@@ -42,6 +42,69 @@ describe('PTYManager.createAsync cancellation', () => {
     expect(manager.get('pty-1')).toBeUndefined();
   });
 
+  // #1305 — dispose(id) can only be called by someone who knows the id, and the
+  // id is exactly what the create has not returned yet. The surface is the
+  // handle the caller does have.
+  it('cancels a pending create by the surface that asked for it', async () => {
+    const manager = new PTYManager();
+    const finishProbe = deferredProbe();
+    const pending = manager.createAsync({ shell: 'wsl.exe', surfaceId: 'surface-1' });
+
+    expect(manager.cancelPendingCreate('surface-1')).toBe(true);
+    finishProbe('/home/dev');
+
+    await expect(pending).rejects.toThrow('PTY creation cancelled');
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('answers false for a surface with nothing in flight, and after the spawn', async () => {
+    const manager = new PTYManager();
+    // Never asked for anything.
+    expect(manager.cancelPendingCreate('surface-unknown')).toBe(false);
+
+    const finishProbe = deferredProbe();
+    const pending = manager.createAsync({ shell: 'wsl.exe', surfaceId: 'surface-1' });
+    finishProbe('/home/dev');
+    const instance = await pending;
+    try {
+      // Resolved: the caller has the id now, so this is its pty to dispose —
+      // a late cancel must not claim to have stopped anything.
+      expect(manager.cancelPendingCreate('surface-1')).toBe(false);
+      expect(manager.get(instance.id)).toBeDefined();
+    } finally { manager.disposeAll(); }
+  });
+
+  // A surface can hold two probes at once — a respawn started while the first
+  // was still resolving. Its close means NONE of them should reach a spawn:
+  // cancelling only the newest left the earlier one to start a shell after the
+  // pane was gone (review: CodeRabbit).
+  it('cancels every create the surface has in flight, not just the newest', async () => {
+    const manager = new PTYManager();
+    const finishFirst = deferredProbe();
+    const first = manager.createAsync({ shell: 'wsl.exe', surfaceId: 'surface-1' });
+    const finishSecond = deferredProbe();
+    const second = manager.createAsync({ shell: 'wsl.exe', surfaceId: 'surface-1' });
+
+    expect(manager.cancelPendingCreate('surface-1')).toBe(true);
+    finishFirst('/home/dev');
+    finishSecond('/home/dev');
+
+    await expect(first).rejects.toThrow('PTY creation cancelled');
+    await expect(second).rejects.toThrow('PTY creation cancelled');
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('forgets a surface once its creates settle, so a later cancel claims nothing', async () => {
+    const manager = new PTYManager();
+    const finishProbe = deferredProbe();
+    const pending = manager.createAsync({ shell: 'wsl.exe', surfaceId: 'surface-1' });
+    finishProbe('/home/dev');
+    await pending;
+    try {
+      expect(manager.cancelPendingCreate('surface-1')).toBe(false);
+    } finally { manager.disposeAll(); }
+  });
+
   it('spawns under the reserved id when nothing cancels the probe', async () => {
     const manager = new PTYManager();
     const finishProbe = deferredProbe();

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useStore } from '../stores';
+import { useWindowDisplayed } from './useWindowDisplayed';
 import { collectRemoteSurfaceWorkspaces } from '../../shared/paneUtils';
-import { remoteAttachmentKey } from '../../shared/remoteHosts';
+import { remoteAttachmentKey, REMOTE_POLL_INTERVAL_MS } from '../../shared/remoteHosts';
 import type {
   RemoteAttachmentDescriptor,
   RemotePaneSummary,
@@ -31,6 +32,25 @@ import type { Workspace } from '../../shared/types';
 //     refetch-and-diff, and both are debounced/serialised so an exit burst
 //     costs one round of requests. No daemon-side change is involved, so this
 //     keeps working against older remote builds (version skew is real here).
+//
+//     THE POLL'S CADENCE COMES FROM MAIN (#1391), not from a renderer timer.
+//     Chromium throttles timers in a hidden or occluded renderer, and the 10s
+//     interval was measured stretching to 17s and then 60s with the window in
+//     the background — a user watching a remote agent from a background window
+//     read minute-old status. Main's timers are never throttled, so main owns
+//     the tick and the renderer owns everything the tick means:
+//
+//        main                                     renderer
+//        ────                                     ────────
+//        REMOTE_POLL_SUBSCRIBE  ◀──── while ≥1 workspace is attached
+//        setInterval(10s) ─── TICK ────▶ refresh()  ─┐
+//                                                    ├─ host set, backoff,
+//        (no subscriber ⇒ no timer at all)           │  serialisation: all
+//        REMOTE_POLL_UNSUBSCRIBE ◀── last detach     ┘  unchanged, all here
+//
+//     The tick carries no payload. `visibilitychange`→visible and window
+//     `focus` additionally refresh straight away, so the first frame after
+//     coming back is fresh rather than up to one tick old.
 //
 //  ③ SURFACE ROWS (#1329). A remote-terminal SURFACE — "New remote pane",
 //     "Split right|down — remote" — is not an attachment: it lives in a local
@@ -72,8 +92,17 @@ import type { Workspace } from '../../shared/types';
  *  one refetch. */
 const REFRESH_DEBOUNCE_MS = 400;
 
-/** Safety net for pane OPENS, which produce no event on this wire. */
-const POLL_INTERVAL_MS = 10_000;
+/** Coming back to the window refreshes immediately, but the three triggers that
+ *  mean "the user is looking again" overlap (a single alt-tab can fire two of
+ *  them), and a user flicking between windows would otherwise turn every flick
+ *  into a round of requests against every attached host. One round per this
+ *  many ms is enough to make the first frame fresh. */
+const FOREGROUND_REFRESH_MIN_GAP_MS = 2_000;
+
+/** How long a subscribed renderer tolerates silence from main's tick before it
+ *  falls back to its own interval (#1391). Three intervals, so an ordinary late
+ *  tick is never mistaken for a dead subscription. */
+const TICK_WATCHDOG_MS = REMOTE_POLL_INTERVAL_MS * 3;
 
 /** A permanently unreachable host would otherwise be retried at full poll rate
  *  forever. Consecutive failures back the host off exponentially from one poll
@@ -137,7 +166,7 @@ function noteHostResult(backoff: Map<string, BackoffEntry>, hostId: string, ok: 
     return;
   }
   const failures = (backoff.get(hostId)?.failures ?? 0) + 1;
-  const delay = Math.min(POLL_INTERVAL_MS * 2 ** (failures - 1), BACKOFF_MAX_MS);
+  const delay = Math.min(REMOTE_POLL_INTERVAL_MS * 2 ** (failures - 1), BACKOFF_MAX_MS);
   backoff.set(hostId, { failures, nextAttemptAt: Date.now() + delay });
 }
 
@@ -193,6 +222,10 @@ export function useRemoteAttachmentsLifecycle(): void {
    *  attached to any more are dropped each round, so detach + re-attach starts
    *  from a clean slate. */
   const backoff = useRef(new Map<string, BackoffEntry>());
+  /** When the foreground catch-up last actually ran (#1391) — its own rate
+   *  limit. Not a substitute for inFlight/pending: those serialise rounds, this
+   *  one decides whether to ask for another at all. */
+  const lastForegroundRefreshAt = useRef(0);
 
   // Stable for the renderer's lifetime — it closes over refs only, so the
   // effects below can depend on it without ever re-subscribing. NEVER rejects:
@@ -237,6 +270,62 @@ export function useRemoteAttachmentsLifecycle(): void {
       }
     }
   }, []);
+
+  /**
+   * A HEARTBEAT refresh (#1391). Dropped outright while a round is in flight,
+   * where `refresh` would coalesce it into a queued follow-up.
+   *
+   * The difference matters because one round against an unreachable host can
+   * take 20s — a `/api/config` probe timeout plus a `/api/workspaces` timeout —
+   * while ticks keep arriving every 10s. Queueing them would make the `finally`
+   * fire the next round the instant the last one ends, turning a backgrounded
+   * window with one sleeping host into a continuous request loop. Backoff does
+   * not save us: it only engages once a round COMPLETES and fails.
+   *
+   * An exit event or a new surface still queues, and should: those carry
+   * information, and a tick carries none — the next one is 10s away.
+   */
+  const refreshTick = useCallback((): void => {
+    if (inFlight.current) return;
+    void refresh();
+  }, [refresh]);
+
+  /**
+   * "The user is looking at this window again" (#1391). Refreshes now instead of
+   * waiting out a tick, and lifts the backoff DEADLINE first.
+   *
+   * Lifting the deadline is the whole point, not a detail. The case this exists
+   * for is a window left in the background while a laptop slept: by the time the
+   * user comes back the host is backed off up to BACKOFF_MAX_MS, so a plain
+   * refresh would filter it out of `due` and make no request at all — the rows
+   * would stay stale for another five minutes with the user staring at them.
+   * Coming back to the window is the user saying to try it now, exactly like
+   * opening a pane on a host is in the reconcile below.
+   *
+   * THREE things keep that from becoming a request storm against a dead host:
+   *
+   *   · `nextAttemptAt`, not the whole entry. Dropping the entry would reset
+   *     `failures` to 0, so the exponential ladder could never climb past one
+   *     step while the user keeps switching windows — #1385's backoff, disarmed
+   *     by a feature that is only supposed to skip one wait.
+   *   · the in-flight drop, for the reason spelled out on `refreshTick`. A round
+   *     against a sleeping host runs 20s while focus events keep arriving; if
+   *     these queued, the `finally` would start the next round the instant the
+   *     last one ended. The heartbeat path is guarded and this one has the same
+   *     exposure — `focus` is bound raw, so alt-tab, DevTools closing, a tray
+   *     show and a notification click all land here.
+   *   · its OWN clock. Deliberately not `refresh`'s: a tick round in which every
+   *     host is backed off issues no request at all, and letting that count as
+   *     "just refreshed" would swallow the next return to the window — which is
+   *     precisely the moment this function exists to serve.
+   */
+  const refreshForeground = useCallback((): void => {
+    if (inFlight.current) return;
+    if (Date.now() - lastForegroundRefreshAt.current < FOREGROUND_REFRESH_MIN_GAP_MS) return;
+    lastForegroundRefreshAt.current = Date.now();
+    for (const entry of backoff.current.values()) entry.nextAttemptAt = 0;
+    void refresh();
+  }, [refresh]);
 
   // ① Boot restore — once per renderer lifetime.
   useEffect(() => {
@@ -386,10 +475,121 @@ export function useRemoteAttachmentsLifecycle(): void {
 
   // ②-b Safety-net poll — armed only while something is attached, so an app
   //     with no mirrors makes no periodic requests at all.
+  //
+  //     The CADENCE comes from main (#1391). A renderer `setInterval` here was
+  //     throttled to a minute once the window went to the background, which is
+  //     exactly when a remote agent is the thing the user is watching.
+  //
+  //     The renderer interval survives only as a FALLBACK, armed the moment the
+  //     tick cannot be had. THREE ways it can't, and the third is why a
+  //     watchdog exists rather than just a rejection handler:
+  //
+  //       · no route at all — an older preload bundle, the same defence
+  //         attachmentsList/hostsList already carry
+  //       · the subscribe REJECTS — no handler registered on the main side
+  //       · the subscribe SUCCEEDS and then the ticks simply stop. Main drops
+  //         every subscriber on `will-quit` and in its disposer without telling
+  //         anyone, and neither is a rejection. Without the watchdog the
+  //         renderer sits on a live listener it believes is subscribed and
+  //         polls nothing for the rest of the session — which is the one
+  //         outcome this whole fallback exists to rule out.
+  //
+  //     Losing the tick must cost freshness, never the poll itself. Exactly one
+  //     driver is ever live: arming the fallback tears the tick listener down.
   const hasAttachments = useStore((s) => s.remoteWorkspaces.length > 0);
   useEffect(() => {
     if (!hasAttachments) return;
-    const id = setInterval(() => { void refresh(); }, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [hasAttachments, refresh]);
+    const remote = window.electronAPI?.remote;
+    let cancelled = false;
+    let offTick: (() => void) | null = null;
+    let unsubscribe: (() => void) | null = null;
+    let fallbackId: ReturnType<typeof setInterval> | null = null;
+    let watchdogId: ReturnType<typeof setInterval> | null = null;
+    let lastTickAt = Date.now();
+
+    const stopWatchdog = (): void => {
+      if (watchdogId === null) return;
+      clearInterval(watchdogId);
+      watchdogId = null;
+    };
+
+    const armFallback = (): void => {
+      if (cancelled || fallbackId !== null) return;
+      stopWatchdog();
+      // Tear the tick listener down FIRST. If main is in fact still ticking
+      // (a subscribe whose reply was lost, say), leaving both installed would
+      // poll at double rate rather than fall back.
+      offTick?.();
+      offTick = null;
+      fallbackId = setInterval(refreshTick, REMOTE_POLL_INTERVAL_MS);
+    };
+
+    if (remote?.pollSubscribe && remote.onPollTick) {
+      // Listener first: a tick that lands between subscribe resolving and the
+      // listener being installed would otherwise be dropped.
+      offTick = remote.onPollTick(() => {
+        lastTickAt = Date.now();
+        refreshTick();
+      });
+      void remote.pollSubscribe().then((off) => {
+        // The effect may have torn down while the invoke was in flight.
+        if (cancelled) { off(); return; }
+        unsubscribe = off;
+      }).catch(armFallback);
+      // Wall-clock, so a throttled watchdog reads late but never wrongly: it
+      // compares timestamps rather than counting its own firings.
+      watchdogId = setInterval(() => {
+        if (Date.now() - lastTickAt < TICK_WATCHDOG_MS) return;
+        armFallback();
+      }, TICK_WATCHDOG_MS);
+    } else {
+      armFallback();
+    }
+
+    return () => {
+      cancelled = true;
+      stopWatchdog();
+      offTick?.();
+      unsubscribe?.();
+      if (fallbackId !== null) clearInterval(fallbackId);
+    };
+  }, [hasAttachments, refreshTick]);
+
+  // ②-c Foreground catch-up. Even an unthrottled tick can be most of an
+  //     interval away when the user comes back, and "the status I see the
+  //     instant I look" is the whole point.
+  //
+  //     THREE triggers, because no one of them covers this on every platform:
+  //
+  //       useWindowDisplayed  minimize/restore, hide/show to tray, lock/unlock,
+  //                           suspend/resume — main-owned, and the ONLY one of
+  //                           the three that works on Windows (#882 measured
+  //                           `document.visibilityState` there as a constant:
+  //                           still 'visible' while minimized or fully covered)
+  //       focus               alt-tab back to a window that was never hidden —
+  //                           the case #1391 was actually dogfooded on
+  //                           (two wmux instances side by side)
+  //       visibilitychange    macOS/Linux occlusion, where it does work
+  const windowDisplayed = useWindowDisplayed();
+  const wasDisplayed = useRef(windowDisplayed);
+  useEffect(() => {
+    const became = windowDisplayed && !wasDisplayed.current;
+    wasDisplayed.current = windowDisplayed;
+    if (!hasAttachments || !became) return;
+    refreshForeground();
+  }, [hasAttachments, windowDisplayed, refreshForeground]);
+
+  useEffect(() => {
+    if (!hasAttachments) return;
+    const onVisibility = (): void => {
+      if (document.visibilityState !== 'visible') return;
+      refreshForeground();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('focus', refreshForeground);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('focus', refreshForeground);
+    };
+  }, [hasAttachments, refreshForeground]);
 }

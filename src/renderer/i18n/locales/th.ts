@@ -181,6 +181,8 @@ export const th = {
   'settings.sidebarPositionDesc': 'ซ้ายหรือขวาของพื้นที่เทอร์มินัล',
   'settings.sidebarAttentionFirst': 'แถวที่รอคุณอยู่ด้านบน',
   'settings.sidebarAttentionFirstDesc': 'ปักหมุดเวิร์กสเปซที่เอเจนต์กำลังรอคุณไว้ด้านบนสุดของแถบด้านข้าง ปิดไว้ตามค่าเริ่มต้น: แถวจะอยู่ตรงที่คุณลากไว้ ขณะเปิดอยู่ การลากเพื่อจัดลำดับจะหยุดชั่วคราว',
+  'settings.sidebarShowPaneCoordinates': 'แสดงพิกัดของบานหน้าต่าง',
+  'settings.sidebarShowPaneCoordinatesDesc': 'แสดงพิกัดรูปแบบ w1-2 ที่สร้างอัตโนมัติในรายการเอเจนต์สำหรับบานหน้าต่างที่คุณยังไม่ได้ตั้งชื่อ เปิดไว้ตามค่าเริ่มต้น บานหน้าต่างที่คุณเปลี่ยนชื่อแล้วจะแสดงชื่อของมันเสมอไม่ว่าตั้งค่านี้อย่างไร',
   'settings.sidebarLeft': 'ซ้าย',
   'settings.sidebarRight': 'ขวา',
   'settings.updateReady': 'การอัปเดตพร้อมแล้ว',

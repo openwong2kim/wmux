@@ -148,17 +148,57 @@ export class PTYManager {
     // pending window cancels the spawn instead of leaving an orphan PTY.
     const id = `pty-${++this.nextId}`;
     this.pendingCreates.add(id);
+    // #1305 — dispose(id) only helps someone who KNOWS the id, and the id is
+    // what the create has not returned yet. The surface is the handle the
+    // caller does have: it named the surface in the request, and it is the
+    // surface closing that wants the spawn cancelled. ALL of them, not the
+    // newest: a surface can have two probes in flight (a respawn started while
+    // the first was still resolving), and its close means none of them should
+    // reach a spawn (review: CodeRabbit).
+    const surfaceId = options?.surfaceId;
+    if (surfaceId) {
+      const forSurface = this.pendingCreatesBySurface.get(surfaceId) ?? new Set<string>();
+      forSurface.add(id);
+      this.pendingCreatesBySurface.set(surfaceId, forSurface);
+    }
     try {
       const wsl = await resolveWslCwd(shell, options?.cwd, options?.wslTarget, undefined, options?.shellArgs);
       if (generation !== this.createGeneration || !this.pendingCreates.has(id)) throw new Error('PTY creation cancelled');
       return this.spawnPrepared({ ...options, shell }, wsl, id);
     } finally {
       this.pendingCreates.delete(id);
+      if (surfaceId) {
+        const forSurface = this.pendingCreatesBySurface.get(surfaceId);
+        forSurface?.delete(id);
+        if (forSurface?.size === 0) this.pendingCreatesBySurface.delete(surfaceId);
+      }
     }
+  }
+
+  /**
+   * #1305 — cancel a create this surface still has in flight, before it spawns.
+   *
+   * True when one was pending and is now cancelled; false when there is nothing
+   * to cancel, which is the ordinary answer: a create that already resolved is
+   * the caller's own pty to `dispose`, and in daemon mode no local create was
+   * ever reserved. Cancelling is not the only guard, just the early one — a
+   * caller that loses this race still gets an id back and must dispose it.
+   */
+  cancelPendingCreate(surfaceId: string): boolean {
+    const forSurface = this.pendingCreatesBySurface.get(surfaceId);
+    if (!forSurface) return false;
+    let cancelled = false;
+    for (const id of forSurface) {
+      if (this.pendingCreates.delete(id)) cancelled = true;
+    }
+    this.pendingCreatesBySurface.delete(surfaceId);
+    return cancelled;
   }
 
   /** Ids reserved by createAsync whose WSL probe has not finished yet. */
   private pendingCreates = new Set<string>();
+  /** #1305 — surfaceId → every id `pendingCreates` has reserved for it. */
+  private pendingCreatesBySurface = new Map<string, Set<string>>();
 
   private spawnPrepared(options?: {
     shell?: string;

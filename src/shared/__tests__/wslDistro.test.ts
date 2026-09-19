@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   isWslShellPath,
   isValidWslDistroName,
@@ -92,6 +92,25 @@ describe('parseWslDistros', () => {
     expect(parseWslDistros(utf8)).toEqual(['Ubuntu']);
     expect(parseWslDistros('Ubuntu\n')).toEqual(['Ubuntu']);
   });
+  it('#1395 orders Latin before Hangul whatever the process locale says', async () => {
+    // A bare localeCompare followed the machine locale: on ko-KR, Hangul sorted
+    // first and the two UTF-16 tests above failed on a clean main. The order
+    // is pinned to one collation so every box lists the same distros the same way.
+    expect(parseWslDistros('우분투\ndocker-desktop\nUbuntu\nalpine\n'))
+      .toEqual(['alpine', 'Ubuntu', '우분투', 'docker-desktop']);
+    // The assertion above passes on an English worker under the OLD code too,
+    // so pin the mechanism as well: the module asks for the 'en' collation
+    // instead of whatever the process locale is (review, #1404).
+    vi.resetModules();
+    const collator = vi.spyOn(Intl, 'Collator');
+    try {
+      await import('../wslDistro');
+      expect(collator).toHaveBeenCalledWith('en');
+    } finally {
+      collator.mockRestore();
+    }
+  });
+
   it('drops blank lines, duplicates, and names outside the charset', () => {
     expect(parseWslDistros('\n\nUbuntu\nUbuntu\n<Default>\nsome weird/name\n'))
       .toEqual(['Ubuntu']);

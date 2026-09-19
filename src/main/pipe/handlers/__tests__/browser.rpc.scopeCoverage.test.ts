@@ -92,7 +92,11 @@ describe('browser RPC workspace-scope coverage (#810)', () => {
     const offenders = blocks
       .filter((b) => b.kind === 'plain')
       .filter((b) => TARGET_RESOLVERS.some((call) => b.body.includes(call)))
-      .filter((b) => !b.body.includes('scopeFor('))
+      // `helpWorkspace(` is the help store's own scoper: the same `callerScope`
+      // decision, fail-closed in both enforcement modes (stricter than
+      // `scopeFor`, which keeps the shadow-mode fallback). A help handler that
+      // resolves a surface after it has made that decision is covered.
+      .filter((b) => !b.body.includes('scopeFor(') && !b.body.includes('helpWorkspace('))
       .map((b) => b.method);
 
     // Failure means a handler resolves a browser surface without deciding which

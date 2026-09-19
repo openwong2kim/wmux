@@ -9,6 +9,7 @@ export const IPC = {
   // route can tell "attached and watched" from "attached but nobody looking".
   PTY_SET_VIEWER_VISIBILITY: 'pty:setViewerVisibility',
   PTY_DISPOSE: 'pty:dispose',
+  PTY_CANCEL_CREATE: 'pty:cancel-create',
   PTY_DATA: 'pty:data',
   PTY_EXIT: 'pty:exit',
   PTY_LIST: 'pty:list',
@@ -386,6 +387,16 @@ export const IPC = {
   // the pluginHost deadlock-break, or a coalesced sibling). Lets the renderer
   // approval-inbox remove the row. Payload: { promptId }.
   PERMISSION_PROMPT_CLOSED: 'permission:prompt-closed',
+  // browser_request_help — the agent hands one browser step to the human.
+  // Deliberately modelled on the permission-prompt trio above rather than the
+  // RPC_COMMAND path: an agent-authored prompt string is untrusted text with a
+  // Done/Cancel answer, so the channel that carries it stays structurally
+  // incapable of reaching anything else. Payloads: BrowserHelpRequestInfo on
+  // OPEN, `{ requestId, outcome }` on RESOLVE, `{ requestId }` on CLOSED.
+  // Timeouts are main's (HelpRequests holds the deadline), never the renderer's.
+  BROWSER_HELP_OPEN: 'browser:help-open',
+  BROWSER_HELP_RESOLVE: 'browser:help-resolve',
+  BROWSER_HELP_CLOSED: 'browser:help-closed',
   // #898 — main → renderer push, once at startup, when a Claude Code plugin
   // install is found whose bridge still forces a permission prompt. wmux
   // refreshes its OWN copy of the bridge but never the plugin's, so this tells
@@ -620,6 +631,17 @@ export const IPC = {
   REMOTE_PANE_RESIZE: 'remote:pane:resize',
   REMOTE_PANE_EXIT: 'remote:pane:exit',      // main → renderer push
   REMOTE_PANE_ERROR: 'remote:pane:error',    // main → renderer push (reconnect gave up)
+  // #1391 — the CADENCE of the per-host `/api/workspaces` liveness poll, moved
+  // out of the renderer. A renderer `setInterval` is throttled by Chromium once
+  // the window is hidden or occluded (measured: 10s → 17s → 60s), so a user
+  // watching a remote agent from a background window saw minute-old status.
+  // Main's timers are never throttled. Subscribe/unsubscribe are refcounted per
+  // WebContents so a window with nothing attached costs no periodic anything,
+  // and TICK carries no payload: it means only "poll now", leaving every bit of
+  // polling policy (host set, backoff, dedup) in the renderer where #1385 put it.
+  REMOTE_POLL_SUBSCRIBE: 'remote:poll:subscribe',
+  REMOTE_POLL_UNSUBSCRIBE: 'remote:poll:unsubscribe',
+  REMOTE_POLL_TICK: 'remote:poll:tick',      // main → renderer push
 } as const;
 
 // Daemon process exit codes. A spawned daemon that finds the canonical control

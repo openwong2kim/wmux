@@ -240,7 +240,27 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
     async ({ action, url, cookies, allowSensitiveDomains, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
         // Playwright Page when available (dev), else CDP over RPC (packaged, #111).
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        // 'get' is a read; set/clear write, and on Live Chrome a cookie write
+        // aimed at someone else's tab is refused before it reaches the page.
+        const page = await engine
+          .getPageForScope(scope, { intent: action === 'get' ? 'read' : 'write' })
+          .catch(allowScopedRpcFallback);
+
+        // The write gate above proves the agent may write to THIS tab. A
+        // cookie write is not a tab write: `page.context()` on Live Chrome is
+        // the user's whole profile, so `clearCookies()` logs them out of every
+        // site and `addCookies()` plants cookies every tab will send. With the
+        // agent-window policy in force there is no tab-sized version of this
+        // mutation to allow, so it is refused as a scope refusal.
+        const refuseProfileWideWriteOnLive = async (verb: 'set' | 'clear'): Promise<void> => {
+          if (!(await engine.isLiveWriteConfined(scope.workspaceId))) return;
+          throw new Error(
+            `agent_window_scope: browser_cookies ${verb} on Live Chrome changes the shared browser ` +
+              "profile — every tab and every site, not just this workspace's tabs — so it is refused " +
+              'while liveWriteScope is "agent". Ask the user to change the cookie in Chrome, or have ' +
+              'the operator set liveWriteScope to "all" in browser-backend.json.',
+          );
+        };
 
         switch (action) {
           case 'get': {
@@ -295,6 +315,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
             }));
 
             if (page) {
+              await refuseProfileWideWriteOnLive('set');
               await page.context().addCookies(cookiesToAdd);
             } else {
               await sendScopedBrowserRpc('browser.cookies', scope, {
@@ -315,6 +336,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
 
           case 'clear': {
             if (page) {
+              await refuseProfileWideWriteOnLive('clear');
               await page.context().clearCookies();
             } else {
               await sendScopedBrowserRpc('browser.cookies', scope, {
@@ -351,7 +373,9 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
         // browser_storage is pure page.evaluate, so it unifies over the same
         // evaluate transport the extraction tools use: a Playwright Page when
         // available, else browser.evaluate over RPC (packaged builds, #111).
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine
+          .getPageForScope(scope, { intent: action === 'get' ? 'read' : 'write' })
+          .catch(allowScopedRpcFallback);
 
         const storageName = type === 'local' ? 'localStorage' : 'sessionStorage';
 
@@ -460,7 +484,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
     BROWSER_EMULATE_SHAPE,
     async ({ offline, headers, credentials, geo, media, timezone, locale, device, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
         const applied: string[] = [];
 
         // Resolve a device preset (if any) up front: both transports need its
@@ -774,7 +798,7 @@ export function registerStateTools(server: McpServer, deps: BrowserToolDeps): vo
     BROWSER_RESIZE_SHAPE,
     async ({ width, height, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
       try {
-        const page = await engine.getPageForScope(scope).catch(allowScopedRpcFallback);
+        const page = await engine.getPageForScope(scope, { intent: 'write' }).catch(allowScopedRpcFallback);
 
         if (page) {
           await page.setViewportSize({ width, height });

@@ -1,4 +1,4 @@
-import { recoveryCwd, isWslShell } from '../shared/wsl';
+import { recoveryCwd, isWslShell, isWslCwdMissingError } from '../shared/wsl';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -136,6 +136,14 @@ let transcriptDiscovery: TranscriptDiscovery | null = null;
 // scoped because the boot-restore site has no agent tracker in scope; a request
 // that arrives before registration simply reports no agent fields.
 let readAgentStateForWeb: ((id: string) => { agentName: string | null; agentStatus: AgentStatus }) | undefined;
+// #1342 — registerRpcHandlers' resume-state reader, read by BOTH
+// WebTerminalServer construction sites for /api/workspaces. Module-scoped for
+// the same reason readAgentStateForWeb is: the boot-restore site has neither
+// the session manager's prompt logs nor the agent process tracker in scope, and
+// a request that arrives before registration simply reports no resume block.
+let readResumeStateForWeb:
+  | ((id: string) => { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean } | undefined)
+  | undefined;
 
 // M3 — per-device credentials for `wmux web`. Module-scoped for the same reason
 // as the servers above: both WebTerminalServer construction paths inject it, and
@@ -387,6 +395,8 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // #1163 — canonical agent state for /api/workspaces, resolved per
         // request (registerRpcHandlers registers the reader).
         agentState: (id) => readAgentStateForWeb?.(id),
+        // #1342 — resume state for the same route, same lazy indirection.
+        resumeState: (id) => readResumeStateForWeb?.(id),
         // M3 — without this, /pair degrades to handing out the shared operator
         // token and nothing is individually revocable. Injected at BOTH
         // construction sites: a restored server serves paired phones on their
@@ -2407,7 +2417,9 @@ function registerRpcHandlers(
   // came back with its ptyId absent and reconcile destructively cleared it. This
   // lets the renderer spawn exactly the one session it still needs, keeping the
   // ptyId stable so scrollback restores from the daemon's ring buffer.
-  const promotionInFlight = new Map<string, Promise<{ ok: boolean; alreadyActive?: boolean; error?: { code: string; message: string } }>>();
+  /** What a promote attempt answers — see `promoteSession`. */
+  type PromoteResult = { ok: boolean; alreadyActive?: boolean; error?: { code: string; message: string } };
+  const promotionInFlight = new Map<string, { operation: Promise<PromoteResult>; startFresh: boolean }>();
   const promoteSession = async (rawParams: Record<string, unknown>) => {
     if (shuttingDown) return { ok: false, error: { code: 'SHUTTING_DOWN', message: 'Daemon is shutting down; retry after reconnect.' } };
     const params = (rawParams ?? {}) as Record<string, unknown>;
@@ -2428,6 +2440,17 @@ function registerRpcHandlers(
       return { ok: false, error: { code: 'NOT_FOUND', message: `No suspended session with id ${sessionId}` } };
     }
 
+    // #1305 — the way out of a pane whose directory is gone. An ordinary
+    // promote reopens the SAME directory and resumes the SAME conversation, so
+    // while the directory is missing every Retry fails identically and the only
+    // remaining action is closing the pane, losing its id and its scrollback.
+    // Starting fresh keeps both and gives up exactly the two things that cannot
+    // be honoured: the directory (home instead) and the resume (the original
+    // command instead). Never implicit — a silent home fallback would resume an
+    // unrelated project's conversation, which is the mistake `recoveryCwd` and
+    // `resumeLaunchCommand` are both written to avoid.
+    const startFresh = params['fresh'] === true;
+
     // createSession enforces the same cap as boot recovery and throws
     // RESOURCE_EXHAUSTED when it is already full.
     try {
@@ -2435,7 +2458,11 @@ function registerRpcHandlers(
       if (session.bufferDumpPath && fs.existsSync(session.bufferDumpPath)) {
         scrollbackData = fs.readFileSync(session.bufferDumpPath);
       }
-      const cwd = recoveryCwd(session);
+      // '~' rather than a Windows homedir for WSL: the probe resolves it inside
+      // the distribution, which is the only side that knows where home is.
+      const cwd = startFresh
+        ? (isWslShell(session.cmd) ? '~' : os.homedir())
+        : recoveryCwd(session);
 
       const PROMOTE_RETRIES = 4;
       let promoted: ReturnType<typeof sessionManager.createSession> | undefined;
@@ -2448,7 +2475,9 @@ function registerRpcHandlers(
             wslTarget: session.wslTarget,
           ...(session.args ? { args: session.args } : {}),
             cwd,
-            spawnCwd: session.spawnCwd,
+            // The old spawn directory is the one that is gone; carrying it would
+            // aim the NEXT recovery at it again.
+            spawnCwd: startFresh ? undefined : session.spawnCwd,
             env: session.env,
             cols: session.cols,
             rows: session.rows,
@@ -2458,7 +2487,7 @@ function registerRpcHandlers(
             lastActivity: session.lastActivity,
             deadTtlHours: session.deadTtlHours,
             exec: session.exec,
-            execLaunchCommand: resumeLaunchCommand(session, readResumeSpoolMap().get(session.id)),
+            execLaunchCommand: startFresh ? undefined : resumeLaunchCommand(session, readResumeSpoolMap().get(session.id)),
             supervision: session.supervision,
             scrollbackData,
             deferOutput: true,
@@ -2487,15 +2516,22 @@ function registerRpcHandlers(
         }
       });
 
-      const fresh = sessionManager.getSession(sessionId);
-      if (fresh) {
-        fresh.meta.resumeBinding = session.resumeBinding;
-        fresh.meta.lastDetectedAgent = session.lastDetectedAgent;
-        const offer = resumeOfferForRecovered(fresh.meta);
-        if (offer) recoveredAgentShellIds.set(sessionId, offer as AgentSlug);
-        if (session.resumeBinding && normalizeResumeCwd(session.resumeBinding.cwd) === normalizeResumeCwd(fresh.meta.cwd)
-          && (isWslShell(session.cmd) || bindingTranscriptLives(session.resumeBinding))) {
-          recoveredResumeBindings.set(sessionId, session.resumeBinding);
+      const promotedSession = sessionManager.getSession(sessionId);
+      if (promotedSession) {
+        // A fresh start drops the binding outright. It names a conversation in
+        // the directory that no longer exists, and the pane did not resume it —
+        // keeping it would leave the pane advertising a resume offer for a
+        // conversation this shell has nothing to do with. (The cwd guard below
+        // already refuses it; the meta assignment did not.)
+        if (!startFresh) {
+          promotedSession.meta.resumeBinding = session.resumeBinding;
+          promotedSession.meta.lastDetectedAgent = session.lastDetectedAgent;
+          const offer = resumeOfferForRecovered(promotedSession.meta);
+          if (offer) recoveredAgentShellIds.set(sessionId, offer as AgentSlug);
+          if (session.resumeBinding && normalizeResumeCwd(session.resumeBinding.cwd) === normalizeResumeCwd(promotedSession.meta.cwd)
+            && (isWslShell(session.cmd) || bindingTranscriptLives(session.resumeBinding))) {
+            recoveredResumeBindings.set(sessionId, session.resumeBinding);
+          }
         }
       }
       if (promoted.supervision) paneSupervisor.arm(sessionId, promoted.supervision, promoted.supervision.status);
@@ -2514,14 +2550,27 @@ function registerRpcHandlers(
         sessionManager.keepPendingRecovery(session, msg);
         stateWriter.saveImmediate(buildState(sessionManager));
       }
-      return { ok: false, error: { code: 'SPAWN_FAILED', message: msg } };
+      // #1305 — CWD_MISSING is not SPAWN_FAILED with a different sentence: it
+      // is the one failure Retry cannot clear, and the renderer offers the
+      // start-fresh action on it alone.
+      return { ok: false, error: { code: isWslCwdMissingError(err) ? 'CWD_MISSING' : 'SPAWN_FAILED', message: msg } };
     }
   };
-  const promoteOnce = (id: string) => {
+  const promoteOnce = (id: string, startFresh = false) => {
     const existing = promotionInFlight.get(id);
-    if (existing) return existing;
-    const operation = promoteSession({ id }).finally(() => promotionInFlight.delete(id));
-    promotionInFlight.set(id, operation);
+    // Same intent → one attempt, as before. A DIFFERENT intent must not be
+    // answered by the one already running: start-fresh exists because the
+    // ordinary promote fails, so handing back that promote's result would
+    // answer a question the user did not ask (#1305). Queue behind it instead —
+    // and if the one in flight happens to succeed, the idempotent
+    // already-active check makes the second a no-op.
+    if (existing && existing.startFresh === startFresh) return existing.operation;
+    const run = () => promoteSession({ id, fresh: startFresh });
+    const operation: Promise<PromoteResult> = (existing ? existing.operation.catch(() => undefined).then(run) : run())
+      .finally(() => {
+        if (promotionInFlight.get(id)?.operation === operation) promotionInFlight.delete(id);
+      });
+    promotionInFlight.set(id, { operation, startFresh });
     return operation;
   };
   pipeServer.onRpc('daemon.promoteSession', (params) => {
@@ -2529,7 +2578,7 @@ function registerRpcHandlers(
     // Before the attempt, so an attempt that fails on a path with no save
     // still records that the user is actively retrying this pane (#1305).
     touchPendingRecovery(id);
-    return promoteOnce(id);
+    return promoteOnce(id, params?.['fresh'] === true);
   });
   // Defer cold WSL starts until RPC registration/event wiring can finish.
   // Independent panes recover concurrently; foreground attach shares the same
@@ -2558,6 +2607,8 @@ function registerRpcHandlers(
       log: (level, msg) => log(level, msg),
       // #1163 — canonical agent state for /api/workspaces (see restoreWebServer).
       agentState: (id) => readAgentStateForWeb?.(id),
+      // #1342 — see the restore path.
+      resumeState: (id) => readResumeStateForWeb?.(id),
       // M3 — see the restore path for why the roster is injected at both sites.
       devices: getDeviceStore(),
       // See the restore path: the lifecycle routes need this and answer 503
@@ -3383,6 +3434,30 @@ function registerRpcHandlers(
   // #1163 — /api/workspaces answers with this same canonical state, so a
   // remote roster row appears and disappears exactly when a local one would.
   readAgentStateForWeb = readDaemonAgentState;
+
+  // #1342 — /api/workspaces answers with the SAME resume facts `pty.list` gives
+  // the local renderer: the durable binding re-probed for transcript existence
+  // (D5 — a purged conversation must not surface a dead `--resume`), plus the
+  // two gate signals. The cwd guard (F7) is NOT applied here either; the web
+  // serialiser turns the recorded cwd into its own `cwdMatches` verdict.
+  readResumeStateForWeb = (id) => {
+    const managed = sessionManager.getSession(id);
+    if (!managed) return undefined;
+    const durable = managed.meta.resumeBinding;
+    const binding = durable && bindingTranscriptLives(durable) ? durable : undefined;
+    const commandRunning = managed.promptLog.size > 0 ? managed.promptLog.isCommandRunning() : undefined;
+    // Same three-state derivation as pty.list: an exec unit IS its agent
+    // process, a tracked pane answers from the tracker, and anything else stays
+    // undecided so the desktop keeps its own heuristic.
+    const agentProcessAlive = managed.meta.exec
+      ? (managed.meta.state === 'attached' || managed.meta.state === 'detached' ? true : undefined)
+      : agentProcessTracker.statusFor(id);
+    return {
+      ...(binding ? { binding } : {}),
+      ...(commandRunning !== undefined ? { commandRunning } : {}),
+      ...(agentProcessAlive !== undefined ? { agentProcessAlive } : {}),
+    };
+  };
 
   // Authoritative detector state bypasses desktop reconnect/event timing.
   pipeServer.onRpc('daemon.getAgentName', async (params) => {

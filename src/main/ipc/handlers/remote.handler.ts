@@ -22,7 +22,11 @@ import { wrapHandler } from '../wrapHandler';
 import { RemoteHostClient } from '../../remote/RemoteHostClient';
 import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
 import type { RemoteAttachmentsStore } from '../../remote/RemoteAttachmentsStore';
-import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey } from '../../../shared/remoteHosts';
+import { RemoteAttentionSubscriber } from '../../remote/RemoteAttentionSubscriber';
+import type { RemoteAttentionNotification } from '../../remote/remoteAttention';
+import { isCategoryMuted } from '../../notification/mutedCategories';
+import { toastManager } from '../../notification/ToastManager';
+import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey, REMOTE_POLL_INTERVAL_MS } from '../../../shared/remoteHosts';
 import { normalizeWorkspaceColor } from '../../../shared/workspaceColors';
 import type {
   PairFailureReason,
@@ -62,6 +66,11 @@ export interface RegisterRemoteHandlersDeps {
   /** Test seam: how a RemoteHostClient is built for a host record. Defaults
    *  to `new RemoteHostClient(host, fetchImpl)`. */
   clientFactory?: (host: RemoteHost) => RemoteHostClient;
+  /** Test seam: how the per-host `/api/events` subscription is built. */
+  attentionSubscriberFactory?: (
+    host: RemoteHost,
+    onNotification: (hostLabel: string, n: RemoteAttentionNotification) => void,
+  ) => RemoteAttentionSubscriber;
   /** Test seam: fetch implementation for the `/api/config` add-time probe
    *  (runs before any RemoteHostClient exists, so it needs its own seam). */
   fetchImpl?: typeof fetch;
@@ -208,6 +217,10 @@ async function exchangePairCode(
 
 export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => void {
   const { store, attachments } = deps;
+  const makeAttentionSubscriber =
+    deps.attentionSubscriberFactory ??
+    ((host: RemoteHost, onNotification: (hostLabel: string, n: RemoteAttentionNotification) => void) =>
+      new RemoteAttentionSubscriber({ host, onNotification, fetchImpl }));
   const fetchImpl: typeof fetch = deps.fetchImpl ?? fetch;
   const makeClient = deps.clientFactory ?? ((host: RemoteHost) => new RemoteHostClient(host, fetchImpl));
 
@@ -221,6 +234,81 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
   const attachRecords = new Map<string, AttachRecord>(); // attachId -> record
   const trackedSenders = new Set<number>();
 
+  // #1391 — the liveness-poll tick. Keyed by WebContents id so a renderer that
+  // subscribes twice gets ONE tick per round, never two.
+  //
+  // REFCOUNTED, and that is load-bearing. The renderer's subscribe is an async
+  // invoke inside a React effect keyed on "is anything attached", so detaching
+  // and re-attaching faster than one IPC round trip — the last mirror closed
+  // and another opened, a workspace switch that empties and refills the row set
+  // — interleaves as: subscribe(A) → subscribe(B) → the LATE unsubscribe from
+  // A. A plain membership set would drop the whole entry on that unsubscribe,
+  // disarm the timer, and leave the renderer holding a live listener it
+  // believes is subscribed — polling silently dead for the rest of the session.
+  // Counting makes the pair balance: B survives A's teardown. (This renderer
+  // does not mount under React StrictMode, whose double-invoked effects would
+  // produce the same order on every single mount.)
+  //
+  // A WebContents teardown deletes the entry outright, count and all, so a
+  // reload can never strand a positive count.
+  interface PollSubscriber {
+    sender: WebContents;
+    /** Outstanding subscribes from this renderer, not tick recipients. */
+    count: number;
+  }
+  const pollSubscribers = new Map<number, PollSubscriber>();
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  // --- remote agent notifications (#1344) ---------------------------------
+  //
+  // One `/api/events` subscription per ATTACHED host, started and stopped with
+  // the attach roster: a registered-but-not-attached host is one the user is
+  // not watching, and subscribing to it would notify about panes that are
+  // nowhere on screen. Transitions land in `dispatchNotification`, the same
+  // entry point every local event uses, so remote notifications inherit the
+  // renderer's notification policy, the per-category mute, idle suppression
+  // and the toast dedup without a second copy of any of them.
+  const attentionSubs = new Map<string, RemoteAttentionSubscriber>(); // hostId -> sub
+
+  function onRemoteAttention(hostLabel: string, n: RemoteAttentionNotification): void {
+    const label = hostLabel || 'Remote';
+    // NOT `dispatchNotification`: its renderer leg resolves a notification with
+    // no ptyId and no workspaceId onto the ACTIVE LOCAL workspace
+    // (resolveNotificationTarget's last fallback), and a remote event has
+    // neither — it names a remote session id that no local surface owns. That
+    // fallback would flash an unrelated local pane, jump there on click, and
+    // let that workspace's `notificationsMuted` silence a remote host it has
+    // nothing to do with. So the remote path takes the two gates main owns
+    // outright and skips the local-surface machinery it cannot honestly feed:
+    // the mirrored per-category mute, and ToastManager (which applies the
+    // `toastEnabled` setting and stays quiet while a window has OS focus).
+    if (isCategoryMuted(n.category)) return;
+    toastManager.show(`${label} · ${n.title}`, n.body, { ptyId: null, workspaceId: null });
+  }
+
+  /** Reconcile live subscriptions against the attach roster. Idempotent. */
+  function syncAttentionSubs(): void {
+    const wanted = new Set<string>();
+    for (const a of attachments.list()) {
+      // A descriptor whose host is gone can never be restored either — it is
+      // waiting to be cascaded away, not a host to subscribe to.
+      if (store.get(a.hostId)) wanted.add(a.hostId);
+    }
+    for (const [hostId, sub] of [...attentionSubs.entries()]) {
+      if (wanted.has(hostId)) continue;
+      sub.stop();
+      attentionSubs.delete(hostId);
+    }
+    for (const hostId of wanted) {
+      if (attentionSubs.has(hostId)) continue;
+      const host = store.get(hostId);
+      if (!host) continue;
+      const sub = makeAttentionSubscriber(host, onRemoteAttention);
+      attentionSubs.set(hostId, sub);
+      sub.start();
+    }
+  }
+
   function attachKey(senderId: number, hostId: string, sessionId: string): string {
     return `${senderId}:${hostId}:${sessionId}`;
   }
@@ -230,6 +318,86 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     if (!record) return;
     if (record.sender.isDestroyed()) return;
     record.sender.send(channel, payload);
+  }
+
+  /**
+   * #1391 — arm the tick on the FIRST subscriber, disarm it on the last.
+   *
+   *   renderer has ≥1 attached remote workspace
+   *          │  REMOTE_POLL_SUBSCRIBE
+   *          ▼
+   *   pollSubscribers ──first──▶ setInterval(REMOTE_POLL_INTERVAL_MS)
+   *          │                          │ every tick
+   *          │                          ▼
+   *          │                   send REMOTE_POLL_TICK to each live subscriber
+   *          │  UNSUBSCRIBE / reload / crash / destroy
+   *          ▼
+   *   pollSubscribers ──last──▶ clearInterval
+   *
+   * An app with no remote workspaces attached therefore runs no periodic timer
+   * at all — the property the old renderer-side `hasAttachments` gate had, kept.
+   */
+  function syncPollTimer(): void {
+    if (pollSubscribers.size > 0) {
+      if (pollTimer) return;
+      pollTimer = setInterval(() => {
+        for (const [id, { sender }] of [...pollSubscribers]) {
+          // A destroyed WebContents throws on send(). Drop it here rather than
+          // waiting for a lifecycle event that may never come.
+          if (sender.isDestroyed()) {
+            pollSubscribers.delete(id);
+            continue;
+          }
+          try {
+            sender.send(IPC.REMOTE_POLL_TICK);
+          } catch {
+            // Renderer mid-reload — it re-subscribes on the next mount, and
+            // one missed tick costs one poll interval, never correctness.
+          }
+        }
+        // A round that found every subscriber dead must not keep ticking.
+        if (pollSubscribers.size === 0) syncPollTimer();
+      }, REMOTE_POLL_INTERVAL_MS);
+      // Never hold the app open for a poll tick.
+      pollTimer.unref?.();
+      return;
+    }
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  function addPollSubscriber(sender: WebContents): void {
+    const entry = pollSubscribers.get(sender.id);
+    // Re-seat `sender` on every subscribe: after a reload the id is the same
+    // object here, but taking the live one costs nothing and cannot go stale.
+    if (entry) {
+      entry.sender = sender;
+      entry.count += 1;
+    } else {
+      pollSubscribers.set(sender.id, { sender, count: 1 });
+    }
+    syncPollTimer();
+  }
+
+  /** One unsubscribe. The entry survives while other subscribes are still
+   *  outstanding — see the refcount rationale on `pollSubscribers`. */
+  function releasePollSubscriber(senderId: number): void {
+    const entry = pollSubscribers.get(senderId);
+    if (!entry) return;
+    entry.count -= 1;
+    if (entry.count > 0) return;
+    pollSubscribers.delete(senderId);
+    syncPollTimer();
+  }
+
+  /** The renderer is GONE (destroyed, crashed, navigated away). Drops the
+   *  whole entry regardless of count — a teardown must never leave a positive
+   *  refcount holding the timer open for a renderer that no longer exists. */
+  function dropPollSubscriber(senderId: number): void {
+    if (!pollSubscribers.delete(senderId)) return;
+    syncPollTimer();
   }
 
   function getOrCreateClient(hostId: string): RemoteHostClient | null {
@@ -267,7 +435,9 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
 
   /** Reload/crash cleanup (once per sender): a renderer reload never runs
    *  React unmount cleanup, so without this every Cmd+R leaks a live SSE
-   *  connection against the remote daemon. A PLAIN reload (Cmd+R) fires
+   *  connection against the remote daemon — and, since #1391, a poll-tick
+   *  subscription that would keep main's interval armed for a renderer that no
+   *  longer exists. A PLAIN reload (Cmd+R) fires
    *  neither 'destroyed' nor 'render-process-gone' in Electron — it's a
    *  same-WebContents in-place navigation, not a teardown — so
    *  'did-start-navigation' is the only event that observes it; a
@@ -280,6 +450,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       for (const [attachId, record] of [...attachRecords.entries()]) {
         if (record.senderId === sender.id) detachAttach(attachId);
       }
+      dropPollSubscriber(sender.id);
       trackedSenders.delete(sender.id);
       // A plain reload (Cmd+R) does NOT destroy the WebContents — it's the
       // same sender re-entering installSenderCleanup on the next
@@ -426,6 +597,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       try {
         attachments.removeByHost(hostId);
       } catch { /* see above — an orphan descriptor restores as a stale row */ }
+      syncAttentionSubs();
       allowInputCache.delete(hostId);
       const client = clients.get(hostId);
       if (client) {
@@ -567,6 +739,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       } catch {
         return false;
       }
+      syncAttentionSubs();
       return true;
     }));
 
@@ -579,7 +752,9 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         // `<hostId>:<workspaceId>` addresses a record, so a key that cannot
         // have been minted by the attach path deletes nothing.
         if (!parseRemoteAttachmentKey(k)) return false;
-        return attachments.remove(k);
+        const removed = attachments.remove(k);
+        syncAttentionSubs();
+        return removed;
       } catch {
         return false;
       }
@@ -665,10 +840,45 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       }
     }));
 
+  // #1391 — the renderer asks for the unthrottled cadence while (and only
+  // while) it has something attached. One tick per WebContents per round
+  // however many times it subscribed; the count only decides when the LAST
+  // unsubscribe lands (see `pollSubscribers`).
+  ipcMain.removeHandler(IPC.REMOTE_POLL_SUBSCRIBE);
+  ipcMain.handle(IPC.REMOTE_POLL_SUBSCRIBE, wrapHandler(IPC.REMOTE_POLL_SUBSCRIBE,
+    async (e: IpcMainInvokeEvent): Promise<boolean> => {
+      // Shared with the pane attaches: one listener set per sender covers
+      // reload/crash/destroy for both the SSE attaches and this subscription.
+      installSenderCleanup(e.sender);
+      addPollSubscriber(e.sender);
+      return true;
+    }));
+
+  ipcMain.removeHandler(IPC.REMOTE_POLL_UNSUBSCRIBE);
+  ipcMain.handle(IPC.REMOTE_POLL_UNSUBSCRIBE, wrapHandler(IPC.REMOTE_POLL_UNSUBSCRIBE,
+    async (e: IpcMainInvokeEvent): Promise<boolean> => {
+      releasePollSubscriber(e.sender.id);
+      return true;
+    }));
+
   const onWillQuit = (): void => {
     for (const client of clients.values()) client.detachAll();
+    pollSubscribers.clear();
+    syncPollTimer();
+    for (const sub of attentionSubs.values()) sub.stop();
+    attentionSubs.clear();
   };
   app.on('will-quit', onWillQuit);
+
+  // Restore after an app restart: the attach roster is on disk, so the
+  // subscriptions must come back with it rather than waiting for the user to
+  // re-attach something.
+  try {
+    syncAttentionSubs();
+  } catch {
+    // Never let a notification subscription take the app down on boot — the
+    // roster is restored, the alerts are not, and the next attach retries.
+  }
 
   return () => {
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_LIST);
@@ -685,6 +895,17 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     ipcMain.removeHandler(IPC.REMOTE_PANE_DETACH);
     ipcMain.removeAllListeners(IPC.REMOTE_PANE_WRITE);
     ipcMain.removeHandler(IPC.REMOTE_PANE_RESIZE_REQUEST);
+    ipcMain.removeHandler(IPC.REMOTE_POLL_SUBSCRIBE);
+    ipcMain.removeHandler(IPC.REMOTE_POLL_UNSUBSCRIBE);
+    // #1391 — the timer is the one thing here that outlives `removeHandler`.
+    // Every other resource above is reachable only through a route that has
+    // just been unregistered; an interval keeps firing on its own, against
+    // renderers whose subscribe can no longer be re-answered. (`src/main/index.ts`
+    // discards this disposer today, so in production this runs only under test —
+    // but the contract a disposer states must be true, or the first caller that
+    // does keep it inherits a live timer.)
+    pollSubscribers.clear();
+    syncPollTimer();
     app.removeListener('will-quit', onWillQuit);
   };
 }

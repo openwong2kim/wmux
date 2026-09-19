@@ -8,6 +8,7 @@ import {
 } from './redact';
 import { ancestorContext } from '../../shared/browserReplay/actionTrace';
 import { getDomFacts } from './ownAttributes';
+import { HAS_SUBMENU_DOM_MARKER, buildHoverTriggerScanExpression } from './hoverSurfaces';
 import {
   describeRetiredRef,
   nextRefFor,
@@ -142,6 +143,16 @@ export function buildDomSnapshotExpression(
         || el.getAttribute('name')
         || '').substring(0, 120),
     }));
+    // Hover triggers (hoverSurfaces.ts phase 1). This lane has no a11y tree to
+    // annotate, so the marker goes on the listing line instead. Its own try:
+    // the scan is an annotation, and a stylesheet that behaves unexpectedly
+    // must not cost the caller the whole listing.
+    let hoverTriggers;
+    try {
+      hoverTriggers = new Set(${buildHoverTriggerScanExpression({ elementsOnly: true })});
+    } catch (e) {
+      hoverTriggers = new Set();
+    }
     const assigned = assignStableRefs(prior, seedNext, described);
     const refs = assigned.refs;
     interactives.forEach((el, i) => el.setAttribute('data-wmux-ref', String(refs[i])));
@@ -170,6 +181,7 @@ export function buildDomSnapshotExpression(
       else if (text) desc += ' "' + text + '"';
       if (placeholder) desc += ' placeholder="' + placeholder + '"';
       if (href) desc += ' -> ' + href.substring(0, 60);
+      if (hoverTriggers.has(el)) desc += ${JSON.stringify(HAS_SUBMENU_DOM_MARKER)};
       lines.push(desc);
     });
     const text = lines.join('\\n');

@@ -5,10 +5,16 @@ import type { Page } from 'playwright-core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
-import { withAutomationLease } from '../automationLease';
+import { leasedMutation, withAutomationLease } from '../automationLease';
 import type { BrowserToolDeps } from '../browserScope';
 import { resolveRef } from '../snapshot';
 import { describeToolError } from '../toolError';
+import {
+  EFFECT_TRAILER_NOTE,
+  taggedFailure,
+  withEffectTrailer,
+  type EffectProbe,
+} from '../resultTrailer';
 import { getWmuxDir } from '../../../daemon/config';
 
 // Optional surfaceId schema reused across tools
@@ -233,6 +239,10 @@ async function uploadViaCdp(
   page: Page,
   selector: string,
   files: string[],
+  // Taken rather than wrapped at the call site: a `false` from here means the
+  // route could not serve the call and sent NOTHING, which the caller must not
+  // report as an ambiguous dispatch. Only the one send below is one.
+  effect: EffectProbe,
 ): Promise<boolean> {
   const client = await page.context().newCDPSession(page).catch(() => null);
   if (!client) return false;
@@ -256,7 +266,7 @@ async function uploadViaCdp(
     }
     if (nodeId === undefined) return false;
 
-    await client.send('DOM.setFileInputFiles', { files, nodeId });
+    await effect.dispatch(() => client.send('DOM.setFileInputFiles', { files, nodeId }));
     return true;
   } finally {
     await client.detach().catch(() => { /* best-effort */ });
@@ -409,8 +419,8 @@ async function setInputFilesTagged(
 function describeUploadTimeout(message: string): string {
   return (
     `${message} The file may have reached the page anyway — the renderer can ` +
-    `finish the transfer after this call gives up. Check the page before ` +
-    `retrying; a blind retry can upload the same file twice.`
+    `finish the transfer after this call gives up, and a blind retry then uploads ` +
+    `the same file twice.`
   );
 }
 
@@ -578,13 +588,13 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_file_upload',
-    'Upload files to a file input, by default the page\'s first one — pass selector to pick another. Paths MUST live under the uploads root (~/.wmux/uploads/, instance suffix applied); anything else is rejected so a malicious page cannot exfiltrate credentials or SSH keys. Size is not a limit on the selector path: the browser opens the path itself. A ref instead of a selector takes a slower path that cannot carry more than 50MB. Only a real <input type=file> is supported; a drop-zone-only uploader fails with "No file input element found".',
+    'Upload files to a file input, by default the page\'s first one — pass selector to pick another. Paths MUST live under the uploads root (~/.wmux/uploads/, instance suffix applied); anything else is rejected so a malicious page cannot exfiltrate credentials or SSH keys. Size is not a limit on the selector path: the browser opens the path itself. A ref instead of a selector takes a slower path that cannot carry more than 50MB. Only a real <input type=file> is supported; a drop-zone-only uploader fails with "No file input element found".' + EFFECT_TRAILER_NOTE,
     BROWSER_FILE_UPLOAD_SHAPE,
-    async ({ paths, selector, ref, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ paths, selector, ref, timeout, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope);
+        const page = await engine.getPageForScope(scope, { intent: 'write' });
         if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
+          throw taggedFailure('not_supported', 'No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const safePaths = paths.map(validateUploadPath);
@@ -598,48 +608,56 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
           // compatibility; `selector` is the route that scales.
           const el = await resolveRef(page, ref);
           if (!el) {
-            throw new Error(`Could not resolve ref="${ref}" to an element.`);
+            throw taggedFailure('ref_not_found', `Could not resolve ref="${ref}" to an element.`);
           }
           // The ref usually names the visible upload BUTTON, not the input.
           const input = await resolveFileInputFromRef(el as unknown as ElementHandleLike);
           if (!input) {
-            throw new Error(
+            throw taggedFailure(
+              'element_not_interactable',
               `No file input found at or near ref="${ref}".` + FILE_INPUT_PROXIMITY_HINT,
             );
           }
-          await setInputFilesTagged(input, safePaths, resolvedTimeout);
-        } else if (!(await uploadViaCdp(page, resolvedSelector, safePaths))) {
+          await effect.dispatch(() => setInputFilesTagged(input, safePaths, resolvedTimeout));
+        } else if (!(await uploadViaCdp(page, resolvedSelector, safePaths, effect))) {
           // No CDP (or the selector matched nothing): fall back to the DOM
           // handle, which also produces the user-facing "no file input" error.
           const fileInput = await page.$(resolvedSelector);
           if (!fileInput) {
-            throw new Error(
+            throw taggedFailure(
+              'selector_not_found',
               (selector
                 ? `No file input element matches selector: ${resolvedSelector}`
                 : 'No file input element found on the page.') + FILE_INPUT_PROXIMITY_HINT,
             );
           }
-          await setInputFilesTagged(fileInput, safePaths, resolvedTimeout);
+          await effect.dispatch(() => setInputFilesTagged(fileInput, safePaths, resolvedTimeout));
         }
 
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Uploaded ${safePaths.length} file(s) from ${displayRoot(getUploadRoot())}`,
-            },
-          ],
-        };
+        return withEffectTrailer(
+          {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Uploaded ${safePaths.length} file(s) from ${displayRoot(getUploadRoot())}`,
+              },
+            ],
+          },
+          effect.success(),
+        );
       } catch (error) {
         // Only a tagged transfer timeout earns the duplicate-upload warning.
         const message =
           error instanceof UploadTransferTimeout
             ? describeUploadTimeout(error.message)
             : describeToolError(error);
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: message }],
+            isError: true,
+          },
+          effect.failure(error),
+        );
       }
     }),
   );
@@ -649,23 +667,24 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_download',
-    'Click an element by ref and capture the resulting download. Returns the saved path plus the name and URL the browser had for it. timeout bounds the wait for the download to START, not to finish — a download that begins in time then runs for minutes still completes (measured: a 60s transfer succeeds under the 30s default). If the click navigates instead of downloading, which is what Chrome does with a cross-origin "download" link, the tab is put back where it was and the error says so.',
+    'Click an element by ref and capture the resulting download. Returns the saved path plus the name and URL the browser had for it. timeout bounds the wait for the download to START, not to finish — a download that begins in time then runs for minutes still completes (measured: a 60s transfer succeeds under the 30s default). If the click navigates instead of downloading, which is what Chrome does with a cross-origin "download" link, the tab is put back where it was and the error says so.' + EFFECT_TRAILER_NOTE,
     BROWSER_DOWNLOAD_SHAPE,
-    async ({ ref, filename, timeout, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ ref, filename, timeout, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       // Captured before the click so a stray navigation has somewhere to go
       // back to. Read outside the try: the catch needs it too.
       let originalUrl = '';
       let page: Awaited<ReturnType<typeof engine.getPageForScope>> = null;
       try {
-        page = await engine.getPageForScope(scope);
+        // A download starts with a CLICK, so this is a write.
+        page = await engine.getPageForScope(scope, { intent: 'write' });
         if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
+          throw taggedFailure('not_supported', 'No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
         originalUrl = page.url();
 
         const el = await resolveRef(page, ref);
         if (!el) {
-          throw new Error(`Could not resolve ref="${ref}" to an element.`);
+          throw taggedFailure('ref_not_found', `Could not resolve ref="${ref}" to an element.`);
         }
 
         // Start waiting for download before clicking. The timeout covers the
@@ -673,6 +692,9 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
         // transfer begins, and download.path() below then waits out the rest
         // unbounded. That split is deliberate and worth keeping: a large file
         // is slow to finish, not slow to begin.
+        // The click is the dispatch, so a timeout waiting for the download that
+        // follows it is the ambiguous case rather than a clean failure.
+        effect.begin();
         const [download] = await Promise.all([
           page.waitForEvent('download', { timeout: timeout ?? DOWNLOAD_START_TIMEOUT_MS }),
           el.click(),
@@ -687,7 +709,7 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
           // arbitrary files via download.saveAs which doesn't sanitize.
           const safeName = pathMod.basename(filename);
           if (!safeName || safeName === '.' || safeName === '..') {
-            throw new Error('filename must be a non-empty plain file name');
+            throw taggedFailure('invalid_params', 'filename must be a non-empty plain file name');
           }
           const savePath = pathMod.join(os.tmpdir(), safeName);
           await download.saveAs(savePath);
@@ -703,17 +725,20 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
         // it came from were previously reachable only through
         // browser_wait_for_download, which meant learning the filename cost a
         // second, differently-shaped call.
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text:
-                `Downloaded: ${filePath}\n` +
-                `suggestedFilename: ${download.suggestedFilename()}\n` +
-                `url: ${download.url()}`,
-            },
-          ],
-        };
+        return withEffectTrailer(
+          {
+            content: [
+              {
+                type: 'text' as const,
+                text:
+                  `Downloaded: ${filePath}\n` +
+                  `suggestedFilename: ${download.suggestedFilename()}\n` +
+                  `url: ${download.url()}`,
+              },
+            ],
+          },
+          effect.success(),
+        );
       } catch (error) {
         let message = describeToolError(error);
         // A click that navigated is not just a failed download: the page the
@@ -728,10 +753,13 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
             message = `${message}\n\n${describeStrayNavigation(strandedUrl, originalUrl, outcome)}`;
           }
         }
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: message }],
+            isError: true,
+          },
+          effect.failure(error),
+        );
       }
     }),
   );
@@ -814,13 +842,14 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
   // -----------------------------------------------------------------------
   server.tool(
     'browser_dialog',
-    'Pre-register a handler for the NEXT dialog (alert, confirm, prompt, beforeunload); it is accepted or dismissed automatically when it appears.',
+    'Pre-register a handler for the NEXT dialog (alert, confirm, prompt, beforeunload); it is accepted or dismissed automatically when it appears.' + EFFECT_TRAILER_NOTE,
     BROWSER_DIALOG_SHAPE,
-    async ({ accept, text, surfaceId }) => withAutomationLease(deps, surfaceId, async (scope) => {
+    async ({ accept, text, surfaceId }) => leasedMutation(deps, surfaceId, async (scope, effect) => {
       try {
-        const page = await engine.getPageForScope(scope);
+        // Answering a dialog (accept/dismiss, and prompt text) acts on the page.
+        const page = await engine.getPageForScope(scope, { intent: 'write' });
         if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
+          throw taggedFailure('not_supported', 'No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         page.once('dialog', async (dialog) => {
@@ -830,22 +859,32 @@ export function registerFileTools(server: McpServer, deps: BrowserToolDeps): voi
             await dialog.dismiss();
           }
         });
+        // Nothing is sent to the page here — what this tool mutates is the
+        // handler armed on it, and that registration is what `committed`
+        // reports. The dialog it answers has not happened yet.
+        effect.begin();
 
         const action = accept ? 'accepted' : 'dismissed';
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Dialog handler set. Next dialog will be ${action}.`,
-            },
-          ],
-        };
+        return withEffectTrailer(
+          {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Dialog handler set. Next dialog will be ${action}.`,
+              },
+            ],
+          },
+          effect.success(),
+        );
       } catch (error) {
         const message = describeToolError(error);
-        return {
-          content: [{ type: 'text' as const, text: message }],
-          isError: true,
-        };
+        return withEffectTrailer(
+          {
+            content: [{ type: 'text' as const, text: message }],
+            isError: true,
+          },
+          effect.failure(error),
+        );
       }
     }),
   );

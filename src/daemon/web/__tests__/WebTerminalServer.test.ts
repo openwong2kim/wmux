@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
 import type { TranscriptProjector } from '../../transcript/TranscriptProjector';
+import type { ResumeBinding } from '../../../shared/agentResume';
 import type { TranscriptStatus } from '../../../shared/transcript/turnEvents';
 import { GIT_HARDENING_CONFIG, type GitRunner } from '../sessionDiff';
 import { MIN_PHONE_PROTOCOL_VERSION, PHONE_PROTOCOL_VERSION } from '../protocolVersion';
@@ -429,11 +431,14 @@ describe('WebTerminalServer', () => {
   let liveActivityPushEnabled: boolean;
   /** #1163 — the daemon's canonical agent state per session, as the server reads it. */
   let agentStates: Record<string, { agentName: string | null; agentStatus: 'idle' | 'running' | 'awaiting_input' }>;
+  /** #1342 — the daemon's resume state per session, as the server reads it. */
+  let resumeStates: Record<string, { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }>;
 
   beforeEach(() => {
     gateArmed = true;
     liveActivityPushEnabled = true;
     agentStates = {};
+    resumeStates = {};
     const deps = makeDeps();
     bridge = deps.bridge;
     write = deps.write;
@@ -474,6 +479,7 @@ describe('WebTerminalServer', () => {
       liveActivityPush: () => liveActivityPushEnabled,
       setGateEnabled: (enabled) => { gateArmed = enabled; },
       agentState: (id) => agentStates[id],
+      resumeState: (id) => resumeStates[id],
       log: () => { /* silent in tests */ },
       assetsDir: os.tmpdir(), // no terminal.html needed for the /api/* tests
     });
@@ -880,6 +886,104 @@ describe('WebTerminalServer', () => {
   });
 
   // ── critical / notify SSE tee ──────────────────────────────────────────────
+  it('★ #1402 withholds the brain pane\'s critical/notify events from the fan-out and the replay log', async () => {
+    // Both brain marks, on separate panes: the env marker, and the id prefix
+    // for a listing that omits env. A pane the manager no longer knows must
+    // still get through — that is a closed pane's in-flight event, not a
+    // brain pane.
+    live.push({
+      id: 'pty-orchestrator', cwd: '/x', cols: 80, rows: 24, state: 'detached',
+      agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+      env: { WMUX_BRAIN_PTY: '1' }, cmd: '/usr/bin/claude',
+    });
+    const info = await startRO();
+    const token = info.token as string;
+    const ac = new AbortController();
+    const sse = await fetch(
+      `${base()}/api/stream?session=s1&token=${encodeURIComponent(token)}`,
+      { signal: ac.signal },
+    );
+    expect(sse.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const em = sessionManager as unknown as EventEmitter;
+    em.emit('session:critical', {
+      sessionId: 'pty-orchestrator',
+      event: { action: 'delete files', riskLevel: 'critical', matchedLine: '$ rm -rf orchestrator-secrets' },
+    });
+    em.emit('session:notification', {
+      sessionId: 'brain-ws-9',
+      event: { source: 'osc9', title: null, body: 'orchestrator notification', ts: 1 },
+    });
+    em.emit('session:notification', {
+      sessionId: 'gone-worker',
+      event: { source: 'osc9', title: null, body: 'closed pane still speaks', ts: 2 },
+    });
+
+    const reader = (sse.body as ReadableStream<Uint8Array>).getReader();
+    let text = '';
+    const deadline = Date.now() + 500;
+    while (Date.now() < deadline && !text.includes('closed pane still speaks')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) text += Buffer.from(value).toString('utf8');
+    }
+    ac.abort();
+
+    expect(text).toContain('"sessionId":"gone-worker"');
+    expect(text).not.toContain('pty-orchestrator');
+    expect(text).not.toContain('orchestrator-secrets');
+    expect(text).not.toContain('brain-ws-9');
+    expect(text).not.toContain('orchestrator notification');
+
+    // The replayable backlog behind /api/events never held them either.
+    const backlog = await fetch(`${base()}/api/events`, { headers: bearer(token) });
+    expect(backlog.status).toBe(200);
+    const body = await backlog.text();
+    expect(body).toContain('gone-worker');
+    expect(body).not.toContain('pty-orchestrator');
+    expect(body).not.toContain('brain-ws-9');
+  });
+
+  it('★ #1397 withholds the brain pane\'s approval events from the fan-out and the replay log', async () => {
+    // The same producer-side gate as #1402 above, on the other producer. An
+    // `approval` event carries the pane id AND the gate's tool name and input
+    // summary, so a brain record here would hand a device the orchestrator's
+    // tool input plus the very id the per-pane routes (#1388) refuse.
+    live.push({
+      id: 'pty-orchestrator', cwd: '/x', cols: 80, rows: 24, state: 'detached',
+      agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+      env: { WMUX_BRAIN_PTY: '1' }, cmd: '/usr/bin/claude',
+    });
+    const info = await startRO();
+    const token = info.token as string;
+
+    // Injected at the registry's own event edge, not produced through the hook
+    // path: whether the brain can raise a record today is a property of how
+    // `ClaudePtyBrainAdapter` spawns it, which is exactly what this gate is
+    // here not to depend on.
+    emitApproval('create', mkApproval({
+      id: 'ap-brain',
+      sessionId: 'pty-orchestrator',
+      kind: 'awaiting_permission',
+      toolName: 'Bash',
+      toolInputSummary: 'rm -rf orchestrator-secrets',
+    }));
+    // A pane the manager no longer knows still gets through — a closed pane's
+    // in-flight approval is not a brain pane.
+    emitApproval('create', mkApproval({ id: 'ap-gone', sessionId: 'gone-worker' }));
+    emitApproval('create', mkApproval({ id: 'ap-worker', sessionId: 's1' }));
+
+    const backlog = await fetch(`${base()}/api/events`, { headers: bearer(token) });
+    expect(backlog.status).toBe(200);
+    const body = await backlog.text();
+    expect(body).toContain('ap-worker');
+    expect(body).toContain('ap-gone');
+    expect(body).not.toContain('ap-brain');
+    expect(body).not.toContain('pty-orchestrator');
+    expect(body).not.toContain('orchestrator-secrets');
+  });
+
   it('tees session:critical and session:notification to every SSE client', async () => {
     const info = await startRO();
     const token = info.token as string;
@@ -4743,6 +4847,64 @@ describe('WebTerminalServer', () => {
       }
     });
 
+    it('★ #1397 a paired device can neither list nor answer a brain pane approval; the operator still can', async () => {
+      live.push({
+        id: 'brain-abc', cwd: '/b', cols: 80, rows: 24, state: 'attached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: { WMUX_BRAIN_PTY: '1' }, cmd: '/usr/local/bin/claude',
+      });
+      // Seeded straight into the registry rather than driven through the hook
+      // path: the producer refuses to create one of these (HookIngest), and
+      // this asserts the route refuses to serve one anyway — the reachability
+      // of the producer is the assumption #1397 is about.
+      approvalRecords.push(mkApproval({
+        id: 'ap-brain',
+        sessionId: 'brain-abc',
+        question: 'ship the orchestrator secret?',
+      }));
+      approvalRecords.push(mkApproval({ id: 'ap-worker', sessionId: 's1' }));
+
+      const info = await startRO();
+      const paired = await fetch(`${base()}/api/pair?code=${info.pairCode as string}`);
+      expect(paired.status).toBe(200);
+      const deviceToken = ((await paired.json()) as { token: string }).token;
+      const asDevice = { Authorization: `Bearer ${deviceToken}` };
+
+      // Listed: the worker's approval only, and nothing that names the brain.
+      const listed = await fetch(`${base()}/api/approvals`, { headers: asDevice });
+      expect(listed.status).toBe(200);
+      const text = await listed.text();
+      expect(text).toContain('ap-worker');
+      expect(text).not.toContain('ap-brain');
+      expect(text).not.toContain('brain-abc');
+      expect(text).not.toContain('orchestrator secret');
+
+      // Answerable: not with the id in hand either. Same 404 as an unknown id,
+      // and the registry is never asked to resolve it.
+      const answered = await postApproval(deviceToken, 'ap-brain', { decision: 'approve' });
+      expect(answered.status).toBe(404);
+      expect(resolveCalls).toEqual([]);
+
+      // The device's own panes are unaffected.
+      const worker = await postApproval(deviceToken, 'ap-worker', { decision: 'approve' });
+      expect(worker.status).toBe(200);
+      expect(resolveCalls.map((c) => c.id)).toEqual(['ap-worker']);
+
+      // Operator: unchanged. The desktop lists and answers the brain's own
+      // record exactly as before — the exclusion follows the credential class.
+      const asOperator = bearer(info.token as string);
+      const operatorList = await fetch(`${base()}/api/approvals`, { headers: asOperator });
+      expect(await operatorList.text()).toContain('ap-brain');
+      const operatorAnswer = await fetch(`${base()}/api/approvals/ap-brain`, {
+        method: 'POST',
+        headers: { ...asOperator, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'approve' }),
+      });
+      expect(operatorAnswer.status).toBe(200);
+      expect(resolveCalls.map((c) => c.id)).toEqual(['ap-worker', 'ap-brain']);
+    });
+
+
     it('★ #1315 pane-stream liveness refuses the brain pane and an invented session id', async () => {
       // `sessionId` arrives from the hook pipe, which is not a trusted producer,
       // and the orchestrator brain is not a worker pane a phone may learn
@@ -4982,6 +5144,307 @@ describe('WebTerminalServer', () => {
     });
   });
 
+  describe('#782 - turn-view images (GET /api/sessions/:id/turns/image)', () => {
+    /** The smallest legal PNG: signature, IHDR for 1x1, one IDAT, IEND. */
+    const PNG_1X1 = Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      'base64',
+    );
+    /** Temp trees this describe made, torn down after every case. */
+    let dirs: string[];
+    const tmpTree = (): string => {
+      const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-turn-image-')));
+      dirs.push(dir);
+      return dir;
+    };
+    const imageUrl = (id: string, p: string): string =>
+      `${base()}/api/sessions/${id}/turns/image?path=${encodeURIComponent(p)}`;
+
+    beforeEach(() => { dirs = []; });
+    afterEach(() => {
+      for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('403 tagged transcript-disabled without --allow-transcript', async () => {
+      const dir = tmpTree();
+      const file = path.join(dir, 'a.png');
+      fs.writeFileSync(file, PNG_1X1);
+      managed.meta.spawnCwd = dir;
+      const info = await startRO();
+      const res = await fetch(imageUrl('s1', file), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(403);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      const body = await res.json();
+      // The TAG is the contract, exactly as on /turns and /turns/block.
+      expect(body.error.startsWith('transcript-disabled:')).toBe(true);
+    });
+
+    it('401 without a Bearer header', async () => {
+      await startWithTranscript();
+      const res = await fetch(imageUrl('s1', '/x/a.png'));
+      expect(res.status).toBe(401);
+    });
+
+    it('404 for an unknown pane, and for the orchestrator brain', async () => {
+      const dir = tmpTree();
+      const file = path.join(dir, 'a.png');
+      fs.writeFileSync(file, PNG_1X1);
+      // The brain pane's own spawn cwd holds the image, so only readableSession
+      // stands between a guessed id and the orchestrator's screenshots.
+      live.push({
+        id: 'brain-ws-1', cwd: dir, cols: 80, rows: 24, state: 'detached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: {}, cmd: '/usr/bin/claude',
+      });
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      for (const id of ['no-such-pane', 'brain-ws-1']) {
+        const res = await fetch(imageUrl(id, file), { headers: h });
+        expect(res.status).toBe(404);
+        expect((await res.json()).error).toBe('session not found');
+      }
+    });
+
+    it('400 bad-image-ref for a missing, empty, relative or NUL-bearing path', async () => {
+      managed.meta.spawnCwd = tmpTree();
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      const refs = ['', '   ', 'relative/a.png', './a.png', `/x/a${String.fromCharCode(0)}.png`];
+      for (const ref of refs) {
+        const res = await fetch(imageUrl('s1', ref), { headers: h });
+        expect(res.status).toBe(400);
+        expect((await res.json()).error).toBe('bad-image-ref');
+      }
+      // No `path` at all is the same refusal.
+      const bare = await fetch(`${base()}/api/sessions/s1/turns/image`, { headers: h });
+      expect(bare.status).toBe(400);
+      expect((await bare.json()).error).toBe('bad-image-ref');
+    });
+
+    it('404 for a real file outside the boundary', async () => {
+      managed.meta.spawnCwd = tmpTree();
+      const info = await startWithTranscript();
+      const res = await fetch(imageUrl('s1', '/etc/hosts'), {
+        headers: bearer(info.token as string),
+      });
+      expect(res.status).toBe(404);
+      // "outside" and "missing" answer alike: a distinct code would confirm the
+      // file exists to a caller mapping the disk.
+      expect((await res.json()).error).toBe('image not found');
+    });
+
+    it('404 for a symlink inside the cwd that points outside it', async () => {
+      const root = tmpTree();
+      const cwd = path.join(root, 'cwd');
+      const outside = path.join(root, 'outside');
+      fs.mkdirSync(cwd);
+      fs.mkdirSync(outside);
+      const secret = path.join(outside, 'secret.png');
+      fs.writeFileSync(secret, PNG_1X1);
+      const link = path.join(cwd, 'looks-local.png');
+      fs.symlinkSync(secret, link);
+      managed.meta.spawnCwd = cwd;
+      const info = await startWithTranscript();
+      const res = await fetch(imageUrl('s1', link), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(404);
+    });
+
+    it('404 for a file under meta.cwd - only spawnCwd is a boundary', async () => {
+      const root = tmpTree();
+      const cwd = path.join(root, 'spawned');
+      const osc7 = path.join(root, 'osc7-said-so');
+      fs.mkdirSync(cwd);
+      fs.mkdirSync(osc7);
+      const wandered = path.join(osc7, 'a.png');
+      fs.writeFileSync(wandered, PNG_1X1);
+      // `meta.cwd` is whatever the pane's own process last claimed via OSC 7 -
+      // three bytes of terminal output, i.e. attacker-controlled. Honoring it
+      // would let a hostile process point this route at the whole home dir.
+      managed.meta.spawnCwd = cwd;
+      managed.meta.cwd = osc7;
+      const info = await startWithTranscript();
+      const res = await fetch(imageUrl('s1', wandered), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(404);
+    });
+
+    it('404 for a sibling directory sharing the boundary prefix', async () => {
+      const root = tmpTree();
+      const cwd = path.join(root, 'b');
+      const sibling = path.join(root, 'bc');
+      fs.mkdirSync(cwd);
+      fs.mkdirSync(sibling);
+      const file = path.join(sibling, 'a.png');
+      fs.writeFileSync(file, PNG_1X1);
+      managed.meta.spawnCwd = cwd;
+      const info = await startWithTranscript();
+      // A string prefix test passes `/a/bc/a.png` against root `/a/b`.
+      const res = await fetch(imageUrl('s1', file), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(404);
+    });
+
+    it('200 when the boundary root is itself a symlink', async () => {
+      const root = tmpTree();
+      const realDir = path.join(root, 'real');
+      fs.mkdirSync(realDir);
+      fs.writeFileSync(path.join(realDir, 'a.png'), PNG_1X1);
+      const linkDir = path.join(root, 'linked');
+      fs.symlinkSync(realDir, linkDir);
+      // The shape macOS hands us for free: `/tmp` is a symlink to `/private/tmp`,
+      // so a root compared unresolved rejects every file beneath it.
+      managed.meta.spawnCwd = linkDir;
+      const info = await startWithTranscript();
+      const res = await fetch(imageUrl('s1', path.join(linkDir, 'a.png')), {
+        headers: bearer(info.token as string),
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it('serves a photo out of the uploads directory, session-independently', async () => {
+      managed.meta.spawnCwd = tmpTree();
+      const photo = path.join(uploadsDir, 'photo.png');
+      fs.writeFileSync(photo, PNG_1X1);
+      try {
+        const info = await startWithTranscript();
+        const res = await fetch(imageUrl('s1', photo), { headers: bearer(info.token as string) });
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toBe('image/png');
+      } finally {
+        // uploadsDir is shared across describes; the tree cleanup does not cover it.
+        fs.rmSync(photo, { force: true });
+      }
+    });
+
+    it('404 for a FIFO inside the boundary instead of hanging on open', async () => {
+      const dir = tmpTree();
+      const fifo = path.join(dir, 'pipe.png');
+      execFileSync('mkfifo', [fifo]);
+      managed.meta.spawnCwd = dir;
+      const info = await startWithTranscript();
+      const res = await fetch(imageUrl('s1', fifo), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(404);
+    });
+
+    it('413 when the file grew past the size the gate approved', async () => {
+      // The route reads exactly the size it measured and probes one byte past
+      // it. A file that is already over the cap is the 413 the gate catches;
+      // this pins the second gate — the probe — by handing it a file whose
+      // stat and contents disagree the way a growing file would.
+      const dir = tmpTree();
+      const file = path.join(dir, 'grow.png');
+      fs.writeFileSync(file, PNG_1X1);
+      managed.meta.spawnCwd = dir;
+      const statSpy = vi.spyOn(fs.promises, 'open');
+      const info = await startWithTranscript();
+      statSpy.mockImplementationOnce(async (...args: Parameters<typeof fs.promises.open>) => {
+        const handle = await fs.promises.open(...args);
+        const realStat = handle.stat.bind(handle);
+        handle.stat = (async () => {
+          const st = await realStat();
+          return Object.assign(st, { size: st.size - 1 });
+        }) as typeof handle.stat;
+        return handle;
+      });
+      try {
+        const res = await fetch(imageUrl('s1', file), { headers: bearer(info.token as string) });
+        expect(res.status).toBe(413);
+        const body = await res.json();
+        expect(body.detail).not.toMatch(/image is/);
+      } finally {
+        statSpy.mockRestore();
+      }
+    });
+
+    it('serves the pane cwd on a daemon with no uploads directory wired', async () => {
+      const dir = tmpTree();
+      const file = path.join(dir, 'a.png');
+      fs.writeFileSync(file, PNG_1X1);
+      managed.meta.spawnCwd = dir;
+      // `uploadsDir` is optional - a daemon started without `--allow-upload`
+      // has none, and the cwd root has to keep working on its own.
+      const noUploads = new WebTerminalServer({
+        sessionManager,
+        projector: () => projectorMock as unknown as TranscriptProjector,
+        log: () => { /* silent in tests */ },
+        assetsDir: os.tmpdir(),
+      });
+      const info = await noUploads.start({
+        port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false, allowTranscript: true,
+      });
+      try {
+        const url = `http://127.0.0.1:${info.port}/api/sessions/s1/turns/image?path=${encodeURIComponent(file)}`;
+        const res = await fetch(url, { headers: bearer(info.token as string) });
+        expect(res.status).toBe(200);
+      } finally {
+        await noUploads.stop();
+      }
+    });
+
+    it('415 not-an-image for a text file inside the boundary', async () => {
+      const dir = tmpTree();
+      const file = path.join(dir, 'notes.png');
+      fs.writeFileSync(file, 'plain text wearing a .png suffix');
+      managed.meta.spawnCwd = dir;
+      const info = await startWithTranscript();
+      const res = await fetch(imageUrl('s1', file), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(415);
+      expect((await res.json()).error).toBe('not-an-image');
+    });
+
+    it('404 for a directory inside the boundary', async () => {
+      const dir = tmpTree();
+      const sub = path.join(dir, 'pictures');
+      fs.mkdirSync(sub);
+      managed.meta.spawnCwd = dir;
+      const info = await startWithTranscript();
+      const res = await fetch(imageUrl('s1', sub), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(404);
+    });
+
+    it('413 image-too-large over the 8 MiB cap', async () => {
+      const dir = tmpTree();
+      const file = path.join(dir, 'huge.png');
+      // One byte over. The size gate runs before the magic-byte read on purpose:
+      // refusing on the stat is what keeps a huge file from being read at all.
+      fs.writeFileSync(file, Buffer.alloc(8 * 1024 * 1024 + 1));
+      managed.meta.spawnCwd = dir;
+      const info = await startWithTranscript();
+      const res = await fetch(imageUrl('s1', file), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(413);
+      expect((await res.json()).error).toBe('image-too-large');
+    });
+
+    it('200 serves the bytes with the sniffed type, a length and no-store', async () => {
+      const dir = tmpTree();
+      const file = path.join(dir, 'shot.bin');
+      fs.writeFileSync(file, PNG_1X1);
+      managed.meta.spawnCwd = dir;
+      const info = await startWithTranscript();
+      const res = await fetch(imageUrl('s1', file), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(200);
+      // The BYTES decide the type, not the `.bin` the transcript named.
+      expect(res.headers.get('content-type')).toBe('image/png');
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(res.headers.get('content-length')).toBe(String(PNG_1X1.length));
+      expect(Buffer.from(await res.arrayBuffer()).equals(PNG_1X1)).toBe(true);
+    });
+
+    it('/api/config advertises turnImages only alongside the transcript grant', async () => {
+      const off = await startRO();
+      const offBody = await (
+        await fetch(`${base()}/api/config`, { headers: bearer(off.token as string) })
+      ).json();
+      // ABSENT, not false: that is exactly how a daemon predating the route reads.
+      expect(offBody).not.toHaveProperty('turnImages');
+
+      await server.stop();
+      const on = await startWithTranscript();
+      const onBody = await (
+        await fetch(`${base()}/api/config`, { headers: bearer(on.token as string) })
+      ).json();
+      expect(onBody).toHaveProperty('turnImages', true);
+    });
+  });
+
   describe('GET /api/workspaces', () => {
     it('groups live sessions by WMUX_WORKSPACE_ID and surfaces id+name+panes', async () => {
       // Fixture already covers the matrix: s1 → ws-1 named "Workspace 1", s2 →
@@ -5061,6 +5524,54 @@ describe('WebTerminalServer', () => {
       body = await read();
       byId = new Map(body.workspaces.flatMap((w) => w.panes).map((p) => [p.sessionId, p]));
       expect(byId.get('s1')).not.toHaveProperty('agentName');
+    });
+
+    // #1342 — the resume block for a remote resume chip. Additive-optional, and
+    // the host-local transcript path is structurally absent from the wire.
+    it('surfaces the resume block with a cwd verdict and never the transcript path', async () => {
+      resumeStates = {
+        s1: {
+          binding: {
+            agent: 'claude',
+            sessionId: 'conv-1',
+            // Matches the fixture's cwd for s1 ('/x') → an EXACT resume is safe.
+            cwd: '/x',
+            permissionMode: 'bypassPermissions',
+            transcriptPath: '/home/host/.claude/projects/x/conv-1.jsonl',
+            ts: 1,
+          },
+          commandRunning: false,
+          agentProcessAlive: false,
+        },
+        s2: {
+          binding: {
+            // Recorded elsewhere than the pane's live cwd ('/y') → fallback only.
+            agent: 'claude', sessionId: 'conv-2', cwd: '/elsewhere', ts: 1,
+          },
+        },
+      };
+      const info = await startRO();
+      const r = await fetch(`${base()}/api/workspaces`, { headers: bearer(info.token as string) });
+      expect(r.status).toBe(200);
+      const raw = await r.text();
+      const body = JSON.parse(raw) as {
+        workspaces: Array<{ panes: Array<{ sessionId: string; resume?: Record<string, unknown>; commandRunning?: boolean; agentProcessAlive?: boolean }> }>;
+      };
+      const byId = new Map(body.workspaces.flatMap((w) => w.panes).map((p) => [p.sessionId, p]));
+      expect(byId.get('s1')?.resume).toEqual({
+        agent: 'claude',
+        sessionId: 'conv-1',
+        cwdMatches: true,
+        permissionMode: 'bypassPermissions',
+      });
+      expect(byId.get('s1')).toMatchObject({ commandRunning: false, agentProcessAlive: false });
+      // Recorded cwd no longer matches → the host says so; no mode was captured.
+      expect(byId.get('s2')?.resume).toEqual({ agent: 'claude', sessionId: 'conv-2', cwdMatches: false });
+      // A session the daemon reports nothing for carries no resume fields at all.
+      expect(byId.get('s2')).not.toHaveProperty('commandRunning');
+      // The host-local transcript path never crosses the API, under any key.
+      expect(raw).not.toContain('.jsonl');
+      expect(raw).not.toContain('transcriptPath');
     });
 
     it('groups multiple panes into the same workspace, sorted by sessionId', async () => {

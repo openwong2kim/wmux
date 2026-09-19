@@ -4,6 +4,7 @@ import { PlaywrightEngine } from '../playwright/PlaywrightEngine';
 import { withAutomationLease } from '../playwright/automationLease';
 import { browserScopeKey } from '../playwright/snapshot';
 import { describeToolError } from '../playwright/toolError';
+import { isAgentWindowScopeError } from '../../shared/liveWriteScope';
 import {
   sendScopedBrowserRpc,
   type BrowserTargetScope,
@@ -527,7 +528,19 @@ export function createReplayToolCatalog(deps: BrowserToolDeps) {
     // emulated: replay resolves stored axes through the accessibility ref map,
     // which the data-wmux-ref lane does not produce at all. Falling back would
     // silently replay against a different addressing scheme.
-    const page = await engine.getPageForScope(scope).catch(() => null);
+    // A replay IS a write: replayTrace below drives clicks, typing and
+    // navigation. And the refusal has to survive the catch: reported as "no live
+    // page" it would send the agent looking for a backend problem instead of
+    // asking the user for the tab.
+    let page;
+    try {
+      page = await engine.getPageForScope(scope, { intent: 'write' });
+    } catch (err) {
+      if (isAgentWindowScopeError(err)) {
+        return text(err instanceof Error ? err.message : String(err), true);
+      }
+      page = null;
+    }
     if (!page) {
       return text(
         `Cannot replay "${name}": this workspace's browser backend provides no live page, and ` +

@@ -28,7 +28,7 @@ import type {
   RemoteWorkspaceSummary,
   RemoteWorkspacesResponse,
 } from '../../shared/remoteHosts';
-import { isRemoteAgentStatus } from '../../shared/remoteHosts';
+import { isRemoteAgentStatus, parseRemoteResumeInfo } from '../../shared/remoteHosts';
 
 export interface RemoteMetaEvent {
   attachId: string;
@@ -175,6 +175,19 @@ function normalizeWorkspaces(body: unknown): RemoteWorkspaceSummary[] {
                 agentName: pane.agentName.slice(0, 256),
                 ...(isRemoteAgentStatus(pane.agentStatus) ? { agentStatus: pane.agentStatus } : {}),
               }
+            : {}),
+          // #1342 — the resume block and its two gate signals, under the same
+          // additive-optional rule as the agent fields: an older host omits
+          // all three and the desktop simply shows no resume chip. A partial
+          // or malformed block is DROPPED by the parser rather than half-read
+          // — a chip built from half an offer types a broken command.
+          ...(() => {
+            const resume = parseRemoteResumeInfo(pane.resume);
+            return resume ? { resume } : {};
+          })(),
+          ...(typeof pane.commandRunning === 'boolean' ? { commandRunning: pane.commandRunning } : {}),
+          ...(typeof pane.agentProcessAlive === 'boolean'
+            ? { agentProcessAlive: pane.agentProcessAlive }
             : {}),
         });
       }

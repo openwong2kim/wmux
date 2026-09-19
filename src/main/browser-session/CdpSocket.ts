@@ -64,6 +64,20 @@ export interface CdpSocketOptions {
    * keeps its current behaviour.
    */
   connectErrorFor?: (reason: CdpConnectFailure, endpoint: string) => Promise<string> | string;
+  /**
+   * Fires once per socket that is torn down after having been opened — the peer
+   * closed it (browser quit), the endpoint moved (Chrome restarted and minted a
+   * new secret path, so ensureSocket replaces the socket), or the owner disposed
+   * it. Callers that hold per-connection state use it to drop that state:
+   * LiveChromeClient clears its borrow grants, so a lent tab is never still lent
+   * across a Chrome restart.
+   *
+   * Deliberately NOT limited to the peer-initiated case: a re-dial means the
+   * connection those grants belonged to is gone just as surely, and that path
+   * never reaches the socket's own close listener (detach clears `this.ws`
+   * first, so the listener's identity guard skips it).
+   */
+  onDisconnect?: () => void;
 }
 
 interface CdpFrame {
@@ -94,6 +108,7 @@ export class CdpSocket {
   private readonly connectNoticeAfterMs: number;
   private readonly onConnectPending?: (elapsedMs: number) => void;
   private readonly connectErrorFor?: (reason: CdpConnectFailure, endpoint: string) => Promise<string> | string;
+  private readonly onDisconnect?: () => void;
 
   constructor(
     private readonly resolveEndpoint: () => string,
@@ -106,6 +121,7 @@ export class CdpSocket {
     this.connectNoticeAfterMs = opts?.connectNoticeAfterMs ?? DEFAULT_CONNECT_NOTICE_MS;
     this.onConnectPending = opts?.onConnectPending;
     this.connectErrorFor = opts?.connectErrorFor;
+    this.onDisconnect = opts?.onDisconnect;
   }
 
   /** The message for a failed dial. Never throws: a diagnosis that itself
@@ -172,11 +188,21 @@ export class CdpSocket {
       this.pending.clear();
       for (const p of waiters) p.reject(new Error(reason));
     }
-    if (!closeSocket || !ws) return;
+    if (!ws) return;
+    if (closeSocket) {
+      try {
+        ws.close();
+      } catch {
+        /* already gone */
+      }
+    }
+    // One socket existed and no longer does. Fired last, so a subscriber that
+    // re-dials sees a clean contract, and swallowed so one bad subscriber cannot
+    // take a teardown down with it.
     try {
-      ws.close();
-    } catch {
-      /* already gone */
+      this.onDisconnect?.();
+    } catch (err) {
+      console.warn(`[${this.label}] onDisconnect handler threw:`, err);
     }
   }
 
@@ -251,6 +277,7 @@ export class CdpSocket {
     ws.addEventListener('message', (ev: MessageEvent) => this.onMessage(ev));
     ws.addEventListener('close', () => {
       // Reject in-flight calls; the next send() re-resolves the endpoint.
+      // detach() fires onDisconnect, so every teardown reports once.
       if (this.ws === ws) this.detach(`${this.label}: connection closed`, false);
     });
     this.ws = ws;

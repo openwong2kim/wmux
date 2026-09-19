@@ -201,6 +201,7 @@ export const pl = {
   // Permission approval dialog
   'permission.pluginTitle': 'Wtyczka żąda uprawnień',
   'permission.pluginLabel': 'wtyczka:',
+  'permission.workspaceLabel': 'obszar roboczy:',
 
   // Workspace
   // Status labels sit in a narrow column beside a coloured dot, on a row that
@@ -466,10 +467,14 @@ export const pl = {
   'fleet.approvals.from': 'od',
   'fleet.approvals.to': 'do',
   'fleet.approvals.plugin': 'wtyczka',
+  'fleet.approvals.workspace': 'obszar roboczy',
   'fleet.approvals.enterApprove': 'zatwierdź',
   'fleet.approvals.delDeny': 'odrzuć',
   'fleet.approvals.autoRejected': 'auto-odrzucone: {name}',
   'fleet.approvals.autoRejectedLog': 'Ostatnio auto-odrzucone zatwierdzenia',
+  'fleet.help.title': 'Przeglądarka czeka na Ciebie',
+  'fleet.help.timesOutIn': 'wygaśnie za {seconds} s',
+  'fleet.help.jump': 'Przejdź do tego panelu przeglądarki',
 
   // Project config (X5 wmux.json)
   'project.dialogTitle': 'Konfiguracja projektu (wmux.json)',
@@ -560,6 +565,9 @@ export const pl = {
   'browser.devToolsTooltip': 'Otwórz DevTools (F12)',
   'browser.title': 'Przeglądarka',
   'browser.discarded': 'Wstrzymano, aby oszczędzić pamięć — kliknij, aby wczytać ponownie',
+  'browser.help.barLabel': 'Agent prosi o wykonanie jednego kroku na tej stronie',
+  'browser.help.done': 'Gotowe',
+  'browser.help.cancel': 'Anuluj',
 
   // VI copy mode
   'viCopy.mode': '-- TRYB KOPIOWANIA --',

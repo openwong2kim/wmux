@@ -6,6 +6,18 @@ import { execFile } from 'node:child_process';
 import { isWslShell, isLinuxCwd, validWslTarget, wslTargetArgs, type WslTarget } from './wslTarget';
 export { isWslShell, isLinuxCwd, validWslTarget, wslTargetArgs, type WslTarget } from './wslTarget';
 
+/**
+ * #1305 — what the probe prints when the directory itself is gone, as opposed
+ * to any other reason a distro cannot be entered.
+ *
+ * A MARKER, not `cd`'s own message and not an exit code. `cd`'s wording is the
+ * shell's and is localized, so matching it would work in English and nowhere
+ * else; an exit code does not survive the injected-probe path the tests and
+ * other callers use. The marker travels on stderr, which is already what the
+ * thrown message is built from, so both paths classify identically.
+ */
+export const WSL_CWD_MISSING_MARKER = 'wmux-cwd-missing';
+
 // Arguments are data, never interpolated into shell source. Resolve ~ inside
 // Linux, and ask the selected distro to validate the directory. A missing
 // directory fails visibly instead of silently resuming a different project.
@@ -17,11 +29,27 @@ case "$candidate" in
   '~/'*) candidate="$HOME/\${candidate#\\~/}" ;;
   [A-Za-z]:*) candidate=$(wslpath -u "$candidate") ;;
 esac
+if [ ! -d "$candidate" ]; then
+  printf '${WSL_CWD_MISSING_MARKER}: %s\\n' "$candidate" >&2
+  exit 3
+fi
 cd -- "$candidate"
 printf '%s\\0%s\\0%s\\0' "$WSL_DISTRO_NAME" "$(id -un)" "$PWD"
 `;
 
 export interface ResolvedWslCwd { cwd: string; target: WslTarget }
+
+/**
+ * #1305 — true when the probe failed because the directory is gone.
+ *
+ * The distinction is the whole point: every other failure (a stopped distro, a
+ * permission problem, a transient interop hiccup) is answered by retrying, and
+ * this one never is. It is what lets a caller offer starting fresh in the home
+ * directory instead of a Retry button that can only fail again.
+ */
+export function isWslCwdMissingError(error: unknown): boolean {
+  return error instanceof Error && (error as { wslCwdMissing?: boolean }).wslCwdMissing === true;
+}
 export const WSL_PROBE_TIMEOUT_MS = 60_000;
 export const WSL_RPC_TIMEOUT_MS = WSL_PROBE_TIMEOUT_MS + 15_000;
 type Probe = (args: string[]) => string | Promise<string>;
@@ -70,7 +98,19 @@ export async function resolveWslCwd(
         });
       }));
     } catch (error) {
-      throw new Error(`WSL could not open ${JSON.stringify(requested)} in ${targetArgs[1] || 'the default distro'}: ${error instanceof Error ? error.message : String(error)}. Check the distro and directory, then retry.`);
+      const detail = error instanceof Error ? error.message : String(error);
+      const where = targetArgs[1] || 'the default distro';
+      // #1305 — a gone directory is not a "check the distro and retry" failure:
+      // retrying it fails identically for as long as the directory is missing,
+      // which is what left a recovered pane with no way out but closing it.
+      // Say so, and flag it for the caller that can offer one.
+      if (detail.includes(WSL_CWD_MISSING_MARKER)) {
+        throw Object.assign(
+          new Error(`The directory ${JSON.stringify(requested)} no longer exists in ${where}. Restore it and retry, or start fresh in your home directory.`),
+          { wslCwdMissing: true },
+        );
+      }
+      throw new Error(`WSL could not open ${JSON.stringify(requested)} in ${where}: ${detail}. Check the distro and directory, then retry.`);
     }
     const [distribution, user, canonicalCwd] = output.split('\0');
     const resolvedTarget = { distribution, user };

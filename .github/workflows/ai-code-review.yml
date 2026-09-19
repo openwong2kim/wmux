@@ -1,0 +1,116 @@
+# AI code review — two ways in, one job. Both are REQUESTED; nothing here
+# reviews a PR nobody asked about.
+#
+#   1. Comment: a maintainer writes `/review` on any PR, including their own.
+#   2. Manual:  `gh workflow run ai-code-review.yml -f pr_number=N`
+#               (once this file is on main, `--ref <branch>` runs a branch's
+#               edition of it — GitHub only registers workflows from main).
+#
+# There was a third lane: outside-contributor PRs reviewed automatically on
+# `pull_request_target`. It was removed after measuring it. Across the first
+# five runs (#1411, #1421, #1424, #1425, #1139) 21 findings were checked
+# against the code: 28% worth acting on, 17% plainly wrong, 55% true but not
+# worth the line, and 0 of 3 `high` findings correct. The clearest case was
+# #1425 — the review asked the contributor to rewrite a config helper that
+# already worked and already had a test proving it, and missed the real
+# defect, a failing macOS CI leg visible in the PR's own checks. A maintainer
+# can discount that; a first-time contributor cannot. An unrequested review
+# that is wrong 17% of the time spends someone else's afternoon, so it now
+# takes a person deciding a second opinion is worth having.
+#
+# The action reviews an untrusted diff. It checks out the TRUSTED base and
+# fetches the PR head as bare git objects, so nothing from the pull request is
+# ever materialized or executed — and both lanes run this file from main, not
+# from the PR. Keep it that way: never add a build, install, or test step to
+# this workflow.
+name: AI code review
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review (any author)
+        required: true
+        type: number
+
+# Least privilege: comment on the PR, read the base repo. Nothing else.
+permissions:
+  contents: read
+  pull-requests: write
+
+# A new trigger supersedes the review still running for the same PR.
+concurrency:
+  group: ai-code-review-${{ format('{0}', github.event.issue.number || inputs.pr_number) }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Comment lane: `/review` at the start of a PR comment, maintainers only,
+    # so outsiders cannot spend the token budget. Manual lane: anyone who can
+    # dispatch already has write access — no extra gate needed.
+    if: >-
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        startsWith(github.event.comment.body, '/review') &&
+        contains(
+          fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+          github.event.comment.author_association
+        )
+      ) || github.event_name == 'workflow_dispatch'
+    steps:
+      # Neither payload carries the PR's refs, so look them up.
+      - name: Resolve PR refs
+        id: pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number || inputs.pr_number }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            --jq '"pr_number=\(.number)\nbase_ref=\(.base.ref)\nhead_sha=\(.head.sha)"' \
+            >> "$GITHUB_OUTPUT"
+
+      # Pinned to the v1.12.5 commit. A tag can be moved; a SHA cannot. Bump it
+      # deliberately after reading the diff — this action sees a repo secret.
+      - name: Open Code Review
+        uses: alibaba/open-code-review@189be5b024d3309dd10fdc8cd8ee31b2530c210b # v1.12.5
+        with:
+          pr_number: ${{ steps.pr.outputs.pr_number }}
+          base_ref: ${{ steps.pr.outputs.base_ref }}
+          head_sha: ${{ steps.pr.outputs.head_sha }}
+
+          # Z.ai coding plan speaks the Anthropic Messages protocol.
+          llm_url: https://api.z.ai/api/anthropic
+          llm_auth_token: ${{ secrets.GLM_API_KEY }}
+          llm_model: glm-5.3
+          llm_use_anthropic: 'true'
+
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+          # medium is the useful floor. Whether a higher effort earns its cost
+          # is untested — the numbers above are all from `medium`.
+          effort: medium
+          language: English
+
+          # Every remaining lane is a requested review, so always look at the
+          # whole PR rather than resuming from a checkpoint.
+          full_review: 'true'
+
+          # Repeat runs: update the one summary, skip comments that overlap a
+          # previous run, and close threads whose lines no longer exist.
+          sticky_summary: 'true'
+          incremental: 'true'
+          resolve_outdated: 'true'
+
+          # Hard ceiling per run so a huge PR cannot drain the coding plan.
+          max_tokens_budget: '1500000'
+
+          # at-or-below, so 'low' routes only low and keeps medium/high/critical
+          # inline — on a long diff the finding has to sit on the line it is about.
+          route_severity_below: 'low'

@@ -97,6 +97,8 @@ import { getPluginTrustStore } from './mcp/PluginTrustStore';
 import { ShadowRejectionLogger } from './audit/shadowRejectionLog';
 import { LegacyTrafficCounter } from './audit/legacyTrafficCounter';
 import { ApprovalQueue } from './mcp/ApprovalQueue';
+import { createBorrowApprovalRequester } from './browser-session/liveBorrowApproval';
+import type { BorrowApprovalRequester } from '../shared/liveWriteScope';
 import { resolveEnforcementMode } from './mcp/enforcementMode';
 import { setConfiguredFirstPartyClients } from './mcp/firstParty';
 import { readConfiguredFirstPartyClients } from './mcp/firstPartyConfig';
@@ -885,7 +887,7 @@ const enforcementMode = resolveEnforcementMode({ isDev: isDevEnvironment });
 // Shared bounded audit sink for permission rejections, legacy milestones, and
 // #810's browser caller-scope decisions.
 const shadowRejectionLogger = new ShadowRejectionLogger();
-registerBrowserRpc(
+const browserHelpRequests = registerBrowserRpc(
   rpcRouter,
   () => mainWindow,
   webviewCdpManager,
@@ -901,7 +903,39 @@ registerBrowserRpc(
   () => sessionManager.readSiteMemoryEnabled(),
   // Site guide pointers' switch (default OFF), judged in the same place.
   () => sessionManager.readSiteGuidesEnabled(),
+  // Live Chrome: asking the human to lend the agent one of THEIR tabs. The
+  // requester needs the approval queue, which is built further down, so the read
+  // is deferred to call time — the same lazy-getter posture the enforcement mode
+  // above uses. Fail-closed while it is unset: a borrow nobody can be asked
+  // about is a borrow that does not happen.
+  (request) => (liveBorrowRequester ? liveBorrowRequester(request) : Promise.resolve('denied')),
 );
+// browser_request_help — the renderer's Done / Cancel. Mirrors
+// PERMISSION_PROMPT_RESOLVE: a shape-validated invoke, and the AUTHORITATIVE
+// removal is the BROWSER_HELP_CLOSED push HelpRequests emits from inside its own
+// settle, so an optimistic local removal racing this is harmless. A stale or
+// already-settled id resolves `{ ok: false }` rather than throwing — the row may
+// have timed out under the operator's click.
+ipcMain.handle(
+  IPC.BROWSER_HELP_RESOLVE,
+  async (_event, payload: { requestId?: unknown; outcome?: unknown }) => {
+    if (
+      !payload ||
+      typeof payload.requestId !== 'string' ||
+      (payload.outcome !== 'continued' && payload.outcome !== 'cancelled')
+    ) {
+      return { ok: false, error: 'invalid browser help payload' };
+    }
+    const settled = await browserHelpRequests.resolveFromRenderer(
+      payload.requestId,
+      payload.outcome,
+    );
+    return { ok: settled };
+  },
+);
+
+/** Set once the ApprovalQueue exists (below). Read lazily by browser.rpc. */
+let liveBorrowRequester: BorrowApprovalRequester | null = null;
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerCompanyRpc(rpcRouter, () => mainWindow);
@@ -1181,6 +1215,16 @@ const approvalQueue = new ApprovalQueue(getPluginTrustStore(), {
   },
 });
 rpcRouter.setApprovalQueue(approvalQueue);
+// Live-Chrome tab borrowing asks through that same queue, so the prompt appears
+// in both of its renditions (the modal and the Fleet approvals inbox) with no new
+// UI. The workspace NAME comes from the renderer's mirror, which is the only
+// place main knows it; an unpopulated mirror falls back to the id, because a
+// prompt that says which workspace by id is still answerable.
+liveBorrowRequester = createBorrowApprovalRequester({
+  queue: approvalQueue,
+  workspaceName: (workspaceId) =>
+    getWorkspaceMirror().getEntries()?.find((e) => e.id === workspaceId)?.name ?? workspaceId,
+});
 
 ipcMain.handle(
   IPC.PERMISSION_PROMPT_RESOLVE,
@@ -1267,6 +1311,10 @@ ipcMain.handle(
     if (!workspaceId || profileName === undefined) return { ok: false, error: 'invalid payload' };
     try {
       await chromeProfileStore.setBinding(workspaceId, profileName);
+      // Any binding change ends the consent that lent this workspace tabs in the
+      // user's own Chrome — including a re-bind to live, which is a new decision
+      // and not a resumption of the old one.
+      chromeRegistry.clearLiveBorrows(workspaceId);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };

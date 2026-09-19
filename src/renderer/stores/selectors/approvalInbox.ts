@@ -32,12 +32,33 @@ export type InboxItem =
       declaredCapabilities: string[];
       rationale?: string;
       isCritical: boolean;
+      /** What the prompt is asking for. Absent reads as a plugin declaring
+       *  capabilities — every prompt before the live-Chrome tab borrow. */
+      kind?: 'plugin' | 'browser-borrow';
+      /** The question, when the generic plugin headline would be wrong. */
+      title?: string;
+    }
+  | {
+      source: 'browserHelp';
+      key: string;
+      requestId: string;
+      /** Agent-authored and untrusted. Render as TEXT, never as markup. */
+      prompt: string;
+      /** The browser surface to jump to; absent when none resolved. */
+      surfaceId?: string;
+      /** Main's deadline, for the row's countdown. */
+      deadlineAt: number;
     };
 
 /** Minimal store surface the selector reads — keeps the subscription narrow. */
 export type ApprovalInboxState = Pick<
   StoreState,
-  'mcpPrompts' | 'mcpPromptOrder' | 'pendingExecuteApprovals' | 'pendingExecuteApprovalOrder'
+  | 'mcpPrompts'
+  | 'mcpPromptOrder'
+  | 'pendingExecuteApprovals'
+  | 'pendingExecuteApprovalOrder'
+  | 'browserHelpRequests'
+  | 'browserHelpOrder'
 >;
 
 export function selectApprovalInbox(state: ApprovalInboxState): InboxItem[] {
@@ -57,6 +78,23 @@ export function selectApprovalInbox(state: ApprovalInboxState): InboxItem[] {
       senderWorkspaceId: a2a.senderWorkspaceId,
       receiverWorkspaceId: a2a.receiverWorkspaceId,
       cwd: a2a.cwd,
+    });
+  }
+
+  // Browser help requests SECOND, ahead of the MCP prompts: a human is the only
+  // thing that can finish one (an MCP prompt at least has an auto-deny deadline
+  // that unblocks the caller), and the flow behind it is frozen mid-login until
+  // someone answers. Insertion order within the group.
+  for (const requestId of state.browserHelpOrder) {
+    const help = state.browserHelpRequests[requestId];
+    if (!help) continue;
+    items.push({
+      source: 'browserHelp',
+      key: `help:${help.requestId}`,
+      requestId: help.requestId,
+      prompt: help.prompt,
+      ...(help.surfaceId !== undefined && { surfaceId: help.surfaceId }),
+      deadlineAt: help.deadlineAt,
     });
   }
 
@@ -80,6 +118,8 @@ export function selectApprovalInbox(state: ApprovalInboxState): InboxItem[] {
       declaredCapabilities: info.declaredCapabilities,
       rationale: info.rationale,
       isCritical,
+      ...(info.kind !== undefined && { kind: info.kind }),
+      ...(info.title !== undefined && { title: info.title }),
     });
   }
 

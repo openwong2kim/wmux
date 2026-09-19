@@ -213,6 +213,7 @@ export const en = {
   // Permission approval dialog
   'permission.pluginTitle': 'Plugin requesting permissions',
   'permission.pluginLabel': 'plugin:',
+  'permission.workspaceLabel': 'workspace:',
 
   // Workspace
   'workspace.agentRunning': 'Running',
@@ -476,11 +477,16 @@ export const en = {
   'fleet.approvals.from': 'from',
   'fleet.approvals.to': 'to',
   'fleet.approvals.plugin': 'plugin',
+  'fleet.approvals.workspace': 'workspace',
   'fleet.approvals.enterApprove': 'approve',
   'fleet.approvals.delDeny': 'deny',
   // C-3 — what happened to the approvals nobody answered.
   'fleet.approvals.autoRejected': 'auto-rejected: {name}',
   'fleet.approvals.autoRejectedLog': 'Recently auto-rejected approvals',
+  // browser_request_help — the Fleet inbox row (the event's second rendition).
+  'fleet.help.title': 'Browser needs you',
+  'fleet.help.timesOutIn': 'times out in {seconds}s',
+  'fleet.help.jump': 'Jump to this browser pane',
 
   // Project config (X5 wmux.json)
   'project.dialogTitle': 'Project configuration (wmux.json)',
@@ -571,6 +577,11 @@ export const en = {
   'browser.devToolsTooltip': 'Open DevTools (F12)',
   'browser.title': 'Browser',
   'browser.discarded': 'Suspended to save memory — click to reload',
+  // browser_request_help — the in-pane bar. 'someone talking' copy: the agent's
+  // own prompt carries the ask, so these are only the verbs and the label.
+  'browser.help.barLabel': 'The agent needs you to finish a step in this page',
+  'browser.help.done': 'Done',
+  'browser.help.cancel': 'Cancel',
 
   // VI copy mode
   'viCopy.mode': '-- COPY MODE --',

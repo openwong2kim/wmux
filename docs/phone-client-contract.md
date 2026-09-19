@@ -670,6 +670,57 @@ once; if the fresh chip 404s again, show the block as unavailable rather than
 retrying, and keep the chip's `lines`/`lang` visible so the user still sees what
 is there.
 
+#### Loading an image the transcript named
+
+```
+GET /api/sessions/<id>/turns/image?path=<absolute path>
+  → 200 image/png | image/jpeg | image/gif | image/webp  (Cache-Control: no-store)
+  → 400 {error: 'bad-image-ref', detail}
+  → 403 {error: 'transcript-disabled: …'}
+  → 404 {error: 'session not found'} | {error: 'image not found'}
+  → 413 {error: 'image-too-large', detail}
+  → 415 {error: 'not-an-image', detail}
+```
+
+A turn page names image files but never carries their bytes: a `Read` or `Write`
+tool input holds a `file_path`, and a photo you uploaded rides the user's own
+text as the path `/api/upload` handed back. This is how you turn one of those
+names into a thumbnail.
+
+**Same grant, same tag.** `--allow-transcript` opens this route and nothing
+else; `--allow-transcript` already grants "the contents of files the agent read",
+so an image out of the same directories is not a wider reader. Match the 403 by
+the `transcript-disabled:` prefix exactly as on `/turns`.
+
+**Gate on `turnImages` from `/api/config`**, which is present (and `true`) only
+on a daemon that both has this route and has the transcript grant armed. A daemon
+predating it omits the key; read a missing key as `false` and render the filename
+chip without fetching. That is one decision per connection instead of a 404 per
+thumbnail.
+
+**Two directories, and only two.** The pane's **spawn** cwd — where the daemon
+actually started it, not wherever the pane's own process has since claimed to be
+via OSC 7 — and the uploads directory. Anything else is `404 image not found`,
+and so is a symlink inside those directories pointing out of them. Note what the
+boundary implies in practice: a screenshot on the Desktop, or a temp file under
+`/var/folders`, is not servable, and an agent that `cd`s out of its spawn cwd
+does not widen it. Fall back to the filename chip.
+
+**`404 image not found` is deliberately one answer for four situations** —
+outside the boundary, missing, a directory, unreadable. A separate code for
+"outside" would confirm to a caller that the file exists, which is exactly the
+mapping this route must not offer. It IS worth one retry: a `Write` the agent has
+not finished yet is the common case, and the file appears on its own.
+
+**The bytes decide the `Content-Type`.** PNG, JPEG, GIF and WebP by leading
+bytes; anything else is 415 no matter what the path ends in. 415 and 413 (the cap
+is 8 MiB, and an image is not truncatable) are permanent for that file — show the
+chip and stop asking.
+
+Responses are `no-store`. Cache the bytes in your own process for as long as the
+session is open if you like, but revoking the transcript grant must not leave a
+replayable copy in a browser or a proxy.
+
 ---
 
 ## 6. Approvals

@@ -7,7 +7,7 @@
 
 # wmux API Reference (generated)
 
-> **Generated from wmux v3.56.0 sources.** This file is produced by
+> **Generated from wmux v3.57.0 sources.** This file is produced by
 > `scripts/gen-api-reference.mjs` directly from the code — it lists every
 > RPC method, event type, required capability, and the key event-bus
 > constants exactly as the running daemon sees them. For the hand-curated
@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **179** methods (`ALL_RPC_METHODS` in
+Total: **182** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -167,6 +167,9 @@ Total: **179** methods (`ALL_RPC_METHODS` in
 | `browser.lease.acquire` | `browser.evaluate` | `browser` |
 | `browser.lease.renew` | `browser.evaluate` | `browser` |
 | `browser.lease.release` | `browser.evaluate` | `browser` |
+| `browser.help.request` | `browser.click` | `browser` |
+| `browser.help.status` | `browser.read` | `browser` |
+| `browser.help.cancel` | `browser.click` | `browser` |
 
 ### `a2a`
 

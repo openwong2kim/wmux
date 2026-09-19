@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { resumeGrammarFor } from '../../../shared/agentResume';
 import { RemoteHostClient } from '../RemoteHostClient';
 import type { RemoteHost } from '../../../shared/remoteHosts';
 
@@ -305,6 +306,90 @@ describe('RemoteHostClient', () => {
             ],
           }],
         });
+      });
+
+      // #1342 — the resume block follows the same additive-optional rule: an
+      // older host omits it entirely, a half-formed one is dropped rather than
+      // half-read, and the two gate signals are kept only when boolean.
+      it('keeps a complete resume block, drops a half-formed one, tolerates an older host', async () => {
+        const body = {
+          workspaces: [
+            {
+              id: 'w1',
+              name: 'proj',
+              panes: [
+                {
+                  sessionId: 's1',
+                  resume: { agent: 'claude', sessionId: 'conv-1', cwdMatches: true, permissionMode: 'bypassPermissions' },
+                  commandRunning: false,
+                  agentProcessAlive: false,
+                },
+                // No conversation id → not a usable offer.
+                { sessionId: 's2', resume: { agent: 'claude', cwdMatches: true } },
+                // A NEWER host's unknown permission mode degrades to no mode.
+                { sessionId: 's3', resume: { agent: 'claude', sessionId: 'conv-3', permissionMode: 'telepathy' } },
+                // Non-boolean gate signals are not smuggled through.
+                { sessionId: 's4', commandRunning: 'yes', agentProcessAlive: 1 },
+                // An older host: no resume fields at all.
+                { sessionId: 's5' },
+              ],
+            },
+          ],
+        };
+        await expect(clientFor(body).listWorkspaces()).resolves.toEqual({
+          workspaces: [{
+            id: 'w1',
+            name: 'proj',
+            panes: [
+              {
+                sessionId: 's1',
+                resume: { agent: 'claude', sessionId: 'conv-1', cwdMatches: true, permissionMode: 'bypassPermissions' },
+                commandRunning: false,
+                agentProcessAlive: false,
+              },
+              { sessionId: 's2' },
+              // Absent cwdMatches reads as false — never guess an exact resume.
+              { sessionId: 's3', resume: { agent: 'claude', sessionId: 'conv-3', cwdMatches: false } },
+              { sessionId: 's4' },
+              { sessionId: 's5' },
+            ],
+          }],
+        });
+      });
+
+      // #1342 review (Claude+GLM) — the chip TYPES its command into a terminal,
+      // so a conversation id carrying a newline would submit itself the instant
+      // the operator clicked, defeating the no-auto-run rule. Nothing but a
+      // strict character set stands between a hostile or compromised host and
+      // that, so the parser rejects rather than sanitizes.
+      it('drops an offer whose agent or conversation id is not a plain token', async () => {
+        const evil = [
+          { sessionId: 'p1', resume: { agent: 'claude', sessionId: 'conv\r rm -rf ~\r', cwdMatches: true } },
+          { sessionId: 'p2', resume: { agent: 'claude', sessionId: 'conv\n:(){ :|:& };:', cwdMatches: true } },
+          { sessionId: 'p3', resume: { agent: 'claude', sessionId: 'conv 1 --dangerously-skip-permissions', cwdMatches: true } },
+          { sessionId: 'p4', resume: { agent: 'claude', sessionId: '$(id)', cwdMatches: true } },
+          { sessionId: 'p5', resume: { agent: 'claude; rm -rf ~', sessionId: 'conv-5', cwdMatches: true } },
+        ];
+        const got = await clientFor({ workspaces: [{ id: 'w1', name: '', panes: evil }] }).listWorkspaces();
+        expect(got.workspaces[0].panes).toEqual([
+          { sessionId: 'p1' }, { sessionId: 'p2' }, { sessionId: 'p3' },
+          { sessionId: 'p4' }, { sessionId: 'p5' },
+        ]);
+      });
+
+      // A prototype key IS a legal slug shape, so it survives the parser by
+      // design; the second layer (resumeGrammarFor's own-property check) is what
+      // keeps it from passing as a resumable agent. Asserted here so the two
+      // layers are never both removed at once.
+      it('passes a prototype-key slug through to the grammar check, which rejects it', async () => {
+        const got = await clientFor({
+          workspaces: [{ id: 'w1', name: '', panes: [
+            { sessionId: 'p1', resume: { agent: 'constructor', sessionId: 'conv-1', cwdMatches: true } },
+          ] }],
+        }).listWorkspaces();
+        const parsed = got.workspaces[0].panes[0].resume;
+        expect(parsed?.agent).toBe('constructor');
+        expect(resumeGrammarFor(parsed?.agent ?? '')).toBeUndefined();
       });
     });
   });

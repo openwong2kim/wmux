@@ -38,7 +38,8 @@ import {
 } from '../../main/deck/skillCatalogScan';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import { webHostIsLoopback, type PairRefusal, type WebTlsConfig } from '../../shared/web';
-import type { RemotePaneSummary } from '../../shared/remoteHosts';
+import type { RemotePaneSummary, RemoteResumeInfo } from '../../shared/remoteHosts';
+import { normalizeResumeCwd, type ResumeBinding } from '../../shared/agentResume';
 import { capSnapshot } from './snapshotWindow';
 import {
   collectSessionDiff,
@@ -141,6 +142,9 @@ function decodeTurnCursor(
  *   DELETE /api/sessions/:id   close a pane — 403 unless `--allow-input`
  *   GET  /api/sessions/:id/diff  what this pane's repo has changed (read-only git)
  *   GET  /api/sessions/:id/commands  slash commands + skills this pane can run
+ *   GET  /api/sessions/:id/turns/image?path=  one image the transcript named,
+ *                              from the pane's spawn cwd or the uploads dir —
+ *                              403 unless `--allow-transcript`
  *   POST /api/stream-ticket    device → short-lived `?ticket=` capability
  *   GET  /api/stream?session=  SSE pane bytes (`?token=`/`?ticket=` — EventSource)
  *   GET  /api/events           attention + approval channel; SSE (`?token=`
@@ -505,6 +509,19 @@ interface WebTerminalServerDeps {
    * pane carries no detected-agent fields.
    */
   agentState?: (sessionId: string) => { agentName: string | null; agentStatus: AgentStatus } | undefined;
+  /**
+   * #1342 — the daemon's resume state for a session, for GET /api/workspaces:
+   * the captured conversation binding (already transcript-probed, so a purged
+   * conversation is never offered) plus the two liveness signals the desktop's
+   * resume chip gates on. Resolved per request for the same reason
+   * `agentState` is. Absent, or undefined for a session, means the pane
+   * carries no resume block.
+   */
+  resumeState?: (sessionId: string) => {
+    binding?: ResumeBinding;
+    commandRunning?: boolean;
+    agentProcessAlive?: boolean;
+  } | undefined;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
@@ -629,6 +646,15 @@ const MAX_JSON_BODY_BYTES = 8 * 1024;
  * (2-MODEL review).
  */
 const MAX_BLOCK_BODY_BYTES = 256 * 1024;
+/**
+ * Ceiling on ONE image served to a phone by `/turns/image`.
+ *
+ * Generous next to the block cap because an image is not truncatable: a head is
+ * not a smaller picture, it is a corrupt file. Over the cap the route refuses
+ * with 413 and the phone shows the filename chip instead, which is the same
+ * fallback it already has for every other refusal on this route.
+ */
+const MAX_TURN_IMAGE_BYTES = 8 * 1024 * 1024;
 /**
  * Who the registry records as having answered, for anything resolved over HTTP.
  *
@@ -1813,6 +1839,13 @@ export class WebTerminalServer {
         allowInput: this.mayInput(principal),
         allowUpload: this.opts?.allowUpload === true,
         allowTranscript: this.opts?.allowTranscript === true,
+        // Whether `/api/sessions/:id/turns/image` exists on this daemon, so the
+        // phone decides ONCE instead of learning it from a 404 per thumbnail.
+        // Only alongside the grant that opens the route: a client that reads
+        // this as "images available" and then meets a 403 on every fetch is
+        // worse off than one that never tried. A daemon predating the route
+        // omits the key entirely, which a phone reads as false.
+        ...(this.opts?.allowTranscript === true ? { turnImages: true } : {}),
         // Whether this daemon can drive a Live Activity over APNs. A phone that
         // sees it true registers a push-to-start token and lets the daemon
         // start the activity; a phone talking to a daemon that omits the key
@@ -1862,6 +1895,9 @@ export class WebTerminalServer {
       if (req.method === 'GET' && rest.endsWith('/commands')) {
         return this.handleSessionCommands(res, rest.slice(0, -'/commands'.length), principal);
       }
+      if (req.method === 'GET' && rest.endsWith('/turns/image')) {
+        return this.handleSessionTurnImage(req, res, rest.slice(0, -'/turns/image'.length));
+      }
       if (req.method === 'GET' && rest.endsWith('/turns/block')) {
         return this.handleSessionTurnBlock(req, res, rest.slice(0, -'/turns/block'.length));
       }
@@ -1908,7 +1944,7 @@ export class WebTerminalServer {
       return this.handleUpload(req, res);
     }
     if (req.method === 'GET' && p === '/api/approvals') {
-      return this.handleApprovalsList(res);
+      return this.handleApprovalsList(res, principal);
     }
     if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
       return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length), principal);
@@ -2214,6 +2250,24 @@ export class WebTerminalServer {
         // the agent and every reboot): a remote row must vanish when its agent
         // exits, exactly as a local one does. Both fields stay absent when
         // nothing is known — additive-optional.
+        // #1342 — the resume half of local/remote parity. The host decides the
+        // cwd question (the desktop cannot compare a path on another machine)
+        // and the transcript path NEVER leaves this process: it is a host-local
+        // filesystem path with no meaning to the attaching desktop, and the
+        // binding's existence probe has already used it here.
+        ...(() => {
+          const resume = this.deps.resumeState?.(s.id);
+          if (!resume) return {};
+          return {
+            ...(resume.binding ? { resume: resumeInfoOf(resume.binding, s.cwd) } : {}),
+            ...(typeof resume.commandRunning === 'boolean'
+              ? { commandRunning: resume.commandRunning }
+              : {}),
+            ...(typeof resume.agentProcessAlive === 'boolean'
+              ? { agentProcessAlive: resume.agentProcessAlive }
+              : {}),
+          };
+        })(),
         ...(() => {
           const state = this.deps.agentState?.(s.id);
           const agentName = s.agent?.displayName ?? state?.agentName ?? null;
@@ -2645,6 +2699,190 @@ export class WebTerminalServer {
       return;
     }
     this.json(res, 200, { body: found.body, bytes });
+  }
+
+  /**
+   * `GET /api/sessions/:id/turns/image?path=<absolute>` — the BYTES behind an
+   * image path the transcript named (a Read/Write tool input, or a photo the
+   * phone itself uploaded), so a turn view can render a thumbnail instead of a
+   * filename.
+   *
+   * Same gate, same tag as `/turns` and `/turns/block`: `--allow-transcript`
+   * already grants "file contents the agent read", and a separate flag would
+   * make the operator arm the same reading twice.
+   *
+   * The boundary is `meta.spawnCwd` ∪ `deps.uploadsDir`, and IT IS
+   * `meta.spawnCwd`, NOT `meta.cwd`, for the reason spelled out on
+   * handleSessionDiff: `meta.cwd` follows OSC 7, so any process inside the pane
+   * can move it with three bytes of terminal output and aim this route at the
+   * whole home directory. A record with no `spawnCwd` leaves the uploads
+   * directory as the only root; with neither there is nothing to serve.
+   *
+   * Everything a caller could use to map the disk answers 404 `image not
+   * found` — outside the boundary, missing, a directory, unreadable. A 403 for
+   * "outside" would confirm the path exists.
+   */
+  private async handleSessionTurnImage(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    sessionId: string,
+  ): Promise<void> {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) {
+      this.json(res, 403, {
+        error: 'transcript-disabled: server started without --allow-transcript',
+        detail: 'restart with: wmux web --allow-transcript <your other flags>',
+      });
+      return;
+    }
+    const managed = this.readableSession(sessionId);
+    if (!managed) {
+      this.json(res, 404, { error: 'session not found' });
+      return;
+    }
+
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const raw = url.searchParams.get('path');
+    // Absolute only, and a NUL is refused rather than truncated: Node throws on
+    // one anyway, and refusing here keeps "what this route accepts" readable.
+    if (raw === null || raw.trim() === '' || raw.includes('\0') || !path.isAbsolute(raw)) {
+      this.json(res, 400, {
+        error: 'bad-image-ref',
+        detail: 'path must be an absolute filesystem path',
+      });
+      return;
+    }
+
+    const roots = [managed.meta.spawnCwd, this.deps.uploadsDir].filter(
+      (dir): dir is string => typeof dir === 'string' && dir.length > 0,
+    );
+    if (roots.length === 0) {
+      this.json(res, 404, { error: 'image not found' });
+      return;
+    }
+
+    let real: string;
+    try {
+      real = await fs.promises.realpath(raw);
+    } catch {
+      // Missing, or a link that does not resolve — indistinguishable from
+      // "outside the boundary" on purpose.
+      this.json(res, 404, { error: 'image not found' });
+      return;
+    }
+    // BOTH sides resolved: `/tmp` is a symlink to `/private/tmp` on macOS, so a
+    // raw root would reject every file under it. And the containment test is
+    // `path.relative`, never a string prefix — `/a/b` is not a prefix test away
+    // from swallowing `/a/bc`.
+    let contained = false;
+    for (const root of roots) {
+      let realRoot: string;
+      try {
+        realRoot = await fs.promises.realpath(root);
+      } catch {
+        continue;
+      }
+      const rel = path.relative(realRoot, real);
+      if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) continue;
+      contained = true;
+      break;
+    }
+    if (!contained) {
+      this.json(res, 404, { error: 'image not found' });
+      return;
+    }
+
+    // Past the boundary check, everything else reads through ONE handle. A
+    // second path lookup here is a window in which the file under an allowed
+    // path becomes a symlink to somewhere else, or a small file becomes a large
+    // one after the size gate has passed.
+    // `real` came back from realpath with every link resolved, so the ONLY way
+    // its last component is a symlink now is that it was swapped in between —
+    // O_NOFOLLOW turns that swap into ELOOP → 404 instead of a follow. And
+    // O_NONBLOCK: a FIFO inside the boundary would otherwise park this request
+    // (and its handle) until a writer shows up, which may be never.
+    let handle: fs.promises.FileHandle;
+    try {
+      handle = await fs.promises.open(
+        real,
+        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+      );
+    } catch {
+      this.json(res, 404, { error: 'image not found' });
+      return;
+    }
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) {
+        this.json(res, 404, { error: 'image not found' });
+        return;
+      }
+      if (stat.size > MAX_TURN_IMAGE_BYTES) {
+        // No exact size in the answer: the cap is the only number a caller
+        // learns, never how big the thing behind the path really is.
+        this.json(res, 413, {
+          error: 'image-too-large',
+          detail: `the cap is ${MAX_TURN_IMAGE_BYTES} bytes`,
+        });
+        return;
+      }
+      const head = Buffer.alloc(IMAGE_MAGIC_BYTES);
+      const { bytesRead } = await handle.read(head, 0, IMAGE_MAGIC_BYTES, 0);
+      // The BYTES decide, never the extension: a phone asked to render a text
+      // file named `.png` shows a broken thumbnail, and `nosniff` plus a wrong
+      // Content-Type is how a non-image gets a chance to be something else.
+      const contentType = sniffImageContentType(head.subarray(0, bytesRead));
+      if (!contentType) {
+        this.json(res, 415, {
+          error: 'not-an-image',
+          detail: 'leading bytes are not PNG, JPEG, GIF or WebP',
+        });
+        return;
+      }
+      // Bounded by the size the gate saw, never "to EOF": holding the handle
+      // does not freeze the file, and a pane process appending to it between
+      // the stat and here would otherwise be buffered whole. One extra byte
+      // probed past that size says whether it grew — then it is over the cap
+      // by definition of what the gate approved.
+      const body = Buffer.allocUnsafe(stat.size);
+      let filled = 0;
+      while (filled < body.length) {
+        const { bytesRead } = await handle.read(body, filled, body.length - filled, filled);
+        if (bytesRead === 0) break;
+        filled += bytesRead;
+      }
+      const probe = await handle.read(Buffer.alloc(1), 0, 1, body.length);
+      if (probe.bytesRead > 0) {
+        this.json(res, 413, {
+          error: 'image-too-large',
+          detail: `the cap is ${MAX_TURN_IMAGE_BYTES} bytes`,
+        });
+        return;
+      }
+      if (filled < body.length) {
+        // Shrank under us — what the gate approved is not what is there.
+        this.json(res, 404, { error: 'image not found' });
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        ...this.securityHeaders(),
+        'Content-Length': String(body.length),
+      });
+      res.end(body);
+    } catch {
+      // A read that fails after the handle opened (permissions, a device that
+      // went away) is the same answer as a file that was never there. Unless
+      // the 200 was already on the wire — then a JSON body would throw
+      // ERR_HTTP_HEADERS_SENT on top, and the honest end is to cut the socket.
+      if (res.headersSent) {
+        res.destroy();
+      } else {
+        this.json(res, 404, { error: 'image not found' });
+      }
+    } finally {
+      await handle.close().catch(() => { /* already gone — nothing to release */ });
+    }
   }
 
   private handleSessionResize(
@@ -3437,7 +3675,7 @@ export class WebTerminalServer {
    * pending approval on two devices; the loser of that race gets a 409, and
    * without the settled record there is nothing to render but an error code.
    */
-  private handleApprovalsList(res: http.ServerResponse): void {
+  private handleApprovalsList(res: http.ServerResponse, principal: WebPrincipal): void {
     const approvals = this.deps.approvals;
     if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
     let listed: { pending: ApprovalRequest[]; recentlyResolved: ApprovalRequest[] };
@@ -3455,10 +3693,33 @@ export class WebTerminalServer {
     // daemon-internal, but it means adding a field to ApprovalRequest puts it
     // on the pipe and not here — deliberately, since the allowlist exists so
     // registry internals cannot reach the network by default.
+    // #1397 — the brain pane is excluded for a device, exactly as it is from
+    // `/api/sessions` and the per-pane routes. A record is refused at the
+    // producer today (`HookIngest`), so this filter should never have anything
+    // to drop; it is here because the producer is one path and this route is
+    // what a device actually reads. Same credential split as
+    // `attachableSession`: the operator's own surfaces keep the full list.
+    const visible = (r: ApprovalRequest): boolean =>
+      principal.kind === 'operator' || !this.isBrainApproval(r.sessionId);
     return this.json(res, 200, {
-      pending: listed.pending.map(approvalWire),
-      recentlyResolved: listed.recentlyResolved.map(approvalWire),
+      pending: listed.pending.filter(visible).map(approvalWire),
+      recentlyResolved: listed.recentlyResolved.filter(visible).map(approvalWire),
     });
+  }
+
+  /**
+   * Does this approval name the orchestrator brain's own pane?
+   *
+   * A BRAIN filter, not `readableSession`'s brain-or-unknown one, and for the
+   * same reason `broadcastEvent` takes the flat one (#1402): an id the manager
+   * no longer knows is a pane that closed while its record was still listed,
+   * and treating that as "brain" would hide real approvals from a device.
+   * `isBrainPty` falls back to the id prefix, so a brain pane that has already
+   * gone is still recognised without its env.
+   */
+  private isBrainApproval(sessionId: string): boolean {
+    const managed = this.deps.sessionManager.getSession(sessionId);
+    return isBrainPty({ id: sessionId, env: managed?.meta.env });
   }
 
   /**
@@ -3511,6 +3772,13 @@ export class WebTerminalServer {
     // runs the tool (arbitrary Bash, a write, a subagent), which is exactly
     // what --allow-input governs. Gate it accordingly (review: Claude).
     const record = approvals.list().pending.find((r) => r.id === id);
+    // #1397 — a device may not answer the orchestrator brain's own prompt. The
+    // same 404 as an unknown id, and BEFORE the gate check below: a 403 here
+    // would confirm the record exists, which is half of what the exclusion is
+    // for. The operator path is untouched.
+    if (record && principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
+      return this.json(res, 404, { error: 'not-found' });
+    }
     if (record?.kind === 'awaiting_permission' && !this.mayInput(principal)) {
       return this.refuseInput(
         res,
@@ -3669,6 +3937,15 @@ export class WebTerminalServer {
   private publishApproval(e: ApprovalEvent): void {
     if (!e || typeof e !== 'object' || !e.request) return;
     const r = e.request;
+    // #1397 — the same producer-side gate `broadcastEvent` takes, for the same
+    // reason. This fan-out is not keyed by pane and is not keyed by principal:
+    // it writes to every open stream and lands in the replayable log that
+    // `/api/events` serves, whose backlog route takes no principal. So a
+    // delivery-side filter would still leave the brain's `toolName` and
+    // `toolInputSummary` — and a brain pane id a device can then try elsewhere
+    // — sitting in the replay window. FLAT, like the liveness gate: the desk
+    // drives the brain over RPC, not this fan-out.
+    if (this.isBrainApproval(r.sessionId)) return;
     this.publish('approval', {
       sessionId: r.sessionId,
       // NOT `id`: the envelope's own `id` is the replay cursor, and identity
@@ -3711,6 +3988,27 @@ export class WebTerminalServer {
    */
   private broadcastEvent(kind: 'critical' | 'notify', payload: { sessionId: string; event?: unknown }): void {
     if (!payload || typeof payload !== 'object') return;
+    // #1402 — the same gate `emitAgentLiveness` takes, and for the same reason.
+    // `DaemonSessionManager` re-emits `session:critical` / `session:notification`
+    // for EVERY pty, the brain included, and this fan-out is not keyed by pane:
+    // it writes to every open stream and records the entry in the replayable
+    // `attentionLog` that `/api/events` serves. So a brain pane's events reached
+    // every paired phone carrying both the pane id AND pane-authored content —
+    // the critical detector's `matchedLine`, an OSC 9/777 title and body. That
+    // is the channel through which a device learns the id the per-pane routes
+    // (#1401) now refuse; refusing it there while handing out fresh ids here
+    // closed the door and left the sign up. It has to be refused at the
+    // producer: the log behind `/api/events` is shared and its backlog route
+    // takes no principal, so a delivery-side filter would still leave brain
+    // content in the replay window.
+    //
+    // FLAT, like the liveness gate: the desk drives the brain over RPC, not this
+    // fan-out, and the pane is absent from `/api/sessions` anyway. A BRAIN
+    // filter, not `readableSession`'s brain-or-unknown one: an id the manager no
+    // longer knows is a pane that closed while its event was in flight, and
+    // dropping those would lose real signals.
+    const named = this.deps.sessionManager.getSession(payload.sessionId);
+    if (isBrainPty({ id: payload.sessionId, env: named?.meta.env })) return;
     const event = payload.event && typeof payload.event === 'object' ? (payload.event as Record<string, unknown>) : {};
     const entry = this.publish(kind, { sessionId: payload.sessionId, ...event });
 
@@ -4808,6 +5106,27 @@ function createTransportServer(
   }
 }
 
+/**
+ * #1342 — project a host-local {@link ResumeBinding} onto the wire.
+ *
+ * Two fields are deliberately transformed rather than copied:
+ *   - `transcriptPath` is DROPPED. It is an absolute path on this machine; the
+ *     attaching desktop can do nothing with it but display or leak it, and the
+ *     staleness probe it exists for has already run host-side.
+ *   - `cwd` becomes the boolean `cwdMatches`. `--resume` is cwd-scoped, and
+ *     only this host can compare its own paths, so it answers the question
+ *     instead of shipping the path for the desktop to guess with.
+ */
+function resumeInfoOf(binding: ResumeBinding, paneCwd: string | undefined): RemoteResumeInfo {
+  return {
+    agent: binding.agent,
+    sessionId: binding.sessionId,
+    cwdMatches:
+      !!paneCwd && !!binding.cwd && normalizeResumeCwd(binding.cwd) === normalizeResumeCwd(paneCwd),
+    ...(binding.permissionMode ? { permissionMode: binding.permissionMode } : {}),
+  };
+}
+
 function readTlsPem(kind: 'certificate' | 'private key', filePath: string): Buffer {
   if (!path.isAbsolute(filePath)) {
     throw new Error(`TLS ${kind} path must be absolute`);
@@ -4864,6 +5183,41 @@ function sniffImageExt(body: Buffer): 'jpg' | 'png' | null {
   if (body.length < PNG_SIGNATURE.length) return null;
   if (body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff) return 'jpg';
   if (body.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return 'png';
+  return null;
+}
+
+/** How many leading bytes `sniffImageContentType` needs — WebP's marker ends at 12. */
+const IMAGE_MAGIC_BYTES = 16;
+
+/**
+ * The `Content-Type` for a blob `/turns/image` is about to serve, by its
+ * leading bytes — or null for anything that is not one of the four formats a
+ * phone can render.
+ *
+ * Separate from `sniffImageExt`, which answers a different question (what
+ * extension do we WRITE for an upload) over a deliberately narrower set. Widening
+ * that one to GIF and WebP would start writing extensions the upload route's
+ * deletion predicate does not recognise.
+ */
+function sniffImageContentType(head: Buffer): string | null {
+  if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (head.length >= PNG_SIGNATURE.length && head.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+    return 'image/png';
+  }
+  if (head.length >= 6) {
+    const gif = head.subarray(0, 6).toString('latin1');
+    if (gif === 'GIF87a' || gif === 'GIF89a') return 'image/gif';
+  }
+  // RIFF containers carry the real format at byte 8; only the WEBP one is an image.
+  if (
+    head.length >= 12 &&
+    head.subarray(0, 4).toString('latin1') === 'RIFF' &&
+    head.subarray(8, 12).toString('latin1') === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
   return null;
 }
 

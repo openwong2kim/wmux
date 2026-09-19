@@ -81,4 +81,32 @@ describe('the browser_snapshot diff key survives a separator in the caller text'
     const again = await snapshot({ selector: 'a', q: 'b||c', surfaceId: 'surf-key-2' });
     expect(again.content[0].text).toContain('no changes since previous snapshot');
   });
+
+  // A probed snapshot carries the `[hover first: …]` items a plain one does
+  // not, so the two are different renderings: diffing one against the other
+  // reports every menu's contents as an addition, then as a removal.
+  it('does not diff a probed snapshot against an unprobed baseline', async () => {
+    await snapshot({ surfaceId: 'surf-key-3' });
+
+    const probed = await snapshot({ probeHover: true, surfaceId: 'surf-key-3' });
+    expect(probed.content[0].text).not.toContain('no changes since previous snapshot');
+    expect(probed.content[0].text).toContain('button name="Save"');
+    // This lane is the DOM listing, which marks triggers but cannot probe them.
+    // Saying so beats letting the caller read "no items" as "empty menus".
+    expect(probed.content[0].text).toContain('probeHover ignored');
+  });
+
+  it('does not diff an unprobed snapshot against a probed baseline either', async () => {
+    await snapshot({ probeHover: true, surfaceId: 'surf-key-4' });
+
+    const plain = await snapshot({ surfaceId: 'surf-key-4' });
+    expect(plain.content[0].text).not.toContain('no changes since previous snapshot');
+  });
+
+  it('still diffs two probed snapshots of the same page', async () => {
+    await snapshot({ probeHover: true, surfaceId: 'surf-key-5' });
+
+    const again = await snapshot({ probeHover: true, surfaceId: 'surf-key-5' });
+    expect(again.content[0].text).toContain('no changes since previous snapshot');
+  });
 });

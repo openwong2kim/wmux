@@ -8,6 +8,7 @@ import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { useT } from '../../hooks/useT';
 import { t } from '../../i18n';
 import { useStore } from '../../stores';
+import { IconExternalLink } from '../icons';
 
 // Compact, scan-friendly cwd: keep the last two path segments. Mirrors the
 // sidebar's shortenPath so the cockpit reads the same as the workspace rows.
@@ -169,7 +170,7 @@ function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
       type="button"
       role="option"
       aria-selected={focused}
-      aria-label={`${displayName}, ${t(icon.labelKey)}, ${card.workspaceName}${supervision ? `, ${supervisionLabel}` : ''}`}
+      aria-label={`${displayName}, ${t(icon.labelKey)}, ${card.workspaceName}${card.remote ? `, ${card.remote.hostLabel}` : ''}${supervision ? `, ${supervisionLabel}` : ''}`}
       tabIndex={focused ? 0 : -1}
       onClick={() => onJump(card)}
       data-fleet-card
@@ -194,6 +195,21 @@ function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
           className={`w-2 h-2 rounded-full flex-shrink-0 ${icon.glowClass}`}
           style={{ backgroundColor: icon.dotVar }}
         />
+        {card.remote && (
+          // #1343 — origin glyph: this agent runs on another host. Identical
+          // rendition to the sidebar roster's badge (#1163) so the same agent
+          // reads the same in both rosters: steel, not accent (DESIGN.md — a
+          // provenance marker must never spend an amber point), shape carries
+          // the meaning, host name lives in the label and the tooltip.
+          <span
+            data-fleet-remote
+            className="flex-shrink-0 self-center text-[var(--text-muted)]"
+            title={`@${card.remote.hostLabel}`}
+            aria-hidden="true"
+          >
+            <IconExternalLink size={10} />
+          </span>
+        )}
         <span className="flex-1 min-w-0 truncate text-body font-medium text-[var(--text-main)]">
           {displayName}
         </span>

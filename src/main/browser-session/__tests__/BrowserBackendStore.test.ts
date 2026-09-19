@@ -39,4 +39,72 @@ describe('BrowserBackendStore (#517)', () => {
     writeFileSync(join(dir, 'browser-backend.json'), JSON.stringify({ backend: 'chrome-extension' }));
     expect(new BrowserBackendStore(dir).get()).toBe('builtin');
   });
+
+  // Live-Chrome agent window: 'all' is the LARGER grant (every logged-in tab in
+  // the user's browser), so every unclear input has to land on 'agent'.
+  describe('liveWriteScope', () => {
+    it("defaults to 'agent' — the narrow grant — with no file", () => {
+      expect(new BrowserBackendStore(dir).liveWriteScope()).toBe('agent');
+    });
+
+    it('reads a persisted opt-out', () => {
+      writeFileSync(
+        join(dir, 'browser-backend.json'),
+        JSON.stringify({ backend: 'chrome', liveWriteScope: 'all' }),
+      );
+      expect(new BrowserBackendStore(dir).liveWriteScope()).toBe('all');
+    });
+
+    it("an unknown value falls back to 'agent', not to the wider grant", () => {
+      writeFileSync(
+        join(dir, 'browser-backend.json'),
+        JSON.stringify({ backend: 'chrome', liveWriteScope: 'everything' }),
+      );
+      expect(new BrowserBackendStore(dir).liveWriteScope()).toBe('agent');
+    });
+
+    it('persists across a restart, and keeps the backend with it', () => {
+      const store = new BrowserBackendStore(dir);
+      store.set('chrome');
+      store.setLiveWriteScope('all');
+      const reloaded = new BrowserBackendStore(dir);
+      expect(reloaded.get()).toBe('chrome');
+      expect(reloaded.liveWriteScope()).toBe('all');
+    });
+
+    it('a later backend write does not silently drop the scope', () => {
+      const store = new BrowserBackendStore(dir);
+      store.setLiveWriteScope('all');
+      store.set('builtin');
+      expect(new BrowserBackendStore(dir).liveWriteScope()).toBe('all');
+    });
+
+    it('an operator edit to the file takes effect without a restart, and a backend write keeps it', () => {
+      // The setting is operator-only and deliberately lives in the file; an
+      // edit there must be honoured by the next RPC, not by the next launch —
+      // and the next Settings change must not overwrite it with the boot value.
+      const store = new BrowserBackendStore(dir);
+      expect(store.liveWriteScope()).toBe('agent');
+      writeFileSync(
+        join(dir, 'browser-backend.json'),
+        JSON.stringify({ backend: 'chrome', liveWriteScope: 'all' }),
+      );
+      expect(store.liveWriteScope()).toBe('all');
+      store.set('chrome');
+      expect(JSON.parse(readFileSync(join(dir, 'browser-backend.json'), 'utf8'))).toEqual({
+        backend: 'chrome',
+        liveWriteScope: 'all',
+      });
+      // Removing the key narrows the grant again, on the next read.
+      writeFileSync(join(dir, 'browser-backend.json'), JSON.stringify({ backend: 'chrome' }));
+      expect(store.liveWriteScope()).toBe('agent');
+    });
+
+    it('writes no scope key while the default stands (the file keeps its shape)', () => {
+      new BrowserBackendStore(dir).set('external');
+      expect(JSON.parse(readFileSync(join(dir, 'browser-backend.json'), 'utf8'))).toEqual({
+        backend: 'external',
+      });
+    });
+  });
 });

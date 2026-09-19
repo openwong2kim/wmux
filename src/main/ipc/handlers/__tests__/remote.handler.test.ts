@@ -5,7 +5,7 @@
 // stubbed directly rather than mocked modules, since the handler takes them
 // as injected deps.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const ipcHandlers = new Map<string, (...args: unknown[]) => unknown>();
 const ipcListeners = new Map<string, (...args: unknown[]) => unknown>();
@@ -40,6 +40,7 @@ vi.mock('electron', () => {
 import { registerRemoteHandlers } from '../remote.handler';
 import { IPC } from '../../../../shared/constants';
 import type { RemoteAttachmentDescriptor, RemoteHost, RemoteHostPublic, RemoteWorkspacesResponse } from '../../../../shared/remoteHosts';
+import { REMOTE_POLL_INTERVAL_MS } from '../../../../shared/remoteHosts';
 import type { RemoteHostClient, RemoteMetaEvent, RemoteResizeEvent, RemoteDataEvent, RemoteExitEvent, RemoteErrorEvent } from '../../../remote/RemoteHostClient';
 
 function getHandler(channel: string): (...args: unknown[]) => unknown {
@@ -1131,5 +1132,211 @@ describe('remote.handler — attachment descriptors', () => {
     expect(client.detach).toHaveBeenCalledWith(res.attachId);
     // The descriptor survives — that is what the renderer restores from.
     await expect(getHandler(IPC.REMOTE_ATTACHMENTS_LIST)({})).resolves.toEqual([descriptor]);
+  });
+});
+
+// #1391 — the liveness-poll CADENCE now lives in main, because a renderer
+// setInterval is throttled to a minute once the window is backgrounded. What
+// main owns is only the tick: when it fires, who gets it, and — the part with
+// teeth — when it stops, since a timer nobody cancels outlives every renderer
+// that ever asked for it.
+describe('remote.handler — liveness poll tick (#1391)', () => {
+  const host: RemoteHost = { id: 'h1', label: 'box', origin: 'https://box:9600', token: 't', addedAt: 0 };
+
+  function register(): () => void {
+    return registerRemoteHandlers({
+      store: fakeStore([host]) as never,
+      attachments: fakeAttachments() as never,
+      clientFactory: () => fakeClient(host),
+    });
+  }
+
+  function ticks(sender: ReturnType<typeof fakeSender>): number {
+    return sender.sent.filter((s) => s.channel === IPC.REMOTE_POLL_TICK).length;
+  }
+
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('arms NO timer until someone subscribes', () => {
+    register();
+    vi.advanceTimersByTime(60_000);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('ticks only the renderers that asked', async () => {
+    register();
+    const subscribed = fakeSender(400);
+    const bystander = fakeSender(418);
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender: subscribed });
+
+    vi.advanceTimersByTime(REMOTE_POLL_INTERVAL_MS);
+    expect(ticks(subscribed)).toBe(1);
+    expect(ticks(bystander)).toBe(0);
+  });
+
+  it('ticks a subscriber at the poll interval', async () => {
+    register();
+    const sender = fakeSender(401);
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender });
+
+    vi.advanceTimersByTime(REMOTE_POLL_INTERVAL_MS * 3);
+    expect(ticks(sender)).toBe(3);
+  });
+
+  it('subscribing twice from the SAME renderer is one subscriber, one tick', async () => {
+    register();
+    const sender = fakeSender(402);
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender });
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender });
+
+    vi.advanceTimersByTime(REMOTE_POLL_INTERVAL_MS);
+    expect(ticks(sender)).toBe(1);
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  // The renderer's subscribe is an async invoke inside a React effect, so a
+  // double-invoked effect (StrictMode) or a fast re-mount lands as
+  // subscribe(A) → subscribe(B) → the LATE unsubscribe from A. Dropping the
+  // whole entry on that unsubscribe would disarm the timer under a renderer
+  // that is still listening and believes it is subscribed — polling silently
+  // dead for the rest of the session.
+  it('a late unsubscribe from a superseded mount does NOT kill the live one', async () => {
+    register();
+    const sender = fakeSender(414);
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender }); // effect A
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender }); // effect B
+    await getHandler(IPC.REMOTE_POLL_UNSUBSCRIBE)({ sender }); // A's cleanup, late
+
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(REMOTE_POLL_INTERVAL_MS);
+    expect(ticks(sender)).toBe(1);
+
+    // B's own cleanup is the one that actually stops it.
+    await getHandler(IPC.REMOTE_POLL_UNSUBSCRIBE)({ sender });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('an unsubscribe from a renderer that never subscribed is a no-op', async () => {
+    register();
+    const live = fakeSender(415);
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender: live });
+    await getHandler(IPC.REMOTE_POLL_UNSUBSCRIBE)({ sender: fakeSender(416) });
+
+    vi.advanceTimersByTime(REMOTE_POLL_INTERVAL_MS);
+    expect(ticks(live)).toBe(1);
+  });
+
+  it('a teardown drops the renderer outright, however many subscribes it held', async () => {
+    register();
+    const sender = fakeSender(417);
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender });
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender });
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender });
+
+    sender.fireDestroyed();
+
+    // Not "count minus one" — gone. A renderer that no longer exists must not
+    // hold the timer open on a leftover refcount.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('two windows share ONE timer and both get the tick', async () => {
+    register();
+    const a = fakeSender(403);
+    const b = fakeSender(404);
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender: a });
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender: b });
+
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(REMOTE_POLL_INTERVAL_MS);
+    expect(ticks(a)).toBe(1);
+    expect(ticks(b)).toBe(1);
+  });
+
+  it('keeps ticking the window that is still subscribed after the other leaves', async () => {
+    register();
+    const a = fakeSender(405);
+    const b = fakeSender(406);
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender: a });
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender: b });
+    await getHandler(IPC.REMOTE_POLL_UNSUBSCRIBE)({ sender: a });
+
+    vi.advanceTimersByTime(REMOTE_POLL_INTERVAL_MS);
+    expect(ticks(a)).toBe(0);
+    expect(ticks(b)).toBe(1);
+  });
+
+  it('disarms the timer entirely once the LAST subscriber leaves', async () => {
+    register();
+    const sender = fakeSender(407);
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender });
+    await getHandler(IPC.REMOTE_POLL_UNSUBSCRIBE)({ sender });
+
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(60_000);
+    expect(ticks(sender)).toBe(0);
+  });
+
+  it('a renderer RELOAD drops the subscription — no zombie timer, no double tick', async () => {
+    register();
+    const sender = fakeSender(408);
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender });
+    sender.fireNavigation(false, true);
+    expect(vi.getTimerCount()).toBe(0);
+
+    // The reloaded renderer re-subscribes on mount: still exactly one timer,
+    // and exactly one tick per round.
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender });
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(REMOTE_POLL_INTERVAL_MS);
+    expect(ticks(sender)).toBe(1);
+  });
+
+  it('a destroyed renderer is dropped rather than sent to', async () => {
+    register();
+    const sender = fakeSender(409);
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender });
+    sender.isDestroyed.mockReturnValue(true);
+
+    vi.advanceTimersByTime(REMOTE_POLL_INTERVAL_MS);
+    expect(sender.send).not.toHaveBeenCalled();
+    // ...and the round that found it dead stopped the timer.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a send that throws mid-reload does not kill the tick for anyone else', async () => {
+    register();
+    const bad = fakeSender(410);
+    const good = fakeSender(411);
+    bad.send.mockImplementation(() => { throw new Error('mid-reload'); });
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender: bad });
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender: good });
+
+    expect(() => vi.advanceTimersByTime(REMOTE_POLL_INTERVAL_MS)).not.toThrow();
+    expect(ticks(good)).toBe(1);
+  });
+
+  it('dispose stops the timer — a re-registration cannot stack a second one', async () => {
+    const dispose = register();
+    const sender = fakeSender(412);
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender });
+    expect(vi.getTimerCount()).toBe(1);
+
+    dispose();
+    expect(vi.getTimerCount()).toBe(0);
+
+    register();
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender });
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it('will-quit stops the timer', async () => {
+    register();
+    await getHandler(IPC.REMOTE_POLL_SUBSCRIBE)({ sender: fakeSender(413) });
+    expect(vi.getTimerCount()).toBe(1);
+
+    appListeners.get('will-quit')?.();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

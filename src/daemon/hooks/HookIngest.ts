@@ -56,7 +56,7 @@ import {
   type AgentSlug,
   type HookSignalResponse,
 } from '../../shared/hooks/signal-types';
-import { ENV_KEYS } from '../../shared/constants';
+import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 // Pure regex/lookup module (no electron), already imported by src/daemon/index.ts.
 import { agentDisplayToSlug, agentStatusToSignalKind, type AgentEventStatus } from '../../main/pty/AgentDetector';
 import type { ResumeBinding, PermissionMode } from '../../shared/agentResume';
@@ -641,7 +641,22 @@ export class HookIngest {
     // meaningful.
     const bypassing = typeof signal.payload?.permission_mode === 'string'
       && signal.payload.permission_mode === 'bypassPermissions';
-    const isGated = !bypassing && toolName !== null && gatedTools.includes(toolName);
+    // #1397 — the orchestrator brain's own pane raises no gate card. A record
+    // here would carry the brain's tool name and input summary to every paired
+    // device and let one answer it, which is exactly what every other
+    // device-facing surface (`/api/sessions`, the transcript routes, the
+    // critical/notify fan-out) already refuses. Nothing in the approvals
+    // pipeline said so until now: the brain simply did not arm these hooks,
+    // because `ClaudePtyBrainAdapter` spawns it with `WMUX_HOOKS_TO_MAIN=1`.
+    // That is a property of how one adapter spawns a process, not a gate — a
+    // different spawn profile, or a hook that reaches the daemon anyway, and
+    // the record appears. Refused as NOT GATED, so the tool is allowed and the
+    // agent keeps its own local permission prompt, which is what happens today.
+    const isBrain = isBrainPty({
+      id: sessionId,
+      env: sessions.find((s) => s.id === sessionId)?.env,
+    });
+    const isGated = !bypassing && !isBrain && toolName !== null && gatedTools.includes(toolName);
 
     if (!isGated) {
       // Non-gated tool (or a bypass session) — emit tool_started for the phone
@@ -976,7 +991,12 @@ export class HookIngest {
   ): void {
     const approvals = this.deps.approvals;
     if (!approvals) return;
-    const workspaceId = sessions.find((s) => s.id === sessionId)?.env?.[ENV_KEYS.WORKSPACE_ID];
+    const session = sessions.find((s) => s.id === sessionId);
+    // #1397 — same refusal as the gate path: the orchestrator brain's own pane
+    // gets no approval record, so its prompt text never reaches a paired device
+    // and no device can answer on its behalf.
+    if (isBrainPty({ id: sessionId, env: session?.env })) return;
+    const workspaceId = session?.env?.[ENV_KEYS.WORKSPACE_ID];
     // A4 — carry WHAT is being asked. Extraction happens here because this is
     // the envelope-aware layer; the registry never learns hook payload shapes.
     // Total and non-throwing (see extractAskUserQuestion): an unusable payload

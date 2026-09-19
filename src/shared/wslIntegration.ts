@@ -12,7 +12,94 @@ exec "$WMUX_WSL_NODE" "$WMUX_WSL_BRIDGE" "$@"
 `;
 
 export const WSL_CLAUDE_SHIM = `#!/bin/sh
-# Remove this shim directory from PATH, including repeated/nested injections.
+# Remove this shim directory from a PATH, including repeated/nested injections.
+strip_shim() {
+  old_ifs=$IFS
+  IFS=:
+  clean=
+  for entry in $1; do
+    [ "$entry" = "$WMUX_WSL_BIN" ] && continue
+    clean="\${clean:+$clean:}$entry"
+  done
+  IFS=$old_ifs
+}
+strip_shim "$PATH"
+real=$(PATH="$clean" command -v claude)
+if [ -z "$real" ]; then
+  # #1305 — an EXEC pane runs bash with --noprofile --norc, deliberately: its
+  # stream carries the agent's output and nothing else, so no startup file may
+  # print into it. The side effect is that a claude whose PATH comes from
+  # ~/.bashrc — what every nvm install does — is simply not there, and this
+  # shim answered 127 for a claude that is installed and works in every
+  # interactive pane.
+  #
+  # So ask an interactive shell what its PATH is, once, and only after the
+  # ordinary lookup has already failed: the same file the interactive pane
+  # sources, read here without its output reaching anyone. Startup chatter
+  # cannot be mistaken for the answer — the marker line is the only thing read,
+  # its leading newline starts it even after an unterminated banner, and the
+  # LAST match wins so a .bashrc that echoes the marker itself cannot win over
+  # the real one. stdin is closed so a prompt in a startup file cannot hang the
+  # pane.
+  #
+  # BOUNDED. Closing stdin stops a startup file that READS from the terminal,
+  # but not one that waits on something else — a network call, a lock, a sleep —
+  # and an unbounded substitution here would hang the exec pane instead of
+  # reaching the honest 127 below (review: CodeRabbit). A timeout leaves
+  # login_path empty, which is exactly the not-found path.
+  #
+  # -k, because the plain TERM is not a bound here: an INTERACTIVE bash ignores
+  # SIGTERM. Measured — it aborts whatever the startup file is waiting on and
+  # carries on to the end, which happens to answer, but a startup file that
+  # blocks again would keep the pane hanging on a timeout that already fired.
+  # The follow-up KILL cannot be ignored, so the lookup ends either way.
+  # \`timeout\` is coreutils and present on every distro wmux supports; where it
+  # somehow is not, the lookup still runs, because an unbounded best effort
+  # beats telling the user their installed claude does not exist.
+  wmux_bash=/bin/bash
+  command -v timeout >/dev/null 2>&1 && wmux_bash="timeout -k 1 10 /bin/bash"
+  # Unquoted on purpose: wmux_bash is a command plus its arguments.
+  # shellcheck disable=SC2086
+  login_path=$($wmux_bash -ic 'printf "\\nWMUX_RESOLVED_PATH=%s\\n" "$PATH"' </dev/null 2>/dev/null \
+    | sed -n 's/^WMUX_RESOLVED_PATH=//p' | tail -n 1)
+  if [ -n "$login_path" ]; then
+    strip_shim "$login_path"
+    real=$(PATH="$clean" command -v claude)
+  fi
+fi
+if [ -z "$real" ]; then
+  printf '%s\\n' 'wmux: claude is not installed in this WSL distribution' >&2
+  exit 127
+fi
+# Retain the pane PATH for subprocesses; only command lookup excludes the shim.
+exec "$real" --settings "$WMUX_WSL_SETTINGS" "$@"
+`;
+
+export const WSL_CODEX_HOOK = `#!/bin/sh
+export ELECTRON_RUN_AS_NODE=1
+export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w"
+# Codex also notifies for temporary title-generation and subagent threads.
+# Only a saved top-level CLI session is a valid Resume target. Match the exact
+# reported UUID and inspect its first metadata record; never guess the newest.
+# thread/revert keeps the thread ID but writes rollout-<ts>-<id>_<rollout>.jsonl.
+# The payload carries the turn's full input and answer. A Windows command line
+# holds ~32K characters, so it goes over stdin and only the fields the bridge
+# reads are passed on as argv.
+notification=$(printf '%s' "\${1:-}" | "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" --notification) || exit 0
+id=$(printf '%s\n' "$notification" | sed -n 1p)
+payload=$(printf '%s\n' "$notification" | sed -n 2p)
+for file in "\${CODEX_HOME:-$HOME/.codex}"/sessions/*/*/*/rollout-*-"$id".jsonl \
+    "\${CODEX_HOME:-$HOME/.codex}"/sessions/*/*/*/rollout-*-"$id"_*.jsonl; do
+  [ -f "$file" ] || continue
+  IFS= read -r metadata < "$file" || continue
+  if printf '%s' "$metadata" | "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" --is-resumable "$id"; then
+    exec "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_BRIDGE" "$payload"
+  fi
+done
+exit 0
+`;
+
+export const WSL_CODEX_SHIM = `#!/bin/bash
 old_ifs=$IFS
 IFS=:
 clean=
@@ -21,18 +108,57 @@ for entry in $PATH; do
   clean="\${clean:+$clean:}$entry"
 done
 IFS=$old_ifs
-real=$(PATH="$clean" command -v claude) || {
-  printf '%s\\n' 'wmux: claude is not installed in this WSL distribution' >&2
+real=$(PATH="$clean" command -v codex) || {
+  printf '%s\\n' 'wmux: codex is not installed in this WSL distribution' >&2
   exit 127
 }
-# Retain the pane PATH for subprocesses; only command lookup excludes the shim.
-exec "$real" --settings "$WMUX_WSL_SETTINGS" "$@"
+if [ "\${WMUX_SHELL_INTEGRATION:-1}" = 0 ]; then exec "$real" "$@"; fi
+# Scan the actual launch directory, including Codex's --cd override. No
+# startup files or user commands are evaluated to inspect configuration.
+launch_dir=$PWD
+args=("$@")
+for ((i=0; i<\${#args[@]}; i++)); do
+  case "\${args[i]}" in
+    --) break ;;
+    -C|--cd) ((i++)); launch_dir=\${args[i]:-} ;;
+    --cd=*) launch_dir=\${args[i]#--cd=} ;;
+    -C?*) launch_dir=\${args[i]#-C} ;;
+  esac
+done
+collect_configs() {
+  local root file
+  root=$(cd -- "$launch_dir" 2>/dev/null && pwd -P) || { printf 'invalid config'; return; }
+  for file in /etc/codex/config.toml /etc/codex/managed_config.toml \
+      "\${CODEX_HOME:-$HOME/.codex}/config.toml" "\${CODEX_HOME:-$HOME/.codex}"/*.config.toml; do
+    if [ -e "$file" ]; then cat -- "$file" || printf 'invalid config'; printf '\\0'; fi
+  done
+  while :; do
+    file="$root/.codex/config.toml"
+    if [ -e "$file" ]; then cat -- "$file" || printf 'invalid config'; printf '\\0'; fi
+    [ "$root" = / ] && break
+    root=\${root%/*}; [ -n "$root" ] || root=/
+  done
+}
+# Only this short-lived helper needs Electron's Node mode. Do not leak it to
+# Codex or other Linux applications. It never runs on the daemon event loop.
+# Bounded like the Claude shim's PATH lookup: a stalled interop call falls back
+# to launching Codex unchanged instead of hanging the launch.
+wmux_guard=
+command -v timeout >/dev/null 2>&1 && wmux_guard="timeout -k 1 10"
+override=$(collect_configs | ELECTRON_RUN_AS_NODE=1 \
+  WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w" \
+  $wmux_guard "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" "$WMUX_WSL_CODEX_HOOK" "$@")
+if [ $? = 0 ] && [ -n "$override" ]; then
+  exec "$real" -c "$override" "$@"
+fi
+printf '%s\\n' 'wmux: Codex resume capture not injected (existing notify, unreadable configuration, or unavailable bridge); launching Codex unchanged.' >&2
+exec "$real" "$@"
 `;
 
-function findBridge(startDir: string): string {
+function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'claude'): string {
   let dir = startDir;
   for (let i = 0; i < 8; i++) {
-    for (const rel of ['cli-bundle/wmux-bridge.mjs', 'integrations/claude/bin/wmux-bridge.mjs', 'dist/cli-bundle/wmux-bridge.mjs']) {
+    for (const rel of [`cli-bundle/${basename}`, `integrations/${agent}/bin/${basename}`, `dist/cli-bundle/${basename}`]) {
       const candidate = path.join(dir, rel);
       if (fs.existsSync(candidate)) return candidate;
     }
@@ -40,7 +166,7 @@ function findBridge(startDir: string): string {
     if (parent === dir) break;
     dir = parent;
   }
-  throw new Error('WSL integration: bundled Claude hook bridge is missing');
+  throw new Error(`WSL integration: bundled ${agent} bridge ${basename} is missing`);
 }
 
 export function buildWslInjection(options: {
@@ -52,6 +178,8 @@ export function buildWslInjection(options: {
   execCommand?: string;
   runtimePath?: string;
   bridgePath?: string;
+  codexBridgePath?: string;
+  codexConfigPath?: string;
 }): { args: string[]; env: Record<string, string> } {
   const { target, cwd, integrationDir } = options;
   const dir = path.join(integrationDir, 'wsl');
@@ -62,6 +190,8 @@ export function buildWslInjection(options: {
   };
   write(path.join(dir, 'hook.sh'), WSL_HOOK);
   write(path.join(bin, 'claude'), WSL_CLAUDE_SHIM);
+  write(path.join(dir, 'codex-hook.sh'), WSL_CODEX_HOOK);
+  write(path.join(bin, 'codex'), WSL_CODEX_SHIM);
   const hooks = Object.fromEntries(['SessionStart', 'Stop', 'StopFailure'].map((event) => [event, [{
     matcher: '', hooks: [{ type: 'command', command: `/bin/sh "$WMUX_WSL_HOOK" ${event}`, timeout: 10 }],
   }]]));
@@ -79,7 +209,7 @@ if [ -z "$WMUX_WSL_CWD" ] || ! builtin cd -- "$WMUX_WSL_CWD"; then
   printf 'wmux: cannot enter WSL directory "%s"; check the directory and WSLENV transport, then retry.\\n' "$WMUX_WSL_CWD" >&2
   exit 1
 fi
-# Only wmux panes see the shim. Existing Claude settings/hooks are retained.
+# Only wmux panes see the shims. Existing agent configuration is retained.
 if [ "\${WMUX_SHELL_INTEGRATION:-1}" != 0 ]; then
   export PATH="$WMUX_WSL_BIN:$PATH"
 fi
@@ -88,6 +218,9 @@ fi
     WMUX_WSL_CWD: cwd,
     WMUX_WSL_NODE: options.runtimePath ?? process.execPath,
     WMUX_WSL_BRIDGE: options.bridgePath ?? findBridge(__dirname),
+    WMUX_WSL_CODEX_BRIDGE: options.codexBridgePath ?? findBridge(__dirname, 'wmux-codex-notify.mjs', 'codex'),
+    WMUX_WSL_CODEX_CONFIG: options.codexConfigPath ?? findBridge(__dirname, 'wmux-wsl-codex-config.mjs', 'codex'),
+    WMUX_WSL_CODEX_HOOK: path.join(dir, 'codex-hook.sh'),
     WMUX_WSL_HOOK: path.join(dir, 'hook.sh'),
     WMUX_WSL_SETTINGS: path.join(dir, 'claude-settings.json'),
     WMUX_WSL_BIN: bin,
@@ -96,6 +229,7 @@ fi
   const entries = [
     'WMUX_PTY_ID', 'WMUX_WORKSPACE_ID', 'WMUX_SURFACE_ID', 'WMUX_DATA_SUFFIX',
     'WMUX_WSL_NODE/p', 'WMUX_WSL_BRIDGE/u', 'WMUX_WSL_HOOK/p',
+    'WMUX_WSL_CODEX_BRIDGE/u', 'WMUX_WSL_CODEX_CONFIG/u', 'WMUX_WSL_CODEX_HOOK/p',
     'WMUX_WSL_CWD/u', 'WMUX_WSL_SETTINGS/p', 'WMUX_WSL_BIN/p', 'WMUX_WSL_BASHRC/p', 'WMUX_SHELL_INTEGRATION',
   ];
   env.WSLENV = mergeWslEnv(env.WSLENV, entries);

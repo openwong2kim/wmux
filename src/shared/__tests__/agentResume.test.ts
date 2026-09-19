@@ -6,6 +6,7 @@ import {
   permissionFlagFor,
   mergeResumeBinding,
   normalizeResumeCwd,
+  resumeGrammarFor,
   PERMISSION_FLAG,
   type ResumeBinding,
   type PermissionMode,
@@ -389,5 +390,18 @@ describe('toResumeCommand (X6)', () => {
     it('EXCLUDES supervised units', () => {
       expect(resumeOfferForRecovered({ supervision: { restart: 'always' }, lastDetectedAgent: 'claude' })).toBeUndefined();
     });
+  });
+});
+
+describe('resumeGrammarFor (#1342 — slugs now arrive from another machine)', () => {
+  it('answers only for its own launchers, never off the prototype chain', () => {
+    expect(resumeGrammarFor('claude')).toBeDefined();
+    expect(resumeGrammarFor('codex')).toBeDefined();
+    // A bare index would return Object's own members here: truthy, with no
+    // `withId` to call — a remote-supplied slug crashing the renderer mid-render.
+    expect(resumeGrammarFor('constructor')).toBeUndefined();
+    expect(resumeGrammarFor('toString')).toBeUndefined();
+    expect(resumeGrammarFor('__proto__')).toBeUndefined();
+    expect(resumeGrammarFor('gemini')).toBeUndefined();
   });
 });

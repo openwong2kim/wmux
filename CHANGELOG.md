@@ -1,4 +1,303 @@
-## [Unreleased]
+## [3.57.0] — 2026-09-18
+
+### Added
+
+- **`browser_click` accepts screenshot pixels directly.** Pass `imageX` and
+  `imageY` and the pixels you read off the last viewport screenshot are
+  converted for you; no scale of your own to apply, and a clear message when no
+  screenshot has set one.
+
+- **`browser_network` can filter by status, method and an exclude glob, and folds repeats.** A page that polls one endpoint used to bury every other request in the listing. Identical url+method+status rows now collapse into one carrying `"repeated":"xN"` (pass `collapse:false` for the old listing), and `status` (`"404"` or a class like `"4xx"`), `method` and `exclude` narrow it further. Every row carries an `id`. (#1372)
+
+- **`browser_response_body` can pick which match.** `nth` selects among several responses for one URL glob — `1` is the first, `-1` the last, and last is now the default, so a re-request after a filter change returns the new body instead of the stale first one. `requestId` takes the `id` a `browser_network` row printed and names one exact request. (#1372)
+
+- **`browser_wait` can scope a text wait to an element.** Passing `selector` and `text` together waits for that text inside that element. Before, the selector simply won and there was no way to stop a word that also appears in a sidebar or nav from satisfying the wait before the content under test rendered. (#1372)
+
+- **`browser_repl` warns before a long run disappears into the background.** A run asking for more than ~120 seconds is likely to be backgrounded by the MCP client, and there is no handle to poll for it. The result now says so, and points at the runtime state that does survive: keep progress on `globalThis` and read it back in a short follow-up call. (#1375)
+
+- **A phone pane row can name itself.** `GET /api/sessions` now also carries
+  `lastDetectedAgent` (the agent the daemon last detected in the pane, as its
+  canonical slug) and `cwdLeaf` (the last segment of the pane's working
+  directory). The one `agent` field it had held two vocabularies at once — a
+  role display name for some panes, a detection slug for others — so a phone
+  could not tell an unlabelled agent pane from a plain shell, and every shell
+  pane's chip read "pane". Both fields are optional and absent means "not
+  known"; a client that ignores them behaves exactly as before. Read
+  `lastDetectedAgent` as identity, not presence: it is persisted, so it
+  outlives the agent process. (#1386)
+
+- **The phone's turn view shows the images a session actually read or wrote.**
+  A turn that named an image — a screenshot the agent opened, a picture sent up
+  from the phone — used to render as a bare file path. The phone can now fetch
+  the bytes behind that path and draw a thumbnail. The grant is the existing
+  `--allow-transcript` one (it already covers file contents the agent read), and
+  a request is only served for an image that sits inside the pane's spawn
+  directory or the uploads directory: never merely the pane's *current*
+  directory, which any process in the pane can move. Everything else — another
+  directory, a symlink pointing out of it, a non-image file, one larger than
+  8 MiB, the orchestrator's own pane — is refused, and refused without telling
+  the caller anything about what is on disk. (#1399)
+
+### Fixed
+
+- **An unaddressed `send_message` no longer pastes into a plain shell and runs
+  it (#1336).** With no `pane_id`/`surface_id`, delivery fell through to
+  "whatever pane is active" — in a workspace running an agent beside an idle
+  shell, the message body was bracket-pasted *and submitted* into the shell,
+  which executed the natural-language text line by line as commands. Delivery
+  now resolves against the panes wmux has actually detected a live agent on:
+  one agent pane wins regardless of focus (and is pinned to the task, so
+  follow-up messages go to the same agent); several agent panes refuse the send
+  and name each candidate; and a target with no detected agent pane is not
+  written to at all, reported as `notified:false` / `mode:"no-agent-pane"`,
+  with the task still stored and on the event bus for `a2a_task_query`. Sends
+  carrying an explicit pane or surface id are unchanged, as is an explicit
+  `silent:false`, which still forces the loud paste.
+
+- **`a2a_broadcast` no longer pastes announcements into shells (#1336).** It
+  wrote the body plus Enter into each workspace's first terminal pane — brain
+  panes and plain shells included — and counted every one as delivered. It now
+  writes only to a detected agent pane and reports `sent` alongside a new
+  `skipped` count for the workspaces that had none. The same rule was applied
+  to the message an `a2a_task_update` delivers, which had kept the old
+  active-pane fallback.
+
+- **Browser tools no longer print OAuth codes, tokens or credential headers.**
+  Only password-family parameters were masked, so a login flow's
+  `?code=`, `#access_token=`, `id_token`, `refresh_token`, `client_secret`,
+  `SAMLResponse` and `Authorization` / `Cookie` / `Set-Cookie` / `X-Api-Key`
+  values reached `browser_network`, `browser_response_body`, `browser_console`
+  and the replay trace verbatim — and a replay trace is kept on disk for thirty
+  days, so the leak outlived the session. Credential values now read as
+  `[redacted:credential]`, while hosts, paths, header names and every
+  non-credential parameter stay readable, so the network listing is still what
+  you debug against. A password reset link's `token` is masked too: it logs its
+  holder in. (#1364)
+
+- **`browser_emulate` with `device: null` now actually ends the emulation.**
+  Turning a phone preset off used to leave the page at the phone's viewport and
+  still reporting a touchscreen, so its media queries and touch checks kept
+  matching the preset — and resizing back by hand landed the layout between
+  breakpoints. The reset now restores the viewport the preset replaced, clears
+  the device metrics, drops the touch points, restores the user agent and
+  reloads the page, and says so: `device=reset (viewport 1280x720 restored,
+  reloaded)`. If the touch points cannot be dropped, that is reported instead of
+  silently ignored. Every apply and every reset also ends with one line read
+  from the page itself — `probe=1280x720 dpr=1 maxTouchPoints=0` — so the state
+  can be checked rather than assumed. (#1365, #1357)
+
+- **Turning a touchscreen off now works at all.** Every command that disabled
+  touch emulation asked for zero touch points, and the browser refuses that
+  ("Touch points must be between 1 and 16") whether or not touch is being
+  enabled — so a desktop preset after a phone one, and every reset, left the
+  page reporting the phone's ten touch points. Found by driving a real browser:
+  clearing the device metrics on its own does not take the touch points with
+  it. (#1365, #1357)
+
+- **`browser_screenshot` now states one coordinate scale, and it stops
+  drifting.** The result used to describe two separate factors — the device
+  pixel ratio and, when the image had to be shrunk to fit, the downscale rung —
+  and left you to combine them; on a phone preset over a downscaled capture,
+  either number on its own gave the wrong answer, and the rung was re-chosen on
+  every call, so the factor changed between screenshots of the same page. A
+  viewport capture now reports a single scale, measured on the image that was
+  actually returned against the live viewport, alongside a `screenshotScale`
+  line carrying the image size, the viewport size and the factor. The rung is
+  kept for as long as the viewport and the size ceiling stay the same.
+
+- **A browser URL now gets the same answer from every tool that loads it.**
+  Opening an intranet host in a new tab with `browser_tabs new` was refused
+  while `browser_navigate` loaded that same host in the tab already open, so a
+  private-network site could only be worked on one tab at a time. The refusal
+  came from the main process, which resolves the hostname before it allows a
+  navigation; `browser_navigate` on the Chrome backend drives the page directly
+  and never passed through that check. Both halves of the policy now live in
+  one place and every entry point — navigate, `tabs new`, open and replay —
+  runs it. (#1367, #1359)
+
+- **A blocked URL says how to allow it.** The private-range block message now
+  names `WMUX_ALLOW_PRIVATE_NETWORK=1`, which opts the RFC1918 ranges (and the
+  IPv6 `fc00::/7` equivalent) in for people whose work is on an intranet. Cloud
+  metadata and link-local addresses stay blocked either way. (#1367, #1359)
+
+- **`browser_extract_data` maps each field to its own column again.** Every
+  requested field used to come back holding the whole row text, which made
+  table extraction useless — the workaround was `browser_extract_text` plus
+  parsing by hand. Header cells are now matched against the field description
+  as well as its name, in both directions, so a table whose column labels are
+  the site's own words still maps; div-based and ARIA (`role="grid"`) tables
+  are read as tables instead of falling through to the text fallback; and when
+  a header row exists but nothing matches, the fields map to columns in order
+  and the result says so. A field that genuinely cannot be resolved now comes
+  back `null` with a note pointing at a selector or `browser_extract_text`,
+  rather than silently repeating the row. The `goal` argument is also used as a
+  hint: when it matches a heading or caption, the table under it is preferred.
+  (#1368, #1353)
+
+- **A snapshot ref keeps working, and keeps its number, after the next
+  snapshot.** Taking a new snapshot used to invalidate every ref from the
+  previous one — even for an element that had not moved — and on the DOM
+  listing lanes the numbers shifted too: a nav link that was ref 2 became ref
+  14 once a dropdown opened above it, and clicking ref 2 came back as stale. An
+  element that is still on the page now keeps the number it had, new elements
+  take numbers after the previous maximum, and a ref from a snapshot or two ago
+  that still names exactly one element is resolved with a note saying so
+  (`note=ref 2 was from an earlier snapshot; resolved to the same element`).
+  When the element is genuinely gone, or when two look-alikes both match, the
+  stale error stands rather than a guess being clicked. (#1369, #1355)
+
+- **A `browser_snapshot` text query no longer reads the whole page first.**
+  `q` used to wait for Chrome to compute and marshal the entire accessibility
+  tree and only then keep the matching nodes, so a query on a large page —
+  35 000 nodes, the size a real app reaches with a dropdown open — cost about
+  11 seconds, of which the fetch alone was 9.9. A literal query now asks the
+  browser to find the text and reads only the matches and the ancestors above
+  them: the same snapshot, the same ref numbers, in 0.27 seconds on that page.
+  A `/regex/` query, a page with iframes, or a query that matches a role rather
+  than any text on screen still reads the full tree, so nothing that used to be
+  in the answer has gone missing. The tool description now says which of `q` and
+  `selector` to reach for. (#1370, #1356)
+
+- **A 404 in `browser_console` now names the resource that failed.** Chrome writes "Failed to load resource: the server responded with a status of 404 ()" and keeps the URL out of the message, so the failing request could not be identified. The line is now paired with the network buffer and the URL appended. (#1372)
+
+- **`browser_snapshot filter:"interactive"` no longer leaks text and image lines.** A kept control was returned with its whole subtree, so the icon and label inside a link came through the filter that exists to remove them. Nested controls are still listed. (#1374)
+
+- **The "page may be a skeleton screen" warning stops firing on finished pages.** It read element density alone, and that budget grows with the element count — so a large, fully rendered application screen with several screens' worth of text was still called "still loading" whenever one long-poll was open. (#1374)
+
+- **`browser_smart_snapshot` says why a repeat call returned the full listing.** On the packaged backend refs are numbered by walk position, so a diff would be noise and the tool never produced one — but it said nothing, while the description promised a diff. Both now name the backend that diffs. (#1374)
+
+- **`browser_open` no longer documents a default page it does not open.** The `url` parameter claimed it defaults to google.com; omitting it opens a blank page (the builtin browser panel shows its start page). (#1374)
+
+- **`browser_repl` says which step failed, and that the earlier ones ran.** An error mid-script read as if everything collected so far had been thrown away. The calls that succeeded were always in the result; now the result names the failing step and how many ran before it — or says the error came from the snippet rather than from any step. (#1375)
+
+- **`browser_select` names the workaround for a custom dropdown.** A `div`-based dropdown produced "Element is not a `<select>` element" or a bare "ref not found", both of which sent you back to re-snapshot a page that was fine. It now says the element is not a native `<select>` and spells out the click-the-trigger-then-the-option sequence. (#1375)
+
+- **Replay recording keeps 200 actions instead of 40.** One `browser_repl` call can drive a hundred steps, so a long session had lost its start before you knew the flow had worked. A 256 KiB ceiling bounds the ring alongside the count, and the `browser_replay` description states both — along with the 30-step limit on a single saved trace, which is why a long session is still saved in parts. (#1375)
+
+- **A newline key pressed right after typing Korean no longer lands in front of
+  the last syllable.** Typing `대한민국` and pressing Ctrl+Enter (or Shift+Enter,
+  or Ctrl+J) inserted the newline before `국`, because Korean has no candidate
+  window — the syllable you just typed is always still under composition, and the
+  newline byte overtook it on its way to the pane. The newline now waits for the
+  composition to be committed, so it lands where you pressed it. Typing with no
+  IME active is unchanged. (#1378, #1361)
+
+- Windows: a successful auto-update no longer reports "install-aborted" on the
+  next launch. The install marker now records the version it was written for,
+  so the newly installed app can tell a completed install from one the install
+  waiter has not finished cleaning up after (#1341).
+
+- **`browser_snapshot` with a `selector` no longer reads the whole page first.**
+  Scoping to an element fetched the entire accessibility tree and then indexed
+  one element out of it, so a scoped snapshot cost the same as a whole-page one:
+  3.3 s on a 35 000-node page for a ten-node answer. It now fetches just the
+  matched element's subtree — 291 ms on the same page — and returns exactly the
+  same lines and refs it did before. (#1380, #1371)
+
+- Escape works again in a Claude Code pane on Windows: it is sent as the plain
+  Escape byte instead of a win32-input-mode key record (#1373).
+
+- Shift+Enter inserts a newline instead of submitting in Claude Code panes on
+  Windows, including panes restored with the agent still running. ConPTY's own
+  startup sequence and replayed scrollback no longer make a pane look like it
+  negotiated win32-input-mode, and returning to a shell prompt clears the
+  tracked state immediately (#1363).
+
+- **`browser_navigate` no longer reports success for a surface that was never opened.** A call with no `surfaceId` could answer `Navigated to <url>` while nothing loaded: the surface it opened for itself never became addressable, and a failure that main *returned* rather than threw arrived as a successful result. Both are now reported — the caller gets `BROWSER_SURFACE_NOT_REGISTERED` (or the underlying error) instead of a navigation that never happened, and the dead surface is no longer left as that connection's default target. A surface that is merely slow to register is still waited for, not failed. (#1383)
+
+- **A WSL pane waiting for Retry no longer stays saved forever.** A pane whose
+  WSL recovery failed keeps its id, conversation binding and scrollback while
+  you can still get back to it, but if its surface or workspace was removed
+  without closing the pane, nothing ever promoted or closed the entry: it stayed
+  in `sessions.json` for good and every launch spent a cold WSL probe retrying a
+  pane you could not see. Such a pane is now discarded 30 days after it went
+  pending. Opening the pane again restarts those 30 days, so a pane you keep
+  coming back to is kept, and a pane restored from an older wmux starts its 30
+  days at the first launch after the upgrade (#1384).
+
+- **A remote pane opened with "Split right/down — remote" or "New remote pane"
+  now shows its agent.** The pane mints a session on the paired host, but the
+  desk never asked that host about it, so an agent running there was invisible
+  to the sidebar's agent list and reported `agents: []` by the `pane_list` MCP
+  tool no matter how long it had been working — the only way to see it was to
+  also attach the same workspace by hand from the sidebar. The pane now starts
+  the same per-host liveness poll the sidebar attach flow starts, without
+  adding a mirror row to the sidebar and without leaving anything behind when
+  the pane closes (#1329, #1322).
+
+- **A phone watching a terminal now sees when the agent is working.**
+  `agent.liveness` used to reach a device only after it had opened that pane's
+  turn view, which a daemon started without `--allow-transcript` refuses
+  outright — so a phone on the terminal screen got no activity signal for the
+  whole connection and had to guess from a 30-second poll, lagging the truth by
+  up to two and a half minutes. The same state now arrives on the per-pane
+  stream the terminal screen already has open, and stops when that screen
+  closes. The tool name stays off this channel, exactly as it stays off the
+  pane list. (#1386)
+
+- **Turning a phone preset off now returns a Chrome-backend page to its own
+  window.** With the Chrome browser backend, `browser_emulate` with
+  `device: null` left the page at the phone's size and dropped its pixel ratio
+  to 1 — a 1036x703 page at 125% scaling came back as 390x664 — because the
+  preset pinned a fixed viewport that could not be handed back to the window.
+  The preset now reaches the page only through the device-metrics override, so
+  the reset returns the window's own size and pixel ratio and says
+  `window size restored`. (#1387, #1357)
+
+- **An A2A nudge into a Codex CLI pane now actually submits.** The nudge was pasted into Codex's composer and left there: the agent never woke, and the sender was told it had. Codex classifies a fast run of input as a paste, and the Enter that submits the nudge was written 100 ms after it — a gap tuned for Claude Code — so Codex swallowed the Enter into the paste. Measured against codex-cli 0.154.0 in a real terminal: at 100 ms the pasted text had usually not even reached the composer before the Enter was sent, and the nudge was intermittently lost; at 500 ms it had landed first every time, and nothing was lost. Claude Code panes are unchanged. (#1389)
+
+- **`send_message` stops claiming a delivery it cannot see.** `notified: true` only ever meant "wmux found a pane and wrote to it" — the Enter goes out on a timer after the call has already returned, and nothing reports back. The result now also carries `delivery.submit`: `assured` only for a Claude Code pane that is not sitting on a question or approval dialog, and `unverified` for every other agent, for a pane whose agent could not be identified, and for a Claude pane at a dialog (where Enter answers the dialog instead of starting a turn). An unverified delivery says so and points the sender at `a2a_task_query` rather than leaving it waiting on a turn that may never start. (#1389)
+
+- **The same two fixes reach the other delivery paths.** `a2a_broadcast`, channel @-mention nudges, and company-mode messages all wrote with the same Claude-tuned gap, and all had the same failure into a Codex pane. The receiving pane's agent is now read at the moment of the write, so the timing — and the receipt — describe the pane that actually got the bytes rather than whichever agent the workspace happened to be labelled with. (#1389)
+
+- **A WSL pane that fails to start now says why, in your own language.** When
+  `wsl.exe` refused to open a pane, wmux stored its reply exactly as the bytes
+  arrived. `wsl.exe` writes UTF-16, so the message Retry showed you came out as
+  `L\0i\0n\0u\0x\0` — a NUL after every letter, with anything non-English
+  already destroyed. wmux now decodes that reply before saving it, so the saved
+  pane's error and the `SPAWN_FAILED` message read as the sentence `wsl.exe`
+  actually wrote. Output that was genuinely UTF-8 is untouched, and the
+  successful-start path, which carries its own NUL separators, is unaffected.
+  (#1394)
+
+- **A remote agent watched from a background window no longer shows minute-old status.** The per-host workspace poll ran on a renderer timer, and Chromium throttles those once the window is hidden or covered: the 10-second refresh was measured stretching to 17 seconds and then to a full minute, so the sidebar roster and `pane.list`'s agent list both reported whatever was true a minute ago. The cadence now comes from the main process, which is never throttled, and returning to the window refreshes immediately instead of waiting out the next tick — including after the other machine has been asleep long enough for wmux to have backed off from it, which previously meant up to five more minutes of stale rows even with the window in front of you. Nothing changed about what is polled or how often; a wmux with no remote workspaces attached still makes no periodic requests at all. (#1398)
+
+- **Claude Code started with `--permission-mode default` is detected again
+  (#1392).** The screen gate required the permission footer (`bypass
+  permissions on` / `shift+tab to cycle`), which default mode never draws, so
+  such a pane stayed unlabelled for its whole life — no agent in `pane_list`
+  or `a2a_discover`, and A2A treated it as a plain shell. The launch splash
+  (logo plus `Claude Code v…`) now counts as the missing signal.
+
+- **The daemon no longer reports `Claude Code / running` after the agent has
+  exited (#1392).** Its agent state cleared only on a process-tracker death
+  edge, which on Windows can never arrive; on panes with shell integration
+  (zsh, bash, PowerShell) it now clears the moment the prompt is back — the
+  same signal the desktop already uses — so `daemon.getAgentName`,
+  `/api/workspaces` and the renderer agree. A verified live agent process
+  still outranks the prompt marker.
+
+- **A paired phone can no longer stream or type into the orchestrator brain
+  pane (#1388).** `GET /api/stream` and `POST /api/input` resolved the pane
+  without the brain exclusion the session list and transcript routes already
+  apply, so a device that learned a brain pane id could read the orchestrator's
+  raw terminal. Byte routes now gate on credential class: a device gets the
+  same 404 as for a missing pane, while the operator token keeps streaming
+  every pane as before.
+
+- **The orchestrator's alerts and notifications stay off paired phones
+  (#1402).** A critical-command alert or a desktop notification raised inside
+  the orchestrator's own pane was broadcast to every connected device and kept
+  in the replayable event window, carrying the pane id along with text the pane
+  itself wrote (the matched command line, a notification title and body). Those
+  events are now withheld at the source, so neither the id nor the content
+  reaches a phone.
+
+- **WSL distro list order no longer depends on the machine's locale (#1395).**
+  The picker sorted distro names with a locale-following comparison, so on a
+  Korean-locale box Hangul names came before Latin ones and the same list
+  showed in a different order per machine. One fixed collation now applies
+  everywhere; `docker-desktop*` still sorts last.
 
 ## [3.56.0] — 2026-09-17
 

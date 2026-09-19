@@ -65,6 +65,15 @@ export interface ConnectionScope {
    */
   snapshotCache?: unknown;
   /**
+   * Truncated-snapshot captures a continuation cursor pages through (capture id
+   * → stored text), per connection for the same reason as snapshotCache: a
+   * cursor is an opaque handle, and a process-global map would let one agent's
+   * token address another agent's capture of another agent's page. Typed as
+   * unknown to avoid an import cycle (snapshotCache imports this module); it
+   * owns the cast.
+   */
+  snapshotCaptures?: unknown;
+  /**
    * Per-connection REPL session registry, for the same reason as `playwright`:
    * a REPL session is a live runtime holding the caller's variables and open
    * handles, so a process-global map would hand one agent another agent's

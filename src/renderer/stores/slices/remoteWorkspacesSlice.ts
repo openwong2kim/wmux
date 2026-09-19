@@ -127,7 +127,18 @@ function samePanes(a: RemotePaneSummary[], b: RemotePaneSummary[]): boolean {
     && pane.shell === b[i].shell
     && pane.cwd === b[i].cwd
     && pane.agentName === b[i].agentName
-    && pane.agentStatus === b[i].agentStatus);
+    && pane.agentStatus === b[i].agentStatus
+    // #1342 — the resume offer and BOTH of its liveness signals. This function
+    // decides whether a poll result is worth storing, so a field missing from
+    // it is a field that never updates after the first snapshot: the chip's
+    // "never type into a live agent" gate would answer from whatever the host
+    // happened to say the first time and never hear that the agent came back.
+    && pane.commandRunning === b[i].commandRunning
+    && pane.agentProcessAlive === b[i].agentProcessAlive
+    && pane.resume?.agent === b[i].resume?.agent
+    && pane.resume?.sessionId === b[i].resume?.sessionId
+    && pane.resume?.cwdMatches === b[i].resume?.cwdMatches
+    && pane.resume?.permissionMode === b[i].resume?.permissionMode);
 }
 
 export interface RemoteWorkspacesSlice {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectWorkspaceAgentStatus, selectAllWorkspaceAgentStatus } from '../fleet';
+import { selectWorkspaceAgentStatus, selectAllWorkspaceAgentStatus, selectFleetPanes } from '../fleet';
 import { selectWorkspaceAgentRoster } from '../workspaceAgentRoster';
 import type { StoreState } from '../../index';
 import type { Workspace, Pane, PaneLeaf, Surface, AgentStatus } from '../../../../shared/types';
@@ -53,6 +53,7 @@ interface StateOverrides {
   surfaceActivityAt?: Record<string, number>;
   paneLabel?: Record<string, string>;
   agentClockMs?: number;
+  remoteWorkspaces?: StoreState['remoteWorkspaces'];
 }
 
 function state(overrides: StateOverrides = {}): StoreState {
@@ -66,6 +67,7 @@ function state(overrides: StateOverrides = {}): StoreState {
     surfaceActivityAt: {},
     paneLabel: {},
     agentClockMs: NOW,
+    remoteWorkspaces: [],
     ...overrides,
   } as unknown as StoreState;
 }
@@ -222,5 +224,112 @@ describe('#1168 — workspace dot vs. roster', () => {
 
     expect(selectWorkspaceAgentRoster(s, 'ws-1').rows[0]?.status).toBe('idle');
     expect(selectWorkspaceAgentStatus(s, 'ws-1')).toBe('idle');
+  });
+});
+
+
+// ─── #1343 — a remote agent in the roster must also reach the fleet pass ─────
+//
+// The two derivations resolve remote sessions through the SAME helper
+// (`resolveRemoteAgent`), which is exactly what this pins: the roster showed
+// remote agents from #1163 while `selectFleetPanes` — the source for Fleet
+// View, the titlebar vitals chip and the deck roll-up — read PTY-keyed maps a
+// `ptyId: ''` surface can never appear in, so they silently disagreed.
+//
+// Asserted in the roster → fleet direction only, like the dot contract above.
+describe('#1343 — remote agents reach the fleet pass too', () => {
+  const remoteSurface = (sessionId: string): Surface => ({
+    id: `rs-${sessionId}`,
+    ptyId: '',
+    title: `rs-${sessionId}`,
+    shell: 'ssh',
+    cwd: '/remote',
+    surfaceType: 'remote-terminal',
+    remoteHostId: 'host-1',
+    remoteSessionId: sessionId,
+  });
+
+  const attachedHost = (status: AgentStatus) => [{
+    key: 'host-1:rw-1',
+    hostId: 'host-1',
+    hostLabel: 'office-mac',
+    workspaceId: 'rw-1',
+    name: 'proj',
+    panes: [{ sessionId: 'rsession-9', shell: 'zsh', agentName: 'Codex', agentStatus: status }],
+  }] as unknown as StoreState['remoteWorkspaces'];
+
+  function fleetRemoteRows(s: StoreState) {
+    return selectFleetPanes(s).filter((p) => p.remote);
+  }
+
+  it('every remote roster row has a matching fleet row, keyed and labelled the same', () => {
+    const s = state({
+      workspaces: [workspace('ws-1', leaf('p1', [remoteSurface('rsession-9')], 'rs-rsession-9'), 'p1')],
+      remoteWorkspaces: attachedHost('awaiting_input'),
+    });
+
+    const rosterRemote = selectWorkspaceAgentRoster(s, 'ws-1').rows.filter((r) => r.remote);
+    expect(rosterRemote).toHaveLength(1);
+
+    const fleetRemote = fleetRemoteRows(s);
+    expect(fleetRemote.map((p) => p.ptyId)).toEqual(rosterRemote.map((r) => r.ptyId));
+    expect(fleetRemote[0]).toMatchObject({
+      ptyId: 'remote:host-1:rsession-9',
+      agentName: 'Codex',
+      agentStatus: 'awaiting_input',
+      surfaceType: 'remote-terminal',
+      remote: { hostId: 'host-1', hostLabel: 'office-mac' },
+    });
+    // ...and the two agree on the status, not just on the row's existence.
+    expect(fleetRemote[0].agentStatus).toBe(rosterRemote[0].status);
+    // The dot above the roster has to carry it as well.
+    expectDotCoversRoster(s, 'ws-1');
+  });
+
+  it("a BACKGROUND remote tab's needs-you still reaches the fleet rollup", () => {
+    // The roster is per surface, this pass is per leaf. Without the rollup over
+    // remote tabs, a remote agent asking for the user from a background tab is
+    // in the sidebar and nowhere else — the very split #1343 closes, one tab
+    // deeper. Identity still follows the ACTIVE surface, as it does locally.
+    const s = state({
+      workspaces: [workspace(
+        'ws-1',
+        leaf('p1', [remoteSurface('rsession-9'), surface('s-fg', 'pty-fg')], 's-fg'),
+        'p1',
+      )],
+      surfaceAgent: { 'pty-fg': { name: 'Claude Code', status: 'idle' } },
+      remoteWorkspaces: attachedHost('awaiting_input'),
+    });
+
+    expect(selectWorkspaceAgentRoster(s, 'ws-1').rows.some((r) => r.remote && r.needsAttention)).toBe(true);
+    expect(selectFleetPanes(s)[0].agentStatus).toBe('awaiting_input');
+    expectDotCoversRoster(s, 'ws-1');
+  });
+
+  it('a stale host is absent from BOTH: a frozen status is not a live agent', () => {
+    const s = state({
+      workspaces: [workspace('ws-1', leaf('p1', [remoteSurface('rsession-9')], 'rs-rsession-9'), 'p1')],
+      remoteWorkspaces: (attachedHost('awaiting_input') ?? []).map(
+        (h) => ({ ...h, stale: true }),
+      ) as unknown as StoreState['remoteWorkspaces'],
+    });
+
+    expect(selectWorkspaceAgentRoster(s, 'ws-1').rows.filter((r) => r.remote)).toEqual([]);
+    expect(fleetRemoteRows(s)).toEqual([]);
+  });
+
+  it('a caller that withholds remoteWorkspaces sees no remote agent (DeckFleet)', () => {
+    // The deck's roster is COMMANDABLE and a remote pane is not drivable
+    // through the local input path, so it passes no mirror. The row must then
+    // derive exactly as it did before #1343: anonymous, idle, empty ptyId.
+    const s = state({
+      workspaces: [workspace('ws-1', leaf('p1', [remoteSurface('rsession-9')], 'rs-rsession-9'), 'p1')],
+      remoteWorkspaces: attachedHost('awaiting_input'),
+    });
+
+    const [row] = selectFleetPanes({ ...s, remoteWorkspaces: undefined });
+    expect(row).toMatchObject({ ptyId: '', agentStatus: 'idle', surfaceType: 'remote-terminal' });
+    expect(row.remote).toBeUndefined();
+    expect(row.agentName).toBeUndefined();
   });
 });

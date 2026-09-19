@@ -11,6 +11,7 @@
 import { mkdirSync, copyFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildSync } from 'esbuild';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const destDir = join(repoRoot, 'dist', 'cli-bundle');
@@ -52,3 +53,11 @@ for (const { src, dest: destBasename } of bridges) {
   copyFileSync(src, dest);
   console.log(`copy-bridge: ${src} -> ${dest}`);
 }
+
+// The WSL config guard uses the same TOML parser as wmux. Bundle it so the
+// packaged Windows runtime needs neither Linux Node nor a node_modules tree.
+buildSync({
+  entryPoints: [join(repoRoot, 'integrations/codex/bin/wmux-wsl-codex-config.mjs')],
+  outfile: join(destDir, 'wmux-wsl-codex-config.mjs'),
+  bundle: true, platform: 'node', format: 'esm',
+});

@@ -11,6 +11,7 @@ import type { NotificationCategory } from '../shared/types';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { DeadPaneRecovery } from '../shared/ptyRecovery';
 import type { AgentSlug } from '../shared/events';
+import type { BrowserHelpOutcome, BrowserHelpRequestInfo } from '../shared/browserHelp';
 import type {
   RemoteInboxItem,
   LanLinkStatus,
@@ -129,6 +130,13 @@ const electronAPI = {
     },
     dispose: (id: string) =>
       ipcRenderer.invoke(IPC.PTY_DISPOSE, id),
+    // #1305 — cancel a create this surface still has in flight. The id is what
+    // a create has not returned yet, so `dispose` cannot reach one; the surface
+    // is the handle the caller already has. Resolves false when there is
+    // nothing pending (it already spawned — dispose that id instead — or the
+    // pane is a daemon one, where the daemon holds its own pending guard).
+    cancelCreate: (surfaceId: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.PTY_CANCEL_CREATE, surfaceId),
     // `supervision` (X8) is additive and present only on supervised daemon-mode
     // sessions — the renderer uses it to hydrate its supervision slice on boot
     // and daemon-reconnect. Absent in local mode and for unsupervised panes.
@@ -156,10 +164,15 @@ const electronAPI = {
       // writable yet, RPC threw during a handler-swap window) from a permanent
       // one (session genuinely dead). The renderer retries transient failures
       // instead of immediately clearing the ptyId and replacing the session.
-      ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as Promise<{ success: boolean; id?: string; shell?: string; error?: string; code?: string; transient?: boolean; recoveryPending?: boolean; recovery?: DeadPaneRecovery }>,
+      // `cwdMissing` (#1305) rides the recoveryPending shape: the WSL directory
+      // itself is gone, so Retry cannot succeed until it is restored and the
+      // pane is offered a fresh start in the home directory instead.
+      ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as Promise<{ success: boolean; id?: string; shell?: string; error?: string; code?: string; transient?: boolean; recoveryPending?: boolean; cwdMissing?: boolean; recovery?: DeadPaneRecovery }>,
     // Fix B — on-demand promote of a cap-skipped suspended session.
-    promote: (id: string) =>
-      ipcRenderer.invoke(IPC.PTY_PROMOTE, id) as Promise<{ success: boolean; error?: string }>,
+    // #1305 — `fresh` promotes it in the home directory WITHOUT resuming the
+    // recorded conversation: the way out when its own directory is gone.
+    promote: (id: string, opts?: { fresh?: boolean }) =>
+      ipcRenderer.invoke(IPC.PTY_PROMOTE, id, opts) as Promise<{ success: boolean; error?: string; cwdMissing?: boolean }>,
     // Phase 3 PR-B — live-pipe re-flush. Unlike `reconnect` (opens a fresh
     // socket), this re-runs the flush on the EXISTING session socket, so input
     // never pauses. Three success shapes: a live re-flush ('snapshot'|'raw'), a
@@ -1332,6 +1345,35 @@ document.addEventListener('DOMContentLoaded', () => {
   },
 };
 
+// browser_request_help — main pushes an open help request over
+// BROWSER_HELP_OPEN, the renderer answers Done / Cancel over
+// BROWSER_HELP_RESOLVE, and BROWSER_HELP_CLOSED clears the row whatever settled
+// it (the human, the page condition, or main's deadline). Same three-channel
+// shape as permissionPrompt above, for the same reason: the payload is an
+// agent-authored string with a two-button answer, so it never touches the
+// RPC_COMMAND path.
+(electronAPI as Record<string, unknown>).browserHelp = {
+  onOpen: (callback: (info: BrowserHelpRequestInfo) => void) => {
+    const listener = (_event: unknown, info: BrowserHelpRequestInfo) => callback(info);
+    ipcRenderer.on(IPC.BROWSER_HELP_OPEN, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC.BROWSER_HELP_OPEN, listener);
+    };
+  },
+  resolve: (requestId: string, outcome: BrowserHelpOutcome) =>
+    ipcRenderer.invoke(IPC.BROWSER_HELP_RESOLVE, { requestId, outcome }) as Promise<{
+      ok: boolean;
+      error?: string;
+    }>,
+  onClosed: (callback: (payload: { requestId: string }) => void) => {
+    const listener = (_event: unknown, payload: { requestId: string }) => callback(payload);
+    ipcRenderer.on(IPC.BROWSER_HELP_CLOSED, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC.BROWSER_HELP_CLOSED, listener);
+    };
+  },
+};
+
 // LanLink PR-2 — dedicated channel for materialized read-only REMOTE inbox
 // items. Mirrors the permissionPrompt bridge: main pushes over IPC.LANLINK_REMOTE
 // and the renderer's useRemoteInboxBridge projects into the remoteInbox slice.
@@ -1467,6 +1509,28 @@ document.addEventListener('DOMContentLoaded', () => {
     const listener = (_event: unknown, payload: { attachId: string; message: string }) => callback(payload);
     ipcRenderer.on(IPC.REMOTE_PANE_ERROR, listener);
     return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_ERROR, listener); };
+  },
+  // #1391 — ask main for the liveness-poll cadence. Main's timers are not
+  // throttled when the window is backgrounded; a renderer `setInterval` is, and
+  // that is what made remote agent status go a minute stale.
+  //
+  // RESOLVES to the unsubscribe, and REJECTS if the subscribe did not land (no
+  // handler registered — main disposed, or a main bundle reloaded under a live
+  // window). Swallowing that would leave the caller believing it is subscribed
+  // and polling nothing at all, which is worse than the throttle this replaces;
+  // the caller arms its own interval instead. The tick carries no payload.
+  pollSubscribe: async () => {
+    await ipcRenderer.invoke(IPC.REMOTE_POLL_SUBSCRIBE);
+    return () => {
+      // A failed unsubscribe means main already forgot us (disposed, or the
+      // WebContents teardown path got there first) — the desired state either way.
+      void ipcRenderer.invoke(IPC.REMOTE_POLL_UNSUBSCRIBE).catch(() => undefined);
+    };
+  },
+  onPollTick: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on(IPC.REMOTE_POLL_TICK, listener);
+    return () => { ipcRenderer.removeListener(IPC.REMOTE_POLL_TICK, listener); };
   },
 };
 

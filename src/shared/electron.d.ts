@@ -18,6 +18,7 @@ import type {
   WebStartArgs,
   WebTerminalInfo,
 } from './web';
+import type { BrowserHelpOutcome, BrowserHelpRequestInfo } from './browserHelp';
 import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteHostPublic, RemoteWorkspaceSummary } from './remoteHosts';
 import type {
   FirstRunCheckResult,
@@ -89,6 +90,22 @@ declare global {
         onClosed: (
           callback: (payload: { promptId: string }) => void,
         ) => () => void;
+      };
+      /**
+       * browser_request_help — the agent hands one browser step (login,
+       * CAPTCHA, OTP, payment confirmation) to the operator. `onOpen` pushes the
+       * request, `resolve` carries the operator's Done / Cancel, and `onClosed`
+       * clears the row whatever settled it — the human, the page condition, or
+       * main's deadline. Optional because an older preload bundle has no such
+       * member; every caller treats its absence as "no help UI".
+       */
+      browserHelp?: {
+        onOpen: (callback: (info: BrowserHelpRequestInfo) => void) => () => void;
+        resolve: (
+          requestId: string,
+          outcome: BrowserHelpOutcome,
+        ) => Promise<{ ok: boolean; error?: string }>;
+        onClosed: (callback: (payload: { requestId: string }) => void) => () => void;
       };
       /**
        * LanLink PR-2 — subscribe to materialized read-only REMOTE inbox items
@@ -276,6 +293,19 @@ declare global {
         /** Fires once reconnection gives up after too many consecutive
          *  failures — the stream is dead until a fresh attach. */
         onPaneError: (callback: (e: { attachId: string; message: string }) => void) => () => void;
+        /**
+         * #1391 — ask MAIN to drive the `/api/workspaces` liveness cadence.
+         *
+         * RESOLVES to the unsubscribe; REJECTS when the subscribe did not land
+         * (no handler registered). Optional on top of that, because a renderer
+         * running against an older preload bundle has no such member at all.
+         * Both failures mean the same thing to the caller: drive the poll from
+         * its own (throttled) interval rather than stop polling altogether.
+         */
+        pollSubscribe?: () => Promise<() => void>;
+        /** Fires once per main-side poll round. No payload: it means only
+         *  "poll now" — every bit of polling policy stays in the renderer. */
+        onPollTick?: (callback: () => void) => () => void;
       };
     };
     clipboardAPI: {

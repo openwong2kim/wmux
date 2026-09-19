@@ -26,6 +26,16 @@ import type { PluginIdentityRecord } from '../../shared/rpc';
 import type { PluginTrustStore } from './PluginTrustStore';
 
 /**
+ * What a prompt is ASKING FOR, so one dialog can render two questions.
+ *
+ * 'plugin' is the original: a plugin declaring capabilities, persisted to the
+ * trust DB on resolve. 'browser-borrow' asks the human to lend an agent one live
+ * Chrome tab; it grants nothing durable, so it is deliberately NOT persisted —
+ * consent for one tab in one session is not a standing decision about a client.
+ */
+export type ApprovalPromptKind = 'plugin' | 'browser-borrow';
+
+/**
  * Information about a pending prompt that gets shipped to the renderer to
  * drive the dialog. Plain JSON-serialisable so it can ride over IPC.
  */
@@ -34,6 +44,20 @@ export interface ApprovalPromptInfo {
   clientName: string;
   declaredCapabilities: string[];
   rationale?: string;
+  /** Absent means 'plugin' — every pre-existing prompt reads unchanged. */
+  kind?: ApprovalPromptKind;
+  /**
+   * The headline, when the generic "Plugin requesting permissions" one would be
+   * wrong. The dialog falls back to its own title when this is absent, so a
+   * renderer that predates the field still renders a usable prompt.
+   */
+  title?: string;
+  /**
+   * When this prompt auto-denies. The Fleet inbox already reads this field
+   * structurally and shows a countdown the moment it is present, which is why
+   * the deadline travels with the info rather than living only in the caller.
+   */
+  deadlineAt?: number;
 }
 
 /** Callback the queue invokes when a fresh prompt should appear on screen. */
@@ -67,6 +91,8 @@ interface PendingPrompt {
   clientName: string;
   declaredCapabilities: string[];
   rationale: string | undefined;
+  /** false = resolving this prompt must NOT touch the plugin trust DB. */
+  persist: boolean;
   /** All waiters coalesced onto this prompt — each gets the same outcome. */
   resolvers: ((r: ApprovalResult) => void)[];
   rejecters: ((err: Error) => void)[];
@@ -161,6 +187,7 @@ export class ApprovalQueue {
       clientName: input.clientName,
       declaredCapabilities: [...input.declaredCapabilities],
       rationale: input.rationale,
+      persist: true,
       resolvers: [],
       rejecters: [],
     };
@@ -189,6 +216,69 @@ export class ApprovalQueue {
   }
 
   /**
+   * Ask the human a one-off question that grants nothing durable.
+   *
+   * Same queue, same dialog, same Fleet inbox row — and deliberately NOT the
+   * same persistence: a consent prompt resolves its waiters and writes nothing,
+   * because what it is asking about (lend this agent that tab) is not a standing
+   * fact about a client the way a capability grant is. Writing one through
+   * setUserDecision would mark the CLIENT trusted or denied on the strength of a
+   * question about a browser tab.
+   *
+   * Dedupe is the caller's to choose, because only it knows what "the same
+   * question" means: the borrow flow keys on workspace + tab, so two agents
+   * asking about two different tabs get two prompts.
+   */
+  requestConsent(input: {
+    kind: Exclude<ApprovalPromptKind, 'plugin'>;
+    dedupeKey: string;
+    clientName: string;
+    title: string;
+    deadlineAt?: number;
+  }): ApprovalHandle {
+    const key = `${input.kind}::${input.dedupeKey}`;
+    const existing = this.inflight.get(key);
+    if (existing) {
+      const resolution = new Promise<ApprovalResult>((resolve, reject) => {
+        existing.resolvers.push(resolve);
+        existing.rejecters.push(reject);
+      });
+      return { promptId: existing.promptId, resolution };
+    }
+    const promptId = this.mintPromptId();
+    const pending: PendingPrompt = {
+      promptId,
+      clientName: input.clientName,
+      // No capabilities: the question is the title, and the dialog's capability
+      // groups render nothing for an empty list.
+      declaredCapabilities: [],
+      rationale: undefined,
+      persist: false,
+      resolvers: [],
+      rejecters: [],
+    };
+    this.inflight.set(key, pending);
+    this.byPromptId.set(promptId, key);
+    const resolution = new Promise<ApprovalResult>((resolve, reject) => {
+      pending.resolvers.push(resolve);
+      pending.rejecters.push(reject);
+    });
+    try {
+      this.openPrompt({
+        promptId,
+        clientName: input.clientName,
+        declaredCapabilities: [],
+        kind: input.kind,
+        title: input.title,
+        ...(input.deadlineAt !== undefined && { deadlineAt: input.deadlineAt }),
+      });
+    } catch {
+      /* swallow — best-effort renderer notification, same as requestApproval */
+    }
+    return { promptId, resolution };
+  }
+
+  /**
    * Resolve a prompt with the user's decision. Persists the decision to
    * the trust DB, then fans out the resolution to every coalesced caller.
    * Idempotent — a duplicate resolve (e.g. user clicks twice, or renderer
@@ -206,16 +296,21 @@ export class ApprovalQueue {
     try { this.closePrompt?.(promptId); } catch { /* best-effort renderer notification */ }
 
     let identity: PluginIdentityRecord | undefined;
-    try {
-      identity = await this.trustStore.setUserDecision(
-        pending.clientName,
-        approved ? 'trusted' : 'denied',
-        approved ? pending.declaredCapabilities : undefined,
-      );
-    } catch {
-      // Trust-DB write failed — still resolve the waiters so they don't
-      // hang. The next RPC from this plugin will re-trigger the enforcer
-      // (which will check the in-disk state — which didn't change).
+    // A consent prompt (see requestConsent) carries no client decision, so there
+    // is nothing to write — and writing one would mark the CLIENT trusted or
+    // denied on the strength of a question about one browser tab.
+    if (pending.persist) {
+      try {
+        identity = await this.trustStore.setUserDecision(
+          pending.clientName,
+          approved ? 'trusted' : 'denied',
+          approved ? pending.declaredCapabilities : undefined,
+        );
+      } catch {
+        // Trust-DB write failed — still resolve the waiters so they don't
+        // hang. The next RPC from this plugin will re-trigger the enforcer
+        // (which will check the in-disk state — which didn't change).
+      }
     }
     const result: ApprovalResult = {
       approved,

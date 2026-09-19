@@ -181,6 +181,8 @@ export const it = {
   'settings.sidebarPositionDesc': 'Sinistra o destra dell\'area del terminale',
   'settings.sidebarAttentionFirst': 'Righe che ti attendono in cima',
   'settings.sidebarAttentionFirstDesc': 'Fissa in cima alla barra laterale gli spazi di lavoro il cui agente sta aspettando te. Disattivato per impostazione predefinita: le righe restano dove le hai trascinate. Mentre è attivo, il riordino tramite trascinamento è sospeso.',
+  'settings.sidebarShowPaneCoordinates': 'Mostra coordinate dei riquadri',
+  'settings.sidebarShowPaneCoordinatesDesc': "Mostra nell'elenco degli agenti la coordinata generata automaticamente, in stile w1-2, per i riquadri a cui non hai dato un nome. Attivo per impostazione predefinita. Un riquadro rinominato mostra sempre la sua etichetta in ogni caso.",
   'settings.sidebarLeft': 'Sinistra',
   'settings.sidebarRight': 'Destra',
   'settings.updateReady': 'Aggiornamento pronto',
