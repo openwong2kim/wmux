@@ -924,6 +924,82 @@ describe('HookIngest', () => {
       }
     });
   });
+
+  describe('#1397 — the orchestrator brain pane produces no approval record', () => {
+    // The brain's TUI is a live daemon session like any other, and every
+    // device-facing surface already refuses it. The approvals pipeline did not:
+    // a brain record was merely unlikely, because `ClaudePtyBrainAdapter` spawns
+    // the brain with `WMUX_HOOKS_TO_MAIN=1` and these hooks are therefore not
+    // armed for it. That is a property of one adapter's spawn profile, not a
+    // gate — so these drive the hooks AS IF they were armed, which is the case
+    // that has to hold.
+    function ingestFor(sessions: HookIngestSession[]) {
+      const base = makeDeps(sessions);
+      const awaitingInput: string[] = [];
+      const gates: string[] = [];
+      const ingestWithGate = new HookIngest({
+        ...base.deps,
+        gateConfig: () => ({ gatedTools: ['Bash'] }),
+        approvals: {
+          ...base.deps.approvals,
+          noteHookAwaitingInput: (input) => { awaitingInput.push(input.sessionId); },
+          noteGateAwaiting: (input) => { gates.push(input.sessionId); return 'gate-id'; },
+        },
+      });
+      return { ingestWithGate, awaitingInput, gates, emitted: base.emitted };
+    }
+
+    // Both marks, because either one alone can be the only one present: the env
+    // marker travels with the session record, the id prefix is what a listing
+    // without env still carries.
+    const brains: Array<[string, HookIngestSession]> = [
+      ['env marker', session({ id: 'pty-brain', env: { WMUX_WORKSPACE_ID: 'ws-1', WMUX_BRAIN_PTY: '1' } })],
+      ['id prefix', session({ id: 'brain-abc' })],
+    ];
+
+    it.each(brains)('opens no permission gate for a brain pane (%s)', (_label, brain) => {
+      const { ingestWithGate, gates, emitted } = ingestFor([brain]);
+
+      const result = ingestWithGate.handlePermissionGate(makeSignal({
+        kind: 'agent.awaiting_permission',
+        ptyId: brain.id,
+        payload: { tool_name: 'Bash' },
+      }));
+
+      // Refused as NOT GATED, exactly like a bypassPermissions session: the
+      // tool is allowed and the agent keeps its own local prompt, which is what
+      // happens today. A refusal that returned a gateId would block the brain
+      // on a card nobody can answer.
+      expect(result.ok).toBe(true);
+      expect(result.gateId).toBeUndefined();
+      expect(gates).toEqual([]);
+      expect(emitted.at(-1)?.data.hookKind).toBe('agent.tool_started');
+    });
+
+    it.each(brains)('raises no awaiting_input card for a brain pane (%s)', (_label, brain) => {
+      const { ingestWithGate, awaitingInput } = ingestFor([brain]);
+
+      ingestWithGate.handle(makeSignal({ kind: 'agent.awaiting_input', ptyId: brain.id }));
+
+      expect(awaitingInput).toEqual([]);
+    });
+
+    it('still records both for a worker pane', () => {
+      const worker = session({ id: 'pty-a' });
+      const { ingestWithGate, gates, awaitingInput } = ingestFor([worker]);
+
+      const gated = ingestWithGate.handlePermissionGate(makeSignal({
+        kind: 'agent.awaiting_permission',
+        ptyId: 'pty-a',
+        payload: { tool_name: 'Bash' },
+      }));
+      ingestWithGate.handle(makeSignal({ kind: 'agent.awaiting_input', ptyId: 'pty-a' }));
+
+      expect(gated.gateId).toBe('gate-id');
+      expect(gates).toEqual(['pty-a']);
+      expect(awaitingInput).toEqual(['pty-a']);
+    });
+  });
 });
 
 describe('resolveSessionIdForSignal', () => {
