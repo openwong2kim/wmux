@@ -49,11 +49,26 @@ describe('pty.handler PTY_PROMOTE — renderer→daemon hop', () => {
 
   it('forwards to daemon.promoteSession and normalizes the reply the renderer reads', () => {
     const region = promoteRegion();
-    expect(region).toMatch(/daemonClient\.rpc\('daemon\.promoteSession', \{ id \}, \{ timeoutMs: WSL_RPC_TIMEOUT_MS \}\)/);
+    expect(region).toMatch(/daemonClient\.rpc\('daemon\.promoteSession', \{ id, \.\.\.\(fresh \? \{ fresh: true \} : \{\}\) \}, \{ timeoutMs: WSL_RPC_TIMEOUT_MS \}\)/);
     expect(region).toMatch(/if \(res\.ok\) return \{ success: true \}/);
     // A failure must carry a message, or reconcile logs `undefined` and the
     // operator cannot tell a cap hit from a spawn crash.
     expect(region).toMatch(/success: false, error: res\.error\?\.message \?\? 'promote failed'/);
+  });
+
+  // #1305 — the start-fresh action. `fresh` only ever travels when the user
+  // pressed it (never a default), and the renderer decides whether to OFFER it
+  // from the daemon's error code, never by reading the distro's message.
+  it('sends the fresh flag only when asked, and normalizes CWD_MISSING for the renderer', () => {
+    const region = promoteRegion();
+    expect(region).toMatch(/const fresh = opts\?\.fresh === true;/);
+    expect(region).toMatch(/cwdMissing: res\.error\?\.code === 'CWD_MISSING'/);
+  });
+
+  it('carries the same code out of the reconnect path, where the banner is actually raised', () => {
+    const start = source.indexOf("ipcMain.handle(IPC.PTY_RECONNECT");
+    const region = source.slice(start, start + 2500);
+    expect(region).toMatch(/recoveryPending: true[\s\S]*?cwdMissing: result\.error\?\.code === 'CWD_MISSING'/);
   });
 
   it('removes the handler on cleanup so a daemon reconnect cannot double-register', () => {
@@ -119,7 +134,31 @@ describe('daemon.promoteSession — guards', () => {
   });
 
   it('reports a spawn failure as a structured error instead of throwing at the pipe', () => {
-    expect(promoteRegion()).toMatch(/code: 'SPAWN_FAILED'/);
+    expect(promoteRegion()).toMatch(/return \{ ok: false, error: \{ code: [^\n]*'SPAWN_FAILED', message: msg \} \}/);
+  });
+
+  // #1305 — a missing directory is the one failure a Retry cannot clear, and
+  // the renderer offers the start-fresh action on this code alone. Classified
+  // from the probe's own marker (see shared/wsl.ts), never from the message.
+  it('separates a missing working directory from every other spawn failure', () => {
+    expect(promoteRegion()).toMatch(/code: isWslCwdMissingError\(err\) \? 'CWD_MISSING' : 'SPAWN_FAILED'/);
+  });
+
+  it('a fresh start drops the directory AND the resume, and never happens by default', () => {
+    const region = promoteRegion();
+    // Explicit: nothing infers it from a failure.
+    expect(region).toMatch(/const startFresh = params\['fresh'\] === true;/);
+    // Home instead of the missing directory — '~' for WSL, because only the
+    // distribution knows where its home is.
+    expect(region).toMatch(/startFresh\s*\?\s*\(isWslShell\(session\.cmd\) \? '~' : os\.homedir\(\)\)/);
+    // The original command, not a --resume of a conversation that lived in the
+    // directory that is gone; and the old spawn dir must not be carried into
+    // the next recovery.
+    expect(region).toMatch(/execLaunchCommand: startFresh \? undefined :/);
+    expect(region).toMatch(/spawnCwd: startFresh \? undefined : session\.spawnCwd/);
+    // The binding is dropped too: the cwd guard below it already refuses one,
+    // but the meta assignment did not.
+    expect(region).toMatch(/if \(!startFresh\) \{/);
   });
 
   it('starts process monitoring for the promoted session', () => {
@@ -135,8 +174,9 @@ describe('daemon.promoteSession — guards', () => {
     expect(createAt).toBeGreaterThanOrEqual(0);
     expect(armAt).toBeGreaterThan(createAt);
     expect(saveAt).toBeGreaterThan(armAt);
-    // Exec units replay `--resume <id>` like boot recovery does.
-    expect(region).toMatch(/execLaunchCommand: resumeLaunchCommand\(session, /);
+    // Exec units replay `--resume <id>` like boot recovery does (unless the
+    // user explicitly asked for a fresh start — #1305).
+    expect(region).toMatch(/execLaunchCommand: startFresh \? undefined : resumeLaunchCommand\(session, /);
     // The resume binding is exposed off-WSL too, gated on a live transcript.
     expect(region).toMatch(/isWslShell\(session\.cmd\) \|\| bindingTranscriptLives\(session\.resumeBinding\)/);
     // None of the above is fenced behind a WSL-only branch.
@@ -157,7 +197,7 @@ describe('daemon.promoteSession — guards', () => {
     // Before the attempt: a promote that fails on a path with no save must
     // still have recorded that the user asked for this pane.
     expect(rpcRegion.indexOf('touchPendingRecovery(id)'))
-      .toBeLessThan(rpcRegion.indexOf('promoteOnce(id)'));
+      .toBeLessThan(rpcRegion.indexOf('promoteOnce(id,'));
 
     // The attach path is the other client-initiated entry point.
     const attachAt = source.indexOf("pipeServer.onRpc('daemon.attachSession'");

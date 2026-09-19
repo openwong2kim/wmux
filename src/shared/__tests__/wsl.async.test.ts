@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 const { exec } = vi.hoisted(() => ({ exec: vi.fn() }));
 vi.mock('node:child_process', () => ({ execFile: exec }));
-import { resolveWslCwd, WSL_PROBE_TIMEOUT_MS } from '../wsl';
+import { resolveWslCwd, WSL_CWD_MISSING_MARKER, WSL_CWD_PROBE, WSL_PROBE_TIMEOUT_MS, isWslCwdMissingError } from '../wsl';
 
 type Callback = (error: Error | null, stdout: string | Buffer, stderr: string | Buffer) => void;
 /**
@@ -45,6 +45,57 @@ describe('asynchronous WSL probes', () => {
     const retry = resolveWslCwd('wsl.exe', '/missing');
     expect(exec).toHaveBeenCalledTimes(3);
     finish(2, '/missing'); await retry;
+  });
+});
+
+// #1305 — a directory that is gone is not "check the distro and retry": every
+// retry fails identically until it comes back, so the caller is told which
+// failure this is and can offer starting fresh in the home directory instead.
+describe('a missing working directory', () => {
+  it('is what the probe itself reports, not something read out of cd\'s wording', () => {
+    // The marker is printed by the probe before `cd` ever runs, so the
+    // classification does not depend on the shell's (localized) message.
+    expect(WSL_CWD_PROBE).toContain(`printf '${WSL_CWD_MISSING_MARKER}: %s`);
+    expect(WSL_CWD_PROBE.indexOf(WSL_CWD_MISSING_MARKER)).toBeLessThan(WSL_CWD_PROBE.indexOf('cd -- '));
+  });
+
+  it('is flagged and named, with no "check the distro" advice that cannot help', async () => {
+    const failed = resolveWslCwd('wsl.exe', '/home/dev/gone', { distribution: 'Ubuntu', user: 'dev' });
+    const caught = failed.catch((error: unknown) => error);
+    respond(0, Buffer.alloc(0), Buffer.from(`${WSL_CWD_MISSING_MARKER}: /home/dev/gone\n`, 'utf8'), new Error('Command failed'));
+
+    const error = await caught;
+    expect(isWslCwdMissingError(error)).toBe(true);
+    expect((error as Error).message).toContain('/home/dev/gone');
+    expect((error as Error).message).toContain('no longer exists in Ubuntu');
+    expect((error as Error).message).toContain('start fresh in your home directory');
+    expect((error as Error).message).not.toContain('Check the distro');
+    // The marker is plumbing; it must not be shown to anyone.
+    expect((error as Error).message).not.toContain(WSL_CWD_MISSING_MARKER);
+  });
+
+  // #1305 — the start-fresh promote asks for '~' and lets the distribution
+  // resolve it, because only it knows where home is. Pinned here so a later
+  // tightening of the path predicate cannot quietly remove the one action a
+  // pane with a missing directory has.
+  it("accepts '~' as the directory, which is what starting fresh asks for", async () => {
+    const resolved = resolveWslCwd('wsl.exe', '~', { distribution: 'Ubuntu', user: 'dev' });
+    finish(0, '/home/dev');
+    // The target is the distribution's OWN answer, not the one asked for.
+    expect(await resolved).toEqual({ cwd: '/home/dev', target: { distribution: 'Ubuntu', user: 'user' } });
+    // The probe is handed '~' verbatim: expanding it on the Windows side would
+    // name the Windows home.
+    expect(exec.mock.calls[0][1]).toContain('~');
+  });
+
+  it('leaves every other failure as the retryable kind it was', async () => {
+    const failed = resolveWslCwd('wsl.exe', '/home/dev/project', { distribution: 'Ubuntu', user: 'dev' });
+    const caught = failed.catch((error: unknown) => error);
+    respond(0, Buffer.alloc(0), Buffer.from('The Windows Subsystem for Linux is not running', 'utf8'), new Error('Command failed'));
+
+    const error = await caught;
+    expect(isWslCwdMissingError(error)).toBe(false);
+    expect((error as Error).message).toContain('Check the distro and directory, then retry');
   });
 });
 

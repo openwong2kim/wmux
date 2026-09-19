@@ -12,19 +12,65 @@ exec "$WMUX_WSL_NODE" "$WMUX_WSL_BRIDGE" "$@"
 `;
 
 export const WSL_CLAUDE_SHIM = `#!/bin/sh
-# Remove this shim directory from PATH, including repeated/nested injections.
-old_ifs=$IFS
-IFS=:
-clean=
-for entry in $PATH; do
-  [ "$entry" = "$WMUX_WSL_BIN" ] && continue
-  clean="\${clean:+$clean:}$entry"
-done
-IFS=$old_ifs
-real=$(PATH="$clean" command -v claude) || {
+# Remove this shim directory from a PATH, including repeated/nested injections.
+strip_shim() {
+  old_ifs=$IFS
+  IFS=:
+  clean=
+  for entry in $1; do
+    [ "$entry" = "$WMUX_WSL_BIN" ] && continue
+    clean="\${clean:+$clean:}$entry"
+  done
+  IFS=$old_ifs
+}
+strip_shim "$PATH"
+real=$(PATH="$clean" command -v claude)
+if [ -z "$real" ]; then
+  # #1305 — an EXEC pane runs bash with --noprofile --norc, deliberately: its
+  # stream carries the agent's output and nothing else, so no startup file may
+  # print into it. The side effect is that a claude whose PATH comes from
+  # ~/.bashrc — what every nvm install does — is simply not there, and this
+  # shim answered 127 for a claude that is installed and works in every
+  # interactive pane.
+  #
+  # So ask an interactive shell what its PATH is, once, and only after the
+  # ordinary lookup has already failed: the same file the interactive pane
+  # sources, read here without its output reaching anyone. Startup chatter
+  # cannot be mistaken for the answer — the marker line is the only thing read,
+  # its leading newline starts it even after an unterminated banner, and the
+  # LAST match wins so a .bashrc that echoes the marker itself cannot win over
+  # the real one. stdin is closed so a prompt in a startup file cannot hang the
+  # pane.
+  #
+  # BOUNDED. Closing stdin stops a startup file that READS from the terminal,
+  # but not one that waits on something else — a network call, a lock, a sleep —
+  # and an unbounded substitution here would hang the exec pane instead of
+  # reaching the honest 127 below (review: CodeRabbit). A timeout leaves
+  # login_path empty, which is exactly the not-found path.
+  #
+  # -k, because the plain TERM is not a bound here: an INTERACTIVE bash ignores
+  # SIGTERM. Measured — it aborts whatever the startup file is waiting on and
+  # carries on to the end, which happens to answer, but a startup file that
+  # blocks again would keep the pane hanging on a timeout that already fired.
+  # The follow-up KILL cannot be ignored, so the lookup ends either way.
+  # \`timeout\` is coreutils and present on every distro wmux supports; where it
+  # somehow is not, the lookup still runs, because an unbounded best effort
+  # beats telling the user their installed claude does not exist.
+  wmux_bash=/bin/bash
+  command -v timeout >/dev/null 2>&1 && wmux_bash="timeout -k 1 10 /bin/bash"
+  # Unquoted on purpose: wmux_bash is a command plus its arguments.
+  # shellcheck disable=SC2086
+  login_path=$($wmux_bash -ic 'printf "\\nWMUX_RESOLVED_PATH=%s\\n" "$PATH"' </dev/null 2>/dev/null \
+    | sed -n 's/^WMUX_RESOLVED_PATH=//p' | tail -n 1)
+  if [ -n "$login_path" ]; then
+    strip_shim "$login_path"
+    real=$(PATH="$clean" command -v claude)
+  fi
+fi
+if [ -z "$real" ]; then
   printf '%s\\n' 'wmux: claude is not installed in this WSL distribution' >&2
   exit 127
-}
+fi
 # Retain the pane PATH for subprocesses; only command lookup excludes the shim.
 exec "$real" --settings "$WMUX_WSL_SETTINGS" "$@"
 `;

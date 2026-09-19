@@ -908,6 +908,45 @@ describe('WebTerminalServer', () => {
     expect(body).not.toContain('brain-ws-9');
   });
 
+  it('★ #1397 withholds the brain pane\'s approval events from the fan-out and the replay log', async () => {
+    // The same producer-side gate as #1402 above, on the other producer. An
+    // `approval` event carries the pane id AND the gate's tool name and input
+    // summary, so a brain record here would hand a device the orchestrator's
+    // tool input plus the very id the per-pane routes (#1388) refuse.
+    live.push({
+      id: 'pty-orchestrator', cwd: '/x', cols: 80, rows: 24, state: 'detached',
+      agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+      env: { WMUX_BRAIN_PTY: '1' }, cmd: '/usr/bin/claude',
+    });
+    const info = await startRO();
+    const token = info.token as string;
+
+    // Injected at the registry's own event edge, not produced through the hook
+    // path: whether the brain can raise a record today is a property of how
+    // `ClaudePtyBrainAdapter` spawns it, which is exactly what this gate is
+    // here not to depend on.
+    emitApproval('create', mkApproval({
+      id: 'ap-brain',
+      sessionId: 'pty-orchestrator',
+      kind: 'awaiting_permission',
+      toolName: 'Bash',
+      toolInputSummary: 'rm -rf orchestrator-secrets',
+    }));
+    // A pane the manager no longer knows still gets through — a closed pane's
+    // in-flight approval is not a brain pane.
+    emitApproval('create', mkApproval({ id: 'ap-gone', sessionId: 'gone-worker' }));
+    emitApproval('create', mkApproval({ id: 'ap-worker', sessionId: 's1' }));
+
+    const backlog = await fetch(`${base()}/api/events`, { headers: bearer(token) });
+    expect(backlog.status).toBe(200);
+    const body = await backlog.text();
+    expect(body).toContain('ap-worker');
+    expect(body).toContain('ap-gone');
+    expect(body).not.toContain('ap-brain');
+    expect(body).not.toContain('pty-orchestrator');
+    expect(body).not.toContain('orchestrator-secrets');
+  });
+
   it('tees session:critical and session:notification to every SSE client', async () => {
     const info = await startRO();
     const token = info.token as string;
@@ -4668,6 +4707,64 @@ describe('WebTerminalServer', () => {
         ac.abort();
       }
     });
+
+    it('★ #1397 a paired device can neither list nor answer a brain pane approval; the operator still can', async () => {
+      live.push({
+        id: 'brain-abc', cwd: '/b', cols: 80, rows: 24, state: 'attached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: { WMUX_BRAIN_PTY: '1' }, cmd: '/usr/local/bin/claude',
+      });
+      // Seeded straight into the registry rather than driven through the hook
+      // path: the producer refuses to create one of these (HookIngest), and
+      // this asserts the route refuses to serve one anyway — the reachability
+      // of the producer is the assumption #1397 is about.
+      approvalRecords.push(mkApproval({
+        id: 'ap-brain',
+        sessionId: 'brain-abc',
+        question: 'ship the orchestrator secret?',
+      }));
+      approvalRecords.push(mkApproval({ id: 'ap-worker', sessionId: 's1' }));
+
+      const info = await startRO();
+      const paired = await fetch(`${base()}/api/pair?code=${info.pairCode as string}`);
+      expect(paired.status).toBe(200);
+      const deviceToken = ((await paired.json()) as { token: string }).token;
+      const asDevice = { Authorization: `Bearer ${deviceToken}` };
+
+      // Listed: the worker's approval only, and nothing that names the brain.
+      const listed = await fetch(`${base()}/api/approvals`, { headers: asDevice });
+      expect(listed.status).toBe(200);
+      const text = await listed.text();
+      expect(text).toContain('ap-worker');
+      expect(text).not.toContain('ap-brain');
+      expect(text).not.toContain('brain-abc');
+      expect(text).not.toContain('orchestrator secret');
+
+      // Answerable: not with the id in hand either. Same 404 as an unknown id,
+      // and the registry is never asked to resolve it.
+      const answered = await postApproval(deviceToken, 'ap-brain', { decision: 'approve' });
+      expect(answered.status).toBe(404);
+      expect(resolveCalls).toEqual([]);
+
+      // The device's own panes are unaffected.
+      const worker = await postApproval(deviceToken, 'ap-worker', { decision: 'approve' });
+      expect(worker.status).toBe(200);
+      expect(resolveCalls.map((c) => c.id)).toEqual(['ap-worker']);
+
+      // Operator: unchanged. The desktop lists and answers the brain's own
+      // record exactly as before — the exclusion follows the credential class.
+      const asOperator = bearer(info.token as string);
+      const operatorList = await fetch(`${base()}/api/approvals`, { headers: asOperator });
+      expect(await operatorList.text()).toContain('ap-brain');
+      const operatorAnswer = await fetch(`${base()}/api/approvals/ap-brain`, {
+        method: 'POST',
+        headers: { ...asOperator, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'approve' }),
+      });
+      expect(operatorAnswer.status).toBe(200);
+      expect(resolveCalls.map((c) => c.id)).toEqual(['ap-worker', 'ap-brain']);
+    });
+
 
     it('★ #1315 pane-stream liveness refuses the brain pane and an invented session id', async () => {
       // `sessionId` arrives from the hook pipe, which is not a trusted producer,

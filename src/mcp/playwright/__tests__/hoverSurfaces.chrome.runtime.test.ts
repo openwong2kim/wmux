@@ -263,13 +263,17 @@ function harnessFor(mode: (typeof MODES)[number]): Harness {
     }
   }, LAUNCH_TIMEOUT_MS + 30_000);
 
+  // Vitest's default hook timeout is 10 s, which closing a real browser and a
+  // real server does not always fit on a loaded CI runner — observed as
+  // "Hook timed out in 10000ms" on #1424's macOS leg, in a suite whose own
+  // tests had all passed. Teardown gets the same room `beforeAll` has.
   afterAll(async () => {
     await browser?.close().catch(() => undefined);
     await new Promise<void>((resolve) => {
       if (!server) return resolve();
       server.close(() => resolve());
     });
-  });
+  }, 60_000);
 
   return {
     browser: () => browser!,
@@ -378,6 +382,17 @@ for (const mode of MODES) {
           onPointerMoved: (point) => {
             pointer = point;
           },
+          // This test is about WHAT the probe finds, so it buys time rather
+          // than inheriting the shipped latency promise. TOTAL_BUDGET_MS is
+          // tuned for a warm interactive machine; on a contended CI runner the
+          // per-trigger slice goes to the approach, `waitUntil` collapses onto
+          // it, and every trigger comes back unanswered — the degradation this
+          // module is designed to do and to report, read here as a correctness
+          // failure. Reproduced exactly by squeezing the budget to 600 ms
+          // locally: `probed=2, unanswered=2, revealed=[]`, the same line CI
+          // printed on #1423 and #1427. That the probe HOLDS the shipped
+          // budget is pinned by the virtual clock in hoverSurfaces.probe.test.ts.
+          budgetMs: 30_000,
         });
         expect(outcome.cancelled).toBe(false);
 
@@ -437,8 +452,12 @@ for (const mode of MODES) {
         // that is not the focused one (Chrome 153): one trigger's `before` forces
         // the layout a throttled compositor has not done — ~1.0 s — and each
         // `Input.dispatchMouseEvent` is ~107 ms against ~30 ms headless, so a run
-        // that answers both menus and a run that answers neither both happen
-        // inside the same 5 s ceiling. Nothing in this module can make a
+        // that answers both menus and a run that answers neither both happened
+        // inside the shipped 5 s ceiling. The budget above is generous enough
+        // that headless now answers on any runner, but headed stays unasserted
+        // because background throttling has no upper bound to buy past: how
+        // hard a hidden window is throttled is the compositor's call, not a
+        // number this test can raise. Nothing in this module can make a
         // throttled renderer fast, so the probe is best-effort THERE and the
         // contract it does keep is the one asserted above for every mode: it is
         // bounded, what it lists is correct, and what it could not reach is

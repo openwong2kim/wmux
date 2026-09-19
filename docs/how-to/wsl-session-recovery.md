@@ -30,6 +30,15 @@ and retry; closing the pane explicitly discards the pending recovery. A missing
 exec-session directory also keeps the pane pending instead of running `--resume`
 in another project.
 
+When the directory itself is gone, the pane says so and offers **Start fresh in
+home** beside Retry, because retrying reopens the same missing directory and
+fails the same way for as long as it is missing. Starting fresh keeps the pane's
+ID and its saved buffer and gives up exactly the two things that cannot be
+honoured: it opens your home directory instead, and runs the pane's original
+command instead of resuming the recorded conversation — that conversation
+belonged to the directory that is gone. It is never automatic: landing in home
+by itself would resume an unrelated project's conversation.
+
 A pending pane is retained for 30 days, not forever. The 30 days start when the
 pane becomes pending, and opening the pane again restarts them: opening the
 workspace mounts the pane, which retries the connection, and each retry renews
@@ -103,11 +112,18 @@ runtime. User hooks and their trust settings are not changed or bypassed.
   contains `cd ~`. Custom login shells such as zsh and fish are not selected by
   this WSL integration.
 - Exec units skip interactive startup files to keep output free of banners and
-  prompt markers. Their commands must use the non-interactive Linux PATH (or set
-  PATH explicitly); interactive panes still source `~/.bashrc`.
-- Claude/Codex must be installed on the Linux PATH. The integration uses pane-local
-  PATH shims. An alias/function or absolute path that bypasses a shim, or a
-  later explicit Claude `--settings` override, can bypass capture.
+  prompt markers, so their commands see the non-interactive Linux PATH;
+  interactive panes still source `~/.bashrc`. Set PATH explicitly for any other
+  program an exec unit runs.
+- Claude/Codex must be installed in the distribution. The integration uses
+  pane-local PATH shims. When the non-interactive PATH does not contain
+  `claude`, the Claude shim asks an interactive shell for its PATH once — so a
+  `claude` installed by nvm, which lives only on the PATH `~/.bashrc` sets, is
+  found in an exec unit as well. That lookup's own output is discarded and never
+  reaches the pane. The Codex shim has no such fallback: in an exec unit, `codex`
+  must be on the non-interactive PATH. An alias/function or absolute path that
+  bypasses a shim, or a later explicit Claude `--settings` override, can bypass
+  capture.
 - `WMUX_SHELL_INTEGRATION=0` disables the shell markers and agent shims while
   retaining the directory and normal Bash startup setup.
 - Directory restoration also applies to other programs in WSL. This integration

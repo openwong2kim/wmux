@@ -130,6 +130,13 @@ const electronAPI = {
     },
     dispose: (id: string) =>
       ipcRenderer.invoke(IPC.PTY_DISPOSE, id),
+    // #1305 — cancel a create this surface still has in flight. The id is what
+    // a create has not returned yet, so `dispose` cannot reach one; the surface
+    // is the handle the caller already has. Resolves false when there is
+    // nothing pending (it already spawned — dispose that id instead — or the
+    // pane is a daemon one, where the daemon holds its own pending guard).
+    cancelCreate: (surfaceId: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.PTY_CANCEL_CREATE, surfaceId),
     // `supervision` (X8) is additive and present only on supervised daemon-mode
     // sessions — the renderer uses it to hydrate its supervision slice on boot
     // and daemon-reconnect. Absent in local mode and for unsupervised panes.
@@ -157,10 +164,15 @@ const electronAPI = {
       // writable yet, RPC threw during a handler-swap window) from a permanent
       // one (session genuinely dead). The renderer retries transient failures
       // instead of immediately clearing the ptyId and replacing the session.
-      ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as Promise<{ success: boolean; id?: string; shell?: string; error?: string; code?: string; transient?: boolean; recoveryPending?: boolean; recovery?: DeadPaneRecovery }>,
+      // `cwdMissing` (#1305) rides the recoveryPending shape: the WSL directory
+      // itself is gone, so Retry cannot succeed until it is restored and the
+      // pane is offered a fresh start in the home directory instead.
+      ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as Promise<{ success: boolean; id?: string; shell?: string; error?: string; code?: string; transient?: boolean; recoveryPending?: boolean; cwdMissing?: boolean; recovery?: DeadPaneRecovery }>,
     // Fix B — on-demand promote of a cap-skipped suspended session.
-    promote: (id: string) =>
-      ipcRenderer.invoke(IPC.PTY_PROMOTE, id) as Promise<{ success: boolean; error?: string }>,
+    // #1305 — `fresh` promotes it in the home directory WITHOUT resuming the
+    // recorded conversation: the way out when its own directory is gone.
+    promote: (id: string, opts?: { fresh?: boolean }) =>
+      ipcRenderer.invoke(IPC.PTY_PROMOTE, id, opts) as Promise<{ success: boolean; error?: string; cwdMissing?: boolean }>,
     // Phase 3 PR-B — live-pipe re-flush. Unlike `reconnect` (opens a fresh
     // socket), this re-runs the flush on the EXISTING session socket, so input
     // never pauses. Three success shapes: a live re-flush ('snapshot'|'raw'), a
