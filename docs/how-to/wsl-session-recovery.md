@@ -72,10 +72,15 @@ the updated daemon to receive the integration.
   contains `cd ~`. Custom login shells such as zsh and fish are not selected by
   this WSL integration.
 - Exec units skip interactive startup files to keep output free of banners and
-  prompt markers. Their commands must use the non-interactive Linux PATH (or set
-  PATH explicitly); interactive panes still source `~/.bashrc`.
-- Claude must be installed on the Linux PATH. The integration uses a pane-local
-  PATH shim. An alias/function or absolute path that bypasses that shim, or a
+  prompt markers, so their commands see the non-interactive Linux PATH;
+  interactive panes still source `~/.bashrc`. Set PATH explicitly for any other
+  program an exec unit runs.
+- Claude must be installed in the distribution. The integration uses a
+  pane-local PATH shim, and when the non-interactive PATH does not contain
+  `claude` the shim asks an interactive shell for its PATH once — so a `claude`
+  installed by nvm, which lives only on the PATH `~/.bashrc` sets, is found in
+  an exec unit as well. That lookup's own output is discarded and never reaches
+  the pane. An alias/function or absolute path that bypasses the shim, or a
   later explicit `--settings` override, can bypass these hooks.
 - `WMUX_SHELL_INTEGRATION=0` disables the shell markers and Claude shim while
   retaining the directory and normal Bash startup setup.
