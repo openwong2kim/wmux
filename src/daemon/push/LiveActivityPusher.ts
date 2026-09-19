@@ -189,7 +189,14 @@ export class LiveActivityPusher {
   private async sendNow(): Promise<void> {
     const counts = this.deps.counts();
     for (const target of this.deps.targets()) {
-      await this.sendToDevice(target, counts);
+      // One device's failure is its own. The transport already turns network
+      // errors into a status, but forgetting a dead token writes the device
+      // store, and a throw there must not skip every device after it.
+      try {
+        await this.sendToDevice(target, counts);
+      } catch (err) {
+        this.deps.log?.('warn', `[live-activity] send to ${target.deviceId} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 

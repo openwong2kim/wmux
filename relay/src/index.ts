@@ -27,9 +27,11 @@
  * nowhere on-device to decrypt an envelope. What it carries is six named
  * integers — counts of pending approvals, blocked panes, agents — validated
  * against a closed allowlist in validate.ts so an unknown field can never ride
- * along. No pane name, no workspace, no question text, no preview. The claim
- * above stands for every notification BODY; on this route the relay can read a
- * set of counters.
+ * along — plus, on a `start` only, the daemon's display name (at most 64
+ * characters), because an activity's attributes are fixed when it starts. No
+ * pane name, no workspace, no question text, no preview. The claim above stands
+ * for every notification BODY; on this route the relay can read a set of
+ * counters and that one name.
  *
  * STATE
  * One cached APNs provider JWT per isolate (apnsJwt.ts). No KV, no D1, no

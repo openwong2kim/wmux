@@ -52,6 +52,7 @@ function harness(
     targets?: LiveActivityTarget[];
     counts?: LiveActivityCounts;
     daemonName?: string;
+    forgetThrows?: boolean;
   } = {},
 ): Harness {
   const calls: Array<{ url: string; body: Record<string, any> }> = [];
@@ -91,7 +92,10 @@ function harness(
     transport,
     targets: () => targets,
     counts: () => current,
-    forgetLiveActivityToken: (id) => forgotActivity.push(id),
+    forgetLiveActivityToken: (id) => {
+      if (opts.forgetThrows) throw new Error('device store unwritable');
+      forgotActivity.push(id);
+    },
     forgetPushToStartToken: (id) => forgotPushToStart.push(id),
     ...(opts.daemonName ? { daemonName: () => opts.daemonName } : {}),
     log: (level, message) => logs.push([level, message]),
@@ -480,6 +484,17 @@ describe('LiveActivityPusher — 410 forgets exactly one token', () => {
     // "this device is gone" would switch approval notifications off several
     // times a day, which is why `forgetPush` is not reachable from here at all.
     expect(h.forgotPushToStart).toEqual([]);
+  });
+
+  it('a device whose token cannot be forgotten does not cost the next device its update', async () => {
+    const second = { ...withActivity({ activityToken: ACTIVITY_2 }), deviceId: 'dev-2' };
+    const h = harness({ targets: [withActivity(), second], statuses: [410, 200], forgetThrows: true });
+    h.setCounts(counts({ pendingApprovals: 1 }));
+    h.pusher.onApprovalsChanged();
+    await h.tick();
+
+    expect(h.calls.map((c) => c.body.apnsToken)).toEqual([ACTIVITY, ACTIVITY_2]);
+    expect(h.logs.some(([level, m]) => level === 'warn' && m.includes('dev-1'))).toBe(true);
   });
 
   it('★ a 410 on a start forgets the PUSH-TO-START token only', async () => {
