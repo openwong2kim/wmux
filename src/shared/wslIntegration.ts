@@ -82,13 +82,18 @@ export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w"
 # Only a saved top-level CLI session is a valid Resume target. Match the exact
 # reported UUID and inspect its first metadata record; never guess the newest.
 # thread/revert keeps the thread ID but writes rollout-<ts>-<id>_<rollout>.jsonl.
-id=$("$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" --notification-id "\${1:-}") || exit 0
+# The payload carries the turn's full input and answer. A Windows command line
+# holds ~32K characters, so it goes over stdin and only the fields the bridge
+# reads are passed on as argv.
+notification=$(printf '%s' "\${1:-}" | "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" --notification) || exit 0
+id=$(printf '%s\n' "$notification" | sed -n 1p)
+payload=$(printf '%s\n' "$notification" | sed -n 2p)
 for file in "\${CODEX_HOME:-$HOME/.codex}"/sessions/*/*/*/rollout-*-"$id".jsonl \
     "\${CODEX_HOME:-$HOME/.codex}"/sessions/*/*/*/rollout-*-"$id"_*.jsonl; do
   [ -f "$file" ] || continue
   IFS= read -r metadata < "$file" || continue
   if printf '%s' "$metadata" | "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" --is-resumable "$id"; then
-    exec "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_BRIDGE" "$@"
+    exec "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_BRIDGE" "$payload"
   fi
 done
 exit 0
@@ -136,9 +141,13 @@ collect_configs() {
 }
 # Only this short-lived helper needs Electron's Node mode. Do not leak it to
 # Codex or other Linux applications. It never runs on the daemon event loop.
+# Bounded like the Claude shim's PATH lookup: a stalled interop call falls back
+# to launching Codex unchanged instead of hanging the launch.
+wmux_guard=
+command -v timeout >/dev/null 2>&1 && wmux_guard="timeout -k 1 10"
 override=$(collect_configs | ELECTRON_RUN_AS_NODE=1 \
   WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w" \
-  "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" "$WMUX_WSL_CODEX_HOOK" "$@")
+  $wmux_guard "$WMUX_WSL_NODE" "$WMUX_WSL_CODEX_CONFIG" "$WMUX_WSL_CODEX_HOOK" "$@")
 if [ $? = 0 ] && [ -n "$override" ]; then
   exec "$real" -c "$override" "$@"
 fi

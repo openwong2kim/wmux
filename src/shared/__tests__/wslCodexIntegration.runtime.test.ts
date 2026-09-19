@@ -28,7 +28,10 @@ import { spawnSync } from 'node:child_process';
 const args = process.argv.slice(2);
 if (args[0] === '-c' && args[1]?.startsWith('notify=["/bin/sh"')) {
   const [cmd, ...prefix] = JSON.parse(args[1].slice(7));
-  const payload = JSON.stringify({ type: 'agent-turn-complete', 'thread-id': '${SESSION_ID}', cwd: process.cwd() });
+  // A real payload carries the turn's full input and answer; only the fields the
+  // bridge reads may reach it (a Windows command line holds ~32K characters).
+  const payload = JSON.stringify({ type: 'agent-turn-complete', 'thread-id': '${SESSION_ID}', 'turn-id': 'turn-1',
+    cwd: process.cwd(), 'input-messages': ['a prompt'], 'last-assistant-message': 'x'.repeat(40000) });
   const result = spawnSync(cmd, [...prefix, payload], { env: process.env });
   if (result.status !== 0) { process.stderr.write(result.stderr); process.exit(1); }
 }
@@ -70,7 +73,7 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
     expect(result.electron).toBeUndefined();
     expect(result.stderr).toBe('');
     expect(JSON.parse(fs.readFileSync(f.resultPath, 'utf8'))).toEqual({
-      payload: { type: 'agent-turn-complete', 'thread-id': SESSION_ID, cwd: f.cwd },
+      payload: { type: 'agent-turn-complete', 'thread-id': SESSION_ID, 'turn-id': 'turn-1', cwd: f.cwd },
       pane: 'pane-one', suffix: '-codex-test', electron: '1',
     });
     expect(fs.readFileSync(config, 'utf8')).toBe('# existing settings\nmodel = "test"\n');

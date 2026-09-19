@@ -11,12 +11,17 @@ function hasNotify(value) {
 
 try {
   const [hook, ...args] = process.argv.slice(2);
-  if (hook === '--notification-id') {
-    const payload = JSON.parse(args[0]);
+  if (hook === '--notification') {
+    // Line 1: the validated thread ID. Line 2: the payload reduced to the
+    // fields wmux-codex-notify.mjs reads, small enough for a Windows argv.
+    const payload = JSON.parse(readFileSync(0, 'utf8'));
     const id = payload['thread-id'];
     if (payload.type !== 'agent-turn-complete' || typeof id !== 'string'
       || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) process.exit(1);
-    process.stdout.write(id);
+    const reduced = { type: payload.type, 'thread-id': id };
+    if (typeof payload['turn-id'] === 'string') reduced['turn-id'] = payload['turn-id'];
+    if (typeof payload.cwd === 'string') reduced.cwd = payload.cwd;
+    process.stdout.write(`${id}\n${JSON.stringify(reduced)}`);
     process.exit(0);
   }
   if (hook === '--is-resumable') {
