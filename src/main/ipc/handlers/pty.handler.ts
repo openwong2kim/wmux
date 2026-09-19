@@ -1075,11 +1075,17 @@ export function registerPTYHandlers(
   if (useDaemon && daemonClient) {
     // Fix B — pty:promote: on-demand recovery of a cap-skipped suspended session.
     ipcMain.removeHandler(IPC.PTY_PROMOTE);
-    ipcMain.handle(IPC.PTY_PROMOTE, wrapHandler(IPC.PTY_PROMOTE, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
+    ipcMain.handle(IPC.PTY_PROMOTE, wrapHandler(IPC.PTY_PROMOTE, async (_event: Electron.IpcMainInvokeEvent, id: string, opts?: { fresh?: boolean }) => {
       if (!id) return { success: false, error: 'id is required' };
-      const res = await daemonClient.rpc('daemon.promoteSession', { id }, { timeoutMs: WSL_RPC_TIMEOUT_MS }) as { ok: boolean; error?: { message: string } };
+      // #1305 — `fresh` is the explicit way out of a pane whose WSL directory
+      // is gone: home instead of the missing directory, the original command
+      // instead of a resume. Only ever set by the user pressing that action.
+      const fresh = opts?.fresh === true;
+      const res = await daemonClient.rpc('daemon.promoteSession', { id, ...(fresh ? { fresh: true } : {}) }, { timeoutMs: WSL_RPC_TIMEOUT_MS }) as { ok: boolean; error?: { code?: string; message: string } };
       if (res.ok) return { success: true };
-      return { success: false, error: res.error?.message ?? 'promote failed' };
+      // The renderer branches on this: CWD_MISSING is the one failure Retry
+      // cannot clear, so it is the one that offers starting fresh.
+      return { success: false, error: res.error?.message ?? 'promote failed', cwdMissing: res.error?.code === 'CWD_MISSING' };
     }));
 
     ipcMain.handle(IPC.PTY_RECONNECT, wrapHandler(IPC.PTY_RECONNECT, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
@@ -1113,8 +1119,11 @@ export function registerPTYHandlers(
 
         if (session.state === 'suspended') {
           try {
-            const result = await daemonClient.rpc('daemon.promoteSession', { id }, { timeoutMs: WSL_RPC_TIMEOUT_MS }) as { ok: boolean; error?: { message: string } };
-            if (!result.ok) return { success: false, recoveryPending: true, error: result.error?.message || 'WSL recovery failed. Check the target and retry.' };
+            const result = await daemonClient.rpc('daemon.promoteSession', { id }, { timeoutMs: WSL_RPC_TIMEOUT_MS }) as { ok: boolean; error?: { code?: string; message: string } };
+            // #1305 — carry WHY it stayed pending, not just that it did. The
+            // banner's Retry is the right and only offer for every other
+            // failure; a missing directory additionally gets "start fresh".
+            if (!result.ok) return { success: false, recoveryPending: true, error: result.error?.message || 'WSL recovery failed. Check the target and retry.', cwdMissing: result.error?.code === 'CWD_MISSING' };
             const refreshed = await daemonClient.rpc('daemon.listSessions', {}) as typeof sessions;
             session = refreshed.find(s => s.id === id) ?? session;
           } catch (err) {

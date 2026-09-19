@@ -519,7 +519,7 @@ export const WEBGL_HIDDEN_DISPOSE_DELAY_MS = 5_000;
 
 // RCA A1 — reconnect-with-retry policy lives in its own module so it can be
 // unit-tested without xterm/zustand/electron. Bound to the live deps here.
-function reconnectPtyWithRetry(ptyId: string, isCurrent: () => boolean, onRecoveryError?: (message: string | null) => void): Promise<void> {
+function reconnectPtyWithRetry(ptyId: string, isCurrent: () => boolean, onRecoveryError?: (message: string | null, info?: { cwdMissing?: boolean }) => void): Promise<void> {
   return reconnectPtyWithRetryImpl(ptyId, isCurrent, {
     reconnect: (id) => window.electronAPI.pty.reconnect(id),
     onRecoveryError,
@@ -654,7 +654,7 @@ interface UseTerminalOptions {
   scrollbackFile?: string;
   /** Called once when the first chunk of PTY data is received (useful for hiding restore overlays) */
   onFirstData?: () => void;
-  onRecoveryError?: (message: string | null) => void;
+  onRecoveryError?: (message: string | null, info?: { cwdMissing?: boolean }) => void;
   /** Called on right-click to show context menu */
   onContextMenu?: (e: ContextMenuEvent) => void;
   /**
@@ -2899,7 +2899,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       inFlight = true;
       reconnectInFlightRef.current = true;
       console.log(`[useTerminal] daemon reattach ptyId=${id} (${reason})`);
-      return reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null, (message) => onRecoveryErrorRef.current?.(message))
+      return reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null, (message, info) => onRecoveryErrorRef.current?.(message, info))
         .then(() => {
           // #882 — the daemon starts every managed session at `viewerVisible:
           // true` and resets to true on detach, so a reattach that lands while

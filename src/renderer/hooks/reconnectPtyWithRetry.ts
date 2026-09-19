@@ -28,6 +28,12 @@ export interface ReconnectResult {
   error?: string;
   transient?: boolean;
   recoveryPending?: boolean;
+  /**
+   * #1305 — the pane stayed pending because its WSL directory is gone, not
+   * because the distro was busy or unreachable. Retry cannot clear it, so the
+   * banner offers a fresh start in the home directory alongside Retry.
+   */
+  cwdMissing?: boolean;
   recovery?: DeadPaneRecovery;
 }
 
@@ -35,7 +41,7 @@ export interface ReconnectDeps {
   /** Invoke the pty.reconnect RPC. */
   reconnect: (id: string) => Promise<ReconnectResult>;
   /** Clear the surface's ptyId so the next mount self-creates. */
-  onRecoveryError?: (message: string | null) => void;
+  onRecoveryError?: (message: string | null, info?: { cwdMissing?: boolean }) => void;
   clearPtyId: (id: string, recovery?: DeadPaneRecovery) => void;
   /** Sleep between retries. Injectable so tests don't wait real time. */
   sleep?: (ms: number) => Promise<void>;
@@ -70,7 +76,12 @@ export async function reconnectPtyWithRetry(
     }
     if (result?.success) { if (isCurrent()) deps.onRecoveryError?.(null); return; }
     if (result?.recoveryPending) {
-      if (isCurrent()) deps.onRecoveryError?.(result.error || 'WSL recovery failed. Check the target and retry.');
+      if (isCurrent()) {
+        deps.onRecoveryError?.(
+          result.error || 'WSL recovery failed. Check the target and retry.',
+          { cwdMissing: result.cwdMissing === true },
+        );
+      }
       return; // Keep the original id, binding and scrollback. Retry is explicit.
     }
     lastErr = result?.error ?? '<no error>';

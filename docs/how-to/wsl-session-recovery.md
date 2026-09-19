@@ -30,6 +30,15 @@ and retry; closing the pane explicitly discards the pending recovery. A missing
 exec-session directory also keeps the pane pending instead of running `--resume`
 in another project.
 
+When the directory itself is gone, the pane says so and offers **Start fresh in
+home** beside Retry, because retrying reopens the same missing directory and
+fails the same way for as long as it is missing. Starting fresh keeps the pane's
+ID and its saved buffer and gives up exactly the two things that cannot be
+honoured: it opens your home directory instead, and runs the pane's original
+command instead of resuming the recorded conversation — that conversation
+belonged to the directory that is gone. It is never automatic: landing in home
+by itself would resume an unrelated project's conversation.
+
 A pending pane is retained for 30 days, not forever. The 30 days start when the
 pane becomes pending, and opening the pane again restarts them: opening the
 workspace mounts the pane, which retries the connection, and each retry renews

@@ -258,8 +258,17 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   const shown = visible ?? isActive;
   const isVisible = isWorkspaceVisible && shown;
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  // #1305 — the failure Retry cannot clear: the pane's WSL directory is gone,
+  // so every attempt reopens the same missing directory. Tracked separately
+  // from the message because it is what decides whether a second action exists,
+  // and the message is agent/distro text that must never be parsed for it.
+  const [recoveryCwdMissing, setRecoveryCwdMissing] = useState(false);
   const [retryingRecovery, setRetryingRecovery] = useState(false);
-  useEffect(() => { setRecoveryError(null); }, [ptyId]);
+  useEffect(() => { setRecoveryError(null); setRecoveryCwdMissing(false); }, [ptyId]);
+  const handleRecoveryError = useCallback((message: string | null, info?: { cwdMissing?: boolean }) => {
+    setRecoveryError(message);
+    setRecoveryCwdMissing(message !== null && info?.cwdMissing === true);
+  }, []);
   const retryRecovery = async () => {
     if (!ptyId || retryingRecovery) return;
     setRetryingRecovery(true);
@@ -269,7 +278,28 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     } catch (error) { setRecoveryError(String(error)); }
     finally { setRetryingRecovery(false); }
   };
-  const { terminal: terminalRef, terminalInstance, findNext, findPrevious, clearSearch, retryConnection } = useTerminal(containerRef, { onRecoveryError: setRecoveryError, ptyId, isVisible, scrollbackFile, onFirstData: scrollbackFile ? handleFirstData : undefined, onContextMenu: handleContextMenu,
+  /**
+   * #1305 — the explicit way out: promote the SAME pane (same id, same
+   * scrollback) in the home directory, without resuming the conversation that
+   * belonged to the directory that is gone. Never automatic — landing in home
+   * silently would resume an unrelated project's conversation.
+   */
+  const startFreshRecovery = async () => {
+    if (!ptyId || retryingRecovery) return;
+    setRetryingRecovery(true);
+    try {
+      const promoted = await window.electronAPI.pty.promote(ptyId, { fresh: true });
+      if (!promoted.success) {
+        setRecoveryError(promoted.error || 'Could not start a fresh session in the home directory.');
+        return;
+      }
+      // The pane exists again under its own id; attach to it the way Retry
+      // does, which is also what clears this banner on success.
+      await retryConnection();
+    } catch (error) { setRecoveryError(String(error)); }
+    finally { setRetryingRecovery(false); }
+  };
+  const { terminal: terminalRef, terminalInstance, findNext, findPrevious, clearSearch, retryConnection } = useTerminal(containerRef, { onRecoveryError: handleRecoveryError, ptyId, isVisible, scrollbackFile, onFirstData: scrollbackFile ? handleFirstData : undefined, onContextMenu: handleContextMenu,
     // Only the pane-surface terminal owns ⌘G / Ctrl+G: useComposeShortcut
     // acts on the active leaf's pty, which is what this component renders.
     // FloatingPane and Deck's BrainTerminalEmbed deliberately do NOT opt in —
@@ -440,10 +470,24 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
         <div role="alert" className="absolute inset-x-2 top-2 z-20 rounded border border-[var(--border)] bg-[var(--bg-base)] p-3 text-sm text-[var(--text-primary)]">
           <p className="break-words">{recoveryError}</p>
           <p className="mt-1 text-[var(--text-muted)]">Your session and saved scrollback are retained.</p>
-          <button type="button" disabled={retryingRecovery} onClick={() => void retryRecovery()}
-            className="mt-2 rounded border border-[var(--border)] px-3 py-1 disabled:opacity-50">
-            {retryingRecovery ? 'Reconnecting…' : 'Retry connection'}
-          </button>
+          {/* Two neutral actions, never an accent one: the banner is already an
+              alert, and a filled warm button here would spend the surface's one
+              primary on the riskier of the two (DESIGN.md — amber diet, one
+              filled button per surface). Order carries the hierarchy instead:
+              Retry is the default, starting fresh is the deliberate second. */}
+          <div className="mt-2 flex gap-2">
+            <button type="button" disabled={retryingRecovery} onClick={() => void retryRecovery()}
+              className="rounded border border-[var(--border)] px-3 py-1 disabled:opacity-50">
+              {retryingRecovery ? 'Reconnecting…' : 'Retry connection'}
+            </button>
+            {recoveryCwdMissing && (
+              <button type="button" disabled={retryingRecovery} onClick={() => void startFreshRecovery()}
+                title="Reopen this pane in your home directory, without resuming the recorded conversation"
+                className="rounded border border-[var(--border)] px-3 py-1 text-[var(--text-muted)] disabled:opacity-50">
+                Start fresh in home
+              </button>
+            )}
+          </div>
         </div>
       )}
       {/* Session restore overlay */}
