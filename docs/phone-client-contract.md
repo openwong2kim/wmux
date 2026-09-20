@@ -751,8 +751,10 @@ on `turnImages`. A daemon predating this route omits the key; read a missing key
 as `false`.
 
 **The bytes decide, and the brand decides which video.** An ISO BMFF `ftyp` box
-with a `qt  ` major brand is `video/quicktime`; `isom`, `iso2`, `mp41`, `mp42`,
-`avc1`, `mp4v` and `M4V ` are `video/mp4`. If you name a cache file from this
+with a `qt  ` major brand is `video/quicktime`; `isom`, `iso2`, `iso4`, `iso5`,
+`iso6`, `dash`, `mp41`, `mp42`, `avc1`, `mp4v` and `M4V ` are `video/mp4` — the
+`iso4`–`iso6` and `dash` brands are what a fragmented mp4 carries, which is what
+an agent rendering for streaming produces. Audio-only containers are not served. If you name a cache file from this
 header, that split is load-bearing: a QuickTime movie saved as `.mp4` will not
 open.
 
@@ -768,12 +770,17 @@ succeed, while 413 is a limit worth naming to the user.
 file, then play it locally. A seek against this route is a fresh whole-file GET,
 which is not what you want on cellular.
 
-**The response can be cut mid-body.** The route streams the exact number of
-bytes the gate approved and re-checks the file afterwards; if it grew or shrank
-under the transfer, the connection is closed rather than finished, because the
-`Content-Length` already promised is no longer the truth. Treat it as a transport
-failure and retry once — a file an agent is still writing is the common cause,
-and it succeeds on its own once the write lands.
+**The response can be cut mid-body, and only in one direction.** The route
+streams exactly the number of bytes it measured before the first header. If the
+file SHRANK under the transfer, fewer bytes exist than the `Content-Length`
+already promised, and the connection is closed rather than finished — treat that
+as a transport failure and retry once. A file an agent is still writing is the
+common cause, and the retry succeeds on its own once the write lands.
+
+A file that GREW is not an error and is not cut. You receive the prefix that was
+there when the request was gated, whole, with a `Content-Length` that matches
+it — the extra bytes simply are not in this response. Fetch again if you want
+them.
 
 ---
 

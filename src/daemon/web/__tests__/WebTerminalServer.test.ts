@@ -5499,6 +5499,30 @@ describe('WebTerminalServer', () => {
       return file;
     };
 
+    /**
+     * Wrap the FileHandle this route opens FOR ONE PATH. Scoping by path is not
+     * tidiness: `fs.promises.open` is global, the daemon opens files of its own
+     * (state, devices) while a test runs, and a `mockImplementationOnce` can be
+     * spent on one of those instead — the handler then gets a real handle and
+     * the case silently proves nothing, or worse, a stub that blocks parks a
+     * read the suite never finishes.
+     */
+    const interceptOpen = (
+      target: string,
+      wrap: (handle: fs.promises.FileHandle) => Promise<fs.promises.FileHandle>,
+    ) => {
+      const real = fs.promises.open;
+      let used = false;
+      const spy = vi.spyOn(fs.promises, 'open');
+      spy.mockImplementation((async (...args: Parameters<typeof fs.promises.open>) => {
+        const handle = await real(...args);
+        if (used || String(args[0]) !== target) return handle;
+        used = true;
+        return wrap(handle);
+      }) as never);
+      return spy;
+    };
+
     beforeEach(() => { dirs = []; });
     afterEach(() => {
       for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
@@ -5608,7 +5632,6 @@ describe('WebTerminalServer', () => {
       const dir = tmpTree();
       const file = sparse(dir, 'long.mp4', bmff('isom'), 100 * 1024 * 1024);
       managed.meta.spawnCwd = dir;
-      const openSpy = vi.spyOn(fs.promises, 'open');
       const info = await startWithTranscript();
       // RSS alone cannot answer this question: server and client share one
       // process, so the client's own chunks and whatever the GC has not got to
@@ -5618,8 +5641,7 @@ describe('WebTerminalServer', () => {
       // never asks for more than a stream chunk, whatever the file weighs.
       const reads: number[] = [];
       let streams = 0;
-      openSpy.mockImplementationOnce(async (...args: Parameters<typeof fs.promises.open>) => {
-        const handle = await fs.promises.open(...args);
+      const openSpy = interceptOpen(file, async (handle) => {
         const realRead = handle.read.bind(handle);
         const realStream = handle.createReadStream.bind(handle);
         handle.read = ((...a: unknown[]) => {
@@ -5671,10 +5693,8 @@ describe('WebTerminalServer', () => {
       const file = path.join(dir, 'shrink.mp4');
       fs.writeFileSync(file, bmff('isom'));
       managed.meta.spawnCwd = dir;
-      const openSpy = vi.spyOn(fs.promises, 'open');
       const info = await startWithTranscript();
-      openSpy.mockImplementationOnce(async (...args: Parameters<typeof fs.promises.open>) => {
-        const handle = await fs.promises.open(...args);
+      const openSpy = interceptOpen(file, async (handle) => {
         const realStat = handle.stat.bind(handle);
         // One byte MORE than there is: the same disagreement a file being
         // truncated mid-flight produces.
@@ -5697,19 +5717,24 @@ describe('WebTerminalServer', () => {
       expect(ok.status).toBe(200);
     });
 
-    it('never sends more than the size the gate approved when the file grows', async () => {
-      // The stream is bounded by `end: size - 1`, so growth cannot ride along
-      // behind the approved bytes; the probe past that offset is what notices
-      // and cuts the socket rather than reusing it.
+    it('finishes cleanly, with the approved prefix, when the file grows', async () => {
+      // The contract sketched a cut here. It cannot work: the stream is bounded
+      // by `end: stat.size - 1`, so the client already holds every byte the
+      // Content-Length announced and reads the message as complete. Destroying
+      // the socket at that point does not reach it as a failure — it lands on
+      // whatever is still in the userland buffer, so the SAME correct response
+      // arrives whole or truncated depending on timing. What this pins is the
+      // decision that replaced it: the approved prefix is delivered, intact,
+      // every time.
       const dir = tmpTree();
       const file = path.join(dir, 'grow.mp4');
       const bytes = bmff('isom');
       fs.writeFileSync(file, bytes);
       managed.meta.spawnCwd = dir;
-      const openSpy = vi.spyOn(fs.promises, 'open');
       const info = await startWithTranscript();
-      openSpy.mockImplementationOnce(async (...args: Parameters<typeof fs.promises.open>) => {
-        const handle = await fs.promises.open(...args);
+      // The handler is told the file is one byte shorter than it is — the same
+      // disagreement a file being appended to mid-flight produces.
+      const openSpy = interceptOpen(file, async (handle) => {
         const realStat = handle.stat.bind(handle);
         handle.stat = (async () => {
           const st = await realStat();
@@ -5719,14 +5744,16 @@ describe('WebTerminalServer', () => {
       });
       try {
         const res = await fetch(fileUrl('s1', file), { headers: bearer(info.token as string) });
+        expect(res.status).toBe(200);
         expect(res.headers.get('content-length')).toBe(String(bytes.length - 1));
-        const got = await res.arrayBuffer().catch(() => null);
-        if (got) expect(got.byteLength).toBe(bytes.length - 1);
+        const got = Buffer.from(await res.arrayBuffer());
+        // Exactly the approved prefix: not one byte of the growth, and not one
+        // byte short of what the header promised.
+        expect(got.length).toBe(bytes.length - 1);
+        expect(got.equals(bytes.subarray(0, bytes.length - 1))).toBe(true);
       } finally {
         openSpy.mockRestore();
       }
-      const ok = await fetch(fileUrl('s1', file), { headers: bearer(info.token as string) });
-      expect(ok.status).toBe(200);
     });
 
     it('survives a client that walks away mid-download', async () => {
@@ -5737,18 +5764,29 @@ describe('WebTerminalServer', () => {
       const file = sparse(dir, 'walked.mp4', bmff('isom'), 32 * 1024 * 1024);
       managed.meta.spawnCwd = dir;
       const info = await startWithTranscript();
-      const ac = new AbortController();
-      const res = await fetch(fileUrl('s1', file), {
-        headers: bearer(info.token as string),
-        signal: ac.signal,
+      let closed = false;
+      const openSpy = interceptOpen(file, async (handle) => {
+        const realClose = handle.close.bind(handle);
+        handle.close = (async () => { closed = true; return realClose(); }) as typeof handle.close;
+        return handle;
       });
-      expect(res.status).toBe(200);
-      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
-      await reader.read();
-      ac.abort();
-      await reader.cancel().catch(() => { /* already aborted */ });
-      // The server answers the next request, which it cannot do if the abort
-      // left the handler stuck.
+      try {
+        const ac = new AbortController();
+        const res = await fetch(fileUrl('s1', file), {
+          headers: bearer(info.token as string),
+          signal: ac.signal,
+        });
+        expect(res.status).toBe(200);
+        const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+        await reader.read();
+        ac.abort();
+        await reader.cancel().catch(() => { /* already aborted */ });
+        // THE assertion. A server leaking the descriptor still answers the next
+        // request happily, so "it answered again" proves nothing on its own.
+        await vi.waitFor(() => expect(closed).toBe(true));
+      } finally {
+        openSpy.mockRestore();
+      }
       const after = await fetch(fileUrl('s1', file), { headers: bearer(info.token as string) });
       expect(after.status).toBe(200);
       await after.body?.cancel();
@@ -5763,15 +5801,13 @@ describe('WebTerminalServer', () => {
       const dir = tmpTree();
       const file = sparse(dir, 'early.mp4', bmff('isom'), 8 * 1024 * 1024);
       managed.meta.spawnCwd = dir;
-      const openSpy = vi.spyOn(fs.promises, 'open');
       const info = await startWithTranscript();
       let entered!: () => void;
       const inTheGate = new Promise<void>((r) => { entered = r; });
       let release!: () => void;
       const held = new Promise<void>((r) => { release = r; });
       let closed = false;
-      openSpy.mockImplementationOnce(async (...args: Parameters<typeof fs.promises.open>) => {
-        const handle = await fs.promises.open(...args);
+      const openSpy = interceptOpen(file, async (handle) => {
         const realClose = handle.close.bind(handle);
         handle.close = (async () => { closed = true; return realClose(); }) as typeof handle.close;
         entered();
@@ -5880,6 +5916,103 @@ describe('WebTerminalServer', () => {
       } finally {
         // uploadsDir is shared across describes; the tree cleanup misses it.
         fs.rmSync(clip, { force: true });
+      }
+    });
+
+    it('serves fragmented mp4, whose major brand is not isom', async () => {
+      // `ffmpeg -movflags frag_keyframe+empty_moov` writes `iso5`. An agent
+      // rendering a clip for streaming is the use this route exists for, and a
+      // 415 there is permanent as far as a client is concerned.
+      const dir = tmpTree();
+      managed.meta.spawnCwd = dir;
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      for (const brand of ['iso4', 'iso5', 'iso6', 'dash']) {
+        const file = path.join(dir, `frag-${brand.trim()}.mp4`);
+        fs.writeFileSync(file, bmff(brand));
+        const res = await fetch(fileUrl('s1', file), { headers: h });
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toBe('video/mp4');
+        await res.body?.cancel();
+      }
+    });
+
+    it('carries the security headers onto the 200', async () => {
+      // Nothing else in this describe would notice if the spread of
+      // `securityHeaders()` were dropped from the streamed response, and this
+      // route hands a browser bytes it sniffed itself.
+      const dir = tmpTree();
+      const file = path.join(dir, 'clip.mp4');
+      fs.writeFileSync(file, bmff('isom'));
+      managed.meta.spawnCwd = dir;
+      const info = await startWithTranscript();
+      const res = await fetch(fileUrl('s1', file), { headers: bearer(info.token as string) });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+      await res.body?.cancel();
+    });
+
+    it('404s when the last component became a symlink after the boundary check', async () => {
+      // O_NOFOLLOW is the whole answer to the window between `realpath` and
+      // `open`, and every other symlink case in this file is caught one step
+      // earlier - by realpath - so nothing reaches the flag. Handing the
+      // handler a path realpath did NOT resolve is what puts the swap in front
+      // of `open`, where ELOOP is the refusal.
+      const root = tmpTree();
+      const cwd = path.join(root, 'cwd');
+      const outside = path.join(root, 'outside');
+      fs.mkdirSync(cwd);
+      fs.mkdirSync(outside);
+      const secret = path.join(outside, 'secret.mp4');
+      fs.writeFileSync(secret, bmff('isom'));
+      const swapped = path.join(cwd, 'swapped.mp4');
+      fs.symlinkSync(secret, swapped);
+      managed.meta.spawnCwd = cwd;
+      const realRealpath = fs.promises.realpath;
+      const rpSpy = vi.spyOn(fs.promises, 'realpath');
+      rpSpy.mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) => {
+        // The link resolves to itself: containment passes, and the file `open`
+        // then meets is the symlink the check never saw through.
+        if (String(p) === swapped) return swapped;
+        return (realRealpath as (...a: unknown[]) => Promise<string>)(p, ...rest);
+      }) as never);
+      try {
+        const info = await startWithTranscript();
+        const res = await fetch(fileUrl('s1', swapped), { headers: bearer(info.token as string) });
+        expect(res.status).toBe(404);
+        expect((await res.json()).error).toBe('file not found');
+      } finally {
+        rpSpy.mockRestore();
+      }
+    });
+
+    it('serves a file under an uploads directory nested inside the pane cwd', async () => {
+      // The two roots are independent, and one containing the other must not
+      // turn into a rejection on whichever is checked second.
+      const cwd = tmpTree();
+      const nested = path.join(cwd, 'uploads');
+      fs.mkdirSync(nested);
+      const clip = path.join(nested, 'from-phone.mp4');
+      fs.writeFileSync(clip, bmff('isom'));
+      managed.meta.spawnCwd = cwd;
+      const nestedServer = new WebTerminalServer({
+        sessionManager,
+        projector: () => projectorMock as unknown as TranscriptProjector,
+        log: () => { /* silent in tests */ },
+        assetsDir: os.tmpdir(),
+        uploadsDir: nested,
+      });
+      const info = await nestedServer.start({
+        port: 0, host: '127.0.0.1', allowInput: false, allowUpload: true, allowTranscript: true,
+      });
+      try {
+        const url = `http://127.0.0.1:${info.port}/api/sessions/s1/turns/file?path=${encodeURIComponent(clip)}`;
+        const res = await fetch(url, { headers: bearer(info.token as string) });
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toBe('video/mp4');
+        await res.body?.cancel();
+      } finally {
+        await nestedServer.stop();
       }
     });
 

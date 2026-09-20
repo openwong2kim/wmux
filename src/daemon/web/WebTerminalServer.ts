@@ -3091,25 +3091,25 @@ export class WebTerminalServer {
         res.off('close', abort);
       }
       if (res.destroyed) return;
-      // One byte read PAST the approved size — positionally, so the stream's
-      // own cursor is irrelevant. Anything there means the file grew under us,
-      // which makes it something the gate never approved. The 200 is already on
-      // the wire, so there is no JSON left to answer with: cutting the socket
-      // is the honest end.
-      const probe = await handle.read(Buffer.alloc(1), 0, 1, stat.size);
-      if (probe.bytesRead > 0) {
-        res.destroy();
-        return;
-      }
-      // And the other direction, which the buffered route answers with a 404
-      // (`filled < body.length`): a file that SHRANK sends fewer bytes than the
-      // Content-Length already promised, and a phone holding that promise waits
-      // for a remainder that is never coming. Same cut, same reason — what the
-      // gate approved is not what was there.
+      // A file that SHRANK sends fewer bytes than the Content-Length already
+      // promised, and a client holding that promise waits for a remainder that
+      // is never coming. The header is long gone, so there is no JSON left to
+      // answer with: cutting the socket is the honest end, and the buffered
+      // route says the same thing with its 404 on `filled < body.length`.
       if (stream.bytesRead !== stat.size) {
         res.destroy();
         return;
       }
+      // GROWTH needs nothing, and this is the one place the shape of this route
+      // differs from what the contract sketched. The stream is bounded by
+      // `end: stat.size - 1`, so bytes the gate never approved cannot ride out
+      // behind the ones it did — the prefix that went out IS the whole response
+      // its Content-Length promised. Cutting the socket on a grown file, as the
+      // sketch had it, cannot reach the client as a failure (it already has
+      // every byte the header announced) and lands instead on whatever is still
+      // in the userland buffer: the same good response, truncated or not,
+      // depending on timing. A probe whose only possible action is to corrupt a
+      // correct answer is not a guard, so there is no probe.
       res.end();
     } catch {
       if (res.headersSent) {
@@ -5464,8 +5464,21 @@ function sniffImageContentType(head: Buffer): string | null {
   return null;
 }
 
-/** The ISO BMFF major brands `/turns/file` hands back as `video/mp4`. */
-const MP4_BRANDS = new Set(['isom', 'iso2', 'mp41', 'mp42', 'avc1', 'mp4v', 'M4V ']);
+/**
+ * The ISO BMFF major brands `/turns/file` hands back as `video/mp4`.
+ *
+ * `iso4`/`iso5`/`iso6`/`dash` are here because a FRAGMENTED mp4 carries one of
+ * them as its major brand — `ffmpeg -movflags frag_keyframe+empty_moov` writes
+ * `iso5` — and an agent rendering a clip for streaming is the exact use this
+ * route exists for. Without them a perfectly ordinary mp4 is refused with a
+ * status the client treats as permanent.
+ *
+ * `M4A ` stays OUT: it is audio, and this route's contract is what a phone can
+ * show in a turn view.
+ */
+const MP4_BRANDS = new Set([
+  'isom', 'iso2', 'iso4', 'iso5', 'iso6', 'dash', 'mp41', 'mp42', 'avc1', 'mp4v', 'M4V ',
+]);
 
 /**
  * The `Content-Type` for a blob `/turns/file` is about to serve: everything
