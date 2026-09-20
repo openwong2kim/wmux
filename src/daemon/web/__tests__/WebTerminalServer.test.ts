@@ -5754,6 +5754,54 @@ describe('WebTerminalServer', () => {
       await after.body?.cancel();
     });
 
+    it('releases the handle when the client leaves before the first byte', async () => {
+      // The window the abort test above cannot reach: every step of the gate is
+      // an await, so 'close' can fire BEFORE the handler subscribes to it. A
+      // listener registered after the event never runs, and writing to a
+      // destroyed response returns false rather than throwing — so a handler
+      // that only subscribed would park in `pipe` for ever holding this handle.
+      const dir = tmpTree();
+      const file = sparse(dir, 'early.mp4', bmff('isom'), 8 * 1024 * 1024);
+      managed.meta.spawnCwd = dir;
+      const openSpy = vi.spyOn(fs.promises, 'open');
+      const info = await startWithTranscript();
+      let entered!: () => void;
+      const inTheGate = new Promise<void>((r) => { entered = r; });
+      let release!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      let closed = false;
+      openSpy.mockImplementationOnce(async (...args: Parameters<typeof fs.promises.open>) => {
+        const handle = await fs.promises.open(...args);
+        const realClose = handle.close.bind(handle);
+        handle.close = (async () => { closed = true; return realClose(); }) as typeof handle.close;
+        entered();
+        await held;
+        return handle;
+      });
+      try {
+        const ac = new AbortController();
+        const pending = fetch(fileUrl('s1', file), {
+          headers: bearer(info.token as string),
+          signal: ac.signal,
+        });
+        const settled = pending.catch(() => 'aborted' as const);
+        await inTheGate;
+        ac.abort();
+        // Let the abort reach the server before the gate finishes.
+        await new Promise((r) => setImmediate(r));
+        release();
+        expect(await settled).toBe('aborted');
+        // The handler has to finish on its own — a leak would leave this
+        // pending for the life of the daemon.
+        await vi.waitFor(() => expect(closed).toBe(true));
+      } finally {
+        openSpy.mockRestore();
+      }
+      const ok = await fetch(fileUrl('s1', file), { headers: bearer(info.token as string) });
+      expect(ok.status).toBe(200);
+      await ok.body?.cancel();
+    });
+
     it('404s outside the boundary, through a symlink, and on a FIFO', async () => {
       const root = tmpTree();
       const cwd = path.join(root, 'cwd');

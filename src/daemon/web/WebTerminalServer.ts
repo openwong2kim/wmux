@@ -3070,6 +3070,17 @@ export class WebTerminalServer {
         stream.destroy();
       };
       res.once('close', abort);
+      // And 'close' may ALREADY have fired: every step of the gate above is an
+      // await, and a phone on a slow link can be gone before the first byte.
+      // A listener registered after the event never runs, and `res.write` on a
+      // destroyed response does not throw — it returns false, so `pipe` parks
+      // the source waiting for a 'drain' that is never coming and the wait
+      // below never settles. The handle would be held for the life of the
+      // daemon. Checking once, here, is what closes that window.
+      if (res.destroyed) {
+        stream.destroy();
+        return;
+      }
       try {
         // `{ end: false }`: whether this response gets a clean end or a cut
         // socket is decided by the probe, and pipe's default would have ended
