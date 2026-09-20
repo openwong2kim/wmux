@@ -5493,13 +5493,24 @@ const MP4_BRANDS = new Set([
 function sniffTurnFileContentType(head: Buffer): string | null {
   const image = sniffImageContentType(head);
   if (image) return image;
-  // ISO BMFF puts a `ftyp` box at byte 4 and its major brand at byte 8. The
-  // first four bytes are that box's own length and say nothing about the
-  // format, so unlike every other entry here the marker is not at offset 0.
+  // ISO BMFF puts a `ftyp` box at byte 4 and its major brand at byte 8. Unlike
+  // every other entry here the marker is not at offset 0 — the first four bytes
+  // are the box's own length.
+  //
+  // And that length is CHECKED, because the marker alone is twelve bytes of
+  // ASCII that a text file can hold by accident or by design: `<!--ftypisom`
+  // would otherwise be served as `video/mp4`. A `ftyp` box is 4 (size) + 4
+  // ('ftyp') + 4 (major brand) + 4 (minor version) + four per compatible brand,
+  // so its length is always 16 or more and always a multiple of four. Prose
+  // that happens to carry the marker does not also carry a plausible length
+  // in front of it.
   if (head.length >= 12 && head.subarray(4, 8).toString('latin1') === 'ftyp') {
-    const brand = head.subarray(8, 12).toString('latin1');
-    if (brand === 'qt  ') return 'video/quicktime';
-    if (MP4_BRANDS.has(brand)) return 'video/mp4';
+    const boxBytes = head.readUInt32BE(0);
+    if (boxBytes >= 16 && boxBytes % 4 === 0) {
+      const brand = head.subarray(8, 12).toString('latin1');
+      if (brand === 'qt  ') return 'video/quicktime';
+      if (MP4_BRANDS.has(brand)) return 'video/mp4';
+    }
   }
   return null;
 }

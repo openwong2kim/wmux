@@ -5507,23 +5507,53 @@ describe('WebTerminalServer', () => {
      * the case silently proves nothing, or worse, a stub that blocks parks a
      * read the suite never finishes.
      */
+    /**
+     * The paths every intercepted `open` was asked for, so a case that never
+     * fired says WHY in its failure rather than just asserting zero.
+     */
+    let openedPaths: string[] = [];
+    /**
+     * Wrap the FileHandle this route opens FOR ONE FILE. Scoping matters:
+     * `fs.promises.open` is global and the daemon opens files of its own while
+     * a case runs, so an unscoped `mockImplementationOnce` can be spent on one
+     * of those — the case then silently proves nothing, or parks the suite if
+     * the stub blocks.
+     *
+     * The file is identified by INODE, not by the path string. The handler
+     * opens whatever `realpath` returned, and a test that compares spellings is
+     * one `/tmp` symlink, one mount, one case difference away from matching
+     * nothing at all — silently, because "never intercepted" and "intercepted
+     * and the route behaved" look identical from the assertion side. The path
+     * is still accepted as a fallback for platforms that report no inode.
+     */
     const interceptOpen = (
       target: string,
       wrap: (handle: fs.promises.FileHandle) => Promise<fs.promises.FileHandle>,
     ) => {
       const real = fs.promises.open;
+      const targetIno = fs.statSync(target).ino;
       let used = false;
       const spy = vi.spyOn(fs.promises, 'open');
       spy.mockImplementation((async (...args: Parameters<typeof fs.promises.open>) => {
         const handle = await real(...args);
-        if (used || String(args[0]) !== target) return handle;
+        openedPaths.push(String(args[0]));
+        if (used) return handle;
+        let mine = String(args[0]) === target;
+        if (!mine && targetIno !== 0) {
+          try {
+            mine = (await handle.stat()).ino === targetIno;
+          } catch {
+            mine = false;
+          }
+        }
+        if (!mine) return handle;
         used = true;
         return wrap(handle);
       }) as never);
       return spy;
     };
 
-    beforeEach(() => { dirs = []; });
+    beforeEach(() => { dirs = []; openedPaths = []; });
     afterEach(() => {
       for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
     });
@@ -5669,7 +5699,10 @@ describe('WebTerminalServer', () => {
           if (rss > peak) peak = rss;
         }
         expect(seen).toBe(100 * 1024 * 1024);
-        expect(streams).toBe(1);
+        // Named with the evidence: a bare `toBe(1)` here reports "0 is not 1"
+        // and leaves the next reader guessing whether the route stopped
+        // streaming or the interception never landed.
+        expect({ streams, openedPaths }).toMatchObject({ streams: 1 });
         // The largest single read is one stream chunk (64 KiB), not the 100 MB
         // a `Buffer.allocUnsafe(stat.size)` route would have asked for. The
         // count is left alone deliberately — it tracks the highWaterMark, and
@@ -5934,6 +5967,36 @@ describe('WebTerminalServer', () => {
         expect(res.status).toBe(200);
         expect(res.headers.get('content-type')).toBe('video/mp4');
         await res.body?.cancel();
+      }
+    });
+
+    it('415s a text file that merely contains the ftyp marker', async () => {
+      // The marker is twelve bytes of ASCII a document can hold. What it cannot
+      // also hold in front of it is a plausible box length: a `ftyp` box is
+      // 16 bytes or more and a multiple of four, and `<!--` read as a
+      // big-endian length is neither.
+      const dir = tmpTree();
+      managed.meta.spawnCwd = dir;
+      const info = await startWithTranscript();
+      const h = bearer(info.token as string);
+      const decoys = [
+        Buffer.from('<!--ftypisom this is a comment, not a movie -->'),
+        // Length zero: legal in MP4 only for the LAST box, never for `ftyp`.
+        Buffer.concat([Buffer.alloc(4), Buffer.from('ftypisom'), Buffer.alloc(8)]),
+        // 18: not a multiple of four, so not a box that holds whole brands.
+        (() => {
+          const b = Buffer.alloc(24);
+          b.writeUInt32BE(18, 0);
+          b.write('ftypisom', 4, 'latin1');
+          return b;
+        })(),
+      ];
+      for (const [i, bytes] of decoys.entries()) {
+        const file = path.join(dir, `decoy-${i}.mp4`);
+        fs.writeFileSync(file, bytes);
+        const res = await fetch(fileUrl('s1', file), { headers: h });
+        expect(res.status).toBe(415);
+        expect((await res.json()).error).toBe('unsupported-type');
       }
     });
 
