@@ -7,6 +7,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { finished } from 'node:stream/promises';
 import type { DaemonSessionManager, ManagedSession } from '../DaemonSessionManager';
 // Types only — the registry implementation, its persistence and its
 // headless-terminal dependency chain stay out of this module. The web server is
@@ -145,6 +146,9 @@ function decodeTurnCursor(
  *   GET  /api/sessions/:id/turns/image?path=  one image the transcript named,
  *                              from the pane's spawn cwd or the uploads dir —
  *                              403 unless `--allow-transcript`
+ *   GET  /api/sessions/:id/turns/file?path=   the same reading, widened to the
+ *                              video an agent produced and STREAMED rather than
+ *                              buffered — same gate, same roots
  *   POST /api/stream-ticket    device → short-lived `?ticket=` capability
  *   GET  /api/stream?session=  SSE pane bytes (`?token=`/`?ticket=` — EventSource)
  *   GET  /api/events           attention + approval channel; SSE (`?token=`
@@ -664,6 +668,17 @@ const MAX_BLOCK_BODY_BYTES = 256 * 1024;
  * fallback it already has for every other refusal on this route.
  */
 const MAX_TURN_IMAGE_BYTES = 8 * 1024 * 1024;
+/**
+ * Ceiling on ONE video served to a phone by `/turns/file`.
+ *
+ * Sixteen times the image cap because the things it exists for — a screen
+ * recording, an ffmpeg render an agent just produced — are that much bigger,
+ * and like an image a video is not truncatable. The number is only affordable
+ * because that route STREAMS: the buffered route could not have carried this
+ * cap without holding 128 MB of one request in memory, which is why it keeps
+ * the smaller one.
+ */
+const MAX_TURN_VIDEO_BYTES = 128 * 1024 * 1024;
 /**
  * Who the registry records as having answered, for anything resolved over HTTP.
  *
@@ -1855,6 +1870,11 @@ export class WebTerminalServer {
         // worse off than one that never tried. A daemon predating the route
         // omits the key entirely, which a phone reads as false.
         ...(this.opts?.allowTranscript === true ? { turnImages: true } : {}),
+        // Whether `/api/sessions/:id/turns/file` exists — the same question
+        // `turnImages` answers for its route, behind the same grant, and
+        // omitted rather than `false` for the same reason: that is the shape a
+        // daemon predating the route serves, and a phone reads both as false.
+        ...(this.opts?.allowTranscript === true ? { turnFiles: true } : {}),
         // Whether this daemon can drive a Live Activity over APNs. A phone that
         // sees it true registers a push-to-start token and lets the daemon
         // start the activity; a phone talking to a daemon that omits the key
@@ -1906,6 +1926,9 @@ export class WebTerminalServer {
       }
       if (req.method === 'GET' && rest.endsWith('/turns/image')) {
         return this.handleSessionTurnImage(req, res, rest.slice(0, -'/turns/image'.length));
+      }
+      if (req.method === 'GET' && rest.endsWith('/turns/file')) {
+        return this.handleSessionTurnFile(req, res, rest.slice(0, -'/turns/file'.length));
       }
       if (req.method === 'GET' && rest.endsWith('/turns/block')) {
         return this.handleSessionTurnBlock(req, res, rest.slice(0, -'/turns/block'.length));
@@ -2888,6 +2911,200 @@ export class WebTerminalServer {
         res.destroy();
       } else {
         this.json(res, 404, { error: 'image not found' });
+      }
+    } finally {
+      await handle.close().catch(() => { /* already gone — nothing to release */ });
+    }
+  }
+
+  /**
+   * `GET /api/sessions/:id/turns/file?path=<absolute>` — the bytes behind a
+   * path the transcript named, for the files a phone can play as well as the
+   * ones it can render: everything `/turns/image` serves, plus the ISO BMFF
+   * video containers an agent produces.
+   *
+   * A deliberate COPY of `handleSessionTurnImage`'s gate, not a shared helper
+   * it was rewired to call. Shipped phone builds depend on that route, and the
+   * contract this one was written to (wmux-ios, 2026-09-20) asks in as many
+   * words that it not be touched; refactoring it to reach a new abstraction is
+   * a change to it, whatever the diff says about behaviour.
+   *
+   * Every piece of the boundary is load-bearing here for the reasons spelled
+   * out on that handler: the roots are `meta.spawnCwd` ∪ `deps.uploadsDir` and
+   * NOT `meta.cwd` (OSC 7 lets any process in the pane move that one), both
+   * sides are realpath'd, containment is `path.relative` and never a string
+   * prefix, and ONE handle carries the request from the gate to the last byte.
+   *
+   * Two things differ from the image route, both forced by the size this one
+   * accepts:
+   *
+   * - The bytes are STREAMED. A 128 MB cap with `Buffer.allocUnsafe(size)`
+   *   behind it is a single request that can hold 128 MB.
+   * - The type is sniffed BEFORE the cap is applied, because the cap depends on
+   *   it. A consequence worth naming: a 200 MB text file is refused as
+   *   `unsupported-type`, not `file-too-large`.
+   */
+  private async handleSessionTurnFile(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    sessionId: string,
+  ): Promise<void> {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) {
+      this.json(res, 403, {
+        error: 'transcript-disabled: server started without --allow-transcript',
+        detail: 'restart with: wmux web --allow-transcript <your other flags>',
+      });
+      return;
+    }
+    const managed = this.readableSession(sessionId);
+    if (!managed) {
+      this.json(res, 404, { error: 'session not found' });
+      return;
+    }
+
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const raw = url.searchParams.get('path');
+    if (raw === null || raw.trim() === '' || raw.includes('\0') || !path.isAbsolute(raw)) {
+      this.json(res, 400, {
+        error: 'bad-file-ref',
+        detail: 'path must be an absolute filesystem path',
+      });
+      return;
+    }
+
+    const roots = [managed.meta.spawnCwd, this.deps.uploadsDir].filter(
+      (dir): dir is string => typeof dir === 'string' && dir.length > 0,
+    );
+    if (roots.length === 0) {
+      this.json(res, 404, { error: 'file not found' });
+      return;
+    }
+
+    let real: string;
+    try {
+      real = await fs.promises.realpath(raw);
+    } catch {
+      this.json(res, 404, { error: 'file not found' });
+      return;
+    }
+    let contained = false;
+    for (const root of roots) {
+      let realRoot: string;
+      try {
+        realRoot = await fs.promises.realpath(root);
+      } catch {
+        continue;
+      }
+      const rel = path.relative(realRoot, real);
+      if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) continue;
+      contained = true;
+      break;
+    }
+    if (!contained) {
+      this.json(res, 404, { error: 'file not found' });
+      return;
+    }
+
+    let handle: fs.promises.FileHandle;
+    try {
+      handle = await fs.promises.open(
+        real,
+        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
+      );
+    } catch {
+      this.json(res, 404, { error: 'file not found' });
+      return;
+    }
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) {
+        this.json(res, 404, { error: 'file not found' });
+        return;
+      }
+      const head = Buffer.alloc(IMAGE_MAGIC_BYTES);
+      const { bytesRead } = await handle.read(head, 0, IMAGE_MAGIC_BYTES, 0);
+      // The BYTES decide, never the extension — and before the cap, because
+      // which cap applies is a fact about the type.
+      const contentType = sniffTurnFileContentType(head.subarray(0, bytesRead));
+      if (!contentType) {
+        this.json(res, 415, {
+          error: 'unsupported-type',
+          detail: 'leading bytes are not PNG, JPEG, GIF, WebP, MP4 or QuickTime',
+        });
+        return;
+      }
+      const cap = contentType.startsWith('video/') ? MAX_TURN_VIDEO_BYTES : MAX_TURN_IMAGE_BYTES;
+      if (stat.size > cap) {
+        // The cap is the only number a caller learns, never how big the thing
+        // behind the path really is.
+        this.json(res, 413, {
+          error: 'file-too-large',
+          detail: `the cap is ${cap} bytes`,
+        });
+        return;
+      }
+
+      // Content-Length before the first byte: the phone's progress bar reads
+      // it, and it is the size the gate approved rather than whatever the file
+      // turns out to be — the two checks after the stream are what reconcile
+      // them.
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        ...this.securityHeaders(),
+        'Content-Length': String(stat.size),
+      });
+      // `autoClose: false` or the stream closes the handle at 'end', and the
+      // probe below — which is the whole point of holding one handle — would
+      // read from a closed descriptor on every SUCCESSFUL transfer.
+      const stream = handle.createReadStream({
+        start: 0,
+        end: stat.size - 1,
+        autoClose: false,
+      });
+      // `pipe` unpipes when the response closes but never destroys its source,
+      // so a phone that leaves mid-download would otherwise leave the wait
+      // below pending for ever with the handle still held. Destroying turns the
+      // walk-out into a rejection the catch already answers.
+      const abort = (): void => {
+        stream.destroy();
+      };
+      res.once('close', abort);
+      try {
+        // `{ end: false }`: whether this response gets a clean end or a cut
+        // socket is decided by the probe, and pipe's default would have ended
+        // it before the question was asked.
+        stream.pipe(res, { end: false });
+        await finished(stream);
+      } finally {
+        res.off('close', abort);
+      }
+      if (res.destroyed) return;
+      // One byte read PAST the approved size — positionally, so the stream's
+      // own cursor is irrelevant. Anything there means the file grew under us,
+      // which makes it something the gate never approved. The 200 is already on
+      // the wire, so there is no JSON left to answer with: cutting the socket
+      // is the honest end.
+      const probe = await handle.read(Buffer.alloc(1), 0, 1, stat.size);
+      if (probe.bytesRead > 0) {
+        res.destroy();
+        return;
+      }
+      // And the other direction, which the buffered route answers with a 404
+      // (`filled < body.length`): a file that SHRANK sends fewer bytes than the
+      // Content-Length already promised, and a phone holding that promise waits
+      // for a remainder that is never coming. Same cut, same reason — what the
+      // gate approved is not what was there.
+      if (stream.bytesRead !== stat.size) {
+        res.destroy();
+        return;
+      }
+      res.end();
+    } catch {
+      if (res.headersSent) {
+        res.destroy();
+      } else {
+        this.json(res, 404, { error: 'file not found' });
       }
     } finally {
       await handle.close().catch(() => { /* already gone — nothing to release */ });
@@ -5232,6 +5449,33 @@ function sniffImageContentType(head: Buffer): string | null {
     head.subarray(8, 12).toString('latin1') === 'WEBP'
   ) {
     return 'image/webp';
+  }
+  return null;
+}
+
+/** The ISO BMFF major brands `/turns/file` hands back as `video/mp4`. */
+const MP4_BRANDS = new Set(['isom', 'iso2', 'mp41', 'mp42', 'avc1', 'mp4v', 'M4V ']);
+
+/**
+ * The `Content-Type` for a blob `/turns/file` is about to serve: everything
+ * `/turns/image` accepts, plus the ISO BMFF containers an agent writes (a
+ * screen recording, an ffmpeg render) — or null for anything else.
+ *
+ * Delegates rather than duplicates, and leaves `sniffImageContentType` exactly
+ * as narrow as it was. That one backs a route already in shipped phone builds
+ * whose promise is "what comes back renders as an image"; widening it to video
+ * would break that promise for every client that never asked for it.
+ */
+function sniffTurnFileContentType(head: Buffer): string | null {
+  const image = sniffImageContentType(head);
+  if (image) return image;
+  // ISO BMFF puts a `ftyp` box at byte 4 and its major brand at byte 8. The
+  // first four bytes are that box's own length and say nothing about the
+  // format, so unlike every other entry here the marker is not at offset 0.
+  if (head.length >= 12 && head.subarray(4, 8).toString('latin1') === 'ftyp') {
+    const brand = head.subarray(8, 12).toString('latin1');
+    if (brand === 'qt  ') return 'video/quicktime';
+    if (MP4_BRANDS.has(brand)) return 'video/mp4';
   }
   return null;
 }

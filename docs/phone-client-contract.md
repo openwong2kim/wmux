@@ -721,6 +721,60 @@ Responses are `no-store`. Cache the bytes in your own process for as long as the
 session is open if you like, but revoking the transcript grant must not leave a
 replayable copy in a browser or a proxy.
 
+#### Loading a video (or any media file) the transcript named
+
+```
+GET /api/sessions/<id>/turns/file?path=<absolute path>
+  → 200 video/mp4 | video/quicktime | image/png | image/jpeg | image/gif | image/webp
+        (Cache-Control: no-store, Content-Length, streamed)
+  → 400 {error: 'bad-file-ref', detail}
+  → 403 {error: 'transcript-disabled: …'}
+  → 404 {error: 'session not found'} | {error: 'file not found'}
+  → 413 {error: 'file-too-large', detail}
+  → 415 {error: 'unsupported-type', detail}
+```
+
+The same reading as `/turns/image`, widened to the files an agent PRODUCES
+rather than only the ones it can draw: a screen recording, an ffmpeg render.
+`/turns/image` answers 415 for those, which is why this route exists instead of
+that one growing.
+
+**Everything about the gate is identical** — same `--allow-transcript`, same
+`transcript-disabled:` prefix on the 403, same two directories (the pane's
+**spawn** cwd and the uploads directory, never `meta.cwd`), same single answer
+for outside/missing/directory/unreadable. Only the tag differs: `file not found`
+and `bad-file-ref`, so a client's two error maps — and its logs — never collapse
+the routes into one.
+
+**Gate on `turnFiles` from `/api/config`**, exactly as you gate the image route
+on `turnImages`. A daemon predating this route omits the key; read a missing key
+as `false`.
+
+**The bytes decide, and the brand decides which video.** An ISO BMFF `ftyp` box
+with a `qt  ` major brand is `video/quicktime`; `isom`, `iso2`, `mp41`, `mp42`,
+`avc1`, `mp4v` and `M4V ` are `video/mp4`. If you name a cache file from this
+header, that split is load-bearing: a QuickTime movie saved as `.mp4` will not
+open.
+
+**Two caps, by kind**: 8 MiB for an image (the same one `/turns/image` enforces),
+128 MiB for a video. The refusal names the cap and never the file's real size.
+
+**The sniff runs before the cap**, because which cap applies is a fact about the
+type. So a 200 MB text file is `415 unsupported-type`, not `413`. Both are
+permanent for that file, but they are not the same message: 415 will never
+succeed, while 413 is a limit worth naming to the user.
+
+**Ranges are not supported and `Accept-Ranges` is not advertised.** Download the
+file, then play it locally. A seek against this route is a fresh whole-file GET,
+which is not what you want on cellular.
+
+**The response can be cut mid-body.** The route streams the exact number of
+bytes the gate approved and re-checks the file afterwards; if it grew or shrank
+under the transfer, the connection is closed rather than finished, because the
+`Content-Length` already promised is no longer the truth. Treat it as a transport
+failure and retry once — a file an agent is still writing is the common cause,
+and it succeeds on its own once the write lands.
+
 ---
 
 ## 6. Approvals
