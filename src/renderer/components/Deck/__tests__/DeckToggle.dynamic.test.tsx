@@ -62,19 +62,22 @@ describe('DeckToggle', () => {
     expect(useStore.getState().channelDockVisible).toBe(false);
   });
 
-  it('points its arrow at what pressing it does', () => {
-    // Deck on the right (sidebar left): collapsed « pulls it out, open » pushes
-    // it back to the edge.
+  it('names the panel and exposes its open state and controlled region', () => {
     mount();
-    expect(btn().textContent).toContain('«');
-    act(() => { useStore.setState({ channelDockVisible: true }); });
-    expect(btn().textContent).toContain('»');
+    expect(btn().textContent).toContain('Tools panel');
+    expect(btn().getAttribute('aria-expanded')).toBe('false');
+    expect(btn().hasAttribute('aria-controls')).toBe(false);
+    act(() => { btn().click(); });
+    expect(btn().getAttribute('aria-expanded')).toBe('true');
+    expect(btn().getAttribute('aria-controls')).toBe('wmux-tools-panel');
+    expect(btn().getAttribute('aria-label')).toBe('Hide tools panel');
   });
 
-  it('mirrors when the deck sits on the left edge', () => {
-    act(() => { useStore.setState({ sidebarPosition: 'right' }); });
+  it('shows the actual panel side when the sidebar is moved', () => {
     mount();
-    expect(btn().textContent).toContain('»');
+    expect(btn().getAttribute('data-panel-side')).toBe('right');
+    act(() => { useStore.setState({ sidebarPosition: 'right' }); });
+    expect(btn().getAttribute('data-panel-side')).toBe('left');
   });
 
   it('shows no dot at zero — no dead gauges', () => {

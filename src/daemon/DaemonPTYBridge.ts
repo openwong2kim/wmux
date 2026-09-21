@@ -89,6 +89,7 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private explicitTerminalStatus = false;
   private submittedTurnPending = false;
+  private lastTurnStartedAt = 0;
 
   /**
    * Which terminal status settled the pane, while one has. Read only to keep
@@ -200,6 +201,8 @@ export class DaemonPTYBridge extends EventEmitter {
     const hasSubmitBoundary = this.scanSubmittedInput(data);
     if (!forceSubmitted && !hasSubmitBoundary) return;
 
+    this.lastTurnStartedAt = Date.now();
+
     this.explicitTerminalStatus = false;
     this.settledStatus = null;
     this.awaitingHuman = false;
@@ -219,8 +222,9 @@ export class DaemonPTYBridge extends EventEmitter {
    * Terminal states settle the turn and block later byte-only redraws;
    * explicit running activity opens the gate again for autonomous work.
    */
-  noteAgentStatus(status: AgentEventStatus): void {
+  noteAgentStatus(status: AgentEventStatus, authoritative = false): void {
     if (status === 'running') {
+      if (authoritative) this.lastTurnStartedAt = Date.now();
       this.explicitTerminalStatus = false;
       this.settledStatus = null;
       // `awaitingHuman` deliberately survives. HookIngest projects
@@ -271,6 +275,11 @@ export class DaemonPTYBridge extends EventEmitter {
   /** Current stdin generation; every non-empty write advances it once. */
   getInputRevision(): number {
     return this.inputRevision;
+  }
+
+  /** Actual submitted input/hook work, excluding terminal redraw activity. */
+  getLastTurnStartedAt(): number {
+    return this.lastTurnStartedAt;
   }
 
   private scanSubmittedInput(data: string): boolean {

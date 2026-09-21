@@ -369,3 +369,12 @@ export function IconSparkles({ size = 14 }: { size?: number }) {
     </Icon>
   );
 }
+
+/** Remote access across a desktop and a phone. */
+export function IconRemoteDevices({ size = 14 }: { size?: number }) {
+  return <Icon size={size}>
+    <path d="M7.5 9H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v1M5 9v3m-2 0h4" />
+    <rect x="9" y="5.5" width="4" height="7" rx=".8" />
+    <path d="M10.7 10.8h.6" />
+  </Icon>;
+}

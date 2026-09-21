@@ -1,24 +1,10 @@
-// ─── Command Deck — dock tab bar (Phase 1 P1a) ───────────────────────────────
-//
-// Tab header at the top of the right dock: [Orchestrator] [Channels].
-// `commander` (Orchestrator) is the default (the LLM-less command composer);
-// Channels holds the classic list + conversation and is hideable via Settings,
-// so the visible set is 1–2 tabs. Git·Review는 시안 A(2026-07-20)로 중앙 페인
-// surface 탭으로 이관됐다. Warm rounded count badge: Channels = unread. Pure +
-// props-driven so the tab-switch behavior is unit-testable under jsdom without
-// the store-connected dock body.
-//
-// Icons, not words (owner decision 2026-08-14, orca): the strip used to read
-// `Agent (Default) ▾ | Git | Channels` and three text labels ate the whole
-// header of a 248–320px column. Each tab is now a 36px glyph cell — the name
-// (and the orchestrator's model) moved into the tooltip/aria-label, the steel
-// underline still says which one is active, and the unread badge moved to the
-// glyph's corner.
+// Tool-panel navigation: readable labels and a quiet segmented selection.
+// The active Agent tab retains its model menu; web remains a separate action.
 
 import { useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
 import { IconRobot, IconGitBranch, IconHash } from '../icons';
-import { DECK_ICON_BUTTON, DECK_ICON_BADGE, deckIconTone, formatDeckCount } from './deckIconStyles';
+import { formatDeckCount } from './deckIconStyles';
 import type { DeckTab } from '../../stores/slices/deckSlice';
 
 export interface DeckTabsProps {
@@ -34,7 +20,7 @@ export interface DeckTabsProps {
   showChannels?: boolean;
   /** Non-tab glyphs that sit right after the tabs (the wmux-web toggle). They
    *  are not tabs — web is a popover, not a deck view — so they render outside
-   *  the tablist semantics but inside the same 36px strip. */
+   *  the tablist semantics but inside the same header. */
   afterTabs?: React.ReactNode;
   /** Right-aligned header controls (model chip + collapse button). Rendered
    *  after the tabs, pinned to the trailing edge — the deck's one header row,
@@ -112,18 +98,18 @@ export function DeckTabs({
   return (
     <div
       data-deck-tabs
-      className="flex items-stretch shrink-0 border-b border-[var(--bg-surface)]"
+      className="wmux-deck-tabs"
       style={{ borderColor: 'var(--border-soft)' }}
       {...tokenAttrs('bgSurface', 'border')}
     >
       {/* `tablist` owns the tabs and NOTHING else: the web glyph and the
           header controls are not tabs, and a tablist that contains them makes
           AT announce "1 of 5" and wire arrow keys to buttons that aren't tabs.
-          They are siblings of the list, inside the same 36px strip. */}
+          They are siblings of the list inside the same header. */}
       <div
         role="tablist"
         aria-label={t('deck.tabsAriaLabel') || 'Command deck tabs'}
-        className="flex items-stretch shrink-0"
+        className="wmux-deck-tablist"
       >
       {tabs.map((tab) => {
         const isActive = active === tab.id;
@@ -131,13 +117,10 @@ export function DeckTabs({
         // Agent 탭만 모델 인라인 드롭다운을 가진다(활성 상태에서 재클릭 시 토글).
         const tabHasModelMenu = isCommander && canModelMenu;
         const baseLabel = t(tab.labelKey) || tab.fallback;
-        // 라벨은 아이콘 탭의 툴팁/aria로 간다. Agent는 현재 모델을 괄호로 덧붙여
-        // `Agent (Sonnet 5)` — 글자가 사라진 만큼 모델을 확인할 곳이 여기뿐이다.
+        // Keep the current model in the accessible name and tooltip.
         const label = isCommander && commanderModelLabel ? `${baseLabel} (${commanderModelLabel})` : baseLabel;
         const unread = tab.id === 'channels' ? formatDeckCount(channelsUnread) : null;
-        // The badge digit is decoration to a screen reader — with the text
-        // label gone it has to ride in the accessible name, or the count is
-        // simply not announced (the deleted sidebar rows read it as text).
+        // Include unread activity in the accessible name as well as the badge.
         const ariaLabel = unread ? `${label} (${unread} unread)` : label;
         const button = (
           <button
@@ -155,26 +138,21 @@ export function DeckTabs({
               if (tabHasModelMenu && isActive) setModelMenuOpen((v) => !v);
               else onSelect(tab.id);
             }}
-            className={`${DECK_ICON_BUTTON} ${deckIconTone(isActive, unread !== null)}`}
+            className="wmux-deck-tab"
             {...(isActive ? tokenAttrs('textMain', 'text') : tokenAttrs('textMuted', 'text'))}
           >
-            <tab.Icon size={15} />
+            <tab.Icon size={16} />
+            <span className="wmux-deck-tab-label">{baseLabel}</span>
             {/* 활성 Agent 탭에만 붙는 힌트 — 재클릭하면 모델 메뉴가 열린다는 표시. */}
             {tabHasModelMenu && isActive && (
-              <span aria-hidden="true" className="absolute bottom-0.5 right-1 text-[10px] opacity-70">▾</span>
+              <span aria-hidden="true" className="wmux-deck-tab-chevron">▾</span>
             )}
             {unread && (
-              <span aria-hidden="true" data-deck-tab-unread className={DECK_ICON_BADGE} {...tokenAttrs('accent', 'bg')}>
+              <span aria-hidden="true" data-deck-tab-unread className="wmux-deck-tab-count" {...tokenAttrs('accent', 'bg')}>
                 {unread}
               </span>
             )}
-            {isActive && (
-              <span
-                aria-hidden="true"
-                className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--accent-blue)]"
-                {...tokenAttrs('accentSecondary', 'bg')}
-              />
-            )}
+
           </button>
         );
         if (!tabHasModelMenu) return button;
@@ -186,7 +164,7 @@ export function DeckTabs({
                 role="menu"
                 aria-label={t('deck.orchestratorModel') || 'Orchestrator model'}
                 data-commander-model-menu
-                className="absolute left-1 top-full mt-1 z-50 min-w-[128px] rounded-md border py-1 shadow-lg bg-[var(--bg-surface)]"
+                className="absolute left-0 top-full mt-2 z-50 min-w-[160px] rounded-lg border p-1 shadow-lg bg-[var(--bg-surface)]"
                 style={{ borderColor: 'var(--border-soft)' }}
                 {...tokenAttrs('bgSurface', 'bg')}
               >
@@ -204,7 +182,7 @@ export function DeckTabs({
                         onCommanderModelSelect?.(o.value);
                         setModelMenuOpen(false);
                       }}
-                      className={`flex items-center justify-between w-full px-2.5 py-1 text-left text-[11px] font-medium transition-colors ${
+                      className={`flex items-center justify-between w-full rounded-md px-3 py-2 text-left text-[13px] font-medium transition-colors ${
                         sel
                           ? 'text-[var(--text-main)] font-semibold'
                           : 'text-[var(--text-sub)] hover:text-[var(--text-main)]'
@@ -226,7 +204,7 @@ export function DeckTabs({
       })}
       </div>
       {afterTabs && (
-        <div data-deck-header-tools className="flex items-stretch shrink-0">
+        <div data-deck-header-tools className="wmux-deck-header-tools">
           {afterTabs}
         </div>
       )}

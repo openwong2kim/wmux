@@ -27,7 +27,7 @@ export function resolveActivePanePtyId(
   if (!surface) return null;
   // Empty ptyId means the surface is mid-create / cleared by reconcile — no
   // xterm is registered for it yet, so there is nothing to focus.
-  if (!surface.ptyId) return null;
+  if (!surface.ptyId || surface.viewMode === 'chat') return null;
   // Browser / editor surfaces have no xterm. The registry lookup below would
   // miss them anyway, but skipping here keeps the retry loop from spinning
   // 10 frames every time the user lands on a browser pane.
@@ -68,7 +68,7 @@ export function computeFocusKey(
   // unrelated edits (adding/removing OTHER workspaces) and needlessly re-steal
   // focus to the terminal.
   const activeInGrid = state.multiviewIds.length >= 2 && state.multiviewIds.includes(state.activeWorkspaceId);
-  return `${state.activeWorkspaceId} ${ws.activePaneId} ${leaf?.activeSurfaceId ?? ''} ${surface?.ptyId ?? ''} ${activeInGrid ? 'grid' : 'single'}`;
+  return `${state.activeWorkspaceId} ${ws.activePaneId} ${leaf?.activeSurfaceId ?? ''} ${surface?.ptyId ?? ''} ${activeInGrid ? 'grid' : 'single'}${surface?.viewMode === 'chat' ? ' chat' : ''}`;
 }
 
 export interface FocusDriverDeps {

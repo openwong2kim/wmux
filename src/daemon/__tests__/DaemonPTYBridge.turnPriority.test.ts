@@ -316,6 +316,18 @@ describe('DaemonPTYBridge turn priority', () => {
   });
 
   describe('noteInput — what counts as a submitted turn', () => {
+    it('timestamps actual work for chat completion without treating paste or redraw as a new turn', () => {
+      expect(bridge.getLastTurnStartedAt()).toBe(0);
+      bridge.noteInput(`${PASTE_START}draft\nbody${PASTE_END}`);
+      bridge.noteAgentStatus('running');
+      expect(bridge.getLastTurnStartedAt()).toBe(0);
+      bridge.noteInput('\r');
+      const submitted = Date.now();
+      expect(bridge.getLastTurnStartedAt()).toBe(submitted);
+      vi.advanceTimersByTime(1000);
+      bridge.noteAgentStatus('running', true);
+      expect(bridge.getLastTurnStartedAt()).toBe(submitted + 1000);
+    });
     it('ordinary typing does NOT re-open the gate', () => {
       bridge.noteAgentStatus('waiting');
       bridge.noteInput('git st');
@@ -513,4 +525,3 @@ describe('sparse-output turns after an explicit running edge (#1045)', () => {
     expect(active).toEqual(['sess-1']);
   });
 });
-

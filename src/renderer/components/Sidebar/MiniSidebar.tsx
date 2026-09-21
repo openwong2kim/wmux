@@ -8,8 +8,9 @@ import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { orderByAttention } from './attentionOrder';
 import { tokenAttrs } from '../../themes';
 import { expandDirection } from './sidebarGlyphs';
-import { IconPlus, IconChevronDir } from '../icons';
+import { IconPlus, IconChevronDir, IconGear } from '../icons';
 import { FOCUS_RING } from '../focusRing';
+import SidebarNavigation from './SidebarNavigation';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PresetPicker from './PresetPicker';
 
@@ -43,19 +44,7 @@ export default function MiniSidebar() {
   const multiviewIds = useStore((s) => s.multiviewIds);
   const reorderWorkspace = useStore((s) => s.reorderWorkspace);
   const notifications = useStore((s) => s.notifications);
-  const totalUnread = notifications.filter((n) => !n.read).length;
-  // A2A channels (U7) — aggregated unread across every channel the
-  // current renderer is a member of. The slice's `channelUnread` map
-  // is keyed by channelId; we sum here. Mirrors `sumUnread` in
-  // ChannelsPanel.tsx — duplicated rather than shared because the two
-  // surfaces have different store-read cadences (panel re-renders on
-  // every channel slice mutation, MiniSidebar only on its own
-  // selectors).
-  const channelUnread = useStore((s) => s.channelUnread);
-  const totalChannelUnread = Object.values(channelUnread).reduce(
-    (acc, n) => acc + (n > 0 ? n : 0),
-    0,
-  );
+  const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
 
   // #1284 — the rail's + opens the same PresetPicker as the titlebar +. With
   // the sidebar collapsed the titlebar + is clipped by its 48px segment, so
@@ -88,7 +77,8 @@ export default function MiniSidebar() {
   const [dropIndicator, setDropIndicator] = useState<{ index: number; side: 'above' | 'below' } | null>(null);
 
   return (
-    <div className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 48, borderColor: 'var(--border-soft)' }} {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}>
+    <div className={`wmux-sidebar flex flex-col shrink-0 h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 48, borderColor: 'var(--border-soft)' }} {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}>
+      <SidebarNavigation compact />
       {/* Header — new workspace button */}
       <button
         ref={plusBtnRef}
@@ -260,46 +250,17 @@ export default function MiniSidebar() {
 
       {/* Footer — expand + status */}
       <div className="flex flex-col items-center gap-2 py-2 border-t border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
-        {/* A2A channels aggregated unread (U7). Sits above the
-            notification badge so the channels icon gets first dibs
-            on user attention — a channel-message unread is a higher
-            signal than a generic terminal notification. */}
-        {totalChannelUnread > 0 && (
-          <button
-            className="w-8 h-8 rounded-[4px] flex items-center justify-center bg-[var(--bg-surface)] text-[var(--text-sub)] text-[10px] font-bold"
-            onClick={() => useStore.getState().toggleSidebar()}
-            title={
-              t('sidebar.channelUnreadCount', { count: totalChannelUnread }) ??
-              `${totalChannelUnread} unread channel ${totalChannelUnread === 1 ? 'message' : 'messages'}`
-            }
-            aria-label={
-              t('sidebar.channelUnreadCount', { count: totalChannelUnread }) ??
-              `${totalChannelUnread} unread channel ${totalChannelUnread === 1 ? 'message' : 'messages'}`
-            }
-            data-mini-channel-unread
-          >
-            <span aria-hidden="true">#</span>
-            <span className="ml-0.5" data-mini-channel-unread-count>
-              {totalChannelUnread > 99 ? '99+' : totalChannelUnread}
-            </span>
-          </button>
-        )}
-
-        {/* Unread badge */}
-        {totalUnread > 0 && (
-          <button
-            className="w-8 h-8 rounded-[4px] flex items-center justify-center bg-[var(--bg-surface)] text-[var(--text-sub)] text-[10px] font-bold"
-            onClick={() => useStore.getState().toggleNotificationPanel()}
-            title={t('sidebar.unreadCount', { count: totalUnread })}
-            // The visible content is a bare number; the sibling channel badge
-            // one row up already names itself, and a screen reader announcing
-            // "3, button" beside "3 unread channel messages, button" cannot
-            // tell the two apart.
-            aria-label={t('sidebar.unreadCount', { count: totalUnread })}
-          >
-            {totalUnread > 99 ? '99+' : totalUnread}
-          </button>
-        )}
+        <button
+          type="button"
+          className={`ui-icon-btn w-8 h-8 ${FOCUS_RING}`}
+          aria-label={t('settings.title')}
+          title={t('settings.title')}
+          data-onboarding-target="settings-button"
+          aria-pressed={settingsPanelVisible}
+          onClick={() => useStore.getState().toggleSettingsPanel()}
+        >
+          <IconGear size={16} />
+        </button>
 
         {/* Expand sidebar button — same position as collapse button in full sidebar */}
         <button

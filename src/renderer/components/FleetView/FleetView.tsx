@@ -22,29 +22,13 @@ import FleetCard from './FleetCard';
 import ApprovalInboxList from './ApprovalInboxList';
 import RemoteInboxList from './RemoteInboxList';
 
-/**
- * S-C1 Fleet View — the cockpit. An always-on chrome panel (Ctrl+Shift+A
- * toggles it) that shows every agent across every workspace, with the blocked
- * ones floated to the top. Click a card → jump straight to that pane. The
- * "Approvals" tab is a v2 stub (the unified A2A + MCP approval inbox).
- *
- * NB2 파동2 사이클 A: 전체화면 모달 → 상시 크롬 전환. ChannelDock과 같은 flex
- * 형제 패턴으로 AppLayout에 배치돼 페인을 reflow한다(더 이상 fixed 오버레이가
- * 아니라 워크스페이스 사이드바 반대편의 고정폭 사이드 패널). 백드롭·모달 포커스
- * 트랩은 제거됐고, 키보드 상호작용은 패널에 포커스가 있을 때만 가로챈다 —
- * 다른 페인으로 Tab 이동이 자유롭다.
- *
- * Mount-gated by AppLayout on `fleetViewVisible`, so this component (and its
- * store subscriptions / selector) only exists while the cockpit is open.
- */
+/** Fleet is a non-modal overlay above the tools dock. AppLayout owns its
+ * positioning, so opening it never resizes terminal panes. The covered dock
+ * stays mounted but inert; close restores it and the original focus target.
+ * Subscriptions and polling run only while Fleet is open. */
 export default function FleetView() {
   const t = useT();
   const setVisible = useStore((s) => s.setFleetViewVisible);
-  // 상시 크롬 엣지 미러링: 워크스페이스 사이드바는 sidebarPosition에, 이 패널은
-  // 그 반대편에 앉는다(ChannelDock과 동일 규칙). 사이드바가 왼쪽(기본)이면 패널은
-  // 오른쪽이고 콘텐츠 경계선은 왼쪽을 향한다(border-l).
-  const sidebarPosition = useStore((s) => s.sidebarPosition);
-  const dockOnRight = sidebarPosition !== 'right';
   const workspaces = useStore((s) => s.workspaces);
   const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
   // Hook-driven per-pane activity line (fleet-activity-line-hook). Subscribed
@@ -451,9 +435,7 @@ export default function FleetView() {
     }, [tab, panes.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible]);
 
   return (
-    // 상시 크롬 패널: fixed 오버레이·백드롭 없이 AppLayout flex 트리의 형제로서
-    // 폭을 차지해 페인을 reflow한다. role=region(모달 아님), 사이드바 반대편 엣지에
-    // 붙는다. 키보드는 포커스가 이 패널 안에 있을 때만 onKeyDownCapture로 가로챈다.
+    // Layout-neutral container positioned by AppLayout.
     <div
       ref={panelRef}
       tabIndex={-1}
@@ -461,19 +443,22 @@ export default function FleetView() {
       aria-label={t('fleet.title')}
       data-fleet-view
       onKeyDownCapture={handleKeyDown}
-      className={`flex flex-col h-full overflow-hidden outline-none ${dockOnRight ? 'border-l' : 'border-r'}`}
+      className="wmux-fleet-panel flex flex-col h-full overflow-hidden outline-none"
       style={{
-        width: 'clamp(300px, 30vw, 460px)',
+        width: '100%',
         backgroundColor: 'var(--bg-base)',
         borderColor: 'var(--bg-surface)',
       }}
     >
         {/* Header: title + "N need you" chip */}
         <div
-          className="flex items-center gap-3 px-4 py-3"
+          className="wmux-fleet-header"
           style={{ borderBottom: '1px solid var(--bg-surface)' }}
         >
-          <span className="text-title text-[var(--text-main)]">{t('fleet.title')}</span>
+          <div className="min-w-0">
+            <h2 className="wmux-fleet-title">{t('fleet.title')}</h2>
+            <p className="wmux-fleet-summary">{t('fleet.overview', { count: panes.length, running: panes.filter((pane) => pane.agentStatus === 'running').length })}</p>
+          </div>
           {needsCount > 0 && (
             <span
               className="text-[11px] font-medium px-2 py-0.5 rounded-full"
@@ -516,7 +501,7 @@ export default function FleetView() {
 
         {/* Tabs: Fleet (v1) + Approvals (v2 stub) */}
         <div
-          className="flex items-center gap-1 px-3 pt-1.5"
+          className="wmux-fleet-tabs"
           role="tablist"
           style={{ borderBottom: '1px solid var(--bg-surface)' }}
         >
@@ -527,10 +512,10 @@ export default function FleetView() {
               role="tab"
               aria-selected={tab === id}
               onClick={() => setTab(id)}
-              className="px-3 py-1.5 text-xs rounded-t-md transition-colors"
+              className="wmux-fleet-tab"
               style={{
                 color: tab === id ? 'var(--text-main)' : 'var(--text-muted)',
-                borderBottom: tab === id ? '2px solid var(--accent-blue)' : '2px solid transparent',
+                backgroundColor: tab === id ? 'var(--bg-surface)' : 'transparent',
               }}
             >
               {/* Explicit per-tab key (NOT a `fleet.tab.${id}` template) so a missing
@@ -567,11 +552,8 @@ export default function FleetView() {
               ref={gridRef}
               role="listbox"
               aria-label={t('fleet.title')}
-              className="grid gap-3"
-              // 상시 크롬 폭(모달 92vw/960px보다 좁음)에 맞춰 카드 최소폭을 축소해
-              // 좁은 패널에서도 그리드가 넘치지 않게 한다. 카드 내부는 전부 truncate라
-              // 200px에서도 레이아웃이 깨지지 않는다(기능 불변, 시각은 자연히 변화).
-              style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}
+              className="wmux-fleet-grid"
+
             >
               {panes.map((card, idx) => (
                 <FleetCard

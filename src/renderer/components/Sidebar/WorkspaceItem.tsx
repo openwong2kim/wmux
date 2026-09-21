@@ -98,7 +98,7 @@ export function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElem
     >
       {clean && <span style={{ color: 'var(--accent-green)' }}>●</span>}
       {/* Uncommitted files are information, not attention: amber is reserved for "running". */}
-      {sync.dirty > 0 && <span style={{ color: 'var(--text-muted)' }}>·{sync.dirty}</span>}
+      {sync.dirty > 0 && <span style={{ color: 'var(--text-subtle)' }}>·{sync.dirty}</span>}
       {ahead > 0 && <span style={{ color: 'var(--accent-blue)' }}>↑{ahead}</span>}
       {behind > 0 && <span style={{ color: 'var(--accent-red)' }}>↓{behind}</span>}
     </span>
@@ -126,7 +126,7 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
       {/* Git 신호등 행 — 이름 바로 아래 전용 줄(owner 2026-07-20: 행이 위아래로
           두꺼워져도 OK). 브랜치·신호등·PR을 한 줄에, 포트·알림은 다음 줄로. */}
       {metadata.gitBranch && (
-        <div className="flex items-center gap-2 mt-1 text-[10px] font-mono text-[var(--text-muted)] min-w-0" data-git-signal-line>
+        <div className="flex items-center gap-2 mt-0.5 text-[11px] leading-4 font-mono tabular-nums text-[var(--text-subtle)] min-w-0" data-git-signal-line>
           <span
             className="min-w-0 truncate"
             title={`${t('workspace.gitBranch')}: ${metadata.gitBranch}${metadata.gitIsWorktree ? ` (${t('workspace.gitWorktree')})` : ''}`}
@@ -734,10 +734,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       <div
         draggable={!sidebarAttentionFirst}
         {...tokenAttrs('bgSurface', 'bg')}
-        className={`group sidebar-row px-3 py-1 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
+        className={`group sidebar-row px-3 py-1.5 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive
             ? 'sidebar-row-active text-[var(--text-main)]'
-            : 'text-[var(--text-subtle)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
+            : 'text-[var(--text-sub)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-main)]'
         }`}
         style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
         onClick={handleClick}
@@ -788,7 +788,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               style={unverifiable ? undefined : { backgroundColor: st ? st.dotVar : isActive ? 'var(--accent-green)' : 'var(--text-muted)' }}
               title={unverifiable
                 ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
-                : undefined}
+                : st ? t(st.labelKey) : undefined}
             />
           );
         })()}
@@ -816,7 +816,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     idle minutes too, which is where they go when the roster
                     chip takes their place on the row (#997). */}
                 <span
-                  className={`font-sans text-[13px] truncate ${unreadCount > 0 ? 'font-semibold' : 'font-medium'} ${idleLabel && !hasRoster ? 'text-[var(--text-sub)]' : ''}`}
+                  className={`font-sans text-[13px] truncate ${unreadCount > 0 || isActive ? 'font-semibold' : 'font-medium'} ${idleLabel && !hasRoster ? 'text-[var(--text-sub)]' : ''}`}
                   title={idleLabel ? `${workspace.name} · ${t('workspace.idleTooltip', { time: idleLabel })}` : workspace.name}
                 >
                   {workspace.name}

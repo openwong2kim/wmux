@@ -6,7 +6,7 @@
 // terminals paid a whole column so four glyphs had somewhere to live.
 //
 // Opening the deck is one command, so it gets one button, and it moves to the
-// row that already exists for app-wide chrome — beside Settings. That is scope-
+// row that already exists for app-wide chrome — with an explicit panel label. That is scope-
 // correct: the deck's state (activeDeckTab / channelDockVisible) is app-global,
 // not per-workspace, so an app-wide row is its natural home. It also satisfies
 // the 2026-08-14 decision's REASON better than the rail did — the entry point
@@ -18,7 +18,8 @@
 
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
-import { HIT_TARGET_24 } from '../hitArea';
+import { FOCUS_RING } from '../focusRing';
+import { Icon } from '../icons';
 import { sumUnread } from '../Channels/ChannelsPanel';
 
 /**
@@ -48,12 +49,7 @@ export default function DeckToggle() {
   // screen, so a dot on the button that closes it would be noise.
   const signal = !visible && deckHasSignal(sumUnread(channelUnread), dirtyWsCount);
 
-  // The arrow points at what pressing it does: toward the edge to collapse,
-  // away from it to expand. The deck sits opposite the workspace sidebar.
   const deckOnRight = sidebarPosition !== 'right';
-  const glyph = visible
-    ? (deckOnRight ? '»' : '«')
-    : (deckOnRight ? '«' : '»');
 
   const label = visible
     ? (t('deck.collapseDock') || 'Collapse dock')
@@ -69,30 +65,24 @@ export default function DeckToggle() {
     <button
       type="button"
       onClick={() => setChannelDockVisible(!visible)}
-      // 20x20 was under the 24px pointer floor (WCAG 2.2 SC 2.5.8) — and this
-      // is the ONLY way back to a collapsed deck, so it is the last control in
-      // the app that should be hard to hit. The glyph keeps its 13px size.
-      className={`${HIT_TARGET_24} rounded-[4px] text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors`}
+      className={`wmux-panel-toggle ${FOCUS_RING}`}
       title={accessibleName}
       aria-label={accessibleName}
       aria-expanded={visible}
+      aria-controls={visible ? 'wmux-tools-panel' : undefined}
+      data-panel-side={deckOnRight ? 'right' : 'left'}
       data-deck-toggle
       data-deck-signal={signal ? 'true' : 'false'}
     >
-      {/* The dot is anchored to the GLYPH, not to the button. The button's box
-          grew to 24px for the pointer's sake; the dot marks the arrow, and left
-          on the button it would have drifted ~5px out and up to a corner with
-          nothing under it. */}
-      <span aria-hidden="true" className="relative text-[13px] leading-none">
-        {glyph}
-        {signal && (
-          <span
-            aria-hidden="true"
-            className="absolute -top-px -right-[3px] w-[6px] h-[6px] rounded-full bg-[var(--accent-red)]"
-            data-deck-toggle-dot
-          />
-        )}
+      <span aria-hidden="true" className="relative flex shrink-0">
+        <Icon size={16}>
+          <rect x="1.5" y="2" width="11" height="10" rx="1.5" />
+          <path d={deckOnRight ? 'M9 2v10' : 'M5 2v10'} />
+          {visible && <path d={deckOnRight ? 'M10.5 4v6' : 'M3.5 4v6'} opacity="0.5" strokeWidth="2" />}
+        </Icon>
+        {signal && <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-[var(--accent)]" data-deck-toggle-dot />}
       </span>
+      <span>{t('deck.panelLabel')}</span>
     </button>
   );
 }

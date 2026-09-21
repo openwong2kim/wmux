@@ -1,3 +1,5 @@
+import { CHAT_IPC } from '../shared/transcript/chatIpc';
+import type { ChatBridgeApi } from '../shared/transcript/turnEvents';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/constants';
 import type {
@@ -48,7 +50,28 @@ interface McpStatusPayload {
   targets: McpTargetStatusPayload[];
 }
 
+const chat: ChatBridgeApi = {
+  status: (id) => ipcRenderer.invoke(CHAT_IPC.status, id),
+  snapshot: (id, before) => ipcRenderer.invoke(CHAT_IPC.snapshot, id, before),
+  subscribe: (id) => ipcRenderer.invoke(CHAT_IPC.subscribe, id),
+  unsubscribe: (id) => ipcRenderer.invoke(CHAT_IPC.unsubscribe, id),
+  codeBlock: (args) => ipcRenderer.invoke(CHAT_IPC.codeBlock, args),
+  send: (args) => ipcRenderer.invoke(CHAT_IPC.send, args),
+  openGates: () => ipcRenderer.invoke(CHAT_IPC.openGates),
+  onAppend: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, ...args: Parameters<typeof callback>) => callback(...args);
+    ipcRenderer.on(CHAT_IPC.append, listener);
+    return () => { ipcRenderer.removeListener(CHAT_IPC.append, listener); };
+  },
+  onGate: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, ...args: Parameters<typeof callback>) => callback(...args);
+    ipcRenderer.on(CHAT_IPC.gate, listener);
+    return () => { ipcRenderer.removeListener(CHAT_IPC.gate, listener); };
+  },
+};
+
 const electronAPI = {
+  chat,
   // OS-aware shortcut mapping support — renderer cannot read process.platform
   // directly under sandbox + contextIsolation, so expose it here.
   // 'win32' | 'darwin' | 'linux' | 'aix' | 'freebsd' | 'openbsd' | 'sunos' | 'cygwin' | 'netbsd'

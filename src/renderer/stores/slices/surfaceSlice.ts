@@ -13,6 +13,7 @@ import { computePaneAutoName } from '../../utils/paneNaming';
 import { recomputeWorkspacePorts } from './workspacePorts';
 
 export interface SurfaceSlice {
+  setSurfaceViewMode: (surfaceId: string, mode: 'terminal' | 'chat') => void;
   /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
    * callers (e.g. the pane.split background-workspace path, #236) target a
    * non-active workspace — defaults to the active one, so existing positional
@@ -423,6 +424,18 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     });
     persistBindingNow(get);
   },
+
+  setSurfaceViewMode: (surfaceId, mode) => set((state: StoreState) => {
+    for (const ws of state.workspaces) {
+      for (const pane of getWorkspaceLeafPanes(ws)) {
+        const surface = pane.surfaces.find((s) => s.id === surfaceId);
+        if (surface && (!surface.surfaceType || surface.surfaceType === 'terminal')) {
+          surface.viewMode = mode;
+          return;
+        }
+      }
+    }
+  }),
 
   updateSurfaceTitle: (surfaceId, title) => set((state: StoreState) => {
     for (const ws of state.workspaces) {

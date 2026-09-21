@@ -79,8 +79,8 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   return (
     <div
       ref={ref}
-      style={anchorStyle}
-      className={`${anchorStyle ? 'fixed' : 'absolute right-2 top-10'} z-50 w-52 bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-md shadow-lg py-1 text-xs font-mono`}
+      style={{ ...anchorStyle, '--wmux-menu-top': typeof anchorStyle?.top === 'number' ? `${anchorStyle.top}px` : anchorStyle?.top } as CSSProperties}
+      className={`wmux-workspace-menu ${anchorStyle ? 'fixed' : 'absolute right-2 top-10'} z-50 w-52 bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-md shadow-lg py-1 text-[13px]`}
     >
       {/* Browse folder option */}
       <button
@@ -92,7 +92,7 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
             something now instead of restating the label: the old line was "Pick
             a folder as workspace" in a menu whose only job is making one. */}
         <div className="font-semibold">{t('sidebar.browseFolder')}</div>
-        <div className="text-[var(--text-muted)] text-[10px]">{t('sidebar.browseFolderDesc')}</div>
+        <div className="text-[var(--text-sub)] text-[11px]">{t('sidebar.browseFolderDesc')}</div>
       </button>
 
       <div className="border-t border-[var(--bg-surface)] my-0.5" />
@@ -103,7 +103,7 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
         onClick={() => handleSelect(null)}
       >
         <div className="font-semibold">{t('sidebar.emptyWorkspace')}</div>
-        <div className="text-[var(--text-muted)] text-[10px]">{t('sidebar.blankSinglePane')}</div>
+        <div className="text-[var(--text-sub)] text-[11px]">{t('sidebar.blankSinglePane')}</div>
       </button>
 
       <div className="border-t border-[var(--bg-surface)] my-0.5" />
@@ -116,7 +116,7 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
           onClick={() => handleSelect(preset.id)}
         >
           <div className="font-semibold">{t(`preset.${preset.id}.name`)}</div>
-          <div className="text-[var(--text-muted)] text-[10px]">{t(`preset.${preset.id}.description`)}</div>
+          <div className="text-[var(--text-sub)] text-[11px]">{t(`preset.${preset.id}.description`)}</div>
         </button>
       ))}
 
@@ -129,7 +129,7 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
         onClick={() => setAttachRemoteOpen(true)}
       >
         <div className="font-semibold">{t('remote.attachTitle')}…</div>
-        <div className="text-[var(--text-muted)] text-[10px]">{t('remote.mirrorDescription')}</div>
+        <div className="text-[var(--text-sub)] text-[11px]">{t('remote.mirrorDescription')}</div>
       </button>
     </div>
   );

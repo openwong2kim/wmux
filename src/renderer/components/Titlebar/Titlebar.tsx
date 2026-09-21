@@ -132,6 +132,7 @@ export default function Titlebar() {
   // Sidebar is 240px expanded / 48px mini (Sidebar.tsx, MiniSidebar.tsx).
   // The mantle segment mirrors it only when the sidebar is docked left —
   // docked right there is no panel below the top-left corner to fuse with.
+  const compactSegment = sidebarPosition === 'left' && !sidebarVisible;
   const leftSegmentWidth = sidebarPosition === 'left' ? (sidebarVisible ? 240 : 48) : 0;
 
   // macOS 트래픽 라이트 예약: 세그먼트가 충분히 넓으면(확장 240px) 세그먼트
@@ -168,7 +169,7 @@ export default function Titlebar() {
       {...tokenAttrs('bgBase', 'bg')}
     >
       <div
-        className={`flex items-center gap-2 px-3 overflow-hidden ${leftSegmentWidth ? 'bg-[var(--bg-mantle)]' : ''}`}
+        className={`flex items-center shrink-0 gap-2 ${compactSegment ? 'px-1 justify-center' : 'px-3'} overflow-hidden ${leftSegmentWidth ? 'bg-[var(--bg-mantle)]' : ''}`}
         style={{
           width: leftSegmentWidth || undefined,
           // 트래픽 라이트를 세그먼트 안에 품을 때는 px-3 대신 예약 폭 안쪽 패딩.
@@ -178,10 +179,10 @@ export default function Titlebar() {
         }}
         {...tokenAttrs('bgMantle', 'bg')}
       >
-        <span className="text-sm font-bold text-[var(--text-main)] tracking-widest font-mono" {...tokenAttrs('textMain', 'text')}>
-          WMUX
+        <span className="text-[14px] font-semibold text-[var(--text-main)] tracking-tight" {...tokenAttrs('textMain', 'text')}>
+          wmux
         </span>
-        <button
+        {!compactSegment && <button
           ref={plusBtnRef}
           type="button"
           onClick={togglePicker}
@@ -192,7 +193,7 @@ export default function Titlebar() {
           data-onboarding-target="add-workspace"
         >
           <IconPlus size={14} />
-        </button>
+        </button>}
         {pickerOpen && (
           <PresetPicker
             onClose={closePicker}

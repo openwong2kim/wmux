@@ -87,7 +87,7 @@ describe('WorkspaceItem unverifiable ring', () => {
     expect(dot().className).not.toContain('sidebar-dot-unverifiable');
     expect(dot().className).toContain('sidebar-dot-running');
     expect(dot().style.backgroundColor).not.toBe('');
-    expect(dot().getAttribute('title')).toBeNull();
+    expect(dot().getAttribute('title')).toBe('Running');
   });
 
   it('goes hollow and names the silence after 34 minutes with no signal', async () => {
@@ -105,6 +105,6 @@ describe('WorkspaceItem unverifiable ring', () => {
     useStore.setState({ surfaceAgentStatus: { 'pty-ws': 'awaiting_input' } });
     await render();
     expect(dot().className).not.toContain('sidebar-dot-unverifiable');
-    expect(dot().getAttribute('title')).toBeNull();
+    expect(dot().getAttribute('title')).toBe('Needs input');
   });
 });

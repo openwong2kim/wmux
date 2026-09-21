@@ -197,6 +197,7 @@ export function CommanderViewContent({
   // `brainPtyId` hydrates a frame after mount and can go null again mid-session
   // — the state must survive the layout swap.
   const [railCollapsed, setRailCollapsed] = useState(true);
+  const [automationExpanded, setAutomationExpanded] = useState(false);
   // The `#` jump for the ledger rows. The sidebar used to own this link; the
   // deck's rows own it now, so the sidebar could shrink to one navigation line
   // (DESIGN.md Layout Contract). The ledger summary is built in main from the
@@ -278,12 +279,14 @@ export function CommanderViewContent({
             모델 선택은 Agent 탭 인라인 드롭다운으로 이동(DESIGN.md Decisions
             Log 2026-07-20)했고, fan-out은 에이전트 툴바로 복귀했다. */}
         <AgentModeChipContainer t={t} workspaceId={activeWorkspaceId} />
-        {/* The one-click loop chip + panel (loop engineering v1) — binds to
-            THIS workspace. */}
-        <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} cwd={activePaneCwd} />
-        {/* Schedules chip + inline panel — new schedules bind to THIS
-            workspace's orchestrator (M1.5). */}
-        <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
+        {!brainPtyId && <button type="button" className="wmux-agent-tools-toggle"
+          aria-expanded={automationExpanded} onClick={() => setAutomationExpanded((value) => !value)}>
+          {t('deck.automationTools')} <span aria-hidden="true">{automationExpanded ? '▴' : '▾'}</span>
+        </button>}
+        <div className="wmux-agent-automation" hidden={!brainPtyId && !automationExpanded}>
+          <DeckLoopPanel t={t} workspaceId={activeWorkspaceId} cwd={activePaneCwd} />
+          <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
+        </div>
         {/* Brain lifecycle — the last ALWAYS-ON control, so in the pty layout
             it lands next to Wake and the two "what is the brain doing" buttons
             sit together. Deliberately not disabled while a turn streams: a
@@ -302,9 +305,9 @@ export function CommanderViewContent({
             the trailing edge stranded it alone on its own line with a gap).
             Neutral at rest, accent on hover (the DESIGN.md AI-action
             grammar), disabled while a turn streams. */}
-        {quickActions.length > 0 && (
+        {quickActions.some((action) => action.id !== 'recover-fleet' || recoveryPanes.length === 0 || !!brainPtyId) && (
           <div data-deck-quick-actions className="flex flex-wrap gap-1.5">
-            {quickActions.map((action) => (
+            {quickActions.filter((action) => action.id !== 'recover-fleet' || recoveryPanes.length === 0 || !!brainPtyId).map((action) => (
               <button
                 key={action.id}
                 type="button"
@@ -469,6 +472,7 @@ export function CommanderViewContent({
   return (
     <div
       data-commander-view
+      data-commander-layout="chat"
       // Mantle, not base: the deck is chrome (one panel family with the
       // sidebar and the dock shell around it — DESIGN.md layout contract);
       // painting base here made the thread read as a detached page.

@@ -590,7 +590,7 @@ export default function SurfaceTabs({
     <div
       // Bridge P1.6 — h-9 (36px chrome module): matches sidebar header/footer,
       // deck tabs, and the agent toolbar so all top/bottom hairlines align.
-      className="flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-9"
+      className="wmux-pane-header flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-9"
       // borderColor → --border-soft so this strip's bottom hairline matches the
       // deck tabs / sidebar / titlebar seams (they all override to border-soft;
       // this one was left on the opaque --bg-surface, so the top-chrome line
@@ -678,10 +678,10 @@ export default function SurfaceTabs({
           draggable={editingId !== s.id}
           onDragStart={handleDragStart}
           onDragEnd={() => setTerminalTextDropDragActive(false)}
-          className={`group flex items-center gap-1 px-3 h-full cursor-pointer text-xs border-r border-[var(--bg-surface)] transition-colors ${
+          className={`group flex items-center gap-2 px-3 h-full cursor-pointer text-[13px] border-r border-[var(--bg-surface)] transition-colors ${
             s.id === activeSurfaceId
-              ? 'bg-[var(--bg-base)] text-[var(--text-main)]'
-              : 'text-[var(--text-subtle)] hover:text-[var(--text-sub)] hover:bg-[rgba(var(--bg-base-rgb),0.5)]'
+              ? 'bg-[var(--bg-base)] text-[var(--text-main)] font-medium'
+              : 'text-[var(--text-sub)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-base-rgb),0.5)]'
           }`}
           {...tokenAttrs('bgBase', 'bg')}
           {...tokenAttrs('textMain', 'text')}
@@ -731,7 +731,7 @@ export default function SurfaceTabs({
               the height, so no vertical refund is needed either. */}
           <button
             data-surface-tab-close
-            className={`${HIT_TARGET_24} -mr-1.5 text-[var(--text-subtle)] hover:text-[var(--accent-red)] transition-colors leading-none`}
+            className={`${HIT_TARGET_24} ${FOCUS_RING} ui-icon-btn ui-icon-btn-danger -mr-1.5 leading-none`}
             onClick={(e) => { e.stopPropagation(); onClose(s.id); }}
             // A strip of four buttons all saying "Close tab" says nothing about
             // WHICH tab closes, so both the tooltip and the accessible name
@@ -766,6 +766,19 @@ export default function SurfaceTabs({
         </button>
       )}
       </div>
+
+      {(() => {
+        const surface = surfaces.find((s) => s.id === activeSurfaceId);
+        if (!surface || (surface.surfaceType && surface.surfaceType !== 'terminal')) return null;
+        return <div className="wmux-chat-toggle" role="group" aria-label={t('chat.viewMode')}>
+          {(['terminal', 'chat'] as const).map((view) => <button key={view} type="button"
+            className={FOCUS_RING} data-surface-view={view}
+            aria-pressed={(surface.viewMode ?? 'terminal') === view}
+            onClick={(e) => { e.stopPropagation(); useStore.getState().setSurfaceViewMode(surface.id, view); }}>
+            {t(`chat.${view}`)}
+          </button>)}
+        </div>;
+      })()}
 
       {/* Right-aligned pane action cluster. Native next to the per-tab close
           button (same quiet chrome): boxless at rest, a subtle surface lift on
