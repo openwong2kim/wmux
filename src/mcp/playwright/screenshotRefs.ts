@@ -215,6 +215,7 @@ export async function formatRefBoxTable(
   const rowCap = options.rowCap ?? REF_BOX_ROW_CAP;
   const offset = options.offset ?? { x: 0, y: 0 };
   const deadline = Date.now() + budgetMs;
+  let budgetExpired = false;
   const outcomes = new Map<number, Outcome>();
 
   const boxAt = (outcome: Outcome | undefined): Box | null =>
@@ -227,13 +228,18 @@ export async function formatRefBoxTable(
   // and each measurement stops on its own timeout.
   const measureBatch = async (indices: readonly number[]): Promise<void> => {
     const remaining = deadline - Date.now();
-    if (remaining <= 0) {
+    if (budgetExpired || remaining <= 0) {
       for (const i of indices) outcomes.set(i, 'timeout');
       return;
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expired = new Promise<'timeout'>((resolve) => {
-      timer = setTimeout(() => resolve('timeout'), remaining);
+      timer = setTimeout(() => {
+        // A timer can fire before the wall clock advances on Windows. Once
+        // it expires, later batches must not restart the spent budget.
+        budgetExpired = true;
+        resolve('timeout');
+      }, remaining);
     });
     const results = await Promise.all(
       indices.map((i) =>

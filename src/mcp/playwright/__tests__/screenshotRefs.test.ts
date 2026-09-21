@@ -127,13 +127,23 @@ describe('formatRefBoxTable', () => {
   });
 
   it('does not start more measurements once the budget is spent', async () => {
-    const measure = vi.fn<RefBoxCandidate['measure']>(() => new Promise<null>(() => undefined));
-    const many = Array.from({ length: 200 }, (_, i) => candidate(i + 1, null, { measure }));
-    const text = await formatRefBoxTable(many, AREA, { basis: 'viewport CSS px', budgetMs: 30 });
-    // Only the first sample batch ever started.
-    expect(measure).toHaveBeenCalledTimes(50);
-    expect(measure.mock.calls[0][0]).toBeLessThanOrEqual(30);
-    expect(text).toContain('timed out');
+    vi.useFakeTimers();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    try {
+      const measure = vi.fn<RefBoxCandidate['measure']>(() => new Promise<null>(() => undefined));
+      const many = Array.from({ length: 200 }, (_, i) => candidate(i + 1, null, { measure }));
+      const pending = formatRefBoxTable(many, AREA, { basis: 'viewport CSS px', budgetMs: 30 });
+      // Simulate a timeout firing while the coarse wall clock has not advanced.
+      await vi.advanceTimersByTimeAsync(30);
+      const text = await pending;
+      // Only the first sample batch ever started.
+      expect(measure).toHaveBeenCalledTimes(50);
+      expect(measure.mock.calls[0][0]).toBeLessThanOrEqual(30);
+      expect(text).toContain('timed out');
+    } finally {
+      clock.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('lists every box, unfiltered, when the captured area is unknown', async () => {
