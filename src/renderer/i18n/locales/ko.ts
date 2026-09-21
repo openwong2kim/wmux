@@ -224,6 +224,7 @@ export const ko = {
   'terminal.supervisedRestartExit': '[wmux] 감독 재시작 #{count} (종료 {code}) — 중지: 창 메뉴',
   'terminal.copied': '복사됨!',
   'terminal.copyFailed': '복사 실패 — 선택 영역 유지됨',
+  'terminal.mouseOwnedSelectHint': '이 앱이 마우스를 사용 중 — Shift를 누른 채 드래그하면 선택됩니다',
   'terminal.openPathBlocked': '실행 파일 차단됨 — 부모 폴더만 열림',
   'terminal.openPathFailed': '열 수 없음 — 폴더 위치 표시',
   'terminal.bookmarkAdded': '북마크 추가됨',

@@ -528,6 +528,7 @@ export const pl = {
   'terminal.supervisedRestartExit': '[wmux] nadzorowany restart #{count} (kod {code}) — zatrzymaj: menu panelu',
   'terminal.copied': 'Skopiowano!',
   'terminal.copyFailed': 'Kopiowanie nie powiodło się — zaznaczenie zachowane',
+  'terminal.mouseOwnedSelectHint': 'Ta aplikacja używa myszy — przytrzymaj Shift, aby zaznaczyć tekst',
   'terminal.openPathBlocked': 'Plik wykonywalny zablokowany — otwarto folder nadrzędny',
   'terminal.openPathFailed': 'Nie udało się otworzyć — pokazuję folder',
   'terminal.bookmarkAdded': 'Dodano zakładkę',

@@ -19,6 +19,7 @@ import { pasteClipboardImage } from '../utils/imagePaste';
 import { openTerminalUrl } from '../utils/browserPaneActions';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { claimFit } from '../utils/fitGuard';
+import { createMouseOwnedHint } from '../utils/mouseOwnedHint';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
 import { createOsc52Handler } from '../utils/osc52Clipboard';
 import {
@@ -598,6 +599,28 @@ function showCopyErrorToast() {
   el.style.opacity = '1';
   if (copyErrorToastTimer) clearTimeout(copyErrorToastTimer);
   copyErrorToastTimer = setTimeout(() => { el!.style.opacity = '0'; }, 1800);
+}
+
+// The pane's foreground app has mouse tracking on, so a plain left-drag never
+// reaches xterm's SelectionService and no highlight appears. Shift is the
+// override xterm already implements (`shouldForceSelection` → `event.shiftKey`
+// off macOS) and the one Windows Terminal / iTerm2 teach; wmux uses it for
+// Shift+right-click paste too. Longer-lived than the copy toasts because this
+// one is instructional, not an acknowledgement.
+let mouseOwnedToastTimer: ReturnType<typeof setTimeout> | null = null;
+function showMouseOwnedHintToast() {
+  let el = document.getElementById('wmux-mouse-owned-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'wmux-mouse-owned-toast';
+    el.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:var(--accent-yellow);color:var(--bg-base);font-family:monospace;font-size:11px;font-weight:600;padding:3px 12px;border-radius:4px;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.2s';
+    document.body.appendChild(el);
+  }
+  const node = el;
+  node.textContent = t('terminal.mouseOwnedSelectHint');
+  node.style.opacity = '1';
+  if (mouseOwnedToastTimer) clearTimeout(mouseOwnedToastTimer);
+  mouseOwnedToastTimer = setTimeout(() => { node.style.opacity = '0'; }, 3200);
 }
 
 /**
@@ -2695,6 +2718,32 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     };
     if (ptyId) hydrateRegistry.set(ptyId, hydrateForRead);
 
+    // #1437: teach the Shift override when the foreground app owns the mouse.
+    // Claude Code emits `?1000h`/`?1006h` around its input box, so a plain
+    // left-drag there is delivered to the agent and xterm never starts a
+    // selection — the pane looks like it simply cannot be copied from. The
+    // decision (real drag attempt? rate-limited?) is the pure
+    // `createMouseOwnedHint`; this only wires events and reads the live mode.
+    // Nothing is preventDefault'ed or swallowed: the app keeps every event it
+    // owns, we just say why the highlight did not appear.
+    const mouseOwnedHint = createMouseOwnedHint({
+      isMouseOwned: () => {
+        const mode = (terminal as unknown as { modes?: { mouseTrackingMode?: string } })
+          .modes?.mouseTrackingMode ?? 'none';
+        return mode !== 'none';
+      },
+      show: showMouseOwnedHintToast,
+    });
+    const onHintMouseDown = (e: MouseEvent) => mouseOwnedHint.onMouseDown(e);
+    // move/up on the document, not the container: a drag that leaves the pane
+    // (the common gesture when grabbing a whole line) must still count, and its
+    // mouseup lands wherever the pointer ended.
+    const onHintMouseMove = (e: MouseEvent) => mouseOwnedHint.onMouseMove(e);
+    const onHintMouseUp = () => mouseOwnedHint.onMouseUp();
+    container.addEventListener('mousedown', onHintMouseDown);
+    document.addEventListener('mousemove', onHintMouseMove);
+    document.addEventListener('mouseup', onHintMouseUp);
+
     // ResizeObserver for auto-fit — preserves user scroll position across resize.
     // IMPORTANT: skip when the container has zero dimensions (display:none workspace).
     // Fitting a hidden terminal produces 0 cols/rows, which corrupts the PTY buffer
@@ -2782,6 +2831,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // other listeners are already torn down. Dropping this disposable here
       // stops stray input during the defer window.
       onDataDisposable.dispose();
+      container.removeEventListener('mousedown', onHintMouseDown);
+      document.removeEventListener('mousemove', onHintMouseMove);
+      document.removeEventListener('mouseup', onHintMouseUp);
       resizeObserver.disconnect();
       // #929: cancel any pending resting-cursor show before dispose — a late
       // inject into a disposed xterm is the #582 class of bug.
