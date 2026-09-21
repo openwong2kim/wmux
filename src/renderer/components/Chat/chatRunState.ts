@@ -17,9 +17,11 @@ export function chatRunState(args: {
   if (args.blocked || args.status === 'awaiting_input') return 'blocked';
   if (args.turnOpen) return 'working';
   if (args.sent) return 'waiting';
-  if (args.status === 'running') return 'working';
+  // A recorded end_turn rebuts byte-only `running` (a dialog repaint, a resize)
+  // once no submitted or hook-signaled turn is open — both were ruled out above.
   const last = args.events.at(-1);
   if (last?.kind === 'assistant_text' && last.turnComplete) return 'complete';
+  if (args.status === 'running') return 'working';
   if (!args.events.length) return 'ready';
   const lastUser = args.events.map((e) => e.kind).lastIndexOf('user_text');
   const hasReply = args.events.slice(lastUser + 1).some((e) => e.kind === 'assistant_text' && !e.thinking);

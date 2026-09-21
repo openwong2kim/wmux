@@ -31,9 +31,20 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
   const progress = chatRunState({ ...data, available: data.status.available, agentAlive: data.status.agentAlive,
     sending, sent: sendState === 'sent', blocked, turnOpen: !!turnOpenAt, status: agentStatus ?? data.status.agentStatus });
   const busy = progress === 'working' || progress === 'waiting';
+  // An exited agent leaves saved history; a live-looking composer would invite a message to nobody.
+  const ended = progress === 'ended';
   const uncertain = progress === 'unconfirmed' || sendState === 'error' || sendState === 'unconfirmed';
   const messages = useMemo(() => transcriptMessages(data.events), [data.events]);
   const latestUser = [...data.events].reverse().find((event) => event.kind === 'user_text')?.id;
+  // The tail page is cut by bytes, so a reply can arrive without the prompt
+  // that produced it. Page back, bounded, until the thread opens on a request.
+  const autoEarlier = useRef(0);
+  const { hasMore, loading, loadingEarlier, error, loadEarlier } = data;
+  useEffect(() => {
+    if (latestUser || !hasMore || loading || loadingEarlier || error || !data.events.length || autoEarlier.current >= 3) return;
+    autoEarlier.current++;
+    void loadEarlier();
+  }, [latestUser, hasMore, loading, loadingEarlier, error, data.events.length, loadEarlier]);
   useEffect(() => {
     if (sendState && latestUser !== sentAfterUser.current) setSendState(null);
   }, [latestUser, sendState]);
@@ -77,7 +88,8 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
   const reasonKey = ['no-hook', 'stale-session', 'no-transcript-path', 'not-claude', 'unsafe-transcript-path', 'unreadable'].includes(data.status.reason)
     ? `chat.reason.${data.status.reason}` : 'chat.reason.unavailable';
   return <ChatPtyContext.Provider value={ptyId}><AssistantRuntimeProvider runtime={runtime}>
-    <Thread status={<ChatProgress state={progress} lastSyncedAt={data.lastSyncedAt} onTerminal={onTerminal} />} empty={messages.length === 0} working={busy} disabled={!data.status.available || data.loading}
+    <Thread status={<ChatProgress state={progress} lastSyncedAt={data.lastSyncedAt} onTerminal={onTerminal} />} empty={messages.length === 0} working={busy} disabled={!data.status.available || data.loading || ended}
+      placeholder={ended ? t('chat.placeholderEnded') : undefined}
       history={data.hasMore && <button type="button" className="wmux-chat-earlier ui-btn" disabled={data.loadingEarlier}
         onClick={() => void data.loadEarlier()}>{data.loadingEarlier ? t('chat.loading') : t('chat.loadEarlier')}</button>}
       welcome={data.loading ? <div className="wmux-chat-empty" role="status">{t('chat.loading')}</div>
@@ -85,10 +97,12 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
           <button type="button" className="ui-btn" onClick={onTerminal}>{t('chat.openTerminal')}</button></div>
         : messages.length === 0 ? <div className="wmux-chat-empty"><strong>{t('chat.empty')}</strong><p>{t('chat.emptyHint')}</p></div> : null}
       notices={<>
-        {uncertain && <div className="wmux-chat-notice">{t('chat.send.unconfirmed')}</div>}
+        {/* A refusal already says why below; one state, one notice. */}
+        {uncertain && !sendState && <div className="wmux-chat-notice">{t('chat.send.unconfirmed')}</div>}
         {data.error && <div className="wmux-chat-notice" role="alert">{t('chat.connectionError')} <button type="button" onClick={data.retry}>{t('chat.retry')}</button></div>}
         {blocked && data.status.available && <div className="wmux-chat-notice">{t('chat.approvalHint')} <button type="button" onClick={onTerminal}>{t('chat.openTerminal')}</button></div>}
-        {sendState && <div className="wmux-chat-notice" role="status">{t(`chat.send.${sendState}`)}</div>}
+        {sendState && <div className="wmux-chat-notice" role="status">{t(`chat.send.${sendState}`)}
+          {sendState !== 'sent' && <button type="button" onClick={onTerminal}>{t('chat.openTerminal')}</button>}</div>}
       </>} />
   </AssistantRuntimeProvider></ChatPtyContext.Provider>;
 }
