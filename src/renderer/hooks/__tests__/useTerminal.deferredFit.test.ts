@@ -130,7 +130,11 @@ describe('#1255 — every fit() apply site is floor-gated, every recovery re-ass
     const runFit = src.slice(runFitStart, src.indexOf('const autoCopy = createAutoSelectionCopy', runFitStart));
     // BEFORE claimFit: a floor skip records no selection debt — the settled
     // layout re-fires the ResizeObserver, which is the retry.
-    const gate = runFit.indexOf('proposedSafeDimensions(fitAddon)) return');
+    // #1436 turned the gate into a captured proposal (the shrink path sends
+    // those dims to the PTY before xterm applies them), so anchor on the
+    // capture + its early return rather than the old one-liner.
+    const gate = runFit.indexOf('const proposed = proposedSafeDimensions(fitAddon);');
+    expect(runFit.slice(gate)).toMatch(/const proposed = proposedSafeDimensions\(fitAddon\);\s+if \(!proposed\) return;/);
     const claim = runFit.indexOf('claimFit(');
     expect(gate).toBeGreaterThan(-1);
     expect(claim).toBeGreaterThan(gate);
