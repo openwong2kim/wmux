@@ -24,6 +24,7 @@ import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { claimFit } from '../utils/fitGuard';
 import { installAltClickTrackingGuard } from '../utils/altClickUnderMouseTracking';
 import { createMouseOwnedHint } from '../utils/mouseOwnedHint';
+import { resizeOrderFor, runOrderedFit, type CancelOrderedFit } from '../utils/resizeOrder';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
 import { createOsc52Handler } from '../utils/osc52Clipboard';
 import {
@@ -834,11 +835,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   //     once after the window clears (~1.1 s) so the size self-heals.
   //   • "not found" — the session was swapped/disposed mid-resize; the main
   //     pty:resize handler already retries-then-logs this, so we swallow it.
-  const sendResize = useCallback((targetPtyId: string, cols: number, rows: number) => {
+  // Returns the in-flight resize so a caller that must not touch xterm before
+  // the daemon has applied the geometry (#1436's shrink path) can wait on it.
+  // Every other caller ignores it, exactly as before.
+  const sendResize = useCallback((targetPtyId: string, cols: number, rows: number): Promise<void> => {
     // The grid belongs to someone else (see `fixedGeometry`): never resize the
     // PTY. Gated here, not at the callers, so no fit path can get around it.
-    if (fixedGeometryRef.current) return;
-    window.electronAPI.pty.resize(targetPtyId, cols, rows).catch((err: unknown) => {
+    if (fixedGeometryRef.current) return Promise.resolve();
+    return window.electronAPI.pty.resize(targetPtyId, cols, rows).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('rate limited')) return; // not-found / other: handled upstream
       window.setTimeout(() => {
@@ -1723,6 +1727,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // a queued fit at teardown nor stop several selection events in the same
     // debt window from each scheduling their own.
     let pendingFitRaf: number | null = null;
+    // #1436: a shrink hands the PTY its new geometry BEFORE xterm shrinks, so
+    // the handle for that deferred local fit lives here — teardown and a newer
+    // resize both have to be able to drop it.
+    let cancelOrderedFit: CancelOrderedFit | null = null;
     const runFit = () => {
       try {
         const term = terminalRef.current;
@@ -1740,7 +1748,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // records no fit debt: layout settling re-fires the ResizeObserver,
         // which is the retry. (Checked before claimFit so the debt mechanism
         // stays reserved for selection-deferred fits.)
-        if (!proposedSafeDimensions(fitAddon)) return;
+        const proposed = proposedSafeDimensions(fitAddon);
+        if (!proposed) return;
 
         // Selection-preservation guard: xterm's SelectionService clears the
         // active selection on any rowsChanged event from fit(). While the user
@@ -1753,34 +1762,75 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         }
         pendingFitRef.current = false;
 
-        const prevYBase = term.buffer.active.baseY;
-        const prevYDisp = term.buffer.active.viewportY;
-        const wasScrolledUp = prevYDisp < prevYBase;
-        const distFromBottom = prevYBase - prevYDisp;
+        // Everything that must happen locally, in one place, so the shrink path
+        // can run the SAME body one IPC round trip later instead of a thinner
+        // copy that drifts (the lesson of #747).
+        const applyLocalFit = () => {
+          const live = terminalRef.current;
+          // Re-check on the deferred path: the wait is short, but a ptyId change
+          // or an unmount inside it must not fit the NEW terminal against the
+          // OLD container/addon.
+          if (!live || live !== terminal) return;
+          if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
 
-        fitAddon.fit();
+          const prevYBase = live.buffer.active.baseY;
+          const prevYDisp = live.buffer.active.viewportY;
+          const wasScrolledUp = prevYDisp < prevYBase;
+          const distFromBottom = prevYBase - prevYDisp;
 
-        if (wasScrolledUp) {
-          const newYBase = term.buffer.active.baseY;
-          const targetYDisp = Math.max(0, newYBase - distFromBottom);
-          term.scrollToLine(targetYDisp);
-        }
+          fitAddon.fit();
 
-        // #1002: first real fit after adopting into a hidden container. The
-        // park's own reading wins over the one taken above, which was measured
-        // against a viewport that had no size to be scrolled in.
-        if (pendingAdoptViewport) {
-          restoreParkedViewport(pendingAdoptViewport);
-          pendingAdoptViewport = null;
-        }
+          if (wasScrolledUp) {
+            const newYBase = live.buffer.active.baseY;
+            const targetYDisp = Math.max(0, newYBase - distFromBottom);
+            live.scrollToLine(targetYDisp);
+          }
 
-        const { cols, rows } = term;
+          // #1002: first real fit after adopting into a hidden container. The
+          // park's own reading wins over the one taken above, which was measured
+          // against a viewport that had no size to be scrolled in.
+          if (pendingAdoptViewport) {
+            restoreParkedViewport(pendingAdoptViewport);
+            pendingAdoptViewport = null;
+          }
+
+          const { cols, rows } = live;
+          const id = ptyIdRef.current;
+          // The shrink path already sent `proposed` and recorded it, so this
+          // stays quiet unless fit() actually landed somewhere else — in which
+          // case the correction is exactly what we want to send.
+          if (id && cols > 0 && rows > 0 && (cols !== lastSentCols || rows !== lastSentRows)) {
+            lastSentCols = cols;
+            lastSentRows = rows;
+            sendResize(id, cols, rows);
+          }
+        };
+
         const currentPtyId = ptyIdRef.current;
-        if (currentPtyId && cols > 0 && rows > 0 && (cols !== lastSentCols || rows !== lastSentRows)) {
-          lastSentCols = cols;
-          lastSentRows = rows;
-          sendResize(currentPtyId, cols, rows);
-        }
+        const order = currentPtyId
+          ? resizeOrderFor(term.rows, proposed.rows)
+          : 'local-first';
+
+        // A newer resize supersedes a deferred one: drop the old handle rather
+        // than let two fits race to apply different geometries.
+        cancelOrderedFit?.();
+        cancelOrderedFit = runOrderedFit({
+          order,
+          sendGeometry: () => {
+            // Only reached on the shrink path, where currentPtyId is non-null.
+            lastSentCols = proposed.cols;
+            lastSentRows = proposed.rows;
+            return sendResize(currentPtyId as string, proposed.cols, proposed.rows);
+          },
+          applyLocalFit: () => {
+            cancelOrderedFit = null;
+            try {
+              applyLocalFit();
+            } catch {
+              // ignore fit errors during unmount, as on the synchronous path
+            }
+          },
+        });
       } catch {
         // ignore fit errors during unmount
       }
@@ -2929,6 +2979,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       container.removeEventListener('mousedown', onHintMouseDown);
       document.removeEventListener('mousemove', onHintMouseMove);
       document.removeEventListener('mouseup', onHintMouseUp);
+      cancelOrderedFit?.();
       resizeObserver.disconnect();
       // #929: cancel any pending resting-cursor show before dispose — a late
       // inject into a disposed xterm is the #582 class of bug.
