@@ -29,6 +29,7 @@ import { registerGithubHandlers } from './handlers/github.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
 import { registerLanLinkHandlers } from './handlers/lanlink.handler';
 import { registerPaneResourcesHandlers } from './handlers/paneResources.handler';
+import { registerChatHandlers } from './handlers/chat.handler';
 import { registerWebHandlers } from './handlers/web.handler';
 import { registerAccountHandlers } from './handlers/account.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
@@ -192,6 +193,7 @@ export function registerAllHandlers(
   // this whole function is re-run on every daemon connect/disconnect, so the
   // snapshot is refreshed each swap. With no daemon the handler resolves
   // `{ running:false, error }` rather than throwing (see web.handler.ts).
+  const cleanupChat = registerChatHandlers(daemonClient, getWindow);
   const cleanupWeb = registerWebHandlers(() => daemonClient ?? null);
 
   // Multi-account registry (M1) — renderer-only, mode-agnostic (main owns
@@ -487,6 +489,7 @@ export function registerAllHandlers(
     if (cleanupLanLink) cleanupLanLink();
     if (cleanupPaneResources) cleanupPaneResources();
     cleanupWeb();
+    cleanupChat();
     cleanupAccounts();
     cleanupQuickCommands();
     // Mirror the register-side removeHandler so a teardown leaves no stale

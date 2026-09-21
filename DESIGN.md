@@ -3,6 +3,8 @@
 > SSOT for all visual/UI decisions. Read this before making any visual change.
 > Token *values* live in `src/renderer/themes.ts`; this file defines the roles,
 > rules, and layout contracts those tokens serve.
+> Current layout and attention rules verified against the working tree on 2026-09-22.
+> Dated decisions below retain history; the current contracts take precedence.
 
 ## Product Context
 
@@ -50,27 +52,36 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 ├───────────┬──────────────────────────────────┬──────────────┤
 │ sidebar   │  terminal grid  (THE HERO,       │ mission      │
 │ 240px     │  largest area; focused pane =    │ control      │
-│ workspaces│  steel tab-strip underline)      │ ~326px       │
-│ ONLY      │                                  │ ┌ tabs ────┐ │
-│ (mantle)  │                                  │ │icon tabs │ │
-│           │                                  │ ├ Fleet ───┤ │
-│           │                                  │ ├ Orch ────┤ │
+│ navigation│  steel tab-strip underline)      │ 248–320px    │
+│ + spaces  │                                  │ ┌ tabs ────┐ │
+│ (mantle)  │                                  │ │text tabs │ │
+│           │                                  │ ├ selected ┤ │
+│           │                                  │ │ tab view │ │
 │           │ [agent bar — overlay, on hover]  │ └ busy bar ┘ │
 └───────────┴──────────────────────────────────┴──────────────┘
      (deck collapsed → that column is gone; reopen from the titlebar)
 ```
 
-- **Left sidebar = navigation only** (workspaces). Agents do NOT live here —
-  and neither do the deck's entry points: Agent · Git · Channels · web are
-  glyphs on the deck's own 36px header strip, never labeled rows at the
-  sidebar's foot (owner decision 2026-08-14). **Collapsed, the deck renders
-  nothing on that edge at all** — one toggle beside Settings in the titlebar
-  opens it (2026-08-18).
-- **Right column = mission control** (one pillar): **Fleet** (agent roster:
-  status dot + name + mono activity line + jump `→`), then **Orchestrator**
-  thread, busy bar at bottom. Channels is a sibling tab. Rationale: agents ↔
-  the brain that commands them ↔ their channels are ONE system; splitting them
-  across both edges made them feel unrelated (owner feedback, 2026-07-11).
+- **Left sidebar = navigation only.** Global shortcuts at the top, in order:
+  Search, Remote, Fleet. Remote opens browser/phone pairing; Fleet opens the
+  agent overview overlay. Workspace destinations follow under
+  their own heading and add action; settings sits at the foot. Collapsing the
+  sidebar keeps those shortcuts as named icon buttons. These open existing
+  surfaces; agent rosters and conversations remain in their owning panels.
+  This Orca-inspired navigation updates the earlier workspace-only rule
+  (owner decision 2026-09-21). The deck retains its own tabs and a labeled tools-panel toggle in the titlebar.
+  Settings has one entry point at the sidebar foot, including the compact rail.
+- **Tools dock = opposite the workspace sidebar**, 248–320px wide, with
+  labeled Agent, Git and Channels tabs. Git includes Review; Agent holds the
+  orchestrator conversation. Remote lives in the sidebar. Fleet opens over
+  the dock as a separate overlay without changing terminal dimensions.
+  The titlebar's labeled panel toggle opens and closes the dock.
+- **Collapsed tools-panel signal:** show one warm `--accent` dot when there
+  are unread channel messages or dirty workspaces; hide it when the dock is
+  open or both counts are zero. This is an attention cue, not an error or a
+  task-status dot. Do not sum those different counts. The icon and dot are
+  decorative under an `aria-hidden="true"` wrapper; the button's accessible
+  name includes the attention message, and `aria-expanded` conveys open state.
 - **Fleet vitals = appearing chips in the titlebar status strip** («N running»
   amber dot · «N need you» danger, click = jump to the most urgent pane).
   They render ONLY when nonzero — no dead gauges, no extra chrome row.
@@ -108,6 +119,10 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
     reserved for the single primary action of a surface + tiny count badges;
     everything else warm is dots/rings/text. Budget: **5±2 warm meaning-points
     per screen** (dots of the same class count as one system).
+    The collapsed tools-panel unread/dirty dot follows this attention rule;
+    it does not use danger red. Decorative descendants may inherit
+    `aria-hidden="true"` from their wrapper; repeat the signal in the
+    control's accessible name rather than exposing the dot itself.
   - **Steel-blue `--accent-blue` #6E9BC4 = navigation + interactive:** links,
     jump affordances, active-tab underline, focused-pane edge, focus rings,
     selection highlight. Reads as "where you are / what you click." An even
@@ -243,3 +258,46 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 | 2026-09-05 | The sidebar's TASKS list is gone; it becomes a one-line summary (`TASKS · N open · M need you`, click = deck task panel) and renders nothing at zero. Per-task rows, their status dots and the task-channel jump live in the deck task panel only (capped at 5 rows + `N more`, expansion remembered) | Restores "left sidebar = navigation only" (2026-07-11): the list repeated the deck panel and the task workspace cards, so twelve tasks were drawn three times and the sidebar stopped being a map. The 2026-08-24 stash-row amendment stands (a stashed pane is a destination); a task row was a status readout, which is the deck's job |
 | 2026-09-05 | Attention grammar applied to approvals: the dialog and the Fleet inbox are the two renditions; the deck header countdown renders only while the Fleet inbox is not on screen. Titlebar vitals follow the no-dead-gauges rule: the memory chip appears above a threshold, the clock is off by default | One pending approval was drawn three times (dialog, deck header badge, Fleet row); `553MB 09:22` sat in the titlebar as a permanent gauge |
 | 2026-09-05 | Inter is bundled after all (400/500/600, OFL), reversing the earlier "not bundled → system-ui" shortcut in globals.css; inline code in the brain transcript is mono on `--text-sub`, never accent; the Mode chip is text + dot at rest, no tinted fill | The audit measured the UI in `system-ui` (the "gave up on typography" signal) and counted amber spent on code spans and a permanent red-tinted pill — the one-lit-instrument thesis fails when prose and a mode label glow |
+| 2026-09-21 | Refine the outer shell first: Orca-inspired global sidebar shortcuts, 13px navigation and pane labels, quieter neutral selections, and an inset terminal frame. Workspace menu descriptions use 11px text. Existing terminal content stays in place; assistant-ui chat is a later phase | Improves readability and navigation while preserving the terminal-first workspace and existing actions |
+| 2026-09-21 | Replace the titlebar's ambiguous double-chevron with a 28px-high tools-panel icon + 13px label, explicit open state, and a mirrored panel-side icon. Settings lives in the full/compact sidebar, including its onboarding target. Preserve Minimal/Standard visibility recipes and saved individual preferences | Makes the top-right control explain its target and removes duplicate settings. Minimal remains a supported contributor-requested workflow, with settings always reachable to restore Standard |
+
+### Desktop conversation view
+
+Each local terminal surface can switch between Terminal and Chat without replacing
+its PTY. Terminal remains the default and the fallback for approvals and unsupported
+agents. The chat presentation adapts assistant-ui's official MIT-licensed Thread
+registry component: a 44rem conversation column, plain assistant replies, muted
+rounded user messages, a rounded composer with an arrow send button, and a sticky
+viewport footer with a scroll-to-latest control. Theme colors come from wmux.
+Avoid repeating speaker labels and timestamps on every message. Keep the same
+Chat / Terminal switch accessible in Minimal mode.
+
+The desktop adapter currently reads Claude Code transcript events and sends to the
+verified live Claude session. Updates follow recorded events, not a separate model
+connection. Tool bodies and code blocks load on expansion; approvals stay in
+Terminal. Drafts survive view switches within the same conversation. Attachments,
+regeneration, message editing and voice controls are hidden until supported.
+
+### Sidebar shortcuts and Agent dock refinement (2026-09-21)
+
+Sidebar shortcuts appear in order: Search, Remote, Fleet. Search opens the
+command palette. Remote opens the existing browser/phone pairing controls;
+Agent, Git and Channels remain in the tools panel. The compact sidebar
+uses the same destinations with accessible names.
+
+The Agent conversation uses a rounded, readable composer. Mode and New session
+remain visible; Loop and Schedules are grouped under an Automation disclosure.
+Keep approval countdowns visible. Show recovery once while its notice is present,
+and restore the recovery shortcut after dismissal. Briefing headlines may wrap
+instead of being clipped between a label and a pane link.
+
+### Fleet overlay (2026-09-21)
+
+Fleet opens over the tools dock, at up to 720px wide, without adding a flex
+column or changing terminal dimensions. Mirror its anchoring when the sidebar
+moves right. Keep the covered tools dock mounted and inert so drafts survive
+and keyboard focus cannot enter covered controls. Fleet stays non-modal: visible
+workspace areas remain usable; close, Escape and selecting an agent retain their
+existing behavior. Use readable 15px card names and 12px context/status text;
+idle cards retain full opacity. The responsive grid uses two columns when room
+permits and one on narrower windows.

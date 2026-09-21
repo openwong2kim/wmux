@@ -166,7 +166,10 @@ describe('CommanderViewContent — brain surface', () => {
         exact: true,
       },
     ];
-    mount({ recoveryPanes: panes, onRecoverFleet, onDismissRecovery });
+    mount({ recoveryPanes: panes, onRecoverFleet, onDismissRecovery,
+      quickActions: [{ id: 'recover-fleet', label: 'Recover agents', prompt: 'recover' }],
+    });
+    expect(container.querySelector('[data-deck-quick-action]')).toBeNull();
 
     const card = container.querySelector('[data-commander-recovery]');
     expect(card).not.toBeNull();

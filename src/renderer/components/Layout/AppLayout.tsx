@@ -1835,7 +1835,7 @@ export default function AppLayout() {
       <ErrorBoundary name="Titlebar">
         <Titlebar />
       </ErrorBoundary>
-      <div className={`flex flex-1 min-h-0 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
+      <div className={`wmux-shell-body relative flex flex-1 min-h-0 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
       <ErrorBoundary name="Sidebar">
         {sidebarVisible ? <Sidebar /> : <MiniSidebar />}
       </ErrorBoundary>
@@ -1891,18 +1891,20 @@ export default function AppLayout() {
           chevron, ~85% of it empty; one button on a row that already exists
           costs the terminals nothing. */}
       {channelDockVisible && (
-        <ErrorBoundary name="ChannelDock">
-          <ChannelDock />
-        </ErrorBoundary>
+        <div className="contents" inert={fleetViewVisible}>
+          <ErrorBoundary name="ChannelDock">
+            <ChannelDock />
+          </ErrorBoundary>
+        </div>
       )}
-      {/* S-C1 Fleet View (Ctrl+Shift+A) — NB2 파동2 사이클 A에서 전체화면 모달을
-          상시 크롬으로 전환. ChannelDock과 같은 flex 형제 패턴으로 워크스페이스
-          사이드바 반대편 엣지에 고정폭으로 앉아 페인을 reflow한다(더 이상 z-fleet
-          fixed 오버레이가 아니다). Mount-gated on fleetViewVisible. */}
+      {/* Fleet overlays the tools panel without adding another layout column.
+          Keep the covered dock mounted so its chat/composer state survives. */}
       {fleetViewVisible && (
-        <ErrorBoundary name="FleetView">
-          <FleetView />
-        </ErrorBoundary>
+        <div className="wmux-fleet-layer" data-fleet-layer data-side={sidebarPosition === 'right' ? 'left' : 'right'}>
+          <ErrorBoundary name="FleetView">
+            <FleetView />
+          </ErrorBoundary>
+        </div>
       )}
       {fileTreeVisible && (
         <ErrorBoundary name="FileTree">

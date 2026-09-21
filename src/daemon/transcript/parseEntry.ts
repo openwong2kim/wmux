@@ -117,9 +117,15 @@ export function parseTranscriptLineDetailed(
   }
 
   const content = message?.['content'];
-  return isUser
+  const parsed = isUser
     ? parseUserEntry(entry, content, baseId, ts, offsetHint)
     : parseAssistantEntry(content, baseId, ts, offsetHint);
+  if (isAssistant && message?.['stop_reason'] === 'end_turn') {
+    for (const event of parsed.events) {
+      if (event.kind === 'assistant_text' && !event.thinking) event.turnComplete = true;
+    }
+  }
+  return parsed;
 }
 
 // ---------------------------------------------------------------------------

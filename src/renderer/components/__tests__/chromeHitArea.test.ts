@@ -53,7 +53,6 @@ const REQUIRED: { file: string; markers: string[] }[] = [
   },
   { file: 'Sidebar/WorkspaceAgentRoster.tsx', markers: ['data-workspace-agent-roster'] },
   { file: 'Deck/DeckToggle.tsx', markers: ['data-deck-toggle'] },
-  { file: 'StatusBar/StatusBar.tsx', markers: ['data-statusbar-settings'] },
 ];
 
 /**
@@ -134,7 +133,7 @@ describe('chrome hit areas — the 24px pointer floor', () => {
       const source = read(file);
       for (const marker of markers) {
         const tag = buttonTagFor(source, marker);
-        if (!/HIT_TARGET_24\b|HIT_TARGET_24_(ROW|IN_CLUSTER)\b/.test(tag)) {
+        if (!/HIT_TARGET_24\b|HIT_TARGET_24_(ROW|IN_CLUSTER)\b|wmux-panel-toggle\b/.test(tag)) {
           missing.push(`${file} ${marker}`);
         }
       }

@@ -1230,6 +1230,7 @@ function SplitSurfaceView({
           ) : (
             <TerminalComponent
               key={surface.id}
+              chatView={surface.viewMode === 'chat'}
               ptyId={surface.ptyId || undefined}
               cwd={surface.cwd || undefined}
               isActive={surface.id === activeSurfaceId}
@@ -1263,6 +1264,7 @@ function SplitSurfaceView({
             {terminals.map((surface) => (
               <TerminalComponent
                 key={surface.id}
+                chatView={surface.viewMode === 'chat'}
                 ptyId={surface.ptyId || undefined}
                 cwd={surface.cwd || undefined}
                 isActive={surface.id === activeSurfaceId}

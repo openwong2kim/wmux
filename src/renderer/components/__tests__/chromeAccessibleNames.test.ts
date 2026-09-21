@@ -108,7 +108,7 @@ describe('chrome accessible names', () => {
 
   it('names the four controls the audit caught, from the existing table', () => {
     const expected: [string, RegExp][] = [
-      ['StatusBar/StatusBar.tsx', /aria-label=\{t\('statusBar\.settingsTooltip'\)\}/],
+      ['Sidebar/Sidebar.tsx', /aria-label=\{t\('settings\.title'\)\}/],
       ['Sidebar/Sidebar.tsx', /aria-label=\{t\('sidebar\.hideTooltip'\)\}/],
       ['Pane/SurfaceTabs.tsx', /aria-label=\{t\('surface\.closeTabNamed'/],
       ['Sidebar/CompanyPanel.tsx', /aria-label=\{t\('company\.destroyTitle'\)\}/],

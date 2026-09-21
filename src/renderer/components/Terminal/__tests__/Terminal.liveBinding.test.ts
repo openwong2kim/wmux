@@ -30,7 +30,7 @@ describe('Terminal.tsx — overlay consumers bind the state-published instance (
 
   it('the instance comes from useTerminal state and the vi-copy gate uses it too', () => {
     expect(src).toMatch(/const \{ terminal: terminalRef, terminalInstance,/);
-    expect(src).toMatch(/showViCopyMode = viCopyModeActive && isActive && terminalInstance !== null/);
+    expect(src).toMatch(/showViCopyMode = !chatView && viCopyModeActive && isActive && terminalInstance !== null/);
     expect(src).not.toMatch(/terminalRef\.current !== null/);
   });
 });

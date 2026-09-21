@@ -41,6 +41,19 @@ describe('resolveActivePanePtyId', () => {
     expect(resolveActivePanePtyId(state)).toBe('pty-1');
   });
 
+  it('never focuses the hidden terminal in Chat and restores its target on switching back', () => {
+    const s = surface('s1', 'pty-1');
+    const root = leaf('p1', [s], 's1');
+    const state = { workspaces: [ws('w1', root, 'p1')], activeWorkspaceId: 'w1', multiviewIds: [] };
+    const terminalKey = computeFocusKey(state);
+    s.viewMode = 'chat';
+    expect(resolveActivePanePtyId(state)).toBeNull();
+    expect(computeFocusKey(state)).not.toBe(terminalKey);
+    s.viewMode = 'terminal';
+    expect(resolveActivePanePtyId(state)).toBe('pty-1');
+    expect(computeFocusKey(state)).toBe(terminalKey);
+  });
+
   it('follows a pane switch — picks the ptyId of whichever pane is active', () => {
     // Two side-by-side leaves; activePaneId selects the target. This is the
     // reported bug: navigating the active pane must change the focus target.

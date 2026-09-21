@@ -34,7 +34,6 @@ import { CommanderView } from '../Deck/CommanderView';
 import { GitTab } from '../Deck/GitTab';
 import { ReviewTab } from '../Deck/ReviewTab';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
-import WebToggle from '../StatusBar/WebToggle';
 
 // ─── Command Deck (Phase 1 P1a) ───────────────────────────────────────────────
 //
@@ -77,6 +76,7 @@ export default function ChannelDock(): React.ReactElement {
     <div
       className={`flex flex-col h-full bg-[var(--bg-mantle)] ${dockOnRight ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`}
       style={{ width: 'clamp(248px, 26vw, 320px)', borderColor: 'var(--border-soft)' }}
+      id="wmux-tools-panel"
       data-channel-dock
       {...tokenAttrs('bgMantle', 'bg')}
       {...tokenAttrs('bgSurface', 'border')}
@@ -96,10 +96,6 @@ export default function ChannelDock(): React.ReactElement {
         commanderModelOptions={MODEL_OPTIONS}
         commanderModelValue={deckBrainModel}
         onCommanderModelSelect={setDeckBrainModel}
-        // wmux web — the fourth glyph on the strip. Not a tab (it opens a
-        // popover, not a deck view), so it rides alongside the tablist rather
-        // than inside it.
-        afterTabs={<WebToggle />}
         /* No collapse button here any more. The titlebar's DeckToggle closes
            the deck as well as opening it (2026-08-18), so a second chevron in
            this header was the same command twice, ~30px apart. One control in

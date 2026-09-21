@@ -122,6 +122,8 @@ import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
+import { chatAgentStatus } from './transcript/chatAgentStatus';
+import { deliverChatPrompt } from './transcript/deliverChatPrompt';
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
 // registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives
@@ -3198,7 +3200,8 @@ function registerRpcHandlers(
       return { available: false, reason: 'not-authorized' };
     }
     const id = typeof params['id'] === 'string' ? params['id'] : '';
-    return projector.status(id);
+    const live = readChatAgentState(id);
+    return { ...projector.status(id), agentStatus: live.agentStatus, agentAlive: live.agentName === 'Claude Code' };
   });
 
   pipeServer.onRpc('daemon.transcript.snapshot', async (params, ctx) => {
@@ -3246,7 +3249,7 @@ function registerRpcHandlers(
         // Hook Stop/awaiting-input is authoritative inside the same daemon that
         // owns byte activity. Settle the bridge before broadcasting so a later
         // idle repaint cannot race the renderer back to stale running.
-        sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status);
+        sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status, true);
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
         // Phone liveness header. The desktop reads pane state off this same
@@ -3575,6 +3578,15 @@ function registerRpcHandlers(
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     return readDaemonAgentState(id);
   });
+  const readChatAgentState = (id: string) => {
+    const live = readDaemonAgentState(id);
+    const bridge = sessionManager.getSession(id)?.bridge;
+    if (live.agentName === 'Claude Code' && bridge && live.agentStatus !== 'awaiting_input') {
+      const last = projector.snapshot(id)?.events.at(-1);
+      return { ...live, agentStatus: chatAgentStatus(live.agentStatus, last, bridge.getLastTurnStartedAt()) };
+    }
+    return live;
+  };
   // Versioned method name is a rolling-upgrade safety boundary. An older
   // daemon's v1 handler would ignore the additive incarnationId parameter and
   // write anyway; v2 makes mixed versions fail with Unknown method pre-write.
@@ -3625,6 +3637,49 @@ function registerRpcHandlers(
       },
     });
     return { result };
+  });
+
+  // Human chat input shares the scheduler's input-revision/identity guards,
+  // with the displayed conversation and approval state checked at both writes.
+  const chatSending = new Set<string>();
+  pipeServer.onRpc('daemon.transcript.send', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'send')) return { result: 'unavailable' };
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const agentSessionId = typeof params['agentSessionId'] === 'string' ? params['agentSessionId'] : '';
+    const text = typeof params['text'] === 'string' ? params['text'] : '';
+    if (!id || !approvalRegistry) return { result: 'unavailable' };
+    if (chatSending.has(id)) return { result: 'busy' };
+    chatSending.add(id);
+    try {
+      const result = await deliverChatPrompt(agentSessionId, text, {
+        getTranscriptSessionId: () => sessionManager.getSession(id)?.meta.resumeBinding?.sessionId,
+        hasOpenApproval: () => !approvalRegistry || approvalRegistry.list().pending.some((r) => r.sessionId === id),
+        getAgentState: () => {
+          const current = readChatAgentState(id);
+          const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;
+          return slug && current.agentVerified ? { slug, incarnationId: current.incarnationId, status: current.agentStatus,
+            inputQuiet: current.inputQuiet, inputRevision: current.inputRevision } : null;
+        },
+        isAgentProcessAlive: async () => {
+          const pid = agentProcessTracker.pidFor(id);
+          if (pid === undefined) return false;
+          try {
+            return await agentProcessTracker.verifyLive(id, 'claude') &&
+              await ProcessMonitor.isRunning(pid);
+          } catch {
+            return false;
+          }
+        },
+        write: (data) => {
+          const managed = sessionManager.getSession(id);
+          if (!managed) return false;
+          managed.ptyProcess.write(data);
+          managed.bridge.noteInput(data);
+          return true;
+        },
+      });
+      return { result };
+    } finally { chatSending.delete(id); }
   });
 
   // daemon.readPromptEvents — read structured OSC 133 prompt/command events

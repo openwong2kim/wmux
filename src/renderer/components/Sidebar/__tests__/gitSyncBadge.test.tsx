@@ -42,11 +42,11 @@ afterEach(() => {
 });
 
 describe('GitSyncBadge', () => {
-  it('renders the dirty count as muted text, not amber', () => {
+  it('renders the dirty count as readable secondary text, not amber', () => {
     const container = render(<GitSyncBadge sync={sync({ dirty: 41 })} />);
     const [dirty] = signals(container);
     expect(dirty.textContent).toBe('·41');
-    expect(dirty.style.color).toBe('var(--text-muted)');
+    expect(dirty.style.color).toBe('var(--text-subtle)');
   });
 
   it('keeps ahead on the steel accent', () => {

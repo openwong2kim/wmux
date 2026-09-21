@@ -17,11 +17,13 @@ import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
 import { collapseDirection } from './sidebarGlyphs';
-import { IconPlus, IconChevronDir } from '../icons';
+import { IconPlus, IconChevronDir, IconGear } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24 } from '../hitArea';
 import PluginPanels from '../../plugins/PluginPanels';
 import CompanyPanel from './CompanyPanel';
+import SidebarNavigation from './SidebarNavigation';
+import PresetPicker from './PresetPicker';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 
 // Frozen stand-in the attention selector returns while the setting is off, so
@@ -82,7 +84,6 @@ export default function Sidebar() {
   const activeRemoteKey = useStore((s) => s.activeRemoteKey);
   const setActiveRemoteKey = useStore((s) => s.setActiveRemoteKey);
   const detachRemoteWorkspace = useStore((s) => s.detachRemoteWorkspace);
-  const addWorkspace = useStore((s) => s.addWorkspace);
   const removeWorkspace = useStore((s) => s.removeWorkspace);
   const archiveWorkspace = useStore((s) => s.archiveWorkspace);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
@@ -91,17 +92,27 @@ export default function Sidebar() {
   const reorderWorkspace = useStore((s) => s.reorderWorkspace);
   const toggleMultiviewWorkspace = useStore((s) => s.toggleMultiviewWorkspace);
   const multiviewIds = useStore((s) => s.multiviewIds);
-  const toggleFileTree = useStore((s) => s.toggleFileTree);
-  const fileTreeVisible = useStore((s) => s.fileTreeVisible);
-  const company = useStore((s) => s.company);
   // sidebarMode toggles the sidebar's central content between the workspace
   // list and the company tree (CompanyPanel). The palette's "Company: …"
   // commands flip this to 'company'; without a consumer here the flip was a
-  // no-op (the bug: company commands appeared to do nothing). The header
-  // toggle below is the UI entry/exit point.
+  // no-op (the bug: company commands appeared to do nothing). The palette
+  // remains the entry/exit point for company mode.
   const sidebarMode = useStore((s) => s.sidebarMode);
-  const setSidebarMode = useStore((s) => s.setSidebarMode);
+  const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
   const pushToast = useStore((s) => s.pushToast);
+
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerButtonRef = useRef<HTMLButtonElement>(null);
+  const [pickerAnchor, setPickerAnchor] = useState({ left: 8, top: 180 });
+  const togglePicker = useCallback(() => {
+    const rect = pickerButtonRef.current?.getBoundingClientRect();
+    if (rect) setPickerAnchor({
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - 216)),
+      top: rect.bottom + 4,
+    });
+    setPickerOpen((v) => !v);
+  }, []);
+  const closePicker = useCallback(() => setPickerOpen(false), []);
 
   // Ctrl+F → focus workspace search, but only while focus is already inside
   // the sidebar. A document-level listener would collide with the global
@@ -161,21 +172,38 @@ export default function Sidebar() {
 
   return (
     <div
-      className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`}
+      className="wmux-sidebar flex flex-col h-full shrink-0 bg-[var(--bg-mantle)]"
       style={{ width: 240, borderColor: 'var(--border-soft)' }}
       {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}
       onKeyDown={handleSidebarKeyDown}
     >
+      {pickerOpen && <PresetPicker onClose={closePicker} anchorStyle={pickerAnchor} />}
+      <SidebarNavigation />
+      <div className="wmux-sidebar-section">
+        <span className="truncate">{t('sidebar.workspaces')}</span>
+        <span className="wmux-sidebar-total">{workspaces.length}</span>
+        <button
+          ref={pickerButtonRef}
+          type="button"
+          className={`ui-icon-btn ml-auto h-7 w-7 ${FOCUS_RING}`}
+          onClick={togglePicker}
+          title={t('sidebar.newWorkspace')}
+          aria-label={t('sidebar.newWorkspace')}
+          aria-expanded={pickerOpen}
+        ><IconPlus size={15} /></button>
+      </div>
+
       {/* Workspace search input — only visible when 3+ workspaces */}
       {workspaces.length >= 3 && (
-        <div className="px-2 pt-2">
+        <div className="px-3 pb-1">
           <input
             ref={wsSearchRef}
             type="text"
             value={wsSearch}
             onChange={(e) => setWsSearch(e.target.value)}
             placeholder={t('sidebar.searchPlaceholder')}
-            className="w-full px-2 py-1 text-xs bg-[var(--bg-surface)] text-[var(--text-main)] border border-[var(--bg-surface)] rounded outline-none focus:border-[var(--text-muted)] placeholder:text-[var(--text-muted)]"
+            aria-label={t('sidebar.searchPlaceholder')}
+            className="ui-input h-8 text-[13px]"
           />
         </div>
       )}
@@ -192,7 +220,7 @@ export default function Sidebar() {
           below the last row) don't paint a 🚫 cursor mid-drag. External
           drags hover-through the container untouched. */
       <div
-        className="flex-1 overflow-y-auto py-2 space-y-0.5"
+        className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 space-y-1"
         onDragOver={(e) => {
           if (useStore.getState().draggedWorkspaceIndex !== null) {
             e.preventDefault();
@@ -263,17 +291,20 @@ export default function Sidebar() {
       {/* Plugin sidebar panels (B-1 ui.sidebar contribution point) */}
       <PluginPanels />
 
-      {/* Agent · Git · Channels · web moved onto the deck's own icon strip
-          (Deck/DeckTabs.tsx; collapsed, the deck is reopened from the
-          titlebar's DeckToggle) — owner decisions 2026-08-14 / 2026-08-18.
-          They all command the
-          right-hand deck, and as rows here they cost 144px of the workspace
-          list and vanished entirely when the sidebar collapsed. */}
-
       {/* Footer — when docked right, mirror the row so the collapse arrow sits
           on the inner edge facing the content area (issue #151). */}
-      <div className={`flex items-center justify-between h-9 shrink-0 px-4 border-t border-[var(--bg-surface)] text-[11px] font-mono text-[var(--text-muted)] ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`} style={{ borderColor: 'var(--border-soft)' }} {...tokenAttrs('textMuted', 'text')}>
-        <span>{workspaces.length} {t('sidebar.workspaces')}</span>
+      <div className={`wmux-sidebar-footer flex items-center shrink-0 gap-1 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`} {...tokenAttrs('textMuted', 'text')}>
+        <button
+          type="button"
+          className={`wmux-nav-button flex-1 ${FOCUS_RING}`}
+          aria-label={t('settings.title')}
+          data-onboarding-target="settings-button"
+          aria-pressed={settingsPanelVisible}
+          onClick={() => useStore.getState().toggleSettingsPanel()}
+        >
+          <IconGear size={16} />
+          <span>{t('settings.title')}</span>
+        </button>
         <button
           data-sidebar-collapse
           className={`${HIT_TARGET_24} rounded text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}

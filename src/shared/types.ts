@@ -52,6 +52,8 @@ export const MAX_INBOX_SIZE = _MAX_INBOX_SIZE;
 
 // === Surface: a single terminal instance within a Pane ===
 export interface Surface {
+  /** Presentation only: both views share the same live PTY. */
+  viewMode?: 'terminal' | 'chat';
   id: string;
   ptyId: string;
   title: string;

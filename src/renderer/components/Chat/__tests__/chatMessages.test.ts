@@ -1,0 +1,24 @@
+import { describe, expect, it } from 'vitest';
+import { transcriptMessages } from '../chatMessages';
+import { mergeTranscriptEvents } from '../transcriptState';
+import type { TurnEvent } from '../../../../shared/transcript/turnEvents';
+const user: TurnEvent = { id: 'u', kind: 'user_text', text: 'hello' };
+const call: TurnEvent = { id: 't', kind: 'tool_use', toolUseId: 'tool-1', name: 'Read', argSummary: 'README.md' };
+const result: TurnEvent = { id: 'r', kind: 'tool_result', toolUseId: 'tool-1', ok: false, bytes: 3, output: { n: 0, bytes: 3, inline: 'err' } };
+describe('transcript message projection', () => {
+  it('joins a tool result to its call without dropping user/assistant boundaries', () => {
+    const rows = transcriptMessages([user, call, result, { id: 'a', kind: 'assistant_text', text: 'done' }]);
+    expect(rows.map((m) => m.id)).toEqual(['u', 't', 'a']);
+    expect(rows[0].role).toBe('user');
+    expect(rows[1].metadata.custom.row).toEqual({ event: call, result });
+    expect(rows[2].content).toEqual([{ type: 'text', text: 'done' }]);
+  });
+  it('preserves an orphan tool result at a pagination boundary', () => {
+    expect(transcriptMessages([result])).toHaveLength(1);
+    expect(transcriptMessages([call, result])).toHaveLength(1);
+  });
+  it('deduplicates overlapping live pages and prepends history without reordering', () => {
+    expect(mergeTranscriptEvents([user, call], [call, result])).toEqual([user, call, result]);
+    expect(mergeTranscriptEvents([call, result], [user, call], true)).toEqual([user, call, result]);
+  });
+});

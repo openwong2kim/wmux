@@ -27,7 +27,7 @@ export function WorkspaceCenter() {
   const remoteVisible = useStore(isRemoteMirrorVisible);
 
   return (
-    <div className="flex-1 min-h-0 relative">
+    <div className="wmux-workspace-frame flex-1 min-h-0 relative">
       {/* Local pane tree — stays mounted even when a remote view is active
           (same hidden-but-alive discipline WorkspaceViewport already uses
           for individual workspaces), just toggled to display:none. */}

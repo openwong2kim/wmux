@@ -63,7 +63,7 @@ export function FleetCardMissionLine({ mission }: { mission: WorkTask | undefine
   const isOpen = mission.status === 'open';
   return (
     <div
-      className="flex items-center gap-1.5 min-w-0 text-caption font-mono"
+      className="flex items-center gap-1.5 min-w-0 text-[12px] font-mono"
       data-fleet-mission
       data-mission-status={mission.status}
       title={`Mission: ${mission.title} (${mission.status})`}
@@ -97,7 +97,7 @@ export function FleetCardEvidenceBadge({ task }: { task: Task | undefined }): Re
   const verified = evidence.items.filter(isVerifiedItem).length;
   return (
     <div
-      className="flex items-center gap-1 min-w-0 text-caption font-mono"
+      className="flex items-center gap-1 min-w-0 text-[12px] font-mono"
       data-fleet-evidence
       data-evidence-verified={verified}
       data-evidence-total={total}
@@ -141,7 +141,6 @@ function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
     selectLatestCompletionEvidenceTask(s.a2aTasks, card.workspaceId, card.paneId, card.isActivePane),
   );
   const isAwaitingInput = card.agentStatus === 'awaiting_input';
-  const isIdle = card.agentStatus === 'idle';
   // P2: a user rename wins so the cockpit reflects the same name as the composer
   // / pane header; otherwise the existing agent name or surface title.
   const displayName = card.paneLabel || card.agentName || card.title || t('surface.terminal');
@@ -178,14 +177,13 @@ function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
       data-pty-id={card.ptyId}
       data-workspace-id={card.workspaceId}
       data-workspace-name={card.workspaceName}
-      className="group text-left flex flex-col gap-1.5 rounded-[7px] p-3 transition-[transform,box-shadow,border-color,background-color] duration-150 cursor-pointer outline-none hover:-translate-y-px hover:shadow-[0_2px_8px_rgba(0,0,0,0.25)] motion-reduce:transition-none motion-reduce:hover:translate-y-0"
+      className="wmux-fleet-card group text-left flex flex-col cursor-pointer outline-none"
       style={{
         backgroundColor: 'var(--bg-surface)',
         border: `1px solid ${
           focused ? 'var(--accent-blue)' : isAwaitingInput ? 'var(--accent-yellow)' : 'var(--bg-overlay)'
         }`,
         boxShadow: focused ? '0 0 0 1px var(--accent-blue)' : undefined,
-        opacity: isIdle ? 0.62 : 1,
       }}
       title={card.cwd ? `${card.workspaceName} · ${card.cwd}` : card.workspaceName}
     >
@@ -210,27 +208,27 @@ function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
             <IconExternalLink size={10} />
           </span>
         )}
-        <span className="flex-1 min-w-0 truncate text-body font-medium text-[var(--text-main)]">
+        <span className="flex-1 min-w-0 truncate text-[15px] font-semibold text-[var(--text-main)]">
           {displayName}
         </span>
         {supervision && (
           <span
             data-fleet-supervision
             data-supervision-status={supervision.status}
-            className="flex-shrink-0 text-[10px] font-mono"
+            className="flex-shrink-0 text-[12px] font-mono"
             style={{ color: supervisionStopped ? 'var(--accent-red)' : 'var(--text-subtle)' }}
             title={supervisionLabel}
           >
             {`${supervisionStopped ? '⟳!' : '⟳'}${supervision.restartCount > 0 ? ` ${supervision.restartCount}` : ''}`}
           </span>
         )}
-        <span className="flex-shrink-0 text-[10px] font-mono" style={{ color: icon.dotVar }}>
+        <span className="wmux-fleet-status" style={{ color: icon.dotVar }}>
           {t(icon.labelKey)}
         </span>
       </div>
 
       {/* Context line: workspace · cwd */}
-      <div className="flex items-center gap-1.5 min-w-0 text-caption font-mono text-[var(--text-muted)]">
+      <div className="flex items-center gap-1.5 min-w-0 text-[12px] font-mono text-[var(--text-muted)]">
         <span className="truncate max-w-[48%]" title={card.workspaceName}>{card.workspaceName}</span>
         {card.cwd && (
           <>
@@ -247,7 +245,7 @@ function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
         <div
           data-fleet-resource
           data-rss-bytes={resource.rss}
-          className="flex items-center gap-1 min-w-0 text-caption font-mono text-[var(--text-muted)]"
+          className="flex items-center gap-1 min-w-0 text-[12px] font-mono text-[var(--text-muted)]"
           title={`${agentLabel(resource.image)} — ${formatRss(resource.rss)} resident (shell + descendants)`}
         >
           <span className="truncate">
@@ -267,11 +265,11 @@ function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
 
       {/* Affordance row — only when there is something worth a third line. */}
       {isAwaitingInput ? (
-        <div className="text-caption font-medium" style={{ color: 'var(--accent-yellow)' }}>
+        <div className="text-[12px] font-medium" style={{ color: 'var(--accent-yellow)' }}>
           ⏸ {t('fleet.needsYourInput')}
         </div>
       ) : card.surfaceType !== 'terminal' ? (
-        <div className="text-caption font-mono text-[var(--text-subtle)] capitalize">
+        <div className="text-[12px] font-mono text-[var(--text-subtle)] capitalize">
           {card.surfaceType}
         </div>
       ) : null}
@@ -285,7 +283,7 @@ function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
       {!isAwaitingInput && activity && (
         <div
           data-fleet-activity
-          className="block truncate font-mono text-caption leading-tight"
+          className="block truncate font-mono text-[12px] leading-tight"
           style={{ color: 'var(--text-subtle)' }}
           title={activity}
         >
@@ -300,7 +298,7 @@ function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
           when the hook-driven activity line above is present (its fallback). */}
       {showTail && (
         <div
-          className="mt-0.5 flex flex-col font-mono text-[10px] leading-tight overflow-hidden"
+          className="mt-0.5 flex flex-col font-mono text-[12px] leading-tight overflow-hidden"
           style={{ color: 'var(--text-subtle)' }}
           aria-hidden="true"
         >

@@ -76,6 +76,8 @@ export interface AssistantTextEvent extends TurnEventBase {
   codeBlocks?: CodeBlockRef[];
   /** True when this entry's content was a `thinking` block. Collapsed by default. */
   thinking?: boolean;
+  /** Explicit end_turn recorded by Claude, never inferred from silence. */
+  turnComplete?: boolean;
 }
 
 /**
@@ -193,6 +195,9 @@ export interface TranscriptPage {
 }
 
 export interface TranscriptStatus {
+  /** Live daemon state, separate from whether saved history can be read. */
+  agentStatus?: import('../types').AgentStatus;
+  agentAlive?: boolean;
   available: boolean;
   /**
    * Closed set matching what the projector's `resolvePath` actually returns:
@@ -231,7 +236,11 @@ export interface TranscriptAppendData {
  * pane whose agent publishes no transcript is a normal state that disables a
  * toggle, not an error the renderer has to catch.
  */
+export type ChatSendResult = 'sent' | 'busy' | 'blocked' | 'unconfirmed' | 'session_changed' | 'unavailable' | 'error';
+
 export interface ChatBridgeApi {
+  /** Identity-bound, daemon-serialized input into the existing Claude process. */
+  send: (args: { ptyId: string; agentSessionId: string; text: string }) => Promise<{ result: ChatSendResult }>;
   status: (ptyId: string) => Promise<TranscriptStatus>;
   /** `before` pages BACKWARD from a prior cursor.headOffset; omit for the tail. */
   snapshot: (ptyId: string, before?: number) => Promise<TranscriptPage | null>;
@@ -264,9 +273,8 @@ export interface ChatBridgeApi {
    * `onGate` is transition-only, so on mount and on every daemon reconnect the
    * gate has to be SEEDED from this before the composer may be enabled —
    * otherwise a reload during an open permission menu renders an unlocked
-   * composer over it. Returns an empty list in local mode (no registry, no
-   * approvals) — never throws, because the caller's fallback for a throw would
-   * be to guess.
+   * composer over it. Returns null when the daemon cannot be reached, so the composer stays
+   * disabled rather than treating unknown permission state as permission to send.
    */
-  openGates: () => Promise<string[]>;
+  openGates: () => Promise<string[] | null>;
 }

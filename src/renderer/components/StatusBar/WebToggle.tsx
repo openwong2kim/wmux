@@ -9,7 +9,7 @@ import {
 import { buildQrPath, type QrPath } from './qrPath';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
-import { IconBrowser } from '../icons';
+import { IconBrowser, IconRemoteDevices } from '../icons';
 import { DECK_ICON_BUTTON, deckIconTone } from '../Deck/deckIconStyles';
 import PairedDevicesModal from './PairedDevicesModal';
 import {
@@ -572,7 +572,7 @@ export function WebPopoverBody({
  * (2026-08-18) — the deck reopens from the titlebar and this glyph comes back
  * with it. The popover anchors under the button.
  */
-export default function WebToggle() {
+export default function WebToggle({ variant = 'icon', compact = false }: { variant?: 'icon' | 'sidebar'; compact?: boolean } = {}) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [info, setInfo] = useState<WebTerminalInfo>({ running: false });
@@ -835,6 +835,7 @@ export default function WebToggle() {
   if (!api) return null;
 
   const running = info.running === true;
+  const buttonLabel = variant === 'sidebar' ? t('sidebar.remote') : t('web.label');
 
   return (
     <div className="contents">
@@ -847,13 +848,15 @@ export default function WebToggle() {
         // No aria-pressed: this button opens a popover, it does not toggle the
         // server. Reporting "pressed" for a running server contradicts
         // haspopup/expanded, so the running state rides in the name instead.
-        aria-label={running ? `${t('web.label')} (${t('web.running')})` : t('web.label')}
-        title={t('web.tooltip')}
+        aria-label={running ? `${buttonLabel} (${t('web.running')})` : buttonLabel}
+        title={variant === 'sidebar' && compact ? (running ? `${buttonLabel} (${t('web.running')})` : buttonLabel) : t('web.tooltip')}
         data-testid="deck-web-toggle"
         data-deck-web=""
-        className={`${DECK_ICON_BUTTON} ${deckIconTone(open, running)}`}
+        data-sidebar-nav={variant === 'sidebar' ? 'remote' : undefined}
+        className={variant === 'sidebar' ? `wmux-nav-button ${FOCUS_RING}` : `${DECK_ICON_BUTTON} ${deckIconTone(open, running)}`}
       >
-        <IconBrowser size={15} />
+        <span className={variant === 'sidebar' ? 'wmux-nav-icon' : undefined} aria-hidden="true">{variant === 'sidebar' ? <IconRemoteDevices size={18} /> : <IconBrowser size={16} />}</span>
+        {variant === 'sidebar' && !compact && <span className="min-w-0 flex-1 truncate text-left">{buttonLabel}</span>}
         {running && (
           <span
             aria-hidden="true"

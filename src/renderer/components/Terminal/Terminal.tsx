@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import { lazy, Suspense, useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { useTerminal, copySelectionWithFeedback, getPaneSyncUi, subscribePaneSyncUi, type ContextMenuEvent, type PaneSyncUiState } from '../../hooks/useTerminal';
 import { useStore } from '../../stores';
 import { t } from '../../i18n';
@@ -17,9 +17,12 @@ import ContextMenu from './ContextMenu';
 import ScrollToBottomButton from './ScrollToBottomButton';
 import '@xterm/xterm/css/xterm.css';
 
+const ChatView = lazy(() => import('../Chat/ChatView'));
+
 const EMPTY_BOOKMARKS: number[] = [];
 
 interface TerminalProps {
+  chatView?: boolean;
   ptyId?: string;
   shell?: string;
   cwd?: string;
@@ -48,7 +51,7 @@ interface TerminalProps {
   surfaceId?: string;
 }
 
-export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, onPtyCreated, isActive = true, visible, isWorkspaceVisible = true, scrollbackFile, workspaceId: ownerWorkspaceId, surfaceId: ownerSurfaceId }: TerminalProps) {
+export default function TerminalComponent({ chatView = false, ptyId: externalPtyId, shell, cwd, onPtyCreated, isActive = true, visible, isWorkspaceVisible = true, scrollbackFile, workspaceId: ownerWorkspaceId, surfaceId: ownerSurfaceId }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [ptyId, setPtyId] = useState<string | null>(externalPtyId || null);
   const creatingRef = useRef(false);
@@ -310,7 +313,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   // terminalInstance (state, #1256) — not terminalRef.current (a render-time
   // snapshot): the ref is populated after this render ran, so a snapshot read
   // here sees null until an unrelated re-render happens.
-  const showViCopyMode = viCopyModeActive && isActive && terminalInstance !== null;
+  const showViCopyMode = !chatView && viCopyModeActive && isActive && terminalInstance !== null;
   // #1266 — `isActive` means "selected tab INSIDE this pane", not "this pane
   // has focus". `searchBarVisible` is a single global flag, so gating on
   // `isActive` alone put a search bar in every pane at once and meant the bar
@@ -328,7 +331,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     // previous behaviour rather than losing their search bar.
     return leaf ? leaf.id === ws.activePaneId : true;
   });
-  const showSearchBar = searchBarVisible && isActive && isPaneFocused;
+  const showSearchBar = !chatView && searchBarVisible && isActive && isPaneFocused;
 
   const handleCloseSearch = () => {
     clearSearch();
@@ -466,6 +469,15 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
         position: 'relative',
       }}
     >
+      {chatView && shown && isWorkspaceVisible && (
+        <div className="absolute inset-0 z-10 bg-[var(--bg-base)]" data-chat-surface>
+          <Suspense fallback={<div className="wmux-chat-empty">{t('chat.loading')}</div>}>
+            {ptyId ? <ChatView ptyId={ptyId} active={isWorkspaceVisible && shown}
+              onTerminal={() => { if (ownerSurfaceId) useStore.getState().setSurfaceViewMode(ownerSurfaceId, 'terminal'); }} />
+              : <div className="wmux-chat-empty" role="status">{t('chat.loading')}</div>}
+          </Suspense>
+        </div>
+      )}
       {recoveryError && (
         <div role="alert" className="absolute inset-x-2 top-2 z-20 rounded border border-[var(--border)] bg-[var(--bg-base)] p-3 text-sm text-[var(--text-primary)]">
           <p className="break-words">{recoveryError}</p>
@@ -512,10 +524,12 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
           clash with the SurfaceTabs drag-export feature. */}
       <div
         ref={containerRef}
+        inert={chatView}
+        aria-hidden={chatView || undefined}
         draggable={false}
         onDragOver={handleTerminalDragOver}
         onDrop={handleTerminalDrop}
-        style={{ width: '100%', height: '100%', padding: '4px' }}
+        style={{ width: '100%', height: '100%', padding: '4px', visibility: chatView ? 'hidden' : undefined }}
       />
 
       {/* Scrollback bookmark markers on the left edge. #1256: bound to the

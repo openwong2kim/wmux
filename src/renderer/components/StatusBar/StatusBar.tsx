@@ -160,7 +160,6 @@ export default function StatusBar() {
     s.setActivePane(target.paneId);
   };
   const toggleNotificationPanel = useStore((s) => s.toggleNotificationPanel);
-  const toggleSettingsPanel = useStore((s) => s.toggleSettingsPanel);
 
   // Prefix mode (tmux-style Ctrl+B)
   const prefixMode = useStore((s) => s.prefixMode);
@@ -188,11 +187,11 @@ export default function StatusBar() {
   // — rendering it here again would duplicate it 20px away.
   const noDrag = { WebkitAppRegion: 'no-drag' } as CSSProperties;
   return (
-    <div className="flex items-center flex-1 min-w-0 h-full px-3 text-[11px] text-[var(--text-muted)] select-none font-mono" data-onboarding-target="status-bar" {...tokenAttrs('textMuted', 'text')}>
+    <div className="flex items-center flex-1 min-w-0 h-full px-3 text-[11px] text-[var(--text-muted)] select-none font-sans" data-onboarding-target="status-bar" {...tokenAttrs('textMuted', 'text')}>
       {/* Left: current workspace (back at its original status-row spot —
           owner call) + transient indicators (prefix mode, branch, badge) */}
-      <div className="flex items-center gap-3" style={noDrag}>
-        <span className="text-[12px] text-[var(--text-main)] font-medium" {...tokenAttrs('textMain', 'text')}>{activeWs.name || 'wmux'}</span>
+      <div className="flex items-center gap-3 min-w-0" style={noDrag}>
+        <span className="text-[13px] text-[var(--text-main)] font-medium truncate" {...tokenAttrs('textMain', 'text')}>{activeWs.name || 'wmux'}</span>
         {prefixMode && (
           <span className="text-[var(--accent-red)] font-bold animate-pulse" {...tokenAttrs('danger', 'accent')}>
             [PREFIX]
@@ -222,7 +221,7 @@ export default function StatusBar() {
       <div className="flex-1" />
 
       {/* Right: status indicators */}
-      <div className="flex items-center gap-3" style={noDrag}>
+      <div className="flex items-center shrink-0 gap-2" style={noDrag}>
         {/* Fleet vitals — render only when there is signal (no dead gauges). */}
         {fleetVitals.running > 0 && (
           <span className="flex items-center gap-1.5" data-statusbar-running>
@@ -256,29 +255,8 @@ export default function StatusBar() {
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
         {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockTime />
-        <button
-          type="button"
-          data-statusbar-settings
-          onClick={toggleSettingsPanel}
-          // The gear drew a 13px icon with no box at all. Plain HIT_TARGET_24,
-          // no refund: this strip is 36px tall and right-aligned with room to
-          // spare, and a side refund here would eat half of the cluster's gap-3
-          // rhythm and reach into the clock beside it. It replaces the old
-          // `ml-1`, which the 24px box now provides on its own.
-          className={`${HIT_TARGET_24} text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors`}
-          title={t('statusBar.settingsTooltip')}
-          // `title` is not an accessible name here: the button's only child is
-          // an inline <svg> with no <title>, so a screen reader announced it as
-          // an unnamed button (a CDP sweep for /settings/i over aria-label
-          // matched nothing in the whole window).
-          aria-label={t('statusBar.settingsTooltip')}
-          data-onboarding-target="settings-button"
-        >
-          <IconGear size={13} />
-        </button>
-        {/* Deck open/close. Last in the row, past Settings: both are app-wide
-            chrome switches, and grouping them here is what let the collapsed
-            deck stop costing the terminals a 36px column (2026-08-18). */}
+        {/* Settings lives in the sidebar in both expanded and compact layouts.
+            The titlebar owns only the labeled tools-panel visibility control. */}
         <DeckToggle />
       </div>
     </div>
