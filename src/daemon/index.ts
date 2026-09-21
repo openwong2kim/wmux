@@ -3552,6 +3552,17 @@ function registerRpcHandlers(
       const result = await deliverChatPrompt(agentSessionId, text, {
         getTranscriptSessionId: () => sessionManager.getSession(id)?.meta.resumeBinding?.sessionId,
         hasOpenApproval: () => !approvalRegistry || approvalRegistry.list().pending.some((r) => r.sessionId === id),
+        readScreen: async () => {
+          const managed = sessionManager.getSession(id);
+          if (!managed) return null;
+          const outcome = await generateTextSnapshot({
+            cols: managed.meta.cols ?? 80,
+            rows: managed.meta.rows ?? 24,
+            scrollback: 0,
+            initial: managed.ringBuffer.readAll(),
+          });
+          return outcome.ok ? outcome.rows.map((r) => r.text) : null;
+        },
         getAgentState: () => {
           const current = readChatAgentState(id);
           const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;

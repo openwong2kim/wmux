@@ -5,11 +5,12 @@ import type { ScheduledPromptAgentState } from '../../sessionPromptDelivery';
 function fixture() {
   let approval = false;
   let transcript = 'conversation-1';
+  let screen: string[] | null = ['● done', '', '❯ ', '  ? for shortcuts'];
   const state: ScheduledPromptAgentState = { slug: 'claude', incarnationId: 'process-1', status: 'complete', inputQuiet: true, inputRevision: 0 };
   const write = vi.fn(() => { state.inputRevision++; return true; });
   const deps: ChatDeliveryDeps = { getAgentState: () => ({ ...state }), getTranscriptSessionId: () => transcript,
-    hasOpenApproval: () => approval, isAgentProcessAlive: async () => true, write, delay: async () => undefined };
-  return { deps, state, write, gate: () => { approval = true; }, replace: () => { transcript = 'conversation-2'; } };
+    hasOpenApproval: () => approval, readScreen: async () => screen, isAgentProcessAlive: async () => true, write, delay: async () => undefined };
+  return { deps, state, write, show: (rows: string[] | null) => { screen = rows; }, gate: () => { approval = true; }, replace: () => { transcript = 'conversation-2'; } };
 }
 describe('identity-bound chat delivery', () => {
   it('never appends a new task to a potentially restored interrupted draft', async () => {
@@ -52,5 +53,23 @@ describe('identity-bound chat delivery', () => {
     };
     expect(await deliverChatPrompt('conversation-1', 'hello', f.deps)).toBe('error');
     expect(f.write).toHaveBeenCalledTimes(1);
+  });
+  // Screens captured live (dogfood 2026-09-22): Claude opened these on its own
+  // while the pane read `complete`, and Enter confirmed the highlighted row.
+  it.each([
+    ['post-turn wizard', ['Teach auto mode about your environment?', '', '❯ 1. Yes', '  2. Not now', "  3. Don't show again", '', 'Enter to confirm · Esc to cancel', '❯ ']],
+    ['wizard step without numbered rows', ['❯ Also scan shell history    [✓]', '  Also scan your other repos [ ]', '  Continue', '←/→ to change usage · Enter to continue · Esc to cancel']],
+    ['/model select', ['Select model', '  1. Default (recommended)', '❯ 2. Opus (1M context) ✓', 'Enter to set as default · s to use this session only · Esc to cancel']],
+    ['unreadable screen', null],
+    ['blank screen', ['', '   ']],
+  ] as const)('refuses while the composer does not own the keyboard: %s', async (_name, rows) => {
+    const f = fixture(); f.show(rows ? [...rows] : null);
+    expect(await deliverChatPrompt('conversation-1', 'hello', f.deps)).toBe('blocked');
+    expect(f.write).not.toHaveBeenCalled();
+  });
+  it('treats a screen read failure as no evidence of a free composer', async () => {
+    const f = fixture(); f.deps.readScreen = async () => { throw new Error('parse budget'); };
+    expect(await deliverChatPrompt('conversation-1', 'hello', f.deps)).toBe('blocked');
+    expect(f.write).not.toHaveBeenCalled();
   });
 });

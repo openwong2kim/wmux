@@ -7,7 +7,11 @@ describe('truthful chat progress', () => {
   it('recognizes recorded end_turn but never overrides a newer running turn', () => {
     const finished: TurnEvent[] = [...events, { id: 'final', kind: 'assistant_text', text: 'done', turnComplete: true }];
     expect(chatRunState({ ...base, events: finished, status: 'idle' })).toBe('complete');
-    expect(chatRunState({ ...base, events: finished, status: 'running' })).toBe('working');
+    // Byte-only activity after end_turn (Claude repainting a /model dialog) is not a turn.
+    expect(chatRunState({ ...base, events: finished, status: 'running' })).toBe('complete');
+    expect(chatRunState({ ...base, events: finished, status: 'running', turnOpen: true })).toBe('working');
+    expect(chatRunState({ ...base, events: finished, status: 'running', sent: true })).toBe('waiting');
+    expect(chatRunState({ ...base, events: [...finished, { id: 'next', kind: 'user_text', text: 'next' }], status: 'running' })).toBe('working');
     expect(chatRunState({ ...base, events: finished, turnOpen: true })).toBe('working');
     expect(chatRunState({ ...base, events: [...finished, { id: 'next', kind: 'user_text', text: 'next' }], status: 'idle' })).toBe('unconfirmed');
   });
