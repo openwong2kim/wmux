@@ -367,6 +367,17 @@ jobs:
       # salvages whatever did get made.
       #
       # continue-on-error: an upload hiccup must not fail the whole release.
+      - name: Upload macOS preview artifacts
+        if: always() && github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wmux-macos-arm64
+          path: |
+            out/make/**/*.dmg
+            out/make/**/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload macOS artifacts to the release
         if: always() && github.event_name == 'push'
         continue-on-error: true
@@ -516,6 +527,18 @@ jobs:
 
       # Same reasoning as the macOS upload: deb/rpm/AppImage are made in
       # sequence, so one failing maker must not discard the ones that succeeded.
+      - name: Upload Linux preview artifacts
+        if: always() && github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wmux-linux
+          path: |
+            out/make/**/*.deb
+            out/make/**/*.rpm
+            out/make/**/*.AppImage
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload Linux artifacts to the release
         if: always() && github.event_name == 'push'
         continue-on-error: true
