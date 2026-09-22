@@ -12,6 +12,9 @@ interface BrowserDeps {
   input: (webContentsId: number, operation: () => Promise<RpcResponse>) => Promise<RpcResponse>;
   invoke: (method: string, params: Record<string, unknown>) => Promise<RpcResponse>;
 }
+/** 700 KiB of base64, so the whole `daemon.phone.complete` envelope stays under
+ * the daemon control pipe's 1 MiB per-line limit. */
+const CAPTURE_BASE64_LIMIT = 700 * 1024;
 function pageURL(raw: string): string | null {
   try {
     const url = new URL(raw);
@@ -61,10 +64,22 @@ export async function handlePhoneBrowser(command: string, payload: Record<string
   };
   if (command === 'browser.capture') {
     const before = await geometry().catch(() => null);
-    result = await deps.invoke('browser.screenshot', { ...scope, format: 'jpeg', quality: 65, scale: 0.75, fullPage: false });
-    if (!result.ok || !result.result || typeof result.result !== 'object') throw new Error('Browser capture unavailable');
-    const capture = result.result as {data?:unknown;mimeType?:unknown};
-    if (typeof capture.data !== 'string' || capture.data.length > 2 * 1024 * 1024 || capture.mimeType !== 'image/jpeg') throw new Error('Browser capture exceeds preview limit');
+    const shoot = async (quality: number, scale: number) => {
+      const response = await deps.invoke('browser.screenshot', { ...scope, format: 'jpeg', quality, scale, fullPage: false });
+      if (!response.ok || !response.result || typeof response.result !== 'object') throw new Error('Browser capture unavailable');
+      const shot = response.result as {data?:unknown;mimeType?:unknown};
+      if (typeof shot.data !== 'string' || shot.mimeType !== 'image/jpeg') throw new Error('Browser capture exceeds preview limit');
+      return shot as {data:string;mimeType:'image/jpeg'};
+    };
+    let capture = await shoot(65, 0.75);
+    // The reply travels as ONE line on the daemon control pipe, whose reader
+    // drops the connection past MAX_LINE_BUFFER (1 MiB, DaemonPipeServer.ts).
+    // A capture that fits an old 2 MiB check therefore cost the desktop its
+    // daemon connection rather than the phone a preview. Keep the base64 far
+    // enough under the line limit that the rest of the envelope still fits;
+    // if the first shot is over, retake once smaller, then give up in words.
+    if (capture.data.length > CAPTURE_BASE64_LIMIT) capture = await shoot(50, 0.5);
+    if (capture.data.length > CAPTURE_BASE64_LIMIT) throw new Error('Browser capture too large for preview');
     const after = await geometry().catch(() => null);
     let capturedGeometry;
     if (before && after) {

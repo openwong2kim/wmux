@@ -42,7 +42,13 @@ export class DesktopPhoneBridge {
         this.pending.delete(requestId);
         reject(new DesktopPhoneError('desktop-timeout'));
       },this.timeoutMs);
-      this.pending.set(requestId,{owner,resolve,reject,timer,maxBytes:command === 'browser.capture' ? 3 * 1024 * 1024 : 128 * 1024});
+      // A capture reply is one line on the same control pipe as everything else,
+      // and DaemonPipeServer drops a connection whose line exceeds
+      // MAX_LINE_BUFFER (1 MiB). A 3 MiB allowance here could never be reached —
+      // the pipe would have closed first — so it described a path that does not
+      // exist. PhoneBrowser caps the base64 at 700 KiB; this is that budget plus
+      // room for the rest of the envelope, still inside the line limit.
+      this.pending.set(requestId,{owner,resolve,reject,timer,maxBytes:command === 'browser.capture' ? 900 * 1024 : 128 * 1024});
       if (!this.send(owner,{type:'phone.request',sessionId:'',data:{requestId,command,payload,expiresAt:Date.now()+this.timeoutMs}})) {
         this.disconnect(owner);
       }

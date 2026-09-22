@@ -44,7 +44,35 @@ describe('workspace browser preview boundary', () => {
     const deps = fixture();
     await expect(handlePhoneBrowser('browser.evaluate', { workspaceId: 'ws-1', surfaceId: 'own' }, deps)).rejects.toThrow('Unsupported');
     deps.invoke.mockImplementation(async method => ({ id: 'rpc', ok: true, result: method === 'browser.evaluate' ? {value:{width:1000,height:728,scrollX:0,scrollY:0,scale:1}} : { data: 'x'.repeat(2 * 1024 * 1024 + 1), mimeType: 'image/jpeg' } }));
-    await expect(handlePhoneBrowser('browser.capture', { workspaceId: 'ws-1', surfaceId: 'own' }, deps)).rejects.toThrow('limit');
+    await expect(handlePhoneBrowser('browser.capture', { workspaceId: 'ws-1', surfaceId: 'own' }, deps)).rejects.toThrow('too large for preview');
+  });
+  // The reply is one line on the daemon control pipe, which drops the connection
+  // past 1 MiB. An oversized capture must cost the phone its preview, not the
+  // desktop its daemon connection.
+  it('retakes an oversized capture smaller before giving up', async () => {
+    const deps = fixture();
+    const geometry = {value:{width:1000,height:728,scrollX:0,scrollY:0,scale:1}};
+    let shots = 0;
+    deps.invoke.mockImplementation(async method => {
+      if (method === 'browser.evaluate') return { id: 'rpc', ok: true, result: geometry };
+      shots += 1;
+      return { id: 'rpc', ok: true, result: { data: shots === 1 ? 'x'.repeat(800 * 1024) : 'aGVsbG8=', mimeType: 'image/jpeg' } };
+    });
+    const result = await handlePhoneBrowser('browser.capture', { workspaceId: 'ws-1', surfaceId: 'own' }, deps) as {data:string};
+    expect(result.data).toBe('aGVsbG8=');
+    const shotsOf = (mock: typeof deps.invoke) =>
+      (mock.mock.calls as unknown as Array<[string, Record<string,unknown>]>).filter(call => call[0] === 'browser.screenshot');
+    const screenshots = shotsOf(deps.invoke);
+    expect(screenshots).toHaveLength(2);
+    expect(screenshots[0][1]).toMatchObject({ quality: 65, scale: 0.75 });
+    expect(screenshots[1][1]).toMatchObject({ quality: 50, scale: 0.5 });
+
+    const stubborn = fixture();
+    stubborn.invoke.mockImplementation(async method => ({ id: 'rpc', ok: true,
+      result: method === 'browser.evaluate' ? geometry : { data: 'x'.repeat(800 * 1024), mimeType: 'image/jpeg' } }));
+    await expect(handlePhoneBrowser('browser.capture', { workspaceId: 'ws-1', surfaceId: 'own' }, stubborn))
+      .rejects.toThrow('Browser capture too large for preview');
+    expect(shotsOf(stubborn.invoke)).toHaveLength(2);
   });
   it('limits keyboard input to owned unchanged pages and fixed operations', async () => {
     const deps = fixture();
