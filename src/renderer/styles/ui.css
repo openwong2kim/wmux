@@ -553,3 +553,68 @@
 [data-chat-state="complete"] .wmux-chat-progress-dot { background: var(--accent-green); }
 .wmux-chat-progress-detail { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; margin-top: 4px; color: var(--text-sub); }
 .wmux-chat-progress-detail button { text-decoration: underline; min-height: 24px; }
+/* Task records: Orca-inspired quiet navigation with the existing MIT assistant-ui
+ * Thread composer treatment (components/Channels/LICENSE.assistant-ui). Channel
+ * transport and mentions remain owned by Composer; no model runtime is added. */
+.wmux-record-catalog { padding: 12px 8px; font-family: var(--font-ui); border-bottom: 1px solid var(--border-soft); }
+.wmux-record-catalog > div:first-child { padding-left: 8px; padding-right: 8px; }
+.wmux-record-catalog [data-channel-record-group] h3 { padding: 14px 8px 7px; font-size: 11px; font-weight: 500; color: var(--text-sub); }
+.wmux-record-catalog [data-channels-new], .wmux-record-catalog [data-channels-refresh], .wmux-record-catalog [data-channel-dock-collapse] { width: 26px; height: 26px; }
+.wmux-record-row { min-height: 38px; padding: 9px 8px; gap: 9px; border-radius: 6px; transition: background-color 150ms, color 150ms; }
+.wmux-record-row[data-active="true"] { background: var(--bg-surface); box-shadow: inset 2px 0 var(--accent-blue); }
+.wmux-record-row-copy { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: 4px; }
+.wmux-record-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-ui); font-size: 13px; line-height: 1.4; font-weight: 500; }
+.wmux-record-row-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-ui); font-size: 11px; color: var(--text-sub); line-height: 1.4; }
+.wmux-record-row > button { min-width: 24px; min-height: 24px; }
+.wmux-record-row:focus-visible, .wmux-record-view button:focus-visible, .wmux-record-view summary:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2px; }
+.wmux-record-view { font-family: var(--font-ui); border-left: 0; }
+.wmux-record-header { min-height: 44px; padding: 8px 16px; }
+.wmux-record-header > div:first-child > span { font-family: var(--font-ui); font-size: 12px; color: var(--text-sub); }
+.wmux-record-header button { min-width: 26px; min-height: 26px; }
+.wmux-record-summary { padding: 20px 16px 0; overflow-y: auto; min-height: 0; flex-shrink: 1; }
+.wmux-record-eyebrow { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11px; color: var(--text-sub); }
+.wmux-record-status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.wmux-record-status > span { width: 5px; height: 5px; border-radius: 50%; background: var(--text-sub); }
+.wmux-record-summary h3 { font-size: 19px; line-height: 1.4; letter-spacing: -.025em; font-weight: 600; color: var(--text-main); overflow-wrap: anywhere; margin-top: 12px; text-wrap: pretty; }
+.wmux-record-branch { display: flex; align-items: flex-start; gap: 6px; margin-top: 10px; font-family: var(--font-mono); font-size: 11px; line-height: 1.5; color: var(--text-sub); overflow-wrap: anywhere; }
+.wmux-record-branch svg { flex-shrink: 0; margin-top: 1px; }
+.wmux-record-branch span { min-width: 0; }
+.wmux-record-workspace-link { display: inline-flex; align-items: center; min-height: 28px; margin-top: 12px; color: var(--accent-blue); font-size: 12px; border-radius: 5px; }
+.wmux-record-workspace-link:hover { text-decoration: underline; }
+.wmux-record-update { margin-top: 20px; padding-left: 12px; border-left: 2px solid var(--border-soft); }
+.wmux-record-label { font-size: 11px; font-weight: 500; color: var(--text-sub); margin-bottom: 7px; }
+.wmux-record-update [data-channel-latest-activity] { font-size: 13px; line-height: 1.65; color: var(--text-main); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.wmux-record-disclosure { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-height: 44px; margin-top: 16px; padding: 10px 0; border-top: 1px solid var(--border-soft); font-size: 12px; color: var(--text-sub); text-align: left; }
+.wmux-record-disclosure:hover { color: var(--text-main); }
+.wmux-record-disclosure svg { flex-shrink: 0; transition: transform 150ms; }
+.wmux-record-disclosure[aria-expanded="true"] svg { transform: rotate(90deg); }
+.wmux-record-purpose { padding: 14px 16px; font-size: 12px; line-height: 1.65; color: var(--text-sub); border-bottom: 1px solid var(--border-soft); }
+.wmux-record-view [data-channel-view-messages] { padding: 16px; overscroll-behavior: contain; }
+.wmux-record-view [data-channel-view-messages][hidden] { display: none; }
+.wmux-record-view [data-channel-message] { position: relative; margin: 0 0 20px; padding-left: 12px; border-left: 1px solid var(--border-soft); gap: 7px; }
+.wmux-record-view [data-channel-message][data-mentions-me="true"] { border-left: 2px solid var(--accent-blue); }
+.wmux-record-view [data-channel-message] > div:first-child { flex-wrap: wrap; gap: 5px 7px; }
+.wmux-record-view [data-channel-message-author] { font-family: var(--font-ui); font-size: 12px; font-weight: 500; }
+.wmux-record-view [data-channel-message-time] { font-size: 10px; font-variant-numeric: tabular-nums; margin-left: auto; }
+.wmux-record-view [data-channel-author-chip] { overflow-wrap: anywhere; }
+.wmux-record-view [data-channel-message-text] { font-family: var(--font-ui); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.wmux-record-view [data-author-kind="human"] [data-channel-message-text] { background: var(--bg-mantle); padding: 8px 10px; border-radius: 7px; }
+.wmux-record-long-message summary { cursor: pointer; list-style: none; }
+.wmux-record-long-message summary::-webkit-details-marker { display: none; }
+.wmux-record-long-message[open] summary > span:first-child { display: none; }
+.wmux-record-expand-label { display: block; margin: 4px 0; color: var(--accent-blue); font-size: 11px; }
+.wmux-record-composer-slot { padding: 12px; margin-top: auto; background: var(--bg-base); }
+.wmux-channel-composer.wmux-chat-composer { border-radius: 12px; padding: 10px; gap: 8px; }
+.wmux-channel-input.wmux-chat-input { min-width: 0; min-height: 62px; font-family: var(--font-ui); font-size: 13px; padding: 3px 2px; border: 0; box-shadow: none; }
+.wmux-channel-send.wmux-chat-send { width: 28px; height: 28px; background: var(--accent); color: var(--bg-base); margin-bottom: 2px; }
+.wmux-channel-composer [data-channel-record-hint], .wmux-channel-composer [data-channel-mention-hint] { font-family: var(--font-ui); font-size: 11px; line-height: 1.5; color: var(--text-sub); }
+@media (prefers-reduced-motion: reduce) { .wmux-record-row, .wmux-record-disclosure svg { transition: none; } }
+
+.wmux-channel-composer { display: flex; flex-shrink: 0; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--border-soft); border-radius: 16px; background: var(--bg-mantle); transition: border-color 150ms; }
+.wmux-channel-composer:focus-within { border-color: var(--text-sub); }
+.wmux-channel-input { display: block; width: 100%; min-height: 48px; max-height: 192px; resize: none; background: transparent; color: var(--text-main); padding: 6px 10px; outline: none; line-height: 1.6; font-size: 15px; }
+.wmux-channel-input::placeholder { color: var(--text-sub); }
+.wmux-channel-send { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; transition: background-color 150ms, opacity 150ms; }
+.wmux-channel-send:hover:not(:disabled) { opacity: .8; }
+.wmux-channel-send:disabled { opacity: .3; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) { .wmux-channel-composer, .wmux-channel-send { transition: none; } }

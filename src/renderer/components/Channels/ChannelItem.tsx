@@ -15,11 +15,14 @@
 
 import { useState } from 'react';
 import type { Channel } from '../../../shared/channels';
+import { IconGitBranch } from '../icons';
 import { tokenAttrs } from '../../themes';
 
 export interface ChannelItemViewProps {
   channel: Channel;
   isActive: boolean;
+  title?: string;
+  detail?: string;
   unreadCount: number;
   /** True when at least one unseen message @-mentions this workspace. Promotes
    *  the unread badge to a stronger red `@` badge. */
@@ -65,6 +68,8 @@ export interface ChannelItemViewProps {
 export function ChannelItemView({
   channel,
   isActive,
+  title,
+  detail,
   unreadCount,
   mentioned = false,
   observedLabel = 'observed',
@@ -94,16 +99,17 @@ export function ChannelItemView({
       }}
       data-channel-observed={observed ? 'true' : undefined}
       {...tokenAttrs('bgSurface', 'bg')}
-      className={`group flex items-center gap-2 px-3 py-1.5 cursor-pointer rounded-md select-none ${
+      aria-current={isActive ? 'page' : undefined}
+      className={`wmux-record-row group flex items-center gap-2 px-3 py-1.5 cursor-pointer rounded-md select-none ${
         isActive
           ? 'text-[var(--text-main)]'
           : 'text-[var(--text-subtle)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
       }`}
     >
       <span className="text-[var(--text-muted)] font-mono text-[11px] flex-shrink-0" aria-hidden="true">
-        #
+        {title ? <IconGitBranch size={15} /> : '#'}
       </span>
-      <span className="text-[11px] font-mono truncate flex-1 min-w-0">{channel.name}</span>
+      <span className="wmux-record-row-copy"><span className="wmux-record-row-title">{title ?? channel.name}</span>{detail && <span className="wmux-record-row-detail">{detail}</span>}</span>
       {observed && (
         <span
           data-channel-observed-badge

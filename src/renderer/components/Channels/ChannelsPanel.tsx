@@ -57,6 +57,7 @@ import {
   CHANNEL_NAME_MAX,
   DEFAULT_COMPANY_ID,
 } from '../../../shared/channels';
+import type { WorkTask } from '../../../shared/workTask';
 import type { Company } from '../../../company/types';
 import { useStore } from '../../stores';
 import ChannelItem from './ChannelItem';
@@ -401,6 +402,7 @@ export function synthesizeChannel(params: {
 // ─── Main panel (pure view — props-driven, store-agnostic) ────────────────────
 
 export interface ChannelsPanelViewProps {
+  tasksByChannel?: Record<string, WorkTask>;
   channels: Record<string, Channel>;
   channelUnread: Record<string, number>;
   channelMentions: Record<string, number>;
@@ -598,7 +600,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
       data-company-state={company ? 'present' : 'absent'}
       data-channel-count={channelList.length}
       data-total-unread={totalUnread}
-      className="border-t border-[var(--bg-surface)] py-2"
+      className="wmux-record-catalog"
       style={{ borderColor: 'var(--border-soft)' }}
     >
       {/* Ship review C1 — stale-daemon banner. The long-lived daemon survived
@@ -699,19 +701,26 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
         </div>
       ) : (
         <>
-          {/* Active group — flat list, no disclosure. */}
+          {/* Task records first; shared discussions retain their channel controls. */}
           <div className="space-y-0.5" data-channels-active-group>
-            {active.map((ch) => (
-              <ChannelItem
-                key={ch.id}
-                channel={ch}
-                isActive={activeChannelId === ch.id}
-                unreadCount={channelUnread[ch.id] ?? 0}
-                mentioned={(channelMentions[ch.id] ?? 0) > 0}
-                observedLabel={t('channels.observedBadge') || 'observed'}
-                onSelect={onSelect}
-                {...(trashActionActive ? { action: trashActionActive } : {})}
-              />
+            {[{ key: 'taskRecords', rows: active.filter((ch) => props.tasksByChannel?.[ch.id]) }, { key: 'discussions', rows: active.filter((ch) => !props.tasksByChannel?.[ch.id]) }].filter((group) => group.rows.length > 0).map((group) => (
+              <section key={group.key} data-channel-record-group={group.key}>
+                <h3 className="px-4 pt-2 pb-1 text-[10px] text-[var(--text-muted)]">{t(`channels.${group.key}`)} · {group.rows.length}</h3>
+                {group.rows.map((ch) => (
+                  <ChannelItem
+                    key={ch.id}
+                    channel={ch}
+                    title={props.tasksByChannel?.[ch.id]?.title}
+                    detail={props.tasksByChannel?.[ch.id] ? `${t(props.tasksByChannel[ch.id].detachedAt !== undefined ? 'channels.taskDetached' : props.tasksByChannel[ch.id].status === 'closed' ? 'channels.taskClosed' : 'channels.taskOpen')} · ${props.tasksByChannel[ch.id].branch ?? ch.name}` : ch.topic}
+                    isActive={activeChannelId === ch.id}
+                    unreadCount={channelUnread[ch.id] ?? 0}
+                    mentioned={(channelMentions[ch.id] ?? 0) > 0}
+                    observedLabel={t('channels.observedBadge') || 'observed'}
+                    onSelect={onSelect}
+                    {...(trashActionActive ? { action: trashActionActive } : {})}
+                  />
+                ))}
+              </section>
             ))}
           </div>
 
@@ -1077,6 +1086,8 @@ export function ChannelsPanel(): React.ReactElement {
   // selfWorkspaceId below), independent of which workspace is active.
   // A1: 이전 `workspaces` 통구독은 아래 handleJoinDiscoverable의 stale dep로만
   // 남아 있었고 실제로 참조되지 않았다 — 구독과 dep를 함께 제거(동작 불변).
+  const missions = useStore((s) => s.missionsByWorkspace);
+  const tasksByChannel = useMemo(() => Object.fromEntries(Object.values(missions).flat().map((task) => [task.missionChannelId, task])), [missions]);
   const channelMembers = useStore((s) => s.channelMembers);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const createChannelDaemon = useStore((s) => s.createChannelDaemon);
@@ -1328,6 +1339,7 @@ export function ChannelsPanel(): React.ReactElement {
 
   return (
     <ChannelsPanelView
+      tasksByChannel={tasksByChannel}
       channels={channels}
       channelUnread={channelUnread}
       channelMentions={channelMentions}

@@ -22,11 +22,12 @@ import type {
   ChannelMention,
 } from '../../../shared/channels';
 import { useStore } from '../../stores';
+import type { WorkTask } from '../../../shared/workTask';
 import { loadChannelHistory, hydrateChannelsCatalog } from '../../hooks/useChannelsHydration';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
-import { IconX, IconArchive, IconCheck, IconChevron } from '../icons';
+import { IconX, IconArchive, IconCheck, IconChevron, IconGitBranch } from '../icons';
 import { formatChannelAuthor } from '../../channels/authorDisplay';
 import { HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID } from '../../../shared/channels';
 import { Composer } from './Composer';
@@ -259,6 +260,8 @@ export interface ChannelViewContentProps {
   workspaceName?: (workspaceId: string) => string | undefined;
   /** Wrapper rendered after the message list; the composer lives here. */
   composerSlot: React.ReactNode;
+  task?: WorkTask;
+  onOpenTask?: () => void;
   /** Header control for the members roster (count + join/leave popover).
    *  Slotted so the pure view stays store-free for the test harness. */
   membersSlot?: React.ReactNode;
@@ -287,6 +290,8 @@ export function ChannelViewContent({
   onLoadEarlier,
   workspaceName = () => undefined,
   composerSlot,
+  task,
+  onOpenTask,
   membersSlot,
   nudgeExhaustedAtByMember,
   now: nowProp,
@@ -320,6 +325,7 @@ export function ChannelViewContent({
   const now = nowProp ?? clock;
   // Two-click confirm for the one-way archive: first click arms (button turns
   // red + shows a check), second commits; blur cancels.
+  const [activityExpanded, setActivityExpanded] = useState(false);
   const [archiveArmed, setArchiveArmed] = useState(false);
   const visible = useMemo(
     () => sortMessagesBySeq(messages).filter((m) => isMessageVisibleToViewer(m, viewer)),
@@ -362,6 +368,7 @@ export function ChannelViewContent({
   // query/visibility, and the archive-arm/daemon-paging flags would leak into
   // the next channel (CodeRabbit review).
   useEffect(() => {
+    setActivityExpanded(false);
     setShownCount(SCROLLBACK_PAGE);
     setSearchOpen(false);
     setQuery('');
@@ -381,14 +388,14 @@ export function ChannelViewContent({
       data-channel-id={channel.id}
       data-channel-status={channel.status}
       data-message-count={visible.length}
-      className="flex flex-col h-full bg-[var(--bg-base)] border-l border-[var(--bg-surface)]"
+      className="wmux-record-view flex flex-col h-full min-h-0 bg-[var(--bg-base)] border-l border-[var(--bg-surface)]"
       style={{ borderColor: 'var(--border-soft)' }}
       {...tokenAttrs('bgBase', 'bg')}
       {...tokenAttrs('bgSurface', 'border')}
     >
       {/* Header — channel name + close affordance */}
       <div
-        className="flex items-center justify-between px-4 py-2 border-b border-[var(--bg-surface)] shrink-0"
+        className="wmux-record-header flex items-center justify-between px-4 py-2 border-b border-[var(--bg-surface)] shrink-0"
         style={{ borderColor: 'var(--border-soft)' }}
         {...tokenAttrs('bgSurface', 'border')}
       >
@@ -426,7 +433,7 @@ export function ChannelViewContent({
             data-channel-search-toggle
             {...tokenAttrs('textSub', 'text')}
           >
-            <span aria-hidden="true" className="text-caption">🔍</span>
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4" /></svg>
           </button>
           {membersSlot}
           {onArchive && channel.status !== 'archived' && (
@@ -485,6 +492,36 @@ export function ChannelViewContent({
         </div>
       </div>
 
+      {task ? (
+        <section data-channel-task-summary className="wmux-record-summary">
+          <div className="wmux-record-eyebrow">
+            <span>{t('channels.taskRecord')}</span>
+            <span data-channel-task-status className="wmux-record-status">
+              <span aria-hidden="true" />
+              {t(task.detachedAt !== undefined ? 'channels.taskDetached' : task.status === 'closed' ? 'channels.taskClosed' : 'channels.taskOpen')}
+            </span>
+          </div>
+          <h3>{task.title}</h3>
+          {task.branch && <p className="wmux-record-branch"><IconGitBranch size={14} /><span>{task.branch}</span></p>}
+          {onOpenTask && (
+            <button type="button" onClick={onOpenTask} data-channel-open-task className="wmux-record-workspace-link">
+              {t('channels.openTaskWorkspace')}
+            </button>
+          )}
+          <div className="wmux-record-update">
+            <p className="wmux-record-label">{t('channels.latestActivity')}</p>
+            <p data-channel-latest-activity>{visible.at(-1)?.text ?? t('channels.noActivity')}</p>
+          </div>
+          <button type="button" data-channel-activity-toggle aria-expanded={activityExpanded || searchOpen}
+            onClick={() => { setActivityExpanded((v) => !v); setSearchOpen(false); setQuery(''); }} className="wmux-record-disclosure">
+            <span>{t(activityExpanded || searchOpen ? 'channels.hideActivity' : 'channels.showActivity')}</span>
+            <IconChevron size={12} />
+          </button>
+        </section>
+      ) : (
+        <p className="wmux-record-purpose">{channel.topic || t('channels.discussionPurpose')}</p>
+      )}
+
       {/* Search bar (P3c) — revealed by the header search toggle. Filters the
             whole visible history, not just the scrollback window. */}
       {searchOpen && (
@@ -510,6 +547,7 @@ export function ChannelViewContent({
       {/* Message list — scrollable. Empty-state copy when the channel
             has nothing visible to the viewer yet. */}
       <div
+        hidden={!!task && !activityExpanded && !searchOpen}
         className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-2"
         data-channel-view-messages
       >
@@ -590,6 +628,7 @@ export function ChannelViewContent({
                 data-channel-message
                 data-seq={m.seq}
                 data-member-id={m.memberId}
+                data-author-kind={author.kind}
                 data-delivery={myStatus ?? 'unknown'}
                 data-mentions-me={mentionsMe ? 'true' : undefined}
                 className={`flex flex-col gap-0.5 ${
@@ -648,7 +687,12 @@ export function ChannelViewContent({
                   data-channel-message-text
                   {...tokenAttrs('textMain', 'text')}
                 >
-                  {renderMessageBody(m.text, m.mentions)}
+                  {m.text.length > 600 ? (
+                    <details className="wmux-record-long-message">
+                      <summary><span>{m.text.slice(0, 160)}…</span><span className="wmux-record-expand-label">{t('channels.readFullUpdate')}</span></summary>
+                      {renderMessageBody(m.text, m.mentions)}
+                    </details>
+                  ) : renderMessageBody(m.text, m.mentions)}
                 </div>
                 {myStatus && (
                   <div
@@ -675,7 +719,7 @@ export function ChannelViewContent({
             inject a fake composer without rendering the real one
             (which depends on store mutations and effects). */}
       <div
-        className="border-t border-[var(--bg-surface)] shrink-0"
+        className="wmux-record-composer-slot shrink-0"
         style={{ borderColor: 'var(--border-soft)' }}
         {...tokenAttrs('bgSurface', 'border')}
       >
@@ -767,6 +811,10 @@ export function ChannelView(): React.ReactElement | null {
     return (workspaceId: string, memberId: string) =>
       paneNameForAuthor({ members, names, workspaceId, memberId });
   }, [paneNamesProjection, members]);
+  const missions = useStore((s) => s.missionsByWorkspace);
+  const task = useMemo(() => Object.values(missions).flat().find((item) => item.missionChannelId === activeChannelId), [missions, activeChannelId]);
+  const taskWorkspaceExists = useStore((s) => !!task?.paneGroupId && s.workspaces.some((w) => w.id === task.paneGroupId));
+  const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const pushToast = useStore((s) => s.pushToast);
   const archiveChannelDaemon = useStore((s) => s.archiveChannelDaemon);
@@ -968,6 +1016,8 @@ export function ChannelView(): React.ReactElement | null {
     <div className="flex flex-col flex-1 min-h-0" data-channel-view-wrapper>
       <ChannelViewContent
         channel={channel}
+        task={task}
+        onOpenTask={taskWorkspaceExists && task?.paneGroupId ? () => { if (task.paneGroupId) setActiveWorkspace(task.paneGroupId); } : undefined}
         messages={messages}
         viewer={viewer}
         onClose={handleClose}
@@ -1011,7 +1061,7 @@ export function ChannelView(): React.ReactElement | null {
               </button>
             </div>
           ) : (
-            <Composer channelId={channel.id} onError={pushToast} />
+            <Composer channelId={channel.id} onError={pushToast} placeholder={task ? t('channels.taskCommentPlaceholder') : undefined} />
           )
         }
       />

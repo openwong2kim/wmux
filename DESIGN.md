@@ -301,3 +301,20 @@ workspace areas remain usable; close, Escape and selecting an agent retain their
 existing behavior. Use readable 15px card names and 12px context/status text;
 idle cards retain full opacity. The responsive grid uses two columns when room
 permits and one on narrower windows.
+
+### Channel task records (2026-09-22)
+
+The Channels tab groups linked mission records before shared discussions. Use
+Orca-style quiet navigation rows: 13px task titles, 11px secondary context,
+neutral selected surfaces and a steel selection edge. Keep original channel
+identity separate from the display title.
+
+Task details lead with a 19px title, neutral open/closed/detached state, mono
+branch and a steel workspace link. Latest activity is a message excerpt, not
+completion evidence. Discussion unfolds below as a flat timeline; long reports
+use a native disclosure. Keep author identity and delivery outcomes available.
+
+Reuse the MIT assistant-ui Thread composer styles already adapted in
+`components/Channels/LICENSE.assistant-ui`, with a compact 12px radius
+and 13px input for the 248–320px dock. Preserve the channel-specific delivery and
+mention implementation. Warm send action, cool navigation, theme tokens only.

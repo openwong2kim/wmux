@@ -683,7 +683,7 @@ export function ComposerContent({
       data-channel-composer
       data-channel-id={channelId}
       data-in-flight={inFlight ? 'true' : 'false'}
-      className="flex flex-col gap-1.5 px-4 py-2"
+      className="wmux-channel-composer wmux-chat-composer"
     >
       {error && (
         <div
@@ -765,7 +765,7 @@ export function ComposerContent({
           disabled={disabled || inFlight}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          className={`flex-1 min-w-0 resize-none bg-[var(--bg-base)] text-[var(--text-main)] text-[12px] font-mono px-2 py-1.5 rounded border border-[var(--bg-surface)] outline-none ${FOCUS_RING}`}
+          className="wmux-chat-input wmux-channel-input"
           aria-label={t('channels.composerAriaLabel') || 'Compose channel message'}
           {...tokenAttrs('bgBase', 'bg')}
           {...tokenAttrs('textMain', 'text')}
@@ -777,11 +777,7 @@ export function ComposerContent({
           disabled={!canSend}
           aria-label={t('channels.sendTooltip') || 'Send'}
           title={t('channels.sendTooltip') || 'Send'}
-          className={`flex items-center justify-center w-7 h-7 rounded text-[var(--bg-base)] transition-opacity ${FOCUS_RING} ${
-            canSend
-              ? 'bg-[var(--accent-green)] hover:opacity-90'
-              : 'bg-[var(--bg-surface)] opacity-50 cursor-not-allowed'
-          }`}
+          className="wmux-chat-send wmux-chat-icon-button wmux-channel-send"
           {...tokenAttrs('success', 'bg')}
           {...tokenAttrs('bgBase', 'text')}
         >
@@ -794,6 +790,9 @@ export function ComposerContent({
       {/* Review fix: no aria-live here. This is a running summary of what the
           user is still typing, not an event — announcing every revision talks
           over the composition it describes. It is read where it sits. */}
+      {targetHints.length === 0 && (
+        <p data-channel-record-hint className="text-[11px] text-[var(--text-muted)]">{t('channels.recordOnlyHint')}</p>
+      )}
       {targetHints.length > 0 && (
         <div
           data-channel-mention-hint
@@ -826,12 +825,13 @@ export function ComposerContent({
  *  toast slot from the parent (`useStore((s) => s.pushToast)`). */
 export interface ComposerProps {
   channelId: string;
+  placeholder?: string;
   onError: (toast: { message: string; level: 'info' | 'warn' | 'error' }) => void;
 }
 
 const EMPTY_MEMBERS: ChannelMember[] = [];
 
-function ComposerImpl({ channelId, onError }: ComposerProps): React.ReactElement {
+function ComposerImpl({ channelId, onError, placeholder }: ComposerProps): React.ReactElement {
   const t = useT();
   const channel = useStore((s) => s.channels[channelId]);
   const members = useStore((s) => s.channelMembers[channelId] ?? EMPTY_MEMBERS);
@@ -958,6 +958,7 @@ function ComposerImpl({ channelId, onError }: ComposerProps): React.ReactElement
     <ComposerContent
       channelId={channelId}
       onSubmit={handlePost}
+      placeholder={placeholder}
       mentionCandidates={mentionCandidates}
       disabled={!channel || channel.status === 'archived'}
       t={t}
