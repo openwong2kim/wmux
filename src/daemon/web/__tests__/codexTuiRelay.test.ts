@@ -41,7 +41,6 @@ async function fixture(options:{onStateChange?:()=>void; onUpstreamRequest?:(req
     await rm(home,{recursive:true,force:true});
   }};
 }
-type Relay=Awaited<ReturnType<typeof createCodexTuiRelay>>;
 async function select(client:WebSocket,id:number) {
   const replied=new Promise<void>(resolve=>client.once('message',()=>resolve()));
   client.send(JSON.stringify({id,method:'thread/start',params:{}}));
@@ -116,9 +115,7 @@ describe('pane-owned Codex Unix relay',()=>{
     // Ordering is only observable through the refusal barrier: a response whose
     // state change cannot be published must never be delivered to the TUI.
     const observed:(string|undefined)[]=[];let refuse=false;
-    let relay:Relay|undefined;
-    const f=await fixture({onStateChange:()=>{observed.push(relay?.current()?.threadId);if(refuse)throw new Error('state refused');}});
-    relay=f.relay;
+    const f=await fixture({onStateChange:()=>{observed.push(f.relay.current()?.threadId);if(refuse)throw new Error('state refused');}});
     try {
       const client=await f.connect();
       const delivered:unknown[]=[];
@@ -138,12 +135,10 @@ describe('pane-owned Codex Unix relay',()=>{
   });
   it('clears the old selection before a new resume request reaches the account server',async()=>{
     const upstreamMethods:string[]=[];const observed:string[]=[];let refuse=false;
-    let relay:Relay|undefined;
     const f=await fixture({
-      onStateChange:()=>{observed.push(relay?.current()?.threadId ?? 'none');if(refuse)throw new Error('state refused');},
+      onStateChange:()=>{observed.push(f.relay.current()?.threadId ?? 'none');if(refuse)throw new Error('state refused');},
       onUpstreamRequest:request=>{if(typeof request.method==='string')upstreamMethods.push(request.method);},
     });
-    relay=f.relay;
     try {
       const client=await f.connect();
       await select(client,1);

@@ -14,8 +14,8 @@ export class CodexPaneRelays {
   private readonly creating = new Set<Promise<Relay>>();
   private stopped = false;
   constructor(private readonly create:typeof createCodexTuiRelay = createCodexTuiRelay,
-    private readonly cleanupError:()=>void = ()=>{},
-    private readonly stateChanged:(id:string,owner:ManagedSession)=>void = ()=>{}) {}
+    private readonly cleanupError:()=>void = ()=> { /* noop */ },
+    private readonly stateChanged:(id:string,owner:ManagedSession)=>void = ()=> { /* noop */ }) {}
 
   async prepare(id:string, codeHome?:string) {
     if (this.stopped || this.entries.has(id) || this.entries.size >= 256 || this.creating.size >= 256) throw new Error('Codex pane relay unavailable');

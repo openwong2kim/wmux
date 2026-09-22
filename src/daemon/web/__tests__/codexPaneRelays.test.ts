@@ -6,7 +6,7 @@ function relay() {
   const state = {retired:false,selected:true};
   return {url:'unix:///private/socket',state,
     current:()=>state.selected ? {threadId:'thread',cwd:'/repo',generation:1} : undefined,
-    retired:()=>state.retired,close:vi.fn(async()=>{})};
+    retired:()=>state.retired,close:vi.fn(async()=> { /* noop */ })};
 }
 describe('Codex pane relay lifetime',()=>{
   it('publishes selection only for its committed managed instance',async()=>{

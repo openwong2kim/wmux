@@ -63,7 +63,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     sockets.add(client);sockets.add(upstream);
     const queued:Buffer[] = [];
     let queuedBytes = 0;
-    const retire = () => { void close().catch(()=>{}); };
+    const retire = () => { void close().catch(()=> { /* noop */ }); };
     const send = (target:WebSocket,bytes:Buffer) => {
       if (retired || target.readyState !== WebSocket.OPEN || target.bufferedAmount + bytes.length > MAX_BUFFER) { retire();return; }
       target.send(bytes,{binary:false},error=>{if(error)retire();});
@@ -117,7 +117,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       server.once('error',reject);
       server.listen(socketPath,()=>{server.removeListener('error',reject);resolve();});
     });
-    server.on('error',()=>{void close().catch(()=>{});});
+    server.on('error',()=>{void close().catch(()=> { /* noop */ });});
     await chmod(socketPath,0o600);
     // `retired` lets the owner tell "this relay is live and nothing is selected"
     // from "this relay is gone" — after close() the tracker reports no selection

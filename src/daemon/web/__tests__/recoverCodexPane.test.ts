@@ -7,7 +7,7 @@ function fixture() {
   const params:Parameters<DaemonSessionManager['createSessionAsync']>[0]={id,cwd:'/repo',env:{CODEX_HOME:'/account'},exec:{command:'codex --model model-a -c model_reasoning_effort=low'},execLaunchCommand:'codex resume --last --model model-a -c model_reasoning_effort=low'};
   const owner={meta:{id,pid:123,incarnationId:'new',state:'attached'}} as ManagedSession;
   const manager={createSessionAsync:vi.fn(async()=>({...owner.meta})),getSession:vi.fn(()=>owner),destroySession:vi.fn()};
-  const lease={url:'unix:///tmp/wmux-new/socket',commit:vi.fn(()=>true),close:vi.fn(async()=>{})};
+  const lease={url:'unix:///tmp/wmux-new/socket',commit:vi.fn(()=>true),close:vi.fn(async()=> { /* noop */ })};
   const relays={prepare:vi.fn(async()=>lease)};
   return {params,owner,manager,lease,relays};
 }

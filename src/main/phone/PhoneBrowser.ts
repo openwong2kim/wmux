@@ -132,6 +132,7 @@ export async function handlePhoneBrowser(command: string, payload: Record<string
         result = await input('phone.scroll',{...point,deltaX:payload.deltaX * size.width,deltaY:payload.deltaY * size.height});
       } else result = await input('browser.click.cdp',point);
     } else if (command === 'browser.type') {
+      // eslint-disable-next-line no-control-regex
       if (typeof payload.text !== 'string' || !payload.text || payload.text.length > 4096 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(payload.text)) throw new Error('Invalid browser text');
       result = await input('browser.type.cdp', {text:payload.text});
     } else {

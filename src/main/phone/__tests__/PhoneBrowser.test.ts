@@ -4,9 +4,9 @@ import type { RpcResponse } from '../../../shared/rpc';
 function fixture() {
   return {
     backend: () => 'builtin',
-    clearViewport: vi.fn(async () => {}),
+    clearViewport: vi.fn(async () => { /* noop */ }),
     nativeBounds: async () => ({width:1000,height:728}),
-    scroll: vi.fn(async () => {}),
+    scroll: vi.fn(async () => { /* noop */ }),
     input: (_id: number, operation: () => Promise<RpcResponse>) => operation(),
     targets: () => [
       { surfaceId: 'own', workspaceId: 'ws-1', webContentsId: 1, targetId: 'secret-cdp', wsUrl: 'ws://private' },

@@ -31,11 +31,11 @@ it('does not repeat a possibly partial PTY write after restart', () => {
 it('rejects expired IDs after cleanup and enforces bounded capacity', () => {
   let now = Date.now(); const old = `${now}.${randomUUID()}`;
   const store = new InputReceiptStore(root,() => now,1);
-  store.execute('phone',old,'pane','a',() => {});
-  expect(() => store.execute('phone',`${now}.${randomUUID()}`,'pane','b',() => {})).toThrow(/capacity/);
+  store.execute('phone',old,'pane','a',() => { /* noop */ });
+  expect(() => store.execute('phone',`${now}.${randomUUID()}`,'pane','b',() => { /* noop */ })).toThrow(/capacity/);
   now += 25 * 60 * 60 * 1000;
-  store.execute('phone',`${now}.${randomUUID()}`,'pane','b',() => {});
-  expect(() => store.execute('phone',old,'pane','a',() => {})).toThrow(/expired/);
+  store.execute('phone',`${now}.${randomUUID()}`,'pane','b',() => { /* noop */ });
+  expect(() => store.execute('phone',old,'pane','a',() => { /* noop */ })).toThrow(/expired/);
 });
 
 it('refuses corrupt storage instead of forgetting prior inputs', () => {

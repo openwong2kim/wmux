@@ -6,10 +6,10 @@ function fixture() {
   return {
     store: {
       listAccounts: () => [account], getAccount: (id: string) => id === 'a1' ? account : undefined,
-      getBindings: () => ({ 'ws-1': { claude: 'a1' } }), setBinding: vi.fn(async () => {}),
+      getBindings: () => ({ 'ws-1': { claude: 'a1' } }), setBinding: vi.fn(async () => { /* noop */ }),
       resolveWorkspaceAccountEnv: vi.fn(() => ({ CLAUDE_CONFIG_DIR: '/private/account' })),
     },
-    usage: { getAll: () => [{ accountId: 'a1', status: 'error' as const, snapshot: null, fetchedAtMs: 1, lastError: 'private diagnostic' }], refreshNow: vi.fn(async () => {}) },
+    usage: { getAll: () => [{ accountId: 'a1', status: 'error' as const, snapshot: null, fetchedAtMs: 1, lastError: 'private diagnostic' }], refreshNow: vi.fn(async () => { /* noop */ }) },
   };
 }
 describe('phone account projection', () => {

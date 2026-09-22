@@ -17,6 +17,7 @@ export interface RunHistoryEntry {
 interface ActiveRun { sessionId: string; workspace: string; agent: string; startedAt: number }
 interface HistoryFile { version: 1; entries: RunHistoryEntry[]; active: ActiveRun[] }
 const CAP = 1000;
+// eslint-disable-next-line no-control-regex
 const clean = (s: string, max: number) => s.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, max);
 
 /** Authoritative hook outcomes, independent of the phone's connection lifetime. */

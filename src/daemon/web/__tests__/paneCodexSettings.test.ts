@@ -9,7 +9,7 @@ function fixture() {
   const selection = {threadId:meta.resumeBinding.sessionId,cwd:'/repo',generation:1,relayId:'relay-a'};
   let owned = {meta} as unknown as ManagedSession;
   let authorized = true;
-  let onRead = () => {};
+  let onRead = () => { /* noop */ };
   const methods: string[] = [];
   const rpc: CodexSettingsRPC = async method => {
     methods.push(method);

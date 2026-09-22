@@ -15,6 +15,7 @@ export async function handlePhoneWorkspaces(command: string, payload: Record<str
   }
   if (command !== 'workspaces.create') throw new Error('Unsupported workspace operation');
   if (typeof payload.requestId !== 'string' || !isPhoneWorkspaceId(`ws-phone-${payload.requestId.toLowerCase()}`) ||
+      // eslint-disable-next-line no-control-regex
       typeof payload.name !== 'string' || !payload.name.trim() || payload.name.length > 100 || /[\u0000-\u001f]/.test(payload.name)) throw new Error('Invalid workspace request');
   let cwd: string | undefined;
   if (payload.cwd !== undefined) {

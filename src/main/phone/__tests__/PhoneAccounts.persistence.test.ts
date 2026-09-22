@@ -14,7 +14,7 @@ describe('phone binding persistence and subsequent pane account', () => {
       fs.mkdirSync(configDir);
       const store = new AccountStore(dir);
       const account = await store.addAccount({ name: 'Work', vendor: 'claude', configDir });
-      const usage = { getAll: () => [], refreshNow: vi.fn(async () => {}) };
+      const usage = { getAll: () => [], refreshNow: vi.fn(async () => { /* noop */ }) };
       await handlePhoneAccounts('accounts.bind', { workspaceId: 'ws-1', vendor: 'claude', accountId: account.id }, { store, usage });
       const reloaded = new AccountStore(dir);
       expect(reloaded.getBindings()['ws-1']).toEqual({ claude: account.id });

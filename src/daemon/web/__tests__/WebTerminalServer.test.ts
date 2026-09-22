@@ -4772,7 +4772,7 @@ describe('WebTerminalServer', () => {
   it('shares document/photo quota and sweeps expired documents without deleting staged files', async () => {
     let clock = Date.now();
     const bounded = new WebTerminalServer({
-      sessionManager, log: () => {}, assetsDir: os.tmpdir(), uploadsDir,
+      sessionManager, log: () => { /* noop */ }, assetsDir: os.tmpdir(), uploadsDir,
       now: () => clock, uploadLimits: {maxFiles: 1},
     });
     const info = await bounded.start({port:0,host:'127.0.0.1',allowInput:false,allowUpload:true});

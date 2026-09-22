@@ -42,7 +42,7 @@ async function run() {
   const registry = {
     getTarget: (id?:string,workspace?:string) => (!id || id === target.surfaceId) && (!workspace || workspace === target.workspaceId) ? target : null,
     listTargets: () => [target], getCdpPort: () => 0,
-    ensureAwake: async () => null, setCaptureCleanup: () => {}, setCaptureAttach: () => {},
+    ensureAwake: async () => null, setCaptureCleanup: () => { /* noop */ }, setCaptureAttach: () => { /* noop */ },
     withAutomationLease: async (_id:string,fn:()=>Promise<unknown>) => fn(),
     acquireRpcLease: () => 'fixture', renewRpcLease: () => true, releaseRpcLease: () => true,
   };
