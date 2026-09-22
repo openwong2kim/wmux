@@ -815,6 +815,9 @@ export interface SessionData {
    *  terminal / split right / split down / new browser). Default true —
    *  hideable for minimal-chrome setups. */
   paneActionsVisible?: boolean;
+  /** Chat presentation for local Claude Code sessions. Default false while
+   *  experimental; persisted so an opt-in survives restarts. */
+  chatViewEnabled?: boolean;
   // Titlebar wall-clock (2026-09-05). Default off; persisted so the people who
   // turn it on keep it across restarts.
   titlebarClockVisible?: boolean;

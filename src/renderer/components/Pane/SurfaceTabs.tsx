@@ -302,6 +302,7 @@ export default function SurfaceTabs({
   // setups, AND by the pane being wide enough to afford it — Pane.tsx combines
   // the two and passes the answer down.
   const paneActionsSetting = useStore((s) => s.paneActionsVisible);
+  const chatViewEnabled = useStore((s) => s.chatViewEnabled);
   const mode: PaneActionsMode = actionsMode ?? (paneActionsSetting ? 'full' : 'none');
   // Zoom/maximize state for this pane — the cluster's fifth button toggles it
   // and reflects the current state (pressed when zoomed). Subscribing here (same
@@ -769,7 +770,7 @@ export default function SurfaceTabs({
 
       {(() => {
         const surface = surfaces.find((s) => s.id === activeSurfaceId);
-        if (!surface || (surface.surfaceType && surface.surfaceType !== 'terminal')) return null;
+        if (!chatViewEnabled || !surface || (surface.surfaceType && surface.surfaceType !== 'terminal')) return null;
         return <div className="wmux-chat-toggle" role="group" aria-label={t('chat.viewMode')}>
           {(['terminal', 'chat'] as const).map((view) => <button key={view} type="button"
             className={FOCUS_RING} data-surface-view={view}

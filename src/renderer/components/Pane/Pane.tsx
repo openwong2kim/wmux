@@ -555,6 +555,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // below are then redundant AND overlap the cluster, so they render only when
   // the cluster is absent. Subscribe the same way SurfaceTabs does.
   const paneActionsSetting = useStore((s) => s.paneActionsVisible);
+  const chatViewEnabled = useStore((s) => s.chatViewEnabled);
   // #977 follow-up — width-based collapse. The cluster is fixed-width and
   // shrink-0, so on a narrow pane every pixel it takes comes out of the tab
   // strip, which is flex-1 min-w-0 and therefore collapses to NOTHING: at
@@ -1146,6 +1147,7 @@ function SplitSurfaceView({
   onPtyCreated: (surfaceId: string, ptyId: string) => void;
   emptyMessage: string;
 }) {
+  const chatViewEnabled = useStore((s) => s.chatViewEnabled);
   const terminals = useMemo(
     () => pane.surfaces.filter((s) => !s.surfaceType || s.surfaceType === 'terminal'),
     [pane.surfaces],
@@ -1230,7 +1232,7 @@ function SplitSurfaceView({
           ) : (
             <TerminalComponent
               key={surface.id}
-              chatView={surface.viewMode === 'chat'}
+              chatView={chatViewEnabled && surface.viewMode === 'chat'}
               ptyId={surface.ptyId || undefined}
               cwd={surface.cwd || undefined}
               isActive={surface.id === activeSurfaceId}
@@ -1264,7 +1266,7 @@ function SplitSurfaceView({
             {terminals.map((surface) => (
               <TerminalComponent
                 key={surface.id}
-                chatView={surface.viewMode === 'chat'}
+                chatView={chatViewEnabled && surface.viewMode === 'chat'}
                 ptyId={surface.ptyId || undefined}
                 cwd={surface.cwd || undefined}
                 isActive={surface.id === activeSurfaceId}

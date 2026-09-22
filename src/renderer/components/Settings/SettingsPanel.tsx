@@ -3735,6 +3735,8 @@ function TabAppearance() {
 
   const paneActionsVisible = useStore((s) => s.paneActionsVisible);
   const setPaneActionsVisible = useStore((s) => s.setPaneActionsVisible);
+  const chatViewEnabled = useStore((s) => s.chatViewEnabled);
+  const setChatViewEnabled = useStore((s) => s.setChatViewEnabled);
   const titlebarClockVisible = useStore((s) => s.titlebarClockVisible);
   const setTitlebarClockVisible = useStore((s) => s.setTitlebarClockVisible);
   const paneNewTerminalButton = useStore((s) => s.paneNewTerminalButton);
@@ -3919,6 +3921,15 @@ function TabAppearance() {
             checked={paneActionsVisible}
             onChange={setPaneActionsVisible}
             label={t('settings.paneActionsVisible')}
+          />
+        </SettingRow>
+        {/* Off by default while experimental (PR #1440): markdown coverage is
+            incomplete and the send path is still being tested in the field. */}
+        <SettingRow label={t('settings.chatView')} description={t('settings.chatViewDesc')}>
+          <Toggle
+            checked={chatViewEnabled}
+            onChange={setChatViewEnabled}
+            label={t('settings.chatView')}
           />
         </SettingRow>
         {/* Off by default — the OS draws a clock already, and a permanent

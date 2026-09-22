@@ -255,6 +255,14 @@ export interface UISlice {
   paneActionsVisible: boolean;
   setPaneActionsVisible: (visible: boolean) => void;
 
+  // Chat presentation of a local Claude Code session (PR #1440). Off by
+  // default while it is being tested: markdown coverage is incomplete and
+  // the send path is still earning trust. Off hides the Terminal / Chat
+  // switch and shows every surface as a terminal, without touching the
+  // stored viewMode, so turning it back on restores what was open.
+  chatViewEnabled: boolean;
+  setChatViewEnabled: (enabled: boolean) => void;
+
   /**
    * Wall-clock in the titlebar status strip. Default OFF: every OS already
    * draws a clock, and DESIGN.md's fleet-vitals rule ("render only when
@@ -1128,6 +1136,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setPaneActionsVisible: (visible) => set((state) => {
     state.paneActionsVisible = visible;
+  }),
+
+  chatViewEnabled: false,
+
+  setChatViewEnabled: (enabled) => set((state) => {
+    state.chatViewEnabled = enabled;
   }),
 
   // Off unless asked for — see the interface note above.

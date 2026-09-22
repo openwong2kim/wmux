@@ -1237,6 +1237,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.paneActionsVisible === 'boolean') {
         state.paneActionsVisible = data.paneActionsVisible;
       }
+      // Chat view — default OFF while experimental; only an explicit true enables it.
+      if (typeof data.chatViewEnabled === 'boolean') {
+        state.chatViewEnabled = data.chatViewEnabled;
+      }
       // Opt-in `+` — default OFF, so only an explicit true shows it. A session
       // written before this setting existed has no field, and must not be read
       // as consent to break one pane = one terminal.

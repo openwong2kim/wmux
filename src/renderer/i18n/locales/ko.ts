@@ -591,6 +591,8 @@ export const ko = {
   'settings.sidebarShowPaneCoordinatesDesc': '이름을 지정하지 않은 판에 대해 에이전트 목록에 자동 생성된 w1-2 형식의 좌표를 표시합니다. 기본은 켜짐. 이름을 바꾼 판은 이 설정과 무관하게 항상 자신의 이름을 표시합니다.',
   'settings.sidebarLeft': '왼쪽',
   'settings.sidebarRight': '오른쪽',
+  'settings.chatView': 'Claude Code 세션 챗 뷰 (실험 기능)',
+  'settings.chatViewDesc': '로컬 Claude Code 페인에 터미널 / 챗 전환을 추가합니다. 마크다운 렌더링과 전송을 아직 테스트 중이라 기본은 꺼짐이며, 터미널은 영향을 받지 않습니다.',
   'settings.titlebarClock': '타이틀바 시계',
   'settings.titlebarClockDesc':
     '기본값 꺼짐 — 운영체제가 이미 시각을 표시합니다. 작업 표시줄을 숨긴 전체 화면에서 쓸 때 켜세요.',

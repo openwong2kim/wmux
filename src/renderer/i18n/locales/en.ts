@@ -1076,6 +1076,8 @@ export const en = {
   'settings.paneNewTerminalButtonDesc':
     'Adds a + that puts a SECOND terminal in this pane. wmux is built around one pane = one terminal — splitting is the usual way to get another — so this is off by default. Ctrl+T does the same thing without the button.',
   'settings.paneActionsVisibleDesc': 'Show new-terminal, split, and new-browser buttons in each pane\'s tab strip.',
+  'settings.chatView': 'Chat view for Claude Code sessions (experimental)',
+  'settings.chatViewDesc': 'Add a Terminal / Chat switch to local Claude Code panes. Off by default while markdown rendering and sending are still being tested; Terminal is unaffected either way.',
   'settings.titlebarClock': 'Clock in the titlebar',
   'settings.titlebarClockDesc':
     'Off by default — your OS already shows the time. Turn it on if you run wmux full-screen with the taskbar hidden.',

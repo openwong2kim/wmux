@@ -1060,6 +1060,8 @@ export const pl = {
   'settings.paneNewTerminalButtonDesc':
     'Dodaje +, który umieszcza DRUGI terminal w tym panelu. wmux jest zbudowany wokół zasady jeden panel = jeden terminal — podział to zwykły sposób na kolejny — więc domyślnie jest to wyłączone. Ctrl+T robi to samo bez przycisku.',
   'settings.paneActionsVisibleDesc': 'Pokaż przyciski nowego terminala, podziału i nowej przeglądarki na pasku kart każdego panelu.',
+  'settings.chatView': 'Widok czatu dla sesji Claude Code (eksperymentalny)',
+  'settings.chatViewDesc': 'Dodaje przełącznik Terminal / Czat do lokalnych paneli Claude Code. Domyślnie wyłączony, dopóki renderowanie markdown i wysyłanie są testowane; Terminal działa bez zmian.',
   'settings.titlebarClock': 'Zegar na pasku tytułu',
   'settings.titlebarClockDesc':
     'Domyślnie wyłączony — system i tak pokazuje godzinę. Włącz, jeśli używasz wmux na pełnym ekranie z ukrytym paskiem zadań.',

@@ -1118,6 +1118,8 @@ export const zh = {
   'settings.multiviewRows': '行',
   'settings.paneActionsVisible': '面板操作按钮',
   'settings.paneActionsVisibleDesc': '在每个面板的标签栏中显示新建终端、分割和新建浏览器按钮。',
+  'settings.chatView': 'Claude Code 会话聊天视图（实验性）',
+  'settings.chatViewDesc': '为本地 Claude Code 窗格添加终端 / 聊天切换。Markdown 渲染和发送仍在测试中，默认关闭；终端不受影响。',
   'settings.paneRing': '新通知的面板边框光环',
   'settings.paneRingDesc': '用蓝色边框高亮收到通知的面板。',
   'settings.paneGlowDim': '未读面板亮度',
