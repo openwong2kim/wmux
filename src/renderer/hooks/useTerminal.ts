@@ -1126,6 +1126,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       theme: xtermTheme,
       minimumContrastRatio,
       allowProposedApi: true,
+      // #1437: when the foreground app enables mouse tracking (Claude Code
+      // does around its input box), a plain drag goes to the app and nothing
+      // gets selected. Off macOS, xterm forces a selection on Shift+drag; on
+      // macOS it only does so for Option+drag, and only with this flag on —
+      // without it a Mac user has no way to select in such a pane. Cost: on
+      // macOS, Option+drag no longer does column selection (iTerm2 makes the
+      // same trade). Option+click-to-move-cursor is unaffected.
+      macOptionClickForcesSelection: true,
       // Enable xterm 6's Windows-aware ConPTY handling. ConPTY emits spurious
       // row-change events on resize; on a build where the reflow path is taken
       // that logic suppresses them, which in turn keeps SelectionService from
