@@ -14,7 +14,7 @@ describe('phone workspace bridge', () => {
     send.mockResolvedValue({ id: `ws-phone-${requestId}`, name: 'Project' });
     const getWindow = () => null;
     await handlePhoneWorkspaces('workspaces.create', { requestId, name: ' Project ', cwd: directory, command: 'rm -rf /', env: { SECRET: 'bad' } }, getWindow);
-    expect(send).toHaveBeenCalledWith(getWindow, 'workspace.phoneCreate', { id: `ws-phone-${requestId}`, name: 'Project', cwd: fs.realpathSync(directory) });
+    expect(send).toHaveBeenCalledWith(getWindow, 'workspace.phoneCreate', { id: `ws-phone-${requestId}`, name: 'Project', cwd: await fs.promises.realpath(directory) });
   });
   it('refuses nonexistent or relative folders before creation', async () => {
     for (const cwd of ['relative', path.join(directory, 'missing')]) {

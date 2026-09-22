@@ -1,5 +1,5 @@
 import { LiveSettingsError } from '../codexLiveSettings';
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -407,6 +407,17 @@ function mkApproval(over: Partial<ApprovalRequest> = {}): ApprovalRequest {
     ...over,
   };
 }
+
+// The phone Git controller refuses repositories with content filters, and the
+// macOS CI image declares git-lfs filters in the runner's global gitconfig.
+// Point HOME at an empty directory for this file so git sees no global config.
+const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-web-home-'));
+const savedHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+beforeAll(() => { process.env.HOME = isolatedHome; process.env.USERPROFILE = isolatedHome; });
+afterAll(() => {
+  process.env.HOME = savedHome.HOME; process.env.USERPROFILE = savedHome.USERPROFILE;
+  fs.rmSync(isolatedHome, { recursive: true, force: true });
+});
 
 describe('WebTerminalServer', () => {
   let server: WebTerminalServer;

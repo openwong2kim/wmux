@@ -41,7 +41,8 @@ export async function sessionFiles(root: string, relative: string, offset: numbe
       if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) continue;
       if (isHidden(entry.name)) continue;
       if (all.length === MAX_ENTRIES) break;
-      all.push({ name: entry.name, path: path.relative(base, path.join(target, entry.name)), directory: entry.isDirectory() });
+      // The wire format is '/'-separated whatever the host's separator is.
+      all.push({ name: entry.name, path: path.relative(base, path.join(target, entry.name)).split(path.sep).join('/'), directory: entry.isDirectory() });
     }
     // Sort the WHOLE directory before slicing. Sorting each page separately
     // ordered it against opendir's arbitrary order, so an entry could appear on
