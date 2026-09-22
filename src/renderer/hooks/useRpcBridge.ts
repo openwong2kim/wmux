@@ -1,3 +1,4 @@
+import { isPhoneWorkspaceId, PHONE_WORKSPACE_REQUEST_LIMIT } from '../../shared/phoneWorkspaceRequests';
 import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { resolveStartupCwd, shellDisplayName, withDefaultShell, withRoleBinding, withWorkspaceProfile } from '../utils/ptyCreateOptions';
@@ -614,6 +615,22 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // the mirror snapshot can never diverge from this reply (see
     // buildWorkspaceListEntries).
     return buildWorkspaceListEntries(store.workspaces);
+  }
+
+  if (method === 'workspace.phoneCreate') {
+    const id = params.id;
+    const name = params.name;
+    const cwd = params.cwd;
+    if (!isPhoneWorkspaceId(id) ||
+        typeof name !== 'string' || !name.trim() || name.length > 100 ||
+        (cwd !== undefined && typeof cwd !== 'string')) return { error: 'Invalid phone workspace' };
+    const existing = store.workspaces.find(w => w.id === id);
+    if (existing) return { id: existing.id, name: existing.name };
+    if (store.phoneWorkspaceRequestIds.includes(id)) return { error: 'workspace-request-closed' };
+    if (store.phoneWorkspaceRequestIds.length >= PHONE_WORKSPACE_REQUEST_LIMIT) return { error: 'workspace-request-history-full' };
+    store.addWorkspace(name, typeof cwd === 'string' ? { startupCwd: cwd } : undefined, id);
+    const created = useStore.getState().workspaces.find(w => w.id === id);
+    return created ? { id: created.id, name: created.name } : { error: 'Workspace was not created' };
   }
 
   if (method === 'workspace.new') {

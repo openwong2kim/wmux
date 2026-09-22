@@ -29,6 +29,7 @@ export interface LiveActivityCounts {
 export interface LiveActivityTarget {
   deviceId: string;
   liveActivity: {
+    hostID?: string;
     pushToStartToken?: string;
     activityToken?: string;
     apnsEnvironment?: 'development' | 'production';
@@ -249,7 +250,7 @@ export class LiveActivityPusher {
         blockedPanes: counts.blockedPanes,
         oldestBlockedMinutes: counts.oldestBlockedMinutes,
       },
-      ...(event === 'start' ? { attributes: this.startAttributes() } : {}),
+      ...(event === 'start' ? { attributes: { ...this.startAttributes(), ...(liveActivity.hostID ? { hostID: liveActivity.hostID } : {}) } } : {}),
       ...(event === 'end'
         ? // Without a dismissal date the activity lingers on the lock screen for
           // up to four hours after the thing it was reporting is over.

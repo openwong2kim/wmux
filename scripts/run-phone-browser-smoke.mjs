@@ -1,0 +1,16 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+import { build } from 'esbuild';
+const require = createRequire(import.meta.url);
+const root = fs.mkdtempSync(path.join(os.tmpdir(),'wmux-phone-browser-'));
+const bundle = path.join(root,'smoke.cjs');
+await build({entryPoints:[fileURLToPath(new URL('./phone-browser-smoke.ts',import.meta.url))],bundle:true,platform:'node',external:['electron'],outfile:bundle,logLevel:'warning'});
+const env = {...process.env,WMUX_PHONE_SMOKE_DIR:root,WMUX_DATA_SUFFIX:'-phone-browser-smoke'};
+delete env.ELECTRON_RUN_AS_NODE;
+const child = spawn(require('electron'),[bundle],{env,stdio:'inherit'});
+child.on('error',error => { console.error(error.message); process.exitCode=1; });
+child.on('exit',code => { process.exitCode=code ?? 1; });

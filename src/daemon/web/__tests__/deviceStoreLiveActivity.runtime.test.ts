@@ -33,6 +33,14 @@ async function paired(s: DeviceStore): Promise<string> {
 }
 
 describe('DeviceStore — live activity registration merges', () => {
+  it('persists host scope and refuses nonopaque identifiers', async () => {
+    const s = store();
+    const id = await paired(s);
+    expect(s.registerLiveActivity(id, { pushToStartToken: START, hostID: 'd'.repeat(64) })).toEqual({ok:true});
+    expect(store().liveActivityTargets()[0].liveActivity.hostID).toBe('d'.repeat(64));
+    expect(s.registerLiveActivity(id, { hostID: '../private' })).toEqual({ok:false,reason:'bad-token'});
+  });
+
   it('★ an omitted field is kept, not erased — the two tokens arrive separately', async () => {
     const s = store();
     const id = await paired(s);

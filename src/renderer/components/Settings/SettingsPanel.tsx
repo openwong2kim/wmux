@@ -1,3 +1,4 @@
+import { QuickCommandsSection } from './QuickCommandsSection';
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBackend';
 import { isWslShellPath } from '../../../shared/wslDistro';
@@ -5323,7 +5324,7 @@ export default function SettingsPanel() {
                   {activeTab === 'appearance'         && <TabAppearance />}
                   {activeTab === 'notifications'      && <TabNotifications />}
                   {activeTab === 'shortcuts'          && <TabShortcuts />}
-                  {activeTab === 'claude-integration' && <><IntegrationSetupSectionContainer /><ClaudeIntegrationSection /><AccountsSection /></>}
+                  {activeTab === 'claude-integration' && <><IntegrationSetupSectionContainer /><ClaudeIntegrationSection /><AccountsSection /><QuickCommandsSection /></>}
                   {activeTab === 'agents'             && <TabAgents />}
                   {activeTab === 'browser'            && <TabBrowser />}
                   {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}

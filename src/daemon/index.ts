@@ -1,3 +1,13 @@
+import {captureCodexRelayResume, codexRelayResumeCommand} from './web/codexRelayResume';
+import { recoverCodexPane } from './web/recoverCodexPane';
+import { CodexRelayUnavailableError } from './web/codexTuiRelay';
+import { paneCodexSettings } from './web/paneCodexSettings';
+import { CodexPaneRelays } from './web/codexPaneRelays';
+import { buildAgentLaunch, installedAgentLaunchOptions } from './web/agentLaunch';
+import { workspaceAccountEnv } from './phone/workspaceAccountEnv';
+import { DesktopPhoneBridge } from './phone/DesktopPhoneBridge';
+import { RunHistoryStore } from './history/RunHistoryStore';
+import { InputReceiptStore } from './web/InputReceiptStore';
 import { recoveryCwd, isWslShell, isWslCwdMissingError } from '../shared/wsl';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,7 +20,7 @@ import {
   readPushPresenceSuppression,
 } from './config';
 import { createDaemonLogWriter } from './logWriter';
-import { DaemonSessionManager } from './DaemonSessionManager';
+import { DaemonSessionManager, type ManagedSession } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
@@ -123,6 +133,19 @@ let webTerminalServer: WebTerminalServer | null = null;
 // (wireEvents) arbitrate against the same dedup state. Module-scoped because
 // those two live in separate functions; registerRpcHandlers runs first and
 // constructs it.
+let desktopPhoneBridge: DesktopPhoneBridge | null = null;
+let runHistory: RunHistoryStore | null = null;
+let inputReceipts: InputReceiptStore | null = null;
+function getInputReceipts(): InputReceiptStore {
+  return inputReceipts ??= new InputReceiptStore(getWmuxDir());
+}
+function getRunHistory(): RunHistoryStore {
+  return runHistory ??= new RunHistoryStore(getWmuxDir());
+}
+function recordHistory(work: (store: RunHistoryStore) => void): void {
+  try { work(getRunHistory()); }
+  catch (error) { log('warn', 'Phone run history could not be saved:', error); }
+}
 let hookIngest: HookIngest | null = null;
 // Outbound webhook/ntfy notifications. Module-scoped for the same reason
 // `webTerminalServer` is: the hook-event site that fires attention pings is
@@ -158,6 +181,9 @@ let deviceStore: DeviceStore | null = null;
 // construction sites, one of which is a module-level function. Null until
 // registerRpcHandlers runs, which is before either site.
 let sessionLifecycle: WebSessionLifecycle | null = null;
+let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
+const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Codex relay cleanup failed'),
+  (id,owner)=>persistCodexRelayState?.(id,owner));
 
 /**
  * #919 — canonical pane-agent identity for one pane, right now. Folds the
@@ -402,6 +428,15 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // construction sites: a restored server serves paired phones on their
         // own credentials, exactly like one the operator just started.
         devices: getDeviceStore(),
+        runHistory: getRunHistory,
+        inputReceipts: getInputReceipts,
+        desktop: () => desktopPhoneBridge,
+        agentLaunchOptions: installedAgentLaunchOptions,
+        agentSettings: (id,authorized,choice)=>paneCodexSettings({
+          session: paneId=>sessionManager.getSession(paneId),
+          agentName: paneId=>readAgentStateForWeb?.(paneId)?.agentName,
+          selection: paneId=>codexPaneRelays.selection(paneId,sessionManager.getSession(paneId)),
+        },id,authorized,choice),
         // Pane spawn/close for POST/DELETE /api/sessions. Both routes answer
         // 503 without it, and both are additionally gated on --allow-input.
         ...(sessionLifecycle ? { lifecycle: sessionLifecycle } : {}),
@@ -758,11 +793,15 @@ function resumeLaunchCommand(
     cmd?: string;
     cwd: string;
     resumeBinding?: ResumeBinding;
+    env?: Record<string,string>;
+    codexRelayResume?: DaemonState['sessions'][number]['codexRelayResume'];
     supervision?: { restorePermissionMode?: boolean };
   },
   spoolBinding?: ResumeBinding,
 ): string | undefined {
   if (!session.exec) return undefined;
+  const phoneResume = codexRelayResumeCommand({...session,env:session.env ?? {}});
+  if (phoneResume !== undefined) return phoneResume;
   if (!isWslShell(session.cmd) && !fs.existsSync(session.cwd)) return undefined; // cwd gone → fresh, not wrong-target resume
   // Prefer the persisted binding; fall back to a spool-captured one (the live
   // capture RPC failed, so the exact id only survived in the spool) so an exec
@@ -1414,7 +1453,7 @@ async function recoverSessions(
         let lastSpawnErr: unknown;
         for (let attempt = 1; attempt <= RECOVERY_PTY_RETRIES; attempt++) {
           try {
-            recovered = await sessionManager.createSessionAsync({
+            recovered = await recoverCodexPane(sessionManager, codexPaneRelays, {
               id: session.id,
             cmd: session.cmd,
             wslTarget: session.wslTarget,
@@ -1507,7 +1546,7 @@ async function recoverSessions(
           const scrollbackData = fs.readFileSync(snapshotPath);
           const cwd = recoveryCwd(session);
 
-          const recovered = await sessionManager.createSessionAsync({
+          const recovered = await recoverCodexPane(sessionManager, codexPaneRelays, {
             id: session.id,
             cmd: session.cmd,
             wslTarget: session.wslTarget,
@@ -1559,7 +1598,7 @@ async function recoverSessions(
       // the 30s snapshot interval fired (e.g. immediate reboot).
       try {
         const cwd = recoveryCwd(session);
-        const recovered = await sessionManager.createSessionAsync({
+        const recovered = await recoverCodexPane(sessionManager, codexPaneRelays, {
           id: session.id,
           cmd: session.cmd,
           wslTarget: session.wslTarget,
@@ -1832,7 +1871,7 @@ function registerRpcHandlers(
   // (see sessionLifecycle below). A phone-spawned pane must be the same kind of
   // object as a GUI-spawned one — process-monitored, supervised, persisted,
   // snapshotted — and the only way to guarantee that is for both to run this.
-  const createSessionRpc = async (params: Record<string, unknown>): Promise<unknown> => {
+  const createSessionRpc = async (params: Record<string, unknown>, local?: {execLaunchCommand?:string}): Promise<unknown> => {
     // B′ auto-replace (Codex #1): shutdown() snapshots the managed-session
     // list once, so a session created AFTER that snapshot would be disposed
     // without any durable suspended record — silent data loss. shutdown()
@@ -1867,6 +1906,7 @@ function registerRpcHandlers(
       // X8: exec unit + supervision. Fresh creates always start 'armed' —
       // a persisted 'stopped' only ever enters through recovery replay.
       exec: p.exec,
+      execLaunchCommand: local?.execLaunchCommand,
       supervision: p.supervision
         ? {
             restart: p.supervision.restart,
@@ -1910,7 +1950,7 @@ function registerRpcHandlers(
     // 응답에서 자격증명 값 제거(main은 pid 등만 사용). fresh env 교체 — live meta 불변.
     return { ...session, env: stripCredentialValues(session.env) };
   };
-  pipeServer.onRpc('daemon.createSession', createSessionRpc);
+  pipeServer.onRpc('daemon.createSession', params => createSessionRpc(params));
 
   // daemon.destroySession
   //
@@ -1946,6 +1986,7 @@ function registerRpcHandlers(
     // emits nothing — drop any pending supervised restart explicitly.
     paneSupervisor.disarm(p.id);
 
+    await codexPaneRelays.retire(p.id);
     sessionManager.destroySession(p.id);
 
     // Clean up buffer dump file if exists
@@ -1990,7 +2031,7 @@ function registerRpcHandlers(
    * `rejectWorkspaceId` in WebTerminalServer for the trade-off that buys.
    */
   sessionLifecycle = {
-    create: async ({ workspaceId, cwd }) => {
+    create: async ({ workspaceId, cwd, agentLaunch }) => {
       const id = `web-${randomUUID()}`;
       // The human-readable workspace NAME is copied from a live sibling pane;
       // the daemon has no workspace registry of its own to look one up in.
@@ -1999,7 +2040,7 @@ function registerRpcHandlers(
             .listLiveSessions()
             .find((s) => s.env?.[ENV_KEYS.WORKSPACE_ID] === workspaceId)
         : undefined;
-      const env = buildWebPaneEnv({
+      let env = buildWebPaneEnv({
         id,
         parentEnv: process.env,
         ...(workspaceId ? { workspaceId } : {}),
@@ -2007,21 +2048,43 @@ function registerRpcHandlers(
           ? { workspaceName: sibling.env[ENV_KEYS.WORKSPACE_NAME] }
           : {}),
       });
-      await createSessionRpc({
-        id,
-        // `cmd` is OMITTED, not empty-string. `createSession` resolves an unset
-        // cmd to the daemon's configured default shell, which is the single
-        // choke point for that decision (platform tables, Store aliases,
-        // $SHELL); naming a shell here would be a second copy of it. `''` took
-        // the same branch today only because `resolveShellPath` happens to
-        // treat it as falsy — one line elsewhere deciding that an explicitly
-        // requested empty command is a request rather than a default, and this
-        // spawns nothing at all. Say what is meant. An unset cwd falls back to
-        // the home directory the same way.
-        ...(cwd ? { cwd } : {}),
-        env,
-      });
-      return { id };
+      if (workspaceId) env = await workspaceAccountEnv(env, workspaceId, desktopPhoneBridge);
+      const agentCommand = agentLaunch ? buildAgentLaunch(agentLaunch, await installedAgentLaunchOptions(env)) : undefined;
+      let relay: Awaited<ReturnType<CodexPaneRelays['prepare']>> | undefined;
+      if (agentLaunch?.agent === 'codex' && process.platform !== 'win32') {
+        try { relay = await codexPaneRelays.prepare(id,env.CODEX_HOME); }
+        catch (error) {
+          // An existing account server enables live controls. A first ordinary
+          // Codex launch may create that server itself; do not invent a socket.
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof CodexRelayUnavailableError)) throw error;
+        }
+      }
+      try {
+        if (relay && !/^unix:\/\/\/[A-Za-z0-9_./-]+$/.test(relay.url)) throw new Error('Unsupported Codex relay path');
+        await createSessionRpc({
+          id,
+          ...(agentCommand ? {exec:{command:agentCommand}} : {}),
+          // `cmd` is OMITTED, not empty-string. `createSession` resolves an unset
+          // cmd to the daemon's configured default shell, which is the single
+          // choke point for that decision (platform tables, Store aliases,
+          // $SHELL); naming a shell here would be a second copy of it. `''` took
+          // the same branch today only because `resolveShellPath` happens to
+          // treat it as falsy — one line elsewhere deciding that an explicitly
+          // requested empty command is a request rather than a default, and this
+          // spawns nothing at all. Say what is meant. An unset cwd falls back to
+          // the home directory the same way.
+          ...(cwd ? { cwd } : {}),
+          env,
+        }, relay ? {execLaunchCommand:`${agentCommand} --remote ${relay.url}`} : undefined);
+        if (relay) {
+          const managed = sessionManager.getSession(id);
+          if (!managed || !relay.commit(managed)) {
+            if (managed) await destroySessionRpc({id});
+            throw new Error('Codex pane closed during launch');
+          }
+        }
+        return { id };
+      } catch (error) { await relay?.close(); throw error; }
     },
     destroy: async (id) => {
       await destroySessionRpc({ id });
@@ -2614,6 +2677,15 @@ function registerRpcHandlers(
       resumeState: (id) => readResumeStateForWeb?.(id),
       // M3 — see the restore path for why the roster is injected at both sites.
       devices: getDeviceStore(),
+      runHistory: getRunHistory,
+      inputReceipts: getInputReceipts,
+        desktop: () => desktopPhoneBridge,
+        agentLaunchOptions: installedAgentLaunchOptions,
+        agentSettings: (id,authorized,choice)=>paneCodexSettings({
+          session: paneId=>sessionManager.getSession(paneId),
+          agentName: paneId=>readAgentStateForWeb?.(paneId)?.agentName,
+          selection: paneId=>codexPaneRelays.selection(paneId,sessionManager.getSession(paneId)),
+        },id,authorized,choice),
       // See the restore path: the lifecycle routes need this and answer 503
       // without it. Registered by the time either site runs.
       ...(sessionLifecycle ? { lifecycle: sessionLifecycle } : {}),
@@ -3059,6 +3131,17 @@ function registerRpcHandlers(
     return false;
   };
 
+  desktopPhoneBridge ??= new DesktopPhoneBridge((id,event) => pipeServer.sendTo(id,event));
+  pipeServer.onRpc('daemon.phone.register', async (_params,ctx) => {
+    if (!firstPartyOnly(ctx.clientId,'daemon.phone.register')) return {ok:false};
+    return {ok:desktopPhoneBridge!.register(ctx.clientId)};
+  });
+  pipeServer.onRpc('daemon.phone.complete', async (params,ctx) => {
+    if (!firstPartyOnly(ctx.clientId,'daemon.phone.complete')) return {ok:false};
+    return {ok:desktopPhoneBridge!.complete(ctx.clientId,params)};
+  });
+  pipeServer.onClientClose(id => desktopPhoneBridge?.disconnect(id));
+
   pipeServer.onRpc('daemon.client.identify', async (params, ctx) => {
     const role = typeof params['role'] === 'string' ? params['role'] : '';
     if (role !== 'main') return { ok: false };
@@ -3141,6 +3224,8 @@ function registerRpcHandlers(
     hookIngest = new HookIngest({
       listLiveSessions: () => sessionManager.listLiveSessions(),
       emitAgentEvent: (sessionId, data) => {
+        const historySession = sessionManager.getSession(sessionId);
+        if (historySession) recordHistory(store => store.ingest(sessionId, historySession.meta.env, data));
         // Hook Stop/awaiting-input is authoritative inside the same daemon that
         // owns byte activity. Settle the bridge before broadcasting so a later
         // idle repaint cannot race the renderer back to stale running.
@@ -4542,6 +4627,8 @@ function wireEvents(
   // session as collateral damage. Per-step isolation ensures one session's
   // exit can't cascade into a mass kill.
   sessionManager.on('session:died', (payload: { id: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number; reason?: string }) => {
+    void codexPaneRelays.retire(payload.id);
+    recordHistory(store => store.interrupted(payload.id));
     // OBSERVABILITY: PTY deaths were previously unlogged — a session could
     // vanish (e.g. powershell exiting -1 under a TUI like claude) with zero
     // trace in the daemon log, making root-cause impossible. Log the forensics
@@ -4787,6 +4874,8 @@ function wireEvents(
   // A pane the user closes while a reclassification is pending must not get a
   // ghost died event 15s later.
   sessionManager.on('session:destroyed', (payload: { id: string }) => {
+    void codexPaneRelays.retire(payload.id);
+    recordHistory(store => store.interrupted(payload.id));
     const t = interruptedTimers.get(payload.id);
     if (t) {
       clearTimeout(t);
@@ -5174,7 +5263,17 @@ async function initBootId(): Promise<void> {
   cachedBootId = await getBootId();
 }
 
+function captureLiveCodexResumes(sessionManager: DaemonSessionManager): void {
+  for (const managed of sessionManager.listManagedSessions()) {
+    if (!['attached','detached'].includes(managed.meta.state)) continue;
+    // liveSelection, not selection: a pane whose relay is already gone keeps the
+    // hint captured while that relay was live instead of being wiped here.
+    captureCodexRelayResume(managed.meta,codexPaneRelays.liveSelection(managed.meta.id,managed));
+  }
+}
+
 function buildState(sessionManager: DaemonSessionManager): DaemonState {
+  captureLiveCodexResumes(sessionManager);
   // cachedBootId is initialized in main() before any calls to buildState.
   // Fallback to sync version only if somehow not initialized.
   if (!cachedBootId) cachedBootId = getBootIdSync();
@@ -5316,6 +5415,8 @@ async function shutdown(
   sessionPipes.clear();
   phaseLog('pipeStops', pipeStopsStart, { count: pipeStops.length });
 
+  captureLiveCodexResumes(sessionManager);
+
   // Dump scrollback buffers and mark live sessions as suspended for recovery
   const managedSessions = sessionManager.listManagedSessions();
   stateWriter.ensureBufferDir();
@@ -5365,6 +5466,7 @@ async function shutdown(
   const disposeStart = phaseStartedAt();
   const disposedCount = sessionManager.listManagedSessions().length;
   sessionManager.disposeAll();
+  await codexPaneRelays.shutdown();
   phaseLog('disposeAll', disposeStart, { count: disposedCount });
 
   stateWriter.dispose();
@@ -6298,6 +6400,18 @@ async function main(): Promise<void> {
   scrubPersistedCredentials(wmuxDir);
   const maxRecover = Math.min(config.session.maxSessions, MAX_RECOVER_SESSIONS);
   await recoverSessions(stateWriter, sessionManager, processMonitor, maxRecover);
+  // Install only after the complete recovery pass; an early partial manager
+  // snapshot must not overwrite sessions still waiting to be recovered.
+  persistCodexRelayState = (id,owner) => {
+    if (shuttingDown || sessionManager.getSession(id) !== owner || !['attached','detached'].includes(owner.meta.state)) return;
+    const before = JSON.stringify(owner.meta.codexRelayResume);
+    captureCodexRelayResume(owner.meta,codexPaneRelays.liveSelection(id,owner));
+    if (before !== JSON.stringify(owner.meta.codexRelayResume) && !stateWriter.saveImmediate(buildState(sessionManager))) {
+      throw new Error('Codex recovery selection could not be persisted');
+    }
+  };
+
+  recordHistory(store => store.reconcileLiveSessions(new Set(sessionManager.listLiveSessions().map(s => s.id))));
   markDaemonBoot('recovery-done');
 
   // X6 ③ (Rung 3): recoverSessions drains the hook spool once at boot (the reboot

@@ -60,6 +60,33 @@ describe('workspace archive (#1011)', () => {
     store = createTestStore([wsA, wsB], wsA.id);
   });
 
+  it('never recreates a closed phone request, including after session restoration', () => {
+    const id = 'ws-phone-01234567-89ab-4cde-8123-456789abcdef';
+    store.getState().addWorkspace('Phone', undefined, id);
+    store.getState().removeWorkspace(id);
+    store.getState().addWorkspace('Late retry', undefined, id);
+    expect(store.getState().workspaces.some(w => w.id === id)).toBe(false);
+    const saved = JSON.parse(JSON.stringify({
+      workspaces: store.getState().workspaces, activeWorkspaceId: store.getState().activeWorkspaceId,
+      sidebarVisible: true, phoneWorkspaceRequestIds: store.getState().phoneWorkspaceRequestIds,
+    })) as SessionData;
+    const reopened = createTestStore([wsA, wsB], wsA.id);
+    reopened.getState().loadSession(saved);
+    reopened.getState().addWorkspace('Retry after restart', undefined, id);
+    expect(reopened.getState().workspaces.some(w => w.id === id)).toBe(false);
+    expect(reopened.getState().phoneWorkspaceRequestIds).toContain(id);
+  });
+
+  it('backfills older phone workspaces and retains their identity after archive', () => {
+    const id = 'ws-phone-01234567-89ab-4cde-8123-456789abcdef';
+    wsA.id = id;
+    store.getState().loadSession({workspaces:[wsA,wsB],activeWorkspaceId:id,sidebarVisible:true});
+    store.getState().archiveWorkspace(id);
+    store.getState().addWorkspace('Late retry', undefined, id);
+    expect(store.getState().workspaces.some(w => w.id === id)).toBe(false);
+    expect(store.getState().phoneWorkspaceRequestIds).toContain(id);
+  });
+
   it('archive snapshots the config and removes the workspace', () => {
     store.getState().archiveWorkspace(wsA.id);
     const state = store.getState();

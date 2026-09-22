@@ -1,3 +1,12 @@
+import { LiveSettingsError, type LiveAgentSettings } from './codexLiveSettings';
+import type { PaneSettingsChoice } from './paneCodexSettings';
+import { buildAgentLaunch, type AgentLaunchChoice, type AgentLaunchOptions } from './agentLaunch';
+import { DesktopPhoneError, type DesktopPhoneBridge } from '../phone/DesktopPhoneBridge';
+import type { RunHistoryStore } from '../history/RunHistoryStore';
+import type { InputReceiptStore } from './InputReceiptStore';
+import { sessionPullRequests } from './sessionPullRequests';
+import { SessionGitController, SessionGitError } from './sessionGit';
+import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
 import http from 'node:http';
 import type { AgentStatus } from '../../shared/types';
 import { isRemoteAgentStatus } from '../../shared/remoteHosts';
@@ -340,7 +349,7 @@ export interface WebDeviceResolver {
    */
   registerLiveActivity?(
     deviceId: string,
-    input: { pushToStartToken?: unknown; activityToken?: unknown; apnsEnvironment?: unknown },
+    input: { hostID?: unknown; pushToStartToken?: unknown; activityToken?: unknown; apnsEnvironment?: unknown },
   ): { ok: boolean; reason?: string };
 }
 
@@ -392,12 +401,17 @@ export type WebPairStartResult =
  */
 export interface WebSessionLifecycle {
   /** Spawn a pane. Resolves to the new session's id. */
-  create(params: { workspaceId?: string; cwd?: string }): Promise<{ id: string }>;
+  create(params: { workspaceId?: string; cwd?: string; agentLaunch?: AgentLaunchChoice }): Promise<{ id: string }>;
   /** Close a pane and dispose its PTY. Called only for an id already resolved. */
   destroy(id: string): Promise<void>;
 }
 
 interface WebTerminalServerDeps {
+  agentSettings?: (id:string, authorized:()=>Promise<boolean>, choice?:PaneSettingsChoice)=>Promise<LiveAgentSettings>;
+  agentLaunchOptions?: (env?: NodeJS.ProcessEnv) => Promise<AgentLaunchOptions[]>;
+  desktop?: () => DesktopPhoneBridge | null;
+  runHistory?: () => RunHistoryStore;
+  inputReceipts?: () => InputReceiptStore;
   sessionManager: DaemonSessionManager;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /**
@@ -960,6 +974,7 @@ interface AttentionCursor {
 }
 
 export class WebTerminalServer {
+  private readonly inputEpoch = crypto.randomUUID();
   private server: http.Server | https.Server | null = null;
   private token = '';
   private opts: WebTerminalStartOptions | null = null;
@@ -979,6 +994,9 @@ export class WebTerminalServer {
   /** Per-pane coalescing timers for the non-recording liveness event. */
   private readonly livenessTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Latest liveness state per pane, held for the open coalescing window. */
+  private readonly phoneGit = new SessionGitController();
+  private phoneGitRequests = 0;
+  private readonly agentSettingsRequests = new Set<string>();
   private readonly pendingLiveness = new Map<string, AgentLivenessBody>();
   /**
    * Last liveness state seen per pane, for the `/api/sessions` snapshot.
@@ -1861,7 +1879,9 @@ export class WebTerminalServer {
         // write routes then refuse — a read-only device showing a live composer
         // that 403s on every keystroke.
         allowInput: this.mayInput(principal),
+        inputReceipts: this.mayInput(principal) && this.deps.inputReceipts !== undefined,
         allowUpload: this.opts?.allowUpload === true,
+        generalFileUpload: this.opts?.allowUpload === true && this.deps.uploadsDir !== undefined,
         allowTranscript: this.opts?.allowTranscript === true,
         // Whether `/api/sessions/:id/turns/image` exists on this daemon, so the
         // phone decides ONCE instead of learning it from a 404 per thumbnail.
@@ -1875,6 +1895,20 @@ export class WebTerminalServer {
         // omitted rather than `false` for the same reason: that is the shape a
         // daemon predating the route serves, and a phone reads both as false.
         ...(this.opts?.allowTranscript === true ? { turnFiles: true } : {}),
+        workspaceFiles: this.opts?.allowTranscript === true,
+        liveActivityHostScope: true,
+        agentSettings: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.agentSettings !== undefined,
+        agentLaunch: this.mayInput(principal) && this.deps.agentLaunchOptions !== undefined,
+        browserScrolling: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
+        workspaceBrowsers: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
+        browserCreation: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
+        browserKeyboard: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
+        browserPreview: this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
+        workspaceCreation: this.mayInput(principal) && this.deps.desktop !== undefined,
+        quickCommands: this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
+        desktopAccounts: this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
+        gitControl: this.mayInput(principal),
+        runHistory: this.opts?.allowTranscript === true && this.deps.runHistory !== undefined,
         // Whether this daemon can drive a Live Activity over APNs. A phone that
         // sees it true registers a push-to-start token and lets the daemon
         // start the activity; a phone talking to a daemon that omits the key
@@ -1910,14 +1944,36 @@ export class WebTerminalServer {
     if (req.method === 'GET' && p === '/api/sessions') {
       return this.json(res, 200, { sessions: this.listSessions() });
     }
+    if (req.method === 'GET' && p === '/api/history') {
+      if (this.opts?.allowTranscript !== true) return this.json(res, 403, {error:'history-disabled'});
+      if (!this.deps.runHistory) return this.json(res, 503, {error:'history-unavailable'});
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      if (!Number.isSafeInteger(offset) || offset < 0 || offset > 1000) return this.json(res, 400, {error:'invalid-offset'});
+      try { return this.json(res, 200, this.deps.runHistory().list(offset), {'Cache-Control':'no-store'}); }
+      catch { return this.json(res, 503, {error:'history-unavailable'}); }
+    }
     if (req.method === 'GET' && p === '/api/workspaces') {
       return this.handleWorkspacesList(res);
     }
     if (req.method === 'POST' && p === '/api/sessions') {
-      return this.handleSessionCreate(req, res, principal);
+      return this.handleSessionCreate(req, res, principal, url);
     }
     if (p.startsWith('/api/sessions/')) {
       const rest = p.slice('/api/sessions/'.length);
+      if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/agent-settings')) return this.handleAgentSettings(req,res,rest.slice(0,-'/agent-settings'.length),url,principal);
+      if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/browser')) return this.handlePhoneBrowser(req,res,rest.slice(0,-'/browser'.length),url,principal);
+      if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/accounts')) {
+        return this.handleSessionAccounts(req,res,rest.slice(0,-'/accounts'.length),url,principal);
+      }
+      if (req.method === 'GET' && rest.endsWith('/git/pr')) {
+        return this.handleSessionGit(req, res, rest.slice(0, -'/git/pr'.length), url, principal, true);
+      }
+      if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/git')) {
+        return this.handleSessionGit(req, res, rest.slice(0, -'/git'.length), url, principal);
+      }
+      if (req.method === 'GET' && rest.endsWith('/files')) {
+        return this.handleSessionFiles(res, rest.slice(0, -'/files'.length), url, principal);
+      }
       if (req.method === 'GET' && rest.endsWith('/diff')) {
         return this.handleSessionDiff(res, rest.slice(0, -'/diff'.length), principal);
       }
@@ -1943,6 +1999,20 @@ export class WebTerminalServer {
         return this.handleSessionDelete(res, rest, principal);
       }
     }
+    if (req.method === 'GET' && p === '/api/agent-launch-options') {
+      if (!this.mayInput(principal)) return this.refuseInput(res,principal,'Agent launch requires input permission');
+      if (!this.deps.agentLaunchOptions) return this.json(res,503,{error:'agent-launch-unavailable'});
+      const workspaceId = url.searchParams.get('workspaceId') ?? '';
+      if (workspaceId) { const bad = this.rejectWorkspaceId(workspaceId,principal); if (bad) return this.json(res,400,bad); }
+      void this.agentOptionsForWorkspace(workspaceId).then(agents => this.json(res,200,{agents},{'Cache-Control':'no-store'})).catch(() => this.json(res,503,{error:'agent-launch-unavailable'}));
+      return;
+    }
+    if ((req.method === 'GET' || req.method === 'POST') && p.startsWith('/api/desktop-workspaces/') && p.endsWith('/browser')) {
+      void this.handleWorkspaceBrowser(req,res,p.slice('/api/desktop-workspaces/'.length,-'/browser'.length),url,principal);
+      return;
+    }
+    if ((req.method === 'GET' && p === '/api/desktop-workspaces') || (req.method === 'POST' && p === '/api/workspaces')) return this.handlePhoneWorkspaces(req,res,url,principal);
+    if ((req.method === 'GET' || req.method === 'POST') && p === '/api/quick-commands') return this.handleQuickCommands(req,res,url,principal);
     if (req.method === 'GET' && p === '/api/stream') {
       return this.handleStream(req, res, url, principal);
     }
@@ -1974,6 +2044,13 @@ export class WebTerminalServer {
     }
     if (req.method === 'POST' && p === '/api/upload') {
       return this.handleUpload(req, res);
+    }
+    if (req.method === 'POST' && p === '/api/upload-file') {
+      const extension = req.headers['x-wmux-file-extension'] ?? 'bin';
+      if (typeof extension !== 'string' || !/^[a-zA-Z0-9]{1,12}$/.test(extension)) {
+        return this.json(res, 400, { error: 'invalid-file-extension' });
+      }
+      return this.handleUpload(req, res, extension.toLowerCase());
     }
     if (req.method === 'GET' && p === '/api/approvals') {
       return this.handleApprovalsList(res, principal);
@@ -2027,6 +2104,7 @@ export class WebTerminalServer {
 
   private listSessions(): Array<{
     id: string;
+    incarnationId?: string;
     cwd: string;
     cols: number;
     rows: number;
@@ -2115,6 +2193,7 @@ export class WebTerminalServer {
       .filter((s) => !isBrainPty({ id: s.id, env: s.env }))
       .map((s) => ({
         id: s.id,
+        incarnationId: this.deps.sessionManager.getSession(s.id)?.meta.incarnationId,
         cwd: s.cwd,
         cols: s.cols,
         rows: s.rows,
@@ -2359,6 +2438,259 @@ export class WebTerminalServer {
    * `not-a-git-repo` is a 409, not a 500: a pane running in `~` is completely
    * normal and the phone should say "no repository here", not "something broke".
    */
+  private async handleSessionFiles(res: http.ServerResponse, rawId: string, url: URL, principal: WebPrincipal): Promise<void> {
+    if (this.opts?.allowTranscript !== true) return this.json(res, 403, { error: 'files-disabled' });
+    const id = decodePathSegment(rawId);
+    const managed = id === null ? null : this.attachableSession(principal, id);
+    if (!managed?.meta.spawnCwd) return this.json(res, 404, { error: 'session not found' });
+    const offset = Number(url.searchParams.get('offset') ?? 0);
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > 100000) return this.json(res, 400, { error: 'invalid-offset' });
+    try {
+      const query = url.searchParams.get('query');
+      const result = query !== null
+        ? await searchSessionFiles(managed.meta.spawnCwd, url.searchParams.get('path') ?? '', query)
+        : await sessionFiles(managed.meta.spawnCwd, url.searchParams.get('path') ?? '', offset, url.searchParams.get('preview') === '1');
+      return this.json(res, 200, result, { 'Cache-Control': 'no-store' });
+    } catch (error) {
+      if (error instanceof SessionFileError) return this.json(res, error.status, { error: error.tag });
+      return this.json(res, 404, { error: 'file-unavailable' });
+    }
+  }
+
+  private async handleWorkspaceBrowser(req: http.IncomingMessage, res: http.ServerResponse, rawId: string, url: URL, principal: WebPrincipal): Promise<void> {
+    if (!this.mayInput(principal) || this.opts?.allowTranscript !== true) return this.json(res,403,{error:'workspace-browser-disabled'});
+    const workspaceId = decodePathSegment(rawId);
+    if (!workspaceId || !/^[A-Za-z0-9_-]{1,128}$/.test(workspaceId) || ['__proto__','constructor','prototype'].includes(workspaceId)) return this.json(res,400,{error:'invalid-workspace'});
+    const desktop = this.deps.desktop?.();
+    if (!desktop?.available) return this.json(res,503,{error:'desktop-unavailable'});
+    try {
+      const registry = await desktop.request('workspaces.list',{}) as {workspaces?:unknown};
+      if (!Array.isArray(registry?.workspaces) || !registry.workspaces.some(row => row && typeof row === 'object' && row.id === workspaceId)) return this.json(res,404,{error:'workspace-not-found'});
+      const fresh = await this.authenticate(req,url,false);
+      if (!fresh.ok) return this.json(res,401,{error:'authorization-expired'});
+      if (!this.mayInput(fresh.principal)) return this.refuseInput(res,fresh.principal,'Input permission changed');
+      return this.handlePhoneBrowser(req,res,rawId,url,fresh.principal,workspaceId);
+    } catch { return this.json(res,503,{error:'workspace-browser-unavailable'}); }
+  }
+
+  private handlePhoneBrowser(req: http.IncomingMessage, res: http.ServerResponse, rawId: string, url: URL, principal: WebPrincipal, knownWorkspace?: string): void {
+    if (this.opts?.allowTranscript !== true) return this.json(res,403,{error:'browser-preview-disabled'});
+    if (req.method === 'POST' && !this.mayInput(principal)) return this.refuseInput(res,principal,'Browser changes require input permission');
+    const id = decodePathSegment(rawId);
+    const session = knownWorkspace !== undefined || id === null ? null : this.attachableSession(principal,id);
+    if (!knownWorkspace && !session) return this.json(res,404,{error:'session not found'});
+    const workspaceId = knownWorkspace ?? session?.meta.env?.[ENV_KEYS.WORKSPACE_ID];
+    if (!workspaceId) return this.json(res,409,{error:'workspace-required'});
+    const desktop = this.deps.desktop?.();
+    if (!desktop?.available) return this.json(res,503,{error:'desktop-unavailable'});
+    const send = (command: 'browser.list' | 'browser.capture' | 'browser.viewport' | 'browser.navigate' | 'browser.type' | 'browser.key' | 'browser.tap' | 'browser.open' | 'browser.scroll', payload: Record<string,unknown>) => {
+      void desktop.request(command,{...payload,workspaceId}).then(result => this.json(res,200,result,{'Cache-Control':'no-store'}))
+        .catch(() => this.json(res,503,{error:'browser-preview-unavailable'}));
+    };
+    if (req.method === 'GET') {
+      const surfaceId = url.searchParams.get('surfaceId');
+      if (surfaceId !== null && (!surfaceId || surfaceId.length > 128)) return this.json(res,400,{error:'invalid-browser-surface'});
+      return surfaceId ? send('browser.capture',{surfaceId}) : send('browser.list',{});
+    }
+    this.readJsonBody(req,res,async body => {
+      const fresh = await this.authenticate(req,url,false).catch(() => ({ok:false as const}));
+      if (!fresh.ok) return this.json(res,401,{error:'authorization-expired'});
+      if (!this.mayInput(fresh.principal)) return this.refuseInput(res,fresh.principal,'Input permission changed');
+      if (session && (this.attachableSession(fresh.principal,id!) !== session || session.meta.env?.[ENV_KEYS.WORKSPACE_ID] !== workspaceId)) return this.json(res,404,{error:'session not found'});
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return this.json(res,400,{error:'invalid-browser-request'});
+      const value = body as Record<string,unknown>;
+      if (value.action === 'open' && typeof value.url === 'string' && value.url.length <= 4096) return send('browser.open',{url:value.url});
+      if (typeof value.surfaceId !== 'string' || !value.surfaceId || value.surfaceId.length > 128) return this.json(res,400,{error:'invalid-browser-surface'});
+      if (value.action === 'viewport' && (value.mode === 'mobile' || value.mode === 'desktop')) return send('browser.viewport',{surfaceId:value.surfaceId,mode:value.mode});
+      if (value.action === 'navigate' && typeof value.url === 'string' && value.url.length <= 4096) return send('browser.navigate',{surfaceId:value.surfaceId,url:value.url});
+      if ((value.action === 'type' || value.action === 'key' || value.action === 'tap' || value.action === 'scroll') && typeof value.expectedURL === 'string' && value.expectedURL.length <= 4096) {
+        const scope = {surfaceId:value.surfaceId,expectedURL:value.expectedURL};
+        if ((value.action === 'tap' || value.action === 'scroll') && typeof value.x === 'number' && value.x >= 0 && value.x < 1 && typeof value.y === 'number' && value.y >= 0 && value.y < 1 && value.geometry && typeof value.geometry === 'object') {
+          if (value.action === 'tap') return send('browser.tap',{...scope,x:value.x,y:value.y,geometry:value.geometry});
+          if (typeof value.deltaX === 'number' && Math.abs(value.deltaX) <= 1 && typeof value.deltaY === 'number' && Math.abs(value.deltaY) <= 1) return send('browser.scroll',{...scope,x:value.x,y:value.y,geometry:value.geometry,deltaX:value.deltaX,deltaY:value.deltaY});
+        }
+        if (value.action === 'type' && typeof value.text === 'string' && value.text.length > 0 && value.text.length <= 4096) return send('browser.type',{...scope,text:value.text});
+        if (value.action === 'key' && ['Tab','Shift+Tab','Enter','Backspace','Escape','PageUp','PageDown'].includes(value.key as string)) return send('browser.key',{...scope,key:value.key});
+      }
+      return this.json(res,400,{error:'invalid-browser-request'});
+    });
+  }
+
+  private handlePhoneWorkspaces(req: http.IncomingMessage, res: http.ServerResponse, url: URL, principal: WebPrincipal): void {
+    if (!this.mayInput(principal)) return this.refuseInput(res,principal,'Workspace management requires input permission');
+    const desktop = this.deps.desktop?.();
+    if (!desktop?.available) return this.json(res,503,{error:'desktop-unavailable'});
+    const send = (command: 'workspaces.list' | 'workspaces.create', payload: Record<string,unknown>) => {
+      void desktop.request(command,payload).then(result => {
+        if (command === 'workspaces.create' && result && typeof result === 'object' && 'error' in result &&
+            ['workspace-request-closed','workspace-request-history-full'].includes(String(result.error))) return this.json(res,409,{error:result.error});
+        if (command === 'workspaces.list' && result && typeof result === 'object') {
+          const rows = (result as {workspaces?: unknown}).workspaces;
+          if (!Array.isArray(rows)) throw new Error('invalid workspaces');
+          result = {workspaces: rows.map(row => ({id:row.id,name:row.name,
+            sessionId: typeof row.sessionId === 'string' && this.attachableSession(principal,row.sessionId) ? row.sessionId : null}))};
+        }
+        this.json(res,200,result,{'Cache-Control':'no-store'});
+      }).catch(() => this.json(res,503,{error:'workspace-request-unconfirmed'}));
+    };
+    if (req.method === 'GET') return send('workspaces.list',{});
+    this.readJsonBody(req,res,async body => {
+      // The snapshot above was taken when the HEADERS arrived. A device revoked
+      // (or narrowed to read-only) while the body was still on the wire must not
+      // reach the desktop — re-resolve the credential before forwarding.
+      const fresh = await this.authenticate(req,url,false).catch(() => ({ok:false as const}));
+      if (!fresh.ok) return this.json(res,401,{error:'authorization-expired'});
+      if (!this.mayInput(fresh.principal)) return this.refuseInput(res,fresh.principal,'Input permission changed');
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return this.json(res,400,{error:'invalid-workspace-request'});
+      const value = body as Record<string,unknown>;
+      if (typeof value.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.requestId) ||
+          typeof value.name !== 'string' || !value.name.trim() || value.name.length > 100 ||
+          (value.cwd !== undefined && typeof value.cwd !== 'string')) return this.json(res,400,{error:'invalid-workspace-request'});
+      send('workspaces.create',{requestId:value.requestId,name:value.name,...(value.cwd !== undefined ? {cwd:value.cwd} : {})});
+    });
+  }
+
+  private handleQuickCommands(req: http.IncomingMessage, res: http.ServerResponse, url: URL, principal: WebPrincipal): void {
+    if (this.opts?.allowTranscript !== true) return this.json(res,403,{error:'quick-commands-disabled'});
+    if (req.method === 'POST' && !this.mayInput(principal)) return this.refuseInput(res,principal,'Quick command edits require input permission');
+    const desktop = this.deps.desktop?.();
+    if (!desktop?.available) return this.json(res,503,{error:'desktop-unavailable'});
+    const send = (command: 'prompts.list' | 'prompts.replace', payload: Record<string,unknown>) => {
+      void desktop.request(command,payload).then(result => this.json(res,200,result,{'Cache-Control':'no-store'})).catch(() => {
+        this.json(res,503,{error:'quick-command-request-unconfirmed'});
+      });
+    };
+    if (req.method === 'GET') return send('prompts.list',{});
+    this.readJsonBody(req,res,async body => {
+      // Re-authorized after the body, exactly as the input and browser routes
+      // are: the entry snapshot is only as fresh as the request headers.
+      const fresh = await this.authenticate(req,url,false).catch(() => ({ok:false as const}));
+      if (!fresh.ok) return this.json(res,401,{error:'authorization-expired'});
+      if (!this.mayInput(fresh.principal)) return this.refuseInput(res,fresh.principal,'Input permission changed');
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return this.json(res,400,{error:'invalid-quick-commands'});
+      const value = body as Record<string,unknown>;
+      if (typeof value.revision !== 'string' || !Array.isArray(value.commands)) return this.json(res,400,{error:'invalid-quick-commands'});
+      send('prompts.replace',{revision:value.revision,commands:value.commands});
+    }, 96 * 1024);
+  }
+
+  private handleSessionAccounts(req: http.IncomingMessage, res: http.ServerResponse, rawId: string, url: URL, principal: WebPrincipal): void {
+    if (this.opts?.allowTranscript !== true) return this.json(res,403,{error:'accounts-disabled'});
+    if (req.method === 'POST' && !this.mayInput(principal)) return this.refuseInput(res,principal,'Account changes require input permission');
+    const id = decodePathSegment(rawId);
+    const session = id === null ? null : this.attachableSession(principal,id);
+    if (!session) return this.json(res,404,{error:'session not found'});
+    const workspaceId = session.meta.env?.[ENV_KEYS.WORKSPACE_ID];
+    if (!workspaceId) return this.json(res,409,{error:'workspace-required'});
+    const desktop = this.deps.desktop?.();
+    if (!desktop?.available) return this.json(res,503,{error:'desktop-unavailable'});
+    const send = (command: 'accounts.list' | 'accounts.bind' | 'accounts.usage', payload: Record<string,unknown>) => {
+      void desktop.request(command,{...payload,workspaceId}).then(result => this.json(res,200,result,{'Cache-Control':'no-store'})).catch(error => {
+        this.json(res,error instanceof DesktopPhoneError && error.tag === 'desktop-busy' ? 429 : 503,
+          {error:error instanceof DesktopPhoneError ? error.tag : 'desktop-request-failed'});
+      });
+    };
+    if (req.method === 'GET') return send('accounts.list',{});
+    this.readJsonBody(req,res,async body => {
+      // Re-resolve the credential and the pane it may reach: the entry snapshot
+      // predates the body, and this write rebinds a workspace's agent account.
+      const fresh = await this.authenticate(req,url,false).catch(() => ({ok:false as const}));
+      if (!fresh.ok) return this.json(res,401,{error:'authorization-expired'});
+      if (!this.mayInput(fresh.principal)) return this.refuseInput(res,fresh.principal,'Input permission changed');
+      if (this.attachableSession(fresh.principal,id!) !== session ||
+          session.meta.env?.[ENV_KEYS.WORKSPACE_ID] !== workspaceId) return this.json(res,404,{error:'session not found'});
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return this.json(res,400,{error:'invalid-account-request'});
+      const value = body as Record<string,unknown>;
+      if (value.action === 'bind' && (value.vendor === 'claude' || value.vendor === 'codex') &&
+          (value.accountId === null || (typeof value.accountId === 'string' && value.accountId.length <= 128))) {
+        return send('accounts.bind',{vendor:value.vendor,accountId:value.accountId});
+      }
+      if (value.action === 'usage' && typeof value.accountId === 'string' && value.accountId.length <= 128) {
+        return send('accounts.usage',{accountId:value.accountId});
+      }
+      return this.json(res,400,{error:'invalid-account-request'});
+    });
+  }
+
+  private handleAgentSettings(req:http.IncomingMessage,res:http.ServerResponse,rawId:string,url:URL,principal:WebPrincipal):void {
+    if (!this.mayInput(principal)) return this.refuseInput(res,principal,'Agent settings require input permission');
+    if (this.opts?.allowTranscript !== true) return this.json(res,403,{error:'transcript-disabled'});
+    const id = decodePathSegment(rawId);
+    const owned = id === null ? undefined : this.attachableSession(principal,id);
+    if (!owned || !id) return this.json(res,404,{error:'session not found'});
+    const control = this.deps.agentSettings;
+    if (!control) return this.json(res,503,{error:'unavailable'});
+    const authorized = async () => {
+      if (res.destroyed || res.writableEnded || this.opts?.allowTranscript !== true) return false;
+      const fresh = await this.authenticate(req,url,false);
+      return fresh.ok && this.mayInput(fresh.principal) &&
+        fresh.principal.kind === principal.kind &&
+        (principal.kind !== 'device' || fresh.principal.kind === 'device' && fresh.principal.deviceId === principal.deviceId) &&
+        this.attachableSession(fresh.principal,id) === owned;
+    };
+    const run = (choice?:PaneSettingsChoice) => {
+      if (this.agentSettingsRequests.has(id) || this.agentSettingsRequests.size >= 4) return this.json(res,409,{error:'busy'});
+      this.agentSettingsRequests.add(id);
+      void (async()=>{
+        if (!await authorized()) return this.json(res,401,{error:'authorization-expired'});
+        const result = await control(id,authorized,choice);
+        if (!await authorized()) return this.json(res,401,{error:'authorization-expired'});
+        this.json(res,200,result,{'Cache-Control':'no-store'});
+      })().catch(error=>{
+        const reason = error instanceof LiveSettingsError ? error.reason : 'unavailable';
+        this.json(res,reason === 'unavailable' ? 503 : 409,{error:reason});
+      }).finally(()=>this.agentSettingsRequests.delete(id));
+    };
+    if (req.method === 'GET') return run();
+    this.readJsonBody(req,res,body=>{
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return this.json(res,400,{error:'invalid-settings-choice'});
+      const value = body as Record<string,unknown>;
+      if (Object.keys(value).length !== 3 || typeof value.model !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,100}$/.test(value.model) ||
+          typeof value.effort !== 'string' || !/^[a-z]{1,16}$/.test(value.effort) ||
+          typeof value.expectedRevision !== 'string' || !/^[0-9a-f]{64}\.[0-9a-f]{64}$/.test(value.expectedRevision)) {
+        return this.json(res,400,{error:'invalid-settings-choice'});
+      }
+      run({model:value.model,effort:value.effort,expectedRevision:value.expectedRevision});
+    });
+  }
+
+  private handleSessionGit(req: http.IncomingMessage, res: http.ServerResponse, rawId: string, url: URL, principal: WebPrincipal, pullRequests = false): void {
+    if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Git control requires input permission');
+    const id = decodePathSegment(rawId);
+    const managed = id === null ? null : this.attachableSession(principal, id);
+    if (!managed) return this.json(res, 404, { error: 'session not found' });
+    const cwd = managed.meta.spawnCwd;
+    if (!cwd) return this.json(res, 409, { error: 'not-a-git-repo' });
+    // Same shape as the agent-settings route: one predicate the handler re-runs
+    // after the body, and the controller re-runs immediately before it moves a
+    // ref — the preflight snapshot is async, and a revoke can land inside it.
+    const authorized = async () => {
+      if (res.destroyed || res.writableEnded) return false;
+      const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+      return fresh.ok && this.mayInput(fresh.principal) &&
+        fresh.principal.kind === principal.kind &&
+        (principal.kind !== 'device' || fresh.principal.kind === 'device' && fresh.principal.deviceId === principal.deviceId) &&
+        this.attachableSession(fresh.principal, id!) === managed;
+    };
+    const respond = (work: () => Promise<unknown>) => {
+      if (this.phoneGitRequests >= 4) return this.json(res, 429, { error: 'git-busy' });
+      this.phoneGitRequests += 1;
+      void work().then(result => this.json(res, 200, result, { 'Cache-Control': 'no-store' })).catch(error => {
+        if (error instanceof SessionGitError) return this.json(res, error.status, { error: error.tag });
+        return this.json(res, 500, { error: 'git-operation-failed' });
+      }).finally(() => { this.phoneGitRequests -= 1; });
+    };
+    if (pullRequests) respond(() => sessionPullRequests(cwd));
+    else if (req.method === 'GET') respond(() => this.phoneGit.read(cwd));
+    else this.readJsonBody(req, res, async body => {
+      const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+      if (!fresh.ok) return this.json(res, 401, { error: 'authorization-expired' });
+      if (!this.mayInput(fresh.principal)) return this.refuseInput(res, fresh.principal, 'Input permission changed');
+      if (this.attachableSession(fresh.principal, id!) !== managed) return this.json(res, 404, { error: 'session not found' });
+      respond(() => this.phoneGit.mutate(cwd, body, authorized));
+    });
+  }
+
   private async handleSessionDiff(res: http.ServerResponse, rawId: string, principal: WebPrincipal): Promise<void> {
     const id = decodePathSegment(rawId);
     if (id === null) return this.json(res, 404, { error: 'session not found' });
@@ -3263,10 +3595,28 @@ export class WebTerminalServer {
    * only differently revocable, so gating on the credential FORM rather than on
    * the server's input policy would be a boundary that is not one.
    */
+  private async agentOptionsForWorkspace(workspaceId: string): Promise<AgentLaunchOptions[]> {
+    if (!this.deps.agentLaunchOptions) throw new Error('Agent launch unavailable');
+    if (!workspaceId) return this.deps.agentLaunchOptions();
+    const desktop = this.deps.desktop?.();
+    if (!desktop?.available) throw new Error('Desktop unavailable');
+    const resolved = await desktop.request('accounts.env',{workspaceId});
+    if (!resolved || typeof resolved !== 'object') throw new Error('Account unavailable');
+    const codexHome = (resolved as Record<string,unknown>).CODEX_HOME;
+    const env = {...process.env};
+    delete env.CODEX_HOME;
+    if (codexHome !== undefined) {
+      if (typeof codexHome !== 'string' || !codexHome || codexHome.includes('\0')) throw new Error('Invalid account directory');
+      env.CODEX_HOME = codexHome;
+    }
+    return this.deps.agentLaunchOptions(env);
+  }
+
   private handleSessionCreate(
     req: http.IncomingMessage,
     res: http.ServerResponse,
     principal: WebPrincipal,
+    url: URL,
   ): void {
     if (!this.mayInput(principal)) {
       return this.refuseInput(
@@ -3279,15 +3629,31 @@ export class WebTerminalServer {
     if (!lifecycle) return this.json(res, 503, { error: 'lifecycle unavailable' });
 
     this.readJsonBody(req, res, (body) => {
-      const b = (body ?? {}) as { workspaceId?: unknown; cwd?: unknown };
+      void (async () => {
+      const b = (body ?? {}) as { workspaceId?: unknown; cwd?: unknown; agentLaunch?: unknown };
       const workspaceId = typeof b.workspaceId === 'string' ? b.workspaceId.trim() : '';
       const cwd = typeof b.cwd === 'string' ? b.cwd.trim() : '';
       if (workspaceId) {
         const bad = this.rejectWorkspaceId(workspaceId, principal);
         if (bad) return this.json(res, 400, bad);
       }
+      let agentLaunch: AgentLaunchChoice | undefined;
+      if (b.agentLaunch !== undefined) {
+        if (!this.deps.agentLaunchOptions) return this.json(res,400,{error:'agent-launch-unavailable'});
+        try {
+          buildAgentLaunch(b.agentLaunch, await this.agentOptionsForWorkspace(workspaceId));
+          const requested = b.agentLaunch as AgentLaunchChoice;
+          agentLaunch = {agent:requested.agent,...(requested.model !== undefined ? {model:requested.model} : {}),...(requested.effort !== undefined ? {effort:requested.effort} : {})};
+        } catch { return this.json(res,400,{error:'invalid-agent-launch'}); }
+      }
+      // The entry check saw the credential as it was when the HEADERS arrived;
+      // the body and the desktop agent-options round-trip both came after. A
+      // device revoked or narrowed in that window must not spawn a shell.
+      const fresh = await this.authenticate(req,url,false).catch(() => ({ok:false as const}));
+      if (!fresh.ok) return this.json(res,401,{error:'authorization-expired'});
+      if (!this.mayInput(fresh.principal)) return this.refuseInput(res,fresh.principal,'Input permission changed');
       lifecycle
-        .create({ ...(workspaceId ? { workspaceId } : {}), ...(cwd ? { cwd } : {}) })
+        .create({ ...(workspaceId ? { workspaceId } : {}), ...(cwd ? { cwd } : {}), ...(agentLaunch ? {agentLaunch} : {}) })
         .then(({ id }) => {
           // One serializer: the new pane is described by the SAME projection
           // `GET /api/sessions` uses, so a client can append the response to
@@ -3305,6 +3671,7 @@ export class WebTerminalServer {
           this.deps.log('warn', `[web] session create failed: ${errMsg(err)}`);
           return this.json(res, 409, { error: 'create-failed', detail: errMsg(err) });
         });
+      })().catch(() => this.json(res,503,{error:'agent-launch-unavailable'}));
     });
   }
 
@@ -3607,6 +3974,18 @@ export class WebTerminalServer {
     if (!managed) {
       return this.json(res, 404, { error: 'session not found' });
     }
+    const incarnation = managed.meta.incarnationId;
+    const requestID = req.headers['x-wmux-input-request-id'];
+    const afterInput = req.headers['x-wmux-input-after'];
+    if (afterInput !== undefined && (typeof afterInput !== 'string' || afterInput.length > 160 || requestID === undefined)) {
+      return this.json(res,400,{error:'invalid-input-precondition'});
+    }
+    if (requestID !== undefined && (typeof requestID !== 'string' || requestID.length > 64)) {
+      return this.json(res,400,{error:'invalid-input-request-id'});
+    }
+    if (requestID !== undefined && (!incarnation || req.headers['x-wmux-pane-incarnation'] !== incarnation)) {
+      return this.json(res,409,{error:'pane-incarnation-changed'});
+    }
 
     const chunks: Buffer[] = [];
     let total = 0;
@@ -3622,14 +4001,35 @@ export class WebTerminalServer {
       }
       chunks.push(chunk);
     });
-    req.on('end', () => {
+    req.on('end', async () => {
       if (aborted) return;
       const body = Buffer.concat(chunks).toString('utf8');
       try {
-        managed.ptyProcess.write(body);
+        const fresh = await this.authenticate(req, url, false);
+        if (!fresh.ok) return this.json(res,401,{error:'authorization-expired'});
+        if (!this.mayInput(fresh.principal)) return this.refuseInput(res,fresh.principal,'Input permission changed');
+        if (this.attachableSession(fresh.principal,sessionId) !== managed || managed.meta.incarnationId !== incarnation) {
+          return this.json(res,409,{error:'pane-incarnation-changed'});
+        }
+        const write = () => {
+          managed.ptyProcess.write(body);
         // A phone can paste drafts containing newlines; bridge.noteInput keeps
         // bracketed-paste bodies inert and only re-arms on a submitted CR/LF.
-        managed.bridge.noteInput?.(body);
+          managed.bridge.noteInput?.(body);
+          const revision = managed.bridge.getInputRevision?.();
+          return typeof revision === 'number' ? `${this.inputEpoch}:${revision}` : undefined;
+        };
+        if (typeof requestID === 'string') {
+          if (!this.deps.inputReceipts) return this.json(res,503,{error:'input-receipts-unavailable'});
+          const owner = fresh.principal.kind === 'device' ? `device:${fresh.principal.deviceId}` : 'operator';
+          let receipt;
+          try {
+            receipt = this.deps.inputReceipts().execute(owner,requestID,JSON.stringify([sessionId,incarnation,afterInput ?? null]),body,write,
+              () => afterInput === undefined || afterInput === `${this.inputEpoch}:${managed.bridge.getInputRevision?.()}`);
+          } catch { return this.json(res,409,{error:'input-request-rejected'}); }
+          return this.json(res,receipt.status === 'written' ? 200 : 409,receipt);
+        }
+        write();
       } catch (err) {
         return this.json(res, 500, { error: `write failed: ${errMsg(err)}` });
       }
@@ -3661,7 +4061,7 @@ export class WebTerminalServer {
    * No multipart. The daemon has no parser and is not getting one for a body
    * that is a single blob.
    */
-  private handleUpload(req: http.IncomingMessage, res: http.ServerResponse): void {
+  private handleUpload(req: http.IncomingMessage, res: http.ServerResponse, fileExtension?: string): void {
     if (this.opts?.allowUpload !== true) {
       return this.json(res, 403, {
         error: 'uploads-disabled: server started without --allow-upload',
@@ -3709,7 +4109,7 @@ export class WebTerminalServer {
     req.on('end', () => {
       if (aborted) return;
       const body = Buffer.concat(chunks);
-      const ext = sniffImageExt(body);
+      const ext = fileExtension ?? sniffImageExt(body);
       if (!ext) {
         release();
         return this.json(res, 415, {
@@ -3734,7 +4134,7 @@ export class WebTerminalServer {
         // will free space on its own.
         return this.json(res, 507, { error: 'uploads-full: quota exceeded, try again later' });
       }
-      const name = `photo-${new Date(now).toISOString().replace(/[:.]/g, '-')}-${crypto
+      const name = `${fileExtension ? 'file' : 'photo'}-${new Date(now).toISOString().replace(/[:.]/g, '-')}-${crypto
         .randomBytes(4)
         .toString('hex')}.${ext}`;
       const full = path.join(dir, name);
@@ -3868,6 +4268,7 @@ export class WebTerminalServer {
     }
     this.readJsonBody(req, res, (body) => {
       const b = (body ?? {}) as {
+        hostID?: unknown;
         pushToStartToken?: unknown;
         activityToken?: unknown;
         apnsEnvironment?: unknown;
@@ -3880,6 +4281,7 @@ export class WebTerminalServer {
       let result: { ok: boolean; reason?: string };
       try {
         result = devices.registerLiveActivity!(principal.deviceId, {
+          ...(statesField(body, "hostID") ? { hostID: b.hostID } : {}),
           ...(statesField(body, 'pushToStartToken')
             ? { pushToStartToken: b.pushToStartToken }
             : {}),
@@ -4126,6 +4528,7 @@ export class WebTerminalServer {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     onBody: (body: unknown) => void,
+    maxBytes = MAX_JSON_BODY_BYTES,
   ): void {
     const chunks: Buffer[] = [];
     let total = 0;
@@ -4133,7 +4536,7 @@ export class WebTerminalServer {
     req.on('data', (chunk: Buffer) => {
       if (aborted) return;
       total += chunk.length;
-      if (total > MAX_JSON_BODY_BYTES) {
+      if (total > maxBytes) {
         aborted = true;
         this.json(res, 413, { error: 'payload too large' });
         req.destroy();
@@ -5518,7 +5921,8 @@ function sniffTurnFileContentType(head: Buffer): string | null {
 /**
  * Exactly the names `handleUpload` generates, every segment anchored:
  * `photo-` + an ISO 8601 instant with `:` and `.` rewritten to `-` + `-` +
- * eight lowercase hex + `.jpg` or `.png`.
+ * eight lowercase hex + `.jpg` or `.png`. General attachments use the same
+ * timestamp/random structure with `file-` and a bounded alphanumeric extension.
  *
  * This is a DELETION predicate, so it is written to be over-strict rather than
  * convenient. `~/.wmux/uploads` is also where an operator stages files for
@@ -5526,7 +5930,7 @@ function sniffTurnFileContentType(head: Buffer): string | null {
  * unlink `photo-vacation.jpg` a day after they put it there. Nothing this route
  * did not write is ever removed.
  */
-const UPLOAD_NAME_RE = /^photo-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}\.(jpg|png)$/;
+const UPLOAD_NAME_RE = /^(?:photo-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}\.(?:jpg|png)|file-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}\.[a-z0-9]{1,12})$/;
 
 /**
  * Delete uploads older than the TTL. Modelled on `pruneOldLogs`, including the

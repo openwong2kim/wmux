@@ -1024,6 +1024,17 @@ describe('DaemonSessionManager', () => {
       expect(session.exec).toEqual({ command: 'claude' });
     });
 
+    it('keeps a temporary Codex relay out of persisted recovery commands', () => {
+      const session = manager.createSession({
+        id:'codex-relay',cmd:'pwsh.exe',cwd:'.',
+        exec:{command:'codex --model model-a'},
+        execLaunchCommand:'codex --model model-a --remote unix:///tmp/wmux-tui-owned/tui.sock',
+      });
+      expect(lastMockPty?.spawnArgs.join(' ')).toContain('--remote unix:///tmp/wmux-tui-owned/tui.sock');
+      expect(session.exec).toEqual({command:'codex --model model-a'});
+      expect(JSON.stringify(manager.listSessions())).not.toContain('wmux-tui-owned');
+    });
+
     it('without execLaunchCommand, spawns the original exec.command (first launch unchanged)', () => {
       manager.createSession({
         id: 'x6-fresh',

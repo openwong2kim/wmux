@@ -1,9 +1,13 @@
+import { LiveSettingsError } from '../codexLiveSettings';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { DesktopPhoneBridge } from '../../phone/DesktopPhoneBridge';
+import { RunHistoryStore } from '../../history/RunHistoryStore';
+import { InputReceiptStore } from '../InputReceiptStore';
 import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
@@ -37,7 +41,7 @@ function makeDeps() {
     // process last claimed via OSC 7 (i.e. attacker-controlled), `spawnCwd` is
     // where the daemon actually spawned it. Every diff assertion below expects
     // '/x', which is the whole point.
-    meta: { id: 's1', cols: 80, rows: 24, state: 'detached', cwd: '/tmp/osc7-said-so', spawnCwd: '/x' },
+    meta: { id: 's1', incarnationId: 'incarnation-1', cols: 80, rows: 24, state: 'detached', cwd: '/tmp/osc7-said-so', spawnCwd: '/x' },
     // A session recovered from a reboot that has not had its first resize yet.
     // The resize route refuses it — that first resize is the desk's unmute.
     deferred: false,
@@ -430,12 +434,21 @@ describe('WebTerminalServer', () => {
   let gateArmed: boolean;
   /** Whether the daemon's Live Activity pusher reports itself enabled. */
   let liveActivityPushEnabled: boolean;
+  let desktopBridge: DesktopPhoneBridge | null;
+  let agentLaunchEnv: NodeJS.ProcessEnv | undefined;
+  let settingsCalls: Array<{id:string;choice:unknown}>;
+  let settingsHook: ((authorized:()=>Promise<boolean>)=>Promise<void>) | undefined;
+  const settingsRevision = 'a'.repeat(64)+'.'+'b'.repeat(64);
+
   /** #1163 — the daemon's canonical agent state per session, as the server reads it. */
   let agentStates: Record<string, { agentName: string | null; agentStatus: 'idle' | 'running' | 'awaiting_input' }>;
   /** #1342 — the daemon's resume state per session, as the server reads it. */
   let resumeStates: Record<string, { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }>;
 
   beforeEach(() => {
+    desktopBridge = null;
+    agentLaunchEnv = undefined;
+    settingsCalls = []; settingsHook = undefined;
     gateArmed = true;
     liveActivityPushEnabled = true;
     agentStates = {};
@@ -475,6 +488,15 @@ describe('WebTerminalServer', () => {
       lifecycle: deps.lifecycle,
       git: deps.git,
       uploadsDir: deps.uploadsDir,
+      runHistory: () => new RunHistoryStore(deps.uploadsDir),
+      inputReceipts: () => new InputReceiptStore(deps.uploadsDir),
+      desktop: () => desktopBridge,
+      agentLaunchOptions: async env => { agentLaunchEnv = env; return [{agent:'claude',models:['opus','sonnet'],efforts:['low','high']}]; },
+      agentSettings: async (id,authorized,choice)=>{
+        settingsCalls.push({id,choice});
+        await settingsHook?.(authorized);
+        return {agent:'codex',model:'model-a',effort:'low',busy:false,revision:settingsRevision,models:[]};
+      },
       projector: () => projectorMock as unknown as TranscriptProjector,
       gateConfig: () => ({ gatedTools: ['Bash'] }),
       gateEnabled: () => gateArmed,
@@ -710,6 +732,113 @@ describe('WebTerminalServer', () => {
     expect('cwdLeaf' in sessions[0]).toBe(false);
     expect('cwdLeaf' in sessions[1]).toBe(false);
     expect('cwdLeaf' in sessions[2]).toBe(false);
+  });
+
+  it('deduplicates authenticated input IDs and refuses changed bodies or pane incarnations', async () => {
+    const info = await startRW();
+    const requestID = `${Date.now()}.${crypto.randomUUID()}`;
+    const headers = {...bearer(info.token as string),'X-Wmux-Input-Request-ID':requestID,'X-Wmux-Pane-Incarnation':'incarnation-1'};
+    const post = (body: string) => fetch(`${base()}/api/input?session=s1`,{method:'POST',headers,body});
+    expect((await post('hello')).status).toBe(200);
+    expect(await (await post('hello')).json()).toEqual({status:'written',replayed:true});
+    expect(write).toHaveBeenCalledTimes(1);
+    expect((await post('changed')).status).toBe(409);
+    managed.meta.incarnationId = 'incarnation-2';
+    expect((await post('hello')).status).toBe(409);
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry a possibly partial write through the HTTP receipt path', async () => {
+    const info = await startRW();
+    write.mockImplementationOnce(() => { throw new Error('partial'); });
+    const headers = {...bearer(info.token as string),'X-Wmux-Input-Request-ID':`${Date.now()}.${crypto.randomUUID()}`,'X-Wmux-Pane-Incarnation':'incarnation-1'};
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await fetch(`${base()}/api/input?session=s1`,{method:'POST',headers,body:'hello'});
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({status:'uncertain',replayed:attempt === 1});
+    }
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false,true])('guards Return against intervening input (changed=%s)', async changed => {
+    const info = await startRW();
+    let revision = 0;
+    Object.assign(bridge,{getInputRevision:() => revision,noteInput:() => { revision++; }});
+    const textID = `${Date.now()}.${crypto.randomUUID()}`;
+    const returnID = `${Date.now()}.${crypto.randomUUID()}`;
+    const post = (id: string, body: string, after?: string) => fetch(`${base()}/api/input?session=s1`, {
+      method:'POST',headers:{...bearer(info.token as string),'X-Wmux-Input-Request-ID':id,
+        'X-Wmux-Pane-Incarnation':'incarnation-1',...(after ? {'X-Wmux-Input-After':after} : {})},body,
+    });
+    const receipt = await (await post(textID,'hello')).json() as {inputToken:string};
+    expect(receipt.inputToken).toEqual(expect.any(String));
+    if (changed) revision++; // Another phone/desktop write observed by the bridge.
+    const submission = await post(returnID,'\r',receipt.inputToken);
+    expect(submission.status).toBe(changed ? 409 : 200);
+    expect(write).toHaveBeenCalledTimes(changed ? 1 : 2);
+    if (!changed) {
+      revision++;
+      const replay = await post(returnID,'\r',receipt.inputToken);
+      expect(replay.status).toBe(200);
+      expect(await replay.json()).toMatchObject({status:'written',replayed:true});
+      expect(write).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it('reconciles a dropped response after HTTP server restart without repeating input', async () => {
+    const info = await startRW();
+    const requestID = `${Date.now()}.${crypto.randomUUID()}`;
+    let receivedResponse = false;
+    await new Promise<void>((resolve, reject) => {
+      const request = httpReq(`${base()}/api/input?session=s1`, {
+        method:'POST', headers:{...bearer(info.token as string),
+          'X-Wmux-Input-Request-ID':requestID,'X-Wmux-Pane-Incarnation':'incarnation-1'},
+      }, response => { receivedResponse = true; response.resume(); reject(new Error('Expected dropped response')); });
+      // Drop the client socket exactly when the server writes, before its
+      // receipt response. No timing sleeps or live user PTYs are involved.
+      write.mockImplementationOnce(() => request.destroy(new Error('simulated response loss')));
+      request.once('error', () => resolve());
+      request.end('hello');
+    });
+    expect(receivedResponse).toBe(false);
+    expect(write).toHaveBeenCalledTimes(1);
+    await server.stop();
+    const restarted = await startRW();
+    const response = await fetch(`${base()}/api/input?session=s1`, {
+      method:'POST',headers:{...bearer(restarted.token as string),
+        'X-Wmux-Input-Request-ID':requestID,'X-Wmux-Pane-Incarnation':'incarnation-1'},body:'hello',
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({status:'written',replayed:true});
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  it('rechecks device revocation after a slow input body completes', async () => {
+    await startRW();
+    const phone = await pairDevice('Slow sender',true);
+    let observed!: () => void;
+    const authorized = new Promise<void>(resolve => { observed = resolve; });
+    const original = sessionManager.getSession.bind(sessionManager);
+    const spy = vi.spyOn(sessionManager,'getSession').mockImplementation(id => {
+      const result = original(id);
+      if (id === 's1') observed();
+      return result;
+    });
+    let request: ReturnType<typeof httpReq>;
+    const response = new Promise<number | undefined>((resolve,reject) => {
+      request = httpReq(`${base()}/api/input?session=s1`,{method:'POST',headers:bearer(phone.token)},res => {
+        res.resume(); res.on('end',() => resolve(res.statusCode));
+      });
+      request.on('error',reject);
+      request.write('partial body');
+    });
+    try {
+      await authorized;
+      deviceRoster.get(phone.deviceId)!.revoked = true;
+      request!.end(' remaining body');
+      expect(await response).toBe(401);
+      expect(write).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); request!.destroy(); }
   });
 
   it('rejects input when started read-only (403), accepts and writes when --allow-input (204)', async () => {
@@ -3391,6 +3520,495 @@ describe('WebTerminalServer', () => {
     expect((await postResize('s1', token, { cols: 60, rows: 30 })).status).toBe(200);
   });
 
+  it('serves durable history only with auth and transcript consent, including closed panes', async () => {
+    const ro = await startRO();
+    expect((await fetch(`${base()}/api/history`)).status).toBe(401);
+    expect((await fetch(`${base()}/api/history`, {headers:bearer(ro.token as string)})).status).toBe(403);
+    await server.stop();
+    const info = await startWithTranscript();
+    const headers = bearer(info.token as string);
+    const history = new RunHistoryStore(uploadsDir);
+    history.ingest('closed-pane', {}, {source:'hook',decision:'emit',hookKind:'agent.stop',agent:'Claude Code',status:'complete',message:'Done',
+      signal:{kind:'agent.stop',agent:'claude',cwd:'/repo',ts:100,payload:{last_assistant_message:'Implemented the fix'}}});
+    const response = await fetch(`${base()}/api/history`, {headers});
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json()).toMatchObject({entries:[{sessionId:'closed-pane',summary:'Implemented the fix',outcome:'completed'}],nextOffset:null});
+    expect((await fetch(`${base()}/api/history?offset=-1`, {headers})).status).toBe(400);
+  });
+
+  it('stages and commits through the authenticated Git API using spawnCwd', async () => {
+    const info = await startRW();
+    const auth = bearer(info.token as string);
+    const root = path.join(uploadsDir, 'repo');
+    fs.mkdirSync(root);
+    const git = (...args: string[]) => execFileSync('git', args, {cwd:root,encoding:'utf8'}).trim();
+    git('init', '-b', 'main');
+    git('config', 'user.name', 'HTTP Test'); git('config', 'user.email', 'http@example.invalid');
+    fs.writeFileSync(path.join(root, 'phone.txt'), 'reviewed');
+    managed.meta.spawnCwd = root;
+    managed.meta.cwd = '/untrusted-osc-path';
+    const endpoint = `${base()}/api/sessions/s1/git`;
+    const beforeResponse = await fetch(endpoint, {headers:auth});
+    expect(beforeResponse.headers.get('cache-control')).toBe('no-store');
+    const before = await beforeResponse.json();
+    expect(before).toMatchObject({branch:'main',ref:'refs/heads/main',head:null,files:[{path:'phone.txt',status:'??'}]});
+    const stage = await fetch(endpoint, {method:'POST',headers:auth,body:JSON.stringify({requestId:crypto.randomUUID(),action:'stage',paths:['phone.txt'],expectedHead:before.head,expectedTree:before.tree,expectedRef:before.ref})});
+    expect(await stage.json()).toEqual({applied:true});
+    const staged = await (await fetch(endpoint, {headers:auth})).json();
+    const mutation = {requestId:crypto.randomUUID(),action:'commit',message:'From phone',expectedHead:staged.head,expectedTree:staged.tree,expectedRef:staged.ref};
+    const send = () => fetch(endpoint, {method:'POST',headers:auth,body:JSON.stringify(mutation)});
+    const result = await (await send()).json();
+    expect(result).toEqual({applied:true,commit:git('rev-parse','HEAD')});
+    expect(await (await send()).json()).toEqual(result);
+    expect(git('rev-list','--count','HEAD')).toBe('1');
+  });
+
+  it('gates Git control on authentication, input grants and session visibility', async () => {
+    const info = await startRO();
+    const headers = bearer(info.token as string);
+    expect((await fetch(`${base()}/api/sessions/s1/git`)).status).toBe(401);
+    expect((await fetch(`${base()}/api/sessions/s1/git`, {headers})).status).toBe(403);
+    expect((await fetch(`${base()}/api/sessions/s1/git`, {method:'POST',headers,body:'{}'})).status).toBe(403);
+    expect(await (await fetch(`${base()}/api/config`, {headers})).json()).toMatchObject({gitControl:false});
+    await server.stop();
+    const enabled = await startRW();
+    const auth = bearer(enabled.token as string);
+    expect(await (await fetch(`${base()}/api/config`, {headers:auth})).json()).toMatchObject({gitControl:true});
+    expect((await fetch(`${base()}/api/sessions/missing/git`, {headers:auth})).status).toBe(404);
+    expect((await fetch(`${base()}/api/sessions/s1/git`, {method:'POST',headers:auth,body:'{}'})).status).toBe(400);
+  });
+
+  it('gates settings on both input and transcript grants', async()=>{
+    let info=await startWithTranscript();
+    expect((await fetch(`${base()}/api/sessions/s1/agent-settings`,{headers:bearer(info.token as string)})).status).toBe(403);
+    await server.stop();info=await startRW();
+    expect((await fetch(`${base()}/api/sessions/s1/agent-settings`,{headers:bearer(info.token as string)})).status).toBe(403);
+    expect(await (await fetch(`${base()}/api/config`,{headers:bearer(info.token as string)})).json()).toMatchObject({agentSettings:false});
+    expect(settingsCalls).toHaveLength(0);
+  });
+  it('serves scoped settings without cache and refuses extra mutation fields', async()=>{
+    const info=await server.start({port:0,host:'127.0.0.1',allowInput:true,allowTranscript:true,allowUpload:false});
+    const headers=bearer(info.token as string);
+    const endpoint=`${base()}/api/sessions/s1/agent-settings`;
+    expect((await fetch(endpoint)).status).toBe(401);
+    expect(await (await fetch(`${base()}/api/config`,{headers})).json()).toMatchObject({agentSettings:true});
+    const result=await fetch(endpoint,{headers});
+    expect(result.status).toBe(200);expect(result.headers.get('cache-control')).toBe('no-store');
+    const choice={model:'model-a',effort:'low',expectedRevision:settingsRevision};
+    expect((await fetch(endpoint,{method:'POST',headers,body:JSON.stringify({...choice,threadId:'forged'})})).status).toBe(400);
+    expect((await fetch(endpoint,{method:'POST',headers,body:JSON.stringify(choice)})).status).toBe(200);
+    expect(settingsCalls).toEqual([{id:'s1',choice:undefined},{id:'s1',choice}]);
+  });
+  it('serializes settings operations and reauthenticates after an in-flight credential revocation', async()=>{
+    await server.start({port:0,host:'127.0.0.1',allowInput:true,allowTranscript:true,allowUpload:false});
+    const phone=await pairDevice('Settings phone');const headers=bearer(phone.token);
+    let enter!:()=>void;const entered=new Promise<void>(resolve=>{enter=resolve;});
+    let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+    let permitted=true;
+    settingsHook=async authorized=>{enter();await gate;permitted=await authorized();};
+    const endpoint=`${base()}/api/sessions/s1/agent-settings`;
+    const first=fetch(endpoint,{headers});await entered;
+    const second=await fetch(endpoint,{headers});
+    expect(second.status).toBe(409);expect(await second.json()).toEqual({error:'busy'});
+    deviceRoster.get(phone.deviceId)!.revoked=true;release();
+    expect((await first).status).toBe(401);expect(permitted).toBe(false);
+    expect(settingsCalls).toHaveLength(1);
+  });
+  it('preserves an unconfirmed write outcome without retrying the controller', async()=>{
+    const info=await server.start({port:0,host:'127.0.0.1',allowInput:true,allowTranscript:true,allowUpload:false});
+    settingsHook=async()=>{throw new LiveSettingsError('unconfirmed');};
+    const result=await fetch(`${base()}/api/sessions/s1/agent-settings`,{method:'POST',headers:bearer(info.token as string),body:JSON.stringify({model:'model-a',effort:'low',expectedRevision:settingsRevision})});
+    expect(result.status).toBe(409);expect(await result.json()).toEqual({error:'unconfirmed'});
+    expect(settingsCalls).toHaveLength(1);
+  });
+
+  it('reads the selected workspace account catalog without returning its config path', async () => {
+    const calls: unknown[] = [];
+    desktopBridge = new DesktopPhoneBridge((_owner,raw) => {
+      const data = (raw as {data:{requestId:string;command:string;payload:unknown}}).data;
+      calls.push({command:data.command,payload:data.payload});
+      desktopBridge!.complete('main',{requestId:data.requestId,ok:true,result:{CODEX_HOME:'/private/account'}});
+      return true;
+    });
+    desktopBridge.register('main');
+    await startRW();
+    const device = await pairDevice('Catalog phone');
+    const headers = bearer(device.token);
+    const response = await fetch(`${base()}/api/agent-launch-options?workspaceId=ws-1`,{headers});
+    expect(response.status).toBe(200);
+    expect(agentLaunchEnv?.CODEX_HOME).toBe('/private/account');
+    expect(await response.text()).not.toContain('/private/account');
+    expect(calls).toEqual([{command:'accounts.env',payload:{workspaceId:'ws-1'}}]);
+    expect((await fetch(`${base()}/api/agent-launch-options?workspaceId=forged`,{headers})).status).toBe(400);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('validates agent launch against advertised options before creating a pane', async () => {
+    const ro = await startRO();
+    expect((await fetch(`${base()}/api/agent-launch-options`,{headers:bearer(ro.token as string)})).status).toBe(403);
+    await server.stop();
+    const rw = await startRW();
+    const headers = bearer(rw.token as string);
+    expect((await fetch(`${base()}/api/agent-launch-options`)).status).toBe(401);
+    expect(await (await fetch(`${base()}/api/agent-launch-options`,{headers})).json()).toEqual({agents:[{agent:'claude',models:['opus','sonnet'],efforts:['low','high']}]});
+    const before = lifecycleCalls.length;
+    expect((await fetch(`${base()}/api/sessions`,{method:'POST',headers,body:JSON.stringify({agentLaunch:{agent:'claude',model:'opus; bad'}})})).status).toBe(400);
+    expect(lifecycleCalls).toHaveLength(before);
+    expect((await fetch(`${base()}/api/sessions`,{method:'POST',headers,body:JSON.stringify({agentLaunch:{agent:'claude',model:'opus',effort:'high'}})})).status).toBe(201);
+    expect(lifecycleCalls.at(-1)).toMatchObject({op:'create',arg:{agentLaunch:{agent:'claude',model:'opus',effort:'high'}}});
+  });
+
+  it('serves workspace-scoped browser captures and restricts browser writes', async () => {
+    managed.meta.env = { WMUX_WORKSPACE_ID: 'ws-1' };
+    const calls: unknown[] = [];
+    desktopBridge = new DesktopPhoneBridge((_owner, raw) => {
+      const data = (raw as {data: {requestId: string; command: string; payload: unknown}}).data;
+      calls.push({command:data.command,payload:data.payload});
+      desktopBridge!.complete('main',{requestId:data.requestId,ok:true,result:data.command === 'browser.capture'
+        ? {data:'x'.repeat(160000),mimeType:'image/jpeg',capturedAt:1} : {pages:[]}});
+      return true;
+    });
+    desktopBridge.register('main');
+    const off = await startRO();
+    expect((await fetch(`${base()}/api/sessions/s1/browser`,{headers:bearer(off.token as string)})).status).toBe(403);
+    await server.stop();
+    const ro = await startWithTranscript();
+    const headers = bearer(ro.token as string);
+    expect((await fetch(`${base()}/api/sessions/s1/browser`)).status).toBe(401);
+    const capture = await fetch(`${base()}/api/sessions/s1/browser?surfaceId=own`,{headers});
+    expect(capture.status).toBe(200);
+    expect(capture.headers.get('cache-control')).toBe('no-store');
+    expect((await capture.json()).data).toHaveLength(160000);
+    expect((await fetch(`${base()}/api/sessions/s1/browser`,{method:'POST',headers,body:'{}'})).status).toBe(403);
+    await server.stop();
+    const rw = await server.start({port:0,host:'127.0.0.1',allowInput:true,allowUpload:false,allowTranscript:true});
+    const auth = bearer(rw.token as string);
+    expect((await fetch(`${base()}/api/sessions/s1/browser`,{method:'POST',headers:auth,body:JSON.stringify({action:'viewport',surfaceId:'own',mode:'mobile',workspaceId:'forged',expression:'bad'})})).status).toBe(200);
+    expect(calls).toEqual([
+      {command:'browser.capture',payload:{surfaceId:'own',workspaceId:'ws-1'}},
+      {command:'browser.viewport',payload:{surfaceId:'own',mode:'mobile',workspaceId:'ws-1'}},
+    ]);
+    expect((await fetch(`${base()}/api/sessions/s1/browser`,{method:'POST',headers:auth,body:'{"action":"evaluate","surfaceId":"own","expression":"bad"}'})).status).toBe(400);
+    const post = (value: unknown) => fetch(`${base()}/api/sessions/s1/browser`,{method:'POST',headers:auth,body:JSON.stringify(value)});
+    expect((await post({action:'type',surfaceId:'own',expectedURL:'https://example.com/',text:'hello',expression:'bad',workspaceId:'other'})).status).toBe(200);
+    expect(calls.at(-1)).toEqual({command:'browser.type',payload:{surfaceId:'own',expectedURL:'https://example.com/',text:'hello',workspaceId:'ws-1'}});
+    expect((await post({action:'key',surfaceId:'own',expectedURL:'https://example.com/',key:'Tab'})).status).toBe(200);
+    expect((await post({action:'open',url:'https://example.com/',workspaceId:'forged',partition:'forged'})).status).toBe(200);
+    expect(calls.at(-1)).toEqual({command:'browser.open',payload:{url:'https://example.com/',workspaceId:'ws-1'}});
+    const geometry = {width:1000,height:728,scrollX:0,scrollY:0};
+    expect((await post({action:'tap',surfaceId:'own',expectedURL:'https://example.com/',x:0.5,y:0.25,geometry,workspaceId:'forged'})).status).toBe(200);
+    expect(calls.at(-1)).toEqual({command:'browser.tap',payload:{surfaceId:'own',expectedURL:'https://example.com/',x:0.5,y:0.25,geometry,workspaceId:'ws-1'}});
+    expect((await post({action:'scroll',surfaceId:'own',expectedURL:'https://example.com/',x:0.5,y:0.5,geometry,deltaX:0,deltaY:0.5,expression:'bad'})).status).toBe(200);
+    expect(calls.at(-1)).toEqual({command:'browser.scroll',payload:{surfaceId:'own',expectedURL:'https://example.com/',x:0.5,y:0.5,geometry,deltaX:0,deltaY:0.5,workspaceId:'ws-1'}});
+    const count = calls.length;
+    expect((await post({action:'scroll',surfaceId:'own',expectedURL:'https://example.com/',x:0.5,y:0.5,geometry,deltaX:0,deltaY:2})).status).toBe(400);
+    expect((await post({action:'tap',surfaceId:'own',expectedURL:'https://example.com/',x:1,y:0.25,geometry})).status).toBe(400);
+    expect((await post({action:'key',surfaceId:'own',expectedURL:'https://example.com/',key:'Control+l'})).status).toBe(400);
+    expect((await post({action:'type',surfaceId:'own',expectedURL:'https://example.com/',text:'x'.repeat(4097)})).status).toBe(400);
+    expect((await post({action:'type',surfaceId:'own',text:'missing URL'})).status).toBe(400);
+    expect(calls).toHaveLength(count);
+
+  });
+
+
+  it('opens browsers in a registered workspace without an attachable terminal', async () => {
+    const calls: {command:string;payload:unknown}[] = [];
+    desktopBridge = new DesktopPhoneBridge((_owner,raw) => {
+      const data = (raw as {data:{requestId:string;command:string;payload:unknown}}).data;
+      calls.push({command:data.command,payload:data.payload});
+      const result = data.command === 'workspaces.list' ? {workspaces:[{id:'empty',name:'Empty',sessionId:null}]} :
+        data.command === 'browser.open' ? {surfaceId:'new-browser'} : {pages:[]};
+      desktopBridge!.complete('main',{requestId:data.requestId,ok:true,result});
+      return true;
+    });
+    desktopBridge.register('main');
+    const ro = await startWithTranscript();
+    expect((await fetch(`${base()}/api/desktop-workspaces/empty/browser`,{headers:bearer(ro.token as string)})).status).toBe(403);
+    expect(calls).toHaveLength(0);
+    await server.stop();
+    const rw = await server.start({port:0,host:'127.0.0.1',allowInput:true,allowUpload:false,allowTranscript:true});
+    const headers = bearer(rw.token as string);
+    expect((await fetch(`${base()}/api/desktop-workspaces/empty/browser`,{headers})).status).toBe(200);
+    expect(calls.at(-1)).toEqual({command:'browser.list',payload:{workspaceId:'empty'}});
+    const opened = await fetch(`${base()}/api/desktop-workspaces/empty/browser`,{method:'POST',headers,body:JSON.stringify({action:'open',url:'https://example.com/',workspaceId:'forged'})});
+    expect(opened.status).toBe(200);
+    expect(await opened.json()).toEqual({surfaceId:'new-browser'});
+    expect(calls.at(-1)).toEqual({command:'browser.open',payload:{workspaceId:'empty',url:'https://example.com/'}});
+    expect((await fetch(`${base()}/api/desktop-workspaces/missing/browser`,{headers})).status).toBe(404);
+    expect(calls.at(-1)?.command).toBe('workspaces.list');
+    expect((await fetch(`${base()}/api/desktop-workspaces/empty/browser`)).status).toBe(401);
+  });
+
+  it('keeps the legacy live roster and desktop workspace registry on distinct routes', async () => {
+    const calls: string[] = [];
+    desktopBridge = new DesktopPhoneBridge((_owner,raw) => {
+      const data = (raw as {data:{requestId:string;command:string}}).data;
+      calls.push(data.command);
+      desktopBridge!.complete('main',{requestId:data.requestId,ok:true,result:{workspaces:[
+        {id:'ws-1',name:'Workspace 1',sessionId:'s1'},
+        {id:'empty',name:'Empty workspace',sessionId:null},
+      ]}});
+      return true;
+    });
+    desktopBridge.register('main');
+    const rw = await startRW();
+    const headers = bearer(rw.token as string);
+    const legacy = await (await fetch(`${base()}/api/workspaces`,{headers})).json();
+    expect(legacy.workspaces[0]).toHaveProperty('panes');
+    expect(calls).toEqual([]);
+    const registry = await (await fetch(`${base()}/api/desktop-workspaces`,{headers})).json();
+    expect(registry.workspaces).toEqual([
+      {id:'ws-1',name:'Workspace 1',sessionId:'s1'},
+      {id:'empty',name:'Empty workspace',sessionId:null},
+    ]);
+    expect(calls).toEqual(['workspaces.list']);
+  });
+
+  it('returns a named conflict when a phone-created workspace was already closed', async () => {
+    desktopBridge = new DesktopPhoneBridge((_owner, raw) => {
+      const data = (raw as {data:{requestId:string}}).data;
+      desktopBridge!.complete('main',{requestId:data.requestId,ok:true,result:{error:'workspace-request-closed'}});
+      return true;
+    });
+    desktopBridge.register('main');
+    const rw = await startRW();
+    const response = await fetch(`${base()}/api/workspaces`, {method:'POST',headers:bearer(rw.token as string),
+      body:JSON.stringify({requestId:'01234567-89ab-4cde-8123-456789abcdef',name:'Project'})});
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({error:'workspace-request-closed'});
+  });
+
+  it('gates workspace creation and does not forward arbitrary execution fields', async () => {
+    const calls: unknown[] = [];
+    desktopBridge = new DesktopPhoneBridge((_owner, raw) => {
+      const data = (raw as {data: {requestId: string; command: string; payload: unknown}}).data;
+      calls.push({command:data.command,payload:data.payload});
+      desktopBridge!.complete('main',{requestId:data.requestId,ok:true,result:{id:'ws-phone-test',name:'Project'}});
+      return true;
+    });
+    desktopBridge.register('main');
+    const ro = await startRO();
+    expect((await fetch(`${base()}/api/workspaces`,{method:'POST',headers:bearer(ro.token as string),body:'{}'})).status).toBe(403);
+    await server.stop();
+    const rw = await startRW();
+    const headers = bearer(rw.token as string);
+    const requestId = '01234567-89ab-4cde-8123-456789abcdef';
+    expect((await fetch(`${base()}/api/workspaces`,{method:'POST',body:'{}'})).status).toBe(401);
+    const result = await fetch(`${base()}/api/workspaces`,{method:'POST',headers,body:JSON.stringify({requestId,name:'Project',cwd:'/project',method:'shell.exec',command:'bad',env:{SECRET:'bad'}})});
+    expect(result.status).toBe(200);
+    expect(calls).toEqual([{command:'workspaces.create',payload:{requestId,name:'Project',cwd:'/project'}}]);
+    expect((await fetch(`${base()}/api/workspaces`,{method:'POST',headers,body:'{"name":"Project"}'})).status).toBe(400);
+  });
+
+  it('shares quick commands with input-gated writes and permits long instructions', async () => {
+    const calls: string[] = [];
+    desktopBridge = new DesktopPhoneBridge((_owner, raw) => {
+      const event = raw as { data: { requestId: string; command: string; payload: unknown } };
+      calls.push(event.data.command);
+      desktopBridge!.complete('main', { requestId: event.data.requestId, ok: true, result: { revision: 'r1', commands: [] } });
+      return true;
+    });
+    desktopBridge.register('main');
+    const ro = await startWithTranscript();
+    const headers = bearer(ro.token as string);
+    expect((await fetch(`${base()}/api/quick-commands`)).status).toBe(401);
+    expect((await fetch(`${base()}/api/quick-commands`, { headers })).status).toBe(200);
+    expect((await fetch(`${base()}/api/quick-commands`, { method: 'POST', headers, body: '{}' })).status).toBe(403);
+    await server.stop();
+    const rw = await server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: true });
+    const response = await fetch(`${base()}/api/quick-commands`, { method: 'POST', headers: bearer(rw.token as string), body: JSON.stringify({ revision: 'r1', commands: [{ id: 'one', title: 'Long', text: 'x'.repeat(10000) }] }) });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(calls).toEqual(['prompts.list', 'prompts.replace']);
+  });
+
+  it('requires authentication, transcript consent and input permission for account writes', async () => {
+    managed.meta.env = { WMUX_WORKSPACE_ID: 'ws-1' };
+    const off = await startRW();
+    const endpoint = `${base()}/api/sessions/s1/accounts`;
+    expect((await fetch(endpoint)).status).toBe(401);
+    expect((await fetch(endpoint, { headers: bearer(off.token as string) })).status).toBe(403);
+    await server.stop();
+    const info = await startWithTranscript();
+    const headers = bearer(info.token as string);
+    expect((await fetch(`${base()}/api/sessions/s1/accounts`, { method: 'POST', headers, body: '{"action":"usage","accountId":"a"}' })).status).toBe(403);
+    expect((await fetch(`${base()}/api/sessions/s1/accounts`, { headers })).status).toBe(503);
+    expect(await (await fetch(`${base()}/api/config`, { headers })).json()).toMatchObject({ desktopAccounts: true });
+  });
+
+  it('derives account workspace scope from the pane and refuses internal env actions', async () => {
+    managed.meta.env = { WMUX_WORKSPACE_ID: 'ws-1' };
+    const calls: Array<{ command: string; payload: unknown }> = [];
+    desktopBridge = new DesktopPhoneBridge((_owner, raw) => {
+      const event = raw as { data: { requestId: string; command: string; payload: unknown } };
+      calls.push({ command: event.data.command, payload: event.data.payload });
+      desktopBridge!.complete('main', { requestId: event.data.requestId, ok: true, result: { workspaceId: 'ws-1', bindings: {}, accounts: [] } });
+      return true;
+    });
+    desktopBridge.register('main');
+    const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: true });
+    const headers = bearer(info.token as string);
+    const endpoint = `${base()}/api/sessions/s1/accounts`;
+    const list = await fetch(endpoint, { headers });
+    expect(list.status).toBe(200);
+    expect(list.headers.get('cache-control')).toBe('no-store');
+    const changed = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ action: 'bind', vendor: 'claude', accountId: 'a', workspaceId: 'forged', env: { CODEX_HOME: '/forged' } }) });
+    expect(changed.status).toBe(200);
+    expect(calls).toEqual([
+      { command: 'accounts.list', payload: { workspaceId: 'ws-1' } },
+      { command: 'accounts.bind', payload: { workspaceId: 'ws-1', vendor: 'claude', accountId: 'a' } },
+    ]);
+    expect((await fetch(endpoint, { method: 'POST', headers, body: '{"action":"accounts.env"}' })).status).toBe(400);
+    expect((await fetch(`${base()}/api/sessions/missing/accounts`, { headers })).status).toBe(404);
+    expect(calls).toHaveLength(2);
+    desktopBridge.disconnect('main');
+    expect((await fetch(endpoint, { headers })).status).toBe(503);
+  });
+
+  /**
+   * Drives a POST whose body arrives in two parts with the device's grant
+   * withdrawn in between. The handoff is synchronized on the ENTRY
+   * authentication's roster lookup, so the snapshot the handler took is already
+   * decided when the grant changes: a route that only consulted that snapshot
+   * would still run the mutation, and a route that re-authenticates after the
+   * body completes cannot.
+   */
+  const withdrawMidBody = async (
+    url: string,
+    phone: { deviceId: string; token: string },
+    head: string,
+    tail: string,
+    withdraw: (record: { revoked: boolean; allowInput: boolean }) => void,
+  ): Promise<number | undefined> => {
+    let entered!: () => void;
+    const authenticated = new Promise<void>((resolve) => { entered = resolve; });
+    const lookup = Map.prototype.get.bind(deviceRoster);
+    const spy = vi.spyOn(deviceRoster, 'get').mockImplementation((id: string) => { entered(); return lookup(id); });
+    let request!: ReturnType<typeof httpReq>;
+    const status = new Promise<number | undefined>((resolve, reject) => {
+      request = httpReq(url, { method: 'POST', headers: { ...bearer(phone.token), 'Content-Type': 'application/json' } }, (res) => {
+        res.resume(); res.on('end', () => resolve(res.statusCode));
+      });
+      request.on('error', reject);
+      request.write(head);
+    });
+    try {
+      await authenticated;
+      withdraw(deviceRoster.get(phone.deviceId) as unknown as { revoked: boolean; allowInput: boolean });
+      request.end(tail);
+      return await status;
+    } finally { spy.mockRestore(); request.destroy(); }
+  };
+
+  it('re-authorizes desktop workspace creation after the request body completes', async () => {
+    const calls: string[] = [];
+    desktopBridge = new DesktopPhoneBridge((_owner, raw) => {
+      const data = (raw as { data: { requestId: string; command: string } }).data;
+      calls.push(data.command);
+      desktopBridge!.complete('main', { requestId: data.requestId, ok: true, result: { id: 'ws-phone', name: 'Project' } });
+      return true;
+    });
+    desktopBridge.register('main');
+    await startRW();
+    const phone = await pairDevice('Workspace phone', true);
+    const body = JSON.stringify({ requestId: '01234567-89ab-4cde-8123-456789abcdef', name: 'Project' });
+    expect(await withdrawMidBody(`${base()}/api/workspaces`, phone, body.slice(0, 20), body.slice(20), (r) => { r.revoked = true; }))
+      .toBe(401);
+    expect(calls).toEqual([]);
+  });
+
+  it('re-authorizes a quick-command replace after the request body completes', async () => {
+    const calls: string[] = [];
+    desktopBridge = new DesktopPhoneBridge((_owner, raw) => {
+      const data = (raw as { data: { requestId: string; command: string } }).data;
+      calls.push(data.command);
+      desktopBridge!.complete('main', { requestId: data.requestId, ok: true, result: { revision: 'r1', commands: [] } });
+      return true;
+    });
+    desktopBridge.register('main');
+    await server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: true });
+    const phone = await pairDevice('Quick command phone', true);
+    const body = JSON.stringify({ revision: 'r1', commands: [{ id: 'one', title: 'One', text: 'echo' }] });
+    // The grant is narrowed rather than the credential revoked: this is the half
+    // that proves `mayInput` itself ran again on the freshly resolved principal.
+    expect(await withdrawMidBody(`${base()}/api/quick-commands`, phone, body.slice(0, 12), body.slice(12), (r) => { r.allowInput = false; }))
+      .toBe(403);
+    expect(calls).toEqual([]);
+  });
+
+  it('re-authorizes an account bind after the request body completes', async () => {
+    managed.meta.env = { WMUX_WORKSPACE_ID: 'ws-1' };
+    const calls: string[] = [];
+    desktopBridge = new DesktopPhoneBridge((_owner, raw) => {
+      const data = (raw as { data: { requestId: string; command: string } }).data;
+      calls.push(data.command);
+      desktopBridge!.complete('main', { requestId: data.requestId, ok: true, result: {} });
+      return true;
+    });
+    desktopBridge.register('main');
+    await server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: true });
+    const phone = await pairDevice('Account phone', true);
+    const body = JSON.stringify({ action: 'bind', vendor: 'claude', accountId: 'a' });
+    expect(await withdrawMidBody(`${base()}/api/sessions/s1/accounts`, phone, body.slice(0, 15), body.slice(15), (r) => { r.revoked = true; }))
+      .toBe(401);
+    expect(calls).toEqual([]);
+  });
+
+  it('re-authorizes a Git mutation after the request body completes', async () => {
+    await startRW();
+    const phone = await pairDevice('Git phone', true);
+    const root = path.join(uploadsDir, 'revoked-repo');
+    fs.mkdirSync(root);
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+    git('init', '-b', 'main');
+    git('config', 'user.name', 'HTTP Test'); git('config', 'user.email', 'http@example.invalid');
+    fs.writeFileSync(path.join(root, 'phone.txt'), 'reviewed');
+    managed.meta.spawnCwd = root;
+    const before = await (await fetch(`${base()}/api/sessions/s1/git`, { headers: bearer(phone.token) })).json();
+    const body = JSON.stringify({ requestId: crypto.randomUUID(), action: 'stage', paths: ['phone.txt'],
+      expectedHead: before.head, expectedTree: before.tree, expectedRef: before.ref });
+    expect(await withdrawMidBody(`${base()}/api/sessions/s1/git`, phone, body.slice(0, 30), body.slice(30), (r) => { r.revoked = true; }))
+      .toBe(401);
+    expect(git('ls-files')).toBe('');
+  });
+
+  it('re-authorizes pane creation after the request body completes', async () => {
+    await startRW();
+    const phone = await pairDevice('Create phone', true);
+    const body = JSON.stringify({ cwd: '/home' });
+    const before = lifecycleCalls.length;
+    expect(await withdrawMidBody(`${base()}/api/sessions`, phone, body.slice(0, 6), body.slice(6), (r) => { r.revoked = true; }))
+      .toBe(401);
+    expect(lifecycleCalls).toHaveLength(before);
+  });
+
+  it('serves bounded workspace files only with authentication and transcript consent', async () => {
+    const info = await startRO();
+    const headers = bearer(info.token as string);
+    expect((await fetch(`${base()}/api/sessions/s1/files`)).status).toBe(401);
+    expect((await fetch(`${base()}/api/sessions/s1/files`, { headers })).status).toBe(403);
+    await server.stop();
+    const enabled = await startWithTranscript();
+    const auth = bearer(enabled.token as string);
+    managed.meta.spawnCwd = uploadsDir;
+    fs.writeFileSync(path.join(uploadsDir, 'review.txt'), 'review this change');
+    const config = await (await fetch(`${base()}/api/config`, {headers: auth})).json();
+    expect(config.workspaceFiles).toBe(true);
+    const listing = await fetch(`${base()}/api/sessions/s1/files`, {headers: auth});
+    expect(listing.status).toBe(200);
+    expect(listing.headers.get('cache-control')).toBe('no-store');
+    expect(await listing.json()).toMatchObject({entries:[{name:'review.txt',directory:false}]});
+    const preview = await fetch(`${base()}/api/sessions/s1/files?path=review.txt&preview=1`, {headers: auth});
+    expect(await preview.json()).toMatchObject({text:'review this change'});
+    const search = await fetch(`${base()}/api/sessions/s1/files?query=REVIEW`, {headers: auth});
+    expect(search.headers.get('cache-control')).toBe('no-store');
+    expect(await search.json()).toMatchObject({entries:[{path:'review.txt'}],truncated:false});
+    expect((await fetch(`${base()}/api/sessions/s1/files?query=`, {headers:auth})).status).toBe(400);
+    expect((await fetch(`${base()}/api/sessions/s1/files?path=..%2Fsecret&preview=1`, {headers:auth})).status).toBe(400);
+    expect((await fetch(`${base()}/api/sessions/missing/files`, {headers:auth})).status).toBe(404);
+  });
+
   // ── pane diff (read-only git) ──────────────────────────────────────────────
 
   const getDiff = (id: string, cred: string) =>
@@ -3922,6 +4540,40 @@ describe('WebTerminalServer', () => {
       body: new Uint8Array(body),
     });
 
+  it('stores a general attachment with server-owned naming and private non-executable permissions', async () => {
+    const info = await startUpload();
+    const body = Buffer.from('document\0bytes\n');
+    const response = await fetch(`${base()}/api/upload-file`, {
+      method: 'POST', headers: { ...bearer(info.token as string), 'X-Wmux-File-Extension': 'PDF' }, body,
+    });
+    expect(response.status).toBe(201);
+    const receipt = await response.json() as {path:string};
+    expect(path.dirname(receipt.path)).toBe(uploadsDir);
+    expect(path.basename(receipt.path)).toMatch(/^file-.*-[a-f0-9]{8}\.pdf$/);
+    expect(fs.readFileSync(receipt.path)).toEqual(body);
+    expect(fs.statSync(receipt.path).mode & 0o777).toBe(0o600);
+    expect((await upload(info.token as string, body)).status).toBe(415);
+  });
+
+  it('rejects general upload traversal and unauthenticated requests without writing', async () => {
+    const info = await startUpload();
+    expect((await fetch(`${base()}/api/upload-file`, {method:'POST',body:'x'})).status).toBe(401);
+    for (const extension of ['../txt','a.txt','txt/sh','longextension123']) {
+      const response = await fetch(`${base()}/api/upload-file`, {
+        method:'POST',headers:{...bearer(info.token as string),'X-Wmux-File-Extension':extension},body:'x',
+      });
+      expect(response.status).toBe(400);
+    }
+    expect(fs.readdirSync(uploadsDir)).toEqual([]);
+  });
+
+  it('does not infer general file upload permission from input permission', async () => {
+    const info = await startRW();
+    const response = await fetch(`${base()}/api/upload-file`, {method:'POST',headers:bearer(info.token as string),body:'x'});
+    expect(response.status).toBe(403);
+    expect(fs.readdirSync(uploadsDir)).toEqual([]);
+  });
+
   it('refuses an unauthenticated upload before it looks at anything else', async () => {
     await startUpload();
     const res = await fetch(`${base()}/api/upload`, {
@@ -4045,9 +4697,40 @@ describe('WebTerminalServer', () => {
   it('reports allowUpload on /api/config so the phone can hide the button', async () => {
     const info = await startUpload();
     const res = await fetch(`${base()}/api/config`, { headers: bearer(info.token as string) });
-    expect(await res.json()).toMatchObject({ allowInput: false, allowUpload: true });
+    expect(await res.json()).toMatchObject({ allowInput: false, allowUpload: true, generalFileUpload: true });
     // status() carries it too — that is what `wmux web --status` prints.
     expect(server.status().allowUpload).toBe(true);
+  });
+
+  it('shares document/photo quota and sweeps expired documents without deleting staged files', async () => {
+    let clock = Date.now();
+    const bounded = new WebTerminalServer({
+      sessionManager, log: () => {}, assetsDir: os.tmpdir(), uploadsDir,
+      now: () => clock, uploadLimits: {maxFiles: 1},
+    });
+    const info = await bounded.start({port:0,host:'127.0.0.1',allowInput:false,allowUpload:true});
+    const post = (endpoint: string, body: Buffer) => fetch(`http://127.0.0.1:${info.port}${endpoint}`, {
+      method:'POST',headers:{...bearer(info.token as string),'X-Wmux-File-Extension':'txt'},body: new Uint8Array(body),
+    });
+    try {
+      const staged = path.join(uploadsDir,'file-my-notes.txt');
+      fs.writeFileSync(staged,'operator file');
+      const first = await post('/api/upload-file',Buffer.from('document'));
+      expect(first.status).toBe(201);
+      const receipt = await first.json() as {path:string};
+      fs.utimesSync(receipt.path,clock / 1000,clock / 1000);
+      expect((await post('/api/upload',jpegBytes())).status).toBe(507);
+      expect((await post('/api/upload-file',Buffer.from('second'))).status).toBe(507);
+      clock += 25 * 60 * 60 * 1000;
+      const replacement = await post('/api/upload',jpegBytes());
+      expect(replacement.status).toBe(201);
+      const photo = await replacement.json() as {path:string};
+      // Keep filesystem mtime aligned with the injected clock after advancing it.
+      fs.utimesSync(photo.path,clock / 1000,clock / 1000);
+      expect(fs.existsSync(receipt.path)).toBe(false);
+      expect(fs.readFileSync(staged,'utf8')).toBe('operator file');
+      expect((await post('/api/upload-file',Buffer.from('third'))).status).toBe(507);
+    } finally { await bounded.stop(); }
   });
 
   it('answers 503 when the daemon wired no uploads directory', async () => {

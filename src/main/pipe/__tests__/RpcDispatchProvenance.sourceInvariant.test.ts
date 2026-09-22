@@ -68,6 +68,12 @@ describe('RPC dispatch provenance source invariant', () => {
 
   it('keeps operator writes inside the renderer bridge and router context constructor', () => {
     expect(markerWriters('operator')).toEqual([
+      // The renderer IPC bridge.
+      'index.ts',
+      // The phone browser bridge. It reaches the router only through
+      // PhoneBrowser, which names a fixed set of `browser.*` methods and
+      // pins every call to a surface the desktop already owns, so this is a
+      // second operator caller in the same file rather than a new transport.
       'index.ts',
       'pipe/RpcRouter.ts',
     ]);

@@ -134,6 +134,8 @@ export interface DaemonSession {
    * resume (`--resume <id>`) on both the recovery pill and the supervised replay.
    */
   resumeBinding?: ResumeBinding;
+  /** Exact thread observed on this pane's owned Codex TUI relay. Never hook-derived. */
+  codexRelayResume?: {threadId:string;cwd:string;codeHome:string;transcriptPath:string};
 }
 
 /** Top-level schema for ~/.wmux/sessions.json */

@@ -747,6 +747,8 @@ export interface SessionData {
   activeWorkspaceId: string;
   /** #1011 — archived workspace snapshots, oldest first. */
   archivedWorkspaces?: ArchivedWorkspace[];
+  /** Issued phone creation identities, retained after close/archive. */
+  phoneWorkspaceRequestIds?: string[];
   /** P2 — persisted global high-water for Workspace.wsOrdinal (stable
    *  workspace numbers across restart). Optional for pre-P2 sessions. */
   nextWorkspaceOrdinal?: number;

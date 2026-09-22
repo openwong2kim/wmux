@@ -324,6 +324,8 @@ export const IPC = {
   //   accounts.json; the renderer never resolves spawn env). Onboarding
   //   provisions an isolated config dir (hybrid share) and reports credential
   //   status by polling; the renderer commits ACCOUNT_ADD once login lands.
+  QUICK_COMMAND_LIST: 'quick-command:list',
+  QUICK_COMMAND_REPLACE: 'quick-command:replace',
   ACCOUNT_LIST: 'account:list',
   ACCOUNT_ONBOARD_PREPARE: 'account:onboard:prepare',
   ACCOUNT_ADD: 'account:add',

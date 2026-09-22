@@ -435,6 +435,8 @@ export type RpcMethod =
   // the approval registry but cannot see whether a workspace is a WorkTask
   // task workspace or what its deck autonomy mode is — both live in main. Main
   // pushes the whole table on every change; the daemon holds the last one.
+  | 'daemon.phone.register'
+  | 'daemon.phone.complete'
   | 'daemon.workspaceFacts.set'
   | 'daemon.inbox.poll'
   | 'lanlink.status'
@@ -653,6 +655,8 @@ export const ALL_RPC_METHODS = [
   'daemon.superviseRearm',
   'daemon.superviseStop',
   'daemon.setResumeBinding',
+  'daemon.phone.register',
+  'daemon.phone.complete',
   'daemon.workspaceFacts.set',
   'daemon.inbox.poll',
   'lanlink.status',
@@ -773,6 +777,7 @@ export interface DaemonEvent {
     | 'session.restarted'
     | 'supervision.changed'
     | 'session.output'
+    | 'phone.request'
     | 'agent.event'
     | 'agent.critical'
     | 'activity.idle'

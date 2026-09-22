@@ -206,7 +206,7 @@ export interface LiveActivityRequest {
   apnsEnvironment?: ApnsEnvironment;
   event: LiveActivityEvent;
   contentState: Record<string, number | null>;
-  attributes?: { daemonName?: string };
+  attributes?: { daemonName?: string; hostID?: string };
   staleDate?: number;
   dismissalDate?: number;
   timestamp: number;
@@ -278,14 +278,14 @@ export function validateLiveRequest(body: unknown): LiveValidationResult {
     contentState[key] = counts[key] as number | null;
   }
 
-  let attributes: { daemonName?: string } | undefined;
+  let attributes: { daemonName?: string; hostID?: string } | undefined;
   if (raw.attributes !== undefined) {
     const a = raw.attributes;
     if (a === null || typeof a !== 'object' || Array.isArray(a)) {
       return { ok: false, error: { status: 400, reason: 'bad-attributes' } };
     }
     for (const key of Object.keys(a as Record<string, unknown>)) {
-      if (key !== 'daemonName') {
+      if (key !== 'daemonName' && key !== 'hostID') {
         return { ok: false, error: { status: 400, reason: 'bad-attributes' } };
       }
     }
@@ -293,7 +293,11 @@ export function validateLiveRequest(body: unknown): LiveValidationResult {
     if (daemonName !== undefined && (typeof daemonName !== 'string' || daemonName.length > 64)) {
       return { ok: false, error: { status: 400, reason: 'bad-attributes' } };
     }
-    attributes = daemonName === undefined ? {} : { daemonName };
+    const hostID = (a as Record<string, unknown>).hostID;
+    if (hostID !== undefined && (typeof hostID !== 'string' || !/^[a-f0-9]{64}$/.test(hostID))) {
+      return { ok: false, error: { status: 400, reason: 'bad-attributes' } };
+    }
+    attributes = { ...(daemonName === undefined ? {} : { daemonName }), ...(typeof hostID === 'string' ? { hostID } : {}) };
   }
 
   if (!isEpochSeconds(raw.timestamp)) {

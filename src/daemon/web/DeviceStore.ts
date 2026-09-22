@@ -253,6 +253,7 @@ export interface DevicePushRegistration {
  * not: they are APNs routing handles Apple mints and rotates.
  */
 export interface DeviceLiveActivityRegistration {
+  hostID?: string;
   /** Starts an activity the app has not created yet. Lowercase hex. */
   pushToStartToken?: string;
   /** Updates the activity that is running now. Lowercase hex. Dies with it. */
@@ -727,6 +728,7 @@ export class DeviceStore {
   registerLiveActivity(
     deviceId: string,
     input: {
+      hostID?: unknown;
       pushToStartToken?: unknown;
       activityToken?: unknown;
       apnsEnvironment?: unknown;
@@ -762,6 +764,9 @@ export class DeviceStore {
       return { ok: false, reason: 'bad-apns-environment' };
     }
 
+    if (input.hostID !== undefined && (typeof input.hostID !== 'string' || !/^[a-f0-9]{64}$/.test(input.hostID))) {
+      return { ok: false, reason: 'bad-token' };
+    }
     const previous = record.liveActivity;
     const merged: DeviceLiveActivityRegistration = {
       ...(previous ?? {}),
@@ -772,6 +777,7 @@ export class DeviceStore {
     if (activity === null) delete merged.activityToken;
     else if (activity !== undefined) merged.activityToken = activity;
     if (rawEnv !== undefined) merged.apnsEnvironment = rawEnv;
+    if (typeof input.hostID === "string") merged.hostID = input.hostID;
     record.liveActivity = merged;
 
     if (!this.persist()) {
@@ -1304,6 +1310,7 @@ function coerceLiveActivity(raw: unknown): DeviceLiveActivityRegistration | null
   // from the app's side it already told us. Nothing at all, though, is nothing.
   if (!pushToStartToken && !activityToken && !apnsEnvironment) return null;
   return {
+    ...(typeof o["hostID"] === "string" && /^[a-f0-9]{64}$/.test(o["hostID"]) ? { hostID: o["hostID"] } : {}),
     ...(pushToStartToken ? { pushToStartToken } : {}),
     ...(activityToken ? { activityToken } : {}),
     ...(apnsEnvironment ? { apnsEnvironment } : {}),

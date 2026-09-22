@@ -1171,3 +1171,400 @@ found only on a real phone. They are the cheapest tests to write on day one.
 
 Four of the six dogfood defects were the same shape: the server answered
 correctly and the client discarded it.
+
+
+## Workspace files (phone gap extension)
+
+`workspaceFiles: true` in `/api/config` advertises `GET /api/sessions/:id/files`.
+The route requires `--allow-transcript` and the same session visibility as pane attach.
+The root is the daemon-recorded `spawnCwd`, never OSC cwd or a client absolute path.
+`path` is relative (default root); symlinks and parent traversal are refused.
+Directory responses contain `{path, entries:[{name,path,directory}], nextOffset}`;
+pass `offset=nextOffset` for another page (200 entries per page).
+`preview=1` returns `{path,mime,text}` for UTF-8 or `{path,mime,base64}` for PNG/JPEG.
+Reads are capped at 1 MiB. Responses are no-store. Errors: 400 invalid path/offset,
+403 files-disabled/symlink/outside-workspace, 404 unavailable, 409 file-changed,
+413 file-too-large, 415 binary-file/not-a-file. No write route is implied.
+
+
+### Live Activity host ownership
+
+`liveActivityHostScope: true` advertises an optional `hostID` in registration.
+It is an opaque 64-character lowercase hexadecimal client profile ID, persisted
+with device registration and forwarded only in start `attributes.hostID`.
+The relay accepts only that format. A client must never register an activity's
+update token with a different profile. Legacy unscoped activities can be adopted
+only when exactly one paired host exists. The iOS selected host owns the current
+local activity; other host notifications remain independently routable.
+
+### Filename search
+
+`query` (1–200 characters, nonblank) on the files route searches relative paths
+recursively below `path`. It excludes `.git` and never follows symlinks. Search
+returns the directory response plus `truncated`, with no `nextOffset`. A request
+is bounded to 200 matches, 10,000 entries, 32 nested levels, and a three-second
+cooperative traversal deadline. `truncated: true` also reports inaccessible or
+changed subfolders. The client must show this partial-result state and let users
+narrow the query or search a subfolder. Individual filesystem operations may
+exceed the cooperative deadline on stalled mounts.
+
+## Git control and PR state
+
+`gitControl: true` in config is caller-specific: these endpoints require the
+input grant and an attachable session, rooted in its trusted `spawnCwd`.
+
+- `GET /api/sessions/:id/git`: `{branch, ref, head, tree, files, lastSubject}`.
+  `head` is null on an unborn branch; `tree` is the staged tree object. `ref` is
+  the full symbolic ref of HEAD (`refs/heads/<name>`); `branch` remains the short
+  name for display. Reading this
+  endpoint may materialize Git tree objects, but never moves a ref or stages a
+  worktree file. The existing `/diff` route remains the read-only review route.
+- `POST .../git`: `{requestId, action, expectedHead, expectedTree, expectedRef, paths?, message?}`.
+  Actions are `stage`, `unstage`, `commit`. `expectedHead` must be present,
+  including null for an unborn branch. `expectedRef` must be present on every
+  action and must be the `ref` from the snapshot the user reviewed — a string
+  starting with `refs/heads/`. A missing or malformed one is
+  `400 invalid-git-request`; there is no legacy path without it. Paths are
+  literal repo-relative paths
+  from the current status (at most 100); include both paths of a rename.
+- Success is `{applied:true, commit?:<oid>}`. Fetch a fresh snapshot separately;
+  failure of that read does not change the successful write receipt.
+- Staged tree, HEAD or ref mismatch returns `409 git-state-changed`, for all
+  three actions. Two branches can share a HEAD and an index tree, so a desktop
+  branch switch alone invalidates a reviewed mutation. The client must
+  refresh and review before issuing a new mutation. There is no automatic retry.
+- Commits use the reviewed immutable tree and a compare-and-swap update of
+  `expectedRef` — never of whatever ref HEAD points at when the write lands.
+  Later index edits are retained. Phone commits use the
+  Mac's Git identity, are unsigned, and bypass hooks; the UI states this. This
+  does not push. Merge/rebase/sequencer state, detached HEAD, unmerged indexes,
+  and configured content filters require desktop Git. Filters are refused
+  rather than silently committing unconverted content.
+- Successful request IDs are cached per canonical repository (up to 1,024) for
+  the server lifetime. Reuse with another payload is refused. This is not a
+  durable transaction journal. After a lost response or daemon restart, inspect
+  the latest commit/staged state before sending a fresh request. Preconditions
+  prevent ordinary duplicate commits after a successful ref update.
+- Four Git/PR HTTP jobs maximum; writes also serialize per repository. Git
+  subprocesses use fixed hardening config, sanitized environment, timeout and
+  output bounds. Arbitrary ref names, shell fragments or remote URLs are not
+  accepted from the phone.
+- `GET .../git/pr`: `{state, items}`. `state` is `available`, `unsupported`, or
+  `unavailable`. An empty available list means no matching PR; a CLI/auth/network
+  failure is unavailable. Only credential-free GitHub origin URLs are accepted.
+  The Mac's `gh pr list` reads at most 100 candidates matching the current
+  branch name and returns at most 10 whose head repository matches origin
+  (case-insensitive repository identity) and whose head branch matches exactly.
+  Other forks and deleted head repositories are excluded. Missing head metadata
+  is unavailable; a full candidate page without a matching head is also
+  unavailable rather than a false claim of no PR. It neither creates nor changes PRs. Items contain number, title, state, url,
+  isDraft. Links must belong to that repository on github.com.
+
+## Durable run results
+
+`runHistory: true` advertises `GET /api/history?offset=0`. It requires both an
+authenticated caller and `--allow-transcript`. Pages contain up to 100 entries
+and a nullable nextOffset. The store retains the newest 1,000 results. Responses
+are no-store. Invalid offsets return 400, disabled access 403, and unavailable
+or corrupt storage 503, never a fake empty success.
+
+Each entry has `id`, `sessionId`, `workspace`, `agent`, `outcome`, `at` (epoch
+milliseconds), and a bounded plain-text summary. Completed means an authoritative
+lead `agent.stop` with status complete; failed means `agent.stop_failure` with
+status error. Detector idle, subagent completion and a continuing lead are not
+results. A provider's last_assistant_message is used when present; otherwise the
+hook's status message is retained without inventing a summary.
+
+Tool/user-prompt activity persists an active-run marker. Destruction or death of
+that pane records interrupted only if an active marker remains. A shell exit
+after completion does not invent a second outcome. Pressing Escape/Ctrl-C alone
+is not proof of interruption, and providers that emit no authoritative hooks
+have no fabricated completion history. Native in-TUI cancellations without a
+terminal outcome hook are not yet classified.
+
+History lives in `phone-run-history.json` with 0600 permissions, bounded storage,
+fsync/atomic writes and last-generation backup recovery. Event IDs deduplicate
+hook replay. Internal brain panes are excluded at capture, including the explicit
+environment marker. Capture continues while the phone/web listener is offline;
+it is wired at daemon HookIngest, not at the SSE subscriber. Closed panes retain
+their results. The client stores read IDs per host on-device and never presents
+read state as synchronized across devices.
+
+### Desktop-backed account, command and workspace operations
+
+Optional config flags `desktopAccounts`, `quickCommands`, and `workspaceCreation`
+identify these contracts. They describe support, not current desktop availability.
+The Electron main process owns account and quick-command storage; a missing or
+reconnecting desktop returns 503. The daemon forwards only named operations over
+an owner-bound request bridge, never an arbitrary RPC supplied by the phone.
+
+- `GET /api/sessions/:id/accounts` reads account labels, workspace bindings, and
+  cached usage. Transcript access is required. It never probes quota automatically.
+  `POST` also requires input permission: `{action:"bind",vendor,accountId}` selects
+  an existing account (`null` clears a binding); `{action:"usage",accountId}` explicitly
+  refreshes supported usage. The client must disclose that this may send a small
+  billable API request. Config paths and local diagnostics are not returned.
+  The workspace comes from the session, not the request body. Binding changes
+  apply to future panes. Phone workspace pane creation requires the desktop to
+  resolve bindings and strips inherited account-directory overrides.
+- `GET /api/quick-commands` returns `{revision,commands:[{id,title,text}]}`.
+  `POST` replaces this snapshot only when its revision still matches. Both require
+  transcript access; replacement also requires input permission. Limits: 100 rows,
+  120-character titles, 16,000-character bodies, and 64 KiB serialized storage.
+  Conflicting or unconfirmed writes must refresh before another edit; never retry
+  a replacement automatically. Saving or inserting a command does not execute it.
+- `GET /api/desktop-workspaces` returns `{workspaces:[{id,name,sessionId}]}`; a session ID
+  is nullable and must pass the caller's attachable-session check. `POST /api/workspaces` accepts
+  `{requestId,name,cwd?}`. Both require input permission. Creation requires a
+  nonempty name and, when supplied, an existing absolute Mac directory. UUID
+  request identity becomes the persisted workspace ID, so retrying an existing
+  creation returns the original workspace without duplication. Issued identities
+  are retained in session.json after close/archive. Replaying a retired identity
+  returns HTTP 409 `workspace-request-closed`; creating another workspace requires
+  an explicit new request ID. The ledger retains up to 10,000 identities without
+  eviction; new phone requests then return 409 `workspace-request-history-full`,
+  while ordinary desktop creation remains available. Existing pre-ledger live
+  phone workspace IDs are backfilled on session load. This follows normal desktop
+  session persistence and does not claim a separate fsync receipt before response.
+  A successful create returns workspace identity, not proof that the first PTY
+  has finished starting. Clients read the workspace list and sessions to open it.
+
+These operations require the desktop app to stay open. They do not expose account
+registration, arbitrary environment updates, shell commands, or generic renderer
+RPC dispatch.
+
+### Workspace browser preview
+
+`browserPreview` advertises the desktop-backed embedded-browser preview contract.
+`GET /api/sessions/:id/browser` lists `{pages:[{id,title,url}]}` for the trusted
+session's workspace. `?surfaceId=...` captures that page as bounded JPEG data with
+`capturedAt` (epoch milliseconds). Transcript consent is required; every response
+is no-store. CDP endpoints and embedded URL credentials are not returned. File,
+data, and about pages and external browser windows are not included.
+
+`POST` additionally requires input permission and accepts exactly:
+
+- `{action:"viewport",surfaceId,mode:"mobile"|"desktop"}`: mobile applies a responsive
+  viewport up to 390 × 844, bounded by the reset desktop guest dimensions, and touch emulation; desktop invokes the existing
+  device-reset path. This changes the Mac browser too and is not Safari emulation.
+- `{action:"navigate",surfaceId,url}`: HTTP(S) URLs without embedded credentials,
+  validated again by the existing browser navigation handler.
+
+`browserCreation` advertises `POST {action:"open",url}` on the same session route.
+No existing surface is required. The workspace still comes from the authenticated
+pane; main allows only credential-free HTTP(S) and the embedded backend, then
+calls scoped `browser.tabs` with fixed `action:"new"`. Existing tabs are not reused.
+A successful response carries `{surfaceId}`; clients refresh the page list because
+the new guest may not be mounted yet. An unconfirmed creation is never retried
+automatically. This session route requires an attachable pane in the workspace.
+
+With `workspaceBrowsers`, the same GET/POST contract is also available at
+`/api/desktop-workspaces/:workspaceId/browser` without a terminal pane. Both input
+and transcript consent are required, including for GET, matching the input-gated
+desktop workspace registry. Before dispatch, the server resolves the exact ID
+through the desktop `workspaces.list` registry and reauthenticates after that
+asynchronous lookup. Unknown IDs return 404; no active-workspace fallback exists.
+POST additionally reauthenticates after reading its body. The iOS Settings
+workspace-browser picker lists desktop workspaces including those without panes.
+
+`browserKeyboard` additionally advertises input-authorized keyboard controls:
+
+- `{action:"type",surfaceId,expectedURL,text}` inserts up to 4096 UTF-16 units into
+  the focused field. Disallowed control characters are rejected.
+- `{action:"key",surfaceId,expectedURL,key}` accepts only `Tab`, `Shift+Tab`,
+  `Enter`, `Backspace`, `Escape`, `PageUp`, and `PageDown`.
+
+Captures may additionally carry `pageURL` and `geometry:{width,height,scrollX,scrollY}`
+when a fixed viewport probe is stable across capture. Their presence enables
+`{action:"tap",surfaceId,expectedURL,geometry,x,y}`, with normalized coordinates
+in `[0,1)`. Main converts to CSS coordinates, refusing a changed viewport size,
+scroll offset, page URL or owner before dispatch. A changed/unsupported geometry
+(including browser pinch zoom) still permits a readable capture, without tap
+metadata. Image downscaling and display density do not change normalized points.
+Main also reads the native webview rectangle from wmux's own renderer, accounting
+for host/guest zoom. If the emulated viewport exceeds the real widget after a Mac
+resize, captures omit input geometry and old coordinate actions are rejected.
+The phone turns control mode off and offers viewport-reset guidance. A viewport
+reset clears remembered device metrics before fitting against current native
+bounds, so the desktop's earlier size is not reinstated after a resize.
+DOM movement within an unchanged viewport is not frozen by a screenshot.
+
+`browserScrolling` adds `{action:"scroll",surfaceId,expectedURL,geometry,x,y,deltaX,deltaY}`.
+The anchor is normalized like a tap. Finite deltas are limited to [-1,1] of the
+captured viewport width/height per gesture. The same ownership, URL, size and
+scroll-offset checks run before fixed CDP mouseWheel dispatch at that point;
+no arbitrary CDP fields are accepted. iOS sends one scroll on a completed
+single-finger swipe in control mode; canceled gestures do not send. Pinch still
+zooms the capture, and turning control off restores local image panning.
+
+Keyboard actions bring the Mac browser forward and temporarily emulate focus if
+needed, restoring that override afterward. Same-target phone input is serialized
+by rejecting overlapping operations. Main rechecks workspace ownership and the
+credential-stripped HTTP(S) page URL immediately before dispatch. A URL match is
+not a DOM/focus snapshot: page scripts and desktop users may still change focus.
+POST reauthenticates after body completion. Clients never automatically retry
+keyboard input after an unconfirmed response; refresh and inspect the page first.
+
+Workspace identity never comes from the HTTP body. Main checks the current CDP
+owner, then calls only existing scoped screenshot/emulation/navigation/input operations.
+No arbitrary JavaScript, headers, cookies, CDP commands or RPC names are accepted.
+The capture envelope permits at most 2 MiB base64 image data; only capture requests
+receive the larger bridge response allowance. A hidden Mac workspace may not
+produce frames; clients show this failure and ask the user to bring it forward.
+
+### New agent pane launch options
+
+With `agentLaunch`, an input-authorized phone may read
+`GET /api/agent-launch-options` -> `{agents:[{agent,models,efforts}]}`.
+The daemon probes the installed Claude CLI's `--help` with a timeout and bounded
+output, caching the result for five minutes. No model request is sent. Model
+values are documented aliases, not a claim that the account can access every
+model; effort values must appear in that installed CLI's help.
+
+`POST /api/sessions` optionally accepts
+`agentLaunch:{agent:"claude"|"codex",model?:id,effort?:level}`. The server validates
+against its current catalog and constructs only the known launcher and flags.
+The actual spawn uses the daemon's existing `exec.command` path; `cmd` continues
+to select the wrapper shell, not a command string. No arbitrary launch command,
+prompt, permission override, or environment is accepted through this field.
+Omitting agentLaunch retains normal shell creation. A 201 confirms creation of
+the pane, not authentication or acceptance of the model by the provider.
+
+Codex is advertised only when its installed CLI exposes `--model` and `--config`.
+Its visible model IDs and per-model effort levels come from that account's
+`models_cache.json`, read with a 4 MiB bound and 24-hour freshness limit. The
+workspace query `?workspaceId=...` resolves CODEX_HOME through the trusted desktop
+account store; it never accepts a config path from the phone. Missing/stale cache
+returns Codex with default-only selection and `catalogState:"unavailable"`.
+`modelEfforts` maps each model ID to its supported levels; without a selected
+Codex model, no explicit effort is advertised. Unknown or executable model tokens
+are rejected. Launch flags use `--model` and fixed `-c model_reasoning_effort=...`;
+no provider, credential, permission or arbitrary config override is accepted.
+
+This contract applies to NEW panes only. It does not change a running agent.
+Claude model/effort semantics were checked
+against installed CLI help and https://code.claude.com/docs/en/model-config;
+account availability and CLI-enforced effort fallback remain provider behavior.
+
+Codex CLI model/config behavior was checked against installed `codex --help` and
+https://developers.openai.com/codex/models and
+https://developers.openai.com/codex/config-advanced. The cache projection excludes
+identity, model instructions and other private metadata. Cached availability is
+not a promise that the provider will accept a later request.
+
+The pre-existing `GET /api/workspaces` remains the daemon's live-pane roster
+(`{id,name,panes:[{sessionId,...}]}`), usable without Electron. It is distinct
+from the input-gated desktop registry. New pane selection uses the live roster's
+IDs even on older hosts; opening a newly created desktop workspace uses
+`/api/desktop-workspaces` to resolve its active pane.
+
+### Isolated Electron preview smoke test
+
+Run `node scripts/run-phone-browser-smoke.mjs` from this repository with a
+graphical desktop session. The runner bundles the harness into a fresh temporary
+directory and starts the installed Electron with a separate user-data directory.
+It does not connect to the running wmux daemon or a provider account.
+
+The test renders a loopback fixture in an actual Electron webview and exercises
+`handlePhoneBrowser` through the existing browser RPC handlers: page listing,
+JPEG capture, mobile viewport (390 × 844), desktop reset, and URL navigation.
+It asserts the original viewport dimensions and touch capability are restored.
+The printed artifact directory contains desktop/mobile/restored JPEGs and
+`result.json`; failure or the 30-second timeout exits nonzero.
+
+The target registry and automation lease are fixtures. This verifies actual
+Chromium rendering/CDP/capture behavior, not the HTTP pairing transport, the
+production registry's hidden-workspace lifecycle, or rendering on iOS. Those
+remain separate integration checks.
+
+### General file attachments
+
+`generalFileUpload` in config advertises `POST /api/upload-file` when uploads
+are enabled and storage is wired. It uses the same authentication and explicit
+`--allow-upload` grant, 10 MiB body cap, concurrency/aggregate quota and expiry
+as photo upload. The raw body is stored unchanged with private 0600 permissions.
+It never executes or inserts the file into a pane.
+
+The optional `X-Wmux-File-Extension` header accepts 1–12 ASCII alphanumeric
+characters, lowercased by the server, defaulting to `bin`. Original filenames
+and client paths are not accepted. The server generates a `file-<timestamp>-<random>`
+basename; successful responses retain `{path, expiresAt}`. Managed general
+files participate in the same quota and expiry sweep as managed photos.
+`/api/upload` remains JPEG/PNG-only for compatibility.
+
+### Durable input receipts
+
+When config advertises `inputReceipts`, POST `/api/input?session=...` accepts
+`X-Wmux-Input-Request-ID: <13-digit epoch milliseconds>.<UUID>` and
+`X-Wmux-Pane-Incarnation: <current incarnation>`. Omit both for the legacy
+204 response. Identified input returns 200 `{status:"written",replayed:boolean}`
+when the PTY write returned and its receipt was persisted, or 409
+`{status:"uncertain",replayed:boolean}` when a write may have occurred but cannot
+be confirmed. Neither state proves the agent processed or executed the input.
+
+Receipts bind authenticated device/operator identity, pane incarnation and exact
+decoded input. Reusing an ID with different content, using an old incarnation,
+invalid/expired IDs or unavailable receipt storage never falls back to a raw
+write. IDs expire after 24 hours and cannot become reusable after receipt pruning.
+Persisted pending entries are not replayed following a daemon restart. Input
+permission and the live session are rechecked after request-body completion for
+both legacy and identified requests.
+
+Written receipts additionally carry `inputToken`, combining a server instance
+epoch with the bridge's all-input revision after the write. A new continuation
+may send `X-Wmux-Input-After` with that token; the server rejects it if any input
+has intervened. The iOS composer requires the text receipt's token before
+sending Return. Receipt replay is checked before this precondition, so a Return
+already written still reconciles successfully after later keyboard activity.
+Server reconstruction changes the epoch and therefore requires manual review
+before continuing an incomplete old text/Return sequence. This does not lock
+the desktop keyboard or establish that the prompt was empty before text input.
+
+### Running agent settings
+
+`agentSettings: true` advertises `GET/POST /api/sessions/:id/agent-settings`.
+Both operations require input permission and transcript consent. Capability means
+this daemon implements the route, not that every pane has a controllable agent.
+Currently Codex panes with a daemon-owned live TUI relay are eligible; a missing
+or unconfirmed selection returns `503 {"error":"unavailable"}`. Persisted resume
+markers are never sufficient attribution.
+
+GET returns `{agent,model,effort,busy,revision,models}`. `effort` can be null;
+`models` contains `{model,efforts,defaultEffort}` entries. These are configured
+settings for subsequent turns, not the model executing an already active turn.
+Responses are not cacheable. The revision is opaque and scoped to pane, account,
+process, relay, selection generation and observed settings.
+
+POST accepts exactly `{model,effort,expectedRevision}` and returns the same
+snapshot shape after a fresh runtime read confirms both requested fields.
+It does not accept thread IDs, account paths, shell commands or prompt text.
+`409` reasons are `stale`, `busy`, `unsupported-choice` and `unconfirmed`.
+Malformed choices return 400; unsupported/unavailable sessions return 503;
+permission failures use 401/403. Clients must refresh after stale/unconfirmed
+results and must not automatically replay changes after uncertain transport
+outcomes. Stale-view validation is optimistic, not atomic CAS with other Codex
+clients. Operations are serialized per pane and limited to four concurrent panes.
+Credentials and pane ownership are rechecked at asynchronous control boundaries.
+
+Phone-created Codex panes on Unix use a private relay when an existing account
+server passes initialization. Missing/stale/unready account servers use ordinary
+Codex launch. Other panes may remain unavailable. Temporary socket URLs are not
+persisted. The three native boot-recovery branches rebuild relay ownership for
+phone-generated Codex command forms, preserving existing resume arguments.
+Arbitrary shell commands, existing remote commands and unsupported platforms are
+not rewritten. A recovered relay changes the scoped revision; clients must refresh.
+Daemon state snapshots retain an exact foreground relay thread hint only when its
+rollout exists inside that pane's account and its cwd matches. Recovery validates
+that hint again. Phone-created Codex panes without a valid hint start fresh; they
+do not guess with resume --last. Temporary or pending selections clear older hints.
+The isolated full-daemon smoke verifies two panes in the same cwd recover their
+own conversations after graceful shutdown, with restored web credentials,
+stale-revision rejection, settings changes and closure. Binding persistence still
+follows normal snapshot timing. Forced daemon/account-server death and shared-server
+hook attribution remain integration work.
+
+Ephemeral system threads used by the TUI for automatic titles do not change the
+foreground settings target. A loaded `systemError` thread can change settings for
+its next turn; an `active` thread remains busy and `notLoaded` remains unavailable.
+Catalog pagination is bounded to four pages of 100 entries; incomplete or ambiguous
+catalogs are unavailable rather than silently truncated.

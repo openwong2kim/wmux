@@ -1,3 +1,4 @@
+import { registerQuickCommandHandlers } from './handlers/quickCommand.handler';
 import { ipcMain, type BrowserWindow } from 'electron';
 import { PTYManager } from '../pty/PTYManager';
 import { PTYBridge } from '../pty/PTYBridge';
@@ -196,6 +197,7 @@ export function registerAllHandlers(
   // Multi-account registry (M1) — renderer-only, mode-agnostic (main owns
   // accounts.json in both local and daemon mode; spawn env is resolved in main).
   const cleanupAccounts = registerAccountHandlers();
+  const cleanupQuickCommands = registerQuickCommandHandlers();
 
   // X1 local-mode context watchers (git HEAD fs.watch + PID-tree ports).
   // Daemon mode gets the same data from the daemon process via
@@ -486,6 +488,7 @@ export function registerAllHandlers(
     if (cleanupPaneResources) cleanupPaneResources();
     cleanupWeb();
     cleanupAccounts();
+    cleanupQuickCommands();
     // Mirror the register-side removeHandler so a teardown leaves no stale
     // handle behind (handle handlers are not .on listeners — see above).
     ipcMain.removeHandler(IPC.RPC_INVOKE);

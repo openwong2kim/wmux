@@ -457,6 +457,10 @@ const electronAPI = {
   // reads snapshots + requests mutations. Onboarding: onboardPrepare() creates
   // an isolated (hybrid-shared) config dir, the renderer spawns a login pane
   // pointed at it, polls credentialStatus() until login lands, then add()s.
+  quickCommands: {
+    list: () => ipcRenderer.invoke(IPC.QUICK_COMMAND_LIST) as Promise<import('../shared/quickCommands').QuickCommandSnapshot>,
+    replace: (snapshot: import('../shared/quickCommands').QuickCommandSnapshot) => ipcRenderer.invoke(IPC.QUICK_COMMAND_REPLACE, snapshot) as Promise<import('../shared/quickCommands').QuickCommandSnapshot>,
+  },
   accounts: {
     list: () =>
       ipcRenderer.invoke(IPC.ACCOUNT_LIST) as Promise<{

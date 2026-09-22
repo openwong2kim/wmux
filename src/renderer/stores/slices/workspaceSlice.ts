@@ -1,3 +1,4 @@
+import { isPhoneWorkspaceId, PHONE_WORKSPACE_REQUEST_LIMIT } from '../../../shared/phoneWorkspaceRequests';
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type ArchivedWorkspace, type Pane, type PaneLeaf, type SessionData, type StashedPane, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
@@ -221,7 +222,7 @@ export interface WorkspaceSlice {
   /** Create and activate a new workspace. An optional `profile` is normalized
    * (dropSecretKeys) and attached in the SAME immer set, so pane #1 spawns with
    * profile.startupCwd already present instead of a home fallback (#515). */
-  addWorkspace: (name?: string, profile?: WorkspaceProfile) => void;
+  addWorkspace: (name?: string, profile?: WorkspaceProfile, requestedId?: string) => void;
   addWorkspaceWithPreset: (presetId: string, name?: string) => void;
   /**
    * Duplicate an existing workspace's LAYOUT (pane tree, with fresh ids and
@@ -235,6 +236,7 @@ export interface WorkspaceSlice {
   removeWorkspace: (id: string) => void;
   // #1011 — Active → Archived → Permanently Deleted.
   archivedWorkspaces: ArchivedWorkspace[];
+  phoneWorkspaceRequestIds: string[];
   /** Snapshot the configuration, then tear the workspace down exactly like
    *  Close (sessions die; the sidebar goes quiet; the config survives). */
   archiveWorkspace: (id: string) => void;
@@ -306,6 +308,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     workspaces: [initial],
     activeWorkspaceId: initial.id,
     archivedWorkspaces: [],
+    phoneWorkspaceRequestIds: [],
     nextWorkspaceOrdinal: 2,
     lastVisibleAt: {},
     parkedWorkspaceIds: {},
@@ -351,7 +354,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
     }),
 
-    addWorkspace: (name, profile) => set((state: StoreState) => {
+    addWorkspace: (name, profile, requestedId) => set((state: StoreState) => {
+      if (requestedId) {
+        if (!isPhoneWorkspaceId(requestedId) || state.workspaces.some(w => w.id === requestedId) ||
+            state.phoneWorkspaceRequestIds.includes(requestedId) ||
+            state.phoneWorkspaceRequestIds.length >= PHONE_WORKSPACE_REQUEST_LIMIT) return;
+        // This ledger and the workspace are committed in the same state/session.
+        // Closing a workspace never makes its request eligible for creation again.
+        state.phoneWorkspaceRequestIds.push(requestedId);
+      }
       let wsName = name;
       if (!wsName) {
         const usedNumbers = new Set(
@@ -368,6 +379,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       const wsOrdinal = state.nextWorkspaceOrdinal ?? 1;
       const ws = createWorkspace(wsName, wsOrdinal);
+      if (requestedId) ws.id = requestedId;
       // #515: attach the profile BEFORE activation (same set) so pane #1's PTY
       // create sees profile.startupCwd. Editor/save boundary → dropSecretKeys.
       if (profile) {
@@ -810,6 +822,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     }),
 
     loadSession: (data: SessionData) => set((state: StoreState) => {
+      state.phoneWorkspaceRequestIds = [...new Set([
+        ...state.phoneWorkspaceRequestIds,
+        ...(Array.isArray(data.phoneWorkspaceRequestIds) ? data.phoneWorkspaceRequestIds.filter(isPhoneWorkspaceId) : []),
+        ...(Array.isArray(data.workspaces) ? data.workspaces.map(w => w.id).filter(isPhoneWorkspaceId) : []),
+      ])].slice(0, PHONE_WORKSPACE_REQUEST_LIMIT);
       // Site guides are restored ahead of the empty-workspace return below:
       // that return would otherwise skip the saved marker while the session
       // still counts as loaded, and the Chrome auto-enable would override a

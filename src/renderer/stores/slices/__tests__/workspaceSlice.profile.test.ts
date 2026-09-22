@@ -90,6 +90,30 @@ describe('workspaceSlice — addWorkspace(name, profile)', () => {
     store = createTestStore();
   });
 
+  it('stops new phone creation at the history bound without evicting old requests', () => {
+    const history = Array.from({length:10_000}, (_, index) =>
+      `ws-phone-${index.toString(16).padStart(8,'0')}-89ab-4cde-8123-456789abcdef`);
+    store.setState({phoneWorkspaceRequestIds:history});
+    const before = store.getState().workspaces.length;
+    store.getState().addWorkspace('Over limit', undefined, 'ws-phone-ffffffff-89ab-4cde-8123-456789abcdef');
+    expect(store.getState().workspaces).toHaveLength(before);
+    expect(store.getState().phoneWorkspaceRequestIds).toEqual(history);
+    store.getState().addWorkspace('Desktop creation still works');
+    expect(store.getState().workspaces).toHaveLength(before + 1);
+  });
+
+  it('keeps a phone request identity across session reload and does not create a duplicate', () => {
+    const id = 'ws-phone-01234567-89ab-4cde-8123-456789abcdef';
+    store.getState().addWorkspace('Phone project', { startupCwd: '/project' }, id);
+    const saved = JSON.parse(JSON.stringify({ workspaces: store.getState().workspaces, activeWorkspaceId: id, sidebarVisible: true })) as SessionData;
+    const restored = createTestStore();
+    restored.getState().loadSession(saved);
+    const count = restored.getState().workspaces.length;
+    restored.getState().addWorkspace('Retry should not rename', { startupCwd: '/other' }, id);
+    expect(restored.getState().workspaces).toHaveLength(count);
+    expect(restored.getState().workspaces.find(w => w.id === id)).toMatchObject({ name: 'Phone project', profile: { startupCwd: '/project' } });
+  });
+
   it('attaches a normalized profile to the newly-activated workspace', () => {
     store.getState().addWorkspace('proj', { startupCwd: 'D:\\proj' });
     const active = store.getState().workspaces.find((w) => w.id === store.getState().activeWorkspaceId);

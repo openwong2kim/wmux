@@ -338,6 +338,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     // P2: persist the global workspace-ordinal high-water so wsOrdinals are
     // never recycled across restarts (loadSession reads it back + backfills).
     nextWorkspaceOrdinal: state.nextWorkspaceOrdinal,
+    phoneWorkspaceRequestIds: state.phoneWorkspaceRequestIds,
     sidebarVisible: state.sidebarVisible,
     channelDockVisible: state.channelDockVisible,
     sidebarMode: state.sidebarMode,

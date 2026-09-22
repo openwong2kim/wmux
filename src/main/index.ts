@@ -1,3 +1,11 @@
+import { randomUUID as phoneBrowserRequestId } from 'node:crypto';
+import { webContents as phoneWebContents } from 'electron';
+import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserNativeBounds } from './phone/PhoneBrowserInput';
+import { handlePhoneBrowser } from './phone/PhoneBrowser';
+import { handlePhoneWorkspaces } from './phone/PhoneWorkspaces';
+import { handlePhoneQuickCommands } from './quickCommands/QuickCommandStore';
+import { installPhoneBridge } from './phone/installPhoneBridge';
+import { handlePhoneAccounts } from './phone/PhoneAccounts';
 // #582: Suppress Electron's dev-only "Insecure Content-Security-Policy"
 // warning at the earliest possible point — before `app` ready and before any
 // BrowserWindow is created. Vite's HMR requires `unsafe-eval`, so the warning
@@ -575,6 +583,7 @@ const webviewCdpManager = new WebviewCdpManager(cdpPort);
 
 // Daemon client — initialized on app ready, used if daemon is available
 let daemonClient: DaemonClient | null = null;
+let disposePhoneBridge: (() => void) | null = null;
 
 // envelope PR4 C12: 워커 전이는 데몬 A2aTaskService(정본 로그)에 먼저 커밋된다 —
 // getter 주입이라 앱-레디 이후 연결되는 daemonClient를 자연 추적한다.
@@ -1597,6 +1606,35 @@ app.on('ready', async () => {
         .rpc('daemon.client.identify', { role: 'main' })
         .then(() => {
           reportDesktopPresence(() => client, BrowserWindow.getFocusedWindow() !== null);
+          disposePhoneBridge?.();
+          disposePhoneBridge = installPhoneBridge(client,(command,payload) => command.startsWith('browser.') ? handlePhoneBrowser(command,payload,{
+            backend: () => browserBackendStore.get(),
+            clearViewport: async id => {
+              const wc = phoneWebContents.fromId(id);
+              if (!wc || wc.isDestroyed()) throw new Error('Browser unavailable');
+              await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
+            },
+            nativeBounds: async id => {
+              const wc = phoneWebContents.fromId(id);
+              if (!wc || wc.isDestroyed()) throw new Error('Browser unavailable');
+              return phoneBrowserNativeBounds(wc);
+            },
+            scroll: async (id,event) => {
+              const wc = phoneWebContents.fromId(id);
+              if (!wc || wc.isDestroyed()) throw new Error('Browser unavailable');
+              await dispatchPhoneBrowserScroll(wc,event);
+            },
+            targets: () => webviewCdpManager.listTargets(),
+            input: (id, operation) => {
+              const wc = phoneWebContents.fromId(id);
+              if (!wc || wc.isDestroyed()) return Promise.reject(new Error('Browser unavailable'));
+              return withPhoneBrowserInputFocus(wc,operation);
+            },
+            page: id => { const wc = phoneWebContents.fromId(id); return wc && !wc.isDestroyed() ? {title:wc.getTitle(),url:wc.getURL()} : null; },
+            invoke: (method,params) => rpcRouter.dispatch({id: `phone-browser-${phoneBrowserRequestId()}`,method:method as RpcMethod,params},{operator:true}),
+          }) : command.startsWith('workspaces.') ? handlePhoneWorkspaces(command,payload,() => mainWindow) : command.startsWith('prompts.') ? handlePhoneQuickCommands(command,payload) : handlePhoneAccounts(command,payload,{
+            store:getAccountStore(),usage:accountUsageService,
+          }));
         })
         .catch(() => {
           // Old daemon: no identify, therefore no presence, therefore pushes.
@@ -2352,6 +2390,7 @@ app.on('before-quit', async (e) => {
   safeStep('disposeHooksRpc', () => disposeHooksRpc());
   safeStep('disposeUsagePollerListener', () => disposeUsagePollerListener());
   safeStep('usagePoller.dispose', () => usagePoller.dispose());
+  safeStep('disposePhoneBridge', () => { disposePhoneBridge?.(); disposePhoneBridge = null; });
   safeStep('disposeAccountUsageListener', () => disposeAccountUsageListener());
   safeStep('cleanupAccountUsageIpc', () => {
     ipcMain.removeHandler(IPC.ACCOUNT_USAGE_LIST);

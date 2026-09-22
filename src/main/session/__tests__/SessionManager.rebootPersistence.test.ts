@@ -61,6 +61,13 @@ describe('SessionManager — reboot persistence contract', () => {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   });
 
+  it('persists retired phone request identities without a live workspace', () => {
+    const id = 'ws-phone-01234567-89ab-4cde-8123-456789abcdef';
+    const data = {...makeSession(['pty-real']),phoneWorkspaceRequestIds:[id]};
+    new SessionManager().save(data);
+    expect(new SessionManager().load()?.phoneWorkspaceRequestIds).toEqual([id]);
+  });
+
   it('load() returns null when session.json does not exist (true first launch)', () => {
     const sm = new SessionManager();
     expect(sm.load()).toBeNull();
