@@ -603,11 +603,13 @@ function showCopyErrorToast() {
 }
 
 // The pane's foreground app has mouse tracking on, so a plain left-drag never
-// reaches xterm's SelectionService and no highlight appears. Shift is the
-// override xterm already implements (`shouldForceSelection` → `event.shiftKey`
-// off macOS) and the one Windows Terminal / iTerm2 teach; wmux uses it for
-// Shift+right-click paste too. Longer-lived than the copy toasts because this
-// one is instructional, not an acknowledgement.
+// reaches xterm's SelectionService and no highlight appears. The override is
+// the one xterm already implements in `shouldForceSelection`: `event.shiftKey`
+// off macOS (what Windows Terminal / iTerm2 teach, and what wmux uses for
+// Shift+right-click paste), `event.altKey` on macOS — so the hint has to name
+// the key for THIS platform, or it sends the user to a modifier that does
+// nothing. Longer-lived than the copy toasts because this one is
+// instructional, not an acknowledgement.
 let mouseOwnedToastTimer: ReturnType<typeof setTimeout> | null = null;
 function showMouseOwnedHintToast() {
   let el = document.getElementById('wmux-mouse-owned-toast');
@@ -618,7 +620,11 @@ function showMouseOwnedHintToast() {
     document.body.appendChild(el);
   }
   const node = el;
-  node.textContent = t('terminal.mouseOwnedSelectHint');
+  node.textContent = t(
+    window.electronAPI?.platform === 'darwin'
+      ? 'terminal.mouseOwnedSelectHintMac'
+      : 'terminal.mouseOwnedSelectHint',
+  );
   node.style.opacity = '1';
   if (mouseOwnedToastTimer) clearTimeout(mouseOwnedToastTimer);
   mouseOwnedToastTimer = setTimeout(() => { node.style.opacity = '0'; }, 3200);
@@ -2740,7 +2746,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // `createMouseOwnedHint`; this only wires events and reads the live mode.
     // Nothing is preventDefault'ed or swallowed: the app keeps every event it
     // owns, we just say why the highlight did not appear.
+    // Which modifier escapes is platform-dependent — see the toast helper.
+    const forcesSelectionOnThisPlatform = window.electronAPI?.platform === 'darwin'
+      ? (e: { altKey?: boolean }) => e.altKey === true
+      : (e: { shiftKey: boolean }) => e.shiftKey;
     const mouseOwnedHint = createMouseOwnedHint({
+      forcesSelection: forcesSelectionOnThisPlatform,
       isMouseOwned: () => {
         const mode = (terminal as unknown as { modes?: { mouseTrackingMode?: string } })
           .modes?.mouseTrackingMode ?? 'none';

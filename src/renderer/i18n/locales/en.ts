@@ -541,6 +541,7 @@ export const en = {
   'terminal.copied': 'Copied!',
   'terminal.copyFailed': 'Copy failed — selection kept',
   'terminal.mouseOwnedSelectHint': 'This app is using the mouse — hold Shift to select text',
+  'terminal.mouseOwnedSelectHintMac': 'This app is using the mouse — hold Option to select text',
   'terminal.openPathBlocked': 'Executable blocked — opened parent folder',
   'terminal.openPathFailed': "Couldn't open — showing folder",
   'terminal.bookmarkAdded': 'Bookmark added',

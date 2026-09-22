@@ -15,6 +15,12 @@
  * the same override for Shift+right-click paste. It is just invisible — there
  * is no moment where the product says so.
  *
+ * On macOS that same xterm method reads `event.altKey` instead, gated on
+ * `macOptionClickForcesSelection` (#1437, which wmux now sets). So the modifier
+ * that escapes is platform-dependent, and the caller supplies it: a hint that
+ * names the wrong key is worse than none, and a drag that already forced a
+ * selection must not be told the selection failed.
+ *
  * This module is the trigger for saying it: a real drag attempt (button held
  * past a threshold, no Shift) in a pane whose app owns the mouse. A bare click
  * is not a selection attempt and must stay silent, and the hint is rate-limited
@@ -37,6 +43,12 @@ export interface MouseOwnedHintDeps {
   cooldownMs?: number;
   /** Movement that turns a click into a drag attempt. Default 8px. */
   dragThresholdPx?: number;
+  /**
+   * True when this gesture already carries xterm's force-selection modifier,
+   * so it selects and there is nothing to teach. Defaults to `shiftKey`, which
+   * is `shouldForceSelection` off macOS; on macOS pass `altKey`.
+   */
+  forcesSelection?: (e: MouseDownLike) => boolean;
 }
 
 export interface MousePoint {
@@ -47,6 +59,7 @@ export interface MousePoint {
 export interface MouseDownLike extends MousePoint {
   button: number;
   shiftKey: boolean;
+  altKey?: boolean;
 }
 
 export interface MouseOwnedHint {
@@ -62,6 +75,7 @@ export function createMouseOwnedHint(deps: MouseOwnedHintDeps): MouseOwnedHint {
   const now = deps.now ?? (() => Date.now());
   const cooldownMs = deps.cooldownMs ?? DEFAULT_COOLDOWN_MS;
   const threshold = deps.dragThresholdPx ?? DEFAULT_DRAG_THRESHOLD_PX;
+  const forcesSelection = deps.forcesSelection ?? ((e: MouseDownLike) => e.shiftKey);
 
   let origin: MousePoint | null = null;
   // -Infinity, not 0: with an injected clock starting at 0, a `0 - 0 >= cooldown`
@@ -71,11 +85,11 @@ export function createMouseOwnedHint(deps: MouseOwnedHintDeps): MouseOwnedHint {
   return {
     onMouseDown(e) {
       // Left button only (right-click already has wmux's own Shift-aware menu
-      // path), no Shift (that IS the override — nothing to teach), and only
-      // while the app actually owns the mouse. The mode is read at mousedown
-      // because it can flip mid-session: an agent enables tracking for its
-      // input box and drops it while streaming.
-      origin = e.button === 0 && !e.shiftKey && deps.isMouseOwned()
+      // path), without the force-selection modifier (that IS the override —
+      // nothing to teach), and only while the app actually owns the mouse. The
+      // mode is read at mousedown because it can flip mid-session: an agent
+      // enables tracking for its input box and drops it while streaming.
+      origin = e.button === 0 && !forcesSelection(e) && deps.isMouseOwned()
         ? { clientX: e.clientX, clientY: e.clientY }
         : null;
     },

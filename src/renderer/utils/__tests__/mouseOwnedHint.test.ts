@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createMouseOwnedHint } from '../mouseOwnedHint';
 
-function harness(opts?: { owned?: boolean; cooldownMs?: number }) {
+function harness(opts?: { owned?: boolean; cooldownMs?: number; mac?: boolean }) {
   const show = vi.fn();
   let owned = opts?.owned ?? true;
   let clock = 0;
@@ -11,14 +11,16 @@ function harness(opts?: { owned?: boolean; cooldownMs?: number }) {
     now: () => clock,
     cooldownMs: opts?.cooldownMs ?? 20_000,
     dragThresholdPx: 8,
+    // xterm's shouldForceSelection: altKey on macOS, shiftKey everywhere else.
+    forcesSelection: opts?.mac ? (e) => e.altKey === true : (e) => e.shiftKey,
   });
   return {
     show,
     hint,
     setOwned: (v: boolean) => { owned = v; },
     advance: (ms: number) => { clock += ms; },
-    drag: (dx: number, dy = 0, mods?: { button?: number; shiftKey?: boolean }) => {
-      hint.onMouseDown({ button: mods?.button ?? 0, shiftKey: mods?.shiftKey ?? false, clientX: 100, clientY: 100 });
+    drag: (dx: number, dy = 0, mods?: { button?: number; shiftKey?: boolean; altKey?: boolean }) => {
+      hint.onMouseDown({ button: mods?.button ?? 0, shiftKey: mods?.shiftKey ?? false, altKey: mods?.altKey ?? false, clientX: 100, clientY: 100 });
       hint.onMouseMove({ clientX: 100 + dx, clientY: 100 + dy });
       hint.onMouseUp();
     },
@@ -42,6 +44,18 @@ describe('createMouseOwnedHint', () => {
     const h = harness();
     h.drag(40, 0, { shiftKey: true });
     expect(h.show).not.toHaveBeenCalled();
+  });
+
+  // #1437 + the macOS half of it: on macOS xterm forces the selection on Option,
+  // not Shift, so the escape modifier — and therefore what is worth saying — is
+  // the other one. Telling a Mac user to hold Shift sends them to a key that
+  // does nothing, and nagging on the Option+drag that DID select is worse.
+  it('on macOS: stays silent for Option+drag, still hints on Shift+drag', () => {
+    const mac = harness({ mac: true });
+    mac.drag(40, 0, { altKey: true });
+    expect(mac.show).not.toHaveBeenCalled();
+    mac.drag(40, 0, { shiftKey: true });
+    expect(mac.show).toHaveBeenCalledTimes(1);
   });
 
   it('stays silent for the right button — right-click has its own Shift-aware path', () => {
