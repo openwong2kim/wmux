@@ -53,6 +53,33 @@ describe('phone Git writes', () => {
     expect(await fs.readFile(path.join(root, 'one'), 'utf8')).toBe('changed');
     expect((await controller.read(root)).files[0].status).toBe(' M');
   });
+  it('refuses a stage whose index moved between the preflight and the write', async () => {
+    await fs.writeFile(path.join(root, 'one'), 'one');
+    const stage = await request('stage', ['one']);
+    // `authorized` runs after the preflight snapshot and before the write — the
+    // exact window a desktop terminal can stage in. Only `commit` used to be
+    // compare-and-swapped, so this write landed on an unreviewed index.
+    await expect(controller.mutate(root, stage, async () => {
+      await fs.writeFile(path.join(root, 'two'), 'two');
+      git('add', 'two');
+      return true;
+    })).rejects.toMatchObject({status:409, tag:'git-state-changed'});
+    expect(git('ls-files')).toBe('two');
+  });
+  it('refuses an unstage whose index moved between the preflight and the write', async () => {
+    await fs.writeFile(path.join(root, 'one'), 'one');
+    git('add', 'one');
+    git('commit', '-m', 'initial');
+    await fs.writeFile(path.join(root, 'one'), 'changed');
+    git('add', 'one');
+    const unstage = await request('unstage', ['one']);
+    await expect(controller.mutate(root, unstage, async () => {
+      await fs.writeFile(path.join(root, 'two'), 'two');
+      git('add', 'two');
+      return true;
+    })).rejects.toMatchObject({status:409, tag:'git-state-changed'});
+    expect(git('diff', '--cached', '--name-only').split('\n').sort()).toEqual(['one','two']);
+  });
   it('does not execute hooks or signing programs and refuses content filters', async () => {
     const marker = path.join(root, 'hook-ran');
     await fs.writeFile(path.join(root, '.git/hooks/pre-commit'), `#!/bin/sh\ntouch '${marker}'\n`, {mode:0o755});
