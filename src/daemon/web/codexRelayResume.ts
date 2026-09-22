@@ -37,6 +37,11 @@ export function captureCodexRelayResume(pane:Pane,observed:CodexRelayObservation
  * Revalidate the persisted account/cwd/rollout before constructing a fixed argv fragment. */
 export function codexRelayResumeCommand(pane:Pane):string|undefined {
   if(!isPhoneCodexSession(pane))return undefined;
+  // A pane whose spawn directory is gone gets no launch command at all — the
+  // caller's own "cwd gone → fresh, not wrong-target resume" rule. Returning
+  // `base` here would jump that guard and auto-launch codex in the fallback
+  // home directory, which is neither the reviewed repository nor a shell.
+  if(!fs.existsSync(pane.cwd))return undefined;
   const base=pane.exec!.command;
   const binding=pane.codexRelayResume;
   try {
