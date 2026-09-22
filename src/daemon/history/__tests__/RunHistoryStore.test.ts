@@ -18,7 +18,7 @@ describe('durable phone results', () => {
     store.ingest('pane',{},signal('agent.stop','complete'));
     store.ingest('pane',{},signal('agent.stop_failure','error',200));
     expect(new RunHistoryStore(root).list().entries.map(x=>x.outcome)).toEqual(['failed','completed']);
-    expect(fs.statSync(path.join(root,'phone-run-history.json')).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(fs.statSync(path.join(root,'phone-run-history.json')).mode & 0o777).toBe(0o600);
   });
   it('never treats subagent completion, idle detector or a continuing lead as done', () => {
     const store = new RunHistoryStore(root);

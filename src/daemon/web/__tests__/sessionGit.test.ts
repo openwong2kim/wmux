@@ -8,21 +8,29 @@ import { SessionGitController, type GitMutation } from '../sessionGit';
 import { buildGitEnv, createGitRunner } from '../sessionDiff';
 let root: string;
 let controller: SessionGitController;
+const savedHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
 const git = (...args: string[]) => execFileSync('git', args, { cwd: root, env: buildGitEnv(), encoding: 'utf8' }).trim();
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'wmux-phone-git-'));
+  // Point git's global config at the empty temp root so a runner's own
+  // ~/.gitconfig (git-lfs filters on the macOS image) cannot leak in.
+  process.env.HOME = root; process.env.USERPROFILE = root;
   git('init', '-b', 'main');
   git('config', 'user.name', 'Phone Test');
   git('config', 'user.email', 'phone@example.invalid');
   controller = new SessionGitController();
 });
-afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+afterEach(async () => {
+  process.env.HOME = savedHome.HOME; process.env.USERPROFILE = savedHome.USERPROFILE;
+  await fs.rm(root, { recursive: true, force: true });
+});
 async function request(action: GitMutation['action'], paths?: string[], message?: string): Promise<GitMutation> {
   const state = await controller.read(root);
   return {requestId:randomUUID(), action, paths, message, expectedHead:state.head, expectedTree:state.tree, expectedRef:state.ref};
 }
-describe('phone Git writes', () => {
-  it('stages literal unusual filenames, unstages initial files, and commits only the reviewed tree', async () => {
+// Windows runners spawn git slowly enough to blow the 5 s default.
+describe('phone Git writes', { timeout: 30_000 }, () => {
+  it.skipIf(process.platform === 'win32')('stages literal unusual filenames, unstages initial files, and commits only the reviewed tree', async () => {
     await fs.writeFile(path.join(root, ':(glob)* 한글.txt'), 'first');
     await fs.writeFile(path.join(root, 'other.txt'), 'untouched');
     await controller.mutate(root, await request('stage', [':(glob)* 한글.txt']));

@@ -4618,7 +4618,7 @@ describe('WebTerminalServer', () => {
     expect(path.dirname(receipt.path)).toBe(uploadsDir);
     expect(path.basename(receipt.path)).toMatch(/^file-.*-[a-f0-9]{8}\.pdf$/);
     expect(fs.readFileSync(receipt.path)).toEqual(body);
-    expect(fs.statSync(receipt.path).mode & 0o777).toBe(0o600);
+    if (process.platform !== 'win32') expect(fs.statSync(receipt.path).mode & 0o777).toBe(0o600);
     expect((await upload(info.token as string, body)).status).toBe(415);
   });
 

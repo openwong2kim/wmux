@@ -1,6 +1,7 @@
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
 import {mkdtemp,mkdir,rm,stat,access} from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import WebSocket,{WebSocketServer} from 'ws';
 import {describe,it,expect} from 'vitest';
@@ -9,7 +10,9 @@ const threadId='01234567-89ab-4cde-8123-456789abcdef';
 const systemThreadId='11111111-89ab-4cde-8123-456789abcdef';
 const otherThreadId='22222222-89ab-4cde-8123-456789abcdef';
 async function fixture(options:{onStateChange?:()=>void; onUpstreamRequest?:(request:{id?:unknown;method?:unknown})=>void}={}) {
-  const home=await mkdtemp('/tmp/wmux-relay-test-');
+  // macOS's per-user tmpdir is too long for a Unix socket path (sun_path is
+  // 104 bytes there); /tmp keeps the fixture sockets addressable.
+  const home=await mkdtemp(path.join(process.platform === 'darwin' ? '/tmp' : os.tmpdir(),'wmux-relay-test-'));
   const upstreamPath=path.join(home,'app-server-control','app-server-control.sock');
   await mkdir(path.dirname(upstreamPath));
   const server=createServer();
@@ -46,7 +49,8 @@ async function select(client:WebSocket,id:number) {
   client.send(JSON.stringify({id,method:'thread/start',params:{}}));
   await replied;
 }
-describe('pane-owned Codex Unix relay',()=>{
+// The relay is Unix-socket only; Windows panes take the ordinary launch path.
+describe.skipIf(process.platform === 'win32')('pane-owned Codex Unix relay',()=>{
   it('refuses a stale socket inode before creating a TUI endpoint',async()=>{
     const home=await mkdtemp('/tmp/wmux-stale-codex-');
     const socketPath=path.join(home,'app-server-control','app-server-control.sock');
