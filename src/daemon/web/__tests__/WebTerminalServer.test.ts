@@ -10,7 +10,7 @@ import { RunHistoryStore } from '../../history/RunHistoryStore';
 import { InputReceiptStore } from '../InputReceiptStore';
 import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
-import { WebTerminalServer, type WebDeviceResolver } from '../WebTerminalServer';
+import { WebTerminalServer, SessionAuthorizationExpiredError, type WebDeviceResolver } from '../WebTerminalServer';
 import type { TranscriptProjector } from '../../transcript/TranscriptProjector';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import type { TranscriptStatus } from '../../../shared/transcript/turnEvents';
@@ -156,11 +156,25 @@ function makeDeps() {
   // functions. It mutates `live` so the route's "describe the new pane with the
   // SAME projection /api/sessions uses" claim is actually exercised.
   const lifecycleCalls: Array<{ op: 'create' | 'destroy'; arg: unknown }> = [];
-  const lifecycleBox = { createThrows: '', destroyThrows: '', createGoesMissing: false };
+  // `createGate` stands in for the daemon's own awaits inside create (workspace
+  // account env, CLI lookup, Codex relay reservation): the route has already
+  // re-authorized before create is called, so the window this fake opens is
+  // exactly the one the daemon's pre-spawn check has to cover.
+  const lifecycleBox = {
+    createThrows: '', destroyThrows: '', createGoesMissing: false,
+    createGate: null as Promise<void> | null, gatePassed: false,
+    authorizedAfterGate: null as boolean | null, spawned: false,
+  };
   let created = 0;
   const lifecycle = {
-    async create(params: { workspaceId?: string; cwd?: string }) {
+    async create({ authorized, ...params }: { workspaceId?: string; cwd?: string; authorized?: () => Promise<boolean> }) {
       lifecycleCalls.push({ op: 'create', arg: { ...params } });
+      if (lifecycleBox.createGate) { await lifecycleBox.createGate; lifecycleBox.gatePassed = true; }
+      if (authorized && !(await authorized())) {
+        lifecycleBox.authorizedAfterGate = lifecycleBox.gatePassed;
+        throw new SessionAuthorizationExpiredError();
+      }
+      lifecycleBox.spawned = true;
       if (lifecycleBox.createThrows) throw new Error(lifecycleBox.createThrows);
       created += 1;
       const id = `web-${created}`;
@@ -415,7 +429,8 @@ describe('WebTerminalServer', () => {
   let resizeCalls: Array<{ id: string; cols: number; rows: number }>;
   let resizeBox: ReturnType<typeof makeDeps>['resizeBox'];
   let lifecycleCalls: Array<{ op: 'create' | 'destroy'; arg: unknown }>;
-  let lifecycleBox: { createThrows: string; destroyThrows: string; createGoesMissing: boolean };
+  let lifecycleBox: { createThrows: string; destroyThrows: string; createGoesMissing: boolean;
+    createGate: Promise<void> | null; gatePassed: boolean; authorizedAfterGate: boolean | null; spawned: boolean };
   let gitCalls: Array<{ args: readonly string[]; cwd: string }>;
   let gitScript: Record<string, { ok: boolean; stdout: string; stderr: string; ran?: boolean }>;
   let gitGate: { hold: Promise<void> | null };
@@ -3981,6 +3996,30 @@ describe('WebTerminalServer', () => {
     expect(await withdrawMidBody(`${base()}/api/sessions`, phone, body.slice(0, 6), body.slice(6), (r) => { r.revoked = true; }))
       .toBe(401);
     expect(lifecycleCalls).toHaveLength(before);
+  });
+
+  // The route's re-check is not the last word: create then awaits the workspace
+  // account environment, the installed-CLI lookup and the Codex relay
+  // reservation, and a device revoked inside THAT window still got a shell.
+  it('re-authorizes pane creation again inside create, after its own awaits', async () => {
+    await startRW();
+    const phone = await pairDevice('Create phone', true);
+    let open!: () => void;
+    lifecycleBox.createGate = new Promise<void>((resolve) => { open = resolve; });
+    const pending = fetch(`${base()}/api/sessions`, {
+      method: 'POST',
+      headers: { ...bearer(phone.token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd: '/home' }),
+    });
+    await vi.waitFor(() => expect(lifecycleCalls.at(-1)).toMatchObject({ op: 'create' }));
+    deviceRoster.get(phone.deviceId)!.revoked = true;
+    open();
+    const response = await pending;
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: 'authorization-expired' });
+    // Asked AFTER the awaits, and no PTY was spawned.
+    expect(lifecycleBox.authorizedAfterGate).toBe(true);
+    expect(lifecycleBox.spawned).toBe(false);
   });
 
   it('serves bounded workspace files only with authentication, transcript AND input consent', async () => {

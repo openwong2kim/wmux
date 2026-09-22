@@ -25,6 +25,7 @@ import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
 import { WebTerminalServer } from './web/WebTerminalServer';
+import { SessionAuthorizationExpiredError } from './web/WebTerminalServer';
 import type { WebTerminalInfo, WebSessionLifecycle } from './web/WebTerminalServer';
 import {
   loadWebStateWithDiagnostics,
@@ -2039,7 +2040,7 @@ function registerRpcHandlers(
    * `rejectWorkspaceId` in WebTerminalServer for the trade-off that buys.
    */
   sessionLifecycle = {
-    create: async ({ workspaceId, cwd, agentLaunch }) => {
+    create: async ({ workspaceId, cwd, agentLaunch, authorized }) => {
       const id = `web-${randomUUID()}`;
       // The human-readable workspace NAME is copied from a live sibling pane;
       // the daemon has no workspace registry of its own to look one up in.
@@ -2069,6 +2070,13 @@ function registerRpcHandlers(
       }
       try {
         if (relay && !/^unix:\/\/\/[A-Za-z0-9_./-]+$/.test(relay.url)) throw new Error('Unsupported Codex relay path');
+        // LAST check before a PTY exists. The HTTP layer re-authenticated after
+        // reading the body, but everything above this line is asynchronous —
+        // the workspace account environment, the installed-CLI lookup and the
+        // Codex relay reservation are each a round trip to another process —
+        // and a device revoked inside that window would still get its shell.
+        // The enclosing catch releases the relay reservation prepared above.
+        if (authorized && !await authorized()) throw new SessionAuthorizationExpiredError();
         await createSessionRpc({
           id,
           ...(agentCommand ? {exec:{command:agentCommand}} : {}),

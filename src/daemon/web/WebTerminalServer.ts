@@ -399,9 +399,23 @@ export type WebPairStartResult =
  * here is a real, monitored, persisted daemon session that the desktop GUI has
  * no layout node for.
  */
+/** The grant a create was authorized under is gone by the time the PTY spawns.
+ * Distinct from a create the daemon refuses on its own terms (409) — this one
+ * means "ask again with a credential that still holds", so it maps to 401. */
+export class SessionAuthorizationExpiredError extends Error {
+  constructor() { super('authorization-expired'); }
+}
+
 export interface WebSessionLifecycle {
-  /** Spawn a pane. Resolves to the new session's id. */
-  create(params: { workspaceId?: string; cwd?: string; agentLaunch?: AgentLaunchChoice }): Promise<{ id: string }>;
+  /** Spawn a pane. Resolves to the new session's id.
+   *
+   * `authorized` is re-checked by the daemon IMMEDIATELY before the spawn. The
+   * route's own re-check happens before this call, and `create` then awaits the
+   * workspace account environment, the installed-CLI lookup and the Codex relay
+   * reservation — every one of them a round trip to another process. A device
+   * revoked or narrowed inside that window must not end up with a shell.
+   * Rejects with `SessionAuthorizationExpiredError` when it no longer holds. */
+  create(params: { workspaceId?: string; cwd?: string; agentLaunch?: AgentLaunchChoice; authorized?: () => Promise<boolean> }): Promise<{ id: string }>;
   /** Close a pane and dispose its PTY. Called only for an id already resolved. */
   destroy(id: string): Promise<void>;
 }
@@ -3659,11 +3673,17 @@ export class WebTerminalServer {
       // The entry check saw the credential as it was when the HEADERS arrived;
       // the body and the desktop agent-options round-trip both came after. A
       // device revoked or narrowed in that window must not spawn a shell.
+      const stillAuthorized = async () => {
+        const now = await this.authenticate(req,url,false).catch(() => ({ok:false as const}));
+        return now.ok && this.mayInput(now.principal);
+      };
       const fresh = await this.authenticate(req,url,false).catch(() => ({ok:false as const}));
       if (!fresh.ok) return this.json(res,401,{error:'authorization-expired'});
       if (!this.mayInput(fresh.principal)) return this.refuseInput(res,fresh.principal,'Input permission changed');
       lifecycle
-        .create({ ...(workspaceId ? { workspaceId } : {}), ...(cwd ? { cwd } : {}), ...(agentLaunch ? {agentLaunch} : {}) })
+        // The same question again at the spawn itself: `create` has its own
+        // awaits after this point, and this check is the last one before a PTY.
+        .create({ ...(workspaceId ? { workspaceId } : {}), ...(cwd ? { cwd } : {}), ...(agentLaunch ? {agentLaunch} : {}), authorized: stillAuthorized })
         .then(({ id }) => {
           // One serializer: the new pane is described by the SAME projection
           // `GET /api/sessions` uses, so a client can append the response to
@@ -3674,6 +3694,10 @@ export class WebTerminalServer {
           return this.json(res, 201, row);
         })
         .catch((err: unknown) => {
+          // The grant went away while the create was preparing. Not the
+          // operator's situation — the caller's — so it answers like the
+          // pre-spawn re-check above, not like a refused create.
+          if (err instanceof SessionAuthorizationExpiredError) return this.json(res,401,{error:'authorization-expired'});
           // The daemon refuses a create for reasons that are the operator's
           // situation, not a bug: the session cap, memory pressure, a shutdown
           // in flight. 409 says "not now" and carries the daemon's own wording,
