@@ -38,7 +38,8 @@ describe('workspace file reads', () => {
     await fs.writeFile(path.join(root, 'binary'), Buffer.from([0, 1, 2]));
     await expect(sessionFiles(root, 'binary', 0, true)).rejects.toMatchObject({status:415});
   });
-  it('paginates directories without dropping entries', async () => {
+  // 205 creates plus a per-entry lstat is slow on the Windows runner under load.
+  it('paginates directories without dropping entries', { timeout: 30_000 }, async () => {
     await Promise.all(Array.from({length:205}, (_, i) => fs.writeFile(path.join(root, `file-${i}`), '')));
     const first = await sessionFiles(root, '', 0, false);
     const second = await sessionFiles(root, '', 200, false);
