@@ -162,7 +162,21 @@ try {
     const killed=JSON.parse(await readFile(statePath,'utf8'));
     assert.equal(hint(killed,pane.id),expectedFirst,`first hint after daemon kill: ${hint(killed,pane.id)}`);
     assert.equal(hint(killed,secondPane.id),expectedSecond,`second hint after daemon kill: ${hint(killed,secondPane.id)}`);
-    // The account server must be back before recovery: relay preparation probes it.
+    // Recover ONCE with no account socket at all. Relay preparation falls back
+    // to an ordinary spawn, so nothing live rewrites the hint — and the hint was
+    // only ever read to build the resume command, never copied into the
+    // recovered pane's meta, so this recovery's own state save erased it.
+    await startDaemon();
+    await until(async()=>{
+      const recovered=JSON.parse(await readFile(statePath,'utf8'));
+      return hint(recovered,pane.id)!==undefined && hint(recovered,secondPane.id)!==undefined;
+    },'recovery without a relay preserving both hints',40000);
+    const relayless=JSON.parse(await readFile(statePath,'utf8'));
+    assert.equal(hint(relayless,pane.id),expectedFirst,`first hint erased by relayless recovery: ${hint(relayless,pane.id)}`);
+    assert.equal(hint(relayless,secondPane.id),expectedSecond,`second hint erased by relayless recovery: ${hint(relayless,secondPane.id)}`);
+    control.destroy();control=undefined;
+    await stop(daemon,daemonClosed);
+    // The account server must be back before the LIVE recovery: relay preparation probes it.
     await startAccountServer();
     await startDaemon();
     await attach(pane.id);await attach(secondPane.id,true);
@@ -175,6 +189,7 @@ try {
     assert.equal((await fetch(`${base}/api/sessions/${pane.id}`,{method:'DELETE',headers})).status,204);
     assert.equal((await fetch(`${base}/api/sessions/${secondPane.id}`,{method:'DELETE',headers})).status,204);
     console.log(JSON.stringify({ok:true,mode:'account-server-death',hintSurvivedTransportLoss:true,
+      hintSurvivedRelaylessRecovery:true,
       twoPaneExactRecovery:true,fullDaemonProcess:true,paneStatesAfterDeath:paneStates,
       providerNetwork:'owned-loopback-fixture',providerRequests}));
   } else if(killMode) {

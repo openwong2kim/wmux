@@ -1662,6 +1662,13 @@ async function recoverSessions(
       if (persisted.resumeBinding && !managed.meta.resumeBinding) {
         managed.meta.resumeBinding = persisted.resumeBinding;
       }
+      // Same reason, for the owned-Codex hint: the saved value is read only to
+      // build the resume command. When recovery runs without a relay — no
+      // account server, so no live capture to rewrite it — the save below would
+      // erase the hint the recovered pane is still sitting on.
+      if (persisted.codexRelayResume && !managed.meta.codexRelayResume) {
+        managed.meta.codexRelayResume = persisted.codexRelayResume;
+      }
     }
     // Build combined state: recovered (live) sessions + everything we
     // intentionally left untouched (originally-dead within TTL, plus
@@ -1799,6 +1806,7 @@ async function restartSupervisedSession(
   if (fresh) {
     if (meta.resumeBinding && !fresh.meta.resumeBinding) fresh.meta.resumeBinding = meta.resumeBinding;
     if (meta.lastDetectedAgent && !fresh.meta.lastDetectedAgent) fresh.meta.lastDetectedAgent = meta.lastDetectedAgent;
+    if (meta.codexRelayResume && !fresh.meta.codexRelayResume) fresh.meta.codexRelayResume = meta.codexRelayResume;
   }
 
   // Same external-death safety net as the create/recovery paths.
@@ -2592,6 +2600,7 @@ function registerRpcHandlers(
         if (!startFresh) {
           promotedSession.meta.resumeBinding = session.resumeBinding;
           promotedSession.meta.lastDetectedAgent = session.lastDetectedAgent;
+          promotedSession.meta.codexRelayResume = session.codexRelayResume;
           const offer = resumeOfferForRecovered(promotedSession.meta);
           if (offer) recoveredAgentShellIds.set(sessionId, offer as AgentSlug);
           if (session.resumeBinding && normalizeResumeCwd(session.resumeBinding.cwd) === normalizeResumeCwd(promotedSession.meta.cwd)
