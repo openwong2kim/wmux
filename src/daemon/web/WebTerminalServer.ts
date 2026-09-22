@@ -1895,7 +1895,11 @@ export class WebTerminalServer {
         // omitted rather than `false` for the same reason: that is the shape a
         // daemon predating the route serves, and a phone reads both as false.
         ...(this.opts?.allowTranscript === true ? { turnFiles: true } : {}),
-        workspaceFiles: this.opts?.allowTranscript === true,
+        // Advertised only when BOTH grants the route needs are held, the same
+        // way `agentSettings` is: a phone that reads this as "browsable" and
+        // then meets a 403 on every listing is worse off than one that never
+        // showed the browser.
+        workspaceFiles: this.mayInput(principal) && this.opts?.allowTranscript === true,
         liveActivityHostScope: true,
         agentSettings: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.agentSettings !== undefined,
         agentLaunch: this.mayInput(principal) && this.deps.agentLaunchOptions !== undefined,
@@ -2439,7 +2443,13 @@ export class WebTerminalServer {
    * normal and the phone should say "no repository here", not "something broke".
    */
   private async handleSessionFiles(res: http.ServerResponse, rawId: string, url: URL, principal: WebPrincipal): Promise<void> {
+    // Two grants, not one. The root is `meta.spawnCwd`, which for a plain shell
+    // pane is the operator's home directory — a read-only device's transcript
+    // consent is consent to see what the agent said, not a file browser over
+    // $HOME. `--allow-input` is the grant that already means "this device acts
+    // on this machine", so the route lives behind both.
     if (this.opts?.allowTranscript !== true) return this.json(res, 403, { error: 'files-disabled' });
+    if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Workspace files require input permission');
     const id = decodePathSegment(rawId);
     const managed = id === null ? null : this.attachableSession(principal, id);
     if (!managed?.meta.spawnCwd) return this.json(res, 404, { error: 'session not found' });

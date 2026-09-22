@@ -1176,15 +1176,27 @@ correctly and the client discarded it.
 ## Workspace files (phone gap extension)
 
 `workspaceFiles: true` in `/api/config` advertises `GET /api/sessions/:id/files`.
-The route requires `--allow-transcript` and the same session visibility as pane attach.
-The root is the daemon-recorded `spawnCwd`, never OSC cwd or a client absolute path.
+The route requires BOTH `--allow-transcript` and the input grant, and the same
+session visibility as pane attach. `workspaceFiles` is advertised only when both
+hold, so a read-only device is never shown a browser it would be 403'd out of.
+The two grants are deliberate: the root is the daemon-recorded `spawnCwd`, which
+for a plain shell pane is the operator's home directory, and transcript consent
+alone does not cover browsing it. The root is never OSC cwd or a client
+absolute path.
 `path` is relative (default root); symlinks and parent traversal are refused.
+Dotfiles and dot-directories (`.git`, `.env`, `.ssh`, …) are excluded at any
+depth from listing, search, read and preview. They answer exactly as a path that
+does not exist does — 404 `file-unavailable` — so the route cannot be used to
+prove that a secret is there.
 Directory responses contain `{path, entries:[{name,path,directory}], nextOffset}`;
-pass `offset=nextOffset` for another page (200 entries per page).
+pass `offset=nextOffset` for another page (200 entries per page). Entries are
+ordered over the whole directory (directories first, then name) before paging,
+so pages never overlap or drop an entry.
 `preview=1` returns `{path,mime,text}` for UTF-8 or `{path,mime,base64}` for PNG/JPEG.
 Reads are capped at 1 MiB. Responses are no-store. Errors: 400 invalid path/offset,
-403 files-disabled/symlink/outside-workspace, 404 unavailable, 409 file-changed,
-413 file-too-large, 415 binary-file/not-a-file. No write route is implied.
+403 files-disabled/input-required/symlink/outside-workspace, 404 unavailable,
+409 file-changed, 413 file-too-large, 415 binary-file/not-a-file. No write route
+is implied.
 
 
 ### Live Activity host ownership
@@ -1200,7 +1212,8 @@ local activity; other host notifications remain independently routable.
 ### Filename search
 
 `query` (1–200 characters, nonblank) on the files route searches relative paths
-recursively below `path`. It excludes `.git` and never follows symlinks. Search
+recursively below `path`. It excludes every dot-entry (`.git` included) and
+never follows symlinks. Search
 returns the directory response plus `truncated`, with no `nextOffset`. A request
 is bounded to 200 matches, 10,000 entries, 32 nested levels, and a three-second
 cooperative traversal deadline. `truncated: true` also reports inaccessible or

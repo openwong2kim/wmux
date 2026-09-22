@@ -7,12 +7,22 @@ export class SessionFileError extends Error {
 }
 const MAX_BYTES = 1024 * 1024;
 const PAGE_SIZE = 200;
+/** The route refuses an offset past this, so a directory beyond it can never be
+ * paged to the end anyway; stop collecting there instead of holding the rest. */
+const MAX_ENTRIES = 100000;
+const isHidden = (name: string) => name !== '' && name !== '.' && name.startsWith('.');
 
 /** Workspace-relative, bounded reads. Never trust the terminal's OSC cwd. */
 export async function sessionFiles(root: string, relative: string, offset: number, preview: boolean) {
   if (relative.includes('\0') || path.isAbsolute(relative) || relative.split(/[\\/]/).includes('..')) {
     throw new SessionFileError(400, 'invalid-path');
   }
+  // `.git`, `.env`, `.ssh` and every other dot-entry are out of this route's
+  // reach at ANY depth. The refusal is the same 404 a path that is simply not
+  // there gets, so asking cannot tell an existing secret from a missing one.
+  // Checked before the symlink walk for that reason: an lstat-based 403 would
+  // be an answer about the path too.
+  if (relative.split(/[\\/]/).some(isHidden)) throw new SessionFileError(404, 'file-unavailable');
   const base = await fs.realpath(root);
   const target = path.resolve(base, relative || '.');
   const inside = (p: string) => p === base || p.startsWith(base + path.sep);
@@ -26,17 +36,19 @@ export async function sessionFiles(root: string, relative: string, offset: numbe
   if (!inside(await fs.realpath(target))) throw new SessionFileError(403, 'outside-workspace');
   if (!preview) {
     const directory = await fs.opendir(target);
-    const entries: Array<{name: string; path: string; directory: boolean}> = [];
-    let seen = 0;
-    let hasMore = false;
+    const all: Array<{name: string; path: string; directory: boolean}> = [];
     for await (const entry of directory) {
       if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) continue;
-      if (seen++ < offset) continue;
-      if (entries.length === PAGE_SIZE) { hasMore = true; break; }
-      entries.push({ name: entry.name, path: path.relative(base, path.join(target, entry.name)), directory: entry.isDirectory() });
+      if (isHidden(entry.name)) continue;
+      if (all.length === MAX_ENTRIES) break;
+      all.push({ name: entry.name, path: path.relative(base, path.join(target, entry.name)), directory: entry.isDirectory() });
     }
-    entries.sort((a, b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name));
-    return { path: relative, entries, nextOffset: hasMore ? offset + entries.length : null };
+    // Sort the WHOLE directory before slicing. Sorting each page separately
+    // ordered it against opendir's arbitrary order, so an entry could appear on
+    // two pages or on none as the caller walked the offsets.
+    all.sort((a, b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name));
+    const entries = all.slice(offset, offset + PAGE_SIZE);
+    return { path: relative, entries, nextOffset: offset + entries.length < all.length ? offset + entries.length : null };
   }
   const before = await fs.stat(target);
   if (!before.isFile()) throw new SessionFileError(415, 'not-a-file');
@@ -92,7 +104,6 @@ export async function searchSessionFiles(root: string, relative: string, query: 
         if (++scanned > 10000 || entries.length >= PAGE_SIZE) {
           return { path: relative, entries, nextOffset: null, truncated: true };
         }
-        if (entry.name === '.git') continue;
         if (entry.path.toLocaleLowerCase().includes(needle)) entries.push(entry);
         if (entry.directory) {
           if (directory.depth < 32) pending.push({ path: entry.path, depth: directory.depth + 1 });

@@ -3983,13 +3983,20 @@ describe('WebTerminalServer', () => {
     expect(lifecycleCalls).toHaveLength(before);
   });
 
-  it('serves bounded workspace files only with authentication and transcript consent', async () => {
+  it('serves bounded workspace files only with authentication, transcript AND input consent', async () => {
     const info = await startRO();
     const headers = bearer(info.token as string);
     expect((await fetch(`${base()}/api/sessions/s1/files`)).status).toBe(401);
     expect((await fetch(`${base()}/api/sessions/s1/files`, { headers })).status).toBe(403);
     await server.stop();
-    const enabled = await startWithTranscript();
+    // Transcript consent ALONE is not a file browser over the spawn directory,
+    // which for a plain shell pane is the operator's home.
+    const readOnly = await startWithTranscript();
+    const readOnlyAuth = bearer(readOnly.token as string);
+    expect((await fetch(`${base()}/api/sessions/s1/files`, { headers: readOnlyAuth })).status).toBe(403);
+    expect((await (await fetch(`${base()}/api/config`, {headers: readOnlyAuth})).json()).workspaceFiles).toBe(false);
+    await server.stop();
+    const enabled = await server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: true });
     const auth = bearer(enabled.token as string);
     managed.meta.spawnCwd = uploadsDir;
     fs.writeFileSync(path.join(uploadsDir, 'review.txt'), 'review this change');
@@ -4007,6 +4014,27 @@ describe('WebTerminalServer', () => {
     expect((await fetch(`${base()}/api/sessions/s1/files?query=`, {headers:auth})).status).toBe(400);
     expect((await fetch(`${base()}/api/sessions/s1/files?path=..%2Fsecret&preview=1`, {headers:auth})).status).toBe(400);
     expect((await fetch(`${base()}/api/sessions/missing/files`, {headers:auth})).status).toBe(404);
+
+    // Dot-entries at any depth answer exactly as a path that is not there does,
+    // so the route cannot be used to prove a secret exists.
+    fs.mkdirSync(path.join(uploadsDir, '.git'), {recursive: true});
+    fs.writeFileSync(path.join(uploadsDir, '.git', 'config'), '[remote]');
+    fs.writeFileSync(path.join(uploadsDir, '.env'), 'TOKEN=private');
+    fs.mkdirSync(path.join(uploadsDir, '.ssh'), {recursive: true});
+    fs.writeFileSync(path.join(uploadsDir, '.ssh', 'id_ed25519'), 'PRIVATE KEY');
+    const absent = await fetch(`${base()}/api/sessions/s1/files?path=nothing-here.txt&preview=1`, {headers:auth});
+    expect(absent.status).toBe(404);
+    const absentBody = await absent.json();
+    for (const hidden of ['.git/config', '.env', '.ssh/id_ed25519', '.git']) {
+      const response = await fetch(`${base()}/api/sessions/s1/files?path=${encodeURIComponent(hidden)}&preview=1`, {headers:auth});
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual(absentBody);
+    }
+    const hiddenListing = await (await fetch(`${base()}/api/sessions/s1/files`, {headers: auth})).json();
+    expect(hiddenListing.entries.map((e: {name: string}) => e.name)).toEqual(['review.txt']);
+    expect((await (await fetch(`${base()}/api/sessions/s1/files?query=env`, {headers: auth})).json()).entries).toEqual([]);
+    // A normal file is unaffected.
+    expect((await fetch(`${base()}/api/sessions/s1/files?path=review.txt&preview=1`, {headers:auth})).status).toBe(200);
   });
 
   // ── pane diff (read-only git) ──────────────────────────────────────────────
