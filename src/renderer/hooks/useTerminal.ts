@@ -19,6 +19,7 @@ import { pasteClipboardImage } from '../utils/imagePaste';
 import { openTerminalUrl } from '../utils/browserPaneActions';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { claimFit } from '../utils/fitGuard';
+import { installAltClickTrackingGuard } from '../utils/altClickUnderMouseTracking';
 import { createMouseOwnedHint } from '../utils/mouseOwnedHint';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
 import { createOsc52Handler } from '../utils/osc52Clipboard';
@@ -1132,7 +1133,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // macOS it only does so for Option+drag, and only with this flag on —
       // without it a Mac user has no way to select in such a pane. Cost: on
       // macOS, Option+drag no longer does column selection (iTerm2 makes the
-      // same trade). Option+click-to-move-cursor is unaffected.
+      // same trade). Option+click-to-move-cursor stays at shell prompts; see
+      // installAltClickTrackingGuard for why it is off under mouse tracking.
       macOptionClickForcesSelection: true,
       // Enable xterm 6's Windows-aware ConPTY handling. ConPTY emits spurious
       // row-change events on resize; on a build where the reflow path is taken
@@ -1332,6 +1334,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // 레이스할 두 번째 네이티브 writer가 없고(Electron paste role registerAccelerator:false),
     // Linux는 middle-click PRIMARY-selection paste 오검출 위험까지 있어 등록에서 제외한다.
     if (isMac) { container.addEventListener('paste', blockNativePaste, true); }
+    // #1437: Option+drag now forces a selection under mouse tracking, so a
+    // short Option+click would reach xterm's click-to-move-cursor and type
+    // arrow keys into the app. Keep that feature to shell prompts.
+    const detachAltClickGuard = installAltClickTrackingGuard(container, terminal);
 
     // Issue #167: keep the hidden IME textarea empty while idle. xterm only
     // clears it on blur, so IME-committed text accumulates there after it was
@@ -2815,6 +2821,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
       if (isMac) { container.removeEventListener('paste', blockNativePaste, true); }
+      detachAltClickGuard();
       detachAltScreenWheel();
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
