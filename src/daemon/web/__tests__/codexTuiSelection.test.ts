@@ -62,3 +62,15 @@ it('does not let a system thread response claim a pending foreground request ID'
   tracker.fromServer(response(1,b));
   expect(tracker.current()).toBeUndefined();
 });
+
+it('recovers after a request whose reply never arrives',()=>{
+  let now=0;const tracker=new CodexTuiSelectionTracker(()=>now,10);
+  tracker.fromTui({id:1,method:'thread/start'});
+  expect(tracker.current()).toBeUndefined();
+  now=11; // the reply is now past its deadline and would be discarded anyway
+  // A retry reusing the same ID must not read the dead pending as a duplicate
+  // outstanding request and retire the tracker for the rest of the connection.
+  tracker.fromTui({id:1,method:'thread/start'});
+  tracker.fromServer(response(1));
+  expect(tracker.current()).toEqual({threadId:a,cwd:'/repo',generation:2});
+});

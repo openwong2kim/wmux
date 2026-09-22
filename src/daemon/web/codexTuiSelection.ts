@@ -35,13 +35,23 @@ export class CodexTuiSelectionTracker {
   private pending?: {id:string | number; generation:number; deadline:number; threadId?:string};
   constructor(private readonly now:()=>number = Date.now, private readonly responseTimeoutMs = 15000) {}
 
+  /** A request whose reply never arrived must not pin the tracker forever: past
+   * its deadline `fromServer` would discard the reply anyway, so the pending is
+   * already dead. Dropping it here only restores availability — the selection
+   * this request cleared stays cleared. */
+  private dropExpiredPending():void {
+    if (this.pending && this.now() > this.pending.deadline) this.pending = undefined;
+  }
+
   current(): CodexTuiSelection | undefined {
+    this.dropExpiredPending();
     if (this.retired || this.pending) return undefined;
     return this.selected ? {...this.selected} : undefined;
   }
 
   fromTui(value:unknown):void {
     if (this.retired) return;
+    this.dropExpiredPending();
     const message = record(value);
     if (!message || typeof message.method !== 'string') return;
     const params = record(message.params);
