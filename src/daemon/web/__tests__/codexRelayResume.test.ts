@@ -53,10 +53,13 @@ describe('owned Codex relay recovery identity',()=>{
     captureCodexRelayResume(pane,{live:true,selection});
     expect(codexRelayResumeCommand(pane)).toContain(`resume ${a}`);
   }));
-  // Without the cwd guard this returned the bare `codex` command, and recovery
-  // — whose own cwd check sits behind this early return — relaunched the agent
-  // in the fallback home directory instead of leaving the pane a plain shell.
-  it('launches nothing when the pane cwd is gone',()=>fixture(({pane,selection})=>{
+  // The caller's cwd guard sits BEHIND this function's early return, so the
+  // rule has to hold here. It did, but only because the revalidation below
+  // dereferences the cwd and throws; this pins it as the function's own
+  // contract rather than a side effect of how the binding happens to be
+  // checked. (`undefined` and the bare command spawn alike today — the manager
+  // defaults execLaunchCommand to exec.command.)
+  it('returns no launch command when the pane cwd is gone',()=>fixture(({pane,selection})=>{
     captureCodexRelayResume(pane,{live:true,selection});
     pane.cwd=path.join(pane.cwd,'deleted-directory');
     expect(codexRelayResumeCommand(pane)).toBeUndefined();

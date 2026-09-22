@@ -37,10 +37,12 @@ export function captureCodexRelayResume(pane:Pane,observed:CodexRelayObservation
  * Revalidate the persisted account/cwd/rollout before constructing a fixed argv fragment. */
 export function codexRelayResumeCommand(pane:Pane):string|undefined {
   if(!isPhoneCodexSession(pane))return undefined;
-  // A pane whose spawn directory is gone gets no launch command at all — the
-  // caller's own "cwd gone → fresh, not wrong-target resume" rule. Returning
-  // `base` here would jump that guard and auto-launch codex in the fallback
-  // home directory, which is neither the reviewed repository nor a shell.
+  // A pane whose directory is gone gets no launch command — the caller's own
+  // "cwd gone → fresh, not wrong-target resume" rule, which its early return on
+  // this function sits in front of. Until now that rule was upheld here only as
+  // a side effect of `realpathSync(pane.cwd)` throwing inside the try below, so
+  // a validation that stopped dereferencing the cwd would have silently
+  // resumed a thread in a directory that no longer exists. Say it outright.
   if(!fs.existsSync(pane.cwd))return undefined;
   const base=pane.exec!.command;
   const binding=pane.codexRelayResume;

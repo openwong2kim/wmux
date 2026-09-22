@@ -1194,7 +1194,7 @@ ordered over the whole directory (directories first, then name) before paging,
 so pages never overlap or drop an entry.
 `preview=1` returns `{path,mime,text}` for UTF-8 or `{path,mime,base64}` for PNG/JPEG.
 Reads are capped at 1 MiB. Responses are no-store. Errors: 400 invalid path/offset,
-403 files-disabled/input-required/symlink/outside-workspace, 404 unavailable,
+403 files-disabled/read-only/symlink/outside-workspace, 404 unavailable,
 409 file-changed, 413 file-too-large, 415 binary-file/not-a-file. No write route
 is implied.
 
