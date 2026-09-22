@@ -1,3 +1,103 @@
+## [3.59.0] — 2026-09-22
+
+### Added
+
+- **More of the desktop is reachable from the phone app.** Phone-created
+  Codex panes can change their live settings, and each pane resumes its exact
+  Codex session after a daemon restart or crash. New phone routes cover
+  workspace files and search, Git stage/unstage/commit, pull request listing,
+  desktop browser control, workspace creation, shared quick commands,
+  desktop accounts and usage, and run history. Every mutating phone route
+  re-checks authorization after the request body arrives. (#1443)
+
+- **Videos in the phone turn view.** A transcript that names an mp4 or a
+  QuickTime movie — a screen recording, a render an agent just produced — used
+  to be a filename and nothing else: the route that serves transcript media
+  accepted images only and refused everything else as an unsupported type. A
+  new route alongside it serves those files too, streamed rather than held in
+  memory, under the same `--allow-transcript` grant and the same two
+  directories (the pane's spawn cwd and the uploads directory) as the images
+  already were. Caps are per kind: 8 MiB for an image, 128 MiB for a video.
+  Clients learn the route exists from `turnFiles` in `/api/config`, and the
+  existing image route is unchanged. (#1433)
+
+- **Fragmented mp4 plays too.** A clip rendered for streaming (`ffmpeg
+  -movflags frag_keyframe+empty_moov`) carries a different container brand than
+  a plain mp4, and the first cut of this route would have refused it as an
+  unsupported type — in exactly the case the route was built for. (#1433)
+
+- Chat view is off by default while experimental; enable it under Settings → Appearance ("Chat view for Claude Code sessions"). Off hides the Terminal / Chat switch and shows every pane as a terminal; the choice persists.
+
+- Switch local session panes between Terminal and an assistant-ui based Chat view, preserving the running terminal and Minimal mode.
+
+- Read Claude Code conversation history, tool results and expandable code; send messages to the verified session with approval and session-change guards, refusing while a Claude Code dialog (such as `/model`) owns the keyboard.
+
+- Use the official assistant-ui Thread layout with a constrained conversation column, rounded composer, scroll-to-latest button and per-conversation drafts.
+
+### Changed
+
+- Simplify sidebar shortcuts to Remote and Fleet, alongside Search. Remote opens the existing browser and phone pairing controls.
+
+- Label tools-panel tabs and separate their selection from secondary controls.
+
+- Refine the Agent conversation composer, messages, recovery notice and briefing; group Loop and Schedules under Automation while keeping Mode and New session visible.
+
+- Present mission channels as task records with task context, workspace navigation, expandable discussion history, and a readable theme-aware layout.
+
+- Distinguish shared discussion posts from agent-directed mentions in the channel composer.
+
+- Open Fleet over the tools panel without shrinking terminals; preserve the covered panel's state.
+
+- Improve Fleet's responsive cards, status labels, typography and pane/running summary.
+
+- Refined workspace navigation with inset rows, a clear selection edge, more readable Git metadata, and status tooltips. Workspace search uses the shared focused input treatment; terminal tabs have clearer labels and consistent close-button hover and keyboard focus states.
+
+- Added sidebar shortcuts for Search, Remote, and Fleet, with compact-mode access and footer settings. Refined the outer workspace frame and increased workspace-menu text legibility.
+
+- Replaced the titlebar chevron with a labeled tools-panel toggle and consolidated settings in the sidebar. Minimal/Standard presets remain available, including settings access from the compact rail.
+
+### Fixed
+
+- **Terminal search now covers the whole scrollback (#1266).** The bundled
+  search addon capped every scan at the viewport bottom, so a search started
+  while scrolled up (browsing history — the normal moment to search) only
+  found matches in the visible slice: highlights stopped at the fold,
+  Next/Previous wrapped inside it, and regions revealed by scrolling showed
+  no highlights at all — reading as "search isn't functional" and "stale
+  artifacts frozen in the pane". The scan bound now runs to the true buffer
+  end (patched via `patches/`, guarded by a install-state test like the
+  webgl atlas patch).
+
+- **A pane whose app owns the mouse now says how to select text in it.** When
+  a program running in a pane turns on mouse tracking — Claude Code does this
+  around its input box — every drag is delivered to that program, so no
+  highlight ever appears and the pane looks like it cannot be copied from. A
+  real drag attempt in such a pane now surfaces a brief hint naming the
+  modifier that does select (Shift on Windows and Linux, Option on macOS), at
+  most once every 20 seconds. Bare clicks, right-clicks, and panes where
+  selection already works stay silent, and nothing is taken away from the
+  program. (#1438)
+
+- **Option+drag selects text on macOS while an app owns the mouse.** When a
+  program in the pane turns on mouse tracking — Claude Code does around its
+  input box — a plain drag goes to that program and nothing is highlighted.
+  Windows and Linux had Shift+drag as the way around it; macOS had nothing at
+  all. Holding Option while dragging now selects, in local panes and in
+  writable remote mirrors. A short Option+click in such an app no longer
+  types arrow keys into it (it used to walk Claude Code's prompt history);
+  Option+click still moves the cursor at a shell prompt. Option+drag column
+  selection is no longer available on macOS. The "hold Shift to select"
+  hint added in #1438 now names Option on macOS, and stays quiet for the
+  Option+drag that already selects there. (#1442)
+
+- Desktop Chat now distinguishes sending, active response, confirmed completion, unconfirmed completion, lost updates, and ended agent sessions. Quiet output alone does not imply completion; the status includes a Terminal shortcut.
+
+- Preserve conversation history and drafts when updates fail, and reject stale snapshots arriving after disconnect. Resolve live agent identity even when terminal name detection is empty.
+
+- Reconcile terminal repaint activity with recorded `end_turn` only when no newer submitted or hook-signaled work exists. After an unconfirmed interruption, block chat sends so a new request cannot append to Claude's restored terminal draft; continue that turn in Terminal first.
+
+- Add a real-Claude desktop E2E script covering send/completion, view switching, draft preservation, interruption, and optional isolated-daemon timeout/recovery.
+
 ## [3.58.0] — 2026-09-19
 
 ### Added
