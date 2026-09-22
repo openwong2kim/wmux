@@ -764,7 +764,11 @@ export class DeviceStore {
       return { ok: false, reason: 'bad-apns-environment' };
     }
 
-    if (input.hostID !== undefined && (typeof input.hostID !== 'string' || !/^[a-f0-9]{64}$/.test(input.hostID))) {
+    // `null` drops the host binding, exactly as it drops a token: after a host
+    // change the phone has to be able to say "the old host is not mine any
+    // more" instead of leaving a stale hostID to be pushed against.
+    if (input.hostID !== undefined && input.hostID !== null &&
+        (typeof input.hostID !== 'string' || !/^[a-f0-9]{64}$/.test(input.hostID))) {
       return { ok: false, reason: 'bad-token' };
     }
     const previous = record.liveActivity;
@@ -777,7 +781,8 @@ export class DeviceStore {
     if (activity === null) delete merged.activityToken;
     else if (activity !== undefined) merged.activityToken = activity;
     if (rawEnv !== undefined) merged.apnsEnvironment = rawEnv;
-    if (typeof input.hostID === "string") merged.hostID = input.hostID;
+    if (input.hostID === null) delete merged.hostID;
+    else if (typeof input.hostID === "string") merged.hostID = input.hostID;
     record.liveActivity = merged;
 
     if (!this.persist()) {

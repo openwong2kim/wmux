@@ -41,6 +41,19 @@ describe('DeviceStore — live activity registration merges', () => {
     expect(s.registerLiveActivity(id, { hostID: '../private' })).toEqual({ok:false,reason:'bad-token'});
   });
 
+  it('clears the host binding on an explicit null, the way a token is cleared', async () => {
+    const s = store();
+    const id = await paired(s);
+    expect(s.registerLiveActivity(id, { pushToStartToken: START, hostID: 'd'.repeat(64) })).toEqual({ok:true});
+    // The phone moved to another host: without a clear path the old hostID
+    // outlives the move and every later push carries it.
+    expect(s.registerLiveActivity(id, { hostID: null })).toEqual({ok:true});
+    const [target] = s.liveActivityTargets();
+    expect(target.liveActivity.hostID).toBeUndefined();
+    expect(target.liveActivity.pushToStartToken).toBe(START);
+    expect(store().liveActivityTargets()[0].liveActivity.hostID).toBeUndefined();
+  });
+
   it('★ an omitted field is kept, not erased — the two tokens arrive separately', async () => {
     const s = store();
     const id = await paired(s);
