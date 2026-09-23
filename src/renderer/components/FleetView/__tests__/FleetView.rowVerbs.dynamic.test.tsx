@@ -351,6 +351,8 @@ describe('FleetView — row verbs', () => {
     // Scoped to pty-1: an earlier test's delayed Enter (submitBracketedPasteToPty
     // sends '\r' on a timer) can land on its own pty while this test runs.
     expect(write.mock.calls.filter(([pty]) => pty === 'pty-1')).toEqual([]);
+    // …and the refused text went nowhere else either.
+    expect(write.mock.calls.some(([, data]) => String(data).includes('late message'))).toBe(false);
     expect(useStore.getState().toasts.some((toast) => toast.message.startsWith('Not sent'))).toBe(true);
   });
 
