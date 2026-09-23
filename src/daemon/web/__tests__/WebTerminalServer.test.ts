@@ -367,7 +367,7 @@ function makeApprovals() {
   const listeners = new Set<(e: ApprovalEvent) => void>();
   const records: ApprovalRequest[] = [];
   const resolveCalls: Array<{ id: string; decision: string; resolvedBy: string }> = [];
-  const box: { result: ApprovalResolveResult; listThrows: boolean } = {
+  const box: { result: ApprovalResolveResult; listThrows: boolean; beforeAuthorize?: () => void } = {
     result: { ok: true, durable: true, request: mkApproval({ state: 'resolved', decision: 'approve', resolvedBy: 'web' }) },
     listThrows: false,
   };
@@ -381,7 +381,18 @@ function makeApprovals() {
     },
     pendingCount: () => records.filter((r) => r.state === 'pending').length,
     resolve: async (params) => {
-      resolveCalls.push({ ...params });
+      // Recorded without the `authorize` closure, so call assertions stay plain
+      // data. The closure is still exercised the way the real registry does:
+      // against the pending record, with the same two refusals.
+      const { authorize, ...recorded } = params;
+      resolveCalls.push(recorded);
+      const pending = records.find((r) => r.id === params.id && r.state === 'pending');
+      if (authorize && pending) {
+        box.beforeAuthorize?.();
+        const verdict = await authorize(pending);
+        if (verdict === 'expired') return { ok: false, reason: 'unauthorized' };
+        if (verdict === 'read-only') return { ok: false, reason: 'input-revoked' };
+      }
       return box.result;
     },
     onEvent: (listener) => {
@@ -428,7 +439,7 @@ describe('WebTerminalServer', () => {
   let resolveCalls: Array<{ id: string; decision: string; resolvedBy: string }>;
   let emitApproval: (type: ApprovalEvent['type'], request: ApprovalRequest) => void;
   let approvalListeners: Set<(e: ApprovalEvent) => void>;
-  let approvalBox: { result: ApprovalResolveResult; listThrows: boolean };
+  let approvalBox: { result: ApprovalResolveResult; listThrows: boolean; beforeAuthorize?: () => void };
   let deviceRoster: Map<string, { secret: string; name?: string; revoked: boolean }>;
   let deviceMintCalls: Array<{ name?: string }>;
   let pushRegistrations: Array<{ deviceId: string; apnsToken: string; publicKey: string }>;
@@ -4031,6 +4042,67 @@ describe('WebTerminalServer', () => {
     // Asked AFTER the awaits, and no PTY was spawned.
     expect(lifecycleBox.authorizedAfterGate).toBe(true);
     expect(lifecycleBox.spawned).toBe(false);
+  });
+
+  it('re-authorizes an approval answer after the request body completes', async () => {
+    await startRW();
+    const phone = await pairDevice('Approval phone', true);
+    approvalRecords.push(mkApproval({ id: 'ap-mid' }));
+    const body = JSON.stringify({ decision: 'approve' });
+    expect(await withdrawMidBody(`${base()}/api/approvals/ap-mid`, phone, body.slice(0, 8), body.slice(8), (r) => { r.revoked = true; }))
+      .toBe(401);
+    expect(resolveCalls).toEqual([]);
+  });
+
+  it('a grant narrowed mid-body refuses a permission gate but still answers a screen prompt', async () => {
+    await startRW();
+    const body = JSON.stringify({ decision: 'approve' });
+    const gatePhone = await pairDevice('Gate phone', true);
+    approvalRecords.push(mkApproval({ id: 'ap-gate-mid', kind: 'awaiting_permission', toolName: 'Bash' }));
+    expect(await withdrawMidBody(`${base()}/api/approvals/ap-gate-mid`, gatePhone, body.slice(0, 8), body.slice(8), (r) => { r.allowInput = false; }))
+      .toBe(403);
+    expect(resolveCalls).toEqual([]);
+
+    // The read-only carve-out: a screen prompt needs no input grant.
+    const promptPhone = await pairDevice('Prompt phone', true);
+    approvalRecords.push(mkApproval({ id: 'ap-prompt-mid' }));
+    expect(await withdrawMidBody(`${base()}/api/approvals/ap-prompt-mid`, promptPhone, body.slice(0, 8), body.slice(8), (r) => { r.allowInput = false; }))
+      .toBe(200);
+    expect(resolveCalls).toEqual([
+      { id: 'ap-prompt-mid', decision: 'approve', resolvedBy: `device Prompt phone (${promptPhone.deviceId})` },
+    ]);
+  });
+
+  // The registry re-checks from inside its mutation link, after the route's own
+  // re-check: a resolve can queue behind others and re-read the screen first.
+  it('the registry re-check refuses a device revoked or narrowed after the route re-check', async () => {
+    await startRW();
+    const phone = await pairDevice('Queued phone', true);
+    approvalRecords.push(mkApproval({ id: 'ap-queued' }));
+    approvalBox.beforeAuthorize = () => { deviceRoster.get(phone.deviceId)!.revoked = true; };
+    const revoked = await postApproval(phone.token, 'ap-queued', { decision: 'approve' });
+    expect(revoked.status).toBe(401);
+    expect(await revoked.json()).toEqual({ error: 'authorization-expired' });
+    expect(resolveCalls).toHaveLength(1);
+
+    const narrowed = await pairDevice('Narrowed phone', true);
+    approvalRecords.push(mkApproval({ id: 'ap-queued-gate', kind: 'awaiting_permission', toolName: 'Bash' }));
+    approvalBox.beforeAuthorize = () => {
+      (deviceRoster.get(narrowed.deviceId) as unknown as { allowInput: boolean }).allowInput = false;
+    };
+    const refused = await postApproval(narrowed.token, 'ap-queued-gate', { decision: 'approve' });
+    expect(refused.status).toBe(403);
+    expect((await refused.json()).error).toMatch(/^read-only:/);
+  });
+
+  it('answers 500 rather than hanging when the registry list throws after the body arrives', async () => {
+    await startRW();
+    const phone = await pairDevice('List phone', true);
+    approvalRecords.push(mkApproval({ id: 'ap-list' }));
+    const body = JSON.stringify({ decision: 'approve' });
+    expect(await withdrawMidBody(`${base()}/api/approvals/ap-list`, phone, body.slice(0, 8), body.slice(8), () => { approvalBox.listThrows = true; }))
+      .toBe(500);
+    expect(resolveCalls).toEqual([]);
   });
 
   it('serves bounded workspace files only with authentication, transcript AND input consent', async () => {

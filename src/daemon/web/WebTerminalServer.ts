@@ -2074,7 +2074,7 @@ export class WebTerminalServer {
       return this.handleApprovalsList(res, principal);
     }
     if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
-      return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length), principal);
+      return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length), principal, url);
     }
     // #783 — runtime escape hatch: stop holding tool calls for a remote answer,
     // from the next call on. This WIDENS what proceeds without remote review
@@ -4432,6 +4432,7 @@ export class WebTerminalServer {
     res: http.ServerResponse,
     rawId: string,
     principal: WebPrincipal,
+    url: URL,
   ): void {
     const approvals = this.deps.approvals;
     if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
@@ -4467,6 +4468,7 @@ export class WebTerminalServer {
     }
 
     this.readJsonBody(req, res, (body) => {
+      void (async () => {
       const decision = (body as { decision?: unknown } | null)?.decision;
       if (decision !== 'approve' && decision !== 'deny') {
         return this.json(res, 400, { error: "decision must be 'approve' or 'deny'" });
@@ -4487,12 +4489,40 @@ export class WebTerminalServer {
         return this.json(res, 400, { error: 'invalid-choice-key' });
       }
       const choiceKey = hasChoiceKey ? rawChoiceKey as string : undefined;
+      // The brain exclusion and the permission-gate check before the body saw
+      // the credential as it was when the HEADERS arrived. A device revoked or
+      // narrowed while the body was on the wire must not answer, so both are
+      // applied again to a freshly resolved principal.
+      const sameCaller = (now: WebPrincipal): boolean =>
+        now.kind === 'operator'
+          ? principal.kind === 'operator'
+          : principal.kind === 'device' && now.deviceId === principal.deviceId;
+      const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+      if (!fresh.ok || !sameCaller(fresh.principal)) return this.json(res, 401, { error: 'authorization-expired' });
+      const current = approvals.list().pending.find((r) => r.id === id);
+      if (current && fresh.principal.kind === 'device' && this.isBrainApproval(current.sessionId)) {
+        return this.json(res, 404, { error: 'not-found' });
+      }
+      if (current?.kind === 'awaiting_permission' && !this.mayInput(fresh.principal)) {
+        return this.refuseInput(res, fresh.principal, 'Input permission changed');
+      }
+      // And once more from inside the registry's mutation link, which can queue
+      // behind other resolves and re-read the screen before it writes. The
+      // input grant matters only for a permission gate: a screen prompt stays
+      // answerable read-only (see above).
+      const authorize = async (record: ApprovalRequest): Promise<'ok' | 'expired' | 'read-only'> => {
+        const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+        if (!now.ok || !sameCaller(now.principal)) return 'expired';
+        if (record.kind === 'awaiting_permission' && !this.mayInput(now.principal)) return 'read-only';
+        return 'ok';
+      };
       approvals
         .resolve({
           id,
           decision,
-          resolvedBy: describePrincipal(principal),
+          resolvedBy: describePrincipal(fresh.principal),
           ...(choiceKey !== undefined ? { choiceKey } : {}),
+          authorize,
         })
         .then((result) => {
           if (result.ok) {
@@ -4531,6 +4561,12 @@ export class WebTerminalServer {
               return this.json(res, 422, { error: 'invalid-choice-key' });
             case 'not-found':
               return this.json(res, 404, { error: 'not-found' });
+            // The registry's own re-check refused: same answers as the
+            // post-body check above.
+            case 'unauthorized':
+              return this.json(res, 401, { error: 'authorization-expired' });
+            case 'input-revoked':
+              return this.refuseInput(res, fresh.principal, 'Input permission changed');
             default: {
               // A reason this surface does not know how to map. Never silently
               // report success — say the server does not understand its own
@@ -4549,6 +4585,14 @@ export class WebTerminalServer {
             /* socket already gone */
           }
         });
+      })().catch((err: unknown) => {
+        this.deps.log('warn', `[web] approval resolve failed: ${errMsg(err)}`);
+        try {
+          this.json(res, 500, { error: 'approvals unavailable' });
+        } catch {
+          /* socket already gone */
+        }
+      });
     });
   }
 
