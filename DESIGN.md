@@ -260,6 +260,7 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 | 2026-09-05 | Inter is bundled after all (400/500/600, OFL), reversing the earlier "not bundled → system-ui" shortcut in globals.css; inline code in the brain transcript is mono on `--text-sub`, never accent; the Mode chip is text + dot at rest, no tinted fill | The audit measured the UI in `system-ui` (the "gave up on typography" signal) and counted amber spent on code spans and a permanent red-tinted pill — the one-lit-instrument thesis fails when prose and a mode label glow |
 | 2026-09-21 | Refine the outer shell first: Orca-inspired global sidebar shortcuts, 13px navigation and pane labels, quieter neutral selections, and an inset terminal frame. Workspace menu descriptions use 11px text. Existing terminal content stays in place; assistant-ui chat is a later phase | Improves readability and navigation while preserving the terminal-first workspace and existing actions |
 | 2026-09-21 | Replace the titlebar's ambiguous double-chevron with a 28px-high tools-panel icon + 13px label, explicit open state, and a mirrored panel-side icon. Settings lives in the full/compact sidebar, including its onboarding target. Preserve Minimal/Standard visibility recipes and saved individual preferences | Makes the top-right control explain its target and removes duplicate settings. Minimal remains a supported contributor-requested workflow, with settings always reachable to restore Standard |
+| 2026-09-23 | Fleet becomes a three-section attention board (Needs you / Running / collapsed Idle) with a one-line detail, elapsed time, a changed-since-last-look dot and row verbs; section and detail come from one pure selector | Twelve identical idle cards with no last activity answered nothing. Fleet is triage — what needs me, what is moving, what has gone quiet and for how long — and the sidebar stays the map |
 
 ### Desktop conversation view
 
@@ -298,15 +299,31 @@ column or changing terminal dimensions. Mirror its anchoring when the sidebar
 moves right. Keep the covered tools dock mounted and inert so drafts survive
 and keyboard focus cannot enter covered controls. Fleet stays non-modal: visible
 workspace areas remain usable; close, Escape and selecting an agent retain their
-existing behavior. Use a compact, single-column task list: status, task/project
-name, latest reported activity, and a pane-opening action. User labels and
-mission titles precede terminal titles; generic agent names are secondary context.
-Use 13px row titles, 12px activity and 11px metadata; idle rows remain readable.
-Search and status filters narrow the list without stealing input focus. Keep
-selection attached to pane identity across status reordering. Raw terminal output
-belongs in an opt-in preview of the selected pane, never in every row. A completed
-turn is labeled as a completed response, not proof that a whole task succeeded.
-At narrow widths, activity stacks under the title; the overlay width stays 720px.
+existing behavior. Fleet is an attention board (andon), not a map: one
+single-column list in three sections — Needs you, Running, Idle — decided by one
+pure selector (`groupFleetPanes`) that other consumers reuse. Needs you holds
+input requests, errors, stopped supervision, unconfirmed (no report for 30m+)
+panes and finished turns until the pane is focused; waiting without a question
+is Idle. Section headers are quiet 11px uppercase text and are not drawn when
+their section is empty (no dead gauges). Idle collapses to one `Idle N · oldest
+2d` row that is itself a roving option; when nothing needs you, one plain line
+says so above it. Each row: status dot + label, task/project name (user labels
+and mission titles before terminal titles), a one-line detail (the question,
+the agent's last message, or its tool activity) and elapsed time since the
+newest activity/output/turn stamp. Status colours are the sidebar's dot
+vocabulary (red = needs you/error, amber = running, hollow amber ring =
+unconfirmed); no yellow. A needs-you row whose status changed since Fleet was
+last closed gets a 6px `--text-main` dot, never amber. Row verbs (Jump,
+Message, Stash, Label, Close) live behind a hover/focus ⋮ using the pane
+actions menu, with m / s / l / Backspace on a focused row; Close confirms with
+Cancel as the default; remote rows offer Jump only. Icons come from
+`icons.tsx`, never emoji; the status cross, the supervision ⟳ chip and the ⋮
+trigger keep the glyphs the sidebar and pane header already use. Search and status filters narrow the
+sections without stealing input focus; selection stays attached to pane
+identity across reordering. Raw terminal output belongs in an opt-in preview of
+the selected pane, never in every row. Use 13px row titles, 12px detail and
+11px metadata; at narrow widths the detail stacks under the title and the
+overlay width stays 720px.
 
 ### Channel task records (2026-09-22)
 

@@ -8,6 +8,7 @@ import type { RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
 import type { InboxItem } from '../../stores/selectors/approvalInbox';
 import { deadlineForItem, remainingSeconds } from './approvalCountdown';
 import { focusNotificationTarget } from '../../hooks/useNotificationListener';
+import { IconWarning } from '../icons';
 
 // gpui button recipes (theme-safe). Approve = primary warm CTA; deny = danger
 // tinted. The row still carries the critical/attention border + countdown, so
@@ -147,7 +148,7 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
               }}
             >
               <div className="flex items-center gap-2">
-                <span style={{ color: 'var(--accent-red)', fontSize: 14 }}>⚠</span>
+                <span aria-hidden="true" className="inline-flex" style={{ color: 'var(--accent-red)' }}><IconWarning size={14} /></span>
                 <span className="text-sm font-semibold font-mono" style={{ color: 'var(--text-main)' }}>
                   {t('fleet.approvals.a2aTitle')}
                 </span>

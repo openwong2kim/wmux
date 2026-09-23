@@ -47,6 +47,17 @@ export function IconCheck({ size = 14 }: { size?: number }) {
   return <Icon size={size}><polyline points="2.5,7.4 5.8,10.5 11.5,3.5" /></Icon>;
 }
 
+/** Triangle with an exclamation mark — a warning that needs a decision. */
+export function IconWarning({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M7 1.8 L12.6 11.8 H1.4 Z" />
+      <line x1="7" y1="5.4" x2="7" y2="8.2" />
+      <line x1="7" y1="10" x2="7" y2="10.1" />
+    </Icon>
+  );
+}
+
 /** Four equal quadrants — layout templates / snap-to-layout verbs. */
 export function IconGrid({ size = 14 }: { size?: number }) {
   return (

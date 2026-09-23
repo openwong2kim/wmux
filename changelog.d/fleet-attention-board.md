@@ -1,6 +1,11 @@
 ### Changed
 
-- **Fleet is a task list, not a card grid.** Large terminal cards are replaced by compact, task-first rows with status filters and a workspace/task search. Each row shows the reported activity or pending question and an explicit pane action; raw terminal output moved into an optional preview of the selected pane. A completed response is no longer presented as a successful task, and stale activity is shown as unconfirmed.
+- **Fleet is an attention board, not a card grid.** Agents are listed in three sections — Needs you, Running and Idle — instead of a grid of identical cards. Each row shows one line of detail (the pending question, the agent's last message or its current tool activity) and how long it has been since the pane last did anything. Idle agents collapse into a single "Idle N · oldest 2d" row, and when nothing needs you Fleet says so. Status filters and search narrow the sections; raw terminal output moved into an optional preview of the selected pane. A finished response is no longer presented as a successful task, and stale activity is shown as unconfirmed.
+
+### Added
+
+- **See what changed while Fleet was closed.** A needs-you row whose status changed since you last closed Fleet is marked with a small dot.
+- **Act on a pane without leaving Fleet.** Each row has Jump, Message, Stash, Label and Close verbs behind a ⋮ menu, with m / s / l / Backspace shortcuts on a focused row. Close asks first, with Cancel as the default. Remote rows offer Jump only, and a running agent cannot be messaged mid-turn.
 
 ### Fixed
 

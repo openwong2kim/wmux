@@ -8,7 +8,7 @@ import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { useT } from '../../hooks/useT';
 import { t } from '../../i18n';
 import { useStore } from '../../stores';
-import { IconChevronDir, IconExternalLink } from '../icons';
+import { IconCheck, IconChevronDir, IconExternalLink } from '../icons';
 import { fleetTitle } from './fleetPresentation';
 import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
 
@@ -108,8 +108,9 @@ export function FleetCardEvidenceBadge({ task }: { task: Task | undefined }): Re
       <span
         className="flex-shrink-0"
         style={{ color: verified > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}
+        aria-hidden="true"
       >
-        ✓
+        <IconCheck size={12} />
       </span>
       <span className="truncate text-[var(--text-muted)]">
         evidence {verified}/{total}
@@ -140,7 +141,9 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
   const isAwaitingInput = card.agentStatus === 'awaiting_input' || row.detailSource === 'question';
   const statusLabel = card.unverifiable ? t('fleet.status.unconfirmed')
     : card.agentStatus === 'complete' ? t('fleet.status.turnComplete') : t(icon.labelKey);
-  const statusColor = card.unverifiable ? 'var(--accent-yellow)'
+  // Unconfirmed reuses the sidebar's hollow amber ring (.sidebar-dot-unverifiable):
+  // the pane still claims to be working, nothing backs the claim.
+  const statusColor = card.unverifiable ? 'var(--accent-cursor)'
     : card.agentStatus === 'idle' ? 'var(--text-sub)' : icon.dotVar;
   const detail = row.detail ?? t(row.detailKey);
   const elapsed = row.idleForMs !== undefined && row.idleForMs >= IDLE_SHOW_AFTER_MS
