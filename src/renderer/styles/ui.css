@@ -594,6 +594,9 @@
 .wmux-fleet-quiet { padding: 14px 8px 2px; font-size: 12px; color: var(--text-sub); }
 .wmux-fleet-idle-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; margin-top: 8px; padding: 6px 8px; font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; text-align: left; color: var(--text-sub); outline: none; }
 .wmux-fleet-idle-toggle:hover, .wmux-fleet-idle-toggle[aria-selected="true"] { background: var(--bg-surface); color: var(--text-main); }
+/* The idle summary carries an age ("oldest 3m"); uppercase would turn it into
+ * "3M", which reads as months or millions. */
+.wmux-fleet-idle-toggle, .wmux-fleet-section-header[data-fleet-section="idle"] { text-transform: none; letter-spacing: normal; }
 .wmux-fleet-idle-toggle:focus-visible { outline: none !important; box-shadow: inset 2px 0 var(--accent-blue); }
 .wmux-fleet-idle-chevron { display: inline-flex; transition: transform 120ms; }
 .wmux-fleet-idle-toggle[aria-expanded="true"] .wmux-fleet-idle-chevron { transform: rotate(90deg); }
