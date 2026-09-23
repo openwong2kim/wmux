@@ -121,6 +121,12 @@ export interface ApprovalRegistryDeps {
   log?: (level: 'info' | 'warn' | 'error', message: string) => void;
   /** Injected for test determinism. */
   now?: () => number;
+  /**
+   * Upper bound on one `authorize` call (see ApprovalResolveParams). It runs
+   * inside the single mutation link, so a check that never settles would stall
+   * every resolve, hook and expiry behind it. Default 2000 ms.
+   */
+  authorizeTimeoutMs?: number;
   /** Injected for test determinism. */
   newId?: () => string;
   /**
@@ -472,7 +478,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
             } as ApprovalResolveResult,
           };
         }
-        // Last check before the waiter wakes and the tool runs.
+        // Last check before the waiter wakes and the tool runs. Nothing awaits
+        // between this and the entry check today; it stays so that a future
+        // await added above cannot silently reopen the window.
         const refusedGate = await this.reauthorize(params, record);
         if (refusedGate) return { result: refusedGate };
         record.state = 'resolved';
@@ -798,8 +806,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   /**
    * Run the caller's `authorize` (see ApprovalResolveParams). Returns the
    * refusal to answer with, or null when the caller may proceed. A throw, a
-   * rejection or an unknown verdict fails closed as `unauthorized`. The record
-   * is left exactly as it was: no state change, no event, no persist.
+   * rejection or an unknown verdict fails closed as `unauthorized`; a check
+   * that does not settle within `authorizeTimeoutMs` fails closed as
+   * `authorization-unconfirmed` (retryable — the credential may be fine). The
+   * record is left exactly as it was: no state change, no event, no persist.
    */
   private async reauthorize(
     params: ApprovalResolveParams,
@@ -807,16 +817,30 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   ): Promise<ApprovalResolveResult | null> {
     const authorize = params.authorize;
     if (!authorize) return null;
-    let verdict: 'ok' | 'expired' | 'read-only';
+    let verdict: 'ok' | 'expired' | 'read-only' | 'timeout';
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      verdict = await authorize(copyRequest(record));
-    } catch {
+      verdict = await Promise.race([
+        authorize(copyRequest(record)),
+        new Promise<'timeout'>((resolve) => {
+          timer = setTimeout(() => resolve('timeout'), this.deps.authorizeTimeoutMs ?? 2000);
+        }),
+      ]);
+    } catch (err) {
+      this.deps.log?.('warn', `[approvals] authorize threw for ${record.id}: ${String(err)}`);
       verdict = 'expired';
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
     if (verdict === 'ok') return null;
+    if (verdict === 'timeout') {
+      this.deps.log?.('warn', `[approvals] authorize timed out for ${record.id}`);
+    }
     return {
       ok: false,
-      reason: verdict === 'read-only' ? 'input-revoked' : 'unauthorized',
+      reason: verdict === 'read-only' ? 'input-revoked'
+        : verdict === 'timeout' ? 'authorization-unconfirmed'
+        : 'unauthorized',
       request: copyRequest(record),
     };
   }

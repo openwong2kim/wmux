@@ -4567,6 +4567,10 @@ export class WebTerminalServer {
               return this.json(res, 401, { error: 'authorization-expired' });
             case 'input-revoked':
               return this.refuseInput(res, fresh.principal, 'Input permission changed');
+            // 503, not 401: the check could not finish, which says nothing
+            // about the credential — a 401 would send the phone to re-pair.
+            case 'authorization-unconfirmed':
+              return this.json(res, 503, { error: 'authorization-unconfirmed' });
             default: {
               // A reason this surface does not know how to map. Never silently
               // report success — say the server does not understand its own

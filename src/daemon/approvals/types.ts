@@ -203,7 +203,10 @@ export type ApprovalResolveFailure =
   // ('unauthorized') or no longer carries the input grant this record needs
   // ('input-revoked'). NOT an expiry: the request stays pending, untouched.
   | 'unauthorized'
-  | 'input-revoked';
+  | 'input-revoked'
+  // The caller's `authorize` did not settle in time. Fail closed, but this is
+  // not a verdict on the credential: the caller may retry.
+  | 'authorization-unconfirmed';
 
 export type ApprovalResolveResult =
   | {

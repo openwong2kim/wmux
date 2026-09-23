@@ -1453,6 +1453,26 @@ describe('ApprovalRegistry — caller re-authorization inside the chain', () => 
     expect(h.events.map((e) => e.type)).toEqual(['create']);
   });
 
+  // The check runs inside the one mutation link. A check that never settles
+  // must not stall the registry: it fails closed as retryable, the record is
+  // untouched, and the next resolve still runs.
+  it('an authorize that never settles times out, stays pending, and frees the chain', async () => {
+    const woken: string[] = [];
+    const h = makeRegistry({ notifyGateResolved: (id) => { woken.push(id); }, authorizeTimeoutMs: 20 });
+    const id = await pendingGate(h);
+
+    const res = await h.registry.resolve({
+      id, decision: 'approve', resolvedBy: 'phone', authorize: () => new Promise<Verdict>(() => {}),
+    });
+
+    expect(res).toMatchObject({ ok: false, reason: 'authorization-unconfirmed' });
+    expect(woken).toEqual([]);
+    expect(h.registry.list().pending.map((r) => r.id)).toEqual([id]);
+    const next = await h.registry.resolve({ id, decision: 'approve', resolvedBy: 'desktop' });
+    expect(next).toMatchObject({ ok: true });
+    expect(woken).toEqual([id]);
+  });
+
   it('a grant narrowed during the screen re-read writes no bytes', async () => {
     const h = makeRegistry();
     await awaitingInput(h.registry);
