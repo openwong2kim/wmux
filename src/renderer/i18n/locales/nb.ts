@@ -213,6 +213,8 @@ export const nb = {
   'settings.sc.renameWorkspace': 'Gi nytt navn til arbeidsområde',
   'settings.sc.highlightPane': 'Fremhev aktivt panel',
   'settings.sc.floatingPane': 'Veksle flytende terminal',
+  'settings.sc.prevWorkspace': 'Forrige arbeidsområde',
+  'settings.sc.nextWorkspace': 'Neste arbeidsområde',
   'settings.shortcutsNotAvailable': 'Tilpasning av innebygde snarveier er ikke tilgjengelig ennå.',
   'settings.aboutTagline': 'Windows-native terminal for AI-agenter',
   'settings.builtWith': 'Bygget med',

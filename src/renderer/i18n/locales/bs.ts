@@ -213,6 +213,8 @@ export const bs = {
   'settings.sc.renameWorkspace': 'Preimenuj radni prostor',
   'settings.sc.highlightPane': 'Istakni aktivni panel',
   'settings.sc.floatingPane': 'Prebaci plutajući terminal',
+  'settings.sc.prevWorkspace': 'Prethodni radni prostor',
+  'settings.sc.nextWorkspace': 'Sljedeći radni prostor',
   'settings.shortcutsNotAvailable': 'Prilagođavanje ugrađenih prečica još nije dostupno.',
   'settings.aboutTagline': 'Windows nativni terminal za AI agente',
   'settings.builtWith': 'Izgrađeno pomoću',

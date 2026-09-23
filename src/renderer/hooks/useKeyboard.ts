@@ -876,7 +876,9 @@ export function useKeyboard() {
       // never sees Alt+Arrow as an escape sequence. Both rows can be switched
       // off in Settings → Shortcuts (#1455) — the disabled gate above then
       // hands the key to the pane for TUIs that bind Alt+Up/Down themselves.
-      if (alt && !literalCtrl && !shift && key === 'ArrowUp') {
+      // `!e.metaKey` keeps this handler to the exact modifier set that gate
+      // matches, so a disabled row can never still fire as Meta+Alt+Arrow.
+      if (alt && !literalCtrl && !shift && !e.metaKey && key === 'ArrowUp') {
         e.preventDefault();
         e.stopImmediatePropagation();
         prefixActions.prevWorkspace();
@@ -885,7 +887,7 @@ export function useKeyboard() {
 
       // Alt+ArrowDown: next workspace (pairs with Alt+ArrowUp = previous).
       // stopImmediatePropagation so xterm never sees Alt+Arrow as an escape seq.
-      if (alt && !literalCtrl && !shift && key === 'ArrowDown') {
+      if (alt && !literalCtrl && !shift && !e.metaKey && key === 'ArrowDown') {
         e.preventDefault();
         e.stopImmediatePropagation();
         prefixActions.nextWorkspace();

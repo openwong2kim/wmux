@@ -213,6 +213,8 @@ export const fr = {
   'settings.sc.renameWorkspace': 'Renommer l\'espace de travail',
   'settings.sc.highlightPane': 'Mettre en évidence le panneau actif',
   'settings.sc.floatingPane': 'Basculer le terminal flottant',
+  'settings.sc.prevWorkspace': 'Espace de travail précédent',
+  'settings.sc.nextWorkspace': 'Espace de travail suivant',
   'settings.shortcutsNotAvailable': 'La personnalisation des raccourcis intégrés n\'est pas encore disponible.',
   'settings.aboutTagline': 'Terminal d\'agent IA natif Windows',
   'settings.builtWith': 'Construit avec',

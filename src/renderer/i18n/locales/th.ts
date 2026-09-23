@@ -213,6 +213,8 @@ export const th = {
   'settings.sc.renameWorkspace': 'เปลี่ยนชื่อพื้นที่ทำงาน',
   'settings.sc.highlightPane': 'เน้นพาเนลที่ใช้งาน',
   'settings.sc.floatingPane': 'สลับเทอร์มินัลลอย',
+  'settings.sc.prevWorkspace': 'พื้นที่ทำงานก่อนหน้า',
+  'settings.sc.nextWorkspace': 'พื้นที่ทำงานถัดไป',
   'settings.shortcutsNotAvailable': 'การปรับแต่งแป้นพิมพ์ลัดในตัวยังไม่พร้อมใช้งาน',
   'settings.aboutTagline': 'เทอร์มินัล AI เอเจนต์เนทีฟสำหรับ Windows',
   'settings.builtWith': 'สร้างด้วย',

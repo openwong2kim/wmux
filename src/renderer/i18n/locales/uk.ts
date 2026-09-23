@@ -213,6 +213,8 @@ export const uk = {
   'settings.sc.renameWorkspace': 'Перейменувати робочий простір',
   'settings.sc.highlightPane': 'Підсвітити активну панель',
   'settings.sc.floatingPane': 'Перемкнути плаваючий термінал',
+  'settings.sc.prevWorkspace': 'Попередній робочий простір',
+  'settings.sc.nextWorkspace': 'Наступний робочий простір',
   'settings.shortcutsNotAvailable': 'Налаштування вбудованих сполучень поки що недоступне.',
   'settings.aboutTagline': 'Нативний термінал AI-агентів для Windows',
   'settings.builtWith': 'Створено з',

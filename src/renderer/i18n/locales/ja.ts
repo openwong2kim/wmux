@@ -215,6 +215,8 @@ export const ja = {
   'settings.sc.renameWorkspace': 'ワークスペースの名前変更',
   'settings.sc.highlightPane': 'アクティブペインをハイライト',
   'settings.sc.floatingPane': 'フローティングターミナル切替',
+  'settings.sc.prevWorkspace': '前のワークスペース',
+  'settings.sc.nextWorkspace': '次のワークスペース',
   'settings.shortcutsNotAvailable': 'ショートカットのカスタマイズはまだ利用できません。',
   'settings.aboutTagline': 'Windows ネイティブ AI エージェントターミナル',
   'settings.builtWith': '使用技術',

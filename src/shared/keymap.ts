@@ -177,8 +177,9 @@ export function builtinCombosFor(platform: NodeJS.Platform): ReadonlySet<string>
 
 /**
  * Render a stored combo for display on macOS: `Ctrl` becomes `⌘` unless the
- * binding is literal-Ctrl on every OS. Mirrors `shortcutLabel()`'s old inline
- * logic in SettingsPanel and the `cmdOrCtrl` split in useKeyboard.ts.
+ * binding is literal-Ctrl on every OS, and `Alt` becomes `⌥`. Mirrors
+ * `shortcutLabel()`'s old inline logic in SettingsPanel and the `cmdOrCtrl`
+ * split in useKeyboard.ts.
  */
 /** The subset of KeyboardEvent both disabled-shortcut gates match against. */
 export interface ShortcutKeyEventLike {
@@ -198,9 +199,6 @@ const CODE_TO_COMBO_CHAR: Record<string, string> = {
   Minus: '-',
   Equal: '=',
 };
-
-// Keys whose advertised combo is bare `Alt+<key>` (see the #1455 rows).
-const ALT_ONLY_KEYS: ReadonlySet<string> = new Set(['ArrowUp', 'ArrowDown']);
 
 function comboCharFromCode(code: string): string | null {
   if (code.startsWith('Key')) return code.slice(3);
@@ -237,8 +235,13 @@ export function matchesDisabledShortcut(
     // #1455 — bare Alt+Arrow (workspace cycling) is the one advertised family
     // without Ctrl, and it reads the same on every OS. Any other modifier
     // makes it a different combo (Ctrl+Alt+Arrow / ⌘+Alt+Arrow focus panes).
+    // Only combos that are rows of the table count, so a new `Alt+<key>` row
+    // is covered without touching this branch.
     if (e.ctrlKey || e.metaKey || e.shiftKey) return false;
-    return [e.key, e.code].some((k) => ALT_ONLY_KEYS.has(k) && disabled.includes('Alt+' + k));
+    return [e.key, e.code].some((k) => {
+      const combo = 'Alt+' + k;
+      return disabled.includes(combo) && WMUX_KEYMAP.some((row) => row.combo === combo);
+    });
   }
   if (!e.ctrlKey && !e.metaKey) return false;
 
@@ -263,7 +266,9 @@ export function matchesDisabledShortcut(
 }
 
 export function macDisplayCombo(entry: KeymapEntry): string {
-  return entry.literalCtrl ? entry.combo : entry.combo.replace(/Ctrl/g, '⌘');
+  const combo = entry.literalCtrl ? entry.combo : entry.combo.replace(/Ctrl/g, '⌘');
+  // Mac keyboards label the key Option (⌥), not Alt.
+  return combo.replace(/\bAlt\b/g, '⌥');
 }
 
 /**

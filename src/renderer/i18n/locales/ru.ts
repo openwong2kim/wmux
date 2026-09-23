@@ -213,6 +213,8 @@ export const ru = {
   'settings.sc.renameWorkspace': 'Переименовать рабочее пространство',
   'settings.sc.highlightPane': 'Подсветить активную панель',
   'settings.sc.floatingPane': 'Переключить плавающий терминал',
+  'settings.sc.prevWorkspace': 'Предыдущее рабочее пространство',
+  'settings.sc.nextWorkspace': 'Следующее рабочее пространство',
   'settings.shortcutsNotAvailable': 'Настройка встроенных сочетаний пока недоступна.',
   'settings.aboutTagline': 'Нативный терминал AI-агентов для Windows',
   'settings.builtWith': 'Создано с использованием',

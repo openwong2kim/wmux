@@ -213,6 +213,8 @@ export const da = {
   'settings.sc.renameWorkspace': 'Omdøb arbejdsområde',
   'settings.sc.highlightPane': 'Fremhæv aktivt panel',
   'settings.sc.floatingPane': 'Skift flydende terminal',
+  'settings.sc.prevWorkspace': 'Forrige arbejdsområde',
+  'settings.sc.nextWorkspace': 'Næste arbejdsområde',
   'settings.shortcutsNotAvailable': 'Tilpasning af indbyggede genveje er endnu ikke tilgængelig.',
   'settings.aboutTagline': 'Windows-native AI-agentterminal',
   'settings.builtWith': 'Bygget med',

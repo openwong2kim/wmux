@@ -213,6 +213,8 @@ export const ms = {
   'settings.sc.renameWorkspace': 'Namakan semula ruang kerja',
   'settings.sc.highlightPane': 'Serlahkan panel aktif',
   'settings.sc.floatingPane': 'Togol terminal terapung',
+  'settings.sc.prevWorkspace': 'Ruang kerja sebelumnya',
+  'settings.sc.nextWorkspace': 'Ruang kerja seterusnya',
   'settings.shortcutsNotAvailable': 'Penyesuaian pintasan terbina dalam belum tersedia.',
   'settings.aboutTagline': 'Terminal ejen AI asli Windows',
   'settings.builtWith': 'Dibina dengan',

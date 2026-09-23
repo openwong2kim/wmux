@@ -213,6 +213,8 @@ export const vi = {
   'settings.sc.renameWorkspace': 'Đổi tên không gian làm việc',
   'settings.sc.highlightPane': 'Làm nổi khung đang hoạt động',
   'settings.sc.floatingPane': 'Bật/tắt terminal nổi',
+  'settings.sc.prevWorkspace': 'Không gian làm việc trước',
+  'settings.sc.nextWorkspace': 'Không gian làm việc tiếp theo',
   'settings.shortcutsNotAvailable': 'Tuỳ chỉnh phím tắt tích hợp chưa khả dụng.',
   'settings.aboutTagline': 'Terminal AI agent gốc cho Windows',
   'settings.builtWith': 'Xây dựng với',

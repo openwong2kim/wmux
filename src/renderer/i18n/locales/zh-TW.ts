@@ -213,6 +213,8 @@ export const zhTW = {
   'settings.sc.renameWorkspace': '重新命名工作區',
   'settings.sc.highlightPane': '突顯作用中面板',
   'settings.sc.floatingPane': '切換浮動終端機',
+  'settings.sc.prevWorkspace': '上一個工作區',
+  'settings.sc.nextWorkspace': '下一個工作區',
   'settings.shortcutsNotAvailable': '尚未提供內建快速鍵自訂功能。',
   'settings.aboutTagline': 'Windows 原生 AI 代理終端機',
   'settings.builtWith': '使用技術',

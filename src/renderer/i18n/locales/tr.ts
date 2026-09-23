@@ -213,6 +213,8 @@ export const tr = {
   'settings.sc.renameWorkspace': 'Çalışma alanını yeniden adlandır',
   'settings.sc.highlightPane': 'Aktif bölmeyi vurgula',
   'settings.sc.floatingPane': 'Yüzen terminali değiştir',
+  'settings.sc.prevWorkspace': 'Önceki çalışma alanı',
+  'settings.sc.nextWorkspace': 'Sonraki çalışma alanı',
   'settings.shortcutsNotAvailable': 'Yerleşik kısayol özelleştirmesi henüz mevcut değil.',
   'settings.aboutTagline': 'Windows için yerel AI aracı terminali',
   'settings.builtWith': 'İle inşa edildi',

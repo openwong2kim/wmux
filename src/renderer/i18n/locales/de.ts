@@ -213,6 +213,8 @@ export const de = {
   'settings.sc.renameWorkspace': 'Arbeitsbereich umbenennen',
   'settings.sc.highlightPane': 'Aktiven Bereich hervorheben',
   'settings.sc.floatingPane': 'Schwebendes Terminal umschalten',
+  'settings.sc.prevWorkspace': 'Vorheriger Arbeitsbereich',
+  'settings.sc.nextWorkspace': 'Nächster Arbeitsbereich',
   'settings.shortcutsNotAvailable': 'Anpassung der integrierten Kürzel ist noch nicht verfügbar.',
   'settings.aboutTagline': 'Natives AI-Agent-Terminal für Windows',
   'settings.builtWith': 'Erstellt mit',

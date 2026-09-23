@@ -213,6 +213,8 @@ export const id = {
   'settings.sc.renameWorkspace': 'Ganti nama ruang kerja',
   'settings.sc.highlightPane': 'Sorot panel aktif',
   'settings.sc.floatingPane': 'Alihkan terminal mengambang',
+  'settings.sc.prevWorkspace': 'Ruang kerja sebelumnya',
+  'settings.sc.nextWorkspace': 'Ruang kerja berikutnya',
   'settings.shortcutsNotAvailable': 'Kustomisasi pintasan bawaan belum tersedia.',
   'settings.aboutTagline': 'Terminal agen AI native Windows',
   'settings.builtWith': 'Dibangun dengan',

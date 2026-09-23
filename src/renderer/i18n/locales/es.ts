@@ -213,6 +213,8 @@ export const es = {
   'settings.sc.renameWorkspace': 'Renombrar espacio de trabajo',
   'settings.sc.highlightPane': 'Destacar panel activo',
   'settings.sc.floatingPane': 'Alternar terminal flotante',
+  'settings.sc.prevWorkspace': 'Espacio de trabajo anterior',
+  'settings.sc.nextWorkspace': 'Siguiente espacio de trabajo',
   'settings.shortcutsNotAvailable': 'La personalización de atajos integrados aún no está disponible.',
   'settings.aboutTagline': 'Terminal de agente de IA nativo para Windows',
   'settings.builtWith': 'Construido con',

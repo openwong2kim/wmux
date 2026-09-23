@@ -213,6 +213,8 @@ export const ptBR = {
   'settings.sc.renameWorkspace': 'Renomear espaço de trabalho',
   'settings.sc.highlightPane': 'Destacar painel ativo',
   'settings.sc.floatingPane': 'Alternar terminal flutuante',
+  'settings.sc.prevWorkspace': 'Espaço de trabalho anterior',
+  'settings.sc.nextWorkspace': 'Próximo espaço de trabalho',
   'settings.shortcutsNotAvailable': 'A personalização dos atalhos integrados ainda não está disponível.',
   'settings.aboutTagline': 'Terminal de agente IA nativo do Windows',
   'settings.builtWith': 'Construído com',

@@ -213,6 +213,8 @@ export const it = {
   'settings.sc.renameWorkspace': 'Rinomina area di lavoro',
   'settings.sc.highlightPane': 'Evidenzia pannello attivo',
   'settings.sc.floatingPane': 'Attiva/disattiva terminale fluttuante',
+  'settings.sc.prevWorkspace': 'Area di lavoro precedente',
+  'settings.sc.nextWorkspace': 'Area di lavoro successiva',
   'settings.shortcutsNotAvailable': 'La personalizzazione delle scorciatoie integrate non è ancora disponibile.',
   'settings.aboutTagline': 'Terminale nativo per agenti IA su Windows',
   'settings.builtWith': 'Realizzato con',

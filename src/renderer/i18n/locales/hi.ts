@@ -213,6 +213,8 @@ export const hi = {
   'settings.sc.renameWorkspace': 'कार्यक्षेत्र का नाम बदलें',
   'settings.sc.highlightPane': 'सक्रिय पैनल को हाइलाइट करें',
   'settings.sc.floatingPane': 'फ़्लोटिंग टर्मिनल टॉगल करें',
+  'settings.sc.prevWorkspace': 'पिछला कार्यक्षेत्र',
+  'settings.sc.nextWorkspace': 'अगला कार्यक्षेत्र',
   'settings.shortcutsNotAvailable': 'अंतर्निहित शॉर्टकट अनुकूलन अभी उपलब्ध नहीं है।',
   'settings.aboutTagline': 'Windows नेटिव AI एजेंट टर्मिनल',
   'settings.builtWith': 'इनसे निर्मित',

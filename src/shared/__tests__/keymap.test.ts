@@ -4,6 +4,7 @@ import {
   builtinCombosFor,
   collidesWithKeymap,
   ADVERTISED_SHORTCUTS,
+  macDisplayCombo,
 } from '../keymap';
 
 /**
@@ -229,8 +230,17 @@ describe('Alt+Arrow workspace cycling rows (#1455)', () => {
     expect(matchesDisabledShortcut(['Alt+ArrowUp'], { ...up, shiftKey: true }, 'win32')).toBe(false);
   });
 
-  it('only the Alt+Arrow family has a Ctrl-less branch', () => {
+  it('only combos that are rows of the table match', () => {
+    // Alt+ArrowLeft is not a wmux binding, so there is nothing to disable.
     expect(matchesDisabledShortcut(['Alt+ArrowLeft'], { ...up, key: 'ArrowLeft', code: 'ArrowLeft' }, 'win32'))
       .toBe(false);
+  });
+
+  it('renders as ⌥ on macOS (no Alt key on a Mac keyboard)', () => {
+    const row = ADVERTISED_SHORTCUTS.find((e) => e.combo === 'Alt+ArrowUp');
+    expect(row && macDisplayCombo(row)).toBe('⌥+ArrowUp');
+    // Ctrl rows keep their existing rendering.
+    expect(macDisplayCombo({ combo: 'Ctrl+Shift+D', descriptionKey: null })).toBe('⌘+Shift+D');
+    expect(macDisplayCombo({ combo: 'Ctrl+M', literalCtrl: true, descriptionKey: null })).toBe('Ctrl+M');
   });
 });

@@ -213,6 +213,8 @@ export const ar = {
   'settings.sc.renameWorkspace': 'إعادة تسمية مساحة العمل',
   'settings.sc.highlightPane': 'تمييز الجزء النشط',
   'settings.sc.floatingPane': 'تبديل الطرفية العائمة',
+  'settings.sc.prevWorkspace': 'مساحة العمل السابقة',
+  'settings.sc.nextWorkspace': 'مساحة العمل التالية',
   'settings.shortcutsNotAvailable': 'تخصيص الاختصارات المدمجة غير متاح بعد.',
   'settings.aboutTagline': 'طرفية وكيل ذكاء اصطناعي أصلية على Windows',
   'settings.builtWith': 'مبني باستخدام',
