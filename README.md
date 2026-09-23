@@ -21,6 +21,8 @@ Claude Code, Codex, Gemini, or any CLI agent — native on Windows & macOS, with
 
 </div>
 
+> **What's a *workspace multiplexer*?** tmux splits a terminal. wmux multiplexes whole **workspaces** — terminals, agents, git worktrees, a browser, and the channels they coordinate over — all owned by a daemon that keeps them running across quits, crashes, and full reboots.
+
 ## Install
 
 **Windows** — a package manager skips the SmartScreen prompt:
@@ -43,7 +45,7 @@ winget install openwong2kim.wmux    # or: choco install wmux
 
 ### Answer your agents from your phone
 
-When an agent stops to ask you something — any agent's AskUserQuestion-style prompt or approval — the question lands on your iPhone's lock screen as a push notification. Pick the answer in the Inbox (Face ID, then **Approve**, **Deny**, or an option) and the pane on your desktop advances. Terminals and agent output go straight from your Mac to your phone, against the daemon you run; the only thing that touches a wmux server is a sealed push envelope the relay cannot read.
+When an agent stops to ask you something — a Claude Code `AskUserQuestion` prompt, or a tool call held by a wmux approval gate — the question lands on your iPhone's lock screen as a push notification. Pick the answer in the Inbox (an option, **Approve**, or **Deny**) and the pane on your desktop advances. Terminals and agent output go straight from your Mac to your phone, against the daemon you run; the only thing that touches a wmux server is a sealed push envelope the relay cannot read.
 
 <img alt="wmux on the desktop running three agents while one agent's question waits in the iPhone Inbox" src="docs/readme/desktop-and-phone.png" width="900" />
 
@@ -155,7 +157,7 @@ Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
 <details>
 <summary><b>FAQ + install troubleshooting</b></summary>
 
-- **Does it need WSL, Cygwin, or MSYS2?** No. wmux is a native app on Electron (ConPTY on Windows, forkpty on macOS) with its own split panes, prefix keys, and session persistence.
+- **Is wmux a tmux port?** No — tmux was the inspiration, not the base. wmux is a native **workspace multiplexer** on Electron (ConPTY on Windows, forkpty on macOS): tmux-*style* split panes, prefix keys, and session persistence, but it also multiplexes agents, git worktrees, a browser, and channels. No WSL / Cygwin / MSYS2.
 - **Which Macs are supported?** Apple Silicon (arm64) — download the `.dmg` from [releases](https://github.com/openwong2kim/wmux/releases/latest). It is Developer ID signed, notarized and stapled, so Gatekeeper lets it through on first launch. Intel builds aren't produced right now; open an issue if you need one.
 - **Can I reach my panes from my phone?** Two ways. The native [wmux for iOS](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556) app (free, iPhone) pairs with your Mac's daemon and pushes agent approvals to the lock screen — answer there and the pane advances. Or skip the app: `wmux web` serves your live panes to any browser (PWA-installable). It is **read-only and loopback-only by default**; `--allow-input` and network exposure are explicit opt-ins. For HTTPS, use the one-command `wmux web --tailscale` path, or terminate it directly with `wmux web --expose --tls-cert <fullchain.pem> --tls-key <privkey.pem>` (add `--allow-host <certificate-dns-name>` so requests for that name are accepted and it is advertised in URLs). Re-supply both TLS paths when re-running the CLI to change options; a CLI start without them and without `--tailscale` explicitly selects HTTP. Bare `--expose` remains HTTP and prints an explicit cleartext warning. Even read-only shows a pane's full scrollback to whoever can reach the port, so do not publish it to the open internet. You can also attach a remote machine's `wmux web` into your own desktop app's sidebar and mirror its panes locally — see [Attach a remote machine's workspaces](docs/how-to/remote-workspaces.md).
 - **Works with Claude Code / Codex / Gemini?** Yes. wmux auto-detects them and registers an MCP server so they can drive the browser and read terminal output.
@@ -198,3 +200,11 @@ Community shout-outs to [@snowyukitty](https://github.com/snowyukitty), [@matdac
 ## License
 
 [MIT](LICENSE)
+
+<sub>**Keywords:** workspace multiplexer · AI coding agent workspace · agent fleet · multi-agent terminal · git worktree fan-out · Claude Code · Codex CLI · Gemini CLI · iOS approval app · MCP server · Chrome DevTools Protocol · browser automation · split terminal · cmux alternative · Windows terminal multiplexer · macOS terminal multiplexer · ConPTY · xterm.js · Electron terminal · tmux for Windows</sub>
+
+<div align="center"><sub>⭐ Star history</sub><br>
+
+[![Star History](https://api.star-history.com/svg?repos=openwong2kim/wmux&type=Date)](https://star-history.com/#openwong2kim/wmux&Date)
+
+</div>
