@@ -2,9 +2,9 @@
 
 # wmux
 
-**Run a fleet of coding agents in one window. Answer them from your phone.**
+### The workspace for AI agents.
 
-Claude Code, Codex, Gemini, or any CLI agent — native on Windows & macOS, with an iPhone app for replies.
+Run Claude Code, Codex, Gemini, or any CLI agent side by side — native on **Windows and macOS** — and answer them from your **iPhone**.
 
 [![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
 [![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
