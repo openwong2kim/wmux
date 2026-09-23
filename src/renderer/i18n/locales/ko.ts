@@ -241,6 +241,7 @@ export const ko = {
   'fleet.section.idle': '유휴 {count}',
   'fleet.section.idleOldest': '유휴 {count} · 가장 오래됨 {age}',
   'fleet.allQuiet': '지금 확인할 항목이 없습니다',
+  'fleet.changedSinceSeen': '마지막으로 본 이후 변경됨',
   'fleet.title': 'Fleet',
   'fleet.tab.fleet': 'Fleet',
   'fleet.tab.approvals': '승인',

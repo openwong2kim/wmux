@@ -24,6 +24,8 @@ interface FleetCardProps {
   /** Section, detail and elapsed time from `groupFleetPanes`. Absent (tests,
    *  stand-alone renders) → derived from the card alone. */
   row?: FleetRow;
+  /** Status differs from what Fleet showed when it was last closed. */
+  changed?: boolean;
   onFocus?: () => void;
   /** TASK-6 — per-pane agent resource attribution: summed RAM (bytes) of this
    *  pane's shell + descendant tree, and the heaviest child's image name. Only
@@ -117,7 +119,7 @@ export function FleetCardEvidenceBadge({ task }: { task: Task | undefined }): Re
 }
 
 /** Compact task row. Output belongs in the opt-in preview, not in every row. */
-function FleetCard({ card, focused, onJump, resource, row: rowProp, onFocus }: FleetCardProps) {
+function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onFocus }: FleetCardProps) {
   const t = useT();
   const icon = AGENT_STATUS_ICON[card.agentStatus];
   const mission = useStore((s) => s.missionByPaneGroup[card.workspaceId]);
@@ -154,7 +156,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, onFocus }: F
       type="button"
       role="option"
       aria-selected={focused}
-      aria-label={`${displayName}, ${statusLabel}, ${card.workspaceName}${card.remote ? `, ${card.remote.hostLabel}` : ''}${supervision ? `, ${supervisionLabel}` : ''}, ${detail}, ${action}`}
+      aria-label={`${displayName}, ${statusLabel}, ${card.workspaceName}${card.remote ? `, ${card.remote.hostLabel}` : ''}${supervision ? `, ${supervisionLabel}` : ''}${changed ? `, ${t('fleet.changedSinceSeen')}` : ''}, ${detail}, ${action}`}
       tabIndex={focused ? 0 : -1}
       onFocus={onFocus}
       onClick={() => onJump(card)}
@@ -193,6 +195,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, onFocus }: F
             </span>
           )}
           {displayName}
+          {changed && <span data-fleet-changed className="wmux-fleet-changed" aria-hidden="true" />}
         </span>
         <span className="wmux-fleet-context" title={card.cwd || card.workspaceName}>
           {displayName !== card.workspaceName && <span>{card.workspaceName}</span>}

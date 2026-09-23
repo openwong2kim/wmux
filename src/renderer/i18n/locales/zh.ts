@@ -839,6 +839,7 @@ export const zh = {
   'fleet.section.idle': '空闲 {count}',
   'fleet.section.idleOldest': '空闲 {count} · 最久 {age}',
   'fleet.allQuiet': '目前没有需要你处理的事项',
+  'fleet.changedSinceSeen': '自你上次查看后有变化',
   'fleet.title': '舰队',
   'fleet.tab.fleet': '舰队',
   'fleet.tab.approvals': '审批',

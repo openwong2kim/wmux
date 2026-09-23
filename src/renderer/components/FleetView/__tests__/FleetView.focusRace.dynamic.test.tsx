@@ -312,6 +312,27 @@ describe('FleetView — attention board sections', () => {
   });
 });
 
+describe('FleetView — changed since you last looked', () => {
+  it('marks a needs-you row whose status changed after the last close, and only then', async () => {
+    seedFleet();
+    mount();
+    await flushRaf();
+    // First open: no snapshot, no dots.
+    expect(container.querySelectorAll('[data-fleet-changed]')).toHaveLength(0);
+    unmount();
+    expect(useStore.getState().fleetLastSeen?.statuses).toMatchObject({ 'pty-1': 'running', 'pty-2': 'complete', 'pty-3': 'awaiting_input' });
+
+    // While closed, pty-1 errors; pty-2 / pty-3 stay as they were.
+    act(() => useStore.setState({ surfaceAgentStatus: { 'pty-1': 'error', 'pty-2': 'complete' } }));
+    mount();
+    await flushRaf();
+    const changed = rows().filter((row) => row.querySelector('[data-fleet-changed]'));
+    expect(changed.map((row) => row.dataset.ptyId)).toEqual(['pty-1']);
+    expect(changed[0].getAttribute('aria-label')).toContain('changed since you last looked');
+    expect(rows().find((row) => row.dataset.ptyId === 'pty-3')?.getAttribute('aria-label')).not.toContain('changed since');
+  });
+});
+
 describe('FleetView — remote rows and browser help stay wired', () => {
   it('passes remoteWorkspaces to the selector: a remote agent renders with the origin glyph', async () => {
     act(() => useStore.setState({

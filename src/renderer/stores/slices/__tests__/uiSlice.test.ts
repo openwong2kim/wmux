@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import { createUISlice, siteGuidesAutoEnablePatch, type UISlice } from '../uiSlice';
+import { createUISlice, siteGuidesAutoEnablePatch, fleetChangedSinceSeen, type UISlice } from '../uiSlice';
 
 // Mock browser APIs that uiSlice touches
 vi.mock('../../../i18n', () => ({
@@ -818,5 +818,38 @@ describe('UISlice — sidebar attention-first ordering', () => {
     expect(store.getState().sidebarAttentionFirst).toBe(true);
     store.getState().setSidebarAttentionFirst(false);
     expect(store.getState().sidebarAttentionFirst).toBe(false);
+  });
+});
+
+describe('UISlice — Fleet "changed since you last looked" snapshot', () => {
+  let store: ReturnType<typeof createTestStore>;
+
+  beforeEach(() => {
+    store = createTestStore();
+  });
+
+  it('starts with no snapshot, so nothing reads as changed', () => {
+    expect(store.getState().fleetLastSeen).toBeNull();
+    expect(fleetChangedSinceSeen(store.getState().fleetLastSeen, 'pty-1', 'awaiting_input')).toBe(false);
+  });
+
+  it('flags a pane whose status differs from the snapshot, or that the snapshot never saw', () => {
+    store.getState().setFleetLastSeen({ 'pty-1': 'running' }, 1_000);
+    const seen = store.getState().fleetLastSeen;
+    expect(seen).toEqual({ statuses: { 'pty-1': 'running' }, at: 1_000 });
+    expect(fleetChangedSinceSeen(seen, 'pty-1', 'awaiting_input')).toBe(true);
+    expect(fleetChangedSinceSeen(seen, 'pty-2', 'error')).toBe(true);
+  });
+
+  it('does not flag a pane whose status is unchanged', () => {
+    store.getState().setFleetLastSeen({ 'pty-1': 'awaiting_input' });
+    expect(fleetChangedSinceSeen(store.getState().fleetLastSeen, 'pty-1', 'awaiting_input')).toBe(false);
+  });
+
+  it('copies the statuses, so later edits to the caller map do not leak in', () => {
+    const statuses: Record<string, 'running' | 'error'> = { 'pty-1': 'running' };
+    store.getState().setFleetLastSeen(statuses);
+    statuses['pty-1'] = 'error';
+    expect(store.getState().fleetLastSeen?.statuses['pty-1']).toBe('running');
   });
 });

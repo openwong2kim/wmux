@@ -578,6 +578,7 @@
 .wmux-fleet-card:hover .wmux-fleet-action, .wmux-fleet-card:focus-visible .wmux-fleet-action { color: var(--text-main); }
 .wmux-fleet-empty { text-align: center; padding: 28px 12px; }
 .wmux-fleet-section-header { padding: 12px 8px 4px; font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--text-sub); }
+.wmux-fleet-changed { display: inline-block; flex-shrink: 0; width: 6px; height: 6px; margin-left: 6px; vertical-align: middle; border-radius: 50%; background: var(--text-main); }
 .wmux-fleet-quiet { padding: 14px 8px 2px; font-size: 12px; color: var(--text-sub); }
 .wmux-fleet-idle-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; margin-top: 8px; padding: 6px 8px; font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; text-align: left; color: var(--text-sub); outline: none; }
 .wmux-fleet-idle-toggle:hover, .wmux-fleet-idle-toggle[aria-selected="true"] { background: var(--bg-surface); color: var(--text-main); }

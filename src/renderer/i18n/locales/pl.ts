@@ -536,6 +536,7 @@ export const pl = {
   'fleet.section.idle': 'Bezczynne {count}',
   'fleet.section.idleOldest': 'Bezczynne {count} · najdłużej {age}',
   'fleet.allQuiet': 'Nic teraz na Ciebie nie czeka',
+  'fleet.changedSinceSeen': 'zmieniono od Twojego ostatniego podglądu',
   'fleet.title': 'Flota',
   'fleet.tab.fleet': 'Flota',
   'fleet.tab.approvals': 'Zatwierdzenia',

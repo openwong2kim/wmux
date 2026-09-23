@@ -540,6 +540,7 @@ export const en = {
   'fleet.section.idle': 'Idle {count}',
   'fleet.section.idleOldest': 'Idle {count} · oldest {age}',
   'fleet.allQuiet': 'Nothing needs you right now',
+  'fleet.changedSinceSeen': 'changed since you last looked',
   'fleet.title': 'Fleet',
   'fleet.tab.fleet': 'Fleet',
   'fleet.tab.approvals': 'Approvals',

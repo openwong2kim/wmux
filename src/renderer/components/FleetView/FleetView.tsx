@@ -18,7 +18,7 @@ import {
   activatePaneTarget,
   focusNotificationTarget,
 } from '../../hooks/useNotificationListener';
-import type { FleetTab } from '../../stores/slices/uiSlice';
+import { fleetChangedSinceSeen, type FleetTab } from '../../stores/slices/uiSlice';
 import { tailForPty } from '../../utils/terminalTail';
 import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
@@ -57,6 +57,9 @@ export default function FleetView() {
   const missions = useStore((s) => s.missionByPaneGroup);
   const surfaceLastMessage = useStore((s) => s.surfaceLastMessage);
   const fleetIdleExpanded = useStore((s) => s.fleetIdleExpanded);
+  // Baseline from the previous close; only written on unmount, so it stays
+  // fixed for the whole time the overlay is open.
+  const fleetLastSeen = useStore((s) => s.fleetLastSeen);
   const setFleetIdleExpanded = useStore((s) => s.setFleetIdleExpanded);
   // X8 supervision mirror — subscribed here so the selector re-runs when a
   // supervised pane arms/stops or its restart count changes.
@@ -115,6 +118,15 @@ export default function FleetView() {
     commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, unverifiableMinutes]);
   // The output stamp moves on every chunk, so it is read on the minute tick
   // (`now`) rather than subscribed; elapsed time is minute-granular anyway.
+  // On close (unmount), remember what each pane's status was, so the next open
+  // can mark needs-you rows that changed while Fleet was not being looked at.
+  const panesRef = useRef(panes);
+  panesRef.current = panes;
+  useEffect(() => () => {
+    const statuses: Record<string, FleetPane['agentStatus']> = {};
+    for (const pane of panesRef.current) if (pane.ptyId) statuses[pane.ptyId] = pane.agentStatus;
+    useStore.getState().setFleetLastSeen(statuses);
+  }, []);
   const groups = useMemo(
     () => groupFleetPanes(panes, {
       now,
@@ -514,6 +526,7 @@ export default function FleetView() {
         key={`${card.workspaceId}:${card.paneId}:${card.surfaceId}`}
         card={card}
         row={row}
+        changed={row.section === 'needsYou' && fleetChangedSinceSeen(fleetLastSeen, card.ptyId, card.agentStatus)}
         focused={card.paneId === focusedKey}
         onJump={jump}
         onFocus={() => setFocusedPaneId(card.paneId)}

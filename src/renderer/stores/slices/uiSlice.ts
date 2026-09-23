@@ -32,6 +32,24 @@ function readInitialBrowserBackend(): { backend: BrowserBackend; hydrated: boole
 }
 const INITIAL_BROWSER_BACKEND = readInitialBrowserBackend();
 
+/** What Fleet showed when it was last closed: ptyId → agentStatus. Same
+ *  pane/status pairs the Deck briefing diffs, kept in memory for the session. */
+export interface FleetSeenSnapshot {
+  statuses: Record<string, AgentStatus>;
+  at: number;
+}
+
+/** True when a row's status differs from the last-closed snapshot (a pane the
+ *  snapshot never saw counts as changed). No snapshot → nothing is "changed". */
+export function fleetChangedSinceSeen(
+  seen: FleetSeenSnapshot | null,
+  ptyId: string,
+  agentStatus: AgentStatus,
+): boolean {
+  if (!seen || !ptyId) return false;
+  return seen.statuses[ptyId] !== agentStatus;
+}
+
 /**
  * One-time auto-enable of site guides for the Chrome agent browser. Returns the
  * fields to write, or null when nothing changes. It only ever turns guides ON,
@@ -67,6 +85,7 @@ import {
   type PaneBranch,
   type PrefixConfig,
   type NotificationCategory,
+  type AgentStatus,
   BUILTIN_TEMPLATES,
   DEFAULT_PREFIX_CONFIG,
   buildDefaultCustomKeybindings,
@@ -165,6 +184,10 @@ export interface UISlice {
   // collapsed to one summary row. Session-only: not in buildSessionData.
   fleetIdleExpanded: boolean;
   setFleetIdleExpanded: (expanded: boolean) => void;
+  // Fleet's "changed since you last looked" baseline, written when the overlay
+  // closes. Session-only: not in buildSessionData; null until the first close.
+  fleetLastSeen: FleetSeenSnapshot | null;
+  setFleetLastSeen: (statuses: Record<string, AgentStatus>, at?: number) => void;
 
   settingsPanelVisible: boolean;
   toggleSettingsPanel: () => void;
@@ -965,6 +988,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setFleetIdleExpanded: (expanded) => set((state) => {
     state.fleetIdleExpanded = expanded;
+  }),
+
+  fleetLastSeen: null,
+
+  setFleetLastSeen: (statuses, at = Date.now()) => set((state) => {
+    state.fleetLastSeen = { statuses: { ...statuses }, at };
   }),
 
   // ─── Settings panel ──────────────────────────────────────────────────────
