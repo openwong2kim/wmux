@@ -298,9 +298,15 @@ column or changing terminal dimensions. Mirror its anchoring when the sidebar
 moves right. Keep the covered tools dock mounted and inert so drafts survive
 and keyboard focus cannot enter covered controls. Fleet stays non-modal: visible
 workspace areas remain usable; close, Escape and selecting an agent retain their
-existing behavior. Use readable 15px card names and 12px context/status text;
-idle cards retain full opacity. The responsive grid uses two columns when room
-permits and one on narrower windows.
+existing behavior. Use a compact, single-column task list: status, task/project
+name, latest reported activity, and a pane-opening action. User labels and
+mission titles precede terminal titles; generic agent names are secondary context.
+Use 13px row titles, 12px activity and 11px metadata; idle rows remain readable.
+Search and status filters narrow the list without stealing input focus. Keep
+selection attached to pane identity across status reordering. Raw terminal output
+belongs in an opt-in preview of the selected pane, never in every row. A completed
+turn is labeled as a completed response, not proof that a whole task succeeded.
+At narrow widths, activity stacks under the title; the overlay width stays 720px.
 
 ### Channel task records (2026-09-22)
 

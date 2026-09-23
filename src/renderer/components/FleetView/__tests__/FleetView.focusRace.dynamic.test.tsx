@@ -16,7 +16,8 @@
 // 버튼인지 검증한다. 카드가 하나뿐인 케이스(레이스가 영구화되던 조건)를 픽스처로
 // 고정한다. 겸사겸사 닫힘 시 포커스 복원(INFO 4번)도 검증한다.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as terminalTail from '../../../utils/terminalTail';
 import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import FleetView from '../FleetView';
@@ -69,6 +70,7 @@ async function flushRaf(): Promise<void> {
 beforeEach(() => {
   act(() => {
     useStore.setState({
+      ...useStore.getInitialState(),
       locale: 'en',
       sidebarPosition: 'left',
       fleetActiveTab: 'fleet',
@@ -79,6 +81,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   try {
     unmount();
   } catch {
@@ -114,5 +117,119 @@ describe('FleetView — mount focus race (NB2 wave2)', () => {
     // 닫히면 열기 시점 요소로 복원(브라우저가 body로 떨구지 않는다).
     expect(document.activeElement).toBe(opener);
     opener.remove();
+  });
+});
+
+function seedFleet(): void {
+  act(() => useStore.setState({
+    workspaces: [
+      workspace('ws-1', 'wmux', leaf('p1', [surface('s1', 'pty-1', { surfaceType: 'terminal', title: 'Codex CLI' })]), 'p1'),
+      workspace('ws-2', 'marketing', leaf('p2', [surface('s2', 'pty-2', { surfaceType: 'terminal', title: '✳ Launch video' })]), 'p2'),
+      workspace('ws-3', 'ios', leaf('p3', [surface('s3', 'pty-3', { surfaceType: 'terminal', title: 'Claude Code' })]), 'p3'),
+    ],
+    surfaceAgent: { 'pty-1': { name: 'Codex CLI', status: 'running' }, 'pty-2': { name: 'Claude Code', status: 'idle' }, 'pty-3': { name: 'Claude Code', status: 'idle' } },
+    surfaceAgentStatus: { 'pty-2': 'complete' },
+    surfacePendingQuestion: { 'pty-3': 'Which deployment target?' },
+    surfaceTurnOpenAt: { 'pty-1': Date.now() },
+    agentClockMs: Date.now(),
+  }));
+}
+
+function rows(): HTMLButtonElement[] {
+  return Array.from(container.querySelectorAll<HTMLButtonElement>('[data-fleet-card]'));
+}
+
+function click(selector: string): void {
+  const button = container.querySelector<HTMLButtonElement>(selector)!;
+  act(() => { button.focus(); button.click(); });
+}
+
+function key(element: Element, name: string): void {
+  act(() => element.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true })));
+}
+
+function search(value: string): HTMLInputElement {
+  const input = container.querySelector<HTMLInputElement>('input[type=search]')!;
+  act(() => {
+    input.focus();
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  return input;
+}
+
+describe('FleetView — task triage', () => {
+  it('derives running from the open turn and puts pending questions first', async () => {
+    seedFleet();
+    mount();
+    await flushRaf();
+    expect(rows().map((row) => row.dataset.status)).toEqual(['awaiting_input', 'complete', 'running']);
+    expect(rows()[0].textContent).toContain('Which deployment target?');
+    expect(rows()[2].textContent).toContain('wmux');
+  });
+
+  it('filters by task/project without stealing search focus, then navigates the results', async () => {
+    seedFleet();
+    mount();
+    await flushRaf();
+    const input = search('launch');
+    await flushRaf();
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0].textContent).toContain('Launch video');
+    expect(document.activeElement).toBe(input);
+    key(input, 'ArrowLeft');
+    expect(document.activeElement).toBe(input);
+    key(input, 'ArrowDown');
+    expect(document.activeElement).toBe(rows()[0]);
+    search('not-a-project');
+    await flushRaf();
+    expect(rows()).toHaveLength(0);
+    expect(container.textContent).toContain('No panes match this view');
+    click('.wmux-fleet-empty button');
+    expect(rows()).toHaveLength(3);
+  });
+
+  it('keeps the selected pane across live reordering and scopes keyboard navigation to the filter', async () => {
+    seedFleet();
+    mount();
+    await flushRaf();
+    act(() => rows().find((row) => row.dataset.ptyId === 'pty-1')!.focus());
+    act(() => useStore.setState({ surfaceAgentStatus: { 'pty-1': 'error', 'pty-2': 'complete' }, surfacePendingQuestion: {} }));
+    await flushRaf();
+    expect(document.activeElement?.getAttribute('data-pty-id')).toBe('pty-1');
+    expect(rows()[0].dataset.ptyId).toBe('pty-1');
+    click('[data-filter=complete]');
+    await flushRaf();
+    expect(rows()).toHaveLength(1);
+    expect(document.activeElement?.getAttribute('data-filter')).toBe('complete');
+    act(() => rows()[0].focus());
+    key(rows()[0], 'End');
+    await flushRaf();
+    expect(document.activeElement).toBe(rows()[0]);
+  });
+
+  it('only reads terminal output when the selected preview is expanded', async () => {
+    const read = vi.spyOn(terminalTail, 'tailForPty').mockReturnValue(['real terminal output']);
+    seedFleet();
+    mount();
+    await flushRaf();
+    expect(read).not.toHaveBeenCalled();
+    click('.wmux-fleet-preview > button');
+    expect(read).toHaveBeenCalledWith('pty-3', 12);
+    expect(container.querySelector('pre')?.textContent).toBe('real terminal output');
+    click('.wmux-fleet-preview > button');
+    expect(container.querySelector('pre')).toBeNull();
+  });
+
+  it('keeps tab keyboard navigation separate from row navigation', async () => {
+    seedFleet();
+    mount();
+    await flushRaf();
+    const tab = container.querySelector<HTMLButtonElement>('#fleet-tab-fleet')!;
+    act(() => tab.focus());
+    key(tab, 'ArrowRight');
+    await flushRaf();
+    expect(document.activeElement?.id).toBe('fleet-tab-approvals');
+    expect(container.textContent).toContain('No pending approvals');
   });
 });
