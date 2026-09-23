@@ -466,6 +466,15 @@ export interface MetadataUpdatePayload {
    * Empty string clears (same convention as `activity`).
    */
   pendingQuestion?: string;
+  /**
+   * Tail of the agent's closing message for the turn that just ended, question
+   * or not, cut to at most 140 graphemes (`LAST_ASSISTANT_GRAPHEMES`, shared
+   * with the phone list). Per-ptyId only, like `activity`: the renderer must
+   * destructure it out before applying the payload to workspace metadata.
+   * Empty string clears. Claude only today — other agents and failed turns
+   * send ''.
+   */
+  lastMessage?: string;
   // External RPC channels (meta.setStatus / meta.setProgress) write through
   // the same payload. Renderer applies these to the active workspace when no
   // ptyId/workspaceId is provided.

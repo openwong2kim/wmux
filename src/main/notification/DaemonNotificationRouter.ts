@@ -729,6 +729,8 @@ export class DaemonNotificationRouter {
             //     on a live pane, and a session start is rare enough that it can
             //     never contribute to the flood the throttle guards against.
             //   - clears pendingQuestion, which no summarized string expresses.
+            //   - clears lastMessage too, so the previous session's closing
+            //     message does not read as this session's.
             // It also does not STAMP the window: the throttle keeps running off
             // the previous session's last tool call, so a new session's first
             // activity line can wait out the remainder of that window. The gap
@@ -739,6 +741,7 @@ export class DaemonNotificationRouter {
               ptyId: payload.sessionId,
               activity: '',
               pendingQuestion: '',
+              lastMessage: '',
             });
           } else if (metadataKind === 'agent.user_prompt_submit') {
             // The TURN START, and the whole point of the hook: the pane goes

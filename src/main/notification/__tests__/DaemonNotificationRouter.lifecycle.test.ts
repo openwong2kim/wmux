@@ -828,6 +828,7 @@ describe('DaemonNotificationRouter — M1 side-effect replay', () => {
         ptyId: 'pty-a',
         activity: '',
         pendingQuestion: '',
+        lastMessage: '',
       });
       // Still metadata-only: no toast, no lifecycle tee.
       expect(dispatchNotificationMock).not.toHaveBeenCalled();
@@ -852,6 +853,7 @@ describe('DaemonNotificationRouter — M1 side-effect replay', () => {
         ptyId: 'pty-a',
         activity: '',
         pendingQuestion: '',
+        lastMessage: '',
       });
     } finally {
       router.stop();
@@ -930,6 +932,7 @@ describe('DaemonNotificationRouter — M1 side-effect replay', () => {
         ptyId: 'pty-a',
         activity: '',
         pendingQuestion: 'Should I proceed?',
+        lastMessage: 'Should I proceed?',
         agentStatus: 'complete',
       });
       expect(pollLifecycle()[0]).toMatchObject({
