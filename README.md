@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/icon.png" alt="wmux app icon" width="128" height="128" />
+
 # wmux
 
 ### The workspace for AI agents.
