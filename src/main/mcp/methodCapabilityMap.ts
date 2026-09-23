@@ -183,7 +183,10 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
 
   // --- Pane lifecycle ---
   'pane.list':   { capability: 'pane.read', riskClass: 'pane-lifecycle' },
-  'fleet.triage': { capability: 'pane.read', riskClass: 'pane-lifecycle' },
+  // The answer carries agent-authored output (last message, tool activity)
+  // for every pane, so it is terminal content, not a pane listing: a
+  // third-party plugin needs the same grant input.readScreen does.
+  'fleet.triage': { capability: 'terminal.read', riskClass: 'terminal-content' },
   'pane.focus':  { capability: 'pane.read', riskClass: 'pane-lifecycle' },
   'pane.split':  { capability: 'pane.create', riskClass: 'pane-lifecycle' },
   'pane.close':  { capability: 'pane.create', riskClass: 'pane-lifecycle' },

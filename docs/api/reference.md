@@ -288,7 +288,7 @@ Total: **185** methods (`ALL_RPC_METHODS` in
 
 | Method | Capability | Risk class |
 |---|---|---|
-| `fleet.triage` | `pane.read` | `pane-lifecycle` |
+| `fleet.triage` | `terminal.read` | `terminal-content` |
 | `ui.decoratePane` | `ui.pane-decoration` | `ui` |
 | `perf.status` | `pane.read` |  |
 | `deck.resolvePaneRoute` | `null` |  |

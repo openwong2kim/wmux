@@ -11,9 +11,36 @@ import {
   fleetTargetPtyId,
   fleetTitle,
   type FleetRow,
+  type FleetDetailKey,
 } from '../stores/selectors/fleet';
 import type { AgentStatus } from '../../shared/types';
 import { en } from '../i18n/locales/en';
+
+/** Why a row sits where it does, for callers that should not parse `detail`. */
+export type FleetTriageReason =
+  | 'input' | 'error' | 'unconfirmed' | 'supervisionStopped' | 'complete' | 'running' | 'idle';
+
+const REASON_BY_DETAIL_KEY: Record<FleetDetailKey, FleetTriageReason> = {
+  'fleet.needsYourInput': 'input',
+  'fleet.detail.error': 'error',
+  'fleet.detail.unconfirmed': 'unconfirmed',
+  'fleet.detail.supervisionStopped': 'supervisionStopped',
+  'fleet.detail.complete': 'complete',
+  'fleet.detail.running': 'running',
+  'fleet.detail.idle': 'idle',
+};
+
+/** Rows returned across all sections, most urgent first. Keeps the JSON well
+ *  under the 64 KiB MCP result cap, which would otherwise cut an object mid-way
+ *  and leave the caller with text it cannot parse. */
+export const FLEET_TRIAGE_MAX_ROWS = 80;
+/** Characters of `detail` per row; a pending question can run to 600. */
+export const FLEET_TRIAGE_MAX_DETAIL = 280;
+
+function clip(text: string): string {
+  const chars = Array.from(text);
+  return chars.length <= FLEET_TRIAGE_MAX_DETAIL ? text : `${chars.slice(0, FLEET_TRIAGE_MAX_DETAIL - 1).join('')}…`;
+}
 
 export interface FleetTriageRow {
   /** The tab to act on: the background tab whose status won the row, else
@@ -25,6 +52,8 @@ export interface FleetTriageRow {
   title: string;
   agentName?: string;
   status: AgentStatus;
+  /** Why the row is in its section; the same for every locale. */
+  reason: FleetTriageReason;
   /** Reported text (question, last message, activity), else the English
    *  fallback the overlay would show. Never the user's UI locale. */
   detail: string;
@@ -38,6 +67,8 @@ export interface FleetTriageResult {
   needsYou: FleetTriageRow[];
   running: FleetTriageRow[];
   idle: { count: number; oldestIdleMs?: number; rows?: FleetTriageRow[] };
+  /** Rows left out per section once FLEET_TRIAGE_MAX_ROWS was reached. */
+  omitted?: { needsYou?: number; running?: number; idle?: number };
 }
 
 export interface FleetTriageParams {
@@ -62,7 +93,8 @@ export function buildFleetTriage(
     title: fleetTitle(pane, state.missionByPaneGroup[pane.workspaceId]),
     ...(pane.agentName ? { agentName: pane.agentName } : {}),
     status: pane.agentStatus,
-    detail: detail ?? en[detailKey],
+    reason: REASON_BY_DETAIL_KEY[detailKey],
+    detail: clip(detail ?? en[detailKey]),
     ...(idleForMs !== undefined ? { idleMs: idleForMs } : {}),
     ...(pane.stashed ? { stashed: true } : {}),
     ...(pane.remote ? { remote: { hostLabel: pane.remote.hostLabel } } : {}),
@@ -72,14 +104,27 @@ export function buildFleetTriage(
     (max, row) => (row.idleForMs !== undefined && (max === undefined || row.idleForMs > max) ? row.idleForMs : max),
     undefined,
   );
+  // Spend the row budget most-urgent first: needs you, then running, then idle.
+  let budget = FLEET_TRIAGE_MAX_ROWS;
+  const omitted: NonNullable<FleetTriageResult['omitted']> = {};
+  const take = (rows: FleetRow[], section: 'needsYou' | 'running' | 'idle'): FleetTriageRow[] => {
+    const kept = rows.slice(0, Math.max(0, budget));
+    budget -= kept.length;
+    if (kept.length < rows.length) omitted[section] = rows.length - kept.length;
+    return kept.map(toRow);
+  };
+  const needsYou = take(groups.needsYou.filter(inScope), 'needsYou');
+  const running = take(groups.running.filter(inScope), 'running');
+  const idleRows = params.includeIdle ? take(idle, 'idle') : undefined;
   return {
     generatedAt: now,
-    needsYou: groups.needsYou.filter(inScope).map(toRow),
-    running: groups.running.filter(inScope).map(toRow),
+    needsYou,
+    running,
     idle: {
       count: idle.length,
       ...(oldestIdleMs !== undefined ? { oldestIdleMs } : {}),
-      ...(params.includeIdle ? { rows: idle.map(toRow) } : {}),
+      ...(idleRows ? { rows: idleRows } : {}),
     },
+    ...(Object.keys(omitted).length > 0 ? { omitted } : {}),
   };
 }

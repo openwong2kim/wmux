@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { useStore } from '../../stores';
-import { buildFleetTriage } from '../../utils/fleetTriage';
+import { buildFleetTriage, FLEET_TRIAGE_MAX_ROWS, FLEET_TRIAGE_MAX_DETAIL } from '../../utils/fleetTriage';
 import { en } from '../../i18n/locales/en';
 import { REMOTE_KEY, seedFleetTriageStore } from '../../utils/__tests__/fleetTriageFixture';
 
@@ -124,5 +124,43 @@ describe('buildFleetTriage', () => {
     const rows = buildFleetTriage(useStore.getState(), { includeIdle: true }, NOW).idle.rows ?? [];
     expect(rows.find((row) => row.paneId === 'p5')?.stashed).toBe(true);
     expect(rows.find((row) => row.paneId === 'p4')?.stashed).toBeUndefined();
+  });
+
+  it('gives every row a locale-free reason', () => {
+    const result = buildFleetTriage(useStore.getState(), { includeIdle: true }, NOW);
+    const reasons = [...result.needsYou, ...result.running, ...(result.idle.rows ?? [])].map((r) => r.reason);
+    expect(reasons.every((r) => typeof r === 'string')).toBe(true);
+    expect(result.needsYou[0].reason).toBe('input');
+    expect(result.running[0].reason).toBe('running');
+  });
+
+  it('clips a long detail so one question cannot blow the result cap', () => {
+    const long = 'Should I '.repeat(100);
+    useStore.setState({ surfacePendingQuestion: { ...useStore.getState().surfacePendingQuestion, 'pty-2b': long } });
+    const [row] = buildFleetTriage(useStore.getState(), {}, NOW).needsYou;
+    expect(Array.from(row.detail).length).toBe(FLEET_TRIAGE_MAX_DETAIL);
+    expect(row.detail.endsWith('…')).toBe(true);
+  });
+
+  it('caps the rows most-urgent first and reports how many were left out', () => {
+    const base = useStore.getState();
+    const many = Array.from({ length: FLEET_TRIAGE_MAX_ROWS + 20 }, (_, i) => ({
+      id: `ws-many-${i}`, name: `many ${i}`, activePaneId: `pm-${i}`,
+      rootPane: { id: `pm-${i}`, type: 'leaf' as const, activeSurfaceId: `sm-${i}`,
+        surfaces: [{ id: `sm-${i}`, ptyId: `pty-m-${i}`, title: 't', shell: 'zsh', cwd: '/', surfaceType: 'terminal' as const }] },
+    }));
+    const status = Object.fromEntries(many.map((w) => [`pty-m-${w.id.slice(8)}`, 'error' as const]));
+    useStore.setState({
+      workspaces: [...base.workspaces, ...many] as typeof base.workspaces,
+      surfaceAgentStatus: { ...base.surfaceAgentStatus, ...status },
+    });
+    const result = buildFleetTriage(useStore.getState(), { includeIdle: true }, NOW);
+    const returned = result.needsYou.length + result.running.length + (result.idle.rows?.length ?? 0);
+    expect(returned).toBe(FLEET_TRIAGE_MAX_ROWS);
+    expect(result.running).toEqual([]);
+    expect(result.omitted?.needsYou).toBeGreaterThan(0);
+    expect(result.omitted?.running).toBe(1);
+    expect(result.idle.count).toBeGreaterThan(0);
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(64 * 1024);
   });
 });
