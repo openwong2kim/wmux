@@ -55,6 +55,7 @@ function envelope(result: Record<string, unknown>) {
 }
 
 let channelStatus = 'active';
+let members: Array<Record<string, string>> = [];
 
 const invoke = vi.fn(async (method: string) => {
   switch (method) {
@@ -79,12 +80,13 @@ const invoke = vi.fn(async (method: string) => {
         ],
       });
     case 'a2a.channel.getMembers':
-      return envelope({ ok: true, members: [] });
+      return envelope({ ok: true, members });
     default:
       return envelope({ ok: true });
   }
 });
 const read = vi.fn(async () => readResult());
+const mutateChannelLocal = vi.fn(async () => ({ ok: true }));
 
 const mounted: Array<() => void> = [];
 
@@ -110,17 +112,34 @@ async function flush(ticks = 14) {
   });
 }
 
-function q(c: Element, id: string): Element | null {
-  return c.querySelector(`[data-testid="${id}"]`);
+function q<T extends Element>(c: Element, id: string): T | null {
+  return c.querySelector<T>(`[data-testid="${id}"]`);
+}
+
+function click(el: Element) {
+  act(() => {
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+}
+
+/** Type into a controlled input through React's onChange path. */
+function setInputValue(input: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+  act(() => {
+    setter.call(input, value);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 }
 
 beforeEach(() => {
   channelStatus = 'active';
+  members = [];
   invoke.mockClear();
   read.mockClear();
+  mutateChannelLocal.mockClear();
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     diff: { read, applyHunks: vi.fn() },
-    rpc: { invoke, mutateChannelLocal: vi.fn(async () => ({ ok: true })) },
+    rpc: { invoke, mutateChannelLocal },
   };
 });
 
@@ -151,5 +170,28 @@ describe('DiffPanel — unwraps the rpc.invoke envelope', () => {
 
     expect(read).toHaveBeenCalledWith('/wt', undefined, 'task');
     expect(q(c, 'diff-comment-open')).toBeNull();
+  });
+
+  it('mentions the mission agents read from an enveloped a2a.channel.getMembers', async () => {
+    // Without the unwrap the roster comes back empty, the post carries no
+    // mentions, and the task's agent is never woken for the comment.
+    members = [
+      { workspaceId: WS, memberId: 'owner', memberName: 'owner' },
+      { workspaceId: 'ws-agent', memberId: 'claude', memberName: 'claude' },
+    ];
+    const c = render();
+    await flush();
+    click(q(c, 'diff-comment-open')!);
+    setInputValue(q<HTMLInputElement>(c, 'diff-comment-input')!, 'please rework this');
+    click(q(c, 'diff-comment-submit')!);
+    await flush();
+
+    expect(mutateChannelLocal).toHaveBeenCalledWith(
+      'a2a.channel.post',
+      expect.objectContaining({
+        channelId: CHANNEL_ID,
+        mentions: [expect.objectContaining({ workspaceId: 'ws-agent' })],
+      }),
+    );
   });
 });
