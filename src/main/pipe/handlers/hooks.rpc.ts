@@ -50,7 +50,7 @@ import { HookFloodMeter, describeHookFlood } from '../../hooks/HookFloodMeter';
 import { eventBus } from '../../events/EventBus';
 import { IPC, dataSuffix } from '../../../shared/constants';
 import { summarizeActivity } from '../../../shared/activitySummary';
-import { assistantPreview } from '../../../shared/assistantPreview';
+import { assistantPreview, flattenAgentText } from '../../../shared/assistantPreview';
 import type { DaemonClient } from '../../DaemonClient';
 import type { ResumeBinding, PermissionMode } from '../../../shared/agentResume';
 import { readLastAssistantMessage } from '../../claude/lastAssistantMessage';
@@ -183,7 +183,9 @@ export function buildTurnBoundaryMetadata(
   }
   return {
     activity: '',
-    pendingQuestion: stopMessage?.endsWithQuestion ? stopMessage.text : '',
+    // Same flatten as lastMessage (agent-authored, rendered on one line), but
+    // not the grapheme cut: the whole question is the point of the row.
+    pendingQuestion: stopMessage?.endsWithQuestion ? flattenAgentText(stopMessage.text) : '',
     lastMessage: assistantPreview(stopMessage?.text ?? '') ?? '',
     // #1096 — a lead stop with background agents still running is not a turn
     // end, so it must not stamp the hook-authoritative completion status: the

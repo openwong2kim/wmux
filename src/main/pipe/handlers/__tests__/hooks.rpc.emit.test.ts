@@ -791,6 +791,14 @@ describe('buildTurnBoundaryMetadata — lastMessage', () => {
     expect(buildTurnBoundaryMetadata('agent.stop_failure', null)?.lastMessage).toBe('');
   });
 
+  it('flattens a pending question (newlines, controls, bidi overrides) without cutting its length', () => {
+    const tail = 'x'.repeat(300);
+    const text = `Deploy to\nprod\u001b[31m now\u202E?\u2066 ${tail} ok?`;
+    const boundary = buildTurnBoundaryMetadata('agent.stop', { text, endsWithQuestion: true });
+    expect(boundary?.pendingQuestion).toBe(`Deploy to prod [31m now? ${tail} ok?`);
+    for (const ch of ['\n', '\u001b', '\u202E', '\u2066']) expect(boundary?.pendingQuestion.includes(ch)).toBe(false);
+  });
+
   it('session_start sends an empty lastMessage', () => {
     expect(buildTurnBoundaryMetadata('agent.session_start', null)?.lastMessage).toBe('');
   });

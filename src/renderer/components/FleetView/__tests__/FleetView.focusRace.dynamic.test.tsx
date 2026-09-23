@@ -320,7 +320,11 @@ describe('FleetView — changed since you last looked', () => {
     // First open: no snapshot, no dots.
     expect(container.querySelectorAll('[data-fleet-changed]')).toHaveLength(0);
     unmount();
-    expect(useStore.getState().fleetLastSeen?.statuses).toMatchObject({ 'pty-1': 'running', 'pty-2': 'complete', 'pty-3': 'awaiting_input' });
+    expect(useStore.getState().fleetLastSeen?.statuses).toMatchObject({
+      'pty-1': { status: 'running' },
+      'pty-2': { status: 'complete' },
+      'pty-3': { status: 'awaiting_input', question: 'Which deployment target?' },
+    });
 
     // While closed, pty-1 errors; pty-2 / pty-3 stay as they were.
     act(() => useStore.setState({ surfaceAgentStatus: { 'pty-1': 'error', 'pty-2': 'complete' } }));

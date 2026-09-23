@@ -19,6 +19,9 @@ function surface(id: string, ptyId: string, extra: Partial<Surface> = {}): Surfa
 function leaf(id: string, surfaces: Surface[]): Pane {
   return { id, type: 'leaf', surfaces, activeSurfaceId: surfaces[0]?.id ?? '' };
 }
+function branch(id: string, children: Pane[]): Pane {
+  return { id, type: 'branch', direction: 'horizontal', children };
+}
 function workspace(id: string, name: string, rootPane: Pane, activePaneId: string): Workspace {
   return { id, name, rootPane, activePaneId };
 }
@@ -30,6 +33,7 @@ const setLabel = vi.fn(async () => ({ ok: true }));
 const stashPane = vi.fn(() => true);
 const unstashPane = vi.fn(() => true);
 const closePane = vi.fn();
+const dispose = vi.fn();
 
 function mount(): void {
   container = document.createElement('div');
@@ -67,9 +71,10 @@ function openMenu(ptyId: string): HTMLElement[] {
 
 beforeEach(() => {
   vi.useRealTimers();
-  write.mockClear(); setLabel.mockClear(); stashPane.mockClear(); unstashPane.mockClear(); closePane.mockClear();
+  write.mockClear(); setLabel.mockClear(); stashPane.mockClear(); unstashPane.mockClear(); closePane.mockClear(); dispose.mockClear();
+  setLabel.mockImplementation(async () => ({ ok: true }));
   (window as unknown as { electronAPI: unknown }).electronAPI = {
-    pty: { write },
+    pty: { write, dispose },
     metadata: { setLabel },
   };
   act(() => {
@@ -78,13 +83,22 @@ beforeEach(() => {
       locale: 'en',
       fleetActiveTab: 'fleet',
       workspaces: [
-        workspace('ws-1', 'alpha', leaf('p1', [surface('s1', 'pty-1', { title: 'alpha task' })]), 'p1'),
+        // p1 has a sibling, so it is closable; ws-3's p3 is a workspace root.
+        workspace('ws-1', 'alpha', branch('b1', [
+          leaf('p1', [surface('s1', 'pty-1', { title: 'alpha task' })]),
+          leaf('p1b', [surface('s1b', 'pty-1b', { title: 'alpha shell' })]),
+        ]), 'p1'),
+        workspace('ws-3', 'gamma', leaf('p3', [surface('s3', 'pty-3', { title: 'gamma task' })]), 'p3'),
+        workspace('ws-4', 'delta', branch('b4', [
+          leaf('p4', [surface('s4', 'pty-4', { title: 'delta task' })]),
+          leaf('p4b', [surface('s4b', 'pty-4b', { title: 'delta shell' })]),
+        ]), 'p4'),
         workspace('ws-2', 'beta', leaf('p2', [surface('s2', 'pty-2', { title: 'beta task' })]), 'p2'),
         workspace('ws-r', 'remote proj', leaf('pr', [surface('rs-1', '', {
           surfaceType: 'remote-terminal', remoteHostId: 'host-1', remoteSessionId: 'rsession-9',
         })]), 'pr'),
       ],
-      surfaceAgentStatus: { 'pty-1': 'complete' },
+      surfaceAgentStatus: { 'pty-1': 'complete', 'pty-3': 'complete', 'pty-4': 'awaiting_input' },
       surfaceAgent: { 'pty-2': { name: 'Claude Code', status: 'running' } },
       surfaceTurnOpenAt: { 'pty-2': Date.now() },
       agentClockMs: Date.now(),
@@ -172,6 +186,22 @@ describe('FleetView — row verbs', () => {
     expect(setLabel).toHaveBeenCalledWith('p1', 'ws-1', 'release notes');
   });
 
+  it('a failed setLabel surfaces an error toast', async () => {
+    setLabel.mockImplementation(async () => { throw new Error('ipc down'); });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mount();
+    await flushRaf();
+    act(() => row('pty-1').focus());
+    key(row('pty-1'), 'l');
+    const input = container.querySelector<HTMLInputElement>('[data-fleet-editor="label"] input')!;
+    type(input, 'x');
+    key(input, 'Enter');
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(useStore.getState().toasts.some((toast) => toast.level === 'error' && toast.message === 'Could not save the pane label')).toBe(true);
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
+  });
+
   it('Backspace asks first: Cancel is focused by default, confirm calls closePane', async () => {
     mount();
     await flushRaf();
@@ -187,6 +217,87 @@ describe('FleetView — row verbs', () => {
     key(row('pty-1'), 'Backspace');
     act(() => { container.querySelector<HTMLButtonElement>('[data-fleet-close-confirm]')!.click(); });
     expect(closePane).toHaveBeenCalledWith('p1', 'ws-1');
+    // The pane's pty is disposed first, like every other close path.
+    expect(dispose).toHaveBeenCalledWith('pty-1');
+    expect(dispose).not.toHaveBeenCalledWith('pty-1b');
+    expect(dispose.mock.invocationCallOrder[0]).toBeLessThan(closePane.mock.invocationCallOrder[0]);
+  });
+
+  it('a workspace root pane cannot be closed from Fleet: disabled with a reason, no confirm', async () => {
+    mount();
+    await flushRaf();
+    const items = openMenu('pty-3');
+    const close = items.find((el) => el.dataset.paneMenuAction === 'close')!;
+    expect(close.getAttribute('aria-disabled')).toBe('true');
+    expect(close.getAttribute('title')).toContain('Close the workspace instead');
+    act(() => { close.click(); });
+    expect(container.querySelector('[data-fleet-editor]')).toBeNull();
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    act(() => row('pty-3').focus());
+    key(row('pty-3'), 'Backspace');
+    expect(container.querySelector('[data-fleet-editor]')).toBeNull();
+    expect(closePane).not.toHaveBeenCalled();
+  });
+
+  it('awaiting_input with no question is a permission prompt: Message is disabled', async () => {
+    mount();
+    await flushRaf();
+    const message = openMenu('pty-4').find((el) => el.dataset.paneMenuAction === 'message')!;
+    expect(message.getAttribute('aria-disabled')).toBe('true');
+    expect(message.getAttribute('title')).toBe('Answer the permission prompt in the terminal');
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    act(() => row('pty-4').focus());
+    key(row('pty-4'), 'm');
+    expect(container.querySelector('[data-fleet-editor]')).toBeNull();
+  });
+
+  it('awaiting_input WITH a question can be messaged', async () => {
+    act(() => { useStore.setState({ surfacePendingQuestion: { 'pty-4': 'Which branch?' } }); });
+    mount();
+    await flushRaf();
+    act(() => row('pty-4').focus());
+    key(row('pty-4'), 'm');
+    expect(container.querySelector('[data-fleet-editor="message"]')).not.toBeNull();
+  });
+
+  it('Message is disabled while hook activity is fresh, or while a plain shell runs a command', async () => {
+    act(() => { useStore.setState({ surfaceActivityAt: { 'pty-1': Date.now() }, agentClockMs: Date.now() }); });
+    mount();
+    await flushRaf();
+    act(() => row('pty-1').focus());
+    key(row('pty-1'), 'm');
+    expect(container.querySelector('[data-fleet-editor]')).toBeNull();
+    act(() => { useStore.setState({ surfaceActivityAt: {}, commandRunningByPtyId: { 'pty-1': true } }); });
+    await flushRaf();
+    act(() => row('pty-1').focus());
+    key(row('pty-1'), 'm');
+    expect(container.querySelector('[data-fleet-editor]')).toBeNull();
+    const message = openMenu('pty-1').find((el) => el.dataset.paneMenuAction === 'message')!;
+    expect(message.getAttribute('title')).toBe('Available once the turn finishes');
+  });
+
+  it('drops an open editor when its row leaves the visible list', async () => {
+    mount();
+    await flushRaf();
+    act(() => row('pty-1').focus());
+    key(row('pty-1'), 'l');
+    expect(container.querySelector('[data-fleet-editor="label"]')).not.toBeNull();
+    // pty-1 finishes being "complete" and drops into the collapsed Idle row.
+    act(() => { useStore.setState({ surfaceAgentStatus: { 'pty-3': 'complete', 'pty-4': 'awaiting_input' } }); });
+    await flushRaf();
+    expect(row('pty-1')).toBeNull();
+    expect(container.querySelector('[data-fleet-editor]')).toBeNull();
+  });
+
+  it('Escape with the ⋮ menu open closes only the menu', async () => {
+    mount();
+    await flushRaf();
+    act(() => { useStore.setState({ fleetViewVisible: true }); });
+    const items = openMenu('pty-1');
+    act(() => items[0].focus());
+    key(items[0], 'Escape');
+    expect(document.body.querySelector('[data-pane-actions-menu]')).toBeNull();
+    expect(useStore.getState().fleetViewVisible).toBe(true);
   });
 
   it('s and Backspace are ignored while typing in an input', async () => {

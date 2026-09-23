@@ -2,13 +2,17 @@
 // the shared PaneActionsMenu (same popover, same placePopover placement as the
 // pane header's overflow menu), plus the inline editors the verbs open under a
 // row — a single-line message composer, a label input, and a close confirm.
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FleetPane } from '../../stores/selectors/fleet';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import PaneActionsMenu, { type PaneActionItem } from '../Pane/PaneActionsMenu';
 import { IconChevron, IconEye, IconEyeOff, IconPencil, IconTerminal, IconX } from '../icons';
 import { submitBracketedPasteToPty } from '../../utils/ptyMessageDelivery';
+import { disposePanePtys } from '../../utils/paneTeardown';
+import { findPane } from '../../../shared/paneUtils';
+import { findStashedEntry } from '../../../shared/paneStash';
+import type { TranslationKey } from '../../i18n/locales/en';
 
 export type FleetEditorKind = 'message' | 'label' | 'close';
 
@@ -16,17 +20,61 @@ export interface FleetRowVerbs {
   /** Remote rows can only be jumped to; every other verb is hidden. */
   remoteOnly: boolean;
   /** Message is shown but unavailable while a turn is running (or before the
-   *  pane has a pty) — typing into a busy agent would interleave two requests. */
+   *  pane has a pty) — typing into a busy agent would interleave two requests —
+   *  and on a permission prompt, where the trailing Enter would pick the
+   *  highlighted option. */
   messageEnabled: boolean;
+  messageReason?: TranslationKey;
   stashed: boolean;
+  /** Closing the only pane of a workspace is a no-op in closePane; the verb is
+   *  disabled there and the workspace close is the way out. */
+  closeEnabled: boolean;
+  closeReason?: TranslationKey;
 }
 
-export function fleetRowVerbs(pane: FleetPane): FleetRowVerbs {
+/** Live signals the verbs depend on, read by the caller from the store. */
+export interface FleetRowVerbContext {
+  pendingQuestion?: string;
+  /** Hook turn latch / fresh hook activity (selectHookRunningByPtyId). */
+  hookRunning?: boolean;
+  /** OSC 133: a foreground command owns the pty. */
+  commandRunning?: boolean;
+  /** An agent is identified on the pty (surfaceAgent). An agent TUI is itself
+   *  the foreground command for its whole life, so `commandRunning` says
+   *  nothing about its turn; it only gates plain shell panes. */
+  hasAgent?: boolean;
+  /** The pane is its workspace's root (single-pane workspace). */
+  isRootPane?: boolean;
+}
+
+export function fleetRowVerbs(pane: FleetPane, ctx: FleetRowVerbContext = {}): FleetRowVerbs {
+  const permissionPrompt = pane.agentStatus === 'awaiting_input' && !ctx.pendingQuestion?.trim();
+  const busy = pane.agentStatus === 'running' || !!ctx.hookRunning || (!!ctx.commandRunning && !ctx.hasAgent);
+  const messageEnabled = !pane.remote && !!pane.ptyId && !busy && !permissionPrompt;
+  const closeEnabled = !pane.remote && !(ctx.isRootPane && !pane.stashed);
   return {
     remoteOnly: !!pane.remote,
-    messageEnabled: !pane.remote && !!pane.ptyId && pane.agentStatus !== 'running',
+    messageEnabled,
+    ...(messageEnabled ? {} : {
+      messageReason: permissionPrompt ? 'fleet.verb.messagePermission' as const : 'fleet.verb.messageUnavailable' as const,
+    }),
     stashed: !!pane.stashed,
+    closeEnabled,
+    ...(closeEnabled ? {} : { closeReason: 'fleet.verb.closeRoot' as const }),
   };
+}
+
+/** Close a pane from Fleet the way every other close path does: dispose its
+ *  ptys and remote sessions first (a visible pane via the layout tree, a
+ *  stashed one via its stash entry), then remove it. */
+export function closeFleetPane(pane: FleetPane): void {
+  const s = useStore.getState();
+  const ws = s.workspaces.find((w) => w.id === pane.workspaceId);
+  const subtree = ws
+    ? findPane(ws.rootPane, pane.paneId) ?? findStashedEntry(ws.stashedPanes, pane.paneId)?.pane
+    : undefined;
+  if (subtree) disposePanePtys(subtree);
+  s.closePane(pane.paneId, pane.workspaceId);
 }
 
 /** Stash a visible pane or bring a stashed one back. */
@@ -38,18 +86,29 @@ export function toggleFleetStash(pane: FleetPane): void {
 
 interface FleetRowMenuProps {
   pane: FleetPane;
+  verbs: FleetRowVerbs;
+  /** Told the menu's close function while it is open (null once closed), so
+   *  FleetView's Escape handler can close the menu instead of the overlay. */
+  onMenuOpenChange?: (close: (() => void) | null) => void;
   /** Roving slot owner — only its trigger is in the Tab order. */
   focused: boolean;
   onJump: (pane: FleetPane) => void;
   onEdit: (pane: FleetPane, kind: FleetEditorKind) => void;
 }
 
-export function FleetRowMenu({ pane, focused, onJump, onEdit }: FleetRowMenuProps) {
+export function FleetRowMenu({ pane, verbs, focused, onJump, onEdit, onMenuOpenChange }: FleetRowMenuProps) {
   const t = useT();
   const [anchor, setAnchor] = useState<{ top: number; left: number; right: number; bottom: number } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const close = useCallback(() => setAnchor(null), []);
-  const verbs = fleetRowVerbs(pane);
+  const close = useCallback(() => {
+    setAnchor(null);
+    onMenuOpenChange?.(null);
+  }, [onMenuOpenChange]);
+  // A row that unmounts with its menu open must not leave FleetView holding
+  // a dead close function (Escape would then do nothing once).
+  const openRef = useRef(false);
+  openRef.current = anchor !== null;
+  useEffect(() => () => { if (openRef.current) onMenuOpenChange?.(null); }, [onMenuOpenChange]);
 
   const items: PaneActionItem[] = [
     { key: 'jump', label: t('fleet.verb.jump'), shortcut: 'Enter', icon: <IconChevron size={12} />, onSelect: () => onJump(pane) },
@@ -62,7 +121,7 @@ export function FleetRowMenu({ pane, focused, onJump, onEdit }: FleetRowMenuProp
         shortcut: 'M',
         icon: <IconTerminal size={12} />,
         disabled: !verbs.messageEnabled,
-        title: verbs.messageEnabled ? undefined : t('fleet.verb.messageUnavailable'),
+        title: verbs.messageReason ? t(verbs.messageReason) : undefined,
         onSelect: () => onEdit(pane, 'message'),
       },
       {
@@ -79,6 +138,8 @@ export function FleetRowMenu({ pane, focused, onJump, onEdit }: FleetRowMenuProp
         shortcut: '⌫',
         icon: <IconX size={12} />,
         separatorBefore: true,
+        disabled: !verbs.closeEnabled,
+        title: verbs.closeReason ? t(verbs.closeReason) : undefined,
         onSelect: () => onEdit(pane, 'close'),
       },
     );
@@ -100,6 +161,7 @@ export function FleetRowMenu({ pane, focused, onJump, onEdit }: FleetRowMenuProp
           e.stopPropagation();
           if (anchor) { close(); return; }
           setAnchor(e.currentTarget.getBoundingClientRect());
+          onMenuOpenChange?.(close);
         }}
       >
         <span aria-hidden="true" className="font-mono text-[13px] leading-none">⋮</span>
@@ -130,7 +192,7 @@ export function FleetRowEditor({ pane, kind, onDone }: FleetRowEditorProps) {
           {t('fleet.close.cancel')}
         </button>
         <button type="button" className="is-destructive" data-fleet-close-confirm
-          onClick={() => { useStore.getState().closePane(pane.paneId, pane.workspaceId); onDone(); }}>
+          onClick={() => { closeFleetPane(pane); onDone(); }}>
           {t('fleet.verb.close')}
         </button>
       </div>
@@ -143,7 +205,10 @@ export function FleetRowEditor({ pane, kind, onDone }: FleetRowEditorProps) {
       if (!text) return;
       submitBracketedPasteToPty(pane.ptyId, text, { agent: agentName ?? pane.agentName });
     } else {
-      void window.electronAPI.metadata.setLabel(pane.paneId, pane.workspaceId, value.trim());
+      window.electronAPI.metadata.setLabel(pane.paneId, pane.workspaceId, value.trim()).catch((err: unknown) => {
+        console.error('[fleet] setLabel failed', err);
+        useStore.getState().pushToast({ level: 'error', message: t('fleet.label.failed') });
+      });
     }
     onDone();
   };

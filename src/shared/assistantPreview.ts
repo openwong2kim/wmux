@@ -39,11 +39,7 @@ export const LAST_ASSISTANT_GRAPHEMES = 140;
  * replacement character.
  */
 export function assistantPreview(raw: string): string | null {
-  const flattened = raw
-    .replace(/\p{Cc}/gu, ' ')
-    .replace(/[\u200B\u200C\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const flattened = flattenAgentText(raw);
   if (!flattened) return null;
   const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
   const graphemes = [...segmenter.segment(flattened)].map((s) => s.segment);
@@ -52,4 +48,19 @@ export function assistantPreview(raw: string): string | null {
   // an untruncated one — a consumer sizing a row off the constant is not
   // surprised by the truncated case being the wider one.
   return `…${graphemes.slice(-(LAST_ASSISTANT_GRAPHEMES - 1)).join('')}`;
+}
+
+/**
+ * The flatten step of `assistantPreview` on its own, with no length cut: C0/C1
+ * controls become spaces, zero-width and bidi-override characters are removed
+ * (ZWJ kept), whitespace runs collapse to one space, and the ends are trimmed.
+ * For agent-authored text shown on one line at its full length, such as a
+ * pending question.
+ */
+export function flattenAgentText(raw: string): string {
+  return raw
+    .replace(/\p{Cc}/gu, ' ')
+    .replace(/[\u200B\u200C\u200E\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

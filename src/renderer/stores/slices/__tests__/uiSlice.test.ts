@@ -830,26 +830,34 @@ describe('UISlice — Fleet "changed since you last looked" snapshot', () => {
 
   it('starts with no snapshot, so nothing reads as changed', () => {
     expect(store.getState().fleetLastSeen).toBeNull();
-    expect(fleetChangedSinceSeen(store.getState().fleetLastSeen, 'pty-1', 'awaiting_input')).toBe(false);
+    expect(fleetChangedSinceSeen(store.getState().fleetLastSeen, 'pty-1', 'awaiting_input', 'Deploy?')).toBe(false);
   });
 
   it('flags a pane whose status differs from the snapshot, or that the snapshot never saw', () => {
-    store.getState().setFleetLastSeen({ 'pty-1': 'running' }, 1_000);
+    store.getState().setFleetLastSeen({ 'pty-1': { status: 'running' } }, 1_000);
     const seen = store.getState().fleetLastSeen;
-    expect(seen).toEqual({ statuses: { 'pty-1': 'running' }, at: 1_000 });
+    expect(seen).toEqual({ statuses: { 'pty-1': { status: 'running' } }, at: 1_000 });
     expect(fleetChangedSinceSeen(seen, 'pty-1', 'awaiting_input')).toBe(true);
     expect(fleetChangedSinceSeen(seen, 'pty-2', 'error')).toBe(true);
   });
 
-  it('does not flag a pane whose status is unchanged', () => {
-    store.getState().setFleetLastSeen({ 'pty-1': 'awaiting_input' });
-    expect(fleetChangedSinceSeen(store.getState().fleetLastSeen, 'pty-1', 'awaiting_input')).toBe(false);
+  it('flags a new question asked in the same status', () => {
+    store.getState().setFleetLastSeen({ 'pty-1': { status: 'awaiting_input', question: 'Deploy to staging?' } });
+    const seen = store.getState().fleetLastSeen;
+    expect(fleetChangedSinceSeen(seen, 'pty-1', 'awaiting_input', 'Deploy to prod?')).toBe(true);
+    expect(fleetChangedSinceSeen(seen, 'pty-1', 'awaiting_input', 'Deploy to staging?')).toBe(false);
   });
 
-  it('copies the statuses, so later edits to the caller map do not leak in', () => {
-    const statuses: Record<string, 'running' | 'error'> = { 'pty-1': 'running' };
+  it('does not flag a pane whose status and question are unchanged', () => {
+    store.getState().setFleetLastSeen({ 'pty-1': { status: 'error' } });
+    expect(fleetChangedSinceSeen(store.getState().fleetLastSeen, 'pty-1', 'error')).toBe(false);
+    expect(fleetChangedSinceSeen(store.getState().fleetLastSeen, 'pty-1', 'error', '')).toBe(false);
+  });
+
+  it('copies the entries, so later edits to the caller map do not leak in', () => {
+    const statuses: Record<string, { status: 'running' | 'error' }> = { 'pty-1': { status: 'running' } };
     store.getState().setFleetLastSeen(statuses);
-    statuses['pty-1'] = 'error';
-    expect(store.getState().fleetLastSeen?.statuses['pty-1']).toBe('running');
+    statuses['pty-1'].status = 'error';
+    expect(store.getState().fleetLastSeen?.statuses['pty-1'].status).toBe('running');
   });
 });

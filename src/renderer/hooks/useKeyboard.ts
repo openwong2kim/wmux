@@ -13,6 +13,7 @@ import {
   destroySurfaceRemoteSession,
   destroyWorkspaceRemoteSessions,
 } from '../utils/remoteSessionTeardown';
+import { disposePanePtys } from '../utils/paneTeardown';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
 let bookmarkToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -78,14 +79,6 @@ export function ctrlByteForKeyCode(code: string): string | null {
   const m = /^Key([A-Z])$/.exec(code);
   if (!m) return null;
   return String.fromCharCode(m[1].charCodeAt(0) - 64);
-}
-
-/** Dispose all PTYs inside a pane tree — plus every remote session the tree
- *  owns (#1129), which carries no ptyId and would otherwise survive the pane
- *  that was running it. */
-function disposePanePtys(pane: import('../../shared/types').Pane): void {
-  for (const ptyId of collectPaneTreePtyIds(pane)) window.electronAPI.pty.dispose(ptyId);
-  destroyPaneTreeRemoteSessions(pane);
 }
 
 /**

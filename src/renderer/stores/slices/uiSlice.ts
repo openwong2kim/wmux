@@ -32,22 +32,33 @@ function readInitialBrowserBackend(): { backend: BrowserBackend; hydrated: boole
 }
 const INITIAL_BROWSER_BACKEND = readInitialBrowserBackend();
 
-/** What Fleet showed when it was last closed: ptyId → agentStatus. Same
- *  pane/status pairs the Deck briefing diffs, kept in memory for the session. */
+/** One pane as Fleet showed it: its status and pending question, if any. */
+export interface FleetSeenEntry {
+  status: AgentStatus;
+  question?: string;
+}
+
+/** What Fleet showed when it was last closed, per ptyId. Same pane/status
+ *  pairs the Deck briefing diffs (plus the question text, so a new question
+ *  in the same status still counts), kept in memory for the session. */
 export interface FleetSeenSnapshot {
-  statuses: Record<string, AgentStatus>;
+  statuses: Record<string, FleetSeenEntry>;
   at: number;
 }
 
-/** True when a row's status differs from the last-closed snapshot (a pane the
- *  snapshot never saw counts as changed). No snapshot → nothing is "changed". */
+/** True when a row's status or pending question differs from the last-closed
+ *  snapshot (a pane the snapshot never saw counts as changed). No snapshot →
+ *  nothing is "changed". */
 export function fleetChangedSinceSeen(
   seen: FleetSeenSnapshot | null,
   ptyId: string,
   agentStatus: AgentStatus,
+  question?: string,
 ): boolean {
   if (!seen || !ptyId) return false;
-  return seen.statuses[ptyId] !== agentStatus;
+  const prior = seen.statuses[ptyId];
+  if (!prior) return true;
+  return prior.status !== agentStatus || (prior.question || '') !== (question || '');
 }
 
 /**
@@ -187,7 +198,7 @@ export interface UISlice {
   // Fleet's "changed since you last looked" baseline, written when the overlay
   // closes. Session-only: not in buildSessionData; null until the first close.
   fleetLastSeen: FleetSeenSnapshot | null;
-  setFleetLastSeen: (statuses: Record<string, AgentStatus>, at?: number) => void;
+  setFleetLastSeen: (statuses: Record<string, FleetSeenEntry>, at?: number) => void;
 
   settingsPanelVisible: boolean;
   toggleSettingsPanel: () => void;
@@ -993,7 +1004,9 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   fleetLastSeen: null,
 
   setFleetLastSeen: (statuses, at = Date.now()) => set((state) => {
-    state.fleetLastSeen = { statuses: { ...statuses }, at };
+    const copy: Record<string, FleetSeenEntry> = {};
+    for (const [ptyId, entry] of Object.entries(statuses)) copy[ptyId] = { ...entry };
+    state.fleetLastSeen = { statuses: copy, at };
   }),
 
   // ─── Settings panel ──────────────────────────────────────────────────────

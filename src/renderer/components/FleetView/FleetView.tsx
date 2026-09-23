@@ -18,11 +18,12 @@ import {
   activatePaneTarget,
   focusNotificationTarget,
 } from '../../hooks/useNotificationListener';
-import { fleetChangedSinceSeen, type FleetTab } from '../../stores/slices/uiSlice';
+import { fleetChangedSinceSeen, type FleetSeenEntry, type FleetTab } from '../../stores/slices/uiSlice';
 import { tailForPty } from '../../utils/terminalTail';
 import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
 import { FleetRowMenu, FleetRowEditor, fleetRowVerbs, toggleFleetStash, type FleetEditorKind } from './FleetRowActions';
+import { findParent } from '../../../shared/paneUtils';
 import ApprovalInboxList from './ApprovalInboxList';
 import RemoteInboxList from './RemoteInboxList';
 import { fleetTitle, matchesFleetFilter, type FleetFilter } from './fleetPresentation';
@@ -132,8 +133,13 @@ export default function FleetView() {
   const panesRef = useRef(panes);
   panesRef.current = panes;
   useEffect(() => () => {
-    const statuses: Record<string, FleetPane['agentStatus']> = {};
-    for (const pane of panesRef.current) if (pane.ptyId) statuses[pane.ptyId] = pane.agentStatus;
+    const questions = useStore.getState().surfacePendingQuestion;
+    const statuses: Record<string, FleetSeenEntry> = {};
+    for (const pane of panesRef.current) {
+      if (!pane.ptyId) continue;
+      const question = questions[pane.ptyId];
+      statuses[pane.ptyId] = question ? { status: pane.agentStatus, question } : { status: pane.agentStatus };
+    }
     useStore.getState().setFleetLastSeen(statuses);
   }, []);
   const groups = useMemo(
@@ -380,6 +386,29 @@ export default function FleetView() {
     setEditor(null);
     requestAnimationFrame(() => { focusActiveItemRef.current(); });
   }, []);
+  // An editor whose pane left the visible rows (closed elsewhere, filtered
+  // out, collapsed into Idle) has nothing to act on: drop it.
+  useEffect(() => {
+    if (editor && !visibleRows.some((row) => row.pane.paneId === editor.paneId)) setEditor(null);
+  }, [editor, visibleRows]);
+
+  // The ⋮ menu that is open, if any (its close function), so Escape closes the
+  // menu rather than the overlay.
+  const closeRowMenuRef = useRef<(() => void) | null>(null);
+  const onRowMenuOpenChange = useCallback((close: (() => void) | null) => {
+    closeRowMenuRef.current = close;
+  }, []);
+  // Verb availability needs live signals the row itself does not carry.
+  const verbsFor = useCallback((pane: FleetPane) => {
+    const ws = workspaces.find((w) => w.id === pane.workspaceId);
+    return fleetRowVerbs(pane, {
+      pendingQuestion: surfacePendingQuestion[pane.ptyId],
+      hookRunning: !!hookRunningByPtyId[pane.ptyId],
+      commandRunning: commandRunningByPtyId[pane.ptyId] === true,
+      hasAgent: !!surfaceAgent[pane.ptyId]?.name,
+      isRootPane: !!ws && ws.rootPane.id === pane.paneId && findParent(ws.rootPane, pane.paneId) === null,
+    });
+  }, [workspaces, surfacePendingQuestion, hookRunningByPtyId, commandRunningByPtyId, surfaceAgent]);
   const openEditor = useCallback((pane: FleetPane, kind: FleetEditorKind) => {
     setFocusedPaneId(pane.paneId);
     setEditor({ paneId: pane.paneId, kind });
@@ -440,8 +469,9 @@ export default function FleetView() {
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        // An open row editor is the innermost thing Escape can mean.
-        if (editor) closeEditor();
+        // Innermost first: an open ⋮ menu, then an open row editor, then Fleet.
+        if (closeRowMenuRef.current) closeRowMenuRef.current();
+        else if (editor) closeEditor();
         else setVisible(false);
         return;
       }
@@ -511,8 +541,9 @@ export default function FleetView() {
           e.stopPropagation();
           if (key === 's') toggleFleetStash(row.pane);
           else if (key === 'l') setEditor({ paneId: row.pane.paneId, kind: 'label' });
-          else if (key === 'Backspace') setEditor({ paneId: row.pane.paneId, kind: 'close' });
-          else if (fleetRowVerbs(row.pane).messageEnabled) setEditor({ paneId: row.pane.paneId, kind: 'message' });
+          else if (key === 'Backspace') {
+            if (verbsFor(row.pane).closeEnabled) setEditor({ paneId: row.pane.paneId, kind: 'close' });
+          } else if (verbsFor(row.pane).messageEnabled) setEditor({ paneId: row.pane.paneId, kind: 'message' });
           return;
         }
       }
@@ -554,7 +585,7 @@ export default function FleetView() {
         }
       }
     }, [tab, rovingKeys.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible, setFocusedIdx,
-      editor, closeEditor, visibleRows, focusedKey]);
+      editor, closeEditor, visibleRows, focusedKey, verbsFor]);
 
   const idleSummary = idleOldestMs !== undefined && idleOldestMs >= IDLE_SHOW_AFTER_MS
     ? t('fleet.section.idleOldest', { count: visibleGroups.idle.length, age: formatIdle(idleOldestMs) })
@@ -566,13 +597,14 @@ export default function FleetView() {
       <FleetCard
         card={card}
         row={row}
-        changed={row.section === 'needsYou' && fleetChangedSinceSeen(fleetLastSeen, card.ptyId, card.agentStatus)}
+        changed={row.section === 'needsYou' && fleetChangedSinceSeen(fleetLastSeen, card.ptyId, card.agentStatus, surfacePendingQuestion[card.ptyId])}
         focused={card.paneId === focusedKey}
         onJump={jump}
         onFocus={() => setFocusedPaneId(card.paneId)}
         resource={card.ptyId ? resources[card.ptyId] : undefined}
       />
-      <FleetRowMenu pane={card} focused={card.paneId === focusedKey} onJump={jump} onEdit={openEditor} />
+      <FleetRowMenu pane={card} verbs={verbsFor(card)} focused={card.paneId === focusedKey} onJump={jump}
+        onEdit={openEditor} onMenuOpenChange={onRowMenuOpenChange} />
       {editor?.paneId === card.paneId && <FleetRowEditor pane={card} kind={editor.kind} onDone={closeEditor} />}
       </div>
     );
