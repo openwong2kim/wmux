@@ -1,3 +1,50 @@
+## [3.60.0] — 2026-09-23
+
+### Added
+
+- **See what changed while Fleet was closed.** A needs-you row whose status changed since you last closed Fleet is marked with a small dot. (#1446)
+
+- **Act on a pane without leaving Fleet.** Each row has Jump, Message, Stash, Label and Close verbs behind a ⋮ menu, with m / s / l / Backspace shortcuts on a focused row. Close asks first, with Cancel as the default. Remote rows offer Jump only, and a running agent cannot be messaged mid-turn. (#1446)
+
+- **Agents can ask "who needs me?" with `fleet_triage`.** A new MCP tool (full, core and commander profiles) returns the Fleet board as data: Needs you, Running and Idle rows with each agent's status, one line of detail and how long it has been quiet, plus the tab to act on. It is computed by the same selector the Fleet overlay renders, so an agent sees exactly what you see, across every workspace unless one is named. Before, an orchestrator had to poll `pane_list` per workspace or read terminals to find a blocked agent. Third-party plugins need the `terminal.read` grant, since rows carry agent-authored text. (#1449)
+
+### Changed
+
+- **Every finished turn now reports its closing message, not just a closing question.** Main used to forward the agent's last message to the renderer only when it ended on a question. Each turn end now also sends the message tail per pane, cut to the same 140-character budget the phone list uses, so Fleet rows can show what an idle pane last said. Claude Code only for now; other agents, failed turns and new sessions clear it. (#1446)
+
+- **Fleet is an attention board, not a card grid.** Agents are listed in three sections — Needs you, Running and Idle — instead of a grid of identical cards. Each row shows one line of detail (the pending question, the agent's last message or its current tool activity) and how long it has been since the pane last did anything. Idle agents collapse into a single "Idle N · oldest 2d" row, and when nothing needs you Fleet says so. Status filters and search narrow the sections; raw terminal output moved into an optional preview of the selected pane. A finished response is no longer presented as a successful task, and stale activity is shown as unconfirmed. (#1446)
+
+- **The wmux MCP tool list is about 9% smaller.** Every tool in `tools/list` carried `execution: { taskSupport: "forbidden" }`, which is exactly what the protocol assumes when the field is absent, and a JSON Schema `$schema` stamp for draft-07. Without the stamp a client reads a schema as draft 2020-12; wmux's schemas use no keyword whose meaning differs between the two drafts, so they read the same either way. wmux no longer sends either field. Tool names, descriptions, parameters and behaviour are unchanged. Each session pays roughly 7 KB less context for the full profile and about 4 KB less for the core and commander profiles. (#1448)
+
+### Fixed
+
+- **Fleet no longer shows hook-driven active turns as idle.** Fleet now reads the same turn and liveness signals as the sidebar, keeps the selected pane across live reordering, and leaves typing focus in the search field while results change. (#1446)
+
+- **The phone no longer offers desktop features the daemon cannot serve.** A
+  daemon running without the desktop app still told the phone, in
+  `/api/config`, that quick commands, workspace creation, account switching and
+  the workspace browser were available, because it checked that the desktop
+  bridge was wired rather than that the desktop app was attached. The phone
+  showed those features, and every one of them failed with `503
+  desktop-unavailable`. The flags now use the same availability check as the
+  routes, so they are true only while the desktop app is attached at the time
+  of the request. (#1450)
+
+### Security
+
+- **A device removed or made read-only mid-request can no longer answer an
+  approval.** `POST /api/approvals/:id` checked the phone's credential only
+  when the request started. A device revoked, or narrowed to read-only, while
+  its answer was still arriving could still approve — including a tool
+  permission, which runs the tool. The daemon now checks the credential again
+  once the answer has arrived, and again right before it presses the key or
+  releases the tool, since a resolve can wait behind other answers and
+  re-read the screen first. A revoked device gets `401 authorization-expired`,
+  a device that lost its input grant gets the read-only 403 for a permission
+  prompt, and the request stays pending for someone who may still answer it.
+  Screen prompts remain answerable from a read-only device, as before.
+  (#1447)
+
 ## [3.59.0] — 2026-09-22
 
 ### Added
