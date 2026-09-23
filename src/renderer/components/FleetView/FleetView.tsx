@@ -3,10 +3,9 @@ import { useStore } from '../../stores';
 import { useShallow } from 'zustand/react/shallow';
 import { useT } from '../../hooks/useT';
 import {
-  selectFleetPanes,
+  selectFleetBoard,
   selectHookRunningByPtyId,
   selectUnverifiablePaneMinutes,
-  groupFleetPanes,
   fleetTargetPtyId,
   type FleetPane,
   type FleetRow,
@@ -113,21 +112,20 @@ export default function FleetView() {
   const listRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
-  // Use the same turn/liveness inputs as the sidebar and Deck roster. Missing
-  // these optional inputs silently classified active hook-driven turns as idle.
-  const panes = useMemo(() => selectFleetPanes({
+  // The board's inputs are assembled in selectFleetBoard, which the
+  // fleet.triage RPC also calls, so what an agent is told matches this screen.
+  // The output stamp moves on every chunk, so it is read on the minute tick
+  // (`now`) rather than subscribed; elapsed time is minute-granular anyway.
+  const { panes, groups } = useMemo(() => selectFleetBoard({
       workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
       surfaceAgent, surfacePendingQuestion, surfaceActivityAt, surfaceTurnOpenAt,
       commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces,
-    }).map((pane) => ({
-      ...pane,
-      agentName: surfaceAgent[pane.ptyId]?.name || pane.agentName,
-      unverifiable: !!unverifiableMinutes[pane.ptyId],
-    })), [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
+      surfaceLastMessage, surfaceOutputAt: useStore.getState().surfaceOutputAt,
+      unverifiablePaneMinutes: unverifiableMinutes,
+    }, { now, sortMode: fleetSortMode }), [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
     surfaceAgent, surfacePendingQuestion, surfaceActivityAt, surfaceTurnOpenAt,
-    commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, unverifiableMinutes]);
-  // The output stamp moves on every chunk, so it is read on the minute tick
-  // (`now`) rather than subscribed; elapsed time is minute-granular anyway.
+    commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, unverifiableMinutes,
+    surfaceLastMessage, now, fleetSortMode]);
   // On close (unmount), remember what each pane's status was, so the next open
   // can mark needs-you rows that changed while Fleet was not being looked at.
   const panesRef = useRef(panes);
@@ -142,18 +140,6 @@ export default function FleetView() {
     }
     useStore.getState().setFleetLastSeen(statuses);
   }, []);
-  const groups = useMemo(
-    () => groupFleetPanes(panes, {
-      now,
-      surfaceActivityAt,
-      surfaceOutputAt: useStore.getState().surfaceOutputAt,
-      surfaceTurnOpenAt,
-      surfacePendingQuestion,
-      surfaceLastMessage,
-      sortMode: fleetSortMode,
-    }),
-    [panes, now, surfaceActivityAt, surfaceTurnOpenAt, surfacePendingQuestion, surfaceLastMessage, fleetSortMode],
-  );
   // Search and status filters narrow each section; the sections themselves
   // (and so the chip counts) come from the one groupFleetPanes pass.
   const visibleGroups = useMemo(() => {

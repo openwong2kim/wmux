@@ -6,6 +6,7 @@ import { remoteAgentKey } from '../../../shared/remoteHosts';
 import type { AttachedRemoteWorkspace } from '../slices/remoteWorkspacesSlice';
 import type { StoreState } from '../index';
 import { flattenAgentText } from '../../../shared/assistantPreview';
+import type { WorkTask } from '../../../shared/workTask';
 
 // ─── S-C1 Fleet View — derived "all agents, all workspaces" model ────────────
 //
@@ -1030,4 +1031,73 @@ export function groupFleetPanes(panes: FleetPane[], ctx: FleetGroupContext = {})
     groups.idle.sort(compare);
   }
   return groups;
+}
+
+/** A terminal's application name is context, not a task title. Never invent
+ * a task from output; use the user's label, mission, or terminal title. */
+export function fleetTitle(pane: FleetPane, mission?: WorkTask): string {
+  if (pane.paneLabel?.trim()) return pane.paneLabel.trim();
+  if (mission?.title.trim()) return mission.title.trim();
+  const title = pane.title.replace(/^[✳✻✽✶✢*]\s*/, '').trim();
+  const generic = /^(claude(?: code)?|codex(?: cli)?|gemini(?: cli)?|terminal|shell|zsh|bash|pwsh|powershell|cmd(?:\.exe)?)$/i;
+  if (title && !generic.test(title) && title.toLowerCase() !== pane.agentName?.toLowerCase()) return title;
+  return pane.workspaceName;
+}
+
+/** Everything the Fleet board reads. The two precomputed maps are optional:
+ *  FleetView subscribes to them shallowly (so the 2 s decay clock does not
+ *  re-derive the board) and passes them in; a caller holding the live store
+ *  omits them and they are derived from the same state here. */
+export type FleetBoardState = FleetSelectorState & Pick<StoreState, 'surfaceOutputAt'> & {
+  /** Produced by `selectUnverifiablePaneMinutes`; derived when absent. */
+  unverifiablePaneMinutes?: Record<string, number>;
+};
+
+export interface FleetBoard {
+  panes: FleetPane[];
+  groups: FleetGroups;
+}
+
+/**
+ * The Fleet attention board — the rows and sections the Fleet overlay shows.
+ * The one place its inputs are assembled, so the overlay and the fleet.triage
+ * RPC (an agent asking "who needs me?") cannot disagree.
+ */
+export function selectFleetBoard(
+  state: FleetBoardState,
+  opts: { now: number; sortMode: FleetSortMode },
+): FleetBoard {
+  const unverifiable = state.unverifiablePaneMinutes ?? selectUnverifiablePaneMinutes(state);
+  const surfaceAgent = state.surfaceAgent ?? {};
+  // Use the same turn/liveness inputs as the sidebar and Deck roster. Missing
+  // these optional inputs silently classified active hook-driven turns as idle.
+  const panes = selectFleetPanes({
+    workspaces: state.workspaces,
+    surfaceAgentStatus: state.surfaceAgentStatus,
+    surfaceActivity: state.surfaceActivity,
+    paneLabel: state.paneLabel,
+    supervisionByPtyId: state.supervisionByPtyId,
+    surfaceAgent: state.surfaceAgent,
+    surfacePendingQuestion: state.surfacePendingQuestion,
+    surfaceActivityAt: state.surfaceActivityAt,
+    surfaceTurnOpenAt: state.surfaceTurnOpenAt,
+    commandRunningByPtyId: state.commandRunningByPtyId,
+    agentAliveByPtyId: state.agentAliveByPtyId,
+    hookRunningByPtyId: state.hookRunningByPtyId ?? selectHookRunningByPtyId(state),
+    remoteWorkspaces: state.remoteWorkspaces,
+  }).map((pane) => ({
+    ...pane,
+    agentName: surfaceAgent[pane.ptyId]?.name || pane.agentName,
+    unverifiable: !!unverifiable[pane.ptyId],
+  }));
+  const groups = groupFleetPanes(panes, {
+    now: opts.now,
+    surfaceActivityAt: state.surfaceActivityAt,
+    surfaceOutputAt: state.surfaceOutputAt,
+    surfaceTurnOpenAt: state.surfaceTurnOpenAt,
+    surfacePendingQuestion: state.surfacePendingQuestion,
+    surfaceLastMessage: state.surfaceLastMessage,
+    sortMode: opts.sortMode,
+  });
+  return { panes, groups };
 }
