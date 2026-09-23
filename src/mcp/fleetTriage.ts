@@ -46,7 +46,7 @@ export function createFleetTriageToolCatalog(deps: FleetTriageDeps) {
       inputSchema: FLEET_TRIAGE_SHAPE,
       profiles: ['full', 'core', 'commander'],
       invoke: async ({ workspaceId, includeIdle }) => callRpc('fleet.triage', {
-        ...(workspaceId ? { workspaceId } : {}),
+        ...(workspaceId !== undefined ? { workspaceId } : {}),
         ...(includeIdle !== undefined ? { includeIdle } : {}),
       }),
     }),

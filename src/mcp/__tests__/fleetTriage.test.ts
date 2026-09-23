@@ -72,4 +72,9 @@ describe('fleet_triage invocation', () => {
     await triage({ includeIdle: false });
     expect(mockCallRpc).toHaveBeenCalledWith('fleet.triage', { includeIdle: false });
   });
+
+  it('forwards an empty workspaceId so the renderer can refuse it', async () => {
+    await triage({ workspaceId: '' });
+    expect(mockCallRpc).toHaveBeenCalledWith('fleet.triage', { workspaceId: '' });
+  });
 });

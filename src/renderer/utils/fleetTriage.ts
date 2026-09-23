@@ -36,6 +36,10 @@ const REASON_BY_DETAIL_KEY: Record<FleetDetailKey, FleetTriageReason> = {
 export const FLEET_TRIAGE_MAX_ROWS = 80;
 /** Characters of `detail` per row; a pending question can run to 600. */
 export const FLEET_TRIAGE_MAX_DETAIL = 280;
+/** UTF-8 bytes of the answer as the MCP server sends it (pretty-printed JSON,
+ *  see callRpc), kept well under the 64 KiB result cap. Hangul details are
+ *  three bytes a character, so the row cap alone does not guarantee this. */
+export const FLEET_TRIAGE_MAX_BYTES = 56 * 1024;
 
 function clip(text: string): string {
   const chars = Array.from(text);
@@ -67,7 +71,10 @@ export interface FleetTriageResult {
   needsYou: FleetTriageRow[];
   running: FleetTriageRow[];
   idle: { count: number; oldestIdleMs?: number; rows?: FleetTriageRow[] };
-  /** Rows left out per section once FLEET_TRIAGE_MAX_ROWS was reached. */
+  /** What was asked about: one workspace id, or 'fleet'. A hosted plugin's
+   *  request is bound to its own workspace, so this is the scope actually read. */
+  scope: string;
+  /** Rows left out per section once the row or byte budget was reached. */
   omitted?: { needsYou?: number; running?: number; idle?: number };
 }
 
@@ -132,8 +139,9 @@ export function buildFleetTriage(
   const needsYou = take(groups.needsYou.filter(inScope), 'needsYou');
   const running = take(groups.running.filter(inScope), 'running');
   const idleRows = params.includeIdle ? take(idle, 'idle') : undefined;
-  return {
+  const build = (): FleetTriageResult => ({
     generatedAt: now,
+    scope: params.workspaceId ?? 'fleet',
     needsYou,
     running,
     idle: {
@@ -142,5 +150,20 @@ export function buildFleetTriage(
       ...(idleRows ? { rows: idleRows } : {}),
     },
     ...(Object.keys(omitted).length > 0 ? { omitted } : {}),
-  };
+  });
+  // Then the byte budget, least urgent rows first, so the answer always
+  // arrives as whole JSON with an honest omitted count.
+  const bytes = (r: FleetTriageResult) => new TextEncoder().encode(JSON.stringify(r, null, 2)).length;
+  let result = build();
+  const order: Array<['idle' | 'running' | 'needsYou', FleetTriageRow[]]> = [
+    ['idle', idleRows ?? []], ['running', running], ['needsYou', needsYou],
+  ];
+  for (const [section, rows] of order) {
+    while (rows.length > 0 && bytes(result) > FLEET_TRIAGE_MAX_BYTES) {
+      rows.pop();
+      omitted[section] = (omitted[section] ?? 0) + 1;
+      result = build();
+    }
+  }
+  return result;
 }

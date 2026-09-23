@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { useStore } from '../../stores';
-import { buildFleetTriage, fleetTriageScopeError, FLEET_TRIAGE_MAX_ROWS, FLEET_TRIAGE_MAX_DETAIL } from '../../utils/fleetTriage';
+import { buildFleetTriage, fleetTriageScopeError, FLEET_TRIAGE_MAX_ROWS, FLEET_TRIAGE_MAX_DETAIL, FLEET_TRIAGE_MAX_BYTES } from '../../utils/fleetTriage';
 import { en } from '../../i18n/locales/en';
 import { REMOTE_KEY, seedFleetTriageStore } from '../../utils/__tests__/fleetTriageFixture';
 
@@ -21,7 +21,7 @@ beforeEach(() => {
 
 describe('useRpcBridge fleet.triage routing', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'useRpcBridge.ts'), 'utf-8');
-  const block = source.match(/if \(method === 'fleet\.triage'\) \{[\s\S]*?\n {2}\}\n/)?.[0] ?? '';
+  const block = source.match(/if \(method === 'fleet\.triage'\) \{[\s\S]*?\r?\n {2}\}\r?\n/)?.[0] ?? '';
 
   it('returns the shared board builder, with no active-workspace fallback', () => {
     expect(block).toContain('return buildFleetTriage(store, {');
@@ -161,7 +161,7 @@ describe('buildFleetTriage', () => {
     expect(result.omitted?.needsYou).toBeGreaterThan(0);
     expect(result.omitted?.running).toBe(1);
     expect(result.idle.count).toBeGreaterThan(0);
-    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(64 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(result, null, 2))).toBeLessThan(64 * 1024);
   });
 
   it('refuses an unknown or empty workspaceId instead of answering an empty board', () => {
@@ -174,8 +174,35 @@ describe('buildFleetTriage', () => {
 
   it('the bridge returns the scope error before building a board', () => {
     const source = fs.readFileSync(path.join(__dirname, '..', 'useRpcBridge.ts'), 'utf-8');
-    const block = source.match(/if \(method === 'fleet\.triage'\) \{[\s\S]*?\n {2}\}\n/)?.[0] ?? '';
+    const block = source.match(/if \(method === 'fleet\.triage'\) \{[\s\S]*?\r?\n {2}\}\r?\n/)?.[0] ?? '';
     expect(block.indexOf('fleetTriageScopeError(')).toBeGreaterThan(-1);
     expect(block.indexOf('fleetTriageScopeError(')).toBeLessThan(block.indexOf('return buildFleetTriage('));
+  });
+
+  it('keeps a Hangul-heavy fleet under the byte budget as whole JSON', () => {
+    const base = useStore.getState();
+    const many = Array.from({ length: FLEET_TRIAGE_MAX_ROWS }, (_, i) => ({
+      id: `ws-ko-${i}`, name: `작업공간 ${i}`, activePaneId: `pk-${i}`,
+      rootPane: { id: `pk-${i}`, type: 'leaf' as const, activeSurfaceId: `sk-${i}`,
+        surfaces: [{ id: `sk-${i}`, ptyId: `pty-k-${i}`, title: 't', shell: 'zsh', cwd: '/', surfaceType: 'terminal' as const }] },
+    }));
+    const question = '스테이징에 마이그레이션을 지금 적용할까요, 아니면 리뷰를 기다릴까요? '.repeat(10);
+    useStore.setState({
+      workspaces: [...base.workspaces, ...many] as typeof base.workspaces,
+      surfaceAgentStatus: { ...base.surfaceAgentStatus, ...Object.fromEntries(many.map((_, i) => [`pty-k-${i}`, 'awaiting_input' as const])) },
+      surfacePendingQuestion: { ...base.surfacePendingQuestion, ...Object.fromEntries(many.map((_, i) => [`pty-k-${i}`, question])) },
+    });
+    const result = buildFleetTriage(useStore.getState(), {}, NOW);
+    const text = JSON.stringify(result, null, 2);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(FLEET_TRIAGE_MAX_BYTES);
+    expect(() => JSON.parse(text)).not.toThrow();
+    expect(result.omitted?.needsYou).toBeGreaterThan(0);
+    expect(result.needsYou.length + (result.omitted?.needsYou ?? 0)).toBeGreaterThanOrEqual(FLEET_TRIAGE_MAX_ROWS);
+  });
+
+  it('reports the scope it read', () => {
+    const state = useStore.getState();
+    expect(buildFleetTriage(state, {}, NOW).scope).toBe('fleet');
+    expect(buildFleetTriage(state, { workspaceId: state.workspaces[0].id }, NOW).scope).toBe(state.workspaces[0].id);
   });
 });
