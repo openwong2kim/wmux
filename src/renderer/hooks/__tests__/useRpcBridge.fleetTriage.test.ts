@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { useStore } from '../../stores';
-import { buildFleetTriage, FLEET_TRIAGE_MAX_ROWS, FLEET_TRIAGE_MAX_DETAIL } from '../../utils/fleetTriage';
+import { buildFleetTriage, fleetTriageScopeError, FLEET_TRIAGE_MAX_ROWS, FLEET_TRIAGE_MAX_DETAIL } from '../../utils/fleetTriage';
 import { en } from '../../i18n/locales/en';
 import { REMOTE_KEY, seedFleetTriageStore } from '../../utils/__tests__/fleetTriageFixture';
 
@@ -162,5 +162,20 @@ describe('buildFleetTriage', () => {
     expect(result.omitted?.running).toBe(1);
     expect(result.idle.count).toBeGreaterThan(0);
     expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(64 * 1024);
+  });
+
+  it('refuses an unknown or empty workspaceId instead of answering an empty board', () => {
+    const state = useStore.getState();
+    expect(fleetTriageScopeError(state, undefined)).toBeNull();
+    expect(fleetTriageScopeError(state, state.workspaces[0].id)).toBeNull();
+    expect(fleetTriageScopeError(state, 'ws-gone')).toContain('unknown workspaceId');
+    expect(fleetTriageScopeError(state, '')).toContain('unknown workspaceId');
+  });
+
+  it('the bridge returns the scope error before building a board', () => {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'useRpcBridge.ts'), 'utf-8');
+    const block = source.match(/if \(method === 'fleet\.triage'\) \{[\s\S]*?\n {2}\}\n/)?.[0] ?? '';
+    expect(block.indexOf('fleetTriageScopeError(')).toBeGreaterThan(-1);
+    expect(block.indexOf('fleetTriageScopeError(')).toBeLessThan(block.indexOf('return buildFleetTriage('));
   });
 });

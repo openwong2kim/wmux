@@ -78,6 +78,22 @@ export interface FleetTriageParams {
   includeIdle?: boolean;
 }
 
+/**
+ * The error for a workspaceId the fleet does not have, or null when the scope
+ * is fine. An empty board for a stale or mistyped id would read as "nobody
+ * needs you" to a polling agent, so it is refused instead.
+ */
+export function fleetTriageScopeError(
+  state: Pick<StoreState, 'workspaces'>,
+  workspaceId: string | undefined,
+): string | null {
+  if (workspaceId === undefined) return null;
+  if (!workspaceId || !state.workspaces.some((ws) => ws.id === workspaceId)) {
+    return `fleet.triage: unknown workspaceId "${workspaceId}"`;
+  }
+  return null;
+}
+
 export function buildFleetTriage(
   state: StoreState,
   params: FleetTriageParams,

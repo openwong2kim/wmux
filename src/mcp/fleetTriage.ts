@@ -6,8 +6,11 @@
 //
 // Scope: the whole fleet by default. An explicit workspaceId narrows it; it is
 // NOT resolved to the caller's own workspace when omitted, because the question
-// is fleet-wide. That adds no reach pane_list lacks: pane_list already answers
-// an explicit foreign workspaceId, pending questions included.
+// is fleet-wide. Each row carries agent-authored text (the pending question,
+// last message or tool activity), remote host labels and mission titles, which
+// pane_list does not, so a third-party plugin needs terminal.read for it (see
+// methodCapabilityMap); an unknown workspaceId is an error, never an empty
+// "all clear" board.
 //
 // callRpc is injected so fleetTriage.test.ts can assert the RPC mapping against
 // a mock (same pattern as paneLifecycle.ts).
