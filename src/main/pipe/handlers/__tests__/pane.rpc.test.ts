@@ -1959,3 +1959,34 @@ describe('pane.rpc — hosted plugin binding on metadata verbs', () => {
     }
   });
 });
+
+describe('pane.rpc — fleet.triage', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sendToRendererMock.mockResolvedValue({ generatedAt: 1, scope: 'fleet', needsYou: [], running: [], idle: { count: 0 } });
+  });
+
+  it('forwards a valid request to the renderer', async () => {
+    const response = await register().dispatch({ id: 't1', method: 'fleet.triage', params: { workspaceId: 'ws-1', includeIdle: true } });
+    expect(response.ok).toBe(true);
+    expect(sendToRendererMock).toHaveBeenCalledWith(expect.any(Function), 'fleet.triage', { workspaceId: 'ws-1', includeIdle: true });
+  });
+
+  it('refuses a non-string workspaceId instead of widening to the whole fleet', async () => {
+    const response = await register().dispatch({ id: 't2', method: 'fleet.triage', params: { workspaceId: 42 } });
+    expect(response.ok).toBe(false);
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a non-boolean includeIdle', async () => {
+    const response = await register().dispatch({ id: 't3', method: 'fleet.triage', params: { includeIdle: 'yes' } });
+    expect(response.ok).toBe(false);
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('turns a booting renderer answer into an error', async () => {
+    sendToRendererMock.mockResolvedValue({ error: 'wmux is still starting (paneGate=pending)', retryable: true });
+    const response = await register().dispatch({ id: 't4', method: 'fleet.triage', params: {} });
+    expect(response.ok).toBe(false);
+  });
+});

@@ -256,6 +256,15 @@ export function registerPaneRpc(
    * { error, retryable } instead of a board, and its reason is propagated.
    */
   router.register('fleet.triage', async (params) => {
+    // A malformed scope must not widen to the whole fleet: the renderer reads
+    // a non-string workspaceId as "none given".
+    const workspaceId = params['workspaceId'];
+    if (workspaceId !== undefined && typeof workspaceId !== 'string') {
+      throw new Error('fleet.triage: "workspaceId" must be a string if provided');
+    }
+    if (params['includeIdle'] !== undefined && typeof params['includeIdle'] !== 'boolean') {
+      throw new Error('fleet.triage: "includeIdle" must be a boolean if provided');
+    }
     const board = (await sendToRenderer(getWindow, 'fleet.triage', params)) as
       { needsYou?: unknown; error?: unknown } | null;
     if (!board || typeof board !== 'object' || !Array.isArray(board.needsYou)) {
