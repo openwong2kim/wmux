@@ -290,6 +290,18 @@ describe('FleetView — attention board sections', () => {
     expect(tabbable[0]).toBe(container.querySelector('[data-fleet-idle-toggle]'));
   });
 
+  it('uses the stored last message as the detail of a finished turn', async () => {
+    seedIdleFleet();
+    act(() => useStore.setState({
+      surfaceAgentStatus: { 'pty-1': 'complete' },
+      surfaceLastMessage: { 'pty-1': 'Refactor done; 12 tests pass.' },
+    }));
+    mount();
+    await flushRaf();
+    expect(rows()[0].dataset.ptyId).toBe('pty-1');
+    expect(rows()[0].querySelector('.wmux-fleet-detail')?.textContent).toBe('Refactor done; 12 tests pass.');
+  });
+
   it('shows a row\'s elapsed time since its newest activity stamp', async () => {
     seedIdleFleet();
     act(() => useStore.setState({ fleetIdleExpanded: true }));

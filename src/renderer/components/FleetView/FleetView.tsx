@@ -9,7 +9,6 @@ import {
   groupFleetPanes,
   type FleetPane,
   type FleetRow,
-  type FleetSelectorState,
 } from '../../stores/selectors/fleet';
 import { selectApprovalInbox } from '../../stores/selectors/approvalInbox';
 import { selectRemoteInbox } from '../../stores/selectors/remoteInbox';
@@ -56,12 +55,7 @@ export default function FleetView() {
   const hookRunningByPtyId = useStore(useShallow(selectHookRunningByPtyId));
   const unverifiableMinutes = useStore(useShallow(selectUnverifiablePaneMinutes));
   const missions = useStore((s) => s.missionByPaneGroup);
-  // Optional last-message map, read through the FleetSelectorState view so the
-  // field may be absent from the store.
-  const surfaceLastMessage = useStore((s) => {
-    const view: FleetSelectorState = s;
-    return view.surfaceLastMessage;
-  });
+  const surfaceLastMessage = useStore((s) => s.surfaceLastMessage);
   const fleetIdleExpanded = useStore((s) => s.fleetIdleExpanded);
   const setFleetIdleExpanded = useStore((s) => s.setFleetIdleExpanded);
   // X8 supervision mirror — subscribed here so the selector re-runs when a

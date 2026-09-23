@@ -147,9 +147,9 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    */
   remoteWorkspaces?: AttachedRemoteWorkspace[];
   /** ptyId → the agent's last reported message (the Fleet row's one-line
-   *  detail for finished and idle turns). Optional: read it only through
-   *  `selectSurfaceLastMessage`, which tolerates the map being absent. */
-  surfaceLastMessage?: Record<string, string>;
+   *  detail for finished and idle turns). Optional so existing fixtures stay
+   *  terse; the live store always provides it. */
+  surfaceLastMessage?: StoreState['surfaceLastMessage'];
 };
 
 /**
@@ -839,7 +839,7 @@ function workspaceRollups(state: FleetSelectorState): WorkspaceRollups {
 }
 
 /** The agent's last reported message for a pty, trimmed; undefined when the
- *  store does not carry the map or the pty has no message. */
+ *  pty has no message. */
 export function selectSurfaceLastMessage(
   state: Pick<FleetSelectorState, 'surfaceLastMessage'>,
   ptyId: string,
