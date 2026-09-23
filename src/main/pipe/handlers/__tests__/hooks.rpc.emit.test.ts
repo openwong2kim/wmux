@@ -43,7 +43,7 @@ vi.mock('../../../notification/rendererNotificationReadiness', () => ({
 
 // Static import — vi.mock declarations are hoisted, so the module-under-test
 // still picks up the mocked _bridge and sendNotification at evaluation time.
-import { registerHooksRpc } from '../hooks.rpc';
+import { registerHooksRpc, buildTurnBoundaryMetadata, readStopMessage } from '../hooks.rpc';
 
 function fakeWindow(): BrowserWindow {
   // Minimal stub — the handler only calls webContents.send for token usage
@@ -561,7 +561,7 @@ describe('hooks.signal — agent.lifecycle event tee', () => {
       expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(1);
       expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ activity: '', pendingQuestion: '머지할까?' }),
+        expect.objectContaining({ activity: '', pendingQuestion: '머지할까?', lastMessage: '머지할까?' }),
       );
       expect(pollLifecycle()[0]).toMatchObject({
         lastMessage: { text: '머지할까?', endsWithQuestion: true },
@@ -591,10 +591,11 @@ describe('hooks.signal — agent.lifecycle event tee', () => {
       });
 
       // Empty string is the clear signal; without it a pane that once asked
-      // something would read as blocked forever.
+      // something would read as blocked forever. The closing message itself
+      // still rides along as lastMessage.
       expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
         expect.anything(),
-        expect.objectContaining({ pendingQuestion: '' }),
+        expect.objectContaining({ pendingQuestion: '', lastMessage: 'Merged as 08be43f.' }),
       );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -748,5 +749,49 @@ describe('hooks.signal — agent.user_prompt_submit turns the pane running', () 
     // plain 'running', which the byte heuristic's idle clear can still undo.
     const call = broadcastMetadataUpdateMock.mock.calls.at(-1)?.[1] as Record<string, unknown>;
     expect(call).not.toHaveProperty('hookKind');
+  });
+});
+
+describe('buildTurnBoundaryMetadata — lastMessage', () => {
+  const graphemes = (text: string) =>
+    [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)].length;
+
+  it('a claude stop carries the closing message, question or not', () => {
+    expect(
+      buildTurnBoundaryMetadata('agent.stop', { text: 'Merged as 08be43f.', endsWithQuestion: false }),
+    ).toMatchObject({ lastMessage: 'Merged as 08be43f.', pendingQuestion: '' });
+  });
+
+  it('a long Hangul message is cut from the front to 140 graphemes', () => {
+    const text = `${'가'.repeat(200)}끝`;
+    const boundary = buildTurnBoundaryMetadata('agent.stop', { text, endsWithQuestion: false });
+    expect(boundary?.lastMessage.startsWith('…')).toBe(true);
+    expect(boundary?.lastMessage.endsWith('끝')).toBe(true);
+    expect(graphemes(boundary!.lastMessage)).toBe(140);
+  });
+
+  // readStopMessage yields null for every non-claude stop, a failed turn, and a
+  // session start — each must CLEAR (''), never leave the field undefined.
+  it('a codex stop sends an empty lastMessage even with a readable transcript', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-hooks-'));
+    const transcript = path.join(dir, 't.jsonl');
+    fs.writeFileSync(
+      transcript,
+      `${JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } })}\n`,
+    );
+    try {
+      const codexStop = signal({ agent: 'codex', payload: { transcript_path: transcript } });
+      expect(buildTurnBoundaryMetadata('agent.stop', readStopMessage(codexStop))?.lastMessage).toBe('');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stop_failure sends an empty lastMessage', () => {
+    expect(buildTurnBoundaryMetadata('agent.stop_failure', null)?.lastMessage).toBe('');
+  });
+
+  it('session_start sends an empty lastMessage', () => {
+    expect(buildTurnBoundaryMetadata('agent.session_start', null)?.lastMessage).toBe('');
   });
 });

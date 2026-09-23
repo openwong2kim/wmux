@@ -961,3 +961,27 @@ describe('surfacePendingQuestion lifecycle', () => {
     expect(store.getState().surfaceQuestionSeen['pty-1']).toBeUndefined();
   });
 });
+
+describe('surfaceLastMessage', () => {
+  it('stores the text per ptyId, clears on an empty write, and dies with closePane', () => {
+    const store = createTestStore();
+    store.getState().setSurfaceLastMessage('pty-1', 'Merged as 08be43f.');
+    expect(store.getState().surfaceLastMessage['pty-1']).toBe('Merged as 08be43f.');
+    // Every turn boundary writes the field; '' is the clear.
+    store.getState().setSurfaceLastMessage('pty-1', '');
+    expect(store.getState().surfaceLastMessage['pty-1']).toBeUndefined();
+
+    const ws = getActiveWorkspace(store);
+    const rootLeafId = getLeafPanes(ws.rootPane)[0].id;
+    store.getState().splitPane(rootLeafId, 'horizontal');
+    const closing = getLeafPanes(getActiveWorkspace(store).rootPane)[1];
+    store.setState((s) => {
+      const leaf = getLeafPanes(s.workspaces[0].rootPane).find((l) => l.id === closing.id);
+      if (leaf) leaf.surfaces.push({ id: 'surf-lm', ptyId: 'pty-lm', title: 'x', shell: '', cwd: '', surfaceType: 'terminal' } as Surface);
+    });
+    store.getState().setSurfaceLastMessage('pty-lm', 'Done.');
+    store.getState().closePane(closing.id);
+    // A reused ptyId must not inherit a closed pane's text.
+    expect(store.getState().surfaceLastMessage['pty-lm']).toBeUndefined();
+  });
+});
