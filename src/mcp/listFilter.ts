@@ -12,22 +12,56 @@
  *
  * The names come from src/shared/unlistedTools.ts (UNLISTED_TOOLS), the SSOT
  * the profile manifests and drift tests also read.
+ *
+ * The same wrapper also drops two fields the SDK stamps on every tool that
+ * only restate the protocol default (MCP 2025-11-25, server/tools):
+ *   - `inputSchema.$schema` = draft-07. With no `$schema` a client reads the
+ *     schema as 2020-12, and no wmux schema uses a keyword whose meaning
+ *     differs between the two (tuple `items`, `$ref`/`definitions`,
+ *     `dependencies`) — the tools/list diet test pins that.
+ *   - `execution: { taskSupport: 'forbidden' }`. 'forbidden' is the default
+ *     when `execution` is absent, and wmux registers no task tools.
+ * Together they were ~9% of every profile's tools/list bytes.
  */
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 /** The handler map Protocol.setRequestHandler writes into (private in the
  *  SDK's types; read once here to capture the handler being wrapped). */
+type ListedTool = { name?: unknown; inputSchema?: unknown; execution?: unknown };
 type HandlerMap = Map<
   string,
-  (request: never, extra: never) => Promise<{ tools?: Array<{ name?: unknown }> }>
+  (request: never, extra: never) => Promise<{ tools?: ListedTool[] }>
 >;
+
+/** A listed tool without the fields that only restate protocol defaults.
+ *  Anything else — a non-default `taskSupport`, a `$schema` other than the
+ *  SDK's draft-07 stamp — passes through untouched. */
+export function withoutDefaultFields<T extends ListedTool>(tool: T): T {
+  let out: T = tool;
+  const schema = tool.inputSchema;
+  if (
+    schema && typeof schema === 'object'
+    && (schema as { $schema?: unknown }).$schema === 'http://json-schema.org/draft-07/schema#'
+  ) {
+    const { $schema: _dropped, ...rest } = schema as Record<string, unknown>;
+    out = { ...out, inputSchema: rest };
+  }
+  const execution = tool.execution as { taskSupport?: unknown } | undefined;
+  if (
+    execution && typeof execution === 'object'
+    && Object.keys(execution).length === 1 && execution.taskSupport === 'forbidden'
+  ) {
+    const { execution: _dropped, ...rest } = out;
+    out = rest as T;
+  }
+  return out;
+}
 
 export function unlistToolsFromListing(
   server: McpServer,
   hidden: ReadonlySet<string>,
 ): void {
-  if (hidden.size === 0) return;
   const protocol = server.server as unknown as {
     _requestHandlers?: HandlerMap;
     setRequestHandler: McpServer['server']['setRequestHandler'];
@@ -54,10 +88,12 @@ export function unlistToolsFromListing(
     const tools = result.tools ?? [];
     return {
       ...result,
-      tools: tools.filter((tool) => {
-        const name = tool.name;
-        return !(typeof name === 'string' && hidden.has(name));
-      }),
+      tools: tools
+        .filter((tool) => {
+          const name = tool.name;
+          return !(typeof name === 'string' && hidden.has(name));
+        })
+        .map(withoutDefaultFields),
     };
   });
 }

@@ -364,3 +364,40 @@ describe('tools/list diet — browser_repl mitigations', () => {
     }
   });
 });
+
+/** Keywords whose meaning differs between JSON Schema draft-07 and 2020-12.
+ *  Dropping the SDK's draft-07 `$schema` stamp is only a no-op while none of
+ *  them appears in a listed schema. */
+function draftSensitivePaths(node: unknown, path = ''): string[] {
+  if (Array.isArray(node)) return node.flatMap((v, i) => draftSensitivePaths(v, `${path}/${i}`));
+  if (!node || typeof node !== 'object') return [];
+  const out: string[] = [];
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    const sensitive = ['$ref', 'definitions', '$defs', 'dependencies', 'additionalItems'].includes(key)
+      || (key === 'items' && Array.isArray(value));
+    if (sensitive) out.push(`${path}/${key}`);
+    out.push(...draftSensitivePaths(value, `${path}/${key}`));
+  }
+  return out;
+}
+
+describe('tools/list diet — protocol-default fields are not listed', () => {
+  for (const coreMode of [false, true]) {
+    it(`${coreMode ? 'core' : 'full'} profile: no $schema stamp, no default execution, no draft-sensitive keyword`, async () => {
+      const { client, close } = await connectClient({ coreMode });
+      try {
+        const res = await client.listTools();
+        expect(res.tools.length).toBeGreaterThan(0);
+        for (const tool of res.tools) {
+          const raw = tool as unknown as { inputSchema: Record<string, unknown>; execution?: unknown };
+          expect(raw.inputSchema.$schema, `${tool.name} $schema`).toBeUndefined();
+          expect(raw.inputSchema.type, `${tool.name} type`).toBe('object');
+          expect(raw.execution, `${tool.name} execution`).toBeUndefined();
+          expect(draftSensitivePaths(raw.inputSchema), `${tool.name} schema`).toEqual([]);
+        }
+      } finally {
+        await close();
+      }
+    });
+  }
+});

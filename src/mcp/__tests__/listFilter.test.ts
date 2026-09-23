@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { unlistToolsFromListing } from '../listFilter';
+import { unlistToolsFromListing, withoutDefaultFields } from '../listFilter';
 
 /**
  * The filter reaches into the SDK's PRIVATE `_requestHandlers` map (#1302).
@@ -64,5 +64,32 @@ describe('unlistToolsFromListing — SDK-shape fallback', () => {
       tools: Array<{ name: string }>;
     };
     expect(result.tools.map((t) => t.name)).toEqual(['send_message']);
+  });
+});
+
+describe('unlistToolsFromListing — protocol-default fields', () => {
+  it('drops the draft-07 $schema stamp and a forbidden-only execution, keeps everything else', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const original = async () => ({
+      tools: [{
+        name: 'pane_list',
+        description: 'd',
+        inputSchema: { $schema: 'http://json-schema.org/draft-07/schema#', type: 'object', properties: { a: { type: 'string' } }, required: ['a'] },
+        execution: { taskSupport: 'forbidden' },
+      }],
+    });
+    const server = fakeServer(new Map([['tools/list', original]]));
+    unlistToolsFromListing(server as never, new Set());
+    const result = (await server.callWrapped({})) as { tools: Array<Record<string, unknown>> };
+    expect(result.tools).toEqual([{
+      name: 'pane_list',
+      description: 'd',
+      inputSchema: { type: 'object', properties: { a: { type: 'string' } }, required: ['a'] },
+    }]);
+  });
+
+  it('leaves a non-default taskSupport and a non-draft-07 $schema untouched', () => {
+    const optional = { name: 't', execution: { taskSupport: 'optional' }, inputSchema: { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object' } };
+    expect(withoutDefaultFields(optional)).toEqual(optional);
   });
 });
