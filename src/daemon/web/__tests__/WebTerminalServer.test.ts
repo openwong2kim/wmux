@@ -3871,7 +3871,58 @@ describe('WebTerminalServer', () => {
     const headers = bearer(info.token as string);
     expect((await fetch(`${base()}/api/sessions/s1/accounts`, { method: 'POST', headers, body: '{"action":"usage","accountId":"a"}' })).status).toBe(403);
     expect((await fetch(`${base()}/api/sessions/s1/accounts`, { headers })).status).toBe(503);
-    expect(await (await fetch(`${base()}/api/config`, { headers })).json()).toMatchObject({ desktopAccounts: true });
+    expect(await (await fetch(`${base()}/api/config`, { headers })).json()).toMatchObject({ desktopAccounts: false });
+  });
+
+  describe('/api/config desktop flags follow the routes\' availability check', () => {
+    const desktopFlags = ['browserScrolling', 'workspaceBrowsers', 'browserCreation', 'browserKeyboard', 'browserPreview', 'workspaceCreation', 'quickCommands', 'desktopAccounts'] as const;
+    const flags = async (token: string) => {
+      const body = await (await fetch(`${base()}/api/config`, { headers: bearer(token) })).json() as Record<string, unknown>;
+      return Object.fromEntries(desktopFlags.map(key => [key, body[key]]));
+    };
+    const all = (value: boolean) => Object.fromEntries(desktopFlags.map(key => [key, value]));
+    const startFull = () => server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: true });
+
+    it('advertises nothing when the getter returns no bridge, and the route agrees', async () => {
+      desktopBridge = null;
+      const info = await startFull();
+      expect(await flags(info.token as string)).toEqual(all(false));
+      expect((await fetch(`${base()}/api/quick-commands`, { headers: bearer(info.token as string) })).status).toBe(503);
+    });
+
+    it('advertises nothing when the bridge exists but no desktop process is attached', async () => {
+      desktopBridge = new DesktopPhoneBridge(() => true);
+      const info = await startFull();
+      expect(await flags(info.token as string)).toEqual(all(false));
+      expect((await fetch(`${base()}/api/quick-commands`, { headers: bearer(info.token as string) })).status).toBe(503);
+    });
+
+    it('advertises every flag once the desktop attaches, and drops them when it detaches', async () => {
+      desktopBridge = new DesktopPhoneBridge(() => true);
+      const info = await startFull();
+      desktopBridge.register('main');
+      expect(await flags(info.token as string)).toEqual(all(true));
+      desktopBridge.disconnect('main');
+      expect(await flags(info.token as string)).toEqual(all(false));
+    });
+
+    it('still ANDs availability with the input and transcript grants', async () => {
+      desktopBridge = new DesktopPhoneBridge(() => true);
+      desktopBridge.register('main');
+      const readOnly = await startRO();
+      expect(await flags(readOnly.token as string)).toEqual(all(false));
+      await server.stop();
+      const transcriptOnly = await startWithTranscript();
+      expect(await flags(transcriptOnly.token as string)).toEqual({
+        ...all(false),
+        browserPreview: true,
+        quickCommands: true,
+        desktopAccounts: true,
+      });
+      await server.stop();
+      const inputOnly = await startRW();
+      expect(await flags(inputOnly.token as string)).toEqual({ ...all(false), workspaceCreation: true });
+    });
   });
 
   it('derives account workspace scope from the pane and refuses internal env actions', async () => {

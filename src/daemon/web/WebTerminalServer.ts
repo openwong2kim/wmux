@@ -1880,6 +1880,11 @@ export class WebTerminalServer {
       // talking to one of those gets a body with no version keys at all, which
       // reads as "protocol 0", the same way a missing `allowUpload` reads as
       // false.
+      //
+      // The desktop flags below ask the same question the desktop routes ask,
+      // through the same helper, at request time. The getter is always wired,
+      // so testing it for `undefined` advertised routes that answered 503.
+      const desktopAvailable = this.availableDesktop() !== null;
       return this.json(res, 200, {
         // THIS CALLER's effective grant, not the server flag. A phone paired
         // read-only asks the same question a phone paired with input does, and
@@ -1911,14 +1916,14 @@ export class WebTerminalServer {
         liveActivityHostScope: true,
         agentSettings: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.agentSettings !== undefined,
         agentLaunch: this.mayInput(principal) && this.deps.agentLaunchOptions !== undefined,
-        browserScrolling: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
-        workspaceBrowsers: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
-        browserCreation: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
-        browserKeyboard: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
-        browserPreview: this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
-        workspaceCreation: this.mayInput(principal) && this.deps.desktop !== undefined,
-        quickCommands: this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
-        desktopAccounts: this.opts?.allowTranscript === true && this.deps.desktop !== undefined,
+        browserScrolling: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
+        workspaceBrowsers: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
+        browserCreation: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
+        browserKeyboard: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
+        browserPreview: this.opts?.allowTranscript === true && desktopAvailable,
+        workspaceCreation: this.mayInput(principal) && desktopAvailable,
+        quickCommands: this.opts?.allowTranscript === true && desktopAvailable,
+        desktopAccounts: this.opts?.allowTranscript === true && desktopAvailable,
         gitControl: this.mayInput(principal),
         runHistory: this.opts?.allowTranscript === true && this.deps.runHistory !== undefined,
         // Whether this daemon can drive a Live Activity over APNs. A phone that
@@ -2479,8 +2484,8 @@ export class WebTerminalServer {
     if (!this.mayInput(principal) || this.opts?.allowTranscript !== true) return this.json(res,403,{error:'workspace-browser-disabled'});
     const workspaceId = decodePathSegment(rawId);
     if (!workspaceId || !/^[A-Za-z0-9_-]{1,128}$/.test(workspaceId) || ['__proto__','constructor','prototype'].includes(workspaceId)) return this.json(res,400,{error:'invalid-workspace'});
-    const desktop = this.deps.desktop?.();
-    if (!desktop?.available) return this.json(res,503,{error:'desktop-unavailable'});
+    const desktop = this.availableDesktop();
+    if (!desktop) return this.json(res,503,{error:'desktop-unavailable'});
     try {
       const registry = await desktop.request('workspaces.list',{}) as {workspaces?:unknown};
       if (!Array.isArray(registry?.workspaces) || !registry.workspaces.some(row => row && typeof row === 'object' && row.id === workspaceId)) return this.json(res,404,{error:'workspace-not-found'});
@@ -2499,8 +2504,8 @@ export class WebTerminalServer {
     if (!knownWorkspace && !session) return this.json(res,404,{error:'session not found'});
     const workspaceId = knownWorkspace ?? session?.meta.env?.[ENV_KEYS.WORKSPACE_ID];
     if (!workspaceId) return this.json(res,409,{error:'workspace-required'});
-    const desktop = this.deps.desktop?.();
-    if (!desktop?.available) return this.json(res,503,{error:'desktop-unavailable'});
+    const desktop = this.availableDesktop();
+    if (!desktop) return this.json(res,503,{error:'desktop-unavailable'});
     const send = (command: 'browser.list' | 'browser.capture' | 'browser.viewport' | 'browser.navigate' | 'browser.type' | 'browser.key' | 'browser.tap' | 'browser.open' | 'browser.scroll', payload: Record<string,unknown>) => {
       void desktop.request(command,{...payload,workspaceId}).then(result => this.json(res,200,result,{'Cache-Control':'no-store'}))
         .catch(() => this.json(res,503,{error:'browser-preview-unavailable'}));
@@ -2536,8 +2541,8 @@ export class WebTerminalServer {
 
   private handlePhoneWorkspaces(req: http.IncomingMessage, res: http.ServerResponse, url: URL, principal: WebPrincipal): void {
     if (!this.mayInput(principal)) return this.refuseInput(res,principal,'Workspace management requires input permission');
-    const desktop = this.deps.desktop?.();
-    if (!desktop?.available) return this.json(res,503,{error:'desktop-unavailable'});
+    const desktop = this.availableDesktop();
+    if (!desktop) return this.json(res,503,{error:'desktop-unavailable'});
     const send = (command: 'workspaces.list' | 'workspaces.create', payload: Record<string,unknown>) => {
       void desktop.request(command,payload).then(result => {
         if (command === 'workspaces.create' && result && typeof result === 'object' && 'error' in result &&
@@ -2571,8 +2576,8 @@ export class WebTerminalServer {
   private handleQuickCommands(req: http.IncomingMessage, res: http.ServerResponse, url: URL, principal: WebPrincipal): void {
     if (this.opts?.allowTranscript !== true) return this.json(res,403,{error:'quick-commands-disabled'});
     if (req.method === 'POST' && !this.mayInput(principal)) return this.refuseInput(res,principal,'Quick command edits require input permission');
-    const desktop = this.deps.desktop?.();
-    if (!desktop?.available) return this.json(res,503,{error:'desktop-unavailable'});
+    const desktop = this.availableDesktop();
+    if (!desktop) return this.json(res,503,{error:'desktop-unavailable'});
     const send = (command: 'prompts.list' | 'prompts.replace', payload: Record<string,unknown>) => {
       void desktop.request(command,payload).then(result => this.json(res,200,result,{'Cache-Control':'no-store'})).catch(() => {
         this.json(res,503,{error:'quick-command-request-unconfirmed'});
@@ -2600,8 +2605,8 @@ export class WebTerminalServer {
     if (!session) return this.json(res,404,{error:'session not found'});
     const workspaceId = session.meta.env?.[ENV_KEYS.WORKSPACE_ID];
     if (!workspaceId) return this.json(res,409,{error:'workspace-required'});
-    const desktop = this.deps.desktop?.();
-    if (!desktop?.available) return this.json(res,503,{error:'desktop-unavailable'});
+    const desktop = this.availableDesktop();
+    if (!desktop) return this.json(res,503,{error:'desktop-unavailable'});
     const send = (command: 'accounts.list' | 'accounts.bind' | 'accounts.usage', payload: Record<string,unknown>) => {
       void desktop.request(command,{...payload,workspaceId}).then(result => this.json(res,200,result,{'Cache-Control':'no-store'})).catch(error => {
         this.json(res,error instanceof DesktopPhoneError && error.tag === 'desktop-busy' ? 429 : 503,
@@ -3616,8 +3621,8 @@ export class WebTerminalServer {
   private async agentOptionsForWorkspace(workspaceId: string): Promise<AgentLaunchOptions[]> {
     if (!this.deps.agentLaunchOptions) throw new Error('Agent launch unavailable');
     if (!workspaceId) return this.deps.agentLaunchOptions();
-    const desktop = this.deps.desktop?.();
-    if (!desktop?.available) throw new Error('Desktop unavailable');
+    const desktop = this.availableDesktop();
+    if (!desktop) throw new Error('Desktop unavailable');
     const resolved = await desktop.request('accounts.env',{workspaceId});
     if (!resolved || typeof resolved !== 'object') throw new Error('Account unavailable');
     const codexHome = (resolved as Record<string,unknown>).CODEX_HOME;
@@ -5409,6 +5414,16 @@ export class WebTerminalServer {
         allowInput: result.allowInput,
       },
     };
+  }
+
+  /**
+   * The desktop bridge when the first-party desktop process is attached, else
+   * null. The one availability judgment: the desktop routes use it to decide
+   * 503, and `/api/config` uses it to decide what to advertise.
+   */
+  private availableDesktop(): DesktopPhoneBridge | null {
+    const desktop = this.deps.desktop?.();
+    return desktop?.available ? desktop : null;
   }
 
   /**
