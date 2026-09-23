@@ -1,6 +1,6 @@
 import { memo } from 'react';
-import type { FleetPane } from '../../stores/selectors/fleet';
-import { selectLatestCompletionEvidenceTask } from '../../stores/selectors/fleet';
+import type { FleetPane, FleetRow } from '../../stores/selectors/fleet';
+import { fleetRow, selectLatestCompletionEvidenceTask } from '../../stores/selectors/fleet';
 import type { WorkTask } from '../../../shared/workTask';
 import type { Task } from '../../../shared/types';
 import { isVerifiedItem } from '../../../shared/completionEvidence';
@@ -10,7 +10,7 @@ import { t } from '../../i18n';
 import { useStore } from '../../stores';
 import { IconChevronDir, IconExternalLink } from '../icons';
 import { fleetTitle } from './fleetPresentation';
-import { timeAgo } from '../../utils/timeAgo';
+import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
 
 interface FleetCardProps {
   card: FleetPane;
@@ -21,9 +21,9 @@ interface FleetCardProps {
   /** S-C2 live output tail — last ~3 plaintext lines of this pane's buffer.
    *  Only meaningful for terminal cards with a ptyId; already plaintext. */
   tail?: string[];
-  pendingQuestion?: string;
-  activityAt?: number;
-  now?: number;
+  /** Section, detail and elapsed time from `groupFleetPanes`. Absent (tests,
+   *  stand-alone renders) → derived from the card alone. */
+  row?: FleetRow;
   onFocus?: () => void;
   /** TASK-6 — per-pane agent resource attribution: summed RAM (bytes) of this
    *  pane's shell + descendant tree, and the heaviest child's image name. Only
@@ -117,7 +117,7 @@ export function FleetCardEvidenceBadge({ task }: { task: Task | undefined }): Re
 }
 
 /** Compact task row. Output belongs in the opt-in preview, not in every row. */
-function FleetCard({ card, focused, onJump, resource, pendingQuestion, activityAt, now, onFocus }: FleetCardProps) {
+function FleetCard({ card, focused, onJump, resource, row: rowProp, onFocus }: FleetCardProps) {
   const t = useT();
   const icon = AGENT_STATUS_ICON[card.agentStatus];
   const mission = useStore((s) => s.missionByPaneGroup[card.workspaceId]);
@@ -126,7 +126,6 @@ function FleetCard({ card, focused, onJump, resource, pendingQuestion, activityA
   );
   const displayName = fleetTitle(card, mission);
   const agentName = card.agentName || (card.surfaceType === 'terminal' ? card.title : card.surfaceType);
-  const isAwaitingInput = card.agentStatus === 'awaiting_input' || card.agentStatus === 'waiting';
   const supervision = card.supervision;
   const supervisionStopped = supervision?.status === 'stopped';
   const supervisionLabel = supervision
@@ -134,24 +133,21 @@ function FleetCard({ card, focused, onJump, resource, pendingQuestion, activityA
         supervision.restartCount === 1 ? '' : 's'
       }`
     : '';
-  const activity = card.surfaceType === 'terminal' ? card.activity?.trim() : undefined;
-  const evidence = card.agentStatus === 'complete' ? evidenceTask?.status.evidence?.summary : undefined;
+  const row = rowProp ?? fleetRow(card);
+  // A waiting pane with no question is idle, not a request for input.
+  const isAwaitingInput = card.agentStatus === 'awaiting_input' || row.detailSource === 'question';
   const statusLabel = card.unverifiable ? t('fleet.status.unconfirmed')
     : card.agentStatus === 'complete' ? t('fleet.status.turnComplete') : t(icon.labelKey);
   const statusColor = card.unverifiable ? 'var(--accent-yellow)'
     : card.agentStatus === 'idle' ? 'var(--text-sub)' : icon.dotVar;
-  const detail = supervisionStopped ? t('fleet.detail.supervisionStopped')
-    : card.unverifiable ? t('fleet.detail.unconfirmed')
-    : isAwaitingInput ? pendingQuestion?.trim() || t('fleet.needsYourInput')
-    : card.agentStatus === 'error' ? t('fleet.detail.error')
-    : evidence || activity || (card.surfaceType !== 'terminal' ? card.surfaceType
-      : card.agentStatus === 'complete' ? t('fleet.detail.complete')
-      : card.agentStatus === 'running' ? t('fleet.detail.running') : t('fleet.detail.idle'));
+  const detail = row.detail ?? t(row.detailKey);
+  const elapsed = row.idleForMs !== undefined && row.idleForMs >= IDLE_SHOW_AFTER_MS
+    ? formatIdle(row.idleForMs) : undefined;
   const action = isAwaitingInput ? t('fleet.action.respond')
     : card.agentStatus === 'complete' ? t('fleet.action.result')
     : card.agentStatus === 'error' || card.unverifiable || supervisionStopped ? t('fleet.action.inspect')
     : t('fleet.action.open');
-  const showActivity = !!activity && detail === activity;
+  const showActivity = row.detailSource === 'activity';
 
   return (
     <button
@@ -220,7 +216,7 @@ function FleetCard({ card, focused, onJump, resource, pendingQuestion, activityA
           data-fleet-activity={showActivity || undefined} title={detail}>{detail}</span>
         <span className="wmux-fleet-meta">
           {card.agentStatus === 'complete' && <FleetCardEvidenceBadge task={evidenceTask} />}
-          {!!activityAt && <span title={new Date(activityAt).toLocaleString()}>{t('fleet.lastActivity', { time: timeAgo(activityAt, now) })}</span>}
+          {elapsed && <span data-fleet-elapsed>{elapsed}</span>}
         </span>
       </span>
       <span className="wmux-fleet-action" aria-hidden="true">

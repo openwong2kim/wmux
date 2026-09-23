@@ -1,4 +1,4 @@
-import type { FleetPane } from '../../stores/selectors/fleet';
+import type { FleetPane, FleetRow } from '../../stores/selectors/fleet';
 import type { WorkTask } from '../../../shared/workTask';
 
 export type FleetFilter = 'all' | 'attention' | 'running' | 'complete' | 'idle';
@@ -14,13 +14,11 @@ export function fleetTitle(pane: FleetPane, mission?: WorkTask): string {
   return pane.workspaceName;
 }
 
-export function fleetNeedsAttention(pane: FleetPane): boolean {
-  return pane.agentStatus === 'awaiting_input' || pane.agentStatus === 'waiting'
-    || pane.agentStatus === 'error' || pane.unverifiable || pane.supervision?.status === 'stopped';
-}
-
-export function matchesFleetFilter(pane: FleetPane, filter: FleetFilter): boolean {
+/** Status filters narrow the attention-board sections; they never re-derive
+ * a status of their own, so a chip count always matches its section. */
+export function matchesFleetFilter(row: FleetRow, filter: FleetFilter): boolean {
   if (filter === 'all') return true;
-  if (filter === 'attention') return fleetNeedsAttention(pane);
-  return pane.agentStatus === filter && !fleetNeedsAttention(pane);
+  if (filter === 'attention') return row.section === 'needsYou';
+  if (filter === 'complete') return row.pane.agentStatus === 'complete';
+  return row.section === filter;
 }

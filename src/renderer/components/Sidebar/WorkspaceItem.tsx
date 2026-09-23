@@ -18,6 +18,7 @@ import WorkspaceAccountMenu from './WorkspaceAccountMenu';
 import WorkspaceChromeProfileMenu from './WorkspaceChromeProfileMenu';
 import WorkspaceAgentRoster, { WorkspaceRosterSummaryMemo, STASH_PULSE_MS } from './WorkspaceAgentRoster';
 import { displayPath } from '../../utils/displayPath';
+import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 
 interface WorkspaceItemProps {
@@ -233,20 +234,6 @@ function notifyOpenFailed(t: (key: TranslationKey, params?: Record<string, strin
   }
   useStore.getState().pushToast({ level: 'warn', message });
 }
-
-/** Idle-duration label: minutes under an hour, then hours, then days. */
-function formatIdle(ms: number): string {
-  const m = Math.floor(ms / 60_000);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h`;
-  return `${Math.floor(h / 24)}d`;
-}
-
-/** Idle badge threshold — under a minute is "just now", not neglect. */
-const IDLE_SHOW_AFTER_MS = 60_000;
-/** Re-render cadence for the idle label; minute granularity needs no more. */
-const IDLE_TICK_MS = 30_000;
 
 /**
  * Rest-state chrome: invisible AND weightless.

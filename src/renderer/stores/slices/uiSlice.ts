@@ -161,6 +161,11 @@ export interface UISlice {
   fleetSortMode: FleetSortMode;
   setFleetSortMode: (mode: FleetSortMode) => void;
 
+  // Fleet attention board — whether the Idle section shows its rows or stays
+  // collapsed to one summary row. Session-only: not in buildSessionData.
+  fleetIdleExpanded: boolean;
+  setFleetIdleExpanded: (expanded: boolean) => void;
+
   settingsPanelVisible: boolean;
   toggleSettingsPanel: () => void;
   setSettingsPanelVisible: (visible: boolean) => void;
@@ -954,6 +959,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setFleetSortMode: (mode) => set((state) => {
     state.fleetSortMode = mode;
+  }),
+
+  fleetIdleExpanded: false,
+
+  setFleetIdleExpanded: (expanded) => set((state) => {
+    state.fleetIdleExpanded = expanded;
   }),
 
   // ─── Settings panel ──────────────────────────────────────────────────────

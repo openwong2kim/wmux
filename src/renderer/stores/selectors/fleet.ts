@@ -146,6 +146,10 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    * with an empty ptyId. See FleetPane.remote.
    */
   remoteWorkspaces?: AttachedRemoteWorkspace[];
+  /** ptyId → the agent's last reported message (the Fleet row's one-line
+   *  detail for finished and idle turns). Optional: read it only through
+   *  `selectSurfaceLastMessage`, which tolerates the map being absent. */
+  surfaceLastMessage?: Record<string, string>;
 };
 
 /**
@@ -832,4 +836,148 @@ function workspaceRollups(state: FleetSelectorState): WorkspaceRollups {
   const out = { status, unverifiableByWorkspace, unverifiableByPty };
   rollupCache.set(state, out);
   return out;
+}
+
+/** The agent's last reported message for a pty, trimmed; undefined when the
+ *  store does not carry the map or the pty has no message. */
+export function selectSurfaceLastMessage(
+  state: Pick<FleetSelectorState, 'surfaceLastMessage'>,
+  ptyId: string,
+): string | undefined {
+  if (!ptyId) return undefined;
+  return state.surfaceLastMessage?.[ptyId]?.trim() || undefined;
+}
+
+// ─── Fleet attention board — needs you / running / idle ──────────────────────
+//
+// The single source for which section a Fleet row lands in and which one-line
+// detail it shows. Pure over the fleet rows plus a small context so a non-UI
+// consumer (an MCP tool) can reuse the exact same triage.
+
+export type FleetSection = 'needsYou' | 'running' | 'idle';
+
+/** Fallback detail keys — the renderer translates them. */
+export type FleetDetailKey =
+  | 'fleet.needsYourInput'
+  | 'fleet.detail.error'
+  | 'fleet.detail.unconfirmed'
+  | 'fleet.detail.supervisionStopped'
+  | 'fleet.detail.complete'
+  | 'fleet.detail.running'
+  | 'fleet.detail.idle';
+
+export interface FleetRow {
+  pane: FleetPane;
+  section: FleetSection;
+  /** Reported text for the row (question, last message, tool activity). */
+  detail?: string;
+  /** Where `detail` came from; undefined when the row shows `detailKey`. */
+  detailSource?: 'question' | 'lastMessage' | 'activity';
+  /** Translation key shown when there is no reported text. */
+  detailKey: FleetDetailKey;
+  /** Milliseconds since the pane's last activity/output/turn stamp; undefined
+   *  when none of them exists (no elapsed time shown, sorted last). */
+  idleForMs?: number;
+}
+
+export interface FleetGroups {
+  needsYou: FleetRow[];
+  running: FleetRow[];
+  idle: FleetRow[];
+}
+
+export type FleetGroupContext = Pick<
+  FleetSelectorState,
+  'surfacePendingQuestion' | 'surfaceLastMessage' | 'surfaceActivityAt' | 'surfaceTurnOpenAt'
+> & {
+  /** Read-time clock for elapsed time. Absent → no elapsed time on any row. */
+  now?: number;
+  /** ptyId → last terminal output stamp (paneSlice.surfaceOutputAt). */
+  surfaceOutputAt?: Record<string, number>;
+  /** 'attention' ranks by status then recency; 'workspace' keeps input order. */
+  sortMode?: FleetSortMode;
+};
+
+/** Elapsed ms since the newest of the pane's activity / output / turn stamps;
+ *  undefined when none exists (never NaN). */
+function fleetIdleForMs(ptyId: string, ctx: FleetGroupContext): number | undefined {
+  if (!ptyId || ctx.now === undefined) return undefined;
+  let newest: number | undefined;
+  for (const stamp of [ctx.surfaceActivityAt?.[ptyId], ctx.surfaceOutputAt?.[ptyId], ctx.surfaceTurnOpenAt?.[ptyId]]) {
+    if (typeof stamp === 'number' && Number.isFinite(stamp) && (newest === undefined || stamp > newest)) newest = stamp;
+  }
+  return newest === undefined ? undefined : Math.max(0, ctx.now - newest);
+}
+
+/** One row's section and detail — `groupFleetPanes` without the grouping. */
+export function fleetRow(pane: FleetPane, ctx: FleetGroupContext = {}): FleetRow {
+  const question = pane.ptyId ? ctx.surfacePendingQuestion?.[pane.ptyId]?.trim() || undefined : undefined;
+  const lastMessage = selectSurfaceLastMessage(ctx, pane.ptyId);
+  const activity = pane.surfaceType === 'terminal' ? pane.activity?.trim() || undefined : undefined;
+  const idleForMs = fleetIdleForMs(pane.ptyId, ctx);
+  const base = { pane, idleForMs };
+  if (pane.supervision?.status === 'stopped') {
+    return { ...base, section: 'needsYou', detailKey: 'fleet.detail.supervisionStopped' };
+  }
+  if (pane.unverifiable) {
+    return { ...base, section: 'needsYou', detailKey: 'fleet.detail.unconfirmed' };
+  }
+  switch (pane.agentStatus) {
+    case 'awaiting_input':
+      return question
+        ? { ...base, section: 'needsYou', detail: question, detailSource: 'question', detailKey: 'fleet.needsYourInput' }
+        : { ...base, section: 'needsYou', detailKey: 'fleet.needsYourInput' };
+    case 'waiting':
+      return question
+        ? { ...base, section: 'needsYou', detail: question, detailSource: 'question', detailKey: 'fleet.needsYourInput' }
+        : lastMessage
+          ? { ...base, section: 'idle', detail: lastMessage, detailSource: 'lastMessage', detailKey: 'fleet.detail.idle' }
+          : { ...base, section: 'idle', detailKey: 'fleet.detail.idle' };
+    case 'error':
+      return { ...base, section: 'needsYou', detailKey: 'fleet.detail.error' };
+    case 'complete':
+      return lastMessage
+        ? { ...base, section: 'needsYou', detail: lastMessage, detailSource: 'lastMessage', detailKey: 'fleet.detail.complete' }
+        : { ...base, section: 'needsYou', detailKey: 'fleet.detail.complete' };
+    case 'running':
+      return activity
+        ? { ...base, section: 'running', detail: activity, detailSource: 'activity', detailKey: 'fleet.detail.running' }
+        : { ...base, section: 'running', detailKey: 'fleet.detail.running' };
+    default:
+      return lastMessage
+        ? { ...base, section: 'idle', detail: lastMessage, detailSource: 'lastMessage', detailKey: 'fleet.detail.idle' }
+        : { ...base, section: 'idle', detailKey: 'fleet.detail.idle' };
+  }
+}
+
+/**
+ * Group fleet rows into the three attention-board sections. Within a section
+ * ('attention' mode): STATUS_RANK first, then the most recent activity first,
+ * rows with no timestamps last, then input order. 'workspace' mode keeps the
+ * input (sidebar) order inside each section.
+ */
+export function groupFleetPanes(panes: FleetPane[], ctx: FleetGroupContext = {}): FleetGroups {
+  const groups: FleetGroups = { needsYou: [], running: [], idle: [] };
+  const order = new Map<FleetRow, number>();
+  panes.forEach((pane, index) => {
+    const row = fleetRow(pane, ctx);
+    order.set(row, index);
+    groups[row.section].push(row);
+  });
+  if (ctx.sortMode !== 'workspace') {
+    const compare = (a: FleetRow, b: FleetRow): number => {
+      const r = STATUS_RANK[a.pane.agentStatus] - STATUS_RANK[b.pane.agentStatus];
+      if (r !== 0) return r;
+      const ai = a.idleForMs;
+      const bi = b.idleForMs;
+      if (ai !== undefined && bi !== undefined && ai !== bi) return ai - bi;
+      if (ai === undefined && bi !== undefined) return 1;
+      if (ai !== undefined && bi === undefined) return -1;
+      return (order.get(a) ?? 0) - (order.get(b) ?? 0);
+    };
+    groups.needsYou.sort(compare);
+    groups.running.sort(compare);
+    groups.idle.sort(compare);
+  }
+  return groups;
 }

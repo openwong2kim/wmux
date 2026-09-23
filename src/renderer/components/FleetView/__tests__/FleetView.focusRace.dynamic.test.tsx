@@ -92,12 +92,14 @@ afterEach(() => {
 
 describe('FleetView — mount focus race (NB2 wave2)', () => {
   it('lands real DOM focus on the single fleet card, not the panel container', async () => {
+    // The fixture's only pane is idle, so the row sits behind the collapsed
+    // "Idle N" option — which is where real DOM focus must land.
     mount();
     await flushRaf();
 
     const active = document.activeElement as HTMLElement | null;
     // 레이스가 있으면 여기서 active는 role=region 패널(또는 body)이라 실패한다.
-    expect(active?.hasAttribute('data-fleet-card')).toBe(true);
+    expect(active?.hasAttribute('data-fleet-idle-toggle')).toBe(true);
     expect(active?.getAttribute('role')).toBe('option');
   });
 
@@ -231,5 +233,101 @@ describe('FleetView — task triage', () => {
     await flushRaf();
     expect(document.activeElement?.id).toBe('fleet-tab-approvals');
     expect(container.textContent).toContain('No pending approvals');
+  });
+});
+
+describe('FleetView — attention board sections', () => {
+  function seedIdleFleet(): void {
+    const now = Date.now();
+    act(() => useStore.setState({
+      workspaces: [
+        workspace('ws-1', 'alpha', leaf('p1', [surface('s1', 'pty-1', { surfaceType: 'terminal', title: 'alpha task' })]), 'p1'),
+        workspace('ws-2', 'beta', leaf('p2', [surface('s2', 'pty-2', { surfaceType: 'terminal', title: 'beta task' })]), 'p2'),
+      ],
+      surfaceOutputAt: { 'pty-1': now - 2 * 86_400_000, 'pty-2': now - 5 * 60_000 },
+    }));
+  }
+
+  it('shows the all-quiet line and focuses the collapsed idle row when everything is idle', async () => {
+    seedIdleFleet();
+    mount();
+    await flushRaf();
+    const quiet = container.querySelector('[data-fleet-all-quiet]');
+    expect(quiet?.textContent).toBe('Nothing needs you right now');
+    expect(quiet?.getAttribute('aria-hidden')).toBe('true');
+    expect(quiet?.hasAttribute('tabindex')).toBe(false);
+    const toggle = container.querySelector<HTMLButtonElement>('[data-fleet-idle-toggle]')!;
+    expect(toggle.textContent).toContain('Idle 2 · oldest 2d');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(toggle);
+    expect(rows()).toHaveLength(0);
+    // Empty sections draw no header at all.
+    expect(container.querySelector('[data-fleet-section=needsYou]')).toBeNull();
+    expect(container.querySelector('[data-fleet-section=running]')).toBeNull();
+  });
+
+  it('expanding and collapsing idle keeps roving focus on a valid row', async () => {
+    seedIdleFleet();
+    mount();
+    await flushRaf();
+    const toggle = container.querySelector<HTMLButtonElement>('[data-fleet-idle-toggle]')!;
+    click('[data-fleet-idle-toggle]');
+    expect(useStore.getState().fleetIdleExpanded).toBe(true);
+    expect(rows().map((row) => row.dataset.ptyId)).toEqual(['pty-2', 'pty-1']);
+    key(toggle, 'ArrowDown');
+    await flushRaf();
+    expect(document.activeElement).toBe(rows()[0]);
+    key(rows()[0], 'ArrowDown');
+    await flushRaf();
+    expect(document.activeElement).toBe(rows()[1]);
+    // Collapse while an idle row holds the roving slot: exactly one option
+    // stays tabbable and it is a rendered one.
+    act(() => useStore.getState().setFleetIdleExpanded(false));
+    await flushRaf();
+    expect(rows()).toHaveLength(0);
+    const tabbable = container.querySelectorAll('[role=option][tabindex="0"]');
+    expect(tabbable).toHaveLength(1);
+    expect(tabbable[0]).toBe(container.querySelector('[data-fleet-idle-toggle]'));
+  });
+
+  it('shows a row\'s elapsed time since its newest activity stamp', async () => {
+    seedIdleFleet();
+    act(() => useStore.setState({ fleetIdleExpanded: true }));
+    mount();
+    await flushRaf();
+    expect(rows()[0].querySelector('[data-fleet-elapsed]')?.textContent).toBe('5m');
+    expect(rows()[1].querySelector('[data-fleet-elapsed]')?.textContent).toBe('2d');
+  });
+});
+
+describe('FleetView — remote rows and browser help stay wired', () => {
+  it('passes remoteWorkspaces to the selector: a remote agent renders with the origin glyph', async () => {
+    act(() => useStore.setState({
+      workspaces: [workspace('ws-r', 'remote proj', leaf('pr', [surface('rs-1', '', {
+        surfaceType: 'remote-terminal', remoteHostId: 'host-1', remoteSessionId: 'rsession-9',
+      })]), 'pr')],
+      remoteWorkspaces: [{
+        key: 'host-1:rw-1', hostId: 'host-1', hostLabel: 'office-mac', workspaceId: 'rw-1', name: 'proj',
+        panes: [{ sessionId: 'rsession-9', shell: 'zsh', agentName: 'Codex', agentStatus: 'awaiting_input' }],
+      }] as unknown as ReturnType<typeof useStore.getState>['remoteWorkspaces'],
+    }));
+    mount();
+    await flushRaf();
+    const row = rows()[0];
+    expect(row.dataset.status).toBe('awaiting_input');
+    expect(row.querySelector('[data-fleet-remote]')?.getAttribute('title')).toBe('@office-mac');
+    expect(row.getAttribute('aria-label')).toContain('office-mac');
+  });
+
+  it('renders a browser help request on the approvals tab', async () => {
+    act(() => useStore.setState({
+      fleetActiveTab: 'approvals',
+      browserHelpRequests: { r1: { requestId: 'r1', workspaceId: 'ws-1', surfaceId: 's1', prompt: 'Sign in, then press Done.', deadlineAt: Date.now() + 60_000 } },
+      browserHelpOrder: ['r1'],
+    }));
+    mount();
+    await flushRaf();
+    expect(container.textContent).toContain('Browser needs you');
+    expect(container.textContent).toContain('Sign in, then press Done.');
   });
 });

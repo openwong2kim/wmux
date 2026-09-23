@@ -4,10 +4,12 @@ import { useShallow } from 'zustand/react/shallow';
 import { useT } from '../../hooks/useT';
 import {
   selectFleetPanes,
-  sortFleetPanes,
   selectHookRunningByPtyId,
   selectUnverifiablePaneMinutes,
+  groupFleetPanes,
   type FleetPane,
+  type FleetRow,
+  type FleetSelectorState,
 } from '../../stores/selectors/fleet';
 import { selectApprovalInbox } from '../../stores/selectors/approvalInbox';
 import { selectRemoteInbox } from '../../stores/selectors/remoteInbox';
@@ -23,8 +25,12 @@ import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
 import ApprovalInboxList from './ApprovalInboxList';
 import RemoteInboxList from './RemoteInboxList';
-import { fleetTitle, fleetNeedsAttention, matchesFleetFilter, type FleetFilter } from './fleetPresentation';
-import { IconX, IconTerminal } from '../icons';
+import { fleetTitle, matchesFleetFilter, type FleetFilter } from './fleetPresentation';
+import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
+import { IconX, IconTerminal, IconChevron } from '../icons';
+
+/** Roving key of the collapsed "Idle N" row (pane ids never take this form). */
+const IDLE_TOGGLE_KEY = 'fleet:idle-toggle';
 
 /** Fleet is a non-modal overlay above the tools dock. AppLayout owns its
  * positioning, so opening it never resizes terminal panes. The covered dock
@@ -50,6 +56,14 @@ export default function FleetView() {
   const hookRunningByPtyId = useStore(useShallow(selectHookRunningByPtyId));
   const unverifiableMinutes = useStore(useShallow(selectUnverifiablePaneMinutes));
   const missions = useStore((s) => s.missionByPaneGroup);
+  // Optional last-message map, read through the FleetSelectorState view so the
+  // field may be absent from the store.
+  const surfaceLastMessage = useStore((s) => {
+    const view: FleetSelectorState = s;
+    return view.surfaceLastMessage;
+  });
+  const fleetIdleExpanded = useStore((s) => s.fleetIdleExpanded);
+  const setFleetIdleExpanded = useStore((s) => s.setFleetIdleExpanded);
   // X8 supervision mirror — subscribed here so the selector re-runs when a
   // supervised pane arms/stops or its restart count changes.
   const supervisionByPtyId = useStore((s) => s.supervisionByPtyId);
@@ -78,7 +92,7 @@ export default function FleetView() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 30_000);
+    const id = window.setInterval(() => setNow(Date.now()), IDLE_TICK_MS);
     return () => window.clearInterval(id);
   }, []);
   const [inboxIdx, setInboxIdx] = useState(0);
@@ -94,8 +108,7 @@ export default function FleetView() {
 
   // Use the same turn/liveness inputs as the sidebar and Deck roster. Missing
   // these optional inputs silently classified active hook-driven turns as idle.
-  const panes = useMemo(() => {
-    const all = selectFleetPanes({
+  const panes = useMemo(() => selectFleetPanes({
       workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
       surfaceAgent, surfacePendingQuestion, surfaceActivityAt, surfaceTurnOpenAt,
       commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces,
@@ -103,36 +116,74 @@ export default function FleetView() {
       ...pane,
       agentName: surfaceAgent[pane.ptyId]?.name || pane.agentName,
       unverifiable: !!unverifiableMinutes[pane.ptyId],
-    }));
-    const sorted = sortFleetPanes(all, fleetSortMode);
-    return fleetSortMode === 'attention'
-      ? sorted.sort((a, b) => Number(fleetNeedsAttention(b)) - Number(fleetNeedsAttention(a)))
-      : sorted;
-  }, [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
+    })), [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId,
     surfaceAgent, surfacePendingQuestion, surfaceActivityAt, surfaceTurnOpenAt,
-    commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, unverifiableMinutes, fleetSortMode]);
-  const visiblePanes = useMemo(() => {
+    commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, unverifiableMinutes]);
+  // The output stamp moves on every chunk, so it is read on the minute tick
+  // (`now`) rather than subscribed; elapsed time is minute-granular anyway.
+  const groups = useMemo(
+    () => groupFleetPanes(panes, {
+      now,
+      surfaceActivityAt,
+      surfaceOutputAt: useStore.getState().surfaceOutputAt,
+      surfaceTurnOpenAt,
+      surfacePendingQuestion,
+      surfaceLastMessage,
+      sortMode: fleetSortMode,
+    }),
+    [panes, now, surfaceActivityAt, surfaceTurnOpenAt, surfacePendingQuestion, surfaceLastMessage, fleetSortMode],
+  );
+  // Search and status filters narrow each section; the sections themselves
+  // (and so the chip counts) come from the one groupFleetPanes pass.
+  const visibleGroups = useMemo(() => {
     const term = query.trim().toLocaleLowerCase();
-    return panes.filter((pane) => matchesFleetFilter(pane, filter) && (!term || [
-      fleetTitle(pane, missions[pane.workspaceId]), pane.workspaceName, pane.agentName,
-      pane.title, pane.cwd, pane.activity, surfacePendingQuestion[pane.ptyId],
-    ].some((value) => value?.toLocaleLowerCase().includes(term))));
-  }, [panes, filter, query, missions, surfacePendingQuestion]);
+    const keep = (row: FleetRow) => matchesFleetFilter(row, filter) && (!term || [
+      fleetTitle(row.pane, missions[row.pane.workspaceId]), row.pane.workspaceName, row.pane.agentName,
+      row.pane.title, row.pane.cwd, row.pane.activity, row.detail,
+    ].some((value) => value?.toLocaleLowerCase().includes(term)));
+    return { needsYou: groups.needsYou.filter(keep), running: groups.running.filter(keep), idle: groups.idle.filter(keep) };
+  }, [groups, filter, query, missions]);
+  // Idle stays collapsed to one summary row unless expanded, or unless the
+  // user is searching / filtering to idle (a hidden match would read as none).
+  const idleForced = filter === 'idle' || query.trim() !== '';
+  const idleShown = fleetIdleExpanded || idleForced;
+  // The collapsed "Idle N" row is itself a roving option (so an all-idle fleet
+  // still has a focus target); it is replaced by a plain header while a
+  // search or the idle filter forces the rows open.
+  const idleToggleShown = visibleGroups.idle.length > 0 && !idleForced;
+  const visibleRows = useMemo(
+    () => [...visibleGroups.needsYou, ...visibleGroups.running, ...(idleShown ? visibleGroups.idle : [])],
+    [visibleGroups, idleShown],
+  );
+  // Roving order = DOM order: needs-you rows, running rows, the idle toggle,
+  // then the idle rows when expanded. Keys are pane ids plus one sentinel.
+  const rovingKeys = useMemo(() => [
+    ...[...visibleGroups.needsYou, ...visibleGroups.running].map((row) => row.pane.paneId),
+    ...(idleToggleShown ? [IDLE_TOGGLE_KEY] : []),
+    ...(idleShown ? visibleGroups.idle.map((row) => row.pane.paneId) : []),
+  ], [visibleGroups, idleToggleShown, idleShown]);
+  const matchCount = visibleGroups.needsYou.length + visibleGroups.running.length + visibleGroups.idle.length;
+  const idleOldestMs = visibleGroups.idle.reduce<number | undefined>(
+    (max, row) => (row.idleForMs !== undefined && (max === undefined || row.idleForMs > max) ? row.idleForMs : max),
+    undefined,
+  );
   // Preserve the selected pane when live status updates reorder the list.
-  const focusedIdx = Math.max(0, visiblePanes.findIndex((pane) => pane.paneId === focusedPaneId));
+  const focusedIdx = Math.max(0, rovingKeys.indexOf(focusedPaneId ?? ''));
+  const focusedKey = rovingKeys[focusedIdx];
   const setFocusedIdx = useCallback((next: number | ((index: number) => number)) => {
     const index = typeof next === 'function' ? next(focusedIdx) : next;
-    setFocusedPaneId(visiblePanes[index]?.paneId ?? null);
-  }, [focusedIdx, visiblePanes]);
-  const selectedPane = visiblePanes[focusedIdx];
+    setFocusedPaneId(rovingKeys[index] ?? null);
+  }, [focusedIdx, rovingKeys]);
+  const selectedPane = visibleRows.find((row) => row.pane.paneId === focusedKey)?.pane;
   const previewPtyId = previewOpen && tab === 'fleet' && selectedPane?.surfaceType === 'terminal'
     ? selectedPane.ptyId : '';
+  const allRows = [...groups.needsYou, ...groups.running, ...groups.idle];
   const filters: { id: FleetFilter; label: string; count: number }[] = [
     { id: 'all', label: t('fleet.filter.all'), count: panes.length },
-    { id: 'attention', label: t('fleet.filter.attention'), count: panes.filter(fleetNeedsAttention).length },
-    { id: 'running', label: t('workspace.agentRunning'), count: panes.filter((p) => matchesFleetFilter(p, 'running')).length },
-    { id: 'complete', label: t('fleet.status.turnComplete'), count: panes.filter((p) => matchesFleetFilter(p, 'complete')).length },
-    { id: 'idle', label: t('workspace.agentIdle'), count: panes.filter((p) => matchesFleetFilter(p, 'idle')).length },
+    { id: 'attention', label: t('fleet.filter.attention'), count: groups.needsYou.length },
+    { id: 'running', label: t('workspace.agentRunning'), count: groups.running.length },
+    { id: 'complete', label: t('fleet.status.turnComplete'), count: allRows.filter((r) => matchesFleetFilter(r, 'complete')).length },
+    { id: 'idle', label: t('workspace.agentIdle'), count: groups.idle.length },
   ];
   // Stable identity key of the terminal ptyIds to poll for RAM. `panes`
   // recomputes on every streaming activity tick (surfaceActivity/agentStatus
@@ -287,8 +338,8 @@ export default function FleetView() {
   // 선택을 announce하고 (2) 탭에 카드가 하나뿐이어도 로빙 인덱스 클램프에 갇히지
   // 않는다. 마운트 효과와 로빙 효과가 공유하는 단일 포커스 경로.
   const focusActiveItem = useCallback(() => {
-    if (tab === 'fleet' && visiblePanes.length > 0) {
-      const cards = listRef.current?.querySelectorAll<HTMLElement>('[data-fleet-card]');
+    if (tab === 'fleet' && rovingKeys.length > 0) {
+      const cards = listRef.current?.querySelectorAll<HTMLElement>('[data-fleet-card], [data-fleet-idle-toggle]');
       const el = cards && cards[focusedIdx];
       if (el) { el.focus(); return true; }
     } else if (tab === 'approvals' && inbox.length > 0) {
@@ -301,7 +352,7 @@ export default function FleetView() {
       if (el) { el.focus(); return true; }
     }
     return false;
-  }, [tab, focusedIdx, inboxIdx, remoteIdx, visiblePanes.length, inbox.length, remoteInbox.length]);
+  }, [tab, focusedIdx, inboxIdx, remoteIdx, rovingKeys.length, inbox.length, remoteInbox.length]);
 
   // 마운트 효과([] deps)가 매 포커스 변경마다 재실행되지 않으면서도 최신 상태를
   // 읽도록, 최신 focusActiveItem 클로저를 ref에 보관한다.
@@ -428,11 +479,11 @@ export default function FleetView() {
       if ((!isArrow && !isBoundary) || !onOptionRow || e.ctrlKey || e.metaKey || e.altKey) return;
       e.preventDefault();
       e.stopPropagation();
-      if (tab === 'fleet' && visiblePanes.length > 0) {
+      if (tab === 'fleet' && rovingKeys.length > 0) {
         if (isBoundary) {
-          setFocusedIdx(e.key === 'Home' ? 0 : visiblePanes.length - 1);
+          setFocusedIdx(e.key === 'Home' ? 0 : rovingKeys.length - 1);
         } else if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-          setFocusedIdx((i) => Math.min(i + 1, visiblePanes.length - 1));
+          setFocusedIdx((i) => Math.min(i + 1, rovingKeys.length - 1));
         } else {
           setFocusedIdx((i) => Math.max(i - 1, 0));
         }
@@ -457,7 +508,25 @@ export default function FleetView() {
           setRemoteIdx((i) => Math.max(i - 1, 0));
         }
       }
-    }, [tab, visiblePanes.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible, setFocusedIdx]);
+    }, [tab, rovingKeys.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible, setFocusedIdx]);
+
+  const idleSummary = idleOldestMs !== undefined && idleOldestMs >= IDLE_SHOW_AFTER_MS
+    ? t('fleet.section.idleOldest', { count: visibleGroups.idle.length, age: formatIdle(idleOldestMs) })
+    : t('fleet.section.idle', { count: visibleGroups.idle.length });
+  const renderRow = (row: FleetRow) => {
+    const card = row.pane;
+    return (
+      <FleetCard
+        key={`${card.workspaceId}:${card.paneId}:${card.surfaceId}`}
+        card={card}
+        row={row}
+        focused={card.paneId === focusedKey}
+        onJump={jump}
+        onFocus={() => setFocusedPaneId(card.paneId)}
+        resource={card.ptyId ? resources[card.ptyId] : undefined}
+      />
+    );
+  };
 
   return (
     // Layout-neutral container positioned by AppLayout.
@@ -519,7 +588,7 @@ export default function FleetView() {
               <input type="search" value={query} onChange={(event) => setQuery(event.target.value)}
                 placeholder={t('fleet.search')} aria-label={t('fleet.search')}
                 onKeyDown={(event) => {
-                  if (event.key === 'ArrowDown' && visiblePanes.length > 0) {
+                  if (event.key === 'ArrowDown' && rovingKeys.length > 0) {
                     event.preventDefault();
                     focusActiveItem();
                   }
@@ -551,7 +620,7 @@ export default function FleetView() {
                 {t('fleet.remote.empty')}
               </div>
             )
-          ) : visiblePanes.length === 0 ? (
+          ) : matchCount === 0 ? (
             <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
               {panes.length === 0 ? t('fleet.empty') : (
                 <div className="wmux-fleet-empty">
@@ -561,27 +630,45 @@ export default function FleetView() {
               )}
             </div>
           ) : (
-            <div
-              ref={listRef}
-              role="listbox"
-              aria-label={t('fleet.title')}
-              className="wmux-fleet-list"
-
-            >
-              {visiblePanes.map((card, idx) => (
-                <FleetCard
-                  key={`${card.workspaceId}:${card.paneId}:${card.surfaceId}`}
-                  card={card}
-                  focused={idx === focusedIdx}
-                  onJump={jump}
-                  onFocus={() => setFocusedPaneId(card.paneId)}
-                  pendingQuestion={surfacePendingQuestion[card.ptyId]}
-                  activityAt={surfaceActivityAt[card.ptyId]}
-                  now={now}
-                  resource={card.ptyId ? resources[card.ptyId] : undefined}
-                />
-              ))}
-            </div>
+            <>
+              {visibleGroups.needsYou.length === 0 && visibleGroups.running.length === 0 && (
+                <p className="wmux-fleet-quiet" aria-hidden="true" data-fleet-all-quiet>{t('fleet.allQuiet')}</p>
+              )}
+              <div ref={listRef} role="listbox" aria-label={t('fleet.title')} className="wmux-fleet-list">
+                {/* One flat keyed sibling array (headers interleaved), so a row
+                    that changes section keeps its DOM node — and its focus. */}
+                {[
+                  ...([
+                    ['needsYou', visibleGroups.needsYou, t('fleet.section.needsYou')],
+                    ['running', visibleGroups.running, t('fleet.section.running')],
+                  ] as const).flatMap(([id, rows, label]) => rows.length === 0 ? [] : [
+                    <div key={`section:${id}`} role="presentation" className="wmux-fleet-section-header" data-fleet-section={id}>{label}</div>,
+                    ...rows.map(renderRow),
+                  ]),
+                  ...(visibleGroups.idle.length === 0 ? [] : [idleToggleShown ? (
+                    <button
+                      key="section:idle"
+                      type="button"
+                      role="option"
+                      aria-selected={focusedKey === IDLE_TOGGLE_KEY}
+                      aria-expanded={idleShown}
+                      tabIndex={focusedKey === IDLE_TOGGLE_KEY ? 0 : -1}
+                      className="wmux-fleet-idle-toggle"
+                      data-fleet-section="idle"
+                      data-fleet-idle-toggle
+                      onFocus={() => setFocusedPaneId(IDLE_TOGGLE_KEY)}
+                      onClick={() => setFleetIdleExpanded(!fleetIdleExpanded)}
+                    >
+                      <span className="wmux-fleet-idle-chevron" aria-hidden="true"><IconChevron size={12} /></span>
+                      <span>{idleSummary}</span>
+                    </button>
+                  ) : (
+                    <div key="section:idle" role="presentation" className="wmux-fleet-section-header" data-fleet-section="idle">{idleSummary}</div>
+                  )]),
+                  ...(idleShown ? visibleGroups.idle.map(renderRow) : []),
+                ]}
+              </div>
+            </>
           )}
         </div>
 
