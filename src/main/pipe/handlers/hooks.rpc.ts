@@ -50,6 +50,7 @@ import { HookFloodMeter, describeHookFlood } from '../../hooks/HookFloodMeter';
 import { eventBus } from '../../events/EventBus';
 import { IPC, dataSuffix } from '../../../shared/constants';
 import { summarizeActivity } from '../../../shared/activitySummary';
+import { assistantPreview } from '../../../shared/assistantPreview';
 import type { DaemonClient } from '../../DaemonClient';
 import type { ResumeBinding, PermissionMode } from '../../../shared/agentResume';
 import { readLastAssistantMessage } from '../../claude/lastAssistantMessage';
@@ -165,18 +166,25 @@ export function activityFromSignalPayload(payload: Record<string, unknown> | und
  * ActivityMonitor.onActive / a fresh awaiting_input hook, both of which clear
  * this attention entry (setSurfaceAgentStatus drops any non-attention status).
  * session_start is a turn BEGINNING, not an end, so it must not set it.
+ *
+ * `lastMessage` is the closing message itself, question or not, cut to the
+ * phone list's grapheme budget (`assistantPreview`) so a Fleet row and a phone
+ * row show the same tail. Written on every boundary like `pendingQuestion`: a
+ * boundary with no readable message (another agent, a failed turn, a fresh
+ * session) sends '' and clears the previous turn's text rather than leaving it.
  */
 export function buildTurnBoundaryMetadata(
   kind: AgentSignal['kind'],
   stopMessage: AgentLastMessage | null,
   leftoverWork = 0,
-): { activity: string; pendingQuestion: string; agentStatus?: 'complete' | 'error' } | null {
+): { activity: string; pendingQuestion: string; lastMessage: string; agentStatus?: 'complete' | 'error' } | null {
   if (kind !== 'agent.stop' && kind !== 'agent.session_start' && kind !== 'agent.stop_failure') {
     return null;
   }
   return {
     activity: '',
     pendingQuestion: stopMessage?.endsWithQuestion ? stopMessage.text : '',
+    lastMessage: assistantPreview(stopMessage?.text ?? '') ?? '',
     // #1096 — a lead stop with background agents still running is not a turn
     // end, so it must not stamp the hook-authoritative completion status: the
     // pane sat on Completed for the whole `Waiting for N background agent(s)`
