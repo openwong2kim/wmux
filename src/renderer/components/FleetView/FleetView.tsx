@@ -22,11 +22,18 @@ import { fleetChangedSinceSeen, type FleetTab } from '../../stores/slices/uiSlic
 import { tailForPty } from '../../utils/terminalTail';
 import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
+import { FleetRowMenu, FleetRowEditor, fleetRowVerbs, toggleFleetStash, type FleetEditorKind } from './FleetRowActions';
 import ApprovalInboxList from './ApprovalInboxList';
 import RemoteInboxList from './RemoteInboxList';
 import { fleetTitle, matchesFleetFilter, type FleetFilter } from './fleetPresentation';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 import { IconX, IconTerminal, IconChevron } from '../icons';
+
+/** True when a key event comes from a text-entry control. */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT';
+}
 
 /** Roving key of the collapsed "Idle N" row (pane ids never take this form). */
 const IDLE_TOGGLE_KEY = 'fleet:idle-toggle';
@@ -87,6 +94,8 @@ export default function FleetView() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<FleetFilter>('all');
   const [previewOpen, setPreviewOpen] = useState(false);
+  // The one inline row editor that is open (message / label / close confirm).
+  const [editor, setEditor] = useState<{ paneId: string; kind: FleetEditorKind } | null>(null);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), IDLE_TICK_MS);
@@ -365,6 +374,17 @@ export default function FleetView() {
   const focusActiveItemRef = useRef(focusActiveItem);
   focusActiveItemRef.current = focusActiveItem;
 
+  // Close the inline editor and hand focus back to the roving row (the row
+  // may be gone after a close; then the next row takes the slot).
+  const closeEditor = useCallback(() => {
+    setEditor(null);
+    requestAnimationFrame(() => { focusActiveItemRef.current(); });
+  }, []);
+  const openEditor = useCallback((pane: FleetPane, kind: FleetEditorKind) => {
+    setFocusedPaneId(pane.paneId);
+    setEditor({ paneId: pane.paneId, kind });
+  }, []);
+
   // 닫힐 때 포커스를 되돌릴 대상(열기 트리거 시점의 activeElement)을 담아두는 ref.
   const restoreFocusRef = useRef<HTMLElement | null>(null);
 
@@ -420,7 +440,9 @@ export default function FleetView() {
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        setVisible(false);
+        // An open row editor is the innermost thing Escape can mean.
+        if (editor) closeEditor();
+        else setVisible(false);
         return;
       }
       // Approvals tab: Enter approves the focused row (guard #5 — non-critical
@@ -478,6 +500,23 @@ export default function FleetView() {
         }
       }
 
+      // Fleet row verbs on the focused row: m message, s stash, l label,
+      // Backspace close. Only when the row itself holds focus — never while
+      // typing in an input, textarea or contenteditable.
+      if (tab === 'fleet' && onOptionRow && !e.ctrlKey && !e.metaKey && !e.altKey && !isEditableTarget(e.target)) {
+        const row = visibleRows.find((r) => r.pane.paneId === focusedKey);
+        const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+        if (row && !row.pane.remote && (key === 'm' || key === 's' || key === 'l' || key === 'Backspace')) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (key === 's') toggleFleetStash(row.pane);
+          else if (key === 'l') setEditor({ paneId: row.pane.paneId, kind: 'label' });
+          else if (key === 'Backspace') setEditor({ paneId: row.pane.paneId, kind: 'close' });
+          else if (fleetRowVerbs(row.pane).messageEnabled) setEditor({ paneId: row.pane.paneId, kind: 'message' });
+          return;
+        }
+      }
+
       const isArrow =
         e.key === 'ArrowDown' || e.key === 'ArrowUp' ||
         e.key === 'ArrowLeft' || e.key === 'ArrowRight';
@@ -514,7 +553,8 @@ export default function FleetView() {
           setRemoteIdx((i) => Math.max(i - 1, 0));
         }
       }
-    }, [tab, rovingKeys.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible, setFocusedIdx]);
+    }, [tab, rovingKeys.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible, setFocusedIdx,
+      editor, closeEditor, visibleRows, focusedKey]);
 
   const idleSummary = idleOldestMs !== undefined && idleOldestMs >= IDLE_SHOW_AFTER_MS
     ? t('fleet.section.idleOldest', { count: visibleGroups.idle.length, age: formatIdle(idleOldestMs) })
@@ -522,8 +562,8 @@ export default function FleetView() {
   const renderRow = (row: FleetRow) => {
     const card = row.pane;
     return (
+      <div key={`${card.workspaceId}:${card.paneId}:${card.surfaceId}`} role="presentation" className="wmux-fleet-row">
       <FleetCard
-        key={`${card.workspaceId}:${card.paneId}:${card.surfaceId}`}
         card={card}
         row={row}
         changed={row.section === 'needsYou' && fleetChangedSinceSeen(fleetLastSeen, card.ptyId, card.agentStatus)}
@@ -532,6 +572,9 @@ export default function FleetView() {
         onFocus={() => setFocusedPaneId(card.paneId)}
         resource={card.ptyId ? resources[card.ptyId] : undefined}
       />
+      <FleetRowMenu pane={card} focused={card.paneId === focusedKey} onJump={jump} onEdit={openEditor} />
+      {editor?.paneId === card.paneId && <FleetRowEditor pane={card} kind={editor.kind} onDone={closeEditor} />}
+      </div>
     );
   };
 
