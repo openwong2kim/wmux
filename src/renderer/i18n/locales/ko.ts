@@ -664,6 +664,8 @@ export const ko = {
   'settings.sc.renameWorkspace': '작업공간 이름 변경',
   'settings.sc.highlightPane': '활성 창 강조',
   'settings.sc.floatingPane': '플로팅 터미널 전환',
+  'settings.sc.prevWorkspace': '이전 작업공간',
+  'settings.sc.nextWorkspace': '다음 작업공간',
   'settings.shortcutsNotAvailable': '내장 단축키 커스터마이즈는 아직 지원되지 않습니다.',
   'settings.aboutTagline': 'Windows 네이티브 AI 에이전트 터미널',
   'settings.builtWith': '사용 기술',

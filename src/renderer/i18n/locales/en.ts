@@ -1179,6 +1179,8 @@ export const en = {
   'settings.sc.renameWorkspace': 'Rename workspace',
   'settings.sc.highlightPane': 'Highlight active pane',
   'settings.sc.floatingPane': 'Toggle floating terminal',
+  'settings.sc.prevWorkspace': 'Previous workspace',
+  'settings.sc.nextWorkspace': 'Next workspace',
   'settings.shortcutsNotAvailable': 'Built-in shortcut customization is not yet available.',
   'settings.aboutTagline': 'Windows native AI agent terminal',
   'settings.builtWith': 'Built with',

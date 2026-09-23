@@ -193,3 +193,44 @@ describe('Ctrl+G Rich Input row (#1280)', () => {
     expect(matchesDisabledShortcut(['Ctrl+G'], { ...base, ctrlKey: true, metaKey: false }, 'darwin')).toBe(false);
   });
 });
+
+/**
+ * #1455 — Alt+Up/Down (workspace cycling) is advertised so it can be switched
+ * off. TUIs bind these keys themselves (Codex, Crush, …), and the built-in
+ * swallowed them before xterm ever saw the keydown.
+ */
+describe('Alt+Arrow workspace cycling rows (#1455)', () => {
+  const up = { key: 'ArrowUp', code: 'ArrowUp', ctrlKey: false, metaKey: false, shiftKey: false, altKey: true };
+
+  it('both rows are advertised, so Settings renders them with a toggle', () => {
+    expect(ADVERTISED_SHORTCUTS.find((e) => e.combo === 'Alt+ArrowUp')?.descriptionKey)
+      .toBe('settings.sc.prevWorkspace');
+    expect(ADVERTISED_SHORTCUTS.find((e) => e.combo === 'Alt+ArrowDown')?.descriptionKey)
+      .toBe('settings.sc.nextWorkspace');
+  });
+
+  it('disabling one matches a bare Alt+Arrow keydown on every OS', () => {
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      expect(matchesDisabledShortcut(['Alt+ArrowUp'], up, platform)).toBe(true);
+    }
+    expect(matchesDisabledShortcut(['Alt+ArrowDown'], { ...up, key: 'ArrowDown', code: 'ArrowDown' }, 'win32'))
+      .toBe(true);
+  });
+
+  it('each direction is its own toggle', () => {
+    expect(matchesDisabledShortcut(['Alt+ArrowDown'], up, 'win32')).toBe(false);
+    expect(matchesDisabledShortcut([], up, 'win32')).toBe(false);
+  });
+
+  it('does not silence the Ctrl/⌘/Shift+Alt+Arrow combos', () => {
+    // Ctrl+Alt+Arrow (⌘+Alt+Arrow on mac) is pane focus — a different binding.
+    expect(matchesDisabledShortcut(['Alt+ArrowUp'], { ...up, ctrlKey: true }, 'win32')).toBe(false);
+    expect(matchesDisabledShortcut(['Alt+ArrowUp'], { ...up, metaKey: true }, 'darwin')).toBe(false);
+    expect(matchesDisabledShortcut(['Alt+ArrowUp'], { ...up, shiftKey: true }, 'win32')).toBe(false);
+  });
+
+  it('only the Alt+Arrow family has a Ctrl-less branch', () => {
+    expect(matchesDisabledShortcut(['Alt+ArrowLeft'], { ...up, key: 'ArrowLeft', code: 'ArrowLeft' }, 'win32'))
+      .toBe(false);
+  });
+});

@@ -1163,6 +1163,8 @@ export const pl = {
   'settings.sc.renameWorkspace': 'Zmień nazwę obszaru roboczego',
   'settings.sc.highlightPane': 'Wyróżnij aktywny panel',
   'settings.sc.floatingPane': 'Przełącz pływający terminal',
+  'settings.sc.prevWorkspace': 'Poprzedni obszar roboczy',
+  'settings.sc.nextWorkspace': 'Następny obszar roboczy',
   'settings.shortcutsNotAvailable': 'Dostosowanie wbudowanych skrótów nie jest jeszcze dostępne.',
   'settings.aboutTagline': 'Natywny terminal agenta AI dla Windows',
   'settings.builtWith': 'Zbudowano z użyciem',

@@ -407,6 +407,8 @@ export const zh = {
   'settings.sc.renameWorkspace': '重命名工作区',
   'settings.sc.highlightPane': '高亮活动面板',
   'settings.sc.floatingPane': '切换浮动终端',
+  'settings.sc.prevWorkspace': '上一个工作区',
+  'settings.sc.nextWorkspace': '下一个工作区',
   'settings.shortcutsNotAvailable': '快捷键自定义暂不可用。',
   'settings.aboutTagline': 'Windows 原生 AI 代理终端',
   'settings.builtWith': '构建工具',

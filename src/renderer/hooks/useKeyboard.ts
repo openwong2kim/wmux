@@ -873,7 +873,9 @@ export function useKeyboard() {
       // the prefix path before — this adds direct prev/next cycling on the
       // sidebar order (↑ = previous, ↓ = next). Reuses the prefix
       // prevWorkspace/nextWorkspace logic. stopImmediatePropagation so xterm
-      // never sees Alt+Arrow as an escape sequence.
+      // never sees Alt+Arrow as an escape sequence. Both rows can be switched
+      // off in Settings → Shortcuts (#1455) — the disabled gate above then
+      // hands the key to the pane for TUIs that bind Alt+Up/Down themselves.
       if (alt && !literalCtrl && !shift && key === 'ArrowUp') {
         e.preventDefault();
         e.stopImmediatePropagation();

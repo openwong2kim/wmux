@@ -75,6 +75,12 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   { combo: 'Ctrl+Shift+R', descriptionKey: 'settings.sc.renameWorkspace' },
   { combo: 'Ctrl+Shift+H', descriptionKey: 'settings.sc.highlightPane' },
   { combo: 'Ctrl+`', descriptionKey: 'settings.sc.floatingPane' },
+  // Alt+Arrow cycles workspaces. Advertised so it can be switched OFF (#1455):
+  // TUI apps (Codex, Crush, …) bind Alt+Up/Down themselves, and the built-in
+  // swallows both keys before xterm sees them. The only advertised rows with
+  // no Ctrl — matchesDisabledShortcut has a branch for them.
+  { combo: 'Alt+ArrowUp', descriptionKey: 'settings.sc.prevWorkspace' },
+  { combo: 'Alt+ArrowDown', descriptionKey: 'settings.sc.nextWorkspace' },
 
   // ── Bound but not advertised in the Settings list ─────────────────────────
   { combo: 'Ctrl+M', literalCtrl: true, descriptionKey: null },
@@ -122,7 +128,8 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   { combo: 'Ctrl+8', descriptionKey: null },
   { combo: 'Ctrl+9', descriptionKey: null },
   // Directional movement. Ctrl+Shift+Arrow moves focus; Ctrl+Alt+Arrow is the
-  // alternate (⌘+Alt+Arrow on mac) focus combo; Alt+Arrow cycles workspaces.
+  // alternate (⌘+Alt+Arrow on mac) focus combo. (Alt+Arrow, which cycles
+  // workspaces, is advertised above.)
   //
   // Spelled `ArrowUp`, not `Up`: `combo` is the STORAGE form, and storage is
   // whatever `formatKeyCombo()` produces from `KeyboardEvent.key` — which is
@@ -138,8 +145,6 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   { combo: 'Ctrl+Alt+ArrowDown', descriptionKey: null },
   { combo: 'Ctrl+Alt+ArrowLeft', descriptionKey: null },
   { combo: 'Ctrl+Alt+ArrowRight', descriptionKey: null },
-  { combo: 'Alt+ArrowUp', descriptionKey: null },
-  { combo: 'Alt+ArrowDown', descriptionKey: null },
 ];
 
 /**
@@ -194,6 +199,9 @@ const CODE_TO_COMBO_CHAR: Record<string, string> = {
   Equal: '=',
 };
 
+// Keys whose advertised combo is bare `Alt+<key>` (see the #1455 rows).
+const ALT_ONLY_KEYS: ReadonlySet<string> = new Set(['ArrowUp', 'ArrowDown']);
+
 function comboCharFromCode(code: string): string | null {
   if (code.startsWith('Key')) return code.slice(3);
   if (code.startsWith('Digit')) return code.slice(5);
@@ -224,7 +232,14 @@ export function matchesDisabledShortcut(
   e: ShortcutKeyEventLike,
   platform: NodeJS.Platform,
 ): boolean {
-  if (disabled.length === 0 || e.altKey) return false;
+  if (disabled.length === 0) return false;
+  if (e.altKey) {
+    // #1455 — bare Alt+Arrow (workspace cycling) is the one advertised family
+    // without Ctrl, and it reads the same on every OS. Any other modifier
+    // makes it a different combo (Ctrl+Alt+Arrow / ⌘+Alt+Arrow focus panes).
+    if (e.ctrlKey || e.metaKey || e.shiftKey) return false;
+    return [e.key, e.code].some((k) => ALT_ONLY_KEYS.has(k) && disabled.includes('Alt+' + k));
+  }
   if (!e.ctrlKey && !e.metaKey) return false;
 
   const mods = e.shiftKey ? 'Ctrl+Shift+' : 'Ctrl+';
