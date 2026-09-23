@@ -92,4 +92,11 @@ describe('unlistToolsFromListing — protocol-default fields', () => {
     const optional = { name: 't', execution: { taskSupport: 'optional' }, inputSchema: { $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object' } };
     expect(withoutDefaultFields(optional)).toEqual(optional);
   });
+
+  it('keeps the draft-07 stamp on a schema whose meaning would change without it', () => {
+    const tuple = { name: 't', inputSchema: { $schema: 'http://json-schema.org/draft-07/schema#', type: 'object', properties: { p: { type: 'array', items: [{ type: 'string' }] } } } };
+    const ref = { name: 'r', inputSchema: { $schema: 'http://json-schema.org/draft-07/schema#', type: 'object', properties: { p: { $ref: '#/definitions/x' } }, definitions: { x: { type: 'string' } } } };
+    expect(withoutDefaultFields(tuple)).toEqual(tuple);
+    expect(withoutDefaultFields(ref)).toEqual(ref);
+  });
 });

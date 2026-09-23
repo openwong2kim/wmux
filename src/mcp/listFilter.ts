@@ -18,7 +18,8 @@
  *   - `inputSchema.$schema` = draft-07. With no `$schema` a client reads the
  *     schema as 2020-12, and no wmux schema uses a keyword whose meaning
  *     differs between the two (tuple `items`, `$ref`/`definitions`,
- *     `dependencies`) — the tools/list diet test pins that.
+ *     `dependencies`) — the tools/list diet test pins that for every
+ *     profile. A schema that does use one keeps its stamp at runtime too.
  *   - `execution: { taskSupport: 'forbidden' }`. 'forbidden' is the default
  *     when `execution` is absent, and wmux registers no task tools.
  * Together they were ~9% of every profile's tools/list bytes.
@@ -34,6 +35,18 @@ type HandlerMap = Map<
   (request: never, extra: never) => Promise<{ tools?: ListedTool[] }>
 >;
 
+const DRAFT_SENSITIVE_KEYS = new Set(['$ref', 'definitions', '$defs', 'dependencies', 'additionalItems']);
+
+/** True when dropping a draft-07 `$schema` could change how the schema reads. */
+function usesDraftSensitiveKeyword(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(usesDraftSensitiveKeyword);
+  if (!node || typeof node !== 'object') return false;
+  return Object.entries(node as Record<string, unknown>).some(([key, value]) =>
+    DRAFT_SENSITIVE_KEYS.has(key)
+    || (key === 'items' && Array.isArray(value))
+    || usesDraftSensitiveKeyword(value));
+}
+
 /** A listed tool without the fields that only restate protocol defaults.
  *  Anything else — a non-default `taskSupport`, a `$schema` other than the
  *  SDK's draft-07 stamp — passes through untouched. */
@@ -43,6 +56,7 @@ export function withoutDefaultFields<T extends ListedTool>(tool: T): T {
   if (
     schema && typeof schema === 'object'
     && (schema as { $schema?: unknown }).$schema === 'http://json-schema.org/draft-07/schema#'
+    && !usesDraftSensitiveKeyword(schema)
   ) {
     const { $schema: _dropped, ...rest } = schema as Record<string, unknown>;
     out = { ...out, inputSchema: rest };

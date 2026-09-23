@@ -39,13 +39,14 @@ interface ConnectedClient {
 
 async function connectClient(opts?: {
   coreMode?: boolean;
+  commanderMode?: boolean;
   envWorkspaceHint?: string;
 }): Promise<ConnectedClient> {
   const server = createWmuxServer({
     envWorkspaceHint: opts?.envWorkspaceHint ?? 'ws-caller',
     envPtyHint: '',
-    commanderToken: undefined,
-    commanderMode: false,
+    commanderToken: opts?.commanderMode ? 'wmux-token-test' : undefined,
+    commanderMode: opts?.commanderMode ?? false,
     coreMode: opts?.coreMode ?? false,
     callerPid: process.pid,
     callerPpid: null,
@@ -382,9 +383,12 @@ function draftSensitivePaths(node: unknown, path = ''): string[] {
 }
 
 describe('tools/list diet — protocol-default fields are not listed', () => {
-  for (const coreMode of [false, true]) {
-    it(`${coreMode ? 'core' : 'full'} profile: no $schema stamp, no default execution, no draft-sensitive keyword`, async () => {
-      const { client, close } = await connectClient({ coreMode });
+  for (const profile of ['full', 'core', 'commander'] as const) {
+    it(`${profile} profile: no $schema stamp, no default execution, no draft-sensitive keyword`, async () => {
+      const { client, close } = await connectClient({
+        coreMode: profile === 'core',
+        commanderMode: profile === 'commander',
+      });
       try {
         const res = await client.listTools();
         expect(res.tools.length).toBeGreaterThan(0);
