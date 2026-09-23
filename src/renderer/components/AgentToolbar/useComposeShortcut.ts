@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useStore } from '../../stores';
 import { focusedTerminalPtyId } from '../../utils/focusedSurface';
-import { matchesDisabledShortcut } from '../../../shared/keymap';
+import { currentShortcutBindings } from '../../utils/shortcutBindings';
 import { isComposeChord, composeOwnerHost } from '../../terminal/composeChord';
 
 /**
@@ -33,9 +33,11 @@ import { isComposeChord, composeOwnerHost } from '../../terminal/composeChord';
 export function useComposeShortcut(): void {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      const isMac = window.electronAPI?.platform === 'darwin';
-      const platform: NodeJS.Platform = isMac ? 'darwin' : 'win32';
-      if (!isComposeChord(e, platform)) return;
+      // The chord is whatever the richInput action holds in the effective
+      // bindings — nothing at all when the user switched it off in Settings →
+      // Shortcuts, and the key then belongs to the pane (useTerminal's
+      // released-shortcut branch writes the byte).
+      if (!isComposeChord(e, currentShortcutBindings())) return;
       // Key repeat must not flap the popover open and shut. The pane gate
       // swallows repeats too (the chord predicate accepts them), so this is a
       // deliberate NON-REPEATING chord, not a gate disagreement: a held Ctrl+G
@@ -45,11 +47,6 @@ export function useComposeShortcut(): void {
       // the same early-out to every global shortcut. The pane gate checks it
       // too, so the key is not merely swallowed here.
       if (useStore.getState().inspectModeActive) return;
-      // A combo the user switched off in Settings → Shortcuts belongs to the
-      // pane; useTerminal's disabled gate writes the byte for it.
-      if (matchesDisabledShortcut(
-        useStore.getState().disabledShortcuts, e, platform,
-      )) return;
       // Don't hijack the chord while the user is typing in a field that this
       // toolbar owns (Rich Input's textarea, snippet inputs). The focused
       // terminal's own xterm textarea is NOT one of those — it is the primary

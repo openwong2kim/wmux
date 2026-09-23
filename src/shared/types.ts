@@ -922,8 +922,13 @@ export interface SessionData {
   /** Categories whose surface actions are suppressed (#516). */
   mutedNotificationCategories?: NotificationCategory[];
   customKeybindings?: CustomKeybinding[];
-  /** #1152 — built-in combos (WMUX_KEYMAP storage form) the user disabled. */
+  /**
+   * #1152 — built-in combos (WMUX_KEYMAP storage form) the user disabled.
+   * Read-only legacy: loaded into `shortcutOverrides` when that is absent.
+   */
   disabledShortcuts?: string[];
+  /** #1455 — per-action changes to the built-in shortcuts (combo, or null = off). */
+  shortcutOverrides?: Partial<Record<string, string | null>>;
   autoUpdateEnabled?: boolean;
   customThemeColors?: CustomThemeColors;
   sidebarMode?: 'workspaces' | 'company';

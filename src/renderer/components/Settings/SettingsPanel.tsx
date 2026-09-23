@@ -31,7 +31,17 @@ import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardow
 import type { ChromePreset } from '../../../shared/chromePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, launcherSupportsModelFlag } from '../../../shared/orchestratorRole';
-import { ADVERTISED_SHORTCUTS, builtinCombosFor, macDisplayCombo, type KeymapEntry } from '../../../shared/keymap';
+import {
+  ADVERTISED_SHORTCUTS,
+  builtinCombosFor,
+  comboFromEvent,
+  concreteCombo,
+  defaultRowsFor,
+  displayCombo,
+  effectiveBindings,
+  rebindProblem,
+  type ShortcutActionId,
+} from '../../../shared/keymap';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
@@ -490,47 +500,84 @@ function SectionLabel({ id, label }: { id?: string; label: string }) {
 
 // ─── Keyboard shortcut badge ──────────────────────────────────────────────────
 
-function KbdRow({ keys, description, disabled, onToggleDisabled, toggleTitle }: {
+function KbdRow({
+  keys, description, disabled, onToggleDisabled, toggleTitle,
+  onChangeKey, changeKeyTitle, onReset, resetLabel, note,
+}: {
   keys: string;
   description: string;
   /** #1152 — undefined hides the toggle (rows that cannot be disabled). */
   disabled?: boolean;
   onToggleDisabled?: () => void;
   toggleTitle?: string;
+  /** #1455 — makes the key badge a button that records a new combo. */
+  onChangeKey?: () => void;
+  changeKeyTitle?: string;
+  /** Shown only while the row differs from its default. */
+  onReset?: () => void;
+  resetLabel?: string;
+  /** Why the last change was refused, under the row. */
+  note?: string;
 }) {
+  const badgeStyle = {
+    backgroundColor: 'var(--bg-surface)',
+    color: disabled ? 'var(--text-subtle)' : 'var(--accent-blue)',
+    border: '1px solid var(--bg-overlay)',
+    ...(disabled ? { textDecoration: 'line-through' } : {}),
+  };
   return (
-    <div className="flex items-center justify-between py-1.5 px-3 rounded-[7px] hover:bg-[color:var(--bg-mantle)] transition-colors">
-      <span
-        className="text-[12px] text-[color:var(--text-sub)]"
-        style={disabled ? { textDecoration: 'line-through', opacity: 0.5 } : undefined}
-      >
-        {description}
-      </span>
-      <span className="flex items-center gap-2">
+    <div className="py-1.5 px-3 rounded-[7px] hover:bg-[color:var(--bg-mantle)] transition-colors">
+      <div className="flex items-center justify-between gap-2">
         <span
-          className="text-[10px] font-mono tabular-nums px-2 py-0.5 rounded"
-          style={{
-            backgroundColor: 'var(--bg-surface)',
-            color: disabled ? 'var(--text-subtle)' : 'var(--accent-blue)',
-            border: '1px solid var(--bg-overlay)',
-            ...(disabled ? { textDecoration: 'line-through' } : {}),
-          }}
+          className="text-[12px] text-[color:var(--text-sub)]"
+          style={disabled ? { textDecoration: 'line-through', opacity: 0.5 } : undefined}
         >
-          {keys}
+          {description}
         </span>
-        {onToggleDisabled !== undefined && (
-          <input
-            type="checkbox"
-            checked={!disabled}
-            onChange={onToggleDisabled}
-            title={toggleTitle}
-            // Unique per row — thirteen checkboxes all reading the same hint
-            // would be indistinguishable to a screen reader.
-            aria-label={`${description} (${keys})`}
-            className="cursor-pointer"
-          />
-        )}
-      </span>
+        <span className="flex items-center gap-2 shrink-0">
+          {onReset !== undefined && (
+            <button
+              type="button"
+              className={`text-[10px] text-[color:var(--text-muted)] hover:text-[color:var(--text-sub)] rounded ${FOCUS_RING}`}
+              onClick={onReset}
+              aria-label={`${resetLabel ?? ''}: ${description}`}
+            >
+              {resetLabel}
+            </button>
+          )}
+          {onChangeKey !== undefined ? (
+            <button
+              type="button"
+              className={`text-[10px] font-mono tabular-nums px-2 py-0.5 rounded ${FOCUS_RING}`}
+              style={badgeStyle}
+              onClick={onChangeKey}
+              title={changeKeyTitle}
+              aria-label={`${description} (${keys}) — ${changeKeyTitle ?? ''}`}
+            >
+              {keys}
+            </button>
+          ) : (
+            <span className="text-[10px] font-mono tabular-nums px-2 py-0.5 rounded" style={badgeStyle}>
+              {keys}
+            </span>
+          )}
+          {onToggleDisabled !== undefined && (
+            <input
+              type="checkbox"
+              checked={!disabled}
+              onChange={onToggleDisabled}
+              title={toggleTitle}
+              // Unique per row — a list of checkboxes all reading the same hint
+              // would be indistinguishable to a screen reader.
+              aria-label={`${description} (${keys})`}
+              className="cursor-pointer"
+            />
+          )}
+        </span>
+      </div>
+      {note && (
+        <p role="status" className="mt-0.5 text-[10px] text-[color:var(--accent-yellow)] text-right">{note}</p>
+      )}
     </div>
   );
 }
@@ -4341,14 +4388,36 @@ function TabNotifications() {
 
 // ─── Key capture overlay ──────────────────────────────────────────────────────
 
-function KeyCaptureOverlay({ label, onCapture, onCancel }: { label: string; onCapture: (key: string, code: string) => void; onCancel: () => void }) {
+function KeyCaptureOverlay({ label, onCapture, onCancel, record }: {
+  label: string;
+  onCapture: (key: string, code: string) => void;
+  onCancel: () => void;
+  /**
+   * How to spell the pressed combo. Default: the custom-keybinding form
+   * (literal Ctrl/Shift/Alt, no ⌘). Built-in shortcuts pass comboFromEvent,
+   * which also records ⌘ and names the key the way the resolver matches it.
+   */
+  record?: (e: KeyboardEvent) => string | null;
+}) {
   const t = useT();
+  const setKeyCaptureActive = useStore((s) => s.setKeyCaptureActive);
+  // While recording, useKeyboard stands down so a combo that is already a
+  // shortcut reaches this recorder instead of running (and being eaten).
+  useEffect(() => {
+    setKeyCaptureActive(true);
+    return () => setKeyCaptureActive(false);
+  }, [setKeyCaptureActive]);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
       if (e.key === 'Escape') { onCancel(); return; }
 
+      if (record) {
+        const combo = record(e);
+        if (combo !== null) onCapture(combo, e.code);
+        return;
+      }
       const parts: string[] = [];
       if (e.ctrlKey) parts.push('Ctrl');
       if (e.shiftKey) parts.push('Shift');
@@ -4362,7 +4431,7 @@ function KeyCaptureOverlay({ label, onCapture, onCancel }: { label: string; onCa
     };
     window.addEventListener('keydown', handler, true);
     return () => window.removeEventListener('keydown', handler, true);
-  }, [onCapture, onCancel]);
+  }, [onCapture, onCancel, record]);
 
   return (
     <div
@@ -4400,22 +4469,6 @@ function keyCodeToDisplay(code: string): string {
   return KEY_CODE_DISPLAY[code] || code;
 }
 
-/**
- * Render a "Ctrl+…" key combo using the host OS convention.
- *
- * On macOS most shortcuts are mapped to ⌘ in {@link useKeyboard}; mirror that
- * here so the catalog shows what the user actually has to press.
- *
- * tmux-convention combos (Ctrl+B prefix, Ctrl+M / Ctrl+Shift+M bookmark family)
- * stay on literal Ctrl across every OS, so we never substitute ⌘ for those.
- */
-function shortcutLabel(entry: KeymapEntry): string {
-  const isMac = window.electronAPI.platform === 'darwin';
-  // literalCtrl entries (tmux prefix, bookmark family) stay literal on macOS —
-  // the flag lives in WMUX_KEYMAP so this and useKeyboard.ts can't drift.
-  return isMac ? macDisplayCombo(entry) : entry.combo;
-}
-
 const PREFIX_ACTION_IDS = [
   'splitHorizontal', 'splitVertical', 'closePane',
   'newWorkspace', 'nextWorkspace', 'prevWorkspace',
@@ -4433,15 +4486,16 @@ function prefixActionLabel(actionId: string, t: (key: string) => string): string
 
 // ─── Shortcuts tab ────────────────────────────────────────────────────────────
 
-function TabShortcuts() {
+export function TabShortcuts() {
   const t = useT();
 
   const customKeybindings = useStore((s) => s.customKeybindings);
   const addKeybinding = useStore((s) => s.addKeybinding);
   const updateKeybinding = useStore((s) => s.updateKeybinding);
   const removeKeybinding = useStore((s) => s.removeKeybinding);
-  const disabledShortcuts = useStore((s) => s.disabledShortcuts);
-  const toggleShortcutDisabled = useStore((s) => s.toggleShortcutDisabled);
+  const shortcutOverrides = useStore((s) => s.shortcutOverrides);
+  const setShortcutOverride = useStore((s) => s.setShortcutOverride);
+  const resetShortcut = useStore((s) => s.resetShortcut);
   const prefixConfig = useStore((s) => s.prefixConfig);
   const setPrefixKey = useStore((s) => s.setPrefixKey);
   const setPrefixBinding = useStore((s) => s.setPrefixBinding);
@@ -4451,36 +4505,61 @@ function TabShortcuts() {
   const [capturingPrefixKey, setCapturingPrefixKey] = useState(false);
   const [capturingBindingKey, setCapturingBindingKey] = useState<string | null>(null);
   const [addingBinding, setAddingBinding] = useState(false);
+  // #1455 — the built-in being moved to a new key, and why the last change
+  // to a row was refused.
+  const [rebinding, setRebinding] = useState<ShortcutActionId | null>(null);
+  const [shortcutNote, setShortcutNote] = useState<{ action: ShortcutActionId; text: string } | null>(null);
 
-  // Was a hand-copied subset that had drifted — Ctrl+Shift+A / Ctrl+Shift+G /
-  // Ctrl+M / Ctrl+Tab and the zoom keys are all bound but were missing, so a
-  // custom keybinding on one of them got no conflict warning and then silently
-  // never fired. Derived from WMUX_KEYMAP now (#818), and resolved for the
-  // running platform — on macOS a built-in that fires on ⌘ cannot collide with
-  // a custom binding, which is matched on literal Ctrl.
-  // #1152 — a disabled built-in no longer claims its combo, so a custom
-  // keybinding on it is a deliberate rebind, not a conflict to warn about.
-  const BUILTIN_KEYS = new Set(
-    [...builtinCombosFor(window.electronAPI?.platform === 'darwin' ? 'darwin' : 'win32')]
-      .filter((c) => !disabledShortcuts.includes(c)),
-  );
+  const platform: NodeJS.Platform = window.electronAPI?.platform === 'darwin'
+    ? 'darwin'
+    : window.electronAPI?.platform === 'linux' ? 'linux' : 'win32';
+  const bindings = effectiveBindings(platform, shortcutOverrides);
 
+  // The combos custom keybindings can lose to: every built-in in force, in
+  // the concrete form (on macOS a ⌘ built-in cannot collide with a custom
+  // binding, which is matched on literal Ctrl). A switched-off or moved
+  // built-in no longer claims its old combo, so a custom keybinding there is
+  // a deliberate rebind, not a conflict to warn about (#818, #1152). The
+  // prefix trigger claims its key too.
   const prefixKeyDisplay = `Ctrl+${keyCodeToDisplay(prefixConfig.key)}`;
+  const BUILTIN_KEYS = new Set([...builtinCombosFor(platform, shortcutOverrides), prefixKeyDisplay]);
+
   const bindingEntries = Object.entries(prefixConfig.bindings);
 
-  // OS-aware labels — macOS shows ⌘ for the cmdOrCtrl family, literal Ctrl for
-  // tmux/bookmark family. prefixKeyDisplay always renders as literal Ctrl
-  // because the prefix combo stays on Ctrl across every OS.
-  const shortcuts = [
-    // The prefix row keeps its own config below — no toggle (combo: undefined).
-    { keys: prefixKeyDisplay, description: t('settings.prefixMode'), combo: undefined as string | undefined },
-    ...ADVERTISED_SHORTCUTS.map((entry) => ({
-      keys: shortcutLabel(entry),
-      description: t(entry.descriptionKey as Parameters<typeof t>[0]),
-      // #1152 — the storage-form combo keys the disable toggle.
-      combo: entry.combo as string | undefined,
-    })),
-  ];
+  const describe = (action: ShortcutActionId): string => {
+    const row = ADVERTISED_SHORTCUTS.find((e) => e.action === action);
+    return row ? t(row.descriptionKey as Parameters<typeof t>[0], row.descriptionVars) : action;
+  };
+  // Why `combo` cannot run `action`, as a sentence — or null when it can.
+  const problemText = (action: ShortcutActionId, combo: string): string | null => {
+    const problem = rebindProblem(action, combo, bindings, platform, prefixConfig.key);
+    if (!problem) return null;
+    const shown = displayCombo(combo, platform);
+    switch (problem.kind) {
+      case 'needsModifier': return t('settings.sc.needsModifier');
+      case 'clipboard': return t('settings.sc.reservedKey', { combo: shown });
+      case 'prefix': return t('settings.sc.prefixConflict', { combo: shown });
+      case 'taken': return t('settings.sc.conflict', { name: describe(problem.by) });
+    }
+  };
+  const moveShortcut = (action: ShortcutActionId, combo: string) => {
+    const text = problemText(action, combo);
+    setShortcutNote(text ? { action, text } : null);
+    if (!text) setShortcutOverride(action, combo);
+  };
+  // Back to the default combo(s) — unless something else took one of them
+  // meanwhile, which would leave two actions on one key.
+  const restoreShortcut = (action: ShortcutActionId) => {
+    const defaults = defaultRowsFor(action).map((row) => concreteCombo(row, platform));
+    for (const combo of defaults) {
+      const text = problemText(action, combo);
+      if (text) { setShortcutNote({ action, text }); return; }
+    }
+    setShortcutNote(null);
+    resetShortcut(action);
+  };
+
+  const hasOverrides = Object.keys(shortcutOverrides).length > 0;
 
   return (
     <div className="flex flex-col gap-1">
@@ -4489,19 +4568,59 @@ function TabShortcuts() {
         className="rounded-[7px] overflow-hidden py-1"
         style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
       >
-        {shortcuts.map((s) => (
-          <KbdRow
-            key={s.keys}
-            keys={s.keys}
-            description={s.description}
-            // #1152 — advertised built-ins can be switched off; the key then
-            // passes through to the terminal (Codex Ctrl+T et al.).
-            disabled={s.combo ? disabledShortcuts.includes(s.combo) : undefined}
-            onToggleDisabled={s.combo ? () => toggleShortcutDisabled(s.combo as string) : undefined}
-            toggleTitle={t('settings.shortcutDisableHint')}
-          />
-        ))}
+        {/* The prefix row keeps its own config below — no toggle. */}
+        <KbdRow keys={prefixKeyDisplay} description={t('settings.prefixMode')} />
+        {ADVERTISED_SHORTCUTS.map((entry) => {
+          const override = shortcutOverrides[entry.action];
+          const disabled = override === null;
+          const combo = typeof override === 'string' ? override : concreteCombo(entry, platform);
+          return (
+            <KbdRow
+              key={entry.action}
+              keys={displayCombo(combo, platform)}
+              description={describe(entry.action)}
+              // #1152 — a built-in can be switched off; the key then passes
+              // through to the terminal (Codex Ctrl+T, a TUI's Alt+Up, …).
+              disabled={disabled}
+              onToggleDisabled={() => {
+                if (disabled) restoreShortcut(entry.action);
+                else { setShortcutNote(null); setShortcutOverride(entry.action, null); }
+              }}
+              toggleTitle={t('settings.shortcutDisableHint')}
+              // #1455 — or moved to any other combo.
+              onChangeKey={() => setRebinding(entry.action)}
+              changeKeyTitle={t('settings.sc.changeKey')}
+              onReset={entry.action in shortcutOverrides ? () => restoreShortcut(entry.action) : undefined}
+              resetLabel={t('settings.sc.reset')}
+              note={shortcutNote?.action === entry.action ? shortcutNote.text : undefined}
+            />
+          );
+        })}
       </div>
+      {hasOverrides && (
+        <button
+          type="button"
+          className={`self-end text-[11px] text-[color:var(--text-muted)] hover:text-[color:var(--text-sub)] px-1 rounded ${FOCUS_RING}`}
+          onClick={() => {
+            if (!confirm(t('settings.sc.resetAllConfirm'))) return;
+            setShortcutNote(null);
+            for (const action of Object.keys(shortcutOverrides) as ShortcutActionId[]) resetShortcut(action);
+          }}
+        >
+          {t('settings.sc.resetAll')}
+        </button>
+      )}
+      {rebinding && (
+        <KeyCaptureOverlay
+          label={t('settings.sc.pressNewKey', { name: describe(rebinding) })}
+          record={comboFromEvent}
+          onCapture={(combo) => {
+            moveShortcut(rebinding, combo);
+            setRebinding(null);
+          }}
+          onCancel={() => setRebinding(null)}
+        />
+      )}
       {/* Prefix mode configuration */}
       <SectionLabel label={t('settings.prefixMode')} />
 

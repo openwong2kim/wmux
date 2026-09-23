@@ -1,16 +1,20 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { defaultBindings, resolveShortcut } from '../../../shared/keymap';
 
 /**
  * Source-level regression lock (owner-reported 2026-07-19):
  *
- * On macOS, app shortcuts use cmdOrCtrl=metaKey (useKeyboard), so if the xterm
- * handler swallows Ctrl+D/K/I/N/T/,/` and bubbles them to the DOM, neither the app
- * action fires nor does the key reach the PTY, killing readline control characters
- * (Ctrl+D EOF, Ctrl+I Tab, Ctrl+K kill-line …) entirely. On mac, only the literal-Ctrl
- * bindings (b=prefix, m=bookmark, Ctrl+Arrow) should bubble; the rest must pass through
- * to the PTY.
+ * On macOS, app shortcuts use ⌘ (the keymap's non-literalCtrl rows), so if the
+ * xterm handler swallows Ctrl+D/K/I/N/T/,/` and bubbles them to the DOM, neither
+ * the app action fires nor does the key reach the PTY, killing readline control
+ * characters (Ctrl+D EOF, Ctrl+I Tab, Ctrl+K kill-line …) entirely. On mac, only
+ * the literal-Ctrl bindings (prefix, bookmark, Ctrl+Shift+Arrow, …) may bubble.
+ *
+ * #1455: the handler no longer keeps its own per-OS bubble lists — it bubbles
+ * exactly the keys the shared resolver maps to an action — so the per-OS
+ * behaviour is pinned on the resolver's defaults here.
  *
  * Also, since copy is Cmd+C's job on mac, Ctrl+C must always be SIGINT even with an
  * active selection (copy interception is non-mac only).
@@ -32,24 +36,36 @@ describe('useTerminal macOS Ctrl passthrough (source-level lock)', () => {
     expect(handlerStart).toBeGreaterThan(-1);
   });
 
-  it('the mac bubble list contains only the literal-Ctrl bindings (b, m, Arrow)', () => {
-    expect(HANDLER).toMatch(
-      /isMac\s*\?\s*\['b', 'm', 'ArrowUp', 'ArrowDown'\]/,
-    );
-    expect(HANDLER).toMatch(
-      /isMac\s*\?\s*\['KeyB', 'KeyM', 'ArrowUp', 'ArrowDown'\]/,
-    );
+  const ctrl = (key: string, code: string) => ({
+    key, code, ctrlKey: true, metaKey: false, shiftKey: false, altKey: false,
+  });
+  const READLINE_KEYS: [string, string][] = [
+    ['d', 'KeyD'], ['k', 'KeyK'], ['i', 'KeyI'], ['n', 'KeyN'], ['t', 'KeyT'],
+    [',', 'Comma'], ['`', 'Backquote'], ['=', 'Equal'], ['-', 'Minus'], ['0', 'Digit0'],
+  ];
+
+  it('on macOS literal Ctrl+D/K/I/N/T/,/`/=/-/0 are no shortcut — they reach the PTY', () => {
+    for (const [key, code] of READLINE_KEYS) {
+      expect(resolveShortcut(ctrl(key, code), defaultBindings('darwin')), `Ctrl+${key} on mac`).toBeNull();
+    }
   });
 
-  it('the non-mac bubble list keeps the full original set (no win/linux regression)', () => {
-    expect(HANDLER).toMatch(
-      /\[',', 'b', 'd', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'\]/,
-    );
+  it('off macOS the same keys stay shortcuts (no win/linux regression)', () => {
+    for (const [key, code] of READLINE_KEYS) {
+      expect(resolveShortcut(ctrl(key, code), defaultBindings('win32')), `Ctrl+${key} on win32`).not.toBeNull();
+    }
   });
 
-  it('Ctrl+` and Ctrl+=/-/0 zoom bubbling are non-mac only', () => {
-    expect(HANDLER).toMatch(/!isMac && e\.ctrlKey && !e\.shiftKey && e\.code === 'Backquote'/);
-    expect(HANDLER).toMatch(/!isMac && e\.ctrlKey && !e\.shiftKey && \(\s*\n?\s*e\.key === '='/);
+  it('the literal-Ctrl bindings still bubble on macOS', () => {
+    expect(resolveShortcut(ctrl('m', 'KeyM'), defaultBindings('darwin'))).toBe('addBookmark');
+    expect(resolveShortcut({ ...ctrl('ArrowUp', 'ArrowUp'), shiftKey: true }, defaultBindings('darwin')))
+      .toBe('focusUp');
+  });
+
+  it('bubbles only what the resolver maps — no hand-kept key lists', () => {
+    expect(HANDLER).not.toMatch(/bubbleKeys|bubbleCodes/);
+    expect(HANDLER).toContain('const shortcut = resolveShortcut(e, bindings);');
+    expect(HANDLER).toContain('isPrefixTrigger(e, useStore.getState().prefixConfig.key)');
   });
 
   it('Ctrl+C copy interception is non-mac only — mac is always SIGINT', () => {

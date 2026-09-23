@@ -90,7 +90,7 @@ function eventForCombo(
 beforeEach(() => {
   setToolbarPopover.mockClear();
   focusedPtyId = 'pty-1';
-  state = { workspaces: [], activeWorkspaceId: 'w1', toolbarPopover: null, disabledShortcuts: [], inspectModeActive: false, setToolbarPopover };
+  state = { workspaces: [], activeWorkspaceId: 'w1', toolbarPopover: null, shortcutOverrides: {}, inspectModeActive: false, setToolbarPopover };
   (window as unknown as { electronAPI?: unknown }).electronAPI = { platform: 'win32' };
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -143,9 +143,17 @@ describe('useComposeShortcut modifier matching (#1280)', () => {
   });
 
   it('yields when the user disabled Ctrl+G in Settings → Shortcuts', () => {
-    state.disabledShortcuts = ['Ctrl+G'];
+    state.shortcutOverrides = { richInput: null };
     press({ key: 'g', code: 'KeyG', ctrlKey: true });
     expect(setToolbarPopover).not.toHaveBeenCalled();
+  });
+
+  it('follows Rich Input to the key the user moved it to (#1455)', () => {
+    state.shortcutOverrides = { richInput: 'Ctrl+Alt+E' };
+    press({ key: 'g', code: 'KeyG', ctrlKey: true });
+    expect(setToolbarPopover).not.toHaveBeenCalled();
+    press({ key: 'e', code: 'KeyE', ctrlKey: true, altKey: true });
+    expect(setToolbarPopover).toHaveBeenCalledWith('rich');
   });
 
   it('key repeat does not flap the popover', () => {
@@ -163,7 +171,7 @@ describe('useComposeShortcut modifier matching (#1280)', () => {
     for (const platform of ['win32', 'darwin'] as const) {
       (window as unknown as { electronAPI?: unknown }).electronAPI = { platform };
       for (const entry of WMUX_KEYMAP) {
-        if (entry.combo === 'Ctrl+G') continue;
+        if (entry.action === 'richInput') continue;
         setToolbarPopover.mockClear();
         press(eventForCombo(entry.combo, platform, entry.literalCtrl === true));
         expect(setToolbarPopover, `${entry.combo} on ${platform} must not toggle Rich Input`)

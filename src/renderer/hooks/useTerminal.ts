@@ -6,7 +6,8 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
 import { isSafeGeometry } from '../../shared/terminalGeometry';
-import { matchesDisabledShortcut } from '../../shared/keymap';
+import { isPrefixTrigger, resolveShortcut } from '../../shared/keymap';
+import { currentShortcutBindings, defaultShortcutBindings } from '../utils/shortcutBindings';
 import { xtermWindowsBuildNumber } from '../../shared/conptyWindows';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
@@ -1872,90 +1873,62 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         return false;
       }
 
-      // Pass app shortcuts through to useKeyboard (don't let xterm consume them).
-      // 'd' is the Ctrl+D split-right shortcut — without it xterm sends EOT (0x04)
-      // to the PTY and PowerShell echoes it back as `^D` instead of triggering split.
+      // ─── Shortcuts leave xterm; everything else is terminal input ────
+      // useKeyboard (window capture phase) has already run the shortcut; xterm
+      // must not ALSO encode it — its keydown handler ignores preventDefault,
+      // so without `return false` here Ctrl+D would both split the pane and
+      // send EOT (0x04), echoed by PowerShell as `^D`.
       //
-      // macOS: useKeyboard가 cmdOrCtrl=metaKey로 매칭하므로 Cmd 계열 액션(,/d/k/i/
-      // n/t/`)의 Ctrl 조합은 앱 액션이 아니다 — 삼키면 Ctrl+D(EOF)·Ctrl+I(Tab)·
-      // Ctrl+K(kill-line) 등 readline 컨트롤 문자가 PTY에도 못 가고 죽는다
-      // (owner-reported 2026-07-19). mac에서는 literal-Ctrl 바인딩만(b=프리픽스,
-      // m=북마크, Ctrl+Arrow) 버블시키고 나머지는 xterm→PTY로 통과.
-      // #1152 — a combo the user disabled in Settings → Shortcuts must reach
-      // the PTY like any other terminal byte: return true so xterm PROCESSES
-      // the key (encoding e.g. Ctrl+T as 0x14) instead of bubbling it to
-      // useKeyboard, whose own disabled-gate would drop it without
-      // preventDefault — leaving the key dead in both worlds. Same shared
-      // matcher as that gate, so the two can never disagree about which
-      // combos are off.
-      if (matchesDisabledShortcut(
-        useStore.getState().disabledShortcuts, e, isMac ? 'darwin' : 'win32',
-      )) {
+      // #1455 — which keys are shortcuts is not listed here. It is answered by
+      // the SAME resolver useKeyboard dispatches with, over the SAME effective
+      // bindings (shared/keymap.ts + the user's overrides). The hand-kept
+      // bubble lists this replaced disagreed with useKeyboard in both
+      // directions: they swallowed bare Ctrl+Up/Down that nothing handled,
+      // missed a moved prefix key, and needed a second copy of the modifier
+      // rules to honour a disabled built-in (#1152). On macOS the ⌘ family is
+      // simply not Ctrl, so Ctrl+D (EOF), Ctrl+K (kill-line) and friends reach
+      // readline there (owner-reported 2026-07-19).
+      const bindings = currentShortcutBindings();
+      const shortcut = resolveShortcut(e, bindings);
+      // A built-in the user switched off or moved away (Settings → Shortcuts)
+      // is the pane's again: xterm PROCESSES it — Ctrl+T reaches Codex's
+      // transcript, Alt+Up reaches a TUI — instead of the combo bubbling to a
+      // useKeyboard that no longer claims it and dying in both worlds.
+      if (shortcut === null && resolveShortcut(e, defaultShortcutBindings()) !== null) {
         // #1227 — xterm encodes Ctrl+letter from keyCode (QWERTY position).
         // Write the logical control byte ourselves so a disabled Ctrl+T on
         // Dvorak still delivers 0x14 instead of whatever physical keyCode says.
-        const disabledCtrl = resolveCtrlLetterByte(e);
-        if (disabledCtrl) {
+        const releasedCtrl = resolveCtrlLetterByte(e);
+        if (releasedCtrl) {
           e.preventDefault();
-          window.electronAPI.pty.write(ptyId, disabledCtrl);
-          noteUserKeystroke(disabledCtrl);
+          window.electronAPI.pty.write(ptyId, releasedCtrl);
+          noteUserKeystroke(releasedCtrl);
           return false;
         }
         return true;
       }
-      // #1280 — the Rich Input chord (⌘G / Ctrl+G) bubbles from HERE, instead
-      // of merely being preventDefault'd downstream: xterm's own encode path
-      // calls stopPropagation (its `cancel()`), so before #1228 Ctrl+G never
-      // reached the document listener at all, and after it the catch-all ctrl
-      // encoder below wrote BEL (0x07) to the pane and then let the event
-      // bubble — `^G` in the shell plus the popover, the reported bug.
+      // #1280 — the Rich Input chord bubbles from HERE, instead of merely
+      // being preventDefault'd downstream: xterm's own encode path calls
+      // stopPropagation (its `cancel()`), so otherwise the chord never reaches
+      // useComposeShortcut's document listener — or it reaches it after the
+      // ctrl encoder below wrote BEL (0x07): `^G` in the shell plus the
+      // popover, the reported bug. Same predicate as the popover gate, so the
+      // two cannot disagree about which keydown is the chord.
       //
-      // Its own branch, not a row in the allowlists below, whose condition is
-      // only `ctrlKey && !shiftKey`: a row there would also swallow
-      // Ctrl+Alt+G and Ctrl+Meta+G, which nobody claims. And the SAME
-      // predicate the popover gate uses, so the two cannot disagree about
-      // which keydown is the chord (composeChord.ts explains why that matters
-      // more than either gate's own correctness).
-      //
-      // `ownsComposeShortcut` is the other half: the popover gate acts on the
-      // active leaf's pty, so a floating pane / brain embed would see the key
-      // swallowed here and declined there. Those surfaces keep encoding 0x07.
-      if (composeOwnerHost(e.target).owns && isComposeChord(e, isMac ? 'darwin' : 'win32')
-          && !useStore.getState().inspectModeActive) {
-        return false; // let DOM bubble to useComposeShortcut
-      }
-      const bubbleKeys = isMac
-        ? ['b', 'm', 'ArrowUp', 'ArrowDown']
-        : [',', 'b', 'd', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'];
-      const bubbleCodes = isMac
-        ? ['KeyB', 'KeyM', 'ArrowUp', 'ArrowDown']
-        : ['KeyB', 'KeyD', 'KeyK', 'KeyI', 'KeyN', 'KeyT', 'KeyM', 'Comma', 'ArrowUp', 'ArrowDown'];
-      if (e.ctrlKey && !e.shiftKey && bubbleKeys.includes(e.key)) {
+      // Ownership is the other half: the popover acts on the active leaf's
+      // pty, so a floating pane / brain embed would see the key swallowed
+      // here and declined there. Those surfaces keep encoding 0x07.
+      if (shortcut === 'richInput') {
+        if (composeOwnerHost(e.target).owns && isComposeChord(e, bindings)
+            && !useStore.getState().inspectModeActive) {
+          return false; // let DOM bubble to useComposeShortcut
+        }
+      } else if (shortcut !== null) {
         return false; // let DOM bubble to useKeyboard
       }
-      // Cross-layout / IME-safe fallback: when a Hangul or other non-Latin layout
-      // is active, e.key is the composed letter (e.g. 'ㅇ') or 'Process', and the
-      // allowlist above misses. Match by physical key code so the split shortcut
-      // still works under any layout/IME state.
-      if (e.ctrlKey && !e.shiftKey && bubbleCodes.includes(e.code)) {
+      // The prefix trigger (Ctrl+B by default, whatever key the user set).
+      if (isPrefixTrigger(e, useStore.getState().prefixConfig.key)) {
         return false;
-      }
-      // Ctrl+` by code (cross-layout) — mac은 Cmd+`가 액션이므로 Ctrl+`(NUL)는 PTY로.
-      if (!isMac && e.ctrlKey && !e.shiftKey && e.code === 'Backquote') {
-        return false;
-      }
-      // Terminal font zoom: Ctrl+= / Ctrl+- / Ctrl+0 (#171). Let these bubble to
-      // useKeyboard instead of feeding '=' / '-' / '0' bytes to the PTY. Match by
-      // physical code as well so zoom survives a Hangul / non-Latin IME. The
-      // Ctrl++ (Shift+=) and numpad variants are already covered: the Ctrl+Shift
-      // catch-all below bubbles the former, and useKeyboard maps NumpadAdd etc.
-      // mac 줌은 Cmd+=/-/0 — Ctrl 조합은 앱 액션이 아니므로 xterm/PTY로 통과.
-      if (!isMac && e.ctrlKey && !e.shiftKey && (
-        e.key === '=' || e.key === '-' || e.key === '0' ||
-        e.code === 'Equal' || e.code === 'Minus' || e.code === 'Digit0' ||
-        e.code === 'NumpadAdd' || e.code === 'NumpadSubtract' || e.code === 'Numpad0'
-      )) {
-        return false; // let DOM bubble to useKeyboard's zoom handlers
       }
       // Ctrl+Shift+C / Ctrl+Shift+V are explicit copy/paste, handled below.
       // Let them fall through; bubble every OTHER Ctrl+Shift combo to app

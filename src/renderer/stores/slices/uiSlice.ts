@@ -12,7 +12,7 @@ import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { markRetentionMigrationDone } from '../retentionMigration';
 import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
 import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
-import { ADVERTISED_SHORTCUTS } from '../../../shared/keymap';
+import { sanitizeShortcutOverrides, type ShortcutActionId, type ShortcutOverrides } from '../../../shared/keymap';
 
 /**
  * #517: read main's authoritative browser backend synchronously at store-module
@@ -670,14 +670,26 @@ export interface UISlice {
   updateKeybinding: (id: string, kb: Partial<Omit<CustomKeybinding, 'id'>>) => void;
   removeKeybinding: (id: string) => void;
   /**
-   * #1152 — built-in combos (WMUX_KEYMAP storage form, e.g. 'Ctrl+T') the
-   * user has switched OFF. A disabled combo is fully unbound: useKeyboard
-   * skips its handler and useTerminal stops bubbling it, so the key reaches
-   * the PTY like any other terminal byte (Ctrl+T then opens Codex's own
-   * transcript instead of a new wmux surface). Persisted in session.json.
+   * The user's changes to the built-in shortcuts (Settings → Shortcuts), per
+   * action: a concrete combo moves the action there, `null` switches it off
+   * (#1152) — the key then reaches the pane like any other terminal byte.
+   * Everything that matches keys reads these through effectiveBindings()
+   * (shared/keymap.ts), so a change applies to every gate at once (#1455).
+   * Persisted in session.json.
    */
-  disabledShortcuts: string[];
-  toggleShortcutDisabled: (combo: string) => void;
+  shortcutOverrides: ShortcutOverrides;
+  /** Move `action` to `combo`, or switch it off with `null`. */
+  setShortcutOverride: (action: ShortcutActionId, combo: string | null) => void;
+  /** Put `action` back on its default combo(s). */
+  resetShortcut: (action: ShortcutActionId) => void;
+  /**
+   * True while Settings is recording a key combo. useKeyboard stands down so
+   * the chord reaches the recorder instead of running the shortcut it is
+   * currently bound to (and being swallowed by it) — otherwise a combo that is
+   * already taken could never even be pressed to see the conflict.
+   */
+  keyCaptureActive: boolean;
+  setKeyCaptureActive: (active: boolean) => void;
 
   // ─── File tree ────────────────────────────────────────────────────────
   fileTreeVisible: boolean;
@@ -1679,17 +1691,27 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.customKeybindings = state.customKeybindings.filter((k) => k.id !== id);
   }),
 
-  disabledShortcuts: [],
+  shortcutOverrides: {},
 
-  toggleShortcutDisabled: (combo) => set((state) => {
-    // Same whitelist the session loader applies (advertised rows only) —
-    // otherwise a programmatic caller could disable a combo the UI renders
-    // no re-enable toggle for, and the state would silently revert on the
-    // next load anyway.
-    if (!ADVERTISED_SHORTCUTS.some((k) => k.combo === combo)) return;
-    state.disabledShortcuts = state.disabledShortcuts.includes(combo)
-      ? state.disabledShortcuts.filter((c) => c !== combo)
-      : [...state.disabledShortcuts, combo];
+  setShortcutOverride: (action, combo) => set((state) => {
+    // Same whitelist the session loader applies (configurable actions, valid
+    // combos) — anything else would have no Settings row to undo it from,
+    // and would silently revert on the next load anyway.
+    const next = sanitizeShortcutOverrides({ ...state.shortcutOverrides, [action]: combo });
+    if (!(action in next)) return;
+    state.shortcutOverrides = next;
+  }),
+
+  keyCaptureActive: false,
+  setKeyCaptureActive: (active) => set((state) => {
+    state.keyCaptureActive = active;
+  }),
+
+  resetShortcut: (action) => set((state) => {
+    if (!(action in state.shortcutOverrides)) return;
+    const next = { ...state.shortcutOverrides };
+    delete next[action];
+    state.shortcutOverrides = next;
   }),
 
   // ─── File tree ────────────────────────────────────────────────────────

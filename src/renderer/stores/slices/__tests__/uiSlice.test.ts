@@ -787,21 +787,27 @@ describe('UISlice — site guides auto-enable with the Chrome backend', () => {
   });
 });
 
-describe('UISlice — #1152 disabled built-in shortcuts', () => {
+describe('UISlice — built-in shortcut overrides (#1152, #1455)', () => {
   let store: ReturnType<typeof createTestStore>;
   beforeEach(() => { store = createTestStore(); });
 
-  it('starts with nothing disabled', () => {
-    expect(store.getState().disabledShortcuts).toEqual([]);
+  it('starts on the defaults', () => {
+    expect(store.getState().shortcutOverrides).toEqual({});
   });
 
-  it('toggleShortcutDisabled adds, then removes, a combo', () => {
-    store.getState().toggleShortcutDisabled('Ctrl+T');
-    expect(store.getState().disabledShortcuts).toEqual(['Ctrl+T']);
-    store.getState().toggleShortcutDisabled('Ctrl+D');
-    expect(store.getState().disabledShortcuts).toEqual(['Ctrl+T', 'Ctrl+D']);
-    store.getState().toggleShortcutDisabled('Ctrl+T');
-    expect(store.getState().disabledShortcuts).toEqual(['Ctrl+D']);
+  it('switches an action off, moves one, and resets each', () => {
+    store.getState().setShortcutOverride('prevWorkspace', null);
+    store.getState().setShortcutOverride('nextWorkspace', 'Ctrl+Alt+J');
+    expect(store.getState().shortcutOverrides).toEqual({ prevWorkspace: null, nextWorkspace: 'Ctrl+Alt+J' });
+    store.getState().resetShortcut('prevWorkspace');
+    expect(store.getState().shortcutOverrides).toEqual({ nextWorkspace: 'Ctrl+Alt+J' });
+    store.getState().resetShortcut('nextWorkspace');
+    expect(store.getState().shortcutOverrides).toEqual({});
+  });
+
+  it('refuses a combo nobody can press without eating a typed key', () => {
+    store.getState().setShortcutOverride('newSurface', 'T');
+    expect(store.getState().shortcutOverrides).toEqual({});
   });
 });
 

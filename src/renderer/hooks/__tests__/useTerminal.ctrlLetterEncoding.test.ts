@@ -56,11 +56,12 @@ describe('useTerminal ctrl-letter encoding + keyboard-state lifecycle (source-le
     );
   });
 
-  it('disabled-shortcut branch encodes the logical ctrl byte before returning true', () => {
-    // #1152: a combo disabled in Settings must reach the PTY as a control
-    // byte, not bubble dead. resolveCtrlLetterByte runs before the return.
-    const guard = SRC.indexOf('matchesDisabledShortcut(');
-    const encode = SRC.indexOf('const disabledCtrl = resolveCtrlLetterByte(e);', guard);
+  it('released-shortcut branch encodes the logical ctrl byte before returning true', () => {
+    // #1152 / #1455: a built-in switched off or moved in Settings must reach
+    // the PTY as a control byte, not bubble dead. resolveCtrlLetterByte runs
+    // before the return.
+    const guard = SRC.indexOf('resolveShortcut(e, defaultShortcutBindings()) !== null');
+    const encode = SRC.indexOf('const releasedCtrl = resolveCtrlLetterByte(e);', guard);
     const passThrough = SRC.indexOf('return true;', encode);
     expect(guard).toBeGreaterThan(-1);
     expect(encode).toBeGreaterThan(guard);
@@ -69,13 +70,13 @@ describe('useTerminal ctrl-letter encoding + keyboard-state lifecycle (source-le
 
   it('all four direct-write sites feed noteUserKeystroke (C2)', () => {
     // Helper definition lives before attachCustomKeyEventHandler, so exactly
-    // the four call sites (newline, Escape, disabled ctrl, catch-all
+    // the four call sites (newline, Escape, released ctrl, catch-all
     // ctrl) are inside the handler slice.
     const calls = HANDLER.match(/noteUserKeystroke\(/g) ?? [];
     expect(calls.length).toBe(4);
     expect(HANDLER).toMatch(/noteUserKeystroke\(newlineByte\);/);
     expect(HANDLER).toMatch(/noteUserKeystroke\(escapeByte\);/);
-    expect(HANDLER).toMatch(/noteUserKeystroke\(disabledCtrl\);/);
+    expect(HANDLER).toMatch(/noteUserKeystroke\(releasedCtrl\);/);
     expect(HANDLER).toMatch(/noteUserKeystroke\(ctrlByte\);/);
   });
 

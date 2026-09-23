@@ -1,3 +1,5 @@
+import { resolveShortcut, type ShortcutBinding, type ShortcutKeyEventLike } from '../../shared/keymap';
+
 /**
  * The ONE definition of the Rich Input chord (⌘G on macOS, Ctrl+G elsewhere).
  *
@@ -43,28 +45,27 @@
  *     a non-repeating chord — instead of a stream of BEL.
  */
 
-export interface ComposeChordEventLike {
-  key: string;
-  code: string;
-  ctrlKey: boolean;
-  metaKey: boolean;
-  shiftKey: boolean;
-  altKey: boolean;
+export interface ComposeChordEventLike extends ShortcutKeyEventLike {
   isComposing: boolean;
 }
 
+/**
+ * Is this keydown the Rich Input chord under `bindings`?
+ *
+ * #1455 — the chord is no longer spelled out here: it is whatever combo the
+ * `richInput` action holds in the effective bindings (⌘G / Ctrl+G by default,
+ * or wherever the user moved it, or nothing when they switched it off), found
+ * by the one resolver every keyboard gate shares. That resolver already
+ * carries the rules this predicate used to own — exact modifiers (so
+ * Ctrl+Shift+G, clearMultiview, is not the chord), the logical key first and
+ * the physical code only for an IME glyph. What stays here is `isComposing`.
+ */
 export function isComposeChord(
   e: ComposeChordEventLike,
-  platform: NodeJS.Platform,
+  bindings: readonly ShortcutBinding[],
 ): boolean {
-  if (e.shiftKey || e.altKey || e.isComposing) return false;
-  // macOS binds ⌘G — literal Ctrl+G there is a readline byte, and the toolbar
-  // renders the chip as ⌘G. Windows/Linux bind literal Ctrl+G.
-  const baseModifier = platform === 'darwin'
-    ? e.metaKey && !e.ctrlKey
-    : e.ctrlKey && !e.metaKey;
-  if (!baseModifier) return false;
-  return e.key === 'g' || e.key === 'G' || e.code === 'KeyG';
+  if (e.isComposing) return false;
+  return resolveShortcut(e, bindings) === 'richInput';
 }
 
 /**

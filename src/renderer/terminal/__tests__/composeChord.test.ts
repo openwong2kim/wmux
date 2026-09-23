@@ -7,7 +7,7 @@ import {
   COMPOSE_OWNER_ATTR,
   type ComposeChordEventLike,
 } from '../composeChord';
-import { WMUX_KEYMAP } from '../../../shared/keymap';
+import { WMUX_KEYMAP, defaultBindings, effectiveBindings } from '../../../shared/keymap';
 
 /**
  * #1280. This predicate exists so the two gates that both handle ⌘G / Ctrl+G —
@@ -24,54 +24,58 @@ const ev = (over: Partial<ComposeChordEventLike> = {}): ComposeChordEventLike =>
   ...over,
 });
 
+/** The chord under the shipped defaults for `platform`. */
+const chord = (e: ComposeChordEventLike, platform: NodeJS.Platform): boolean =>
+  isComposeChord(e, defaultBindings(platform));
+
 describe('isComposeChord', () => {
   it('accepts plain Ctrl+G off macOS', () => {
-    expect(isComposeChord(ev(), 'win32')).toBe(true);
-    expect(isComposeChord(ev(), 'linux')).toBe(true);
+    expect(chord(ev(), 'win32')).toBe(true);
+    expect(chord(ev(), 'linux')).toBe(true);
   });
 
   it('rejects Shift — Ctrl+Shift+G is clearMultiview', () => {
     // The original bug: `key` is 'G' exactly when Shift is held, and the old
     // inline test accepted both spellings of the letter with no shift check.
-    expect(isComposeChord(ev({ key: 'G', shiftKey: true }), 'win32')).toBe(false);
+    expect(chord(ev({ key: 'G', shiftKey: true }), 'win32')).toBe(false);
   });
 
   it('accepts an unshifted capital G (Caps Lock)', () => {
-    expect(isComposeChord(ev({ key: 'G' }), 'win32')).toBe(true);
+    expect(chord(ev({ key: 'G' }), 'win32')).toBe(true);
   });
 
   it('rejects Alt and Meta — nobody binds Ctrl+Alt+G / Ctrl+Meta+G', () => {
     // These must keep reaching the pane; swallowing them would leave a key
     // that writes no byte and triggers no action.
-    expect(isComposeChord(ev({ altKey: true }), 'win32')).toBe(false);
-    expect(isComposeChord(ev({ metaKey: true }), 'win32')).toBe(false);
+    expect(chord(ev({ altKey: true }), 'win32')).toBe(false);
+    expect(chord(ev({ metaKey: true }), 'win32')).toBe(false);
   });
 
   it('rejects the bare letter and every other letter', () => {
-    expect(isComposeChord(ev({ ctrlKey: false }), 'win32')).toBe(false);
-    expect(isComposeChord(ev({ key: 'f', code: 'KeyF' }), 'win32')).toBe(false);
+    expect(chord(ev({ ctrlKey: false }), 'win32')).toBe(false);
+    expect(chord(ev({ key: 'f', code: 'KeyF' }), 'win32')).toBe(false);
   });
 
   it('falls back to the physical KeyG under a non-Latin layout', () => {
     // Hangul / Pinyin report a composed jamo or 'Process' in `key`.
-    expect(isComposeChord(ev({ key: 'ㅎ' }), 'win32')).toBe(true);
-    expect(isComposeChord(ev({ key: 'Process' }), 'win32')).toBe(true);
+    expect(chord(ev({ key: 'ㅎ' }), 'win32')).toBe(true);
+    expect(chord(ev({ key: 'Process' }), 'win32')).toBe(true);
   });
 
   it('defers while an IME composition is active', () => {
     // Every other ctrl-letter path defers here (resolveCtrlLetterByte,
     // resolveNewlineKeyByte, the IME-Escape branch). Without it a Hangul
     // preedit plus the physical fallback above popped Rich Input mid-word.
-    expect(isComposeChord(ev({ isComposing: true }), 'win32')).toBe(false);
-    expect(isComposeChord(ev({ key: 'Process', isComposing: true }), 'win32')).toBe(false);
-    expect(isComposeChord(ev({ key: 'g', metaKey: true, ctrlKey: false, isComposing: true }), 'darwin')).toBe(false);
+    expect(chord(ev({ isComposing: true }), 'win32')).toBe(false);
+    expect(chord(ev({ key: 'Process', isComposing: true }), 'win32')).toBe(false);
+    expect(chord(ev({ key: 'g', metaKey: true, ctrlKey: false, isComposing: true }), 'darwin')).toBe(false);
   });
 
   it('macOS binds ⌘G and leaves literal Ctrl+G to readline', () => {
-    expect(isComposeChord(ev({ ctrlKey: false, metaKey: true }), 'darwin')).toBe(true);
-    expect(isComposeChord(ev(), 'darwin')).toBe(false);
+    expect(chord(ev({ ctrlKey: false, metaKey: true }), 'darwin')).toBe(true);
+    expect(chord(ev(), 'darwin')).toBe(false);
     // Ctrl+⌘+G is neither: `baseModifier` requires Ctrl to be up on mac.
-    expect(isComposeChord(ev({ ctrlKey: true, metaKey: true }), 'darwin')).toBe(false);
+    expect(chord(ev({ ctrlKey: true, metaKey: true }), 'darwin')).toBe(false);
   });
 
   it('accepts auto-repeat — a held chord is still the chord', () => {
@@ -79,7 +83,7 @@ describe('isComposeChord', () => {
     // answer for a repeat tick. The popover gate then declines to TOGGLE on
     // one (flapping is not the ask), which makes Ctrl+G a deliberate
     // non-repeating chord rather than a key that dies between the gates.
-    expect(isComposeChord({ ...ev(), key: 'g' }, 'win32')).toBe(true);
+    expect(chord({ ...ev(), key: 'g' }, 'win32')).toBe(true);
   });
 
   it('no other keymap combo is mistaken for the chord', () => {
@@ -88,11 +92,22 @@ describe('isComposeChord', () => {
     // letter so the physical fallback is exercised too.
     for (const platform of ['win32', 'darwin'] as const) {
       for (const entry of WMUX_KEYMAP) {
-        if (entry.combo === 'Ctrl+G') continue;
-        expect(isComposeChord(eventForCombo(entry.combo, platform, entry.literalCtrl === true), platform),
+        if (entry.action === 'richInput') continue;
+        expect(chord(eventForCombo(entry.combo, platform, entry.literalCtrl === true), platform),
           `${entry.combo} on ${platform} must not read as the compose chord`).toBe(false);
       }
     }
+  });
+
+  // #1455 — the chord is the richInput action's binding, not a fixed key.
+  it('follows the richInput binding when the user moves it', () => {
+    const moved = effectiveBindings('win32', { richInput: 'Ctrl+Alt+E' });
+    expect(isComposeChord(ev(), moved)).toBe(false);
+    expect(isComposeChord(ev({ key: 'e', code: 'KeyE', altKey: true }), moved)).toBe(true);
+  });
+
+  it('is no key at all when the user switches Rich Input off', () => {
+    expect(isComposeChord(ev(), effectiveBindings('win32', { richInput: null }))).toBe(false);
   });
 });
 

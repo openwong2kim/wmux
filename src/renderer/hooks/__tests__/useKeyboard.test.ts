@@ -28,6 +28,7 @@ import {
   clampFontSize,
   type PrefixActionDeps,
 } from '../useKeyboard';
+import { defaultBindings, resolveShortcut } from '../../../shared/keymap';
 import { DEFAULT_PREFIX_CONFIG } from '../../../shared/types';
 import type { Pane } from '../../../shared/types';
 
@@ -416,7 +417,9 @@ describe('useKeyboard handler — Ctrl+T terminal creation', () => {
   );
 
   it('routes Ctrl+T through the shared terminal-surface helper', () => {
-    const shortcut = src.slice(src.indexOf("key === 't'"), src.indexOf("key === 'w'"));
+    const start = src.indexOf('newSurface: () => {');
+    expect(start, 'newSurface action not found').toBeGreaterThan(-1);
+    const shortcut = src.slice(start, src.indexOf('newWorkspace:', start));
     expect(shortcut).toContain('createTerminalSurface({');
     expect(shortcut).not.toContain('window.electronAPI.pty.create(');
   });
@@ -498,31 +501,36 @@ describe('useKeyboard handler — zoom shortcuts (#171)', () => {
     expect(src).toContain('const FONT_SIZE_DEFAULT = 14;');
   });
 
+  // #1455 — which keys zoom is a keymap question now, answered by the one
+  // resolver; these pin that every spelling the old guards accepted still
+  // resolves to the zoom actions.
+  const zoomKey = (key: string, code: string, shiftKey = false) => resolveShortcut(
+    { key, code, ctrlKey: true, metaKey: false, shiftKey, altKey: false },
+    defaultBindings('win32'),
+  );
+
   it('zoom in matches both e.key and physical e.code (IME-safe), incl. numpad', () => {
-    // The combined zoom-in guard must accept '=' / '+' by key and Equal /
-    // NumpadAdd by code so a Hangul IME (e.key = composed glyph) still zooms.
-    expect(src).toMatch(/key === '=' \|\| key === '\+' \|\| code === 'Equal' \|\| code === 'NumpadAdd'/);
+    expect(zoomKey('=', 'Equal')).toBe('zoomIn');
+    expect(zoomKey('+', 'Equal', true)).toBe('zoomIn');
+    expect(zoomKey('Process', 'Equal')).toBe('zoomIn');
+    expect(zoomKey('+', 'NumpadAdd')).toBe('zoomIn');
   });
 
   it('zoom out matches Ctrl+- by key and Minus / NumpadSubtract by code', () => {
-    expect(src).toMatch(/key === '-' \|\| key === '_' \|\| code === 'Minus' \|\| code === 'NumpadSubtract'/);
+    expect(zoomKey('-', 'Minus')).toBe('zoomOut');
+    expect(zoomKey('_', 'Minus', true)).toBe('zoomOut');
+    expect(zoomKey('-', 'NumpadSubtract')).toBe('zoomOut');
   });
 
   it('reset zoom (Ctrl+0) restores FONT_SIZE_DEFAULT and excludes Shift', () => {
-    const reset = src.indexOf("key === '0' || code === 'Digit0' || code === 'Numpad0'");
-    expect(reset, 'reset guard not found').toBeGreaterThan(-1);
-    // The reset guard line requires !shift so Ctrl+Shift+0 stays free.
-    const guardLineStart = src.lastIndexOf('if (', reset);
-    expect(src.slice(guardLineStart, reset)).toContain('!shift');
+    expect(zoomKey('0', 'Digit0')).toBe('zoomReset');
+    expect(zoomKey('Insert', 'Numpad0')).toBe('zoomReset');
+    expect(zoomKey(')', 'Digit0', true)).toBeNull();
     expect(src).toContain('store.getState().setTerminalFontSize(FONT_SIZE_DEFAULT);');
   });
 
-  it('places the zoom guards AFTER the Ctrl+1~9 workspace switch (so Ctrl+0 is unambiguous)', () => {
-    const wsSwitch = src.indexOf("key >= '1' && key <= '9'");
-    const zoomIn = src.indexOf('Zoom in: Ctrl+= or Ctrl++');
-    expect(wsSwitch).toBeGreaterThan(-1);
-    expect(zoomIn).toBeGreaterThan(-1);
-    expect(zoomIn).toBeGreaterThan(wsSwitch);
+  it('Ctrl+0 is zoom reset, never a workspace jump', () => {
+    expect(zoomKey('0', 'Digit0')).not.toMatch(/^workspace/);
   });
 
   it('zoom writes through setTerminalFontSize (runtime font effect, no re-create)', () => {
@@ -536,11 +544,12 @@ describe('useTerminal — zoom combos bubble past xterm (#171)', () => {
     'utf-8',
   );
 
-  it('returns false (bubbles) for Ctrl+= / Ctrl+- / Ctrl+0 by key and code', () => {
+  it('returns false (bubbles) for every resolved shortcut, zoom included', () => {
     // Without this, xterm would feed '=' / '-' / '0' to the PTY instead of
-    // letting useKeyboard zoom. Match the guard that lists the keys + codes.
-    expect(src).toMatch(/e\.key === '=' \|\| e\.key === '-' \|\| e\.key === '0'/);
-    expect(src).toMatch(/e\.code === 'Equal' \|\| e\.code === 'Minus' \|\| e\.code === 'Digit0'/);
+    // letting useKeyboard zoom. #1455: the pane gate asks the same resolver
+    // useKeyboard dispatches with, so any key that resolves bubbles.
+    expect(src).toContain('const shortcut = resolveShortcut(e, bindings);');
+    expect(src).toMatch(/\} else if \(shortcut !== null\) \{\s*return false; \/\/ let DOM bubble to useKeyboard/);
   });
 });
 

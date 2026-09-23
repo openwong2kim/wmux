@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { isComposeChord } from '../../terminal/composeChord';
 import { resolveCtrlLetterByte } from '../../terminal/ctrlLetterKeys';
+import { defaultBindings, resolveShortcut } from '../../../shared/keymap';
 
 /**
  * #1280 — who gets the Ctrl+G keydown, the pane or Rich Input.
@@ -53,7 +54,9 @@ describe('the pane gate and the popover gate share one chord predicate (#1280)',
     // The one line that wires both halves. Both gates read ownership from
     // composeOwnerHost, so they cannot disagree about it any more than about
     // the chord. Anything more specific is the predicates' own tests' job.
-    expect(HANDLER).toMatch(/composeOwnerHost\(e\.target\)\.owns && isComposeChord\(e, isMac \? 'darwin' : 'win32'\)/);
+    // #1455: over the same effective bindings every other gate reads.
+    expect(HANDLER).toMatch(/composeOwnerHost\(e\.target\)\.owns && isComposeChord\(e, bindings\)/);
+    expect(HANDLER).toContain('const bindings = currentShortcutBindings();');
     expect(HANDLER).toMatch(/return false; \/\/ let DOM bubble to useComposeShortcut/);
   });
 
@@ -63,31 +66,29 @@ describe('the pane gate and the popover gate share one chord predicate (#1280)',
       .toBeLessThan(HANDLER.indexOf('const ctrlByte = resolveCtrlLetterByte(e)'));
   });
 
-  it("'g' / KeyG stay out of the shared bubble allowlists", () => {
-    // Those lists test only `ctrlKey && !shiftKey`, so a row there would also
-    // swallow Ctrl+Alt+G and Ctrl+Meta+G, which nobody claims.
-    const list = (name: string) => {
-      const at = HANDLER.indexOf(`const ${name} = isMac`);
-      expect(at).toBeGreaterThan(-1);
-      return HANDLER.slice(at, HANDLER.indexOf(';', at));
-    };
-    expect(list('bubbleKeys')).not.toContain("'g'");
-    expect(list('bubbleCodes')).not.toContain("'KeyG'");
+  it('Ctrl+Alt+G and Ctrl+Meta+G are nobody\'s binding, so they reach the pane', () => {
+    // The hand-kept bubble lists this gate used to have tested only
+    // `ctrlKey && !shiftKey`, so a 'g' row there would have swallowed these
+    // too. The resolver matches modifiers exactly.
+    for (const platform of ['win32', 'darwin'] as const) {
+      expect(resolveShortcut({ ...ctrlG, altKey: true }, defaultBindings(platform))).toBeNull();
+      expect(resolveShortcut({ ...ctrlG, metaKey: true }, defaultBindings(platform))).toBeNull();
+    }
   });
 
-  it('the disabled-shortcut branch writes the byte, and runs before the bubble', () => {
-    // The escape hatch: Ctrl+G is an advertised keymap row, so a user can
-    // switch it off in Settings → Shortcuts and hand the key back to the pane.
-    // That needs the disabled gate FIRST, writing the control byte inside its
-    // own branch — returning true would let xterm encode it from the QWERTY
-    // keyCode instead (#1227). Matched as one contiguous block so the write
-    // cannot drift out of the branch.
+  it('the released-shortcut branch writes the byte, and runs before the bubble', () => {
+    // The escape hatch: Ctrl+G is a keymap row, so a user can switch it off
+    // (or move it) in Settings → Shortcuts and hand the key back to the pane.
+    // That needs the released branch FIRST, writing the control byte inside
+    // its own branch — returning true would let xterm encode it from the
+    // QWERTY keyCode instead (#1227). Matched as one contiguous block so the
+    // write cannot drift out of the branch.
     const branch = HANDLER.match(
-      /if \(matchesDisabledShortcut\([\s\S]{0,300}?\)\) \{[\s\S]{0,900}?\n {6}\}/,
+      /if \(shortcut === null && resolveShortcut\(e, defaultShortcutBindings\(\)\) !== null\) \{[\s\S]{0,900}?\n {6}\}/,
     );
     expect(branch).not.toBeNull();
     expect(branch?.[0]).toMatch(
-      /const disabledCtrl = resolveCtrlLetterByte\(e\);\s*if \(disabledCtrl\) \{\s*e\.preventDefault\(\);\s*window\.electronAPI\.pty\.write\(ptyId, disabledCtrl\);\s*noteUserKeystroke\(disabledCtrl\);\s*return false;/,
+      /const releasedCtrl = resolveCtrlLetterByte\(e\);\s*if \(releasedCtrl\) \{\s*e\.preventDefault\(\);\s*window\.electronAPI\.pty\.write\(ptyId, releasedCtrl\);\s*noteUserKeystroke\(releasedCtrl\);\s*return false;/,
     );
     expect(HANDLER.indexOf(branch?.[0] ?? ''))
       .toBeLessThan(HANDLER.indexOf('composeOwnerHost(e.target).owns && isComposeChord'));
@@ -132,6 +133,6 @@ describe('only the active-leaf terminal owns the chord (#1280 review)', () => {
     expect(resolveCtrlLetterByte(ctrlG)).toBe('\x07');
     // And it IS the chord — the predicate is not what excuses the encode;
     // ownership is. Both gates agree about the key either way.
-    expect(isComposeChord(ctrlG, 'win32')).toBe(true);
+    expect(isComposeChord(ctrlG, defaultBindings('win32'))).toBe(true);
   });
 });

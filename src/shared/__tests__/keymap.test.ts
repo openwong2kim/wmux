@@ -4,7 +4,19 @@ import {
   builtinCombosFor,
   collidesWithKeymap,
   ADVERTISED_SHORTCUTS,
-  macDisplayCombo,
+  SHORTCUT_ACTION_IDS,
+  comboFromEvent,
+  concreteCombo,
+  defaultBindings,
+  displayCombo,
+  effectiveBindings,
+  invalidShortcutCombo,
+  isPrefixTrigger,
+  overridesFromDisabledCombos,
+  rebindProblem,
+  resolveShortcut,
+  sanitizeShortcutOverrides,
+  type ShortcutKeyEventLike,
 } from '../keymap';
 
 /**
@@ -79,8 +91,9 @@ describe('builtinCombosFor', () => {
   it('keeps the literal-Ctrl family and the Ctrl-less rows on macOS', () => {
     const mac = builtinCombosFor('darwin');
     expect(mac.has('Ctrl+M')).toBe(true);        // bookmark — literal Ctrl on mac
-    expect(mac.has('Ctrl+B')).toBe(true);        // tmux prefix
     expect(mac.has('Alt+ArrowUp')).toBe(true);   // no Ctrl at all
+    // The ⌘ family is there in concrete form.
+    expect(mac.has('Meta+D')).toBe(true);
   });
 });
 
@@ -104,143 +117,235 @@ describe('ADVERTISED_SHORTCUTS', () => {
     const expected = WMUX_KEYMAP.filter((e) => e.descriptionKey !== null).map((e) => e.combo);
     expect(ADVERTISED_SHORTCUTS.map((e) => e.combo)).toEqual(expected);
   });
+
+  it('has exactly one row per action (the rest are aliases)', () => {
+    const actions = ADVERTISED_SHORTCUTS.map((e) => e.action);
+    expect(new Set(actions).size).toBe(actions.length);
+    // Every action the table binds can be listed, changed and switched off.
+    expect([...new Set(actions)].sort()).toEqual([...SHORTCUT_ACTION_IDS].sort());
+  });
+
+  it('puts an action\'s primary row before its aliases', () => {
+    for (const row of ADVERTISED_SHORTCUTS) {
+      expect(WMUX_KEYMAP.find((e) => e.action === row.action)).toBe(row);
+    }
+  });
 });
 
-// ─── #1152 matchesDisabledShortcut ───────────────────────────────────────────
-
-import { matchesDisabledShortcut, type ShortcutKeyEventLike } from '../keymap';
+// ─── #1455 one resolver ──────────────────────────────────────────────────────
 
 const ev = (over: Partial<ShortcutKeyEventLike>): ShortcutKeyEventLike => ({
   key: 't', code: 'KeyT', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false, ...over,
 });
+const win = defaultBindings('win32');
+const mac = defaultBindings('darwin');
 
-describe('matchesDisabledShortcut (#1152)', () => {
-  it('matches a disabled combo on Windows by e.key', () => {
-    expect(matchesDisabledShortcut(['Ctrl+T'], ev({}), 'win32')).toBe(true);
+describe('resolveShortcut', () => {
+  it('finds the action a default combo runs', () => {
+    expect(resolveShortcut(ev({}), win)).toBe('newSurface');
+    expect(resolveShortcut(ev({ key: 'D', code: 'KeyD', shiftKey: true }), win)).toBe('splitVertical');
+    expect(resolveShortcut(ev({ key: 'ArrowUp', code: 'ArrowUp', ctrlKey: false, altKey: true }), win))
+      .toBe('prevWorkspace');
   });
 
-  it('matches by physical code under an IME (e.key is a composed glyph)', () => {
-    expect(matchesDisabledShortcut(['Ctrl+T'], ev({ key: 'ㅅ' }), 'win32')).toBe(true);
-    expect(matchesDisabledShortcut(['Ctrl+T'], ev({ key: 'Process' }), 'win32')).toBe(true);
+  it('matches modifiers exactly — no binding swallows a chord it does not name', () => {
+    // The class of bug a per-branch if-chain kept producing: Alt+Up must not
+    // also be Meta+Alt+Up, Ctrl+Alt+Up (pane focus) or Shift+Alt+Up.
+    const up = ev({ key: 'ArrowUp', code: 'ArrowUp', ctrlKey: false, altKey: true });
+    expect(resolveShortcut({ ...up, metaKey: true }, win)).toBeNull();
+    expect(resolveShortcut({ ...up, shiftKey: true }, win)).toBeNull();
+    expect(resolveShortcut({ ...up, ctrlKey: true }, win)).toBe('focusUpAlt');
+    expect(resolveShortcut(ev({ altKey: true }), win)).toBeNull();
+    expect(resolveShortcut(ev({ metaKey: true }), win)).toBeNull();
+    expect(resolveShortcut(ev({ key: 'ArrowUp', code: 'ArrowUp' }), win)).toBeNull(); // bare Ctrl+Up
   });
 
-  it('matches Ctrl+` by the Backquote code (non-Key* physical code)', () => {
-    expect(matchesDisabledShortcut(['Ctrl+`'], ev({ key: 'Process', code: 'Backquote' }), 'win32')).toBe(true);
+  it('macOS: the ⌘ family fires on ⌘, and literal Ctrl stays the terminal\'s', () => {
+    expect(resolveShortcut(ev({ ctrlKey: false, metaKey: true }), mac)).toBe('newSurface');
+    expect(resolveShortcut(ev({}), mac)).toBeNull(); // Ctrl+T: a readline byte on mac
+    expect(resolveShortcut(ev({ key: 'm', code: 'KeyM' }), mac)).toBe('addBookmark'); // literal Ctrl row
+    expect(resolveShortcut(ev({ key: 'ArrowLeft', code: 'ArrowLeft', ctrlKey: false, metaKey: true, altKey: true }), mac))
+      .toBe('focusLeftAlt');
   });
 
-  it('shift combos are distinct from their base combo', () => {
-    expect(matchesDisabledShortcut(['Ctrl+Shift+D'], ev({ key: 'D', code: 'KeyD', shiftKey: true }), 'win32')).toBe(true);
-    expect(matchesDisabledShortcut(['Ctrl+Shift+D'], ev({ key: 'd', code: 'KeyD' }), 'win32')).toBe(false);
-    expect(matchesDisabledShortcut(['Ctrl+D'], ev({ key: 'D', code: 'KeyD', shiftKey: true }), 'win32')).toBe(false);
+  it('matches the physical key under an IME (e.key is a glyph or Process)', () => {
+    expect(resolveShortcut(ev({ key: 'ㅅ' }), win)).toBe('newSurface');
+    expect(resolveShortcut(ev({ key: 'Process' }), win)).toBe('newSurface');
+    expect(resolveShortcut(ev({ key: 'Process', code: 'Backquote' }), win)).toBe('floatingPane');
   });
 
-  it('macOS: a cmdOrCtrl-family combo matches ⌘, NOT literal Ctrl (readline bytes stay alive)', () => {
-    // Disabling "Ctrl+T" (rendered ⌘T on mac) must catch Cmd+T…
-    expect(matchesDisabledShortcut(['Ctrl+T'], ev({ ctrlKey: false, metaKey: true }), 'darwin')).toBe(true);
-    // …and must NOT catch literal Ctrl+T, which was never an app shortcut on
-    // mac — swallowing it would kill readline control bytes and any custom
-    // literal-Ctrl keybinding the user defined.
-    expect(matchesDisabledShortcut(['Ctrl+T'], ev({}), 'darwin')).toBe(false);
+  it('prefers the logical key on non-QWERTY layouts (#1227)', () => {
+    // Dvorak: the key printed "t" sits where QWERTY has K.
+    expect(resolveShortcut(ev({ key: 't', code: 'KeyK' }), win)).toBe('newSurface');
+    // …and QWERTY's T position prints "y" there, which is nobody's binding.
+    expect(resolveShortcut(ev({ key: 'y', code: 'KeyT' }), win)).toBeNull();
   });
 
-  it('does not match with Alt held or with no Ctrl/⌘ at all', () => {
-    expect(matchesDisabledShortcut(['Ctrl+T'], ev({ altKey: true }), 'win32')).toBe(false);
-    expect(matchesDisabledShortcut(['Ctrl+T'], ev({ ctrlKey: false }), 'win32')).toBe(false);
+  it('reaches shifted punctuation by its physical key', () => {
+    // Windows reports '}' / '{' with Shift held (#1422).
+    expect(resolveShortcut(ev({ key: '}', code: 'BracketRight', shiftKey: true }), win)).toBe('nextSurface');
+    expect(resolveShortcut(ev({ key: '{', code: 'BracketLeft', shiftKey: true }), win)).toBe('prevSurface');
   });
 
-  it('empty disabled list is a cheap no-op', () => {
-    expect(matchesDisabledShortcut([], ev({}), 'win32')).toBe(false);
+  it('covers every zoom spelling the old handlers accepted', () => {
+    const zoom = (over: Partial<ShortcutKeyEventLike>) => resolveShortcut(ev(over), win);
+    expect(zoom({ key: '=', code: 'Equal' })).toBe('zoomIn');
+    expect(zoom({ key: '+', code: 'Equal', shiftKey: true })).toBe('zoomIn');
+    expect(zoom({ key: '+', code: 'NumpadAdd' })).toBe('zoomIn');
+    expect(zoom({ key: '-', code: 'Minus' })).toBe('zoomOut');
+    expect(zoom({ key: '_', code: 'Minus', shiftKey: true })).toBe('zoomOut');
+    expect(zoom({ key: '-', code: 'NumpadSubtract' })).toBe('zoomOut');
+    expect(zoom({ key: '0', code: 'Digit0' })).toBe('zoomReset');
+    expect(zoom({ key: 'Insert', code: 'Numpad0' })).toBe('zoomReset');
+    expect(zoom({ key: ')', code: 'Digit0', shiftKey: true })).toBeNull();
+  });
+
+  it('jumps to workspaces 1–9, by physical digit on AZERTY', () => {
+    expect(resolveShortcut(ev({ key: '1', code: 'Digit1' }), win)).toBe('workspace1');
+    expect(resolveShortcut(ev({ key: '&', code: 'Digit1' }), win)).toBe('workspace1');
+    expect(resolveShortcut(ev({ key: '9', code: 'Digit9' }), win)).toBe('workspace9');
+  });
+
+  it('ignores a bare modifier keydown', () => {
+    expect(resolveShortcut(ev({ key: 'Control', code: 'ControlLeft' }), win)).toBeNull();
+  });
+});
+
+describe('effectiveBindings — the user\'s overrides', () => {
+  const upAlt = ev({ key: 'ArrowUp', code: 'ArrowUp', ctrlKey: false, altKey: true });
+
+  it('switching an action off frees its combo for the terminal (#1152, #1455)', () => {
+    const b = effectiveBindings('win32', { prevWorkspace: null });
+    expect(resolveShortcut(upAlt, b)).toBeNull();
+    // Only that action: its pair keeps working.
+    expect(resolveShortcut({ ...upAlt, key: 'ArrowDown', code: 'ArrowDown' }, b)).toBe('nextWorkspace');
+  });
+
+  it('moving an action rebinds it and releases the old combo', () => {
+    const b = effectiveBindings('win32', { prevWorkspace: 'Ctrl+Alt+K' });
+    expect(resolveShortcut(upAlt, b)).toBeNull();
+    expect(resolveShortcut(ev({ key: 'k', code: 'KeyK', altKey: true }), b)).toBe('prevWorkspace');
+  });
+
+  it('an override replaces every alias of the action', () => {
+    const b = effectiveBindings('win32', { zoomIn: 'Ctrl+Alt+=' });
+    expect(resolveShortcut(ev({ key: '+', code: 'NumpadAdd' }), b)).toBeNull();
+    expect(resolveShortcut(ev({ key: '=', code: 'Equal' }), b)).toBeNull();
+    expect(resolveShortcut(ev({ key: '=', code: 'Equal', altKey: true }), b)).toBe('zoomIn');
+  });
+
+  it('a recorded ⌘ combo resolves on macOS', () => {
+    const b = effectiveBindings('darwin', { commandPalette: 'Meta+Shift+P' });
+    expect(resolveShortcut(ev({ key: 'P', code: 'KeyP', ctrlKey: false, metaKey: true, shiftKey: true }), b))
+      .toBe('commandPalette');
+  });
+});
+
+describe('comboFromEvent — recording a new binding', () => {
+  it('spells the combo the resolver matches', () => {
+    const e = ev({ key: 'k', code: 'KeyK', altKey: true });
+    const combo = comboFromEvent(e);
+    expect(combo).toBe('Ctrl+Alt+K');
+    expect(resolveShortcut(e, [{ action: 'prevWorkspace', combo: combo as string }])).toBe('prevWorkspace');
+  });
+
+  it('records ⌘ as Meta', () => {
+    expect(comboFromEvent(ev({ ctrlKey: false, metaKey: true, key: 'j', code: 'KeyJ' }))).toBe('Meta+J');
+  });
+
+  it('records the physical key when an IME gives a glyph', () => {
+    expect(comboFromEvent(ev({ key: 'ㅅ' }))).toBe('Ctrl+T');
+  });
+
+  it('waits while only modifiers are held', () => {
+    expect(comboFromEvent(ev({ key: 'Control', code: 'ControlLeft' }))).toBeNull();
+  });
+});
+
+describe('override validation', () => {
+  it('a combo needs Ctrl, ⌘ or Alt (or an F-key) — a bare key would eat typing', () => {
+    expect(invalidShortcutCombo('K')).toBe('needsModifier');
+    expect(invalidShortcutCombo('Shift+K')).toBe('needsModifier');
+    expect(invalidShortcutCombo('Alt+K')).toBeNull();
+    expect(invalidShortcutCombo('Meta+K')).toBeNull();
+    expect(invalidShortcutCombo('Ctrl++')).toBeNull();
+    expect(invalidShortcutCombo('F7')).toBeNull();
+  });
+
+  it('sanitize keeps configurable actions with pressable combos, and nothing else', () => {
+    expect(sanitizeShortcutOverrides({
+      prevWorkspace: null,
+      nextWorkspace: 'Ctrl+Alt+J',
+      newSurface: 'T',            // bare key — dropped
+      notAnAction: 'Ctrl+Q',      // unknown — dropped
+      splitVertical: 42,          // not a combo — dropped
+    })).toEqual({ prevWorkspace: null, nextWorkspace: 'Ctrl+Alt+J' });
+    expect(sanitizeShortcutOverrides(null)).toEqual({});
+    expect(sanitizeShortcutOverrides(['Ctrl+T'])).toEqual({});
+  });
+
+  it('migrates #1152 disabled combos to per-action overrides', () => {
+    expect(overridesFromDisabledCombos(['Ctrl+T', 'Ctrl+G', 'Ctrl+Alt+Delete', 7]))
+      .toEqual({ newSurface: null, richInput: null });
+    expect(overridesFromDisabledCombos(undefined)).toEqual({});
+  });
+
+  it('rebindProblem refuses what would leave a key or an action unreachable', () => {
+    const b = defaultBindings('win32');
+    expect(rebindProblem('prevWorkspace', 'Ctrl+Alt+K', b, 'win32', 'KeyB')).toBeNull();
+    expect(rebindProblem('prevWorkspace', 'K', b, 'win32', 'KeyB')).toEqual({ kind: 'needsModifier' });
+    expect(rebindProblem('prevWorkspace', 'Ctrl+C', b, 'win32', 'KeyB')).toEqual({ kind: 'clipboard' });
+    expect(rebindProblem('prevWorkspace', 'Meta+V', b, 'darwin', 'KeyB')).toEqual({ kind: 'clipboard' });
+    expect(rebindProblem('prevWorkspace', 'Ctrl+B', b, 'win32', 'KeyB')).toEqual({ kind: 'prefix' });
+    expect(rebindProblem('prevWorkspace', 'Ctrl+T', b, 'win32', 'KeyB')).toEqual({ kind: 'taken', by: 'newSurface' });
+    // Its own current combo is not a conflict.
+    expect(rebindProblem('prevWorkspace', 'Alt+ArrowUp', b, 'win32', 'KeyB')).toBeNull();
+  });
+});
+
+describe('prefix trigger', () => {
+  it('is literal Ctrl + the configured physical key, on every OS', () => {
+    expect(isPrefixTrigger(ev({ key: 'b', code: 'KeyB' }), 'KeyB')).toBe(true);
+    expect(isPrefixTrigger(ev({ key: 'ㅠ', code: 'KeyB' }), 'KeyB')).toBe(true);
+    expect(isPrefixTrigger(ev({ key: 'a', code: 'KeyA' }), 'KeyA')).toBe(true);
+    expect(isPrefixTrigger(ev({ key: 'B', code: 'KeyB', shiftKey: true }), 'KeyB')).toBe(false);
+    expect(isPrefixTrigger(ev({ key: 'b', code: 'KeyB', ctrlKey: false, metaKey: true }), 'KeyB')).toBe(false);
+  });
+});
+
+describe('display', () => {
+  it('concreteCombo turns the ⌘ family into Meta on macOS only', () => {
+    expect(concreteCombo({ combo: 'Ctrl+Shift+D' }, 'darwin')).toBe('Meta+Shift+D');
+    expect(concreteCombo({ combo: 'Ctrl+M', literalCtrl: true }, 'darwin')).toBe('Ctrl+M');
+    expect(concreteCombo({ combo: 'Ctrl+Shift+D' }, 'win32')).toBe('Ctrl+Shift+D');
+    expect(concreteCombo({ combo: 'Alt+ArrowUp' }, 'darwin')).toBe('Alt+ArrowUp');
+  });
+
+  it('labels keys the way the keyboard does', () => {
+    expect(displayCombo('Meta+Shift+D', 'darwin')).toBe('⌘+Shift+D');
+    expect(displayCombo('Alt+ArrowUp', 'darwin')).toBe('⌥+ArrowUp');
+    expect(displayCombo('Ctrl+M', 'darwin')).toBe('Ctrl+M');
+    expect(displayCombo('Alt+ArrowUp', 'win32')).toBe('Alt+ArrowUp');
+    expect(displayCombo('Meta+K', 'win32')).toBe('Win+K');
   });
 });
 
 /**
- * #1280 — Ctrl+G (Rich Input) is an ADVERTISED row, which is what makes the
- * escape hatch reachable: advertised rows are the ones SettingsPanel renders
- * with a disable toggle, and a disabled row hands its key back to the pane
+ * #1280 — Ctrl+G (Rich Input) is a configurable row, which is what makes the
+ * escape hatch reachable: turning it off hands the key back to the pane
  * (Claude Code's external editor, readline's abort).
  */
 describe('Ctrl+G Rich Input row (#1280)', () => {
-  it('is advertised, so the Settings shortcut list renders it with a toggle', () => {
-    // ADVERTISED_SHORTCUTS is the exact list SettingsPanel maps over.
-    const row = ADVERTISED_SHORTCUTS.find((e) => e.combo === 'Ctrl+G');
-    expect(row).toBeDefined();
+  it('is listed, so Settings renders it with a toggle', () => {
+    const row = ADVERTISED_SHORTCUTS.find((e) => e.action === 'richInput');
+    expect(row?.combo).toBe('Ctrl+G');
     expect(row?.descriptionKey).toBe('settings.sc.richInput');
     // Not literalCtrl: on macOS the binding is ⌘G, and Ctrl+G there stays a
-    // readline byte (useTerminal's mac bubble list excludes 'g').
-    expect(row?.literalCtrl).toBe(false);
+    // readline byte.
+    expect(row?.literalCtrl).toBeUndefined();
   });
 
   it('reserves its accelerator so the app menu can never claim Ctrl+G', () => {
-    expect(builtinCombosFor('win32').has('Ctrl+G')).toBe(true);
-  });
-
-  it('disabling it matches a real Ctrl+G keydown — the byte reaches the pane', () => {
-    // Both gates read this one function: useComposeShortcut yields (no
-    // popover) and useTerminal's disabled branch writes the control byte.
-    const g = { key: 'g', code: 'KeyG', ctrlKey: true, metaKey: false, shiftKey: false, altKey: false };
-    expect(matchesDisabledShortcut(['Ctrl+G'], g, 'win32')).toBe(true);
-    // Under a Hangul IME `key` is a jamo / 'Process' — the physical code path.
-    expect(matchesDisabledShortcut(['Ctrl+G'], { ...g, key: 'ㅎ' }, 'win32')).toBe(true);
-    // Enabled (empty list) is the normal case: the binding owns the key.
-    expect(matchesDisabledShortcut([], g, 'win32')).toBe(false);
-    // Ctrl+Shift+G is a DIFFERENT combo (clearMultiview) and must not be
-    // silenced by disabling Ctrl+G.
-    expect(matchesDisabledShortcut(['Ctrl+G'], { ...g, key: 'G', shiftKey: true }, 'win32')).toBe(false);
-  });
-
-  it('macOS: disabling it matches ⌘G, not literal Ctrl+G', () => {
-    const base = { key: 'g', code: 'KeyG', shiftKey: false, altKey: false };
-    expect(matchesDisabledShortcut(['Ctrl+G'], { ...base, ctrlKey: false, metaKey: true }, 'darwin')).toBe(true);
-    expect(matchesDisabledShortcut(['Ctrl+G'], { ...base, ctrlKey: true, metaKey: false }, 'darwin')).toBe(false);
-  });
-});
-
-/**
- * #1455 — Alt+Up/Down (workspace cycling) is advertised so it can be switched
- * off. TUIs bind these keys themselves (Codex, Crush, …), and the built-in
- * swallowed them before xterm ever saw the keydown.
- */
-describe('Alt+Arrow workspace cycling rows (#1455)', () => {
-  const up = { key: 'ArrowUp', code: 'ArrowUp', ctrlKey: false, metaKey: false, shiftKey: false, altKey: true };
-
-  it('both rows are advertised, so Settings renders them with a toggle', () => {
-    expect(ADVERTISED_SHORTCUTS.find((e) => e.combo === 'Alt+ArrowUp')?.descriptionKey)
-      .toBe('settings.sc.prevWorkspace');
-    expect(ADVERTISED_SHORTCUTS.find((e) => e.combo === 'Alt+ArrowDown')?.descriptionKey)
-      .toBe('settings.sc.nextWorkspace');
-  });
-
-  it('disabling one matches a bare Alt+Arrow keydown on every OS', () => {
-    for (const platform of ['win32', 'darwin', 'linux'] as const) {
-      expect(matchesDisabledShortcut(['Alt+ArrowUp'], up, platform)).toBe(true);
-    }
-    expect(matchesDisabledShortcut(['Alt+ArrowDown'], { ...up, key: 'ArrowDown', code: 'ArrowDown' }, 'win32'))
-      .toBe(true);
-  });
-
-  it('each direction is its own toggle', () => {
-    expect(matchesDisabledShortcut(['Alt+ArrowDown'], up, 'win32')).toBe(false);
-    expect(matchesDisabledShortcut([], up, 'win32')).toBe(false);
-  });
-
-  it('does not silence the Ctrl/⌘/Shift+Alt+Arrow combos', () => {
-    // Ctrl+Alt+Arrow (⌘+Alt+Arrow on mac) is pane focus — a different binding.
-    expect(matchesDisabledShortcut(['Alt+ArrowUp'], { ...up, ctrlKey: true }, 'win32')).toBe(false);
-    expect(matchesDisabledShortcut(['Alt+ArrowUp'], { ...up, metaKey: true }, 'darwin')).toBe(false);
-    expect(matchesDisabledShortcut(['Alt+ArrowUp'], { ...up, shiftKey: true }, 'win32')).toBe(false);
-  });
-
-  it('only combos that are rows of the table match', () => {
-    // Alt+ArrowLeft is not a wmux binding, so there is nothing to disable.
-    expect(matchesDisabledShortcut(['Alt+ArrowLeft'], { ...up, key: 'ArrowLeft', code: 'ArrowLeft' }, 'win32'))
-      .toBe(false);
-  });
-
-  it('renders as ⌥ on macOS (no Alt key on a Mac keyboard)', () => {
-    const row = ADVERTISED_SHORTCUTS.find((e) => e.combo === 'Alt+ArrowUp');
-    expect(row && macDisplayCombo(row)).toBe('⌥+ArrowUp');
-    // Ctrl rows keep their existing rendering.
-    expect(macDisplayCombo({ combo: 'Ctrl+Shift+D', descriptionKey: null })).toBe('⌘+Shift+D');
-    expect(macDisplayCombo({ combo: 'Ctrl+M', literalCtrl: true, descriptionKey: null })).toBe('Ctrl+M');
+    expect(collidesWithKeymap('CommandOrControl+G', 'win32')).toBe(true);
   });
 });

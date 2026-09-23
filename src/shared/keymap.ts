@@ -1,187 +1,244 @@
 /**
- * Canonical table of the key combos wmux's renderer keymap owns.
+ * wmux's built-in keyboard shortcuts: the ONE table, and the ONE matcher.
  *
- * This exists because the same list used to be hand-copied into three places
- * (`useKeyboard.ts`'s if-chain, `SettingsPanel.tsx`'s BUILTIN_KEYS + shortcut
- * rows, `KeyboardCheatSheet.buildShortcuts()`), and nothing kept them in sync.
- * Issue #818 is what that costs: the application menu was never defined, so
- * Electron's default menu quietly owned `Cmd+Shift+R`, `Cmd+W`, and the three
- * zoom keys, and no single place in the codebase could be consulted to notice.
+ * Every built-in is a row here — a default combo paired with the action it
+ * runs. Everything that has an opinion about a keydown reads this file:
  *
- * `src/main/menu/appMenu.ts` is built against this table and
- * `appMenu.template.test.ts` fails CI if a menu item ever declares one of these
- * combos again. `useKeyboard.ts` still expresses its bindings as an if-chain —
- * converting that is deliberately a separate change — so when a binding is
- * added there, add its row here too.
+ *                       WMUX_KEYMAP (defaults)
+ *                                 │   + user overrides (Settings → Shortcuts)
+ *                                 ▼
+ *                      effectiveBindings()
+ *                                 │
+ *        ┌─────────────────┬──────┴─────────┬──────────────────────┐
+ *        ▼                 ▼                ▼                      ▼
+ *   useKeyboard       useTerminal      useComposeShortcut      SettingsPanel
+ *   runs the action   decides which    (Rich Input chord)      lists, rebinds,
+ *   resolveShortcut   keys leave xterm resolveShortcut         disables rows
+ *   returned          (same resolver)
  *
- *                       WMUX_KEYMAP (this file)
- *                          │        │        │
- *          ┌───────────────┘        │        └───────────────┐
- *          ▼                        ▼                        ▼
- *   SettingsPanel            appMenu.template.test    (useKeyboard.ts:
- *   BUILTIN_KEYS +           reserved-accelerator      manual, see above)
- *   shortcut rows            assertions
+ *   appMenu.template.test — the defaults reserve their accelerators, so the
+ *   application menu can never claim one (#818).
  *
- * `combo` is stored in the literal `Ctrl+…` form on every OS — the same form
- * `formatKeyCombo()` produces for custom keybindings, and the form the settings
- * UI persists. Rendering to `⌘` for macOS is a display concern; see
- * `macDisplayCombo()`.
+ * Before #1455 the bindings lived in an if-chain in useKeyboard.ts, each
+ * branch with its own modifier test, while this table and useTerminal's
+ * bubble lists were hand-kept copies of it. Every disagreement between those
+ * copies was a dead key: the #1152 disable gate had to re-derive the
+ * modifier rules, a combo one side swallowed and the other declined reached
+ * neither the app nor the pane, and no built-in could be moved off a key a TUI
+ * needs (Alt+Up/Down, #1455). Now one resolver decides for everyone, and a
+ * user override changes the one table they all read.
+ *
+ * `combo` is stored in the cross-OS form (`Ctrl+…`), the form custom
+ * keybindings use too. On macOS a row that is not `literalCtrl` fires on ⌘:
+ * `concreteCombo()` turns the storage form into the literal modifier set the
+ * event carries (`Ctrl`, `Meta`, `Shift`, `Alt`), and that concrete form is
+ * what the resolver and user overrides speak.
  */
 
+/**
+ * Every action a built-in shortcut can run. `prefix` is the tmux-style prefix
+ * trigger: its key is configured separately (Settings → Prefix mode) and
+ * useKeyboard handles it before the table is consulted, so its row only
+ * reserves the default accelerator.
+ */
+export const SHORTCUT_ACTION_IDS = [
+  'splitHorizontal', 'splitVertical', 'newSurface', 'newWorkspace',
+  'closeSurface', 'closePane', 'searchTerminal', 'commandPalette',
+  'toggleNotifications', 'richInput', 'viCopyMode', 'renameWorkspace',
+  'highlightPane', 'floatingPane',
+  'prevWorkspace', 'nextWorkspace',
+  'workspace1', 'workspace2', 'workspace3', 'workspace4', 'workspace5',
+  'workspace6', 'workspace7', 'workspace8', 'workspace9',
+  'closeWorkspace', 'jumpToUnread',
+  'nextSurface', 'prevSurface', 'nextPane', 'prevPane',
+  'focusUp', 'focusDown', 'focusLeft', 'focusRight',
+  'focusUpAlt', 'focusDownAlt', 'focusLeftAlt', 'focusRightAlt',
+  'toggleSidebar', 'openSettings', 'toggleFleetView', 'toggleCompanyView',
+  'clearMultiview', 'openBrowser', 'addBookmark', 'toggleMessageFeed',
+  'zoomIn', 'zoomOut', 'zoomReset',
+] as const;
+
+export type ShortcutActionId = typeof SHORTCUT_ACTION_IDS[number];
+
 export interface KeymapEntry {
+  /** What the combo does. Several rows can share an action (aliases). */
+  action: ShortcutActionId | 'prefix';
   /** Cross-OS storage form, e.g. `Ctrl+Shift+D`. */
   combo: string;
   /**
    * When true the binding uses literal Ctrl on macOS as well (the tmux prefix
-   * and bookmark family — see the `literalCtrl` branches in useKeyboard.ts).
-   * When false/absent, macOS substitutes ⌘ (the `cmdOrCtrl` branches).
+   * and bookmark family). When false/absent, macOS substitutes ⌘.
    */
   literalCtrl?: boolean;
   /**
-   * i18n key for the Settings → Shortcuts list. `null` means the binding is
-   * real but not advertised there (it still reserves its accelerator).
+   * i18n key for the Settings → Shortcuts list, set on each action's primary
+   * row. `null` on alias rows and on the prefix row, which Settings does not
+   * list here.
    */
   descriptionKey: string | null;
+  /** Interpolation vars for `descriptionKey` (the workspace number). */
+  descriptionVars?: Record<string, number>;
 }
 
+const ws = (n: number): KeymapEntry => ({
+  action: `workspace${n}` as ShortcutActionId,
+  combo: `Ctrl+${n}`,
+  descriptionKey: 'settings.sc.jumpWorkspace',
+  descriptionVars: { n },
+});
+
 /**
- * Every combo `useKeyboard.ts` binds, in the order Settings renders the
- * advertised subset. Rows with `descriptionKey: null` are bound but unlisted.
+ * Every default binding, in the order Settings renders them. The first row of
+ * an action is its primary (the one Settings shows); later rows of the same
+ * action are aliases that the resolver also accepts until the user rebinds or
+ * disables that action, which replaces all of them at once.
  */
 export const WMUX_KEYMAP: readonly KeymapEntry[] = [
-  // ── Advertised in Settings → Shortcuts (order is the render order) ────────
-  { combo: 'Ctrl+D', descriptionKey: 'settings.sc.splitHorizontal' },
-  { combo: 'Ctrl+Shift+D', descriptionKey: 'settings.sc.splitVertical' },
-  // Ctrl+T adds a SURFACE to the active pane (useKeyboard.ts → addSurface);
-  // the key that makes a workspace is Ctrl+N (addWorkspace), listed below.
-  // This row said "New workspace" and pointed users at the wrong key while
-  // hiding the right one — the cheat-sheet overlay had it right all along.
-  { combo: 'Ctrl+T', descriptionKey: 'settings.sc.newTerminalInPane' },
-  { combo: 'Ctrl+N', descriptionKey: 'settings.sc.newWorkspace' },
-  { combo: 'Ctrl+W', descriptionKey: 'settings.sc.closeSurface' },
-  { combo: 'Ctrl+Shift+Q', descriptionKey: 'settings.sc.closePane' },
-  { combo: 'Ctrl+F', descriptionKey: 'settings.sc.searchTerminal' },
-  { combo: 'Ctrl+K', descriptionKey: 'settings.sc.commandPalette' },
-  { combo: 'Ctrl+I', descriptionKey: 'settings.sc.toggleNotifications' },
-  // Rich Input. Not bound in useKeyboard's if-chain — the owner is
-  // useComposeShortcut (ToolbarHost), a document-level listener — but it is a
-  // real renderer binding, so it reserves its accelerator and feeds
-  // matchesDisabledShortcut like every other row. Advertised so it can be
-  // switched OFF: turning it off hands Ctrl+G back to the pane (Claude Code's
-  // external editor, readline's abort), which is the escape hatch #1280 asked
-  // for.
-  { combo: 'Ctrl+G', descriptionKey: 'settings.sc.richInput' },
-  { combo: 'Ctrl+Shift+X', descriptionKey: 'settings.sc.viCopyMode' },
-  { combo: 'Ctrl+Shift+R', descriptionKey: 'settings.sc.renameWorkspace' },
-  { combo: 'Ctrl+Shift+H', descriptionKey: 'settings.sc.highlightPane' },
-  { combo: 'Ctrl+`', descriptionKey: 'settings.sc.floatingPane' },
-  // Alt+Arrow cycles workspaces. Advertised so it can be switched OFF (#1455):
-  // TUI apps (Codex, Crush, …) bind Alt+Up/Down themselves, and the built-in
-  // swallows both keys before xterm sees them. The only advertised rows with
-  // no Ctrl — matchesDisabledShortcut has a branch for them.
-  { combo: 'Alt+ArrowUp', descriptionKey: 'settings.sc.prevWorkspace' },
-  { combo: 'Alt+ArrowDown', descriptionKey: 'settings.sc.nextWorkspace' },
+  { action: 'splitHorizontal', combo: 'Ctrl+D', descriptionKey: 'settings.sc.splitHorizontal' },
+  { action: 'splitVertical', combo: 'Ctrl+Shift+D', descriptionKey: 'settings.sc.splitVertical' },
+  // Ctrl+T adds a SURFACE to the active pane; the key that makes a workspace
+  // is Ctrl+N.
+  { action: 'newSurface', combo: 'Ctrl+T', descriptionKey: 'settings.sc.newTerminalInPane' },
+  { action: 'newWorkspace', combo: 'Ctrl+N', descriptionKey: 'settings.sc.newWorkspace' },
+  { action: 'closeSurface', combo: 'Ctrl+W', descriptionKey: 'settings.sc.closeSurface' },
+  { action: 'closePane', combo: 'Ctrl+Shift+Q', descriptionKey: 'settings.sc.closePane' },
+  { action: 'searchTerminal', combo: 'Ctrl+F', descriptionKey: 'settings.sc.searchTerminal' },
+  { action: 'commandPalette', combo: 'Ctrl+K', descriptionKey: 'settings.sc.commandPalette' },
+  { action: 'toggleNotifications', combo: 'Ctrl+I', descriptionKey: 'settings.sc.toggleNotifications' },
+  // Rich Input. Run by useComposeShortcut (ToolbarHost), a document-level
+  // listener, not by useKeyboard — but it is a real binding, resolved by the
+  // same resolver, so it can be switched off or moved: turning it off hands
+  // Ctrl+G back to the pane (Claude Code's external editor, readline's abort),
+  // the escape hatch #1280 asked for.
+  { action: 'richInput', combo: 'Ctrl+G', descriptionKey: 'settings.sc.richInput' },
+  { action: 'viCopyMode', combo: 'Ctrl+Shift+X', descriptionKey: 'settings.sc.viCopyMode' },
+  { action: 'renameWorkspace', combo: 'Ctrl+Shift+R', descriptionKey: 'settings.sc.renameWorkspace' },
+  { action: 'highlightPane', combo: 'Ctrl+Shift+H', descriptionKey: 'settings.sc.highlightPane' },
+  { action: 'floatingPane', combo: 'Ctrl+`', descriptionKey: 'settings.sc.floatingPane' },
 
-  // ── Bound but not advertised in the Settings list ─────────────────────────
-  { combo: 'Ctrl+M', literalCtrl: true, descriptionKey: null },
-  { combo: 'Ctrl+B', literalCtrl: true, descriptionKey: null },
-  { combo: 'Ctrl+Shift+B', literalCtrl: true, descriptionKey: null },
-  { combo: 'Ctrl+Shift+M', literalCtrl: true, descriptionKey: null },
-  { combo: 'Ctrl+,', descriptionKey: null },
-  { combo: 'Ctrl+Shift+W', descriptionKey: null },
-  { combo: 'Ctrl+Shift+A', descriptionKey: null },
-  { combo: 'Ctrl+Shift+U', descriptionKey: null },
-  { combo: 'Ctrl+Shift+L', descriptionKey: null },
-  { combo: 'Ctrl+Shift+O', descriptionKey: null },
-  { combo: 'Ctrl+Shift+G', descriptionKey: null },
-  { combo: 'Ctrl+Shift+]', descriptionKey: null },
-  { combo: 'Ctrl+Shift+[', descriptionKey: null },
-  { combo: 'Ctrl+Tab', literalCtrl: true, descriptionKey: null },
-  { combo: 'Ctrl+Shift+Tab', literalCtrl: true, descriptionKey: null },
+  // Workspaces. Alt+Up/Down cycle on the sidebar order; TUIs (Codex, Crush, …)
+  // bind these keys too, which is why every row here can be moved (#1455).
+  { action: 'prevWorkspace', combo: 'Alt+ArrowUp', descriptionKey: 'settings.sc.prevWorkspace' },
+  { action: 'nextWorkspace', combo: 'Alt+ArrowDown', descriptionKey: 'settings.sc.nextWorkspace' },
+  ws(1), ws(2), ws(3), ws(4), ws(5), ws(6), ws(7), ws(8),
+  // Ctrl+9 jumps to the LAST workspace, whatever the count (browser tabs).
+  { action: 'workspace9', combo: 'Ctrl+9', descriptionKey: 'settings.sc.lastWorkspace' },
+  { action: 'closeWorkspace', combo: 'Ctrl+Shift+W', descriptionKey: 'settings.sc.closeWorkspace' },
+  { action: 'jumpToUnread', combo: 'Ctrl+Shift+U', descriptionKey: 'settings.sc.jumpToUnread' },
+
+  // Tabs and panes.
+  { action: 'nextSurface', combo: 'Ctrl+Shift+]', descriptionKey: 'settings.sc.nextSurface' },
+  { action: 'prevSurface', combo: 'Ctrl+Shift+[', descriptionKey: 'settings.sc.prevSurface' },
+  // Browser-style cycling; literal Ctrl on every OS (Chrome / VS Code).
+  { action: 'nextPane', combo: 'Ctrl+Tab', literalCtrl: true, descriptionKey: 'settings.sc.nextPane' },
+  { action: 'prevPane', combo: 'Ctrl+Shift+Tab', literalCtrl: true, descriptionKey: 'settings.sc.prevPane' },
+  // Ctrl+Shift+Arrow moves focus (panes, or tiles in multiview). Spelled
+  // `ArrowUp`, not `Up`: storage is whatever KeyboardEvent.key says (#854).
+  { action: 'focusUp', combo: 'Ctrl+Shift+ArrowUp', literalCtrl: true, descriptionKey: 'settings.sc.focusUp' },
+  { action: 'focusDown', combo: 'Ctrl+Shift+ArrowDown', literalCtrl: true, descriptionKey: 'settings.sc.focusDown' },
+  { action: 'focusLeft', combo: 'Ctrl+Shift+ArrowLeft', literalCtrl: true, descriptionKey: 'settings.sc.focusLeft' },
+  { action: 'focusRight', combo: 'Ctrl+Shift+ArrowRight', literalCtrl: true, descriptionKey: 'settings.sc.focusRight' },
+  // The alternate pane-focus combo (⌘+Alt+Arrow on macOS).
+  { action: 'focusUpAlt', combo: 'Ctrl+Alt+ArrowUp', descriptionKey: 'settings.sc.focusUpAlt' },
+  { action: 'focusDownAlt', combo: 'Ctrl+Alt+ArrowDown', descriptionKey: 'settings.sc.focusDownAlt' },
+  { action: 'focusLeftAlt', combo: 'Ctrl+Alt+ArrowLeft', descriptionKey: 'settings.sc.focusLeftAlt' },
+  { action: 'focusRightAlt', combo: 'Ctrl+Alt+ArrowRight', descriptionKey: 'settings.sc.focusRightAlt' },
+
+  // Panels and views.
+  // Sidebar pairs with the tmux prefix → literal Ctrl on every OS.
+  { action: 'toggleSidebar', combo: 'Ctrl+Shift+B', literalCtrl: true, descriptionKey: 'settings.sc.toggleSidebar' },
+  { action: 'openSettings', combo: 'Ctrl+,', descriptionKey: 'settings.sc.openSettings' },
+  { action: 'toggleFleetView', combo: 'Ctrl+Shift+A', descriptionKey: 'settings.sc.toggleFleetView' },
+  { action: 'toggleCompanyView', combo: 'Ctrl+Shift+O', descriptionKey: 'settings.sc.toggleCompanyView' },
+  { action: 'clearMultiview', combo: 'Ctrl+Shift+G', descriptionKey: 'settings.sc.clearMultiview' },
+  { action: 'openBrowser', combo: 'Ctrl+Shift+L', descriptionKey: 'settings.sc.openBrowser' },
+  // Bookmark / message-feed convention → literal Ctrl on every OS.
+  { action: 'addBookmark', combo: 'Ctrl+M', literalCtrl: true, descriptionKey: 'settings.sc.addBookmark' },
+  { action: 'toggleMessageFeed', combo: 'Ctrl+Shift+M', literalCtrl: true, descriptionKey: 'settings.sc.toggleMessageFeed' },
+
   // Terminal font zoom. These are the combos Electron's default View menu
   // owned as resetZoom / zoomIn / zoomOut, so on macOS they hit webFrame zoom
   // instead of the terminal font — the reason the menu must not declare them.
-  //
-  // The zoom-in/out handlers accept the shifted and numpad spellings of the
-  // same physical key and do NOT require `!shift`, so every alias below is
-  // swallowed before a custom binding could see it. Listing only the plain
-  // forms let a user bind e.g. Ctrl+Shift++ with no conflict warning and then
-  // watch it never fire (Codex review on #854). Reset (Ctrl+0) does require
-  // `!shift`, so it has no shifted alias.
-  { combo: 'Ctrl+0', descriptionKey: null },
-  { combo: 'Ctrl+=', descriptionKey: null },
-  { combo: 'Ctrl++', descriptionKey: null },
-  { combo: 'Ctrl+Shift+=', descriptionKey: null },
-  { combo: 'Ctrl+Shift++', descriptionKey: null },
-  { combo: 'Ctrl+-', descriptionKey: null },
-  { combo: 'Ctrl+_', descriptionKey: null },
-  { combo: 'Ctrl+Shift+-', descriptionKey: null },
-  { combo: 'Ctrl+Shift+_', descriptionKey: null },
-  // Workspace jump: Ctrl+1 … Ctrl+9.
-  { combo: 'Ctrl+1', descriptionKey: null },
-  { combo: 'Ctrl+2', descriptionKey: null },
-  { combo: 'Ctrl+3', descriptionKey: null },
-  { combo: 'Ctrl+4', descriptionKey: null },
-  { combo: 'Ctrl+5', descriptionKey: null },
-  { combo: 'Ctrl+6', descriptionKey: null },
-  { combo: 'Ctrl+7', descriptionKey: null },
-  { combo: 'Ctrl+8', descriptionKey: null },
-  { combo: 'Ctrl+9', descriptionKey: null },
-  // Directional movement. Ctrl+Shift+Arrow moves focus; Ctrl+Alt+Arrow is the
-  // alternate (⌘+Alt+Arrow on mac) focus combo. (Alt+Arrow, which cycles
-  // workspaces, is advertised above.)
-  //
-  // Spelled `ArrowUp`, not `Up`: `combo` is the STORAGE form, and storage is
-  // whatever `formatKeyCombo()` produces from `KeyboardEvent.key` — which is
-  // `ArrowUp`. Writing `Up` here made the Settings conflict check (an exact
-  // Set lookup) miss every directional binding (Codex review on #854). The
-  // accelerator side is unaffected: `normalizeAcceleratorKey` already folds
-  // `arrowup` onto Electron's `Up`.
-  { combo: 'Ctrl+Shift+ArrowUp', literalCtrl: true, descriptionKey: null },
-  { combo: 'Ctrl+Shift+ArrowDown', literalCtrl: true, descriptionKey: null },
-  { combo: 'Ctrl+Shift+ArrowLeft', literalCtrl: true, descriptionKey: null },
-  { combo: 'Ctrl+Shift+ArrowRight', literalCtrl: true, descriptionKey: null },
-  { combo: 'Ctrl+Alt+ArrowUp', descriptionKey: null },
-  { combo: 'Ctrl+Alt+ArrowDown', descriptionKey: null },
-  { combo: 'Ctrl+Alt+ArrowLeft', descriptionKey: null },
-  { combo: 'Ctrl+Alt+ArrowRight', descriptionKey: null },
+  // Zoom in/out accept the shifted and numpad spellings of the same physical
+  // key, so each alias is its own row (Codex review on #854).
+  { action: 'zoomIn', combo: 'Ctrl+=', descriptionKey: 'settings.sc.zoomIn' },
+  { action: 'zoomIn', combo: 'Ctrl++', descriptionKey: null },
+  { action: 'zoomIn', combo: 'Ctrl+Shift+=', descriptionKey: null },
+  { action: 'zoomIn', combo: 'Ctrl+Shift++', descriptionKey: null },
+  { action: 'zoomIn', combo: 'Ctrl+NumpadAdd', descriptionKey: null },
+  { action: 'zoomIn', combo: 'Ctrl+Shift+NumpadAdd', descriptionKey: null },
+  { action: 'zoomOut', combo: 'Ctrl+-', descriptionKey: 'settings.sc.zoomOut' },
+  { action: 'zoomOut', combo: 'Ctrl+_', descriptionKey: null },
+  { action: 'zoomOut', combo: 'Ctrl+Shift+-', descriptionKey: null },
+  { action: 'zoomOut', combo: 'Ctrl+Shift+_', descriptionKey: null },
+  { action: 'zoomOut', combo: 'Ctrl+NumpadSubtract', descriptionKey: null },
+  { action: 'zoomOut', combo: 'Ctrl+Shift+NumpadSubtract', descriptionKey: null },
+  { action: 'zoomReset', combo: 'Ctrl+0', descriptionKey: 'settings.sc.zoomReset' },
+  { action: 'zoomReset', combo: 'Ctrl+Numpad0', descriptionKey: null },
+
+  // The default prefix trigger. Configured in Settings → Prefix mode.
+  { action: 'prefix', combo: 'Ctrl+B', literalCtrl: true, descriptionKey: null },
 ];
 
-/**
- * The combos Settings advertises, in render order. Pairs each with its i18n
- * key so the panel no longer keeps its own copy of the list.
- */
-export const ADVERTISED_SHORTCUTS: readonly Required<KeymapEntry>[] =
-  WMUX_KEYMAP.filter((e): e is KeymapEntry & { descriptionKey: string } => e.descriptionKey !== null)
-    .map((e) => ({ literalCtrl: false, ...e }));
+/** One row per configurable action — the primary rows, in render order. */
+export const ADVERTISED_SHORTCUTS: readonly (KeymapEntry & { action: ShortcutActionId; descriptionKey: string })[] =
+  WMUX_KEYMAP.filter(
+    (e): e is KeymapEntry & { action: ShortcutActionId; descriptionKey: string } =>
+      e.descriptionKey !== null && e.action !== 'prefix',
+  );
 
 /**
- * The combos a CUSTOM keybinding can actually lose to on `platform`.
- *
- * Not simply every row: custom bindings are matched with literal `e.ctrlKey`
- * on every OS (see the `formatKeyCombo(literalCtrl, …)` call in useKeyboard),
- * while a non-`literalCtrl` row is dispatched on `e.metaKey` under macOS. So on
- * macOS a custom `Ctrl+Shift+A` never meets the built-in, which fires on
- * `⌘+Shift+A` — warning about it is a false conflict (Codex review on #854).
- * Rows that are `literalCtrl`, or that carry no Ctrl at all (`Alt+ArrowUp`),
- * stay reachable there and do collide.
- *
- * On Windows and Linux `cmdOrCtrl === literalCtrl`, so every row collides.
+ * The user's changes to the defaults, per action: a concrete combo moves the
+ * action there (replacing every default row of it, aliases included), `null`
+ * switches it off. Actions not listed keep their defaults.
  */
-export function builtinCombosFor(platform: NodeJS.Platform): ReadonlySet<string> {
-  const rows = platform === 'darwin'
-    ? WMUX_KEYMAP.filter((e) => e.literalCtrl || !e.combo.startsWith('Ctrl'))
-    : WMUX_KEYMAP;
-  return new Set(rows.map((e) => e.combo));
+export type ShortcutOverrides = Partial<Record<ShortcutActionId, string | null>>;
+
+/** A combo in concrete form, bound to what it runs. */
+export interface ShortcutBinding {
+  action: ShortcutActionId;
+  /** Concrete form: literal `Ctrl` / `Meta` / `Shift` / `Alt` + key. */
+  combo: string;
+}
+
+/** The default rows of `action`: its primary combo, then any aliases. */
+export function defaultRowsFor(action: ShortcutActionId): KeymapEntry[] {
+  return WMUX_KEYMAP.filter((e) => e.action === action);
 }
 
 /**
- * Render a stored combo for display on macOS: `Ctrl` becomes `⌘` unless the
- * binding is literal-Ctrl on every OS, and `Alt` becomes `⌥`. Mirrors
- * `shortcutLabel()`'s old inline logic in SettingsPanel and the `cmdOrCtrl`
- * split in useKeyboard.ts.
+ * The storage form resolved to the literal modifiers `platform` presses:
+ * on macOS a non-`literalCtrl` row's `Ctrl` is ⌘ (`Meta`).
  */
-/** The subset of KeyboardEvent both disabled-shortcut gates match against. */
+export function concreteCombo(entry: Pick<KeymapEntry, 'combo' | 'literalCtrl'>, platform: NodeJS.Platform): string {
+  if (platform !== 'darwin' || entry.literalCtrl || !entry.combo.startsWith('Ctrl+')) return entry.combo;
+  return 'Meta+' + entry.combo.slice('Ctrl+'.length);
+}
+
+export function isShortcutActionId(value: unknown): value is ShortcutActionId {
+  return typeof value === 'string' && (SHORTCUT_ACTION_IDS as readonly string[]).includes(value);
+}
+
+/** The default bindings on `platform` (the prefix row excluded). */
+export function defaultBindings(platform: NodeJS.Platform): ShortcutBinding[] {
+  const out: ShortcutBinding[] = [];
+  for (const entry of WMUX_KEYMAP) {
+    if (entry.action === 'prefix') continue;
+    out.push({ action: entry.action, combo: concreteCombo(entry, platform) });
+  }
+  return out;
+}
+
+/** The bindings in force: the defaults with the user's overrides applied. */
+export function effectiveBindings(platform: NodeJS.Platform, overrides: ShortcutOverrides): ShortcutBinding[] {
+  const out = defaultBindings(platform).filter((b) => !(b.action in overrides));
+  for (const [action, combo] of Object.entries(overrides)) {
+    if (isShortcutActionId(action) && typeof combo === 'string') out.push({ action, combo });
+  }
+  return out;
+}
+
+/** The subset of KeyboardEvent the resolver reads. */
 export interface ShortcutKeyEventLike {
   key: string;
   code: string;
@@ -191,84 +248,212 @@ export interface ShortcutKeyEventLike {
   altKey: boolean;
 }
 
-// Physical-code → combo character, for the non-letter keys the keymap owns.
-// Letters/digits are derived from the Key*/Digit* prefix; these are the rest.
-const CODE_TO_COMBO_CHAR: Record<string, string> = {
-  Backquote: '`',
-  Comma: ',',
-  Minus: '-',
-  Equal: '=',
+const MODIFIER_KEYS: readonly string[] = ['Control', 'Shift', 'Alt', 'Meta', 'AltGraph', 'CapsLock'];
+
+// Physical code → combo key for the non-letter keys. Letters and digits are
+// derived from the Key*/Digit* prefix.
+const CODE_TO_COMBO_KEY: Record<string, string> = {
+  Backquote: '`', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']',
+  Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/',
 };
 
-function comboCharFromCode(code: string): string | null {
-  if (code.startsWith('Key')) return code.slice(3);
-  if (code.startsWith('Digit')) return code.slice(5);
-  return CODE_TO_COMBO_CHAR[code] ?? null;
+// Codes whose name IS the combo key (KeyboardEvent.key spells them the same).
+const NAMED_CODE = /^(Arrow(Up|Down|Left|Right)|Tab|Enter|Escape|Space|Backspace|Delete|Insert|Home|End|PageUp|PageDown|F\d{1,2}|Numpad\w+)$/;
+
+/** The combo key a physical `code` stands for, or null. */
+export function comboKeyFromCode(code: string): string | null {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+  if (/^Digit\d$/.test(code)) return code.slice(5);
+  if (CODE_TO_COMBO_KEY[code]) return CODE_TO_COMBO_KEY[code];
+  return NAMED_CODE.test(code) ? code : null;
+}
+
+function modifierPrefix(e: ShortcutKeyEventLike): string {
+  let s = '';
+  if (e.ctrlKey) s += 'Ctrl+';
+  if (e.metaKey) s += 'Meta+';
+  if (e.shiftKey) s += 'Shift+';
+  if (e.altKey) s += 'Alt+';
+  return s;
 }
 
 /**
- * #1152 — does this keydown match a user-disabled built-in combo?
+ * The key names a keydown can be matched by, most specific first.
  *
- * ONE function shared by BOTH gates (useKeyboard's capture handler and
- * useTerminal's xterm handler) so they can never disagree about which keys
- * are off — a combo caught by only one side would die in both worlds
- * (swallowed by the other gate) or stay half-bound.
- *
- * Combos are stored in WMUX_KEYMAP's cross-OS form ('Ctrl+T'), which on
- * macOS means ⌘ for the cmdOrCtrl family and literal Ctrl only for
- * `literalCtrl` rows — the same platform reading `builtinCombosFor` and the
- * individual useKeyboard handlers apply. Matching literal Ctrl for
- * everything on mac would swallow readline bytes (Ctrl+D EOF et al.) that
- * were never app shortcuts there.
- *
- * Matches by e.key AND by physical code (KeyX, DigitN, Backquote, Comma, …)
- * so a Hangul / non-Latin IME — where e.key is a composed glyph or
- * 'Process' — disables the same keys a Latin layout does.
+ * The LOGICAL key (`e.key`) comes first, so a Dvorak or AZERTY user presses
+ * the letter printed on their keycap (#1227). The PHYSICAL code is a fallback
+ * only when `e.key` is not a plain ASCII letter or digit — under a Hangul /
+ * non-Latin IME `key` is a composed glyph or 'Process', and with Shift held a
+ * bracket arrives as `{`/`}` — so those keys still reach their binding.
  */
-export function matchesDisabledShortcut(
-  disabled: readonly string[],
-  e: ShortcutKeyEventLike,
-  platform: NodeJS.Platform,
-): boolean {
-  if (disabled.length === 0) return false;
-  if (e.altKey) {
-    // #1455 — bare Alt+Arrow (workspace cycling) is the one advertised family
-    // without Ctrl, and it reads the same on every OS. Any other modifier
-    // makes it a different combo (Ctrl+Alt+Arrow / ⌘+Alt+Arrow focus panes).
-    // Only combos that are rows of the table count, so a new `Alt+<key>` row
-    // is covered without touching this branch.
-    if (e.ctrlKey || e.metaKey || e.shiftKey) return false;
-    return [e.key, e.code].some((k) => {
-      const combo = 'Alt+' + k;
-      return disabled.includes(combo) && WMUX_KEYMAP.some((row) => row.combo === combo);
-    });
+function keyCandidates(e: ShortcutKeyEventLike): string[] {
+  const out: string[] = [];
+  const k = e.key;
+  if (k === ' ') out.push('Space');
+  else if (k.length === 1) out.push(k.toUpperCase());
+  else if (k !== 'Process' && k !== 'Dead' && k !== 'Unidentified') out.push(k);
+  if (!/^[A-Za-z0-9]$/.test(k)) {
+    const physical = comboKeyFromCode(e.code);
+    if (physical !== null && !out.includes(physical)) out.push(physical);
   }
-  if (!e.ctrlKey && !e.metaKey) return false;
-
-  const mods = e.shiftKey ? 'Ctrl+Shift+' : 'Ctrl+';
-  const candidates: string[] = [];
-  if (e.key.length === 1) candidates.push(mods + e.key.toUpperCase());
-  else if (e.key !== 'Process' && e.key !== 'Dead') candidates.push(mods + e.key);
-  const byCode = comboCharFromCode(e.code);
-  if (byCode !== null) candidates.push(mods + byCode);
-
-  const mac = platform === 'darwin';
-  for (const combo of candidates) {
-    if (!disabled.includes(combo)) continue;
-    const entry = WMUX_KEYMAP.find((k) => k.combo === combo);
-    const wantsLiteralCtrl = entry?.literalCtrl === true;
-    const modifierMatches = mac
-      ? (wantsLiteralCtrl ? e.ctrlKey && !e.metaKey : e.metaKey)
-      : e.ctrlKey;
-    if (modifierMatches) return true;
-  }
-  return false;
+  return out;
 }
 
-export function macDisplayCombo(entry: KeymapEntry): string {
-  const combo = entry.literalCtrl ? entry.combo : entry.combo.replace(/Ctrl/g, '⌘');
-  // Mac keyboards label the key Option (⌥), not Alt.
-  return combo.replace(/\bAlt\b/g, '⌥');
+/**
+ * THE matcher: which action, if any, this keydown runs under `bindings`.
+ *
+ * Modifiers match exactly — Ctrl, ⌘/Meta, Shift and Alt are each either part
+ * of the combo or not held — so a binding can never swallow a chord that is
+ * some other binding's (or the pane's): Alt+Up is not Meta+Alt+Up is not
+ * Ctrl+Alt+Up.
+ */
+export function resolveShortcut(
+  e: ShortcutKeyEventLike,
+  bindings: readonly ShortcutBinding[],
+): ShortcutActionId | null {
+  if (MODIFIER_KEYS.includes(e.key)) return null;
+  const mods = modifierPrefix(e);
+  for (const k of keyCandidates(e)) {
+    const combo = mods + k;
+    const hit = bindings.find((b) => b.combo === combo);
+    if (hit) return hit.action;
+  }
+  return null;
+}
+
+/**
+ * The tmux-style prefix trigger: literal Ctrl + the configured physical key
+ * (`prefixConfig.key`, a `KeyboardEvent.code` so a Hangul IME cannot mangle
+ * it — commit 60e39b0), on every OS. useKeyboard enters prefix mode on it and
+ * useTerminal keeps it out of the pane; both ask this.
+ */
+export function isPrefixTrigger(e: ShortcutKeyEventLike, prefixKeyCode: string): boolean {
+  return e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.code === prefixKeyCode;
+}
+
+/**
+ * The concrete combo a keydown spells, for recording a new binding — or null
+ * while only modifiers are held. Uses the same key naming the resolver
+ * matches first, so a recorded combo always resolves again.
+ */
+export function comboFromEvent(e: ShortcutKeyEventLike): string | null {
+  if (MODIFIER_KEYS.includes(e.key)) return null;
+  const [first] = keyCandidates(e);
+  if (!first) return null;
+  // Record the physical key when the logical one is a non-ASCII glyph (IME):
+  // the glyph changes with the input mode, the code does not.
+  const physical = comboKeyFromCode(e.code);
+  const key = /^[\x20-\x7e]$/.test(first) || first.length > 1 || physical === null ? first : physical;
+  return modifierPrefix(e) + key;
+}
+
+/**
+ * Why a combo cannot be a shortcut, or null when it can. A binding with no
+ * Ctrl / ⌘ / Alt would eat a character the user types (a bare `A` or
+ * Shift+`A`), so it needs one — function keys excepted.
+ */
+export function invalidShortcutCombo(combo: string): 'empty' | 'needsModifier' | null {
+  const parts = combo.split('+');
+  const key = combo.endsWith('+') ? '+' : parts[parts.length - 1];
+  if (!key || MODIFIER_KEYS.includes(key)) return 'empty';
+  const mods = combo.slice(0, combo.length - key.length);
+  if (/^F\d{1,2}$/.test(key)) return null;
+  return /(^|\+)(Ctrl|Meta|Alt)\+/.test(mods) ? null : 'needsModifier';
+}
+
+/**
+ * Combos the terminal itself owns for the clipboard (useTerminal's copy /
+ * paste handlers run AFTER shortcuts are resolved, so a shortcut moved onto
+ * one would silently take copy or paste away). On macOS copy/paste is ⌘ and
+ * Ctrl+C stays SIGINT, so only the ⌘ pair and the Ctrl+Shift fallbacks count.
+ */
+export function clipboardCombos(platform: NodeJS.Platform): readonly string[] {
+  return platform === 'darwin'
+    ? ['Meta+C', 'Meta+V', 'Ctrl+Shift+C', 'Ctrl+Shift+V']
+    : ['Ctrl+C', 'Ctrl+V', 'Ctrl+Shift+C', 'Ctrl+Shift+V'];
+}
+
+export type RebindProblem =
+  | { kind: 'needsModifier' }
+  | { kind: 'clipboard' }
+  | { kind: 'prefix' }
+  | { kind: 'taken'; by: ShortcutActionId };
+
+/**
+ * Why `action` cannot move to `combo` right now, or null when it can. The one
+ * rule set Settings checks before it writes an override: a combo must be
+ * pressable without eating a typed character, must not take copy / paste or
+ * the prefix trigger, and must not already run another action — two actions
+ * on one key would leave one of them unreachable with no sign why.
+ */
+export function rebindProblem(
+  action: ShortcutActionId,
+  combo: string,
+  bindings: readonly ShortcutBinding[],
+  platform: NodeJS.Platform,
+  prefixKeyCode: string,
+): RebindProblem | null {
+  if (invalidShortcutCombo(combo) !== null) return { kind: 'needsModifier' };
+  if (clipboardCombos(platform).includes(combo)) return { kind: 'clipboard' };
+  const prefixKey = comboKeyFromCode(prefixKeyCode);
+  if (prefixKey !== null && combo === 'Ctrl+' + prefixKey) return { kind: 'prefix' };
+  const other = bindings.find((b) => b.combo === combo && b.action !== action);
+  return other ? { kind: 'taken', by: other.action } : null;
+}
+
+/**
+ * Keep only well-formed overrides for configurable actions. Session files are
+ * hand-editable and outlive versions, so anything else is dropped rather than
+ * trusted — an unknown action would have no Settings row to undo it from.
+ */
+export function sanitizeShortcutOverrides(raw: unknown): ShortcutOverrides {
+  const out: ShortcutOverrides = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  const configurable = new Set<string>(ADVERTISED_SHORTCUTS.map((e) => e.action));
+  for (const [action, combo] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isShortcutActionId(action) || !configurable.has(action)) continue;
+    if (combo === null) out[action] = null;
+    else if (typeof combo === 'string' && invalidShortcutCombo(combo) === null) out[action] = combo;
+  }
+  return out;
+}
+
+/**
+ * #1152 sessions stored switched-off built-ins as a list of storage-form
+ * combos. Each becomes a `null` override for the action it named.
+ */
+export function overridesFromDisabledCombos(disabled: unknown): ShortcutOverrides {
+  const out: ShortcutOverrides = {};
+  if (!Array.isArray(disabled)) return out;
+  for (const combo of disabled) {
+    const row = ADVERTISED_SHORTCUTS.find((e) => e.combo === combo);
+    if (row) out[row.action] = null;
+  }
+  return out;
+}
+
+/**
+ * The combos the built-ins hold on `platform`, in concrete form — what a
+ * CUSTOM keybinding (matched on literal Ctrl/Shift/Alt, never ⌘) can collide
+ * with. On macOS a ⌘ built-in cannot meet a custom `Ctrl+…` binding, so
+ * it is not reported as a conflict (Codex review on #854).
+ */
+export function builtinCombosFor(
+  platform: NodeJS.Platform,
+  overrides: ShortcutOverrides = {},
+): ReadonlySet<string> {
+  return new Set(effectiveBindings(platform, overrides).map((b) => b.combo));
+}
+
+/**
+ * Render a concrete combo the way the keyboard labels it: ⌘ and ⌥ on macOS,
+ * Win / Super for the Meta key elsewhere.
+ */
+export function displayCombo(combo: string, platform: NodeJS.Platform): string {
+  const mac = platform === 'darwin';
+  return combo
+    .replace(/(^|\+)Meta(?=\+)/g, `$1${mac ? '⌘' : platform === 'win32' ? 'Win' : 'Super'}`)
+    .replace(/(^|\+)Alt(?=\+)/g, `$1${mac ? '⌥' : 'Alt'}`);
 }
 
 /**
