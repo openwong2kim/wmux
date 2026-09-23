@@ -247,6 +247,28 @@ export function registerPaneRpc(
   });
 
   /**
+   * fleet.triage — the Fleet attention board (needs you / running / idle) as
+   * data, computed in the renderer by the same selector the Fleet overlay
+   * renders. params: { workspaceId?: string, includeIdle?: boolean }; omitted
+   * workspaceId means every workspace.
+   *
+   * Same error contract as pane.list: a renderer that is still booting answers
+   * { error, retryable } instead of a board, and its reason is propagated.
+   */
+  router.register('fleet.triage', async (params) => {
+    const board = (await sendToRenderer(getWindow, 'fleet.triage', params)) as
+      { needsYou?: unknown; error?: unknown } | null;
+    if (!board || typeof board !== 'object' || !Array.isArray(board.needsYou)) {
+      const reason =
+        board && typeof board.error === 'string'
+          ? board.error
+          : 'fleet.triage: renderer returned an unexpected response';
+      throw new Error(reason);
+    }
+    return board;
+  });
+
+  /**
    * pane.focus — focuses a specific pane
    * params: { id: string }
    */

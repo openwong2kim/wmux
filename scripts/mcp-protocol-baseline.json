@@ -3,7 +3,7 @@
   "profiles": {
     "full": {
       "maxListBytes": 80000,
-      "wireResultSha256": "afd3b6083fa48c16302b7c5205b82f60fbd8060ff7e7f5e6d6f307f16f8c5018",
+      "wireResultSha256": "4686075967ec8d2fb24d4d2b71a8aec7618e9bb2cd68cf622509a949856e3952",
       "instructionSha256": "f18849bb1ea62bcf5a1e46a73d633c787b4e08e763cc04b01c4e557df8f833eb",
       "toolNames": [
         "browser_open",
@@ -48,6 +48,7 @@
         "workspace_list",
         "surface_list",
         "pane_list",
+        "fleet_triage",
         "pane_metadata",
         "wmux_search_panes",
         "wmux_events_poll",
@@ -87,7 +88,7 @@
     },
     "core": {
       "maxListBytes": 49000,
-      "wireResultSha256": "a006648cf541127bd49f7e0f87902a3b56402c869ab6f16e49b0dea11637cd1b",
+      "wireResultSha256": "dfe67d6229388899060957f56de56adb042570e9a5c01707cbbcd4f84fe0b43b",
       "instructionSha256": "0c313d4e88ad9313bb6a51ff00717abbb243ebcdd18f8e226cba2c738e43c95a",
       "toolNames": [
         "terminal_read",
@@ -100,6 +101,7 @@
         "workspace_list",
         "surface_list",
         "pane_list",
+        "fleet_triage",
         "pane_metadata",
         "wmux_search_panes",
         "wmux_events_poll",
@@ -139,7 +141,7 @@
     },
     "commander": {
       "maxListBytes": 60000,
-      "wireResultSha256": "d1484031688c841e9926ecfc9f4f801d7ef50d0a5716f84b7167cbc90f12d4eb",
+      "wireResultSha256": "0854c876cc45d521633c77f3336127dcf777d8734f837cd6f3e50de321f7bf23",
       "instructionSha256": "5a97f851c892326eba7cbcf46292f6925834d5794172461d1ced997d90ac1deb",
       "toolNames": [
         "terminal_read",
@@ -152,6 +154,7 @@
         "workspace_list",
         "surface_list",
         "pane_list",
+        "fleet_triage",
         "pane_metadata",
         "wmux_search_panes",
         "wmux_events_poll",

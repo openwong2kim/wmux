@@ -39,6 +39,7 @@ import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRem
 import { remoteAgentKey } from '../../shared/remoteHosts';
 import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
+import { buildFleetTriage } from '../utils/fleetTriage';
 
 // ---------------------------------------------------------------------------
 // Cold-park (TASK-9) daemon-backed read fallback
@@ -1253,6 +1254,16 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // -------------------------------------------------------------------------
   // pane.*
   // -------------------------------------------------------------------------
+
+  if (method === 'fleet.triage') {
+    // The Fleet overlay's own board (selectFleetBoard), so an agent is told
+    // exactly what the human sees. The whole fleet unless a workspaceId narrows
+    // it — never the active workspace: "who needs me?" is a fleet question.
+    return buildFleetTriage(store, {
+      workspaceId: typeof params.workspaceId === 'string' ? params.workspaceId : undefined,
+      includeIdle: params.includeIdle === true,
+    }, Date.now());
+  }
 
   if (method === 'pane.list') {
     const targetWsId = typeof params.workspaceId === 'string' ? params.workspaceId : store.activeWorkspaceId;

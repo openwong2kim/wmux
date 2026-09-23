@@ -34,6 +34,7 @@ import { registerLedgerUpdateTool, registerLedgerListTool, registerLedgerBrainUp
 import { registerWorktaskTools } from './worktask';
 import { registerGitTools } from './git';
 import { registerPaneLifecycleTools } from './paneLifecycle';
+import { registerFleetTriageTools } from './fleetTriage';
 import { registerReplTools } from './repl/tools';
 import { inputSchemaDeclaresMaxBytes, wrapHandlerWithResultCap } from './resultCap';
 import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
@@ -1337,6 +1338,10 @@ server.tool(
     });
   },
 );
+
+// Fleet-wide attention board (src/mcp/fleetTriage.ts). Registered right after
+// pane_list so every profile lists the two reads side by side.
+registerFleetTriageTools(server, { callRpc }, MCP_CATALOG_OPTIONS);
 
 // Shared by the pre-merge pane_set_metadata / pane_get_metadata tools
 // (registered below, unlisted for one release) and the merged

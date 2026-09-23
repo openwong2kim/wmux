@@ -119,6 +119,9 @@ import { CAPABILITY_EFFECT, METHOD_CAPABILITY, resolveRequiredCapability } from 
 const BODY_SCOPED_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // Renderer-fallback family.
   'pane.list',
+  // No active-workspace fallback: omitted means the whole fleet. A hosted
+  // caller gets its own workspace instead, the same answer pane.list gives it.
+  'fleet.triage',
   'pane.search',
   'pane.split',
   'browser.open',

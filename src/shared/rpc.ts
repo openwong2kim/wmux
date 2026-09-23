@@ -336,6 +336,8 @@ export type RpcMethod =
   | 'surface.focus'
   | 'surface.close'
   | 'pane.list'
+  // The Fleet attention board (needs you / running / idle) as data.
+  | 'fleet.triage'
   | 'pane.focus'
   | 'pane.split'
   | 'pane.close'
@@ -568,6 +570,7 @@ export const ALL_RPC_METHODS = [
   'surface.focus',
   'surface.close',
   'pane.list',
+  'fleet.triage',
   'pane.focus',
   'pane.split',
   'pane.close',

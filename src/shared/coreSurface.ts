@@ -45,6 +45,7 @@ export const CORE_TOOL_SURFACE: readonly string[] = [
   'workspace_list',
   'surface_list',
   'pane_list',
+  'fleet_triage',
   'pane_set_metadata',
   'pane_get_metadata',
   // Merged pane_metadata {action} tool; the two names above stay registered

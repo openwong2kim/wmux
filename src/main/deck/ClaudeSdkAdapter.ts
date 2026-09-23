@@ -255,6 +255,7 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   WMUX('a2a_discover'),
   WMUX('a2a_whoami'),
   WMUX('a2a_task_query'),
+  WMUX('fleet_triage'),
   // Spawn + drive panes (create is allowed; close/teardown is NOT — P3 gate).
   WMUX('pane_split'),
   WMUX('pane_focus'),

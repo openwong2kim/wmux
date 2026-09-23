@@ -173,6 +173,7 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'surface.close',
   // panes + metadata
   'pane.list',
+  'fleet.triage',
   'pane.search',
   'pane.getMetadata',
   'pane.setMetadata',

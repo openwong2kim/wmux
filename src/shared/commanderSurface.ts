@@ -64,6 +64,8 @@ export const COMMANDER_TOOL_SURFACE: readonly string[] = [
   'a2a_discover',
   'a2a_whoami',
   'a2a_task_query',
+  // The Fleet attention board: which agents need the human, fleet-wide.
+  'fleet_triage',
   // Spawn + drive panes (create yes; close/teardown NO — P3 gate).
   'pane_split',
   'pane_focus',
@@ -188,6 +190,7 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   'surface.new',
   // panes + metadata (no close)
   'pane.list',
+  'fleet.triage',
   'pane.search',
   'pane.getMetadata',
   'pane.setMetadata',

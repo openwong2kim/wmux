@@ -183,6 +183,7 @@ describe('hostedWorkspaceBinding — decision', () => {
     expect([...HOSTED_BOUND_METHODS].sort()).toEqual([
       'browser.close',
       'browser.open',
+      'fleet.triage',
       'input.readScreen',
       'input.send',
       'input.sendKey',
