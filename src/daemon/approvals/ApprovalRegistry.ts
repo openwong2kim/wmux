@@ -451,6 +451,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         };
       }
 
+      // The caller's authority, re-checked inside the chain before ANY
+      // mutation — including the prompt-gone expiry below.
+      const refusedEarly = await this.reauthorize(params, record);
+      if (refusedEarly) return { result: refusedEarly };
+
       // #783 — gate records resolve through the GateBroker, not the PTY. There
       // is no screen to re-read (the gate blocks inside the bridge process, not
       // on the pane's TUI) and no keystroke to send. The CAS above already
@@ -467,6 +472,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
             } as ApprovalResolveResult,
           };
         }
+        // Last check before the waiter wakes and the tool runs.
+        const refusedGate = await this.reauthorize(params, record);
+        if (refusedGate) return { result: refusedGate };
         record.state = 'resolved';
         record.decision = params.decision;
         record.resolvedBy = sanitizeResolvedBy(params.resolvedBy);
@@ -664,6 +672,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         }
       }
 
+      // Last check before the bytes: the screen re-read above can take seconds.
+      const refusedWrite = await this.reauthorize(params, record);
+      if (refusedWrite) return { result: refusedWrite };
+
       // Determine the data to send: choiceKey overrides the default mapping.
       // When choiceKey is set, we send exactly that digit — no CR.
       // When absent, existing behaviour: approve → '1', deny → ESC.
@@ -781,6 +793,32 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       );
     }
     return events;
+  }
+
+  /**
+   * Run the caller's `authorize` (see ApprovalResolveParams). Returns the
+   * refusal to answer with, or null when the caller may proceed. A throw, a
+   * rejection or an unknown verdict fails closed as `unauthorized`. The record
+   * is left exactly as it was: no state change, no event, no persist.
+   */
+  private async reauthorize(
+    params: ApprovalResolveParams,
+    record: ApprovalRequest,
+  ): Promise<ApprovalResolveResult | null> {
+    const authorize = params.authorize;
+    if (!authorize) return null;
+    let verdict: 'ok' | 'expired' | 'read-only';
+    try {
+      verdict = await authorize(copyRequest(record));
+    } catch {
+      verdict = 'expired';
+    }
+    if (verdict === 'ok') return null;
+    return {
+      ok: false,
+      reason: verdict === 'read-only' ? 'input-revoked' : 'unauthorized',
+      request: copyRequest(record),
+    };
   }
 
   private async safeReadScreen(sessionId: string): Promise<string[] | null> {

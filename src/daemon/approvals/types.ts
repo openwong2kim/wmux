@@ -198,7 +198,12 @@ export type ApprovalResolveFailure =
   // delegated task workspace, autonomy off, or a fact the daemon could not
   // establish — unknown is a refusal. NOT an expiry: the request stays live and
   // a human at the desktop can still answer it themselves.
-  | 'out-of-scope';
+  | 'out-of-scope'
+  // The caller's `authorize` check no longer holds: the credential is gone
+  // ('unauthorized') or no longer carries the input grant this record needs
+  // ('input-revoked'). NOT an expiry: the request stays pending, untouched.
+  | 'unauthorized'
+  | 'input-revoked';
 
 export type ApprovalResolveResult =
   | {
@@ -333,6 +338,23 @@ export interface ApprovalResolveParams {
    * (`decideApprovalPress`), which a human is deliberately not subject to.
    */
   resolver?: 'human' | 'automated';
+  /**
+   * Re-check the caller's authority from INSIDE the mutation link. A resolve
+   * can queue behind other resolves and re-reads the screen before it writes,
+   * so a credential checked by the caller beforehand can be revoked or narrowed
+   * by the time the side effect happens. The registry calls this with its own
+   * record right after the pending check (before any mutation) and again
+   * immediately before the side effect (the gate wake-up or the PTY write).
+   *
+   * 'expired' refuses with `unauthorized`, 'read-only' with `input-revoked`;
+   * the record stays pending with no event and no persist. A throw or a
+   * rejection counts as 'expired'. Async because the web layer's device
+   * resolver may be async; there is no timeout.
+   *
+   * Omitted ⇒ no re-check, byte-for-byte the previous behavior (the desktop
+   * renderer and the operator's own pipe callers).
+   */
+  authorize?: (record: ApprovalRequest) => Promise<'ok' | 'expired' | 'read-only'>;
 }
 
 /**

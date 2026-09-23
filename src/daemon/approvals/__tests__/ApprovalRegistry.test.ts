@@ -1407,3 +1407,116 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
     expect(logs.join('\n')).not.toContain('scope source');
   });
 });
+
+describe('ApprovalRegistry — caller re-authorization inside the chain', () => {
+  type Verdict = 'ok' | 'expired' | 'read-only';
+
+  async function pendingGate(h: Harness): Promise<string> {
+    const id = h.registry.noteGateAwaiting({
+      sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash',
+    });
+    await settle();
+    return id;
+  }
+
+  it('a gate whose caller is no longer authorized is refused and stays pending', async () => {
+    const woken: string[] = [];
+    const h = makeRegistry({ notifyGateResolved: (id) => { woken.push(id); } });
+    const id = await pendingGate(h);
+
+    const res = await h.registry.resolve({
+      id, decision: 'approve', resolvedBy: 'phone', authorize: async () => 'expired',
+    });
+
+    expect(res).toMatchObject({ ok: false, reason: 'unauthorized' });
+    expect(woken).toEqual([]);
+    expect(h.registry.list().pending.map((r) => r.id)).toEqual([id]);
+    expect(h.events.map((e) => e.type)).toEqual(['create']);
+  });
+
+  // The second call is the one right before the waiter wakes. A check made
+  // only at the top of the link would let this approval run the tool.
+  it('a gate re-checks immediately before waking the waiter', async () => {
+    const woken: string[] = [];
+    const h = makeRegistry({ notifyGateResolved: (id) => { woken.push(id); } });
+    const id = await pendingGate(h);
+    const verdicts: Verdict[] = ['ok', 'expired'];
+
+    const res = await h.registry.resolve({
+      id, decision: 'approve', resolvedBy: 'phone', authorize: async () => verdicts.shift() ?? 'expired',
+    });
+
+    expect(res).toMatchObject({ ok: false, reason: 'unauthorized' });
+    expect(verdicts).toEqual([]);
+    expect(woken).toEqual([]);
+    expect(h.registry.list().pending.map((r) => r.id)).toEqual([id]);
+    expect(h.events.map((e) => e.type)).toEqual(['create']);
+  });
+
+  it('a grant narrowed during the screen re-read writes no bytes', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry);
+    await settle();
+    let verdict: Verdict = 'ok';
+    const seen: string[] = [];
+
+    const letThrough = h.blockScreen();
+    const pending = h.registry.resolve({
+      id: 'req-1', decision: 'approve', resolvedBy: 'phone',
+      authorize: async (record) => { seen.push(record.id); return verdict; },
+    });
+    await settle();
+    verdict = 'read-only';
+    letThrough();
+    const res = await pending;
+
+    expect(res).toMatchObject({ ok: false, reason: 'input-revoked' });
+    expect(seen).toEqual(['req-1', 'req-1']);
+    expect(h.writes).toHaveLength(0);
+    expect(h.registry.list().pending.map((r) => r.id)).toEqual(['req-1']);
+    expect(h.events.map((e) => e.type)).toEqual(['create']);
+  });
+
+  it('a revoked caller cannot expire a request whose prompt left the screen', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry);
+    await settle();
+    h.setScreen(NO_PROMPT_ROWS);
+
+    const res = await h.registry.resolve({
+      id: 'req-1', decision: 'approve', resolvedBy: 'phone', authorize: async () => 'expired',
+    });
+
+    expect(res).toMatchObject({ ok: false, reason: 'unauthorized' });
+    expect(h.registry.list().pending.map((r) => r.id)).toEqual(['req-1']);
+    expect(h.events.map((e) => e.type)).toEqual(['create']);
+  });
+
+  it('a throwing authorize fails closed as unauthorized', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry);
+    await settle();
+
+    const res = await h.registry.resolve({
+      id: 'req-1', decision: 'approve', resolvedBy: 'phone',
+      authorize: () => { throw new Error('roster unreadable'); },
+    });
+
+    expect(res).toMatchObject({ ok: false, reason: 'unauthorized' });
+    expect(h.writes).toHaveLength(0);
+    expect(h.registry.list().pending.map((r) => r.id)).toEqual(['req-1']);
+  });
+
+  it('an authorized caller resolves exactly as before', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry);
+    await settle();
+
+    const res = await h.registry.resolve({
+      id: 'req-1', decision: 'approve', resolvedBy: 'phone', authorize: async () => 'ok',
+    });
+
+    expect(res.ok).toBe(true);
+    expect(h.writes).toEqual([{ sessionId: 'pty-a', data: '1' }]);
+  });
+});
