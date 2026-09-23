@@ -559,6 +559,8 @@
 .wmux-fleet-list { display: flex; flex-direction: column; padding: 4px 0; }
 .wmux-fleet-card { display: grid; grid-template-columns: 88px minmax(120px, 1fr) minmax(110px, 1.1fr) 62px; align-items: center; gap: 12px; min-width: 0; width: 100%; min-height: 56px; padding: 9px 8px; text-align: left; border-bottom: 1px solid var(--border-soft); border-radius: 0; background: transparent; cursor: pointer; outline: none; transition: background-color 120ms; }
 .wmux-fleet-row { position: relative; }
+/* Reserve the ⋮ trigger's lane so it never covers the action label. */
+.wmux-fleet-row > .wmux-fleet-card { padding-right: 40px; }
 .wmux-fleet-row:last-child .wmux-fleet-card { border-bottom-color: transparent; }
 .wmux-fleet-row-trigger { position: absolute; top: 50%; right: 8px; display: grid; place-items: center; width: 24px; height: 24px; transform: translateY(-50%); border-radius: 5px; background: var(--bg-surface); color: var(--text-sub); opacity: 0; pointer-events: none; }
 .wmux-fleet-row:hover .wmux-fleet-row-trigger, .wmux-fleet-row:focus-within .wmux-fleet-row-trigger, .wmux-fleet-row-trigger[aria-expanded="true"] { opacity: 1; pointer-events: auto; }

@@ -1,5 +1,6 @@
 ### Changed
 
+- **Every finished turn now reports its closing message, not just a closing question.** Main used to forward the agent's last message to the renderer only when it ended on a question. Each turn end now also sends the message tail per pane, cut to the same 140-character budget the phone list uses, so Fleet rows can show what an idle pane last said. Claude Code only for now; other agents, failed turns and new sessions clear it.
 - **Fleet is an attention board, not a card grid.** Agents are listed in three sections — Needs you, Running and Idle — instead of a grid of identical cards. Each row shows one line of detail (the pending question, the agent's last message or its current tool activity) and how long it has been since the pane last did anything. Idle agents collapse into a single "Idle N · oldest 2d" row, and when nothing needs you Fleet says so. Status filters and search narrow the sections; raw terminal output moved into an optional preview of the selected pane. A finished response is no longer presented as a successful task, and stale activity is shown as unconfirmed.
 
 ### Added
