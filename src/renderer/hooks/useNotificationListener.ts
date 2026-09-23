@@ -635,7 +635,7 @@ export function useNotificationListener() {
       // workspace metadata — pull it OUT here, alongside ptyId, so it can never
       // flow into `...rest` and get written into updateWorkspaceMetadata by
       // applyToWorkspace's spread.
-      const { ptyId, workspaceId: payloadWsId, activity, pendingQuestion, paneId, paneLabel, paneRole, agentSlug, hookKind, settled, ...rest } = payload;
+      const { ptyId, workspaceId: payloadWsId, activity, pendingQuestion, lastMessage, paneId, paneLabel, paneRole, agentSlug, hookKind, settled, ...rest } = payload;
 
       // The orchestrator's own brain pty (the `claude-pty` vendor's embedded
       // Claude Code TUI) is not a fleet agent. The daemon has no idea it is
@@ -769,6 +769,11 @@ export function useNotificationListener() {
         // signal for a pane whose previous turn ended on a question.
         if (typeof pendingQuestion === 'string') {
           state.setSurfacePendingQuestion(ptyId, pendingQuestion);
+        }
+        // Same shape again: main truncates, every turn boundary writes it, and
+        // '' clears.
+        if (typeof lastMessage === 'string') {
+          state.setSurfaceLastMessage(ptyId, lastMessage);
         }
         // Workspace-wide (#977): the one-shot agent-name backfill below lands
         // HERE and nowhere else. A stashed pane that missed the original

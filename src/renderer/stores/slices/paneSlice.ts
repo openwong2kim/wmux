@@ -238,6 +238,13 @@ export interface PaneSlice {
   // Transient — never persisted (buildSessionData allowlist excludes it).
   surfacePendingQuestion: Record<string, string>;
   setSurfacePendingQuestion: (ptyId: string, question: string | null) => void;
+  // Per-surface tail of the agent's closing message for its last turn, keyed
+  // by ptyId. Populated from METADATA_UPDATE.lastMessage, which main cuts to
+  // the phone list's grapheme budget. Every turn boundary writes it ('' clears),
+  // so a new session or a failed turn never shows the previous turn's text.
+  // Transient — never persisted (buildSessionData allowlist excludes it).
+  surfaceLastMessage: Record<string, string>;
+  setSurfaceLastMessage: (ptyId: string, text: string | null) => void;
   /**
    * #1176 — the pendingQuestion text the user has already laid eyes on (they
    * focused the pane while it was blocked). The dot stays red — the agent IS
@@ -707,6 +714,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   surfaceActivityAt: {},
   surfaceTurnOpenAt: {},
   surfacePendingQuestion: {},
+  surfaceLastMessage: {},
   surfaceQuestionSeen: {},
   agentClockMs: Date.now(),
 
@@ -750,6 +758,13 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       // unseen with no extra bookkeeping.
       delete state.surfaceQuestionSeen[ptyId];
     }
+  }),
+
+  setSurfaceLastMessage: (ptyId, text) => set((state: StoreState) => {
+    if (!ptyId) return;
+    // Main already truncated the text. Empty/null clears.
+    if (text) state.surfaceLastMessage[ptyId] = text;
+    else delete state.surfaceLastMessage[ptyId];
   }),
 
   markSurfaceQuestionSeen: (ptyId) => set((state: StoreState) => {
@@ -1013,6 +1028,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
             delete state.surfaceAgent[s.ptyId];
             delete state.surfaceActivity[s.ptyId];
             delete state.surfacePendingQuestion[s.ptyId];
+            delete state.surfaceLastMessage[s.ptyId];
             delete state.surfaceQuestionSeen[s.ptyId];
             delete state.surfaceActivityAt[s.ptyId];
             // A reused ptyId must not inherit a dead pane's open turn — the
