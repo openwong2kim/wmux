@@ -7,6 +7,7 @@ import {
   selectHookRunningByPtyId,
   selectUnverifiablePaneMinutes,
   groupFleetPanes,
+  fleetTargetPtyId,
   type FleetPane,
   type FleetRow,
 } from '../../stores/selectors/fleet';
@@ -22,8 +23,7 @@ import { fleetChangedSinceSeen, type FleetSeenEntry, type FleetTab } from '../..
 import { tailForPty } from '../../utils/terminalTail';
 import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
-import { FleetRowMenu, FleetRowEditor, fleetRowVerbs, toggleFleetStash, type FleetEditorKind } from './FleetRowActions';
-import { findParent } from '../../../shared/paneUtils';
+import { FleetRowMenu, FleetRowEditor, fleetRowVerbsFromState, toggleFleetStash, type FleetEditorKind } from './FleetRowActions';
 import ApprovalInboxList from './ApprovalInboxList';
 import RemoteInboxList from './RemoteInboxList';
 import { fleetTitle, matchesFleetFilter, type FleetFilter } from './fleetPresentation';
@@ -137,7 +137,7 @@ export default function FleetView() {
     const statuses: Record<string, FleetSeenEntry> = {};
     for (const pane of panesRef.current) {
       if (!pane.ptyId) continue;
-      const question = questions[pane.ptyId];
+      const question = questions[fleetTargetPtyId(pane)];
       statuses[pane.ptyId] = question ? { status: pane.agentStatus, question } : { status: pane.agentStatus };
     }
     useStore.getState().setFleetLastSeen(statuses);
@@ -324,8 +324,9 @@ export default function FleetView() {
     // nothing. Remote rows take the pane/surface path below, as they did when
     // they still had an empty ptyId.
     if (card.ptyId && !card.remote) {
-      // focusPaneByPtyId unstashes on the way (#977).
-      focusPaneByPtyId(getState, card.ptyId);
+      // focusPaneByPtyId unstashes on the way (#977). A background tab that
+      // won the row's attention is the one the jump lands on.
+      focusPaneByPtyId(getState, fleetTargetPtyId(card));
     } else if (card.surfaceId) {
       // No ptyId — an unspawned surface, or a stashed pane whose session died.
       // activatePaneTarget only works on the visible tree, so put the pane back
@@ -399,16 +400,11 @@ export default function FleetView() {
     closeRowMenuRef.current = close;
   }, []);
   // Verb availability needs live signals the row itself does not carry.
-  const verbsFor = useCallback((pane: FleetPane) => {
-    const ws = workspaces.find((w) => w.id === pane.workspaceId);
-    return fleetRowVerbs(pane, {
-      pendingQuestion: surfacePendingQuestion[pane.ptyId],
-      hookRunning: !!hookRunningByPtyId[pane.ptyId],
-      commandRunning: commandRunningByPtyId[pane.ptyId] === true,
-      hasAgent: !!surfaceAgent[pane.ptyId]?.name,
-      isRootPane: !!ws && ws.rootPane.id === pane.paneId && findParent(ws.rootPane, pane.paneId) === null,
-    });
-  }, [workspaces, surfacePendingQuestion, hookRunningByPtyId, commandRunningByPtyId, surfaceAgent]);
+  // The listed maps are dependencies so verbs re-derive when they change.
+  const verbsFor = useCallback(
+    (pane: FleetPane) => fleetRowVerbsFromState(pane, useStore.getState()),
+    [workspaces, surfacePendingQuestion, hookRunningByPtyId, commandRunningByPtyId, surfaceAgent],
+  );
   const openEditor = useCallback((pane: FleetPane, kind: FleetEditorKind) => {
     setFocusedPaneId(pane.paneId);
     setEditor({ paneId: pane.paneId, kind });
@@ -597,7 +593,7 @@ export default function FleetView() {
       <FleetCard
         card={card}
         row={row}
-        changed={row.section === 'needsYou' && fleetChangedSinceSeen(fleetLastSeen, card.ptyId, card.agentStatus, surfacePendingQuestion[card.ptyId])}
+        changed={row.section === 'needsYou' && fleetChangedSinceSeen(fleetLastSeen, card.ptyId, card.agentStatus, surfacePendingQuestion[fleetTargetPtyId(card)])}
         focused={card.paneId === focusedKey}
         onJump={jump}
         onFocus={() => setFocusedPaneId(card.paneId)}

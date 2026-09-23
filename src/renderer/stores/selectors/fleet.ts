@@ -5,6 +5,7 @@ import { isBrainPtyId } from '../../../shared/constants';
 import { remoteAgentKey } from '../../../shared/remoteHosts';
 import type { AttachedRemoteWorkspace } from '../slices/remoteWorkspacesSlice';
 import type { StoreState } from '../index';
+import { flattenAgentText } from '../../../shared/assistantPreview';
 
 // ─── S-C1 Fleet View — derived "all agents, all workspaces" model ────────────
 //
@@ -86,6 +87,20 @@ export interface FleetPane {
    * (a remote row keeps `surfaceType: 'remote-terminal'`).
    */
   remote?: { hostId: string; hostLabel: string };
+  /**
+   * The local ptyId of the BACKGROUND tab whose attention status won this
+   * row's rollup (a background tab awaiting input while the active tab is
+   * idle). Set only when it differs from `ptyId`. Whatever acts on or reads
+   * the row's urgent state — its question, its last message, a Message verb,
+   * a jump — targets this pty (`fleetTargetPtyId`), not the active tab.
+   */
+  attentionPtyId?: string;
+}
+
+/** The pty a row's urgent state lives on: the winning background tab, else
+ *  the active surface. */
+export function fleetTargetPtyId(pane: Pick<FleetPane, 'ptyId' | 'attentionPtyId'>): string {
+  return pane.attentionPtyId ?? pane.ptyId;
 }
 
 /** Minimal store surface the selector reads — keeps the fixture trivial and the
@@ -455,6 +470,8 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // is idle), so a multi-tab pane that needs the user is never silently
       // shown as idle. The card otherwise stays keyed on the active surface.
       let attention: AgentStatus | undefined;
+      // The local pty that set `attention` (undefined when a remote tab won).
+      let attentionPty: string | undefined;
       // #1343 — the same rollup over the leaf's REMOTE tabs, tracked separately
       // so a remote row is never given a local agent's status (and vice versa)
       // while both still reach the workspace dot and the vitals chip.
@@ -474,6 +491,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
           }
           if (rs && (attention === undefined || STATUS_RANK[rs] < STATUS_RANK[attention])) {
             attention = rs;
+            attentionPty = undefined;
           }
           continue;
         }
@@ -487,6 +505,7 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
           : state.surfaceAgentStatus[s.ptyId];
         if (st && (attention === undefined || STATUS_RANK[st] < STATUS_RANK[attention])) {
           attention = st;
+          attentionPty = s.ptyId;
         }
       }
       // Resolution order (most → least authoritative):
@@ -617,6 +636,9 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         ...(stashed ? { stashed: true } : {}),
         ...(remoteAgent
           ? { remote: { hostId: surf?.remoteHostId ?? '', hostLabel: remoteAgent.hostLabel } }
+          : {}),
+        ...(!remoteAgent && !stashedExited && attentionPty && attentionPty !== ptyId
+          ? { attentionPtyId: attentionPty }
           : {}),
       });
     }
@@ -911,10 +933,13 @@ function fleetIdleForMs(ptyId: string, ctx: FleetGroupContext): number | undefin
 
 /** One row's section and detail — `groupFleetPanes` without the grouping. */
 export function fleetRow(pane: FleetPane, ctx: FleetGroupContext = {}): FleetRow {
-  const question = pane.ptyId ? ctx.surfacePendingQuestion?.[pane.ptyId]?.trim() || undefined : undefined;
-  const lastMessage = selectSurfaceLastMessage(ctx, pane.ptyId);
-  const activity = pane.surfaceType === 'terminal' ? pane.activity?.trim() || undefined : undefined;
-  const idleForMs = fleetIdleForMs(pane.ptyId, ctx);
+  const target = fleetTargetPtyId(pane);
+  const question = target ? ctx.surfacePendingQuestion?.[target]?.trim() || undefined : undefined;
+  const lastMessage = selectSurfaceLastMessage(ctx, target);
+  // Agent-authored; flattened at display time so bidi / zero-width characters
+  // cannot reorder how a tool path reads.
+  const activity = pane.surfaceType === 'terminal' ? flattenAgentText(pane.activity ?? '') || undefined : undefined;
+  const idleForMs = fleetIdleForMs(target, ctx);
   const base = { pane, idleForMs };
   if (pane.supervision?.status === 'stopped') {
     return { ...base, section: 'needsYou', detailKey: 'fleet.detail.supervisionStopped' };
@@ -950,11 +975,28 @@ export function fleetRow(pane: FleetPane, ctx: FleetGroupContext = {}): FleetRow
   }
 }
 
+/** Severity inside Needs you: a stopped supervisor, then a request for
+ *  input, then an error, then an unconfirmed turn, then a finished one. */
+function needsYouRank(row: FleetRow): number {
+  if (row.pane.supervision?.status === 'stopped') return 0;
+  if (row.pane.unverifiable) return 3;
+  switch (row.pane.agentStatus) {
+    case 'awaiting_input':
+    case 'waiting':
+      return 1;
+    case 'error':
+      return 2;
+    default:
+      return 4;
+  }
+}
+
 /**
  * Group fleet rows into the three attention-board sections. Within a section
- * ('attention' mode): STATUS_RANK first, then the most recent activity first,
- * rows with no timestamps last, then input order. 'workspace' mode keeps the
- * input (sidebar) order inside each section.
+ * ('attention' mode): Needs you ranks by severity (needsYouRank), the other
+ * sections by STATUS_RANK; then the most recent activity first, rows with no
+ * timestamps last, then input order. 'workspace' mode keeps the input
+ * (sidebar) order inside each section.
  */
 export function groupFleetPanes(panes: FleetPane[], ctx: FleetGroupContext = {}): FleetGroups {
   const groups: FleetGroups = { needsYou: [], running: [], idle: [] };
@@ -966,7 +1008,9 @@ export function groupFleetPanes(panes: FleetPane[], ctx: FleetGroupContext = {})
   });
   if (ctx.sortMode !== 'workspace') {
     const compare = (a: FleetRow, b: FleetRow): number => {
-      const r = STATUS_RANK[a.pane.agentStatus] - STATUS_RANK[b.pane.agentStatus];
+      const r = a.section === 'needsYou'
+        ? needsYouRank(a) - needsYouRank(b)
+        : STATUS_RANK[a.pane.agentStatus] - STATUS_RANK[b.pane.agentStatus];
       if (r !== 0) return r;
       const ai = a.idleForMs;
       const bi = b.idleForMs;

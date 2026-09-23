@@ -543,6 +543,7 @@ export const pl = {
   'fleet.verb.messagePermission': 'Odpowiedz na monit o uprawnienia w terminalu',
   'fleet.verb.closeRoot': 'Ostatni panel w obszarze roboczym. Zamknij zamiast tego obszar roboczy',
   'fleet.label.failed': 'Nie udało się zapisać etykiety panelu',
+  'fleet.message.refused': 'Nie wysłano: agent jest teraz zajęty lub czeka na monit.',
   'fleet.verb.label': 'Etykieta',
   'fleet.verb.close': 'Zamknij panel',
   'fleet.close.confirm': 'Zamknąć ten panel i zakończyć jego sesję?',

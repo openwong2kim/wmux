@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { groupFleetPanes, selectSurfaceLastMessage, type FleetPane, type FleetRow } from '../fleet';
+import { groupFleetPanes, selectFleetPanes, selectSurfaceLastMessage, type FleetPane, type FleetRow } from '../fleet';
+import type { Workspace } from '../../../../shared/types';
 
 function pane(ptyId: string, overrides: Partial<FleetPane> = {}): FleetPane {
   return {
@@ -128,6 +129,55 @@ describe('groupFleetPanes — elapsed time and ordering', () => {
     expect(g.needsYou).toEqual([]);
     expect(g.running).toEqual([]);
     expect(ids(g.idle)).toEqual(['y', 'x']); // waiting outranks idle
+  });
+});
+
+describe('groupFleetPanes — Needs you severity and agent text', () => {
+  it('orders Needs you by severity: stopped, input, error, unconfirmed, finished', () => {
+    const g = groupFleetPanes([
+      pane('done', { agentStatus: 'complete' }),
+      pane('stale', { agentStatus: 'running', unverifiable: true }),
+      pane('err', { agentStatus: 'error' }),
+      pane('ask', { agentStatus: 'waiting' }),
+      pane('halt', { agentStatus: 'idle', supervision: { status: 'stopped', restartCount: 2 } }),
+    ], { surfacePendingQuestion: { ask: 'Continue?' } });
+    expect(ids(g.needsYou)).toEqual(['halt', 'ask', 'err', 'stale', 'done']);
+  });
+
+  it('flattens bidi / zero-width characters out of a running row\'s activity', () => {
+    const row = only([pane('r', { agentStatus: 'running', activity: '✎ src/\u202Egnp.exe\u202C\u200B.ts' })]);
+    expect(row.detail).toBe('✎ src/gnp.exe.ts');
+  });
+});
+
+describe('background tab that needs you (attentionPtyId)', () => {
+  const ws: Workspace = {
+    id: 'ws-1', name: 'alpha', activePaneId: 'p1',
+    rootPane: {
+      id: 'p1', type: 'leaf', activeSurfaceId: 's-front',
+      surfaces: [
+        { id: 's-front', ptyId: 'pty-front', title: 'front', shell: 'zsh', cwd: '/', surfaceType: 'terminal' },
+        { id: 's-back', ptyId: 'pty-back', title: 'back', shell: 'zsh', cwd: '/', surfaceType: 'terminal' },
+      ],
+    },
+  };
+
+  it('records the background pty and reads its question for the row detail', () => {
+    const state = {
+      workspaces: [ws], surfaceAgentStatus: {}, surfaceActivity: {},
+      surfacePendingQuestion: { 'pty-back': 'Which region?' },
+    };
+    const [p] = selectFleetPanes(state);
+    expect(p).toMatchObject({ ptyId: 'pty-front', agentStatus: 'awaiting_input', attentionPtyId: 'pty-back' });
+    const row = only([p], { surfacePendingQuestion: state.surfacePendingQuestion });
+    expect(row).toMatchObject({ section: 'needsYou', detail: 'Which region?', detailSource: 'question' });
+  });
+
+  it('leaves attentionPtyId unset when the active tab is the one that needs you', () => {
+    const [p] = selectFleetPanes({
+      workspaces: [ws], surfaceAgentStatus: { 'pty-front': 'error' }, surfaceActivity: {},
+    });
+    expect(p.attentionPtyId).toBeUndefined();
   });
 });
 

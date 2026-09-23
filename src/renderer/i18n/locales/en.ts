@@ -547,6 +547,7 @@ export const en = {
   'fleet.verb.messagePermission': 'Answer the permission prompt in the terminal',
   'fleet.verb.closeRoot': 'Last pane in its workspace. Close the workspace instead',
   'fleet.label.failed': 'Could not save the pane label',
+  'fleet.message.refused': 'Not sent: this agent is busy or waiting on a prompt now.',
   'fleet.verb.label': 'Label',
   'fleet.verb.close': 'Close pane',
   'fleet.close.confirm': 'Close this pane and end its session?',

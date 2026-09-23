@@ -846,6 +846,7 @@ export const zh = {
   'fleet.verb.messagePermission': '请在终端中回应权限提示',
   'fleet.verb.closeRoot': '这是工作区中的最后一个窗格。请改为关闭工作区',
   'fleet.label.failed': '无法保存窗格标签',
+  'fleet.message.refused': '未发送：该智能体正在工作或正在等待提示。',
   'fleet.verb.label': '标签',
   'fleet.verb.close': '关闭窗格',
   'fleet.close.confirm': '关闭此窗格并结束其会话？',

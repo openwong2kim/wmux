@@ -248,6 +248,7 @@ export const ko = {
   'fleet.verb.messagePermission': '권한 확인은 터미널에서 응답하세요',
   'fleet.verb.closeRoot': '워크스페이스의 마지막 페인입니다. 워크스페이스를 닫으세요',
   'fleet.label.failed': '페인 라벨을 저장하지 못했습니다',
+  'fleet.message.refused': '보내지 않았습니다: 에이전트가 지금 작업 중이거나 프롬프트를 기다리고 있습니다.',
   'fleet.verb.label': '라벨',
   'fleet.verb.close': '페인 닫기',
   'fleet.close.confirm': '이 페인을 닫고 세션을 종료할까요?',

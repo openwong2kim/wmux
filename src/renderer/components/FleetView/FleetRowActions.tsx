@@ -3,14 +3,19 @@
 // pane header's overflow menu), plus the inline editors the verbs open under a
 // row — a single-line message composer, a label input, and a close confirm.
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { FleetPane } from '../../stores/selectors/fleet';
+import {
+  fleetTargetPtyId,
+  selectFleetPanes,
+  selectHookRunningByPtyId,
+  type FleetPane,
+} from '../../stores/selectors/fleet';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import PaneActionsMenu, { type PaneActionItem } from '../Pane/PaneActionsMenu';
 import { IconChevron, IconEye, IconEyeOff, IconPencil, IconTerminal, IconX } from '../icons';
 import { submitBracketedPasteToPty } from '../../utils/ptyMessageDelivery';
 import { disposePanePtys } from '../../utils/paneTeardown';
-import { findPane } from '../../../shared/paneUtils';
+import { findParent, findPane } from '../../../shared/paneUtils';
 import { findStashedEntry } from '../../../shared/paneStash';
 import type { TranslationKey } from '../../i18n/locales/en';
 
@@ -50,7 +55,7 @@ export interface FleetRowVerbContext {
 export function fleetRowVerbs(pane: FleetPane, ctx: FleetRowVerbContext = {}): FleetRowVerbs {
   const permissionPrompt = pane.agentStatus === 'awaiting_input' && !ctx.pendingQuestion?.trim();
   const busy = pane.agentStatus === 'running' || !!ctx.hookRunning || (!!ctx.commandRunning && !ctx.hasAgent);
-  const messageEnabled = !pane.remote && !!pane.ptyId && !busy && !permissionPrompt;
+  const messageEnabled = !pane.remote && !!fleetTargetPtyId(pane) && !busy && !permissionPrompt;
   const closeEnabled = !pane.remote && !(ctx.isRootPane && !pane.stashed);
   return {
     remoteOnly: !!pane.remote,
@@ -62,6 +67,22 @@ export function fleetRowVerbs(pane: FleetPane, ctx: FleetRowVerbContext = {}): F
     closeEnabled,
     ...(closeEnabled ? {} : { closeReason: 'fleet.verb.closeRoot' as const }),
   };
+}
+
+type VerbStoreState = ReturnType<typeof useStore.getState>;
+
+/** `fleetRowVerbs` with its context read from a store snapshot, keyed on the
+ *  row's target pty (the background tab that needs you, else the active one). */
+export function fleetRowVerbsFromState(pane: FleetPane, state: VerbStoreState): FleetRowVerbs {
+  const target = fleetTargetPtyId(pane);
+  const ws = state.workspaces.find((w) => w.id === pane.workspaceId);
+  return fleetRowVerbs(pane, {
+    pendingQuestion: state.surfacePendingQuestion[target],
+    hookRunning: !!selectHookRunningByPtyId(state)[target],
+    commandRunning: state.commandRunningByPtyId[target] === true,
+    hasAgent: !!state.surfaceAgent[target]?.name,
+    isRootPane: !!ws && ws.rootPane.id === pane.paneId && findParent(ws.rootPane, pane.paneId) === null,
+  });
 }
 
 /** Close a pane from Fleet the way every other close path does: dispose its
@@ -180,7 +201,8 @@ interface FleetRowEditorProps {
 
 export function FleetRowEditor({ pane, kind, onDone }: FleetRowEditorProps) {
   const t = useT();
-  const agentName = useStore((s) => s.surfaceAgent[pane.ptyId]?.name);
+  const target = fleetTargetPtyId(pane);
+  const agentName = useStore((s) => s.surfaceAgent[target]?.name);
   const [value, setValue] = useState(kind === 'label' ? pane.paneLabel ?? '' : '');
 
   if (kind === 'close') {
@@ -203,7 +225,16 @@ export function FleetRowEditor({ pane, kind, onDone }: FleetRowEditorProps) {
     if (kind === 'message') {
       const text = value.trim();
       if (!text) return;
-      submitBracketedPasteToPty(pane.ptyId, text, { agent: agentName ?? pane.agentName });
+      // The composer can stay open while the pane changes state: re-check
+      // against the store as it is now, not as it was when the editor opened.
+      const s = useStore.getState();
+      const fresh = selectFleetPanes({ ...s, hookRunningByPtyId: selectHookRunningByPtyId(s) })
+        .find((p) => p.paneId === pane.paneId && p.workspaceId === pane.workspaceId);
+      if (!fresh || !fleetRowVerbsFromState(fresh, s).messageEnabled) {
+        s.pushToast({ level: 'warn', message: t('fleet.message.refused') });
+        return;
+      }
+      submitBracketedPasteToPty(fleetTargetPtyId(fresh), text, { agent: agentName ?? pane.agentName });
     } else {
       window.electronAPI.metadata.setLabel(pane.paneId, pane.workspaceId, value.trim()).catch((err: unknown) => {
         console.error('[fleet] setLabel failed', err);

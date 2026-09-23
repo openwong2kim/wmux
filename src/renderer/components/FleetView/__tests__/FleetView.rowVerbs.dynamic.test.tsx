@@ -289,6 +289,69 @@ describe('FleetView — row verbs', () => {
     expect(container.querySelector('[data-fleet-editor]')).toBeNull();
   });
 
+  it('a background tab awaiting input: the row shows its question and Message writes to that tab', async () => {
+    act(() => {
+      useStore.setState({
+        workspaces: [workspace('ws-5', 'tabs', branch('b5', [
+          { id: 'p5', type: 'leaf', activeSurfaceId: 's5a', surfaces: [
+            surface('s5a', 'pty-5a', { title: 'front tab' }),
+            surface('s5b', 'pty-5b', { title: 'back tab' }),
+          ] },
+          leaf('p5x', [surface('s5x', 'pty-5x')]),
+        ]), 'p5')],
+        surfaceAgentStatus: {},
+        surfacePendingQuestion: { 'pty-5b': 'Which region?' },
+      });
+    });
+    mount();
+    await flushRaf();
+    const r = row('pty-5a');
+    expect(r.dataset.status).toBe('awaiting_input');
+    expect(r.querySelector('.wmux-fleet-detail')?.textContent).toBe('Which region?');
+    act(() => r.focus());
+    key(r, 'm');
+    const input = container.querySelector<HTMLInputElement>('[data-fleet-editor="message"] input')!;
+    type(input, 'eu-west-1');
+    key(input, 'Enter');
+    expect(write).toHaveBeenCalledWith('pty-5b', expect.stringContaining('eu-west-1'));
+    expect(write).not.toHaveBeenCalledWith('pty-5a', expect.anything());
+  });
+
+  it('jumping to that row activates the background tab that needs you', async () => {
+    act(() => {
+      useStore.setState({
+        workspaces: [workspace('ws-5', 'tabs', branch('b5', [
+          { id: 'p5', type: 'leaf', activeSurfaceId: 's5a', surfaces: [
+            surface('s5a', 'pty-5a', { title: 'front tab' }),
+            surface('s5b', 'pty-5b', { title: 'back tab' }),
+          ] },
+          leaf('p5x', [surface('s5x', 'pty-5x')]),
+        ]), 'p5')],
+        activeWorkspaceId: 'ws-5',
+        surfaceAgentStatus: {},
+        surfacePendingQuestion: { 'pty-5b': 'Which region?' },
+      });
+    });
+    mount();
+    await flushRaf();
+    act(() => { row('pty-5a').click(); });
+    const leafP5 = (useStore.getState().workspaces[0].rootPane as { children: Pane[] }).children[0] as Pane & { activeSurfaceId: string };
+    expect(leafP5.activeSurfaceId).toBe('s5b');
+  });
+
+  it('re-checks at submit: a pane that started a turn while the composer was open is not messaged', async () => {
+    mount();
+    await flushRaf();
+    act(() => row('pty-1').focus());
+    key(row('pty-1'), 'm');
+    const input = container.querySelector<HTMLInputElement>('[data-fleet-editor="message"] input')!;
+    type(input, 'late message');
+    act(() => { useStore.setState({ surfaceTurnOpenAt: { 'pty-1': Date.now() } }); });
+    key(input, 'Enter');
+    expect(write).not.toHaveBeenCalled();
+    expect(useStore.getState().toasts.some((toast) => toast.message.startsWith('Not sent'))).toBe(true);
+  });
+
   it('Escape with the ⋮ menu open closes only the menu', async () => {
     mount();
     await flushRaf();
