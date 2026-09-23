@@ -35,7 +35,7 @@ winget install openwong2kim.wmux    # or: choco install wmux
 
 **macOS** (Apple Silicon) — [download the .dmg](https://github.com/openwong2kim/wmux/releases/latest) and drag wmux to Applications. It is Developer ID signed and notarized; on first launch the `wmux` CLI installs itself onto your PATH.
 
-**iPhone** — [wmux for iOS on the App Store](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556) (free). It pairs with the daemon on your Mac: start `wmux web` over HTTPS (the titlebar **web** popover has a one-click Tailscale option) and scan the QR code it shows.
+**iPhone** — [wmux for iOS on the App Store](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556) (free). It pairs with the daemon on your Mac: start `wmux web` over HTTPS (the sidebar **Remote** button has a one-click Tailscale option) and scan the QR code it shows.
 
 **Linux** — experimental AppImage / .deb / .rpm builds are on the [releases page](https://github.com/openwong2kim/wmux/releases/latest).
 
@@ -45,7 +45,7 @@ winget install openwong2kim.wmux    # or: choco install wmux
 
 ### Answer your agents from your phone
 
-When an agent stops to ask you something — a Claude Code `AskUserQuestion` prompt, or a tool call held by a wmux approval gate — the question lands on your iPhone's lock screen as a push notification. Pick the answer in the Inbox (an option, **Approve**, or **Deny**) and the pane on your desktop advances. Terminals and agent output go straight from your Mac to your phone, against the daemon you run; the only thing that touches a wmux server is a sealed push envelope the relay cannot read.
+When an agent stops to ask you something — a Claude Code `AskUserQuestion` prompt, or a tool call held by a wmux approval gate — the question lands on your iPhone's lock screen as a push notification. Pick the answer in the Inbox (an option, **Approve**, or **Deny**) and the pane on your desktop advances. Terminals and agent output go straight from your Mac to your phone, against the daemon you run; notification content reaches the push relay only as a sealed envelope it cannot read. The one exception is the lock-screen Live Activity, which carries six plain counts (pending approvals, running / working / idle agents, blocked panes, longest wait) and no text — see [the phone client contract](docs/phone-client-contract.md).
 
 <img alt="wmux on the desktop running three agents while one agent's question waits in the iPhone Inbox" src="docs/readme/desktop-and-phone.png" width="900" />
 
@@ -87,7 +87,7 @@ A standalone daemon owns every PTY, so closing the app leaves your sessions runn
 - **One-click loops** — put the orchestrator on an objective with per-iteration steps and a done-when checklist; it keeps working across restarts.
 - **`wmux web`** — your live panes in any phone browser (PWA-installable), read-only and loopback-only by default.
 - **Notifications** — desktop toasts when an agent finishes, flags on `rm -rf` / `git push --force` / `DROP TABLE`, and optional webhook or ntfy pings from the daemon.
-- **Themes & locales** — 10 UI themes, 11 terminal palettes (light ones included), and 23 locales — [translations welcome](https://github.com/openwong2kim/wmux/labels/good%20first%20issue).
+- **Themes & locales** — 9 built-in UI themes plus a custom theme, 11 terminal palettes (light ones included), and 23 locales scaffolded (English, Polish, Chinese, and Korean are the most complete) — [translations welcome](https://github.com/openwong2kim/wmux/labels/good%20first%20issue).
 - **Plugins** — sandboxed iframe plugins with an explicit permission model.
 - **Security** — token-authed IPC, SSRF guard, PTY input sanitization, randomized CDP port, Electron Fuses.
 
