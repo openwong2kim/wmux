@@ -16,6 +16,7 @@ import { HUMAN_WORKSPACE_ID, CHANNEL_MENTIONS_MAX } from '../../../shared/channe
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { buildDiffAskContext } from '../../../shared/diffAskContext';
+import { unwrapRpc } from '../../utils/unwrapRpc';
 
 // gpui button recipes (theme-safe color-mix on tokens; primary/danger keep the
 // rgba sheen the DESIGN spec calls for). Reused across this panel's header.
@@ -177,7 +178,8 @@ async function resolveTaskMeta(taskId: string, verifiedWorkspaceId: string): Pro
   }).electronAPI;
   if (!api?.rpc) return null;
   try {
-    const res = (await api.rpc.invoke('task.mission.list', { verifiedWorkspaceId })) as {
+    // rpc.invoke returns the `{ id, ok, result }` envelope; the task list is in `result`.
+    const res = unwrapRpc(await api.rpc.invoke('task.mission.list', { verifiedWorkspaceId })) as {
       ok?: boolean;
       tasks?: Array<{
         id: string;
@@ -196,7 +198,7 @@ async function resolveTaskMeta(taskId: string, verifiedWorkspaceId: string): Pro
     const channelId = task.missionChannelId ?? '';
     if (channelId) {
       try {
-        const chRes = (await api.rpc.invoke('a2a.channel.get', {
+        const chRes = unwrapRpc(await api.rpc.invoke('a2a.channel.get', {
           verifiedWorkspaceId,
           channelId,
         })) as { ok?: boolean; channel?: { status?: string }; error?: unknown };
@@ -232,7 +234,7 @@ async function loadDiffComments(
   }).electronAPI;
   if (!api?.rpc) return [];
   try {
-    const res = (await api.rpc.invoke('a2a.channel.getMessages', {
+    const res = unwrapRpc(await api.rpc.invoke('a2a.channel.getMessages', {
       verifiedWorkspaceId,
       channelId,
     })) as { ok?: boolean; messages?: Array<{ text?: string; memberName?: string; postedAt?: number; data?: unknown }> };
@@ -265,7 +267,7 @@ async function loadMissionRoster(
   }).electronAPI;
   if (!api?.rpc) return [];
   try {
-    const res = (await api.rpc.invoke('a2a.channel.getMembers', {
+    const res = unwrapRpc(await api.rpc.invoke('a2a.channel.getMembers', {
       verifiedWorkspaceId,
       channelId,
     })) as {

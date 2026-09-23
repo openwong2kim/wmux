@@ -21,6 +21,7 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { WorkTask } from '../../../shared/workTask';
+import { unwrapRpc } from '../../utils/unwrapRpc';
 
 /** The mission bridge useRpcBridge installs (reads + the close used for workspace-lifetime binding). */
 interface MissionRpcBridge {
@@ -30,24 +31,6 @@ interface MissionRpcBridge {
 
 function readMissionRpc(): MissionRpcBridge | undefined {
   return (window as unknown as { __wmuxMissionRpc?: MissionRpcBridge }).__wmuxMissionRpc;
-}
-
-/**
- * `rpc.invoke`는 데몬 응답을 프로토콜 봉투 `{ id, ok, result }`로 감싼다(result가
- * 데몬 자신의 `{ ok, tasks }`). useChannelsHydration의 unwrapRpc와 동형 — 전송
- * 봉투를 벗겨 데몬 응답을 노출한다.
- */
-function unwrapRpc(res: unknown): unknown {
-  if (
-    res !== null &&
-    typeof res === 'object' &&
-    'result' in res &&
-    (res as { result?: unknown }).result !== null &&
-    typeof (res as { result?: unknown }).result === 'object'
-  ) {
-    return (res as { result: unknown }).result;
-  }
-  return res;
 }
 
 function isOkObject(v: unknown): v is Record<string, unknown> {

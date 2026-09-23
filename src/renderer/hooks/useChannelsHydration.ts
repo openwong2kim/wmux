@@ -42,6 +42,7 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import type { Channel, ChannelMember, ChannelMessage } from '../../shared/channels';
 import { HUMAN_WORKSPACE_ID, CHANNELS_EPOCH } from '../../shared/channels';
+import { unwrapRpc } from '../utils/unwrapRpc';
 
 /** Dependencies for the pure hydration routine. */
 export interface ChannelHydrationDeps {
@@ -66,27 +67,6 @@ export interface ChannelHydrationDeps {
 
 function isOkObject(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && (v as { ok?: unknown }).ok === true;
-}
-
-/**
- * The renderer `rpc` bridge (electronAPI.rpc.invoke → pipe RpcRouter) wraps
- * the daemon reply in the RPC protocol envelope `{ id, ok, result }`, where
- * `result` is the daemon's own `{ ok, channels }` / `{ ok, members }` reply.
- * (Confirmed via live CDP; PluginFrame's events.poll loop reads `resp.result`
- * the same way.) Peel the transport envelope so callers see the daemon reply.
- * Falls back to the value itself if it's already unwrapped (defensive).
- */
-function unwrapRpc(res: unknown): unknown {
-  if (
-    res !== null &&
-    typeof res === 'object' &&
-    'result' in res &&
-    (res as { result?: unknown }).result !== null &&
-    typeof (res as { result?: unknown }).result === 'object'
-  ) {
-    return (res as { result: unknown }).result;
-  }
-  return res;
 }
 
 /**
