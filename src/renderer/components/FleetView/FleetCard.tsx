@@ -139,12 +139,16 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
   const row = rowProp ?? fleetRow(card);
   // A waiting pane with no question is idle, not a request for input.
   const isAwaitingInput = card.agentStatus === 'awaiting_input' || row.detailSource === 'question';
+  // A waiting pane with no question sits in Idle; label and colour it as idle
+  // so no red needs-you dot appears inside the Idle section.
+  const quietWaiting = card.agentStatus === 'waiting' && row.section === 'idle';
   const statusLabel = card.unverifiable ? t('fleet.status.unconfirmed')
-    : card.agentStatus === 'complete' ? t('fleet.status.turnComplete') : t(icon.labelKey);
+    : card.agentStatus === 'complete' ? t('fleet.status.turnComplete')
+    : quietWaiting ? t('workspace.agentIdle') : t(icon.labelKey);
   // Unconfirmed reuses the sidebar's hollow amber ring (.sidebar-dot-unverifiable):
   // the pane still claims to be working, nothing backs the claim.
   const statusColor = card.unverifiable ? 'var(--accent-cursor)'
-    : card.agentStatus === 'idle' ? 'var(--text-sub)' : icon.dotVar;
+    : card.agentStatus === 'idle' || quietWaiting ? 'var(--text-sub)' : icon.dotVar;
   const detail = row.detail ?? t(row.detailKey);
   const elapsed = row.idleForMs !== undefined && row.idleForMs >= IDLE_SHOW_AFTER_MS
     ? formatIdle(row.idleForMs) : undefined;

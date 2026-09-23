@@ -179,6 +179,18 @@ describe('background tab that needs you (attentionPtyId)', () => {
     });
     expect(p.attentionPtyId).toBeUndefined();
   });
+
+  it('keeps the active tab on an equal-rank tie, even when the background tab comes first', () => {
+    const backFirst: Workspace = {
+      ...ws,
+      rootPane: { ...(ws.rootPane as Extract<Workspace['rootPane'], { type: 'leaf' }>), surfaces: [...(ws.rootPane as Extract<Workspace['rootPane'], { type: 'leaf' }>).surfaces].reverse() },
+    };
+    const [p] = selectFleetPanes({
+      workspaces: [backFirst], surfaceAgentStatus: { 'pty-back': 'complete', 'pty-front': 'complete' }, surfaceActivity: {},
+    });
+    expect(p.agentStatus).toBe('complete');
+    expect(p.attentionPtyId).toBeUndefined();
+  });
 });
 
 describe('selectSurfaceLastMessage', () => {

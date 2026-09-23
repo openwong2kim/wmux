@@ -528,7 +528,7 @@ export const pl = {
   'fleet.action.result': 'Przejrzyj',
   'fleet.action.inspect': 'Sprawdź',
   'fleet.action.open': 'Otwórz',
-  'fleet.stashed': 'Schowany',
+  'fleet.stashed': 'Odłożony',
   'fleet.preview': 'Podgląd terminala',
   'fleet.previewEmpty': 'Brak dostępnego wyjścia terminala.',
   'fleet.section.needsYou': 'Czeka na Ciebie',

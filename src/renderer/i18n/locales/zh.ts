@@ -831,7 +831,7 @@ export const zh = {
   'fleet.action.result': '查看结果',
   'fleet.action.inspect': '检查',
   'fleet.action.open': '打开',
-  'fleet.stashed': '已暂存',
+  'fleet.stashed': '已收起',
   'fleet.preview': '终端预览',
   'fleet.previewEmpty': '没有可显示的终端输出。',
   'fleet.section.needsYou': '需要你处理',

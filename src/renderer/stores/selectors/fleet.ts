@@ -503,7 +503,13 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         const st = state.surfacePendingQuestion?.[s.ptyId]?.trim()
           ? 'awaiting_input'
           : state.surfaceAgentStatus[s.ptyId];
-        if (st && (attention === undefined || STATUS_RANK[st] < STATUS_RANK[attention])) {
+        // On a tie the active surface wins: equal urgency gives no reason to
+        // point the row (detail, Message, Jump) at a background tab.
+        if (st && (
+          attention === undefined
+          || STATUS_RANK[st] < STATUS_RANK[attention]
+          || (STATUS_RANK[st] === STATUS_RANK[attention] && s.ptyId === ptyId)
+        )) {
           attention = st;
           attentionPty = s.ptyId;
         }

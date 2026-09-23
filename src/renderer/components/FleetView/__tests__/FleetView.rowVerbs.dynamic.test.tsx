@@ -348,7 +348,9 @@ describe('FleetView — row verbs', () => {
     type(input, 'late message');
     act(() => { useStore.setState({ surfaceTurnOpenAt: { 'pty-1': Date.now() } }); });
     key(input, 'Enter');
-    expect(write).not.toHaveBeenCalled();
+    // Scoped to pty-1: an earlier test's delayed Enter (submitBracketedPasteToPty
+    // sends '\r' on a timer) can land on its own pty while this test runs.
+    expect(write.mock.calls.filter(([pty]) => pty === 'pty-1')).toEqual([]);
     expect(useStore.getState().toasts.some((toast) => toast.message.startsWith('Not sent'))).toBe(true);
   });
 

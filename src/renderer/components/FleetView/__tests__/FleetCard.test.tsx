@@ -59,6 +59,14 @@ describe('FleetCard — task-first rows', () => {
     expect(html).toContain('Respond');
   });
 
+  it('labels a question-less waiting pane as idle with a neutral dot, not a red needs-you signal', () => {
+    const html = render({ card: card({ agentStatus: 'waiting' }) });
+    expect(html).toContain('Idle');
+    expect(html).not.toContain('Waiting');
+    expect(html).not.toContain('var(--accent-red)');
+    expect(html).toContain('var(--text-sub)');
+  });
+
   it('labels response completion without claiming task success', () => {
     const html = render({ card: card({ agentStatus: 'complete' }) });
     expect(html).toContain('Turn complete');
