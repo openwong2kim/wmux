@@ -132,20 +132,23 @@ describe.skipIf(!onWindows)('recovery replay — real ConPTY (win32 only; elsewh
     expect(replayed).toMatch(/[A-Za-z]:\\[^\r\n]*>/);
   }, WAIT_MS + 10000);
 
-  it('(b) same size then a size change inside the window: nothing held is replayed', async () => {
+  it('(b) same size then a size change inside the window: nothing held is replayed, the prompt still arrives', async () => {
     const { mgr, managed, client } = await recoverWithHeldHead(`rt-1464-change-${Date.now()}`);
 
     // First resize keeps the saved size (schedules the unmute), the second
     // changes it before the 100 ms drain elapses — the Resume row shrinking
-    // the pane is the real-world trigger. ConPTY repaints at the new size and
-    // may flush output queued at the old one; none of that may be replayed.
+    // the pane is the real-world trigger. The held bytes may mix ConPTY frames
+    // from both sizes; none of them may be replayed.
     mgr.resizeSession(managed.meta.id, 80, 24);
     mgr.resizeSession(managed.meta.id, 80, 22);
     await waitFor(() => !managed.bridge.isMuted, 'unmute');
-    await sleep(UNMUTE_SETTLE_MS);
 
     expect(client.flush).toContain(HISTORY);
     expect(client.replayed.join('')).toBe('');
+    // …but the pane is not left blank: with no keystroke, ConPTY's repaint at
+    // the current size (asked for after the unmute) brings cmd's prompt. The
+    // Windows dogfood of #1469 found it missing in 4 of 6 recovered panes.
+    await waitFor(() => /[A-Za-z]:\\[^\r\n]*>/.test(client.live.join('')), 'the prompt to arrive live without input');
     // The pane is live again: new output reaches the client directly.
     managed.ptyProcess.write(`echo ${TAIL}\r`);
     await waitFor(() => client.live.join('').includes(TAIL), `${TAIL} to arrive live`);

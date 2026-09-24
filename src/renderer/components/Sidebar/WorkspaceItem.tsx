@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react';
 import type { GitSyncStatus, PrStatus, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
@@ -14,6 +14,9 @@ import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { collectTerminalSurfaces, collectWorkspaceTerminalSurfaces } from '../../utils/paneTraversal';
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
+import Popover from '../ui/Popover';
+import Button from '../ui/Button';
+import { placePopover } from '../AgentToolbar/placePopover';
 import WorkspaceAccountMenu from './WorkspaceAccountMenu';
 import WorkspaceChromeProfileMenu from './WorkspaceChromeProfileMenu';
 import WorkspaceAgentRoster, { WorkspaceRosterSummaryMemo, STASH_PULSE_MS } from './WorkspaceAgentRoster';
@@ -279,7 +282,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const [owOpen, setOwOpen] = useState(false);
   const [colorOpen, setColorOpen] = useState(false);
   const [folderApps, setFolderApps] = useState<{ id: string; name: string }[]>([]);
-  const [closeConfirmPos, setCloseConfirmPos] = useState<{ x: number; y: number } | null>(null);
+  const [closeConfirmPos, setCloseConfirmPos] = useState<CloseConfirmAnchor | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const dragStartTimeRef = useRef<number>(0);
@@ -981,7 +984,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           <button
             data-workspace-action="close"
             className={`${HIT_TARGET_24_IN_CLUSTER} text-[var(--text-subtle)] hover:text-[var(--accent-red)] text-[10px] font-mono`}
-            onClick={(e) => { e.stopPropagation(); setMenuPos(null); setCloseConfirmPos({ x: e.clientX, y: e.clientY }); }}
+            onClick={(e) => { e.stopPropagation(); setMenuPos(null); setCloseConfirmPos(anchorOf(e.currentTarget)); }}
             title={t('workspace.close')}
             aria-label={t('workspace.close')}
           >
@@ -1233,41 +1236,19 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
 
       {/* Close-workspace confirmation (anti-misclick). */}
       {closeConfirmPos && (
-        <div
-          className="fixed z-[var(--z-popover-top)] w-[220px] py-2 rounded-[7px] shadow-xl sidebar-popover-enter"
-          style={{ left: Math.min(closeConfirmPos.x, window.innerWidth - 232), top: closeConfirmPos.y, background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <div className="px-3 pb-1 text-xs text-[var(--text-main)]">
-            {t('workspace.closeConfirm', { name: workspace.name })}
-          </div>
-          {(() => {
-            // Workspace-wide (#977): closing the workspace disposes stashed
-            // PTYs too, so a visible-only count promises to close fewer panes
-            // than it actually kills.
-            const count = collectWorkspaceTerminalSurfaces(workspace).length;
-            if (count === 0) return null;
-            return (
-              <div className="px-3 pb-2 text-caption text-[var(--text-muted)]">
-                {t('workspace.closeConfirmDetail', { count })}
-              </div>
-            );
-          })()}
-          <div className="flex justify-end gap-2 px-3 pt-1">
-            <button
-              className="px-2 py-0.5 text-caption rounded transition-colors text-[var(--text-subtle)] hover:bg-[var(--bg-overlay)]"
-              onClick={() => setCloseConfirmPos(null)}
-            >
-              {t('workspace.closeCancel')}
-            </button>
-            <button
-              className="px-2 py-0.5 text-caption rounded transition-colors text-[var(--accent-red)] hover:bg-[var(--bg-overlay)]"
-              onClick={() => { setCloseConfirmPos(null); onClose(workspaceId); }}
-            >
-              {t('workspace.closeConfirmYes')}
-            </button>
-          </div>
-        </div>
+        <CloseWorkspaceConfirm
+          anchor={closeConfirmPos}
+          title={t('workspace.closeConfirm', { name: workspace.name })}
+          // Workspace-wide (#977): closing the workspace disposes stashed
+          // PTYs too, so a visible-only count promises to close fewer panes
+          // than it actually kills.
+          terminalCount={collectWorkspaceTerminalSurfaces(workspace).length}
+          detail={(count) => t('workspace.closeConfirmDetail', { count })}
+          cancelLabel={t('workspace.closeCancel')}
+          confirmLabel={t('workspace.closeConfirmYes')}
+          onCancel={() => setCloseConfirmPos(null)}
+          onConfirm={() => { setCloseConfirmPos(null); onClose(workspaceId); }}
+        />
       )}
 
       {/* Profile editor modal */}
@@ -1275,6 +1256,108 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         <WorkspaceProfileModal workspace={workspace} onClose={() => setProfileModalOpen(false)} />
       )}
     </div>
+  );
+}
+
+/** Viewport rect of the control that opened the close confirmation. */
+export interface CloseConfirmAnchor {
+  top: number;
+  left: number;
+  right: number;
+  bottom: number;
+}
+
+function anchorOf(el: Element): CloseConfirmAnchor {
+  const r = el.getBoundingClientRect();
+  return { top: r.top, left: r.left, right: r.right, bottom: r.bottom };
+}
+
+export const CLOSE_CONFIRM_WIDTH = 240;
+/** Opening estimate only; the real height is measured before paint. */
+const CLOSE_CONFIRM_HEIGHT_ESTIMATE = 112;
+
+export interface CloseWorkspaceConfirmProps {
+  anchor: CloseConfirmAnchor;
+  title: string;
+  terminalCount: number;
+  detail: (count: number) => string;
+  cancelLabel: string;
+  confirmLabel: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+/**
+ * The close-workspace confirmation, anchored to the row's close button.
+ *
+ * Placed with placePopover (the pane actions menu's helper, #957): it hangs
+ * below the button, right-aligned inside the sidebar, and flips above it when
+ * the row sits near the bottom of the window (#1482) — opening at the pointer
+ * put the Close button past the window edge for the last rows.
+ */
+export function CloseWorkspaceConfirm({
+  anchor,
+  title,
+  terminalCount,
+  detail,
+  cancelLabel,
+  confirmLabel,
+  onCancel,
+  onConfirm,
+}: CloseWorkspaceConfirmProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState(CLOSE_CONFIRM_HEIGHT_ESTIMATE);
+  // Measure before paint and re-place with the real height: the detail line
+  // is conditional and the title wraps with long names, so the estimate alone
+  // would flip too late (or too early). offsetHeight, not the bounding rect:
+  // the enter animation scales the card, and a rect read mid-animation is
+  // short by that scale.
+  useLayoutEffect(() => {
+    const measured = ref.current?.offsetHeight ?? 0;
+    if (measured > 0 && Math.abs(measured - height) > 0.5) setHeight(measured);
+  });
+  // The anchor is the button's rect at click time. A window resize or a
+  // scroll of the sidebar (anything that contains this popover — it is a DOM
+  // descendant of its row) moves the button, and a stale anchor would put the
+  // confirm off-screen again (#1482), so either dismisses it, like an outside
+  // click. Scrolls elsewhere (a terminal printing output) do not.
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
+  useEffect(() => {
+    const dismiss = () => onCancelRef.current();
+    const onScroll = (e: Event) => {
+      const el = ref.current;
+      if (el && e.target instanceof Node && e.target !== el && e.target.contains(el)) dismiss();
+    };
+    window.addEventListener('resize', dismiss);
+    document.addEventListener('scroll', onScroll, true);
+    return () => {
+      window.removeEventListener('resize', dismiss);
+      document.removeEventListener('scroll', onScroll, true);
+    };
+  }, []);
+  const pos = placePopover(anchor, { width: CLOSE_CONFIRM_WIDTH, height });
+  return (
+    <Popover
+      ref={ref}
+      padded
+      aria-label={title}
+      data-workspace-close-confirm=""
+      className="fixed z-[var(--z-popover-top)] sidebar-popover-enter"
+      style={{ top: pos.top, left: pos.left, width: CLOSE_CONFIRM_WIDTH }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <p className="m-0 text-[13px] font-medium leading-5 text-[var(--text-main)] [overflow-wrap:anywhere]">{title}</p>
+      {terminalCount > 0 ? <p className="ui-note mt-1">{detail(terminalCount)}</p> : null}
+      <div className="mt-3 flex justify-end gap-2">
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          {cancelLabel}
+        </Button>
+        <Button variant="danger" size="sm" onClick={onConfirm}>
+          {confirmLabel}
+        </Button>
+      </div>
+    </Popover>
   );
 }
 

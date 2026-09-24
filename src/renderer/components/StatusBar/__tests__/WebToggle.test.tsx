@@ -138,7 +138,16 @@ describe('WebPopoverBody — off state', () => {
   });
 
   it('Start uses the single amber primary fill', () => {
-    expect(html).toContain('bg-[var(--accent)]');
+    expect(html).toContain('ui-btn-primary');
+    // One primary per surface: nothing else in the stopped body is filled.
+    expect(html.split('ui-btn-primary').length - 1).toBe(1);
+  });
+
+  it('draws the options as token checkboxes, not native OS boxes', () => {
+    expect(html).not.toContain('type="checkbox"');
+    expect(html.split('role="checkbox"').length - 1).toBe(3);
+    expect(html).toContain('aria-checked="false"');
+    expect(renderBody({ info: { running: false }, allowInput: true })).toContain('aria-checked="true"');
   });
 
   it('shows the actual control error instead of misreporting every failure as offline', () => {
@@ -151,6 +160,8 @@ describe('WebPopoverBody — off state', () => {
     const busy = renderBody({ info: { running: false }, busy: true });
     expect(busy).toContain('web.starting');
     expect(busy).toContain('disabled');
+    // An in-flight action is never the primary.
+    expect(busy).not.toContain('ui-btn-primary');
   });
 });
 
@@ -185,10 +196,10 @@ describe('WebPopoverBody — on state', () => {
     expect(html).not.toContain('web.inputEnabled');
   });
 
-  it('input-enabled mode shows INPUT ENABLED in amber', () => {
+  it('input-enabled mode shows INPUT ENABLED as the warning badge', () => {
     const html = renderBody({ info: { ...runningInfo, allowInput: true } });
     expect(html).toContain('web.inputEnabled');
-    expect(html).toContain('text-[var(--accent)]');
+    expect(html).toContain('data-tone="warning"');
   });
 
   it('exposed bind surfaces the 0.0.0.0 warning; loopback does not', () => {
@@ -198,10 +209,11 @@ describe('WebPopoverBody — on state', () => {
     expect(loopback).not.toContain('web.exposeWarning');
   });
 
-  it('Stop is a neutral raised button (not red)', () => {
+  it('Stop is a neutral secondary button (not red, not the amber primary)', () => {
     const html = renderBody({ info: runningInfo });
     expect(html).toContain('web.stop');
-    expect(html).toContain('bg-[var(--bg-surface)]');
+    expect(html).toContain('ui-btn-secondary');
+    expect(html).not.toContain('ui-btn-primary');
     expect(html).not.toContain('accent-red');
   });
 

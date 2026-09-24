@@ -4,7 +4,9 @@ import type { SessionPromptSchedule } from '../../../shared/sessionPromptSchedul
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Button from '../ui/Button';
-import { IconX } from '../icons';
+import Badge from '../ui/Badge';
+import Popover from '../ui/Popover';
+import { IconWarning, IconX } from '../icons';
 
 export interface SessionSchedulesApi {
   list: (ptyId: string) => Promise<{ schedules: SessionPromptSchedule[]; available?: boolean }>;
@@ -194,136 +196,139 @@ export default function SessionSchedulesPopover({
 
   if (!resolvedApi) return null;
 
+  const createDisabled = saving || !prompt.trim() || !agentSlug || !schedulingAvailable;
+
   return (
-    <div
-      role="dialog"
+    <Popover
       aria-labelledby="session-schedules-title"
-      className="pointer-events-auto absolute bottom-full left-2 mb-1 w-[31rem] max-w-[calc(100vw-1rem)] max-h-[72vh] overflow-y-auto rounded-[7px] border border-[var(--border-soft)] bg-[var(--bg-mantle)] shadow-xl z-50 text-xs"
+      className="pointer-events-auto absolute bottom-full left-2 mb-1 w-[31rem] max-w-[calc(100vw-1rem)] max-h-[72vh] overflow-y-auto z-50"
+      // The sticky header needs the panel edge-to-edge; the sections below
+      // carry their own inset.
+      style={{ padding: 0 }}
       data-testid="session-schedules-popover"
     >
-      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 px-3 py-2 border-b border-[var(--bg-surface)] bg-[var(--bg-mantle)] rounded-t-[7px]">
+      <div
+        className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b px-4 pb-3 pt-3.5 bg-[var(--bg-base)] rounded-t-[14px]"
+        style={{ borderColor: 'var(--surface-hairline)' }}
+      >
         <div className="min-w-0">
-          <div className="flex items-center gap-2 text-[var(--text-main)] font-medium">
+          <div className="flex items-center gap-2 text-[13px] font-semibold leading-5 text-[var(--text-main)]">
             <span id="session-schedules-title">{t('sessionSchedule.title')}</span>
-            {activeCount > 0 && (
-              <span className="rounded-full px-1.5 py-px text-[10px] text-[var(--accent)] border border-[color-mix(in_srgb,var(--accent)_35%,transparent)]">
-                {activeCount}
-              </span>
-            )}
+            {activeCount > 0 && <Badge>{activeCount}</Badge>}
           </div>
-          <div className="truncate text-[10px] text-[var(--text-muted)]" title={`${agentName ?? t('sessionSchedule.noAgent')} · ${ptyId}`}>
+          <div className="ui-note truncate" title={`${agentName ?? t('sessionSchedule.noAgent')} · ${ptyId}`}>
             {agentName ?? t('sessionSchedule.noAgent')} · {ptyId}
           </div>
         </div>
-        <button
-          type="button"
-          className="px-1.5 py-1 text-[var(--text-muted)] hover:text-[var(--text-main)]"
+        <Button
+          variant="icon"
+          className="h-7 w-7 shrink-0"
           aria-label={t('toolbar.close')}
           title={t('toolbar.close')}
           onClick={() => setPopover(null)}
         >
           <IconX size={12} />
-        </button>
+        </Button>
       </div>
 
-      <div className="p-3 space-y-3">
-        <p className="text-[11px] leading-relaxed text-[var(--text-sub)]">
-          {t('sessionSchedule.hint')}
-        </p>
+      <div className="flex flex-col gap-3 p-4">
+        <p className="ui-note">{t('sessionSchedule.hint')}</p>
         {schedulingAvailable && !agentSlug && (
-          <p data-session-schedule-needs-agent className="text-[11px] text-[var(--accent-yellow)]">
-            {t('sessionSchedule.needsAgent')}
+          <p data-session-schedule-needs-agent className="ui-note flex gap-1.5 text-[var(--text-main)]">
+            <span className="mt-0.5 shrink-0 text-[var(--accent-yellow)]" aria-hidden="true"><IconWarning size={11} /></span>
+            <span>{t('sessionSchedule.needsAgent')}</span>
           </p>
         )}
         {!schedulingAvailable && (
-          <p data-session-schedule-needs-daemon className="text-[11px] text-[var(--accent-yellow)]">
-            {t('sessionSchedule.daemonRequired')}
+          <p data-session-schedule-needs-daemon className="ui-note flex gap-1.5 text-[var(--text-main)]">
+            <span className="mt-0.5 shrink-0 text-[var(--accent-yellow)]" aria-hidden="true"><IconWarning size={11} /></span>
+            <span>{t('sessionSchedule.daemonRequired')}</span>
           </p>
         )}
 
         {schedules.length === 0 ? (
-          <div data-session-schedules-empty className="py-2 text-[11px] text-[var(--text-muted)]">
+          <div data-session-schedules-empty className="ui-note py-1">
             {t('sessionSchedule.empty')}
           </div>
         ) : (
-          <div className="space-y-1.5" data-session-schedules-list>
+          <div className="ui-group" data-session-schedules-list>
             {schedules.map((schedule, index) => (
               <div
                 key={schedule.id}
                 data-session-schedule-row
                 data-schedule-id={schedule.id}
-                className="rounded-[6px] border border-[var(--border-soft)] px-2.5 py-2"
+                className="flex items-start gap-2.5 px-3 py-2.5"
               >
-                <div className="flex items-start gap-2">
-                  <span
-                    aria-hidden="true"
-                    className="mt-1.5 h-1.5 w-1.5 rounded-full shrink-0"
-                    style={{
-                      backgroundColor: schedule.lastResult === 'session_changed'
-                        ? 'var(--accent-red)'
-                        : schedule.enabled
-                        ? schedule.lastResult === 'busy' || schedule.lastResult === 'unavailable'
-                          ? 'var(--accent-yellow)'
-                          : 'var(--accent-green)'
-                        : 'var(--text-muted)',
-                    }}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[12px] text-[var(--text-main)]" title={schedule.prompt}>
-                      {schedule.prompt}
-                    </div>
-                    <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-[var(--text-muted)]">
-                      {schedule.ptyId !== ptyId && (
-                        <span title={schedule.ptyId}>
-                          {t('sessionSchedule.otherSession', { ptyId: schedule.ptyId })}
-                        </span>
-                      )}
-                      <span className="font-mono">{formatWhen(schedule.nextRunAt)}</span>
-                      {schedule.intervalMinutes && (() => {
-                        const repeatOption = REPEAT_OPTIONS.find(
-                          (option) => option.minutes === schedule.intervalMinutes,
-                        );
-                        return <span>{repeatOption ? t(repeatOption.key) : `${schedule.intervalMinutes}m`}</span>;
-                      })()}
-                      <span data-session-schedule-status>{t(statusKey(schedule))}</span>
-                    </div>
+                <span
+                  aria-hidden="true"
+                  className="mt-[7px] h-1.5 w-1.5 rounded-full shrink-0"
+                  style={{
+                    backgroundColor: schedule.lastResult === 'session_changed'
+                      ? 'var(--accent-red)'
+                      : schedule.enabled
+                      ? schedule.lastResult === 'busy' || schedule.lastResult === 'unavailable'
+                        ? 'var(--accent-yellow)'
+                        : 'var(--accent-green)'
+                      : 'var(--text-muted)',
+                  }}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13px] leading-5 text-[var(--text-main)]" title={schedule.prompt}>
+                    {schedule.prompt}
                   </div>
-                  {schedule.lastResult !== 'session_changed' && (
-                    <button
-                      ref={index === 0 ? firstManageRef : undefined}
-                      type="button"
-                      data-session-schedule-toggle
-                      className="px-1 py-0.5 text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)]"
-                      aria-label={`${schedule.enabled ? t('sessionSchedule.pause') : t('sessionSchedule.resume')} — ${formatWhen(schedule.nextRunAt)}`}
-                      onClick={() => void setEnabled(schedule)}
-                    >
-                      {schedule.enabled ? t('sessionSchedule.pause') : t('sessionSchedule.resume')}
-                    </button>
-                  )}
-                  <button
-                    ref={index === 0 && schedule.lastResult === 'session_changed'
-                      ? firstManageRef
-                      : undefined}
-                    type="button"
-                    data-session-schedule-delete
-                    className="px-1 py-0.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--accent-red)]"
-                    aria-label={`${t('sessionSchedule.delete')} — ${formatWhen(schedule.nextRunAt)}`}
-                    onClick={() => void remove(schedule)}
-                  >
-                    {t('sessionSchedule.delete')}
-                  </button>
+                  <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] leading-4 text-[var(--text-sub)]">
+                    {schedule.ptyId !== ptyId && (
+                      <span title={schedule.ptyId}>
+                        {t('sessionSchedule.otherSession', { ptyId: schedule.ptyId })}
+                      </span>
+                    )}
+                    <span className="font-mono">{formatWhen(schedule.nextRunAt)}</span>
+                    {schedule.intervalMinutes && (() => {
+                      const repeatOption = REPEAT_OPTIONS.find(
+                        (option) => option.minutes === schedule.intervalMinutes,
+                      );
+                      return <span>{repeatOption ? t(repeatOption.key) : `${schedule.intervalMinutes}m`}</span>;
+                    })()}
+                    <span data-session-schedule-status>{t(statusKey(schedule))}</span>
+                  </div>
                 </div>
+                {schedule.lastResult !== 'session_changed' && (
+                  <Button
+                    ref={index === 0 ? firstManageRef : undefined}
+                    variant="ghost"
+                    size="sm"
+                    data-session-schedule-toggle
+                    className="shrink-0"
+                    aria-label={`${schedule.enabled ? t('sessionSchedule.pause') : t('sessionSchedule.resume')} — ${formatWhen(schedule.nextRunAt)}`}
+                    onClick={() => void setEnabled(schedule)}
+                  >
+                    {schedule.enabled ? t('sessionSchedule.pause') : t('sessionSchedule.resume')}
+                  </Button>
+                )}
+                <Button
+                  ref={index === 0 && schedule.lastResult === 'session_changed'
+                    ? firstManageRef
+                    : undefined}
+                  variant="ghost"
+                  size="sm"
+                  data-session-schedule-delete
+                  className="shrink-0 hover:text-[var(--accent-red)]"
+                  aria-label={`${t('sessionSchedule.delete')} — ${formatWhen(schedule.nextRunAt)}`}
+                  onClick={() => void remove(schedule)}
+                >
+                  {t('sessionSchedule.delete')}
+                </Button>
               </div>
             ))}
           </div>
         )}
 
-        <div className="pt-3 border-t border-[var(--border-soft)] space-y-2">
+        <div className="flex flex-col gap-2 border-t pt-4" style={{ borderColor: 'var(--surface-hairline)' }}>
           <textarea
             id="session-schedule-prompt"
             ref={promptRef}
             data-session-schedule-prompt
-            className="ui-input h-28 min-h-[5rem] resize-y"
+            className="ui-input h-28 min-h-[5rem] resize-y text-[13px]"
             value={prompt}
             maxLength={16_000}
             aria-label={t('sessionSchedule.promptLabel')}
@@ -337,7 +342,7 @@ export default function SessionSchedulesPopover({
             }}
           />
 
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-2">
             <input
               id="session-schedule-when"
               type="datetime-local"
@@ -349,7 +354,7 @@ export default function SessionSchedulesPopover({
             />
             <select
               data-session-schedule-repeat
-              className="ui-input w-auto py-1 font-mono text-[11px]"
+              className="ui-input w-auto py-1 text-[11px]"
               value={repeat}
               aria-label={t('sessionSchedule.repeatLabel')}
               onChange={(event) => setRepeat(Number(event.target.value))}
@@ -363,36 +368,41 @@ export default function SessionSchedulesPopover({
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[10px] text-[var(--text-muted)]">{t('sessionSchedule.quick')}</span>
-            <button type="button" data-session-schedule-quick="60" className="ui-ghost rounded px-1.5 py-0.5 text-[10px]" aria-label={t('sessionSchedule.quickHours', { hours: 1 })} onClick={() => setQuickTime(60)}>
-              {t('sessionSchedule.quickHours', { hours: 1 })}
-            </button>
-            <button type="button" data-session-schedule-quick="300" className="ui-ghost rounded px-1.5 py-0.5 text-[10px]" aria-label={t('sessionSchedule.quickHours', { hours: 5 })} onClick={() => setQuickTime(300)}>
-              {t('sessionSchedule.quickHours', { hours: 5 })}
-            </button>
-            <button type="button" data-session-schedule-quick="1440" className="ui-ghost rounded px-1.5 py-0.5 text-[10px]" aria-label={t('sessionSchedule.quickHours', { hours: 24 })} onClick={() => setQuickTime(1440)}>
-              {t('sessionSchedule.quickHours', { hours: 24 })}
-            </button>
+            <span className="ui-note mr-0.5">{t('sessionSchedule.quick')}</span>
+            {([60, 300, 1440] as const).map((minutes) => (
+              <Button
+                key={minutes}
+                variant="ghost"
+                size="sm"
+                data-session-schedule-quick={String(minutes)}
+                aria-label={t('sessionSchedule.quickHours', { hours: minutes / 60 })}
+                onClick={() => setQuickTime(minutes)}
+              >
+                {t('sessionSchedule.quickHours', { hours: minutes / 60 })}
+              </Button>
+            ))}
             <Button
-              variant="primary"
+              // A disabled or in-flight action is never the primary (DESIGN.md).
+              variant={createDisabled ? 'secondary' : 'primary'}
+              size="sm"
               className="ml-auto"
               data-session-schedule-create
               title={!schedulingAvailable
                 ? t('sessionSchedule.daemonRequired')
                 : !agentSlug ? t('sessionSchedule.needsAgent') : undefined}
-              disabled={saving || !prompt.trim() || !agentSlug || !schedulingAvailable}
+              disabled={createDisabled}
               onClick={() => void create()}
             >
               {saving ? t('sessionSchedule.saving') : t('sessionSchedule.add')}
             </Button>
           </div>
           {error && (
-            <div role="alert" data-session-schedule-error className="text-[11px] text-[var(--accent-red)]">
+            <div role="alert" data-session-schedule-error className="ui-note text-[var(--accent-red)]">
               {error}
             </div>
           )}
         </div>
       </div>
-    </div>
+    </Popover>
   );
 }

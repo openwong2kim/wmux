@@ -17,13 +17,6 @@ interface PaletteItemProps {
   onClick: () => void;
 }
 
-const categoryColor: Record<PaletteCategory, string> = {
-  workspace: 'text-[var(--accent-blue)]',
-  surface: 'text-[var(--accent-green)]',
-  command: 'text-[var(--accent-cursor)]',
-  recent: 'text-[var(--accent-yellow)]',
-};
-
 function PaletteItem({ item, isActive, onClick }: PaletteItemProps) {
   const t = useT();
 
@@ -38,18 +31,22 @@ function PaletteItem({ item, isActive, onClick }: PaletteItemProps) {
     <button
       type="button"
       onClick={onClick}
+      // Quiet list row (DESIGN.md "Dialogs & forms"): an 8px chip inside the
+      // panel inset, a faint neutral fill for the active row only (pointer
+      // movement sets the active row, so hover needs no look of its own), and
+      // a muted category label — no per-category colours.
       className={[
-        'w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors',
+        'mx-1.5 flex w-[calc(100%-12px)] items-center gap-3 rounded-[8px] px-3 py-2 text-left transition-colors',
         isActive
-          ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'
-          : 'text-[var(--text-sub)] hover:bg-[var(--bg-overlay)] hover:text-[var(--text-main)]',
+          ? 'bg-[var(--surface-fill-hover)] text-[var(--text-main)]'
+          : 'text-[var(--text-main)]',
       ].join(' ')}
     >
-      <span className="shrink-0 w-4 h-4 flex items-center justify-center text-[var(--text-subtle)]">
+      <span className="shrink-0 w-4 h-4 flex items-center justify-center text-[var(--text-sub)]">
         {item.icon}
       </span>
-      <span className="flex-1 truncate text-sm">{item.label}</span>
-      <span className={`shrink-0 text-xs font-medium ${categoryColor[item.category]}`}>
+      <span className="flex-1 truncate text-[13px] leading-5">{item.label}</span>
+      <span className="shrink-0 text-[11px] leading-4 text-[var(--text-sub)]">
         {categoryLabel[item.category]}
       </span>
     </button>

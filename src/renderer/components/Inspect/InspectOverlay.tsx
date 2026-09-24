@@ -13,6 +13,8 @@
 // → GUI dogfood). The branchy decision logic is extracted to inspectActions.ts
 // and unit-tested. Overlay chrome uses FIXED high-contrast colors, never live
 // var(--*) tokens, so it stays legible even if the user breaks their palette.
+// It follows the quiet-surface shape (radii, one soft shadow, Inter for its
+// prose) but not the token-based ui/ primitives, for that reason.
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useStore } from '../../stores';
@@ -47,6 +49,8 @@ const C = {
   hintBg: '#3F1D1D',
   hintText: '#FECACA',
   hintBorder: '#F87171',
+  // One soft floating shadow, as on the quiet surfaces — fixed like the rest.
+  shadow: '0 18px 48px rgba(0,0,0,0.32), 0 2px 8px rgba(0,0,0,0.16)',
 } as const;
 
 interface HighlightState {
@@ -411,7 +415,7 @@ export default function InspectOverlay(): React.ReactElement | null {
       {capturing && highlight && (
         <div
           data-inspect-overlay
-          className="absolute font-mono text-xs px-2 py-1 rounded-md"
+          className="absolute font-sans text-[11px] leading-4 px-2 py-1 rounded-[8px]"
           style={{
             left: highlight.chip.x,
             top: highlight.chip.y,
@@ -430,12 +434,13 @@ export default function InspectOverlay(): React.ReactElement | null {
       {capturing && roleMenu && (
         <div
           data-inspect-overlay
-          className="absolute font-mono text-xs rounded-md overflow-hidden"
+          className="absolute font-sans text-[13px] leading-5 rounded-[12px] overflow-hidden p-1"
           style={{
             left: roleMenu.x,
             top: roleMenu.y,
             backgroundColor: C.menuBg,
             border: `1px solid ${C.menuBorder}`,
+            boxShadow: C.shadow,
             pointerEvents: 'auto',
             minWidth: 120,
           }}
@@ -446,7 +451,7 @@ export default function InspectOverlay(): React.ReactElement | null {
               key={opt.role}
               type="button"
               role="menuitem"
-              className="block w-full text-left px-3 py-1.5"
+              className="block w-full text-left px-2.5 py-1.5 rounded-[8px]"
               style={{ color: C.menuText, backgroundColor: 'transparent' }}
               onMouseEnter={(ev) => {
                 (ev.currentTarget as HTMLElement).style.backgroundColor = C.menuHover;
@@ -469,12 +474,13 @@ export default function InspectOverlay(): React.ReactElement | null {
       {capturing && terminalMenu && (
         <div
           data-inspect-overlay
-          className="absolute font-mono text-xs rounded-md overflow-hidden"
+          className="absolute font-sans text-[13px] leading-5 rounded-[12px] overflow-hidden p-1"
           style={{
             left: terminalMenu.x,
             top: terminalMenu.y,
             backgroundColor: C.menuBg,
             border: `1px solid ${C.menuBorder}`,
+            boxShadow: C.shadow,
             pointerEvents: 'auto',
             minWidth: 160,
           }}
@@ -485,7 +491,7 @@ export default function InspectOverlay(): React.ReactElement | null {
               key={slot}
               type="button"
               role="menuitem"
-              className="block w-full text-left px-3 py-1.5"
+              className="block w-full text-left px-2.5 py-1.5 rounded-[8px]"
               style={{ color: C.menuText, backgroundColor: 'transparent' }}
               onMouseEnter={(ev) => {
                 (ev.currentTarget as HTMLElement).style.backgroundColor = C.menuHover;
@@ -510,7 +516,7 @@ export default function InspectOverlay(): React.ReactElement | null {
       {capturing && hint && (
         <div
           data-inspect-overlay
-          className="absolute font-mono text-xs px-2 py-1 rounded-md"
+          className="absolute font-sans text-[11px] leading-4 px-2 py-1 rounded-[8px]"
           style={{
             left: hint.x,
             top: hint.y,
@@ -550,18 +556,19 @@ export default function InspectOverlay(): React.ReactElement | null {
       {/* Banner — fixed-contrast instruction + Done button (Esc parity). */}
       <div
         data-inspect-overlay
-        className="absolute left-1/2 bottom-6 -translate-x-1/2 flex items-center gap-3 font-mono text-xs px-4 py-2 rounded-[7px]"
+        className="absolute left-1/2 bottom-6 -translate-x-1/2 flex items-center gap-3 font-sans text-[13px] leading-5 py-2 pl-4 pr-2 rounded-[14px]"
         style={{
           backgroundColor: C.chipBg,
           color: C.chipText,
-          border: `1px solid ${C.chipBorder}`,
+          border: `1px solid ${C.menuBorder}`,
+          boxShadow: C.shadow,
           pointerEvents: 'auto',
         }}
       >
         <span>{t('settings.inspect.banner')}</span>
         <button
           type="button"
-          className="px-2 py-0.5 rounded-md"
+          className="min-h-[28px] px-3 rounded-[8px] text-[13px]"
           style={{ backgroundColor: C.outline, color: C.chipBg, fontWeight: 600 }}
           onClick={(ev) => {
             ev.stopPropagation();

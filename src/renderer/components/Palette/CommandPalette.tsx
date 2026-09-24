@@ -749,24 +749,20 @@ export default function CommandPalette() {
         if (e.target === e.currentTarget) setVisible(false);
       }}
     >
-      {/* Palette container */}
+      {/* Palette container — the quiet popover panel (ui-popover +
+          ui-surface: 14px, hairline, one soft shadow). */}
       <div
-        className="w-[480px] max-h-[60vh] flex flex-col rounded-xl overflow-hidden shadow-2xl"
-        style={{
-          backgroundColor: 'var(--bg-base)',
-          border: '1px solid var(--bg-surface)',
-          boxShadow: 'var(--shadow-modal-soft)',
-        }}
+        className="ui-popover ui-surface w-[480px] max-h-[60vh] flex flex-col overflow-hidden"
+        style={{ padding: 0 }}
         onMouseDown={(e) => e.stopPropagation()}
         {...tokenAttrs('bgBase', 'bg')}
-        {...tokenAttrs('bgSurface', 'border')}
       >
         {/* Search input row */}
         <div
           className="flex items-center gap-2.5 px-4 py-3"
-          style={{ borderBottom: '1px solid var(--bg-surface)' }}
+          style={{ borderBottom: '1px solid var(--surface-hairline)' }}
         >
-          <span className="shrink-0 text-[var(--text-subtle)]" {...tokenAttrs('textSub', 'text')} data-derived="textSubtle">
+          <span className="shrink-0 text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')}>
             <IconSearch />
           </span>
           <input
@@ -779,31 +775,33 @@ export default function CommandPalette() {
             }}
             onKeyDown={handleKeyDown}
             placeholder={t('palette.placeholder')}
-            className="flex-1 bg-transparent text-[var(--text-main)] text-sm placeholder-[var(--text-muted)] outline-none"
+            className="flex-1 bg-transparent text-[var(--text-main)] text-[14px] leading-5 placeholder-[var(--text-muted)] outline-none"
             spellCheck={false}
             autoComplete="off"
             {...tokenAttrs('textMain', 'text')}
           />
-          <kbd
-            className="shrink-0 text-xs text-[var(--text-muted)] px-1.5 py-0.5 rounded"
-            style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
-            {...tokenAttrs('textMuted', 'text')}
-            {...tokenAttrs('bgSurface', 'border')}
-            data-derived="bgOverlay"
-          >
+          <kbd className="ui-kbd shrink-0" {...tokenAttrs('textSub', 'text')}>
             ESC
           </kbd>
         </div>
 
         {/* Results list */}
-        <div ref={listRef} className="overflow-y-auto flex-1">
+        <div ref={listRef} className="overflow-y-auto flex-1 py-1.5">
           {results.length === 0 ? (
-            <div className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">
+            <div className="px-4 py-8 text-center text-[13px] text-[var(--text-sub)]">
               {t('palette.noResults')} &ldquo;{query}&rdquo;
             </div>
           ) : (
             results.map((item, idx) => (
-              <div key={item.id} data-active={idx === activeIdx ? 'true' : undefined}>
+              <div
+                key={item.id}
+                data-active={idx === activeIdx ? 'true' : undefined}
+                // The pointer moves the selection, so the keyboard-active row
+                // and the hovered row are never two different highlights.
+                // mousemove, not mouseenter: rows scrolled under a still
+                // pointer by arrow keys must not steal the selection back.
+                onMouseMove={() => { if (idx !== activeIdx) setActiveIdx(idx); }}
+              >
                 <PaletteItem
                   item={item}
                   isActive={idx === activeIdx}
@@ -816,35 +814,19 @@ export default function CommandPalette() {
 
         {/* Footer hint */}
         <div
-          className="flex items-center gap-3 px-4 py-2"
-          style={{ borderTop: '1px solid var(--bg-surface)', backgroundColor: 'var(--bg-mantle)' }}
-          {...tokenAttrs('bgMantle', 'bg')}
+          className="flex items-center gap-4 px-4 py-2.5"
+          style={{ borderTop: '1px solid var(--surface-hairline)' }}
         >
-          <span className="text-xs text-[var(--text-muted)]">
-            <kbd
-              className="px-1 py-0.5 rounded mr-0.5"
-              style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
-            >
-              ↑↓
-            </kbd>{' '}
+          <span className="ui-note flex items-center gap-1.5">
+            <kbd className="ui-kbd">↑↓</kbd>
             {t('palette.navigate')}
           </span>
-          <span className="text-xs text-[var(--text-muted)]">
-            <kbd
-              className="px-1 py-0.5 rounded mr-0.5"
-              style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
-            >
-              Enter
-            </kbd>{' '}
+          <span className="ui-note flex items-center gap-1.5">
+            <kbd className="ui-kbd">Enter</kbd>
             {t('palette.select')}
           </span>
-          <span className="text-xs text-[var(--text-muted)]">
-            <kbd
-              className="px-1 py-0.5 rounded mr-0.5"
-              style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
-            >
-              Esc
-            </kbd>{' '}
+          <span className="ui-note flex items-center gap-1.5">
+            <kbd className="ui-kbd">Esc</kbd>
             {t('palette.close')}
           </span>
         </div>

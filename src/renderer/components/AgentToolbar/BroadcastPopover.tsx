@@ -3,7 +3,7 @@
 // Injects the same text simultaneously into every terminal surface in the active
 // workspace (including plain, non-agent shells). It used to prompt via window.prompt,
 // but there's no prompt polyfill in preload, so it was effectively dead (Electron) —
-// restored as an inline recessed popover.
+// restored as an inline popover (ui/Popover).
 //
 // Scope stays as-is: "every terminal pane in the current workspace" (no isolation or
 // worktree creation like fan-out). The target count is shown up front as
@@ -18,6 +18,8 @@ import { useT } from '../../hooks/useT';
 import { findLeafPanes } from '../../hooks/a2aAddressing';
 import type { Workspace } from '../../../shared/types';
 import { injectText } from './inject';
+import Popover, { PopoverSection } from '../ui/Popover';
+import Button from '../ui/Button';
 
 interface BroadcastPopoverProps {
   onClose: () => void;
@@ -100,50 +102,55 @@ export default function BroadcastPopover({ onClose, triggerRef }: BroadcastPopov
   }, [text, ptyIds]);
 
   const targetCount = ptyIds.length;
+  const sendDisabled = sending || targetCount === 0 || text.trim().length === 0;
 
   return (
-    <div
+    <Popover
       ref={rootRef}
-      role="dialog"
+      padded
       aria-label={t('toolbar.broadcastTitle')}
       data-testid="broadcast-popover"
-      className="pointer-events-auto absolute bottom-full right-2 mb-2 z-50 w-80 rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl"
+      className="pointer-events-auto absolute bottom-full right-2 mb-2 z-50 w-80"
     >
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[12px] font-semibold text-[var(--text-main)]">{t('toolbar.broadcastTitle')}</span>
-        <span className="text-[10px] text-[var(--text-muted)]" data-testid="broadcast-targets">
-          {t('toolbar.broadcastTargets', { n: targetCount })}
-        </span>
-      </div>
-      <textarea
-        ref={textareaRef}
-        className="ui-input h-20 resize-none font-mono text-[12px]"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          // Send with ⌘/Ctrl+Enter (plain Enter inserts a newline).
-          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-            e.preventDefault();
-            void handleSend();
-          }
-        }}
-        placeholder={t('toolbar.broadcastPlaceholder')}
-        data-testid="broadcast-input"
-      />
-      <div className="flex items-center justify-between mt-2">
-        <span className="text-[10px] text-[var(--text-muted)]" data-testid="broadcast-result">
-          {result ? t('toolbar.broadcastResult', { ok: result.ok, fail: result.fail }) : ''}
-        </span>
-        <button
-          type="button"
-          disabled={sending || targetCount === 0 || text.trim().length === 0}
-          onClick={() => void handleSend()}
-          data-testid="broadcast-send"
-          className="px-2.5 py-1 rounded-[5px] text-[11px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {sending ? t('toolbar.broadcastSending') : t('toolbar.broadcastSend')}
-        </button>
-      </div>
-    </div>
+      <PopoverSection
+        title={t('toolbar.broadcastTitle')}
+        action={
+          <span className="ui-note shrink-0" data-testid="broadcast-targets">
+            {t('toolbar.broadcastTargets', { n: targetCount })}
+          </span>
+        }
+      >
+        <textarea
+          ref={textareaRef}
+          className="ui-input h-20 resize-none font-mono text-[13px]"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            // Send with ⌘/Ctrl+Enter (plain Enter inserts a newline).
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+              e.preventDefault();
+              void handleSend();
+            }
+          }}
+          placeholder={t('toolbar.broadcastPlaceholder')}
+          data-testid="broadcast-input"
+        />
+        <div className="flex items-center justify-between gap-2">
+          <span className="ui-note" data-testid="broadcast-result">
+            {result ? t('toolbar.broadcastResult', { ok: result.ok, fail: result.fail }) : ''}
+          </span>
+          <Button
+            // A disabled or in-flight action is never the primary (DESIGN.md).
+            variant={sendDisabled ? 'secondary' : 'primary'}
+            size="sm"
+            disabled={sendDisabled}
+            onClick={() => void handleSend()}
+            data-testid="broadcast-send"
+          >
+            {sending ? t('toolbar.broadcastSending') : t('toolbar.broadcastSend')}
+          </Button>
+        </div>
+      </PopoverSection>
+    </Popover>
   );
 }

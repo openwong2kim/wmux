@@ -746,6 +746,14 @@
   border-color: var(--surface-hairline);
   box-shadow: none;
 }
+/* The flat rule above ties `.ui-input:focus` on specificity and comes later,
+ * so without this the steel focus ring vanished inside every surface. */
+.ui-surface .ui-input:focus,
+.ui-surface .ui-input:focus-visible,
+.ui-surface .ui-select > select:focus-visible {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 22%, transparent);
+}
 
 /* Dialog panel: the one floating elevation. */
 .ui-dialog {
@@ -810,6 +818,32 @@
 }
 .ui-section-row > svg { flex-shrink: 0; color: var(--text-sub); }
 .ui-section-row:hover { background: var(--surface-fill-hover); }
+/* A popover that holds a form or prose rather than a menu: a wider inset, and
+ * sections that sit flush with it. */
+.ui-popover-padded { padding: 16px; }
+.ui-popover-padded .ui-section { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; }
+.ui-popover-padded .ui-section:first-child { padding-top: 0; }
+.ui-popover-padded .ui-section:last-child { padding-bottom: 0; }
+.ui-popover-padded .ui-section-header { min-height: 20px; padding: 0; line-height: 20px; }
+/* A muted one-line note under a control (security notes, hints). */
+.ui-note { margin: 0; font-size: 11px; line-height: 16px; color: var(--text-sub); }
+/* Keyboard key hint: machine evidence, so mono. */
+.ui-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0 5px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--text-main) 10%, transparent);
+  background: color-mix(in srgb, var(--text-main) 5%, transparent);
+  color: var(--text-sub);
+  font-family: var(--font-mono, 'Cascadia Code', 'JetBrains Mono', ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
 /* Icon-only toggles on a surface show "on" as a faint filled chip, not a colour. */
 .ui-surface .ui-icon-btn { border-radius: 8px; }
 .ui-surface .ui-icon-btn[aria-pressed="true"],

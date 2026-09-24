@@ -9,7 +9,13 @@ import {
 import { buildQrPath, type QrPath } from './qrPath';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
-import { IconBrowser, IconRemoteDevices } from '../icons';
+import { IconBrowser, IconLock, IconRemoteDevices, IconWarning } from '../icons';
+import Popover, { PopoverSection } from '../ui/Popover';
+import Button from '../ui/Button';
+import Checkbox from '../ui/Checkbox';
+import Field from '../ui/Field';
+import Input from '../ui/Input';
+import Badge from '../ui/Badge';
 import { DECK_ICON_BUTTON, deckIconTone } from '../Deck/deckIconStyles';
 import PairedDevicesModal from './PairedDevicesModal';
 import {
@@ -24,7 +30,7 @@ import {
  *
  * At rest the control is quiet muted text ("web"). When the daemon-hosted
  * browser terminal is running it grows an amber dot (alive state). Clicking
- * opens a single floating-shadow popover (7px radius) that starts/stops the
+ * opens a quiet popover (ui/Popover: 14px radius, one soft shadow) that starts/stops the
  * server and surfaces the pairing code + URL.
  *
  * State (the last WebTerminalInfo) lives in this persistently-mounted component,
@@ -183,6 +189,9 @@ export interface WebPopoverBodyProps {
   t: (key: string) => string;
 }
 
+/** A steel text link (DESIGN.md: steel is for focus rings and links). */
+const WEB_LINK = `text-[11px] leading-4 text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`;
+
 /** Nothing copied, or the field whose copy button should read "Copied". */
 export type CopyTarget = null | 'url' | 'pairUrl' | 'pairCode';
 
@@ -222,99 +231,74 @@ export function WebPopoverBody({
   // Same control in both bodies below — declared once so the running and
   // stopped branches cannot drift into different labels or styling.
   const devicesLink = (
-    <button
-      type="button"
-      onClick={onOpenDevices}
-      className={`self-start text-[10px] text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`}
-    >
+    <button type="button" onClick={onOpenDevices} className={`${WEB_LINK} self-center`}>
       {t('web.devicesLink')}
     </button>
   );
   if (!info.running) {
     return (
-      <div className="flex flex-col gap-2.5">
-        <div className="text-[12px] font-semibold text-[var(--text-main)]">
-          {t('web.headline')}
-        </div>
-        {info.error ? (
-          <div className="text-[11px] text-[var(--text-sub)] leading-snug">
-            {info.error}
+      <>
+        <PopoverSection title={t('web.headline')}>
+          {info.error ? <p className="ui-note">{info.error}</p> : null}
+          <div className="ui-group">
+            <Field label={t('web.allowInput')} className="ui-row">
+              <Checkbox checked={allowInput} onCheckedChange={() => onToggleAllowInput()} />
+            </Field>
+            {/* The only transport a phone can actually pair over. Listed FIRST
+                of the transports because it is the one most operators opening
+                this popover want: a device credential never expires, so it is
+                not handed out over plaintext, which rules the LAN option out
+                for pairing entirely. */}
+            <Field label={t('web.tailscale')} className="ui-row">
+              <Checkbox checked={tailscale} onCheckedChange={() => onToggleTailscale()} />
+            </Field>
+            <Field label={t('web.expose')} className="ui-row">
+              <Checkbox checked={expose} onCheckedChange={() => onToggleExpose()} />
+            </Field>
           </div>
-        ) : null}
-        <label className="flex items-center gap-2 text-[11px] text-[var(--text-main)] cursor-pointer">
-          <input
-            type="checkbox"
-            checked={allowInput}
-            onChange={onToggleAllowInput}
-            className="accent-[var(--accent)]"
-          />
-          {t('web.allowInput')}
-        </label>
-        {/* The only transport a phone can actually pair over. Listed FIRST
-            because it is the one most operators opening this popover want:
-            a device credential never expires, so it is not handed out over
-            plaintext, which rules the LAN option out for pairing entirely. */}
-        <label className="flex items-center gap-2 text-[11px] text-[var(--text-main)] cursor-pointer">
-          <input
-            type="checkbox"
-            checked={tailscale}
-            onChange={onToggleTailscale}
-            className="accent-[var(--accent)]"
-          />
-          {t('web.tailscale')}
-        </label>
-        <label className="flex items-center gap-2 text-[11px] text-[var(--text-main)] cursor-pointer">
-          <input
-            type="checkbox"
-            checked={expose}
-            onChange={onToggleExpose}
-            className="accent-[var(--accent)]"
-          />
-          {t('web.expose')}
-        </label>
-        {/* Say what --expose actually buys now. Since #616 it can serve panes
-            to the LAN but cannot pair a phone, and a checkbox that silently
-            means "watch only" is how someone ends up stuck at a 403. */}
-        {expose ? (
-          <p className="text-[10px] leading-snug text-[var(--text-sub)]">
-            {t('web.exposeNoPairing')}
+          {/* Say what --expose actually buys now. Since #616 it can serve panes
+              to the LAN but cannot pair a phone, and a checkbox that silently
+              means "watch only" is how someone ends up stuck at a 403. */}
+          {expose ? <p className="ui-note">{t('web.exposeNoPairing')}</p> : null}
+          {info.transportError ? (
+            <div className="ui-notice flex gap-2 px-3 py-2.5">
+              <span className="mt-0.5 shrink-0 text-[var(--accent-yellow)]" aria-hidden="true">
+                <IconWarning size={12} />
+              </span>
+              <div className="flex min-w-0 flex-col gap-1">
+                {info.transportError.lines.map((line, i) => {
+                  const { before, url, after } = splitLinkedLine(line);
+                  return (
+                    <span key={i} className="ui-note">
+                      {before}
+                      {url ? (
+                        <button type="button" onClick={() => onOpenLink(url)} className={WEB_LINK}>
+                          {url}
+                        </button>
+                      ) : null}
+                      {after}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+          <p className="ui-note flex gap-1.5">
+            <span className="mt-0.5 shrink-0" aria-hidden="true">
+              <IconLock size={11} />
+            </span>
+            <span>{t('web.scrollbackWarning')}</span>
           </p>
-        ) : null}
-        {info.transportError ? (
-          <div className="flex flex-col gap-1 rounded-[5px] bg-[var(--bg-surface)] px-2 py-1.5">
-            {info.transportError.lines.map((line, i) => {
-              const { before, url, after } = splitLinkedLine(line);
-              return (
-                <span key={i} className="text-[10px] leading-snug text-[var(--text-sub)]">
-                  {before}
-                  {url ? (
-                    <button
-                      type="button"
-                      onClick={() => onOpenLink(url)}
-                      className={`text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`}
-                    >
-                      {url}
-                    </button>
-                  ) : null}
-                  {after}
-                </span>
-              );
-            })}
-          </div>
-        ) : null}
-        <p className="text-[10px] leading-snug text-[var(--text-sub)]">
-          {t('web.scrollbackWarning')}
-        </p>
-        <button
-          type="button"
-          onClick={onStart}
-          disabled={busy}
-          className={`w-full rounded-[5px] px-3 py-1.5 text-[11px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] disabled:opacity-40 disabled:cursor-not-allowed transition-opacity ${FOCUS_RING}`}
-        >
-          {busy ? t('web.starting') : t('web.start')}
-        </button>
-        {devicesLink}
-      </div>
+        </PopoverSection>
+        <div className="flex items-center justify-between gap-2">
+          {devicesLink}
+          {/* In flight it is not the primary: DESIGN.md keeps the warm fill off
+              disabled and running actions. */}
+          <Button variant={busy ? 'secondary' : 'primary'} size="md" onClick={onStart} disabled={busy}>
+            {busy ? t('web.starting') : t('web.start')}
+          </Button>
+        </div>
+      </>
     );
   }
 
@@ -327,151 +311,123 @@ export function WebPopoverBody({
       : '';
 
   return (
-    <div className="flex flex-col gap-2.5">
-      <div className="flex items-center gap-2 text-[11px] text-[var(--text-main)]">
-        <span
-          aria-hidden="true"
-          className="w-[6px] h-[6px] rounded-full bg-[var(--accent)]"
-        />
-        <span className="font-mono">{webBindLabel(info)}</span>
-        {viewers ? <span className="text-[var(--text-sub)]">· {viewers}</span> : null}
-      </div>
+    <>
+      <PopoverSection>
+        <div className="flex items-center gap-2">
+          <span aria-hidden="true" className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--accent)]" />
+          <span className="ui-code shrink-0">{webBindLabel(info)}</span>
+          {viewers ? <span className="ui-note min-w-0 truncate">{viewers}</span> : null}
+          <span className="ml-auto shrink-0">
+            {info.allowInput ? (
+              <Badge tone="warning">{t('web.inputEnabled')}</Badge>
+            ) : (
+              <Badge>{t('web.readOnly')}</Badge>
+            )}
+          </span>
+        </div>
+      </PopoverSection>
 
       {/* Path 1 — this machine. The URL carries the token, so it just works;
           clicking opens it in the default browser rather than being dead text. */}
       {url ? (
-        <div className="flex flex-col gap-1">
-          <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-            {t('web.openHere')}
-          </span>
-          <div className="flex items-center gap-1.5">
+        <PopoverSection title={t('web.openHere')}>
+          <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={onOpenUrl}
               title={url}
-              className={`flex-1 min-w-0 truncate text-left font-mono text-[11px] text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`}
+              className={`${WEB_LINK} min-w-0 flex-1 truncate text-left font-mono`}
             >
               {url}
             </button>
-            <button
-              type="button"
-              onClick={onCopyUrl}
-              className={`shrink-0 rounded-[5px] px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
-            >
+            <Button size="sm" onClick={onCopyUrl} className="shrink-0">
               {copied === 'url' ? t('web.copied') : t('web.copy')}
-            </button>
+            </Button>
           </div>
-        </div>
+        </PopoverSection>
       ) : null}
 
       {/* Path 2 — another device. This is what the pairing code exists for:
           typing a 36-char token on a phone keyboard is miserable, so the phone
           opens a token-free /pair address and enters eight characters instead. */}
-      <div className="flex flex-col gap-1">
-        <span className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">
-          {t('web.onPhone')}
-        </span>
+      <PopoverSection title={t('web.onPhone')}>
         {info.pairRefusal ? (
           // The whole point of the refusal: this replaces the code rather than
           // sitting beside it. A code shown next to "pairing is unavailable" is
           // still a code someone will try to type into a phone.
           <>
-            <span className="text-[10px] leading-snug text-[var(--text-sub)]">
+            <p className="ui-note text-[var(--text-main)]">
               {info.pairRefusal.reason === 'no-front'
                 ? t('web.refusalNoFront')
                 : t('web.refusalInsecure')}
-            </span>
-            <span
-              title={info.pairRefusal.detail}
-              className="text-[10px] leading-snug text-[var(--text-muted)]"
-            >
+            </p>
+            <p title={info.pairRefusal.detail} className="ui-note">
               {info.pairRefusal.reason === 'no-front'
                 ? t('web.refusalNoFrontFix')
                 : t('web.refusalInsecureFix')}
-            </span>
+            </p>
           </>
         ) : info.pairCode && info.pendingDeviceName ? (
           <>
-          {/* Which device this code will register. The operator typed it a
-              moment ago, but the code outlives that moment by ten minutes and
-              a mis-labelled roster is only discovered when someone needs to
-              revoke one entry out of eight. */}
-          <span className="text-[10px] leading-snug text-[var(--text-sub)]">
-            {t('web.pairingAs').replace('{name}', info.pendingDeviceName ?? '')}
-          </span>
-          <span className="text-[10px] leading-snug text-[var(--text-sub)]">
-            {t('web.pairHint')}
-          </span>
-          {/* The QR replaces the pair-URL text row rather than stacking on it:
-              once a scan carries the address AND the code, the address as text
-              is redundant, and this popover is a fixed 288px box. Copy stays
-              reachable for a phone that will not scan. */}
-          {qr ? (
-            <div className="flex items-center gap-2">
-              <svg
-                viewBox={`0 0 ${qr.size} ${qr.size}`}
-                width={116}
-                height={116}
-                shapeRendering="crispEdges"
-                role="img"
-                aria-label={t('web.qrAlt')}
-                className="shrink-0 rounded-[5px] bg-white p-1"
-              >
-                <path d={qr.d} fill="#000" />
-              </svg>
-              <div className="flex min-w-0 flex-1 flex-col gap-1">
-                <span className="text-[10px] leading-snug text-[var(--text-sub)]">
-                  {t('web.qrHint')}
-                </span>
-                <button
-                  type="button"
-                  onClick={onCopyPairUrl}
-                  className={`self-start rounded-[5px] px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
+            {/* Which device this code will register. The operator typed it a
+                moment ago, but the code outlives that moment by ten minutes and
+                a mis-labelled roster is only discovered when someone needs to
+                revoke one entry out of eight. */}
+            <p className="ui-note">
+              {t('web.pairingAs').replace('{name}', info.pendingDeviceName ?? '')}
+            </p>
+            <p className="ui-note">{t('web.pairHint')}</p>
+            {/* The QR replaces the pair-URL text row rather than stacking on it:
+                once a scan carries the address AND the code, the address as text
+                is redundant, and this popover is a fixed 288px box. Copy stays
+                reachable for a phone that will not scan. */}
+            {qr ? (
+              <div className="flex items-center gap-3">
+                <svg
+                  viewBox={`0 0 ${qr.size} ${qr.size}`}
+                  width={116}
+                  height={116}
+                  shapeRendering="crispEdges"
+                  role="img"
+                  aria-label={t('web.qrAlt')}
+                  className="shrink-0 rounded-[8px] bg-white p-1"
                 >
-                  {copied === 'pairUrl' ? t('web.copied') : t('web.copyLink')}
-                </button>
+                  <path d={qr.d} fill="#000" />
+                </svg>
+                <div className="flex min-w-0 flex-1 flex-col items-start gap-2">
+                  <span className="ui-note">{t('web.qrHint')}</span>
+                  <Button size="sm" onClick={onCopyPairUrl}>
+                    {copied === 'pairUrl' ? t('web.copied') : t('web.copyLink')}
+                  </Button>
+                </div>
               </div>
-            </div>
-          ) : pairUrl ? (
-            <div className="flex items-center gap-1.5">
-              <span className="flex-1 min-w-0 truncate font-mono text-[11px] text-[var(--text-sub)] select-all">
-                {pairUrl}
+            ) : pairUrl ? (
+              <div className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate select-all font-mono text-[11px] text-[var(--text-sub)]">
+                  {pairUrl}
+                </span>
+                <Button size="sm" onClick={onCopyPairUrl} className="shrink-0">
+                  {copied === 'pairUrl' ? t('web.copied') : t('web.copy')}
+                </Button>
+              </div>
+            ) : null}
+            <div className="flex items-center gap-2">
+              <span className="flex-1 select-all font-mono text-[22px] font-semibold tracking-widest text-[var(--text-main)]">
+                {info.pairCode}
               </span>
-              <button
-                type="button"
-                onClick={onCopyPairUrl}
-                className={`shrink-0 rounded-[5px] px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
-              >
-                {copied === 'pairUrl' ? t('web.copied') : t('web.copy')}
-              </button>
+              <Button size="sm" onClick={onCopyPairCode} className="shrink-0">
+                {copied === 'pairCode' ? t('web.copied') : t('web.copy')}
+              </Button>
             </div>
-          ) : null}
-          <div className="flex items-center gap-1.5">
-            <span className="flex-1 font-mono text-[22px] font-bold tracking-widest text-[var(--text-main)] select-all">
-              {info.pairCode}
-            </span>
-            <button
-              type="button"
-              onClick={onCopyPairCode}
-              className={`shrink-0 rounded-[5px] px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
-            >
-              {copied === 'pairCode' ? t('web.copied') : t('web.copy')}
-            </button>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] text-[var(--text-sub)]">{t('web.pairValidity')}</span>
-            {/* Still reachable while a code is live: the operator may believe
-                this one was seen. It re-mints under the SAME name, so replacing
-                a code never silently costs the device its label. */}
-            <button
-              type="button"
-              onClick={onNewPairCode}
-              disabled={busy}
-              className={`ml-auto shrink-0 rounded-[5px] px-2 py-0.5 text-[10px] text-[var(--text-sub)] hover:text-[var(--text-main)] bg-[var(--bg-surface)] disabled:opacity-40 transition-colors ${FOCUS_RING}`}
-            >
-              {t('web.newPairCode')}
-            </button>
-          </div>
+            <div className="flex items-center gap-2">
+              <span className="ui-note">{t('web.pairValidity')}</span>
+              {/* Still reachable while a code is live: the operator may believe
+                  this one was seen. It re-mints under the SAME name, so replacing
+                  a code never silently costs the device its label. */}
+              <Button variant="ghost" size="sm" onClick={onNewPairCode} disabled={busy} className="ml-auto shrink-0">
+                {t('web.newPairCode')}
+              </Button>
+            </div>
           </>
         ) : (
           // Name first, code second. A code exists from the moment the server
@@ -481,10 +437,8 @@ export function WebPopoverBody({
           // this is the only moment a human is present to give one; the phone
           // still types nothing but the code.
           <>
-            <span className="text-[10px] leading-snug text-[var(--text-sub)]">
-              {t('web.nameHint')}
-            </span>
-            <input
+            <p className="ui-note">{t('web.nameHint')}</p>
+            <Input
               type="text"
               value={deviceName}
               onChange={(e) => onDeviceNameChange(e.target.value)}
@@ -494,7 +448,7 @@ export function WebPopoverBody({
               placeholder={t('web.namePlaceholder')}
               maxLength={DEVICE_NAME_MAX}
               aria-label={t('web.nameHint')}
-              className={`w-full rounded-[6px] bg-[var(--bg-base)] px-2 py-1 text-[11px] text-[var(--text-main)] placeholder:text-[var(--text-muted)] ${FOCUS_RING}`}
+              className="w-full text-[13px]"
             />
             {/* Asked HERE, with the name, for the same reason the name is: this
                 is the only moment a human is present to say what the device is
@@ -502,65 +456,39 @@ export function WebPopoverBody({
                 default — read-only is the mistake you can fix from the roster,
                 where a keyboard handed out by accident is not noticed until
                 something has been typed. */}
-            <label className="flex items-center gap-2 text-[10px] text-[var(--text-sub)] cursor-pointer">
-              <input
-                type="checkbox"
-                checked={pairAllowInput}
-                onChange={onTogglePairAllowInput}
-                className="accent-[var(--accent)]"
-              />
-              {t('web.pairAllowInput')}
-            </label>
-            <button
-              type="button"
+            <Field label={t('web.pairAllowInput')}>
+              <Checkbox checked={pairAllowInput} onCheckedChange={() => onTogglePairAllowInput()} />
+            </Field>
+            <Button
+              size="sm"
               onClick={onStartPairing}
               disabled={busy || deviceName.trim().length === 0}
-              className={`self-start rounded-[5px] px-2 py-1 text-[10px] text-[var(--text-main)] bg-[var(--bg-surface)] hover:bg-[var(--bg-overlay)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors ${FOCUS_RING}`}
+              className="self-start"
             >
               {t('web.showPairCode')}
-            </button>
+            </Button>
             {/* A refused mint used to leave this panel looking untouched: no
                 code appeared and nothing said why. The button guards the empty
                 name, so what lands here is the server refusing for its own
                 reason, which the operator cannot guess. */}
             {info.pairStartError ? (
-              <span className="text-[10px] leading-snug text-[var(--accent-red)]">
-                {info.pairStartError}
-              </span>
+              <p className="ui-note text-[var(--accent-red)]">{info.pairStartError}</p>
             ) : null}
           </>
         )}
-      </div>
+      </PopoverSection>
 
-      <div className="text-[11px]">
-        {info.allowInput ? (
-          <span className="font-semibold text-[var(--accent)]">{t('web.inputEnabled')}</span>
-        ) : (
-          <span className="text-[var(--text-sub)]">{t('web.readOnly')}</span>
-        )}
-      </div>
-
-      {exposed ? (
-        <p className="text-[10px] leading-snug text-[var(--text-sub)]">{t('web.exposeWarning')}</p>
-      ) : null}
-
-      {info.error ? (
-        <span className="text-[10px] leading-snug text-[var(--accent-red)]">
-          {info.error}
-        </span>
-      ) : null}
-
-      {devicesLink}
-
-      <button
-        type="button"
-        onClick={onStop}
-        disabled={busy}
-        className={`w-full rounded-[5px] px-3 py-1.5 text-[11px] font-semibold bg-[var(--bg-surface)] text-[var(--text-main)] hover:bg-[var(--bg-overlay)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors ${FOCUS_RING}`}
-      >
-        {busy ? t('web.stopping') : t('web.stop')}
-      </button>
-    </div>
+      <PopoverSection>
+        {exposed ? <p className="ui-note">{t('web.exposeWarning')}</p> : null}
+        {info.error ? <p className="ui-note text-[var(--accent-red)]">{info.error}</p> : null}
+        <div className="flex items-center justify-between gap-2">
+          {devicesLink}
+          <Button size="md" onClick={onStop} disabled={busy}>
+            {busy ? t('web.stopping') : t('web.stop')}
+          </Button>
+        </div>
+      </PopoverSection>
+    </>
   );
 }
 
@@ -867,16 +795,16 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
       </button>
 
       {open ? (
-        <div
+        <Popover
           ref={popRef}
-          role="dialog"
+          padded
           aria-label={t('web.headline')}
           style={{
             left: anchorLeft,
             top: anchorTop,
             maxHeight: `min(${POPOVER_MAX_HEIGHT}px, calc(100vh - 16px))`,
           } as CSSProperties}
-          className="fixed z-50 w-72 overflow-y-auto rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl font-sans"
+          className="fixed z-50 w-72 overflow-y-auto"
         >
           <WebPopoverBody
             info={info}
@@ -905,7 +833,7 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
             qr={qr}
             t={t}
           />
-        </div>
+        </Popover>
       ) : null}
 
       {/* Sibling of the popover, not a child: opening the roster closes the
