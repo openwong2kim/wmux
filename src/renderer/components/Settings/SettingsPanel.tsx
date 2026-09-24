@@ -456,9 +456,9 @@ function KbdRow({
       </span>
       <span className="flex items-center gap-3">
         {onReset !== undefined && (
-          <Button variant="ghost" onClick={onReset} aria-label={`${resetLabel ?? ''}: ${description}`}>
+          <UiButton variant="ghost" size="sm" onClick={onReset} aria-label={`${resetLabel ?? ''}: ${description}`}>
             {resetLabel}
-          </Button>
+          </UiButton>
         )}
         {onChangeKey !== undefined ? (
           <button

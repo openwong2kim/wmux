@@ -348,10 +348,11 @@ function isImeKey(key: string): boolean {
  *
  * So every gate that ACTS on a keydown notes it, and asks before acting
  * whether a keydown is the plain-key follow-up of an IME keydown it already
- * acted on: same physical code, same modifiers, not a repeat, before that
- * key's keyup. The follow-up is then swallowed whole — no second action and
- * no byte to the pane. A plain press never arms the guard, so key repeat and
- * two separate presses behave as before.
+ * acted on: same physical code, same modifiers, before that key's keyup.
+ * The follow-up is then swallowed whole — no second action and no byte to
+ * the pane. `repeat` is not consulted: a held key may repeat as the same
+ * pair. A plain press never arms the guard, so key repeat and two separate
+ * presses behave as before.
  */
 export class ShortcutPressGuard {
   private armed: { event: object; code: string; mods: string } | null = null;
@@ -368,12 +369,12 @@ export class ShortcutPressGuard {
    * but stable for the event it matched, so every gate the same keydown
    * passes through gets the same answer.
    */
-  isDuplicate(e: ShortcutKeyEventLike & { repeat?: boolean }): boolean {
+  isDuplicate(e: ShortcutKeyEventLike): boolean {
     if (e === this.swallowed) return true;
     const armed = this.armed;
     if (!armed || e === armed.event || MODIFIER_KEYS.includes(e.key)) return false;
     this.armed = null;
-    if (e.repeat || isImeKey(e.key) || e.code !== armed.code || modifierPrefix(e) !== armed.mods) return false;
+    if (isImeKey(e.key) || e.code !== armed.code || modifierPrefix(e) !== armed.mods) return false;
     this.swallowed = e;
     return true;
   }

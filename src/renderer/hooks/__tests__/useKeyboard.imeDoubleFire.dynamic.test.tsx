@@ -178,12 +178,30 @@ describe('Windows IME: one physical press runs a shortcut once', () => {
     expect(createTerminalSurface).toHaveBeenCalledTimes(2);
   });
 
-  it('a held key still repeats', () => {
-    pressWithIme(CTRL_T);
-    keydown({ ctrlKey: true, code: 'KeyT', key: 'Process', keyCode: 229 });
-    keydown({ ctrlKey: true, code: 'KeyT', key: 't', repeat: true });
-    keydown({ ctrlKey: true, code: 'KeyT', key: 't', repeat: true });
-    expect(createTerminalSurface).toHaveBeenCalledTimes(4);
+  it('a held key repeats once per repeat, whether repeats come as pairs or plain', () => {
+    const imeKey = { ctrlKey: true, code: 'KeyT', key: 'Process', keyCode: 229 };
+    const plain = { ctrlKey: true, code: 'KeyT', key: 't' };
+    // Every repeat as a Process + plain pair.
+    keydown(imeKey);
+    keydown(plain);
+    keydown({ ...imeKey, repeat: true });
+    keydown({ ...plain, repeat: true });
+    keydown({ ...imeKey, repeat: true });
+    keydown({ ...plain, repeat: true });
+    keyup('KeyT', 't');
+    expect(createTerminalSurface).toHaveBeenCalledTimes(3);
+    // Composition committed by the first pair; repeats come plain.
+    keydown(imeKey);
+    keydown(plain);
+    keydown({ ...plain, repeat: true });
+    keydown({ ...plain, repeat: true });
+    keyup('KeyT', 't');
+    expect(createTerminalSurface).toHaveBeenCalledTimes(6);
+    // No IME at all: a held key repeats as before.
+    keydown(plain);
+    keydown({ ...plain, repeat: true });
+    keyup('KeyT', 't');
+    expect(createTerminalSurface).toHaveBeenCalledTimes(8);
   });
 
   it('a follow-up with other modifiers is its own chord', () => {

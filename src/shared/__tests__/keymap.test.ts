@@ -357,7 +357,7 @@ describe('Ctrl+G Rich Input row (#1280)', () => {
  * act on the first and recognise the second as the same press.
  */
 describe('ShortcutPressGuard (IME double keydown)', () => {
-  const ev = (key: string, code: string, extra: Partial<ShortcutKeyEventLike & { repeat: boolean }> = {}) => ({
+  const ev = (key: string, code: string, extra: Partial<ShortcutKeyEventLike> = {}) => ({
     key, code, ctrlKey: true, metaKey: false, shiftKey: false, altKey: false, ...extra,
   });
 
@@ -400,11 +400,10 @@ describe('ShortcutPressGuard (IME double keydown)', () => {
     expect(g.isDuplicate(ev('t', 'KeyT'))).toBe(false);
   });
 
-  it('another key, other modifiers, a repeat or another IME keydown are not the follow-up', () => {
+  it('another key, other modifiers or another IME keydown are not the follow-up', () => {
     const cases = [
       ev('w', 'KeyW'),
       ev('T', 'KeyT', { shiftKey: true }),
-      ev('t', 'KeyT', { repeat: true }),
       ev('Process', 'KeyT'),
     ];
     for (const next of cases) {
