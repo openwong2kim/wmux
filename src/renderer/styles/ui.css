@@ -746,6 +746,14 @@
   border-color: var(--surface-hairline);
   box-shadow: none;
 }
+/* The flat rule above ties `.ui-input:focus` on specificity and comes later,
+ * so without this the steel focus ring vanished inside every surface. */
+.ui-surface .ui-input:focus,
+.ui-surface .ui-input:focus-visible,
+.ui-surface .ui-select > select:focus-visible {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 22%, transparent);
+}
 
 /* Dialog panel: the one floating elevation. */
 .ui-dialog {
