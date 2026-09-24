@@ -9,3 +9,5 @@
 - Include native command destinations in the slash menu, add live Codex model/effort controls, and handle app/daemon version skew without restarting existing terminal sessions.
 
 - Reduce Chat re-entry waits by overlapping history reads and subscription setup, preloading the view, and reusing bounded history only after fresh conversation and file identity checks.
+
+- Preserve native Korean/IME composition in the Chat composer with synchronous input state, and prevent composition-confirming Enter from submitting a message.

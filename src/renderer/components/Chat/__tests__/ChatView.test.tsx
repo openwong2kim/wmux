@@ -33,6 +33,29 @@ const type = async (text: string) => {
 };
 
 describe('assistant-ui composer connected to session drafts', () => {
+  it('keeps Korean composition synchronous and preserves the committed draft', async () => {
+    fixture.session = 'korean-ime';
+    const send = vi.fn();
+    vi.stubGlobal('electronAPI', { chat: { send } });
+    await render();
+    await act(async () => input().dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })));
+    for (const text of ['ㅎ', '하', '한']) {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input(), text);
+        input().dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertCompositionText', isComposing: true }));
+        // React restores controlled inputs before returning from the event.
+        expect(input().value).toBe(text);
+      });
+    }
+    await act(async () => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, bubbles: true, cancelable: true })));
+    expect(send).not.toHaveBeenCalled();
+    await act(async () => input().dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '한' })));
+    expect(input().value).toBe('한');
+    await render(false); await render();
+    expect(input().value).toBe('한');
+    await type('');
+  });
+
   it('filters skills and inserts with the keyboard without sending or losing arguments', async () => {
     const send = vi.fn();
     const skills = vi.fn(async () => ({ state: 'ready', skills: [

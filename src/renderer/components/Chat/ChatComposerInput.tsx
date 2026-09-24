@@ -11,14 +11,17 @@ export function skillQuery(text: string, caret: number): { query: string; end: n
   return match && caret > 0 && caret <= match[0].length ? { query: match[1], end: match[0].length } : null;
 }
 
-export function ChatComposerInput({ disabled, placeholder, maxLength, scope, onDiscoveryOpenChange }: {
-  disabled: boolean; placeholder: string; maxLength: number; scope?: ChatSkillScope; onDiscoveryOpenChange?: (open: boolean) => void;
+export function ChatComposerInput({ disabled, placeholder, maxLength, scope, composer, onDiscoveryOpenChange }: {
+  disabled: boolean; placeholder: string; maxLength: number; composer: SkillComposer; scope?: ChatSkillScope; onDiscoveryOpenChange?: (open: boolean) => void;
 }) {
   const t = useT();
   const input = useRef<HTMLTextAreaElement>(null);
   const list = useRef<HTMLDivElement>(null);
   const id = useId();
-  const [text, setText] = useState('');
+  // Keep React's controlled value synchronous with the DOM input event.
+  // The runtime's store propagation can lag a render and cancel native IME.
+  const [text, setText] = useState(() => composer.getState().text);
+  const composing = useRef(false);
   const [caret, setCaret] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const [catalog, setCatalog] = useState<ChatSkillCatalog | null>(null);
@@ -32,10 +35,13 @@ export function ChatComposerInput({ disabled, placeholder, maxLength, scope, onD
   useEffect(() => { onDiscoveryOpenChange?.(open); return () => onDiscoveryOpenChange?.(false); }, [open, onDiscoveryOpenChange]);
   useEffect(() => {
     setCatalog(null); setDismissed(false); setSelected(0);
-    if (!scope) return;
-    setText(scope.composer.getState().text);
-    return scope.composer.subscribe(() => setText(scope.composer.getState().text));
-  }, [scope?.composer, scope?.ptyId, scope?.agent]);
+  }, [scope?.ptyId, scope?.agent]);
+  useEffect(() => {
+    setText(composer.getState().text);
+    return composer.subscribe(() => {
+      if (!composing.current) setText(composer.getState().text);
+    });
+  }, [composer]);
   useEffect(() => {
     const readSkills = window.electronAPI?.chat?.skills;
     if (!open || !scope) return;
@@ -71,7 +77,12 @@ export function ChatComposerInput({ disabled, placeholder, maxLength, scope, onD
     requestAnimationFrame(() => { if (!input.current || scope.composer.getState().text !== inserted) return; input.current?.focus(); input.current?.setSelectionRange(prefix.length, prefix.length); setCaret(prefix.length); });
   }
   function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (!open || event.nativeEvent.isComposing || event.keyCode === 229) return;
+    if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) {
+      // Some IMEs report the confirming Enter as 229 without isComposing.
+      if (event.key === 'Enter' && !event.nativeEvent.isComposing) event.preventDefault();
+      return;
+    }
+    if (!open) return;
     if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
       event.preventDefault();
       if (event.key === 'Escape') setDismissed(true);
@@ -100,7 +111,10 @@ export function ChatComposerInput({ disabled, placeholder, maxLength, scope, onD
       role={enabled ? 'combobox' : undefined} aria-autocomplete={enabled ? 'list' : undefined} aria-expanded={enabled ? open : undefined}
       aria-controls={open ? id : undefined} aria-activedescendant={open && filtered[index] ? `${id}-${index}` : undefined}
       disabled={disabled} maxLength={maxLength} rows={1} maxRows={8} submitMode="enter" enterKeyHint="send" addAttachmentOnPaste={false}
-      cancelOnEscape={!open} onKeyDown={keyDown} onChange={event => { setCaret(event.target.selectionStart); setDismissed(false); }}
+      value={text} cancelOnEscape={!open} onKeyDown={keyDown}
+      onCompositionStart={() => { composing.current = true; }}
+      onCompositionEnd={event => { composing.current = false; setText(event.currentTarget.value); }}
+      onChange={event => { setText(event.target.value); setCaret(event.target.selectionStart); setDismissed(false); }}
       onSelect={event => setCaret(event.currentTarget.selectionStart)}
       onBlur={event => { if (!event.relatedTarget || !event.currentTarget.parentElement?.contains(event.relatedTarget as Node)) setDismissed(true); }}
       unstable_focusOnThreadSwitched={false} unstable_focusOnRunStart={false} unstable_focusOnScrollToBottom={false} />

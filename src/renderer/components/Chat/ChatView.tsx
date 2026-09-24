@@ -114,7 +114,7 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
   const reasonKey = ['no-hook', 'stale-session', 'no-transcript-path', 'not-claude', 'unsafe-transcript-path', 'unreadable'].includes(data.status.reason)
     ? `chat.reason.${data.status.reason}` : 'chat.reason.unavailable';
   return <ChatPtyContext.Provider value={ptyId}><AssistantRuntimeProvider runtime={runtime}>
-    <Thread status={<><ChatProgress state={canLaunch ? 'ready' : progress} lastSyncedAt={data.lastSyncedAt} onTerminal={onTerminal} /><ChatControls ptyId={ptyId} status={data.status} refresh={data.retry} /></>} empty={messages.length === 0} working={busy} disabled={canLaunch ? sending || data.loading : launched || readOnly || !data.status.available || data.loading || ended || !!managed && (managed.phase !== 'ready' || !managed.capabilities.send)}
+    <Thread composer={runtime.thread.composer} status={<><ChatProgress state={canLaunch ? 'ready' : progress} lastSyncedAt={data.lastSyncedAt} onTerminal={onTerminal} /><ChatControls ptyId={ptyId} status={data.status} refresh={data.retry} /></>} empty={messages.length === 0} working={busy} disabled={canLaunch ? sending || data.loading : launched || readOnly || !data.status.available || data.loading || ended || !!managed && (managed.phase !== 'ready' || !managed.capabilities.send)}
       placeholder={canLaunch ? t('chat.initialMessage') : ended ? t('chat.placeholderEnded') : undefined}
       skillScope={!managed ? { ptyId, agent: canLaunch ? launchAgent : data.status.terminal?.agent ?? 'claude', composer: runtime.thread.composer, onTerminal, live: !!data.status.agentAlive } : undefined}
       maxLength={canLaunch ? 2000 : 16_000}
