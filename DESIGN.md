@@ -446,18 +446,28 @@ regeneration, message editing and voice controls are hidden until supported.
 - **Order:** Attention (default), Manual, or Recent activity — Settings ›
   Appearance › Sidebar. Attention: needs you → finished (a turn that ended and
   was not looked at) → running → unconfirmed → idle; within a class the most
-  recent event first. A pinned workspace (row menu › Pin position, a muted pin
-  glyph) keeps its manual slot. A workspace created in the last three minutes
-  holds the top. Rows never move under the pointer: a re-sort applies after the
-  list has been quiet for 3 s, or at once when the pointer leaves it; adds and
-  removals land immediately. The non-manual orders are display-only and pause
-  drag-to-reorder. Sessions that never chose an order move to Attention; an
-  explicit choice is kept.
+  recent event first. Plain `waiting` with no question is idle here, as in
+  Fleet, and draws no "Needs you" wash or label. A fan-out owner scores as its
+  most urgent nested task, so a task that needs you lifts its group. A pinned
+  workspace (row menu › Pin position, offered in Attention only; a muted pin
+  glyph) keeps its rank among the top-level workspaces above it in the stored
+  order — nested tasks take no slot. A workspace created in the last three
+  minutes holds the top. Rows never move under the pointer or keyboard focus:
+  a re-sort applies after the list has been quiet for 3 s (at most 10 s after
+  the first pending change), or at once when the pointer or focus leaves;
+  adds and removals land immediately. The non-manual orders are display-only:
+  drag-to-reorder pauses, and the `^N` shortcut hints are hidden because
+  Ctrl+N follows the stored order. Sessions that never chose an order move to
+  Attention once, with a notice offering to keep the manual order; an explicit
+  choice is kept.
 - **Changed since you last looked:** a 6px `--text-main` dot (never amber —
   Fleet's rule) after the name, on the workspace row and on the agent row,
-  when a pane's status or pending question changed since its workspace was
-  last on screen and it now needs you or has finished. Being on screen is
-  looking: it clears as soon as the workspace is active or in multiview.
+  when an agent tab's status or pending question changed (any number of
+  times, round trips included) since its workspace was last on screen and it
+  now needs you or has finished. Tracked per agent tab, not per pane. On
+  screen means the active workspace, plus the multiview grid only while the
+  active workspace is in it, and no local workspace while a remote mirror is
+  showing. It clears as soon as the workspace is on screen.
 
 ### Sidebar shortcuts and Agent dock refinement (2026-09-21)
 
