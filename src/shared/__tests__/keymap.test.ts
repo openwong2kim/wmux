@@ -16,6 +16,7 @@ import {
   rebindProblem,
   resolveShortcut,
   sanitizeShortcutOverrides,
+  ShortcutPressGuard,
   type ShortcutKeyEventLike,
 } from '../keymap';
 
@@ -347,5 +348,84 @@ describe('Ctrl+G Rich Input row (#1280)', () => {
 
   it('reserves its accelerator so the app menu can never claim Ctrl+G', () => {
     expect(collidesWithKeymap('CommandOrControl+G', 'win32')).toBe(true);
+  });
+});
+
+/**
+ * #1455 Windows dogfood — under a Hangul composition one Ctrl+T press is two
+ * keydowns, `Process` then `t`, and both resolve. The guard lets every gate
+ * act on the first and recognise the second as the same press.
+ */
+describe('ShortcutPressGuard (IME double keydown)', () => {
+  const ev = (key: string, code: string, extra: Partial<ShortcutKeyEventLike & { repeat: boolean }> = {}) => ({
+    key, code, ctrlKey: true, metaKey: false, shiftKey: false, altKey: false, ...extra,
+  });
+
+  it('the plain follow-up of an acted-on Process keydown is a duplicate', () => {
+    const g = new ShortcutPressGuard();
+    const first = ev('Process', 'KeyT');
+    expect(g.isDuplicate(first)).toBe(false);
+    g.noteActed(first);
+    const second = ev('t', 'KeyT');
+    expect(g.isDuplicate(second)).toBe(true);
+    // Every gate the same keydown passes through gets the same answer.
+    expect(g.isDuplicate(second)).toBe(true);
+  });
+
+  it('the acted-on keydown itself is never its own duplicate (later gates see it too)', () => {
+    const g = new ShortcutPressGuard();
+    const first = ev('Process', 'KeyT');
+    g.noteActed(first);
+    expect(g.isDuplicate(first)).toBe(false);
+    expect(g.isDuplicate(ev('t', 'KeyT'))).toBe(true);
+  });
+
+  it('is one-shot: a third keydown is a new press', () => {
+    const g = new ShortcutPressGuard();
+    g.noteActed(ev('Process', 'KeyT'));
+    expect(g.isDuplicate(ev('t', 'KeyT'))).toBe(true);
+    expect(g.isDuplicate(ev('t', 'KeyT'))).toBe(false);
+  });
+
+  it('a plain press never arms it', () => {
+    const g = new ShortcutPressGuard();
+    g.noteActed(ev('t', 'KeyT'));
+    expect(g.isDuplicate(ev('t', 'KeyT'))).toBe(false);
+  });
+
+  it('the press ending (keyup) disarms it', () => {
+    const g = new ShortcutPressGuard();
+    g.noteActed(ev('Process', 'KeyT'));
+    g.onKeyUp({ code: 'KeyT' });
+    expect(g.isDuplicate(ev('t', 'KeyT'))).toBe(false);
+  });
+
+  it('another key, other modifiers, a repeat or another IME keydown are not the follow-up', () => {
+    const cases = [
+      ev('w', 'KeyW'),
+      ev('T', 'KeyT', { shiftKey: true }),
+      ev('t', 'KeyT', { repeat: true }),
+      ev('Process', 'KeyT'),
+    ];
+    for (const next of cases) {
+      const g = new ShortcutPressGuard();
+      g.noteActed(ev('Process', 'KeyT'));
+      expect(g.isDuplicate(next)).toBe(false);
+      // …and the guard is disarmed by it rather than left waiting.
+      expect(g.isDuplicate(ev('t', 'KeyT'))).toBe(false);
+    }
+  });
+
+  it('a lone modifier keydown in between does not disarm it', () => {
+    const g = new ShortcutPressGuard();
+    g.noteActed(ev('Process', 'KeyT'));
+    expect(g.isDuplicate(ev('Control', 'ControlLeft'))).toBe(false);
+    expect(g.isDuplicate(ev('t', 'KeyT'))).toBe(true);
+  });
+
+  it('a composed glyph arms it like Process does', () => {
+    const g = new ShortcutPressGuard();
+    g.noteActed(ev('ㅅ', 'KeyT'));
+    expect(g.isDuplicate(ev('t', 'KeyT'))).toBe(true);
   });
 });

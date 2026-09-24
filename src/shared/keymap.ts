@@ -331,6 +331,59 @@ export function isPrefixTrigger(e: ShortcutKeyEventLike, prefixKeyCode: string):
   return e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.code === prefixKeyCode;
 }
 
+// A keydown whose `key` an IME replaced: 'Process', or a composed glyph.
+function isImeKey(key: string): boolean {
+  return key === 'Process' || (key.length === 1 && key > '\x7e');
+}
+
+/**
+ * One physical press runs a shortcut at most once.
+ *
+ * While a Windows IME composition is open (Hangul ㄱ pending), Chromium
+ * delivers TWO keydowns for one Ctrl+T: first `key='Process', code='KeyT'`,
+ * then — after the IME commits — `key='t', code='KeyT'`. Both resolve (the
+ * first through the physical-code fallback), so without this every letter
+ * shortcut fired twice: one Ctrl+W closed two tabs. The first keydown cannot
+ * simply be ignored, because the follow-up does not always come.
+ *
+ * So every gate that ACTS on a keydown notes it, and asks before acting
+ * whether a keydown is the plain-key follow-up of an IME keydown it already
+ * acted on: same physical code, same modifiers, not a repeat, before that
+ * key's keyup. The follow-up is then swallowed whole — no second action and
+ * no byte to the pane. A plain press never arms the guard, so key repeat and
+ * two separate presses behave as before.
+ */
+export class ShortcutPressGuard {
+  private armed: { event: object; code: string; mods: string } | null = null;
+  private swallowed: object | null = null;
+
+  /** A gate acted on `e` (ran an action, wrote a byte, entered prefix mode). */
+  noteActed(e: ShortcutKeyEventLike): void {
+    if (e === this.armed?.event) return;
+    this.armed = isImeKey(e.key) ? { event: e, code: e.code, mods: modifierPrefix(e) } : null;
+  }
+
+  /**
+   * Is `e` the IME follow-up of a press a gate already acted on? One-shot,
+   * but stable for the event it matched, so every gate the same keydown
+   * passes through gets the same answer.
+   */
+  isDuplicate(e: ShortcutKeyEventLike & { repeat?: boolean }): boolean {
+    if (e === this.swallowed) return true;
+    const armed = this.armed;
+    if (!armed || e === armed.event || MODIFIER_KEYS.includes(e.key)) return false;
+    this.armed = null;
+    if (e.repeat || isImeKey(e.key) || e.code !== armed.code || modifierPrefix(e) !== armed.mods) return false;
+    this.swallowed = e;
+    return true;
+  }
+
+  /** The press is over: its follow-up, if any, has come and gone. */
+  onKeyUp(e: { code: string }): void {
+    if (this.armed?.code === e.code) this.armed = null;
+  }
+}
+
 /**
  * The concrete combo a keydown spells, for recording a new binding — or null
  * while only modifiers are held. Uses the same key naming the resolver

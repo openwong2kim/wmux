@@ -119,6 +119,19 @@ describe('Settings → Shortcuts (#1455)', () => {
     expect(useStore.getState().activeWorkspaceId).toBe(workspaces[1].id);
   });
 
+  it('recording under an IME: the follow-up keydown does not run the new binding', () => {
+    // Hangul composition: one Ctrl+Alt+K press is `Process` then `k`. The
+    // recorder takes the first and closes; the second must not then fire
+    // the shortcut it was just bound to.
+    const workspaces = ['a', 'b'].map((n) => createWorkspace(n));
+    act(() => useStore.setState({ workspaces, activeWorkspaceId: workspaces[1].id }));
+    click(badge(PREV));
+    press({ key: 'Process', code: 'KeyK', ctrlKey: true, altKey: true });
+    expect(overrides()).toEqual({ prevWorkspace: 'Ctrl+Alt+K' });
+    press({ key: 'k', code: 'KeyK', ctrlKey: true, altKey: true });
+    expect(useStore.getState().activeWorkspaceId).toBe(workspaces[1].id);
+  });
+
   it('Escape cancels the recorder without a change', () => {
     click(badge(PREV));
     press({ key: 'Escape', code: 'Escape' });

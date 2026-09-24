@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useStore } from '../../stores';
 import { focusedTerminalPtyId } from '../../utils/focusedSurface';
-import { currentShortcutBindings } from '../../utils/shortcutBindings';
+import { currentShortcutBindings, shortcutPressGuard } from '../../utils/shortcutBindings';
 import { isComposeChord, composeOwnerHost } from '../../terminal/composeChord';
 
 /**
@@ -33,6 +33,8 @@ import { isComposeChord, composeOwnerHost } from '../../terminal/composeChord';
 export function useComposeShortcut(): void {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // The IME follow-up of a press that already toggled (ShortcutPressGuard).
+      if (shortcutPressGuard.isDuplicate(e)) return;
       // The chord is whatever the richInput action holds in the effective
       // bindings — nothing at all when the user switched it off in Settings →
       // Shortcuts, and the key then belongs to the pane (useTerminal's
@@ -72,6 +74,7 @@ export function useComposeShortcut(): void {
       const origin = composeOwnerHost(e.target);
       if (origin.ptyId !== null && (!origin.owns || origin.ptyId !== activePtyId)) return;
       e.preventDefault();
+      shortcutPressGuard.noteActed(e);
       state.setToolbarPopover(state.toolbarPopover === 'rich' ? null : 'rich');
     };
     document.addEventListener('keydown', handler);

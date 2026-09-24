@@ -7,7 +7,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
 import { isSafeGeometry } from '../../shared/terminalGeometry';
 import { isPrefixTrigger, resolveShortcut } from '../../shared/keymap';
-import { currentShortcutBindings, defaultShortcutBindings } from '../utils/shortcutBindings';
+import { currentShortcutBindings, defaultShortcutBindings, shortcutPressGuard } from '../utils/shortcutBindings';
 import { xtermWindowsBuildNumber } from '../../shared/conptyWindows';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
@@ -1847,6 +1847,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminal.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
 
+      // The IME's plain-key follow-up of a press already acted on (a
+      // shortcut run, or a released shortcut's byte written below): never
+      // PTY input. useKeyboard swallows it first; this keeps the pane from
+      // encoding it should that ever not happen. See ShortcutPressGuard.
+      if (shortcutPressGuard.isDuplicate(e)) {
+        e.preventDefault();
+        return false;
+      }
+
       // Deterministic newline keys (Shift+Enter, Ctrl+J). Resolved by physical
       // `code` where needed so a CJK IME can't mangle the keystroke: xterm
       // derives Ctrl+<letter> from the deprecated `keyCode`, which becomes 229
@@ -1921,6 +1930,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         const releasedCtrl = resolveCtrlLetterByte(e);
         if (releasedCtrl) {
           e.preventDefault();
+          shortcutPressGuard.noteActed(e);
           window.electronAPI.pty.write(ptyId, releasedCtrl);
           noteUserKeystroke(releasedCtrl);
           return false;

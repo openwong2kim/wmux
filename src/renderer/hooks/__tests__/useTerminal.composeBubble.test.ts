@@ -88,7 +88,7 @@ describe('the pane gate and the popover gate share one chord predicate (#1280)',
     );
     expect(branch).not.toBeNull();
     expect(branch?.[0]).toMatch(
-      /const releasedCtrl = resolveCtrlLetterByte\(e\);\s*if \(releasedCtrl\) \{\s*e\.preventDefault\(\);\s*window\.electronAPI\.pty\.write\(ptyId, releasedCtrl\);\s*noteUserKeystroke\(releasedCtrl\);\s*return false;/,
+      /const releasedCtrl = resolveCtrlLetterByte\(e\);\s*if \(releasedCtrl\) \{\s*e\.preventDefault\(\);\s*shortcutPressGuard\.noteActed\(e\);\s*window\.electronAPI\.pty\.write\(ptyId, releasedCtrl\);\s*noteUserKeystroke\(releasedCtrl\);\s*return false;/,
     );
     expect(HANDLER.indexOf(branch?.[0] ?? ''))
       .toBeLessThan(HANDLER.indexOf('composeOwnerHost(e.target).owns && isComposeChord'));

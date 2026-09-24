@@ -2,6 +2,7 @@ import { useStore } from '../stores';
 import {
   defaultBindings,
   effectiveBindings,
+  ShortcutPressGuard,
   type ShortcutBinding,
   type ShortcutOverrides,
 } from '../../shared/keymap';
@@ -48,3 +49,10 @@ export function defaultShortcutBindings(): readonly ShortcutBinding[] {
   }
   return defaultsCache.bindings;
 }
+
+/**
+ * The one ShortcutPressGuard every gate above shares, so a press one gate
+ * acted on is a duplicate for all of them (see shared/keymap.ts). useKeyboard
+ * feeds it keyups.
+ */
+export const shortcutPressGuard = new ShortcutPressGuard();

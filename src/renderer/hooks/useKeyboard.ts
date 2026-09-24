@@ -6,7 +6,7 @@ import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
 import { pastePtyChunked } from '../utils/clipboardChunk';
 import { isPrefixTrigger, resolveShortcut, type ShortcutActionId } from '../../shared/keymap';
-import { currentShortcutBindings } from '../utils/shortcutBindings';
+import { currentShortcutBindings, shortcutPressGuard } from '../utils/shortcutBindings';
 import { createTerminalSurface } from '../utils/createTerminalSurface';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 import {
@@ -525,6 +525,14 @@ export function useKeyboard() {
     const isMac = window.electronAPI.platform === 'darwin';
 
     const handler = (e: KeyboardEvent) => {
+      // The IME's plain-key follow-up of a press something already acted on
+      // (Hangul composition: `Process` then `t` for one Ctrl+T). Swallowed
+      // whole, before any mode below can read it as a second press.
+      if (shortcutPressGuard.isDuplicate(e)) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
       // D-exclusive: inspect (point-and-style) is the top-level exclusive mode.
       // While it's active, suppress EVERY global shortcut — the prefix trigger,
       // split/close/zoom/focus, palette/settings toggles, custom keybindings —
@@ -613,6 +621,7 @@ export function useKeyboard() {
               }
             }
           }
+          shortcutPressGuard.noteActed(e);
           exitPrefixMode();
           return;
         }
@@ -680,6 +689,7 @@ export function useKeyboard() {
       // tmux convention → literal Ctrl on every OS (do NOT remap to ⌘ on macOS).
       if (isPrefixTrigger(e, store.getState().prefixConfig.key)) {
         e.preventDefault();
+        shortcutPressGuard.noteActed(e);
         store.getState().setPrefixMode(true);
         // Start timeout — auto-exit prefix mode after 2s
         clearPrefixTimeout();
@@ -701,6 +711,7 @@ export function useKeyboard() {
       if (action && run) {
         e.preventDefault();
         if (STOP_PROPAGATION_ACTIONS.has(action)) e.stopImmediatePropagation();
+        shortcutPressGuard.noteActed(e);
         run();
         return;
       }
@@ -709,10 +720,15 @@ export function useKeyboard() {
       dispatchCustomKeybinding();
     };
 
+    // The guard's view of when a press ends (see ShortcutPressGuard).
+    const onKeyUp = (e: KeyboardEvent) => shortcutPressGuard.onKeyUp(e);
+
     // Use capture phase so we run BEFORE xterm's stopPropagation
     window.addEventListener('keydown', handler, true);
+    window.addEventListener('keyup', onKeyUp, true);
     return () => {
       window.removeEventListener('keydown', handler, true);
+      window.removeEventListener('keyup', onKeyUp, true);
       // Clean up prefix timeout on unmount
       if (prefixTimeoutRef.current !== null) {
         clearTimeout(prefixTimeoutRef.current);

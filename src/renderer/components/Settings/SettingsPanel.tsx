@@ -48,6 +48,7 @@ import {
   rebindProblem,
   type ShortcutActionId,
 } from '../../../shared/keymap';
+import { shortcutPressGuard } from '../../utils/shortcutBindings';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
@@ -4336,7 +4337,11 @@ function KeyCaptureOverlay({ label, onCapture, onCancel, record }: {
 
       if (record) {
         const combo = record(e);
-        if (combo !== null) onCapture(combo, e.code);
+        if (combo === null) return;
+        // Recorded on an IME `Process` keydown, the follow-up keydown would
+        // otherwise arrive after the recorder closed and run the new binding.
+        shortcutPressGuard.noteActed(e);
+        onCapture(combo, e.code);
         return;
       }
       const parts: string[] = [];

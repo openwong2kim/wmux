@@ -142,6 +142,17 @@ describe('useComposeShortcut modifier matching (#1280)', () => {
     expect(setToolbarPopover).toHaveBeenCalledWith('rich');
   });
 
+  it('toggles once for the IME pair: `Process` keydown then the plain `g` (#1455)', () => {
+    // Windows Hangul composition: one Ctrl+G press arrives as two keydowns.
+    // Toggling on both opened and shut the popover in one press.
+    press({ key: 'Process', code: 'KeyG', ctrlKey: true });
+    press({ key: 'g', code: 'KeyG', ctrlKey: true });
+    expect(setToolbarPopover).toHaveBeenCalledTimes(1);
+    // The next press is a press of its own.
+    press({ key: 'g', code: 'KeyG', ctrlKey: true });
+    expect(setToolbarPopover).toHaveBeenCalledTimes(2);
+  });
+
   it('yields when the user disabled Ctrl+G in Settings → Shortcuts', () => {
     state.shortcutOverrides = { richInput: null };
     press({ key: 'g', code: 'KeyG', ctrlKey: true });
