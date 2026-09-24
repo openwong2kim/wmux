@@ -947,7 +947,13 @@ export class DaemonSessionManager extends EventEmitter {
     // into the shell.
     const safeCols = clampCols(cols);
     const safeRows = clampRows(rows);
-    if (safeCols !== managed.meta.cols || safeRows !== managed.meta.rows) {
+    const geometryChanged = safeCols !== managed.meta.cols || safeRows !== managed.meta.rows;
+    if (geometryChanged) {
+      // #1464: output held by a still-muted (recovering) session so far was
+      // produced at the old size. Drop it BEFORE the resize — node-pty data
+      // arrives asynchronously, so the shell's repaint at the new size lands
+      // after this and stays held for the unmute to release.
+      managed.bridge.discardHeld();
       managed.ptyProcess.resize(safeCols, safeRows);
       managed.meta.cols = safeCols;
       managed.meta.rows = safeRows;
@@ -960,13 +966,23 @@ export class DaemonSessionManager extends EventEmitter {
     // First resize on a deferred (recovery) session unmutes data
     // capture. The 100ms delay drains any pre-resize output ConPTY
     // queued at the saved/default geometry.
+    //
+    // #1464: the output still held at unmute was produced at the size the
+    // renderer shows (anything older was discarded above), so replay it rather
+    // than drop it. Dropping it left a recovered pane blank until a key was
+    // pressed: the shell prints its prompt once, before the renderer attaches,
+    // and repaints only on a SIGWINCH — which an unchanged geometry never
+    // sends, and a changed one sends while still muted. Windows keeps the
+    // discard when the geometry changed: that is the ConPTY stale-geometry
+    // flush this delay exists to drain.
     if (managed.deferred) {
       managed.deferred = false;
       const sessionId = id;
+      const replayHeld = !geometryChanged || process.platform !== 'win32';
       setTimeout(() => {
         const current = this.sessions.get(sessionId);
         if (!current) return;
-        current.bridge.setMuted(false);
+        current.bridge.setMuted(false, { replayHeld });
       }, DEFERRED_UNMUTE_DELAY_MS).unref?.();
     }
   }

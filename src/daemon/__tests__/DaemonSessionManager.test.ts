@@ -799,8 +799,15 @@ describe('DaemonSessionManager', () => {
 
         // Resize flips deferred → false synchronously but schedules
         // the actual unmute so any output ConPTY emits at the prior
-        // geometry can drain first.
-        manager.resizeSession('rec-3', 120, 30);
+        // geometry can drain first. That flush is a ConPTY behavior, so the
+        // drop below is the Windows contract (#1464 replays it elsewhere).
+        const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+        Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+        try {
+          manager.resizeSession('rec-3', 120, 30);
+        } finally {
+          if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+        }
         expect(managed?.deferred).toBe(false);
         expect(managed?.bridge.isMuted).toBe(true);
 
@@ -816,6 +823,64 @@ describe('DaemonSessionManager', () => {
         expect(managed?.ringBuffer.readAll().toString()).toBe(
           'post-resize prompt $ ',
         );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('#1464: replays output held while muted when the first resize keeps the saved geometry', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({
+          id: 'rec-same',
+          cmd: '/bin/zsh',
+          cwd: '.',
+          cols: 62,
+          rows: 44,
+          scrollbackData: Buffer.from('history-before-crash'),
+          deferOutput: true,
+        });
+        const managed = manager.getSession('rec-same');
+        const prefill = 'history-before-crash' + restoreSeam(44);
+
+        // The fresh shell prints its first prompt before the renderer attaches.
+        lastMockPty?.simulateData('fresh-prompt % ');
+        expect(managed?.ringBuffer.readAll().toString()).toBe(prefill);
+
+        // Same geometry: no SIGWINCH reaches the shell, so it will never
+        // repaint that prompt on its own.
+        manager.resizeSession('rec-same', 62, 44);
+        vi.advanceTimersByTime(100);
+        expect(managed?.bridge.isMuted).toBe(false);
+        expect(managed?.ringBuffer.readAll().toString()).toBe(prefill + 'fresh-prompt % ');
+
+        // Live output after the unmute follows the replayed prompt in order.
+        lastMockPty?.simulateData('ls');
+        expect(managed?.ringBuffer.readAll().toString()).toBe(prefill + 'fresh-prompt % ls');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('#1464: a geometry change drops the old-size output but replays the repaint at the new size', () => {
+      if (process.platform === 'win32') return; // ConPTY keeps the discard — see the test above
+      vi.useFakeTimers();
+      try {
+        manager.createSession({ id: 'rec-diff', cmd: '/bin/zsh', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+        const managed = manager.getSession('rec-diff');
+        lastMockPty?.simulateData('prompt-at-saved-geometry % ');
+        // The relaunched renderer's first fit is often transient (27 → 25 → 27
+        // cols in the #1464 repro), so a second resize can land inside the
+        // drain window too. Each one makes the shell repaint at the new size.
+        manager.resizeSession('rec-diff', 100, 30);
+        lastMockPty?.simulateData('repaint-at-100x30 % ');
+        manager.resizeSession('rec-diff', 98, 30);
+        lastMockPty?.simulateData('repaint-at-98x30 % ');
+        expect(managed?.ringBuffer.readAll().toString()).toBe('');
+
+        vi.advanceTimersByTime(100);
+        expect(managed?.bridge.isMuted).toBe(false);
+        expect(managed?.ringBuffer.readAll().toString()).toBe('repaint-at-98x30 % ');
       } finally {
         vi.useRealTimers();
       }

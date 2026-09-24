@@ -800,6 +800,106 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           {supervision.status === 'stopped' ? '⟳!' : '⟳'}
         </span>
       )}
+      {/* Persistent per-pane resume affordance — shown whenever this agent pane
+          carries a captured conversation binding but is NOT in the reboot-
+          recovery pill flow above (the pill takes precedence right after a
+          reboot). Reveals the conversation UUID and types the exact resume
+          command into this pane on 복구. */}
+      {resumeBinding && !resumeHint && activeSurfacePtyId && (
+        <ResumeInfoChipGate
+          ptyId={activeSurfacePtyId}
+          binding={resumeBinding}
+          roleBinding={paneRoleBinding}
+          role={paneRoleName}
+          paneCwds={[
+            pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd,
+            workspace.metadata?.cwd,
+          ]}
+        />
+      )}
+      {/* D2 — muted enforced-model badge on a role-bound TERMINAL pane. Amber
+          stays reserved for alive+focus (DESIGN.md), so this rides the sub
+          tones. A browser/diff/editor surface never launches an agent, so the
+          badge would be a lie there — hence the surface-type gate, and the
+          enforceability gate beside it (see showsEnforcedModel). */}
+      {showsEnforcedModel && paneRoleBinding && (
+        <span
+          data-pane-enforced-model
+          title={t('pane.enforcedLaunch', {
+            binding: [paneRoleBinding.agent, paneRoleBinding.model].filter(Boolean).join(' · '),
+          })}
+          style={{
+            position: 'absolute',
+            top: 4,
+            // The pane's top-right is a stack of absolutely-positioned controls
+            // (zoom/maximize, the supervision badge, or SurfaceTabs' own action
+            // cluster). Anchor past whatever is present — the same approach the
+            // supervision badge above uses — so this never covers a button.
+            right: enforcedModelBadgeRight,
+            zIndex: 20,
+            padding: '0 5px',
+            fontSize: 10,
+            lineHeight: '16px',
+            fontFamily: 'ui-monospace, monospace',
+            letterSpacing: '0.02em',
+            color: 'var(--text-muted)',
+            backgroundColor: 'var(--bg-surface)',
+            border: '1px solid var(--border-soft)',
+            borderRadius: 3,
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}
+        >
+          {paneRoleBinding.model}
+        </span>
+      )}
+      {/* #645 — drop indicator. Drawn by the pane being hovered, not by the
+          one being dragged, so it lands in the right coordinate space with no
+          overlay layer. Steel accent (navigation), a thin edge line, no wash —
+          DESIGN.md's two-accent grammar reserves amber for alive/attention. */}
+      {dropIndicator && (
+        <div
+          data-pane-drop-indicator={dropIndicator}
+          style={{
+            position: 'absolute',
+            zIndex: 30,
+            pointerEvents: 'none',
+            transition: 'all 120ms ease-out',
+            ...(dropIndicator === 'swap'
+              ? {
+                  // A swap has no edge, so outline the whole pane instead.
+                  inset: 0,
+                  border: '2px solid var(--accent-blue)',
+                }
+              : dropIndicator === 'left' || dropIndicator === 'right'
+                ? { backgroundColor: 'var(--accent-blue)', top: 0, bottom: 0, width: 2, [dropIndicator]: 0 }
+                : { backgroundColor: 'var(--accent-blue)', left: 0, right: 0, height: 2, [dropIndicator]: 0 }),
+          }}
+        />
+      )}
+
+      <SurfaceTabs
+        surfaces={pane.surfaces}
+        activeSurfaceId={pane.activeSurfaceId}
+        workspace={workspace}
+        paneId={pane.id}
+        paneActive={isActive}
+        actionsMode={actionsMode}
+        onSelect={(surfaceId) => setActiveSurface(pane.id, surfaceId)}
+        onClose={handleCloseSurface}
+        onSplitHorizontal={handleSplitHorizontal}
+        onSplitVertical={handleSplitVertical}
+        onAddTerminal={handleAddTerminal}
+        onAddBrowser={handleAddBrowser}
+        onAddRemote={handleAddRemote}
+        onSplitHorizontalRemote={handleSplitRemoteHorizontal}
+        onSplitVerticalRemote={handleSplitRemoteVertical}
+      />
+      {/* #1464 — the reboot-recovery resume pill gets its own row under the
+          tab strip while the offer stands. It used to float over the pane
+          top-left, covering the tab title and the first terminal row (the
+          row it types the resume command into); the strip itself has no
+          room for it on a narrow pane. */}
       {resumeHint && resumePtyReady && !supervision && activeSurfacePtyId && (() => {
         const ptyId = activeSurfacePtyId;
         const launcher = resumeHint; // slug doubles as the launcher stem ('claude'/'codex')
@@ -897,14 +997,20 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           <span
             onClick={(e) => e.stopPropagation()}
             style={{
-              position: 'absolute',
-              top: 4,
-              left: 6,
-              zIndex: 20,
-              display: 'inline-flex',
-              flexDirection: 'column',
-              alignItems: 'flex-start',
-              gap: 4,
+              // A 36px chrome-module row in flow, so the terminal below gives up
+              // the height instead of being drawn over. On a narrow pane the
+              // checkbox label ellipsizes; the button never shrinks.
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              flexShrink: 0,
+              height: 36,
+              minWidth: 0,
+              padding: '0 8px',
+              overflow: 'hidden',
+              backgroundColor: 'var(--bg-mantle)',
+              borderBottom: '1px solid var(--border-soft)',
+              boxSizing: 'border-box',
               fontSize: 10,
               fontFamily: 'ui-monospace, monospace',
               fontWeight: 600,
@@ -917,6 +1023,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
             {canSkip && (
               <label
                 onClick={(e) => e.stopPropagation()}
+                // The flag ellipsizes on a narrow pane; keep it readable on hover.
+                title="--dangerously-skip-permissions"
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -927,8 +1035,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
                   backgroundColor: 'var(--bg-surface)',
                   border: '1px solid var(--border-soft)',
                   borderRadius: 4,
-                  padding: '1px 6px',
-                  boxShadow: 'var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.25))',
+                  padding: '0 6px',
+                  height: 24,
+                  boxSizing: 'border-box',
+                  minWidth: 0,
                   userSelect: 'none',
                 }}
               >
@@ -936,9 +1046,9 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
                   type="checkbox"
                   checked={resumeSkipPermissions}
                   onChange={(e) => setResumeSkipPermissions(e.target.checked)}
-                  style={{ accentColor: 'var(--accent-cursor)', cursor: 'pointer', margin: 0 }}
+                  style={{ accentColor: 'var(--accent-cursor)', cursor: 'pointer', margin: 0, flexShrink: 0 }}
                 />
-                <span>--dangerously-skip-permissions</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>--dangerously-skip-permissions</span>
               </label>
             )}
             {/* Button pill — DESIGN.md: amber never FILLS an area — neutral surface
@@ -952,7 +1062,9 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
                 backgroundColor: 'var(--bg-surface)',
                 border: '1px solid color-mix(in srgb, var(--accent-cursor) 55%, transparent)',
                 borderRadius: 4,
-                boxShadow: 'var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.25))',
+                height: 24,
+                boxSizing: 'border-box',
+                flexShrink: 0,
                 overflow: 'hidden',
               }}
             >
@@ -994,101 +1106,6 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           </span>
         );
       })()}
-      {/* Persistent per-pane resume affordance — shown whenever this agent pane
-          carries a captured conversation binding but is NOT in the reboot-
-          recovery pill flow above (the pill takes precedence right after a
-          reboot). Reveals the conversation UUID and types the exact resume
-          command into this pane on 복구. */}
-      {resumeBinding && !resumeHint && activeSurfacePtyId && (
-        <ResumeInfoChipGate
-          ptyId={activeSurfacePtyId}
-          binding={resumeBinding}
-          roleBinding={paneRoleBinding}
-          role={paneRoleName}
-          paneCwds={[
-            pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd,
-            workspace.metadata?.cwd,
-          ]}
-        />
-      )}
-      {/* D2 — muted enforced-model badge on a role-bound TERMINAL pane. Amber
-          stays reserved for alive+focus (DESIGN.md), so this rides the sub
-          tones. A browser/diff/editor surface never launches an agent, so the
-          badge would be a lie there — hence the surface-type gate, and the
-          enforceability gate beside it (see showsEnforcedModel). */}
-      {showsEnforcedModel && paneRoleBinding && (
-        <span
-          data-pane-enforced-model
-          title={t('pane.enforcedLaunch', {
-            binding: [paneRoleBinding.agent, paneRoleBinding.model].filter(Boolean).join(' · '),
-          })}
-          style={{
-            position: 'absolute',
-            top: 4,
-            // The pane's top-right is a stack of absolutely-positioned controls
-            // (zoom/maximize, the supervision badge, or SurfaceTabs' own action
-            // cluster). Anchor past whatever is present — the same approach the
-            // supervision badge above uses — so this never covers a button.
-            right: enforcedModelBadgeRight,
-            zIndex: 20,
-            padding: '0 5px',
-            fontSize: 10,
-            lineHeight: '16px',
-            fontFamily: 'ui-monospace, monospace',
-            letterSpacing: '0.02em',
-            color: 'var(--text-muted)',
-            backgroundColor: 'var(--bg-surface)',
-            border: '1px solid var(--border-soft)',
-            borderRadius: 3,
-            pointerEvents: 'none',
-            userSelect: 'none',
-          }}
-        >
-          {paneRoleBinding.model}
-        </span>
-      )}
-      {/* #645 — drop indicator. Drawn by the pane being hovered, not by the
-          one being dragged, so it lands in the right coordinate space with no
-          overlay layer. Steel accent (navigation), a thin edge line, no wash —
-          DESIGN.md's two-accent grammar reserves amber for alive/attention. */}
-      {dropIndicator && (
-        <div
-          data-pane-drop-indicator={dropIndicator}
-          style={{
-            position: 'absolute',
-            zIndex: 30,
-            pointerEvents: 'none',
-            transition: 'all 120ms ease-out',
-            ...(dropIndicator === 'swap'
-              ? {
-                  // A swap has no edge, so outline the whole pane instead.
-                  inset: 0,
-                  border: '2px solid var(--accent-blue)',
-                }
-              : dropIndicator === 'left' || dropIndicator === 'right'
-                ? { backgroundColor: 'var(--accent-blue)', top: 0, bottom: 0, width: 2, [dropIndicator]: 0 }
-                : { backgroundColor: 'var(--accent-blue)', left: 0, right: 0, height: 2, [dropIndicator]: 0 }),
-          }}
-        />
-      )}
-
-      <SurfaceTabs
-        surfaces={pane.surfaces}
-        activeSurfaceId={pane.activeSurfaceId}
-        workspace={workspace}
-        paneId={pane.id}
-        paneActive={isActive}
-        actionsMode={actionsMode}
-        onSelect={(surfaceId) => setActiveSurface(pane.id, surfaceId)}
-        onClose={handleCloseSurface}
-        onSplitHorizontal={handleSplitHorizontal}
-        onSplitVertical={handleSplitVertical}
-        onAddTerminal={handleAddTerminal}
-        onAddBrowser={handleAddBrowser}
-        onAddRemote={handleAddRemote}
-        onSplitHorizontalRemote={handleSplitRemoteHorizontal}
-        onSplitVerticalRemote={handleSplitRemoteVertical}
-      />
       {addRemoteModalOpen && (
         <AddRemotePaneModal
           onClose={() => setAddRemoteModalOpen(false)}
