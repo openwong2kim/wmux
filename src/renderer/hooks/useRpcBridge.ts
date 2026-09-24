@@ -12,7 +12,12 @@ import { generateId } from '../../shared/types';
 import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
 import { findStashedEntry, paneStashedError, stashedPaneLiveness } from '../../shared/paneStash';
 import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
-import { reattachModelEnvMarker, splitModelEnvMarker } from '../../shared/workerLaunch';
+import {
+  applyWorkerPermissionFlags,
+  isFanoutWorkerPermissionMode,
+  reattachModelEnvMarker,
+  splitModelEnvMarker,
+} from '../../shared/workerLaunch';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName, type A2aFormatOptions } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
@@ -947,7 +952,18 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       },
       useStore.getState().defaultShell,
     );
-    const bound = withRoleBinding(seeded, roleBinding, role);
+    const roleBound = withRoleBinding(seeded, roleBinding, role);
+    // Worker permission mode + allow-list, AFTER the role rewrite: only then is
+    // the final launcher known (a binding may have swapped claude for codex,
+    // which rejects these flags), and only then can a permission flag the
+    // binding's args added be replaced rather than doubled.
+    const workerMode = isFanoutWorkerPermissionMode(params.workerPermissionMode)
+      ? params.workerPermissionMode
+      : undefined;
+    const bound =
+      workerMode && roleBound.initialCommand
+        ? { ...roleBound, initialCommand: applyWorkerPermissionFlags(roleBound.initialCommand, workerMode) }
+        : roleBound;
     // `bound.initialCommand` stays undefined for the "environment only" launch,
     // and it has to: withWorkspaceProfile fills a MISSING command from the
     // profile's defaultPaneCommand, and an empty string is not missing.

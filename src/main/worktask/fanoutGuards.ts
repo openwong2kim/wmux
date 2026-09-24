@@ -74,6 +74,8 @@ export interface FanOutAuditRecord {
   /** sha256 of each task's effective prompt, index-aligned with `titles`. */
   promptSha256: string[];
   approvedBy: 'auto' | 'human';
+  /** The worker permission mode the tasks launch with (Settings → Agents). */
+  workerPermissionMode: string;
 }
 
 export type CapReservation = { ok: true } | { ok: false; message: string };
@@ -107,10 +109,14 @@ export class FanOutGuards {
   /** null until first read. */
   private lineage: Map<string, LineageStamp> | null = null;
   private hourly: HourlyStamp[] | null = null;
-  /** In-flight reservations against the live cap: key → task count. Process
-   *  memory only — after a restart the tasks that did spawn are ledger rows,
-   *  and the ones that did not never will. */
-  private readonly liveReservations = new Map<string, number>();
+  /** Claim-time reservations: key → task count, counted against BOTH caps
+   *  until the fan-out starts or is dropped. Process memory only — a
+   *  reservation stands for tasks that have not started, and after a restart
+   *  they never will. */
+  private readonly pending = new Map<string, number>();
+  /** Started fan-outs whose tasks are still spawning (live cap only; their
+   *  hourly stamp is already on disk). */
+  private readonly spawning = new Map<string, number>();
 
   constructor(opts: FanOutGuardsOptions = {}) {
     this.dir = opts.dir ?? getWmuxDir();
@@ -228,9 +234,11 @@ export class FanOutGuards {
     const windowStart = now - FANOUT_CAP_WINDOW_MS;
     const hourly = this.loadHourly().filter((s) => s.at > windowStart);
 
-    let reservedLive = 0;
-    for (const n of this.liveReservations.values()) reservedLive += n;
-    const live = this.countLiveTasks() + reservedLive;
+    let pendingCount = 0;
+    for (const n of this.pending.values()) pendingCount += n;
+    let spawningCount = 0;
+    for (const n of this.spawning.values()) spawningCount += n;
+    const live = this.countLiveTasks() + pendingCount + spawningCount;
     if (live + count > FANOUT_LIVE_TASK_CAP) {
       return {
         ok: false,
@@ -240,7 +248,7 @@ export class FanOutGuards {
       };
     }
 
-    const started = hourly.reduce((sum, s) => sum + s.count, 0);
+    const started = hourly.reduce((sum, s) => sum + s.count, 0) + pendingCount;
     if (started + count > FANOUT_HOURLY_TASK_CAP) {
       // Walk the window oldest-first to the stamp whose expiry makes room.
       const sorted = [...hourly].sort((a, b) => a.at - b.at);
@@ -261,28 +269,43 @@ export class FanOutGuards {
       };
     }
 
-    this.saveHourly([...hourly.filter((s) => s.id !== key), { id: key, at: now, count }]);
-    this.liveReservations.set(key, count);
+    this.pending.set(key, count);
     return { ok: true };
   }
 
-  /** The fan-out never started (preflight failure, denial, repo moved): give
-   *  back both its live slots and its hourly stamp. */
+  /** The fan-out never started (preflight failure, denial, repo moved): its
+   *  reservation stops counting against either cap. */
   release(key: string): void {
-    this.liveReservations.delete(key);
-    const hourly = this.loadHourly();
-    if (!hourly.some((s) => s.id === key)) return;
+    this.pending.delete(key);
+  }
+
+  /**
+   * The fan-out is about to spawn: its hourly stamp goes to disk, so a restart
+   * does not hand a loop a fresh hour, and its slots keep counting against the
+   * live cap until {@link settleStarted}. Only STARTED fan-outs are persisted —
+   * a reservation that was denied never touched the file.
+   */
+  commitStart(key: string): void {
+    const count = this.pending.get(key);
+    if (count === undefined) return;
+    this.pending.delete(key);
+    this.spawning.set(key, count);
+    const now = this.now();
+    const hourly = this.loadHourly().filter((s) => s.at > now - FANOUT_CAP_WINDOW_MS && s.id !== key);
+    const next = [...hourly, { id: key, at: now, count }];
     try {
-      this.saveHourly(hourly.filter((s) => s.id !== key));
-    } catch {
-      // Keeping the stamp only over-counts for an hour — the safe direction.
+      this.saveHourly(next);
+    } catch (err) {
+      // Still counted for this process; only a restart would forget it.
+      this.hourly = next;
+      console.warn(`[fanout] could not persist the hourly cap stamp: ${String(err)}`);
     }
   }
 
-  /** The fan-out finished spawning: its tasks are ledger rows now, so its live
-   *  reservation stops counting. The hourly stamp stays — it started. */
+  /** The fan-out finished spawning: its tasks are ledger rows now, so its
+   *  in-flight slots stop counting. The hourly stamp stays — it started. */
   settleStarted(key: string): void {
-    this.liveReservations.delete(key);
+    this.spawning.delete(key);
   }
 
   // ── audit ────────────────────────────────────────────────────────────────

@@ -472,6 +472,14 @@ const electronAPI = {
     start: (req: Record<string, unknown>) => ipcRenderer.invoke(IPC.FANOUT_START, req),
     markTask: (workspaceId: string, ownerWorkspaceId: string) =>
       ipcRenderer.invoke(IPC.FANOUT_MARK_TASK, workspaceId, ownerWorkspaceId) as Promise<{ ok: boolean; error?: string }>,
+    getWorkerPermissionMode: () =>
+      ipcRenderer.invoke(IPC.FANOUT_WORKER_MODE_GET) as Promise<
+        import('../shared/workerLaunch').FanoutWorkerPermissionMode
+      >,
+    setWorkerPermissionMode: (mode: import('../shared/workerLaunch').FanoutWorkerPermissionMode) =>
+      ipcRenderer.invoke(IPC.FANOUT_WORKER_MODE_SET, mode) as Promise<
+        import('../shared/workerLaunch').FanoutWorkerPermissionMode
+      >,
   },
   // Command Deck Phase 2 — the Commander brain. `send` runs one orchestrator
   // turn (resolves with the accept/reject verdict; the turn's content streams
@@ -708,6 +716,10 @@ const electronAPI = {
       install: () =>
         ipcRenderer.invoke(IPC.HOOKS_BRIDGE_INSTALL) as Promise<
           import('../cli/commands/setupHooks').InstallOutcome
+        >,
+      allowWorkerTools: () =>
+        ipcRenderer.invoke(IPC.HOOKS_BRIDGE_ALLOW_WORKER_TOOLS) as Promise<
+          import('../cli/commands/setupHooks').AllowWorkerToolsOutcome
         >,
       // Durable "Don't ask again". GET is consulted before the prompt shows;
       // SET is written only by that explicit click and cleared from Settings.

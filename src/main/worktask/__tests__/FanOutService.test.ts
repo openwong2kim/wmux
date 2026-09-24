@@ -435,6 +435,21 @@ describe('depth-1 lineage stamp', () => {
     for (const p of renderer.spawned) expect((p as { fanoutTaskOf?: string }).fanoutTaskOf).toBe('ws-ceo');
     for (const t of res.tasks) expect(lineage.fanoutOwnerOf(t.workspaceId!)).toBe('ws-ceo');
   });
+
+  it('hands the renderer the operator\'s worker permission mode for every task', async () => {
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+      workerPermissionMode: () => 'acceptEdits',
+    });
+    await svc.start(baseReq());
+    expect(renderer.spawned.map((p) => (p as { workerPermissionMode?: string }).workerPermissionMode)).toEqual([
+      'acceptEdits',
+      'acceptEdits',
+    ]);
+  });
 });
 
 describe('§0 E2E 정상 — N=2 전부 성공', () => {

@@ -10,8 +10,10 @@ import {
   findBridgeSourceFrom,
   detectProfile,
   isPermissionGateInstalled,
+  allowFanoutWorkerTools,
   type SetupHooksPaths,
 } from '../setupHooks';
+import { FANOUT_WORKER_ALLOWED_TOOLS } from '../../../shared/workerLaunch';
 
 /**
  * All tests run against an isolated temp HOME-equivalent dir via the injectable
@@ -1118,5 +1120,36 @@ describe('bundled hooks.json ↔ setup-hooks parity', () => {
     for (const event of installHooks(paths()).events) {
       expect(inBundle.has(event)).toBe(true);
     }
+  });
+});
+
+describe('allowFanoutWorkerTools', () => {
+  it('adds exactly the minimal worker list and keeps every foreign entry', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ model: 'opus', permissions: { allow: ['Bash(git status)', 'mcp__wmux__channel_post'], deny: ['X'] } }),
+    );
+    const out = allowFanoutWorkerTools(paths());
+    expect(out.ok).toBe(true);
+    const s = readSettings() as { model: string; permissions: { allow: string[]; deny: string[] } };
+    expect(s.model).toBe('opus');
+    expect(s.permissions.deny).toEqual(['X']);
+    expect(s.permissions.allow[0]).toBe('Bash(git status)');
+    for (const tool of FANOUT_WORKER_ALLOWED_TOOLS) {
+      expect(s.permissions.allow.filter((a) => a === tool)).toHaveLength(1);
+    }
+    expect(s.permissions.allow).not.toContain('mcp__wmux');
+    expect(out.added).not.toContain('mcp__wmux__channel_post');
+    // Idempotent.
+    expect(allowFanoutWorkerTools(paths()).added).toEqual([]);
+  });
+
+  it('aborts on a corrupted settings.json instead of overwriting it', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(settingsPath, '{ nope');
+    const out = allowFanoutWorkerTools(paths());
+    expect(out.ok).toBe(false);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe('{ nope');
   });
 });

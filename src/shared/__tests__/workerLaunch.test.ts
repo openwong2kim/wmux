@@ -3,6 +3,8 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  FANOUT_WORKER_ALLOWED_TOOLS,
+  applyWorkerPermissionFlags,
   MODEL_ENV_MARKER,
   WORKER_GATEWAY_ENV,
   WORKER_MODEL_ENV,
@@ -97,5 +99,57 @@ describe('reattachModelEnvMarker', () => {
     // The quoted argument is one token; a whitespace split would read its words.
     const r = reattachModelEnvMarker(MODEL_ENV_MARKER, 'claude "$(cat \'/m/--model opus/p.md\')"', undefined);
     expect(r.command.startsWith(MODEL_ENV_MARKER)).toBe(true);
+  });
+});
+
+// Fan-out worker launch flags. The flags must land AFTER the prompt argument
+// (`--allowedTools` is variadic and would swallow it), exactly once, and only
+// on a claude launch.
+describe('applyWorkerPermissionFlags', () => {
+  const PROMPT = `"$(cat '/tmp/meta/task one/prompt.md')"`;
+  const ALLOW = `"--allowedTools=${FANOUT_WORKER_ALLOWED_TOOLS.join(',')}"`;
+
+  it('appends the mode and the allow-list after the prompt', () => {
+    expect(applyWorkerPermissionFlags(`claude ${PROMPT}`, 'auto')).toBe(
+      `claude ${PROMPT} --permission-mode auto ${ALLOW}`,
+    );
+    expect(applyWorkerPermissionFlags(`claude ${PROMPT}`, 'bypassPermissions')).toBe(
+      `claude ${PROMPT} --dangerously-skip-permissions ${ALLOW}`,
+    );
+  });
+
+  it('replaces a permission flag a role binding already put on the line', () => {
+    const bound = `claude --model opus --dangerously-skip-permissions ${PROMPT} --permission-mode=plan`;
+    const out = applyWorkerPermissionFlags(bound, 'acceptEdits');
+    expect(out).toBe(`claude --model opus ${PROMPT} --permission-mode acceptEdits ${ALLOW}`);
+    expect(out.match(/--permission-mode|--dangerously-skip-permissions/g)).toHaveLength(1);
+  });
+
+  it('leaves the quoted prompt path byte-for-byte intact', () => {
+    const spaced = `claude "$(cat '/tmp/a  b/prompt.md')"`;
+    expect(applyWorkerPermissionFlags(spaced, 'auto').startsWith(spaced + ' ')).toBe(true);
+  });
+
+  it('manual adds no permission flag and keeps the line\'s own', () => {
+    const line = `claude --permission-mode plan ${PROMPT}`;
+    expect(applyWorkerPermissionFlags(line, 'manual')).toBe(`${line} ${ALLOW}`);
+  });
+
+  it('does not touch a non-claude launch (a role may have swapped the agent)', () => {
+    const codex = `codex --model o3 ${PROMPT}`;
+    expect(applyWorkerPermissionFlags(codex, 'auto')).toBe(codex);
+  });
+
+  it('allows only the minimal wmux worker tools, never the whole server', () => {
+    expect(FANOUT_WORKER_ALLOWED_TOOLS).toEqual([
+      'mcp__wmux__ledger_update',
+      'mcp__wmux__channel_post',
+      'mcp__wmux__channel_read',
+      'mcp__wmux__channel_unread',
+      'mcp__wmux__channel_ack',
+      'mcp__wmux__a2a_task_query',
+      'mcp__wmux__a2a_whoami',
+    ]);
+    expect(FANOUT_WORKER_ALLOWED_TOOLS).not.toContain('mcp__wmux');
   });
 });

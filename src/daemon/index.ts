@@ -862,7 +862,7 @@ const RESUME_SPOOL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // prune orphans after 
 // a real client crash never reconnects, so it always fires.
 const ATTACHED_ORPHAN_GRACE_MS = 60_000;
 const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
-  'bypassPermissions', 'acceptEdits', 'plan', 'default',
+  'bypassPermissions', 'acceptEdits', 'plan', 'auto', 'default',
 ]);
 
 // Validate one spool record into a {ptyId, binding} pair, or null when it is

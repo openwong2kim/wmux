@@ -57,6 +57,7 @@ describe('global caps', () => {
   it(`refuses past ${FANOUT_LIVE_TASK_CAP} live tasks, counting ledger rows and in-flight reservations`, () => {
     const g = guards(tmpDir(), { live: () => 5 });
     expect(g.reserve('a', 3)).toEqual({ ok: true });
+    g.commitStart('a');
     const over = g.reserve('b', 1);
     expect(over.ok).toBe(false);
     expect(!over.ok && over.message).toMatch(new RegExp(`at most ${FANOUT_LIVE_TASK_CAP} fan-out tasks may be live`));
@@ -72,6 +73,7 @@ describe('global caps', () => {
     const first = guards(dir, { now: clock });
     for (let k = 0; k < FANOUT_HOURLY_TASK_CAP / 8; k++) {
       expect(first.reserve(`k${k}`, 8)).toEqual({ ok: true });
+      first.commitStart(`k${k}`);
       first.settleStarted(`k${k}`);
       now += 60_000;
     }
@@ -86,16 +88,21 @@ describe('global caps', () => {
     expect(restarted.reserve('late', 1)).toEqual({ ok: true });
   });
 
-  it('gives the hourly stamp back when the fan-out never started', () => {
+  it('fills the hour with started fan-outs, and frees a reservation that never started', () => {
     const dir = tmpDir();
     const g = guards(dir);
-    expect(g.reserve('denied', 8)).toEqual({ ok: true });
-    g.release('denied');
-    const again = guards(dir);
     for (let k = 0; k < FANOUT_HOURLY_TASK_CAP / 8; k++) {
-      expect(again.reserve(`k${k}`, 8)).toEqual({ ok: true });
-      again.settleStarted(`k${k}`);
+      expect(g.reserve(`p${k}`, 8)).toEqual({ ok: true });
+      // Started and finished spawning, so only the hour still binds.
+      g.commitStart(`p${k}`);
+      g.settleStarted(`p${k}`);
     }
+    expect(g.reserve('one-more', 1).ok).toBe(false);
+
+    const fresh = guards(tmpDir());
+    for (let k = 0; k < FANOUT_HOURLY_TASK_CAP / 8; k++) expect(fresh.reserve(`d${k}`, 8).ok).toBe(k === 0);
+    fresh.release('d0');
+    expect(fresh.reserve('after-release', 8)).toEqual({ ok: true });
   });
 });
 
@@ -114,6 +121,7 @@ describe('audit log', () => {
       roleCommands: [],
       promptSha256: [promptDigest('p')],
       approvedBy: 'auto',
+      workerPermissionMode: 'auto',
     };
     g.appendAudit(base);
     g.appendAudit({ ...base, at: 2, idempotencyKey: 'k2', approvedBy: 'human' });

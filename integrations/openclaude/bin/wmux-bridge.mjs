@@ -253,7 +253,7 @@ function extractUsageFromTranscript(transcriptPath) {
 
 // Extract permission mode from transcript. Returns one of the four known
 // modes, or null.
-const VALID_PERMISSION_MODES = new Set(['bypassPermissions', 'acceptEdits', 'plan', 'default']);
+const VALID_PERMISSION_MODES = new Set(['bypassPermissions', 'acceptEdits', 'plan', 'auto', 'default']);
 function extractPermissionModeFromTranscript(transcriptPath) {
   try {
     if (!existsSync(transcriptPath)) return null;

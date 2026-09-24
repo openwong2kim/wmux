@@ -31,6 +31,12 @@ import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardow
 import type { ChromePreset } from '../../../shared/chromePresets';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import { ORCH_ROLES, launcherSupportsModelFlag } from '../../../shared/orchestratorRole';
+import {
+  DEFAULT_FANOUT_WORKER_PERMISSION_MODE,
+  FANOUT_WORKER_PERMISSION_MODES,
+  isFanoutWorkerPermissionMode,
+  type FanoutWorkerPermissionMode,
+} from '../../../shared/workerLaunch';
 import { ADVERTISED_SHORTCUTS, builtinCombosFor, macDisplayCombo, type KeymapEntry } from '../../../shared/keymap';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
@@ -2472,6 +2478,82 @@ function TabBrowser() {
   );
 }
 
+// ─── Fan-out workers — permission mode + allow-list button ───────────────────
+// The mode is main-side (it can loosen what an unattended worker may do), so
+// it is read and written over IPC, never through the renderer store.
+function FanoutWorkersSection() {
+  const t = useT();
+  const [mode, setMode] = useState<FanoutWorkerPermissionMode>(DEFAULT_FANOUT_WORKER_PERMISSION_MODE);
+  const [allowResult, setAllowResult] = useState<string | null>(null);
+  const [allowing, setAllowing] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI?.fanout?.getWorkerPermissionMode?.()
+      .then((m) => {
+        if (!cancelled && isFanoutWorkerPermissionMode(m)) setMode(m);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onModeChange = (next: string) => {
+    if (!isFanoutWorkerPermissionMode(next)) return;
+    window.electronAPI.fanout
+      .setWorkerPermissionMode(next)
+      .then((stored) => setMode(stored))
+      .catch(() => undefined);
+  };
+
+  const onAllow = async () => {
+    setAllowing(true);
+    try {
+      const out = await window.electronAPI.deck.hooksBridge.allowWorkerTools();
+      if (!out.ok) setAllowResult(t('settings.fanoutAllowWorkerToolsFailed', { error: out.error ?? '' }));
+      else if (out.added.length === 0) setAllowResult(t('settings.fanoutAllowWorkerToolsAlready'));
+      else setAllowResult(t('settings.fanoutAllowWorkerToolsDone', { count: String(out.added.length) }));
+    } catch (err) {
+      setAllowResult(t('settings.fanoutAllowWorkerToolsFailed', { error: err instanceof Error ? err.message : String(err) }));
+    } finally {
+      setAllowing(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <SectionLabel label={t('settings.fanoutWorkers')} />
+      <SettingRow
+        id="fanoutworkers"
+        label={t('settings.fanoutWorkerPermissionMode')}
+        description={t('settings.fanoutWorkerPermissionModeDesc')}
+      >
+        <SettingSelect
+          value={mode}
+          onChange={onModeChange}
+          label={t('settings.fanoutWorkerPermissionMode')}
+          options={FANOUT_WORKER_PERMISSION_MODES.map((m) => ({ value: m, label: t(`settings.fanoutWorkerMode.${m}`) }))}
+        />
+      </SettingRow>
+      {mode === 'bypassPermissions' && (
+        <p className="text-[10px] font-mono px-1" style={{ color: 'var(--accent-yellow)' }}>
+          {t('settings.fanoutWorkerBypassWarning')}
+        </p>
+      )}
+      <SettingRow
+        id="fanoutallowtools"
+        label={t('settings.fanoutAllowWorkerTools')}
+        description={allowResult ?? t('settings.fanoutAllowWorkerToolsDesc')}
+      >
+        <Button onClick={onAllow} disabled={allowing}>
+          {t('settings.fanoutAllowWorkerToolsButton')}
+        </Button>
+      </SettingRow>
+    </div>
+  );
+}
+
 // ─── Agents tab — orchestrator, A2A, agent toolbar, MCP ──────────────────────
 function TabAgents() {
   const t = useT();
@@ -2498,6 +2580,9 @@ function TabAgents() {
           />
         </SettingRow>
       </div>
+
+      {/* Fan-out workers */}
+      <FanoutWorkersSection />
 
       {/* Agent toolbar */}
       <div className="flex flex-col gap-2">

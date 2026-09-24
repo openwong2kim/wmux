@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { writeJsonAtomic } from '../../shared/settingsFile';
+import { FANOUT_WORKER_ALLOWED_TOOLS } from '../../shared/workerLaunch';
 
 /**
  * `wmux setup-hooks` — install the wmux ↔ Claude Code hook bridge directly into
@@ -718,6 +719,50 @@ export function installHooks(
     profile,
     events: specs.map((s) => s.event),
   };
+}
+
+// ----- Fan-out worker allow-list (Settings button) ------------------------
+
+export interface AllowWorkerToolsOutcome {
+  ok: boolean;
+  settingsPath: string;
+  /** Entries this call added (already-present ones are not repeated). */
+  added: string[];
+  error: string | null;
+}
+
+/**
+ * Add the minimal fan-out worker tool list to `permissions.allow` in Claude
+ * Code's user settings, so a worker's report-back calls never stop on a prompt.
+ *
+ * Only ever the fixed list in FANOUT_WORKER_ALLOWED_TOOLS — never `mcp__wmux`
+ * as a whole, which would pre-approve every tool wmux exposes. Same load and
+ * atomic write as the hook install: a corrupted settings.json aborts rather
+ * than being overwritten, and every other key and allow entry is kept.
+ */
+export function allowFanoutWorkerTools(paths: Pick<SetupHooksPaths, 'settingsPath'>): AllowWorkerToolsOutcome {
+  const base: AllowWorkerToolsOutcome = { ok: false, settingsPath: paths.settingsPath, added: [], error: null };
+  const load = loadSettings(paths.settingsPath);
+  if (load.corrupted) {
+    return {
+      ...base,
+      error:
+        `settings.json at ${paths.settingsPath} is not valid JSON — aborting to avoid ` +
+        `overwriting your Claude Code config. Fix or remove the file and retry.`,
+    };
+  }
+  const settings = load.settings;
+  const perms =
+    settings.permissions && typeof settings.permissions === 'object' && !Array.isArray(settings.permissions)
+      ? (settings.permissions as Record<string, unknown>)
+      : {};
+  const allow = Array.isArray(perms.allow) ? [...(perms.allow as unknown[])] : [];
+  const added = FANOUT_WORKER_ALLOWED_TOOLS.filter((t) => !allow.includes(t));
+  if (added.length === 0) return { ...base, ok: true };
+  perms.allow = [...allow, ...added];
+  settings.permissions = perms;
+  writeJsonAtomic(paths.settingsPath, settings);
+  return { ...base, ok: true, added };
 }
 
 // ----- Boot-time script refresh -------------------------------------------

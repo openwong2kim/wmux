@@ -194,7 +194,7 @@ function setup(opts?: {
       countLiveTasks: () => 0,
       ledgerTaskOwner: () => null,
     });
-  registerFanOutRpc(router, service, () => null, { guards });
+  registerFanOutRpc(router, service, () => null, { guards, workerPermissionMode: () => 'auto' });
   const handler = handlers.get('task.fanout.start');
   if (!handler) throw new Error('task.fanout.start was not registered');
 
@@ -1262,6 +1262,7 @@ describe('task.fanout.start — audit record', () => {
       titles: ['a', 'b'],
       roles: ['Builder', ''],
       approvedBy: 'auto',
+      workerPermissionMode: 'auto',
     });
     const { createHash } = await import('node:crypto');
     const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');

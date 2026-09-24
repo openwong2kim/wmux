@@ -48,6 +48,7 @@ import {
 } from './fanoutEnvironment';
 import { inheritTaskAutonomy } from './taskAutonomy';
 import { getFanOutGuards, type FanOutGuards } from './fanoutGuards';
+import { loadFanoutWorkerPermissionMode } from './fanoutWorkerPolicy';
 import { commandChoosesModel } from '../../shared/orchestratorRole';
 import {
   MODEL_ENV_MARKER,
@@ -55,6 +56,7 @@ import {
   WORKER_MODEL_ENV,
   isSimpleLaunchCommand,
   splitModelEnvMarker,
+  type FanoutWorkerPermissionMode,
 } from '../../shared/workerLaunch';
 import {
   clearFirstRunPrompts,
@@ -127,6 +129,10 @@ export interface FanOutRendererPort {
      *  stamps it main-side (fanout:markTask) BEFORE the pane's agent launches,
      *  and refuses the spawn if the stamp cannot be written. */
     fanoutTaskOf?: string;
+    /** The operator's worker permission mode (main-side setting). The renderer
+     *  appends the matching flag and the worker allow-list AFTER the role
+     *  rewrite, and only when the final launcher is claude. */
+    workerPermissionMode?: FanoutWorkerPermissionMode;
   }): Promise<
     | {
         workspaceId: string;
@@ -259,6 +265,9 @@ export interface FanOutServiceOptions {
   firstRunRecheckMs?: number;
   /** Depth-1 lineage store. Injected in tests; defaults to the hosted one. */
   lineage?: Pick<FanOutGuards, 'markTask'>;
+  /** Worker permission mode reader. Injected in tests; defaults to the
+   *  main-side Settings store. */
+  workerPermissionMode?: () => FanoutWorkerPermissionMode;
 }
 
 /**
@@ -291,6 +300,7 @@ export class FanOutService {
   private pendingRechecks: Promise<void>[] = [];
   /** Depth-1 lineage store (absent = the hosted one). */
   private readonly lineage?: Pick<FanOutGuards, 'markTask'>;
+  private readonly workerPermissionMode: () => FanoutWorkerPermissionMode;
 
   /** §2 G1 멱등: 키 → 완료 결과 LRU. 동일 키 재호출은 직전 결과 반환. */
   private readonly results = new Map<string, FanOutResult>();
@@ -307,6 +317,7 @@ export class FanOutService {
     this.firstRunOptions = opts.firstRunOptions;
     this.firstRunRecheckMs = opts.firstRunRecheckMs ?? FIRST_RUN_MODEL_RECHECK_MS;
     this.lineage = opts.lineage;
+    this.workerPermissionMode = opts.workerPermissionMode ?? (() => loadFanoutWorkerPermissionMode());
   }
 
   /**
@@ -666,6 +677,7 @@ export class FanOutService {
         ...(Object.keys(paneEnv).length > 0 ? { env: paneEnv } : {}),
         ...(ctx.role ? { role: ctx.role } : {}),
         fanoutTaskOf: ctx.verifiedWorkspaceId,
+        workerPermissionMode: this.workerPermissionMode(),
       });
       if ('error' in spawned) {
         await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);

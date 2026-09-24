@@ -24,6 +24,10 @@ function asOrchRole(raw: unknown): string {
 }
 import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService';
 import { getFanOutGuards } from '../../worktask/fanoutGuards';
+import {
+  loadFanoutWorkerPermissionMode,
+  setFanoutWorkerPermissionMode,
+} from '../../worktask/fanoutWorkerPolicy';
 
 export function registerFanOutHandler(service: FanOutService): () => void {
   // Depth-1 lineage stamp, written by the renderer's fanout.spawnWorkspace
@@ -46,6 +50,21 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     }),
   );
 
+  // Worker permission mode (Settings → Agents). Main owns it; see
+  // fanoutWorkerPolicy.ts for why it is not renderer state.
+  ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_GET);
+  ipcMain.handle(
+    IPC.FANOUT_WORKER_MODE_GET,
+    wrapHandler(IPC.FANOUT_WORKER_MODE_GET, async () => loadFanoutWorkerPermissionMode()),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_SET);
+  ipcMain.handle(
+    IPC.FANOUT_WORKER_MODE_SET,
+    wrapHandler(IPC.FANOUT_WORKER_MODE_SET, async (_event: Electron.IpcMainInvokeEvent, mode: unknown) =>
+      setFanoutWorkerPermissionMode(mode),
+    ),
+  );
+
   ipcMain.removeHandler(IPC.FANOUT_START);
   ipcMain.handle(
     IPC.FANOUT_START,
@@ -59,6 +78,8 @@ export function registerFanOutHandler(service: FanOutService): () => void {
   return () => {
     ipcMain.removeHandler(IPC.FANOUT_START);
     ipcMain.removeHandler(IPC.FANOUT_MARK_TASK);
+    ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_GET);
+    ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_SET);
   };
 }
 

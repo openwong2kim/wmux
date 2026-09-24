@@ -127,3 +127,86 @@ export function reattachModelEnvMarker(
   if (!shellSupportsModelEnvMarker(shell)) return { command, dropped: 'shell' };
   return { command: marker + command };
 }
+
+// ─── Fan-out worker permission mode + tool allow-list ───────────────────────
+//
+// A worker runs unattended, so the boundary that actually holds is its Claude
+// Code permission mode and allow-list, not wmux's approval dialog. The mode is
+// an operator setting (main-side, because it can loosen what a worker may do);
+// the allow-list is the fixed minimum a worker needs to report back.
+
+/** The operator's choice for fan-out workers. `manual` is wmux's word for
+ *  "add no permission flag" — deliberately NOT a PermissionMode value, which
+ *  describes what a transcript recorded rather than what wmux launches. */
+export type FanoutWorkerPermissionMode = 'auto' | 'acceptEdits' | 'bypassPermissions' | 'manual';
+
+export const FANOUT_WORKER_PERMISSION_MODES: readonly FanoutWorkerPermissionMode[] = [
+  'auto',
+  'acceptEdits',
+  'bypassPermissions',
+  'manual',
+];
+
+export const DEFAULT_FANOUT_WORKER_PERMISSION_MODE: FanoutWorkerPermissionMode = 'auto';
+
+export function isFanoutWorkerPermissionMode(v: unknown): v is FanoutWorkerPermissionMode {
+  return typeof v === 'string' && (FANOUT_WORKER_PERMISSION_MODES as readonly string[]).includes(v);
+}
+
+/**
+ * The wmux tools a worker may call without a prompt: report status, talk on
+ * its mission channel, and read who it is / what it was asked. Nothing that
+ * types into another pane, opens a browser or fans out. Never `mcp__wmux` as a
+ * whole — that would pre-approve every tool wmux exposes.
+ */
+export const FANOUT_WORKER_ALLOWED_TOOLS: readonly string[] = [
+  'mcp__wmux__ledger_update',
+  'mcp__wmux__channel_post',
+  'mcp__wmux__channel_read',
+  'mcp__wmux__channel_unread',
+  'mcp__wmux__channel_ack',
+  'mcp__wmux__a2a_task_query',
+  'mcp__wmux__a2a_whoami',
+];
+
+const PERMISSION_FLAG_FOR_WORKER: Readonly<Record<FanoutWorkerPermissionMode, string>> = {
+  auto: '--permission-mode auto',
+  acceptEdits: '--permission-mode acceptEdits',
+  bypassPermissions: '--dangerously-skip-permissions',
+  manual: '',
+};
+
+/** First-token stem, extension and path stripped (`/x/claude.exe` → claude). */
+function launchStem(command: string): string {
+  const first = command.trim().split(/\s+/)[0] ?? '';
+  return (first.split(/[\\/]/).pop() ?? '').replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
+}
+
+/**
+ * Append the worker's permission flag and allow-list to a launch line.
+ *
+ * Only a `claude` launch is touched — a role binding may have swapped the agent
+ * to one that rejects these flags. Both go AFTER everything already on the line,
+ * i.e. after the prompt argument: `--allowedTools` is variadic, so placed before
+ * the prompt it would swallow it as a tool name. The list is one quoted
+ * `--allowedTools=a,b` token for the same reason (and so PowerShell does not
+ * read the commas as an array).
+ *
+ * Any permission flag already on the line (a role binding's args, a typed
+ * agentCmd) is removed first so the setting is the one that applies; `manual`
+ * leaves the line's own flags alone, because it means "wmux adds none".
+ */
+export function applyWorkerPermissionFlags(command: string, mode: FanoutWorkerPermissionMode): string {
+  if (launchStem(command) !== 'claude') return command;
+  let line = command;
+  const flag = PERMISSION_FLAG_FOR_WORKER[mode];
+  if (flag) {
+    // Each flag goes with the whitespace in front of it, so nothing else on
+    // the line (the quoted prompt path included) is re-spaced.
+    line = line
+      .replace(/\s+--dangerously-skip-permissions(?=\s|$)/g, '')
+      .replace(/\s+--permission-mode(?:=|\s+)[A-Za-z]+(?=\s|$)/g, '');
+  }
+  const allow = `"--allowedTools=${FANOUT_WORKER_ALLOWED_TOOLS.join(',')}"`;
+  return [line, flag, allow].filter((p) => p.length > 0).join(' ');
+}

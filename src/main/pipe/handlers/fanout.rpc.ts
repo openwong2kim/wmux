@@ -88,6 +88,7 @@ import { git as runGit } from '../../git/git';
 import { loadWorkspaceDecision } from '../../deck/deckDecisionStore';
 import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService';
 import { getFanOutGuards, promptDigest, type FanOutGuards } from '../../worktask/fanoutGuards';
+import { loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -497,6 +498,8 @@ function parseTasks(
 export interface FanOutRpcDeps {
   /** Injected in tests; defaults to the hosted lineage/caps/audit store. */
   guards?: FanOutGuards;
+  /** Injected in tests; defaults to the main-side Settings store. */
+  workerPermissionMode?: () => string;
 }
 
 /**
@@ -882,6 +885,7 @@ export function registerFanOutRpc(
             promptDigest([sharedPrompt, own].filter((p) => p.length > 0).join('\n\n')),
           ),
           approvedBy: verdict.outcome === 'auto' ? 'auto' : 'human',
+          workerPermissionMode: (deps.workerPermissionMode ?? loadFanoutWorkerPermissionMode)(),
         });
       } catch (err) {
         settle(key, { phase: 'denied', reason: 'audit-unavailable' });
@@ -894,6 +898,7 @@ export function registerFanOutRpc(
       // await, so there is no window in which the gate says 'started' and the
       // service still says 'unknown'.
       settle(key, { phase: 'started' });
+      guards.commitStart(key);
       try {
         await service.start(req);
       } catch (err) {

@@ -471,7 +471,7 @@ function extractUsageFromTranscript(transcriptPath) {
 // Mirrors extractUsageFromTranscript's parse-tolerant tail read (last 64KB).
 // Returns one of the four known modes, or null (file absent, no record yet, or
 // an unrecognized value).
-const VALID_PERMISSION_MODES = new Set(['bypassPermissions', 'acceptEdits', 'plan', 'default']);
+const VALID_PERMISSION_MODES = new Set(['bypassPermissions', 'acceptEdits', 'plan', 'auto', 'default']);
 function extractPermissionModeFromTranscript(transcriptPath) {
   try {
     if (!existsSync(transcriptPath)) return null;
