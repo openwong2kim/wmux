@@ -8,7 +8,7 @@
  * without importing the full RPC bridge (and its xterm/canvas dependencies).
  *
  * Fan-out shares the queue, the dialog and the timer but NOT the auto-approve
- * toggle — see requestFanOutApproval.
+ * toggle, and by default it is not prompted at all — see requestFanOutApproval.
  */
 import { useStore } from '../stores';
 import { generateId } from '../../shared/types';
@@ -19,8 +19,10 @@ import {
 } from '../../shared/executeApprovalBounds';
 
 /** How an approval prompt ended. `timeout` is the unattended case, and callers
- *  that report back over the wire need to tell it apart from a real denial. */
-export type ApprovalOutcome = 'approved' | 'declined' | 'timeout';
+ *  that report back over the wire need to tell it apart from a real denial.
+ *  `auto` means no prompt was shown because the operator turned it off (the
+ *  fan-out default) — the audit log records it as approved by nobody. */
+export type ApprovalOutcome = 'approved' | 'declined' | 'timeout' | 'auto';
 
 interface ApprovalInput {
   taskId: string;
@@ -216,13 +218,19 @@ export function requestExecuteApproval(input: {
 /**
  * Gate for a fan-out started over the pipe/MCP surface.
  *
- * Same queue, same dialog, same 30s timer as the execute gate — but deliberately
- * NOT the same consent. `a2aAutoApproveExecute` is the user agreeing that an
- * agent may spawn a background agent; it is not the user agreeing that an agent
- * may create N git worktrees and branches in their repository. So fan-out is
- * never auto-approved, and it reports the outcome instead of a bare boolean:
- * the wire caller has already been told "accepted", so a silent auto-deny would
- * leave an unattended fleet waiting on a fan-out that will never happen.
+ * By default there is no prompt (owner decision 2026-09-24): fan-out runs
+ * unattended, and the brakes are main-side — depth-1, the global caps and the
+ * audit log (worktask/fanoutGuards.ts). `fanoutRequireApproval` turns the
+ * prompt back on.
+ *
+ * When it is on: same queue, same dialog, same 30s timer as the execute gate —
+ * but deliberately NOT the same consent. `a2aAutoApproveExecute` is the user
+ * agreeing that an agent may spawn a background agent; it is not the user
+ * agreeing that an agent may create N git worktrees and branches in their
+ * repository, so it never answers this prompt. The outcome goes back instead
+ * of a bare boolean: the wire caller has already been told "accepted", so a
+ * silent auto-deny would leave an unattended fleet waiting on a fan-out that
+ * will never happen.
  */
 export function requestFanOutApproval(input: {
   workspaceId: string;
@@ -230,6 +238,9 @@ export function requestFanOutApproval(input: {
   taskCount: number;
   messagePreview: string;
 }): Promise<{ approved: boolean; outcome: ApprovalOutcome }> {
+  if (!useStore.getState().fanoutRequireApproval) {
+    return Promise.resolve({ approved: true, outcome: 'auto' });
+  }
   return enqueueApproval(
     {
       taskId: 'fan-out',
@@ -246,7 +257,7 @@ export function requestFanOutApproval(input: {
 /**
  * Gate for the two destructive task-lifecycle methods (task.close, task.pr).
  *
- * Never auto-approved, for the same reason fan-out is not: `a2aAutoApproveExecute`
+ * Never auto-approved: `a2aAutoApproveExecute`
  * is consent to background execution, and neither removing a worktree nor
  * pushing a branch to a remote is that. The outcome (not a bare boolean) goes
  * back over the wire so an unattended orchestrator learns it was refused, and

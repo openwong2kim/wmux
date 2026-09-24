@@ -145,6 +145,28 @@ describe('useRpcBridge — fan-out task roles', () => {
     expect(helper?.[0]).toMatch(/no binding/);
   });
 
+  it('stamps the depth-1 lineage main-side BEFORE the pane (and its agent) exists', () => {
+    const block = fanoutSpawnBlock();
+    const stamp = block.indexOf('fanout.markTask(newWsId, fanoutTaskOf)');
+    expect(stamp).toBeGreaterThan(-1);
+    expect(stamp).toBeLessThan(block.indexOf('pty.create(createOptions)'));
+  });
+
+  it('appends the worker permission flags after the role rewrite and before the marker goes back on', () => {
+    const block = fanoutSpawnBlock();
+    const bind = block.indexOf('withRoleBinding(seeded, roleBinding, role)');
+    const flags = block.indexOf('applyWorkerPermissionFlags(roleBound.initialCommand, workerMode)');
+    const marker = block.indexOf('reattachModelEnvMarker(marker, bound.initialCommand');
+    expect(bind).toBeGreaterThan(-1);
+    expect(flags).toBeGreaterThan(bind);
+    expect(marker).toBeGreaterThan(flags);
+  });
+
+  it('toasts once for an unattended fan-out', () => {
+    const m = src.match(/if \(method === 'fanout\.requestApproval'\)[\s\S]*?\n {2}\}\n/);
+    expect(m?.[0]).toMatch(/verdict\.outcome === 'auto'[\s\S]*pushToast/);
+  });
+
   it('restores focus before the role write, not after', () => {
     // setRole is an IPC round-trip; awaiting it while the new workspace is
     // active drags the user's screen for every task in the fan-out.

@@ -472,6 +472,10 @@ const electronAPI = {
     start: (req: Record<string, unknown>) => ipcRenderer.invoke(IPC.FANOUT_START, req),
     markTask: (workspaceId: string, ownerWorkspaceId: string) =>
       ipcRenderer.invoke(IPC.FANOUT_MARK_TASK, workspaceId, ownerWorkspaceId) as Promise<{ ok: boolean; error?: string }>,
+    recentAudit: (limit: number) =>
+      ipcRenderer.invoke(IPC.FANOUT_AUDIT_RECENT, limit) as Promise<
+        import('../main/worktask/fanoutGuards').FanOutAuditRecord[]
+      >,
     getWorkerPermissionMode: () =>
       ipcRenderer.invoke(IPC.FANOUT_WORKER_MODE_GET) as Promise<
         import('../shared/workerLaunch').FanoutWorkerPermissionMode

@@ -50,6 +50,16 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     }),
   );
 
+  // The Fleet Approvals tab's "recent unattended fan-outs" list.
+  ipcMain.removeHandler(IPC.FANOUT_AUDIT_RECENT);
+  ipcMain.handle(
+    IPC.FANOUT_AUDIT_RECENT,
+    wrapHandler(IPC.FANOUT_AUDIT_RECENT, async (_event: Electron.IpcMainInvokeEvent, limit: unknown) => {
+      const n = typeof limit === 'number' && Number.isInteger(limit) ? Math.min(Math.max(limit, 1), 100) : 20;
+      return getFanOutGuards().recentAudit(n);
+    }),
+  );
+
   // Worker permission mode (Settings → Agents). Main owns it; see
   // fanoutWorkerPolicy.ts for why it is not renderer state.
   ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_GET);
@@ -78,6 +88,7 @@ export function registerFanOutHandler(service: FanOutService): () => void {
   return () => {
     ipcMain.removeHandler(IPC.FANOUT_START);
     ipcMain.removeHandler(IPC.FANOUT_MARK_TASK);
+    ipcMain.removeHandler(IPC.FANOUT_AUDIT_RECENT);
     ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_GET);
     ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_SET);
   };

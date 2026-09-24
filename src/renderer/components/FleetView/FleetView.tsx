@@ -24,6 +24,7 @@ import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
 import { FleetRowMenu, FleetRowEditor, fleetRowVerbsFromState, toggleFleetStash, type FleetEditorKind } from './FleetRowActions';
 import ApprovalInboxList from './ApprovalInboxList';
+import RecentAutoRuns from './RecentAutoRuns';
 import RemoteInboxList from './RemoteInboxList';
 import { fleetTitle, matchesFleetFilter, type FleetFilter } from './fleetPresentation';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
@@ -669,13 +670,16 @@ export default function FleetView() {
         {/* Body */}
         <div ref={bodyRef} id="fleet-tab-panel" role="tabpanel" aria-labelledby={`fleet-tab-${tab}`} className="wmux-fleet-body">
           {tab === 'approvals' ? (
-            inbox.length > 0 ? (
-              <ApprovalInboxList items={inbox} focusedIdx={inboxIdx} onResolve={resolveInboxItem} />
-            ) : (
-              <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
-                {t('fleet.approvals.empty')}
-              </div>
-            )
+            <>
+              {inbox.length > 0 ? (
+                <ApprovalInboxList items={inbox} focusedIdx={inboxIdx} onResolve={resolveInboxItem} />
+              ) : (
+                <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
+                  {t('fleet.approvals.empty')}
+                </div>
+              )}
+              <RecentAutoRuns />
+            </>
           ) : tab === 'remote' ? (
             remoteInbox.length > 0 ? (
               <RemoteInboxList items={remoteInbox} focusedIdx={remoteIdx} onDismiss={dismissRemoteItem} />

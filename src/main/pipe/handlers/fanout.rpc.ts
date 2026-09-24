@@ -38,6 +38,10 @@
 //      only inside the service) so the wire gets a wire-shaped rejection and an
 //      oversized array is bounded before any per-element work.
 //   R7 approval — see below.
+//   R8 runaway brakes — depth-1 (a fan-out task cannot fan out), the app-wide
+//      live / hourly caps, and the audit record written before anything
+//      spawns (worktask/fanoutGuards.ts). With approval off by default these
+//      are what stop a loop.
 //
 // Asynchrony is forced, not chosen: the MCP client's RPC deadline is 10s
 // (wmux-client.ts) and one task's renderer spawn alone is allowed 30s. So the
@@ -45,7 +49,11 @@
 // awaiting_approval / running / completed / denied. The poll answer comes from
 // FanOutService's existing G1 bookkeeping plus the gate map below.
 //
-// R7 — fan-out DOES ask the user, and the ask is NOT the a2a execute gate:
+// R7 — by default fan-out does NOT ask (owner decision 2026-09-24): the
+// renderer answers `fanout.requestApproval` with outcome 'auto', shows one
+// toast, and R8's brakes carry the load. The Settings toggle
+// `fanoutRequireApproval` turns the ask back on, and then it is NOT the a2a
+// execute gate:
 //
 //   * It reuses the execute approval queue and dialog (one inbox, one timer),
 //     but it goes through requestFanOutApproval, which does NOT consult
@@ -348,9 +356,9 @@ async function resolveSenderSurfaceCwd(
  * workspace already has a pane in — and a pane that reports no cwd of its own
  * still reads the workspace-level one (the residual R3 already documents).
  * Neither escapes the workspace: ctx.commanderWorkspace is bound to exactly one
- * and every path here is scoped to it. What holds the line inside the workspace
- * is the approval prompt, which prints the resolved repository and is never
- * auto-approved — the operator sees the path before anything spawns.
+ * and every path here is scoped to it. Inside the workspace, the resolved
+ * repository is printed in the approval prompt when approval is on, and is
+ * always written to the audit record before anything spawns.
  */
 async function resolveCommanderAnchorPtyId(
   getWindow: GetWindow,

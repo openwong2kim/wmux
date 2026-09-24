@@ -240,8 +240,28 @@ const FANOUT_INPUT = {
   messagePreview: 'refactor the parser',
 };
 
-describe('requestFanOutApproval (pipe/MCP fan-out gate)', () => {
-  beforeEach(resetGate);
+describe('requestFanOutApproval — default: no prompt', () => {
+  beforeEach(() => {
+    resetGate();
+    useStore.getState().setFanoutRequireApproval(false);
+  });
+
+  it('is off by default', () => {
+    // A fresh store, not the one the other tests toggle.
+    expect(useStore.getInitialState().fanoutRequireApproval).toBe(false);
+  });
+
+  it('answers approved/auto without raising a dialog', async () => {
+    await expect(requestFanOutApproval(FANOUT_INPUT)).resolves.toEqual({ approved: true, outcome: 'auto' });
+    expect(useStore.getState().pendingExecuteApprovalOrder).toHaveLength(0);
+  });
+});
+
+describe('requestFanOutApproval (pipe/MCP fan-out gate, approval turned on)', () => {
+  beforeEach(() => {
+    resetGate();
+    useStore.getState().setFanoutRequireApproval(true);
+  });
 
   it('still asks even when the A2A auto-approve toggle is on', async () => {
     useStore.getState().setA2aAutoApproveExecute(true);

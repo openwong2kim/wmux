@@ -19,6 +19,7 @@ import {
   splitModelEnvMarker,
 } from '../../shared/workerLaunch';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
+import { t } from '../i18n';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName, type A2aFormatOptions } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
 import { findPendingExecuteRequest, requestExecuteApproval, requestFanOutApproval, requestTaskApproval } from '../utils/executeApprovalGate';
@@ -811,11 +812,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
   }
 
   if (method === 'fanout.requestApproval') {
-    // 파이프/MCP fan-out의 승인 게이트. 큐·다이얼로그·30s 타이머는 A2A execute
-    // 게이트와 공유하지만 전역 auto-approve 토글(a2aAutoApproveExecute)은 타지
-    // 않는다 — 그 토글은 백그라운드 에이전트 스폰에 대한 동의지 worktree N개
-    // 생성에 대한 동의가 아니다(requestFanOutApproval). 렌더러 다이얼로그가
-    // 시작하는 fan-out(FanOutDialog)은 사람 클릭이 곧 승인이라 이 경로를 타지 않는다.
+    // The pipe/MCP fan-out approval gate. Off by default: the fan-out runs
+    // unattended (outcome 'auto') behind main's depth-1, caps and audit log,
+    // and gets one toast so it is never invisible. With `fanoutRequireApproval`
+    // on it shares the A2A execute queue, dialog and 30s timer, but never the
+    // a2aAutoApproveExecute toggle (requestFanOutApproval). A fan-out the GUI
+    // FanOutDialog starts is a human click and does not come through here.
     //
     // outcome을 그대로 돌려준다: main은 이미 호출자에게 accepted를 반환한 뒤라,
     // 자동 거부가 "조용히 사라지는" 대신 폴 응답에 이유로 실려야 한다.
@@ -837,6 +839,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       taskCount,
       messagePreview: previewWithRoles,
     });
+    if (verdict.outcome === 'auto') {
+      useStore.getState().pushToast({
+        message: t('fanout.autoRunToast', { count: taskCount, repo: repoPath }),
+        level: 'info',
+      });
+    }
     return { approved: verdict.approved, outcome: verdict.outcome, roleCommands };
   }
 

@@ -384,6 +384,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     scrollbackLines: state.scrollbackLines,
     scrollbackRestoreEnabled: state.scrollbackRestoreEnabled,
     a2aAutoApproveExecute: state.a2aAutoApproveExecute,
+    fanoutRequireApproval: state.fanoutRequireApproval,
     sidebarPosition: state.sidebarPosition,
     sidebarAttentionFirst: state.sidebarAttentionFirst,
     sidebarShowPaneCoordinates: state.sidebarShowPaneCoordinates,

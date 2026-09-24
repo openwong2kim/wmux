@@ -102,6 +102,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'ledgergate', tab: 'agents', labelKey: 'settings.ledgerGate', descKey: 'settings.ledgerGateDesc', synonyms: 'ledger gate stop task orchestrator delegated experimental' },
   { id: 'roles', tab: 'agents', labelKey: 'settings.roleBindings', descKey: 'settings.roleBindingsDesc', synonyms: 'role reviewer tester planner model bind' },
   { id: 'a2a', tab: 'agents', labelKey: 'settings.a2aAutoApproveExecute', descKey: 'settings.a2aAutoApproveExecuteDesc', synonyms: 'a2a execute approve' },
+  { id: 'fanoutapproval', tab: 'agents', labelKey: 'settings.fanoutRequireApproval', descKey: 'settings.fanoutRequireApprovalDesc', synonyms: 'fanout fan-out approval approve prompt unattended ask' },
   { id: 'fanoutworkers', tab: 'agents', labelKey: 'settings.fanoutWorkerPermissionMode', descKey: 'settings.fanoutWorkerPermissionModeDesc', synonyms: 'fanout fan-out worker permission auto bypass sandbox' },
   { id: 'fanoutallowtools', tab: 'agents', labelKey: 'settings.fanoutAllowWorkerTools', descKey: 'settings.fanoutAllowWorkerToolsDesc', synonyms: 'fanout worker allow tools permissions settings.json' },
   { id: 'mcp', tab: 'agents', labelKey: 'settings.mcpServers', synonyms: 'mcp plugin tools broker register' },

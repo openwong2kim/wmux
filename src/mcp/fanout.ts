@@ -112,7 +112,7 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
       // tools/list does not contain. Every profile can see the mission channels
       // themselves, which is the same answer.
       'Returns { status: "accepted" } immediately: spawning outlasts one RPC, so poll with the SAME idempotency_key, or watch each mission channel appear in your channel list. ' +
-      'The user must approve first and that prompt is never auto-approved; unanswered, a poll reports { status: "denied", reason: "timeout" } rather than leaving you waiting. ' +
+      'No approval prompt unless the user turned it on (unanswered, a poll says denied/timeout). A task cannot fan out again; over the cap (8 live, 24/h) it is refused. ' +
       'Repository, owning workspace and agent command all come from your verified identity — fan-out runs in YOUR repository, the tasks are owned by you, and it is refused without that identity. ' +
       'An accept or the completed poll may carry `warnings` (also printed as WARNING lines): the fan-out ran, but something will stop its reports reaching you or the tasks did not start from a fresh origin commit — act on it.',
     FANOUT_START_SHAPE,

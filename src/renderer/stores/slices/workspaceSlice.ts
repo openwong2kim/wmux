@@ -1321,6 +1321,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.a2aAutoApproveExecute === 'boolean') {
         state.a2aAutoApproveExecute = data.a2aAutoApproveExecute;
       }
+      if (typeof data.fanoutRequireApproval === 'boolean') {
+        state.fanoutRequireApproval = data.fanoutRequireApproval;
+      }
       if (data.sidebarPosition) state.sidebarPosition = data.sidebarPosition;
       if (typeof data.sidebarAttentionFirst === 'boolean') {
         state.sidebarAttentionFirst = data.sidebarAttentionFirst;

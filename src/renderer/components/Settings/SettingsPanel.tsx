@@ -2483,6 +2483,8 @@ function TabBrowser() {
 // it is read and written over IPC, never through the renderer store.
 function FanoutWorkersSection() {
   const t = useT();
+  const fanoutRequireApproval = useStore((s) => s.fanoutRequireApproval);
+  const setFanoutRequireApproval = useStore((s) => s.setFanoutRequireApproval);
   const [mode, setMode] = useState<FanoutWorkerPermissionMode>(DEFAULT_FANOUT_WORKER_PERMISSION_MODE);
   const [allowResult, setAllowResult] = useState<string | null>(null);
   const [allowing, setAllowing] = useState(false);
@@ -2524,6 +2526,17 @@ function FanoutWorkersSection() {
   return (
     <div className="flex flex-col gap-2">
       <SectionLabel label={t('settings.fanoutWorkers')} />
+      <SettingRow
+        id="fanoutapproval"
+        label={t('settings.fanoutRequireApproval')}
+        description={t('settings.fanoutRequireApprovalDesc')}
+      >
+        <Toggle
+          checked={fanoutRequireApproval}
+          onChange={setFanoutRequireApproval}
+          label={t('settings.fanoutRequireApproval')}
+        />
+      </SettingRow>
       <SettingRow
         id="fanoutworkers"
         label={t('settings.fanoutWorkerPermissionMode')}
