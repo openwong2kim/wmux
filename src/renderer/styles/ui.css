@@ -926,3 +926,97 @@
 @media (prefers-reduced-motion: reduce) {
   .ui-switch, .ui-switch-knob, .ui-checkbox, .ui-select > select, .ui-segment { transition: none; }
 }
+
+/* Raised card (DESIGN.md gpui surfacing): faint surface fill, hairline, top
+ * inset highlight. */
+.ui-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-surface) 45%, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-main) 8%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 5%, transparent);
+}
+/* Inline machine evidence (commands, paths, error codes) inside prose. */
+.ui-code {
+  font-family: var(--font-mono, 'Cascadia Code', 'JetBrains Mono', ui-monospace, monospace);
+  font-size: 11px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg-surface) 70%, transparent);
+  color: var(--text-sub);
+  overflow-wrap: anywhere;
+}
+
+/* Welcome (first-run) dialog. */
+.wmux-welcome-checklist { display: flex; flex-direction: column; gap: 2px; }
+.wmux-welcome-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 28px;
+  padding: 4px 0;
+}
+.wmux-welcome-row-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 20px;
+  color: var(--text-muted);
+}
+.wmux-welcome-row[data-status="ok"] .wmux-welcome-row-glyph { color: var(--accent-green); }
+.wmux-welcome-row[data-status="warn"] .wmux-welcome-row-glyph { color: var(--accent-yellow); }
+.wmux-welcome-row[data-status="error"] .wmux-welcome-row-glyph { color: var(--accent-red); }
+.wmux-welcome-row-todo {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  border: 1.3px solid currentColor;
+}
+.wmux-welcome-row-text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.wmux-welcome-row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--text-main);
+}
+.wmux-welcome-row-detail { margin: 0; font-size: 11px; line-height: 16px; color: var(--text-sub); }
+.wmux-welcome-row-error { margin: 2px 0 0; font-size: 11px; line-height: 16px; color: var(--accent-red); }
+.wmux-welcome-row-action { flex-shrink: 0; padding-top: 0; }
+.wmux-welcome-link {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 5px;
+  color: var(--accent-blue);
+  font-size: 11px;
+  text-decoration: none;
+}
+.wmux-welcome-link:hover { text-decoration: underline; }
+.wmux-welcome-alert {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-red) 30%, transparent);
+}
+.wmux-welcome-sample-row { display: flex; align-items: flex-end; gap: 12px; }
+.wmux-welcome-sample-text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.wmux-welcome-sample h3 { margin: 0; }
+.wmux-welcome-running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--accent-cursor, var(--accent));
+}
