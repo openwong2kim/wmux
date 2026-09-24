@@ -15,7 +15,9 @@ import {
 import {
   resolvePtyOwnerWorkspace,
   assertWorkspaceOwnsPty,
+  assertCallerMayAccessPty,
   resolveRoleBindingForPty,
+  type TaskOwnerLane,
 } from '../ptyOwnership';
 import { STALE_TRUST_MS } from '../../pipe/handlers/hooks.rpc';
 
@@ -200,5 +202,71 @@ describe('resolveRoleBindingForPty (T6)', () => {
     pushSnapshot({ roleBindings: { 'pty-1': { bogus: true } } });
     expect(await resolveRoleBindingForPty(getWindow, 'pty-1')).toBeUndefined();
     expect(mockedSend).not.toHaveBeenCalled();
+  });
+});
+
+// Fan-out T5 — the owner lane. ws-A owns an open task whose workspace is ws-B
+// (pty-3); pty-1 is ws-A's own pane.
+describe('assertCallerMayAccessPty — task-owner lane (fan-out T5)', () => {
+  const lane = (over: Partial<TaskOwnerLane> = {}): TaskOwnerLane => ({
+    openTaskWorkspacesOf: (owner) => (owner === 'ws-A' ? ['ws-B'] : []),
+    ...over,
+  });
+
+  it('grants a commander its open task pane; the mirror short-circuits the allow', async () => {
+    pushSnapshot();
+    const access = await assertCallerMayAccessPty(
+      getWindow, 'pty-3', 'ws-A', 'test', lane({ commanderWorkspace: 'ws-A' }),
+    );
+    expect(access).toEqual({ lane: 'task-owner', taskWorkspaceId: 'ws-B', callerWorkspaceId: 'ws-A' });
+  });
+
+  it('grants a pane caller identified by its walked ptyId, not by any named workspace', async () => {
+    pushSnapshot();
+    const access = await assertCallerMayAccessPty(
+      getWindow, 'pty-3', 'ws-A', 'test', lane({ callerPtyId: 'pty-2' }),
+    );
+    expect(access).toMatchObject({ lane: 'task-owner', callerWorkspaceId: 'ws-A' });
+  });
+
+  it('denies with the ownership error when no verified identity is present', async () => {
+    pushSnapshot();
+    mockedSend.mockResolvedValue({ workspaceId: 'ws-B' });
+    await expect(
+      assertCallerMayAccessPty(getWindow, 'pty-3', 'ws-A', 'test', lane()),
+    ).rejects.toThrow(/Cross-workspace terminal access is not allowed/);
+  });
+
+  it('denies when the caller owns no open task there', async () => {
+    pushSnapshot();
+    mockedSend.mockResolvedValue({ workspaceId: 'ws-B' });
+    await expect(
+      assertCallerMayAccessPty(
+        getWindow, 'pty-3', 'ws-A', 'test',
+        lane({ commanderWorkspace: 'ws-A', openTaskWorkspacesOf: () => [] }),
+      ),
+    ).rejects.toThrow(/not owned by workspace "ws-A"/);
+  });
+
+  it('a mirror miss round-trips before denying (deny authority stays fresh)', async () => {
+    pushSnapshot();
+    // Mirror says pty-1 is ws-A's own, not a task pane; the renderer says it
+    // just moved into the task workspace — the round-trip wins.
+    mockedSend.mockResolvedValue({ workspaceId: 'ws-B' });
+    const access = await assertCallerMayAccessPty(
+      getWindow, 'pty-1', 'ws-Z', 'test', lane({ commanderWorkspace: 'ws-A' }),
+    );
+    expect(access).toMatchObject({ lane: 'task-owner', taskWorkspaceId: 'ws-B' });
+  });
+
+  it('fails closed when the ledger lookup throws', async () => {
+    pushSnapshot();
+    mockedSend.mockResolvedValue({ workspaceId: 'ws-B' });
+    await expect(
+      assertCallerMayAccessPty(
+        getWindow, 'pty-3', 'ws-A', 'test',
+        lane({ commanderWorkspace: 'ws-A', openTaskWorkspacesOf: () => { throw new Error('disk'); } }),
+      ),
+    ).rejects.toThrow(/Cross-workspace/);
   });
 });

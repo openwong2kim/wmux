@@ -84,8 +84,13 @@ type Answer = { ok: boolean; error?: string; result?: unknown };
 const asBrain = (method: string, params: Record<string, unknown>): Promise<Answer> =>
   w.router.dispatch({ id: '1', method, params, commanderToken: w.token } as never) as Promise<Answer>;
 
+/** The human operator's in-process surface (the renderer bridge). */
 const asHuman = (method: string, params: Record<string, unknown>): Promise<Answer> =>
-  w.router.dispatch({ id: '1', method, params } as never) as Promise<Answer>;
+  w.router.dispatch({ id: '1', method, params } as never, { operator: true }) as Promise<Answer>;
+
+/** A pane agent on the wire: no commander token, not the operator. */
+const asPaneAgent = (method: string, params: Record<string, unknown>): Promise<Answer> =>
+  w.router.dispatch({ id: '1', method, params } as never, { externalWire: true }) as Promise<Answer>;
 
 describe('terminal_send at a pane holding an approval', () => {
   it('refuses the brain, and names approval_press with the pane id', async () => {
@@ -145,13 +150,27 @@ describe('terminal_send at a pane holding an approval', () => {
     expect(w.writes).toHaveLength(1);
   });
 
-  it('does not touch the human operator — only a commander is blocked', async () => {
+  it('does not touch the human operator', async () => {
     w = wire({ pending: [OWNED] });
 
     const res = await asHuman('input.send', { ptyId: 'pty-w', text: '1' });
 
     expect(res.ok).toBe(true);
     expect(w.writes).toEqual([{ ptyId: 'pty-w', data: '1' }]);
+  });
+
+  // Fan-out T5: a pane agent can now type at the task panes it owns, and its
+  // "1" misfires exactly as a brain's does. It cannot press (approval_press is
+  // commander-only), so the refusal says the human answers instead.
+  it('refuses a pane agent too, and says who can answer', async () => {
+    w = wire({ pending: [OWNED] });
+
+    const res = await asPaneAgent('input.send', { ptyId: 'pty-w', text: '1' });
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('refusing to type at an approval prompt');
+    expect(res.error).toContain('the human answers this prompt in the pane');
+    expect(w.writes).toHaveLength(0);
   });
 
   it('lets the brain type when no record exists — a worker without wmux hooks', async () => {

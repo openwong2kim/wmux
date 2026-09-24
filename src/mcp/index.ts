@@ -1164,6 +1164,15 @@ server.tool(
 
 // === Terminal tools ===
 
+// Fan-out T5: our walked pane (MY_PTY_ID, hit-only) as `callerPtyId`, from which
+// main resolves who we are to grant the owner lane — reaching the panes of our
+// OPEN fan-out tasks. Hit-only for the same reason as the channel and fan-out
+// tools: this field GRANTS, so the weak WMUX_PTY_ID env hint must not feed it.
+// `senderPtyId` (weak fallback allowed) stays the reject-only self-loop guard.
+function addCallerPtyId(params: Record<string, unknown>): void {
+  if (MY_PTY_ID) params.callerPtyId = MY_PTY_ID;
+}
+
 server.tool(
   'terminal_read',
   `Read the recent text from a terminal: by default the last ${DEFAULT_READ_TAIL_LINES} lines, which is the recent screen plus enough history to judge an agent's latest turn. Omit ptyId for the active terminal. The bound is deliberate — escalate on purpose, not by reflex: widen with tail_lines (e.g. 800), and only as a last resort pull the whole backlog with full_scrollback. For structured command boundaries / exit codes use terminal_read_events instead.`,
@@ -1175,6 +1184,7 @@ server.tool(
     // Clamp, not reject: an over-limit request is served at the ceiling.
     if (tail_lines !== undefined) params.tail_lines = Math.min(tail_lines, MAX_READ_TAIL_LINES);
     if (full_scrollback) params.full_scrollback = true;
+    addCallerPtyId(params);
     return callRpc('input.readScreen', params);
   },
 );
@@ -1191,6 +1201,7 @@ server.tool(
     if (limit !== undefined) params.limit = Math.min(limit, 1024);
     if (sinceOffset !== undefined) params.sinceOffset = sinceOffset;
     if (lastCommandOnly) params.lastCommandOnly = true;
+    addCallerPtyId(params);
     return callRpc('terminal.readEvents', params);
   },
 );
@@ -1213,6 +1224,7 @@ server.tool(
     const senderPtyId = getTaskSenderPtyId();
     if (senderPtyId) base.senderPtyId = senderPtyId;
     if (submit) base.submit = true;
+    addCallerPtyId(base);
     return callRpc('input.send', base);
   },
 );
@@ -1230,6 +1242,7 @@ server.tool(
     // agent (self-loop / sibling misroute).
     const senderPtyId = getTaskSenderPtyId();
     if (senderPtyId) params.senderPtyId = senderPtyId;
+    addCallerPtyId(params);
     const result = await callRpc('input.sendKey', params);
     // Say plainly what `ok` covers. The RPC confirms DELIVERY of a keystroke and
     // nothing more, but callers read a bare `{ok:true}` from an Enter press as
