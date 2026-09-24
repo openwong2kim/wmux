@@ -143,6 +143,8 @@ export const ko = {
   'sidebar.showWorkspaces': '워크스페이스 보기',
   'sidebar.expandTooltip': '사이드바 펼치기 (Ctrl+B)',
   'sidebar.unreadCount': '읽지 않음 {count}개',
+  'sidebar.sortMigrated': '이제 사이드바가 주의 순으로 정렬됩니다: 응답이 필요한 것이 먼저 옵니다.',
+  'sidebar.sortMigratedUndo': '수동 순서 유지',
   'sidebar.changedSinceSeen': '마지막으로 본 뒤 바뀜',
   'sidebar.pinned': '고정됨 — 자리를 지킵니다',
   'sidebar.pin': '위치 고정',

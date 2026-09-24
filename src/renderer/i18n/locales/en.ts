@@ -148,6 +148,8 @@ export const en = {
   'sidebar.showWorkspaces': 'Show workspaces',
   'sidebar.expandTooltip': 'Expand sidebar (Ctrl+B)',
   'sidebar.unreadCount': '{count} unread',
+  'sidebar.sortMigrated': 'The sidebar now sorts by attention: what needs you comes first.',
+  'sidebar.sortMigratedUndo': 'Keep manual order',
   'sidebar.changedSinceSeen': 'Changed since you last looked',
   'sidebar.pinned': 'Pinned — keeps its place',
   'sidebar.pin': 'Pin position',

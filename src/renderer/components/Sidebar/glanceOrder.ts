@@ -14,6 +14,9 @@
 export const NEW_WORKSPACE_HOLD_MS = 3 * 60_000;
 /** A pending re-sort applies after the list has been quiet this long. */
 export const GLANCE_SETTLE_MS = 3_000;
+/** Under changes that never stop, a pending re-sort applies this long after
+ *  the first one (still never while the pointer or focus is in the list). */
+export const GLANCE_MAX_WAIT_MS = 10_000;
 
 export function glanceOrder<T extends { id: string }>(
   manual: readonly T[],

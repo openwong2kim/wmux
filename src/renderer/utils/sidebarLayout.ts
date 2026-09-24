@@ -57,6 +57,25 @@ export function resolveSidebarSortMode(data: {
   return 'attention';
 }
 
+/**
+ * The order a session was actually showing before the 2026-09-25 default flip
+ * (what resolveSidebarSortMode's input meant under the old rules). Used to
+ * tell a user once that their Manual list now sorts by attention.
+ */
+export function previousSidebarSortMode(data: {
+  sidebarSortMode?: unknown;
+  sidebarSortModeChosen?: unknown;
+  sidebarAttentionFirst?: unknown;
+}): SidebarSortMode {
+  if (isSidebarSortMode(data.sidebarSortMode)) return data.sidebarSortMode;
+  return data.sidebarAttentionFirst === true ? 'attention' : 'manual';
+}
+
+/** True when loading this session switches a Manual list to Attention. */
+export function sortModeMigratedToAttention(data: Parameters<typeof previousSidebarSortMode>[0]): boolean {
+  return previousSidebarSortMode(data) === 'manual' && resolveSidebarSortMode(data) === 'attention';
+}
+
 /** Remembered-expansion key of the "From closed workspace" group. */
 export const ORPHAN_GROUP_KEY = '__closed-owner__';
 

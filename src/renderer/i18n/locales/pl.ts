@@ -156,6 +156,8 @@ export const pl = {
   'sidebar.showWorkspaces': 'Pokaż obszary robocze',
   'sidebar.expandTooltip': 'Rozwiń pasek boczny (Ctrl+B)',
   'sidebar.unreadCount': '{count} nieprzeczytanych',
+  'sidebar.sortMigrated': 'Pasek boczny sortuje teraz według uwagi: najpierw to, co czeka na Ciebie.',
+  'sidebar.sortMigratedUndo': 'Zostaw ręczną kolejność',
   'sidebar.changedSinceSeen': 'Zmieniło się od ostatniego spojrzenia',
   'sidebar.pinned': 'Przypięte — zostaje na miejscu',
   'sidebar.pin': 'Przypnij pozycję',

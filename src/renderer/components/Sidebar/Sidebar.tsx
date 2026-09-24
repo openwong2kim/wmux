@@ -58,10 +58,7 @@ export default function Sidebar() {
     const q = wsSearch.toLowerCase();
     return workspaces.filter((ws) => ws.name.toLowerCase().includes(q));
   }, [workspaces, wsSearch]);
-  // Glance board (2026-09-25): Attention by default, applied only after a
-  // settle or when the pointer leaves the list (useSettledOrder).
-  const { ordered: orderedWorkspaces, onPointerEnter: onListPointerEnter, onPointerLeave: onListPointerLeave } =
-    useGlanceBoardOrder(filteredWorkspaces);
+
   // #1481 — fan-out nesting. Both maps change only when a fan-out lands, a
   // task closes or detaches, or the audit log is re-read — not on output.
   const missionByPaneGroup = useStore((s) => s.missionByPaneGroup);
@@ -69,6 +66,38 @@ export default function Sidebar() {
   const fanoutSpawnOwner = useStore((s) => s.fanoutSpawnOwner);
   const fanoutSettled = useStore((s) => s.fanoutRefreshSettled);
   const sidebarWidth = useStore((s) => s.sidebarWidth);
+  // One-time notice when this load moved a Manual list to Attention: sessions
+  // saved before the choice was recorded cannot prove Manual was chosen, so
+  // they are told once and can take it back.
+  const sortMigrated = useStore((s) => s.sidebarSortMigrated);
+  useEffect(() => {
+    if (!sortMigrated) return;
+    const st = useStore.getState();
+    st.clearSidebarSortMigrated();
+    st.pushToast({
+      level: 'info',
+      message: t('sidebar.sortMigrated'),
+      durationMs: 15_000,
+      action: { label: t('sidebar.sortMigratedUndo'), onClick: () => useStore.getState().setSidebarSortMode('manual') },
+    });
+  }, [sortMigrated, t]);
+  // Glance board (2026-09-25): Attention by default, applied only after a
+  // settle, or when the pointer / focus leaves the list (useSettledOrder).
+  // Nested fan-out tasks lift their owner: the owner scores as its most urgent
+  // task (see useGlanceBoardOrder).
+  const nestedOwnerOf = useCallback((id: string) => {
+    const liveIds = new Set(workspaces.map((w) => w.id));
+    const link = resolveTaskLink(missionByPaneGroup[id], fanoutLineage[id], fanoutSpawnOwner[id]);
+    if (!link || link.detached || !link.ownerId || link.ownerId === id || !liveIds.has(link.ownerId)) return undefined;
+    return link.ownerId;
+  }, [workspaces, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
+  const {
+    ordered: orderedWorkspaces,
+    onPointerEnter: onListPointerEnter,
+    onPointerLeave: onListPointerLeave,
+    onFocusCapture: onListFocus,
+    onBlurCapture: onListBlur,
+  } = useGlanceBoardOrder(filteredWorkspaces, nestedOwnerOf);
   const tree = useMemo(() => {
     const byId = new Map(workspaces.map((w) => [w.id, w]));
     return buildSidebarTree(
@@ -249,6 +278,8 @@ export default function Sidebar() {
         className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 space-y-1"
         onPointerEnter={onListPointerEnter}
         onPointerLeave={onListPointerLeave}
+        onFocusCapture={onListFocus}
+        onBlurCapture={onListBlur}
         onDragOver={(e) => {
           if (useStore.getState().draggedWorkspaceIndex !== null) {
             e.preventDefault();

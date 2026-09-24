@@ -997,9 +997,16 @@ export function newestPaneStamp(
   return newest;
 }
 
-/** Agent rows only — the filter the titlebar vitals and Fleet apply. */
-export function isFleetAgentPane(p: Pick<FleetPane, 'remote' | 'ptyId' | 'surfaceType'>): boolean {
-  return p.remote ? true : p.ptyId !== '' && p.surfaceType === 'terminal';
+/**
+ * Agent rows only — the filter the titlebar vitals and Fleet apply, widened
+ * for the glance board: a pane whose ACTIVE tab is a browser but whose
+ * terminal tab behind it carries an attention status (attentionPtyId) is an
+ * agent pane too, or a background agent waiting on you would drop out.
+ */
+export function isFleetAgentPane(p: Pick<FleetPane, 'remote' | 'ptyId' | 'surfaceType' | 'attentionPtyId'>): boolean {
+  if (p.remote) return true;
+  if (p.attentionPtyId) return true;
+  return p.ptyId !== '' && p.surfaceType === 'terminal';
 }
 
 /**
@@ -1009,21 +1016,47 @@ export function isFleetAgentPane(p: Pick<FleetPane, 'remote' | 'ptyId' | 'surfac
  * not change on every byte. Lower score sorts first. Workspaces with no agent
  * pane score as idle with no stamp.
  */
+const attentionCache = new WeakMap<object, { scores: Record<string, number>; classes: Record<string, FleetAttentionClass> }>();
+
 export function selectWorkspaceAttentionScores(
   state: FleetSelectorState & { surfaceOutputAt?: Record<string, number> },
 ): Record<string, number> {
-  const best: Record<string, { rank: number; at: number }> = {};
+  return workspaceAttention(state).scores;
+}
+
+/** workspace id → its most urgent attention class (idle when it has no agent). */
+export function selectWorkspaceAttentionClasses(
+  state: FleetSelectorState & { surfaceOutputAt?: Record<string, number> },
+): Record<string, FleetAttentionClass> {
+  return workspaceAttention(state).classes;
+}
+
+// One pass per store state, shared by every row and the order (the sidebar
+// reads it from many subscribers on the same write).
+function workspaceAttention(
+  state: FleetSelectorState & { surfaceOutputAt?: Record<string, number> },
+): { scores: Record<string, number>; classes: Record<string, FleetAttentionClass> } {
+  const cached = attentionCache.get(state);
+  if (cached) return cached;
+  const best: Record<string, { rank: number; at: number; cls: FleetAttentionClass }> = {};
   for (const pane of selectFleetPanes(state)) {
     if (!isFleetAgentPane(pane)) continue;
     const target = fleetTargetPtyId(pane);
     const question = target ? state.surfacePendingQuestion?.[target]?.trim() || undefined : undefined;
-    const rank = ATTENTION_CLASS_RANK[fleetAttentionClass(pane, question)];
+    const cls = fleetAttentionClass(pane, question);
+    const rank = ATTENTION_CLASS_RANK[cls];
     const at = Math.floor(newestPaneStamp(target, state) / 60_000);
     const cur = best[pane.workspaceId];
-    if (!cur || rank < cur.rank || (rank === cur.rank && at > cur.at)) best[pane.workspaceId] = { rank, at };
+    if (!cur || rank < cur.rank || (rank === cur.rank && at > cur.at)) best[pane.workspaceId] = { rank, at, cls };
   }
-  const out: Record<string, number> = {};
-  for (const ws of state.workspaces) out[ws.id] = attentionScore(best[ws.id]?.rank ?? ATTENTION_CLASS_RANK.idle, best[ws.id]?.at ?? 0);
+  const scores: Record<string, number> = {};
+  const classes: Record<string, FleetAttentionClass> = {};
+  for (const ws of state.workspaces) {
+    scores[ws.id] = attentionScore(best[ws.id]?.rank ?? ATTENTION_CLASS_RANK.idle, best[ws.id]?.at ?? 0);
+    classes[ws.id] = best[ws.id]?.cls ?? 'idle';
+  }
+  const out = { scores, classes };
+  attentionCache.set(state, out);
   return out;
 }
 

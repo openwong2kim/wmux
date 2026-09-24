@@ -11,7 +11,7 @@ import {
   selectWorkspaceAttentionScores,
   type FleetPane,
 } from '../fleet';
-import { seenPanes, seenUpdates, selectSidebarUnseen, selectSidebarUnseenWorkspaces } from '../sidebarSeen';
+import { seenTabs, seenUpdates, selectSidebarUnseen, selectSidebarUnseenWorkspaces, visibleWorkspaceIds } from '../sidebarSeen';
 import type { StoreState } from '../../index';
 import type { AgentStatus, Pane, Surface, Workspace } from '../../../../shared/types';
 
@@ -72,26 +72,83 @@ describe('selectWorkspaceAttentionScores', () => {
   });
 });
 
+const rec = (status: AgentStatus, rev = 0, seenRev = rev) => ({ entry: { status }, rev, seenRev });
+
 describe('changed-since-you-last-looked', () => {
-  it('seeds a pane the first time it is seen, so it opens without a dot', () => {
+  it('seeds a tab the first time it is seen, so it opens without a dot', () => {
     const s = state({ a: 'running' });
-    const updates = seenUpdates(seenPanes(s), new Set(), {});
-    expect(updates['pty-a']).toEqual({ status: 'running' });
-    expect(selectSidebarUnseen({ ...s, sidebarSeen: {} } as StoreState)).toEqual({});
+    const { updates } = seenUpdates(seenTabs(s), new Set(), {});
+    expect(updates['pty-a']).toEqual(rec('running'));
+    expect(selectSidebarUnseen(s)).toEqual({});
   });
 
-  it('sets the dot when an out-of-view pane finishes or needs you after it was seen', () => {
+  it('sets the dot when an out-of-view tab finishes or needs you after it was seen', () => {
     const s = state({ a: 'complete', b: 'awaiting_input', c: 'running' }, {
-      sidebarSeen: { 'pty-a': { status: 'running' }, 'pty-b': { status: 'running' }, 'pty-c': { status: 'idle' } },
+      sidebarSeen: { 'pty-a': rec('complete', 1, 0), 'pty-b': rec('awaiting_input', 1, 0), 'pty-c': rec('running', 1, 0) },
     });
     expect(selectSidebarUnseen(s)).toEqual({ 'pty-a': true, 'pty-b': true });
     expect(selectSidebarUnseenWorkspaces(s)).toEqual({ a: true, b: true });
   });
 
-  it('clears when the workspace is in view: no dot, and the snapshot catches up', () => {
-    const seen = { 'pty-a': { status: 'running' as AgentStatus } };
+  it('clears when the workspace is in view: no dot, and seenRev catches up', () => {
+    const seen = { 'pty-a': rec('running') };
     const s = state({ a: 'complete' }, { sidebarSeen: seen, activeWorkspaceId: 'a' });
     expect(selectSidebarUnseen(s)).toEqual({});
-    expect(seenUpdates(seenPanes(s), new Set(['a']), seen)).toEqual({ 'pty-a': { status: 'complete' } });
+    expect(seenUpdates(seenTabs(s), new Set(['a']), seen).updates['pty-a']).toEqual({ entry: { status: 'complete' }, rev: 1, seenRev: 1 });
+  });
+
+  // Review #6 — a round trip is still a change.
+  it('counts a round trip (complete → running → complete) as unseen', () => {
+    let seen: Record<string, ReturnType<typeof rec>> = { 'pty-a': rec('complete') };
+    for (const status of ['running', 'complete'] as AgentStatus[]) {
+      const next = seenUpdates(seenTabs(state({ a: status })), new Set(), seen).updates;
+      seen = { ...seen, ...next };
+    }
+    expect(seen['pty-a']).toMatchObject({ rev: 2, seenRev: 0 });
+    expect(selectSidebarUnseen(state({ a: 'complete' }, { sidebarSeen: seen }))).toEqual({ 'pty-a': true });
+  });
+
+  it('prunes records of tabs that no longer exist', () => {
+    expect(seenUpdates(seenTabs(state({ a: 'idle' })), new Set(), { 'pty-gone': rec('idle') }).removed).toEqual(['pty-gone']);
+  });
+
+  // Review #5 — per agent TAB: a background tab gets its own record and dot.
+  it('tracks a background agent tab behind the active one', () => {
+    const s = state({ a: 'running' });
+    const w = s.workspaces[0];
+    const leaf = w.rootPane as Extract<Pane, { type: 'leaf' }>;
+    leaf.surfaces.push({ ...leaf.surfaces[0], id: 'a-s2', ptyId: 'pty-a2' });
+    const s2 = { ...s, surfaceAgent: { ...s.surfaceAgent, 'pty-a2': { name: 'Claude Code', status: 'complete' } }, surfaceAgentStatus: { 'pty-a2': 'complete' }, sidebarSeen: { 'pty-a': rec('running'), 'pty-a2': rec('complete', 1, 0) } } as unknown as StoreState;
+    expect(seenTabs(s2).map((t) => t.ptyId)).toEqual(['pty-a', 'pty-a2']);
+    expect(selectSidebarUnseen(s2)).toEqual({ 'pty-a2': true });
+  });
+});
+
+// Review #1 — visibility follows what is actually on screen.
+describe('visibleWorkspaceIds', () => {
+  it('counts the multiview grid only while the active workspace is part of it', () => {
+    expect([...visibleWorkspaceIds({ activeWorkspaceId: 'a', multiviewIds: ['a', 'b'] })].sort()).toEqual(['a', 'b']);
+    expect([...visibleWorkspaceIds({ activeWorkspaceId: 'c', multiviewIds: ['a', 'b'] })]).toEqual(['c']);
+  });
+  it('hides every local workspace while a remote mirror is showing', () => {
+    const remoteWorkspaces = [{ key: 'h:1', stale: false, ephemeral: false }] as unknown as StoreState['remoteWorkspaces'];
+    expect([...visibleWorkspaceIds({ activeWorkspaceId: 'a', multiviewIds: [], activeRemoteKey: 'h:1', remoteWorkspaces })]).toEqual([]);
+  });
+});
+
+// Review #2/#4 — one rule for plain waiting; a terminal behind a browser tab still counts.
+describe('shared class edge cases', () => {
+  it('scores plain waiting (no question) as idle, like Fleet', () => {
+    const s = state({ w: 'waiting', r: 'running' });
+    const scores = selectWorkspaceAttentionScores(s);
+    expect(scores.r < scores.w).toBe(true);
+  });
+  it('keeps an agent waiting behind a browser tab as needs you', () => {
+    const s = state({ a: 'awaiting_input', b: 'running' });
+    const leaf = s.workspaces[0].rootPane as Extract<Pane, { type: 'leaf' }>;
+    leaf.surfaces.push({ id: 'a-browser', ptyId: '', title: '', shell: '', cwd: '', surfaceType: 'browser' } as never);
+    leaf.activeSurfaceId = 'a-browser';
+    const scores = selectWorkspaceAttentionScores({ ...s } as StoreState);
+    expect(scores.a < scores.b).toBe(true);
   });
 });

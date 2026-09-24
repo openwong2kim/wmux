@@ -20,12 +20,9 @@ const sidebarSrc = readFileSync(resolve(SIDEBAR_DIR, 'Sidebar.tsx'), 'utf8');
 const miniSrc = readFileSync(resolve(SIDEBAR_DIR, 'MiniSidebar.tsx'), 'utf8');
 const itemSrc = readFileSync(resolve(SIDEBAR_DIR, 'WorkspaceItem.tsx'), 'utf8');
 
+// The displayed order itself is asserted by rendering the sidebar:
+// Sidebar.glanceOrder.dynamic.test.tsx. What stays here is index wiring.
 describe('Sidebar — ordering wiring (#1481: manual / needs-you-first / recent)', () => {
-  // Glance board (2026-09-25): every mode goes through one shared hook.
-  it('orders through the shared glance-board hook', () => {
-    expect(sidebarSrc).toContain("import { useGlanceBoardOrder } from './useGlanceBoardOrder';");
-    expect(sidebarSrc).toContain('useGlanceBoardOrder(filteredWorkspaces)');
-  });
 
   it('builds the rendered tree from the ordered list, not the filtered one', () => {
     expect(sidebarSrc).toMatch(/buildSidebarTree\(\s*orderedWorkspaces,/);
@@ -40,9 +37,6 @@ describe('Sidebar — ordering wiring (#1481: manual / needs-you-first / recent)
 });
 
 describe('MiniSidebar — ordering wiring', () => {
-  it('orders through the same shared hook as the full sidebar', () => {
-    expect(miniSrc).toContain('useGlanceBoardOrder(workspaces)');
-  });
 
   it('renders the ordered rail', () => {
     expect(miniSrc).toContain('orderedWorkspaces.map(');
@@ -72,7 +66,7 @@ describe('drag reorder is paused while the ordering is on', () => {
   // shipping its own translation between the two orders.
   it('gates draggable on the setting, on both surfaces', () => {
     // WorkspaceItem folds the sort mode and task rows into one flag (#1481).
-    expect(itemSrc).toContain("const sortPaused = useStore((s) => s.sidebarSortMode !== 'manual');");
+    expect(itemSrc).toContain("const sortPaused = sortMode !== 'manual';");
     expect(itemSrc).toContain('draggable={!reorderOff}');
     expect(miniSrc).toContain('draggable={!sidebarAttentionFirst}');
     expect(miniSrc).toContain("const sidebarAttentionFirst = sidebarSortMode !== 'manual';");

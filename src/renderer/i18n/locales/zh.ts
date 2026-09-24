@@ -16,6 +16,8 @@ export const zh = {
   'sidebar.hideTooltip': '隐藏侧边栏 (Ctrl+B)',
   'sidebar.expandTooltip': '展开侧边栏 (Ctrl+B)',
   'sidebar.unreadCount': '{count} 条未读',
+  'sidebar.sortMigrated': '侧边栏现在按关注排序：需要你的排在最前。',
+  'sidebar.sortMigratedUndo': '保留手动顺序',
   'sidebar.changedSinceSeen': '自上次查看后有变化',
   'sidebar.pinned': '已固定 — 保持位置',
   'sidebar.pin': '固定位置',

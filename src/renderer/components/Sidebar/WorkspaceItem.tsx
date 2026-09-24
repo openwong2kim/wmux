@@ -9,6 +9,7 @@ import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { StatusMarkView } from './AgentMarks';
 import { selectSidebarUnseenWorkspaces } from '../../stores/selectors/sidebarSeen';
+import { selectWorkspaceAttentionClasses } from '../../stores/selectors/fleet';
 import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning, IconFanOut, IconPin } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24_CLUSTER, HIT_TARGET_24_IN_CLUSTER } from '../hitArea';
@@ -314,7 +315,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // stored order are untouched.
   // #1481 — any non-manual order ('attention' or 'recent') is display-only in
   // the same way, so reorder pauses for both; task rows never reorder.
-  const sortPaused = useStore((s) => s.sidebarSortMode !== 'manual');
+  const sortMode = useStore((s) => s.sidebarSortMode);
+  const sortPaused = sortMode !== 'manual';
   const reorderOff = sortPaused || taskRow;
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
@@ -334,7 +336,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // An agent that is blocked on the user is the one row state the design
   // system lets us paint (DESIGN.md: the only permitted wash is the danger
   // needs-input row). Two renditions and no more — the wash and the label.
-  const needsYou = agentStatus === 'waiting' || agentStatus === 'awaiting_input';
+  // One rule with Fleet and the Attention order (fleetAttentionClass): a
+  // plain `waiting` with no pending question is idle there, so it must not
+  // paint a "Needs you" row that sorts to the bottom.
+  const attentionClass = useStore((s) => selectWorkspaceAttentionClasses(s)[workspaceId] ?? 'idle');
+  const needsYou = attentionClass === 'needsYou' && (agentStatus === 'waiting' || agentStatus === 'awaiting_input');
+  const markStatus = agentStatus === 'waiting' && attentionClass !== 'needsYou' ? 'idle' : agentStatus;
   // Glance board (2026-09-25): something here changed since it was last in
   // view, and it wants a look. Fleet's changed-dot rule: --text-main, never amber.
   const unseen = useStore((s) => !!selectSidebarUnseenWorkspaces(s)[workspaceId]);
@@ -789,11 +796,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             box on the name line. */}
         <span className="mt-1 flex-none">
           <StatusMarkView
-            status={agentStatus}
+            status={markStatus}
             unverifiable={unverifiableMinutes > 0}
             label={unverifiableMinutes > 0
               ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
-              : agentStatus !== 'idle' ? t(AGENT_STATUS_ICON[agentStatus].labelKey) : undefined}
+              : markStatus !== 'idle' ? t(AGENT_STATUS_ICON[markStatus].labelKey) : undefined}
           />
         </span>
 
@@ -847,7 +854,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     data-sidebar-unseen
                   />
                 )}
-                {pinned && (
+                {pinned && sortMode === 'attention' && (
                   <span className="flex-none text-[var(--text-muted)]" role="img" aria-label={t('sidebar.pinned')} title={t('sidebar.pinned')} data-sidebar-pinned>
                     <IconPin size={10} />
                   </span>
@@ -976,7 +983,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         {/* #1481 review — Ctrl+N follows the stored order, which nesting no
             longer mirrors on screen; a nested task row would show a hint out
             of sequence with the rows around it, so it shows none. */}
-        {!taskRow && (
+        {/* Ctrl+N follows the stored (manual) order, which only Manual shows
+            on screen; in the other orders a hint would name a shortcut out of
+            sequence with the rows around it, so none is drawn. */}
+        {!taskRow && !sortPaused && (
           <span className={`text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5 ${restHidden}`}>
             {index < 9 ? `^${index + 1}` : ''}
           </span>
@@ -1097,14 +1107,18 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           </button>
           {/* Glance board: a pinned row keeps its manual place in the
               Attention order instead of moving with its status. */}
-          <button
-            className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
-            style={{ color: 'var(--text-main)' }}
-            onClick={() => { setMenuPos(null); toggleSidebarPin(workspaceId); }}
-            data-workspace-action="pin"
-          >
-            {pinned ? t('sidebar.unpin') : t('sidebar.pin')}
-          </button>
+          {/* Pinning only does something in the Attention order, so it is only
+              offered there (a pinned row still shows its glyph elsewhere). */}
+          {sortMode === 'attention' && (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+              onClick={() => { setMenuPos(null); toggleSidebarPin(workspaceId); }}
+              data-workspace-action="pin"
+            >
+              {pinned ? t('sidebar.unpin') : t('sidebar.pin')}
+            </button>
+          )}
           {/* Color tag — hover to reveal the swatch row. A single row of eight
               swatches plus "None" keeps the whole picker one click deep; a
               modal would be heavier than the decision it holds. */}

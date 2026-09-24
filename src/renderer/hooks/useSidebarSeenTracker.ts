@@ -1,25 +1,26 @@
-// Keeps `sidebarSeen` current: panes in view are "seen" as they change, new
-// panes are seeded. Mounted once at the layout level so it runs while the
-// sidebar is collapsed too (glance board, 2026-09-25).
+// Keeps `sidebarSeen` current: tabs in view are marked seen as they change,
+// new tabs are seeded, closed tabs are pruned. Mounted once at the layout
+// level (as a render-null component) so it runs while the sidebar is collapsed
+// too (glance board, 2026-09-25).
 
 import { useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../stores';
-import { seenPanes, seenUpdates, visibleWorkspaceIds } from '../stores/selectors/sidebarSeen';
+import { seenTabs, seenUpdates, visibleWorkspaceIds } from '../stores/selectors/sidebarSeen';
 
 export function useSidebarSeenTracker(): void {
-  // A compact key per pane plus the visible set: the effect re-runs only when
-  // one of those changes, not on every store write.
+  // A compact key per tab plus the visible set: the effect re-runs only when
+  // one of those changes. seenTabs is cached per store state.
   const key = useStore(useShallow((s) => {
     const out: Record<string, string> = {};
-    for (const p of seenPanes(s)) out[p.ptyId] = `${p.workspaceId}|${p.stashed ? 1 : 0}|${p.entry.status}|${p.entry.question ?? ''}`;
+    for (const t of seenTabs(s)) out[t.ptyId] = `${t.workspaceId}|${t.stashed ? 1 : 0}|${t.entry.status}|${t.entry.question ?? ''}`;
     out['\u0000visible'] = [...visibleWorkspaceIds(s)].sort().join(',');
     return out;
   }));
   useEffect(() => {
     const s = useStore.getState();
-    const updates = seenUpdates(seenPanes(s), visibleWorkspaceIds(s), s.sidebarSeen ?? {});
-    if (Object.keys(updates).length > 0) s.markSidebarSeen(updates);
+    const { updates, removed } = seenUpdates(seenTabs(s), visibleWorkspaceIds(s), s.sidebarSeen ?? {});
+    if (Object.keys(updates).length > 0 || removed.length > 0) s.markSidebarSeen(updates, removed);
   }, [key]);
 }
 

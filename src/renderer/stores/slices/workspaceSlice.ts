@@ -19,7 +19,7 @@ import { retentionMigrationDone, markRetentionMigrationDone } from '../retention
 import { decUnread } from './notificationSlice';
 import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { stashedPaneLiveness } from '../../../shared/paneStash';
-import { clampSidebarWidth, pruneTaskGroupExpanded, resolveSidebarSortMode } from '../../utils/sidebarLayout';
+import { clampSidebarWidth, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention } from '../../utils/sidebarLayout';
 import {
   collectLeafIds,
   getLeafPanes,
@@ -1354,6 +1354,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // predates it carries only the flag, which maps onto 'attention'.
       state.sidebarSortMode = resolveSidebarSortMode(data);
       state.sidebarSortModeChosen = data.sidebarSortModeChosen === true;
+      state.sidebarSortMigrated = sortModeMigratedToAttention(data);
       {
         const liveIds = new Set((data.workspaces ?? []).map((w) => w.id));
         state.sidebarPinnedIds = Array.isArray(data.sidebarPinnedIds)

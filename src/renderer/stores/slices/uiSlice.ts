@@ -39,6 +39,14 @@ export interface FleetSeenEntry {
   question?: string;
 }
 
+/** Glance board — one agent tab's "changed since you last looked" record
+ *  (see stores/selectors/sidebarSeen.ts). */
+export interface SidebarSeenRecord {
+  entry: FleetSeenEntry;
+  rev: number;
+  seenRev: number;
+}
+
 /** What Fleet showed when it was last closed, per ptyId. Same pane/status
  *  pairs the Deck briefing diffs (plus the question text, so a new question
  *  in the same status still counts), kept in memory for the session. */
@@ -480,6 +488,10 @@ export interface UISlice {
   sidebarSortMode: SidebarSortMode;
   /** The user picked the sort mode in Settings (kept across the default flip). */
   sidebarSortModeChosen: boolean;
+  /** Session-only: this load moved a Manual list to Attention; the sidebar
+   *  shows a one-time notice with Undo and clears the flag. */
+  sidebarSortMigrated: boolean;
+  clearSidebarSortMigrated: () => void;
   /** Workspaces that keep their manual position in the Attention order. */
   sidebarPinnedIds: string[];
   toggleSidebarPin: (workspaceId: string) => void;
@@ -490,8 +502,9 @@ export interface UISlice {
    * it (the pane's workspace was on screen). Same entry shape Fleet's
    * last-seen snapshot keeps; drives the sidebar's "changed" dot.
    */
-  sidebarSeen: Record<string, FleetSeenEntry>;
-  markSidebarSeen: (entries: Record<string, FleetSeenEntry>) => void;
+  sidebarSeen: Record<string, SidebarSeenRecord>;
+  /** Merge tracker writes and drop records of tabs that no longer exist. */
+  markSidebarSeen: (updates: Record<string, SidebarSeenRecord>, removed?: readonly string[]) => void;
   setSidebarSortMode: (mode: SidebarSortMode) => void;
 
   /** #1481 — expanded sidebar width in px (clamped 220–400, default 264). */
@@ -1453,10 +1466,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   setSidebarAttentionFirst: (enabled) => set((state) => {
     state.sidebarAttentionFirst = enabled;
     state.sidebarSortMode = enabled ? 'attention' : 'manual';
+    state.sidebarSortModeChosen = true;
   }),
 
   sidebarSortMode: 'attention',
   sidebarSortModeChosen: false,
+  sidebarSortMigrated: false,
+  clearSidebarSortMigrated: () => set((state) => { state.sidebarSortMigrated = false; }),
   sidebarPinnedIds: [],
   toggleSidebarPin: (workspaceId) => set((state) => {
     if (!workspaceId) return;
@@ -1466,12 +1482,15 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
   sidebarNewAt: {},
   sidebarSeen: {},
-  markSidebarSeen: (entries) => set((state) => {
-    for (const [ptyId, entry] of Object.entries(entries)) {
-      const prior = state.sidebarSeen[ptyId];
-      if (prior && prior.status === entry.status && (prior.question || '') === (entry.question || '')) continue;
-      state.sidebarSeen[ptyId] = entry.question ? { status: entry.status, question: entry.question } : { status: entry.status };
+  markSidebarSeen: (updates, removed = []) => set((state) => {
+    for (const [ptyId, rec] of Object.entries(updates)) {
+      state.sidebarSeen[ptyId] = {
+        entry: rec.entry.question ? { status: rec.entry.status, question: rec.entry.question } : { status: rec.entry.status },
+        rev: rec.rev,
+        seenRev: rec.seenRev,
+      };
     }
+    for (const ptyId of removed) delete state.sidebarSeen[ptyId];
   }),
 
   setSidebarSortMode: (mode) => set((state) => {

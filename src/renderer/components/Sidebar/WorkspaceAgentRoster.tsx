@@ -448,7 +448,9 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                       box-shadow, so forced-colors keeps every one. #1176 — a
                       SEEN question drops only the animated glow. */}
                   <StatusMarkView
-                    status={row.status}
+                    // Plain waiting with no question is idle in the shared
+                    // class (fleetAttentionClass), so it draws no ring here.
+                    status={row.status === 'waiting' && !row.pendingQuestion ? 'idle' : row.status}
                     unverifiable={!!unverifiableLabel}
                     quiet={!!row.questionSeen && !row.attentionStatus}
                   />

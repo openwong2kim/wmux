@@ -7,6 +7,7 @@ import {
   SIDEBAR_MIN_WIDTH,
   clampSidebarWidth,
   resolveSidebarSortMode,
+  sortModeMigratedToAttention,
   ORPHAN_GROUP_KEY,
   pruneTaskGroupExpanded,
 } from '../sidebarLayout';
@@ -76,6 +77,8 @@ describe('uiSlice sidebar width + sort mode (#1481)', () => {
     expect(store.getState().sidebarAttentionFirst).toBe(false);
     store.getState().setSidebarAttentionFirst(true);
     expect(store.getState().sidebarSortMode).toBe('attention');
+    // Review #10 — the legacy setter records an explicit choice too.
+    expect(store.getState().sidebarSortModeChosen).toBe(true);
   });
 });
 
@@ -86,5 +89,19 @@ describe('pruneTaskGroupExpanded', () => {
     expect(pruneTaskGroupExpanded({ a: true, gone: false, [ORPHAN_GROUP_KEY]: false, b: 'yes' }, new Set(['a', 'b'])))
       .toEqual({ a: true, [ORPHAN_GROUP_KEY]: false });
     expect(pruneTaskGroupExpanded(undefined, new Set())).toEqual({});
+  });
+});
+
+// Review #10 — who gets the one-time "now sorts by attention" notice.
+describe('sortModeMigratedToAttention', () => {
+  it('is true for a list that was showing Manual without a recorded choice', () => {
+    expect(sortModeMigratedToAttention({ sidebarSortMode: 'manual' })).toBe(true);
+    expect(sortModeMigratedToAttention({ sidebarAttentionFirst: false })).toBe(true);
+  });
+  it('is false for a chosen Manual, an attention list, and Recent activity', () => {
+    expect(sortModeMigratedToAttention({ sidebarSortMode: 'manual', sidebarSortModeChosen: true })).toBe(false);
+    expect(sortModeMigratedToAttention({ sidebarAttentionFirst: true })).toBe(false);
+    expect(sortModeMigratedToAttention({ sidebarSortMode: 'attention' })).toBe(false);
+    expect(sortModeMigratedToAttention({ sidebarSortMode: 'recent' })).toBe(false);
   });
 });

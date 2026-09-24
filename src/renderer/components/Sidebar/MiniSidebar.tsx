@@ -37,7 +37,7 @@ export default function MiniSidebar() {
   const sidebarSortMode = useStore((s) => s.sidebarSortMode);
   const sidebarAttentionFirst = sidebarSortMode !== 'manual';
   // Same glance-board order and settle rule as the full sidebar.
-  const { ordered: orderedWorkspaces, onPointerEnter: onRailPointerEnter, onPointerLeave: onRailPointerLeave } =
+  const { ordered: orderedWorkspaces, onPointerEnter: onRailPointerEnter, onPointerLeave: onRailPointerLeave, onFocusCapture: onRailFocus, onBlurCapture: onRailBlur } =
     useGlanceBoardOrder(workspaces);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
@@ -100,7 +100,7 @@ export default function MiniSidebar() {
       {pickerOpen && <PresetPicker onClose={closePicker} anchorStyle={pickerAnchor} />}
 
       {/* Workspace dots */}
-      <div className="flex-1 overflow-y-auto py-2 flex flex-col items-center gap-1" onPointerEnter={onRailPointerEnter} onPointerLeave={onRailPointerLeave}>
+      <div className="flex-1 overflow-y-auto py-2 flex flex-col items-center gap-1" onPointerEnter={onRailPointerEnter} onPointerLeave={onRailPointerLeave} onFocusCapture={onRailFocus} onBlurCapture={onRailBlur}>
         {orderedWorkspaces.map((ws, i) => {
           // `i` is the DISPLAY position and drives only the drop indicator.
           // Everything the user reads or reorders against — the Ctrl+N label,
