@@ -41,6 +41,7 @@ import { attachImeStormGuard } from '../terminal/imeStormGuard';
 import { attachCompositionCommitGate } from '../terminal/compositionCommitGate';
 import { webglContextPool } from '../terminal/webglContextPool';
 import { teardownWebglAddon } from '../terminal/webglTeardown';
+import { forceCharSizeMeasure, onCharSizeChange } from '../terminal/charSizeRefit';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { atlasGuard } from '../terminal/atlasGuard';
 import { decideViewerVisibility } from '../terminal/viewerVisibility';
@@ -1624,8 +1625,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // so the WebGL atlas may contain glyphs measured with wrong metrics.
     // A simple refresh() doesn't rebuild the atlas — we must dispose and
     // recreate the WebGL addon to force a full atlas rebuild.
+    //
+    // #1497: the cell itself was measured with the fallback font too, and xterm
+    // never re-measures a size it considers valid — so re-measure here, before
+    // the hidden-container bail (the measurement is layout-independent, and a
+    // hidden pane would otherwise reveal with the stale cell). A changed cell
+    // fires onCharSizeChange, whose subscription below refits.
     document.fonts.ready.then(() => {
       if (!terminalRef.current || terminalRef.current !== terminal) return;
+      forceCharSizeMeasure(terminal);
       if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
       if (webglAddonRef.current) {
         // [#191/#197] Release the old context (not just dispose) before
@@ -1636,20 +1644,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         webglAddonRef.current = null;
         loadWebgl();
       }
-      // Selection-preservation guard — this is mostly defensive (fonts.ready
-      // resolves on mount before the user can select anything), but pinning
-      // the contract here prevents future regressions if anything triggers
-      // a font load mid-session.
-      if (!claimFit(terminalRef.current, pendingFitRef)) {
-        console.debug('[Terminal] fonts.ready fit deferred — active selection');
-        return;
-      }
-      pendingFitRef.current = false;
-      // #1255: floor gate — fonts re-measure a container that may still be
-      // mid-layout; a sub-floor proposal is skipped, not applied.
-      if (proposedSafeDimensions(fitAddon)) fitAddon.fit();
+      // runFit carries the selection guard, the #1255 floor gate and — unlike
+      // a direct addon fit — the sendResize, which a re-measured cell needs:
+      // cols/rows change here, and the PTY must hear about it.
+      runFit();
       terminal.refresh(0, terminal.rows - 1);
     });
+    // fonts.ready can settle before the webfont is even requested; a load that
+    // finishes later is caught here. measure() is a no-op for an unchanged cell.
+    const onFontsLoadingDone = () => {
+      if (terminalRef.current === terminal) forceCharSizeMeasure(terminal);
+    };
+    document.fonts.addEventListener('loadingdone', onFontsLoadingDone);
 
     // pendingFitRef lives at hook scope so every guarded site can reach it, so a
     // debt left by the PREVIOUS terminal (ptyId change re-runs this effect) would
@@ -1762,6 +1768,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           runFit();
         });
       }
+    });
+
+    // #1497: refit whenever xterm's cell changes. xterm also re-measures inside
+    // its own resize (_afterResize), i.e. AFTER FitAddon computed cols/rows from
+    // the old cell; without this the screen overflows its container until the
+    // next resize. Deferred to a frame because the event fires mid-resize. No
+    // loop: the refit re-measures the same cell, and measure() fires only on a
+    // change.
+    const charSizeDisposable = onCharSizeChange(terminal, () => {
+      if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
+      pendingFitRaf = requestAnimationFrame(() => {
+        pendingFitRaf = null;
+        runFit();
+      });
     });
 
     // Keyboard-protocol negotiation folded from this pane's own output
@@ -2847,6 +2867,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       deadInputWatchdog.dispose();
       autoCopy.dispose();
       selectionDisposable.dispose();
+      charSizeDisposable?.dispose();
+      document.fonts.removeEventListener('loadingdone', onFontsLoadingDone);
       pathLinkDisposable.dispose();
       osc52Disposable.dispose();
       // #582: dispose the xterm→PTY input listener BEFORE the deferred-

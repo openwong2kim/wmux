@@ -124,8 +124,10 @@ describe('#1255 — every fit() apply site is floor-gated, every recovery re-ass
   });
 
   it('fonts.ready and runFit gate their fits too', () => {
+    // fonts.ready fits through runFit, which carries the gate (locked below).
     const fonts = src.slice(src.indexOf('document.fonts.ready'), src.indexOf('document.fonts.ready') + 1400);
-    expect(fonts).toMatch(/if \(proposedSafeDimensions\(fitAddon\)\) fitAddon\.fit\(\)/);
+    expect(fonts).toMatch(/runFit\(\)/);
+    expect(fonts).not.toMatch(/fitAddon\.fit\(\)/);
     const runFitStart = src.indexOf('const runFit = () => {');
     const runFit = src.slice(runFitStart, src.indexOf('const autoCopy = createAutoSelectionCopy', runFitStart));
     // BEFORE claimFit: a floor skip records no selection debt — the settled
@@ -159,5 +161,40 @@ describe('#1255 — every fit() apply site is floor-gated, every recovery re-ass
     const reattach = src.slice(src.indexOf('[useTerminal] daemon reattach ptyId='), src.indexOf('[useTerminal] daemon reattach ptyId=') + 2200);
     expect(reattach).toMatch(/proposedSafeDimensions\(fitAddonRef\.current\)/);
     expect(reattach).toMatch(/sendResize\(id, dims\.cols, dims\.rows\)/);
+  });
+});
+
+// #1497 — a recovered pane opened before the bundled webfont loaded keeps a
+// fallback-font cell; its first resize re-measures only after FitAddon fitted
+// with the stale cell. The re-measure itself is unit-tested for real in
+// terminal/__tests__/charSizeRefit.test.ts; the hook wiring is pinned here.
+describe('#1497 — fonts re-measure the cell, and a changed cell refits', () => {
+  const hookPath = path.join(__dirname, '..', 'useTerminal.ts');
+  const src = readSource(hookPath);
+
+  it('fonts.ready re-measures before the hidden-container bail and the fit', () => {
+    const start = src.indexOf('document.fonts.ready.then(');
+    const block = src.slice(start, src.indexOf('});', src.indexOf('runFit()', start)));
+    const measure = block.indexOf('forceCharSizeMeasure(terminal)');
+    const bail = block.indexOf('offsetWidth === 0');
+    const fitCall = block.indexOf('runFit()');
+    expect(measure, 'fonts.ready does not re-measure the cell').toBeGreaterThan(-1);
+    expect(bail).toBeGreaterThan(measure);
+    expect(fitCall).toBeGreaterThan(bail);
+  });
+
+  it('a font load that settles after fonts.ready re-measures too, and is removed at teardown', () => {
+    expect(src).toMatch(/document\.fonts\.addEventListener\('loadingdone', onFontsLoadingDone\)/);
+    expect(src).toMatch(/document\.fonts\.removeEventListener\('loadingdone', onFontsLoadingDone\)/);
+  });
+
+  it('a char-size change queues the real fit path on a frame, and is disposed', () => {
+    const start = src.indexOf('onCharSizeChange(terminal, () => {');
+    expect(start, 'nothing subscribes to the char-size change').toBeGreaterThan(-1);
+    const block = src.slice(start, src.indexOf('});', src.indexOf('runFit()', start)));
+    expect(block).toMatch(/requestAnimationFrame\(/);
+    expect(block).toMatch(/pendingFitRaf/);
+    expect(block).not.toMatch(/fitAddon\.fit\(\)/);
+    expect(src).toMatch(/charSizeDisposable\?\.dispose\(\)/);
   });
 });
