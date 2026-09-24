@@ -1,5 +1,6 @@
 /** Private desktop IPC; never registered on the public MCP router. */
 export const CHAT_IPC = {
+  settings: 'chat:settings',
   skills: 'chat:skills',
   launchTerminal: 'chat:launch-terminal',
   close: 'chat:close', providers: 'chat:providers', start: 'chat:start', reconnect: 'chat:reconnect', cancel: 'chat:cancel', respond: 'chat:respond',

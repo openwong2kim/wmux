@@ -116,7 +116,7 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
   return <ChatPtyContext.Provider value={ptyId}><AssistantRuntimeProvider runtime={runtime}>
     <Thread status={<><ChatProgress state={canLaunch ? 'ready' : progress} lastSyncedAt={data.lastSyncedAt} onTerminal={onTerminal} /><ChatControls ptyId={ptyId} status={data.status} refresh={data.retry} /></>} empty={messages.length === 0} working={busy} disabled={canLaunch ? sending || data.loading : launched || readOnly || !data.status.available || data.loading || ended || !!managed && (managed.phase !== 'ready' || !managed.capabilities.send)}
       placeholder={canLaunch ? t('chat.initialMessage') : ended ? t('chat.placeholderEnded') : undefined}
-      skillScope={!managed ? { ptyId, agent: canLaunch ? launchAgent : data.status.terminal?.agent ?? 'claude', composer: runtime.thread.composer } : undefined}
+      skillScope={!managed ? { ptyId, agent: canLaunch ? launchAgent : data.status.terminal?.agent ?? 'claude', composer: runtime.thread.composer, onTerminal, live: !!data.status.agentAlive } : undefined}
       maxLength={canLaunch ? 2000 : 16_000}
       composerOptions={canLaunch && <div className="wmux-chat-launch-options">
         <select aria-label={t('chat.provider')} value={launchAgent} disabled={sending} onChange={event => {

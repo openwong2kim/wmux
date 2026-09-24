@@ -5,3 +5,5 @@
 - Use one bottom composer for initial and follow-up messages, with explicit Claude Bypass and Codex YOLO startup mode selection.
 
 - Add bottom-composer skill search for native Claude/Codex with keyboard navigation, agent-correct invocation, source labels, draft-preserving selection and honest discovery states. Keep idle connection text and session placeholders agent-neutral.
+
+- Include native command destinations in the slash menu, add live Codex model/effort controls, and handle app/daemon version skew without restarting existing terminal sessions.

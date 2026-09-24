@@ -19,7 +19,8 @@ export default defineConfig({
       // break that self-spawn. External → required from node_modules at runtime
       // (resolvable in dev; packaged builds must ship it unpacked from the asar —
       // see the Command Deck P2 deferred note in the impl plan).
-      external: ['node-pty', 'koffi', '@anthropic-ai/claude-agent-sdk'],
+      // ws probes optional native accelerators at runtime; keep those optional requires intact.
+      external: ['node-pty', 'koffi', 'ws', '@anthropic-ai/claude-agent-sdk'],
     },
   },
 });

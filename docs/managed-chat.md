@@ -167,3 +167,30 @@ session-only CLI settings, enterprise policy, synced skills and custom plugin
 paths may differ from the native menu. Built-in interactive terminal commands
 are not fabricated as chat actions. OpenCode/managed skill discovery is not yet
 advertised. Adding another provider requires its own catalogue adapter.
+
+
+### Native commands and rolling app updates
+
+`/` lists command actions alongside skills; `$` lists only skills. The curated
+command entries state their destination. For a live Codex session, `/model` opens
+an in-chat model/effort dialog using the native runtime catalogue and current
+thread settings. Apply is explicit, revision-bound and confirmed by a fresh
+runtime read. Busy/stale/uncertain outcomes do not trigger automatic mutations.
+Other native interactive commands (permissions, fast mode, IDE/keymap/Vim,
+experimental features and approval review) switch to the existing Terminal view;
+they are not auto-executed or injected into its potentially occupied composer.
+This is not a claim of complete native command UI parity. Selecting an action
+consumes only its query token and retains any remaining draft. The send button is
+disabled while the discovery menu is open.
+
+A renderer-only hot update can expose a newer preload method while the main
+process still lacks its IPC handler. The UI distinguishes that condition from an
+empty skill list. Reopening the app refreshes main/preload without killing the
+existing daemon or terminal. If that daemon specifically answers `Unknown method:
+daemon.chat.skills`, the trusted desktop uses a read-only compatibility adapter:
+existing list/status/agent RPCs establish pane incarnation, PID, account, live
+agent and native session; `thread/read` supplies the selected Codex cwd; ownership
+is checked again after discovery. No fallback occurs on authorization/transport
+errors. `chat:settings` uses the same scoped desktop adapter with the native
+model-settings allowlist. It never exposes an arbitrary RPC method or path.
+Neither desktop method introduces a phone HTTP route.

@@ -44,6 +44,7 @@ describe('assistant-ui composer connected to session drafts', () => {
     await render(); await type('/rev keep these arguments');
     await act(async () => { input().focus(); input().setSelectionRange(4,4); document.dispatchEvent(new Event('selectionchange',{bubbles:true})); });
     expect(host.querySelectorAll('[role="option"]')).toHaveLength(1);
+    expect(host.querySelector<HTMLButtonElement>('[aria-label="chat.send"]')!.disabled).toBe(true);
     await act(async () => input().dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true})));
     expect(input().value).toBe('/review keep these arguments');
     expect(send).not.toHaveBeenCalled();
@@ -63,6 +64,7 @@ describe('assistant-ui composer connected to session drafts', () => {
     expect(host.textContent).toContain('/claude');
     await act(async () => { const select=host.querySelector<HTMLSelectElement>('select[aria-label="chat.provider"]')!; select.value='codex'; select.dispatchEvent(new Event('change',{bubbles:true})); });
     expect(host.textContent).not.toContain('/claude');
+    await type('/codex');
     await act(async () => input().dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true})));
     expect(input().value).toBe('$codex ');
     expect(launchTerminal).not.toHaveBeenCalled();
@@ -72,12 +74,22 @@ describe('assistant-ui composer connected to session drafts', () => {
     const send=vi.fn();
     let resolve!: (value: unknown) => void;
     vi.stubGlobal('electronAPI',{chat:{send,skills:vi.fn(()=>new Promise(done=>{resolve=done;}))}});
-    fixture.session='skills-pending'; await render(); await type('/');
+    fixture.session='skills-pending'; await render(); await type('/qa');
     await act(async()=>input().dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true})));
-    expect(input().value).toBe('/'); expect(send).not.toHaveBeenCalled();
+    expect(input().value).toBe('/qa'); expect(send).not.toHaveBeenCalled();
     await act(async()=>resolve({state:'ready',skills:[{name:'qa',invocation:'/qa',source:'user',description:''}]}));
     await act(async()=>input().dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true,cancelable:true})));
-    expect(input().value).toBe('/'); expect(send).not.toHaveBeenCalled();
+    expect(input().value).toBe('/qa'); expect(send).not.toHaveBeenCalled();
+    await type('');
+  });
+  it('keeps native command navigation available when skill discovery fails', async () => {
+    vi.stubGlobal('electronAPI',{chat:{skills:vi.fn(async()=>{throw new Error("No handler registered for chat:skills");}),launchTerminal:vi.fn()}});
+    fixture.session='';fixture.available=false;fixture.reason='no-hook';
+    await render();
+    await act(async()=>{const select=host.querySelector<HTMLSelectElement>('select[aria-label="chat.provider"]')!;select.value='codex';select.dispatchEvent(new Event('change',{bubbles:true}));});
+    await type('/');
+    expect(host.textContent).toContain('/model');expect(host.textContent).toContain('/permissions');
+    expect(host.textContent).toContain('chat.inTerminal');expect(host.textContent).toContain('chat.bridgeOutdated');
     await type('');
   });
   it('starts from the sole bottom composer with the selected provider and explicit mode', async () => {

@@ -3,7 +3,7 @@
 // Keep its 44rem column, viewport footer, composer and scroll anchor structure.
 // wmux supplies transcript rows and session notices; unsupported backend actions
 // (attachments, regeneration, editing and voice) are deliberately not exposed.
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { ComposerPrimitive, ThreadPrimitive } from '@assistant-ui/react';
 import { useT } from '../../../hooks/useT';
 import { ChatComposerInput, type ChatSkillScope } from '../ChatComposerInput';
@@ -16,6 +16,7 @@ export function Thread({ status, empty, welcome, history, notices, working, disa
   working: boolean; disabled: boolean; placeholder?: string; composerOptions?: ReactNode; maxLength?: number; skillScope?: ChatSkillScope;
 }) {
   const t = useT();
+  const [discoveryOpen, setDiscoveryOpen] = useState(false);
   return <ThreadPrimitive.Root className="wmux-chat aui-thread-root" data-chat-view>
     {status}
     <ThreadPrimitive.Viewport className="wmux-chat-viewport" turnAnchor="top" autoScroll>
@@ -33,9 +34,9 @@ export function Thread({ status, empty, welcome, history, notices, working, disa
           {notices}
           <ComposerPrimitive.Root className="wmux-chat-composer aui-composer-root">
             {composerOptions}
-            <ChatComposerInput scope={skillScope} disabled={disabled} placeholder={placeholder ?? t('chat.placeholder')} maxLength={maxLength ?? 16_000} />
+            <ChatComposerInput onDiscoveryOpenChange={setDiscoveryOpen} scope={skillScope} disabled={disabled} placeholder={placeholder ?? t('chat.placeholder')} maxLength={maxLength ?? 16_000} />
             <div className="wmux-chat-composer-footer"><span>{t(skillScope && ['claude', 'codex'].includes(skillScope.agent) ? 'chat.inputSkillsHint' : 'chat.inputHint')}</span>
-              <ComposerPrimitive.Send className="wmux-chat-send wmux-chat-icon-button" aria-label={t('chat.send')} title={t('chat.send')}>
+              <ComposerPrimitive.Send disabled={discoveryOpen} className="wmux-chat-send wmux-chat-icon-button" aria-label={t('chat.send')} title={t('chat.send')}>
                 <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6" /></svg>
               </ComposerPrimitive.Send>
             </div>

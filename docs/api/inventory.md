@@ -393,3 +393,11 @@ explicit authenticated contract; these methods grant no remote access.
 skills: [{ name, description, invocation, source }] }`. Cwd/account are resolved by
 the daemon; arbitrary paths and provider RPC methods are not accepted. No public
 MCP or phone HTTP route is added by this internal method.
+
+
+Private desktop `chat:settings` accepts `{ptyId, choice?: {model, effort,
+expectedRevision}}` and returns `{ok, settings?, error?}` for the existing native
+Codex session. Read returns only model/effort/catalogue, busy state and a scoped
+opaque revision. Write rechecks pane identity and runtime revision, rejects busy
+or unsupported choices, and confirms the result by rereading the runtime.
+It is not registered in the public RPC/MCP or phone HTTP routers.

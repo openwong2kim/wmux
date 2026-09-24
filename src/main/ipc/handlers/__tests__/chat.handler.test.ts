@@ -28,6 +28,12 @@ function fixture(connected = true, lateWindow = false) {
   return { client, wc, event, call, revealWindow: () => { windowReady = true; } };
 }
 describe('private desktop transcript bridge', () => {
+  it('refuses model settings from untrusted frames or malformed choices before any RPC', async () => {
+    const f=fixture(); f.client.rpc.mockClear();
+    await handlers.get(CHAT_IPC.settings)!({ ...f.event, sender: {} }, {ptyId:'pane'});
+    await f.call('settings',{ptyId:'pane',choice:{model:'model',effort:'low'}});
+    expect(f.client.rpc).not.toHaveBeenCalled();
+  });
   it('scopes skill lookup to a trusted pane and drops arbitrary filesystem fields', async () => {
     const f=fixture();
     await f.call('skills',{ptyId:'pane',agent:'codex',cwd:'/private',path:'/private'});

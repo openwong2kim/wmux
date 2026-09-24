@@ -250,6 +250,8 @@ export interface TranscriptAppendData {
 export type ChatSendResult = 'sent' | 'busy' | 'blocked' | 'unconfirmed' | 'session_changed' | 'unavailable' | 'error';
 
 export interface ChatBridgeApi {
+  settings?: (args: { ptyId: string; choice?: { model: string; effort: string; expectedRevision: string } }) => Promise<{ ok: boolean; settings?: { model: string; effort: string | null; busy: boolean; revision: string; models: { model: string; efforts: string[]; defaultEffort: string }[] }; error?: string }>;
+
   skills?: (args: { ptyId: string; agent: string }) => Promise<import('./chatSkills').ChatSkillCatalog>;
   launchTerminal?: (args: { ptyId: string; agent: 'claude' | 'codex'; prompt: string; mode?: import('./terminalChat').TerminalLaunchMode }) => Promise<{ ok: boolean; error?: string }>;
   controls?: import('./chatSession').ChatControls;
