@@ -392,6 +392,14 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         return;
       }
       setMeta(m);
+      // A closed task's worktree has been removed: say so instead of reading a
+      // path that no longer exists (and offering its stale hunks for adoption).
+      if (m.status === 'closed') {
+        setData(null);
+        setError(t('diff.taskClosed'));
+        setLoading(false);
+        return;
+      }
       // F10: 코멘트 역조회(실패는 빈 목록 — diff 렌더는 막지 않음).
       setComments(await loadDiffComments(m.missionChannelId, taskId, verifiedWorkspaceId));
       readPath = m.worktreePath;
@@ -414,7 +422,12 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
       setData(null);
     } else {
       setData(res);
-      if (res.files.length > 0) setSelectedFile(res.files[0].path);
+      // Stay on the file being reviewed when it is still in the diff.
+      if (res.files.length > 0) {
+        setSelectedFile((prev) =>
+          prev && res.files.some((f) => f.path === prev) ? prev : res.files[0].path,
+        );
+      }
     }
     setLoading(false);
   }, [isTask, taskId, repoPath, verifiedWorkspaceId, t]);
@@ -509,9 +522,16 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     const res = await bridge.applyHunks(req, meta.worktreePath);
     setApplying(false);
     if (res.ok) {
-      setApplyMsg(t('diff.adopted', { count: res.appliedFiles.length }));
-      // 재열람: 채택분은 여전히 태스크 worktree diff에 보이며 "적용됨" 뱃지로 표시됨.
-      void load();
+      const adoptedMsg = t('diff.adopted', { count: res.appliedFiles.length });
+      // Adopting writes the target, not the task worktree, so the adopted hunks
+      // are still in the reloaded diff with unchanged digests and the stale-
+      // selection sweep would keep their ticks. Clear them so a second click
+      // cannot re-apply the same hunks.
+      setSelection({});
+      setSelectionDigest({});
+      // load() clears the message bar, so the confirmation goes up after it.
+      await load();
+      setApplyMsg(adoptedMsg);
     } else {
       if (res.code === 'probe' && res.failedProbes) {
         setFailedProbes(new Set(res.failedProbes.map((p) => `${p.path}#${p.hunkIndex}`)));
@@ -611,6 +631,13 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         // F11과 정합: close가 커밋됐으니 로컬 meta도 closed로 — PR/닫기 버튼이
         // 제거된 worktree를 상대로 다시 눌리지 않게 즉시 숨긴다.
         setMeta((m) => (m ? { ...m, status: 'closed' } : m));
+        // The worktree is gone: drop its hunks and ticks so nothing can be
+        // adopted from it.
+        setData(null);
+        setSelection({});
+        setSelectionDigest({});
+        setApplyMsg(null);
+        setError(t('diff.taskClosed'));
         pushToast({
           level: res.archivePending ? 'warn' : 'info',
           message: res.unmaterialized
@@ -624,6 +651,11 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
           level: 'warn',
           message: t('diff.closePreserved'),
         });
+        // Right after an adopt the agent's edits are still uncommitted in the
+        // worktree, so Close refuses. Keep the way out on screen (the toast
+        // times out): discard them there, or commit and open a PR.
+        const preserved = res.preservedWorktree ?? meta?.worktreePath;
+        if (preserved) setApplyMsg(t('diff.closePreservedAt', { path: preserved }));
       } else if (res.reason === 'unpushed') {
         pushToast({
           level: 'warn',
@@ -637,7 +669,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     } finally {
       setLifecycleBusy(null);
     }
-  }, [lifecycleBusy, taskId, verifiedWorkspaceId, pushToast, t]);
+  }, [lifecycleBusy, taskId, verifiedWorkspaceId, meta, pushToast, t]);
 
   // diff→오케스트레이터 질문: hunk 컨텍스트 블록 + 질문을 단일 메시지로
   // 조립해 pendingBrainPrompt 릴레이에 싣고 Orchestrator 탭으로 전환한다
@@ -769,10 +801,11 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
           {t('diff.reload')}
         </button>
         {/* 채택은 태스크 모드 전용 — 워크스페이스 모드는 repo 자신 대상이라 무의미(읽기 전용). */}
-        {isTask && (
+        {isTask && meta?.status !== 'closed' && (
           <button
             className={`px-2 py-0.5 text-[10px] ${BTN_PRIMARY_WARM} disabled:opacity-40`}
             onClick={() => void handleAdopt()}
+            data-testid="diff-adopt"
             disabled={applying || selectedCount === 0}
             title={t('diff.adoptTitle')}
           >

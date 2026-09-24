@@ -646,6 +646,8 @@ export const zh = {
   'diff.closedArchiveDeferred': '任务已关闭 — 通道归档已延后（启动时的 reconcile 将会收敛）。',
   'diff.closedFull': '任务已关闭 — 已移除工作树并归档通道。',
   'diff.closePreserved': '存在未 commit 的产物，已保留 — 请查看 diff 以 commit/PR 或丢弃（任务保持打开）。',
+  'diff.closePreservedAt': '未关闭 — 任务工作树中仍有未 commit 的更改。采用只会把更改复制到目标，不会从工作树中移除。如果需要的内容都已采用，请在 {path} 中丢弃它们（git restore . && git clean -fd）后再次关闭，或 commit 后创建 PR。',
+  'diff.taskClosed': '此任务已关闭，工作树已移除 — 没有可采用的内容。',
   'diff.closeUnpushed': '你有 {count} 个未 push 的 commit — 请创建 PR 或 push 后再次关闭。',
   'diff.closeFailed': 'close 失败：{error}',
   'diff.branchLine': '分支：{branch}',

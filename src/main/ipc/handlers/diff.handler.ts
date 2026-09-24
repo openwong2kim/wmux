@@ -197,14 +197,14 @@ async function readDiff(
         })()
       : await resolveTargetRepo(worktreePath);
   if (!targetRepoPath) {
-    return { ok: false, error: '타겟 repo를 찾을 수 없음(worktree 손상?)', code: 'no-repo' };
+    return { ok: false, error: 'Could not find the target repository — the task worktree may be damaged or removed.', code: 'no-repo' };
   }
 
   // F8: targetHeadOid 인자 가드 — 지정 시 SHA-1 hex(7~40자)만 허용.
   //   빈 문자열(미지정)은 아래에서 타겟 HEAD로 도출하므로 통과. 인자 주입을
   //   merge-base·git 명령에 그대로 넘기기 전에 형식을 명시 검증한다.
   if (targetHeadOid && !/^[0-9a-fA-F]{7,40}$/.test(targetHeadOid)) {
-    return { ok: false, error: 'targetHeadOid 형식 오류(SHA hex 7~40자 아님)', code: 'bad-oid' };
+    return { ok: false, error: 'Invalid targetHeadOid — expected a 7 to 40 character hex commit id.', code: 'bad-oid' };
   }
 
   let mergeBase: string;
@@ -240,7 +240,7 @@ async function readDiff(
     worktreePath,
   );
   if (diffRes.code !== 0) {
-    return { ok: false, error: `git diff 실패: ${diffRes.stderr.slice(0, 200)}`, code: 'diff-fail' };
+    return { ok: false, error: `git diff failed: ${diffRes.stderr.slice(0, 200)}`, code: 'diff-fail' };
   }
   const numRes = await git(['diff', DIFF_ALGORITHM, '--numstat', mergeBase], worktreePath);
 
@@ -296,7 +296,7 @@ async function readDiff(
   if (Buffer.byteLength(diffText, 'utf8') > DIFF_TOTAL_CAP_BYTES) {
     return {
       ok: false,
-      error: 'diff 총량이 2MB를 초과 — 표시 전용(채택 불가). 커밋 단위를 좁혀 재열람.',
+      error: 'The diff is larger than 2 MB, so it cannot be shown or adopted here. Split the work into smaller commits and reopen the diff.',
       code: 'too-large',
     };
   }
@@ -351,7 +351,7 @@ function patchPathsSafe(patch: string): boolean {
 async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<DiffApplyResult> {
   const targetRepoPath = await resolveTargetRepo(worktreePath);
   if (!targetRepoPath) {
-    return { ok: false, error: '타겟 repo를 찾을 수 없음', code: 'apply' };
+    return { ok: false, error: 'Could not find the target repository.', code: 'apply' };
   }
 
   return withRepoLock(targetRepoPath, async (): Promise<DiffApplyResult> => {
@@ -361,7 +361,7 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
       cur.targetHeadOid !== req.snapshot.targetHeadOid ||
       cur.targetBranch !== req.snapshot.targetBranch
     ) {
-      return { ok: false, error: '타겟이 이동됨 — diff 재열람 필요', code: 'drift' };
+      return { ok: false, error: 'The target moved since this diff was read — reload the diff.', code: 'drift' };
     }
 
     // 선택 파일의 diff를 재계산(태스크 worktree 기준). read와 동일 소스.
@@ -465,21 +465,21 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
       if (truncatedSet.has(f.path)) {
         return {
           ok: false,
-          error: `${f.path}: 캡 초과로 표시 전용 — 채택 불가`,
+          error: `${f.path}: too large to adopt — shown for reading only.`,
           code: 'unsupported',
         };
       }
       if (!f.hunkSelectable) {
         return {
           ok: false,
-          error: `${f.path}: rename·binary·mode 변경은 채택 불가`,
+          error: `${f.path}: renames, binary files and mode changes cannot be adopted.`,
           code: 'unsupported',
         };
       }
       selectedFiles.push({ file: f, hunkIndices: idxs });
     }
     if (selectedFiles.length === 0) {
-      return { ok: false, error: '선택된 hunk 없음', code: 'apply' };
+      return { ok: false, error: 'No hunks selected.', code: 'apply' };
     }
 
     // ② dirty 거부(§3): 대상 파일이 현재 dirty면 거부.
@@ -488,7 +488,7 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
       if (dirtySet.has(sf.file.path)) {
         return {
           ok: false,
-          error: `${sf.file.path}: 타겟에 미커밋 변경 있음 — 충돌 방지로 거부`,
+          error: `${sf.file.path}: has uncommitted changes in the target — commit or discard them there, then adopt again.`,
           code: 'dirty',
         };
       }
@@ -496,7 +496,7 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
 
     const patch = reassemblePatch(selectedFiles);
     if (!patchPathsSafe(patch)) {
-      return { ok: false, error: '패치 내부 경로 검증 실패(.. 또는 절대경로)', code: 'path' };
+      return { ok: false, error: 'Patch rejected — it contains a path outside the repository (.. or an absolute path).', code: 'path' };
     }
 
     // ③ 프로브(§3, F2 재정의): per-hunk 개별 프로브는 UI 힌트 전용이고,
@@ -530,7 +530,7 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
       if (already.length > 0) {
         return {
           ok: false,
-          error: '일부 hunk가 타겟에 이미 적용됨 — 해당 hunk를 선택 해제 후 재시도',
+          error: 'Some hunks are already applied in the target — deselect them and retry.',
           code: 'probe',
           failedProbes: already,
         };
@@ -547,7 +547,7 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
         const notApplicable = probes.filter((p) => !p.applicable);
         return {
           ok: false,
-          error: `선택 hunk 결합 적용 불가(타겟 미변경): ${gate.stderr.slice(0, 200)}`,
+          error: `The selected hunks do not apply together (target unchanged): ${gate.stderr.slice(0, 200)}`,
           code: 'probe',
           failedProbes: notApplicable.length > 0 ? notApplicable : probes,
         };
@@ -558,7 +558,7 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
       if (applied.code !== 0) {
         return {
           ok: false,
-          error: `git apply 실패(타겟 미변경): ${applied.stderr.slice(0, 200)}`,
+          error: `git apply failed (target unchanged): ${applied.stderr.slice(0, 200)}`,
           code: 'apply',
         };
       }
@@ -582,11 +582,11 @@ export function registerDiffHandlers(): () => void {
         mode: unknown,
       ): Promise<DiffReadResult | DiffReadError> => {
         if (typeof worktreePath !== 'string' || !worktreePath) {
-          return { ok: false, error: 'worktreePath 필요', code: 'bad-args' };
+          return { ok: false, error: 'worktreePath is required.', code: 'bad-args' };
         }
         // F2 (#615): confine the renderer path before it reaches `git -C`.
         const safeWt = await resolveAccessiblePath(worktreePath);
-        if (!safeWt) return { ok: false, error: 'worktreePath 필요', code: 'bad-args' };
+        if (!safeWt) return { ok: false, error: 'worktreePath is required.', code: 'bad-args' };
         // targetHeadOid는 선택 — 미지정 시 타겟 repo HEAD로 도출.
         const head = typeof targetHeadOid === 'string' ? targetHeadOid : '';
         // mode 미지정/오값은 'task'(기존 계약). 'workspace'만 명시 분기.
@@ -631,14 +631,14 @@ export function registerDiffHandlers(): () => void {
         worktreePath: unknown,
       ): Promise<DiffApplyResult> => {
         if (typeof worktreePath !== 'string' || !worktreePath) {
-          return { ok: false, error: 'worktreePath 필요', code: 'apply' };
+          return { ok: false, error: 'worktreePath is required.', code: 'apply' };
         }
         // F2 (#615): confine the renderer path before git/file writes touch it.
         const safeWt = await resolveAccessiblePath(worktreePath);
-        if (!safeWt) return { ok: false, error: 'worktreePath 필요', code: 'apply' };
+        if (!safeWt) return { ok: false, error: 'worktreePath is required.', code: 'apply' };
         const r = req as DiffApplyRequest;
         if (!r || !r.snapshot || !Array.isArray(r.selections)) {
-          return { ok: false, error: 'applyHunks 요청 형식 오류', code: 'apply' };
+          return { ok: false, error: 'Malformed applyHunks request.', code: 'apply' };
         }
         return applyHunks(r, safeWt);
       },

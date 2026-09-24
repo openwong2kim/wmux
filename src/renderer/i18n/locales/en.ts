@@ -1990,6 +1990,8 @@ export const en = {
   'diff.closedArchiveDeferred': 'Task closed — channel archive deferred (boot reconcile will converge).',
   'diff.closedFull': 'Task closed — worktree removed and channel archived.',
   'diff.closePreserved': 'Uncommitted artifacts preserved — review the diff to commit/PR or discard (the task stays open).',
+  'diff.closePreservedAt': 'Not closed — the task worktree still has uncommitted changes. Adopting copies changes into the target; it does not remove them from the worktree. If you have adopted everything you need, discard them in {path} (git restore . && git clean -fd) and close again, or commit them and open a PR.',
+  'diff.taskClosed': 'This task is closed and its worktree was removed — there is nothing left to adopt.',
   'diff.closeUnpushed': 'You have {count} unpushed commit(s) — create a PR or push, then close again.',
   'diff.closeFailed': 'close failed: {error}',
   'diff.branchLine': 'Branch: {branch}',

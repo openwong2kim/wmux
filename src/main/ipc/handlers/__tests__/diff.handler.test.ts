@@ -236,9 +236,12 @@ describe('diff:applyHunks — 채택 all-or-nothing', { timeout: GIT_PROCESS_TIM
       snapshot: r.snapshot,
       selections: [pick(r, 'a.txt', [0])],
     };
-    const res = (await apply({}, req, scn.worktreePath)) as { ok: boolean; code?: string };
+    const res = (await apply({}, req, scn.worktreePath)) as { ok: boolean; code?: string; error?: string };
     expect(res.ok).toBe(false);
     expect(res.code).toBe('dirty');
+    // The panel shows this reason verbatim, so it must be English (#1461).
+    expect(res.error).toContain('a.txt');
+    expect(res.error).not.toMatch(/[\u3131-\uD79D]/);
   });
 
   it('이미 적용된 hunk — reverse 프로브가 alreadyApplied 표시(거부 아님, best-effort)', async () => {
@@ -811,9 +814,11 @@ describe('diff:read — F8 targetHeadOid 형식 가드', { timeout: GIT_PROCESS_
     const res = (await read({}, scn.worktreePath, 'not-a-sha; rm -rf /')) as {
       ok: boolean;
       code?: string;
+      error?: string;
     };
     expect(res.ok).toBe(false);
     expect(res.code).toBe('bad-oid');
+    expect(res.error).not.toMatch(/[\u3131-\uD79D]/);
   });
 });
 
