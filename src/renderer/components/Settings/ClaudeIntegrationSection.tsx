@@ -159,6 +159,7 @@ function UsageCard({
   };
 
   return (
+    <div data-setting-id="usage" className="scroll-mt-4">
     <Card>
       <CardHeader title={t('claudeIntegration.usage.title')} />
       <p className="text-xs text-[color:var(--text-muted)] leading-relaxed">
@@ -195,6 +196,7 @@ function UsageCard({
         </button>
       )}
     </Card>
+    </div>
   );
 }
 

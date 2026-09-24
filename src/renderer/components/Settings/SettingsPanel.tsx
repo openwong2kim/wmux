@@ -49,9 +49,10 @@ import { IntegrationSetupSectionContainer } from './IntegrationSetupSection';
 import { AccountsSection } from './AccountsSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
-import { Icon, IconX, IconCheck, IconChevron, IconExternalLink, IconBrowser } from '../icons';
+import { Icon, IconX, IconCheck, IconChevron, IconExternalLink, IconBrowser, IconUsers, IconRobot, IconRemoteDevices } from '../icons';
+import PairedDevicesModal from '../StatusBar/PairedDevicesModal';
 import { FOCUS_RING } from '../focusRing';
-import { SETTINGS_CATALOG, SETTINGS_NAV_GROUPS, type SettingsTabId } from '../../settings/catalog';
+import { SETTINGS_CATALOG, SETTINGS_NAV_GROUPS, resolveSettingsTab, type SettingsTabId } from '../../settings/catalog';
 import { matchSettings, tabHitCount } from '../../settings/searchSettings';
 import { CursorShapePicker } from './CursorShapePicker';
 import { SettingsSearchResults } from './SettingsSearchResults';
@@ -1000,7 +1001,6 @@ function OrchestratorSection() {
           label={t('settings.orchestratorModel')}
         />
       </SettingRow>
-      <RoleBindingEditor />
       {/* Full power tunes settingSources/canUseTool — both SDK-only knobs. The
           terminal brain (an interactive TUI) and ACP brains ignore the flag
           entirely (see createAdapter in deck.handler), so with the terminal
@@ -1008,6 +1008,7 @@ function OrchestratorSection() {
           does nothing when clicked. Inert + a reason instead of hidden: the
           setting still exists, it just belongs to the other vendor. */}
       <SettingRow
+        id="fullpower"
         label={t('settings.orchestratorFullPower')}
         description={
           deckBrainVendor === 'claude'
@@ -1055,6 +1056,7 @@ function OrchestratorSection() {
         </div>
       </SettingRow>
       <SettingRow
+        id="briefing"
         label={t('settings.briefing')}
         description={t('settings.briefingDesc')}
       >
@@ -1577,7 +1579,7 @@ export function LanLinkPairingView(props: LanLinkPairingViewProps) {
 
   return (
     <div className="flex flex-col gap-3" data-testid="lanlink-pairing-section">
-      <SectionLabel label={t('settings.lanlinkPair')} />
+      <SectionLabel id="lanpair" label={t('settings.lanlinkPair')} />
 
       {/* Pair this machine: mint a PIN + live countdown. */}
       <SettingRow label={t('settings.lanlinkPairStart')} description={t('settings.lanlinkPairStartDesc')}>
@@ -2196,6 +2198,9 @@ function TabGeneral() {
         </SettingRow>
       </div>
 
+      {/* First-run setup — the wizard and cheat sheet re-entry points. */}
+      <TabFirstRunSetup />
+
       {/* Reset */}
       <ResetSection />
     </div>
@@ -2580,20 +2585,24 @@ function FanoutWorkersSection() {
   );
 }
 
-// ─── Agents tab — orchestrator, A2A, agent toolbar, MCP ──────────────────────
-function TabAgents() {
+// ─── Orchestrator tab — the deck brain: runtime, model, wake, gates ──────────
+function TabOrchestrator() {
+  return (
+    <div className="flex flex-col gap-4">
+      <OrchestratorSection />
+    </div>
+  );
+}
+
+// ─── Roles & fan-out tab — who runs each role, and what workers may do ───────
+function TabRoles() {
   const t = useT();
   const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
   const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);
-  const agentToolbarEnabled = useStore((s) => s.agentToolbarEnabled);
-  const setAgentToolbarEnabled = useStore((s) => s.setAgentToolbarEnabled);
-  const newConversationCommand = useStore((s) => s.newConversationCommand);
-  const setNewConversationCommand = useStore((s) => s.setNewConversationCommand);
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Orchestrator (moved out of Claude integration) */}
-      <OrchestratorSection />
+      <RoleBindingEditor />
 
       {/* A2A execution */}
       <div className="flex flex-col gap-2">
@@ -2609,35 +2618,82 @@ function TabAgents() {
 
       {/* Fan-out workers */}
       <FanoutWorkersSection />
+    </div>
+  );
+}
 
-      {/* Agent toolbar */}
+// ─── Agent toolbar rows (Appearance) ─────────────────────────────────────────
+// Moved out of the Agents tab: whether the inject toolbar is pinned is a
+// question about what the window shows, not about how agents run.
+function AgentToolbarSection() {
+  const t = useT();
+  const agentToolbarEnabled = useStore((s) => s.agentToolbarEnabled);
+  const setAgentToolbarEnabled = useStore((s) => s.setAgentToolbarEnabled);
+  const newConversationCommand = useStore((s) => s.newConversationCommand);
+  const setNewConversationCommand = useStore((s) => s.setNewConversationCommand);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <SectionLabel label={t('settings.agentToolbar')} />
+      <SettingRow id="toolbar" label={t('settings.agentToolbarShow')} description={t('settings.agentToolbarShowDesc')}>
+        <Toggle
+          checked={agentToolbarEnabled}
+          onChange={setAgentToolbarEnabled}
+          label={t('settings.agentToolbarShow')}
+        />
+      </SettingRow>
+      <SettingRow label={t('settings.agentToolbarNewCommand')}>
+        <input
+          type="text"
+          value={newConversationCommand}
+          onChange={(e) => setNewConversationCommand(e.target.value)}
+          className="text-xs rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)] font-mono"
+          style={{
+            backgroundColor: 'var(--bg-surface)',
+            color: 'var(--text-main)',
+            border: '1px solid var(--bg-overlay)',
+            width: 200,
+          }}
+        />
+      </SettingRow>
+    </div>
+  );
+}
+
+// ─── Claude Code tab — what wmux installs into Claude Code, and its health ───
+function TabClaudeCode() {
+  return (
+    <div className="flex flex-col gap-4">
+      <IntegrationSetupSectionContainer />
+      <ClaudeIntegrationSection />
+      {/* Per-client MCP registration. It lives with the setup card because it
+          is the same question — is wmux wired into the agent's config — asked
+          for every client wmux knows, not an agent-facing preference. */}
+      <McpStatusSection />
+    </div>
+  );
+}
+
+// ─── Remote & phone tab — devices that hold a credential, shared snippets ────
+// The live serve toggle stays in the sidebar Remote popover; this tab is where
+// you manage what persists once the server is off.
+function TabRemote() {
+  const t = useT();
+  const [devicesOpen, setDevicesOpen] = useState(false);
+  return (
+    <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
-        <SectionLabel label={t('settings.agentToolbar')} />
-        <SettingRow id="toolbar" label={t('settings.agentToolbarShow')} description={t('settings.agentToolbarShowDesc')}>
-          <Toggle
-            checked={agentToolbarEnabled}
-            onChange={setAgentToolbarEnabled}
-            label={t('settings.agentToolbarShow')}
-          />
-        </SettingRow>
-        <SettingRow label={t('settings.agentToolbarNewCommand')}>
-          <input
-            type="text"
-            value={newConversationCommand}
-            onChange={(e) => setNewConversationCommand(e.target.value)}
-            className="text-xs rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)] font-mono"
-            style={{
-              backgroundColor: 'var(--bg-surface)',
-              color: 'var(--text-main)',
-              border: '1px solid var(--bg-overlay)',
-              width: 200,
-            }}
-          />
+        <SectionLabel label={t('web.devicesTitle')} />
+        <SettingRow id="paireddevices" label={t('web.devicesTitle')} description={t('web.devicesSubtitle')}>
+          <Button variant="secondary" onClick={() => setDevicesOpen(true)}>
+            {t('web.devicesLink')}
+          </Button>
         </SettingRow>
       </div>
-
-      {/* MCP integration */}
-      <McpStatusSection />
+      <div data-setting-id="quickcommands" className="scroll-mt-4">
+        <QuickCommandsSection />
+      </div>
+      {devicesOpen && <PairedDevicesModal onClose={() => setDevicesOpen(false)} />}
     </div>
   );
 }
@@ -4092,6 +4148,8 @@ function TabAppearance() {
           </div>
         </SettingRow>
       </div>
+
+      <AgentToolbarSection />
     </div>
   );
 }
@@ -5223,7 +5281,7 @@ export default function SettingsPanel() {
     const entry = SETTINGS_CATALOG.find((item) => item.id === id);
     if (!entry) return;
     setSearchQuery('');
-    setActiveTab(entry.tab);
+    setActiveTab(resolveSettingsTab(entry.tab));
     setHighlightId(id);
   }, []);
 
@@ -5246,16 +5304,19 @@ export default function SettingsPanel() {
   }, [hasTarget, dismissedTarget]);
 
   const TAB_META: Record<TabId, { label: string; icon: ReactNode }> = {
-    general:            { label: t('settings.tabGeneral'),      icon: <IconGeneral /> },
-    terminal:           { label: t('settings.tabTerminal'),     icon: <IconTerminal /> },
-    appearance:         { label: t('settings.tabAppearance'),   icon: <IconAppearance /> },
-    notifications:      { label: t('settings.tabNotifications'), icon: <IconNotifications /> },
-    shortcuts:          { label: t('settings.tabShortcuts'),    icon: <IconShortcuts /> },
-    'claude-integration': { label: t('settings.tabAccounts'),   icon: <IconClaude /> },
-    agents:             { label: t('settings.tabAgents'),      icon: <IconAgents /> },
-    browser:            { label: t('settings.tabBrowser'),     icon: <IconBrowser /> },
-    lanlink:            { label: t('settings.tabNetwork'),     icon: <IconLanLink /> },
-    about:              { label: t('settings.tabAbout'),       icon: <IconAbout /> },
+    general:              { label: t('settings.tabGeneral'),       icon: <IconGeneral /> },
+    appearance:           { label: t('settings.tabAppearance'),    icon: <IconAppearance /> },
+    terminal:             { label: t('settings.tabTerminal'),      icon: <IconTerminal /> },
+    shortcuts:            { label: t('settings.tabKeyboard'),      icon: <IconShortcuts /> },
+    notifications:        { label: t('settings.tabNotifications'), icon: <IconNotifications /> },
+    'claude-integration': { label: t('settings.tabClaudeCode'),    icon: <IconClaude /> },
+    accounts:             { label: t('settings.tabAccounts'),      icon: <IconUsers /> },
+    orchestrator:         { label: t('settings.tabOrchestrator'),  icon: <IconAgents /> },
+    roles:                { label: t('settings.tabRoles'),         icon: <IconRobot /> },
+    browser:              { label: t('settings.tabBrowser'),       icon: <IconBrowser /> },
+    remote:               { label: t('settings.tabRemote'),        icon: <IconRemoteDevices /> },
+    lanlink:              { label: t('settings.tabLan'),           icon: <IconLanLink /> },
+    about:                { label: t('settings.tabAbout'),         icon: <IconAbout /> },
   };
 
   // Close on Escape (D-esc). While inspect is active the overlay owns ESC
@@ -5384,12 +5445,14 @@ export default function SettingsPanel() {
             <div className="flex-1 overflow-y-auto px-2 pb-3">
               {SETTINGS_NAV_GROUPS.map((group) => (
                 <div key={group.id} className="mt-2 first:mt-0">
-                  <div
-                    className="px-2 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-[0.09em]"
-                    style={{ color: 'var(--text-muted)' }}
-                  >
-                    {t(group.labelKey)}
-                  </div>
+                  {group.labelKey && (
+                    <div
+                      className="px-2 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-[0.09em]"
+                      style={{ color: 'var(--text-muted)' }}
+                    >
+                      {t(group.labelKey)}
+                    </div>
+                  )}
                   {group.tabs.map((tabId) => {
                     const tab = TAB_META[tabId];
                     const isActive = !searching && activeTab === tabId;
@@ -5442,15 +5505,18 @@ export default function SettingsPanel() {
               ) : (
                 <>
                   {activeTab === 'general'            && <TabGeneral />}
-                  {activeTab === 'terminal'           && <TabTerminal />}
                   {activeTab === 'appearance'         && <TabAppearance />}
-                  {activeTab === 'notifications'      && <TabNotifications />}
+                  {activeTab === 'terminal'           && <TabTerminal />}
                   {activeTab === 'shortcuts'          && <TabShortcuts />}
-                  {activeTab === 'claude-integration' && <><IntegrationSetupSectionContainer /><ClaudeIntegrationSection /><AccountsSection /><QuickCommandsSection /></>}
-                  {activeTab === 'agents'             && <TabAgents />}
+                  {activeTab === 'notifications'      && <TabNotifications />}
+                  {activeTab === 'claude-integration' && <TabClaudeCode />}
+                  {activeTab === 'accounts'           && <AccountsSection />}
+                  {activeTab === 'orchestrator'       && <TabOrchestrator />}
+                  {activeTab === 'roles'              && <TabRoles />}
                   {activeTab === 'browser'            && <TabBrowser />}
+                  {activeTab === 'remote'             && <TabRemote />}
                   {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}
-                  {activeTab === 'about'              && <><TabAbout /><TabFirstRunSetup /></>}
+                  {activeTab === 'about'              && <TabAbout />}
                 </>
               )}
             </div>

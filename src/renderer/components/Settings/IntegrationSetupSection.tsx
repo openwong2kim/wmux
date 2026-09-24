@@ -408,6 +408,7 @@ export function IntegrationSetupSection({
       className="rounded-[7px] p-4 flex flex-col gap-3"
       style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
       data-integration-setup
+      data-setting-id="setup"
     >
       <div className="flex items-center justify-between">
         <span className="text-sm font-semibold text-[color:var(--text-main)] font-mono">

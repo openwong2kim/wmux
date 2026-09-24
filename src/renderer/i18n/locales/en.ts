@@ -802,7 +802,7 @@ export const en = {
   'settings.theme': 'Theme',
   'settings.escToCancel': 'ESC to cancel',
   // Settings — MCP server status (wmux mcp check mirror)
-  'settings.mcpServers': 'MCP Servers',
+  'settings.mcpServers': 'MCP servers',
   'settings.mcpRegistered': 'registered',
   'settings.mcpNotRegistered': 'not registered',
   'settings.mcpExperimentalTitle': 'Integration not yet verified end-to-end',
@@ -849,7 +849,7 @@ export const en = {
   'accounts.defaultAccount': 'Default account',
   'accounts.notLoggedIn': 'not logged in',
   'accounts.newTerminalsNote': 'Applies to new terminals; running ones keep their account.',
-  'settings.shortcuts': 'Keyboard Shortcuts',
+  'settings.shortcuts': 'Keyboard shortcuts',
   // #1152 — checkbox on each advertised row; unchecked = the built-in is
   // unbound and the key passes through to the terminal (e.g. Codex Ctrl+T).
   'settings.shortcutDisableHint': 'On: wmux handles this key. Off: the key goes to the terminal instead.',
@@ -866,6 +866,23 @@ export const en = {
   'settings.navGroupApp': 'App',
   'settings.navGroupAgents': 'Agents',
   'settings.navGroupSystem': 'System',
+  'settings.tabKeyboard': 'Keyboard',
+  'settings.tabClaudeCode': 'Claude Code',
+  'settings.tabOrchestrator': 'Orchestrator',
+  'settings.tabRoles': 'Roles & fan-out',
+  'settings.tabRemote': 'Remote & phone',
+  'settings.tabLan': 'LAN',
+  'settings.navGroupConnections': 'Connections',
+  'settings.learnMore': 'Learn more',
+  'settings.showLess': 'Show less',
+  'settings.quickCommands': 'Quick commands',
+  'settings.sectionShell': 'Shell',
+  'settings.sectionInput': 'Input',
+  'settings.sectionPerformance': 'Rendering and memory',
+  'settings.sectionScrollback': 'Scrollback',
+  'settings.sectionInterface': 'Interface',
+  'settings.sectionSidebar': 'Sidebar',
+  'settings.sectionPanes': 'Panes',
   'settings.searchPlaceholder': 'Search settings',
   'settings.searchMatches': '{n} matches',
   'settings.searchNoMatches': 'No settings match “{query}”.',
@@ -1206,7 +1223,7 @@ export const en = {
   'settings.toggleHint': 'Ctrl+, to toggle',
 
   // Prefix mode
-  'settings.prefixMode': 'Prefix Mode (tmux-style)',
+  'settings.prefixMode': 'Prefix mode (tmux-style)',
   'settings.prefixKey': 'Prefix key',
   'settings.prefixKeyDesc': 'Ctrl + this key enters prefix mode',
   'settings.prefixBindings': 'Prefix bindings',
@@ -1240,7 +1257,7 @@ export const en = {
   'settings.prefix.stashPane': 'Stash pane',
 
   // Custom keybindings
-  'settings.customKeybindings': 'Custom Keybindings',
+  'settings.customKeybindings': 'Custom keybindings',
   'settings.kb.add': 'Add keybinding',
   'settings.kb.key': 'Key',
   'settings.kb.label': 'Label',

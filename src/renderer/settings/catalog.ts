@@ -2,17 +2,20 @@ import type { TranslationKey } from '../i18n/locales/en';
 
 export type SettingsTabId =
   | 'general'
-  | 'terminal'
   | 'appearance'
-  | 'notifications'
+  | 'terminal'
   | 'shortcuts'
+  | 'notifications'
   | 'claude-integration'
-  | 'agents'
+  | 'accounts'
+  | 'orchestrator'
+  | 'roles'
   | 'browser'
+  | 'remote'
   | 'lanlink'
   | 'about';
 
-export type SettingsNavGroupId = 'app' | 'agents' | 'system';
+export type SettingsNavGroupId = 'app' | 'agents' | 'connections' | 'about';
 
 export interface SettingsCatalogEntry {
   id: string;
@@ -23,27 +26,55 @@ export interface SettingsCatalogEntry {
   synonyms: string;
 }
 
+/**
+ * Left-nav order. The first and last groups carry no heading: the app tabs
+ * read as the default list and About sits alone at the end. Agents and
+ * Connections are headed because they gather several tabs of one kind.
+ */
 export const SETTINGS_NAV_GROUPS: {
   id: SettingsNavGroupId;
-  labelKey: TranslationKey;
+  labelKey?: TranslationKey;
   tabs: SettingsTabId[];
 }[] = [
   {
     id: 'app',
-    labelKey: 'settings.navGroupApp',
-    tabs: ['general', 'terminal', 'appearance', 'notifications', 'shortcuts'],
+    tabs: ['general', 'appearance', 'terminal', 'shortcuts', 'notifications'],
   },
   {
     id: 'agents',
     labelKey: 'settings.navGroupAgents',
-    tabs: ['claude-integration', 'agents', 'browser'],
+    tabs: ['claude-integration', 'accounts', 'orchestrator', 'roles', 'browser'],
   },
   {
-    id: 'system',
-    labelKey: 'settings.navGroupSystem',
-    tabs: ['lanlink', 'about'],
+    id: 'connections',
+    labelKey: 'settings.navGroupConnections',
+    tabs: ['remote', 'lanlink'],
+  },
+  {
+    id: 'about',
+    tabs: ['about'],
   },
 ];
+
+/**
+ * Tab ids that no longer exist, mapped to the tab that now holds their
+ * settings. `agents` was split into Orchestrator and Roles & fan-out; the
+ * orchestrator half kept the tab's first section, so an old deep link lands
+ * there. Every tab id that survived kept its spelling, so it needs no alias.
+ */
+export const LEGACY_SETTINGS_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
+  agents: 'orchestrator',
+};
+
+const TAB_IDS: ReadonlySet<string> = new Set(SETTINGS_NAV_GROUPS.flatMap((g) => g.tabs));
+
+/** Resolve a tab id from any caller (current or legacy) to a tab that exists.
+ *  An unknown id opens General rather than a blank panel. */
+export function resolveSettingsTab(id: string | null | undefined): SettingsTabId {
+  if (!id) return 'general';
+  if (TAB_IDS.has(id)) return id as SettingsTabId;
+  return LEGACY_SETTINGS_TAB_ALIASES[id] ?? 'general';
+}
 
 /**
  * Searchable index over Settings. Labels/descriptions come from i18n at
@@ -57,6 +88,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'checkupdate', tab: 'general', labelKey: 'settings.checkUpdate', synonyms: 'update now latest release' },
   { id: 'startup', tab: 'general', labelKey: 'settings.startup', synonyms: 'autostart boot login launch 시작' },
   { id: 'tutorial', tab: 'general', labelKey: 'settings.restartTutorial', descKey: 'settings.restartTutorialDesc', synonyms: 'onboarding tour help 튜토리얼' },
+  { id: 'firstrun', tab: 'general', labelKey: 'settings.firstRunSetup', descKey: 'settings.firstRunSetupDesc', synonyms: 'first run setup doctor diagnose' },
   { id: 'reset', tab: 'general', labelKey: 'settings.reset', synonyms: 'factory default wipe 초기화' },
 
   { id: 'shell', tab: 'terminal', labelKey: 'settings.defaultShell', synonyms: 'zsh bash powershell pwsh fish 셸' },
@@ -79,6 +111,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'sidebarpanecoordinates', tab: 'appearance', labelKey: 'settings.sidebarShowPaneCoordinates', descKey: 'settings.sidebarShowPaneCoordinatesDesc', synonyms: 'roster coordinate w1-2 pane name label unnamed clutter agent' },
   { id: 'multiview', tab: 'appearance', labelKey: 'settings.multiviewArrangement', descKey: 'settings.multiviewArrangementDesc', synonyms: 'grid split stack columns rows' },
   { id: 'uiscale', tab: 'appearance', labelKey: 'settings.uiScale', descKey: 'settings.uiScaleDesc', synonyms: 'zoom dpi accessibility scale 배율' },
+  { id: 'toolbar', tab: 'appearance', labelKey: 'settings.agentToolbarShow', descKey: 'settings.agentToolbarShowDesc', synonyms: 'toolbar compose new chat' },
 
   { id: 'sound', tab: 'notifications', labelKey: 'settings.sound', descKey: 'settings.soundDesc', synonyms: 'sound audio beep alarm 소리' },
   { id: 'toast', tab: 'notifications', labelKey: 'settings.toast', descKey: 'settings.toastDesc', synonyms: 'toast popup banner' },
@@ -89,34 +122,37 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'prefix', tab: 'shortcuts', labelKey: 'settings.prefixKey', synonyms: 'prefix tmux ctrl+b leader' },
   { id: 'customkeys', tab: 'shortcuts', labelKey: 'settings.customKeybindings', synonyms: 'hotkey shortcut keymap bind 단축키' },
 
-  // Labelled by the tab's CURRENT name. `claudeIntegration.tab` still says
-  // "Claude Integration", which this PR renamed the tab away from — a result
-  // row naming a tab that no longer exists by that name sends the user looking
-  // for the wrong thing.
-  { id: 'plugin', tab: 'claude-integration', labelKey: 'settings.tabAccounts', synonyms: 'integration hook plugin setup install claude 계정' },
-  { id: 'claudeacct', tab: 'claude-integration', labelKey: 'accounts.title', synonyms: 'claude account login subscription max usage quota 계정' },
+  { id: 'plugin', tab: 'claude-integration', labelKey: 'claudeIntegration.signalHealth.title', synonyms: 'integration hook plugin setup install claude 계정' },
+  { id: 'setup', tab: 'claude-integration', labelKey: 'integrationSetup.title', descKey: 'integrationSetup.description', synonyms: 'hooks hook bridge statusline status line mcp install setup 훅 설치' },
+  { id: 'usage', tab: 'claude-integration', labelKey: 'claudeIntegration.usage.title', descKey: 'claudeIntegration.usage.description', synonyms: 'usage quota limit 5h 7d meter anthropic 사용량' },
+  { id: 'mcp', tab: 'claude-integration', labelKey: 'settings.mcpServers', synonyms: 'mcp plugin tools broker register codex' },
 
-  { id: 'brain', tab: 'agents', labelKey: 'settings.orchestratorBrain', descKey: 'settings.orchestratorBrainDesc', synonyms: 'orchestrator brain hermes claude acp' },
-  { id: 'model', tab: 'agents', labelKey: 'settings.orchestratorModel', descKey: 'settings.orchestratorModelDesc', synonyms: 'model opus sonnet haiku' },
-  { id: 'autowake', tab: 'agents', labelKey: 'settings.autoWake', descKey: 'settings.autoWakeDesc', synonyms: 'autowake wake event push tokens' },
-  { id: 'ledgergate', tab: 'agents', labelKey: 'settings.ledgerGate', descKey: 'settings.ledgerGateDesc', synonyms: 'ledger gate stop task orchestrator delegated experimental' },
-  { id: 'roles', tab: 'agents', labelKey: 'settings.roleBindings', descKey: 'settings.roleBindingsDesc', synonyms: 'role reviewer tester planner model bind' },
-  { id: 'a2a', tab: 'agents', labelKey: 'settings.a2aAutoApproveExecute', descKey: 'settings.a2aAutoApproveExecuteDesc', synonyms: 'a2a execute approve' },
-  { id: 'fanoutapproval', tab: 'agents', labelKey: 'settings.fanoutRequireApproval', descKey: 'settings.fanoutRequireApprovalDesc', synonyms: 'fanout fan-out approval approve prompt unattended ask' },
-  { id: 'fanoutworkers', tab: 'agents', labelKey: 'settings.fanoutWorkerPermissionMode', descKey: 'settings.fanoutWorkerPermissionModeDesc', synonyms: 'fanout fan-out worker permission auto bypass sandbox' },
-  { id: 'fanoutallowtools', tab: 'agents', labelKey: 'settings.fanoutAllowWorkerTools', descKey: 'settings.fanoutAllowWorkerToolsDesc', synonyms: 'fanout worker allow tools permissions settings.json' },
-  { id: 'mcp', tab: 'agents', labelKey: 'settings.mcpServers', synonyms: 'mcp plugin tools broker register' },
-  { id: 'toolbar', tab: 'agents', labelKey: 'settings.agentToolbarShow', descKey: 'settings.agentToolbarShowDesc', synonyms: 'toolbar compose new chat' },
+  { id: 'claudeacct', tab: 'accounts', labelKey: 'accounts.title', synonyms: 'claude account login subscription max usage quota 계정' },
+
+  { id: 'brain', tab: 'orchestrator', labelKey: 'settings.orchestratorBrain', descKey: 'settings.orchestratorBrainDesc', synonyms: 'orchestrator brain hermes claude acp' },
+  { id: 'model', tab: 'orchestrator', labelKey: 'settings.orchestratorModel', descKey: 'settings.orchestratorModelDesc', synonyms: 'model opus sonnet haiku' },
+  { id: 'autowake', tab: 'orchestrator', labelKey: 'settings.autoWake', descKey: 'settings.autoWakeDesc', synonyms: 'autowake wake event push tokens' },
+  { id: 'fullpower', tab: 'orchestrator', labelKey: 'settings.orchestratorFullPower', synonyms: 'full power sdk settings sources tools' },
+  { id: 'ledgergate', tab: 'orchestrator', labelKey: 'settings.ledgerGate', descKey: 'settings.ledgerGateDesc', synonyms: 'ledger gate stop task orchestrator delegated experimental' },
+  { id: 'briefing', tab: 'orchestrator', labelKey: 'settings.briefing', descKey: 'settings.briefingDesc', synonyms: 'briefing welcome home summary' },
+
+  { id: 'roles', tab: 'roles', labelKey: 'settings.roleBindings', descKey: 'settings.roleBindingsDesc', synonyms: 'role reviewer tester planner model bind' },
+  { id: 'a2a', tab: 'roles', labelKey: 'settings.a2aAutoApproveExecute', descKey: 'settings.a2aAutoApproveExecuteDesc', synonyms: 'a2a execute approve' },
+  { id: 'fanoutapproval', tab: 'roles', labelKey: 'settings.fanoutRequireApproval', descKey: 'settings.fanoutRequireApprovalDesc', synonyms: 'fanout fan-out approval approve prompt unattended ask' },
+  { id: 'fanoutworkers', tab: 'roles', labelKey: 'settings.fanoutWorkerPermissionMode', descKey: 'settings.fanoutWorkerPermissionModeDesc', synonyms: 'fanout fan-out worker permission auto bypass sandbox' },
+  { id: 'fanoutallowtools', tab: 'roles', labelKey: 'settings.fanoutAllowWorkerTools', descKey: 'settings.fanoutAllowWorkerToolsDesc', synonyms: 'fanout worker allow tools permissions settings.json' },
 
   { id: 'browserbackend', tab: 'browser', labelKey: 'settings.browserBackend', descKey: 'settings.browserBackendDesc', synonyms: 'browser chrome chromium external builtin' },
   { id: 'browserlight', tab: 'browser', labelKey: 'settings.browserLightweight', descKey: 'settings.browserLightweightDesc', synonyms: 'browser throttle cpu lightweight' },
   { id: 'sitememory', tab: 'browser', labelKey: 'settings.siteMemory', descKey: 'settings.siteMemoryDesc', synonyms: 'browser site memory domain replay failure remember' },
   { id: 'siteguides', tab: 'browser', labelKey: 'settings.siteGuides', descKey: 'settings.siteGuidesDesc', synonyms: 'browser site guides notes chrome agent' },
 
+  { id: 'paireddevices', tab: 'remote', labelKey: 'web.devicesTitle', descKey: 'web.devicesSubtitle', synonyms: 'phone mobile device paired revoke remote web 휴대폰 기기' },
+  { id: 'quickcommands', tab: 'remote', labelKey: 'settings.quickCommands', synonyms: 'quick command snippet phone reusable instruction 빠른 명령' },
+
   { id: 'lanenable', tab: 'lanlink', labelKey: 'settings.lanlinkEnable', descKey: 'settings.lanlinkEnableDesc', synonyms: 'lan link network peer remote pair' },
   { id: 'lannic', tab: 'lanlink', labelKey: 'settings.lanlinkNic', descKey: 'settings.lanlinkNicDesc', synonyms: 'nic interface ethernet wifi mac' },
   { id: 'lanpair', tab: 'lanlink', labelKey: 'settings.lanlinkPair', synonyms: 'pin pair join revoke peer' },
 
   { id: 'version', tab: 'about', labelKey: 'settings.aboutTagline', synonyms: 'version about changelog release 버전' },
-  { id: 'firstrun', tab: 'about', labelKey: 'settings.firstRunSetup', descKey: 'settings.firstRunSetupDesc', synonyms: 'first run setup doctor diagnose' },
 ];
