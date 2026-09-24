@@ -777,13 +777,15 @@ export class AgentDetector {
       if (!ap.gate || this.activeAgents.has(ap.agent)) continue;
       // Opening a gate makes its agent the lastAgent, and processLine then
       // skips every other agent's patterns for the rest of the session. The
-      // chrome-checked gates (Claude, Kiro, Grok, Codex) may take a pane at any
-      // time — their evidence is the TUI itself. A substring gate may take a
-      // pane another agent owns only after the shell prompt has come back
-      // (OSC 133), i.e. the owner exited: mid-session, an echoed command or a
-      // sentence naming an agent ("Claude/OpenClaude", "opencode-sync-render")
-      // silenced a live Claude pane's permission prompts.
-      const substringTakeover = this.lastAgent !== null && this.lastAgent !== ap.agent
+      // compound gates (Claude, Kiro) and Grok's chrome may take a pane at any
+      // time. Every other gate may take a pane another agent owns only after
+      // the shell prompt has come back (OSC 133), i.e. the owner exited:
+      // mid-session, an echoed command or a sentence naming an agent
+      // ("Claude/OpenClaude", "opencode-sync-render") silenced a live Claude
+      // pane's permission prompts. Codex is included — its banner row can be
+      // reproduced by a Claude reply that wraps with `>_ OpenAI Codex` at the
+      // start of a row (seen live when a Claude pane printed that line).
+      const blockedTakeover = this.lastAgent !== null && this.lastAgent !== ap.agent
         && !this.shellPromptSinceOwner;
       const gateMatched = ap.slug === 'kiro'
         ? this.kiroChromeSeen && this.kiroPromptSeen
@@ -792,8 +794,8 @@ export class AgentDetector {
           : ap.slug === 'grok'
             ? candidateLines(clean).some(isGrokChrome)
             : ap.slug === 'codex'
-              ? ap.gate.test(clean) && candidateLines(clean).some(isCodexChrome)
-              : !substringTakeover && ap.gate.test(clean);
+              ? !blockedTakeover && ap.gate.test(clean) && candidateLines(clean).some(isCodexChrome)
+              : !blockedTakeover && ap.gate.test(clean);
       if (!gateMatched) continue;
 
       this.activeAgents.add(ap.agent);

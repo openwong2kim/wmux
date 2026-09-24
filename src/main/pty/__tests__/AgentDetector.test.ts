@@ -841,6 +841,23 @@ describe('AgentDetector', () => {
       ]);
     });
 
+    it('a Claude reply that wraps with the Codex banner text at a row start stays Claude', () => {
+      // Seen live: Claude answered "printed two lines: >_ OpenAI Codex (v0.149.1)"
+      // and the TUI broke the row right before the quoted text.
+      const { det, cb } = claudeGated();
+      det.feed('\r\u001b[5C\u001b[1B\u001b[38;2;177;185;249m>_ OpenAI Codex (v0.149.1)\u001b[39m and\r');
+      expect(det.getActiveAgents()).toEqual(['Claude Code']);
+      det.feed(PROCEED_CURSOR_DRAWN);
+      expect(cb.mock.calls.map((c) => c[0].status)).toEqual(['awaiting_input']);
+    });
+
+    it('Claude exiting to the shell and Codex starting hands the pane to Codex', () => {
+      const { det } = claudeGated();
+      det.feed('\u001b]133;D;0\u0007\u001b]133;A\u0007% codex\r\n');
+      det.feed('\u001b[9;1H│ >_ OpenAI Codex (v0.149.1)            │\r\n');
+      expect(det.getLastAgent()).toBe('Codex CLI');
+    });
+
     it('a substring gate takes the pane once the shell prompt is back (OSC 133)', () => {
       // The owner exited: the shell draws its prompt, and the user starts
       // another agent in the same pane.
