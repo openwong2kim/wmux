@@ -779,6 +779,11 @@
 .ui-dialog-close { width: 32px; height: 32px; flex-shrink: 0; border-radius: 8px; }
 .ui-dialog-body { display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow-y: auto; padding: 20px 24px; }
 .ui-dialog-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 4px 24px 24px; }
+/* A group or notice in the body keeps its full height, so a long list scrolls
+ * the body instead of being clipped: as a flex item with overflow:hidden its
+ * automatic minimum height would otherwise be 0. */
+.ui-dialog-body > .ui-group,
+.ui-dialog-body > .ui-notice { flex-shrink: 0; }
 
 /* Popover panel: the same quiet floating card as a dialog, anchored to its
  * trigger. Sections stack inside it: a muted sentence-case header with an

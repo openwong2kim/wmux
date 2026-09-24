@@ -8,9 +8,9 @@
 //     library — the wording-asymmetry checks the Phase 2.2 risk-class
 //     copy table is intact.
 //
-// Layout mirrors `A2a/ExecuteApprovalDialog.tsx`: a centered modal with
-// risk-class grouping, per-group color treatment, and Approve/Deny on the
-// right rail. The risk-class severity drives the accent color so the
+// Layout mirrors `A2a/ExecuteApprovalDialog.tsx`: the shared ui/Dialog with
+// the risk classes as one grouped list, a severity mark per row, and
+// Deny/Approve in the footer. The risk-class severity drives the accent color so the
 // terminal-content / terminal-input asymmetry (plan D5) is immediately
 // visible — "can label your panes" sits in neutral grey, "can read what's
 // on your screen" sits in warning red.
@@ -18,6 +18,10 @@
 import { type RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
 import { groupCapabilities } from './capabilityGrouping';
 import { useT } from '../../hooks/useT';
+import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
+import Button from '../ui/Button';
+import { IconWarning } from '../icons';
+import { useActivationGuard } from './useActivationGuard';
 
 // Re-export the grouping helpers so existing importers of these symbols from
 // the dialog module keep working — the canonical home is now the pure
@@ -76,129 +80,104 @@ export function PermissionApprovalDialogView(
   const t = useT();
   const groups = groupCapabilities(props.declaredCapabilities);
   const hasCritical = groups.some((g) => g.copy.severity === 'critical');
+  // The container keys this view by prompt id, so each prompt gets its own
+  // guard window and no focus carried over from the one before.
+  const guard = useActivationGuard(props.clientName + '\u0000' + props.declaredCapabilities.join(','));
+  // It opens by itself, so it leaves focus where the user is: their next
+  // Enter or Space cannot answer a prompt they have not read. There is no
+  // Escape, backdrop or close button: the prompt is answered with a button.
   return (
-    <div
-      className="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center"
-      style={{ backgroundColor: 'rgba(0,0,0,0.65)' }}
+    <Dialog
       role="alertdialog"
-      aria-labelledby="permission-approval-title"
+      onClose={props.onDeny}
+      closeOnEscape={false}
+      focusOnOpen="none"
+      width={540}
     >
-      <div
-        className="flex flex-col gap-4 p-5 rounded-xl"
-        style={{
-          width: 540,
-          maxWidth: '92vw',
-          maxHeight: '90vh',
-          overflowY: 'auto',
-          backgroundColor: 'var(--bg-base)',
-          border: `1px solid ${hasCritical ? 'var(--accent-red)' : 'var(--accent-yellow)'}`,
-          boxShadow: 'var(--shadow-modal)',
-        }}
-      >
-        <div className="flex items-center gap-2">
-          <span
-            style={{
-              color: hasCritical ? 'var(--accent-red)' : 'var(--accent-yellow)',
-              fontSize: 18,
-            }}
-          >
-            {hasCritical ? '⚠' : '⚠'}
-          </span>
-          <p
-            id="permission-approval-title"
-            className="text-sm font-semibold font-mono"
-            style={{ color: 'var(--text-main)' }}
-          >
+      <DialogHeader
+        title={
+          <span className="flex items-center gap-2">
+            <span
+              className="shrink-0"
+              style={{ color: hasCritical ? 'var(--accent-red)' : 'var(--accent-yellow)' }}
+            >
+              <IconWarning size={16} />
+            </span>
             {props.title ?? t('permission.pluginTitle')}
-          </p>
-        </div>
-
-        <div className="text-xs font-mono" style={{ color: 'var(--text-sub)' }}>
-          {/* The label names WHAT is asking. A borrow prompt is a workspace's
-              agent, not a plugin, and calling it one would misattribute the
-              request. */}
-          <span style={{ color: 'var(--text-subtle)' }}>
-            {t(props.kind === 'browser-borrow' ? 'permission.workspaceLabel' : 'permission.pluginLabel')}
-          </span>{' '}
-          <span style={{ color: 'var(--text-main)' }}>{props.clientName}</span>
-        </div>
-
+          </span>
+        }
+        description={
+          // The label names WHAT is asking. A borrow prompt is a workspace's
+          // agent, not a plugin, and calling it one would misattribute the
+          // request.
+          <>
+            {t(props.kind === 'browser-borrow' ? 'permission.workspaceLabel' : 'permission.pluginLabel')}{' '}
+            <span className="font-mono text-[12px] text-[var(--text-main)]">{props.clientName}</span>
+          </>
+        }
+      />
+      <DialogBody className="!gap-3">
         {props.rationale ? (
-          <div
-            className="text-xs p-3 rounded-md italic"
-            style={{
-              backgroundColor: 'var(--bg-mantle)',
-              color: 'var(--text-sub2)',
-            }}
-          >
+          <div className="ui-group px-3.5 py-3 text-[13px] text-[var(--text-sub)]">
             "{props.rationale}"
           </div>
         ) : null}
 
-        <div className="flex flex-col gap-3">
-          {groups.map((group) => (
-            <div
-              key={group.riskClass}
-              className="flex flex-col gap-1 p-3 rounded-md"
-              style={{
-                backgroundColor: 'var(--bg-surface)',
-                borderLeft: `3px solid ${severityAccent(group.copy.severity)}`,
-              }}
-            >
-              <div
-                className="text-xs font-semibold"
-                style={{
-                  color:
-                    group.copy.severity === 'critical'
-                      ? 'var(--accent-red)'
-                      : group.copy.severity === 'caution'
-                        ? 'var(--accent-yellow)'
-                        : 'var(--text-main)',
-                  fontWeight: group.copy.severity === 'critical' ? 700 : 600,
-                }}
-              >
-                {group.copy.summary}
+        {groups.length > 0 && (
+          <div className="ui-group" data-permission-groups>
+            {groups.map((group) => (
+              <div key={group.riskClass} className="ui-row !items-start" data-severity={group.copy.severity}>
+                <span className="ui-row-icon h-5" aria-hidden="true">
+                  <span
+                    className="block w-2 h-2 rounded-full"
+                    style={{ backgroundColor: severityAccent(group.copy.severity) }}
+                  />
+                </span>
+                <div className="ui-row-text">
+                  <p
+                    className="ui-row-title"
+                    style={
+                      group.copy.severity === 'critical'
+                        ? { color: 'var(--accent-red)', fontWeight: 600 }
+                        : group.copy.severity === 'caution'
+                          ? { color: 'var(--accent-yellow)' }
+                          : undefined
+                    }
+                  >
+                    {group.copy.summary}
+                  </p>
+                  <p className="ui-row-detail">{group.copy.detail}</p>
+                  <ul className="m-0 mt-1 p-0 list-none flex flex-wrap gap-1">
+                    {group.capabilities.map((cap, idx) => (
+                      <li key={`${cap.raw}-${idx}`} className="ui-code">
+                        {cap.raw}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               </div>
-              <div className="text-xs" style={{ color: 'var(--text-sub)' }}>
-                {group.copy.detail}
-              </div>
-              <ul
-                className="text-[11px] font-mono mt-1"
-                style={{ color: 'var(--text-sub2)' }}
-              >
-                {group.capabilities.map((cap, idx) => (
-                  <li key={`${cap.raw}-${idx}`}>· {cap.raw}</li>
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-
-        <div className="flex items-center justify-end gap-2">
-          <button
-            onClick={props.onDeny}
-            className="px-4 py-1.5 rounded-[5px] text-xs font-medium transition-colors"
-            style={{
-              backgroundColor: 'var(--bg-surface)',
-              color: 'var(--text-subtle)',
-            }}
-          >
-            {t('approval.deny')}
-          </button>
-          <button
-            onClick={props.onApprove}
-            className="px-4 py-1.5 rounded-[5px] text-xs font-medium transition-colors"
-            style={{
-              backgroundColor: hasCritical
-                ? 'var(--accent-red)'
-                : 'var(--accent-yellow)',
-              color: 'var(--bg-base)',
-            }}
-          >
-            {t('approval.approve')}
-          </button>
-        </div>
-      </div>
-    </div>
+            ))}
+          </div>
+        )}
+      </DialogBody>
+      <DialogFooter>
+        <Button size="md" variant="secondary" onClick={guard(props.onDeny)}>
+          {t('approval.deny')}
+        </Button>
+        {/* Solid red only when the grant reaches the screen or the keyboard —
+            that approval is the final confirm of a dangerous grant. */}
+        <Button
+          size="md"
+          variant={hasCritical ? 'danger' : 'primary'}
+          className={hasCritical ? 'gap-1.5' : undefined}
+          onClick={guard(props.onApprove)}
+        >
+          {/* Severity is not colour alone: in themes whose accent is red, the
+              danger and primary fills look alike. */}
+          {hasCritical && <IconWarning size={12} />}
+          {t('approval.approve')}
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }

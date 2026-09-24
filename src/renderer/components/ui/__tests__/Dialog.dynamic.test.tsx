@@ -232,6 +232,80 @@ describe('Dialog', () => {
     act(() => root.render(createElement(WithRef)));
     expect(document.activeElement).toBe(container.querySelector('[data-id="primary"]'));
   });
+
+  it('can be an alertdialog, still modal and labelled by its title', () => {
+    act(() => root.render(createElement(Dialog, { onClose: () => undefined, role: 'alertdialog' }, createElement(DialogHeader, { title: 'Approve?' }))));
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    const panel = container.querySelector('[role="alertdialog"]') as HTMLElement;
+    expect(panel.getAttribute('aria-modal')).toBe('true');
+    expect(document.getElementById(panel.getAttribute('aria-labelledby') ?? '')?.textContent).toBe('Approve?');
+  });
+
+  describe('focusOnOpen="none" (a dialog the app opens by itself)', () => {
+    function Passive({ onClose }: { onClose: () => void }) {
+      return createElement(
+        Dialog,
+        { onClose, focusOnOpen: 'none', 'data-testid': 'passive' },
+        createElement(DialogHeader, { title: 'Approve?' }),
+        createElement(DialogFooter, null, createElement('button', { 'data-id': 'deny' }, 'Deny')),
+      );
+    }
+
+    it('leaves an editing focus where it is and lets its keys through', () => {
+      const editor = document.createElement('textarea');
+      document.body.appendChild(editor);
+      editor.focus();
+      const onClose = vi.fn();
+      act(() => root.render(createElement(Passive, { onClose })));
+      expect(document.activeElement).toBe(editor);
+      // The panel itself is not a focus target, so a click on it cannot take
+      // focus from the terminal either.
+      expect(container.querySelector('[data-testid="passive"]')?.hasAttribute('tabindex')).toBe(false);
+      const esc = key('Escape');
+      expect(onClose).not.toHaveBeenCalled();
+      expect(esc.defaultPrevented).toBe(false);
+      editor.remove();
+    });
+
+    it('handles Escape once the user has moved focus into it', () => {
+      const onClose = vi.fn();
+      act(() => root.render(createElement(Passive, { onClose })));
+      (container.querySelector('[data-id="deny"]') as HTMLButtonElement).focus();
+      key('Escape');
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not take the keyboard from a dialog the user opened, even when it arrives later', () => {
+      const userDialog = vi.fn();
+      const arrived = vi.fn();
+      act(() => root.render(createElement('div', null, createElement(Sample, { onClose: userDialog }))));
+      const body = container.querySelector('[data-id="body"]') as HTMLButtonElement;
+      body.focus();
+      act(() =>
+        root.render(
+          createElement('div', null, createElement(Sample, { onClose: userDialog }), createElement(Passive, { onClose: arrived })),
+        ),
+      );
+      expect(document.activeElement).toBe(body);
+      // Tab still wraps inside the user's dialog...
+      (container.querySelector('[data-id="ok"]') as HTMLButtonElement).focus();
+      key('Tab');
+      expect(document.activeElement?.getAttribute('aria-label')).toBe('Close');
+      // ...and Escape closes it, not the dialog that arrived.
+      key('Escape');
+      expect(userDialog).toHaveBeenCalledTimes(1);
+      expect(arrived).not.toHaveBeenCalled();
+    });
+  });
+
+  it('closeDisabled disables the header close button', () => {
+    const onClose = vi.fn();
+    act(() => root.render(createElement(Dialog, { onClose }, createElement(DialogHeader, { title: 'T', closeLabel: 'Close', closeDisabled: true }))));
+    const close = container.querySelector('button[aria-label="Close"]') as HTMLButtonElement;
+    expect(close.disabled).toBe(true);
+    act(() => close.click());
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });
 
 describe('focusableWithin', () => {

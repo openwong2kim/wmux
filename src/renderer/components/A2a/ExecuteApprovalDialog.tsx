@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
@@ -6,6 +7,11 @@ import { resolveExecuteApproval } from '../../utils/executeApproval';
 import { beginApprovalCountdown, pauseApprovalCountdown } from '../../utils/executeApprovalGate';
 import { renderSentence } from '../../i18n/renderSentence';
 import { useT } from '../../hooks/useT';
+import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
+import Button from '../ui/Button';
+import Checkbox from '../ui/Checkbox';
+import { IconWarning } from '../icons';
+import { useActivationGuard } from '../Approval/useActivationGuard';
 
 /**
  * Approval prompt for `a2a_task_send` requests with `execute: true`.
@@ -24,6 +30,8 @@ export default function ExecuteApprovalDialog() {
   const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
   const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);
   const [now, setNow] = useState(() => Date.now());
+  // A click already on its way when a prompt appears must not answer it.
+  const guard = useActivationGuard(approval?.approvalId ?? '');
 
   // The auto-deny countdown belongs to the prompt that is ON SCREEN. Prompts
   // queued behind this one have not started theirs, so a busy queue can no
@@ -77,109 +85,101 @@ export default function ExecuteApprovalDialog() {
   const remainingMs = approval.expiresAt > 0 ? Math.max(0, approval.expiresAt - now) : null;
   const remainingSec = remainingMs === null ? null : Math.ceil(remainingMs / 1000);
 
+  const title = task
+    ? task.action === 'pr'
+      ? t('approval.taskPrTitle')
+      : t('approval.taskCloseTitle')
+    : fanout
+      ? t('approval.fanoutTitle')
+      : t('approval.executeTitle');
+  const danger = (text: string) => <span style={{ color: 'var(--accent-red)' }}>{text}</span>;
+  // Machine evidence (ids, paths, branch tips) in mono; the labels stay Inter.
+  const evidence = (label: string, value: ReactNode) => (
+    <div className="flex gap-3 min-w-0 px-3.5 py-2">
+      <span className="w-[72px] shrink-0 text-[var(--text-sub)]">{label}</span>
+      <span className="min-w-0 break-all font-mono text-[12px] text-[var(--text-main)]">{value}</span>
+    </div>
+  );
+
+  // No Escape, no backdrop, no close button: the prompt is answered with
+  // Approve or Deny, or it auto-denies when the countdown runs out. It opens by
+  // itself, so it leaves focus where the user is (a terminal, another dialog):
+  // their next Enter or Space cannot answer a prompt they have not read. Keyed
+  // by request id so each queued prompt starts fresh — without focus carried
+  // over from the one before, and with its own activation guard.
   return (
-    <div
-      className="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center"
-      style={{ backgroundColor: 'rgba(0,0,0,0.65)' }}
+    <Dialog
+      key={approval.approvalId}
       role="alertdialog"
-      aria-labelledby="execute-approval-title"
+      onClose={() => resolveExecuteApproval(approval.approvalId, false)}
+      closeOnEscape={false}
+      focusOnOpen="none"
+      width={480}
     >
-      <div
-        className="flex flex-col gap-4 p-5 rounded-xl"
-        style={{
-          width: 460,
-          maxWidth: '90vw',
-          backgroundColor: 'var(--bg-base)',
-          border: '1px solid var(--accent-red)',
-          boxShadow: 'var(--shadow-modal)',
-        }}
-      >
-        <div className="flex items-center gap-2">
-          <span style={{ color: 'var(--accent-red)', fontSize: 18 }}>⚠</span>
-          <p
-            id="execute-approval-title"
-            className="text-sm font-semibold font-mono"
-            style={{ color: 'var(--text-main)' }}
-          >
-            {task
-              ? task.action === 'pr'
-                ? t('approval.taskPrTitle')
-                : t('approval.taskCloseTitle')
-              : fanout
-                ? t('approval.fanoutTitle')
-                : t('approval.executeTitle')}
-          </p>
-        </div>
-        <p className="text-xs" style={{ color: 'var(--text-sub)' }}>
-          {task ? (
-            renderSentence(t('approval.taskSentence'), {
-              effect: <span style={{ color: 'var(--accent-red)' }}>{task.effect}</span>,
-            })
-          ) : fanout ? (
-            renderSentence(t('approval.fanoutSentence'), {
-              tasks: (
-                <span style={{ color: 'var(--accent-red)' }}>
-                  {fanout.taskCount === 1
-                    ? t('approval.fanoutTasks', { count: fanout.taskCount })
-                    : t('approval.fanoutTasksPlural', { count: fanout.taskCount })}
-                </span>
-              ),
-            })
-          ) : sameWs ? (
-            renderSentence(t('approval.sameWsSentence'), {
-              workspace: <span style={{ color: 'var(--accent-red)' }}>{t('approval.sameWsWorkspace')}</span>,
-              mode: <span style={{ color: 'var(--accent-red)' }}>bypassPermissions</span>,
-            })
-          ) : (
-            renderSentence(t('approval.remoteSentence'), {
-              mode: <span style={{ color: 'var(--accent-red)' }}>bypassPermissions</span>,
-            })
-          )}
-        </p>
-        <div
-          className="text-xs font-mono flex flex-col gap-1 p-3 rounded-md"
-          style={{ backgroundColor: 'var(--bg-mantle)', color: 'var(--text-sub2)' }}
-        >
+      <DialogHeader
+        title={
+          <span className="flex items-center gap-2">
+            <span className="shrink-0" style={{ color: 'var(--accent-red)' }}>
+              <IconWarning size={16} />
+            </span>
+            {title}
+          </span>
+        }
+        description={
+          task
+            ? renderSentence(t('approval.taskSentence'), { effect: danger(task.effect) })
+            : fanout
+              ? renderSentence(t('approval.fanoutSentence'), {
+                  tasks: danger(
+                    fanout.taskCount === 1
+                      ? t('approval.fanoutTasks', { count: fanout.taskCount })
+                      : t('approval.fanoutTasksPlural', { count: fanout.taskCount }),
+                  ),
+                })
+              : sameWs
+                ? renderSentence(t('approval.sameWsSentence'), {
+                    workspace: danger(t('approval.sameWsWorkspace')),
+                    mode: danger('bypassPermissions'),
+                  })
+                : renderSentence(t('approval.remoteSentence'), { mode: danger('bypassPermissions') })
+        }
+      />
+      <DialogBody className="!gap-3">
+        <div className="ui-group text-[13px]" data-approval-evidence>
           {task ? (
             <>
-              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.caller')}</span> {senderName}</div>
-              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.task')}</span> {task.taskId}</div>
-              {task.branch ? (
-                <div>
-                  <span style={{ color: 'var(--text-subtle)' }}>{t('approval.branch')}</span> {task.branch}
-                  {/* The COMMIT, not just the name: the worker owning this
-                      worktree is still running, so a branch name alone does not
-                      identify what a push would send. main refuses if this
-                      moves before the answer lands. */}
-                  {task.branchTip ? ` @ ${task.branchTip}` : ''}
-                </div>
-              ) : null}
-              {task.worktreePath ? (
-                <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.worktree')}</span> {task.worktreePath}</div>
-              ) : null}
+              {evidence(t('approval.caller'), senderName)}
+              {evidence(t('approval.task'), task.taskId)}
+              {task.branch
+                ? evidence(
+                    t('approval.branch'),
+                    // The COMMIT, not just the name: the worker owning this
+                    // worktree is still running, so a branch name alone does not
+                    // identify what a push would send. main refuses if this
+                    // moves before the answer lands.
+                    `${task.branch}${task.branchTip ? ` @ ${task.branchTip}` : ''}`,
+                  )
+                : null}
+              {task.worktreePath ? evidence(t('approval.worktree'), task.worktreePath) : null}
             </>
           ) : fanout ? (
             <>
-              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.caller')}</span> {senderName}</div>
-              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.repo')}</span> {fanout.repoPath}</div>
-              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.tasks')}</span> {fanout.taskCount}</div>
+              {evidence(t('approval.caller'), senderName)}
+              {evidence(t('approval.repo'), fanout.repoPath)}
+              {evidence(t('approval.tasks'), fanout.taskCount)}
             </>
           ) : (
             <>
-              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.from')}</span> {senderName}</div>
-              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.to')}</span> {receiverName}</div>
-              {approval.cwd ? (
-                <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.cwd')}</span> {approval.cwd}</div>
-              ) : null}
-              <div><span style={{ color: 'var(--text-subtle)' }}>{t('approval.task')}</span> {approval.taskId}</div>
+              {evidence(t('approval.from'), senderName)}
+              {evidence(t('approval.to'), receiverName)}
+              {approval.cwd ? evidence(t('approval.cwd'), approval.cwd) : null}
+              {evidence(t('approval.task'), approval.taskId)}
             </>
           )}
         </div>
         <div
-          className="text-xs font-mono p-3 rounded-md whitespace-pre-wrap break-words"
+          className="ui-group px-3.5 py-3 font-mono text-[12px] whitespace-pre-wrap break-words text-[var(--text-main)]"
           style={{
-            backgroundColor: 'var(--bg-surface)',
-            color: 'var(--text-main)',
             // A fan-out preview carries one block PER TASK — the effective
             // prompt each agent is handed, which is what the user is actually
             // approving. Eight lines of scroll would hide most of it behind a
@@ -187,50 +187,52 @@ export default function ExecuteApprovalDialog() {
             maxHeight: fanout ? 340 : 160,
             overflowY: 'auto',
           }}
+          data-approval-message
         >
           {approval.messagePreview || t('approval.emptyMessage')}
         </div>
-        <div className="flex items-center justify-between">
-          {fanout || task ? (
-            // No auto-approve affordance on a fan-out or a task action: the
-            // toggle is scoped to A2A background execution and neither rides
-            // it, so offering it here would promise something it does not do.
-            <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
-              {t('approval.fanoutAutoApproveHint')}
-            </span>
-          ) : (
-            <label className="flex items-center gap-2 text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
-              <input
-                type="checkbox"
-                checked={a2aAutoApproveExecute}
-                onChange={(e) => setA2aAutoApproveExecute(e.currentTarget.checked)}
-              />
-              {t('fleet.approvals.a2aAutoApprove')}
-            </label>
-          )}
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
-            {remainingSec === null ? '' : t('approval.autoDeny', { sec: remainingSec })}
-          </span>
-          <div className="flex gap-2">
-            <button
-              onClick={() => resolveExecuteApproval(approval.approvalId, false)}
-              className="px-4 py-1.5 rounded-[5px] text-xs font-medium transition-colors"
-              style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-subtle)' }}
-            >
-              {t('approval.deny')}
-            </button>
-            <button
-              onClick={() => resolveExecuteApproval(approval.approvalId, true)}
-              className="px-4 py-1.5 rounded-[5px] text-xs font-medium transition-colors"
-              style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
-            >
-              {t('approval.approve')}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+        {fanout || task ? (
+          // No auto-approve affordance on a fan-out or a task action: the
+          // toggle is scoped to A2A background execution and neither rides
+          // it, so offering it here would promise something it does not do.
+          <p className="m-0 text-[11px] text-[var(--text-sub)]">{t('approval.fanoutAutoApproveHint')}</p>
+        ) : (
+          <label className="flex items-center gap-2 text-[13px] text-[var(--text-sub)] cursor-pointer">
+            <Checkbox
+              checked={a2aAutoApproveExecute}
+              onCheckedChange={(next) => guard(() => setA2aAutoApproveExecute(next))()}
+              data-approval-auto-approve
+            />
+            {t('fleet.approvals.a2aAutoApprove')}
+          </label>
+        )}
+      </DialogBody>
+      <DialogFooter>
+        {/* The countdown stays in view next to the answer it is counting down to. */}
+        <span className="mr-auto text-[11px] tabular-nums text-[var(--text-sub)]" data-approval-countdown>
+          {remainingSec === null ? '' : t('approval.autoDeny', { sec: remainingSec })}
+        </span>
+        <Button
+          size="md"
+          variant="secondary"
+          onClick={guard(() => resolveExecuteApproval(approval.approvalId, false))}
+        >
+          {t('approval.deny')}
+        </Button>
+        {/* Solid red: this is the final confirm of an autonomous spawn or a
+            push, the one place DESIGN.md allows the full danger fill. */}
+        <Button
+          size="md"
+          variant="danger"
+          className="gap-1.5"
+          onClick={guard(() => resolveExecuteApproval(approval.approvalId, true))}
+        >
+          {/* Severity is not colour alone: in themes whose accent is red, the
+              danger and primary fills look alike. */}
+          <IconWarning size={12} />
+          {t('approval.approve')}
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }

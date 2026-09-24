@@ -40,8 +40,8 @@
 // window.electronAPI.deck.hooksBridge in the container.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { tokenAttrs } from '../../themes';
-import { FOCUS_RING } from '../focusRing';
+import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
+import Button from '../ui/Button';
 
 export const HOOKS_PROMPT_EVENT = 'wmux:hooks-install-prompt';
 
@@ -227,99 +227,92 @@ export function HooksInstallPrompt({
 
   if (phase === 'hidden') return null;
 
+  // Later, Escape, the backdrop and the post-install Close share one
+  // lifetime (this modal only) — and none of them works mid-write.
+  //
+  // It opens by itself after an async check at launch or on a mode change, so
+  // it leaves focus where the user is: a Space or Enter typed into a terminal
+  // must not press Don't ask again (a durable refusal) or Install unseen.
+  // Escape applies once focus is inside it.
+  const dismissIfIdle = () => {
+    if (!busy) dismissNow();
+  };
+
   return (
-    <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50"
-      data-hooks-install-prompt
-      onClick={(e) => {
-        // Backdrop dismiss — but never mid-install (the write is in flight).
-        // Same lifetime as Later: this session only.
-        if (e.target === e.currentTarget && !busy) dismissNow();
-      }}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={t('hooks.prompt.title') || 'Install wmux hooks'}
-        className="w-[420px] max-w-[90vw] bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-[7px] shadow-xl p-4 text-[13px] text-[var(--text-main)]"
-        {...tokenAttrs('textMain', 'text')}
-      >
+    <div className="contents" data-hooks-install-prompt>
+      <Dialog onClose={dismissIfIdle} closeOnBackdrop focusOnOpen="none" width={440}>
         {phase === 'done' ? (
           <>
-            <div className="font-semibold mb-2">{t('hooks.prompt.doneTitle') || 'Hooks installed'}</div>
-            <p className="text-[var(--text-sub)] mb-3">
-              {t('hooks.prompt.doneBody') ||
-                'Restart the Claude sessions in your panes to activate the hooks.'}
-            </p>
-            <div className="flex justify-end">
-              <button
-                type="button"
-                data-hooks-close
-                onClick={dismissNow}
-                className={`px-3 py-1 rounded-md bg-[var(--accent)] text-[var(--bg-base)] font-semibold hover:opacity-90 ${FOCUS_RING}`}
-              >
+            <DialogHeader
+              title={t('hooks.prompt.doneTitle') || 'Hooks installed'}
+              description={
+                t('hooks.prompt.doneBody') ||
+                'Restart the Claude sessions in your panes to activate the hooks.'
+              }
+            />
+            <DialogFooter className="pt-5">
+              <Button size="md" variant="primary" data-hooks-close onClick={dismissNow}>
                 {t('hooks.prompt.close') || 'Close'}
-              </button>
-            </div>
+              </Button>
+            </DialogFooter>
           </>
         ) : (
           <>
-            <div className="font-semibold mb-2">
-              {t('hooks.prompt.title') || 'Install wmux hooks for accurate agent signals'}
-            </div>
-            <p className="text-[var(--text-sub)] mb-2">
-              {t('hooks.prompt.body') ||
-                'Without hooks, wmux falls back to screen-reading to guess when an agent finishes — it can miss completions and approvals. Installing the hook bridge into your Claude Code settings makes these signals exact.'}
-            </p>
-            {phase === 'error' && (
-              <p className="text-[var(--accent)] mb-2" role="alert" data-hooks-error>
-                {errorKind === 'never'
-                  ? t('hooks.prompt.neverError') ||
-                    'Could not save that preference, so this prompt would return on the next launch.'
-                  : t('hooks.prompt.error') || 'Install failed.'}
-                {errorDetail ? ` ${errorDetail}` : ''}
+            <DialogHeader
+              title={t('hooks.prompt.title') || 'Install wmux hooks for accurate agent signals'}
+            />
+            <DialogBody className="!gap-2">
+              <p className="m-0 text-[13px] leading-5 text-[var(--text-sub)]">
+                {t('hooks.prompt.body') ||
+                  'Without hooks, wmux falls back to screen-reading to guess when an agent finishes — it can miss completions and approvals. Installing the hook bridge into your Claude Code settings makes these signals exact.'}
               </p>
-            )}
-            <div className="flex justify-end gap-2">
+              {phase === 'error' && (
+                <p className="ui-row-error text-[13px] leading-5" role="alert" data-hooks-error>
+                  {errorKind === 'never'
+                    ? t('hooks.prompt.neverError') ||
+                      'Could not save that preference, so this prompt would return on the next launch.'
+                    : t('hooks.prompt.error') || 'Install failed.'}
+                  {errorDetail ? ` ${errorDetail}` : ''}
+                </p>
+              )}
+            </DialogBody>
+            <DialogFooter>
               {/* Only offered when it can actually persist. On an older
                   preload this control could not do what its label promises,
                   and a durable-looking button that silently acts as Later is
                   worse than no button. */}
               {api.setPromptPreference && (
-              <button
-                type="button"
-                data-hooks-never
-                disabled={busy}
-                onClick={neverAsk}
-                className={`px-3 py-1 rounded-md text-[var(--text-muted)] hover:text-[var(--text-main)] disabled:opacity-50 ${FOCUS_RING}`}
-              >
-                {t('hooks.prompt.never') || "Don't ask again"}
-              </button>
+                <Button
+                  size="md"
+                  variant="ghost"
+                  className="mr-auto"
+                  data-hooks-never
+                  disabled={busy}
+                  onClick={neverAsk}
+                >
+                  {t('hooks.prompt.never') || "Don't ask again"}
+                </Button>
               )}
-              <button
-                type="button"
-                data-hooks-later
-                disabled={busy}
-                onClick={dismissNow}
-                className={`px-3 py-1 rounded-md text-[var(--text-sub)] hover:text-[var(--text-main)] disabled:opacity-50 ${FOCUS_RING}`}
-              >
+              <Button size="md" variant="secondary" data-hooks-later disabled={busy} onClick={dismissNow}>
                 {t('hooks.prompt.later') || 'Later'}
-              </button>
-              <button
-                type="button"
+              </Button>
+              {/* In flight it is not the primary: nothing to press until the
+                  write returns. */}
+              <Button
+                size="md"
+                variant={phase === 'installing' ? 'secondary' : 'primary'}
                 data-hooks-install
                 disabled={busy}
                 onClick={install}
-                className={`px-3 py-1 rounded-md bg-[var(--accent)] text-[var(--bg-base)] font-semibold hover:opacity-90 disabled:opacity-50 ${FOCUS_RING}`}
               >
                 {phase === 'installing'
                   ? t('hooks.prompt.installing') || 'Installing…'
                   : t('hooks.prompt.install') || 'Install hooks'}
-              </button>
-            </div>
+              </Button>
+            </DialogFooter>
           </>
         )}
-      </div>
+      </Dialog>
     </div>
   );
 }
