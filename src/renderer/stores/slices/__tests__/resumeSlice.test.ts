@@ -7,6 +7,7 @@ describe('resumeSlice', () => {
     useStore.setState((state) => {
       state.pendingDeadPaneRecoveryBySurfaceId = {};
       state.deadPaneRecoveryOfferByPtyId = {};
+      state.resumeConsumedByPtyId = {};
     });
     useStore.getState().hydrateResume({});
     useStore.getState().hydrateResumeBindings({});
@@ -50,6 +51,16 @@ describe('resumeSlice', () => {
       useStore.getState().setResumeHint('pty-old', 'claude');
       useStore.getState().hydrateResume({ 'pty-new': 'claude' });
       expect(useStore.getState().resumeHintByPtyId).toEqual({ 'pty-new': 'claude' });
+    });
+
+    it('#1464: a consumed offer is not brought back by a later snapshot', () => {
+      // The daemon keeps reporting resumeAgent until the agent is re-detected,
+      // so the 15 s pty.list hydrate would re-show a dismissed pill (and, as an
+      // in-flow row, resize the pane again).
+      useStore.getState().hydrateResume({ 'pty-a': 'claude', 'pty-b': 'codex' });
+      useStore.getState().clearResumeHint('pty-a');
+      useStore.getState().hydrateResume({ 'pty-a': 'claude', 'pty-b': 'codex' });
+      expect(useStore.getState().resumeHintByPtyId).toEqual({ 'pty-b': 'codex' });
     });
 
     it('empty snapshot clears everything', () => {

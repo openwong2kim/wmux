@@ -899,8 +899,12 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           tab strip while the offer stands. It used to float over the pane
           top-left, covering the tab title and the first terminal row (the
           row it types the resume command into); the strip itself has no
-          room for it on a narrow pane. */}
-      {resumeHint && resumePtyReady && !supervision && activeSurfacePtyId && (() => {
+          room for it on a narrow pane.
+          The row is laid out from the moment the hint exists, NOT from
+          resumePtyReady: it then takes its height before the recovered pane's
+          first fit instead of shrinking the terminal (a resize, a SIGWINCH)
+          once the pane is live. Only the button waits for readiness. */}
+      {resumeHint && !supervision && activeSurfacePtyId && (() => {
         const ptyId = activeSurfacePtyId;
         const launcher = resumeHint; // slug doubles as the launcher stem ('claude'/'codex')
         const agentName = launcher.charAt(0).toUpperCase() + launcher.slice(1);
@@ -957,6 +961,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
 
         const onPrimary = (e: React.MouseEvent) => {
           e.stopPropagation();
+          if (!resumePtyReady) return; // EI6: the recovered pipe is not writable yet
           // Assemble the exact string to type — with the role's bound model
           // re-asserted on the launcher-prefixed variants (mirrors the chip and
           // the input.send path). The permission-restore (click 1) / exact-resume
@@ -1070,6 +1075,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
             >
             <button
               onClick={onPrimary}
+              disabled={!resumePtyReady}
               title={primaryTooltip}
               aria-label={primaryTooltip}
               style={{
@@ -1078,7 +1084,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
                 color: 'inherit',
                 background: 'none',
                 border: 'none',
-                cursor: 'pointer',
+                cursor: resumePtyReady ? 'pointer' : 'default',
+                opacity: resumePtyReady ? 1 : 0.5,
               }}
             >
               {primaryLabel}

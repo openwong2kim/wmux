@@ -11,6 +11,7 @@ import { RingBuffer } from './RingBuffer';
 import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
 import { OutputModeTracker } from './util/outputModeTracker';
 import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
+import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 
 /**
  * Daemon version of PTYBridge.
@@ -60,11 +61,15 @@ export class DaemonPTYBridge extends EventEmitter {
    * { replayHeld: true })` can release it. A recovered shell prints its first
    * prompt while still muted; when the renderer's first resize keeps the saved
    * geometry no SIGWINCH follows, so the shell never repaints and a dropped
-   * prompt leaves the pane blank until a key is pressed. `null` = not holding
-   * (never muted, or the cap below was exceeded and the chunks were given up).
+   * prompt leaves the pane blank until a key is pressed. `null` = not holding.
+   *
+   * Bounded by keeping the HEAD: once the cap is reached later chunks are not
+   * held (`heldFull`), but what was held stays — the shell's prompt, or a
+   * TUI's first frame, is printed first, so it is the part worth keeping.
    */
   private heldWhileMuted: string[] | null = null;
   private heldBytes = 0;
+  private heldFull = false;
   private static readonly MAX_HELD_BYTES = 256 * 1024;
   /** The unmuted capture path, set by setupDataForwarding; replays held chunks. */
   private captureChunk: ((data: string, buf: Buffer) => void) | null = null;
@@ -604,13 +609,16 @@ export class DaemonPTYBridge extends EventEmitter {
       // Muted: keep the chunk out of the ring before any side effect. Recovery
       // sessions run muted until their first resize so the geometry mismatch
       // window (Bug 2 in v2.8.0) doesn't pollute the ring buffer. The chunk is
-      // held (bounded) so the unmute can still release it when the geometry
-      // turned out not to change (#1464).
+      // held (bounded, head kept) so the unmute can release what was produced
+      // at the geometry the renderer shows (#1464).
       if (this.muted) {
-        if (this.heldWhileMuted) {
-          this.heldBytes += buf.length;
-          if (this.heldBytes > DaemonPTYBridge.MAX_HELD_BYTES) this.heldWhileMuted = null;
-          else this.heldWhileMuted.push(data);
+        if (this.heldWhileMuted && !this.heldFull) {
+          if (this.heldBytes + buf.length > DaemonPTYBridge.MAX_HELD_BYTES) {
+            this.heldFull = true;
+          } else {
+            this.heldBytes += buf.length;
+            this.heldWhileMuted.push(data);
+          }
         }
         return;
       }
@@ -647,6 +655,12 @@ export class DaemonPTYBridge extends EventEmitter {
    * Muting starts holding the dropped chunks. Unmuting with `replayHeld`
    * pushes them through the normal capture path (ring + clients) in order;
    * without it they are discarded, as before (#1464).
+   *
+   * The replay goes out as LIVE bytes (after the attach flush), so terminal
+   * queries in it — DA1/DSR/OSC color probes the program sent at startup and
+   * has long since stopped waiting for — would make xterm answer late, and the
+   * answer would land in the program's input. They are stripped first, with
+   * the same sanitizer the attach-time ring replay goes through.
    */
   setMuted(muted: boolean, opts?: { replayHeld?: boolean }): void {
     // Unmuting a recovered pane releases a full repaint at the new geometry,
@@ -660,10 +674,12 @@ export class DaemonPTYBridge extends EventEmitter {
     if (muted !== this.muted) {
       this.heldWhileMuted = muted ? [] : null;
       this.heldBytes = 0;
+      this.heldFull = false;
     }
     this.muted = muted;
-    if (!muted && opts?.replayHeld && held && this.captureChunk) {
-      for (const data of held) this.captureChunk(data, Buffer.from(data));
+    if (!muted && opts?.replayHeld && held && held.length > 0 && this.captureChunk) {
+      const buf = stripReplayQuerySequences(Buffer.from(held.join('')));
+      if (buf.length > 0) this.captureChunk(buf.toString(), buf);
     }
   }
 
@@ -677,6 +693,7 @@ export class DaemonPTYBridge extends EventEmitter {
     if (!this.muted) return;
     this.heldWhileMuted = [];
     this.heldBytes = 0;
+    this.heldFull = false;
   }
 
   /**
