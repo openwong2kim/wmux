@@ -981,7 +981,11 @@ function describeErr(err: unknown): string {
  *    counted, so the binder wraps the value itself — and doubles its trailing
  *    backslashes itself, so only the ones in front of a quote are doubled here.
  * 7.3+ in `Standard` or `Windows` mode escapes arguments correctly on its own,
- * so the text passes through untouched there. The quote character is
+ * so the text passes through untouched there. 6.0–7.2 have only the legacy
+ * binder and are assumed to match 7.6's Legacy mode; they were not run. The
+ * variable is read with Get-Variable because 5.1 does not define it and a
+ * profile's Set-StrictMode would make a bare `$PSNativeCommandArgumentPassing`
+ * throw — the worker would not launch at all. The quote character is
  * spelled `[char]34` / `\x22` so the whole `"$(…)"` stays one quoted word for
  * the launch-line tokenizers (workerLaunch.spans, agentResume.tokenize). `\z`,
  * not `$`: `$` also matches before a final newline.
@@ -991,7 +995,7 @@ function describeErr(err: unknown): string {
  * unescaped there.
  */
 const PS_LEGACY_ARGV_QUOTE =
-  "ForEach-Object { if ($PSNativeCommandArgumentPassing -and $PSNativeCommandArgumentPassing -ne 'Legacy') { $_ } " +
+  "ForEach-Object { if ((Get-Variable PSNativeCommandArgumentPassing -ValueOnly -ErrorAction Ignore) -in 'Standard', 'Windows') { $_ } " +
   "elseif ($PSVersionTable.PSVersion.Major -ge 6) { $_ -replace '(\\\\*)\\x22', ('$1$1\\{0}' -f [char]34) } " +
   "else { '{0}{1}{0}' -f [char]34, ($_ -replace '(\\\\*)\\x22', ('$1$1{0}{0}' -f [char]34) -replace '(\\\\+)\\z', '$1$1') } }";
 
