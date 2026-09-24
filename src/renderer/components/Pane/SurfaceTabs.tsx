@@ -3,6 +3,7 @@ import type { AgentStatus, Surface, Workspace } from '../../../shared/types';
 import { useT } from '../../hooks/useT';
 import { useDaemonModeActive } from '../../hooks/useDaemonMode';
 import { useStore } from '../../stores';
+import { surfaceAttentionStatus } from '../../stores/selectors/fleet';
 import {
   buildExportPayload,
   buildPaneMarkdown,
@@ -207,12 +208,13 @@ function statusDotColor(status: AgentStatus): string {
 }
 
 /** B8 blink dot for a BACKGROUND tab, extracted so each tab subscribes to its
- *  OWN `surfaceAgentStatus[ptyId]` entry (a primitive). The parent used to
- *  subscribe to the whole map, so any pane's status change re-rendered every
- *  tab strip in the app. */
+ *  OWN status (a primitive). The parent used to subscribe to the whole map, so
+ *  any pane's status change re-rendered every tab strip in the app.
+ *  #1509 — the same per-surface attention the Fleet row reads, so a tab whose
+ *  dialog is still open keeps its dot after it has been looked at. */
 function SurfaceTabStatusDot({ ptyId, active }: { ptyId?: string; active: boolean }) {
   const t = useT();
-  const status = useStore((s) => (ptyId ? s.surfaceAgentStatus[ptyId] : undefined));
+  const status = useStore((s) => (ptyId ? surfaceAttentionStatus(s, ptyId) : undefined));
   if (!status || active) return null;
   return (
     <span
