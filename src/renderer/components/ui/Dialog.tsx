@@ -51,6 +51,9 @@ export interface DialogProps {
   zIndexClassName?: string;
   /** Set when the dialog has no DialogHeader title to point at. */
   ariaLabel?: string;
+  /** `alertdialog` for a prompt that interrupts to demand an answer
+   *  (approvals, consent). Default `dialog`. */
+  role?: 'dialog' | 'alertdialog';
   className?: string;
   style?: CSSProperties;
   'data-testid'?: string;
@@ -67,6 +70,7 @@ export default function Dialog({
   initialFocusRef,
   zIndexClassName = 'z-[var(--z-dialog)]',
   ariaLabel,
+  role = 'dialog',
   className = '',
   style,
   'data-testid': testId,
@@ -110,7 +114,7 @@ export default function Dialog({
       <DialogContext.Provider value={{ titleId, descriptionId, onClose, setHasDescription }}>
         <div
           ref={setPanel}
-          role="dialog"
+          role={role}
           aria-modal="true"
           aria-labelledby={ariaLabel ? undefined : titleId}
           aria-label={ariaLabel}
@@ -139,13 +143,15 @@ export interface DialogHeaderProps {
   /** Accessible name of the × button. Omit to render no close button. */
   closeLabel?: string;
   closeTestId?: string;
+  /** Disable the × while an action that must not be dismissed is in flight. */
+  closeDisabled?: boolean;
   /** Defaults to the Dialog's onClose. */
   onClose?: () => void;
 }
 
 /** Title (16px/600), optional description (13px, --text-sub), close ×. */
 export const DialogHeader = forwardRef<HTMLButtonElement, DialogHeaderProps>(function DialogHeader(
-  { title, description, closeLabel, closeTestId, onClose },
+  { title, description, closeLabel, closeTestId, closeDisabled, onClose },
   closeRef,
 ) {
   const ids = useDialogIds();
@@ -173,6 +179,7 @@ export const DialogHeader = forwardRef<HTMLButtonElement, DialogHeaderProps>(fun
           className={`ui-icon-btn ui-dialog-close ${FOCUS_RING}`}
           aria-label={closeLabel}
           data-testid={closeTestId}
+          disabled={closeDisabled}
           onClick={onClose ?? ids.onClose}
         >
           <IconX size={14} />

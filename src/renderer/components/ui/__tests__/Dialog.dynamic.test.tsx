@@ -232,6 +232,23 @@ describe('Dialog', () => {
     act(() => root.render(createElement(WithRef)));
     expect(document.activeElement).toBe(container.querySelector('[data-id="primary"]'));
   });
+
+  it('can be an alertdialog, still modal and labelled by its title', () => {
+    act(() => root.render(createElement(Dialog, { onClose: () => undefined, role: 'alertdialog' }, createElement(DialogHeader, { title: 'Approve?' }))));
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    const panel = container.querySelector('[role="alertdialog"]') as HTMLElement;
+    expect(panel.getAttribute('aria-modal')).toBe('true');
+    expect(document.getElementById(panel.getAttribute('aria-labelledby') ?? '')?.textContent).toBe('Approve?');
+  });
+
+  it('closeDisabled disables the header close button', () => {
+    const onClose = vi.fn();
+    act(() => root.render(createElement(Dialog, { onClose }, createElement(DialogHeader, { title: 'T', closeLabel: 'Close', closeDisabled: true }))));
+    const close = container.querySelector('button[aria-label="Close"]') as HTMLButtonElement;
+    expect(close.disabled).toBe(true);
+    act(() => close.click());
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });
 
 describe('focusableWithin', () => {
