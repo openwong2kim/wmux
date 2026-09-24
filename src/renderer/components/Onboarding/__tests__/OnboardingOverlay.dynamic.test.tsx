@@ -47,7 +47,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const q = (id: string) => container.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
+const find = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`);
+const q = (id: string) => find(id) as HTMLElement;
 
 async function mount(onComplete = vi.fn()) {
   await act(async () => {
@@ -59,12 +60,12 @@ async function mount(onComplete = vi.fn()) {
 describe('OnboardingOverlay', () => {
   it('renders a labelled card with the clip and a single warm primary (Next)', async () => {
     await mount();
-    const card = q('onboarding-card')!;
+    const card = q('onboarding-card');
     expect(card.getAttribute('role')).toBe('dialog');
     expect(card.hasAttribute('aria-modal')).toBe(false);
     expect(document.getElementById(card.getAttribute('aria-labelledby') ?? '')?.textContent).toBe('Your terminal');
 
-    const media = q('onboarding-media')!;
+    const media = q('onboarding-media');
     expect(media.getAttribute('role')).toBe('img');
     expect(media.getAttribute('aria-label')).toBe('Your terminal');
     expect(media.querySelector('video')?.getAttribute('src')).toMatch(/panes.*\.webm/);
@@ -80,18 +81,18 @@ describe('OnboardingOverlay', () => {
   it('focuses Next on each step, and a step without a clip shows text only', async () => {
     await mount();
     expect(document.activeElement).toBe(q('onboarding-next'));
-    await act(async () => q('onboarding-next')!.click());
+    await act(async () => q('onboarding-next').click());
     expect(q('onboarding-card')?.textContent).toContain('Settings');
-    expect(q('onboarding-media')).toBeNull();
+    expect(find('onboarding-media')).toBeNull();
     expect(q('onboarding-prev')?.className).toContain('ui-btn-secondary');
     expect(document.activeElement).toBe(q('onboarding-next'));
   });
 
   it('Done on the last step and Escape both complete the tour', async () => {
     const onComplete = await mount();
-    await act(async () => q('onboarding-next')!.click());
+    await act(async () => q('onboarding-next').click());
     expect(q('onboarding-next')?.textContent).toBe('Done');
-    await act(async () => q('onboarding-next')!.click());
+    await act(async () => q('onboarding-next').click());
     expect(onComplete).toHaveBeenCalledTimes(1);
 
     await act(async () => {
@@ -107,7 +108,7 @@ describe('OnboardingOverlay', () => {
       removeEventListener: () => undefined,
     }));
     await mount();
-    const media = q('onboarding-media')!;
+    const media = q('onboarding-media');
     expect(media.dataset.motion).toBe('reduced');
     expect(media.querySelector('video')).toBeNull();
     expect(media.querySelector('img')?.getAttribute('src')).toMatch(/panes-poster.*\.webp/);
