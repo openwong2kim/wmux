@@ -39,7 +39,7 @@ import {
 } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
-import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
@@ -516,8 +516,9 @@ function deliverPtyNudge(
 // A2A silent-default for TUI receivers (S-C2 ②). A receiver running a live
 // TUI agent gets its input box corrupted by a full bracketed-paste; for those
 // we DEFAULT to the EventBus pointer + a one-line nudge instead of the body.
-// A receiver with NO live agent keeps today's loud full-body paste (never
-// regress a peer that never polls). An explicit params.silent === true still
+// A receiver whose detected agent is not live keeps the loud full-body paste
+// (never regress a peer that never polls); a pane with no detected agent gets
+// nothing at all (a2aTargetHasAgent). An explicit params.silent === true still
 // fully suppresses (handled at the call sites).
 //
 // "live TUI agent" = an agentName is present AND agentStatus is one of the
@@ -545,6 +546,27 @@ function deliveryLiveMeta(
   if (!explicitPty) return fallbackMeta;
   const a = surfaceAgent[explicitPty];
   return a ? { agentName: a.name, agentStatus: a.status } : undefined;
+}
+
+// #1489 — may an A2A delivery write to `pty` (or, with no pty, the target's
+// active pane) at all? Only a pane with a detected agent, or the single visible
+// terminal of a workspace whose metadata evidences a live agent (detection not
+// landed per pane, remote panes — see wsMetadataMayStandIn). Neither an explicit
+// pane_id / pinned task anchor nor `silent:false` overrides this: the `␤` fold
+// keeps a body on one line, but that line still runs once a shell gets Enter.
+function a2aTargetHasAgent(
+  targetWs: Pick<Workspace, 'rootPane' | 'metadata'>,
+  pty: string | undefined,
+): boolean {
+  const s = useStore.getState();
+  if (pty && paneHasDetectedAgent(pty, s.surfaceAgent, {
+    agentAlive: s.agentAliveByPtyId,
+    commandRunning: s.commandRunningByPtyId,
+  })) return true;
+  const visible = findLeafPanes(targetWs.rootPane);
+  return isLiveTuiAgent(targetWs.metadata)
+    && wsMetadataMayStandIn(visible)
+    && (!pty || isTerminalPtyInLeaves(visible, pty));
 }
 
 /**
@@ -2312,7 +2334,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // one-line nudge (its prompt is not flooded); a receiver with no live
     // agent keeps today's loud full-body paste (don't regress a non-poller).
     // An explicit silent (true OR false) is honored verbatim — explicit true
-    // = full suppression, explicit false = loud full paste.
+    // = full suppression, explicit false = loud full paste. #1489: the loud
+    // paste only ever reaches a pane with a detected agent; a pane without one
+    // gets nothing written, exactly as when silent is omitted.
     //
     // Only a real BOOLEAN counts as explicit. A direct main-pipe RPC client
     // (which bypasses the MCP zod schema) may serialize an omitted optional as
@@ -2474,7 +2498,6 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             // anchorless one is suppressed above), so only the cross-ws
             // active-pane fallback reaches this.
             let replyPty = explicitPty;
-            let replyHasAgent = true;
             let ambiguous = false;
             if (!replyPty) {
               const pick = resolveUnaddressedDelivery(findLeafPanes(targetWs.rootPane), store.surfaceAgent, {
@@ -2483,7 +2506,6 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
               });
               if (pick.kind === 'ambiguous') ambiguous = true;
               else if (pick.kind === 'agent') replyPty = pick.address.ptyId;
-              else replyHasAgent = false;
             }
             if (ambiguous) {
               // The reply is already stored on the task (addTaskMessage above),
@@ -2509,12 +2531,10 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             // here would recreate the exact false receipt this change removes.
             let wrotePty: string | null;
             let mode: 'nudge' | 'notification' | 'no-agent-pane' = 'nudge';
-            // Same ws-level-metadata fallback as the create path: a target
-            // evidenced only at workspace level still gets its nudge.
-            const replyNoAgentTarget =
-              !replyHasAgent
-              && !(isLiveTuiAgent(targetWs.metadata) && wsMetadataMayStandIn(findLeafPanes(targetWs.rootPane)))
-              && params.silent !== false;
+            // Same gate as the create path (a2aTargetHasAgent): a target
+            // evidenced only at workspace level still gets its nudge, and a
+            // pinned anchor or silent:false no longer reaches a shell (#1489).
+            const replyNoAgentTarget = !a2aTargetHasAgent(targetWs, replyPty);
             if (decision.sameWs) {
               // Same-ws sibling: pointer-only nudge (no full-body injection).
               wrotePty = deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), replyPty);
@@ -2645,7 +2665,6 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // create an ambiguity nor become the delivery target — nobody is looking at
     // it), and a pane whose agent is known gone is not a candidate.
     let resolvedFallback: PaneAddress | undefined;
-    let fallbackHasAgent = true;
     if (!silent && !sameWsDecision.suppressPaste && !resolvedAddr) {
       const pick = resolveUnaddressedDelivery(findLeafPanes(target.rootPane), store.surfaceAgent, {
         agentAlive: store.agentAliveByPtyId,
@@ -2654,12 +2673,10 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       if (pick.kind === 'ambiguous') {
         return { error: `a2a.task.send: ${describeAmbiguousDelivery(target.name, pick.candidates)}` };
       }
-      if (pick.kind === 'agent') resolvedFallback = pick.address;
-      // 'no_agent' keeps fallbackHasAgent false: no pane is written to at all,
+      // 'no_agent' leaves resolvedFallback unset: no pane is written to at all,
       // unless the workspace-level metadata still evidences a live TUI agent
-      // (detection sources differ — see the delivery block) or the caller
-      // explicitly asked for the loud paste with silent:false.
-      else fallbackHasAgent = false;
+      // (detection sources differ — see a2aTargetHasAgent).
+      if (pick.kind === 'agent') resolvedFallback = pick.address;
     }
 
     // S-C2: capture the sender's pane anchor (symmetric with `to`) so a reply can
@@ -2747,7 +2764,8 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // When silent, the task is only persisted in the store and the
     // receiver must poll via a2a_task_query to discover it. silent-default:
     // an unset silent + live-TUI receiver gets a one-line nudge (prompt not
-    // flooded); no live agent (or explicit silent:false) keeps the loud paste.
+    // flooded); a detected but not live agent (or explicit silent:false) keeps
+    // the loud paste; a pane with no detected agent gets nothing (#1336, #1489).
     // Suppress the PTY paste when the user asked (silent) OR when a same-ws send
     // can't be proven non-self (decideSameWsSend → suppressPaste). The task is
     // still created + teed onto the EventBus below, so a sibling can poll it via
@@ -2770,18 +2788,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // candidate scan reads, and the workspace-level metadata this path has
       // always trusted. A target that only has the latter (detection not landed
       // per-pane, remote panes) must keep waking up as before — dropping it to
-      // "no agent" would silently stop delivering to a real agent. An explicit
-      // silent:false is the documented "paste it loudly anyway" override and
-      // still wins; that is a caller asking for the old behavior by name.
-      // ...but only where "the active pane" and "the pane the metadata
-      // describes" cannot be different panes (CodeRabbit, Major): with two
-      // terminals the fallback writes to whichever is focused, which is
-      // exactly the shell paste this change removes.
-      const wsLevelAgent =
-        isLiveTuiAgent(target.metadata) && wsMetadataMayStandIn(findLeafPanes(target.rootPane));
-      // `silent` is normalized to `params.silent === true`, so it is `false`
-      // for an OMITTED flag too — the override must read the raw param.
-      const noAgentTarget = !fallbackHasAgent && !wsLevelAgent && params.silent !== false;
+      // "no agent" would silently stop delivering to a real agent. Both are
+      // read by a2aTargetHasAgent, which also checks an explicitly addressed
+      // pane. #1489: silent:false no longer overrides it — it was the
+      // "paste it loudly anyway" switch, and into a shell that runs the body.
+      const noAgentTarget = !a2aTargetHasAgent(target, explicitPty);
       let wrotePty: string | null;
       let mode: 'nudge' | 'notification' | 'no-agent-pane' = 'nudge';
       if (noAgentTarget) {
@@ -3011,23 +3022,21 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             // into whatever pane was focused, so the very bug the other two
             // paths now refuse survived on the third one.
             let updatePty = explicitPty;
-            let updateHasAgent = true;
             if (!updatePty) {
               const pick = resolveUnaddressedDelivery(findLeafPanes(targetWs.rootPane), store.surfaceAgent, {
                 agentAlive: store.agentAliveByPtyId,
                 commandRunning: store.commandRunningByPtyId,
               });
-              if (pick.kind === 'agent') updatePty = pick.address.ptyId;
               // Ambiguous is treated like no-agent here: this delivery is a
               // side-effect of a status change (the transition is already
               // committed and teed onto the bus), so an arbitrary pick is the
               // only thing worth refusing.
-              else updateHasAgent = false;
+              if (pick.kind === 'agent') updatePty = pick.address.ptyId;
             }
             const liveMeta = deliveryLiveMeta(store.surfaceAgent, updatePty, targetWs.metadata);
-            const updateWsStandIn =
-              isLiveTuiAgent(targetWs.metadata) && wsMetadataMayStandIn(findLeafPanes(targetWs.rootPane));
-            if (!updateHasAgent && !updateWsStandIn) {
+            // #1489 — a pinned anchor on a shell pane is refused like an
+            // unaddressed one.
+            if (!a2aTargetHasAgent(targetWs, updatePty)) {
               // Write nothing; the receiver follows the EventBus pointer.
             } else if (isLiveTuiAgent(liveMeta)) {
               deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), updatePty);

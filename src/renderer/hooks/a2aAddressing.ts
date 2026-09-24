@@ -530,6 +530,26 @@ export type UnaddressedDelivery =
   | { kind: 'no_agent' };
 
 /**
+ * Does `ptyId` carry a detected agent that is not known to be gone? The test
+ * every A2A PTY write must pass, whether the pane was picked from an
+ * unaddressed send or named explicitly (#1489: an explicit pane_id, a pinned
+ * task anchor or `silent:false` used to skip it and paste into a shell). A
+ * brain pty is not a pane a human or agent can be addressed at; see the same
+ * guard in decideReplyDelivery.
+ */
+export function paneHasDetectedAgent(
+  ptyId: string,
+  surfaceAgent: Record<string, { name: string } | undefined>,
+  liveness: PaneLivenessMaps = {},
+): boolean {
+  if (!ptyId || isBrainPtyId(ptyId)) return false;
+  if (!surfaceAgent[ptyId]?.name) return false;
+  if (liveness.agentAlive?.[ptyId] === false) return false;
+  if (liveness.commandRunning?.[ptyId] === false) return false;
+  return true;
+}
+
+/**
  * @param visibleLeaves the target's VISIBLE pane tree (getLeafPanes(rootPane)),
  * never the workspace-wide list. A stashed pane is off-screen: counting it
  * would turn a workspace with one visible agent into an ambiguous refusal, and
@@ -544,18 +564,12 @@ export function resolveUnaddressedDelivery(
   for (const leaf of visibleLeaves) {
     for (const s of leaf.surfaces) {
       if (s.surfaceType === 'browser' || !s.ptyId) continue;
-      // A brain pty is not a pane a human or agent can be addressed at; see the
-      // same guard in decideReplyDelivery.
-      if (isBrainPtyId(s.ptyId)) continue;
-      const agentName = surfaceAgent[s.ptyId]?.name;
-      if (!agentName) continue;
-      if (liveness.agentAlive?.[s.ptyId] === false) continue;
-      if (liveness.commandRunning?.[s.ptyId] === false) continue;
+      if (!paneHasDetectedAgent(s.ptyId, surfaceAgent, liveness)) continue;
       candidates.push({
         paneId: leaf.id,
         surfaceId: s.id,
         ptyId: s.ptyId,
-        agentName,
+        agentName: surfaceAgent[s.ptyId]?.name ?? '',
         // Same source as a2a_discover's `paneTitle` (#1018) — untrusted
         // pane-chosen text; sanitized at render time, see describeAmbiguousDelivery.
         paneTitle: s.title?.trim() || null,
@@ -650,6 +664,7 @@ export function wsMetadataMayStandIn(visibleLeaves: PaneLeaf[]): boolean {
 export const NO_AGENT_PANE_HINT =
   'Nothing was written to the target: none of its visible panes is running a detected agent, and pasting a ' +
   'message body into a plain shell prompt is how it ends up executed as commands. The task is stored and on ' +
-  'the event bus — the receiver can still find it with a2a_task_query. If an agent IS running there, ' +
-  'detection may not have landed yet (or the pane is stashed): address it explicitly with pane_id/surface_id ' +
-  'from a2a_discover, or re-send once it is detected.';
+  'the event bus — the receiver can still find it with a2a_task_query. This holds for an explicit ' +
+  'pane_id/surface_id and for silent:false too: only a pane with a detected agent is ever written to. If an ' +
+  'agent IS running there, detection may not have landed yet (re-send once it is detected), or its pane is ' +
+  'stashed (address that pane with pane_id/surface_id from a2a_discover).';
