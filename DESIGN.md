@@ -209,9 +209,44 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 - Status dot vocabulary: amber = running · green = ok/idle-complete · gray =
   idle · red = needs input (with wash).
 
+### Dialogs & forms
+
+Build every modal and settings row from `src/renderer/components/ui/`
+(`Dialog`, `Button`, `Field`, `Switch`, `Checkbox`, `Select`,
+`SegmentedControl`, `Badge`, `Input`) rather than hand-rolled inline styles.
+
+- **Dialog anatomy:** backdrop `--backdrop-modal` at `--z-dialog`, panel
+  `--bg-base` with a 1px hairline, 7px radius and `--shadow-modal` (the one
+  floating elevation). Header = 14px/600 title + optional 13px `--text-sub`
+  description + a 28px close ×. Body scrolls; Footer is a hairline-topped,
+  right-aligned action row with the primary last. Focus is trapped, Escape
+  closes the top-most dialog, focus returns to the opener.
+- **One primary per dialog.** Exactly one solid warm (`--accent`) button per
+  dialog state, chosen by what unblocks the user first; every other action is
+  secondary (raised), ghost (dismiss / skip) or destructive (red tint; solid
+  red only for a final confirm). A disabled action is never the primary.
+- **Field row:** 13px/500 label + 11px `--text-sub` description on the left,
+  control on the right (`inline`) or underneath (`stacked`, for text inputs).
+  The row wires `htmlFor` and `aria-describedby` into its control.
+- **Controls:** switches and checkboxes are recessed when off and warm-tinted
+  when on (a warm knob / check, never a solid fill); segmented controls are a
+  recessed track with a raised active segment; selects use the recessed input
+  skin. Badges are neutral by default — success / warning / danger tint the
+  text and hairline only, and there is no amber badge.
+- **Type:** Inter on the 4-step scale inside dialogs. Mono only for machine
+  evidence — commands, paths, error codes (`ui-code`) — never for a whole
+  dialog. Status marks are icons (`IconCheck`, `IconWarning`), not text glyphs.
+- **Media:** a feature explained in a dialog or the tour may show a short muted
+  loop (`MediaPreview`, WebM ≤ ~6 s, ≤ 500 KB) in a fixed 16:10 recessed
+  frame, labelled for assistive tech; under `prefers-reduced-motion` it shows
+  the still poster and never plays.
+
 ## Motion
 
 - Minimal-functional. Spinners and blink-cursor are the only perpetual motion.
+  Exception (owner, 2026-09-24): the preview clips in the welcome dialog and
+  the onboarding tour loop while they are on screen — they are content shown
+  on request, not chrome — and they never play under reduced motion.
 - Transitions ≤150ms ease-out, only for state changes (hover, expand, theme
   swap suppressed during switch).
 
@@ -261,6 +296,7 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 | 2026-09-21 | Refine the outer shell first: Orca-inspired global sidebar shortcuts, 13px navigation and pane labels, quieter neutral selections, and an inset terminal frame. Workspace menu descriptions use 11px text. Existing terminal content stays in place; assistant-ui chat is a later phase | Improves readability and navigation while preserving the terminal-first workspace and existing actions |
 | 2026-09-21 | Replace the titlebar's ambiguous double-chevron with a 28px-high tools-panel icon + 13px label, explicit open state, and a mirrored panel-side icon. Settings lives in the full/compact sidebar, including its onboarding target. Preserve Minimal/Standard visibility recipes and saved individual preferences | Makes the top-right control explain its target and removes duplicate settings. Minimal remains a supported contributor-requested workflow, with settings always reachable to restore Standard |
 | 2026-09-23 | Fleet becomes a three-section attention board (Needs you / Running / collapsed Idle) with a one-line detail, elapsed time, a changed-since-last-look dot and row verbs; section and detail come from one pure selector | Twelve identical idle cards with no last activity answered nothing. Fleet is triage — what needs me, what is moving, what has gone quiet and for how long — and the sidebar stays the map |
+| 2026-09-24 | Dialogs and forms get shared primitives (Dialog, Field, Switch, Checkbox, Select, SegmentedControl, Badge; Button sizes and a destructive alias) and a "Dialogs & forms" rule set; the welcome dialog and the onboarding tour are the first adopters, with short preview clips. The settings gear becomes a cog | The outer chrome had the Bridge design but every modal still used the old UI: monospace prose, green borders, several amber buttons per dialog and a steel-filled Next. Shared primitives make the grammar the default, and a clip shows what a feature does where text alone did not |
 
 ### Desktop conversation view
 
