@@ -274,7 +274,7 @@ export const en = {
   'approval.cwd': 'cwd:',
   'approval.task': 'task:',
   'approval.emptyMessage': '<empty message>',
-  'approval.fanoutAutoApproveHint': 'fan-out always asks — auto-approve does not cover it',
+  'approval.fanoutAutoApproveHint': 'you turned on approval for fan-out — A2A auto-approve does not cover it',
   'approval.autoDeny': 'auto-deny in {sec}s',
   'approval.deny': 'Deny',
   'approval.approve': 'Approve',

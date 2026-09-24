@@ -269,7 +269,7 @@ export const pl = {
   'approval.cwd': 'cwd:',
   'approval.task': 'zadanie:',
   'approval.emptyMessage': '<pusta wiadomość>',
-  'approval.fanoutAutoApproveHint': 'fan-out zawsze pyta — auto-zatwierdzanie tego nie obejmuje',
+  'approval.fanoutAutoApproveHint': 'włączono zatwierdzanie fan-out — auto-zatwierdzanie A2A tego nie obejmuje',
   'approval.autoDeny': 'auto-odrzucenie za {sec}s',
   'approval.deny': 'Odrzuć',
   'approval.approve': 'Zatwierdź',

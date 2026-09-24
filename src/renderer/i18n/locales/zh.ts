@@ -160,7 +160,7 @@ export const zh = {
   'approval.cwd': '工作目录：',
   'approval.task': '任务：',
   'approval.emptyMessage': '<空消息>',
-  'approval.fanoutAutoApproveHint': 'fan-out 始终会询问 — 自动批准不适用于它',
+  'approval.fanoutAutoApproveHint': '你已开启 fan-out 审批 — A2A 自动批准不适用于它',
   'approval.autoDeny': '{sec} 秒后自动拒绝',
   'approval.deny': '拒绝',
   'approval.approve': '批准',

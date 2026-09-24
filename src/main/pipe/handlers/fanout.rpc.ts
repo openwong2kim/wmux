@@ -656,7 +656,7 @@ export function registerFanOutRpc(
       return deny(
         'NOT_AUTHORIZED',
         `task.fanout.start refused: workspace ${callerWorkspaceId} is a fan-out task of ${fanoutOwner}, and fan-out is one level deep — ` +
-          'report back to the owner (ledger_update / channel_post) and let it fan out instead',
+          'record your result with ledger_update and let the owner fan out instead',
       );
     }
     /** Per-workspace key space (see above). The GUI mints uuid keys of its own,
