@@ -5,7 +5,7 @@ import type { AccountUsageEntry } from '../../../main/account/AccountUsageServic
 import { t } from '../../i18n';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
-import { IconPlus, IconRefresh, IconX } from '../icons';
+import { IconRefresh, IconX } from '../icons';
 import Badge from '../ui/Badge';
 import Button from '../ui/Button';
 import Checkbox from '../ui/Checkbox';
@@ -405,7 +405,7 @@ export function AccountsSection(): React.ReactElement | null {
             className="self-start"
             onClick={() => setAdding(true)}
           >
-            <IconPlus size={12} /> {t('accounts.addAccount')}
+            {t('accounts.addAccount')}
           </Button>
         </div>
       )}
