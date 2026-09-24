@@ -50,6 +50,9 @@ interface Layer {
   seq: number;
   el: HTMLElement | null;
   onEscape: (() => void) | undefined;
+  /** Opened by the app rather than the user: owns the keyboard only while
+   *  focus is inside it. */
+  passive: boolean;
 }
 
 const layers: Layer[] = [];
@@ -62,7 +65,12 @@ let nextSeq = 0;
  */
 export function topLayer(): Layer | undefined {
   let top: Layer | undefined;
+  const active = typeof document !== 'undefined' ? document.activeElement : null;
   for (const layer of layers) {
+    // A passive layer (an approval or prompt that opened by itself) never
+    // takes the keyboard from whatever the user is working in — a terminal,
+    // or a dialog they opened, even one stacked visually above it.
+    if (layer.passive && !(layer.el && active instanceof Node && layer.el.contains(active))) continue;
     const containsOther = layers.some(
       (other) => other !== layer && !!layer.el && !!other.el && layer.el.contains(other.el),
     );
@@ -130,13 +138,16 @@ if (typeof window !== 'undefined') {
 export interface ModalLayerOptions {
   /** Called on Escape while this layer is top-most. Omit to ignore Escape. */
   onEscape?: () => void;
+  /** A surface that opens by itself (approvals, launch prompts): it handles
+   *  Escape / Tab and heals focus only once focus is inside it. */
+  passive?: boolean;
 }
 
 /**
  * Registers a modal layer for the lifetime of the calling component. Attach
  * the returned callback ref to the layer's outermost focus container.
  */
-export function useModalLayer({ onEscape }: ModalLayerOptions): (el: HTMLElement | null) => void {
+export function useModalLayer({ onEscape, passive = false }: ModalLayerOptions): (el: HTMLElement | null) => void {
   // The opener is read during the first render, before any child can take
   // focus in its own mount (autoFocus runs before parent effects).
   const [opener] = useState<HTMLElement | null>(() =>
@@ -147,8 +158,9 @@ export function useModalLayer({ onEscape }: ModalLayerOptions): (el: HTMLElement
       : null,
   );
   const layerRef = useRef<Layer | null>(null);
-  if (!layerRef.current) layerRef.current = { seq: nextSeq++, el: null, onEscape };
+  if (!layerRef.current) layerRef.current = { seq: nextSeq++, el: null, onEscape, passive };
   layerRef.current.onEscape = onEscape;
+  layerRef.current.passive = passive;
 
   const observerRef = useRef<MutationObserver | null>(null);
   const detachRef = useRef<(() => void) | null>(null);

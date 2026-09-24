@@ -25,6 +25,10 @@ export { focusableWithin } from './modalLayer';
  * - Focus moves in on mount (`initialFocusRef`, else the first focusable
  *   control, else the panel), comes back if a re-render drops it on <body>,
  *   and returns to the opener on close.
+ * - `focusOnOpen="none"` is for a dialog that opens by itself (an approval, a
+ *   launch prompt): it leaves focus where the user is, so their next Enter or
+ *   Space cannot answer it unseen. The panel is not a focus target, and
+ *   Escape / Tab / focus healing apply only once focus is inside it.
  */
 
 interface DialogIds {
@@ -47,6 +51,9 @@ export interface DialogProps {
   /** Close when the backdrop itself is clicked. Default false. */
   closeOnBackdrop?: boolean;
   initialFocusRef?: RefObject<HTMLElement | null>;
+  /** `first` (default): focus moves in on open. `none`: focus stays where the
+   *  user is — for a dialog the app opens by itself. */
+  focusOnOpen?: 'first' | 'none';
   /** Tailwind z-index class for the root. Default `z-[var(--z-dialog)]`. */
   zIndexClassName?: string;
   /** Set when the dialog has no DialogHeader title to point at. */
@@ -68,6 +75,7 @@ export default function Dialog({
   closeOnEscape = true,
   closeOnBackdrop = false,
   initialFocusRef,
+  focusOnOpen = 'first',
   zIndexClassName = 'z-[var(--z-dialog)]',
   ariaLabel,
   role = 'dialog',
@@ -84,8 +92,10 @@ export default function Dialog({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
+  const passive = focusOnOpen === 'none';
   const attachLayer = useModalLayer({
     onEscape: onEscape ?? (closeOnEscape ? () => onCloseRef.current() : undefined),
+    passive,
   });
   const setPanel = useCallback(
     (el: HTMLDivElement | null) => {
@@ -96,6 +106,7 @@ export default function Dialog({
   );
 
   useEffect(() => {
+    if (passive) return;
     const panel = panelRef.current;
     const target = initialFocusRef?.current ?? (panel ? focusableWithin(panel)[0] : null) ?? panel;
     target?.focus();
@@ -119,7 +130,7 @@ export default function Dialog({
           aria-labelledby={ariaLabel ? undefined : titleId}
           aria-label={ariaLabel}
           aria-describedby={hasDescription ? descriptionId : undefined}
-          tabIndex={-1}
+          tabIndex={passive ? undefined : -1}
           className={`ui-dialog ui-surface${className ? ` ${className}` : ''}`}
           style={{ width, ...style }}
           data-testid={testId}
