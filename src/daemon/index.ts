@@ -68,7 +68,10 @@ import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill'
 import {
   classifyReapIdentity,
   getProcessStartTime,
+  getWin32BootId,
+  getWin32BootIdSync,
   isPidAlive,
+  isWin32ShellProcess,
   isSameBootProven,
   mayReap,
   shouldReconcileTombstone,
@@ -636,19 +639,8 @@ const MAX_RECOVER_SESSIONS = 40;
 async function getBootId(): Promise<string> {
   try {
     if (process.platform === 'win32') {
-      const { execFile } = require('child_process');
-      const { promisify } = require('util');
-      const execFileAsync = promisify(execFile);
-      const pathMod = require('path');
-      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-      const wmic = pathMod.join(systemRoot, 'System32', 'wbem', 'wmic.exe');
-      const { stdout } = await execFileAsync(
-        wmic,
-        ['os', 'get', 'LastBootUpTime', '/value'],
-        { encoding: 'utf-8', timeout: 5000, windowsHide: true },
-      );
-      const match = (stdout as string).match(/LastBootUpTime=(\S+)/);
-      return match ? match[1].trim() : `fallback-${os.uptime()}`;
+      // #1493: CIM LastBootUpTime, not wmic.exe (gone on current Windows 11).
+      return await getWin32BootId();
     } else if (process.platform === 'darwin') {
       // macOS: sysctl exposes the boot timestamp; encode it as a stable string.
       // Format: "{ sec = 1745678901, usec = 123456 } Mon Apr 28 ..."
@@ -676,17 +668,7 @@ async function getBootId(): Promise<string> {
 function getBootIdSync(): string {
   try {
     if (process.platform === 'win32') {
-      const { execFileSync } = require('child_process');
-      const pathMod = require('path');
-      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-      const wmic = pathMod.join(systemRoot, 'System32', 'wbem', 'wmic.exe');
-      const result = execFileSync(
-        wmic,
-        ['os', 'get', 'LastBootUpTime', '/value'],
-        { encoding: 'utf-8', timeout: 5000, windowsHide: true },
-      );
-      const match = result.match(/LastBootUpTime=(\S+)/);
-      return match ? match[1].trim() : `fallback-${os.uptime()}`;
+      return getWin32BootIdSync();
     } else if (process.platform === 'darwin') {
       const { execFileSync } = require('child_process');
       const result = execFileSync(
@@ -1146,22 +1128,7 @@ async function isOurShellProcess(pid: number, expectedCmd: string): Promise<bool
     const { promisify } = require('util');
     const execFileAsync = promisify(execFile);
     if (process.platform === 'win32') {
-      const pathMod = require('path');
-      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-      const wmic = pathMod.join(systemRoot, 'System32', 'wbem', 'wmic.exe');
-      const { stdout } = await execFileAsync(
-        wmic,
-        ['process', 'where', `ProcessId=${pid}`, 'get', 'ExecutablePath', '/value'],
-        { encoding: 'utf-8', timeout: 3000, windowsHide: true },
-      );
-      // WMIC output: "ExecutablePath=C:\Windows\...\powershell.exe\r\n"
-      const match = (stdout as string).match(/ExecutablePath=(.+)/i);
-      if (!match) return false;
-      const actualExe = match[1].trim().toLowerCase();
-      const expectedExe = expectedCmd.toLowerCase();
-      // Match if the actual executable path ends with the expected command
-      return actualExe.endsWith(pathMod.basename(expectedExe).toLowerCase()) ||
-             actualExe === expectedExe;
+      return await isWin32ShellProcess(pid, expectedCmd);
     } else {
       // Unix: check /proc/<pid>/exe or use ps
       const { stdout } = await execFileAsync('ps', ['-o', 'comm=', '-p', String(pid)], {

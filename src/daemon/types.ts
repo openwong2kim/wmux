@@ -42,7 +42,7 @@ export interface DaemonSession {
   pid: number;              // child process PID
   /**
    * OS-reported creation time of `pid`, as the platform prints it (Windows
-   * WMIC `CreationDate`, posix `ps -o lstart=`). Opaque — only ever compared
+   * CIM `CreationDate` in wmic's DMTF format, posix `ps -o lstart=`). Opaque — only ever compared
    * for equality against a fresh reading of the same pid.
    *
    * A pid alone is not an identity: Windows recycles pids aggressively and a

@@ -33,6 +33,9 @@
  * the realistic win here is prevention plus reaping, not resurrection.
  */
 
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
+
 /**
  * Is this pid still present? `signal 0` performs the permission/existence
  * check without delivering anything.
@@ -106,25 +109,11 @@ export function isPhantomExit(
  */
 export async function getProcessStartTime(pid: number): Promise<string | null> {
   if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform === 'win32') {
+    return (await probeWin32Process(pid))?.creationDate ?? null;
+  }
   try {
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    const path = await import('node:path');
-    const execFileAsync = promisify(execFile);
-    if (process.platform === 'win32') {
-      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-      const wmic = path.join(systemRoot, 'System32', 'wbem', 'wmic.exe');
-      const { stdout } = await execFileAsync(
-        wmic,
-        ['process', 'where', `ProcessId=${pid}`, 'get', 'CreationDate', '/value'],
-        { encoding: 'utf-8', timeout: 3000, windowsHide: true },
-      );
-      // "CreationDate=20260727142800.123456+540"
-      const match = String(stdout).match(/CreationDate=(\S+)/i);
-      const value = match?.[1]?.trim();
-      return value ? value : null;
-    }
-    const { stdout } = await execFileAsync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+    const { stdout } = await promisify(execFile)('ps', ['-o', 'lstart=', '-p', String(pid)], {
       encoding: 'utf-8',
       timeout: 3000,
     });
@@ -133,6 +122,186 @@ export async function getProcessStartTime(pid: number): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+// === Windows probes (#1493) ===
+//
+// These used to shell out to wmic.exe, which is disabled on Windows 11 24H2
+// and absent on later builds. Every probe then threw, so the boot ID fell back
+// to `uptime-<sec>` (a "reboot" on every daemon start) and every start-time /
+// executable read came back empty — all reaping was withheld. CIM through
+// Windows PowerShell 5.1 replaces it, the route daemonLauncherCore's
+// getProcessArgv already takes.
+//
+// Dates are printed with ManagementDateTimeConverter.ToDmtfDateTime, which
+// yields exactly wmic's `/value` format (`20260915084549.500977+540`), so the
+// boot IDs and pidStartTime values persisted by wmic-era builds still compare
+// equal against new reads. Only a state file holding the old `uptime-N`
+// fallback reads as "rebooted" once after upgrading, which fails closed.
+
+/** Windows PowerShell 5.1 ships with every supported Windows; pwsh may not. */
+function windowsPowerShellPath(): string {
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  return `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+}
+
+/**
+ * PowerShell cold start is ~0.5-1 s, so wmic's 3 s budget is too tight: a
+ * timeout would quietly bring back the "identity unknown" state. 5 s matches
+ * daemonLauncherCore. UTF-8 output keeps a non-ASCII executable path from
+ * being mangled by the OEM code page.
+ */
+const WIN32_PROBE_TIMEOUT_MS = 5000;
+const WIN32_UTF8_OUTPUT = '[Console]::OutputEncoding=[Text.Encoding]::UTF8;';
+
+/** wmic-style CIM_DATETIME, e.g. `20260915084549.500977+540`. */
+const DMTF_DATETIME_RE = /^\d{14}\.\d{6}[+-]\d{3}$/;
+
+const WIN32_BOOT_ID_SCRIPT =
+  `${WIN32_UTF8_OUTPUT} 'LastBootUpTime=' + ` +
+  '[System.Management.ManagementDateTimeConverter]::ToDmtfDateTime(' +
+  '(Get-CimInstance Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime)';
+
+function win32PowerShellArgs(script: string): string[] {
+  return ['-NoProfile', '-NonInteractive', '-Command', script];
+}
+
+/** The boot time in the probe output, or null when it is not a DMTF date. */
+export function parseWin32BootId(stdout: string): string | null {
+  const value = String(stdout).match(/LastBootUpTime=(\S+)/)?.[1];
+  return value && DMTF_DATETIME_RE.test(value) ? value : null;
+}
+
+/**
+ * The boot ID cannot change while this process lives, and startup asks for it
+ * up to three times (stale-lock check, initBootId, recovery). Memoizing the
+ * first good read keeps that at one PowerShell spawn.
+ */
+let win32BootIdCache: string | null = null;
+
+/** Windows boot ID (CIM LastBootUpTime). Throws when it cannot be read. */
+export async function getWin32BootId(): Promise<string> {
+  if (win32BootIdCache) return win32BootIdCache;
+  const { stdout } = await promisify(execFile)(
+    windowsPowerShellPath(),
+    win32PowerShellArgs(WIN32_BOOT_ID_SCRIPT),
+    { encoding: 'utf-8', timeout: WIN32_PROBE_TIMEOUT_MS, windowsHide: true },
+  );
+  const bootId = parseWin32BootId(String(stdout));
+  if (!bootId) throw new Error('LastBootUpTime missing from CIM output');
+  win32BootIdCache = bootId;
+  return bootId;
+}
+
+/**
+ * Synchronous twin for the process 'exit' handler. Normally a cache hit,
+ * since main() awaits the async read before any state is built.
+ */
+export function getWin32BootIdSync(): string {
+  if (win32BootIdCache) return win32BootIdCache;
+  const stdout = execFileSync(
+    windowsPowerShellPath(),
+    win32PowerShellArgs(WIN32_BOOT_ID_SCRIPT),
+    { encoding: 'utf-8', timeout: WIN32_PROBE_TIMEOUT_MS, windowsHide: true },
+  );
+  const bootId = parseWin32BootId(String(stdout));
+  if (!bootId) throw new Error('LastBootUpTime missing from CIM output');
+  win32BootIdCache = bootId;
+  return bootId;
+}
+
+/** Test seam: forget the memoized boot ID. */
+export function resetWin32BootIdCache(): void {
+  win32BootIdCache = null;
+}
+
+export interface Win32ProcessInfo {
+  /** Null when CIM withholds it (e.g. a protected process). */
+  executablePath: string | null;
+  /** DMTF creation time — the same string wmic printed. */
+  creationDate: string | null;
+}
+
+function win32ProcessScript(pid: number): string {
+  return (
+    `${WIN32_UTF8_OUTPUT} $p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction Stop;` +
+    " if ($p) { 'ExecutablePath=' + $p.ExecutablePath;" +
+    " if ($p.CreationDate) { 'CreationDate=' + " +
+    '[System.Management.ManagementDateTimeConverter]::ToDmtfDateTime($p.CreationDate) } }'
+  );
+}
+
+/** Parse the process probe output; null when the process was not found. */
+export function parseWin32ProcessInfo(stdout: string): Win32ProcessInfo | null {
+  const text = String(stdout);
+  const exe = text.match(/^ExecutablePath=(.*)$/m);
+  if (!exe) return null;
+  const date = text.match(/^CreationDate=(\S+)/m)?.[1];
+  return {
+    executablePath: exe[1].trim() || null,
+    creationDate: date && DMTF_DATETIME_RE.test(date) ? date : null,
+  };
+}
+
+/**
+ * Recovery can create dozens of panes at once and each stamps its start time.
+ * A PowerShell per pane, all at once, is a real memory spike, so probes queue
+ * behind a small cap. Concurrent asks for the same pid share one spawn —
+ * reapIfIdentityConfirmed reads the start time and the executable in parallel.
+ */
+const WIN32_PROBE_CONCURRENCY = 4;
+let win32ProbesRunning = 0;
+const win32ProbeWaiters: Array<() => void> = [];
+const win32ProbesInFlight = new Map<number, Promise<Win32ProcessInfo | null>>();
+
+async function withWin32ProbeSlot<T>(run: () => Promise<T>): Promise<T> {
+  while (win32ProbesRunning >= WIN32_PROBE_CONCURRENCY) {
+    await new Promise<void>((resolve) => win32ProbeWaiters.push(resolve));
+  }
+  win32ProbesRunning++;
+  try {
+    return await run();
+  } finally {
+    win32ProbesRunning--;
+    win32ProbeWaiters.shift()?.();
+  }
+}
+
+/**
+ * Executable path and creation time of a Windows pid, or null on ANY failure
+ * (probe error, timeout, process gone). Callers treat null as "identity
+ * unknown" and withhold the kill.
+ */
+export function probeWin32Process(pid: number): Promise<Win32ProcessInfo | null> {
+  if (!Number.isInteger(pid) || pid <= 0) return Promise.resolve(null);
+  const inFlight = win32ProbesInFlight.get(pid);
+  if (inFlight) return inFlight;
+  const probe = withWin32ProbeSlot(async () => {
+    try {
+      const { stdout } = await promisify(execFile)(
+        windowsPowerShellPath(),
+        win32PowerShellArgs(win32ProcessScript(pid)),
+        { encoding: 'utf-8', timeout: WIN32_PROBE_TIMEOUT_MS, windowsHide: true },
+      );
+      return parseWin32ProcessInfo(String(stdout));
+    } catch {
+      return null;
+    }
+  }).finally(() => win32ProbesInFlight.delete(pid));
+  win32ProbesInFlight.set(pid, probe);
+  return probe;
+}
+
+/**
+ * Is the Windows pid running the shell executable we spawned? Matches the
+ * basename or the full path, as the wmic-era check did. False when unsure.
+ */
+export async function isWin32ShellProcess(pid: number, expectedCmd: string): Promise<boolean> {
+  const actualExe = (await probeWin32Process(pid))?.executablePath?.toLowerCase();
+  if (!actualExe) return false;
+  const expectedExe = expectedCmd.toLowerCase();
+  const expectedBase = expectedExe.split(/[\\/]/).pop() ?? expectedExe;
+  return actualExe.endsWith(expectedBase) || actualExe === expectedExe;
 }
 
 /**
