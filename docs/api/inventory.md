@@ -375,7 +375,7 @@ The full machine-readable map (with path extractors and `multiPathMode` flags) l
 
 ### Terminal launch and managed chat (internal, first-party desktop only)
 
-`daemon.chat.launchTerminal` starts a fixed installed Claude/Codex CLI with a single-line initial message in the same pane. It requires an unchanged, positively empty POSIX shell prompt, fresh shell process attribution without children, and no pending approval. It never creates a managed session.
+`daemon.chat.launchTerminal` starts a fixed installed Claude/Codex CLI with an initial message and an optional agent-specific mode (`default`, Claude `bypass`, or Codex `yolo`) in the same pane. It requires an unchanged, positively empty POSIX shell prompt, fresh shell process attribution without children, and no pending approval. It never creates a managed session.
 
 `daemon.chat.providers`, `daemon.chat.start`, `daemon.chat.reconnect`,
 `daemon.chat.cancel`, `daemon.chat.respond`, and `daemon.chat.close` are private

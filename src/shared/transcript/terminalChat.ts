@@ -17,3 +17,9 @@ export interface TerminalChatBinding {
     fileUndo: boolean;
   };
 }
+
+export type TerminalLaunchAgent = 'claude' | 'codex';
+export type TerminalLaunchMode = 'default' | 'bypass' | 'yolo';
+export function validTerminalLaunchMode(agent: unknown, mode: unknown): boolean {
+  return mode === undefined || mode === 'default' || agent === 'claude' && mode === 'bypass' || agent === 'codex' && mode === 'yolo';
+}

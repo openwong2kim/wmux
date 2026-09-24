@@ -3301,7 +3301,7 @@ function registerRpcHandlers(
       if (!ready() || !pane) return { ok: false, error: 'Use Terminal: an empty shell prompt is required.' };
       if (!await agentProcessTracker.verifyIdleShell(pane.meta.pid) || !ready()) return { ok: false, error: 'Terminal changed or is busy.' };
       buildAgentLaunch({ agent: params.agent }, await installedAgentLaunchOptions(pane.meta.env));
-      let command = terminalLaunchCommand(params.agent, params.prompt);
+      let command = terminalLaunchCommand(params.agent, params.prompt, params.mode);
       if (params.agent === 'codex') {
         // Hook session_id can name an invocation rather than the conversation.
         // Observe the existing native TUI transport for authoritative thread IDs.
@@ -3314,7 +3314,7 @@ function registerRpcHandlers(
           launchRelay = await codexPaneRelays.prepare(id, pane.meta.env?.CODEX_HOME);
         }
         if (!/^unix:\/\/\/[A-Za-z0-9_./-]+$/.test(launchRelay.url)) throw new Error('Unsupported relay path');
-        command = command.replace('codex -- ', `codex --remote ${launchRelay.url} -- `);
+        command = command.replace(/^codex /, `codex --remote ${launchRelay.url} `);
       }
       if (!await agentProcessTracker.verifyIdleShell(pane.meta.pid) || !ready()) return { ok: false, error: 'Terminal changed or is busy.' };
       // Fixed launcher only; no renderer-provided shell text, prompts or flags.

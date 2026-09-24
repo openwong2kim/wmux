@@ -37,6 +37,14 @@ describe('private desktop transcript bridge', () => {
     await handlers.get(CHAT_IPC.launchTerminal)!({ ...f.event, sender: {} }, { ptyId: 'pane', agent: 'claude', prompt: 'hello' });
     expect(f.client.rpc).not.toHaveBeenCalled();
   });
+  it('forwards explicit launch mode and refuses another provider mode', async () => {
+    const f = fixture();
+    await f.call('launchTerminal', { ptyId: 'pane', agent: 'codex', prompt: 'hello', mode: 'yolo' });
+    expect(f.client.rpc).toHaveBeenCalledWith('daemon.chat.launchTerminal', { id: 'pane', agent: 'codex', prompt: 'hello', mode: 'yolo' }, { timeoutMs: 30000 });
+    f.client.rpc.mockClear();
+    await f.call('launchTerminal', { ptyId: 'pane', agent: 'claude', prompt: 'hello', mode: 'yolo' });
+    expect(f.client.rpc).not.toHaveBeenCalled();
+  });
   it('reports live activity separately from readable saved history', async () => {
     const f = fixture();
     expect(await f.call('status', 'pty')).toMatchObject({ available: true, agentAlive: true, agentStatus: 'running' });

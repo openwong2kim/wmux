@@ -7,9 +7,6 @@ export function ChatControls({ ptyId, status, refresh }: { ptyId: string; status
   const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [launched, setLaunched] = useState(false);
-  const [prompt, setPrompt] = useState('');
-  const launch = window.electronAPI?.chat?.launchTerminal;
   const controls = window.electronAPI?.chat?.controls;
   const managed = status.managed;
 
@@ -20,22 +17,7 @@ export function ChatControls({ ptyId, status, refresh }: { ptyId: string; status
     catch { setError(t('chat.controlFailed')); }
     finally { setBusy(false); }
   };
-  if (!managed) {
-    if (!launch || status.available || status.agentAlive || status.agentSessionId) return null;
-    return <div className="wmux-chat-controls">
-      <p role="status">{t(launched ? 'chat.terminalStarting' : 'chat.terminalStartHint')}</p>
-      {!launched && <input aria-label={t('chat.initialMessage')} placeholder={t('chat.initialMessage')} value={prompt} maxLength={2000} disabled={busy}
-        onChange={event => setPrompt(event.target.value)} />}
-      {!launched && <div className="wmux-chat-control-row">{(['claude', 'codex'] as const).map(agent =>
-        <button key={agent} type="button" className="ui-btn" disabled={busy || !prompt.trim()} onClick={() => void run(async () => {
-          const result = await launch({ ptyId, agent, prompt });
-          if (result.ok) setLaunched(true);
-          return result;
-        })}>{agent === 'claude' ? 'Claude' : 'Codex'} · {t('chat.startNew')}</button>)}</div>}
-      {error && <p role="alert">{error}</p>}
-    </div>;
-  }
-  if (!controls) return null;
+  if (!managed || !controls) return null;
   const identity = { ptyId, agentSessionId: status.agentSessionId ?? '' };
   return <div className="wmux-chat-controls">
     {managed ? <>

@@ -1,12 +1,14 @@
+import { validTerminalLaunchMode } from '../../shared/transcript/terminalChat';
 import { execFile } from 'node:child_process';
-/** Quote an initial, single-line instruction for the verified POSIX shell.
+/** Quote an initial instruction for the verified POSIX shell.
  * Never accept controls, terminal escapes or a caller-supplied launcher. */
-export function terminalLaunchCommand(agent: unknown, prompt: unknown): string {
-  if ((agent !== 'claude' && agent !== 'codex') || typeof prompt !== 'string' ||
-      !prompt.trim() || prompt.length > 2000 || [...prompt].some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)) {
+export function terminalLaunchCommand(agent: unknown, prompt: unknown, mode: unknown = 'default'): string {
+  if (!validTerminalLaunchMode(agent, mode) || (agent !== 'claude' && agent !== 'codex') || typeof prompt !== 'string' ||
+      !prompt.trim() || prompt.length > 2000 || [...prompt].some(c => c.charCodeAt(0) < 32 && c !== '\n' || c.charCodeAt(0) === 127)) {
     throw new Error('Invalid initial message');
   }
-  return agent + " -- '" + prompt.replace(/'/g, "'\\''") + "'";
+  const flags = mode === 'bypass' ? ' --dangerously-skip-permissions' : mode === 'yolo' ? ' --dangerously-bypass-approvals-and-sandbox' : '';
+  return agent + flags + " -- '" + prompt.replace(/'/g, "'\\''") + "'";
 }
 
 const startingAccounts = new Map<string, Promise<void>>();

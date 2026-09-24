@@ -9,6 +9,7 @@ import { ChatPtyContext } from './ChatMessage';
 import { chatRunState } from './chatRunState';
 import { ChatProgress } from './ChatProgress';
 import { ChatControls } from './ChatControls';
+import type { TerminalLaunchAgent, TerminalLaunchMode } from '../../../shared/transcript/terminalChat';
 import { Thread } from './assistant-ui/Thread';
 
 // Drafts survive view/workspace changes, but never cross conversation boundaries.
@@ -24,6 +25,13 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
   const t = useT();
   const [sendState, setSendState] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [launchAgent, setLaunchAgent] = useState<TerminalLaunchAgent>('claude');
+  const [launchMode, setLaunchMode] = useState<TerminalLaunchMode>('default');
+  const [launched, setLaunched] = useState(false);
+  const [launchError, setLaunchError] = useState('');
+  const launch = window.electronAPI?.chat?.launchTerminal;
+  const canLaunch = !!launch && !data.status.managed && !data.status.available && !data.status.agentSessionId && !data.status.agentAlive &&
+    ['no-hook', 'no-binding'].includes(data.status.reason) && !launched;
   const inFlight = useRef(false);
   const sentAfterUser = useRef<string | undefined>(undefined);
   const agentStatus = useStore((s) => s.surfaceAgentStatus[ptyId]);
@@ -54,6 +62,20 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
   }, [latestUser, sendState]);
   const onNew = useCallback(async (message: AppendMessage) => {
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+    if (canLaunch && launch) {
+      if (inFlight.current || data.loading) throw new MessageNotSentError(t('chat.sendUnavailable'));
+      inFlight.current = true; setSending(true); setLaunchError('');
+      try {
+        const result = await launch({ ptyId, agent: launchAgent, mode: launchMode, prompt: text });
+        if (!result.ok) throw new MessageNotSentError(result.error ?? t('chat.controlFailed'));
+        setLaunched(true); data.retry();
+      } catch (error) {
+        const message = error instanceof MessageNotSentError ? error.message : t('chat.controlFailed');
+        setLaunchError(message);
+        throw new MessageNotSentError(message);
+      } finally { inFlight.current = false; setSending(false); }
+      return;
+    }
     if (inFlight.current || readOnly || busy || blocked || uncertain || data.status.agentAlive === false || data.error || !data.status.agentSessionId || !data.status.available) {
       throw new MessageNotSentError(t('chat.sendUnavailable'));
     }
@@ -73,12 +95,11 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
       setSendState('error');
       throw new MessageNotSentError(t('chat.send.error'));
     } finally { inFlight.current = false; setSending(false); }
-  }, [readOnly, busy, blocked, uncertain, data.status.agentAlive, data.error, data.status.agentSessionId, data.status.available, latestUser, ptyId, t, managed]);
+  }, [canLaunch, launch, launchAgent, launchMode, data.loading, data.retry, readOnly, busy, blocked, uncertain, data.status.agentAlive, data.error, data.status.agentSessionId, data.status.available, latestUser, ptyId, t, managed]);
   const runtime = useExternalStoreRuntime({ messages, isRunning: busy || sending, isLoading: data.loading,
-    isSendDisabled: readOnly || blocked || busy || uncertain || data.error || !data.status.available || data.status.agentAlive === false || sending, onNew });
+    isSendDisabled: canLaunch ? sending || data.loading : launched || readOnly || blocked || busy || uncertain || data.error || !data.status.available || data.status.agentAlive === false || sending, onNew });
   useEffect(() => {
-    const session = data.status.agentSessionId;
-    if (!session) return;
+    const session = data.status.agentSessionId ?? 'new';
     const key = `${ptyId}:${session}`;
     const composer = runtime.thread.composer;
     composer.setText(drafts.get(key) ?? '');
@@ -92,15 +113,28 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
   const reasonKey = ['no-hook', 'stale-session', 'no-transcript-path', 'not-claude', 'unsafe-transcript-path', 'unreadable'].includes(data.status.reason)
     ? `chat.reason.${data.status.reason}` : 'chat.reason.unavailable';
   return <ChatPtyContext.Provider value={ptyId}><AssistantRuntimeProvider runtime={runtime}>
-    <Thread status={<><ChatProgress state={progress} lastSyncedAt={data.lastSyncedAt} onTerminal={onTerminal} /><ChatControls ptyId={ptyId} status={data.status} refresh={data.retry} /></>} empty={messages.length === 0} working={busy} disabled={readOnly || !data.status.available || data.loading || ended || !!managed && (managed.phase !== 'ready' || !managed.capabilities.send)}
-      placeholder={ended ? t('chat.placeholderEnded') : undefined}
+    <Thread status={<><ChatProgress state={canLaunch ? 'ready' : progress} lastSyncedAt={data.lastSyncedAt} onTerminal={onTerminal} /><ChatControls ptyId={ptyId} status={data.status} refresh={data.retry} /></>} empty={messages.length === 0} working={busy} disabled={canLaunch ? sending || data.loading : launched || readOnly || !data.status.available || data.loading || ended || !!managed && (managed.phase !== 'ready' || !managed.capabilities.send)}
+      placeholder={canLaunch ? t('chat.initialMessage') : ended ? t('chat.placeholderEnded') : undefined}
+      maxLength={canLaunch ? 2000 : 16_000}
+      composerOptions={canLaunch && <div className="wmux-chat-launch-options">
+        <select aria-label={t('chat.provider')} value={launchAgent} disabled={sending} onChange={event => {
+          setLaunchAgent(event.target.value as TerminalLaunchAgent); setLaunchMode('default');
+        }}><option value="claude">Claude</option><option value="codex">Codex</option></select>
+        <select aria-label={t('chat.launchMode')} value={launchMode} disabled={sending} onChange={event => setLaunchMode(event.target.value as TerminalLaunchMode)}>
+          <option value="default">{t('chat.modeDefault')}</option>
+          {launchAgent === 'claude' ? <option value="bypass">{t('chat.modeBypass')}</option> : <option value="yolo">{t('chat.modeYolo')}</option>}
+        </select>
+      </div>}
       history={data.hasMore && <button type="button" className="wmux-chat-earlier ui-btn" disabled={data.loadingEarlier}
         onClick={() => void data.loadEarlier()}>{data.loadingEarlier ? t('chat.loading') : t('chat.loadEarlier')}</button>}
       welcome={data.loading ? <div className="wmux-chat-empty" role="status">{t('chat.loading')}</div>
+        : canLaunch ? <div className="wmux-chat-empty"><strong>{t('chat.startNew')}</strong><p>{t('chat.chooseAgentHint')}</p></div>
         : !data.status.available && messages.length === 0 ? <div className="wmux-chat-empty"><strong>{t('chat.unavailable')}</strong><p>{t(reasonKey)}</p>
           <button type="button" className="ui-btn" onClick={onTerminal}>{t('chat.openTerminal')}</button></div>
         : messages.length === 0 ? <div className="wmux-chat-empty"><strong>{t('chat.empty')}</strong><p>{t('chat.emptyHint')}</p></div> : null}
       notices={<>
+        {launched && <div className="wmux-chat-notice" role="status">{t('chat.terminalStarting')} <button type="button" onClick={onTerminal}>{t('chat.openTerminal')}</button></div>}
+        {launchError && <div className="wmux-chat-notice" role="alert">{launchError}</div>}
         {data.status.terminal?.historyTruncated && <div className="wmux-chat-notice">{t('chat.retentionLimit')}</div>}
         {/* A refusal already says why below; one state, one notice. */}
         {uncertain && !managed && !sendState && <div className="wmux-chat-notice">{t('chat.send.unconfirmed')}</div>}

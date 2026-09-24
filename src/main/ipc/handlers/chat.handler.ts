@@ -2,6 +2,7 @@ import { wrapHandler } from '../wrapHandler';
 import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import type { DaemonClient } from '../../DaemonClient';
 import type { DaemonEvent } from '../../../shared/rpc';
+import { validTerminalLaunchMode } from '../../../shared/transcript/terminalChat';
 import { CHAT_IPC } from '../../../shared/transcript/chatIpc';
 import type { ChatBridgeApi, TranscriptStatus } from '../../../shared/transcript/turnEvents';
 
@@ -128,8 +129,8 @@ export function registerChatHandlers(
         ...(typeof args.requestId === 'string' ? { requestId: args.requestId } : {}),
       }, { result: 'error' }) : { result: 'unavailable' },
   };
-  handlers[CHAT_IPC.launchTerminal] = (e, args) => trusted(e) && args && validId(args.ptyId) && ['claude', 'codex'].includes(args.agent) && typeof args.prompt === 'string' && args.prompt.trim() && args.prompt.length <= 2000
-    ? rpc('daemon.chat.launchTerminal', { id: args.ptyId, agent: args.agent, prompt: args.prompt }, { ok: false, error: 'Launch could not be confirmed. Check Terminal before retrying.' })
+  handlers[CHAT_IPC.launchTerminal] = (e, args) => trusted(e) && args && validId(args.ptyId) && ['claude', 'codex'].includes(args.agent) && typeof args.prompt === 'string' && args.prompt.trim() && args.prompt.length <= 2000 && validTerminalLaunchMode(args.agent, args.mode)
+    ? rpc('daemon.chat.launchTerminal', { id: args.ptyId, agent: args.agent, prompt: args.prompt, ...(args.mode === undefined ? {} : { mode: args.mode }) }, { ok: false, error: 'Launch could not be confirmed. Check Terminal before retrying.' })
     : { ok: false, error: 'Invalid terminal launch' };
   handlers[CHAT_IPC.providers] = (e) => trusted(e) ? rpc('daemon.chat.providers', {}, []) : [];
   for (const action of ['start', 'reconnect', 'cancel', 'respond', 'close'] as const) {

@@ -31,14 +31,13 @@ describe('chat controls', () => {
     expect(f.controls.providers).not.toHaveBeenCalled();
     expect(f.controls.start).not.toHaveBeenCalled();
   });
-  it('offers native launch only for a pane without an existing conversation', async () => {
+  it('does not duplicate native launch input above the shared composer', async () => {
     const f = fixture();
     const launchTerminal = vi.fn(async () => ({ ok: true }));
     vi.stubGlobal('electronAPI', { chat: { controls: f.controls, launchTerminal } });
     await f.render({ available: false, reason: 'no-hook' });
-    expect(host.textContent).toContain('Claude');
-    expect(host.textContent).toContain('Codex');
-    expect([...host.querySelectorAll('button')].every(button => button.disabled)).toBe(true);
+    expect(host.textContent).toBe('');
+    expect(host.querySelector('input')).toBeNull();
     expect(launchTerminal).not.toHaveBeenCalled();
     await f.render({ available: true, reason: 'ok', agentSessionId: 'existing' });
     expect(host.textContent).toBe('');

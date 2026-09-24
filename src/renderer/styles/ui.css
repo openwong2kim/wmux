@@ -430,7 +430,7 @@
 .wmux-chat { display: flex; flex-direction: column; height: 100%; min-height: 0; font-family: var(--font-ui); font-size: 15px; color: var(--text-main); container-type: inline-size; }
 .wmux-chat-viewport { position: relative; display: flex; flex: 1; min-height: 0; flex-direction: column; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
 .wmux-chat-column { display: flex; flex: 1; flex-direction: column; width: 100%; max-width: 44rem; margin: 0 auto; padding: 24px 20px 0; }
-.wmux-chat-column[data-empty="true"] { justify-content: center; }
+
 .wmux-chat-messages { display: flex; flex-direction: column; gap: 24px; margin-bottom: 48px; }
 .wmux-chat-messages:empty { display: none; }
 .wmux-chat-message { min-width: 0; overflow-wrap: anywhere; }
@@ -451,7 +451,7 @@
 .wmux-chat-empty strong { color: var(--text-main); font-size: 24px; line-height: 1.35; letter-spacing: -.025em; font-weight: 500; text-wrap: balance; }
 .wmux-chat-empty p { font-size: 14px; }
 .wmux-chat-footer { position: sticky; bottom: 0; display: flex; flex-direction: column; gap: 10px; margin-top: auto; padding: 12px 0 24px; background: var(--bg-base); border-radius: 16px 16px 0 0; }
-.wmux-chat-footer[data-empty="true"] { position: relative; margin-top: 0; }
+
 .wmux-chat-notice { padding: 4px 8px; font-size: 13px; line-height: 1.6; color: var(--text-sub); }
 .wmux-chat-notice button { text-decoration: underline; min-height: 28px; margin-left: 5px; }
 .wmux-chat-composer { display: flex; flex-shrink: 0; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--border-soft); border-radius: 16px; background: var(--bg-mantle); transition: border-color 150ms; }
@@ -1114,3 +1114,6 @@
 .wmux-chat-added { color: var(--accent-green); }
 .wmux-chat-deleted { color: var(--accent-red); }
 .wmux-chat-file pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; font-size: 12px; margin-top: 12px; }
+
+.wmux-chat-launch-options { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 8px; }
+.wmux-chat-launch-options select { min-height: 28px; max-width: 100%; padding: 3px 8px; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--bg-base); color: var(--text-main); font-size: 12px; }

@@ -105,7 +105,8 @@ separate explicit creation UI before it can run again.
 
 ## Start from Chat
 
-An empty pane offers Claude and Codex launch buttons plus an initial-message field.
+An empty pane uses the same bottom composer as an active conversation. Choose
+Claude or Codex and the run mode inside the composer, then send the first message.
 The private launch RPC starts the installed CLI in that same PTY and includes the
 first message as a literal argument, so native conversation discovery can connect
 Chat without requiring an initial terminal prompt. No managed session is created.
@@ -114,7 +115,7 @@ Existing readable conversations are retained and do not offer replacement launch
 Launch currently supports zsh/bash/sh with OSC 133 shell integration and a
 positively empty prompt. Draft input, foreground/background child processes,
 pending approvals, unknown shell state, Windows and other shells are refused.
-The initial message is one line, at most 2,000 characters; subsequent chat messages
+The initial message supports newlines and at most 2,000 characters; subsequent chat messages
 retain the regular multiline composer. Login/trust onboarding remains in Terminal.
 No automatic launch retry occurs after a failed or uncertain response.
 
@@ -131,3 +132,9 @@ selected test pane and verifies the initial native answer, one user turn, and
 Terminal/Chat round-trip without a managed conversation. Native Codex transport
 accepts bounded 16 MiB metadata frames (Chat history keeps its smaller limits),
 and excludes ephemeral `thread_title` sessions from foreground selection.
+
+The default run mode adds no permission flags. Explicit Claude Bypass mode adds
+`--dangerously-skip-permissions`; explicit Codex YOLO mode adds
+`--dangerously-bypass-approvals-and-sandbox`. These are native startup options, not
+changes to an already running agent. Switching provider resets the mode to default.
+Only the matching agent/mode combinations are accepted by IPC and the daemon.
