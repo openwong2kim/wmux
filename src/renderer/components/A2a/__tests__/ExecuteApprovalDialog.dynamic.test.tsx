@@ -163,12 +163,16 @@ describe('ExecuteApprovalDialog', () => {
     show(approval('b', { expiresAt: Date.now() + 30_000 }));
     expect(committedCountdowns[0]).toMatch(/\b30s$/);
     expect(committedCountdowns.every((text) => /\b30s$/.test(text))).toBe(true);
+  });
 
-    // The usual path: a queued prompt arrives with its countdown not started,
-    // and the dialog starts it.
+  it('counts a queued prompt down from a fresh clock once its countdown starts', () => {
+    act(() => root.render(createElement('div', null, createElement(ExecuteApprovalDialog), createElement(CountdownProbe))));
+    show(approval('a', { expiresAt: Date.now() + 30_000 }));
     show(null);
     vi.setSystemTime(Date.now() + 100_000);
     committedCountdowns.length = 0;
+    // The usual path: the prompt arrives with its countdown not started, and
+    // the dialog starts it.
     show(approval('c', { expiresAt: 0 }));
     show(approval('c', { expiresAt: Date.now() + 30_000 }));
     expect(committedCountdowns[0]).toMatch(/\b30s$/);
