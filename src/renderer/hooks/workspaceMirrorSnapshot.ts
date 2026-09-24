@@ -18,7 +18,7 @@ import type {
 } from '../../shared/workspaceMirror';
 import { normalizeRoleBinding } from '../../shared/orchestratorRole';
 import type { StoreState } from '../stores';
-import { selectFleetPanes, type FleetPane, type FleetSelectorState } from '../stores/selectors/fleet';
+import { selectFleetPanes, surfaceAttentionStatus, type FleetPane, type FleetSelectorState } from '../stores/selectors/fleet';
 
 /**
  * The push builder's input: everything the fleet snapshot reads (below) plus
@@ -170,7 +170,19 @@ export function buildFleetSnapshots(state: FleetSnapshotState, ts: number): Flee
   // #1168 — the pending-question map is a SECOND attention source inside the
   // selector, so stripping only `surfaceAgentStatus` would leave a blocked pane
   // reporting `awaiting_input` as its non-attention base status. Both go.
-  for (const p of selectFleetPanes({ ...localOnly, surfaceAgentStatus: {}, surfacePendingQuestion: {} })) {
+  // #1509 — so does the third: an open dialog in the lifecycle status. Its
+  // entries stay (the selector still needs each pane's agent NAME); only the
+  // status is neutralized.
+  const surfaceAgentNoAttention: FleetSelectorState['surfaceAgent'] = {};
+  for (const [ptyId, agent] of Object.entries(localOnly.surfaceAgent ?? {})) {
+    surfaceAgentNoAttention[ptyId] = agent.status === 'awaiting_input' ? { ...agent, status: 'idle' } : agent;
+  }
+  for (const p of selectFleetPanes({
+    ...localOnly,
+    surfaceAgentStatus: {},
+    surfacePendingQuestion: {},
+    surfaceAgent: surfaceAgentNoAttention,
+  })) {
     baseByPane.set(p.paneId, p.agentStatus);
   }
 
@@ -243,8 +255,9 @@ export function buildFleetSnapshots(state: FleetSnapshotState, ts: number): Flee
         // of error the #977 note below describes. It also emits a row for a
         // question that OUTLIVED its retained status — focusing the pane clears
         // `surfaceAgentStatus` but not the question.
-        const blocked = !!state.surfacePendingQuestion?.[s.ptyId]?.trim();
-        const att = blocked ? 'awaiting_input' : state.surfaceAgentStatus[s.ptyId];
+        // #1509 — and an open dialog the user already looked at: the shared
+        // helper reads it from the pane's lifecycle status.
+        const att = surfaceAttentionStatus(state, s.ptyId);
         if (att === undefined) continue;
         const isActiveSurface = s.id === leaf.activeSurfaceId;
         const row: FleetSnapshotPane = {

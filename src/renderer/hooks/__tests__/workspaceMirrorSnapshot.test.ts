@@ -477,3 +477,44 @@ describe('buildFleetSnapshots — pending question (#1168)', () => {
     expect(fleet.panes[0]).toMatchObject({ ptyId: 'pty-1', agentStatus: 'complete' });
   });
 });
+
+describe('buildFleetSnapshots — open dialog outlives the focus clear (#1509)', () => {
+  // Focusing a pane deletes its `surfaceAgentStatus` entry (the unread cue).
+  // The dialog is still open, and the pane's own lifecycle status says so. The
+  // deck's heartbeat and completion gate read this mirror: dropping the row
+  // would tell them a workspace blocked on an approval is quiescent.
+  it('keeps the blocked pane after focus moved to a new split', () => {
+    const ws = workspace(
+      'ws-1', 'alpha',
+      branch('b', [leaf('pA', [surface('sA', 'pty-a')]), leaf('pB', [surface('sB', 'pty-b')])]),
+      'pB',
+      { agentName: 'Claude Code', agentStatus: 'running' },
+    );
+    const st: FleetSelectorState = {
+      workspaces: [ws],
+      surfaceAgentStatus: {},
+      surfaceActivity: {},
+      surfaceAgent: { 'pty-a': { name: 'Claude Code', status: 'awaiting_input' } },
+    };
+    const [fleet] = buildFleetSnapshots(st, 7);
+    expect(fleet.panes.find((p) => p.ptyId === 'pty-a')).toMatchObject({ agentStatus: 'awaiting_input' });
+    expect(fleet.panes.find((p) => p.ptyId === 'pty-b')?.agentStatus).not.toBe('awaiting_input');
+  });
+
+  it('attributes a background tab\'s open dialog to THAT tab, not the active one', () => {
+    const st: FleetSelectorState = {
+      workspaces: [w2],
+      surfaceAgentStatus: {},
+      surfaceActivity: {},
+      surfaceAgent: {
+        'pty-2a-first': { name: 'Codex', status: 'awaiting_input' },
+        'pty-2a': { name: 'Codex', status: 'running' },
+      },
+      surfaceActivityAt: { 'pty-2a': 1_000 },
+      agentClockMs: 1_000,
+    };
+    const [fleet] = buildFleetSnapshots(st, 7);
+    expect(fleet.panes.find((p) => p.ptyId === 'pty-2a-first')).toMatchObject({ agentStatus: 'awaiting_input' });
+    expect(fleet.panes.find((p) => p.ptyId === 'pty-2a')).toMatchObject({ agentStatus: 'running', isActivePane: true });
+  });
+});

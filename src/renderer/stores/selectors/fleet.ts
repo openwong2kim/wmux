@@ -363,6 +363,33 @@ const STATUS_RANK: Record<AgentStatus, number> = {
 };
 
 /**
+ * One surface's attention status — the per-surface input to every fleet
+ * roll-up, shared with the deck mirror so the two cannot disagree.
+ *
+ * Two kinds of attention, and #1509 is the difference between them:
+ *   - UNREAD (`surfaceAgentStatus`): "something happened you have not looked
+ *     at". Pane.tsx deletes it while the pane is focused, and that is right
+ *     for a finished turn.
+ *   - AWAITING A HUMAN: a dialog is open and the agent is blocked on it.
+ *     Looking at it does not answer it, so it must outlive the focus clear.
+ *     The pane's own lifecycle status (`surfaceAgent[pty].status`) carries
+ *     it until THAT pane reports something else, whichever pane is focused.
+ * Only `awaiting_input` is read from the lifecycle status; a viewed
+ * complete / waiting / error stays cleared.
+ */
+export function surfaceAttentionStatus(
+  state: Pick<FleetSelectorState, 'surfaceAgentStatus' | 'surfaceAgent' | 'surfacePendingQuestion'>,
+  ptyId: string,
+): AgentStatus | undefined {
+  // #1168 — a transcript-derived pending question outranks whatever the stop
+  // payload settled this surface to, exactly as it does in
+  // workspaceAgentRoster.
+  if (state.surfacePendingQuestion?.[ptyId]?.trim()) return 'awaiting_input';
+  if (state.surfaceAgent?.[ptyId]?.status === 'awaiting_input') return 'awaiting_input';
+  return state.surfaceAgentStatus[ptyId];
+}
+
+/**
  * Status fidelity (S-C1 v1, confirmed scope):
  * `surfaceAgentStatus` only retains the ATTENTION statuses
  * (complete / waiting / awaiting_input / error) keyed per-ptyId — see paneSlice
@@ -496,14 +523,9 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
           }
           continue;
         }
-        // #1168 — a transcript-derived pending question outranks whatever the
-        // stop payload settled this surface to, exactly as it does in
-        // workspaceAgentRoster. Without it a payload carrying `complete`
-        // alongside an unanswered question painted a green "nothing to see"
-        // dot over a red roster row that was printing the question.
-        const st = state.surfacePendingQuestion?.[s.ptyId]?.trim()
-          ? 'awaiting_input'
-          : state.surfaceAgentStatus[s.ptyId];
+        // #1168 / #1509 — see surfaceAttentionStatus: a pending question or an
+        // open dialog is attention whether or not the pane has been looked at.
+        const st = surfaceAttentionStatus(state, s.ptyId);
         // On a tie the active surface wins: equal urgency gives no reason to
         // point the row (detail, Message, Jump) at a background tab.
         if (st && (
@@ -547,8 +569,12 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       // `error` is still inherited here, but no longer as its ONLY carrier:
       // it is an ATTENTION status now, so the per-pty attention scan above
       // reaches it on background panes too.
+      // #1509 — 'awaiting_input' is vetoed for the same reason as 'running':
+      // the per-pty scan above carries it on the pane that raised it, so the
+      // shared slot could only add it to a same-named sibling as well.
       const metaStatus =
-        isActivePane && metaMatchesPane && wsMeta?.agentStatus !== 'running'
+        isActivePane && metaMatchesPane
+          && wsMeta?.agentStatus !== 'running' && wsMeta?.agentStatus !== 'awaiting_input'
           ? wsMeta?.agentStatus
           : undefined;
       const activityAt = ptyId ? state.surfaceActivityAt?.[ptyId] : undefined;
