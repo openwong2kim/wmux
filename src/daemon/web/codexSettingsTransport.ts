@@ -5,7 +5,7 @@ import type { CodexSettingsMethod, CodexSettingsRPC } from './codexLiveSettings'
 
 const METHODS = new Set<CodexSettingsMethod>(['thread/read','model/list','thread/settings/update']);
 interface Pending { resolve:(value:unknown)=>void; reject:(error:Error)=>void; timer:ReturnType<typeof setTimeout> }
-export interface CodexSettingsConnection { rpc: CodexSettingsRPC; close():void }
+export interface CodexSettingsConnection { rpc: CodexSettingsRPC; skills(cwd: string): Promise<unknown>; close():void }
 
 /** Attach to an existing account's Unix WebSocket. Never start or stop its server. */
 export async function connectCodexSettings(options: {codeHome?:string; cwd:string}): Promise<CodexSettingsConnection> {
@@ -59,6 +59,11 @@ export class SettingsTransport implements CodexSettingsConnection {
     if (!this.ready || !METHODS.has(method)) throw new Error('Unsupported Codex settings operation');
     return this.request(method,params);
   };
+
+  skills(cwd: string): Promise<unknown> {
+    if (!this.ready || !path.isAbsolute(cwd) || cwd.includes('\0')) return Promise.reject(new Error('Invalid skill scope'));
+    return this.request('skills/list', { cwds: [cwd], forceReload: false });
+  }
 
   close():void { this.stop(new Error('Codex settings connection closed')); }
 

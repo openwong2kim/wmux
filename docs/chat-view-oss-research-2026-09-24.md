@@ -119,3 +119,11 @@ The plugin has no dependency on competitor application code and imports only
 Node built-ins. Future providers must demonstrate the same pane/process/session
 ownership before advertising input capability. See `docs/managed-chat.md` for
 installation, contract, validation and remaining platform/phone work.
+
+
+Composer discovery uses the installed Codex 0.156.1 app-server generated protocol
+(`skills/list`, `SkillsListEntry`, `SkillMetadata`), not a copied client. Claude
+metadata interpretation follows [official skills documentation](https://code.claude.com/docs/en/skills),
+including personal/project precedence, plugin namespaces and invocability.
+Competitor code was not used. Disk discovery is marked partial rather than
+claiming to reproduce runtime-only configuration.

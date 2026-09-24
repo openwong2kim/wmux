@@ -386,3 +386,10 @@ request IDs, file previews, and history generations are defined in
 `src/shared/transcript/`. See [managed chat](../managed-chat.md) for delivery,
 retention, and capability semantics. A future mobile bridge needs its own
 explicit authenticated contract; these methods grant no remote access.
+
+
+`daemon.chat.skills` is first-party-only read-only discovery for an existing pane:
+`{ id, agent: "claude" | "codex" }` → `{ state: "ready" | "partial" | "unavailable",
+skills: [{ name, description, invocation, source }] }`. Cwd/account are resolved by
+the daemon; arbitrary paths and provider RPC methods are not accepted. No public
+MCP or phone HTTP route is added by this internal method.

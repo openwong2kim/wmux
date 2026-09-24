@@ -3,3 +3,5 @@
 - Shared agent-neutral conversation/activity UI and optional private managed Codex, OpenCode and ACP adapters. ACP is supplementary; opening Chat does not create a separate agent session.
 - Start Claude or Codex from Chat with a first message in the same terminal, guarded against existing shell drafts and running processes (zsh/bash/sh with shell integration).
 - Use one bottom composer for initial and follow-up messages, with explicit Claude Bypass and Codex YOLO startup mode selection.
+
+- Add bottom-composer skill search for native Claude/Codex with keyboard navigation, agent-correct invocation, source labels, draft-preserving selection and honest discovery states. Keep idle connection text and session placeholders agent-neutral.

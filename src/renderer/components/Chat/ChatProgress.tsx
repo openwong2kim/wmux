@@ -14,7 +14,7 @@ export function ChatProgress({ state, lastSyncedAt, onTerminal }: {
       <span className="wmux-chat-progress-dot" aria-hidden="true" />{t(`chat.state.${state}`)}
     </div>
     <div className="wmux-chat-progress-detail">
-      <span>{state === 'working' ? t('chat.recordedUpdates') : seconds === null ? t('chat.checkingConnection') : t('chat.lastSynced', { seconds })}</span>
+      <span>{state === 'working' ? t('chat.recordedUpdates') : seconds === null ? state === 'ready' ? '' : t('chat.checkingConnection') : t('chat.lastSynced', { seconds })}</span>
       <button type="button" onClick={onTerminal}>{t('chat.openTerminal')}</button>
     </div>
   </div>;

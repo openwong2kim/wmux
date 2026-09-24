@@ -33,6 +33,53 @@ const type = async (text: string) => {
 };
 
 describe('assistant-ui composer connected to session drafts', () => {
+  it('filters skills and inserts with the keyboard without sending or losing arguments', async () => {
+    const send = vi.fn();
+    const skills = vi.fn(async () => ({ state: 'ready', skills: [
+      {name:'qa',invocation:'/qa',description:'Check quality',source:'project'},
+      {name:'review',invocation:'/review',description:'Review changes',source:'user'},
+    ] }));
+    vi.stubGlobal('electronAPI', { chat: { skills, send } });
+    fixture.session = 'skills-test';
+    await render(); await type('/rev keep these arguments');
+    await act(async () => { input().focus(); input().setSelectionRange(4,4); document.dispatchEvent(new Event('selectionchange',{bubbles:true})); });
+    expect(host.querySelectorAll('[role="option"]')).toHaveLength(1);
+    await act(async () => input().dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true})));
+    expect(input().value).toBe('/review keep these arguments');
+    expect(send).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="listbox"]')).toBeNull();
+    await type('/');
+    await act(async () => input().dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true})));
+    expect(input().value).toBe('/');
+    expect(host.querySelector('[role="listbox"]')).toBeNull();
+    await type('');
+  });
+  it('inserts Codex skills as dollar references and resets the catalogue on provider change', async () => {
+    const skills = vi.fn(async ({agent}) => ({state:'ready', skills:[{name:agent,invocation:agent==='codex'?'$codex':'/claude',description:'',source:'user'}]}));
+    const launchTerminal = vi.fn();
+    vi.stubGlobal('electronAPI',{chat:{skills,launchTerminal}});
+    fixture.session=''; fixture.available=false; fixture.reason='no-hook';
+    await render(); await type('/');
+    expect(host.textContent).toContain('/claude');
+    await act(async () => { const select=host.querySelector<HTMLSelectElement>('select[aria-label="chat.provider"]')!; select.value='codex'; select.dispatchEvent(new Event('change',{bubbles:true})); });
+    expect(host.textContent).not.toContain('/claude');
+    await act(async () => input().dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true})));
+    expect(input().value).toBe('$codex ');
+    expect(launchTerminal).not.toHaveBeenCalled();
+    await type('');
+  });
+  it('does not send an unresolved slash query or treat IME Enter as selection', async () => {
+    const send=vi.fn();
+    let resolve!: (value: unknown) => void;
+    vi.stubGlobal('electronAPI',{chat:{send,skills:vi.fn(()=>new Promise(done=>{resolve=done;}))}});
+    fixture.session='skills-pending'; await render(); await type('/');
+    await act(async()=>input().dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true})));
+    expect(input().value).toBe('/'); expect(send).not.toHaveBeenCalled();
+    await act(async()=>resolve({state:'ready',skills:[{name:'qa',invocation:'/qa',source:'user',description:''}]}));
+    await act(async()=>input().dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',isComposing:true,bubbles:true,cancelable:true})));
+    expect(input().value).toBe('/'); expect(send).not.toHaveBeenCalled();
+    await type('');
+  });
   it('starts from the sole bottom composer with the selected provider and explicit mode', async () => {
     const launchTerminal = vi.fn(async () => ({ ok: true }));
     const send = vi.fn();

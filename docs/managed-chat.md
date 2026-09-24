@@ -138,3 +138,32 @@ The default run mode adds no permission flags. Explicit Claude Bypass mode adds
 `--dangerously-bypass-approvals-and-sandbox`. These are native startup options, not
 changes to an already running agent. Switching provider resets the mode to default.
 Only the matching agent/mode combinations are accepted by IPC and the daemon.
+
+
+### Composer skill discovery
+
+The same bottom composer opens an installed-skill list with `/` (Codex also accepts
+`$`), or its `/` button. Search matches names and descriptions. Arrow keys navigate;
+Enter/Tab inserts, Escape dismisses without discarding the draft, and IME Enter
+is left to composition. Insertion never sends a turn. Existing arguments remain.
+Claude inserts `/name`; Codex inserts `$name`. Provider changes cancel stale reads.
+The list shows source labels, bounded descriptions, loading, empty, unavailable
+and partial states. It does not create a terminal, session or agent process.
+
+Private `chat:skills` → `daemon.chat.skills` takes `{id, agent}`. The daemon derives
+cwd and account configuration from the owned live pane, rechecks scope after I/O,
+and rejects WSL panes. The renderer cannot supply paths or methods. Returned
+metadata contains only name, description, invocation and source; no bodies or
+paths. Reads are bounded and coalesced with a five-second cache.
+
+Codex uses the existing native account server's read-only `skills/list`, scoped to
+the selected native thread cwd when known, and excludes disabled skills. It does
+not start the account server just to populate a menu: before that runtime exists,
+the list reports unavailable and can be retried after native launch.
+Claude scans personal/project skills, command files and enabled installed plugins,
+respects personal-name precedence, `user-invocable: false`, local visibility
+settings and plugin namespaces. This disk inventory is explicitly partial:
+session-only CLI settings, enterprise policy, synced skills and custom plugin
+paths may differ from the native menu. Built-in interactive terminal commands
+are not fabricated as chat actions. OpenCode/managed skill discovery is not yet
+advertised. Adding another provider requires its own catalogue adapter.

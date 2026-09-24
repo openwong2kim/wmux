@@ -28,6 +28,14 @@ function fixture(connected = true, lateWindow = false) {
   return { client, wc, event, call, revealWindow: () => { windowReady = true; } };
 }
 describe('private desktop transcript bridge', () => {
+  it('scopes skill lookup to a trusted pane and drops arbitrary filesystem fields', async () => {
+    const f=fixture();
+    await f.call('skills',{ptyId:'pane',agent:'codex',cwd:'/private',path:'/private'});
+    expect(f.client.rpc).toHaveBeenCalledWith('daemon.chat.skills',{id:'pane',agent:'codex'},{timeoutMs:30000});
+    f.client.rpc.mockClear();
+    await f.call('skills',{ptyId:'pane',agent:'shell'});
+    expect(f.client.rpc).not.toHaveBeenCalled();
+  });
   it('limits terminal launch to first-party callers and fixed agent choices', async () => {
     const f = fixture();
     await f.call('launchTerminal', { ptyId: 'pane', agent: 'codex', prompt: 'hello' });

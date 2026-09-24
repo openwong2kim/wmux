@@ -129,6 +129,9 @@ export function registerChatHandlers(
         ...(typeof args.requestId === 'string' ? { requestId: args.requestId } : {}),
       }, { result: 'error' }) : { result: 'unavailable' },
   };
+  handlers[CHAT_IPC.skills] = (e, args) => trusted(e) && args && validId(args.ptyId) && ['claude', 'codex'].includes(args.agent)
+    ? rpc('daemon.chat.skills', { id: args.ptyId, agent: args.agent }, { skills: [], state: 'unavailable' })
+    : { skills: [], state: 'unavailable' };
   handlers[CHAT_IPC.launchTerminal] = (e, args) => trusted(e) && args && validId(args.ptyId) && ['claude', 'codex'].includes(args.agent) && typeof args.prompt === 'string' && args.prompt.trim() && args.prompt.length <= 2000 && validTerminalLaunchMode(args.agent, args.mode)
     ? rpc('daemon.chat.launchTerminal', { id: args.ptyId, agent: args.agent, prompt: args.prompt, ...(args.mode === undefined ? {} : { mode: args.mode }) }, { ok: false, error: 'Launch could not be confirmed. Check Terminal before retrying.' })
     : { ok: false, error: 'Invalid terminal launch' };

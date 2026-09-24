@@ -1,3 +1,4 @@
+import { loadChatSkills } from './transcript/chatSkills';
 import { TerminalChatService } from './transcript/TerminalChatService';
 import {captureCodexRelayResume, codexRelayResumeCommand} from './web/codexRelayResume';
 import { recoverCodexPane } from './web/recoverCodexPane';
@@ -3282,6 +3283,26 @@ function registerRpcHandlers(
     });
     pipeServer.onClientClose(client => terminalChat?.dropClient(client));
   }
+
+  pipeServer.onRpc('daemon.chat.skills', async (params, ctx) => {
+    const unavailable = { skills: [], state: 'unavailable' };
+    if (!firstPartyOnly(ctx.clientId, 'skills') || typeof params.id !== 'string') return unavailable;
+    const id = params.id;
+    const pane = sessionManager.getSession(id);
+    if (!pane || pane.meta.wslTarget || !['attached', 'detached'].includes(pane.meta.state)) return unavailable;
+    const liveAgent = agentDisplayToSlug(readChatAgentState(id).agentName ?? '');
+    if (liveAgent && liveAgent !== params.agent) return unavailable;
+    if (!['claude', 'codex'].includes(String(params.agent))) return unavailable;
+    const selection = params.agent === 'codex' ? codexPaneRelays.selection(id, pane) : undefined;
+    const cwd = selection?.cwd ?? pane.meta.cwd;
+    const capture = () => JSON.stringify([pane.meta.cwd, pane.meta.pid, pane.meta.incarnationId, pane.meta.state,
+      pane.meta.env?.CODEX_HOME, pane.meta.env?.CLAUDE_CONFIG_DIR,
+      params.agent === 'codex' ? codexPaneRelays.selection(id, pane) : undefined]);
+    const scope = capture();
+    const result = await loadChatSkills(String(params.agent), cwd, { ...process.env, ...pane.meta.env });
+    return sessionManager.getSession(id) === pane && capture() === scope &&
+      agentDisplayToSlug(readChatAgentState(id).agentName ?? '') === liveAgent ? result : unavailable;
+  });
 
   const terminalLaunching = new Set<string>();
   pipeServer.onRpc('daemon.chat.launchTerminal', async (params, ctx) => {
