@@ -162,7 +162,10 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   13px body · 14px titles. Tabular figures for counters. **These four steps
   are the whole scale** (2026-09-05): no 8/9/10.5/11.5/12.5px anywhere in
   chrome — a lint rule forbids them. Inter is bundled (400/500/600) so the
-  stack never falls through to `system-ui`.
+  stack never falls through to `system-ui`. The one exception is the dialog
+  title, which uses the existing 16px display step (`--text-display-size`).
+  Inside dialogs and popovers, labels are sentence case and muted (11–13px);
+  the 10px uppercase tracked label belongs to chrome only.
 - **Hierarchy from typography, not decoration.** Speaker labels differ by
   weight/color (You = muted 600, Orchestrator = main 700), not by accent color.
 
@@ -178,8 +181,12 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 - Base unit 4px. Density: compact-leaning (rows 26–30px). **Every interactive
   element has a hit area of at least 24×24px** (2026-09-05) — extend the hit
   area with padding or a pseudo-element, never the glyph.
-- Radii: **5px buttons/controls · 6px inputs · 7px cards/panels**. Never larger
-  on chrome. Full-round only for status dots and count badges.
+- Radii: **chrome 5/6/7; surfaces 8/12/14.** Chrome (titlebar, tab strip,
+  sidebar rows and their controls): 5px buttons/controls · 6px inputs · 7px
+  cards/panels, never larger. Surfaces (dialogs, popovers, the grouped
+  containers and inputs inside them): 8px buttons · 10–12px grouped
+  containers and inputs · 14px dialog and popover panels. Full-round for
+  status dots, count badges, chips and segmented pills.
 - Borders: 1px hairline `rgba(255,255,255,.06)` (dark). Panel seams via inset
   box-shadow hairlines, not borders.
 - Elevation: exactly 3 levels (flat hairline / subtle surface lift / one
@@ -192,7 +199,8 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   arg summary + right-aligned jump link (muted at rest, accent on hover).
 - **Every claim is one click from its evidence:** anything referencing a pane
   gets a jump affordance (litmus test inherited from the deck).
-- **gpui-style control surfacing (2026-07-15):** two physical treatments only.
+- **gpui-style control surfacing (2026-07-15), chrome only** (dialogs and
+  popovers follow the quiet rules in Dialogs & forms): two physical treatments only.
   *Raised* (buttons, active segments, menu-item hover chips, cards): faint
   surface fill + 1px `color-mix(text-main 10%)` hairline + **top 1px inset
   highlight** (`inset 0 1px 0 color-mix(text-main 6%)`) — the "machined" look;
@@ -211,36 +219,61 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 
 ### Dialogs & forms
 
-Build every modal and settings row from `src/renderer/components/ui/`
+Build every modal, popover and settings row from `src/renderer/components/ui/`
 (`Dialog`, `Button`, `Field`, `Switch`, `Checkbox`, `Select`,
-`SegmentedControl`, `Badge`, `Input`) rather than hand-rolled inline styles.
+`SegmentedControl`, `Badge`, `Input`, `MediaPreview`) rather than hand-rolled
+inline styles. Surfaces are **quiet** (owner, 2026-09-24): neutral fills,
+1px low-contrast hairlines, one soft floating shadow on the panel only, no
+top inset highlight and no raised bevel. The machined raised/recessed look
+stays on chrome.
 
-- **Dialog anatomy:** backdrop `--backdrop-modal` at `--z-dialog`, panel
-  `--bg-base` with a 1px hairline, 7px radius and `--shadow-modal` (the one
-  floating elevation). Header = 14px/600 title + optional 13px `--text-sub`
-  description + a 28px close ×. Body scrolls; Footer is a hairline-topped,
-  right-aligned action row with the primary last. Focus is trapped, Escape
-  closes the top-most dialog, focus returns to the opener.
-- **One primary per dialog.** At most one solid warm (`--accent`) button per
-  dialog state, chosen by what unblocks the user first; every other action is
-  secondary (raised), ghost (dismiss / skip) or destructive (red tint; solid
-  red only for a final confirm). A disabled action is never the primary, so a
-  state with nothing to do has none.
+- **Dialog anatomy:** backdrop `--backdrop-modal` at `--z-dialog`; panel
+  `--bg-base`, 1px hairline, 14px radius, one soft shadow; 24px padding and
+  12–16px between groups. Header = 16px/600 title + optional 13px `--text-sub`
+  description + a 32px close ×. Body scrolls; Footer is a right-aligned
+  action row with no divider. Focus is trapped while it is inside the panel,
+  comes back if a re-render drops it, and returns to the opener on close.
+  Escape closes the top-most dialog only, never mid-IME, and never reaches
+  what is underneath.
+- **One primary per surface.** At most one solid warm (`--accent`) button per
+  dialog state, chosen by what unblocks the user first. It sits last in the
+  footer, or — when a listed status needs an action — in that row's notice
+  action. Every other action is secondary (flat: subtle neutral fill + hairline,
+  or a hairline outline), ghost (dismiss / skip) or destructive (red tint;
+  solid red only for a final confirm). A disabled or in-flight action is never
+  the primary, and the emphasis does not jump to the next step while one runs;
+  a state with nothing to do has none. Steel is only for focus rings and links.
+- **Grouped rows:** a list is ONE rounded container (12px, hairline) with
+  inner hairline dividers, not a boxed card per row. Each row is icon +
+  13px label + optional 11px muted secondary line.
+- **Notice row:** icon · title + one-line description · vertical hairline ·
+  action on the right. Use it where a status needs an action (hooks not
+  installed → Install hooks), inside a group or on its own.
+- **Popover:** the same quiet panel (14px, hairline, soft shadow) anchored to
+  its trigger. Sections stack inside it: a muted sentence-case header with an
+  optional trailing action (e.g. `+`), icon + label rows beneath, and a
+  hairline between sections. Icon-only toggles on a surface show "on" as a
+  faint filled chip, not a colour.
 - **Field row:** 13px/500 label + 11px `--text-sub` description on the left,
   control on the right (`inline`) or underneath (`stacked`, for text inputs).
-  The row wires `htmlFor` and `aria-describedby` into its control.
-- **Controls:** switches and checkboxes are recessed when off and warm-tinted
-  when on (a warm knob / check, never a solid fill); segmented controls are a
-  recessed track with a raised active segment; selects use the recessed input
-  skin. Badges are neutral by default — success / warning / danger tint the
-  text and hairline only, and there is no amber badge.
-- **Type:** Inter on the 4-step scale inside dialogs. Mono only for machine
-  evidence — commands, paths, error codes (`ui-code`) — never for a whole
-  dialog. Status marks are icons (`IconCheck`, `IconWarning`), not text glyphs.
+  The row wires the label (`htmlFor`, adopting a control's own id, or
+  `aria-labelledby` for groups) and `aria-describedby` into its control.
+- **Controls:** switches and checkboxes are neutral — a dim track / hairline
+  box when off, a light track with a dark knob / light box with a dark check
+  when on; never warm. Segmented controls are a full-round track with the
+  active pill filled neutral. Selects and inputs in surfaces use a subtle
+  neutral fill, 10px radius and the steel focus ring. Badges are full-round
+  and neutral by default; success / warning / danger tint the text and
+  hairline only. There is no action-coloured badge; `warning` uses the
+  theme's warning hue (amber in the amber theme, by the Color rule above).
+- **Type:** Inter inside surfaces. Mono only for machine evidence —
+  commands, paths, error codes (`ui-code`) — never for a whole dialog. Status
+  marks are icons (`IconCheck`, `IconWarning`), not text glyphs.
 - **Media:** a feature explained in a dialog or the tour may show a short muted
-  loop (`MediaPreview`, WebM ≤ ~6 s, ≤ 500 KB) in a fixed 16:10 recessed
-  frame, labelled for assistive tech; under `prefers-reduced-motion` it shows
-  the still poster and never plays.
+  loop (`MediaPreview`, WebM ≤ ~6 s, ≤ 500 KB) in a fixed 16:10 frame,
+  labelled for assistive tech; under `prefers-reduced-motion` it shows the
+  still poster and never plays. The clip must show what the copy next to it
+  says; when no clip does, the step is text only.
 
 ## Motion
 
@@ -298,6 +331,7 @@ Build every modal and settings row from `src/renderer/components/ui/`
 | 2026-09-21 | Replace the titlebar's ambiguous double-chevron with a 28px-high tools-panel icon + 13px label, explicit open state, and a mirrored panel-side icon. Settings lives in the full/compact sidebar, including its onboarding target. Preserve Minimal/Standard visibility recipes and saved individual preferences | Makes the top-right control explain its target and removes duplicate settings. Minimal remains a supported contributor-requested workflow, with settings always reachable to restore Standard |
 | 2026-09-23 | Fleet becomes a three-section attention board (Needs you / Running / collapsed Idle) with a one-line detail, elapsed time, a changed-since-last-look dot and row verbs; section and detail come from one pure selector | Twelve identical idle cards with no last activity answered nothing. Fleet is triage — what needs me, what is moving, what has gone quiet and for how long — and the sidebar stays the map |
 | 2026-09-24 | Dialogs and forms get shared primitives (Dialog, Field, Switch, Checkbox, Select, SegmentedControl, Badge; Button sizes and a destructive alias) and a "Dialogs & forms" rule set; the welcome dialog and the onboarding tour are the first adopters, with short preview clips. The settings gear becomes a cog | The outer chrome had the Bridge design but every modal still used the old UI: monospace prose, green borders, several amber buttons per dialog and a steel-filled Next. Shared primitives make the grammar the default, and a clip shows what a feature does where text alone did not |
+| 2026-09-24 | Owner: quiet surfaces for dialogs and forms. Surface radii 8/12/14 (chrome keeps 5/6/7), flat secondary buttons, neutral switches and checkboxes, sentence-case muted labels, grouped rows in one container, the notice row, the popover section model, 16px dialog titles, one soft shadow and no bevels | The first pass carried the chrome's machined look into dialogs, and they read heavy and busy. The owner chose a quieter, almost colourless surface where the single warm primary is the only colour, lists read as one calm group, and a status that needs an action carries it on the same row |
 
 ### Desktop conversation view
 
