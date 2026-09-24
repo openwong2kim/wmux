@@ -30,6 +30,15 @@ export default function ExecuteApprovalDialog() {
   const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
   const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);
   const [now, setNow] = useState(() => Date.now());
+  // `now` only ticks while a prompt is shown, so between prompts it keeps its
+  // last value. Refresh it during render whenever the prompt changes (a new one,
+  // or its countdown starting), before anything commits: otherwise the next
+  // prompt's first paint counts down from a stale clock ("auto-deny in 129s").
+  const [clockFor, setClockFor] = useState(approval);
+  if (clockFor !== approval) {
+    setClockFor(approval);
+    setNow(Date.now());
+  }
   // A click already on its way when a prompt appears must not answer it.
   const guard = useActivationGuard(approval?.approvalId ?? '');
 

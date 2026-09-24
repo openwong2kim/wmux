@@ -7,7 +7,7 @@
 // takes the keyboard from a dialog the user has open.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { act, createElement } from 'react';
+import { act, createElement, useLayoutEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
 vi.mock('../../../utils/executeApproval', () => ({ resolveExecuteApproval: vi.fn() }));
@@ -20,6 +20,18 @@ import Dialog, { DialogFooter, DialogHeader } from '../../ui/Dialog';
 import ExecuteApprovalDialog from '../ExecuteApprovalDialog';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+// Records the countdown text of every commit that shows a prompt, including
+// commits a later effect would correct before the next tick.
+const committedCountdowns: string[] = [];
+function CountdownProbe() {
+  useStore((s) => s.pendingExecuteApproval);
+  useLayoutEffect(() => {
+    const text = container.querySelector('[data-approval-countdown]')?.textContent;
+    if (text) committedCountdowns.push(text);
+  });
+  return null;
+}
 
 let container: HTMLDivElement;
 let root: Root;
@@ -139,6 +151,28 @@ describe('ExecuteApprovalDialog', () => {
     press('Escape');
     expect(closeUserDialog).toHaveBeenCalledTimes(1);
     expect(resolveExecuteApproval).not.toHaveBeenCalled();
+  });
+
+  it('counts the next prompt down from a fresh clock, not the one the last prompt left', () => {
+    act(() => root.render(createElement('div', null, createElement(ExecuteApprovalDialog), createElement(CountdownProbe))));
+    show(approval('a', { expiresAt: Date.now() + 30_000 }));
+    show(null);
+    // No prompt on screen, so the dialog's tick is off for these 100 s.
+    vi.setSystemTime(Date.now() + 100_000);
+    committedCountdowns.length = 0;
+    show(approval('b', { expiresAt: Date.now() + 30_000 }));
+    expect(committedCountdowns[0]).toMatch(/\b30s$/);
+    expect(committedCountdowns.every((text) => /\b30s$/.test(text))).toBe(true);
+
+    // The usual path: a queued prompt arrives with its countdown not started,
+    // and the dialog starts it.
+    show(null);
+    vi.setSystemTime(Date.now() + 100_000);
+    committedCountdowns.length = 0;
+    show(approval('c', { expiresAt: 0 }));
+    show(approval('c', { expiresAt: Date.now() + 30_000 }));
+    expect(committedCountdowns[0]).toMatch(/\b30s$/);
+    expect(committedCountdowns.every((text) => /\b30s$/.test(text))).toBe(true);
   });
 
   it('offers the auto-approve checkbox only for a plain execute request', () => {
