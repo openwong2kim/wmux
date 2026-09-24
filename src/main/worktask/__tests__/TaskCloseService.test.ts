@@ -109,10 +109,17 @@ describe('J3 §1 close 순서 계약', () => {
 
   it('a failed status check is preserved but reported as an error, not as dirty (#1461)', async () => {
     const { mgr, worktreePath, metaDir } = await makeWorktree('broken-task');
-    // Break the worktree's gitdir pointer so `git status` itself fails.
-    fs.writeFileSync(path.join(worktreePath, '.git'), 'gitdir: /nonexistent/worktree\n');
+    // Stub only the remove step with the result removeWorktree returns when its
+    // `git status` fails. Corrupting a real `.git` to get there is not portable
+    // (Windows refuses to open the hidden `.git` file for writing).
+    const removeWorktree = vi.fn(async () => ({
+      ok: false as const,
+      error: 'removeWorktree: status check failed: fatal: not a git repository',
+      preserved: true,
+    }));
+    const worktrees = Object.assign(Object.create(mgr) as TaskWorktreeManager, { removeWorktree });
     const { port, calls } = makeDaemon();
-    const svc = new TaskCloseService({ daemon: port, worktrees: mgr });
+    const svc = new TaskCloseService({ daemon: port, worktrees });
 
     const res = await svc.closeTask({
       taskId: 'wtask-2b',
@@ -126,6 +133,7 @@ describe('J3 §1 close 순서 계약', () => {
     if (res.ok) throw new Error('unreachable');
     expect(res.reason).toBe('error');
     expect(res.error).toContain('status check failed');
+    expect(removeWorktree).toHaveBeenCalledTimes(1);
     // Still nothing removed and nothing closed.
     expect(calls).toHaveLength(0);
     expect(fs.existsSync(worktreePath)).toBe(true);
