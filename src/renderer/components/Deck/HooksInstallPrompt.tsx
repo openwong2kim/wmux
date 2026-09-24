@@ -229,13 +229,18 @@ export function HooksInstallPrompt({
 
   // Later, Escape, the backdrop and the post-install Close share one
   // lifetime (this modal only) — and none of them works mid-write.
+  //
+  // It opens by itself after an async check at launch or on a mode change, so
+  // it leaves focus where the user is: a Space or Enter typed into a terminal
+  // must not press Don't ask again (a durable refusal) or Install unseen.
+  // Escape applies once focus is inside it.
   const dismissIfIdle = () => {
     if (!busy) dismissNow();
   };
 
   return (
     <div className="contents" data-hooks-install-prompt>
-      <Dialog onClose={dismissIfIdle} closeOnBackdrop width={440}>
+      <Dialog onClose={dismissIfIdle} closeOnBackdrop focusOnOpen="none" width={440}>
         {phase === 'done' ? (
           <>
             <DialogHeader

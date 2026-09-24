@@ -311,7 +311,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
           {loadingHosts ? (
             <p className={muted}>{t('remote.loading')}</p>
           ) : hosts.length > 0 ? (
-            <div className="ui-group">
+            <div className="ui-group shrink-0">
               {hosts.map((host) => (
                 <div
                   key={host.id}
@@ -471,7 +471,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
             <p className={muted}>{t('remote.noWorkspaces')}</p>
           )}
           {selectedHostId && !loadingWorkspaces && !workspacesError && workspaces.length > 0 && (
-            <div className="ui-group">
+            <div className="ui-group shrink-0">
               {workspaces.map((ws) => (
                 <div key={ws.id} className="ui-row">
                   <div className="ui-row-text">

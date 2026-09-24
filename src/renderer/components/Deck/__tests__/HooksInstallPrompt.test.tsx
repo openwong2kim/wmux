@@ -522,8 +522,33 @@ describe('HooksInstallPrompt — refusals', () => {
     expect(el.querySelector('[data-hooks-install-prompt]')).toBeTruthy();
   });
 
-  // On the shared Dialog: Escape is the same one-modal dismissal as Later —
-  // and, like Later, unavailable while the install write is in flight.
+  // It opens by itself after an async check, so focus stays in the terminal:
+  // a Space or Enter meant for it cannot press Don't ask again or Install.
+  it('leaves focus where the user is when it appears', async () => {
+    const terminal = document.createElement('textarea');
+    document.body.appendChild(terminal);
+    terminal.focus();
+    const setPromptPreference = vi.fn(async (v: boolean) => ({ suppressed: v }));
+    const el = render(
+      <HooksInstallPrompt
+        api={apiOf({ getPromptPreference: async () => ({ suppressed: false }), setPromptPreference })}
+        t={t}
+      />,
+    );
+    await flush();
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeTruthy();
+    expect(document.activeElement).toBe(terminal);
+    act(() => {
+      terminal.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeTruthy();
+    expect(setPromptPreference).not.toHaveBeenCalled();
+    terminal.remove();
+  });
+
+  // On the shared Dialog: Escape (once focus is in the prompt) is the same
+  // one-modal dismissal as Later — and, like Later, unavailable while the
+  // install write is in flight.
   it('Escape dismisses like Later, but not mid-install', async () => {
     let finish: (v: { ok: boolean; error: string | null }) => void = () => undefined;
     const install = vi.fn(() => new Promise<{ ok: boolean; error: string | null }>((r) => { finish = r; }));
@@ -532,11 +557,15 @@ describe('HooksInstallPrompt — refusals', () => {
     const esc = () => act(() => {
       (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     });
+    // The user is in the prompt (it never pulls focus in by itself).
+    (el.querySelector('[data-hooks-later]') as HTMLButtonElement).focus();
     act(() => (el.querySelector('[data-hooks-install]') as HTMLButtonElement).click());
+    expect(el.contains(document.activeElement)).toBe(true);
     esc();
     expect(el.querySelector('[data-hooks-install-prompt]')).toBeTruthy();
     await act(async () => { finish({ ok: false, error: 'nope' }); });
     await flush();
+    (el.querySelector('[data-hooks-later]') as HTMLButtonElement).focus();
     esc();
     expect(el.querySelector('[data-hooks-install-prompt]')).toBeNull();
   });
