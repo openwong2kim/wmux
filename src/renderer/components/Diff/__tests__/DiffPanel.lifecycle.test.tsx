@@ -48,10 +48,11 @@ function readResult(): DiffReadResult {
   };
 }
 
+let taskRow: Record<string, unknown> = {};
 const invoke = vi.fn(async (method: string) => {
   const result =
     method === 'task.mission.list'
-      ? { ok: true, tasks: [{ id: TASK_ID, status: 'open', worktreePath: '/wt', branch: 'b', missionChannelId: '' }] }
+      ? { ok: true, tasks: [{ id: TASK_ID, status: 'open', worktreePath: '/wt', branch: 'b', missionChannelId: '', ...taskRow }] }
       : { ok: true };
   return { id: 'renderer-1', ok: true, result };
 });
@@ -93,15 +94,21 @@ function adoptButton(c: Element): HTMLButtonElement | null {
   return c.querySelector<HTMLButtonElement>('[data-testid="diff-adopt"]');
 }
 
+function buttonByText(c: Element, text: string): HTMLButtonElement | undefined {
+  return [...c.querySelectorAll('button')].find((b) => b.textContent === text);
+}
+
 function closeButton(c: Element): HTMLButtonElement {
-  const btn = [...c.querySelectorAll('button')].find((b) => b.textContent === 'Close');
+  const btn = buttonByText(c, 'Close');
   if (!btn) throw new Error('Close button not rendered');
   return btn;
 }
 
 beforeEach(() => {
+  taskRow = {};
   invoke.mockClear();
-  read.mockClear();
+  read.mockReset();
+  read.mockImplementation(async () => readResult());
   applyHunks.mockClear();
   close.mockReset();
   vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -152,8 +159,12 @@ describe('DiffPanel — adopt and close lifecycle (#1461)', () => {
     });
     click(closeButton(c));
     await flush();
-    // The guidance names the worktree and the way out, and stays in the panel.
-    expect(c.textContent).toContain('discard them in /wt (git restore . && git clean -fd)');
+    // The guidance names the worktree, leads with the safe routes, and stays in
+    // the panel. The discard recipe also unstages and warns what it deletes.
+    expect(c.textContent).toContain('the task worktree at /wt still has uncommitted changes');
+    expect(c.textContent).toContain('commit the changes and open a PR');
+    expect(c.textContent).toContain('git restore --staged --worktree . && git clean -fd in /wt');
+    expect(c.textContent).toContain('including files that were not adopted');
     expect(adoptButton(c)).not.toBeNull();
 
     close.mockResolvedValueOnce({ ok: true, taskId: TASK_ID, archivePending: false });
@@ -166,5 +177,60 @@ describe('DiffPanel — adopt and close lifecycle (#1461)', () => {
     expect(c.textContent).not.toContain('@@ -1,2 +1,3 @@');
     expect(c.querySelector('input[type="checkbox"]')).toBeNull();
     expect(adoptButton(c)).toBeNull();
+  });
+
+  it('opens a closed task without reading its removed worktree', async () => {
+    taskRow = { status: 'closed' };
+    const c = render();
+    await flush();
+
+    expect(read).not.toHaveBeenCalled();
+    expect(c.textContent).toContain('This task is closed');
+    expect(adoptButton(c)).toBeNull();
+    expect(buttonByText(c, 'PR')).toBeUndefined();
+    expect(buttonByText(c, 'Close')).toBeUndefined();
+  });
+
+  it('still shows a detached task, which is closed but keeps its worktree', async () => {
+    taskRow = { status: 'closed', detachedAt: 1000 };
+    const c = render();
+    await flush();
+
+    expect(read).toHaveBeenCalledWith('/wt', undefined, 'task');
+    expect(c.textContent).not.toContain('This task is closed');
+    expect(c.querySelector('input[type="checkbox"]')).not.toBeNull();
+    expect(adoptButton(c)).not.toBeNull();
+  });
+
+  it('ignores a reload that was still in flight when Close succeeded', async () => {
+    const c = render();
+    await flush();
+
+    // Hold the reload's task lookup: it will answer with the pre-close 'open' row.
+    let releaseList: () => void = () => undefined;
+    const held = new Promise<void>((r) => (releaseList = r));
+    invoke.mockImplementationOnce(async () => {
+      await held;
+      return {
+        id: 'renderer-1',
+        ok: true,
+        result: { ok: true, tasks: [{ id: TASK_ID, status: 'open', worktreePath: '/wt', branch: 'b', missionChannelId: '' }] },
+      };
+    });
+    click(buttonByText(c, 'Reload')!);
+    await flush();
+
+    close.mockResolvedValueOnce({ ok: true, taskId: TASK_ID, archivePending: false });
+    click(closeButton(c));
+    await flush();
+    expect(c.textContent).toContain('This task is closed');
+
+    // The stale lookup lands after the close: it must not reopen the task.
+    await act(async () => releaseList());
+    await flush();
+    expect(c.textContent).toContain('This task is closed');
+    expect(adoptButton(c)).toBeNull();
+    expect(buttonByText(c, 'Close')).toBeUndefined();
+    expect(read).toHaveBeenCalledTimes(1);
   });
 });

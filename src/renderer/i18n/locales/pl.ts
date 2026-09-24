@@ -1961,7 +1961,7 @@ export const pl = {
   'diff.closedArchiveDeferred': 'Zadanie zamknięte — archiwizacja kanału odroczona (reconcile przy starcie ją dokończy).',
   'diff.closedFull': 'Zadanie zamknięte — worktree usunięty, kanał zarchiwizowany.',
   'diff.closePreserved': 'Zachowano niezatwierdzone artefakty — przejrzyj diff, aby wykonać commit/PR lub odrzucić (zadanie pozostaje otwarte).',
-  'diff.closePreservedAt': 'Nie zamknięto — worktree zadania nadal ma niezatwierdzone zmiany. Adopcja kopiuje zmiany do celu, ale nie usuwa ich z worktree. Jeśli zaadoptowano już wszystko, co potrzebne, odrzuć je w {path} (git restore . && git clean -fd) i zamknij ponownie albo wykonaj commit i otwórz PR.',
+  'diff.closePreservedAt': 'Nie zamknięto — worktree zadania w {path} nadal ma niezatwierdzone zmiany. Adopcja kopiuje zmiany do celu, ale zostawia je w worktree. Zaadoptuj to, czego jeszcze potrzebujesz, albo wykonaj commit i otwórz PR. Tylko jeśli nic więcej nie jest potrzebne, odrzuć je: uruchom git restore --staged --worktree . && git clean -fd w {path}, a potem zamknij ponownie. To trwale usuwa wszystkie niezatwierdzone zmiany w tym miejscu, także pliki, których nie zaadoptowano.',
   'diff.taskClosed': 'To zadanie jest zamknięte, a jego worktree usunięto — nie ma już nic do adopcji.',
   'diff.closeUnpushed': 'Masz {count} niewypchniętych commitów — utwórz PR lub wykonaj push, a następnie zamknij ponownie.',
   'diff.closeFailed': 'close nie powiódł się: {error}',

@@ -136,7 +136,14 @@ export type CreateResult =
 
 export type RemoveResult =
   | { ok: true }
-  | { ok: false; error: string; preserved?: boolean };
+  | {
+      ok: false;
+      error: string;
+      preserved?: boolean;
+      /** Set only when the worktree was kept because it has uncommitted changes —
+       *  not when the status check itself failed (also preserved, cause unknown). */
+      dirty?: boolean;
+    };
 
 /**
  * repo 단위 직렬 큐를 갖춘 worktree 매니저. 인스턴스는 프로세스 수명 동안 재사용
@@ -316,7 +323,7 @@ export class TaskWorktreeManager {
       try {
         const { stdout } = await this.runGit(['status', '--porcelain'], safePath);
         if (stdout.trim().length > 0) {
-          return { ok: false, error: 'removeWorktree: worktree is dirty; preserved', preserved: true };
+          return { ok: false, error: 'removeWorktree: worktree is dirty; preserved', preserved: true, dirty: true };
         }
       } catch (err) {
         // status 실패(경로 부재 등) — 보수적으로 제거 시도하지 않고 보존.

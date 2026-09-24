@@ -107,6 +107,30 @@ describe('J3 §1 close 순서 계약', () => {
     expect(fs.existsSync(metaDir)).toBe(true);
   });
 
+  it('a failed status check is preserved but reported as an error, not as dirty (#1461)', async () => {
+    const { mgr, worktreePath, metaDir } = await makeWorktree('broken-task');
+    // Break the worktree's gitdir pointer so `git status` itself fails.
+    fs.writeFileSync(path.join(worktreePath, '.git'), 'gitdir: /nonexistent/worktree\n');
+    const { port, calls } = makeDaemon();
+    const svc = new TaskCloseService({ daemon: port, worktrees: mgr });
+
+    const res = await svc.closeTask({
+      taskId: 'wtask-2b',
+      verifiedWorkspaceId: 'ws-owner',
+      repoRoot,
+      repoHash: 'closehash',
+      worktreePath,
+      metaDir,
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('unreachable');
+    expect(res.reason).toBe('error');
+    expect(res.error).toContain('status check failed');
+    // Still nothing removed and nothing closed.
+    expect(calls).toHaveLength(0);
+    expect(fs.existsSync(worktreePath)).toBe(true);
+  });
+
   it('미push 커밋: 진행 중단 + unpushed 경고(remove·close 0회)', async () => {
     const { mgr, worktreePath, metaDir } = await makeWorktree('ahead-task');
     // 원격이 있어야 경고 게이트가 켜진다(로컬 전용 repo는 오탐 방지로 생략).
