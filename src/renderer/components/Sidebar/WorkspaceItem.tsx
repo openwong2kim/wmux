@@ -7,6 +7,7 @@ import { createWorkspaceRosterCountsSelector } from '../../stores/selectors/work
 import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
+import { StatusMarkView } from './AgentMarks';
 import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24_CLUSTER, HIT_TARGET_24_IN_CLUSTER } from '../hitArea';
@@ -740,48 +741,20 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         onDrop={handleDrop}
       >
         <div className="flex min-w-0 items-start gap-2">
-        {/* Status indicator */}
-        {(() => {
-          const st = agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
-          // Red is spent on both "needs you" and "error", so hue alone cannot
-          // say which one this row is: an errored agent gets a ✕ in the dot's
-          // own footprint instead of a round dot.
-          if (st?.shape === 'cross') {
-            // The box is sized to the GLYPH (10px), not to the dot it replaces
-            // (6px), which the ✕ overflowed. `-mx-0.5` refunds the 4px of extra
-            // width so the name column starts where it does on every other row,
-            // and `mt-1` puts the taller box's centre on the dot's centre line
-            // (6px + 3 − 5). No glow: the cross is told apart by FORM, so the
-            // glow channel would only make it read as one more red dot.
-            return (
-              <span
-                className="w-2.5 h-2.5 -mx-0.5 flex items-center justify-center flex-shrink-0 mt-1 text-[10px] font-bold leading-none"
-                style={{ color: st.dotVar }}
-                role="img"
-                aria-label={t(st.labelKey)}
-                title={t(st.labelKey)}
-              >
-                ✕
-              </span>
-            );
-          }
-          // Unverifiable (running, but silent past the hook-authority window):
-          // the same 6px footprint goes hollow — an amber ring, no fill, no
-          // glow — and says how long the silence has lasted. The status itself
-          // is untouched, so the needs-you wash and the row order are too.
-          const unverifiable = unverifiableMinutes > 0;
-          return (
-            <div
-              className={`sidebar-dot w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${
-                unverifiable ? 'sidebar-dot-unverifiable' : st ? st.glowClass : ''
-              }`}
-              style={unverifiable ? undefined : { backgroundColor: st ? st.dotVar : isActive ? 'var(--accent-green)' : 'var(--text-muted)' }}
-              title={unverifiable
-                ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
-                : st ? t(st.labelKey) : undefined}
-            />
-          );
-        })()}
+        {/* Status indicator — #1481: one shared mark (AgentMarks.tsx), status
+            told by shape. Idle draws nothing: an active-but-idle workspace
+            is no longer painted green, because green means "finished" and
+            selection already has its own treatment. `mt-1` centres the 10px
+            box on the name line. */}
+        <span className="mt-1 flex-none">
+          <StatusMarkView
+            status={agentStatus}
+            unverifiable={unverifiableMinutes > 0}
+            label={unverifiableMinutes > 0
+              ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
+              : agentStatus !== 'idle' ? t(AGENT_STATUS_ICON[agentStatus].labelKey) : undefined}
+          />
+        </span>
 
         {/* Name + Metadata */}
         <div className="flex-1 min-w-0">

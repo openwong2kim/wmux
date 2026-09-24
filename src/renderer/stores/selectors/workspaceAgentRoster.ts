@@ -3,6 +3,7 @@ import { isBrainPtyId } from '../../../shared/constants';
 import { getLeafPanes } from '../../../shared/paneUtils';
 import { stashedPaneLiveness, type StashedLiveness } from '../../../shared/paneStash';
 import { remoteAgentKey } from '../../../shared/remoteHosts';
+import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import type { StoreState } from '../index';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { HOOK_RUNNING_TTL_MS, isHookRunning, pickStashedRepresentativeSurface, resolveRemoteAgent } from './fleet';
@@ -14,6 +15,12 @@ export interface WorkspaceAgentRosterRow {
   surfaceId: string;
   ptyId: string;
   agentName: string;
+  /**
+   * #1481 — the agent kind for the row's identity glyph: the detector's slug
+   * when it reported one, else derived from the display name. Undefined for an
+   * unknown kind or a plain shell (the glyph falls back to a terminal mark).
+   */
+  slug?: string;
   paneName: string;
   surfaceTitle?: string;
   surfaceIndex: number;
@@ -122,6 +129,7 @@ export function selectWorkspaceAgentRoster(
           surfaceId: surface.id,
           ptyId: remoteAgentKey(hostId, sessionId),
           agentName: remoteAgent.agentName,
+          slug: agentDisplayToSlug(remoteAgent.agentName),
           paneName,
           surfaceTitle: nonEmpty(surface.title),
           surfaceIndex,
@@ -195,6 +203,7 @@ export function selectWorkspaceAgentRoster(
         surfaceId: surface.id,
         ptyId,
         agentName: agent.name,
+        slug: agent.slug ?? agentDisplayToSlug(agent.name),
         paneName,
         surfaceTitle: nonEmpty(surface.title),
         surfaceIndex,
@@ -275,6 +284,7 @@ export function selectWorkspaceAgentRoster(
       surfaceId: surface.id,
       ptyId,
       agentName: agent?.name ?? '',
+      slug: agent ? agent.slug ?? agentDisplayToSlug(agent.name) : undefined,
       paneName: paneDisplayName(
         state.paneLabel[leaf.id],
         showCoordinates ? computePaneAutoName(workspace.wsOrdinal ?? 0, leaf.ordinal ?? 0) : '',
@@ -322,6 +332,7 @@ function rowsEqual(
       a.surfaceId !== b.surfaceId ||
       a.ptyId !== b.ptyId ||
       a.agentName !== b.agentName ||
+      a.slug !== b.slug ||
       a.paneName !== b.paneName ||
       a.surfaceTitle !== b.surfaceTitle ||
       a.surfaceIndex !== b.surfaceIndex ||

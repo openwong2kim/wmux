@@ -404,3 +404,52 @@ export function IconRemoteDevices({ size = 14 }: { size?: number }) {
     <path d="M10.7 10.8h.6" />
   </Icon>;
 }
+
+/** Worktree — a branch that lives in its own checkout: the branch glyph's
+ *  side node boxed. Replaces the ⊕ text mark on the sidebar's git line. */
+export function IconWorktree({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <circle cx="4" cy="3.4" r="1.5" />
+      <circle cx="4" cy="10.6" r="1.5" />
+      <line x1="4" y1="4.9" x2="4" y2="9.1" />
+      <rect x="8.2" y="3.4" width="3.8" height="3.8" rx="0.8" />
+      <path d="M8.2 5.3 H6.8 a2 2 0 0 0 -2 2 V9" />
+    </Icon>
+  );
+}
+
+/** Fan-out — one node splitting into three. Marks a workspace a fan-out
+ *  created (sidebar task rows, provenance). */
+export function IconFanOut({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <circle cx="2.8" cy="7" r="1.3" />
+      <path d="M4.1 7 H6 L10.6 3" />
+      <line x1="6" y1="7" x2="10.6" y2="7" />
+      <path d="M6 7 L10.6 11" />
+    </Icon>
+  );
+}
+
+/** Corner up-left — "go up to the parent". The task workspace's link back to
+ *  the workspace that fanned it out. */
+export function IconCornerUpLeft({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <polyline points="5.4,2.8 2.6,5.6 5.4,8.4" />
+      <path d="M2.6 5.6 H8.4 a2.8 2.8 0 0 1 2.8 2.8 V11.4" />
+    </Icon>
+  );
+}
+
+/** Vertical ellipsis — an overflow menu trigger. */
+export function IconMoreVertical({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <line x1="7" y1="3" x2="7" y2="3.1" />
+      <line x1="7" y1="7" x2="7" y2="7.1" />
+      <line x1="7" y1="11" x2="7" y2="11.1" />
+    </Icon>
+  );
+}

@@ -929,7 +929,7 @@ export type FleetGroupContext = Pick<
 
 /** Elapsed ms since the newest of the pane's activity / output / turn stamps;
  *  undefined when none exists (never NaN). */
-function fleetIdleForMs(ptyId: string, ctx: FleetGroupContext): number | undefined {
+export function fleetIdleForMs(ptyId: string, ctx: FleetGroupContext): number | undefined {
   if (!ptyId || ctx.now === undefined) return undefined;
   let newest: number | undefined;
   for (const stamp of [ctx.surfaceActivityAt?.[ptyId], ctx.surfaceOutputAt?.[ptyId], ctx.surfaceTurnOpenAt?.[ptyId]]) {
