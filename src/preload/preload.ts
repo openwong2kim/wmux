@@ -481,6 +481,8 @@ const electronAPI = {
   // main의 FanOutService로 보낸다(renderer-trusted 신원, 파이프 미노출).
   fanout: {
     start: (req: Record<string, unknown>) => ipcRenderer.invoke(IPC.FANOUT_START, req),
+    lineage: (workspaceIds: string[]) =>
+      ipcRenderer.invoke(IPC.FANOUT_LINEAGE, workspaceIds) as Promise<Record<string, { owner: string; at: number }>>,
     recentAudit: (limit: number) =>
       ipcRenderer.invoke(IPC.FANOUT_AUDIT_RECENT, limit) as Promise<
         import('../main/worktask/fanoutGuards').FanOutAuditRecord[]

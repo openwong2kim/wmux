@@ -44,6 +44,8 @@ export const FANOUT_CAP_WINDOW_MS = 60 * 60 * 1000;
 const LINEAGE_MAX_ENTRIES = 10_000;
 /** The audit log rolls to `<name>.1` past this size. */
 const AUDIT_MAX_BYTES = 1024 * 1024;
+/** How much of the audit log's tail the sidebar's provenance read looks at. */
+const AUDIT_TAIL_BYTES = 256 * 1024;
 
 export const FANOUT_LINEAGE_FILENAME = 'fanout-lineage.json';
 export const FANOUT_CAPS_FILENAME = 'fanout-caps.json';
@@ -436,6 +438,64 @@ export class FanOutGuards {
       // absent — first record
     }
     fs.appendFileSync(p, JSON.stringify(record) + '\n', 'utf8');
+  }
+
+  /**
+   * #1481 — the newest `limit` records, newest first, reading only the file's
+   * tail (at most AUDIT_TAIL_BYTES) and off the main thread. The sidebar calls
+   * this on workspace-set changes; a 1 MB synchronous read there would stall
+   * the main process for nothing.
+   */
+  async recentAuditTail(limit = 20): Promise<FanOutAuditRecord[]> {
+    let handle: fs.promises.FileHandle | undefined;
+    let text = '';
+    try {
+      handle = await fs.promises.open(this.auditPath(), 'r');
+      const { size } = await handle.stat();
+      const length = Math.min(size, AUDIT_TAIL_BYTES);
+      const buf = Buffer.alloc(length);
+      await handle.read(buf, 0, length, size - length);
+      text = buf.toString('utf8');
+      // A tail that starts mid-record: drop the partial first line.
+      if (length < size) text = text.slice(text.indexOf('\n') + 1);
+    } catch {
+      return [];
+    } finally {
+      await handle?.close().catch(() => undefined);
+    }
+    const out: FanOutAuditRecord[] = [];
+    const lines = text.split('\n');
+    for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      try {
+        out.push(JSON.parse(line) as FanOutAuditRecord);
+      } catch {
+        // skip a torn line
+      }
+    }
+    return out;
+  }
+
+  /**
+   * #1481 — the durable owner stamps for `workspaceIds`, for the sidebar's
+   * fan-out nesting. Read-only and non-throwing: an unreadable store yields
+   * no stamps (the sidebar then falls back to the task ledger), unlike
+   * fanoutOwnerOf, whose depth-1 check must refuse on doubt.
+   */
+  lineageFor(workspaceIds: readonly string[]): Record<string, { owner: string; at: number }> {
+    const out: Record<string, { owner: string; at: number }> = {};
+    let map: Map<string, LineageStamp>;
+    try {
+      map = this.loadLineage();
+    } catch {
+      return out;
+    }
+    for (const id of workspaceIds) {
+      const stamp = map.get(id);
+      if (stamp) out[id] = { owner: stamp.owner, at: stamp.at };
+    }
+    return out;
   }
 
   /** The newest `limit` records, newest first. Unparseable lines are skipped. */

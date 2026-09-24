@@ -38,7 +38,18 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     IPC.FANOUT_AUDIT_RECENT,
     wrapHandler(IPC.FANOUT_AUDIT_RECENT, async (_event: Electron.IpcMainInvokeEvent, limit: unknown) => {
       const n = typeof limit === 'number' && Number.isInteger(limit) ? Math.min(Math.max(limit, 1), 100) : 20;
-      return getFanOutGuards().recentAudit(n);
+      return getFanOutGuards().recentAuditTail(n);
+    }),
+  );
+
+  // #1481 — durable owner stamps for the sidebar's fan-out nesting.
+  ipcMain.removeHandler(IPC.FANOUT_LINEAGE);
+  ipcMain.handle(
+    IPC.FANOUT_LINEAGE,
+    wrapHandler(IPC.FANOUT_LINEAGE, async (_event: Electron.IpcMainInvokeEvent, ids: unknown) => {
+      if (!Array.isArray(ids)) return {};
+      const wanted = ids.filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 128).slice(0, 512);
+      return getFanOutGuards().lineageFor(wanted);
     }),
   );
 
@@ -127,6 +138,7 @@ export function registerFanOutHandler(service: FanOutService): () => void {
   return () => {
     ipcMain.removeHandler(IPC.FANOUT_START);
     ipcMain.removeHandler(IPC.FANOUT_AUDIT_RECENT);
+    ipcMain.removeHandler(IPC.FANOUT_LINEAGE);
     ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_GET);
     ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_SET);
     ipcMain.removeHandler(IPC.FANOUT_REQUIRE_APPROVAL_GET);
