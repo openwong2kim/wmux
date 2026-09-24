@@ -11,7 +11,6 @@ import { RingBuffer } from './RingBuffer';
 import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
 import { OutputModeTracker } from './util/outputModeTracker';
 import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
-import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 
 /**
  * Daemon version of PTYBridge.
@@ -55,24 +54,6 @@ export class DaemonPTYBridge extends EventEmitter {
    * while muted so the daemon notices when a recovered shell dies.
    */
   private muted = false;
-
-  /**
-   * #1464: output that arrived while muted, kept so `setMuted(false,
-   * { replayHeld: true })` can release it. A recovered shell prints its first
-   * prompt while still muted; when the renderer's first resize keeps the saved
-   * geometry no SIGWINCH follows, so the shell never repaints and a dropped
-   * prompt leaves the pane blank until a key is pressed. `null` = not holding.
-   *
-   * Bounded by keeping the HEAD: once the cap is reached later chunks are not
-   * held (`heldFull`), but what was held stays — the shell's prompt, or a
-   * TUI's first frame, is printed first, so it is the part worth keeping.
-   */
-  private heldWhileMuted: string[] | null = null;
-  private heldBytes = 0;
-  private heldFull = false;
-  private static readonly MAX_HELD_BYTES = 256 * 1024;
-  /** The unmuted capture path, set by setupDataForwarding; replays held chunks. */
-  private captureChunk: ((data: string, buf: Buffer) => void) | null = null;
 
   /**
    * Last resize timestamp for this session (daemon-process state — the
@@ -551,41 +532,6 @@ export class DaemonPTYBridge extends EventEmitter {
     let lastDetectedCwd = '';
     let promptBuffer = '';
 
-    const capture = (data: string, buf: Buffer): void => {
-      try {
-        ringBuffer.write(buf);
-        // AFTER the ring write: the tracker's offsets are in the ring's own
-        // coordinate system, so it needs the counter this chunk already moved.
-        modeTracker.feed(data, ringBuffer.totalBytesWritten);
-        oscParser.process(data);
-
-        // Prompt-based CWD detection — fallback for shells WITHOUT the
-        // integration hook only. Once OSC 7 has been seen (oscCwdSeen), the
-        // scraper is permanently off for this session: the hook re-emits on
-        // every prompt, so scraping can only ever add false positives.
-        if (!this.oscCwdSeen) {
-          promptBuffer += data;
-          if (promptBuffer.length > 1024) promptBuffer = promptBuffer.slice(-512);
-
-          const clean = promptBuffer.replace(DaemonPTYBridge.ANSI_STRIP, '');
-          const detectedCwd = detectPromptCwd(clean);
-          if (detectedCwd !== null) {
-            if (detectedCwd !== lastDetectedCwd) {
-              lastDetectedCwd = detectedCwd;
-              this.emit('cwd', { sessionId, cwd: detectedCwd });
-            }
-            promptBuffer = '';
-          }
-        }
-
-        this.emit('data', buf);
-      } catch (err) {
-        // Still forward raw data even if parsing failed
-        this.emit('data', buf);
-      }
-    };
-    this.captureChunk = capture;
-
     // PTY data handler
     const onDataDisposable = ptyProcess.onData((data: string) => {
       const buf = Buffer.from(data);
@@ -621,23 +567,41 @@ export class DaemonPTYBridge extends EventEmitter {
         // detection 실패가 데이터 포워딩을 막아선 안 된다.
       }
 
-      // Muted: keep the chunk out of the ring before any side effect. Recovery
-      // sessions run muted until their first resize so the geometry mismatch
-      // window (Bug 2 in v2.8.0) doesn't pollute the ring buffer. The chunk is
-      // held (bounded, head kept) so the unmute can release what was produced
-      // at the geometry the renderer shows (#1464).
-      if (this.muted) {
-        if (this.heldWhileMuted && !this.heldFull) {
-          if (this.heldBytes + buf.length > DaemonPTYBridge.MAX_HELD_BYTES) {
-            this.heldFull = true;
-          } else {
-            this.heldBytes += buf.length;
-            this.heldWhileMuted.push(data);
+      // Muted: drop the chunk before any side effect. Recovery sessions
+      // run muted until their first resize so the geometry mismatch
+      // window (Bug 2 in v2.8.0) doesn't pollute the ring buffer.
+      if (this.muted) return;
+      try {
+        ringBuffer.write(buf);
+        // AFTER the ring write: the tracker's offsets are in the ring's own
+        // coordinate system, so it needs the counter this chunk already moved.
+        modeTracker.feed(data, ringBuffer.totalBytesWritten);
+        oscParser.process(data);
+
+        // Prompt-based CWD detection — fallback for shells WITHOUT the
+        // integration hook only. Once OSC 7 has been seen (oscCwdSeen), the
+        // scraper is permanently off for this session: the hook re-emits on
+        // every prompt, so scraping can only ever add false positives.
+        if (!this.oscCwdSeen) {
+          promptBuffer += data;
+          if (promptBuffer.length > 1024) promptBuffer = promptBuffer.slice(-512);
+
+          const clean = promptBuffer.replace(DaemonPTYBridge.ANSI_STRIP, '');
+          const detectedCwd = detectPromptCwd(clean);
+          if (detectedCwd !== null) {
+            if (detectedCwd !== lastDetectedCwd) {
+              lastDetectedCwd = detectedCwd;
+              this.emit('cwd', { sessionId, cwd: detectedCwd });
+            }
+            promptBuffer = '';
           }
         }
-        return;
+
+        this.emit('data', buf);
+      } catch (err) {
+        // Still forward raw data even if parsing failed
+        this.emit('data', buf);
       }
-      capture(data, buf);
     });
     this.dataDisposable = () => onDataDisposable.dispose();
 
@@ -666,18 +630,8 @@ export class DaemonPTYBridge extends EventEmitter {
    * Mute or unmute PTY output capture. While muted, the data handler
    * drops chunks; ringBuffer pre-fill from saved scrollback (set up by
    * the caller before forwarding starts) is preserved.
-   *
-   * Muting starts holding the dropped chunks. Unmuting with `replayHeld`
-   * pushes them through the normal capture path (ring + clients) in order;
-   * without it they are discarded, as before (#1464).
-   *
-   * The replay goes out as LIVE bytes (after the attach flush), so terminal
-   * queries in it — DA1/DSR/OSC color probes the program sent at startup and
-   * has long since stopped waiting for — would make xterm answer late, and the
-   * answer would land in the program's input. They are stripped first, with
-   * the same sanitizer the attach-time ring replay goes through.
    */
-  setMuted(muted: boolean, opts?: { replayHeld?: boolean }): void {
+  setMuted(muted: boolean): void {
     // Unmuting a recovered pane releases a full repaint at the new geometry,
     // and `noteResize` only stamps when the dimensions actually CHANGED — a
     // pane recovered at the size it was saved at gets the storm with no guard
@@ -685,30 +639,7 @@ export class DaemonPTYBridge extends EventEmitter {
     // the agent starting a turn. Muted panes feed nothing, so the window is
     // empty and the storm would otherwise clear the threshold on its own.
     if (this.muted && !muted) this.lastResizeAtMs = Date.now();
-    const held = this.heldWhileMuted;
-    if (muted !== this.muted) {
-      this.heldWhileMuted = muted ? [] : null;
-      this.heldBytes = 0;
-      this.heldFull = false;
-    }
     this.muted = muted;
-    if (!muted && opts?.replayHeld && held && held.length > 0 && this.captureChunk) {
-      const buf = stripReplayQuerySequences(Buffer.from(held.join('')));
-      if (buf.length > 0) this.captureChunk(buf.toString(), buf);
-    }
-  }
-
-  /**
-   * #1464: forget what was held so far but keep holding. Called right before a
-   * muted PTY is resized to a new geometry — the chunks already held were
-   * produced at the old size, while the shell's SIGWINCH repaint (the prompt
-   * at the new size) arrives after it and is what the unmute should release.
-   */
-  discardHeld(): void {
-    if (!this.muted) return;
-    this.heldWhileMuted = [];
-    this.heldBytes = 0;
-    this.heldFull = false;
   }
 
   /**
