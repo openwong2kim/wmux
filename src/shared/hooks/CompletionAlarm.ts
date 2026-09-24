@@ -43,7 +43,9 @@ const noop = (): void => undefined;
  * - `working`    — evidence the turn is alive (tool activity, byte activity,
  *                  prompt arrival). Rebuts any pending window.
  * - `attention`  — the agent is blocked waiting for a human (approval
- *                  prompt, question). Gets its own symmetric hold.
+ *                  prompt, question). Gets its own symmetric hold. `firm`
+ *                  marks one the agent's own hook reported: a real dialog,
+ *                  which working cues do not rebut (see observe).
  * - `stop`       — a turn-end candidate. `child` marks subagent stops (never
  *                  a lead-turn end). `leftoverWork` is the count of
  *                  background tasks still running at stop time, mined from
@@ -55,7 +57,7 @@ const noop = (): void => undefined;
  */
 export type AlarmCue =
   | { class: 'working' }
-  | { class: 'attention' }
+  | { class: 'attention'; firm?: boolean }
   | { class: 'stop'; child: boolean; leftoverWork: number }
   | { class: 'session' }
   | { class: 'answered' };
@@ -83,6 +85,9 @@ interface PaneState {
 
 interface PendingWindow {
   cls: AlarmClass;
+  /** A hook-reported attention: only an answer, a stop or a session boundary
+   *  closes it — never a working cue. */
+  firm: boolean;
   /** Cancels the scheduled confirmation timer. */
   cancel: () => void;
   /** Caller-supplied deferred side effects, handed back at confirmation. */
@@ -130,11 +135,14 @@ export class CompletionAlarm {
    *
    *   cue              | pending        | result
    *   -----------------+----------------+-------------------------------
-   *   working          | any            | cancel (rebut), announced=false,
+   *   working          | firm attention | kept (not rebutted), seenWorking=true → drop
+   *   working          | other          | cancel (rebut), announced=false,
    *   working          |                | seenWorking=true → drop
    *   answered         | attention      | cancel → drop
    *   answered         | other/none     | no-op → drop
    *   attention        | done/attention | cancel, open attention window → hold
+   *                    |                | (firm if the cue or the replaced
+   *                    |                | attention window was firm)
    *   stop.child       | any            | NO-OP, never a toast → drop
    *   stop.leftover>0  | any            | cancel, treated as working → drop
    *   stop clean       | attention      | cancel, then evaluate the gate
@@ -152,6 +160,14 @@ export class CompletionAlarm {
 
     switch (cue.class) {
       case 'working':
+        // A dialog the agent's own hook reported stays open until it is
+        // answered. Working cues on a blocked pane are subagents and
+        // background shells still running behind it — rebutting on them meant
+        // a fan-out worker with parallel subagents never showed "needs you".
+        if (state.pending?.cls === 'attention' && state.pending.firm) {
+          state.seenWorking = true;
+          return 'drop';
+        }
         this.cancelPending(state, key, 'rebutted by working');
         state.announced = false;
         state.seenWorking = true;
@@ -163,9 +179,13 @@ export class CompletionAlarm {
         }
         return 'drop';
 
-      case 'attention':
+      case 'attention': {
+        // The hook and the screen detector both report the same dialog; one
+        // window carries it, and it stays firm whichever report came second.
+        const firm = cue.firm === true || (state.pending?.cls === 'attention' && state.pending.firm);
         this.cancelPending(state, key, 'superseded by attention');
-        return this.openWindow(state, key, pane, slug, 'attention', resume);
+        return this.openWindow(state, key, pane, slug, 'attention', resume, firm);
+      }
 
       case 'stop': {
         if (cue.child) {
@@ -242,6 +262,7 @@ export class CompletionAlarm {
     slug: string,
     cls: AlarmClass,
     resume: () => void,
+    firm = false,
   ): AlarmOutcome {
     const t0 = this.now();
     const cancel = this.schedule(() => {
@@ -278,7 +299,7 @@ export class CompletionAlarm {
         else console.warn(line);
       }
     }, this.windowMs);
-    state.pending = { cls, cancel, resume };
+    state.pending = { cls, cancel, resume, firm };
     return 'hold';
   }
 
@@ -320,7 +341,9 @@ export function normalizeHookCue(signal: AgentSignal): AlarmCue {
     case 'agent.user_prompt_submit':
       return { class: 'working' };
     case 'agent.awaiting_input':
-      return { class: 'attention' };
+      // The agent's own hook: a dialog is really on screen (AskUserQuestion,
+      // or the PermissionRequest behind "Do you want to proceed?").
+      return { class: 'attention', firm: true };
     case 'agent.stop_failure':
       // The turn ended on an API error. That IS a boundary — whatever window
       // was open has to close — but it is not a completion, so it must not

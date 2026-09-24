@@ -40,6 +40,15 @@ export interface ResumeSlice {
   resumeHintByPtyId: Record<string, AgentSlug>;
 
   /**
+   * #1464: ptys whose offer was consumed (clicked, dismissed, typed-into or
+   * the agent relaunched). hydrateResume skips them, so a later pty.list
+   * snapshot — which still reports the hint, the daemon is never told about a
+   * dismiss — cannot bring the pill back. The pill is an in-flow row now, so
+   * re-showing it would also resize a terminal that may be running the agent.
+   */
+  resumeConsumedByPtyId: Record<string, true>;
+
+  /**
    * X6 ③: per-ptyId resume binding (origin session id + cwd + permission mode),
    * surfaced alongside the slug for panes recovered-this-boot whose captured cwd
    * still matches (the daemon enforces that guard). Present → the pill can build
@@ -66,10 +75,8 @@ export interface ResumeSlice {
    * Replace the whole map from a `pty.list` snapshot. The daemon only reports
    * `resumeAgent` for sessions recovered-this-boot whose agent has NOT been
    * re-detected, so replacing on every hydrate drops a hint the moment the
-   * agent relaunches. Known v1 edge: an explicitly-dismissed pill can reappear
-   * on a later daemon:connected re-hydrate (the daemon isn't told about a
-   * dismiss); clicking Resume self-clears it because the relaunched agent is
-   * then detected live.
+   * agent relaunches. A pty whose offer was already consumed is skipped
+   * (resumeConsumedByPtyId) — the daemon isn't told about a dismiss.
    */
   hydrateResume: (snapshot: Record<string, AgentSlug>) => void;
 
@@ -108,6 +115,7 @@ export const createResumeSlice: StateCreator<
   ResumeSlice
 > = (set, get) => ({
   resumeHintByPtyId: {},
+  resumeConsumedByPtyId: {},
   resumeBindingByPtyId: {},
   commandRunningByPtyId: {},
   agentAliveByPtyId: {},
@@ -159,13 +167,19 @@ export const createResumeSlice: StateCreator<
   clearResumeHint: (ptyId) => set((draft: StoreState) => {
     // Clear the binding together with the hint — the pill goes away as a unit
     // (clicked, dismissed, typed-into, or agent relaunched).
-    if (draft.resumeHintByPtyId[ptyId]) delete draft.resumeHintByPtyId[ptyId];
+    if (draft.resumeHintByPtyId[ptyId]) {
+      delete draft.resumeHintByPtyId[ptyId];
+      draft.resumeConsumedByPtyId[ptyId] = true;
+    }
     if (draft.resumeBindingByPtyId[ptyId]) delete draft.resumeBindingByPtyId[ptyId];
     if (draft.deadPaneRecoveryOfferByPtyId[ptyId]) delete draft.deadPaneRecoveryOfferByPtyId[ptyId];
   }),
 
   hydrateResume: (snapshot) => set((draft: StoreState) => {
-    draft.resumeHintByPtyId = { ...snapshot };
+    draft.resumeHintByPtyId = {};
+    for (const [ptyId, agent] of Object.entries(snapshot)) {
+      if (!draft.resumeConsumedByPtyId[ptyId]) draft.resumeHintByPtyId[ptyId] = agent;
+    }
     for (const [ptyId, recovery] of Object.entries(draft.deadPaneRecoveryOfferByPtyId)) {
       const agent = recovery.resumeAgent ?? asRecoveryAgentSlug(recovery.resumeBinding?.agent);
       if (agent) draft.resumeHintByPtyId[ptyId] = agent;

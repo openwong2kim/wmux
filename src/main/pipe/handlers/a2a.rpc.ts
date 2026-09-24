@@ -7,6 +7,7 @@ import type { DaemonClient } from '../../DaemonClient';
 import * as fs from 'fs';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage } from '../../../shared/types';
+import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../shared/executeApprovalBounds';
 import { defaultSnapshot } from '../../pty/portWatch';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
@@ -32,6 +33,7 @@ type DaemonTaskGate =
 // soft 분류 마커: 'pane-authz deferred'는 S-C2 페인 게이트를 렌더러(페인 트리
 // 소유자)가 판정하도록 데몬이 의도적으로 미루는 신호다 — 거부가 아니라 폴백.
 const A2A_DAEMON_SOFT_ERRORS = ['task log unavailable', 'task not found', 'pane-authz deferred'];
+
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -423,7 +425,15 @@ export function registerA2aRpc(
       sendParams.commanderWorkspaceId = ctx.commanderWorkspace;
       sendParams.workspaceId = ctx.commanderWorkspace;
     }
-    const result = await sendToRenderer(getWindow, 'a2a.task.send', sendParams);
+    // A NEW execute send's reply is held until the user answers the approval
+    // prompt, which the 5 s bridge default gave up on long before (#1462). The
+    // renderer bounds that prompt against this same value, so it always
+    // answers first. Plain sends keep the default: nothing in them waits on a
+    // person.
+    const awaitsApproval = params.execute === true && !params.taskId;
+    const result = awaitsApproval
+      ? await sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: EXECUTE_SEND_MAIN_TIMEOUT_MS })
+      : await sendToRenderer(getWindow, 'a2a.task.send', sendParams);
 
     // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).
     // 실패는 soft-degrade: 이후 전이가 'task not found'로 렌더러 폴백을 탄다.

@@ -31,9 +31,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import {
-  parseTranscriptLineDetailed,
-} from './parseEntry';
+import { fileTranscriptProvider, checkNativeTranscriptPath } from './providers';
+import type { ParsedTranscriptLine } from './parseEntry';
 import {
   TAIL_BYTES,
   isLineBoundary,
@@ -42,9 +41,7 @@ import {
   readTranscriptPage,
   statTranscript,
   transcriptBasename,
-  transcriptSessionId,
 } from './readTail';
-import { checkTranscriptPath } from '../hooks/transcriptPathGuard';
 import type { AgentSignalKind, CodeBlockRequest, TranscriptProjectorDeps } from './types';
 import type {
   TranscriptAppendData,
@@ -82,8 +79,7 @@ const DRAIN_DELAY_MS = 10;
  */
 const MAX_STALL_BACKOFF_MS = 5000;
 
-/** Only Claude Code publishes a transcript wmux can project today. */
-const SUPPORTED_AGENT = 'claude';
+
 
 /** One budget-fitted read, ready to become an append event. */
 interface BudgetedRead {
@@ -98,6 +94,7 @@ interface WatchState {
   /** Subscribers, keyed by pipe clientId. Empty ⇒ tear the watch down. */
   clients: Set<string>;
   transcriptPath: string;
+  parse: (line: string, offset: number) => ParsedTranscriptLine;
   watcher: fs.FSWatcher | null;
   poller: ReturnType<typeof setInterval> | null;
   debounce: ReturnType<typeof setTimeout> | null;
@@ -161,7 +158,9 @@ export class TranscriptProjector {
       available: true,
       reason: 'ok',
       transcriptBasename: basename,
-      agentSessionId: transcriptSessionId(resolved.transcriptPath),
+      agentSessionId: resolved.agentSessionId,
+      terminal: { kind: 'terminal', agent: resolved.agent, nativeSessionId: resolved.agentSessionId,
+        capabilities: { history: true, send: false, permissions: false, cancel: false, fileUndo: false } },
       sizeBytes: stat.size,
       mtimeMs: stat.mtimeMs,
     };
@@ -191,13 +190,13 @@ export class TranscriptProjector {
     if (!resolved.ok) return null;
 
     let maxBytes = TAIL_BYTES;
-    let page = readTranscriptPage(resolved.transcriptPath, { ...opts, maxBytes });
+    let page = readTranscriptPage(resolved.transcriptPath, { ...opts, maxBytes, parseLine: (line, offset) => resolved.parse(line, offset).events });
     while (page && maxBytes > MIN_READ_BYTES && !withinBudget(page.events)) {
       // A3: shrink the WINDOW, never the honesty of the cursor. The events we
       // did not return are still reachable — the caller pages backward for
       // older ones, and the delta path carries newer ones.
       maxBytes = Math.max(MIN_READ_BYTES, Math.floor(maxBytes / 2));
-      page = readTranscriptPage(resolved.transcriptPath, { ...opts, maxBytes });
+      page = readTranscriptPage(resolved.transcriptPath, { ...opts, maxBytes, parseLine: (line, offset) => resolved.parse(line, offset).events });
     }
     if (page && !withinBudget(page.events)) {
       // One entry alone exceeds the budget. Report the cursor truthfully with
@@ -248,7 +247,7 @@ export class TranscriptProjector {
 
     if (reset) {
       const { result: page, budgetDropped } = this.fitWithReceipt((maxBytes) =>
-        readTranscriptPage(resolved.transcriptPath, { maxBytes }),
+        readTranscriptPage(resolved.transcriptPath, { maxBytes, parseLine: (line, offset) => resolved.parse(line, offset).events }),
       );
       if (!page) return null;
       return {
@@ -260,7 +259,7 @@ export class TranscriptProjector {
     }
 
     const { result, budgetDropped } = this.fitWithReceipt((maxBytes) => {
-      const d = readTranscriptDelta(resolved.transcriptPath, fromOffset, maxBytes);
+      const d = readTranscriptDelta(resolved.transcriptPath, fromOffset, maxBytes, (line, offset) => resolved.parse(line, offset).events);
       return d && { events: d.events, cursor: d.cursor, ...(d.reset ? { reset: true } : {}) };
     });
     if (!result) return null;
@@ -292,6 +291,7 @@ export class TranscriptProjector {
       state = {
         clients: new Set(),
         transcriptPath: resolved.ok ? resolved.transcriptPath : '',
+        parse: resolved.ok ? resolved.parse : () => ({ events: [], bodies: new Map() }),
         watcher: null,
         poller: null,
         debounce: null,
@@ -445,7 +445,7 @@ export class TranscriptProjector {
     if (offset > 0 && !isLineBoundary(resolved.transcriptPath, offset)) return null;
     const line = readTranscriptLineAt(resolved.transcriptPath, offset);
     if (line === null) return null;
-    const parsed = parseTranscriptLineDetailed(line, offset);
+    const parsed = resolved.parse(line, offset);
 
     if (req.eventId) {
       // The file may have rotated since the ref was minted; without this check
@@ -487,7 +487,7 @@ export class TranscriptProjector {
   private resolvePath(
     sessionId: string,
   ):
-    | { ok: true; transcriptPath: string; agentSessionId: string }
+    | { ok: true; agent: string; transcriptPath: string; agentSessionId: string; parse: (line: string, offset: number) => ParsedTranscriptLine }
     | { ok: false; reason: string } {
     let binding;
     try {
@@ -496,7 +496,8 @@ export class TranscriptProjector {
       return { ok: false, reason: this.absentBindingReason(sessionId) };
     }
     if (!binding) return { ok: false, reason: this.absentBindingReason(sessionId) };
-    if (binding.agent !== SUPPORTED_AGENT) return { ok: false, reason: 'not-claude' };
+    const provider = fileTranscriptProvider(binding.agent);
+    if (!provider) return { ok: false, reason: 'unsupported-agent' };
     if (!binding.transcriptPath) return { ok: false, reason: 'no-transcript-path' };
     // The containment guard belongs HERE, at the single point every read goes
     // through, not only on the hook path that happens to be validated today.
@@ -506,7 +507,8 @@ export class TranscriptProjector {
     // file — and any one of them landing an unchecked path would otherwise turn
     // the projector back into "open this file and render it as a conversation".
     // Refusal degrades exactly like a missing path: Chat View is unavailable.
-    const check = checkTranscriptPath(
+    const check = checkNativeTranscriptPath(
+      binding.agent,
       binding.transcriptPath,
       binding.sessionId,
       this.deps.getSessionEnv?.(sessionId),
@@ -522,6 +524,8 @@ export class TranscriptProjector {
       ok: true,
       transcriptPath: binding.transcriptPath,
       agentSessionId: binding.sessionId,
+      parse: provider.parse,
+      agent: binding.agent,
     };
   }
 
@@ -563,6 +567,7 @@ export class TranscriptProjector {
       state.staleAgentSessionId = null;
     }
     const next = resolved.ok ? resolved.transcriptPath : '';
+    if (resolved.ok) state.parse = resolved.parse;
     if (next === state.transcriptPath) return;
     state.transcriptPath = next;
     state.tailOffset = -1;
@@ -748,7 +753,7 @@ export class TranscriptProjector {
     state: WatchState,
   ): BudgetedRead | null {
     const page = this.fit((maxBytes) => {
-      const p = readTranscriptPage(state.transcriptPath, { maxBytes });
+      const p = readTranscriptPage(state.transcriptPath, { maxBytes, parseLine: (line, offset) => state.parse(line, offset).events });
       return p && { events: p.events, cursor: p.cursor, reset: false };
     });
     return page;
@@ -758,7 +763,7 @@ export class TranscriptProjector {
     state: WatchState,
   ): BudgetedRead | null {
     return this.fit((maxBytes) => {
-      const delta = readTranscriptDelta(state.transcriptPath, state.tailOffset, maxBytes);
+      const delta = readTranscriptDelta(state.transcriptPath, state.tailOffset, maxBytes, (line, offset) => state.parse(line, offset).events);
       return delta && {
         events: delta.events,
         cursor: delta.cursor,

@@ -127,3 +127,186 @@ export function reattachModelEnvMarker(
   if (!shellSupportsModelEnvMarker(shell)) return { command, dropped: 'shell' };
   return { command: marker + command };
 }
+
+// ─── Fan-out worker permission mode + tool lists ────────────────────────────
+//
+// A worker runs unattended, so the boundary that actually holds is its Claude
+// Code permission mode and tool rules, not wmux's approval dialog. The mode is
+// an operator setting (main-side, because it can loosen what a worker may do);
+// the tool lists are fixed: a minimal ALLOW list so the worker can report
+// without a prompt, and a DENY list for the wmux tools that would let it act
+// on other panes or fan out. Deny rules win over allow rules and over every
+// permission mode, bypass included, so the deny list is what holds even when
+// the operator picks bypassPermissions.
+
+/** The operator's choice for fan-out workers. `manual` is wmux's word for
+ *  "add no permission flag" — deliberately NOT a PermissionMode value, which
+ *  describes what a transcript recorded rather than what wmux launches. */
+export type FanoutWorkerPermissionMode = 'auto' | 'acceptEdits' | 'bypassPermissions' | 'manual';
+
+export const FANOUT_WORKER_PERMISSION_MODES: readonly FanoutWorkerPermissionMode[] = [
+  'auto',
+  'acceptEdits',
+  'bypassPermissions',
+  'manual',
+];
+
+export const DEFAULT_FANOUT_WORKER_PERMISSION_MODE: FanoutWorkerPermissionMode = 'auto';
+
+export function isFanoutWorkerPermissionMode(v: unknown): v is FanoutWorkerPermissionMode {
+  return typeof v === 'string' && (FANOUT_WORKER_PERMISSION_MODES as readonly string[]).includes(v);
+}
+
+/**
+ * The wmux tools a worker may call without a prompt: record its ledger row,
+ * READ its mission channel, and ask who it is / what it was asked. Nothing
+ * that writes into another agent's prompt: `channel_post` is left out because
+ * a post can pin a mention to any pane and land in that agent's prompt, and
+ * `send_message` / `terminal_send` type into panes outright. Never `mcp__wmux`
+ * as a whole — that would pre-approve every tool wmux exposes.
+ */
+export const FANOUT_WORKER_ALLOWED_TOOLS: readonly string[] = [
+  'mcp__wmux__ledger_update',
+  'mcp__wmux__channel_read',
+  'mcp__wmux__channel_unread',
+  'mcp__wmux__channel_ack',
+  'mcp__wmux__a2a_task_query',
+  'mcp__wmux__a2a_whoami',
+];
+
+/**
+ * The wmux tools a worker may not call at all, in any permission mode: fan
+ * out again, type into or open panes, message other agents, drive a browser.
+ */
+export const FANOUT_WORKER_DISALLOWED_TOOLS: readonly string[] = [
+  'mcp__wmux__fanout_start',
+  'mcp__wmux__terminal_send',
+  'mcp__wmux__terminal_send_key',
+  'mcp__wmux__send_message',
+  'mcp__wmux__surface_new',
+  'mcp__wmux__pane_split',
+  'mcp__wmux__browser_*',
+];
+
+const PERMISSION_FLAG_FOR_WORKER: Readonly<Record<FanoutWorkerPermissionMode, string>> = {
+  auto: '--permission-mode auto',
+  acceptEdits: '--permission-mode acceptEdits',
+  bypassPermissions: '--dangerously-skip-permissions',
+  manual: '',
+};
+
+/** The flags wmux appends for `mode`, as they appear on the line. */
+export function workerLaunchFlags(mode: FanoutWorkerPermissionMode): string {
+  return [
+    PERMISSION_FLAG_FOR_WORKER[mode],
+    `--allowedTools "${FANOUT_WORKER_ALLOWED_TOOLS.join(',')}"`,
+    `--disallowedTools "${FANOUT_WORKER_DISALLOWED_TOOLS.join(',')}"`,
+  ]
+    .filter((p) => p.length > 0)
+    .join(' ');
+}
+
+interface Span {
+  /** Unquoted value (quotes stripped). */
+  value: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * Shell-ish word spans: splits on unquoted whitespace, keeps single- and
+ * double-quoted runs (and a backslash-escaped character) inside one word.
+ * Same rules as agentResume.tokenize, plus the start offset, so a word can be
+ * cut out of the line without touching anything else on it.
+ */
+function spans(line: string): Span[] {
+  const out: Span[] = [];
+  const n = line.length;
+  let i = 0;
+  while (i < n) {
+    while (i < n && /\s/.test(line[i])) i++;
+    if (i >= n) break;
+    const start = i;
+    let value = '';
+    while (i < n && !/\s/.test(line[i])) {
+      const c = line[i];
+      if (c === '"' || c === "'") {
+        i++;
+        while (i < n && line[i] !== c) {
+          if (c === '"' && line[i] === '\\' && i + 1 < n) i++;
+          value += line[i];
+          i++;
+        }
+        if (i < n) i++;
+      } else if (c === '\\' && i + 1 < n) {
+        value += line[i + 1];
+        i += 2;
+      } else {
+        value += c;
+        i++;
+      }
+    }
+    out.push({ value, start, end: i });
+  }
+  return out;
+}
+
+const BARE_PERMISSION_FLAGS = new Set(['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions']);
+const VALUE_FLAGS = new Set(['--permission-mode']);
+const LIST_FLAGS = new Set(['--allowedTools', '--allowed-tools', '--disallowedTools', '--disallowed-tools']);
+/** A tool rule as it appears after a space-form list flag (`Bash(git *)`,
+ *  `mcp__x__y`, `Edit,Read`). The prompt argument never looks like one. */
+const TOOL_RULE = /^[A-Za-z_][\w*-]*(\(.*\))?(,[A-Za-z_][\w*-]*(\(.*\))?)*$/;
+
+/**
+ * Append the worker's permission flag and tool lists to a launch line.
+ *
+ * Only a `claude` launch is touched — a role binding may have swapped the agent
+ * to one that rejects these flags, and a wrapper (`env …`, `sh -c …`) is left
+ * alone because wmux cannot see which word is the launcher. Everything goes
+ * AFTER what is already on the line, i.e. after the prompt argument: the list
+ * flags are variadic, so before the prompt they would swallow it as a tool
+ * name. Each list is ONE quoted comma-separated word (the documented form), so
+ * a list ends at the next flag and PowerShell does not read the commas as an
+ * array; `*` inside the quotes is not globbed.
+ *
+ * Any permission or tool-list flag already on the line (a role binding's args,
+ * a typed agentCmd) is removed first so the setting is the one that applies.
+ * Removal is word-based: a flag spelled inside a quoted argument (a prompt, an
+ * --append-system-prompt value) is part of that word and is never matched.
+ * `manual` keeps the line's own permission flag and adds none of its own; the
+ * tool lists are applied in every mode.
+ */
+export function applyWorkerPermissionFlags(command: string, mode: FanoutWorkerPermissionMode): string {
+  const words = spans(command);
+  const stem = (words[0]?.value.split(/[\\/]/).pop() ?? '').replace(/\.(exe|cmd|bat|ps1)$/i, '').toLowerCase();
+  if (stem !== 'claude') return command;
+
+  const replacePermission = mode !== 'manual';
+  const cut: Span[] = [];
+  for (let k = 1; k < words.length; k++) {
+    const v = words[k].value;
+    const flag = v.includes('=') ? v.slice(0, v.indexOf('=')) : v;
+    const hasValue = v.includes('=');
+    if (replacePermission && BARE_PERMISSION_FLAGS.has(v)) {
+      cut.push(words[k]);
+    } else if (replacePermission && VALUE_FLAGS.has(flag)) {
+      cut.push(words[k]);
+      if (!hasValue && k + 1 < words.length) cut.push(words[++k]);
+    } else if (LIST_FLAGS.has(flag)) {
+      cut.push(words[k]);
+      if (!hasValue) {
+        while (k + 1 < words.length && TOOL_RULE.test(words[k + 1].value)) cut.push(words[++k]);
+      }
+    }
+  }
+  let line = command;
+  // Cut from the end so earlier offsets stay valid; each word goes with the
+  // whitespace in front of it and nothing else on the line is re-spaced.
+  for (const w of [...cut].sort((a, b) => b.start - a.start)) {
+    let from = w.start;
+    while (from > 0 && /\s/.test(line[from - 1])) from--;
+    line = line.slice(0, from) + line.slice(w.end);
+  }
+  return `${line} ${workerLaunchFlags(mode)}`;
+}

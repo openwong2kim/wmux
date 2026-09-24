@@ -11,7 +11,7 @@ interface PaneSettingsDependencies {
   agentName(id: string): string | null | undefined;
   /** Only the owned live relay registry may supply this; no resume-hook fallback. */
   selection(id: string): (CodexTuiSelection & {relayId:string}) | undefined;
-  connect?: typeof connectCodexSettings;
+  connect?: (options: Parameters<typeof connectCodexSettings>[0]) => Promise<Pick<Awaited<ReturnType<typeof connectCodexSettings>>, 'rpc' | 'close'>>;
 }
 export interface PaneSettingsChoice { model: string; effort: string; expectedRevision: string }
 

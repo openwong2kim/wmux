@@ -225,6 +225,10 @@ export interface WorkTaskMetaStamp {
   title: string;
   createdAt: number;
   closedAt?: number;
+  /** T3 — the commit the task branch started from (origin's default branch at
+   *  fan-out time). Task-mode diffs compare against it; absent when the task
+   *  fell back to the owner's HEAD. */
+  baseOid?: string;
 }
 
 /** meta dir에 스탬프를 쓰는 파일명(J3 §1 — 정리 스캔 역추적 정본). */

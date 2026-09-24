@@ -1,8 +1,10 @@
+import { openCodeTerminalChatIntegration } from '../../shared/openCodeTerminalChatIntegration';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 import { writeJsonAtomic } from '../../shared/settingsFile';
+import { FANOUT_WORKER_ALLOWED_TOOLS } from '../../shared/workerLaunch';
 
 /**
  * `wmux setup-hooks` — install the wmux ↔ Claude Code hook bridge directly into
@@ -97,7 +99,8 @@ const ASK_QUESTION_HOOKS = [
 type HookEvent =
   | (typeof HOOK_EVENTS)[number]
   | (typeof ASK_QUESTION_HOOKS)[number]['event']
-  | 'PreToolUse'; // #783 — permission gate adds a wide PreToolUse
+  | 'PreToolUse' // #783 — permission gate adds a wide PreToolUse
+  | 'PermissionRequest';
 
 /**
  * #783 — the permission-gate hook. A WIDE PreToolUse matcher (every tool) that
@@ -111,6 +114,23 @@ const PERMISSION_GATE_SPEC = {
   event: 'PreToolUse' as const,
   matcher: '',
   extraArgs: '--permission-gate',
+};
+
+/**
+ * Claude Code's own permission dialog (`Do you want to proceed?`). Fires once
+ * per dialog — a human-paced event, not a per-tool-call cost — and the bridge
+ * maps it to `agent.awaiting_input`, so a pane blocked on a permission prompt
+ * reads "needs you" without depending on the screen detector reading the row.
+ *
+ * Not a SIGNAL_SPECS member on purpose: `detectProfile` reads "every signal
+ * spec present, gate absent" as the signals-only profile. An install made
+ * before this hook existed must keep reading as signals-only, not as a broken
+ * 'full' install whose repair would add the wide gate back. Both profiles
+ * install it; it is only ever written by a user-run install.
+ */
+const PERMISSION_REQUEST_SPEC = {
+  event: 'PermissionRequest' as const,
+  matcher: '',
 };
 
 /** One wmux-owned hook entry in settings.json. */
@@ -156,11 +176,11 @@ export type HookProfile = 'full' | 'signals-only';
 
 /** Every wmux-owned hook in settings.json as (event, matcher) specs — the
  *  single source `installHooks` writes and `statusHooks` checks against. */
-const HOOK_SPECS: readonly HookSpec[] = [...SIGNAL_SPECS, PERMISSION_GATE_SPEC];
+const HOOK_SPECS: readonly HookSpec[] = [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC, PERMISSION_GATE_SPEC];
 
 /** The specs a given profile installs. */
 function specsFor(profile: HookProfile): readonly HookSpec[] {
-  return profile === 'signals-only' ? SIGNAL_SPECS : HOOK_SPECS;
+  return profile === 'signals-only' ? [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC] : HOOK_SPECS;
 }
 
 /** Stable identity of a spec — event plus argv tail, since the approval pair
@@ -700,6 +720,50 @@ export function installHooks(
     profile,
     events: specs.map((s) => s.event),
   };
+}
+
+// ----- Fan-out worker allow-list (Settings button) ------------------------
+
+export interface AllowWorkerToolsOutcome {
+  ok: boolean;
+  settingsPath: string;
+  /** Entries this call added (already-present ones are not repeated). */
+  added: string[];
+  error: string | null;
+}
+
+/**
+ * Add the minimal fan-out worker tool list to `permissions.allow` in Claude
+ * Code's user settings, so a worker's report-back calls never stop on a prompt.
+ *
+ * Only ever the fixed list in FANOUT_WORKER_ALLOWED_TOOLS — never `mcp__wmux`
+ * as a whole, which would pre-approve every tool wmux exposes. Same load and
+ * atomic write as the hook install: a corrupted settings.json aborts rather
+ * than being overwritten, and every other key and allow entry is kept.
+ */
+export function allowFanoutWorkerTools(paths: Pick<SetupHooksPaths, 'settingsPath'>): AllowWorkerToolsOutcome {
+  const base: AllowWorkerToolsOutcome = { ok: false, settingsPath: paths.settingsPath, added: [], error: null };
+  const load = loadSettings(paths.settingsPath);
+  if (load.corrupted) {
+    return {
+      ...base,
+      error:
+        `settings.json at ${paths.settingsPath} is not valid JSON — aborting to avoid ` +
+        `overwriting your Claude Code config. Fix or remove the file and retry.`,
+    };
+  }
+  const settings = load.settings;
+  const perms =
+    settings.permissions && typeof settings.permissions === 'object' && !Array.isArray(settings.permissions)
+      ? (settings.permissions as Record<string, unknown>)
+      : {};
+  const allow = Array.isArray(perms.allow) ? [...(perms.allow as unknown[])] : [];
+  const added = FANOUT_WORKER_ALLOWED_TOOLS.filter((t) => !allow.includes(t));
+  if (added.length === 0) return { ...base, ok: true };
+  perms.allow = [...allow, ...added];
+  settings.permissions = perms;
+  writeJsonAtomic(paths.settingsPath, settings);
+  return { ...base, ok: true, added };
 }
 
 // ----- Boot-time script refresh -------------------------------------------
@@ -1453,13 +1517,15 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
 
   const lifecycle = await import('../../shared/lifecycleIntegrations');
   const lifecyclePaths = lifecycle.resolveLifecycleIntegrationPaths(os.homedir(), __dirname);
+  const terminalChatOptions = { configRoot: path.dirname(path.dirname(lifecyclePaths.opencode.destinationPath)), startDir: __dirname };
 
   if (status) {
     const claude = statusHooks(paths);
     const integrations = lifecycle.statusLifecycleIntegrations(lifecyclePaths);
     // Preserve the legacy Claude-only root fields for scripts while exposing
     // the richer per-integration objects alongside them.
-    const outcome = { ...claude, claude, ...integrations };
+    const opencodeTerminalChat = openCodeTerminalChatIntegration(terminalChatOptions);
+    const outcome = { ...claude, claude, ...integrations, opencodeTerminalChat };
     if (jsonMode) {
       console.log(JSON.stringify(outcome, null, 2));
     } else {
@@ -1482,6 +1548,7 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
         console.log(`codex notify: NOT registered (${integrations.codexNotify.configPath})`);
       }
       printAssetStatus('opencode plugin', integrations.opencodePlugin);
+      console.log(`opencode terminal chat: ${opencodeTerminalChat.state} (${opencodeTerminalChat.configPath})`);
       printAssetStatus('codex hooks bridge', integrations.codexHooksBridge);
       printCodexHooksStatus(integrations.codexHooks);
     }
@@ -1497,9 +1564,11 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   const claude = installHooks(paths, requestedProfile);
   const codexVersionOutput = probeCodexVersion();
   const integrations = lifecycle.installLifecycleIntegrations(lifecyclePaths, { codexVersionOutput });
+  const opencodeTerminalChat = openCodeTerminalChatIntegration({ ...terminalChatOptions, install: true });
   const outcome = {
     ...claude,
     ...integrations,
+    opencodeTerminalChat,
     ok: claude.ok && integrations.ok,
     claude,
   };
@@ -1522,6 +1591,9 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
       console.log(`codex notify: already registered in ${integrations.codexNotify.configPath}`);
     }
     printAssetInstall('opencode plugin', integrations.opencodePlugin);
+    console.log(`opencode terminal chat: ${opencodeTerminalChat.state}`);
+    if (opencodeTerminalChat.state === 'manual-config') console.log(`Add ${opencodeTerminalChat.pluginUrl} to the plugin array in ${opencodeTerminalChat.configPath} (or tui.jsonc).`);
+    if (opencodeTerminalChat.state === 'current') console.log('Restart existing OpenCode terminals to enable the same-session Chat view.');
     if (integrations.opencodePlugin.action !== 'none') {
       console.log('Restart existing OpenCode sessions so they load the wmux plugin.');
     }

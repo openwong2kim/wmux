@@ -138,6 +138,12 @@ export const IPC = {
   // 조립한다. 렌더러 신뢰 신원(verifiedWorkspaceId)은 channelLocal과 동일 trust
   // basis(Electron 프로세스 경계). 파이프 미노출 — 같은 사용자 MCP 클라가 못 닿는다.
   FANOUT_START: 'fanout:start',
+  FANOUT_WORKER_MODE_GET: 'fanout:workerMode:get',
+  FANOUT_WORKER_MODE_SET: 'fanout:workerMode:set',
+  FANOUT_REQUIRE_APPROVAL_GET: 'fanout:requireApproval:get',
+  FANOUT_REQUIRE_APPROVAL_SET: 'fanout:requireApproval:set',
+  FANOUT_AUDIT_RECENT: 'fanout:audit:recent',
+  FANOUT_LINEAGE: 'fanout:lineage',
   // J3 태스크 수명주기 — renderer → main(파이프 미노출, channelLocal과 동일 trust).
   //  TASK_CLOSE: remove 성공→close 커밋 순서 오케스트레이션(TaskCloseService).
   //  TASK_CREATE_PR: gh 4중 게이트 1클릭 PR(TaskPrService).
@@ -273,6 +279,9 @@ export const IPC = {
   //   2026-07-17). Renderer-only trust boundary.
   HOOKS_BRIDGE_STATUS: 'hooks:bridge:status',
   HOOKS_BRIDGE_INSTALL: 'hooks:bridge:install',
+  //   ALLOW_WORKER_TOOLS — the Settings button that adds the minimal fan-out
+  //   worker tool list to permissions.allow. User-clicked, like INSTALL.
+  HOOKS_BRIDGE_ALLOW_WORKER_TOOLS: 'hooks:bridge:allow-worker-tools',
   //   PROMPT_PREF_* — the durable "Don't ask again" for the install prompt.
   //   GET is read by the prompt before it decides to show; SET is written only
   //   by that explicit click, and cleared again from Settings. Refusing the

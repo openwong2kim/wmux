@@ -1,6 +1,7 @@
 import { sendRequest } from '../client';
 import { printResult, ensureOk, parseFlag } from '../utils';
 import type { RpcResponse } from '../../shared/rpc';
+import { ENV_KEYS } from '../../shared/constants';
 
 interface WorkspaceInfo {
   id: string;
@@ -55,7 +56,11 @@ export async function handleWorkspace(
 
     case 'new-workspace': {
       const name = parseFlag(args, '--name') ?? `workspace-${Date.now()}`;
-      response = await sendRequest('workspace.new', { name });
+      // The pane hint lets main stamp the new workspace as a fan-out task when
+      // this shell is one (depth-1 lineage inheritance). Only a hint — main
+      // uses it for nothing that could widen what the caller may do.
+      const senderPtyId = process.env[ENV_KEYS.PTY_ID]?.trim();
+      response = await sendRequest('workspace.new', { name, ...(senderPtyId ? { senderPtyId } : {}) });
       if (jsonMode) {
         printResult(response);
       } else {

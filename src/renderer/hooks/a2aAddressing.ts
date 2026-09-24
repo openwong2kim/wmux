@@ -6,7 +6,8 @@
 import type { PaneLeaf } from '../../shared/types';
 import { getLeafPanes } from '../../shared/paneUtils';
 import { isBrainPtyId } from '../../shared/constants';
-import { submitProfileForAgent, type SubmitAssurance } from '../../shared/ptyMessageDelivery';
+import type { AgentSlug } from '../../shared/agentIdentity';
+import { resolveAgentSlug, submitProfileForAgent, type SubmitAssurance } from '../../shared/ptyMessageDelivery';
 
 export type PaneAddress = { ptyId: string; paneId: string; surfaceId: string };
 
@@ -481,6 +482,37 @@ export type PaneLivenessMaps = {
   commandRunning?: Record<string, boolean>;
 };
 
+/**
+ * The canonical agent slug of the TUI running in `ptyId`, or undefined when
+ * the pane is not a detected, still-live agent. Decides whether an A2A
+ * envelope may keep its body's real newlines (see `A2aFormatOptions`).
+ *
+ * Only a known slug counts: DECSET 2004 (bracketed paste) is NOT a signal,
+ * because shells turn it on too, and a shell runs each pasted line as its own
+ * command once the paste is submitted. A brain pty is not a TUI at all.
+ *
+ * Liveness must be POSITIVELY confirmed. A surfaceAgent entry outlives its
+ * agent until a liveness snapshot clears it (#1210), and both maps are often
+ * empty (no process attribution, no shell integration), so "not known gone"
+ * would hand a multi-line body to a shell that just got its prompt back. The
+ * entry's status is not used either: it is as stale as the entry. Unknown
+ * means fold.
+ */
+export function detectedAgentTuiSlug(
+  ptyId: string,
+  surfaceAgent: Record<string, { name: string; slug?: string } | undefined>,
+  liveness: PaneLivenessMaps = {},
+): AgentSlug | undefined {
+  if (!ptyId || isBrainPtyId(ptyId)) return undefined;
+  const alive = liveness.agentAlive?.[ptyId];
+  const running = liveness.commandRunning?.[ptyId];
+  if (alive === false || running === false) return undefined;
+  if (alive !== true && running !== true) return undefined;
+  const agent = surfaceAgent[ptyId];
+  if (!agent) return undefined;
+  return resolveAgentSlug(agent.slug) ?? resolveAgentSlug(agent.name);
+}
+
 export type AgentPaneCandidate = {
   paneId: string;
   surfaceId: string;
@@ -498,6 +530,26 @@ export type UnaddressedDelivery =
   | { kind: 'no_agent' };
 
 /**
+ * Does `ptyId` carry a detected agent that is not known to be gone? The test
+ * every A2A PTY write must pass, whether the pane was picked from an
+ * unaddressed send or named explicitly (#1489: an explicit pane_id, a pinned
+ * task anchor or `silent:false` used to skip it and paste into a shell). A
+ * brain pty is not a pane a human or agent can be addressed at; see the same
+ * guard in decideReplyDelivery.
+ */
+export function paneHasDetectedAgent(
+  ptyId: string,
+  surfaceAgent: Record<string, { name: string } | undefined>,
+  liveness: PaneLivenessMaps = {},
+): boolean {
+  if (!ptyId || isBrainPtyId(ptyId)) return false;
+  if (!surfaceAgent[ptyId]?.name) return false;
+  if (liveness.agentAlive?.[ptyId] === false) return false;
+  if (liveness.commandRunning?.[ptyId] === false) return false;
+  return true;
+}
+
+/**
  * @param visibleLeaves the target's VISIBLE pane tree (getLeafPanes(rootPane)),
  * never the workspace-wide list. A stashed pane is off-screen: counting it
  * would turn a workspace with one visible agent into an ambiguous refusal, and
@@ -512,18 +564,12 @@ export function resolveUnaddressedDelivery(
   for (const leaf of visibleLeaves) {
     for (const s of leaf.surfaces) {
       if (s.surfaceType === 'browser' || !s.ptyId) continue;
-      // A brain pty is not a pane a human or agent can be addressed at; see the
-      // same guard in decideReplyDelivery.
-      if (isBrainPtyId(s.ptyId)) continue;
-      const agentName = surfaceAgent[s.ptyId]?.name;
-      if (!agentName) continue;
-      if (liveness.agentAlive?.[s.ptyId] === false) continue;
-      if (liveness.commandRunning?.[s.ptyId] === false) continue;
+      if (!paneHasDetectedAgent(s.ptyId, surfaceAgent, liveness)) continue;
       candidates.push({
         paneId: leaf.id,
         surfaceId: s.id,
         ptyId: s.ptyId,
-        agentName,
+        agentName: surfaceAgent[s.ptyId]?.name ?? '',
         // Same source as a2a_discover's `paneTitle` (#1018) — untrusted
         // pane-chosen text; sanitized at render time, see describeAmbiguousDelivery.
         paneTitle: s.title?.trim() || null,
@@ -618,6 +664,7 @@ export function wsMetadataMayStandIn(visibleLeaves: PaneLeaf[]): boolean {
 export const NO_AGENT_PANE_HINT =
   'Nothing was written to the target: none of its visible panes is running a detected agent, and pasting a ' +
   'message body into a plain shell prompt is how it ends up executed as commands. The task is stored and on ' +
-  'the event bus — the receiver can still find it with a2a_task_query. If an agent IS running there, ' +
-  'detection may not have landed yet (or the pane is stashed): address it explicitly with pane_id/surface_id ' +
-  'from a2a_discover, or re-send once it is detected.';
+  'the event bus — the receiver can still find it with a2a_task_query. This holds for an explicit ' +
+  'pane_id/surface_id and for silent:false too: only a pane with a detected agent is ever written to. If an ' +
+  'agent IS running there, detection may not have landed yet (re-send once it is detected), or its pane is ' +
+  'stashed (address that pane with pane_id/surface_id from a2a_discover).';

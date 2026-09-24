@@ -3,7 +3,7 @@
 @keyframes onboarding-fade-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(4px);
   }
   to {
     opacity: 1;
@@ -28,15 +28,73 @@
 /* Spotlight cutout — animated position transitions defined inline,
    but the initial appearance fades in via this animation */
 .onboarding-spotlight {
-  animation: onboarding-spotlight-appear 0.3s ease-out;
+  animation: onboarding-spotlight-appear 150ms ease-out;
 }
 
-/* Tooltip card hover state for buttons */
-.onboarding-tooltip-card button:hover {
-  filter: brightness(1.1);
+/* Tooltip card: the quiet floating panel shared with ui/Dialog (14px radius,
+   hairline, one soft shadow, no inset highlight). --surface-* come from
+   .ui-surface in ui.css. */
+.onboarding-tooltip-card {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px 20px;
+  background: var(--bg-base);
+  border: 1px solid var(--surface-hairline);
+  border-radius: 14px;
+  box-shadow: var(--surface-shadow);
+  color: var(--text-main);
+  font-family: var(--font-ui);
+  outline: none;
+  animation: onboarding-fade-in 150ms ease-out;
 }
+.onboarding-tooltip-card .ui-media { margin: 4px 0 16px; }
+.onboarding-step-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 4px 0 8px;
+}
+/* Sentence case, muted — no uppercase tracked labels inside surfaces. */
+.onboarding-step-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.onboarding-dots { display: flex; gap: 4px; }
+.onboarding-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--text-main) 18%, transparent);
+}
+/* Position, not status: neutral, so the only warm thing is the Next button. */
+.onboarding-dot[data-active="true"] { background: var(--text-main); }
+.onboarding-title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--text-main);
+}
+.onboarding-description {
+  margin: 0 0 16px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-sub);
+}
+.onboarding-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.onboarding-actions-end { display: flex; gap: 8px; }
+/* Ghost Skip sits flush with the copy's left edge. */
+.onboarding-skip { margin-left: -12px; }
 
-/* Skip button subtle underline on hover */
-.onboarding-tooltip-card button[data-testid="onboarding-skip"]:hover {
-  text-decoration: underline;
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-spotlight,
+  .onboarding-tooltip-card {
+    animation: none;
+  }
+  /* The spotlight's move transition is inline. */
+  .onboarding-spotlight {
+    transition: none !important;
+  }
 }

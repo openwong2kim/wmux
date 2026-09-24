@@ -9,7 +9,13 @@
     "outDir": "dist/daemon",
     "rootDir": "src",
     "declaration": false,
-    "sourceMap": false
+    "sourceMap": false,
+    "baseUrl": ".",
+    "paths": {
+      "@opencode-ai/sdk/v2/client": [
+        "./node_modules/@opencode-ai/sdk/dist/v2/client"
+      ]
+    }
   },
   "include": [
     "src/daemon/**/*",

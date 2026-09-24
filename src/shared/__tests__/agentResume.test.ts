@@ -342,19 +342,20 @@ describe('toResumeCommand (X6)', () => {
     });
   });
 
-  describe('permissionFlagFor (pill helper) — the 4-mode mapping', () => {
+  describe('permissionFlagFor (pill helper) — the 5-mode mapping', () => {
     it('maps every mode', () => {
       expect(permissionFlagFor('bypassPermissions')).toBe('--dangerously-skip-permissions');
       expect(permissionFlagFor('acceptEdits')).toBe('--permission-mode acceptEdits');
       expect(permissionFlagFor('plan')).toBe('--permission-mode plan');
+      expect(permissionFlagFor('auto')).toBe('--permission-mode auto');
       expect(permissionFlagFor('default')).toBe('');
     });
     it('undefined → empty string', () => {
       expect(permissionFlagFor(undefined)).toBe('');
     });
-    it('PERMISSION_FLAG table covers exactly the 4 modes', () => {
+    it('PERMISSION_FLAG table covers exactly the 5 modes', () => {
       expect(Object.keys(PERMISSION_FLAG).sort()).toEqual(
-        (['acceptEdits', 'bypassPermissions', 'default', 'plan'] as PermissionMode[]).sort(),
+        (['acceptEdits', 'auto', 'bypassPermissions', 'default', 'plan'] as PermissionMode[]).sort(),
       );
     });
   });

@@ -3,6 +3,10 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  FANOUT_WORKER_ALLOWED_TOOLS,
+  FANOUT_WORKER_DISALLOWED_TOOLS,
+  applyWorkerPermissionFlags,
+  workerLaunchFlags,
   MODEL_ENV_MARKER,
   WORKER_GATEWAY_ENV,
   WORKER_MODEL_ENV,
@@ -97,5 +101,69 @@ describe('reattachModelEnvMarker', () => {
     // The quoted argument is one token; a whitespace split would read its words.
     const r = reattachModelEnvMarker(MODEL_ENV_MARKER, 'claude "$(cat \'/m/--model opus/p.md\')"', undefined);
     expect(r.command.startsWith(MODEL_ENV_MARKER)).toBe(true);
+  });
+});
+
+// Fan-out worker launch flags. The flags must land AFTER the prompt argument
+// (the list flags are variadic and would swallow it), exactly once, only on a
+// claude launch, and never by editing text inside a quoted argument.
+describe('applyWorkerPermissionFlags', () => {
+  const PROMPT = `"$(cat '/tmp/meta/task one/prompt.md')"`;
+  const LISTS = `--allowedTools "${FANOUT_WORKER_ALLOWED_TOOLS.join(',')}" --disallowedTools "${FANOUT_WORKER_DISALLOWED_TOOLS.join(',')}"`;
+
+  it('appends the mode and both tool lists after the prompt', () => {
+    expect(applyWorkerPermissionFlags(`claude ${PROMPT}`, 'auto')).toBe(
+      `claude ${PROMPT} --permission-mode auto ${LISTS}`,
+    );
+    expect(applyWorkerPermissionFlags(`claude ${PROMPT}`, 'bypassPermissions')).toBe(
+      `claude ${PROMPT} --dangerously-skip-permissions ${LISTS}`,
+    );
+    expect(workerLaunchFlags('acceptEdits')).toBe(`--permission-mode acceptEdits ${LISTS}`);
+  });
+
+  it('replaces every spelling of a permission or tool-list flag a role binding put on the line', () => {
+    const bound =
+      `claude --model opus --dangerously-skip-permissions "--allow-dangerously-skip-permissions" ` +
+      `--allowedTools "Bash(git *)" Edit --disallowed-tools=Read ${PROMPT} --permission-mode=plan`;
+    const out = applyWorkerPermissionFlags(bound, 'acceptEdits');
+    expect(out).toBe(`claude --model opus ${PROMPT} --permission-mode acceptEdits ${LISTS}`);
+  });
+
+  it('never edits a flag spelled inside a quoted argument', () => {
+    const line = `claude --append-system-prompt "never use --permission-mode auto or --dangerously-skip-permissions" ${PROMPT}`;
+    expect(applyWorkerPermissionFlags(line, 'auto')).toBe(`${line} --permission-mode auto ${LISTS}`);
+  });
+
+  it('leaves the quoted prompt path byte-for-byte intact', () => {
+    const spaced = `claude "$(cat '/tmp/a  b/prompt.md')"`;
+    expect(applyWorkerPermissionFlags(spaced, 'auto').startsWith(spaced + ' ')).toBe(true);
+  });
+
+  it("manual adds no permission flag and keeps the line's own, but still applies the tool lists", () => {
+    const line = `claude --permission-mode plan ${PROMPT}`;
+    expect(applyWorkerPermissionFlags(line, 'manual')).toBe(`${line} ${LISTS}`);
+  });
+
+  it('does not touch a non-claude launch or a wrapped one', () => {
+    for (const line of [`codex --model o3 ${PROMPT}`, `env FOO=1 claude ${PROMPT}`, `sh -c 'claude hi'`]) {
+      expect(applyWorkerPermissionFlags(line, 'auto')).toBe(line);
+    }
+  });
+
+  it('allows only reporting tools and denies the ones that reach other agents', () => {
+    expect(FANOUT_WORKER_ALLOWED_TOOLS).toEqual([
+      'mcp__wmux__ledger_update',
+      'mcp__wmux__channel_read',
+      'mcp__wmux__channel_unread',
+      'mcp__wmux__channel_ack',
+      'mcp__wmux__a2a_task_query',
+      'mcp__wmux__a2a_whoami',
+    ]);
+    // A post can pin a mention into another agent's prompt.
+    expect(FANOUT_WORKER_ALLOWED_TOOLS).not.toContain('mcp__wmux__channel_post');
+    expect(FANOUT_WORKER_ALLOWED_TOOLS).not.toContain('mcp__wmux');
+    for (const t of ['mcp__wmux__fanout_start', 'mcp__wmux__terminal_send', 'mcp__wmux__send_message', 'mcp__wmux__browser_*']) {
+      expect(FANOUT_WORKER_DISALLOWED_TOOLS).toContain(t);
+    }
   });
 });

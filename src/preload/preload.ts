@@ -51,6 +51,17 @@ interface McpStatusPayload {
 }
 
 const chat: ChatBridgeApi = {
+  settings: (args) => ipcRenderer.invoke(CHAT_IPC.settings, args),
+  skills: (args) => ipcRenderer.invoke(CHAT_IPC.skills, args),
+  launchTerminal: (args) => ipcRenderer.invoke(CHAT_IPC.launchTerminal, args),
+  controls: {
+    close: (args) => ipcRenderer.invoke(CHAT_IPC.close, args),
+    providers: () => ipcRenderer.invoke(CHAT_IPC.providers),
+    start: (args) => ipcRenderer.invoke(CHAT_IPC.start, args),
+    reconnect: (args) => ipcRenderer.invoke(CHAT_IPC.reconnect, args),
+    cancel: (args) => ipcRenderer.invoke(CHAT_IPC.cancel, args),
+    respond: (args) => ipcRenderer.invoke(CHAT_IPC.respond, args),
+  },
   status: (id) => ipcRenderer.invoke(CHAT_IPC.status, id),
   snapshot: (id, before) => ipcRenderer.invoke(CHAT_IPC.snapshot, id, before),
   subscribe: (id) => ipcRenderer.invoke(CHAT_IPC.subscribe, id),
@@ -105,7 +116,7 @@ const electronAPI = {
     // wmux.json leaf — `exec` runs the command as the pane's ROOT process and
     // `supervision` arms the daemon's PaneSupervisor (daemon mode only; the
     // local branch ignores them with a one-time warning toast).
-    create: (options?: { shell?: string; cwd?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean } }) =>
+    create: (options?: { shell?: string; cwd?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string }) =>
       ipcRenderer.invoke(IPC.PTY_CREATE, options),
     write: (id: string, data: string) => {
       ipcRenderer.send(IPC.PTY_WRITE, id, data);
@@ -470,6 +481,23 @@ const electronAPI = {
   // main의 FanOutService로 보낸다(renderer-trusted 신원, 파이프 미노출).
   fanout: {
     start: (req: Record<string, unknown>) => ipcRenderer.invoke(IPC.FANOUT_START, req),
+    lineage: (workspaceIds: string[]) =>
+      ipcRenderer.invoke(IPC.FANOUT_LINEAGE, workspaceIds) as Promise<Record<string, { owner: string; at: number }>>,
+    recentAudit: (limit: number) =>
+      ipcRenderer.invoke(IPC.FANOUT_AUDIT_RECENT, limit) as Promise<
+        import('../main/worktask/fanoutGuards').FanOutAuditRecord[]
+      >,
+    getRequireApproval: () => ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_GET) as Promise<boolean>,
+    setRequireApproval: (value: boolean) =>
+      ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_SET, value) as Promise<boolean>,
+    getWorkerPermissionMode: () =>
+      ipcRenderer.invoke(IPC.FANOUT_WORKER_MODE_GET) as Promise<
+        import('../shared/workerLaunch').FanoutWorkerPermissionMode
+      >,
+    setWorkerPermissionMode: (mode: import('../shared/workerLaunch').FanoutWorkerPermissionMode) =>
+      ipcRenderer.invoke(IPC.FANOUT_WORKER_MODE_SET, mode) as Promise<
+        import('../shared/workerLaunch').FanoutWorkerPermissionMode
+      >,
   },
   // Command Deck Phase 2 — the Commander brain. `send` runs one orchestrator
   // turn (resolves with the accept/reject verdict; the turn's content streams
@@ -706,6 +734,10 @@ const electronAPI = {
       install: () =>
         ipcRenderer.invoke(IPC.HOOKS_BRIDGE_INSTALL) as Promise<
           import('../cli/commands/setupHooks').InstallOutcome
+        >,
+      allowWorkerTools: () =>
+        ipcRenderer.invoke(IPC.HOOKS_BRIDGE_ALLOW_WORKER_TOOLS) as Promise<
+          import('../cli/commands/setupHooks').AllowWorkerToolsOutcome
         >,
       // Durable "Don't ask again". GET is consulted before the prompt shows;
       // SET is written only by that explicit click and cleared from Settings.

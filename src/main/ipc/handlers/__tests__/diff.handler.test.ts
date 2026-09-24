@@ -155,6 +155,62 @@ describe('diff:read — 워킹트리 대조·untracked 합성·스냅샷', { tim
   });
 });
 
+// T3: a fan-out task branches from origin's default branch, which can be ahead
+// of the owner's checkout. The task diff must compare against that base (read
+// from the task.json stamp beside the worktree), or every upstream commit in
+// between shows up as the worker's change.
+describe('diff:read — T3 task base from the task.json stamp', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
+  let base: string;
+  let worktreePath: string;
+  beforeEach(() => {
+    captured.clear();
+    registerDiffHandlers();
+    base = mkdtempSync(join(tmpdir(), 'wmux-diffbase-'));
+    const repoRoot = join(base, 'repo');
+    mkdirSync(repoRoot);
+    g(repoRoot, ['init', '-q', '-b', 'main']);
+    g(repoRoot, ['config', 'user.email', 't@t']);
+    g(repoRoot, ['config', 'user.name', 't']);
+    g(repoRoot, ['config', 'core.autocrlf', 'false']);
+    writeFileSync(join(repoRoot, 'a.txt'), 'a1\n');
+    g(repoRoot, ['add', '-A']);
+    g(repoRoot, ['commit', '-q', '-m', 'base']);
+    // "origin/main" moved on: an upstream commit the owner's main does not have.
+    g(repoRoot, ['checkout', '-q', '-b', 'upstream']);
+    writeFileSync(join(repoRoot, 'up.txt'), 'upstream\n');
+    g(repoRoot, ['add', '-A']);
+    g(repoRoot, ['commit', '-q', '-m', 'upstream']);
+    const upstreamOid = g(repoRoot, ['rev-parse', 'HEAD']).trim();
+    g(repoRoot, ['checkout', '-q', 'main']);
+    // The task branched from the upstream commit and changed a.txt.
+    worktreePath = join(base, 'worktrees', 'task-1');
+    g(repoRoot, ['worktree', 'add', '-q', '--no-track', '-b', 'wtask/task-1', worktreePath, upstreamOid]);
+    writeFileSync(join(worktreePath, 'a.txt'), 'a1\nworker\n');
+    const metaDir = join(base, 'worktrees', '.meta', 'task-1');
+    mkdirSync(metaDir, { recursive: true });
+    writeFileSync(
+      join(metaDir, 'task.json'),
+      JSON.stringify({ taskId: 'wtask-1', title: 't', createdAt: 1, baseOid: upstreamOid }),
+    );
+  });
+  afterEach(() => removeScenarioTree(base));
+
+  it('shows only the worker change, not the upstream commit the owner lacks', async () => {
+    const read = captured.get(IPC.DIFF_READ)!;
+    const res = (await read({}, worktreePath)) as { ok: boolean; files: Array<{ path: string }> };
+    expect(res.ok).toBe(true);
+    expect(res.files.map((f) => f.path)).toEqual(['a.txt']);
+  });
+
+  it('without a stamped base, falls back to the owner HEAD comparison (pre-T3 behaviour)', async () => {
+    rmSync(join(base, 'worktrees', '.meta'), { recursive: true, force: true });
+    const read = captured.get(IPC.DIFF_READ)!;
+    const res = (await read({}, worktreePath)) as { ok: boolean; files: Array<{ path: string }> };
+    expect(res.ok).toBe(true);
+    expect(res.files.map((f) => f.path).sort()).toEqual(['a.txt', 'up.txt']);
+  });
+});
+
 describe('diff:applyHunks — 채택 all-or-nothing', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let scn: ReturnType<typeof makeScenario>;
   beforeEach(() => {
@@ -236,9 +292,12 @@ describe('diff:applyHunks — 채택 all-or-nothing', { timeout: GIT_PROCESS_TIM
       snapshot: r.snapshot,
       selections: [pick(r, 'a.txt', [0])],
     };
-    const res = (await apply({}, req, scn.worktreePath)) as { ok: boolean; code?: string };
+    const res = (await apply({}, req, scn.worktreePath)) as { ok: boolean; code?: string; error?: string };
     expect(res.ok).toBe(false);
     expect(res.code).toBe('dirty');
+    // The panel shows this reason verbatim, so it must be English (#1461).
+    expect(res.error).toContain('a.txt');
+    expect(res.error).not.toMatch(/[\u3131-\uD79D]/);
   });
 
   it('이미 적용된 hunk — reverse 프로브가 alreadyApplied 표시(거부 아님, best-effort)', async () => {
@@ -811,9 +870,11 @@ describe('diff:read — F8 targetHeadOid 형식 가드', { timeout: GIT_PROCESS_
     const res = (await read({}, scn.worktreePath, 'not-a-sha; rm -rf /')) as {
       ok: boolean;
       code?: string;
+      error?: string;
     };
     expect(res.ok).toBe(false);
     expect(res.code).toBe('bad-oid');
+    expect(res.error).not.toMatch(/[\u3131-\uD79D]/);
   });
 });
 

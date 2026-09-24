@@ -19,6 +19,7 @@ import { retentionMigrationDone, markRetentionMigrationDone } from '../retention
 import { decUnread } from './notificationSlice';
 import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { stashedPaneLiveness } from '../../../shared/paneStash';
+import { clampSidebarWidth, pruneTaskGroupExpanded, resolveSidebarSortMode } from '../../utils/sidebarLayout';
 import {
   collectLeafIds,
   getLeafPanes,
@@ -696,14 +697,20 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // visibility rule reads workspace existence directly, so it is already
         // correct whether or not this RPC lands.
         void get().closeMissionForRemovedWorkspace?.(id);
+        // #1481 — sidebar display state keyed by this workspace goes with it.
+        get().pruneFanoutFor?.(id);
+        if (get().sidebarTaskGroupExpanded?.[id] !== undefined) {
+          set((s: StoreState) => { delete s.sidebarTaskGroupExpanded[id]; });
+        }
         // NOTE: deliberately NOT `clearMissionsFor(id)`. That bucket is keyed by
         // the fan-out PARENT, and its tasks' child workspaces routinely outlive
         // the parent — wiping it would hide live missions from the sidebar AND
         // leave `closeMissionForRemovedWorkspace` unable to find those tasks when
         // the children are deleted later. The orphan bucket is harmless: it is
         // capped per workspace, `selectLiveMissions` filters rows by child
-        // workspace existence, and `refreshMissions` only ever visits workspaces
-        // that still exist, so it never grows again.
+        // workspace existence, and the poll only revisits a closed owner while the
+        // fan-out audit log still names it (#1481 — so its orphaned tasks can be
+        // told apart from detached ones and closed), so it stays bounded.
       }
     },
 
@@ -1328,6 +1335,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.sidebarShowPaneCoordinates === 'boolean') {
         state.sidebarShowPaneCoordinates = data.sidebarShowPaneCoordinates;
       }
+      // #1481 — the sort mode supersedes the attention flag; a session that
+      // predates it carries only the flag, which maps onto 'attention'.
+      state.sidebarSortMode = resolveSidebarSortMode(data);
+      state.sidebarAttentionFirst = state.sidebarSortMode === 'attention';
+      if (data.sidebarWidth !== undefined) state.sidebarWidth = clampSidebarWidth(data.sidebarWidth);
+      state.sidebarTaskGroupExpanded = pruneTaskGroupExpanded(
+        data.sidebarTaskGroupExpanded,
+        new Set((data.workspaces ?? []).map((w) => w.id)),
+      );
       // Whitelisted, not a bare truthiness check: a forward-version session file
       // that names a fourth arrangement must not park an unknown string in the
       // store, where the settings control would render with nothing selected.

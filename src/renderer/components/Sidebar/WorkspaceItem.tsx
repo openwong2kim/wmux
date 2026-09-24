@@ -1,24 +1,30 @@
-import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react';
 import type { GitSyncStatus, PrStatus, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
 import { formatStaleMinutes, selectWorkspaceAgentStatus, selectWorkspaceUnverifiableMinutes } from '../../stores/selectors/fleet';
-import { createWorkspaceRosterCountsSelector } from '../../stores/selectors/workspaceAgentRoster';
+import { createWorkspaceRosterChipSelector } from '../../stores/selectors/workspaceAgentRoster';
 import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink } from '../icons';
+import { StatusMarkView } from './AgentMarks';
+import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning, IconFanOut } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24_CLUSTER, HIT_TARGET_24_IN_CLUSTER } from '../hitArea';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { collectTerminalSurfaces, collectWorkspaceTerminalSurfaces } from '../../utils/paneTraversal';
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
+import Popover from '../ui/Popover';
+import Button from '../ui/Button';
+import { placePopover } from '../AgentToolbar/placePopover';
 import WorkspaceAccountMenu from './WorkspaceAccountMenu';
 import WorkspaceChromeProfileMenu from './WorkspaceChromeProfileMenu';
 import WorkspaceAgentRoster, { WorkspaceRosterSummaryMemo, STASH_PULSE_MS } from './WorkspaceAgentRoster';
 import { displayPath } from '../../utils/displayPath';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
+import { timeAgo } from '../../utils/timeAgo';
+import { displayWorkspaceName, provenanceCallerLabel, provenanceTooltip, resolveCallerPane } from '../../utils/fanoutProvenance';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 
 interface WorkspaceItemProps {
@@ -38,6 +44,13 @@ interface WorkspaceItemProps {
   onCopyInfo: (id: string) => void;
   onDuplicate: (id: string) => void;
   onReorder: (fromIndex: number, toIndex: number) => void;
+  /**
+   * #1481 — this row is a fan-out task rendered under its owner (or in the
+   * closed-owner group): shown without the `wtask: ` prefix, marked with the
+   * fan-out glyph + provenance tooltip, and not a reorder source or target —
+   * the drop math assumes flat siblings, and a task's place is its owner's.
+   */
+  taskRow?: boolean;
 }
 
 /**
@@ -51,11 +64,12 @@ function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
     : pr.state === 'merged' ? 'var(--accent-blue)'
     : pr.state === 'closed' ? 'var(--accent-red)'
     : 'var(--text-muted)'; // draft
+  // #1481 — monochrome SVG marks, not text glyphs that can render as emoji.
   const checksGlyph =
-    pr.checks === 'passing' ? '✓'
-    : pr.checks === 'failing' ? '✗'
+    pr.checks === 'passing' ? <IconCheck size={9} />
+    : pr.checks === 'failing' ? <IconX size={9} />
     : pr.checks === 'pending' ? '●'
-    : '';
+    : null;
   const checksColor =
     pr.checks === 'passing' ? 'var(--accent-green)'
     : pr.checks === 'failing' ? 'var(--accent-red)'
@@ -75,7 +89,7 @@ function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
       }}
     >
       #{pr.number}
-      {checksGlyph && <span style={{ color: checksColor }}>{checksGlyph}</span>}
+      {checksGlyph && <span className="inline-flex" style={{ color: checksColor }}>{checksGlyph}</span>}
     </span>
   );
 }
@@ -132,8 +146,10 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
             className="min-w-0 truncate"
             title={`${t('workspace.gitBranch')}: ${metadata.gitBranch}${metadata.gitIsWorktree ? ` (${t('workspace.gitWorktree')})` : ''}`}
           >
-            ⎇ {metadata.gitBranch}
-            {metadata.gitIsWorktree ? <span className="text-[var(--accent-blue)]">⊕</span> : null}
+            {/* #1481 — branch and worktree marks are SVG icons, not ⎇ / ⊕. */}
+            <span className="mr-1 inline-flex align-[-1px]" aria-hidden="true"><IconGitBranch size={10} /></span>
+            {metadata.gitBranch}
+            {metadata.gitIsWorktree ? <span className="ml-1 inline-flex align-[-1px] text-[var(--accent-blue)]" aria-hidden="true"><IconWorktree size={10} /></span> : null}
           </span>
           {metadata.gitSync && <GitSyncBadge sync={metadata.gitSync} />}
           {metadata.pr && <PrBadge pr={metadata.pr} />}
@@ -267,7 +283,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
   const workspace = useStore(selectWorkspaceById(workspaceId));
@@ -279,7 +295,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const [owOpen, setOwOpen] = useState(false);
   const [colorOpen, setColorOpen] = useState(false);
   const [folderApps, setFolderApps] = useState<{ id: string; name: string }[]>([]);
-  const [closeConfirmPos, setCloseConfirmPos] = useState<{ x: number; y: number } | null>(null);
+  const [closeConfirmPos, setCloseConfirmPos] = useState<CloseConfirmAnchor | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const dragStartTimeRef = useRef<number>(0);
@@ -295,7 +311,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // DISPLAY order would move the row to a different ARRAY index than the
   // indicator promised. Reorder is paused while it is on; Ctrl+N and the
   // stored order are untouched.
-  const sidebarAttentionFirst = useStore((s) => s.sidebarAttentionFirst);
+  // #1481 — any non-manual order ('attention' or 'recent') is display-only in
+  // the same way, so reorder pauses for both; task rows never reorder.
+  const sortPaused = useStore((s) => s.sidebarSortMode !== 'manual');
+  const reorderOff = sortPaused || taskRow;
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
   const metadata = workspace?.metadata;
@@ -334,15 +353,19 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const toggleRoster = useCallback(() => setRosterOpen((value) => !value), []);
   // Counts only — a reference-stable projection of two integers, so this does
   // not rerender the row on terminal output the way the full roster would.
-  const rosterCountsSelector = useMemo(
-    () => createWorkspaceRosterCountsSelector(workspaceId),
+  // #1481 — the chip projection: counts plus up to three agents for the
+  // collapsed summary. Reference-stable; it changes only when a drawn glyph,
+  // its status or a count does, never on output.
+  const rosterChipSelector = useMemo(
+    () => createWorkspaceRosterChipSelector(workspaceId),
     [workspaceId],
   );
-  const rosterCounts = useStore(rosterCountsSelector);
+  const rosterCounts = useStore(rosterChipSelector);
   const hasRoster = rosterCounts.agentCount > 0 || rosterCounts.stashedCount > 0;
-  /** Rows whose roster summary must not wait for the pointer — see its JSX. */
-  const rosterAlwaysShown =
-    rosterOpen || (rosterCounts.agentCount === 0 && rosterCounts.stashedCount > 0);
+  /** Rows whose roster summary must not wait for the pointer — see its JSX.
+   *  #1481 — the summary now names who is here and what they are doing, which
+   *  is the reason to scan the list, so it no longer hides at rest. */
+  const rosterAlwaysShown = rosterOpen || hasRoster;
   // Newly selected workspaces reveal their agents automatically; workspaces
   // that move to the background collapse back to the count. The user can still
   // explicitly toggle either state until selection changes again.
@@ -389,6 +412,13 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const childMission = useStore((s) => s.missionByPaneGroup[workspaceId]);
   const detachMissionForPaneGroup = useStore((s) => s.detachMissionForPaneGroup);
   const isDependentChild = childMission?.status === 'open';
+  // #1481 — provenance for a task row: the audit record (who asked, when) and
+  // the owner's current name. Undefined for every other row.
+  const provenance = useStore((s) => (taskRow ? s.fanoutProvenance[workspaceId] : undefined));
+  const spawnOwner = useStore((s) => (taskRow ? s.fanoutSpawnOwner[workspaceId] : undefined));
+  const lineageOwner = useStore((s) => (taskRow ? s.fanoutLineage[workspaceId] : undefined));
+  const taskOwnerId = taskRow ? childMission?.owner?.verifiedWorkspaceId ?? lineageOwner ?? spawnOwner : undefined;
+  const taskOwnerName = useStore((s) => (taskOwnerId ? s.workspaces.find((w) => w.id === taskOwnerId)?.name : undefined));
 
   // Idle badge — how long since ANY of this workspace's surfaces last showed
   // life: agent activity (surfaceActivityAt, same stamps the fleet 'running'
@@ -523,7 +553,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDragStart = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!workspace || sidebarAttentionFirst) return;
+    if (!workspace || reorderOff) return;
     // Roster controls live inside this draggable card. Chromium chooses the
     // nearest draggable ancestor as the native source, so `draggable={false}`
     // on a nested button is not enough. Reject a drag whose pointer originated
@@ -568,7 +598,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    if (sidebarAttentionFirst) return;
+    if (reorderOff) return;
     e.preventDefault();
     const reorderFrom = useStore.getState().draggedWorkspaceIndex;
     if (reorderFrom === null) return;
@@ -594,7 +624,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    if (sidebarAttentionFirst) return;
+    if (reorderOff) return;
     e.preventDefault();
     setDropIndicator(null);
     // Reorder source comes from the store, not dataTransfer. A null
@@ -680,6 +710,15 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // 하므로 이 창은 찰나다.
   if (!workspace) return null;
 
+  const displayName = displayWorkspaceName(workspace.name, taskRow);
+  const provenanceTitle = taskRow
+    ? provenanceTooltip({
+      ownerName: taskOwnerName ? displayWorkspaceName(taskOwnerName, false) : undefined,
+      caller: provenanceCallerLabel(provenance, (ptyId) => resolveCallerPane(useStore.getState(), ptyId), t),
+      when: provenance?.at ?? childMission?.createdAt ? timeAgo(provenance?.at ?? childMission?.createdAt ?? 0) : undefined,
+    }, t)
+    : undefined;
+
   const hasProfile = workspace.profile !== undefined;
   // Color tag (optional). Undefined → every style below falls back to exactly
   // the pre-feature rendering, so an untagged workspace is pixel-identical.
@@ -719,7 +758,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       )}
 
       <div
-        draggable={!sidebarAttentionFirst}
+        draggable={!reorderOff}
         {...tokenAttrs('bgSurface', 'bg')}
         className={`group sidebar-row px-3 py-1.5 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive
@@ -737,48 +776,20 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         onDrop={handleDrop}
       >
         <div className="flex min-w-0 items-start gap-2">
-        {/* Status indicator */}
-        {(() => {
-          const st = agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
-          // Red is spent on both "needs you" and "error", so hue alone cannot
-          // say which one this row is: an errored agent gets a ✕ in the dot's
-          // own footprint instead of a round dot.
-          if (st?.shape === 'cross') {
-            // The box is sized to the GLYPH (10px), not to the dot it replaces
-            // (6px), which the ✕ overflowed. `-mx-0.5` refunds the 4px of extra
-            // width so the name column starts where it does on every other row,
-            // and `mt-1` puts the taller box's centre on the dot's centre line
-            // (6px + 3 − 5). No glow: the cross is told apart by FORM, so the
-            // glow channel would only make it read as one more red dot.
-            return (
-              <span
-                className="w-2.5 h-2.5 -mx-0.5 flex items-center justify-center flex-shrink-0 mt-1 text-[10px] font-bold leading-none"
-                style={{ color: st.dotVar }}
-                role="img"
-                aria-label={t(st.labelKey)}
-                title={t(st.labelKey)}
-              >
-                ✕
-              </span>
-            );
-          }
-          // Unverifiable (running, but silent past the hook-authority window):
-          // the same 6px footprint goes hollow — an amber ring, no fill, no
-          // glow — and says how long the silence has lasted. The status itself
-          // is untouched, so the needs-you wash and the row order are too.
-          const unverifiable = unverifiableMinutes > 0;
-          return (
-            <div
-              className={`sidebar-dot w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${
-                unverifiable ? 'sidebar-dot-unverifiable' : st ? st.glowClass : ''
-              }`}
-              style={unverifiable ? undefined : { backgroundColor: st ? st.dotVar : isActive ? 'var(--accent-green)' : 'var(--text-muted)' }}
-              title={unverifiable
-                ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
-                : st ? t(st.labelKey) : undefined}
-            />
-          );
-        })()}
+        {/* Status indicator — #1481: one shared mark (AgentMarks.tsx), status
+            told by shape. Idle draws nothing: an active-but-idle workspace
+            is no longer painted green, because green means "finished" and
+            selection already has its own treatment. `mt-1` centres the 10px
+            box on the name line. */}
+        <span className="mt-1 flex-none">
+          <StatusMarkView
+            status={agentStatus}
+            unverifiable={unverifiableMinutes > 0}
+            label={unverifiableMinutes > 0
+              ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
+              : agentStatus !== 'idle' ? t(AGENT_STATUS_ICON[agentStatus].labelKey) : undefined}
+          />
+        </span>
 
         {/* Name + Metadata */}
         <div className="flex-1 min-w-0">
@@ -802,11 +813,24 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     all, so a clipped name was simply unreadable. It carries the
                     idle minutes too, which is where they go when the roster
                     chip takes their place on the row (#997). */}
+                {taskRow && (
+                  // #1481 — provenance: a muted fan-out glyph whose tooltip says
+                  // who fanned this task out, from which caller, and when.
+                  <span
+                    className="flex-none text-[var(--text-muted)]"
+                    role="img"
+                    aria-label={provenanceTitle}
+                    title={provenanceTitle}
+                    data-task-provenance
+                  >
+                    <IconFanOut size={10} />
+                  </span>
+                )}
                 <span
                   className={`font-sans text-[13px] truncate ${unreadCount > 0 || isActive ? 'font-semibold' : 'font-medium'} ${idleLabel && !hasRoster ? 'text-[var(--text-sub)]' : ''}`}
-                  title={idleLabel ? `${workspace.name} · ${t('workspace.idleTooltip', { time: idleLabel })}` : workspace.name}
+                  title={idleLabel ? `${displayName} · ${t('workspace.idleTooltip', { time: idleLabel })}` : displayName}
                 >
-                  {workspace.name}
+                  {displayName}
                 </span>
                 {hasProfile && (
                   <span
@@ -864,7 +888,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     className="text-[10px] text-[var(--accent-yellow)] flex-shrink-0"
                     title={t('workspace.cwdDeparted', { cwd: departedCwd })}
                   >
-                    ⚠ {t('workspace.departed')}
+                    <span className="mr-0.5 inline-flex align-[-1px]" aria-hidden="true"><IconWarning size={10} /></span>
+                    {t('workspace.departed')}
                   </span>
                 )}
                 {/* #997 — the idle label and the roster chip answer the same
@@ -903,6 +928,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               workspaceId={workspaceId}
               agentCount={rosterCounts.agentCount}
               stashedCount={rosterCounts.stashedCount}
+              agents={rosterOpen ? undefined : rosterCounts.agents}
+              extra={rosterCounts.extra}
               open={rosterOpen}
               onToggle={toggleRoster}
             />
@@ -915,16 +942,25 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             On hover the row's chrome comes back and the label steps aside for
             it (the wash and the red dot keep saying "needs you"); the active
             row, which shows its chrome permanently, keeps the label too. */}
-        {needsYou && (
+        {/* #1481 — not on a nested task row: its wash and red ring stay, and the
+            owner's rollup line already says "N need you" for the group. */}
+        {needsYou && !taskRow && (
           <span className={`font-sans text-[10px] font-semibold text-[var(--accent-red)] flex-shrink-0 mt-0.5 ${isActive ? '' : 'group-hover:hidden'}`}>
             {t('workspace.needsYou')}
           </span>
         )}
 
         {/* Shortcut hint */}
-        <span className={`text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5 ${restHidden}`}>
-          {index < 9 ? `^${index + 1}` : ''}
-        </span>
+        {/* #1481 — a nested task row is indented, so even the active one gives
+            the hint back to its name at rest. */}
+        {/* #1481 review — Ctrl+N follows the stored order, which nesting no
+            longer mirrors on screen; a nested task row would show a hint out
+            of sequence with the rows around it, so it shows none. */}
+        {!taskRow && (
+          <span className={`text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5 ${restHidden}`}>
+            {index < 9 ? `^${index + 1}` : ''}
+          </span>
+        )}
 
         {/* Hover actions. Each drew an 11px glyph in a 13px box; each is now a
             real 24x24 target. They sit in a cluster because three 24px boxes do
@@ -981,7 +1017,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           <button
             data-workspace-action="close"
             className={`${HIT_TARGET_24_IN_CLUSTER} text-[var(--text-subtle)] hover:text-[var(--accent-red)] text-[10px] font-mono`}
-            onClick={(e) => { e.stopPropagation(); setMenuPos(null); setCloseConfirmPos({ x: e.clientX, y: e.clientY }); }}
+            onClick={(e) => { e.stopPropagation(); setMenuPos(null); setCloseConfirmPos(anchorOf(e.currentTarget)); }}
             title={t('workspace.close')}
             aria-label={t('workspace.close')}
           >
@@ -1233,41 +1269,19 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
 
       {/* Close-workspace confirmation (anti-misclick). */}
       {closeConfirmPos && (
-        <div
-          className="fixed z-[var(--z-popover-top)] w-[220px] py-2 rounded-[7px] shadow-xl sidebar-popover-enter"
-          style={{ left: Math.min(closeConfirmPos.x, window.innerWidth - 232), top: closeConfirmPos.y, background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
-          <div className="px-3 pb-1 text-xs text-[var(--text-main)]">
-            {t('workspace.closeConfirm', { name: workspace.name })}
-          </div>
-          {(() => {
-            // Workspace-wide (#977): closing the workspace disposes stashed
-            // PTYs too, so a visible-only count promises to close fewer panes
-            // than it actually kills.
-            const count = collectWorkspaceTerminalSurfaces(workspace).length;
-            if (count === 0) return null;
-            return (
-              <div className="px-3 pb-2 text-caption text-[var(--text-muted)]">
-                {t('workspace.closeConfirmDetail', { count })}
-              </div>
-            );
-          })()}
-          <div className="flex justify-end gap-2 px-3 pt-1">
-            <button
-              className="px-2 py-0.5 text-caption rounded transition-colors text-[var(--text-subtle)] hover:bg-[var(--bg-overlay)]"
-              onClick={() => setCloseConfirmPos(null)}
-            >
-              {t('workspace.closeCancel')}
-            </button>
-            <button
-              className="px-2 py-0.5 text-caption rounded transition-colors text-[var(--accent-red)] hover:bg-[var(--bg-overlay)]"
-              onClick={() => { setCloseConfirmPos(null); onClose(workspaceId); }}
-            >
-              {t('workspace.closeConfirmYes')}
-            </button>
-          </div>
-        </div>
+        <CloseWorkspaceConfirm
+          anchor={closeConfirmPos}
+          title={t('workspace.closeConfirm', { name: displayName })}
+          // Workspace-wide (#977): closing the workspace disposes stashed
+          // PTYs too, so a visible-only count promises to close fewer panes
+          // than it actually kills.
+          terminalCount={collectWorkspaceTerminalSurfaces(workspace).length}
+          detail={(count) => t('workspace.closeConfirmDetail', { count })}
+          cancelLabel={t('workspace.closeCancel')}
+          confirmLabel={t('workspace.closeConfirmYes')}
+          onCancel={() => setCloseConfirmPos(null)}
+          onConfirm={() => { setCloseConfirmPos(null); onClose(workspaceId); }}
+        />
       )}
 
       {/* Profile editor modal */}
@@ -1275,6 +1289,116 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         <WorkspaceProfileModal workspace={workspace} onClose={() => setProfileModalOpen(false)} />
       )}
     </div>
+  );
+}
+
+/** Viewport rect of the control that opened the close confirmation. */
+export interface CloseConfirmAnchor {
+  top: number;
+  left: number;
+  right: number;
+  bottom: number;
+}
+
+function anchorOf(el: Element): CloseConfirmAnchor {
+  const r = el.getBoundingClientRect();
+  return { top: r.top, left: r.left, right: r.right, bottom: r.bottom };
+}
+
+export const CLOSE_CONFIRM_WIDTH = 240;
+/** Opening estimate only; the real height is measured before paint. */
+const CLOSE_CONFIRM_HEIGHT_ESTIMATE = 112;
+
+export interface CloseWorkspaceConfirmProps {
+  anchor: CloseConfirmAnchor;
+  title: string;
+  terminalCount: number;
+  detail: (count: number) => string;
+  cancelLabel: string;
+  confirmLabel: string;
+  /** #1481 — names of exactly what will be closed, listed under the detail. */
+  items?: readonly string[];
+  onCancel: () => void;
+  onConfirm: () => void;
+}
+
+/**
+ * The close-workspace confirmation, anchored to the row's close button.
+ *
+ * Placed with placePopover (the pane actions menu's helper, #957): it hangs
+ * below the button, right-aligned inside the sidebar, and flips above it when
+ * the row sits near the bottom of the window (#1482) — opening at the pointer
+ * put the Close button past the window edge for the last rows.
+ */
+export function CloseWorkspaceConfirm({
+  anchor,
+  title,
+  terminalCount,
+  detail,
+  cancelLabel,
+  confirmLabel,
+  items,
+  onCancel,
+  onConfirm,
+}: CloseWorkspaceConfirmProps) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [height, setHeight] = useState(CLOSE_CONFIRM_HEIGHT_ESTIMATE);
+  // Measure before paint and re-place with the real height: the detail line
+  // is conditional and the title wraps with long names, so the estimate alone
+  // would flip too late (or too early). offsetHeight, not the bounding rect:
+  // the enter animation scales the card, and a rect read mid-animation is
+  // short by that scale.
+  useLayoutEffect(() => {
+    const measured = ref.current?.offsetHeight ?? 0;
+    if (measured > 0 && Math.abs(measured - height) > 0.5) setHeight(measured);
+  });
+  // The anchor is the button's rect at click time. A window resize or a
+  // scroll of the sidebar (anything that contains this popover — it is a DOM
+  // descendant of its row) moves the button, and a stale anchor would put the
+  // confirm off-screen again (#1482), so either dismisses it, like an outside
+  // click. Scrolls elsewhere (a terminal printing output) do not.
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
+  useEffect(() => {
+    const dismiss = () => onCancelRef.current();
+    const onScroll = (e: Event) => {
+      const el = ref.current;
+      if (el && e.target instanceof Node && e.target !== el && e.target.contains(el)) dismiss();
+    };
+    window.addEventListener('resize', dismiss);
+    document.addEventListener('scroll', onScroll, true);
+    return () => {
+      window.removeEventListener('resize', dismiss);
+      document.removeEventListener('scroll', onScroll, true);
+    };
+  }, []);
+  const pos = placePopover(anchor, { width: CLOSE_CONFIRM_WIDTH, height });
+  return (
+    <Popover
+      ref={ref}
+      padded
+      aria-label={title}
+      data-workspace-close-confirm=""
+      className="fixed z-[var(--z-popover-top)] sidebar-popover-enter"
+      style={{ top: pos.top, left: pos.left, width: CLOSE_CONFIRM_WIDTH }}
+      onMouseDown={(e) => e.stopPropagation()}
+    >
+      <p className="m-0 text-[13px] font-medium leading-5 text-[var(--text-main)] [overflow-wrap:anywhere]">{title}</p>
+      {terminalCount > 0 ? <p className="ui-note mt-1">{detail(terminalCount)}</p> : null}
+      {items && items.length > 0 ? (
+        <ul className="m-0 mt-2 max-h-[132px] list-none overflow-y-auto p-0 text-[13px] leading-5 text-[var(--text-main)]" data-close-items>
+          {items.map((item, i) => <li key={i} className="truncate" title={item}>{item}</li>)}
+        </ul>
+      ) : null}
+      <div className="mt-3 flex justify-end gap-2">
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          {cancelLabel}
+        </Button>
+        <Button variant="danger" size="sm" onClick={onConfirm}>
+          {confirmLabel}
+        </Button>
+      </div>
+    </Popover>
   );
 }
 

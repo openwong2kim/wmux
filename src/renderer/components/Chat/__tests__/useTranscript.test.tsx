@@ -23,7 +23,7 @@ function fixture() {
   } } });
   let append!: (id: string, delta: TranscriptAppendData) => void;
   let gate!: Parameters<ChatBridgeApi['onGate']>[0];
-  const api: ChatBridgeApi = { status: vi.fn(async () => ({ available: true, reason: 'ok', agentSessionId: 'conv-1' })),
+  const api: ChatBridgeApi = { status: vi.fn(async () => ({ available: true, reason: 'ok', agentSessionId: 'conv-1', transcriptBasename:'a.jsonl', sizeBytes:100, mtimeMs:100 })),
     snapshot: vi.fn(async () => page(['a'])), subscribe: vi.fn(async () => ({ ok: true, status: { available: true, reason: 'ok' } })),
     unsubscribe: vi.fn(async () => ({ ok: true })), codeBlock: vi.fn(async () => null), send: vi.fn(async () => ({ result: 'sent' as const })),
     openGates: vi.fn(async () => []), onAppend: (cb) => { append = cb; return vi.fn(); }, onGate: (cb) => { gate = cb; return vi.fn(); } };
@@ -33,6 +33,41 @@ function fixture() {
   return { api, render, disconnect: () => disconnected(), reconnect: () => connected(), append: (delta: TranscriptAppendData, id = 'pty-1') => append(id, delta), gate: (kind: 'open' | 'closed') => gate('pty-1', { kind }) };
 }
 describe('visible chat transcript lifecycle', () => {
+  it('starts the snapshot without waiting for the subscription round trip', async () => {
+    const f=fixture();const sub=deferred<Awaited<ReturnType<ChatBridgeApi['subscribe']>>>();
+    vi.mocked(f.api.subscribe).mockReturnValueOnce(sub.promise);
+    await f.render();
+    expect(f.api.snapshot).toHaveBeenCalledWith('pty-1');expect(latest.loading).toBe(true);
+    await act(async()=>sub.resolve({ok:true,status:{available:true,reason:'ok'}}));
+    expect(latest.events.map(e=>e.id)).toEqual(['a']);
+  });
+  it('shows cached history only after confirming identity, and keeps input blocked until refresh completes', async () => {
+    const f=fixture();await f.render();await f.render('pty-1',false);
+    const status=deferred<Awaited<ReturnType<ChatBridgeApi['status']>>>();
+    const snapshot=deferred<TranscriptPage>();
+    vi.mocked(f.api.status).mockReturnValueOnce(status.promise);vi.mocked(f.api.snapshot).mockReturnValueOnce(snapshot.promise);
+    await f.render();expect(latest.events).toEqual([]);
+    await act(async()=>status.resolve({available:true,reason:'ok',agentSessionId:'conv-1',transcriptBasename:'a.jsonl',sizeBytes:100,mtimeMs:100}));
+    expect(latest.events.map(e=>e.id)).toEqual(['a']);expect(latest.blocked).toBe(true);expect(latest.loading).toBe(true);
+    await act(async()=>snapshot.resolve(page(['a','b'])));
+    expect(latest.events.map(e=>e.id)).toEqual(['a','b']);expect(latest.loading).toBe(false);
+  });
+  it('does not reuse a cache after same-session history is rewritten', async () => {
+    const f=fixture();await f.render();await f.render('pty-1',false);
+    vi.mocked(f.api.status).mockResolvedValueOnce({available:true,reason:'ok',agentSessionId:'conv-1',transcriptBasename:'a.jsonl',sizeBytes:100,mtimeMs:200});
+    const pending=deferred<TranscriptPage>();vi.mocked(f.api.snapshot).mockReturnValueOnce(pending.promise);
+    await f.render();expect(latest.events).toEqual([]);
+    await act(async()=>pending.resolve(page(['rewritten'])));
+    expect(latest.events.map(e=>e.id)).toEqual(['rewritten']);
+  });
+  it('never paints the cached conversation when the same pane has switched native session', async () => {
+    const f=fixture();await f.render();await f.render('pty-1',false);
+    vi.mocked(f.api.status).mockResolvedValueOnce({available:true,reason:'ok',agentSessionId:'replacement'});
+    const snapshot=deferred<TranscriptPage>();vi.mocked(f.api.snapshot).mockReturnValueOnce(snapshot.promise);
+    await f.render();expect(latest.events).toEqual([]);
+    await act(async()=>snapshot.resolve(page(['replacement'])));
+    expect(latest.events.map(e=>e.id)).toEqual(['replacement']);
+  });
   it('rejects an in-flight snapshot after disconnect and repairs history on reconnect', async () => {
     vi.useFakeTimers();
     const f = fixture(); await f.render();

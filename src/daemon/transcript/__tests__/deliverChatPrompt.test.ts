@@ -28,7 +28,7 @@ describe('identity-bound chat delivery', () => {
   it('refuses permission prompts, other agents, old conversations, busy input and oversized drafts', async () => {
     const f = fixture(); f.gate();
     expect(await deliverChatPrompt('conversation-1', 'yes', f.deps)).toBe('blocked');
-    const other = fixture(); other.state.slug = 'codex';
+    const other = fixture(); other.state.slug = 'grok';
     expect(await deliverChatPrompt('conversation-1', 'hello', other.deps)).toBe('unavailable');
     const stale = fixture(); stale.replace();
     expect(await deliverChatPrompt('conversation-1', 'hello', stale.deps)).toBe('session_changed');

@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import {
   createWorkspaceAgentRosterSelector,
-  createWorkspaceRosterCountsSelector,
+  type RosterChipAgent,
   type WorkspaceAgentRosterRow,
 } from '../../stores/selectors/workspaceAgentRoster';
 import { focusNotificationTarget, focusPaneByPtyId } from '../../hooks/useNotificationListener';
@@ -13,7 +13,9 @@ import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24_ROW } from '../hitArea';
 import { timeAgo } from '../../utils/timeAgo';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { formatStaleMinutes, selectUnverifiablePaneMinutes } from '../../stores/selectors/fleet';
+import { fleetIdleForMs, formatStaleMinutes, selectUnverifiablePaneMinutes } from '../../stores/selectors/fleet';
+import { AgentGlyph, StatusMarkView } from './AgentMarks';
+import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 
 /** How long the just-stashed row stays highlighted. Long enough to catch the
  *  eye after the pane vanishes from the layout, short enough not to linger. */
@@ -68,8 +70,23 @@ interface WorkspaceRosterSummaryProps {
    *  control holds no store subscription of its own and memoizes on numbers. */
   agentCount: number;
   stashedCount: number;
+  /** #1481 — up to three agents, most urgent first, grouped by status. */
+  agents?: readonly RosterChipAgent[];
+  /** Agents beyond the drawn ones ("+N"). */
+  extra?: number;
   open: boolean;
   onToggle: () => void;
+}
+
+/** Consecutive runs of the same status, so each run carries ONE mark. */
+export function groupChipAgents(agents: readonly RosterChipAgent[]): RosterChipAgent[][] {
+  const groups: RosterChipAgent[][] = [];
+  for (const agent of agents) {
+    const last = groups[groups.length - 1];
+    if (last && last[0].status === agent.status) last.push(agent);
+    else groups.push([agent]);
+  }
+  return groups;
 }
 
 /**
@@ -172,6 +189,8 @@ function WorkspaceRosterSummary({
   workspaceId,
   agentCount,
   stashedCount,
+  agents = [],
+  extra = 0,
   open,
   onToggle,
 }: WorkspaceRosterSummaryProps) {
@@ -227,7 +246,19 @@ function WorkspaceRosterSummary({
       >
         <IconChevron size={8} />
       </span>
-      {agentCount > 0 && <span>{agentCount}</span>}
+      {/* #1481 — who is here and what they are doing, instead of a bare
+          count: up to three identity glyphs, grouped by status with one mark
+          per group (idle groups draw no mark), then "+N" for the rest. */}
+      {agentCount > 0 && agents.length === 0 && <span>{agentCount}</span>}
+      {groupChipAgents(agents).map((group, gi) => (
+        <span key={`${group[0].status}-${gi}`} className="flex items-center gap-0.5" data-roster-chip-group={group[0].status}>
+          {group[0].status !== 'idle' && <StatusMarkView status={group[0].status} quiet neutralRunning />}
+          {group.map((agent, ai) => (
+            <AgentGlyph key={ai} slug={agent.slug} name={agent.agentName} decorative />
+          ))}
+        </span>
+      ))}
+      {extra > 0 && agents.length > 0 && <span data-roster-chip-extra>+{extra}</span>}
       {/* The stash glyph draws only when it is the ONLY thing to report.
           Beside an agent count it cost 17px of a row whose name column has
           none to spare (measured: it was the difference between eleven
@@ -254,6 +285,17 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
     [workspaceId],
   );
   const roster = useStore(selector);
+  // #1481 — the elapsed column. A local ticker rather than a subscription to
+  // the per-PTY stamps: those move on every throttled output write, and the
+  // label only changes once a minute. Stamps are read at render time.
+  const [now, setNow] = useState(() => Date.now());
+  const hasRows = roster.rows.length > 0;
+  useEffect(() => {
+    if (!hasRows) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), IDLE_TICK_MS);
+    return () => clearInterval(id);
+  }, [hasRows]);
   // Per-PTY silence, in whole minutes, for the rows whose agent still claims to
   // be running but has reported nothing for the hook-authority window. Keyed by
   // ptyId, which is the id these rows already carry; verifiable panes are absent.
@@ -264,6 +306,13 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
   // Computed once per render, not per row: the vendor column earns its width
   // only when the workspace actually mixes vendors.
   const mixedVendors = rosterHasMixedVendors(roster.rows);
+  const stamps = useStore.getState();
+  const stampCtx = {
+    now,
+    surfaceActivityAt: stamps.surfaceActivityAt,
+    surfaceOutputAt: stamps.surfaceOutputAt,
+    surfaceTurnOpenAt: stamps.surfaceTurnOpenAt,
+  };
 
   return (
     <div
@@ -307,6 +356,12 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
             const primary = rosterPrimaryLabel(row) || t('surface.terminal');
             const secondary = rosterSecondaryLabel(row, { showVendor: mixedVendors });
             const detail = row.pendingQuestion ?? row.activity;
+            // #1481 — last activity rides the title line (muted) unless the
+            // agent is blocked on a question, which keeps its own red line.
+            const inlineActivity = !row.pendingQuestion ? row.activity : undefined;
+            const elapsedMs = row.ptyId && !row.remote ? fleetIdleForMs(row.ptyId, stampCtx) : undefined;
+            const elapsed = elapsedMs !== undefined && elapsedMs >= IDLE_SHOW_AFTER_MS ? formatIdle(elapsedMs) : undefined;
+            const agentLabel = row.agentName || t('surface.terminal');
             // The verb rides the accessible name and the tooltip, NOT the
             // visible status slot. Swapping the status text on hover would hide
             // the one thing a stashed row exists to prove — that the session is
@@ -316,7 +371,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
               ? (exited ? t('roster.recoverAction') : t('roster.unstashAction'))
               : undefined;
             const stashedAgo = row.stashedAt ? timeAgo(row.stashedAt) : undefined;
-            const rowAriaLabel = [primary, secondary, unverifiableLabel ?? statusLabel, stashedAgo, detail, verb]
+            const rowAriaLabel = [primary, agentLabel !== primary ? agentLabel : undefined, secondary, unverifiableLabel ?? statusLabel, elapsed, stashedAgo, detail, verb]
               .filter(Boolean)
               .join(', ');
             return (
@@ -383,29 +438,18 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     event.stopPropagation();
                   }}
                 >
-                  {/* Filled, not a hollow ring. A ring drawn with box-shadow
-                      disappears entirely under forced-colors, taking the row's
-                      only status signal with it — and dimming would say "dead"
-                      about a pane whose whole claim is the opposite. The stash
-                      is signalled by the archive glyph, the list position, and
-                      the label instead. The one hollow rendition is silence
-                      (below): there the ring IS the claim being withdrawn, and
-                      it is drawn with a border, which forced-colors keeps. */}
-                  {/* #1176 — a SEEN question drops only the animated glow: the
-                      dot itself stays red because the agent is still blocked;
-                      looking does not answer the question. An attention EVENT
-                      (attentionStatus) keeps its glow — those are unseen by
-                      definition, since focusing clears them. */}
-                  <span
-                    className={`sidebar-dot h-1.5 w-1.5 flex-none rounded-full ${
-                      unverifiableLabel
-                        ? 'sidebar-dot-unverifiable'
-                        : row.questionSeen && !row.attentionStatus
-                          ? ''
-                          : statusIcon.glowClass
-                    }`}
-                    style={unverifiableLabel ? undefined : { backgroundColor: statusIcon.dotVar }}
+                  {/* #1481 — status by shape (StatusMarkView) then identity by
+                      monogram (AgentGlyph). A stashed row keeps a FILLED mark
+                      for its live statuses (DESIGN.md 2026-08-24): the mark
+                      table's shapes are all border- or fill-drawn, none uses
+                      box-shadow, so forced-colors keeps every one. #1176 — a
+                      SEEN question drops only the animated glow. */}
+                  <StatusMarkView
+                    status={row.status}
+                    unverifiable={!!unverifiableLabel}
+                    quiet={!!row.questionSeen && !row.attentionStatus}
                   />
+                  <AgentGlyph slug={row.slug} name={agentLabel} decorative />
                   {/* Name and location on one line. The title truncates first;
                       the coordinate (w85-1 etc.) takes at most 40% before it
                       ellipses too. */}
@@ -424,8 +468,17 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     </span>
                     {/* #1326 — secondary can be empty now (coordinate hidden,
                         no title, no label): drop the "·" too, or a titleless,
-                        coordinate-hidden row would end in a dangling dot. */}
-                    {secondary && (
+                        coordinate-hidden row would end in a dangling dot.
+                        #1481 — live activity takes the trailer's place while
+                        it lasts; the coordinate stays in the tooltip. */}
+                    {inlineActivity ? (
+                      <>
+                        <span className="flex-none text-[10px] text-[var(--text-muted)]">·</span>
+                        <span className="min-w-0 max-w-[55%] flex-none truncate text-[10px] text-[var(--text-muted)]" data-roster-activity>
+                          {inlineActivity}
+                        </span>
+                      </>
+                    ) : secondary && (
                       <>
                         <span className="flex-none text-[10px] text-[var(--text-muted)]">·</span>
                         <span className="max-w-[40%] flex-none truncate text-[10px] font-mono text-[var(--text-muted)]">
@@ -450,24 +503,34 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                       </span>
                     </span>
                   )}
-                  <span
-                    className={`flex-none whitespace-nowrap text-[10px] ${exited ? 'text-[var(--text-muted)]' : statusIcon.className}`}
-                  >
-                    {statusLabel}
-                  </span>
+                  {/* The status word stays visible only on stashed rows — their
+                      proof of life (2026-08-24). Elsewhere the mark carries the
+                      status and the slot shows how long since the last sign of
+                      activity; the word is in the accessible name. */}
+                  {row.stashed ? (
+                    <span
+                      className={`flex-none whitespace-nowrap text-[10px] ${exited ? 'text-[var(--text-muted)]' : statusIcon.className}`}
+                    >
+                      {statusLabel}
+                    </span>
+                  ) : elapsed ? (
+                    <span className="flex-none whitespace-nowrap text-[10px] font-mono tabular-nums text-[var(--text-muted)]" data-roster-elapsed>
+                      {elapsed}
+                    </span>
+                  ) : null}
                 </button>
                 {/* How long it has been off-screen. Free cost visibility: a
                     stashed agent burns tokens whether or not anyone remembers
                     it, and "3d ago" is the cheapest possible reminder. */}
                 {row.stashed && stashedAgo && (
-                  <div className="truncate pl-[18px] pr-1 text-[10px] text-[var(--text-muted)]">
+                  <div className="truncate pl-[37px] pr-1 text-[10px] text-[var(--text-muted)]">
                     {stashedAgo}
                   </div>
                 )}
                 {/* 확인 필요일 때만 질문을 빨강 2번째 줄로 편다(실제로 봐야 하는 신호). */}
                 {row.pendingQuestion && (
                   <div
-                    className="truncate pl-[18px] pr-1 text-[10px] text-[var(--accent-red)]"
+                    className="truncate pl-[37px] pr-1 text-[10px] text-[var(--accent-red)]"
                     title={row.pendingQuestion}
                   >
                     ? {row.pendingQuestion}

@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useT } from '../../hooks/useT';
+import Dialog, { DialogBody, DialogHeader } from '../ui/Dialog';
+import { FOCUS_RING } from '../focusRing';
+import { IconRemoteDevices } from '../icons';
 import type { RemoteHostPublic } from '../../../shared/remoteHosts';
 
 export interface AddRemotePaneModalProps {
@@ -39,14 +42,6 @@ export default function AddRemotePaneModal({ onClose, onCreated, title }: AddRem
   const [creatingHostId, setCreatingHostId] = useState<string | null>(null);
   const [error, setError] = useState<string | undefined>(undefined);
 
-  // Escape closes, same listener AttachRemoteModal binds — until #1140 the
-  // backdrop click was the only way out of this dialog.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
   useEffect(() => {
     let cancelled = false;
     window.electronAPI?.remote?.hostsList().then((list) => {
@@ -85,44 +80,40 @@ export default function AddRemotePaneModal({ onClose, onCreated, title }: AddRem
     }
   };
 
+  // Escape and the backdrop close it (ui/Dialog) — until #1140 the backdrop
+  // click was the only way out of this dialog.
   return (
-    <div
-      className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.4)' }}
-      onMouseDown={onClose}
-    >
-      <div
-        className="w-[360px] max-h-[70vh] overflow-y-auto rounded-[7px] p-3"
-        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-soft)' }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="text-sm font-medium mb-2" style={{ color: 'var(--text-main)' }}>
-          {title ?? t('pane.newRemote')}
-        </div>
-        {error && (
-          <div className="text-xs mb-2" style={{ color: 'var(--accent-red)' }}>{error}</div>
-        )}
+    <Dialog onClose={onClose} closeOnBackdrop width={380} zIndexClassName="z-[var(--z-modal)]">
+      <DialogHeader title={title ?? t('pane.newRemote')} />
+      <DialogBody className="!gap-3">
+        {error && <p className="ui-row-error !m-0 text-[13px] leading-5" role="alert">{error}</p>}
         {hosts === null ? (
-          <div className="text-xs" style={{ color: 'var(--text-muted)' }}>…</div>
+          <p className="m-0 text-[13px] text-[var(--text-sub)]">…</p>
         ) : hosts.length === 0 ? (
-          <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{t('remote.noHostsHint')}</div>
+          <p className="m-0 text-[13px] text-[var(--text-sub)]">{t('remote.noHostsHint')}</p>
         ) : (
-          <div className="flex flex-col gap-1">
+          <div className="ui-group">
             {hosts.map((h) => (
               <button
                 key={h.id}
                 type="button"
                 disabled={creatingHostId !== null}
-                className="text-left px-2 py-1.5 rounded text-xs font-mono truncate hover:bg-[rgba(var(--bg-surface-rgb),0.6)] disabled:opacity-50"
-                style={{ color: 'var(--text-main)' }}
+                className={`ui-row w-full text-left hover:bg-[var(--surface-fill-hover)] disabled:opacity-50 ${FOCUS_RING}`}
                 onClick={() => void pick(h.id)}
               >
-                {h.label || h.origin} {creatingHostId === h.id ? '…' : ''}
+                <span className="ui-row-icon" aria-hidden="true"><IconRemoteDevices size={14} /></span>
+                <span className="ui-row-text">
+                  <span className="ui-row-title truncate">{h.label || h.origin}</span>
+                  {h.label && h.label !== h.origin && (
+                    <span className="ui-row-detail font-mono truncate">{h.origin}</span>
+                  )}
+                </span>
+                {creatingHostId === h.id && <span className="text-[13px] text-[var(--text-sub)]">…</span>}
               </button>
             ))}
           </div>
         )}
-      </div>
-    </div>
+      </DialogBody>
+    </Dialog>
   );
 }

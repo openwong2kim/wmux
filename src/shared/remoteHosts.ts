@@ -129,6 +129,7 @@ const PERMISSION_MODES: ReadonlySet<string> = new Set<PermissionMode>([
   'bypassPermissions',
   'acceptEdits',
   'plan',
+  'auto',
   'default',
 ]);
 

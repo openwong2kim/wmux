@@ -22,6 +22,8 @@ import {
   defaultPaths,
   statusHooks,
   installHooks,
+  allowFanoutWorkerTools,
+  type AllowWorkerToolsOutcome,
   type StatusOutcome,
   type InstallOutcome,
 } from '../../../cli/commands/setupHooks';
@@ -61,6 +63,17 @@ export function registerHooksBridgeHandlers(): void {
     IPC.HOOKS_BRIDGE_INSTALL,
     wrapHandler(IPC.HOOKS_BRIDGE_INSTALL, async (): Promise<InstallOutcome> => {
       return installHooks(defaultPaths());
+    }),
+  );
+
+  // Settings → Agents "Allow wmux worker tools in Claude Code". User-clicked,
+  // never automatic (owner decision 2026-07-17), and only the fixed minimal
+  // list — see FANOUT_WORKER_ALLOWED_TOOLS.
+  ipcMain.removeHandler(IPC.HOOKS_BRIDGE_ALLOW_WORKER_TOOLS);
+  ipcMain.handle(
+    IPC.HOOKS_BRIDGE_ALLOW_WORKER_TOOLS,
+    wrapHandler(IPC.HOOKS_BRIDGE_ALLOW_WORKER_TOOLS, async (): Promise<AllowWorkerToolsOutcome> => {
+      return allowFanoutWorkerTools(defaultPaths());
     }),
   );
 

@@ -56,7 +56,8 @@ export interface PendingExecuteApproval {
   /**
    * Present when the prompt is a fan-out request from the pipe/MCP surface
    * rather than an A2A `execute:true` send. Same queue and same timer, but NOT
-   * the same consent: fan-out never rides `a2aAutoApproveExecute`. The dialog
+   * the same consent: fan-out never rides `a2aAutoApproveExecute` — and it is
+   * only prompted at all when main's fan-out policy asks for approval. The dialog
    * also swaps its copy, because the A2A wording ("spawn a Claude CLI in this
    * workspace") misdescribes a fan-out, which spawns into N NEW worktree
    * workspaces.
@@ -65,7 +66,8 @@ export interface PendingExecuteApproval {
   /**
    * Present when the prompt is a task-lifecycle action from the pipe/MCP
    * surface (task.close / task.pr). Same queue, same timer, same
-   * never-auto-approved rule as fan-out — and its own copy for the same
+   * refusal to ride `a2aAutoApproveExecute` as fan-out (and, unlike fan-out,
+   * no off switch: task.close / task.pr always ask) — and its own copy for the same
    * reason: nothing is spawned here, so the execute wording would name an
    * action the user is not being asked about.
    */

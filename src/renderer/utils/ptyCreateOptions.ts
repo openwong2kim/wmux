@@ -18,6 +18,9 @@ export interface PtyCreateOptions {
    * provisioner·project seed)은 스탬프를 생략 → main이 fail-closed로 gated 처리.
    */
   spawnKind?: SpawnKind;
+  /** Fan-out task pane: main stamps the workspace's depth-1 lineage with this
+   *  owner inside the create, before the PTY exists. */
+  fanoutTaskOf?: string;
   /**
    * Workspace profile env overlay. Merged into the new PTY's environment AFTER
    * the safe-inherited baseline and BEFORE wmux identity vars are forced, so a

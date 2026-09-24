@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
@@ -8,6 +8,7 @@ import type { RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
 import type { InboxItem } from '../../stores/selectors/approvalInbox';
 import { deadlineForItem, remainingSeconds } from './approvalCountdown';
 import { focusNotificationTarget } from '../../hooks/useNotificationListener';
+import { beginApprovalCountdown, pauseApprovalCountdown } from '../../utils/executeApprovalGate';
 import { IconWarning } from '../icons';
 
 // gpui button recipes (theme-safe). Approve = primary warm CTA; deny = danger
@@ -74,13 +75,44 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
     [mcpPrompts],
   );
 
+  // While this tab is open AppLayout unmounts the execute dialog, which is the
+  // only other thing that starts an A2A prompt's auto-deny clock — so without
+  // this the row sat at "0s" and never expired. Every row is on screen at once
+  // here, so each one's 30 s is time a person can actually use. Idempotent, so
+  // a row that is already counting keeps its deadline when another one lands.
+  const a2aRows = items.filter((it): it is Extract<InboxItem, { source: 'a2a' }> => it.source === 'a2a');
+  const a2aApprovalIds = a2aRows.map((it) => it.approvalId).join(',');
+  // Rows on screen whose clock is not running: new ones, and any another
+  // surface paused. Keyed on those alone, so a row that is already counting
+  // keeps its deadline when another one lands or settles.
+  const stoppedA2aIds = a2aRows.filter((it) => it.expiresAt <= 0).map((it) => it.approvalId).join(',');
+  useEffect(() => {
+    if (!stoppedA2aIds) return;
+    for (const id of stoppedA2aIds.split(',')) beginApprovalCountdown(id);
+  }, [stoppedA2aIds]);
+  // When the inbox goes away, the dialog takes over and shows ONE prompt at a
+  // time; the rest must not keep counting down unseen. Pause every row this
+  // list was showing — the dialog restarts the one it shows. Unmount only: a
+  // row that leaves the list while it stays open has settled.
+  const shownA2aIds = useRef<string[]>([]);
+  useEffect(() => {
+    shownA2aIds.current = a2aApprovalIds ? a2aApprovalIds.split(',') : [];
+  }, [a2aApprovalIds]);
+  useEffect(() => () => {
+    for (const id of shownA2aIds.current) pauseApprovalCountdown(id);
+  }, []);
+
   // Live countdown tick for any row that HAS a deadline (A2A always, an MCP
   // prompt once stamped), mirroring ExecuteApprovalDialog's now-tick. Gated so
   // an inbox of deadline-less prompts never spins a 250ms interval.
   const hasDeadline = items.some((it) => deadlineForItem(it, mcpDeadlineAt) !== undefined);
   const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
+  // Layout effect, and `now` refreshed on start: while no row had a deadline
+  // the tick was off and `now` kept its mount time, so the first countdown
+  // would paint against a stale clock ("auto-deny in 330s").
+  useLayoutEffect(() => {
     if (!hasDeadline) return;
+    setNow(Date.now());
     const tick = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(tick);
   }, [hasDeadline]);
@@ -134,7 +166,7 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
         );
 
         if (item.source === 'a2a') {
-          const remainingSec = Math.ceil(Math.max(0, item.expiresAt - now) / 1000);
+          const deadline = deadlineForItem(item);
           const sameWs = !!item.senderWorkspaceId && item.senderWorkspaceId === item.receiverWorkspaceId;
           return (
             <div
@@ -153,9 +185,11 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
                   {t('fleet.approvals.a2aTitle')}
                 </span>
                 <div className="flex-1" />
-                <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
-                  {t('fleet.approvals.autoDenyIn', { seconds: remainingSec })}
-                </span>
+                {deadline !== undefined && (
+                  <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
+                    {t('fleet.approvals.autoDenyIn', { seconds: remainingSeconds(deadline, now) })}
+                  </span>
+                )}
               </div>
               {/* Who is asking + what they want — security context (subordinate,
                   muted, mono). Uses the from/to/a2aDescRemote/a2aDescSameWorkspace keys. */}

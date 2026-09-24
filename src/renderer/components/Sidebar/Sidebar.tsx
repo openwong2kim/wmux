@@ -1,9 +1,13 @@
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { Fragment, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
-import { selectAllWorkspaceAgentStatus } from '../../stores/selectors/fleet';
-import { orderByAttention } from './attentionOrder';
+import { selectAllWorkspaceAgentStatus, selectAllWorkspaceLastActivityMinute } from '../../stores/selectors/fleet';
+import { orderWorkspaces } from './attentionOrder';
+import { buildSidebarTree, ORPHAN_GROUP_KEY } from './sidebarTree';
+import SidebarTaskGroup from './SidebarTaskGroup';
+import SidebarResizeHandle from './SidebarResizeHandle';
+import { resolveTaskLink } from '../../utils/fanoutProvenance';
 import WorkspaceItem from './WorkspaceItem';
 import RemoteWorkspaceItem from './RemoteWorkspaceItem';
 import OrphanSessions from './OrphanSessions';
@@ -29,6 +33,8 @@ import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 // Frozen stand-in the attention selector returns while the setting is off, so
 // useShallow sees the same empty map every time and nothing re-renders.
 const NO_AGENT_STATUS: Record<string, AgentStatus> = {};
+/** The same frozen stand-in for the recent-activity map (#1481). */
+const NO_ACTIVITY: Record<string, number> = {};
 
 // 워크스페이스가 소유한 모든 PTY를 dispose
 // (traversal is the shared canonical walk; the dispose policy stays local)
@@ -58,22 +64,45 @@ export default function Sidebar() {
     const q = wsSearch.toLowerCase();
     return workspaces.filter((ws) => ws.name.toLowerCase().includes(q));
   }, [workspaces, wsSearch]);
-  // Needs-you-first ordering (attentionOrder.ts) — display only. Subscribing to
-  // the status roll-up unconditionally would re-couple this component to the
-  // per-pane churn the A1 refactor above decoupled it from, so the selector
-  // short-circuits to a frozen empty map while the setting is off.
-  const sidebarAttentionFirst = useStore((s) => s.sidebarAttentionFirst);
+  // Display-only ordering (attentionOrder.ts): manual, needs-you-first, or
+  // recent activity (#1481). Subscribing to the status or activity roll-up
+  // unconditionally would re-couple this component to the per-pane churn the
+  // A1 refactor above decoupled it from, so each selector short-circuits to a
+  // frozen empty map unless its mode is on. Activity is minute-floored.
+  const sidebarSortMode = useStore((s) => s.sidebarSortMode);
   const agentStatusById = useStore(
-    useShallow((s) => (s.sidebarAttentionFirst ? selectAllWorkspaceAgentStatus(s) : NO_AGENT_STATUS)),
+    useShallow((s) => (s.sidebarSortMode === 'attention' ? selectAllWorkspaceAgentStatus(s) : NO_AGENT_STATUS)),
+  );
+  const lastActivityById = useStore(
+    useShallow((s) => (s.sidebarSortMode === 'recent' ? selectAllWorkspaceLastActivityMinute(s) : NO_ACTIVITY)),
   );
   const orderedWorkspaces = useMemo(
-    () => orderByAttention(
+    () => orderWorkspaces(
       filteredWorkspaces,
+      sidebarSortMode,
       (id) => agentStatusById[id] ?? 'idle',
-      sidebarAttentionFirst,
+      (id) => lastActivityById[id] ?? 0,
     ),
-    [filteredWorkspaces, agentStatusById, sidebarAttentionFirst],
+    [filteredWorkspaces, agentStatusById, lastActivityById, sidebarSortMode],
   );
+  // #1481 — fan-out nesting. Both maps change only when a fan-out lands, a
+  // task closes or detaches, or the audit log is re-read — not on output.
+  const missionByPaneGroup = useStore((s) => s.missionByPaneGroup);
+  const fanoutLineage = useStore((s) => s.fanoutLineage);
+  const fanoutSpawnOwner = useStore((s) => s.fanoutSpawnOwner);
+  const fanoutSettled = useStore((s) => s.fanoutRefreshSettled);
+  const sidebarWidth = useStore((s) => s.sidebarWidth);
+  const tree = useMemo(() => {
+    const byId = new Map(workspaces.map((w) => [w.id, w]));
+    return buildSidebarTree(
+      orderedWorkspaces,
+      (id) => {
+        const ws = byId.get(id);
+        return ws ? resolveTaskLink(missionByPaneGroup[id], fanoutLineage[id], fanoutSpawnOwner[id]) : null;
+      },
+      new Set(workspaces.map((w) => w.id)),
+    );
+  }, [orderedWorkspaces, workspaces, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   // #1329 — rows that only exist to poll a remote-terminal PANE's host are not
   // attachments and must not render here: the user never asked for a mirror,
@@ -170,14 +199,34 @@ export default function Sidebar() {
     archiveWorkspace(wsId);
   }, [archiveWorkspace]);
 
+  const workspaceById = useMemo(() => new Map(workspaces.map((w) => [w.id, w])), [workspaces]);
+  const renderTask = useCallback((id: string) => (
+    <WorkspaceItem
+      workspaceId={id}
+      isActive={id === activeWorkspaceId}
+      isMultiview={multiviewIds.includes(id)}
+      index={workspaces.findIndex((w) => w.id === id)}
+      onSelect={setActiveWorkspace}
+      onCtrlSelect={handleCtrlSelect}
+      onRename={renameWorkspace}
+      onClose={handleClose}
+      onArchive={handleArchive}
+      onCopyInfo={handleCopySessionInfo}
+      onDuplicate={duplicateWorkspace}
+      onReorder={reorderWorkspace}
+      taskRow
+    />
+  ), [activeWorkspaceId, multiviewIds, workspaces, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
+
   return (
     <div
-      className="wmux-sidebar flex flex-col h-full shrink-0 bg-[var(--bg-mantle)]"
-      style={{ width: 240, borderColor: 'var(--border-soft)' }}
+      className="wmux-sidebar relative flex flex-col h-full shrink-0 bg-[var(--bg-mantle)]"
+      style={{ width: sidebarWidth, borderColor: 'var(--border-soft)' }}
       {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}
       onKeyDown={handleSidebarKeyDown}
     >
       {pickerOpen && <PresetPicker onClose={closePicker} anchorStyle={pickerAnchor} />}
+      <SidebarResizeHandle />
       <SidebarNavigation />
       <div className="wmux-sidebar-section">
         <span className="truncate">{t('sidebar.workspaces')}</span>
@@ -241,23 +290,61 @@ export default function Sidebar() {
             drops on a pinned row: `index` is the row's real position, so a
             reorder onto it lands where the row actually lives, not where the
             needs-you sort happens to be showing it. */}
-        {orderedWorkspaces.map((ws) => (
-          <WorkspaceItem
-            key={ws.id}
-            workspaceId={ws.id}
-            isActive={ws.id === activeWorkspaceId}
-            isMultiview={multiviewIds.includes(ws.id)}
-            index={workspaces.indexOf(ws)}
-            onSelect={setActiveWorkspace}
-            onCtrlSelect={handleCtrlSelect}
-            onRename={renameWorkspace}
-            onClose={handleClose}
-            onArchive={handleArchive}
-            onCopyInfo={handleCopySessionInfo}
-            onDuplicate={duplicateWorkspace}
-            onReorder={reorderWorkspace}
+        {/* #1481 — fan-out tasks nest under the workspace that fanned them
+            out (SidebarTaskGroup: rollup, fold, close-finished). Detached
+            tasks are ordinary rows; tasks whose owner is gone collect in the
+            "From closed workspace" group below. */}
+        {tree.top.map((node) => {
+          const ws = workspaceById.get(node.id);
+          if (!ws) return null;
+          // A task whose owner is only hidden by the search filter still
+          // renders as a task row (prefix stripped, provenance, no drag).
+          if (tree.taskIds.has(node.id)) return <Fragment key={node.id}>{renderTask(node.id)}</Fragment>;
+          return (
+            <Fragment key={node.id}>
+              <WorkspaceItem
+                workspaceId={ws.id}
+                isActive={ws.id === activeWorkspaceId}
+                isMultiview={multiviewIds.includes(ws.id)}
+                index={workspaces.indexOf(ws)}
+                onSelect={setActiveWorkspace}
+                onCtrlSelect={handleCtrlSelect}
+                onRename={renameWorkspace}
+                onClose={handleClose}
+                onArchive={handleArchive}
+                onCopyInfo={handleCopySessionInfo}
+                onDuplicate={duplicateWorkspace}
+                onReorder={reorderWorkspace}
+              />
+              {node.taskIds.length > 0 && (
+                <SidebarTaskGroup
+                  groupKey={node.id}
+                  taskIds={node.taskIds}
+                  ownerName={ws.name}
+                  ownerActive={node.id === activeWorkspaceId}
+                  renderTask={renderTask}
+                  onCloseWorkspace={handleClose}
+                />
+              )}
+            </Fragment>
+          );
+        })}
+        {/* Until the first lineage + ledger refresh lands, a task whose owner
+            is not yet known to be gone is not called orphaned: it waits as a
+            plain task row instead of flashing into the group. */}
+        {!fanoutSettled && tree.orphanTaskIds.map((id) => <Fragment key={id}>{renderTask(id)}</Fragment>)}
+        {fanoutSettled && tree.orphanTaskIds.length > 0 && (
+          <SidebarTaskGroup
+            groupKey={ORPHAN_GROUP_KEY}
+            taskIds={tree.orphanTaskIds}
+            // Open by default: these are the tasks nobody is watching.
+            ownerActive
+            label={t('sidebar.tasks.orphanGroup')}
+            ownerName={t('sidebar.tasks.orphanGroup')}
+            renderTask={renderTask}
+            onCloseWorkspace={handleClose}
           />
-        ))}
+        )}
 
         {/* Remote section — attached mirrors from other wmux hosts, rendered
             under the local workspace rows. A remote workspace is never part

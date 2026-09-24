@@ -24,9 +24,9 @@ describe('settings catalog — Browser tab', () => {
     ]);
   });
 
-  it('lists browser in the Agents nav group right after agents', () => {
+  it('lists browser last in the Agents nav group', () => {
     const agents = SETTINGS_NAV_GROUPS.find((g) => g.id === 'agents');
-    expect(agents?.tabs).toEqual(['claude-integration', 'agents', 'browser']);
+    expect(agents?.tabs).toEqual(['claude-integration', 'accounts', 'orchestrator', 'roles', 'browser']);
     const elsewhere = SETTINGS_NAV_GROUPS.filter((g) => g.id !== 'agents').flatMap((g) => g.tabs);
     expect(elsewhere).not.toContain('browser');
   });

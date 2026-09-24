@@ -11,6 +11,7 @@ import { RingBuffer } from './RingBuffer';
 import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
 import { OutputModeTracker } from './util/outputModeTracker';
 import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
+import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 
 /**
  * Daemon version of PTYBridge.
@@ -54,6 +55,24 @@ export class DaemonPTYBridge extends EventEmitter {
    * while muted so the daemon notices when a recovered shell dies.
    */
   private muted = false;
+
+  /**
+   * #1464: output that arrived while muted, kept so `setMuted(false,
+   * { replayHeld: true })` can release it. A recovered shell prints its first
+   * prompt while still muted; when the renderer's first resize keeps the saved
+   * geometry no SIGWINCH follows, so the shell never repaints and a dropped
+   * prompt leaves the pane blank until a key is pressed. `null` = not holding.
+   *
+   * Bounded by keeping the HEAD: once the cap is reached later chunks are not
+   * held (`heldFull`), but what was held stays — the shell's prompt, or a
+   * TUI's first frame, is printed first, so it is the part worth keeping.
+   */
+  private heldWhileMuted: string[] | null = null;
+  private heldBytes = 0;
+  private heldFull = false;
+  private static readonly MAX_HELD_BYTES = 256 * 1024;
+  /** The unmuted capture path, set by setupDataForwarding; replays held chunks. */
+  private captureChunk: ((data: string, buf: Buffer) => void) | null = null;
 
   /**
    * Last resize timestamp for this session (daemon-process state — the
@@ -114,6 +133,9 @@ export class DaemonPTYBridge extends EventEmitter {
   private lastInputAt = 0;
   /** Monotonic stdin write counter used to detect input racing a scheduled paste. */
   private inputRevision = 0;
+  private emptyShellPrompt = false;
+  private completedShellCommand = false;
+  private shellCommandRunning = false;
   /**
    * At least one full activity window. A shorter one would let bytes banked
    * before a keystroke combine, inside the same 3 s measurement window, with
@@ -196,10 +218,19 @@ export class DaemonPTYBridge extends EventEmitter {
     if (data.length > 0) {
       this.lastInputAt = Date.now();
       this.inputRevision += 1;
+      this.emptyShellPrompt = false;
+      this.completedShellCommand = false;
     }
 
+    // A pane blocked on a human is answered by a lone option digit or a lone
+    // ESC as well as by Enter: Claude Code's permission dialog takes `1`/`2`/`3`
+    // and ESC without a CR. Arrow keys (`ESC [ A`) move the selection and are
+    // not an answer; a paste is never one.
+    const wasAwaiting = this.awaitingHuman;
+    // eslint-disable-next-line no-control-regex
+    const answerKey = wasAwaiting && !this.inputInBracketedPaste && /^(?:[1-9]|\x1b)$/.test(data);
     const hasSubmitBoundary = this.scanSubmittedInput(data);
-    if (!forceSubmitted && !hasSubmitBoundary) return;
+    if (!forceSubmitted && !hasSubmitBoundary && !answerKey) return;
 
     this.lastTurnStartedAt = Date.now();
 
@@ -215,6 +246,10 @@ export class DaemonPTYBridge extends EventEmitter {
     if (this.activityMonitor && this.sessionId) {
       this.activityMonitor.beginTurn(this.sessionId);
     }
+    // The dialog is closed. On a hook-governed pane bytes cannot relight the
+    // status (main mutes the byte heuristic while the turn latch is held), so
+    // the daemon broadcasts `running` and cancels a still-held awaiting window.
+    if (wasAwaiting && this.sessionId) this.emit('answered', { sessionId: this.sessionId });
   }
 
   /**
@@ -248,7 +283,11 @@ export class DaemonPTYBridge extends EventEmitter {
     }
     this.explicitTerminalStatus = true;
     this.settledStatus = status;
+    // An authoritative turn end (the Stop / StopFailure hook) closes any dialog
+    // the turn was blocked on. The detector's own `waiting` / `complete` cannot:
+    // the idle footer under an approval box matches those patterns too.
     if (status === 'awaiting_input') this.awaitingHuman = true;
+    else if (authoritative) this.awaitingHuman = false;
     this.settledAtMs = Date.now();
     this.submittedTurnPending = false;
     if (this.resizeGuardTimer) {
@@ -273,6 +312,8 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /** Current stdin generation; every non-empty write advances it once. */
+  isEmptyShellPrompt(): boolean { return this.emptyShellPrompt; }
+
   getInputRevision(): number {
     return this.inputRevision;
   }
@@ -495,6 +536,12 @@ export class DaemonPTYBridge extends EventEmitter {
       if (event.code === 133 && promptLog) {
         const parsed = parseOsc133Payload(event.data, Date.now(), ringBuffer.totalBytesWritten);
         if (parsed) {
+          if (parsed.type === 'command_end') { this.completedShellCommand = this.shellCommandRunning; this.shellCommandRunning = false; }
+          if (parsed.type === 'command_start') { this.shellCommandRunning = true; this.completedShellCommand = false; this.emptyShellPrompt = false; }
+          if (parsed.type === 'prompt_end') {
+            this.emptyShellPrompt = this.inputRevision === 0 || this.completedShellCommand;
+            this.completedShellCommand = false;
+          }
           promptLog.append(parsed);
           this.emit('prompt', { sessionId, event: parsed });
         }
@@ -516,6 +563,41 @@ export class DaemonPTYBridge extends EventEmitter {
     // Prompt-based CWD detection state
     let lastDetectedCwd = '';
     let promptBuffer = '';
+
+    const capture = (data: string, buf: Buffer): void => {
+      try {
+        ringBuffer.write(buf);
+        // AFTER the ring write: the tracker's offsets are in the ring's own
+        // coordinate system, so it needs the counter this chunk already moved.
+        modeTracker.feed(data, ringBuffer.totalBytesWritten);
+        oscParser.process(data);
+
+        // Prompt-based CWD detection — fallback for shells WITHOUT the
+        // integration hook only. Once OSC 7 has been seen (oscCwdSeen), the
+        // scraper is permanently off for this session: the hook re-emits on
+        // every prompt, so scraping can only ever add false positives.
+        if (!this.oscCwdSeen) {
+          promptBuffer += data;
+          if (promptBuffer.length > 1024) promptBuffer = promptBuffer.slice(-512);
+
+          const clean = promptBuffer.replace(DaemonPTYBridge.ANSI_STRIP, '');
+          const detectedCwd = detectPromptCwd(clean);
+          if (detectedCwd !== null) {
+            if (detectedCwd !== lastDetectedCwd) {
+              lastDetectedCwd = detectedCwd;
+              this.emit('cwd', { sessionId, cwd: detectedCwd });
+            }
+            promptBuffer = '';
+          }
+        }
+
+        this.emit('data', buf);
+      } catch (err) {
+        // Still forward raw data even if parsing failed
+        this.emit('data', buf);
+      }
+    };
+    this.captureChunk = capture;
 
     // PTY data handler
     const onDataDisposable = ptyProcess.onData((data: string) => {
@@ -552,41 +634,23 @@ export class DaemonPTYBridge extends EventEmitter {
         // detection 실패가 데이터 포워딩을 막아선 안 된다.
       }
 
-      // Muted: drop the chunk before any side effect. Recovery sessions
-      // run muted until their first resize so the geometry mismatch
-      // window (Bug 2 in v2.8.0) doesn't pollute the ring buffer.
-      if (this.muted) return;
-      try {
-        ringBuffer.write(buf);
-        // AFTER the ring write: the tracker's offsets are in the ring's own
-        // coordinate system, so it needs the counter this chunk already moved.
-        modeTracker.feed(data, ringBuffer.totalBytesWritten);
-        oscParser.process(data);
-
-        // Prompt-based CWD detection — fallback for shells WITHOUT the
-        // integration hook only. Once OSC 7 has been seen (oscCwdSeen), the
-        // scraper is permanently off for this session: the hook re-emits on
-        // every prompt, so scraping can only ever add false positives.
-        if (!this.oscCwdSeen) {
-          promptBuffer += data;
-          if (promptBuffer.length > 1024) promptBuffer = promptBuffer.slice(-512);
-
-          const clean = promptBuffer.replace(DaemonPTYBridge.ANSI_STRIP, '');
-          const detectedCwd = detectPromptCwd(clean);
-          if (detectedCwd !== null) {
-            if (detectedCwd !== lastDetectedCwd) {
-              lastDetectedCwd = detectedCwd;
-              this.emit('cwd', { sessionId, cwd: detectedCwd });
-            }
-            promptBuffer = '';
+      // Muted: keep the chunk out of the ring before any side effect. Recovery
+      // sessions run muted until their first resize so the geometry mismatch
+      // window (Bug 2 in v2.8.0) doesn't pollute the ring buffer. The chunk is
+      // held (bounded, head kept) so the unmute can release what was produced
+      // at the geometry the renderer shows (#1464).
+      if (this.muted) {
+        if (this.heldWhileMuted && !this.heldFull) {
+          if (this.heldBytes + buf.length > DaemonPTYBridge.MAX_HELD_BYTES) {
+            this.heldFull = true;
+          } else {
+            this.heldBytes += buf.length;
+            this.heldWhileMuted.push(data);
           }
         }
-
-        this.emit('data', buf);
-      } catch (err) {
-        // Still forward raw data even if parsing failed
-        this.emit('data', buf);
+        return;
       }
+      capture(data, buf);
     });
     this.dataDisposable = () => onDataDisposable.dispose();
 
@@ -615,8 +679,18 @@ export class DaemonPTYBridge extends EventEmitter {
    * Mute or unmute PTY output capture. While muted, the data handler
    * drops chunks; ringBuffer pre-fill from saved scrollback (set up by
    * the caller before forwarding starts) is preserved.
+   *
+   * Muting starts holding the dropped chunks. Unmuting with `replayHeld`
+   * pushes them through the normal capture path (ring + clients) in order;
+   * without it they are discarded, as before (#1464).
+   *
+   * The replay goes out as LIVE bytes (after the attach flush), so terminal
+   * queries in it — DA1/DSR/OSC color probes the program sent at startup and
+   * has long since stopped waiting for — would make xterm answer late, and the
+   * answer would land in the program's input. They are stripped first, with
+   * the same sanitizer the attach-time ring replay goes through.
    */
-  setMuted(muted: boolean): void {
+  setMuted(muted: boolean, opts?: { replayHeld?: boolean }): void {
     // Unmuting a recovered pane releases a full repaint at the new geometry,
     // and `noteResize` only stamps when the dimensions actually CHANGED — a
     // pane recovered at the size it was saved at gets the storm with no guard
@@ -624,7 +698,30 @@ export class DaemonPTYBridge extends EventEmitter {
     // the agent starting a turn. Muted panes feed nothing, so the window is
     // empty and the storm would otherwise clear the threshold on its own.
     if (this.muted && !muted) this.lastResizeAtMs = Date.now();
+    const held = this.heldWhileMuted;
+    if (muted !== this.muted) {
+      this.heldWhileMuted = muted ? [] : null;
+      this.heldBytes = 0;
+      this.heldFull = false;
+    }
     this.muted = muted;
+    if (!muted && opts?.replayHeld && held && held.length > 0 && this.captureChunk) {
+      const buf = stripReplayQuerySequences(Buffer.from(held.join('')));
+      if (buf.length > 0) this.captureChunk(buf.toString(), buf);
+    }
+  }
+
+  /**
+   * #1464: forget what was held so far but keep holding. Called right before a
+   * muted PTY is resized to a new geometry — the chunks already held were
+   * produced at the old size, while the shell's SIGWINCH repaint (the prompt
+   * at the new size) arrives after it and is what the unmute should release.
+   */
+  discardHeld(): void {
+    if (!this.muted) return;
+    this.heldWhileMuted = [];
+    this.heldBytes = 0;
+    this.heldFull = false;
   }
 
   /**
@@ -686,6 +783,9 @@ export class DaemonPTYBridge extends EventEmitter {
     this.inputInBracketedPaste = false;
     this.lastInputAt = 0;
     this.inputRevision = 0;
+    this.shellCommandRunning = false;
+    this.emptyShellPrompt = false;
+    this.completedShellCommand = false;
     this.settledStatus = null;
     this.settledAtMs = 0;
     this.awaitingHuman = false;

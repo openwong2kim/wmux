@@ -51,7 +51,7 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 │ [mantle: mark + workspace]      (drag)      [native overlay] │
 ├───────────┬──────────────────────────────────┬──────────────┤
 │ sidebar   │  terminal grid  (THE HERO,       │ mission      │
-│ 240px     │  largest area; focused pane =    │ control      │
+│ 264px     │  largest area; focused pane =    │ control      │
 │ navigation│  steel tab-strip underline)      │ 248–320px    │
 │ + spaces  │                                  │ ┌ tabs ────┐ │
 │ (mantle)  │                                  │ │text tabs │ │
@@ -67,7 +67,9 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   agent overview overlay. Workspace destinations follow under
   their own heading and add action; settings sits at the foot. Collapsing the
   sidebar keeps those shortcuts as named icon buttons. These open existing
-  surfaces; agent rosters and conversations remain in their owning panels.
+  surfaces; conversations remain in their owning panels. Each workspace row
+  carries its agent roster (2026-09-24): the roster is a map of who is where,
+  and a click on an agent jumps to its pane — see "Sidebar rows" below.
   This Orca-inspired navigation updates the earlier workspace-only rule
   (owner decision 2026-09-21). The deck retains its own tabs and a labeled tools-panel toggle in the titlebar.
   Settings has one entry point at the sidebar foot, including the compact rail.
@@ -162,7 +164,10 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   13px body · 14px titles. Tabular figures for counters. **These four steps
   are the whole scale** (2026-09-05): no 8/9/10.5/11.5/12.5px anywhere in
   chrome — a lint rule forbids them. Inter is bundled (400/500/600) so the
-  stack never falls through to `system-ui`.
+  stack never falls through to `system-ui`. The one exception is the dialog
+  title, which uses the existing 16px display step (`--text-display-size`).
+  Inside dialogs and popovers, labels are sentence case and muted (11–13px);
+  the 10px uppercase tracked label belongs to chrome only.
 - **Hierarchy from typography, not decoration.** Speaker labels differ by
   weight/color (You = muted 600, Orchestrator = main 700), not by accent color.
 
@@ -178,8 +183,12 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 - Base unit 4px. Density: compact-leaning (rows 26–30px). **Every interactive
   element has a hit area of at least 24×24px** (2026-09-05) — extend the hit
   area with padding or a pseudo-element, never the glyph.
-- Radii: **5px buttons/controls · 6px inputs · 7px cards/panels**. Never larger
-  on chrome. Full-round only for status dots and count badges.
+- Radii: **chrome 5/6/7; surfaces 8/12/14.** Chrome (titlebar, tab strip,
+  sidebar rows and their controls): 5px buttons/controls · 6px inputs · 7px
+  cards/panels, never larger. Surfaces (dialogs, popovers, the grouped
+  containers and inputs inside them): 8px buttons · 10–12px grouped
+  containers and inputs · 14px dialog and popover panels. Full-round for
+  status dots, count badges, chips and segmented pills.
 - Borders: 1px hairline `rgba(255,255,255,.06)` (dark). Panel seams via inset
   box-shadow hairlines, not borders.
 - Elevation: exactly 3 levels (flat hairline / subtle surface lift / one
@@ -192,7 +201,8 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   arg summary + right-aligned jump link (muted at rest, accent on hover).
 - **Every claim is one click from its evidence:** anything referencing a pane
   gets a jump affordance (litmus test inherited from the deck).
-- **gpui-style control surfacing (2026-07-15):** two physical treatments only.
+- **gpui-style control surfacing (2026-07-15), chrome only** (dialogs and
+  popovers follow the quiet rules in Dialogs & forms): two physical treatments only.
   *Raised* (buttons, active segments, menu-item hover chips, cards): faint
   surface fill + 1px `color-mix(text-main 10%)` hairline + **top 1px inset
   highlight** (`inset 0 1px 0 color-mix(text-main 6%)`) — the "machined" look;
@@ -206,12 +216,115 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   raised chip (not a color change alone). AI-directed actions (fan-out,
   broadcast) stay neutral at rest.
 - No emoji glyphs in chrome; use monochrome glyphs/icons only.
-- Status dot vocabulary: amber = running · green = ok/idle-complete · gray =
-  idle · red = needs input (with wash).
+- Status mark vocabulary (2026-09-24) — shape first, colour second, one shared
+  helper (`AGENT_STATUS_ICON.mark`): running = filled amber dot · needs input =
+  red ring (with the row wash) · error = red ✕ drawn as SVG · complete = green
+  check · unconfirmed = hollow amber ring · idle = no mark. Selection is never
+  painted as a status: an active-but-idle workspace has no dot.
+
+### Dialogs & forms
+
+Build every modal, popover and settings row from `src/renderer/components/ui/`
+(`Dialog`, `Button`, `Field`, `Switch`, `Checkbox`, `Select`,
+`SegmentedControl`, `Badge`, `Input`, `MediaPreview`) rather than hand-rolled
+inline styles. Surfaces are **quiet** (owner, 2026-09-24): neutral fills,
+1px low-contrast hairlines, one soft floating shadow on the panel only, no
+top inset highlight and no raised bevel. The machined raised/recessed look
+stays on chrome.
+
+- **Dialog anatomy:** backdrop `--backdrop-modal` at `--z-dialog`; panel
+  `--bg-base`, 1px hairline, 14px radius, one soft shadow; 24px padding and
+  12–16px between groups. Header = 16px/600 title + optional 13px `--text-sub`
+  description + a 32px close ×. Body scrolls; Footer is a right-aligned
+  action row with no divider. Focus is trapped while it is inside the panel,
+  comes back if a re-render drops it, and returns to the opener on close.
+  Escape closes the top-most dialog only, never mid-IME, and never reaches
+  what is underneath.
+- **One primary per surface.** At most one solid warm (`--accent`) button per
+  dialog state, chosen by what unblocks the user first. It sits last in the
+  footer, or — when a listed status needs an action — in that row's notice
+  action. Every other action is secondary (flat: subtle neutral fill + hairline,
+  or a hairline outline), ghost (dismiss / skip) or destructive (red tint;
+  solid red only for a final confirm). A disabled or in-flight action is never
+  the primary, and the emphasis does not jump to the next step while one runs;
+  a state with nothing to do has none. Steel is only for focus rings and links.
+- **Grouped rows:** a list is ONE rounded container (12px, hairline) with
+  inner hairline dividers, not a boxed card per row. Each row is icon +
+  13px label + optional 11px muted secondary line.
+- **Notice row:** icon · title + one-line description · vertical hairline ·
+  action on the right. Use it where a status needs an action (hooks not
+  installed → Install hooks), inside a group or on its own.
+- **Popover:** the same quiet panel (14px, hairline, soft shadow) anchored to
+  its trigger. Sections stack inside it: a muted sentence-case header with an
+  optional trailing action (e.g. `+`), icon + label rows beneath, and a
+  hairline between sections. Icon-only toggles on a surface show "on" as a
+  faint filled chip, not a colour.
+- **Field row:** 13px/500 label + 11px `--text-sub` description on the left,
+  control on the right (`inline`) or underneath (`stacked`, for text inputs).
+  The row wires the label (`htmlFor`, adopting a control's own id, or
+  `aria-labelledby` for groups) and `aria-describedby` into its control.
+- **Controls:** switches and checkboxes are neutral — a dim track / hairline
+  box when off, a light track with a dark knob / light box with a dark check
+  when on; never warm. Segmented controls are a full-round track with the
+  active pill filled neutral. Selects and inputs in surfaces use a subtle
+  neutral fill, 10px radius and the steel focus ring. Badges are full-round
+  and neutral by default; success / warning / danger tint the text and
+  hairline only. There is no action-coloured badge; `warning` uses the
+  theme's warning hue (amber in the amber theme, by the Color rule above).
+- **Type:** Inter inside surfaces. Mono only for machine evidence —
+  commands, paths, error codes (`ui-code`) — never for a whole dialog. Status
+  marks are icons (`IconCheck`, `IconWarning`), not text glyphs.
+- **Media:** a feature explained in a dialog or the tour may show a short muted
+  loop (`MediaPreview`, WebM ≤ ~6 s, ≤ 500 KB) in a fixed 16:10 frame,
+  labelled for assistive tech; under `prefers-reduced-motion` it shows the
+  still poster and never plays. The clip must show what the copy next to it
+  says; when no clip does, the step is text only.
+
+### Settings
+
+Settings is a full-screen surface under the titlebar (`.ui-surface`), built
+from the Dialogs & forms primitives plus `Settings/SettingsLayout.tsx`
+(`SettingsSection`, `SettingRow`, `SettingNote`).
+
+- **Information architecture** (owner-reviewed, 2026-09-24). Tabs, in nav
+  order: General (language, updates, startup, tutorial, first-run setup,
+  reset) · Appearance (theme, interface, sidebar, panes, terminal text, agent
+  toolbar) · Terminal (shell, input, rendering and memory, scrollback) ·
+  Keyboard (shortcuts, prefix mode, custom keybindings) · Notifications. Group
+  **Agents**: Claude Code (setup card, plugin signal health, usage meter, MCP
+  registration) · Accounts · Orchestrator · Roles & fan-out (role bindings,
+  A2A, fan-out approval and worker permissions) · Browser. Group
+  **Connections**: Remote & phone (paired devices, quick commands; the live
+  serve toggle stays in the sidebar Remote popover) · LAN. Then About. Each
+  tab answers one question; a setting lives on exactly one tab and the search
+  catalog (`settings/catalog.ts`) names that tab. Retired tab ids resolve
+  through `resolveSettingsTab` instead of breaking a deep link.
+- **Nav:** 13px icon + label rows; group headings muted sentence case (the
+  app group and About are unheaded); the selected row is the sidebar's active
+  row — neutral surface + a steel edge. No mono, no uppercase tracking.
+- **Page:** one centered column (720px max); the tab's name as a 16px/600
+  Inter title; sections 28px apart. A section is a muted sentence-case heading
+  over ONE rounded container of rows with hairline dividers — never a card per
+  row. A lead group whose only row names itself carries no heading.
+- **Row:** label + one-line muted description on the left, control on the
+  right. Copy that overflows its line collapses to one line with a Learn more
+  disclosure (measured, not guessed). A status that needs an action is a
+  notice row (hooks missing → Install); status words are Badges (neutral or
+  success), never amber mono.
+- **Controls:** Switch, Select, SegmentedControl, Input, Checkbox, Button,
+  Badge from `ui/`. At most one primary per tab, on the action that unblocks
+  the user (a staged update's Install, the first missing integration, starting
+  a LAN pairing); a destructive flow is red tint, solid red only on its final
+  confirm. Theme and cursor cards stay visual, on 10px radii and hairlines,
+  selected by a neutral outline + check.
+- **Escape** closes a dialog opened from Settings before Settings itself.
 
 ## Motion
 
 - Minimal-functional. Spinners and blink-cursor are the only perpetual motion.
+  Exception (owner, 2026-09-24): the preview clips in the welcome dialog and
+  the onboarding tour loop while they are on screen — they are content shown
+  on request, not chrome — and they never play under reduced motion.
 - Transitions ≤150ms ease-out, only for state changes (hover, expand, theme
   swap suppressed during switch).
 
@@ -261,6 +374,10 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 | 2026-09-21 | Refine the outer shell first: Orca-inspired global sidebar shortcuts, 13px navigation and pane labels, quieter neutral selections, and an inset terminal frame. Workspace menu descriptions use 11px text. Existing terminal content stays in place; assistant-ui chat is a later phase | Improves readability and navigation while preserving the terminal-first workspace and existing actions |
 | 2026-09-21 | Replace the titlebar's ambiguous double-chevron with a 28px-high tools-panel icon + 13px label, explicit open state, and a mirrored panel-side icon. Settings lives in the full/compact sidebar, including its onboarding target. Preserve Minimal/Standard visibility recipes and saved individual preferences | Makes the top-right control explain its target and removes duplicate settings. Minimal remains a supported contributor-requested workflow, with settings always reachable to restore Standard |
 | 2026-09-23 | Fleet becomes a three-section attention board (Needs you / Running / collapsed Idle) with a one-line detail, elapsed time, a changed-since-last-look dot and row verbs; section and detail come from one pure selector | Twelve identical idle cards with no last activity answered nothing. Fleet is triage — what needs me, what is moving, what has gone quiet and for how long — and the sidebar stays the map |
+| 2026-09-24 | Dialogs and forms get shared primitives (Dialog, Field, Switch, Checkbox, Select, SegmentedControl, Badge; Button sizes and a destructive alias) and a "Dialogs & forms" rule set; the welcome dialog and the onboarding tour are the first adopters, with short preview clips. The settings gear becomes a cog | The outer chrome had the Bridge design but every modal still used the old UI: monospace prose, green borders, several amber buttons per dialog and a steel-filled Next. Shared primitives make the grammar the default, and a clip shows what a feature does where text alone did not |
+| 2026-09-24 | Owner: quiet surfaces for dialogs and forms. Surface radii 8/12/14 (chrome keeps 5/6/7), flat secondary buttons, neutral switches and checkboxes, sentence-case muted labels, grouped rows in one container, the notice row, the popover section model, 16px dialog titles, one soft shadow and no bevels | The first pass carried the chrome's machined look into dialogs, and they read heavy and busy. The owner chose a quieter, almost colourless surface where the single warm primary is the only colour, lists read as one calm group, and a status that needs an action carries it on the same row |
+| 2026-09-24 | Settings reorganised into one-question tabs (Claude Code, Accounts, Orchestrator, Roles & fan-out, Remote & phone split out of the old Accounts/Agents tabs; the agent toolbar moves to Appearance, first-run setup to General) and rebuilt on the quiet-surface primitives: one container per section, Field rows, Learn more for long copy, a language Select without flags, an Inter header and no footer | The Accounts and Agents tabs each held four or five unrelated things and the categories did not sort; every tab mixed card-per-row boxes, mono headings, uppercase labels and bright input borders. One question per tab makes a setting findable by where it belongs, and one row grammar makes every tab read the same |
+| 2026-09-24 | Sidebar redesign (#1481): the roster lives in the sidebar with a drawn identity monogram per agent kind; status is told by shape (dot / ring / ✕ / check / hollow ring / none) and an idle active workspace is no longer green; collapsed rows summarise agents by glyph and status; fan-out tasks nest under their owner with a rollup, provenance tooltip, a link back to the owner and a close-finished action; a Recent activity order; the sidebar is 264px and resizable 220–400px | With several agents per workspace and fan-outs creating a workspace per task, the flat list could not say which agent was which, whether "green" meant done or merely selected, or which workspace a task came from and who asked for it. Shape survives colour-blindness and forced-colors; nesting keeps a fan-out's tasks next to the work that spawned them; the width was the first thing the new row content needed |
 
 ### Desktop conversation view
 
@@ -278,6 +395,55 @@ verified live Claude session. Updates follow recorded events, not a separate mod
 connection. Tool bodies and code blocks load on expansion; approvals stay in
 Terminal. Drafts survive view switches within the same conversation. Attachments,
 regeneration, message editing and voice controls are hidden until supported.
+
+### Sidebar rows (2026-09-24)
+
+- **Width:** 264px by default, resizable 220–400px from the inner edge (a 10px
+  seam, `role="separator"`, arrow keys when focused), persisted, double-click
+  resets. While dragging only a 1px steel guide follows the pointer; the width
+  is committed on release, so terminals refit once rather than on every move.
+  The titlebar's left segment follows the width. The compact rail stays 48px.
+- **Workspace row:** status mark · name (13px) · collapsed summary · needs-you
+  label · hover actions. The collapsed summary is up to three agent glyphs,
+  most urgent first and grouped by status with one mark per group, then `+N`;
+  it stays visible at rest. The git line uses the branch and worktree icons;
+  no text glyphs that can render as emoji (⎇ ⊕ ⚠ ✓ ✗).
+- **Agent row:** status mark · identity glyph · title · muted trailer (live
+  activity while running, else the pane coordinate) · elapsed time since the
+  last activity, right-aligned (10px like the rest of the roster row, muted,
+  tabular). A pending question
+  keeps its own red second line. Stashed rows keep their status word (their
+  proof of life, 2026-08-24).
+- **Identity glyph:** an 11px monogram in a rounded frame drawn in-house — one
+  or two letters per agent kind, steel/muted, never amber; unknown kinds and
+  shells get a neutral terminal mark. The agent's name is the tooltip and the
+  accessible name. Never a vendor logo or favicon (trademarks).
+- **Fan-out nesting:** a task workspace renders under the workspace that fanned
+  it out, indented on a hairline guide, with a fold chevron. A group is open
+  while its owner is active or one of its tasks needs you, otherwise folded; a
+  user toggle is remembered, and a group always opens while one of its own
+  tasks is the active workspace. A task row carries no "Needs you" word (its
+  wash and red ring stay; the rollup names the count) and shows its shortcut
+  hint only on hover — the indent leaves the name no width to spare. The owner's rollup line reads `N tasks · M need
+  you` and draws nothing at zero; "need you" is red only while the group is
+  folded (unfolded, the task row is the evidence). Its ⋮ menu holds `Close
+  finished tasks (N)`: finished means every agent pane in the task reports
+  complete (idle never counts); the confirm lists the tasks by name, each is
+  re-checked right before its close, and the close is the task close path — a
+  task with uncommitted or unpushed work is kept and the reason is said. The
+  collapsed-row summary draws a running agent neutral, so a workspace spends
+  one amber point, not two. Detached tasks are ordinary
+  top-level rows; tasks whose owner is gone collect under "From closed
+  workspace". The `wtask: ` prefix is dropped on screen only. Nesting trusts the task
+  record and the fan-out lineage stamp, never the name. Task rows are not
+  reorder sources or targets and carry no Ctrl+N hint.
+- **Provenance:** a task row carries a muted fan-out glyph whose tooltip reads
+  `Fanned out by <owner> · <you (GUI) | orchestrator | calling pane> · <time>`.
+  Inside a task workspace the titlebar's workspace name is followed by a muted
+  `↰ <owner>` link (steel on hover) that jumps to the owner.
+- **Order:** Manual (default), Needs you first, or Recent activity — Settings
+  › Appearance › Sidebar. The two non-manual orders are display-only and pause
+  drag-to-reorder while on.
 
 ### Sidebar shortcuts and Agent dock refinement (2026-09-21)
 

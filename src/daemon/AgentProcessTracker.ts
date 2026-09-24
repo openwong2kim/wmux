@@ -416,6 +416,13 @@ export class AgentProcessTracker {
     private readonly enumerate: () => Promise<ProcessTreeEntry[]> = enumerateProcesses,
   ) {}
 
+  async verifyIdleShell(pid: number): Promise<boolean> {
+    const entries = await this.snapshot();
+    const root = entries.find(entry => entry.pid === pid);
+    return !!root && /^(?:-?)(?:zsh|bash|sh)$/i.test(path.basename(root.name)) &&
+      !entries.some(entry => entry.ppid === pid);
+  }
+
   private static watchKey(sessionId: string): string {
     // Namespaced so it can never collide with the daemon's shell-PID watches,
     // which key ProcessMonitor by the raw session id.
@@ -562,6 +569,18 @@ export class AgentProcessTracker {
     } catch {
       return false;
     }
+  }
+
+  /** Exec panes may own the agent as their PTY root, without a shell child.
+   * Verify that exact armed root from fresh process metadata; never accept an
+   * arbitrary PID or infer its executable from pane text. */
+  async verifyOwnedRoot(sessionId: string, pid: number, expectedSlug: AgentSlug): Promise<boolean> {
+    if (this.shellPids.get(sessionId) !== pid) return false;
+    try {
+      const root = (await this.snapshot()).find(entry => entry.pid === pid);
+      return this.shellPids.get(sessionId) === pid && !!root &&
+        selectAgentProcess([{ ...root, ppid: -1 }], -1)?.slug === expectedSlug;
+    } catch { return false; }
   }
 
   /** Drop all tracking for a session (died / interrupted / killed). */

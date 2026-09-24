@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import type { RunGitOptions } from '../TaskWorktreeManager';
 
 let home: string;
 let prevHome: string | undefined;
@@ -44,11 +45,14 @@ function toPosix(p: string): string {
 
 /** git fake: rev-parse/status/worktree 등 인자별 응답 스크립트. */
 function makeGitFake(script: (args: string[], cwd: string) => { stdout?: string; stderr?: string } | Error) {
-  return vi.fn(async (args: string[], cwd: string) => {
-    const r = script(args, cwd);
-    if (r instanceof Error) throw r;
-    return { stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
-  });
+  // Typed with the optional third (per-call options) parameter so tests can read it back.
+  return vi.fn<(args: string[], cwd: string, opts?: RunGitOptions) => Promise<{ stdout: string; stderr: string }>>(
+    async (args, cwd) => {
+      const r = script(args, cwd);
+      if (r instanceof Error) throw r;
+      return { stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    },
+  );
 }
 
 /** 정상 repo git fake — toplevel·non-bare·branch 부재·worktree add 성공. */
@@ -302,5 +306,233 @@ describe('per-repo 직렬 큐 (§3 index.lock 경합 차단)', () => {
       mgr.createWorktree({ ...base, worktreePath: '/wt/s3', branch: 'wtask/s3' }),
     ]);
     expect(maxActive).toBe(1); // 직렬 — 동시 실행 0
+  });
+});
+
+describe('T3 worktree base — origin default branch pinned to an OID, --no-track, fallbacks', () => {
+  const OID_A = 'a'.repeat(40);
+  const OID_B = 'b'.repeat(40);
+
+  /** git fake for base resolution. `refs` maps remote-tracking refs to OIDs;
+   *  `refsAfterFetch` replaces it once a fetch succeeded. */
+  function baseGit(opts: {
+    originHead?: string;
+    refs?: Record<string, string>;
+    refsAfterFetch?: Record<string, string>;
+    fetchFails?: Error;
+    lsRemote?: string;
+    sshCommand?: string;
+    gitmodules?: boolean;
+    gitattributes?: string;
+  }) {
+    let fetched = false;
+    return makeGitFake((args) => {
+      if (args[0] === 'config') return opts.sshCommand ? { stdout: `${opts.sshCommand}\n` } : new Error('unset');
+      if (args[0] === 'symbolic-ref') {
+        return opts.originHead ? { stdout: `${opts.originHead}\n` } : new Error('not a symbolic ref');
+      }
+      if (args[0] === 'ls-remote') return opts.lsRemote !== undefined ? { stdout: opts.lsRemote } : new Error('no remote');
+      if (args[0] === 'fetch') {
+        if (opts.fetchFails) return opts.fetchFails;
+        fetched = true;
+        return { stdout: '' };
+      }
+      if (args[0] === 'rev-parse' && args.includes('--verify')) {
+        const ref = (args[args.length - 1] ?? '').replace(/\^\{commit\}$/, '');
+        const known = fetched && opts.refsAfterFetch ? opts.refsAfterFetch : (opts.refs ?? {});
+        return known[ref] ? { stdout: `${known[ref]}\n` } : new Error('unknown revision');
+      }
+      if (args[0] === 'cat-file') return opts.gitmodules ? { stdout: '' } : new Error('missing');
+      if (args[0] === 'show') return opts.gitattributes !== undefined ? { stdout: opts.gitattributes } : new Error('missing');
+      return { stdout: '' };
+    });
+  }
+  const fetchesOf = (git: ReturnType<typeof makeGitFake>) => git.mock.calls.filter((c) => c[0][0] === 'fetch');
+
+  it('uses origin/HEAD, fetches with an explicit refspec and network options once, and pins the OID', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = baseGit({
+      originHead: 'refs/remotes/origin/trunk',
+      refs: { 'refs/remotes/origin/trunk': OID_A },
+      refsAfterFetch: { 'refs/remotes/origin/trunk': OID_B },
+    });
+    const base = await new TaskWorktreeManager({ runGit: git }).resolveBase('/repo');
+    expect(base).toEqual({ oid: OID_B, ref: 'refs/remotes/origin/trunk' });
+    const fetches = fetchesOf(git);
+    expect(fetches).toHaveLength(1);
+    expect(fetches[0][0]).toEqual(['fetch', 'origin', '+refs/heads/trunk:refs/remotes/origin/trunk']);
+    expect(fetches[0][2]).toEqual({ timeoutMs: 10000, noPrompt: true, sshBatchMode: true });
+  });
+
+  it('leaves ssh alone when the user configured core.sshCommand', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = baseGit({ sshCommand: 'ssh -i key', refs: { 'refs/remotes/origin/main': OID_A } });
+    await new TaskWorktreeManager({ runGit: git }).resolveBase('/repo');
+    expect(fetchesOf(git)[0][2]).toMatchObject({ sshBatchMode: false });
+  });
+
+  it('falls back to origin/main, then origin/master, when origin/HEAD is unset', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const mainMgr = new TaskWorktreeManager({ runGit: baseGit({ refs: { 'refs/remotes/origin/main': OID_A } }) });
+    expect(await mainMgr.resolveBase('/repo')).toEqual({ oid: OID_A, ref: 'refs/remotes/origin/main' });
+    const masterMgr = new TaskWorktreeManager({ runGit: baseGit({ refs: { 'refs/remotes/origin/master': OID_A } }) });
+    expect(await masterMgr.resolveBase('/repo')).toEqual({ oid: OID_A, ref: 'refs/remotes/origin/master' });
+  });
+
+  it('asks the remote (ls-remote --symref) when no remote-tracking ref exists yet', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = baseGit({
+      lsRemote: `ref: refs/heads/develop\tHEAD\n${OID_A}\tHEAD\n`,
+      refsAfterFetch: { 'refs/remotes/origin/develop': OID_A },
+    });
+    const base = await new TaskWorktreeManager({ runGit: git }).resolveBase('/repo');
+    expect(base).toEqual({ oid: OID_A, ref: 'refs/remotes/origin/develop' });
+    expect(fetchesOf(git)[0][0]).toEqual(['fetch', 'origin', '+refs/heads/develop:refs/remotes/origin/develop']);
+  });
+
+  it('no resolvable default branch → HEAD fallback with a warning, and no fetch', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = baseGit({});
+    const base = await new TaskWorktreeManager({ runGit: git }).resolveBase('/repo');
+    expect(base.oid).toBeUndefined();
+    expect(base.warning).toMatch(/default branch of remote "origin"/);
+    expect(base.warning).toMatch(/local HEAD/);
+    expect(fetchesOf(git)).toHaveLength(0);
+  });
+
+  it('an empty repo root never runs git', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = baseGit({});
+    const base = await new TaskWorktreeManager({ runGit: git }).resolveBase('');
+    expect(base.oid).toBeUndefined();
+    expect(base.warning).toMatch(/local HEAD/);
+    expect(git).not.toHaveBeenCalled();
+  });
+
+  it('a failed fetch keeps the existing remote-tracking ref with a stale warning', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const err = Object.assign(new Error('Command failed'), { stderr: 'error: cannot lock ref\nmore' });
+    const git = baseGit({ originHead: 'refs/remotes/origin/main', refs: { 'refs/remotes/origin/main': OID_A }, fetchFails: err });
+    const base = await new TaskWorktreeManager({ runGit: git }).resolveBase('/repo');
+    expect(base.oid).toBe(OID_A);
+    expect(base.warning).toContain('git fetch origin main failed (error: cannot lock ref)');
+    expect(base.warning).toMatch(/may be stale/);
+  });
+
+  it('a failed fetch with no remote-tracking ref at all → HEAD fallback', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = baseGit({ lsRemote: `ref: refs/heads/main\tHEAD\n`, fetchFails: new Error('offline') });
+    const base = await new TaskWorktreeManager({ runGit: git }).resolveBase('/repo');
+    expect(base.oid).toBeUndefined();
+    expect(base.warning).toMatch(/fetch origin main failed and refs\/remotes\/origin\/main does not exist/);
+  });
+
+  it('a fetch timeout is reported as such', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const err = Object.assign(new Error('Command failed'), { killed: true });
+    const git = baseGit({ refs: { 'refs/remotes/origin/main': OID_A }, fetchFails: err });
+    const base = await new TaskWorktreeManager({ runGit: git }).resolveBase('/repo');
+    expect(base.warning).toContain('(timed out)');
+  });
+
+  it('a fetch that succeeded without the tracking ref existing → HEAD fallback with a warning', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = baseGit({ refs: { 'refs/remotes/origin/main': OID_A }, refsAfterFetch: {} });
+    const base = await new TaskWorktreeManager({ runGit: git }).resolveBase('/repo');
+    expect(base.oid).toBeUndefined();
+    expect(base.warning).toMatch(/does not exist after git fetch origin main/);
+  });
+
+  it('refuses a base commit that carries submodules or LFS', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const refs = { 'refs/remotes/origin/main': OID_A };
+    const sub = await new TaskWorktreeManager({ runGit: baseGit({ refs, gitmodules: true }) }).resolveBase('/repo');
+    expect(sub.error).toMatch(/submodules/);
+    const lfs = await new TaskWorktreeManager({
+      runGit: baseGit({ refs, gitattributes: '*.bin filter=lfs diff=lfs merge=lfs -text\n' }),
+    }).resolveBase('/repo');
+    expect(lfs.error).toMatch(/LFS/);
+    const plain = await new TaskWorktreeManager({ runGit: baseGit({ refs, gitattributes: '* text=auto\n' }) }).resolveBase('/repo');
+    expect(plain.error).toBeUndefined();
+  });
+
+  it('createWorktree with a base OID adds --no-track and the OID as start point', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = healthyRepoGit('/repo');
+    const mgr = new TaskWorktreeManager({ runGit: git });
+    const plan = { repoRoot: '/repo', repoHash: 'h', taskSlug: 's', metaDir: '/m', worktreePath: '/wt/s', branch: 'wtask/s' };
+    const res = await mgr.createWorktree(plan, OID_A);
+    expect(res.ok).toBe(true);
+    const add = git.mock.calls.find((c) => c[0][0] === 'worktree' && c[0][1] === 'add');
+    expect(add?.[0]).toEqual(['worktree', 'add', '--no-track', path.resolve('/wt/s'), '-b', 'wtask/s', OID_A]);
+  });
+
+  it('createWorktree without a base keeps the HEAD argv unchanged', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = healthyRepoGit('/repo');
+    const mgr = new TaskWorktreeManager({ runGit: git });
+    const plan = { repoRoot: '/repo', repoHash: 'h', taskSlug: 's', metaDir: '/m', worktreePath: '/wt/s', branch: 'wtask/s' };
+    await mgr.createWorktree(plan);
+    const add = git.mock.calls.find((c) => c[0][0] === 'worktree' && c[0][1] === 'add');
+    expect(add?.[0]).toEqual(['worktree', 'add', path.resolve('/wt/s'), '-b', 'wtask/s']);
+  });
+
+  // Real git processes: sized for a loaded CI runner, like diff.handler.test.ts.
+  it('real git: narrowed fetch refspec, stale local checkout, OID pinned across tasks, no upstream', { timeout: 30_000 }, async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const { execFileSync } = await import('node:child_process');
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'init.defaultBranch=main', ...args], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-twm-base-'));
+    try {
+      const origin = path.join(root, 'origin.git');
+      git(root, 'init', '--bare', origin);
+      const seed = path.join(root, 'seed');
+      git(root, 'clone', origin, seed);
+      git(seed, 'commit', '--allow-empty', '-m', 'one');
+      git(seed, 'push', 'origin', 'HEAD:main');
+      const repo = path.join(root, 'repo');
+      git(root, 'clone', origin, repo);
+      // A narrowed refspec: a bare `git fetch origin main` would move only FETCH_HEAD.
+      git(repo, 'config', 'remote.origin.fetch', '+refs/heads/nothing:refs/remotes/origin/nothing');
+      // The owner is on a feature branch; origin moves on after the clone.
+      git(repo, 'checkout', '-b', 'feature');
+      git(repo, 'commit', '--allow-empty', '-m', 'local only');
+      git(seed, 'commit', '--allow-empty', '-m', 'two');
+      git(seed, 'push', 'origin', 'HEAD:main');
+      const originTip = git(seed, 'rev-parse', 'HEAD');
+
+      const mgr = new TaskWorktreeManager();
+      const base = await mgr.resolveBase(repo);
+      expect(base).toEqual({ oid: originTip, ref: 'refs/remotes/origin/main' });
+
+      // Origin moves again and the tracking ref follows mid-fan-out: the pinned
+      // OID keeps both tasks on the same commit.
+      git(seed, 'commit', '--allow-empty', '-m', 'three');
+      git(seed, 'push', 'origin', 'HEAD:main');
+      git(repo, 'fetch', 'origin', '+refs/heads/main:refs/remotes/origin/main');
+
+      const plan = (slug: string) => ({
+        repoRoot: repo,
+        repoHash: 'real',
+        taskSlug: slug,
+        metaDir: path.join(root, 'm', slug),
+        worktreePath: path.join(root, 'wt', slug),
+        branch: `wtask/${slug}`,
+      });
+      for (const slug of ['s1', 's2']) {
+        const res = await mgr.createWorktree(plan(slug), base.oid);
+        expect(res.ok).toBe(true);
+        expect(git(path.join(root, 'wt', slug), 'rev-parse', 'HEAD')).toBe(originTip);
+        // --no-track: the task branch has no upstream to pull from or push to by accident.
+        expect(() => git(repo, 'config', '--get', `branch.wtask/${slug}.merge`)).toThrow();
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

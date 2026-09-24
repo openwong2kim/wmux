@@ -70,6 +70,13 @@ function dot(): HTMLElement {
   return el as HTMLElement;
 }
 
+/** #1481 — the tooltip / accessible name sits on the mark's fixed-size box. */
+function mark(): HTMLElement {
+  const el = container.querySelector('[data-status-mark]');
+  if (!el) throw new Error('no status mark rendered');
+  return el as HTMLElement;
+}
+
 beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -87,7 +94,7 @@ describe('WorkspaceItem unverifiable ring', () => {
     expect(dot().className).not.toContain('sidebar-dot-unverifiable');
     expect(dot().className).toContain('sidebar-dot-running');
     expect(dot().style.backgroundColor).not.toBe('');
-    expect(dot().getAttribute('title')).toBe('Running');
+    expect(mark().getAttribute('title')).toBe('Running');
   });
 
   it('goes hollow and names the silence after 34 minutes with no signal', async () => {
@@ -97,14 +104,15 @@ describe('WorkspaceItem unverifiable ring', () => {
     // No glow: the ring is the absence of a claim, not a quieter version of one.
     expect(dot().className).not.toContain('sidebar-dot-running');
     expect(dot().style.backgroundColor).toBe('');
-    expect(dot().getAttribute('title')).toBe('No update for 30m+');
+    expect(mark().getAttribute('title')).toBe('No update for 30m+');
   });
 
-  it('never rings a workspace that needs the user — that dot is red', async () => {
+  it('never draws the unconfirmed ring on a workspace that needs the user — its ring is red', async () => {
     seed(NOW - 34 * 60_000);
     useStore.setState({ surfaceAgentStatus: { 'pty-ws': 'awaiting_input' } });
     await render();
     expect(dot().className).not.toContain('sidebar-dot-unverifiable');
-    expect(dot().getAttribute('title')).toBe('Needs input');
+    expect(mark().getAttribute('data-status-mark')).toBe('ring');
+    expect(mark().getAttribute('title')).toBe('Needs input');
   });
 });

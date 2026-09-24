@@ -50,6 +50,7 @@ import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import { wslDistroArgs, isWslDistroSpawnArgs } from '../../../shared/wslDistro';
 import { getDefaultWslDistro } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
+import { stampFanoutTaskPane } from '../../worktask/fanoutGuards';
 import {
   removeSessionPromptSchedulesForPty,
 } from '../../pty/sessionPromptScheduleStore';
@@ -117,7 +118,10 @@ type PtyCreateOptions = {
   /** 스폰 출처 (실행 컨텍스트 정책). 'user-shell'만 env 투과; exec/supervision이
    * 있으면 스탬프와 무관하게 gated. 미지정은 fail-closed gated. */
   spawnKind?: SpawnKind;
+  /** Fan-out task pane: the owner workspace this one's lineage stamp names. */
+  fanoutTaskOf?: string;
 };
+
 
 /** Clamp one runaway-guard bound to its cap; falls back to `def` when absent.
  * Defense-in-depth — the schema already clamps wmux.json values, but the funnel
@@ -360,6 +364,10 @@ export function registerPTYHandlers(
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
+      // Depth-1 lineage for a fan-out task pane: stamped here, inside the
+      // create and before the PTY (and the agent) exists. A failed stamp fails
+      // the create; the renderer rolls the workspace back.
+      stampFanoutTaskPane(options);
 
       // X8 exec-style unit: a supervised wmux.json leaf runs its command as the
       // pane's root process under a daemon-chosen wrapper shell (the daemon
@@ -590,6 +598,10 @@ export function registerPTYHandlers(
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
+      // Depth-1 lineage for a fan-out task pane: stamped here, inside the
+      // create and before the PTY (and the agent) exists. A failed stamp fails
+      // the create; the renderer rolls the workspace back.
+      stampFanoutTaskPane(options);
 
       // X8 — supervision lives inside the daemon (decision ②). In local mode it
       // can't be honored, but a silent drop would be a trust violation: the user

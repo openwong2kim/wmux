@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-// Aliased so the document-level Escape listener below still sees the DOM
-// KeyboardEvent rather than React's synthetic one.
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
-import { FOCUS_RING } from '../focusRing';
+import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
+import Button from '../ui/Button';
+import Checkbox from '../ui/Checkbox';
+import Badge from '../ui/Badge';
+import { IconWarning } from '../icons';
 import { timeAgo } from '../../utils/timeAgo';
 import type { WebDeviceListError, WebDeviceSummary } from '../../../shared/web';
 
@@ -93,14 +94,12 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
 
   const revokeInFlight = revoking !== null;
 
-  // Escape is ignored mid-revoke for the same reason the backdrop is: the
-  // verdict of a destructive call the operator confirmed must not be
-  // dismissable before it has been shown.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !revokeInFlight) onClose(); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose, revokeInFlight]);
+  // Escape, the backdrop and Close are all ignored mid-revoke: the verdict of
+  // a destructive call the operator confirmed must not be dismissable before
+  // it has been shown.
+  const closeIfIdle = () => {
+    if (!revokeInFlight) onClose();
+  };
 
   const handleSetInput = useCallback(async (deviceId: string, allowInput: boolean) => {
     const api = window.electronAPI?.web;
@@ -186,201 +185,145 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
   const liveCount = devices.filter((d) => d.revokedAt === undefined).length;
 
   /**
-   * Focus lands in the dialog and stays there.
+   * Focus lands in the dialog and stays there (ui/Dialog traps it).
    *
    * The popover that opened this closes on the way, which drops focus to
-   * `<body>` — so without this a destructive confirm is on screen while Tab
-   * walks the app behind it and a screen reader keeps reading the background.
+   * `<body>` — so without the trap a destructive confirm is on screen while
+   * Tab walks the app behind it and a screen reader keeps reading the
+   * background. Close takes the initial focus rather than a Revoke button.
    */
-  const dialogRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { dialogRef.current?.focus(); }, []);
-
-  const handleTrapTab = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== 'Tab') return;
-    const focusables = dialogRef.current?.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-    );
-    if (!focusables || focusables.length === 0) return;
-    const first = focusables[0]!;
-    const last = focusables[focusables.length - 1]!;
-    const active = document.activeElement;
-    if (e.shiftKey && (active === first || active === dialogRef.current)) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && active === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
+  const closeRef = useRef<HTMLButtonElement>(null);
 
   return (
-    <div
-      className="fixed inset-0 z-[var(--z-modal-top)] flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.45)' }}
-      onMouseDown={() => { if (!revokeInFlight) onClose(); }}
+    <Dialog
+      onClose={closeIfIdle}
+      closeOnBackdrop
+      width={460}
+      zIndexClassName="z-[var(--z-modal-top)]"
+      initialFocusRef={closeRef}
+      style={{ maxHeight: '80vh' }}
     >
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        tabIndex={-1}
-        aria-label={t('web.devicesTitle')}
-        className={`w-[440px] max-h-[80vh] rounded-[7px] shadow-2xl flex flex-col font-sans outline-none`}
-        style={{ background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
-        onMouseDown={(e) => e.stopPropagation()}
-        onKeyDown={handleTrapTab}
-      >
-        <div className="px-5 pt-4 pb-3 border-b" style={{ borderColor: 'var(--bg-overlay)' }}>
-          <div className="text-sm font-bold" style={{ color: 'var(--text-main)' }}>
-            {t('web.devicesTitle')}
+      <DialogHeader title={t('web.devicesTitle')} description={t('web.devicesSubtitle')} />
+      <DialogBody className="!gap-3">
+        {/* Says the ticked boxes below are dormant, not active. */}
+        {serverReadOnly && (
+          <div className="ui-notice flex items-start gap-2 px-3.5 py-2.5 text-[11px] leading-4 text-[var(--text-main)]">
+            <span className="shrink-0 pt-px" style={{ color: 'var(--accent-yellow)' }} aria-hidden="true">
+              <IconWarning size={12} />
+            </span>
+            {t('web.grantCeilingHint')}
           </div>
-          <div className="text-[11px] mt-1" style={{ color: 'var(--text-sub)' }}>
-            {t('web.devicesSubtitle')}
-          </div>
-          {/* Says the ticked boxes below are dormant, not active. */}
-          {serverReadOnly && (
-            <div className="text-[10px] mt-1.5 leading-snug" style={{ color: 'var(--accent)' }}>
-              {t('web.grantCeilingHint')}
-            </div>
-          )}
-        </div>
+        )}
+        {loading && <p className="m-0 text-[13px] text-[var(--text-sub)]">{t('web.devicesLoading')}</p>}
+        {!loading && listError && (
+          <p className="ui-row-error !m-0 text-[13px]">
+            {listError === 'unavailable' ? t('web.devicesUnavailable') : t('web.devicesMalformed')}
+          </p>
+        )}
+        {/* "Nobody is paired" is only ever said after a read that SUCCEEDED. */}
+        {!loading && !listError && ordered.length === 0 && (
+          <p className="m-0 text-[13px] text-[var(--text-sub)]">{t('web.devicesEmpty')}</p>
+        )}
 
-        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-2">
-          {loading && (
-            <div className="text-[11px]" style={{ color: 'var(--text-subtle)' }}>{t('web.devicesLoading')}</div>
-          )}
-          {!loading && listError && (
-            <div className="text-[11px]" style={{ color: 'var(--accent-red)' }}>
-              {listError === 'unavailable' ? t('web.devicesUnavailable') : t('web.devicesMalformed')}
-            </div>
-          )}
-          {/* "Nobody is paired" is only ever said after a read that SUCCEEDED. */}
-          {!loading && !listError && ordered.length === 0 && (
-            <div className="text-[11px]" style={{ color: 'var(--text-subtle)' }}>{t('web.devicesEmpty')}</div>
-          )}
+        {ordered.length > 0 && (
+          <div className="ui-group">
+            {ordered.map((d) => {
+              const revoked = d.revokedAt !== undefined;
+              return (
+                <div key={d.deviceId} className="px-3.5 py-2.5" style={{ opacity: revoked ? 0.6 : 1 }}>
+                  <div className="flex items-center gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="ui-row-title flex items-center gap-2 min-w-0">
+                        {/* A device paired before naming was required has no
+                            name. Say so plainly instead of rendering an empty row. */}
+                        <span className="truncate">{d.name || t('web.deviceUnnamed')}</span>
+                        {revoked && <Badge tone="danger">{t('web.deviceRevoked')}</Badge>}
+                      </p>
+                      <p className="ui-row-detail">
+                        {revoked
+                          ? t('web.deviceRevokedAt', { when: timeAgo(d.revokedAt as number) })
+                          : t('web.deviceLastSeen', { when: timeAgo(d.lastSeenAt) })}
+                      </p>
+                    </div>
 
-          {ordered.map((d) => {
-            const revoked = d.revokedAt !== undefined;
-            return (
-              <div
-                key={d.deviceId}
-                className="px-3 py-2 rounded"
-                style={{ background: 'var(--bg-overlay)', opacity: revoked ? 0.55 : 1 }}
-              >
-                <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-[12px] font-mono truncate" style={{ color: 'var(--text-main)' }}>
-                    {/* A device paired before naming was required has no name.
-                        Say so plainly instead of rendering an empty row. */}
-                    {d.name || t('web.deviceUnnamed')}
-                    {revoked && (
-                      <span className="ml-2 text-[10px]" style={{ color: 'var(--accent-red)' }}>
-                        {t('web.deviceRevoked')}
-                      </span>
+                    {!revoked && (
+                      // The grant, and the control for it, in one place. A
+                      // checkbox rather than a second destructive button: taking
+                      // typing away is reversible here, which is exactly what
+                      // separates it from the revoke sitting next to it.
+                      <label
+                        className={`flex-shrink-0 flex items-center gap-2 text-[11px] cursor-pointer text-[var(--text-sub)] ${
+                          serverReadOnly ? 'opacity-50' : ''
+                        }`}
+                        title={serverReadOnly ? t('web.grantCeilingHint') : undefined}
+                      >
+                        <Checkbox
+                          checked={d.allowInput}
+                          onCheckedChange={(next) => { void handleSetInput(d.deviceId, next); }}
+                          aria-label={t('web.grantLabel')}
+                        />
+                        {t('web.grantLabel')}
+                      </label>
+                    )}
+
+                    {!revoked && (
+                      // Two clicks, deliberately. Revocation is permanent — the
+                      // record is never un-revoked, and the device returns only by
+                      // pairing again — so it does not get a single-click control
+                      // sitting next to a list of similar-looking names.
+                      // Red tint at rest, solid red only on the confirm (DESIGN.md).
+                      <Button
+                        size="sm"
+                        variant={confirming === d.deviceId ? 'danger' : 'destructive'}
+                        className="flex-shrink-0"
+                        disabled={revoking !== null}
+                        onClick={() => {
+                          if (confirming === d.deviceId) void handleRevoke(d.deviceId);
+                          else { setConfirming(d.deviceId); setRevokeError(null); }
+                        }}
+                        onBlur={() => setConfirming((c) => (c === d.deviceId ? null : c))}
+                      >
+                        {revoking === d.deviceId
+                          ? t('web.revoking')
+                          : confirming === d.deviceId
+                            ? t('web.revokeConfirm')
+                            : t('web.revoke')}
+                      </Button>
                     )}
                   </div>
-                  <div className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
-                    {revoked
-                      ? t('web.deviceRevokedAt', { when: timeAgo(d.revokedAt as number) })
-                      : t('web.deviceLastSeen', { when: timeAgo(d.lastSeenAt) })}
-                  </div>
+                  {/* In THIS row. A shared line at the foot of the list said
+                      nothing about which device failed — and the re-list that
+                      follows a failure re-sorts the rows underneath it. */}
+                  {revokeError?.deviceId === d.deviceId && (
+                    <p className="ui-row-error">{revokeError.message}</p>
+                  )}
                 </div>
+              );
+            })}
+          </div>
+        )}
 
-                {!revoked && (
-                  // The grant, and the control for it, in one place. A checkbox
-                  // rather than a second destructive button: taking typing away
-                  // is reversible here, which is exactly what separates it from
-                  // the revoke sitting next to it.
-                  <label
-                    className={`flex-shrink-0 flex items-center gap-1.5 text-[10px] cursor-pointer ${
-                      serverReadOnly ? 'opacity-50' : ''
-                    }`}
-                    style={{ color: 'var(--text-sub)' }}
-                    title={serverReadOnly ? t('web.grantCeilingHint') : undefined}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={d.allowInput}
-                      onChange={(e) => { void handleSetInput(d.deviceId, e.target.checked); }}
-                      className="accent-[var(--accent)]"
-                      aria-label={t('web.grantLabel')}
-                    />
-                    {t('web.grantLabel')}
-                  </label>
-                )}
+        {/* A failure whose device is gone from the re-listed roster would
+            otherwise vanish with it. */}
+        {revokeError && !ordered.some((d) => d.deviceId === revokeError.deviceId) && (
+          <p className="ui-row-error !m-0 text-[13px]">{revokeError.message}</p>
+        )}
+      </DialogBody>
 
-                {!revoked && (
-                  // Two clicks, deliberately. Revocation is permanent — the
-                  // record is never un-revoked, and the device returns only by
-                  // pairing again — so it does not get a single-click control
-                  // sitting next to a list of similar-looking names.
-                  // Red tint at rest, solid red only on the confirm (DESIGN.md).
-                  <button
-                    type="button"
-                    disabled={revoking !== null}
-                    onClick={() => {
-                      if (confirming === d.deviceId) void handleRevoke(d.deviceId);
-                      else { setConfirming(d.deviceId); setRevokeError(null); }
-                    }}
-                    onBlur={() => setConfirming((c) => (c === d.deviceId ? null : c))}
-                    className={`flex-shrink-0 rounded-[5px] px-2 py-1 text-[10px] font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${FOCUS_RING}`}
-                    style={
-                      confirming === d.deviceId
-                        ? { background: 'var(--accent-red)', color: 'var(--bg-base)' }
-                        : { background: 'transparent', color: 'var(--accent-red)', border: '1px solid var(--accent-red)' }
-                    }
-                  >
-                    {revoking === d.deviceId
-                      ? t('web.revoking')
-                      : confirming === d.deviceId
-                        ? t('web.revokeConfirm')
-                        : t('web.revoke')}
-                  </button>
-                )}
-                </div>
-                {/* In THIS row. A shared line at the foot of the list said
-                    nothing about which device failed — and the re-list that
-                    follows a failure re-sorts the rows underneath it. */}
-                {revokeError?.deviceId === d.deviceId && (
-                  <div className="text-[10px] leading-snug pt-1.5" style={{ color: 'var(--accent-red)' }}>
-                    {revokeError.message}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {/* A failure whose device is gone from the re-listed roster would
-              otherwise vanish with it. */}
-          {revokeError && !ordered.some((d) => d.deviceId === revokeError.deviceId) && (
-            <div className="text-[11px]" style={{ color: 'var(--accent-red)' }}>{revokeError.message}</div>
-          )}
-        </div>
-
-        <div
-          className="px-4 py-2.5 border-t flex items-center justify-between"
-          style={{ borderColor: 'var(--bg-overlay)' }}
-        >
-          {/* A count is a CLAIM about how many devices hold a credential. When
-              the read failed there is no such number, and printing "0 active"
-              would be the same fail-open the empty-state above avoids. */}
-          <span className="text-[10px]" style={{ color: 'var(--text-subtle)' }}>
-            {listError ? t('web.devicesCountUnknown') : t('web.devicesLiveCount', { count: liveCount })}
-          </span>
-          {/* Same rule as Escape and the backdrop: a destructive call the
-              operator confirmed must not be dismissable before its verdict has
-              been shown. Leaving this one live made the other two decorative. */}
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={revokeInFlight}
-            className={`rounded-[5px] px-3 py-1 text-[11px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${FOCUS_RING}`}
-            style={{ background: 'var(--bg-overlay)', color: 'var(--text-main)' }}
-          >
-            {t('web.devicesClose')}
-          </button>
-        </div>
-      </div>
-    </div>
+      <DialogFooter>
+        {/* A count is a CLAIM about how many devices hold a credential. When
+            the read failed there is no such number, and printing "0 active"
+            would be the same fail-open the empty-state above avoids. */}
+        <span className="mr-auto text-[11px] text-[var(--text-sub)]">
+          {listError ? t('web.devicesCountUnknown') : t('web.devicesLiveCount', { count: liveCount })}
+        </span>
+        {/* Same rule as Escape and the backdrop: a destructive call the
+            operator confirmed must not be dismissable before its verdict has
+            been shown. Leaving this one live made the other two decorative. */}
+        <Button ref={closeRef} size="md" variant="secondary" onClick={onClose} disabled={revokeInFlight}>
+          {t('web.devicesClose')}
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }

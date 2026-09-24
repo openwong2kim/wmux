@@ -31,6 +31,11 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { IconCheck, IconWarning } from '../icons';
+import Button from '../ui/Button';
+import Field from '../ui/Field';
+import Switch from '../ui/Switch';
+import { SettingsSection } from './SettingsLayout';
 
 export const STALE_THRESHOLD_MS = 24 * 60 * 60 * 1000; // 24h
 
@@ -117,9 +122,8 @@ export function ClaudeIntegrationSection() {
   };
 
   return (
-    <div data-setting-id="plugin" className="flex flex-col gap-3 scroll-mt-4">
-      <Card>
-        <CardHeader title={t('claudeIntegration.signalHealth.title')} />
+    <>
+      <SettingsSection id="plugin" title={t('claudeIntegration.signalHealth.title')}>
         {cardState.kind === 'unknown' && (
           <UnknownBody t={t} onCopy={onCopyInstall} copyState={copyState} />
         )}
@@ -129,9 +133,9 @@ export function ClaudeIntegrationSection() {
         {cardState.kind === 'stale' && (
           <StaleBody t={t} relTime={cardState.relTime} onCopy={onCopyInstall} copyState={copyState} />
         )}
-      </Card>
+      </SettingsSection>
       <UsageCard t={t} />
-    </div>
+    </>
   );
 }
 
@@ -159,42 +163,37 @@ function UsageCard({
   };
 
   return (
-    <Card>
-      <CardHeader title={t('claudeIntegration.usage.title')} />
-      <p className="text-xs text-[color:var(--text-muted)] leading-relaxed">
-        {t('claudeIntegration.usage.description')}
-      </p>
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-[color:var(--text-main)]">
-          {t('claudeIntegration.usage.enableLabel')}
-        </span>
-        <ToggleSwitch
-          checked={enabled}
-          onChange={setEnabled}
-          ariaLabel={t('claudeIntegration.usage.enableLabel')}
-        />
+    <SettingsSection id="usage" title={t('claudeIntegration.usage.title')} description={t('claudeIntegration.usage.description')}>
+      <div className="settings-row">
+        <Field label={t('claudeIntegration.usage.enableLabel')}>
+          <Switch
+            checked={enabled}
+            onCheckedChange={setEnabled}
+            aria-label={t('claudeIntegration.usage.enableLabel')}
+          />
+        </Field>
       </div>
-      {enabled && <UsageStatusLine t={t} usage={usage} now={now} />}
       {enabled && (
-        <button
-          type="button"
-          onClick={onRefresh}
-          disabled={inCooldown}
-          className="self-start text-[11px] font-mono px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-50"
-          style={{
-            backgroundColor: 'var(--bg-surface)',
-            color: 'var(--text-main)',
-            border: '1px solid var(--bg-overlay)',
-          }}
-        >
-          {inCooldown
-            ? t('claudeIntegration.usage.refreshCooldown', {
-                seconds: Math.ceil(cooldownRemainingMs / 1000),
-              })
-            : t('claudeIntegration.usage.refreshButton')}
-        </button>
+        <div className="settings-row">
+          <div className="flex items-center justify-between gap-4">
+            <UsageStatusLine t={t} usage={usage} now={now} />
+            <Button
+              variant="secondary"
+              size="md"
+              className="shrink-0 ml-auto"
+              onClick={onRefresh}
+              disabled={inCooldown}
+            >
+              {inCooldown
+                ? t('claudeIntegration.usage.refreshCooldown', {
+                    seconds: Math.ceil(cooldownRemainingMs / 1000),
+                  })
+                : t('claudeIntegration.usage.refreshButton')}
+            </Button>
+          </div>
+        </div>
       )}
-    </Card>
+    </SettingsSection>
   );
 }
 
@@ -219,16 +218,16 @@ function UsageStatusLine({
   if (usage.status === 'idle') return null;
   if (usage.status === 'ok' && usage.snapshot) {
     return (
-      <div className="flex flex-col gap-1 text-xs font-mono">
-        <span className="text-[color:var(--text-main)]">
+      <div className="flex flex-col gap-0.5">
+        <span className="ui-field-label tabular-nums">
           5h {usage.snapshot.sessionPct}% {'·'} 7d {usage.snapshot.weeklyPct}%
         </span>
         {usage.subscriptionType && (
-          <span className="text-[color:var(--text-muted)]">
+          <span className="ui-field-description">
             {t('claudeIntegration.usage.subscription', { tier: usage.subscriptionType })}
           </span>
         )}
-        <span className="text-[color:var(--text-muted)]">
+        <span className="ui-field-description">
           {t('claudeIntegration.usage.lastFetched', {
             ago: formatAgo(usage.snapshot.fetchedAtMs, now, t),
           })}
@@ -238,12 +237,13 @@ function UsageStatusLine({
   }
   // Error states — surface the human-readable code + optional detail.
   return (
-    <div className="flex flex-col gap-1 text-xs">
-      <span className="text-[var(--accent-red)] font-mono">
+    <div className="flex flex-col gap-0.5">
+      <span className="ui-field-label" style={{ color: 'var(--accent-red)' }}>
         {t(`claudeIntegration.usage.status.${usage.status}` as never)}
       </span>
+      {/* The raw error is machine evidence: mono. */}
       {usage.lastError && (
-        <span className="text-[color:var(--text-muted)] font-mono">{usage.lastError}</span>
+        <span className="ui-field-description font-mono">{usage.lastError}</span>
       )}
     </div>
   );
@@ -262,52 +262,7 @@ function formatAgo(
   return t('claudeIntegration.usage.daysAgo', { n: Math.floor(ageHr / 24) });
 }
 
-function ToggleSwitch({
-  checked,
-  onChange,
-  ariaLabel,
-}: {
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  ariaLabel: string;
-}) {
-  return (
-    <button
-      role="switch"
-      aria-checked={checked}
-      aria-label={ariaLabel}
-      onClick={() => onChange(!checked)}
-      className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none shrink-0"
-      style={{ backgroundColor: checked ? 'var(--accent-blue)' : 'var(--bg-overlay)' }}
-    >
-      <span
-        className="inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform"
-        style={{ transform: checked ? 'translateX(18px)' : 'translateX(2px)' }}
-      />
-    </button>
-  );
-}
-
 // ─── Subcomponents ──────────────────────────────────────────────────────────
-
-function Card({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      className="rounded-[7px] p-4 flex flex-col gap-3"
-      style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
-    >
-      {children}
-    </div>
-  );
-}
-
-function CardHeader({ title }: { title: string }) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-sm font-semibold text-[color:var(--text-main)] font-mono">{title}</span>
-    </div>
-  );
-}
 
 function UnknownBody({
   t,
@@ -319,12 +274,15 @@ function UnknownBody({
   copyState: 'idle' | 'copied' | 'error';
 }) {
   return (
-    <>
-      <p className="text-xs text-[color:var(--text-muted)] leading-relaxed">
-        {t('claudeIntegration.signalHealth.unknownBody')}
-      </p>
-      <CopyInstallButton t={t} onCopy={onCopy} state={copyState} />
-    </>
+    <div className="ui-row">
+      <span className="ui-row-icon" aria-hidden="true"><span className="wmux-welcome-todo" /></span>
+      <div className="ui-row-text">
+        <p className="ui-row-detail">{t('claudeIntegration.signalHealth.unknownBody')}</p>
+      </div>
+      <div className="ui-row-action">
+        <CopyInstallButton t={t} onCopy={onCopy} state={copyState} />
+      </div>
+    </div>
   );
 }
 
@@ -343,23 +301,26 @@ function DetectedBody({
   const missed = health.workspaceMatchRate.missed;
   const totalAttempts = matched + missed;
   return (
-    <div className="flex flex-col gap-1.5 text-xs">
-      <p className="text-[color:var(--text-main)]">
+    <div className="ui-row">
+      <span className="ui-row-icon wmux-welcome-glyph-ok" aria-hidden="true"><IconCheck size={14} /></span>
+      <div className="ui-row-text">
+      <p className="ui-row-title">
         {t('claudeIntegration.signalHealth.detectedLastReceived', { rel: relTime })}
       </p>
-      <p className="text-[color:var(--text-muted)] font-mono">
+      <p className="ui-row-detail tabular-nums">
         {t('claudeIntegration.signalHealth.detectedLatencyFormat', {
           p50: Math.round(p50),
           p95: Math.round(p95),
           count: health.count,
         })}
       </p>
-      <p className="text-[color:var(--text-muted)] font-mono">
+      <p className="ui-row-detail tabular-nums">
         {t('claudeIntegration.signalHealth.workspaceMatchFormat', {
           matched,
           total: totalAttempts,
         })}
       </p>
+      </div>
     </div>
   );
 }
@@ -376,12 +337,15 @@ function StaleBody({
   copyState: 'idle' | 'copied' | 'error';
 }) {
   return (
-    <>
-      <p className="text-xs text-[color:var(--text-muted)] leading-relaxed">
-        {t('claudeIntegration.signalHealth.staleBody', { rel: relTime })}
-      </p>
-      <CopyInstallButton t={t} onCopy={onCopy} state={copyState} />
-    </>
+    <div className="ui-row">
+      <span className="ui-row-icon wmux-welcome-glyph-warn" aria-hidden="true"><IconWarning size={14} /></span>
+      <div className="ui-row-text">
+        <p className="ui-row-detail">{t('claudeIntegration.signalHealth.staleBody', { rel: relTime })}</p>
+      </div>
+      <div className="ui-row-action">
+        <CopyInstallButton t={t} onCopy={onCopy} state={copyState} />
+      </div>
+    </div>
   );
 }
 
@@ -401,17 +365,8 @@ function CopyInstallButton({
         ? t('claudeIntegration.signalHealth.copyError')
         : t('claudeIntegration.signalHealth.copyInstallCommand');
   return (
-    <button
-      type="button"
-      onClick={onCopy}
-      className="self-start text-[11px] font-mono px-2.5 py-1.5 rounded-md transition-colors"
-      style={{
-        backgroundColor: 'var(--bg-surface)',
-        color: 'var(--text-main)',
-        border: '1px solid var(--bg-overlay)',
-      }}
-    >
+    <Button variant="secondary" size="md" onClick={onCopy}>
       {label}
-    </button>
+    </Button>
   );
 }

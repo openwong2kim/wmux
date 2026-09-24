@@ -800,200 +800,6 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           {supervision.status === 'stopped' ? '⟳!' : '⟳'}
         </span>
       )}
-      {resumeHint && resumePtyReady && !supervision && activeSurfacePtyId && (() => {
-        const ptyId = activeSurfacePtyId;
-        const launcher = resumeHint; // slug doubles as the launcher stem ('claude'/'codex')
-        const agentName = launcher.charAt(0).toUpperCase() + launcher.slice(1);
-        // cwd-match guard (F7): `--resume <id>` is cwd-scoped, so only offer the
-        // exact-session resume when the binding's origin cwd still matches the
-        // pane's LIVE cwd. The daemon checks this at recovery, but the shell can
-        // `cd` afterwards (OSC 7 updates surface.cwd) — re-validate here so a
-        // post-recovery cd drops to the cwd-relative `--continue` (plan line 220).
-        const normCwd = (p: string | undefined) => {
-          // Lowercase ONLY a leading Windows drive letter — drive letters are
-          // case-insensitive, but POSIX paths are fully case-sensitive, so a blanket
-          // toLowerCase() would treat `/Foo` and `/foo` as equal and wrongly allow
-          // `--resume` (CodeRabbit). Mirrors the daemon's normalizeCwd.
-          let out = (p ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
-          if (/^[A-Za-z]:\//.test(out)) out = out[0].toLowerCase() + out.slice(1);
-          return out;
-        };
-        // Candidates, not a single cwd (2026-07-21): surface.cwd goes stale
-        // across `cd X; claude` one-liners (no prompt render → no OSC 7), which
-        // wrongly downgraded a legitimate exact resume to `--continue`. The
-        // workspace's hook-reported agent cwd (metadata.cwd) is the second
-        // candidate — same rationale as buildPaneResumeCommand (ResumeInfoChip).
-        const paneCwdCandidates = [
-          pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd,
-          workspace.metadata?.cwd,
-        ];
-        const cwdMatches = !!resumeBinding &&
-          paneCwdCandidates.some((c) => !!c && normCwd(resumeBinding.cwd) === normCwd(c));
-        // The binding must be for THIS launcher's agent. The pill's slug
-        // (resumeHint) and the binding are surfaced independently, and the daemon
-        // only fills lastDetectedAgent when empty — so a stale hint for one agent
-        // could pair with a binding for another, typing `codex --resume <claude-id>`
-        // (codex P2). Gate the exact-session path on an agent match too.
-        const agentMatches = resumeBinding?.agent === launcher;
-        const exactOk = cwdMatches && agentMatches;
-        const sessionId = exactOk ? resumeBinding?.sessionId : undefined;
-        // --dangerously-skip-permissions is a launch preference, not tied to the
-        // exact conversation, so the explicit toggle forces it on EITHER the exact
-        // resume or the cwd-relative fallback. When the toggle is OFF, fall back
-        // to restoring the captured mode (acceptEdits/plan), exact-resume only.
-        const canSkip = agentSupportsPermissionFlag(launcher);
-        const forceSkip = canSkip && resumeSkipPermissions;
-        const permFlag = forceSkip
-          ? permissionFlagFor('bypassPermissions')
-          : (exactOk ? permissionFlagFor(resumeBinding?.permissionMode) : '');
-
-        // Paste WITHOUT a trailing \r. The user presses Enter to run — so bypass
-        // is re-granted only by an explicit keystroke, never automatically (D6).
-        const type = (text: string) => window.electronAPI.pty.write(ptyId, text);
-        const typeAndClear = (text: string) => {
-          type(text);
-          useStore.getState().clearResumeHint(ptyId);
-        };
-
-        const onPrimary = (e: React.MouseEvent) => {
-          e.stopPropagation();
-          // Assemble the exact string to type — with the role's bound model
-          // re-asserted on the launcher-prefixed variants (mirrors the chip and
-          // the input.send path). The permission-restore (click 1) / exact-resume
-          // (click 2) staging and the D6 no-auto-submit contract are unchanged;
-          // planRecoveryPillType only injects the model where applyRoleBinding's
-          // gates allow it.
-          const plan = planRecoveryPillType({
-            launcher,
-            sessionId,
-            permFlag,
-            forceSkip,
-            resumeStage,
-            roleBinding: paneRoleBinding,
-          });
-          if (!plan) return; // not resumable — pill shouldn't have shown (defensive)
-          if (plan.rewritten) {
-            // Audit trail — a role silently changed what this pill types. Logged
-            // at the ACTION so it fires once per real rewrite, not every render.
-            console.log('[wmux:role-binding] resume command rewritten', {
-              role: paneRoleName,
-              agent: launcher,
-              after: plan.text,
-            });
-          }
-          if (plan.clearHint) typeAndClear(plan.text);
-          else type(plan.text);
-          if (plan.advanceStage) setResumeStage(1);
-        };
-
-        // The two-stage progressive assembly only applies to the toggle-OFF
-        // captured-mode path; with the toggle ON, one click types everything.
-        const primaryLabel = resumeStage === 1
-          ? `+ ${t('resume.addSession')}`
-          : `▶ ${t('resume.label', { agent: agentName })}`;
-        const primaryTooltip = resumeStage === 1 ? t('resume.addSessionTooltip') : t('resume.tooltip');
-
-        return (
-          <span
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              position: 'absolute',
-              top: 4,
-              left: 6,
-              zIndex: 20,
-              display: 'inline-flex',
-              flexDirection: 'column',
-              alignItems: 'flex-start',
-              gap: 4,
-              fontSize: 10,
-              fontFamily: 'ui-monospace, monospace',
-              fontWeight: 600,
-              letterSpacing: '0.04em',
-            }}
-          >
-            {/* --dangerously-skip-permissions toggle (Claude only, default on).
-                A launch preference the owner used to retype by hand; the primary
-                button types it onto the resume line when checked. */}
-            {canSkip && (
-              <label
-                onClick={(e) => e.stopPropagation()}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  cursor: 'pointer',
-                  fontWeight: 400,
-                  color: 'var(--text-sub)',
-                  backgroundColor: 'var(--bg-surface)',
-                  border: '1px solid var(--border-soft)',
-                  borderRadius: 4,
-                  padding: '1px 6px',
-                  boxShadow: 'var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.25))',
-                  userSelect: 'none',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={resumeSkipPermissions}
-                  onChange={(e) => setResumeSkipPermissions(e.target.checked)}
-                  style={{ accentColor: 'var(--accent-cursor)', cursor: 'pointer', margin: 0 }}
-                />
-                <span>--dangerously-skip-permissions</span>
-              </label>
-            )}
-            {/* Button pill — DESIGN.md: amber never FILLS an area — neutral surface
-                pill with a thin amber edge (accent as an outline, not a wash). */}
-            <span
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                color: 'var(--text-main)',
-                backgroundColor: 'var(--bg-surface)',
-                border: '1px solid color-mix(in srgb, var(--accent-cursor) 55%, transparent)',
-                borderRadius: 4,
-                boxShadow: 'var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.25))',
-                overflow: 'hidden',
-              }}
-            >
-            <button
-              onClick={onPrimary}
-              title={primaryTooltip}
-              aria-label={primaryTooltip}
-              style={{
-                padding: '1px 6px',
-                font: 'inherit',
-                color: 'inherit',
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-              }}
-            >
-              {primaryLabel}
-            </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                useStore.getState().clearResumeHint(ptyId);
-              }}
-              title={t('resume.dismiss')}
-              aria-label={t('resume.dismiss')}
-              style={{
-                padding: '1px 5px 1px 0',
-                font: 'inherit',
-                color: 'inherit',
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                opacity: 0.8,
-              }}
-            >
-              ×
-            </button>
-            </span>
-          </span>
-        );
-      })()}
       {/* Persistent per-pane resume affordance — shown whenever this agent pane
           carries a captured conversation binding but is NOT in the reboot-
           recovery pill flow above (the pill takes precedence right after a
@@ -1089,6 +895,224 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         onSplitHorizontalRemote={handleSplitRemoteHorizontal}
         onSplitVerticalRemote={handleSplitRemoteVertical}
       />
+      {/* #1464 — the reboot-recovery resume pill gets its own row under the
+          tab strip while the offer stands. It used to float over the pane
+          top-left, covering the tab title and the first terminal row (the
+          row it types the resume command into); the strip itself has no
+          room for it on a narrow pane.
+          The row is laid out from the moment the hint exists, NOT from
+          resumePtyReady: it then takes its height before the recovered pane's
+          first fit instead of shrinking the terminal (a resize, a SIGWINCH)
+          once the pane is live. Only the button waits for readiness. */}
+      {resumeHint && !supervision && activeSurfacePtyId && (() => {
+        const ptyId = activeSurfacePtyId;
+        const launcher = resumeHint; // slug doubles as the launcher stem ('claude'/'codex')
+        const agentName = launcher.charAt(0).toUpperCase() + launcher.slice(1);
+        // cwd-match guard (F7): `--resume <id>` is cwd-scoped, so only offer the
+        // exact-session resume when the binding's origin cwd still matches the
+        // pane's LIVE cwd. The daemon checks this at recovery, but the shell can
+        // `cd` afterwards (OSC 7 updates surface.cwd) — re-validate here so a
+        // post-recovery cd drops to the cwd-relative `--continue` (plan line 220).
+        const normCwd = (p: string | undefined) => {
+          // Lowercase ONLY a leading Windows drive letter — drive letters are
+          // case-insensitive, but POSIX paths are fully case-sensitive, so a blanket
+          // toLowerCase() would treat `/Foo` and `/foo` as equal and wrongly allow
+          // `--resume` (CodeRabbit). Mirrors the daemon's normalizeCwd.
+          let out = (p ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
+          if (/^[A-Za-z]:\//.test(out)) out = out[0].toLowerCase() + out.slice(1);
+          return out;
+        };
+        // Candidates, not a single cwd (2026-07-21): surface.cwd goes stale
+        // across `cd X; claude` one-liners (no prompt render → no OSC 7), which
+        // wrongly downgraded a legitimate exact resume to `--continue`. The
+        // workspace's hook-reported agent cwd (metadata.cwd) is the second
+        // candidate — same rationale as buildPaneResumeCommand (ResumeInfoChip).
+        const paneCwdCandidates = [
+          pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd,
+          workspace.metadata?.cwd,
+        ];
+        const cwdMatches = !!resumeBinding &&
+          paneCwdCandidates.some((c) => !!c && normCwd(resumeBinding.cwd) === normCwd(c));
+        // The binding must be for THIS launcher's agent. The pill's slug
+        // (resumeHint) and the binding are surfaced independently, and the daemon
+        // only fills lastDetectedAgent when empty — so a stale hint for one agent
+        // could pair with a binding for another, typing `codex --resume <claude-id>`
+        // (codex P2). Gate the exact-session path on an agent match too.
+        const agentMatches = resumeBinding?.agent === launcher;
+        const exactOk = cwdMatches && agentMatches;
+        const sessionId = exactOk ? resumeBinding?.sessionId : undefined;
+        // --dangerously-skip-permissions is a launch preference, not tied to the
+        // exact conversation, so the explicit toggle forces it on EITHER the exact
+        // resume or the cwd-relative fallback. When the toggle is OFF, fall back
+        // to restoring the captured mode (acceptEdits/plan), exact-resume only.
+        const canSkip = agentSupportsPermissionFlag(launcher);
+        const forceSkip = canSkip && resumeSkipPermissions;
+        const permFlag = forceSkip
+          ? permissionFlagFor('bypassPermissions')
+          : (exactOk ? permissionFlagFor(resumeBinding?.permissionMode) : '');
+
+        // Paste WITHOUT a trailing \r. The user presses Enter to run — so bypass
+        // is re-granted only by an explicit keystroke, never automatically (D6).
+        const type = (text: string) => window.electronAPI.pty.write(ptyId, text);
+        const typeAndClear = (text: string) => {
+          type(text);
+          useStore.getState().clearResumeHint(ptyId);
+        };
+
+        const onPrimary = (e: React.MouseEvent) => {
+          e.stopPropagation();
+          if (!resumePtyReady) return; // EI6: the recovered pipe is not writable yet
+          // Assemble the exact string to type — with the role's bound model
+          // re-asserted on the launcher-prefixed variants (mirrors the chip and
+          // the input.send path). The permission-restore (click 1) / exact-resume
+          // (click 2) staging and the D6 no-auto-submit contract are unchanged;
+          // planRecoveryPillType only injects the model where applyRoleBinding's
+          // gates allow it.
+          const plan = planRecoveryPillType({
+            launcher,
+            sessionId,
+            permFlag,
+            forceSkip,
+            resumeStage,
+            roleBinding: paneRoleBinding,
+          });
+          if (!plan) return; // not resumable — pill shouldn't have shown (defensive)
+          if (plan.rewritten) {
+            // Audit trail — a role silently changed what this pill types. Logged
+            // at the ACTION so it fires once per real rewrite, not every render.
+            console.log('[wmux:role-binding] resume command rewritten', {
+              role: paneRoleName,
+              agent: launcher,
+              after: plan.text,
+            });
+          }
+          if (plan.clearHint) typeAndClear(plan.text);
+          else type(plan.text);
+          if (plan.advanceStage) setResumeStage(1);
+        };
+
+        // The two-stage progressive assembly only applies to the toggle-OFF
+        // captured-mode path; with the toggle ON, one click types everything.
+        const primaryLabel = resumeStage === 1
+          ? `+ ${t('resume.addSession')}`
+          : `▶ ${t('resume.label', { agent: agentName })}`;
+        const primaryTooltip = resumeStage === 1 ? t('resume.addSessionTooltip') : t('resume.tooltip');
+
+        return (
+          <span
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              // A 36px chrome-module row in flow, so the terminal below gives up
+              // the height instead of being drawn over. On a narrow pane the
+              // checkbox label ellipsizes; the button never shrinks.
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              flexShrink: 0,
+              height: 36,
+              minWidth: 0,
+              padding: '0 8px',
+              overflow: 'hidden',
+              backgroundColor: 'var(--bg-mantle)',
+              borderBottom: '1px solid var(--border-soft)',
+              boxSizing: 'border-box',
+              fontSize: 10,
+              fontFamily: 'ui-monospace, monospace',
+              fontWeight: 600,
+              letterSpacing: '0.04em',
+            }}
+          >
+            {/* --dangerously-skip-permissions toggle (Claude only, default on).
+                A launch preference the owner used to retype by hand; the primary
+                button types it onto the resume line when checked. */}
+            {canSkip && (
+              <label
+                onClick={(e) => e.stopPropagation()}
+                // The flag ellipsizes on a narrow pane; keep it readable on hover.
+                title="--dangerously-skip-permissions"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  cursor: 'pointer',
+                  fontWeight: 400,
+                  color: 'var(--text-sub)',
+                  backgroundColor: 'var(--bg-surface)',
+                  border: '1px solid var(--border-soft)',
+                  borderRadius: 4,
+                  padding: '0 6px',
+                  height: 24,
+                  boxSizing: 'border-box',
+                  minWidth: 0,
+                  userSelect: 'none',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={resumeSkipPermissions}
+                  onChange={(e) => setResumeSkipPermissions(e.target.checked)}
+                  style={{ accentColor: 'var(--accent-cursor)', cursor: 'pointer', margin: 0, flexShrink: 0 }}
+                />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>--dangerously-skip-permissions</span>
+              </label>
+            )}
+            {/* Button pill — DESIGN.md: amber never FILLS an area — neutral surface
+                pill with a thin amber edge (accent as an outline, not a wash). */}
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                color: 'var(--text-main)',
+                backgroundColor: 'var(--bg-surface)',
+                border: '1px solid color-mix(in srgb, var(--accent-cursor) 55%, transparent)',
+                borderRadius: 4,
+                height: 24,
+                boxSizing: 'border-box',
+                flexShrink: 0,
+                overflow: 'hidden',
+              }}
+            >
+            <button
+              onClick={onPrimary}
+              disabled={!resumePtyReady}
+              title={primaryTooltip}
+              aria-label={primaryTooltip}
+              style={{
+                padding: '1px 6px',
+                font: 'inherit',
+                color: 'inherit',
+                background: 'none',
+                border: 'none',
+                cursor: resumePtyReady ? 'pointer' : 'default',
+                opacity: resumePtyReady ? 1 : 0.5,
+              }}
+            >
+              {primaryLabel}
+            </button>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                useStore.getState().clearResumeHint(ptyId);
+              }}
+              title={t('resume.dismiss')}
+              aria-label={t('resume.dismiss')}
+              style={{
+                padding: '1px 5px 1px 0',
+                font: 'inherit',
+                color: 'inherit',
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                opacity: 0.8,
+              }}
+            >
+              ×
+            </button>
+            </span>
+          </span>
+        );
+      })()}
       {addRemoteModalOpen && (
         <AddRemotePaneModal
           onClose={() => setAddRemoteModalOpen(false)}

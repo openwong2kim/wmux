@@ -29,3 +29,30 @@ export function orderByAttention<T extends { id: string }>(
   }
   return pinned.concat(rest);
 }
+
+/**
+ * #1481 — "Recent activity": the workspace with the newest sign of life first.
+ * Stable, so ties (and workspaces with no activity this session, which sort
+ * last) keep their manual order.
+ */
+export function orderByRecentActivity<T extends { id: string }>(
+  items: readonly T[],
+  lastActivityOf: (id: string) => number,
+): T[] {
+  return items
+    .map((item, index) => ({ item, index, at: lastActivityOf(item.id) || 0 }))
+    .sort((a, b) => b.at - a.at || a.index - b.index)
+    .map(({ item }) => item);
+}
+
+/** One entry point for every sort mode the sidebar offers. */
+export function orderWorkspaces<T extends { id: string }>(
+  items: readonly T[],
+  mode: 'manual' | 'attention' | 'recent',
+  statusOf: (id: string) => AgentStatus,
+  lastActivityOf: (id: string) => number,
+): T[] {
+  if (mode === 'attention') return orderByAttention(items, statusOf, true);
+  if (mode === 'recent') return orderByRecentActivity(items, lastActivityOf);
+  return items as T[];
+}

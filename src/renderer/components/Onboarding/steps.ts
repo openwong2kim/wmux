@@ -1,3 +1,5 @@
+import type { MediaClipId } from '../../assets/media';
+
 export interface OnboardingStep {
   id: string;
   titleKey: string;
@@ -5,6 +7,9 @@ export interface OnboardingStep {
   targetSelector: string;
   /** Preferred tooltip placement relative to the highlighted element */
   placement: 'top' | 'bottom' | 'left' | 'right';
+  /** Short looping clip (assets/media) that shows exactly what the step's
+   *  copy describes. Steps without such a clip show text only. */
+  media?: MediaClipId;
 }
 
 /**
@@ -21,6 +26,7 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     descriptionKey: 'onboarding.step1.description',
     targetSelector: '[data-onboarding-target="pane-area"]',
     placement: 'bottom',
+    media: 'split',
   },
   {
     id: 'add-workspace',
@@ -28,6 +34,7 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     descriptionKey: 'onboarding.step2.description',
     targetSelector: '[data-onboarding-target="add-workspace"]',
     placement: 'right',
+    media: 'workspaces',
   },
   {
     id: 'open-browser',

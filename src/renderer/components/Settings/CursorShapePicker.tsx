@@ -31,7 +31,7 @@ export function CursorShapePicker({
     <div
       role="radiogroup"
       aria-label={t('settings.cursorShape')}
-      className="grid grid-cols-3 gap-2 w-full mt-2.5"
+      className="grid grid-cols-3 gap-2 w-full"
     >
       {TERMINAL_CURSOR_STYLES.map((style) => {
         const selected = value === style;
@@ -43,25 +43,21 @@ export function CursorShapePicker({
             aria-checked={selected}
             data-cursor-style={style}
             onClick={() => onChange(style)}
-            className={`rounded-[5px] text-left px-2 pt-2 pb-1.5 ${FOCUS_RING}`}
-            style={{
-              backgroundColor: 'var(--bg-surface)',
-              border: `1px solid ${selected ? 'var(--accent-blue)' : 'var(--bg-overlay)'}`,
-              boxShadow: selected
-                ? '0 0 0 2px color-mix(in srgb, var(--accent-blue) 45%, transparent), inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%)'
-                : 'inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%)',
-            }}
+            // Same selection grammar as the theme cards: a neutral outline,
+            // never steel (steel is the focus ring).
+            className={`settings-theme-card px-2 pt-2 pb-1.5 ${FOCUS_RING}`}
+            style={{ backgroundColor: 'var(--surface-fill)' }}
           >
             <div
-              className="h-9 rounded px-2.5 flex items-center gap-1 font-mono text-xs"
+              className="h-9 rounded-[6px] px-2.5 flex items-center gap-1 font-mono text-xs"
               style={{ backgroundColor: '#101012', color: '#c8c4bc' }}
             >
               <span>~/wmux</span>
               <CursorGlyph style={style} />
             </div>
             <div
-              className="mt-1.5 text-[11px]"
-              style={{ color: selected ? 'var(--text-main)' : 'var(--text-subtle)', fontWeight: selected ? 600 : 400 }}
+              className="mt-1.5 text-[13px]"
+              style={{ color: selected ? 'var(--text-main)' : 'var(--text-sub)', fontWeight: selected ? 500 : 400 }}
             >
               {t(LABEL_KEY[style])}
             </div>

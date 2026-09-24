@@ -13,6 +13,11 @@ import { useT } from '../../hooks/useT';
 import { findLeafPanes, activePaneTerminalPty } from '../../hooks/a2aAddressing';
 import { formatBracketedPastePayload } from '../../utils/ptyMessageDelivery';
 import type { WorktaskScanEntryWire, WorktaskScanCategoryWire } from '../../../shared/workTask';
+import Dialog, { DialogBody, DialogHeader } from '../ui/Dialog';
+import Button from '../ui/Button';
+import Badge from '../ui/Badge';
+import type { BadgeTone } from '../ui/Badge';
+import { IconRefresh } from '../icons';
 
 /** Why the last close attempt for a task failed — drives which next steps the
  *  row offers. 'dirty' is the only one a commit line can answer. */
@@ -25,11 +30,12 @@ const CATEGORY_LABEL_KEY: Record<WorktaskScanCategoryWire, string> = {
   'orphan-dir': 'worktask.cleanup.cat.orphan',
 };
 
-const CATEGORY_COLOR: Record<WorktaskScanCategoryWire, string> = {
-  'unmaterialized-open': 'var(--accent-yellow)',
-  'disk-missing': 'var(--accent-red)',
-  preserved: 'var(--accent-blue)',
-  'orphan-dir': 'var(--text-muted)',
+// Status tones tint a neutral badge; steel is kept for focus and links.
+const CATEGORY_TONE: Record<WorktaskScanCategoryWire, BadgeTone> = {
+  'unmaterialized-open': 'warning',
+  'disk-missing': 'danger',
+  preserved: 'neutral',
+  'orphan-dir': 'neutral',
 };
 
 // ─── C-4: the prepared commit line ──────────────────────────────────────
@@ -269,6 +275,12 @@ export default function WorktaskCleanupView() {
       st.setActiveWorkspace(ws.id);
       // Bracketed paste, no trailing CR: the line lands at the prompt unrun.
       window.electronAPI.pty.write(ptyId, formatBracketedPastePayload(line));
+      // Hand focus to the terminal holding the line before the list closes, so
+      // the user's next Enter runs it instead of the dialog handing focus back
+      // to its opener (which reopens this list). Loaded lazily: the terminal
+      // registry pulls in xterm, which this view does not otherwise need.
+      const { terminalRegistry } = await import('../../hooks/useTerminal');
+      terminalRegistry.get(ptyId)?.focus();
       setVisible(false);
       pushToast({ level: 'info', message: t('worktask.cleanup.commitLinePrepared') });
     },
@@ -280,115 +292,112 @@ export default function WorktaskCleanupView() {
 
   if (!visible) return null;
 
+  // Escape, the backdrop and the header close all dismiss it (ui/Dialog) —
+  // except while a task close is in flight, whose result lands in this list.
+  const closeIfIdle = () => {
+    if (busyTaskId === null) setVisible(false);
+  };
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]"
-      style={{ backgroundColor: 'var(--bg-overlay-scrim, rgba(0, 0, 0, 0.55))' }}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) setVisible(false);
-      }}
+    <Dialog
+      onClose={closeIfIdle}
+      closeOnBackdrop
+      width={600}
+      zIndexClassName="z-50"
+      style={{ maxHeight: '70vh' }}
+      data-testid="worktask-cleanup"
     >
-      <div
-        className="w-[560px] max-h-[70vh] flex flex-col rounded-xl overflow-hidden shadow-2xl"
-        style={{ backgroundColor: 'var(--bg-base)', border: '1px solid var(--bg-surface)' }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--bg-surface)]">
-          <span className="text-sm font-semibold text-[var(--text-main)]">{t('worktask.cleanup.title')}</span>
-          <div className="flex-1" />
-          <button
-            className="px-2 py-0.5 rounded text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)]"
-            onClick={() => void runScan()}
-            disabled={loading}
-          >
+      <DialogHeader
+        title={t('worktask.cleanup.title')}
+        closeLabel={t('worktask.cleanup.dismiss')}
+        closeDisabled={busyTaskId !== null}
+      />
+      <DialogBody className="!gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <p className="m-0 flex-1 min-w-0 truncate text-[11px] text-[var(--text-sub)]" title={scannedRoot || undefined}>
+            {scannedRoot && (
+              <>
+                {t('worktask.cleanup.root')}: <span className="font-mono">{scannedRoot}</span>
+              </>
+            )}
+          </p>
+          <Button size="sm" variant="secondary" className="shrink-0 gap-1" onClick={() => void runScan()} disabled={loading}>
+            <IconRefresh size={12} />
             {loading ? t('worktask.cleanup.scanning') : t('worktask.cleanup.rescan')}
-          </button>
-          <button
-            className="px-2 py-0.5 rounded text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)]"
-            onClick={() => setVisible(false)}
-          >
-            {t('worktask.cleanup.dismiss')}
-          </button>
+          </Button>
         </div>
-
-        <div className="overflow-y-auto flex-1 p-2">
-          {scannedRoot && (
-            <div className="px-2 py-1 text-[10px] text-[var(--text-muted)] font-mono truncate" title={scannedRoot}>
-              {t('worktask.cleanup.root')}: {scannedRoot}
-            </div>
-          )}
-          {error && <div className="px-2 py-2 text-[11px] text-[var(--accent-red)]">{error}</div>}
-          {!loading && !error && entries.length === 0 && (
-            <div className="px-2 py-8 text-center text-[12px] text-[var(--text-muted)]">
-              {t('worktask.cleanup.empty')}
-            </div>
-          )}
-          {entries.map((e, i) => {
-            const canClose = e.taskId && e.category !== 'orphan-dir';
-            return (
-              <div
-                key={`${e.category}-${e.taskId ?? e.worktreePath ?? i}`}
-                className="flex items-start gap-2 px-2 py-2 border-b border-[var(--bg-mantle)]"
-              >
-                <span
-                  className="text-[10px] font-semibold px-1.5 py-0.5 rounded mt-0.5 shrink-0"
-                  style={{ color: CATEGORY_COLOR[e.category], border: `1px solid ${CATEGORY_COLOR[e.category]}` }}
-                >
-                  {t(CATEGORY_LABEL_KEY[e.category])}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="text-[12px] text-[var(--text-main)] truncate">{e.title ?? e.taskId ?? t('worktask.cleanup.unnamed')}</div>
-                  {e.worktreePath && (
-                    <div className="text-[10px] text-[var(--text-muted)] font-mono truncate" title={e.worktreePath}>
-                      {e.worktreePath}
+        {error && <p className="ui-row-error !m-0 text-[13px]">{error}</p>}
+        {!loading && !error && entries.length === 0 && (
+          <p className="m-0 py-8 text-center text-[13px] text-[var(--text-sub)]">{t('worktask.cleanup.empty')}</p>
+        )}
+        {entries.length > 0 && (
+          <div className="ui-group">
+            {entries.map((e, i) => {
+              const canClose = e.taskId && e.category !== 'orphan-dir';
+              return (
+                <div key={`${e.category}-${e.taskId ?? e.worktreePath ?? i}`} className="ui-row !items-start">
+                  <div className="ui-row-text">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <p className="ui-row-title truncate">{e.title ?? e.taskId ?? t('worktask.cleanup.unnamed')}</p>
+                      <Badge tone={CATEGORY_TONE[e.category]} className="shrink-0">
+                        {t(CATEGORY_LABEL_KEY[e.category])}
+                      </Badge>
                     </div>
-                  )}
-                  {e.detail && <div className="text-[10px] text-[var(--text-sub)]">{e.detail}</div>}
-                  {e.closedAt && (
-                    <div className="text-[10px] text-[var(--text-muted)]">
-                      {t('worktask.cleanup.closedAt')}: {new Date(e.closedAt).toLocaleString()}
-                    </div>
-                  )}
-                  {e.taskId && closeFailed[e.taskId] && (
-                    <div className="mt-1 flex flex-wrap items-center gap-2" data-cleanup-close-failed>
-                      {/* Only a worktree that still holds UNCOMMITTED work has a
-                          commit line to prepare — an unpushed branch needs a
-                          push, and a commit would only add to it. */}
-                      {e.worktreePath && closeFailed[e.taskId] === 'dirty' && canPrepareCommit && (
-                        <button
-                          className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-mantle)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)]"
-                          onClick={() => void handleCommitAndClose(e)}
-                          data-cleanup-commit-close
-                        >
-                          {t('worktask.cleanup.commitAndClose')}
-                        </button>
-                      )}
-                      {e.worktreePath && (
-                        <button
-                          className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-mantle)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)]"
-                          onClick={() => void handleOpenWorktree(e.worktreePath!)}
-                          data-cleanup-open-worktree
-                        >
-                          {t('worktask.cleanup.openWorktree')}
-                        </button>
-                      )}
-                    </div>
+                    {e.worktreePath && (
+                      <p className="ui-row-detail font-mono truncate" title={e.worktreePath}>
+                        {e.worktreePath}
+                      </p>
+                    )}
+                    {e.detail && <p className="ui-row-detail">{e.detail}</p>}
+                    {e.closedAt && (
+                      <p className="ui-row-detail">
+                        {t('worktask.cleanup.closedAt')}: {new Date(e.closedAt).toLocaleString()}
+                      </p>
+                    )}
+                    {e.taskId && closeFailed[e.taskId] && (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2" data-cleanup-close-failed>
+                        {/* Only a worktree that still holds UNCOMMITTED work has a
+                            commit line to prepare — an unpushed branch needs a
+                            push, and a commit would only add to it. */}
+                        {e.worktreePath && closeFailed[e.taskId] === 'dirty' && canPrepareCommit && (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => void handleCommitAndClose(e)}
+                            data-cleanup-commit-close
+                          >
+                            {t('worktask.cleanup.commitAndClose')}
+                          </Button>
+                        )}
+                        {e.worktreePath && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => void handleOpenWorktree(e.worktreePath!)}
+                            data-cleanup-open-worktree
+                          >
+                            {t('worktask.cleanup.openWorktree')}
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {canClose && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="shrink-0"
+                      onClick={() => void handleClose(e.taskId!, e.ownerWorkspaceId)}
+                      disabled={busyTaskId !== null}
+                    >
+                      {busyTaskId === e.taskId ? t('worktask.cleanup.closing') : t('worktask.cleanup.close')}
+                    </Button>
                   )}
                 </div>
-                {canClose && (
-                  <button
-                    className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-mantle)] text-[var(--text-sub)] hover:text-[var(--accent-red)] border border-[var(--bg-mantle)] disabled:opacity-40 shrink-0"
-                    onClick={() => void handleClose(e.taskId!, e.ownerWorkspaceId)}
-                    disabled={busyTaskId !== null}
-                  >
-                    {busyTaskId === e.taskId ? t('worktask.cleanup.closing') : t('worktask.cleanup.close')}
-                  </button>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
+              );
+            })}
+          </div>
+        )}
+      </DialogBody>
+    </Dialog>
   );
 }

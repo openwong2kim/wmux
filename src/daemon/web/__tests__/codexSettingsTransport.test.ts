@@ -30,6 +30,15 @@ describe('Codex Unix WebSocket settings transport', () => {
     f.reply({id:2,result:{label:'모델'}});
     await expect(result).resolves.toEqual({label:'모델'});
   });
+  it('lists skills through a fixed read-only operation without widening settings RPC', async () => {
+    const f=fixture(); await f.ready();
+    const result=f.transport.skills('/repo');
+    expect(f.messages.at(-1)).toMatchObject({method:'skills/list',params:{cwds:['/repo'],forceReload:false}});
+    f.reply({id:2,result:{data:[]}});
+    await expect(result).resolves.toEqual({data:[]});
+    await expect(f.transport.rpc('skills/list' as never,{})).rejects.toThrow('Unsupported');
+    await expect(f.transport.skills('relative')).rejects.toThrow('Invalid');
+  });
   it('refuses server approvals and excludes private provider errors', async () => {
     const f=fixture(); await f.ready();
     f.reply({id:'approval',method:'item/commandExecution/requestApproval'});

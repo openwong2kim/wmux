@@ -47,6 +47,8 @@ import {
   type FanoutSetupSkipReason,
 } from './fanoutEnvironment';
 import { inheritTaskAutonomy } from './taskAutonomy';
+import { getFanOutGuards, type FanOutGuards } from './fanoutGuards';
+import { loadFanoutWorkerPermissionMode } from './fanoutWorkerPolicy';
 import { commandChoosesModel } from '../../shared/orchestratorRole';
 import {
   MODEL_ENV_MARKER,
@@ -54,6 +56,7 @@ import {
   WORKER_MODEL_ENV,
   isSimpleLaunchCommand,
   splitModelEnvMarker,
+  type FanoutWorkerPermissionMode,
 } from '../../shared/workerLaunch';
 import {
   clearFirstRunPrompts,
@@ -122,6 +125,14 @@ export interface FanOutRendererPort {
      *  renderer rewrites the launch command through the same applyRoleBinding
      *  path a human-opened pane uses. Absent = launch the command as given. */
     role?: string;
+    /** Depth-1 lineage: the workspace that fanned this task out. The renderer
+     *  hands it to pty.create, whose main-side handler stamps it BEFORE the
+     *  PTY (and the agent) exists; a failed stamp fails the spawn. */
+    fanoutTaskOf?: string;
+    /** The operator's worker permission mode (main-side setting). The renderer
+     *  appends the matching flag and the worker allow-list AFTER the role
+     *  rewrite, and only when the final launcher is claude. */
+    workerPermissionMode?: FanoutWorkerPermissionMode;
   }): Promise<
     | {
         workspaceId: string;
@@ -176,6 +187,9 @@ export interface FanOutRequest {
   verifiedWorkspaceId: string;
   /** 미션 채널 멤버 좌표(생성자 memberId — 기본 verifiedWorkspaceId). */
   memberId?: string;
+  /** Worker permission mode, read once by the caller so the audit record and
+   *  every task agree. Absent → read once from the Settings store per run. */
+  workerPermissionMode?: FanoutWorkerPermissionMode;
 }
 
 /** 태스크 단위 결과(리포트 — 상태 구분). */
@@ -229,6 +243,10 @@ export interface FanOutResult {
    *  privileged/inverted bounds, or wider than the cap), so no task got a
    *  WMUX_TASK_PORT. Distinct from "no range declared", which reports nothing. */
   portRangeInvalid?: true;
+  /** T3 — conditions that did not stop the fan-out but the caller should know,
+   *  e.g. the tasks branched from the local HEAD because origin's default
+   *  branch could not be fetched. */
+  warnings?: string[];
 }
 
 export interface FanOutServiceOptions {
@@ -248,6 +266,12 @@ export interface FanOutServiceOptions {
   /** F15 — how long after a clean watch to look once more for the model error.
    *  Negative disables the re-check entirely. */
   firstRunRecheckMs?: number;
+  /** Depth-1 lineage + live-cap store. Injected in tests; defaults to the
+   *  hosted one. */
+  lineage?: Pick<FanOutGuards, 'markTask' | 'taskSettled'>;
+  /** Worker permission mode reader. Injected in tests; defaults to the
+   *  main-side Settings store. */
+  workerPermissionMode?: () => FanoutWorkerPermissionMode;
 }
 
 /**
@@ -278,6 +302,9 @@ export class FanOutService {
   private readonly firstRunRecheckMs: number;
   /** F15 — deferred re-checks still in flight (tests await them). */
   private pendingRechecks: Promise<void>[] = [];
+  /** Depth-1 lineage + live-cap store (absent = the hosted one). */
+  private readonly lineage?: Pick<FanOutGuards, 'markTask' | 'taskSettled'>;
+  private readonly workerPermissionMode: () => FanoutWorkerPermissionMode;
 
   /** §2 G1 멱등: 키 → 완료 결과 LRU. 동일 키 재호출은 직전 결과 반환. */
   private readonly results = new Map<string, FanOutResult>();
@@ -293,6 +320,8 @@ export class FanOutService {
     this.autonomy = opts.autonomy;
     this.firstRunOptions = opts.firstRunOptions;
     this.firstRunRecheckMs = opts.firstRunRecheckMs ?? FIRST_RUN_MODEL_RECHECK_MS;
+    this.lineage = opts.lineage;
+    this.workerPermissionMode = opts.workerPermissionMode ?? (() => loadFanoutWorkerPermissionMode());
   }
 
   /**
@@ -399,6 +428,7 @@ export class FanOutService {
     // 전체를 선검증한다 — 부적격이 하나라도 있으면 mission.start 전에 N개 전부 거부해
     // "부적격이면 태스크 생성 0" 계약을 이행한다. 실 taskId는 아직 없으므로 인덱스별
     // 자리표시자로 slug/경로/branch를 파생·검증한다.
+    let repoRoot = '';
     for (const [k, preflightTitle] of titles.entries()) {
       const placeholder = `wtask-preflight-${String(k).padStart(8, '0')}`;
       const pf = await this.worktrees.preflight(req.repoPath, preflightTitle, placeholder, {
@@ -407,6 +437,16 @@ export class FanOutService {
       if (!pf.ok) {
         return { ok: false, error: `fanout preflight failed (task ${k + 1}): ${pf.error}`, tasks: [] };
       }
+      repoRoot = pf.plan.repoRoot;
+    }
+
+    // ── T3 base: origin's default branch, fetched once for the whole fan-out ──
+    // Every task branches from the same freshly fetched ref, not from whatever
+    // the owner happens to have checked out. A failure is a warning, not a
+    // refusal: the tasks then branch from HEAD, as they did before.
+    const base = await this.worktrees.resolveBase(repoRoot);
+    if (base.error) {
+      return { ok: false, error: `fanout preflight failed: ${base.error}`, tasks: [] };
     }
 
     // ── T2 per-repo fan-out environment(포트 창·setup 훅) ──
@@ -414,6 +454,7 @@ export class FanOutService {
     // 전에 전부 확정한다 — 태스크 k가 뜬 뒤 k+1이 같은 창을 다시 스캔하면 아직
     // 바인드되지 않은 포트를 중복 배정할 수 있기 때문이다.
     const env = await this.resolveEnvironment(req.repoPath, n);
+    const workerMode = req.workerPermissionMode ?? this.workerPermissionMode();
 
     // ── 태스크 순차 처리(직렬 큐가 이미 강제하지만, 스폰 부하도 직렬로) ──
     const tasks: FanOutTaskResult[] = [];
@@ -430,9 +471,15 @@ export class FanOutService {
         missionIdemKey,
         port: env.ports[k],
         setupCommand: env.setupCommand,
+        baseOid: base.oid,
+        baseWarning: base.warning,
         ...(entries[k].role ? { role: entries[k].role } : {}),
+        workerMode,
       });
       tasks.push(r);
+      // This task is through its spawn: from here its stamped workspace (if
+      // it got one) is what the live cap counts, not the in-flight booking.
+      (this.lineage ?? getFanOutGuards()).taskSettled(req.idempotencyKey);
     }
 
     // 배정됐지만 태스크가 뜨지 못한 포트는 창에 돌려준다(예약 TTL을 기다리지 않게).
@@ -444,6 +491,7 @@ export class FanOutService {
       tasks,
       ...(env.setupSkipped ? { setupSkipped: env.setupSkipped } : {}),
       ...(env.portRangeInvalid ? { portRangeInvalid: true as const } : {}),
+      ...(base.warning ? { warnings: [base.warning] } : {}),
     };
   }
 
@@ -516,6 +564,11 @@ export class FanOutService {
     setupCommand?: string;
     /** Orchestrator role for this task's pane (absent = unroled). */
     role?: string;
+    /** T3 — commit the task branch starts from (absent = HEAD). */
+    baseOid?: string;
+    /** T3 — why the base is not a fresh origin commit; posted to the mission channel. */
+    baseWarning?: string;
+    workerMode: FanoutWorkerPermissionMode;
   }): Promise<FanOutTaskResult> {
     const base: FanOutTaskResult = { index: ctx.index, title: ctx.title, ok: false };
 
@@ -548,7 +601,7 @@ export class FanOutService {
       return { ...base, error: `worktree preflight failed: ${pf.error}` };
     }
     const plan: TaskWorktreePlan = pf.plan;
-    const created = await this.worktrees.createWorktree(plan);
+    const created = await this.worktrees.createWorktree(plan, ctx.baseOid);
     if (!created.ok) {
       await this.compensate(taskId, ctx.verifiedWorkspaceId);
       return { ...base, error: `worktree create failed: ${created.error}` };
@@ -570,7 +623,12 @@ export class FanOutService {
         // 파일 자체가 없으므로 계약문도 붙지 않는다 — 사람이 직접 입력한다.
         fs.writeFileSync(promptPath, ctx.prompt + WORKER_DELIVERY_PREAMBLE, 'utf8');
       }
-      const stamp: WorkTaskMetaStamp = { taskId, title: ctx.title, createdAt: Date.now() };
+      const stamp: WorkTaskMetaStamp = {
+        taskId,
+        title: ctx.title,
+        createdAt: Date.now(),
+        ...(ctx.baseOid ? { baseOid: ctx.baseOid } : {}),
+      };
       fs.writeFileSync(path.join(plan.metaDir, WORKTASK_META_FILENAME), JSON.stringify(stamp), 'utf8');
     } catch (err) {
       await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
@@ -628,6 +686,8 @@ export class FanOutService {
         initialCommand,
         ...(Object.keys(paneEnv).length > 0 ? { env: paneEnv } : {}),
         ...(ctx.role ? { role: ctx.role } : {}),
+        fanoutTaskOf: ctx.verifiedWorkspaceId,
+        workerPermissionMode: ctx.workerMode,
       });
       if ('error' in spawned) {
         await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
@@ -644,6 +704,13 @@ export class FanOutService {
       return { ...base, error: `renderer spawn threw: ${(err as Error).message}`, preservedWorktree: plan.worktreePath };
     }
     base.workspaceId = workspaceId;
+    // The renderer already stamped the lineage before the agent launched; this
+    // second write is idempotent and covers a renderer that did not.
+    try {
+      (this.lineage ?? getFanOutGuards()).markTask(workspaceId, ctx.verifiedWorkspaceId);
+    } catch (err) {
+      console.warn(`[fanout] could not confirm the lineage stamp for ${workspaceId}: ${String(err)}`);
+    }
 
     // ④ task.update — 물질화 커밋({branch, worktreePath, paneGroupId=workspaceId}).
     // 이 RPC는 MCP 도구 표면은 없지만 파이프 라우터 등록으로 first-party 클라이언트에
@@ -699,6 +766,22 @@ export class FanOutService {
       if (!invited?.ok) channelDisconnected = true;
     } catch {
       channelDisconnected = true;
+    }
+
+    // T3 — the worker should know its base is not a fresh origin commit. Posted
+    // as the owner, after the invite so the worker is a member; best-effort.
+    if (ctx.baseWarning) {
+      try {
+        await this.daemon.rpc('a2a.channel.post', {
+          channelId,
+          sender: { workspaceId: ctx.verifiedWorkspaceId, memberId: ctx.verifiedWorkspaceId },
+          text: `[fan-out] base warning: ${ctx.baseWarning}`,
+          verifiedWorkspaceId: ctx.verifiedWorkspaceId,
+          clientMsgId: `${ctx.missionIdemKey}-base-warning`,
+        });
+      } catch {
+        // best-effort — the fan-out result carries the same warning.
+      }
     }
 
     // A-1 — the worker is up; make sure it is not sitting on a first-run screen.
@@ -874,8 +957,53 @@ function describeErr(err: unknown): string {
 }
 
 /**
+ * #1490 — the PowerShell pipeline stage that turns the prompt file's text into
+ * the string PowerShell hands to the agent as ONE intact argv entry.
+ *
+ * Windows PowerShell 5.1 (and 7.x with `$PSNativeCommandArgumentPassing` unset
+ * or `Legacy`) builds a native command line without escaping embedded `"`: it
+ * wraps the value in quotes only when it finds whitespace at an even count of
+ * `"` characters, and passes it verbatim otherwise. A prompt such as
+ * `Fix the "login page" bug` therefore reached the agent split at the inner
+ * quotes, and everything after the first piece — the wmux preamble included —
+ * was lost.
+ *
+ * The two legacy binders count quotes differently, so each gets its own escape
+ * (both verified against powershell.exe 5.1 and pwsh 7.6 in Legacy mode):
+ *  - 5.1 counts every `"`, escaped or not, so a `\"` escape flips the parity and
+ *    the value goes out unwrapped. The stage quotes the value itself: `"…"`
+ *    around it, each `"` inside written as `""` (the C runtime's in-quotes
+ *    escape — two quote characters, so the parity never changes and 5.1 never
+ *    adds a second pair). Backslashes in front of a quote, and at the end of
+ *    the value, are doubled.
+ *  - 6+ skips a `"` that follows a backslash, which breaks `""` after a
+ *    backslash but makes the usual `\"` escape safe: no escaped quote is
+ *    counted, so the binder wraps the value itself — and doubles its trailing
+ *    backslashes itself, so only the ones in front of a quote are doubled here.
+ * 7.3+ in `Standard` or `Windows` mode escapes arguments correctly on its own,
+ * so the text passes through untouched there. 6.0–7.2 have only the legacy
+ * binder and are assumed to match 7.6's Legacy mode; they were not run. The
+ * variable is read with Get-Variable because 5.1 does not define it and a
+ * profile's Set-StrictMode would make a bare `$PSNativeCommandArgumentPassing`
+ * throw — the worker would not launch at all. The quote character is
+ * spelled `[char]34` / `\x22` so the whole `"$(…)"` stays one quoted word for
+ * the launch-line tokenizers (workerLaunch.spans, agentResume.tokenize). `\z`,
+ * not `$`: `$` also matches before a final newline.
+ *
+ * Known gap: 7.3+ `Windows` mode still uses the legacy rules for `.cmd`/`.bat`
+ * launchers (an npm shim without its `.ps1`), and the text passes through
+ * unescaped there.
+ */
+const PS_LEGACY_ARGV_QUOTE =
+  "ForEach-Object { if ((Get-Variable PSNativeCommandArgumentPassing -ValueOnly -ErrorAction Ignore) -in 'Standard', 'Windows') { $_ } " +
+  "elseif ($PSVersionTable.PSVersion.Major -ge 6) { $_ -replace '(\\\\*)\\x22', ('$1$1\\{0}' -f [char]34) } " +
+  "else { '{0}{1}{0}' -f [char]34, ($_ -replace '(\\\\*)\\x22', ('$1$1{0}{0}' -f [char]34) -replace '(\\\\+)\\z', '$1$1') } }";
+
+/**
  * initialCommand 조립(§4 D4). POSIX `{agentCmd} "$(cat '{path}')"` / Windows PowerShell
- * `{agentCmd} "$(Get-Content -Raw -LiteralPath '{path}')"`. 프롬프트 본문은 파일 안이라
+ * `{agentCmd} "$(Get-Content -Raw -Encoding UTF8 -LiteralPath '{path}' | …)"` — `-Encoding
+ * UTF8` because 5.1 reads a BOM-less file in the ANSI code page (#1490), and the
+ * pipeline stage is {@link PS_LEGACY_ARGV_QUOTE}. 프롬프트 본문은 파일 안이라
  * 쿼팅 표면이 경로에 한정된다 — 경로를 셸 단일따옴표로 감싸 공백·`$`·백틱·따옴표가
  * 셸에 재해석되지 않게 한다(F1 3모델 리뷰 conf10). sanitizePtyText가 `$()`·따옴표를
  * 보존함은 §4 C9 테스트로 확정.
@@ -895,7 +1023,7 @@ export function buildInitialCommand(
     // PowerShell 단일따옴표 리터럴: 내부 `'`는 `''`로 이스케이프. -LiteralPath로
     // glob·경로 특수문자 해석까지 봉쇄.
     const escaped = promptPath.replace(/'/g, "''");
-    return `${agentCmd} "$(Get-Content -Raw -LiteralPath '${escaped}')"`;
+    return `${agentCmd} "$(Get-Content -Raw -Encoding UTF8 -LiteralPath '${escaped}' | ${PS_LEGACY_ARGV_QUOTE})"`;
   }
   // POSIX 단일따옴표 리터럴: 내부 `'`는 `'\''`(닫고-이스케이프-열기)로 처리.
   const escaped = promptPath.replace(/'/g, "'\\''");

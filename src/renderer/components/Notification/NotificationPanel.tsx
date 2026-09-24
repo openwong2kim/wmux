@@ -5,6 +5,9 @@ import { timeAgo } from '../../utils/timeAgo';
 import { tokenAttrs } from '../../themes';
 import type { Notification, NotificationType } from '../../../shared/types';
 import { focusNotificationTarget } from '../../hooks/useNotificationListener';
+import Badge from '../ui/Badge';
+import Button from '../ui/Button';
+import { IconBell, IconRobot, IconWarning, IconX } from '../icons';
 
 // ─── Pure helpers (exported for tests) ────────────────────────────────────────
 
@@ -69,15 +72,20 @@ export function resolveRestoredScrollTop(
 }
 
 /**
- * Emoji icon for a notification type. NOT updated as part of T10 (DESIGN D9
- * scope hygiene); kept here so the view function stays pure and renderable.
+ * Monochrome status mark for a notification type (DESIGN.md: no emoji glyphs
+ * in chrome; status marks are icons). Only error and warning take a hue, on
+ * the icon alone.
  */
-function typeIcon(type: string): string {
+function TypeIcon({ type }: { type: string }): ReactElement {
   switch (type) {
-    case 'agent': return '🤖';
-    case 'error': return '❌';
-    case 'warning': return '⚠️';
-    default: return 'ℹ️';
+    case 'agent':
+      return <span className="text-[var(--text-sub)]"><IconRobot size={13} /></span>;
+    case 'error':
+      return <span className="text-[var(--accent-red)]"><IconWarning size={13} /></span>;
+    case 'warning':
+      return <span className="text-[var(--accent-yellow)]"><IconWarning size={13} /></span>;
+    default:
+      return <span className="text-[var(--text-sub)]"><IconBell size={13} /></span>;
   }
 }
 
@@ -124,63 +132,61 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
     <div
       role="dialog"
       aria-label={dialogLabel}
-      className="fixed right-0 top-0 h-full w-80 bg-[var(--bg-mantle)] border-l border-[var(--bg-surface)] z-50 flex flex-col shadow-2xl notification-panel-enter"
+      // A drawer, not a floating card: the quiet surface rules (hairline, one
+      // soft shadow, Inter, flat controls) without the 14px card radius.
+      className="ui-surface fixed right-0 top-0 h-full w-80 bg-[var(--bg-mantle)] z-50 flex flex-col font-sans notification-panel-enter"
+      style={{ borderLeft: '1px solid var(--surface-hairline)', boxShadow: 'var(--surface-shadow)' }}
       {...tokenAttrs('bgMantle', 'bg')}
-      {...tokenAttrs('bgSurface', 'border')}
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--bg-surface)]">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-bold text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>{dialogLabel}</span>
-          {unreadCount > 0 && (
-            <span className="bg-[var(--accent)] text-[var(--bg-base)] text-[10px] font-bold px-1.5 py-0.5 rounded-full" {...tokenAttrs('accent', 'accent')} {...tokenAttrs('bgBase', 'bg')}>
-              {unreadCount}
-            </span>
-          )}
+      <div className="flex flex-col gap-2 px-4 pb-2.5 pt-3" style={{ borderBottom: '1px solid var(--surface-hairline)' }}>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="truncate text-[13px] font-semibold leading-5 text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>{dialogLabel}</span>
+            {unreadCount > 0 && <Badge>{unreadCount}</Badge>}
+          </div>
+          <Button variant="icon" className="h-7 w-7 shrink-0" onClick={onClose} aria-label={closeLabel}>
+            <IconX size={12} />
+          </Button>
         </div>
-        <div className="flex items-center gap-2">
-          {notifications.length > 0 && (
-            <>
-              {/* Global mark-all-read (T2). Placed FIRST per plan. */}
-              <button
-                ref={markAllReadBtnRef}
-                className="text-[10px] text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors"
-                onClick={onMarkAllRead}
-                aria-label={markAllReadLabel}
-              >
-                {markAllReadLabel}
-              </button>
-              {/* Per-workspace mark-all-read (legacy behavior). */}
-              <button
-                className="text-[10px] text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors"
-                onClick={onMarkWorkspaceRead}
-                aria-label={markWorkspaceReadLabel}
-              >
-                {markWorkspaceReadLabel}
-              </button>
-              <button
-                className="text-[10px] text-[var(--text-subtle)] hover:text-[var(--accent-red)] transition-colors"
-                onClick={onClear}
-                {...tokenAttrs('danger', 'accent')}
-              >
-                {clearLabel}
-              </button>
-            </>
-          )}
-          <button
-            className="text-[var(--text-subtle)] hover:text-[var(--text-main)] text-sm transition-colors"
-            onClick={onClose}
-            aria-label={closeLabel}
-          >
-            ✕
-          </button>
-        </div>
+        {notifications.length > 0 && (
+          <div className="-ml-2.5 flex flex-wrap items-center gap-1">
+            {/* Global mark-all-read (T2). Placed FIRST per plan. */}
+            <Button
+              ref={markAllReadBtnRef}
+              variant="ghost"
+              size="sm"
+              onClick={onMarkAllRead}
+              aria-label={markAllReadLabel}
+            >
+              {markAllReadLabel}
+            </Button>
+            {/* Per-workspace mark-all-read (legacy behavior). */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onMarkWorkspaceRead}
+              aria-label={markWorkspaceReadLabel}
+            >
+              {markWorkspaceReadLabel}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="hover:text-[var(--accent-red)]"
+              onClick={onClear}
+              {...tokenAttrs('danger', 'accent')}
+            >
+              {clearLabel}
+            </Button>
+          </div>
+        )}
       </div>
 
       {/* List */}
       <div ref={listRef} onScroll={onListScroll} data-notification-list className="flex-1 overflow-y-auto">
         {notifications.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-[var(--text-muted)] text-sm" {...tokenAttrs('textMuted', 'text')}>
+          <div className="flex items-center justify-center h-full text-[13px] text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')}>
             {emptyLabel}
           </div>
         ) : (
@@ -191,27 +197,28 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
               role="button"
               tabIndex={0}
               aria-label={buildNotifAriaLabel(notif)}
-              className={`px-4 py-3 border-b border-[rgba(var(--bg-surface-rgb),0.5)] cursor-pointer hover:bg-[rgba(var(--bg-surface-rgb),0.3)] transition-colors ${
+              className={`px-4 py-3 cursor-pointer hover:bg-[var(--surface-fill)] transition-colors ${
                 notif.read ? 'opacity-60' : ''
               }`}
+              style={{ borderBottom: '1px solid var(--surface-hairline)' }}
               onClick={() => onNotifClick(notif)}
               onKeyDown={(e) => onNotifKeyDown(e, notif)}
             >
-              <div className="flex items-start gap-2">
-                <span className="text-xs mt-0.5">{typeIcon(notif.type)}</span>
+              <div className="flex items-start gap-2.5">
+                <span className="mt-[3px] shrink-0" aria-hidden="true"><TypeIcon type={notif.type} /></span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between">
-                    <span className={`text-xs font-medium truncate ${notif.read ? 'text-[var(--text-subtle)]' : 'text-[var(--text-main)]'}`}>
+                    <span className={`text-[13px] leading-5 font-medium truncate ${notif.read ? 'text-[var(--text-sub)]' : 'text-[var(--text-main)]'}`}>
                       {notif.title}
                     </span>
-                    <span className="text-[10px] text-[var(--text-muted)] flex-shrink-0 ml-2">
+                    <span className="text-[11px] text-[var(--text-sub)] flex-shrink-0 ml-2">
                       {timeAgo(notif.timestamp)}
                     </span>
                   </div>
-                  <p className="text-[11px] text-[var(--text-sub2)] mt-0.5 truncate" {...tokenAttrs('textMain', 'text')} data-derived="textSub2">{notif.body}</p>
+                  <p className="m-0 mt-0.5 text-[11px] leading-4 text-[var(--text-sub2)] truncate" {...tokenAttrs('textMain', 'text')} data-derived="textSub2">{notif.body}</p>
                 </div>
                 {!notif.read && (
-                  <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] mt-1.5 flex-shrink-0" />
+                  <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] mt-2 flex-shrink-0" {...tokenAttrs('accent', 'accent')} />
                 )}
               </div>
             </div>
@@ -220,7 +227,7 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
       </div>
 
       {/* Footer */}
-      <div className="px-4 py-2 border-t border-[var(--bg-surface)] text-[10px] text-[var(--text-muted)]">
+      <div className="ui-note px-4 py-2.5" style={{ borderTop: '1px solid var(--surface-hairline)' }}>
         {toggleHintLabel}
       </div>
     </div>

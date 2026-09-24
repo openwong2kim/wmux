@@ -31,8 +31,8 @@ function badge(description: string): HTMLButtonElement {
   return el;
 }
 
-function toggle(description: string): HTMLInputElement {
-  const el = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+function toggle(description: string): HTMLButtonElement {
+  const el = [...container.querySelectorAll<HTMLButtonElement>('[role="checkbox"]')]
     .find((b) => b.getAttribute('aria-label')?.startsWith(`${description} (`));
   if (!el) throw new Error(`no toggle for ${description}`);
   return el;
@@ -129,7 +129,7 @@ describe('Settings → Shortcuts (#1455)', () => {
   it('switches a shortcut off and back on', () => {
     click(toggle(PREV));
     expect(overrides()).toEqual({ prevWorkspace: null });
-    expect(toggle(PREV).checked).toBe(false);
+    expect(toggle(PREV).getAttribute('aria-checked')).toBe('false');
     click(toggle(PREV));
     expect(overrides()).toEqual({});
   });

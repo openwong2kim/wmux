@@ -557,7 +557,8 @@ export class PTYBridge {
           // Claude's hooks.json wires PreToolUse ONLY for the
           // AskUserQuestion tool — the far more common approval prompts
           // ("Do you want to proceed?", "Allow tool use for X", Claude's
-          // default permission-mode Y/N gate) have NO hook at all;
+          // default permission-mode Y/N gate) have a hook only where the
+          // PermissionRequest hook was installed by hand; elsewhere
           // AgentDetector's regex patterns (matched right below, in
           // `status`) are the ONLY signal source for those. Vetoing here
           // would leave an agent blocked on a real approval prompt

@@ -1,9 +1,11 @@
+import { compatibleChatSkills, compatibleCodexSettings } from './chatSkillCompatibility';
+import { wrapHandler } from '../wrapHandler';
 import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import type { DaemonClient } from '../../DaemonClient';
 import type { DaemonEvent } from '../../../shared/rpc';
+import { validTerminalLaunchMode } from '../../../shared/transcript/terminalChat';
 import { CHAT_IPC } from '../../../shared/transcript/chatIpc';
 import type { ChatBridgeApi, TranscriptStatus } from '../../../shared/transcript/turnEvents';
-import { wrapHandler } from '../wrapHandler';
 
 const unavailable: TranscriptStatus = { available: false, reason: 'unavailable' };
 const validId = (id: unknown): id is string => typeof id === 'string' && id.length > 0 && id.length < 256;
@@ -22,7 +24,7 @@ export function registerChatHandlers(
   let gates = new Set<string>();
   const rpc = async <T>(method: string, params: Record<string, unknown>, fallback: T): Promise<T> => {
     if (disposed || !client?.isConnected) return fallback;
-    try { return await client.rpc(method, params) as T; } catch { return fallback; }
+    try { return await (method.startsWith('daemon.chat.') ? client.rpc(method, params, { timeoutMs: 30_000 }) : client.rpc(method, params)) as T; } catch { return fallback; }
   };
   const trusted = (e: IpcMainInvokeEvent) => {
     watchWindow();
@@ -125,8 +127,46 @@ export function registerChatHandlers(
       typeof args.text === 'string' && args.text.trim() && args.text.length <= 16_000
       ? rpc<Awaited<ReturnType<ChatBridgeApi['send']>>>('daemon.transcript.send', {
         id: args.ptyId, agentSessionId: args.agentSessionId, text: args.text,
+        ...(typeof args.requestId === 'string' ? { requestId: args.requestId } : {}),
       }, { result: 'error' }) : { result: 'unavailable' },
   };
+  handlers[CHAT_IPC.settings] = async (e, args) => {
+    if (!trusted(e) || !args || !validId(args.ptyId) || disposed || !client?.isConnected) return { ok: false, error: 'unavailable' };
+    const choice = args.choice;
+    if (choice !== undefined && (!choice || !validId(choice.model) || !validId(choice.effort) || !validId(choice.expectedRevision))) return { ok: false, error: 'unavailable' };
+    const scopedRpc = (method: string, params: Record<string, unknown>) => {
+      if (disposed || !trusted(e)) return Promise.reject(new Error('unavailable'));
+      return client.rpc(method, params);
+    };
+    try { return { ok: true, settings: await compatibleCodexSettings(scopedRpc, args.ptyId, choice) }; }
+    catch (error) {
+      const reason = error instanceof Error && ['busy', 'stale', 'unconfirmed', 'unsupported-choice'].includes(error.message) ? error.message : 'unavailable';
+      return { ok: false, error: reason };
+    }
+  };
+  handlers[CHAT_IPC.skills] = async (e, args) => {
+    const empty = { skills: [], state: 'unavailable' };
+    if (!trusted(e) || !args || !validId(args.ptyId) || !['claude', 'codex'].includes(args.agent) || disposed || !client?.isConnected) return empty;
+    try { return await client.rpc('daemon.chat.skills', { id: args.ptyId, agent: args.agent }, { timeoutMs: 30_000 }); }
+    catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('Unknown method: daemon.chat.skills')) return empty;
+      const result = await compatibleChatSkills((method, params) => client.rpc(method, params), args.ptyId, args.agent);
+      return !disposed && trusted(e) ? result : empty;
+    }
+  };
+  handlers[CHAT_IPC.launchTerminal] = (e, args) => trusted(e) && args && validId(args.ptyId) && ['claude', 'codex'].includes(args.agent) && typeof args.prompt === 'string' && args.prompt.trim() && args.prompt.length <= 2000 && validTerminalLaunchMode(args.agent, args.mode)
+    ? rpc('daemon.chat.launchTerminal', { id: args.ptyId, agent: args.agent, prompt: args.prompt, ...(args.mode === undefined ? {} : { mode: args.mode }) }, { ok: false, error: 'Launch could not be confirmed. Check Terminal before retrying.' })
+    : { ok: false, error: 'Invalid terminal launch' };
+  handlers[CHAT_IPC.providers] = (e) => trusted(e) ? rpc('daemon.chat.providers', {}, []) : [];
+  for (const action of ['start', 'reconnect', 'cancel', 'respond', 'close'] as const) {
+    handlers[CHAT_IPC[action]] = (e, args) => {
+      if (!trusted(e) || !args || !validId(args.ptyId)) return { ok: false, error: 'Unavailable' };
+      if (action === 'start' ? !validId(args.providerId) : !validId(args.agentSessionId)) return { ok: false, error: 'Invalid session' };
+      if (action === 'respond' && (!validId(args.requestId) || !args.answer || JSON.stringify(args.answer).length > 32_000)) return { ok: false, error: 'Invalid response' };
+      return rpc(`daemon.chat.${action}`, { id: args.ptyId, providerId: args.providerId,
+        agentSessionId: args.agentSessionId, requestId: args.requestId, answer: args.answer }, { ok: false, error: 'Chat service unavailable' });
+    };
+  }
   for (const [channel, handler] of Object.entries(handlers)) {
     ipcMain.removeHandler(channel);
     ipcMain.handle(channel, wrapHandler(channel, handler));

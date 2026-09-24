@@ -39,7 +39,9 @@ export function deadlineForItem(
   item: InboxItem,
   mcpDeadlineAt?: (promptId: string) => number | undefined,
 ): number | undefined {
-  if (item.source === 'a2a') return item.expiresAt;
+  // expiresAt is 0 while the gate's countdown has not started; that is "no
+  // deadline yet", not "expired" — reading it as a timestamp showed 0s.
+  if (item.source === 'a2a') return item.expiresAt > 0 ? item.expiresAt : undefined;
   if (item.source === 'browserHelp') return item.deadlineAt;
   const at = mcpDeadlineAt?.(item.promptId);
   return typeof at === 'number' && Number.isFinite(at) ? at : undefined;

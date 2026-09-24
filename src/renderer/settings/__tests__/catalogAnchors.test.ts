@@ -32,9 +32,9 @@ function anchoredIds(): Set<string> {
     } catch {
       continue; // a section file that moved is caught by the assertion below
     }
-    // Direct attribute, and the two components that forward `id` to it.
+    // Direct attribute, and the components that forward `id` to it.
     for (const m of src.matchAll(/data-setting-id="([^"]+)"/g)) found.add(m[1]);
-    for (const m of src.matchAll(/<(?:SettingRow|SectionLabel)[^>]*\bid="([^"]+)"/g)) found.add(m[1]);
+    for (const m of src.matchAll(/<(?:SettingRow|SettingsSection|SectionLabel)[^>]*\bid="([^"]+)"/g)) found.add(m[1]);
   }
   return found;
 }

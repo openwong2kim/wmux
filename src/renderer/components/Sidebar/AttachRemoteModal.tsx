@@ -6,6 +6,10 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
+import Dialog, { DialogBody, DialogHeader } from '../ui/Dialog';
+import SegmentedControl from '../ui/SegmentedControl';
+import { FOCUS_RING } from '../focusRing';
+import { IconPlus, IconX } from '../icons';
 import { remoteAttachmentKey } from '../../../shared/remoteHosts';
 import type { PairFailureReason, RemoteHostPublic, RemoteWorkspaceSummary } from '../../../shared/remoteHosts';
 
@@ -89,12 +93,6 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     setLoadingHosts(true);
     refreshHosts().finally(() => setLoadingHosts(false));
   }, [refreshHosts]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   // Guards against a stale-response race: select host A then quickly B — if
   // A's workspacesList resolves after B's, it must not overwrite B's list.
@@ -294,98 +292,77 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
       run();
     };
 
+  const muted = 'm-0 text-[13px] text-[var(--text-sub)]';
+  const errorLine = 'ui-row-error !m-0 text-[11px] leading-4';
+
+  // Escape and the backdrop close it (ui/Dialog).
   return (
-    <div
-      className="fixed inset-0 z-[var(--z-modal-top)] flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.45)' }}
-      onMouseDown={onClose}
+    <Dialog
+      onClose={onClose}
+      closeOnBackdrop
+      width={640}
+      zIndexClassName="z-[var(--z-modal-top)]"
+      style={{ maxHeight: '80vh' }}
     >
-      <div
-        className="w-[640px] max-h-[80vh] rounded-[7px] shadow-2xl flex flex-col"
-        style={{ background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="px-5 pt-4 pb-3 border-b" style={{ borderColor: 'var(--bg-overlay)' }}>
-          <div className="text-sm font-bold" style={{ color: 'var(--text-main)' }}>
-            {t('remote.attachTitle')}
-          </div>
-        </div>
-
-        <div className="flex-1 min-h-0 flex">
-          {/* Left: hosts + add-host row */}
-          <div
-            className="w-[240px] flex-shrink-0 border-r overflow-y-auto px-3 py-3"
-            style={{ borderColor: 'var(--bg-overlay)' }}
-          >
-            <div className="space-y-1">
-              {loadingHosts ? (
-                <div className="text-[11px]" style={{ color: 'var(--text-subtle)' }}>{t('remote.loading')}</div>
-              ) : (
-                hosts.map((host) => (
-                  <div key={host.id} className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      className="flex-1 min-w-0 text-left px-2 py-1.5 rounded text-[12px] font-mono truncate"
-                      style={{
-                        background: host.id === selectedHostId ? 'var(--bg-overlay)' : 'transparent',
-                        color: host.id === selectedHostId ? 'var(--text-main)' : 'var(--text-sub)',
-                      }}
-                      onClick={() => selectHost(host.id)}
-                    >
-                      {host.label}
-                    </button>
-                    <button
-                      type="button"
-                      title={t('remote.removeHost')}
-                      aria-label={t('remote.removeHost')}
-                      className="flex-shrink-0 px-1.5 py-1 rounded text-[11px] font-mono"
-                      style={{ color: 'var(--text-subtle)' }}
-                      onClick={() => handleRemoveHost(host.id)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ))
-              )}
+      <DialogHeader title={t('remote.attachTitle')} />
+      <DialogBody className="!p-0 !gap-0 !flex-row mt-4 border-t border-[var(--surface-hairline)]">
+        {/* Left: hosts + add-host form */}
+        <div className="w-[248px] flex-shrink-0 overflow-y-auto px-4 py-4 flex flex-col gap-4 border-r border-[var(--surface-hairline)]">
+          {loadingHosts ? (
+            <p className={muted}>{t('remote.loading')}</p>
+          ) : hosts.length > 0 ? (
+            <div className="ui-group shrink-0">
+              {hosts.map((host) => (
+                <div
+                  key={host.id}
+                  className="flex items-center gap-1 pr-1"
+                  style={host.id === selectedHostId ? { background: 'var(--surface-fill-hover)' } : undefined}
+                >
+                  <button
+                    type="button"
+                    className={`flex-1 min-w-0 text-left px-3 py-2.5 text-[13px] truncate ${FOCUS_RING}`}
+                    style={{ color: host.id === selectedHostId ? 'var(--text-main)' : 'var(--text-sub)', fontWeight: host.id === selectedHostId ? 500 : 400 }}
+                    aria-pressed={host.id === selectedHostId}
+                    onClick={() => selectHost(host.id)}
+                  >
+                    {host.label}
+                  </button>
+                  <Button
+                    variant="icon"
+                    className="w-7 h-7 flex-shrink-0"
+                    title={t('remote.removeHost')}
+                    aria-label={t('remote.removeHost')}
+                    onClick={() => handleRemoveHost(host.id)}
+                  >
+                    <IconX size={12} />
+                  </Button>
+                </div>
+              ))}
             </div>
+          ) : null}
 
-            <div className="border-t my-3" style={{ borderColor: 'var(--bg-overlay)' }} />
-
-            <div className="flex gap-1 mb-2">
-              <button
-                type="button"
-                className="flex-1 px-2 py-1 rounded text-[11px] font-mono"
-                style={{
-                  background: addMode === 'pair' ? 'var(--bg-overlay)' : 'transparent',
-                  color: addMode === 'pair' ? 'var(--text-main)' : 'var(--text-subtle)',
-                }}
-                onClick={() => setAddMode('pair')}
-              >
-                {t('remote.pairTab')}
-              </button>
-              <button
-                type="button"
-                className="flex-1 px-2 py-1 rounded text-[11px] font-mono"
-                style={{
-                  background: addMode === 'url' ? 'var(--bg-overlay)' : 'transparent',
-                  color: addMode === 'url' ? 'var(--text-main)' : 'var(--text-subtle)',
-                }}
-                onClick={() => setAddMode('url')}
-              >
-                {t('remote.urlTab')}
-              </button>
-            </div>
+          <div className="flex flex-col gap-2">
+            <SegmentedControl<AddHostMode>
+              value={addMode}
+              onValueChange={setAddMode}
+              ariaLabel={t('remote.addHost')}
+              className="w-full [&>button]:flex-1 [&>button]:px-2 [&>button]:whitespace-nowrap [&>button]:text-[12px]"
+              options={[
+                { value: 'pair', label: t('remote.pairTab') },
+                { value: 'url', label: t('remote.urlTab') },
+              ]}
+            />
 
             {addMode === 'pair' ? (
-              <div className="space-y-1.5">
-                <div className="text-[10px]" style={{ color: 'var(--text-subtle)' }}>{t('remote.pairHint')}</div>
+              <>
+                <p className="m-0 text-[11px] leading-4 text-[var(--text-sub)]">{t('remote.pairHint')}</p>
                 <Input
                   type="text"
                   placeholder={t('remote.hostAddressHint')}
                   value={pairOrigin}
                   onChange={(e) => setPairOrigin(e.target.value)}
                   onKeyDown={submitOnEnter(pairDisabled, handlePairHost)}
-                  className="text-[11px] font-mono w-full"
+                  className="text-[12px] font-mono w-full"
                   autoComplete="off"
                   aria-label={t('remote.hostAddress')}
                 />
@@ -398,7 +375,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                   value={pairCode}
                   onChange={(e) => setPairCode(e.target.value)}
                   onKeyDown={submitOnEnter(pairDisabled, handlePairHost)}
-                  className="text-[11px] font-mono w-full"
+                  className="text-[12px] font-mono w-full"
                   autoComplete="off"
                   aria-label={t('remote.pairCode')}
                 />
@@ -408,22 +385,23 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                   value={pairLabel}
                   onChange={(e) => setPairLabel(e.target.value)}
                   onKeyDown={submitOnEnter(pairDisabled, handlePairHost)}
-                  className="text-[11px] font-mono w-full"
+                  className="text-[13px] w-full"
                 />
+                {/* The one primary once the form can submit; a disabled
+                    action is never the primary. */}
                 <Button
-                  variant="secondary"
-                  className="w-full text-[11px]"
+                  size="md"
+                  variant={pairDisabled ? 'secondary' : 'primary'}
+                  className="w-full"
                   disabled={pairDisabled}
                   onClick={handlePairHost}
                 >
                   {t('remote.pair')}
                 </Button>
-                {pairError && (
-                  <div className="text-[10px]" style={{ color: 'var(--accent-red)' }}>{pairError}</div>
-                )}
-              </div>
+                {pairError && <p className={errorLine}>{pairError}</p>}
+              </>
             ) : (
-              <div className="space-y-1.5">
+              <>
                 {/* Masked like a password — the URL carries the bearer token. */}
                 <Input
                   type="password"
@@ -431,7 +409,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                   value={addUrl}
                   onChange={(e) => setAddUrl(e.target.value)}
                   onKeyDown={submitOnEnter(addDisabled, handleAddHost)}
-                  className="text-[11px] font-mono w-full"
+                  className="text-[12px] font-mono w-full"
                   autoComplete="off"
                 />
                 <Input
@@ -440,91 +418,84 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                   value={addLabel}
                   onChange={(e) => setAddLabel(e.target.value)}
                   onKeyDown={submitOnEnter(addDisabled, handleAddHost)}
-                  className="text-[11px] font-mono w-full"
+                  className="text-[13px] w-full"
                 />
                 <Button
-                  variant="secondary"
-                  className="w-full text-[11px]"
+                  size="md"
+                  variant={addDisabled ? 'secondary' : 'primary'}
+                  className="w-full"
                   disabled={addDisabled}
                   onClick={handleAddHost}
                 >
                   {t('remote.addHost')}
                 </Button>
-                {addError && (
-                  <div className="text-[10px]" style={{ color: 'var(--accent-red)' }}>{addError}</div>
-                )}
-              </div>
+                {addError && <p className={errorLine}>{addError}</p>}
+              </>
             )}
-          </div>
-
-          {/* Right: the selected host's workspaces */}
-          <div className="flex-1 min-w-0 overflow-y-auto px-4 py-3 space-y-2">
-            {/* Two distinct nothing-to-show states. Sharing one string here
-                (it used to reuse the paste-URL placeholder) told an operator
-                who had ALREADY registered a host to go paste a URL — the one
-                thing they no longer needed to do. */}
-            {!selectedHostId && (
-              <div className="text-[11px]" style={{ color: 'var(--text-subtle)' }}>
-                {hosts.length === 0 ? t('remote.noHostsHint') : t('remote.selectHostHint')}
-              </div>
-            )}
-            {selectedHostId && (
-              <div>
-                <Button
-                  variant="secondary"
-                  className="w-full text-[11px]"
-                  disabled={creatingWorkspace}
-                  onClick={handleCreateWorkspace}
-                >
-                  {creatingWorkspace ? t('remote.loading') : t('remote.createWorkspaceHere')}
-                </Button>
-                {createWorkspaceError && (
-                  <div className="text-[10px] mt-1" style={{ color: 'var(--accent-red)' }}>
-                    {createWorkspaceError}
-                  </div>
-                )}
-              </div>
-            )}
-            {selectedHostId && loadingWorkspaces && (
-              <div className="text-[11px]" style={{ color: 'var(--text-subtle)' }}>{t('remote.loading')}</div>
-            )}
-            {selectedHostId && workspacesError && (
-              <div className="text-[11px]" style={{ color: 'var(--accent-red)' }}>{workspacesError}</div>
-            )}
-            {/* A host whose panes are all closed returns an empty list, which
-                would otherwise render as a blank pane with no explanation —
-                the workspace list is derived from live panes, not a saved
-                registry, so "empty" is a normal state that needs saying. */}
-            {selectedHostId && !loadingWorkspaces && !workspacesError && workspaces.length === 0 && (
-              <div className="text-[11px]" style={{ color: 'var(--text-subtle)' }}>
-                {t('remote.noWorkspaces')}
-              </div>
-            )}
-            {selectedHostId && !loadingWorkspaces && !workspacesError && workspaces.map((ws) => (
-              <div
-                key={ws.id}
-                className="flex items-center justify-between gap-2 px-3 py-2 rounded"
-                style={{ background: 'var(--bg-overlay)' }}
-              >
-                <div className="min-w-0">
-                  <div className="text-[12px] font-mono truncate" style={{ color: 'var(--text-main)' }}>
-                    {ws.name || ws.id.slice(0, 8)}
-                  </div>
-                  <div className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
-                    {t('remote.paneCount', { count: ws.panes.length })}
-                    {selectedHost?.allowInput === false && (
-                      <span className="ml-2" style={{ color: 'var(--accent)' }}>{t('remote.readOnly')}</span>
-                    )}
-                  </div>
-                </div>
-                <Button variant="primary" className="text-[11px] flex-shrink-0" onClick={() => handleAttach(ws)}>
-                  {t('remote.attach')}
-                </Button>
-              </div>
-            ))}
           </div>
         </div>
-      </div>
-    </div>
+
+        {/* Right: the selected host's workspaces */}
+        <div className="flex-1 min-w-0 overflow-y-auto px-5 py-4 flex flex-col gap-3">
+          {/* Two distinct nothing-to-show states. Sharing one string here
+              (it used to reuse the paste-URL placeholder) told an operator
+              who had ALREADY registered a host to go paste a URL — the one
+              thing they no longer needed to do. */}
+          {!selectedHostId && (
+            <p className={muted}>
+              {hosts.length === 0 ? t('remote.noHostsHint') : t('remote.selectHostHint')}
+            </p>
+          )}
+          {selectedHostId && (
+            <div className="flex flex-col gap-1">
+              <Button
+                size="md"
+                variant="secondary"
+                className="w-full gap-1.5"
+                disabled={creatingWorkspace}
+                onClick={handleCreateWorkspace}
+              >
+                {!creatingWorkspace && <IconPlus size={12} />}
+                {creatingWorkspace ? t('remote.loading') : t('remote.createWorkspaceHere')}
+              </Button>
+              {createWorkspaceError && <p className={errorLine}>{createWorkspaceError}</p>}
+            </div>
+          )}
+          {selectedHostId && loadingWorkspaces && <p className={muted}>{t('remote.loading')}</p>}
+          {selectedHostId && workspacesError && <p className="ui-row-error !m-0 text-[13px]">{workspacesError}</p>}
+          {/* A host whose panes are all closed returns an empty list, which
+              would otherwise render as a blank pane with no explanation —
+              the workspace list is derived from live panes, not a saved
+              registry, so "empty" is a normal state that needs saying. */}
+          {selectedHostId && !loadingWorkspaces && !workspacesError && workspaces.length === 0 && (
+            <p className={muted}>{t('remote.noWorkspaces')}</p>
+          )}
+          {selectedHostId && !loadingWorkspaces && !workspacesError && workspaces.length > 0 && (
+            <div className="ui-group shrink-0">
+              {workspaces.map((ws) => (
+                <div key={ws.id} className="ui-row">
+                  <div className="ui-row-text">
+                    <p className={`ui-row-title truncate${ws.name ? '' : ' font-mono'}`}>
+                      {ws.name || ws.id.slice(0, 8)}
+                    </p>
+                    <p className="ui-row-detail">
+                      {t('remote.paneCount', { count: ws.panes.length })}
+                    </p>
+                    {selectedHost?.allowInput === false && (
+                      <p className="ui-row-detail" style={{ color: 'var(--accent-yellow)' }}>
+                        {t('remote.readOnly')}
+                      </p>
+                    )}
+                  </div>
+                  <Button size="sm" variant="secondary" className="flex-shrink-0" onClick={() => handleAttach(ws)}>
+                    {t('remote.attach')}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </DialogBody>
+    </Dialog>
   );
 }

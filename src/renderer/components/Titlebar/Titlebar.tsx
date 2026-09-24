@@ -6,6 +6,7 @@ import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
 import { IconPlus } from '../icons';
 import PresetPicker from '../Sidebar/PresetPicker';
+import { SIDEBAR_COMPACT_WIDTH } from '../../utils/sidebarLayout';
 
 /**
  * Bridge redesign — custom 36px titlebar (DESIGN.md "Window Chrome").
@@ -133,7 +134,9 @@ export default function Titlebar() {
   // The mantle segment mirrors it only when the sidebar is docked left —
   // docked right there is no panel below the top-left corner to fuse with.
   const compactSegment = sidebarPosition === 'left' && !sidebarVisible;
-  const leftSegmentWidth = sidebarPosition === 'left' ? (sidebarVisible ? 240 : 48) : 0;
+  // #1481 — the expanded width is the user's (drag handle, persisted).
+  const sidebarWidth = useStore((s) => s.sidebarWidth);
+  const leftSegmentWidth = sidebarPosition === 'left' ? (sidebarVisible ? sidebarWidth : SIDEBAR_COMPACT_WIDTH) : 0;
 
   // macOS 트래픽 라이트 예약: 세그먼트가 충분히 넓으면(확장 240px) 세그먼트
   // "안쪽" 패딩으로 품는다 — 헤더에 걸면 세그먼트 전체가 예약만큼 밀려 아래

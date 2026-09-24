@@ -1,0 +1,164 @@
+/* ─── Settings (DESIGN.md "Settings") ────────────────────────────────────────
+ * The Settings screen is a quiet surface (`.ui-surface` on its root): the
+ * surface tokens, flat buttons and 10px inputs come from styles/ui.css. This
+ * file holds only the screen's own layout — the left nav, the centered
+ * content column, the section/row grammar and the few row variants. Every
+ * colour is a token or a color-mix of one, so built-in and custom themes
+ * inherit it. */
+
+.settings-screen {
+  font-family: var(--font-ui);
+  color: var(--text-main);
+}
+
+/* Header: the screen title in Inter, one close control. */
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 0 12px 0 20px;
+  border-bottom: 1px solid var(--surface-hairline);
+}
+.settings-header-title { margin: 0; font-size: 14px; font-weight: 600; line-height: 20px; color: var(--text-main); }
+.settings-header-close { width: 32px; height: 32px; border-radius: 8px; }
+
+/* Left nav: quiet rows like the app sidebar. */
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 228px;
+  background: var(--bg-mantle);
+  border-right: 1px solid var(--surface-hairline);
+}
+.settings-nav-search { padding: 12px 12px 4px; }
+.settings-nav-search .ui-input { width: 100%; min-height: 32px; font-size: 13px; }
+.settings-nav-count { min-height: 16px; margin: 4px 2px 0; font-size: 11px; line-height: 16px; color: var(--text-sub); }
+.settings-nav-list { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
+.settings-nav-group + .settings-nav-group { margin-top: 12px; }
+.settings-nav-heading { padding: 4px 10px 4px; font-size: 13px; font-weight: 500; line-height: 16px; color: var(--text-muted); }
+.settings-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+  text-align: left;
+  color: var(--text-sub);
+  transition: background-color 120ms ease-out, color 120ms ease-out;
+}
+.settings-nav-row > svg,
+.settings-nav-row .settings-nav-icon { flex-shrink: 0; color: var(--text-muted); }
+.settings-nav-row:hover { background: var(--surface-fill-hover); color: var(--text-main); }
+/* Selected: the sidebar's active row — neutral surface + a steel edge. */
+.settings-nav-row[aria-current="page"] {
+  background: var(--bg-surface);
+  box-shadow: inset -2px 0 0 var(--accent-blue);
+  color: var(--text-main);
+  font-weight: 500;
+}
+.settings-nav-row[aria-current="page"] .settings-nav-icon { color: var(--text-sub); }
+.settings-nav-row[data-dim="true"] { opacity: 0.38; }
+.settings-nav-hits { margin-left: auto; font-size: 11px; color: var(--text-sub); font-variant-numeric: tabular-nums; }
+
+/* Content: one centered column. */
+.settings-content { flex: 1; min-width: 0; overflow-y: auto; }
+.settings-column { width: 100%; max-width: 720px; margin: 0 auto; padding: 28px 24px 48px; }
+.settings-page-title { margin: 0 0 20px; font-size: var(--text-display-size, 16px); font-weight: 600; line-height: 24px; color: var(--text-main); }
+.settings-page { display: flex; flex-direction: column; gap: 28px; }
+
+/* Section: heading over ONE container. */
+.settings-section { display: flex; flex-direction: column; }
+.settings-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.settings-section-title { margin: 0; }
+.settings-section-desc { margin: -4px 0 8px; font-size: 11px; line-height: 16px; color: var(--text-sub); }
+
+/* Row: Field on the left/right; long copy collapses to one line. */
+.settings-row { display: flex; flex-direction: column; padding: 10px 14px; min-height: 52px; justify-content: center; }
+.settings-row > .ui-field { min-height: 32px; }
+.settings-row .ui-field-text { flex: 1; }
+.settings-clamp { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.settings-more {
+  align-self: flex-start;
+  margin-top: 2px;
+  padding: 0;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--accent-blue);
+  background: none;
+}
+.settings-more:hover { text-decoration: underline; }
+.settings-note { margin: 0; padding: 10px 14px; font-size: 11px; line-height: 16px; color: var(--text-sub); }
+.settings-note[data-tone="warning"] { color: color-mix(in srgb, var(--accent-yellow) 80%, var(--text-main)); }
+.settings-note[data-tone="danger"] { color: color-mix(in srgb, var(--accent-red) 80%, var(--text-main)); }
+.settings-select > select { min-width: 180px; }
+.settings-input { min-height: 32px; font-size: 13px; }
+.settings-input.font-mono { font-size: 11px; }
+.settings-range { width: 112px; accent-color: var(--text-sub); }
+.settings-range-value { width: 40px; text-align: right; font-size: 11px; color: var(--text-sub); font-variant-numeric: tabular-nums; }
+
+/* A row whose content is a free-form block (grids, pickers). */
+.settings-block { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
+
+/* Keyboard rows. */
+.settings-kbd-row { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; min-height: 40px; padding: 6px 14px; }
+.settings-kbd-desc { font-size: 13px; line-height: 20px; color: var(--text-main); }
+.settings-kbd {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid var(--surface-hairline);
+  background: var(--surface-fill);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--text-sub);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Read-only shortcut hints are ui/.ui-kbd; these are the clickable key chips
+ * (prefix key, bindings) that open key capture. */
+.settings-kbd-hint { min-height: 22px; padding: 0 7px; }
+.settings-kbd-hint[data-disabled] { text-decoration: line-through; color: var(--text-muted); }
+button.settings-kbd { cursor: pointer; }
+button.settings-kbd:hover { color: var(--text-main); background: var(--surface-fill-hover); }
+
+/* Theme cards: visual, on surface radii and hairlines. */
+.settings-theme-card {
+  overflow: hidden;
+  border-radius: 10px;
+  border: 1px solid var(--surface-hairline);
+  text-align: left;
+  transition: border-color 140ms ease-out;
+}
+.settings-theme-card:hover { border-color: color-mix(in srgb, var(--text-main) 24%, transparent); }
+.settings-theme-card[aria-checked="true"] { border-color: color-mix(in srgb, var(--text-main) 60%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--text-main) 60%, transparent); }
+
+/* Search jump: rows have no border of their own, so the flash is a tint. */
+.settings-flash { background: color-mix(in srgb, var(--accent-blue) 10%, transparent) !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-nav-row, .settings-theme-card { transition: none; }
+}
+
+/* Native radios / checkboxes that tests or forms depend on, drawn neutral. */
+.settings-radio { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-main); cursor: pointer; }
+.settings-radio > input,
+.settings-native-check { width: 16px; height: 16px; accent-color: var(--text-sub); }
+.settings-search-hit { align-items: flex-start; gap: 2px; width: 100%; }
+.settings-search-hit:hover { background: var(--surface-fill-hover); }
+
+/* A group with an in-place dropdown lets it escape; the corners are then
+ * rounded on the rows themselves so a hover fill cannot square them off. */
+.ui-group.settings-group-open { overflow: visible; }
+.ui-group.settings-group-open > :first-child { border-top-left-radius: 11px; border-top-right-radius: 11px; }
+.ui-group.settings-group-open > :last-child { border-bottom-left-radius: 11px; border-bottom-right-radius: 11px; }

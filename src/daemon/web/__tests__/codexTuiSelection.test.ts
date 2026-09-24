@@ -41,12 +41,12 @@ describe('owned TUI selection attribution',()=>{
 });
 
 
-it('keeps the foreground selection while an automatic-title thread starts and closes',()=>{
+it.each(['system', 'thread_title'])('keeps the foreground selection while an automatic-title thread starts and closes (%s)',source=>{
   const tracker=new CodexTuiSelectionTracker();
   tracker.fromTui({id:1,method:'thread/start',params:{ephemeral:false,threadSource:'user'}});
   tracker.fromServer(response(1));
   const selected=tracker.current();
-  tracker.fromTui({id:2,method:'thread/start',params:{ephemeral:true,threadSource:'system'}});
+  tracker.fromTui({id:2,method:'thread/start',params:{ephemeral:true,threadSource:source}});
   expect(tracker.current()).toEqual(selected);
   tracker.fromServer(response(2,b));
   tracker.fromTui({id:3,method:'turn/start',params:{threadId:b}});

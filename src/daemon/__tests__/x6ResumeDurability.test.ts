@@ -177,7 +177,9 @@ describe('X6 ② reboot-survival durability', () => {
     const src = fs.readFileSync(daemonIndexPath, 'utf-8');
     const idx = src.indexOf('const applyResumeBinding =');
     expect(idx).toBeGreaterThan(-1);
-    const body = src.slice(idx, idx + 5700);
+    const end = src.indexOf("pipeServer.onRpc('daemon.setResumeBinding'", idx);
+    expect(end).toBeGreaterThan(idx);
+    const body = src.slice(idx, end);
     expect(body).toMatch(/lastDetectedAgent\s*=\s*next\.agent/);
     expect(body).toMatch(/KNOWN_AGENT_SLUGS/);
     // ...and the RPC must still route through it, or the wire path silently
@@ -194,8 +196,10 @@ describe('X6 ② reboot-survival durability', () => {
     const src = fs.readFileSync(daemonIndexPath, 'utf-8');
     const idx = src.indexOf('const applyResumeBinding =');
     expect(idx).toBeGreaterThan(-1);
-    const body = src.slice(idx, idx + 5700);
-    expect(body).toMatch(/checkTranscriptPath\(/);
+    const end = src.indexOf("pipeServer.onRpc('daemon.setResumeBinding'", idx);
+    expect(end).toBeGreaterThan(idx);
+    const body = src.slice(idx, end);
+    expect(body).toMatch(/checkNativeTranscriptPath\(vetted\.agent,/);
   });
 
   it('Rung 0: the daemon stamps WMUX_PTY_ID into each pane env (per-pane routing key)', () => {

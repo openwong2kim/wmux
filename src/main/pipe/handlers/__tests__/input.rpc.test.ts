@@ -314,11 +314,24 @@ describe('input.rpc — assertWorkspaceOwnsPty parity (source invariant)', () =>
     return src.slice(start, next > start ? next : src.length);
   }
 
+  // assertCallerMayAccessPty (fan-out T5) runs assertWorkspaceOwnsPty first
+  // and only adds the owner lane on top, so either call satisfies parity.
   for (const method of ['input.send', 'input.sendKey', 'input.readScreen', 'terminal.readEvents']) {
     it(`${method} calls assertWorkspaceOwnsPty`, () => {
-      expect(handlerBlock(method)).toMatch(/assertWorkspaceOwnsPty\(/);
+      expect(handlerBlock(method)).toMatch(/(assertWorkspaceOwnsPty|assertCallerMayAccessPty)\(/);
     });
   }
+
+  it('assertCallerMayAccessPty itself runs assertWorkspaceOwnsPty', () => {
+    const owner = fs.readFileSync(
+      path.join(__dirname, '..', '..', '..', 'workspace', 'ptyOwnership.ts'),
+      'utf-8',
+    );
+    const start = owner.indexOf('export async function assertCallerMayAccessPty(');
+    expect(start).toBeGreaterThan(0);
+    const body = owner.slice(start, owner.indexOf('\n}\n', start));
+    expect(body).toMatch(/await assertWorkspaceOwnsPty\(/);
+  });
 });
 
 // P0 — terminal_send / terminal_send_key self-loop guard. A first-party agent

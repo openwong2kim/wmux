@@ -498,6 +498,8 @@ describe('AgentDetector', () => {
       const det = new AgentDetector();
       // Claude compound gate needs both signals
       det.feed('Claude Code\n  shift+tab to cycle\n');
+      // Claude exits: the shell draws its prompt (OSC 133) and aider starts.
+      det.feed('\u001b]133;A\u0007% aider\n');
       det.feed('aider v0.50.0\n');
       expect(det.getActiveAgents().sort()).toEqual(['Aider', 'Claude Code'].sort());
     });
@@ -769,6 +771,309 @@ describe('AgentDetector', () => {
       b.feed('  shift+tab to cycle\n');
       expect(a.getLastAgent()).toBeNull();
       expect(b.getLastAgent()).toBeNull();
+    });
+  });
+
+  describe('permission prompt reads as awaiting_input (Claude Code 2.1.281, replayed PTY bytes)', () => {
+    // Every row below is copied byte-for-byte from a live pane buffer or a
+    // scratch-PTY capture of Claude Code 2.1.281 — not hand-written text.
+    // Hand-written fixtures with literal spaces are how these regexes passed
+    // their tests while missing 15 of 33 real prompts.
+
+    // Cursor-drawn prompt row: CHA moves (`ESC[5G`) instead of spaces.
+    const PROCEED_CURSOR_DRAWN = '\r\u001b[1C\u001b[2BDo\u001b[5Gyou\u001b[9Gwant\u001b[14Gto\u001b[17Gproceed?\r';
+    // Same row as another frame painted it: the first gap is a CHA, the rest spaces.
+    const PROCEED_PARTLY_DRAWN = '\r\u001b[1C\u001b[1BDo\u001b[5Gyou want to proceed?\u001b[K\r';
+
+    it('emits awaiting_input for a cursor-drawn "Do you want to proceed?" row', () => {
+      const { det, cb } = claudeGated();
+      det.feed(PROCEED_CURSOR_DRAWN);
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({
+        agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested',
+      });
+    });
+
+    it('emits awaiting_input for a partly cursor-drawn row', () => {
+      const { det, cb } = claudeGated();
+      det.feed(PROCEED_PARTLY_DRAWN);
+      expect(cb.mock.calls.map((c) => c[0].status)).toEqual(['awaiting_input']);
+    });
+
+    it('emits awaiting_input for a space-collapsed "Allow tool use for" row', () => {
+      const { det, cb } = claudeGated();
+      det.feed('│Allowtoolusefor mcp__wmux__channel_post?│\n');
+      expect(cb.mock.calls.map((c) => c[0].status)).toEqual(['awaiting_input']);
+    });
+
+    it('still ignores the collapsed phrase inside a sentence (whole-line anchor kept)', () => {
+      const { det, cb } = claudeGated();
+      det.feed('If it asks Doyouwanttoproceed? then answer no\n');
+      expect(cb).not.toHaveBeenCalled();
+    });
+
+    it('a shell line naming the codex binary does not hand the pane to Codex', () => {
+      // The review panel's preamble, echoed by Claude's Bash tool in a Claude
+      // pane. The old `codex ` gate alternative opened Codex here, made it the
+      // pane's lastAgent, and every later Claude prompt went unread.
+      const { det, cb } = claudeGated();
+      det.feed('⎿  $ echo "--- PANEL ---"; echo "Claude: available"; command -v codex >/dev/null 2>&1 && echo "Codex: available" || echo "Codex: SKIP";\n');
+      expect(det.getActiveAgents()).toEqual(['Claude Code']);
+      det.feed(PROCEED_CURSOR_DRAWN);
+      expect(cb.mock.calls.map((c) => c[0])).toEqual([
+        { agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested' },
+      ]);
+    });
+
+    it('rows that merely name another agent do not take a live Claude pane', () => {
+      // Replayed from live Claude panes, each of which used to end the session
+      // owned by another agent: a `git log -S"…OpenAI Codex"` echo, a status
+      // line quoting "Claude/OpenClaude", a test path containing "opencode".
+      const { det, cb } = claudeGated();
+      det.feed('\r\u001b[2C\u001b[1Bfmzube; gi -C $W log -S"gate: /codex |OpenAI Codex" --oneline --\r');
+      det.feed('\r\u001b[1B⏺\u001b[3GDiagnosissettled.Editing:(1)\\s*intheClaude/OpenClaudeproceed+\r');
+      det.feed('\r\u001b[1Bcripts/__tests_/opencode-sync-render.runtime.test.mjs 2>&1 | grep -E\r');
+      det.feed('\r\u001b[1Bopencode-sync-render, fails because the Playwrightbrowserisn\'tinstalled\r');
+      expect(det.getActiveAgents()).toEqual(['Claude Code']);
+      det.feed(PROCEED_CURSOR_DRAWN);
+      expect(cb.mock.calls.map((c) => c[0])).toEqual([
+        { agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested' },
+      ]);
+    });
+
+    it('a Claude reply that wraps with the Codex banner text at a row start stays Claude', () => {
+      // Seen live: Claude answered "printed two lines: >_ OpenAI Codex (v0.149.1)"
+      // and the TUI broke the row right before the quoted text.
+      const { det, cb } = claudeGated();
+      det.feed('\r\u001b[5C\u001b[1B\u001b[38;2;177;185;249m>_ OpenAI Codex (v0.149.1)\u001b[39m and\r');
+      expect(det.getActiveAgents()).toEqual(['Claude Code']);
+      det.feed(PROCEED_CURSOR_DRAWN);
+      expect(cb.mock.calls.map((c) => c[0].status)).toEqual(['awaiting_input']);
+    });
+
+    it('Claude exiting to the shell and Codex starting hands the pane to Codex', () => {
+      const { det } = claudeGated();
+      det.feed('\u001b]133;D;0\u0007\u001b]133;A\u0007% codex\r\n');
+      det.feed('\u001b[9;1H│ >_ OpenAI Codex (v0.149.1)            │\r\n');
+      expect(det.getLastAgent()).toBe('Codex CLI');
+    });
+
+    it('a substring gate takes the pane once the shell prompt is back (OSC 133)', () => {
+      // The owner exited: the shell draws its prompt, and the user starts
+      // another agent in the same pane.
+      const { det } = claudeGated();
+      det.feed('\u001b]133;D;0\u0007\u001b]133;A\u0007% opencode\r\n');
+      expect(det.getLastAgent()).toBe('OpenCode');
+    });
+
+    it('the real Codex banner row still opens the Codex gate', () => {
+      const det = new AgentDetector();
+      det.feed('\u001b[9;1H│ >_ OpenAI Codex (v0.149.1)            │\r\n');
+      expect(det.getLastAgent()).toBe('Codex CLI');
+    });
+
+    describe('#1494 — the live permission dialog, however Ink draws it', () => {
+      // Byte shapes from Windows dogfood panes (Claude Code, detector only,
+      // no PermissionRequest hook). Commands, descriptions and paths were
+      // replaced; the escapes and their order are as recorded.
+      const OPTION = '\u001b[38;2;177;185;249m❯\u001b[38;2;153;153;153m\u001b[1C1. \u001b[38;2;177;185;249mYes';
+      // First draw: the question row is placed by a CUP and glued to the
+      // description row before it and the `❯ 1. Yes` row after it.
+      const FIRST_DRAW =
+        '\u001b[1m\u001b[23;2HBash command\u001b[m\u001b[25;4Hecho\u001b[1Chi\u001b[1C>\u001b[1Chello.txt'
+        + '\u001b[38;2;153;153;153m\u001b[26;4HCreate hello.txt containing "hi"'
+        + '\u001b[m\u001b[28;2HDo\u001b[1Cyou\u001b[1Cwant\u001b[1Cto\u001b[1Cproceed?'
+        + '\u001b[29;2H' + OPTION
+        + '\u001b[38;2;153;153;153m\u001b[30;4H2. \u001b[mYes,\u001b[1Cand\u001b[1Calways\u001b[1Callow\u001b[1Caccess\u001b[1Cto'
+        + '\u001b[1m\u001b[31;7HC:\\work\u001b[22m\u001b[1Cfrom\u001b[1Cthis\u001b[1Cproject'
+        + '\u001b[38;2;153;153;153m\u001b[32;4H3. \u001b[mNo\r\n';
+      // Question row after a CR/LF, option row glued on by a CUP.
+      const TRAILING_GLUE =
+        '\r\n Do you want to proceed?\u001b[K\u001b[35;2H' + OPTION + '\u001b[m\r\n';
+      // Question row glued to the row before it; the option row follows the CR/LF.
+      const LEADING_GLUE =
+        '\u001b[m\u001b[30;2HThis\u001b[1Ccommand\u001b[1Crequires\u001b[1Capproval'
+        + '\u001b[32;2HDo\u001b[1Cyou\u001b[1Cwant\u001b[1Cto\u001b[1Cproceed?\r\n '
+        + OPTION + '\u001b[K\u001b[m\r\n';
+      // Full repaint once the transcript outgrows the viewport: no CUP before
+      // the question, which is glued after the diff row by width padding and
+      // autowrap.
+      const PADDED_REPAINT =
+        '\u001b[38;2;248;248;242m\u001b[2m 1 \u001b[22mhi' + ' '.repeat(120)
+        + '\u001b[38;2;80;80;80m' + '╌'.repeat(64) + '\u001b[m Do you want to create \u001b[1mhello7.txt\u001b[22m?'
+        + '\u001b[K\u001b[40;2H' + OPTION + '\u001b[m\r\n';
+
+      const statuses = (cb: ReturnType<typeof vi.fn>) => cb.mock.calls.map((c) => c[0]);
+      const APPROVAL = [{ agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested' }];
+      const EDIT_APPROVAL = [{ agent: 'Claude Code', status: 'awaiting_input', message: 'Edit approval requested' }];
+
+      it('emits awaiting_input for the first-draw frame', () => {
+        const { det, cb } = claudeGated();
+        det.feed(FIRST_DRAW);
+        expect(statuses(cb)).toEqual(APPROVAL);
+      });
+
+      it('emits awaiting_input when only the following row is glued on', () => {
+        const { det, cb } = claudeGated();
+        det.feed(TRAILING_GLUE);
+        expect(statuses(cb)).toEqual(APPROVAL);
+      });
+
+      it('emits awaiting_input when only the preceding row is glued on', () => {
+        const { det, cb } = claudeGated();
+        det.feed(LEADING_GLUE);
+        expect(statuses(cb)).toEqual(APPROVAL);
+      });
+
+      it('emits awaiting_input for the padded full-repaint shape', () => {
+        const { det, cb } = claudeGated();
+        det.feed(PADDED_REPAINT);
+        expect(statuses(cb)).toEqual(EDIT_APPROVAL);
+      });
+
+      it('emits awaiting_input when the filename wraps and the option is padded onto its row', () => {
+        const { det, cb } = claudeGated();
+        det.feed('\u001b[38;2;80;80;80m' + '╌'.repeat(40) + '\u001b[m\u001b[11;2HDo\u001b[1Cyou\u001b[1Cwant\u001b[1Cto'
+          + '\u001b[1Cmake\u001b[1Cthis\u001b[1Cedit\u001b[1Cto\r\n \u001b[1mcalculator.html\u001b[22m?' + ' '.repeat(40)
+          + '\u001b[38;2;177;185;249m❯ \u001b[38;2;153;153;153m1. \u001b[38;2;177;185;249mYes\u001b[K\u001b[m\r\n');
+        expect(statuses(cb)).toEqual(EDIT_APPROVAL);
+      });
+
+      it('a tool approval on a cursor-positioned row still reads as awaiting_input', () => {
+        const { det, cb } = claudeGated();
+        det.feed('\u001b[K\u001b[35;2HAllow tool use for mcp__wmux__channel_post?\r\n ' + OPTION + '\u001b[K\u001b[m\r\n');
+        expect(statuses(cb)).toEqual([{ agent: 'Claude Code', status: 'awaiting_input', message: 'Tool approval requested' }]);
+      });
+
+      it('reads the dialog as soon as its rows are drawn, with no line break yet', () => {
+        const { det, cb } = claudeGated();
+        det.feed(FIRST_DRAW.slice(0, -2) + '\u001b[35;1H');
+        expect(statuses(cb)).toEqual(APPROVAL);
+      });
+
+      it('same result when the frame arrives split inside the CUP escape, in 512 B chunks or byte by byte', () => {
+        const cut = FIRST_DRAW.indexOf('\u001b[29;2H') + 4;
+        const a = claudeGated();
+        a.det.feed(FIRST_DRAW.slice(0, cut));
+        a.det.feed(FIRST_DRAW.slice(cut));
+        expect(statuses(a.cb)).toEqual(APPROVAL);
+
+        const padded = 'x'.repeat(300) + '\r\n' + FIRST_DRAW;
+        const b = claudeGated();
+        for (let i = 0; i < padded.length; i += 512) b.det.feed(padded.slice(i, i + 512));
+        expect(statuses(b.cb)).toEqual(APPROVAL);
+
+        for (const frame of [FIRST_DRAW, PADDED_REPAINT]) {
+          const c = claudeGated();
+          for (const ch of frame) c.det.feed(ch);
+          expect(statuses(c.cb)).toHaveLength(1);
+        }
+      });
+
+      it('a transcript row that is exactly the question stays silent on a full repaint', () => {
+        // Claude asked to print the phrase on a line of its own. Every repaint
+        // after the answer draws that row again, placed by a CUP.
+        const { det, cb } = claudeGated();
+        det.feed('\u001b[38;2;255;255;255m\u001b[29;1H● \u001b[mOK' + ' '.repeat(120)
+          + '\u001b[30;3HDo\u001b[1Cyou\u001b[1Cwant\u001b[1Cto\u001b[1Cproceed?\r\n \u001b[1CEND' + ' '.repeat(80) + '\u001b[32;3H\r\n');
+        det.feed('\u001b[38;2;255;255;255m● \u001b[mOK\r\n  Do you want to proceed?' + ' '.repeat(100) + 'END\r\n');
+        expect(cb).not.toHaveBeenCalled();
+      });
+
+      it('a dialog row redrawn before the answer does not re-raise the dialog when a clear completes its line', () => {
+        const { det, cb } = claudeGated();
+        // The dialog is drawn, then laid out again two rows lower (diff redraw
+        // skipping unchanged cells). No CR/LF ends that line yet.
+        det.feed('\u001b[m\u001b[17;2HDo\u001b[1Cyou\u001b[1Cwant\u001b[1Cto\u001b[1Ccreate\u001b[1m\u001b[1Chello1.txt\u001b[22m?'
+          + '\u001b[18;2H' + OPTION + '\u001b[38;2;153;153;153m\u001b[20;4H3. \u001b[mNo\u001b[35;1H\u001b[K');
+        det.feed('\u001b[m\u001b[19;2HDo you want to create \u001b[1mhello1.\u001b[1Cxt\u001b[22m?\u001b[K\u001b[38;2;177;185;249m\u001b[20;2H❯'
+          + '\u001b[38;2;153;153;153m\u001b[1C1\u001b[38;2;177;185;249m\u001b[2CYes\u001b[38;2;153;153;153m\u001b[24;2HEsc to cancel · Tab to amend\u001b[m');
+        expect(statuses(cb).length).toBeGreaterThan(0);
+        // The user answers: the daemon resets dedup, Claude clears the dialog.
+        cb.mockClear();
+        det.resetEmissionState();
+        det.feed('\u001b[13;1H' + ' '.repeat(40) + '\u001b[15;2H\u001b[K\r\n' + ' '.repeat(40) + '\u001b[17;2H\u001b[K\r\n');
+        expect(cb).not.toHaveBeenCalled();
+      });
+
+      it('a lone question row completed by the post-answer clear stays silent', () => {
+        // Same hazard with a partial redraw of the question row alone.
+        const { det, cb } = claudeGated();
+        det.feed('\u001b[19;2HDo you want to create \u001b[1mhello1.\u001b[1Cxt\u001b[22m?\u001b[K');
+        det.feed('\u001b[15;2H\u001b[K\r\n');
+        expect(cb).not.toHaveBeenCalled();
+      });
+
+      it('a cursor-positioned row quoting the phrase inside a sentence stays silent', () => {
+        const { det, cb } = claudeGated();
+        det.feed('\u001b[12;2HIf\u001b[1Cthe\u001b[1CCLI\u001b[1Casks\u001b[1C"Do\u001b[1Cyou\u001b[1Cwant\u001b[1Cto\u001b[1Cproceed?",'
+          + '\u001b[13;2Hchoose\u001b[1Cno.\u001b[14;2HDo\u001b[1Cyou\u001b[1Cwant\u001b[1Cto\u001b[1Cproceed?\u001b[1Cthen\u001b[1Cstop\r\n');
+        det.feed('\u001b[36;1H❯ Without using any tools, reply with one prose sentence that contains the exact words \'Do you want to proceed?\' in the\r\n');
+        expect(cb).not.toHaveBeenCalled();
+      });
+
+      it('a pane another agent owns does not read the Claude-shaped frame', () => {
+        // #1474: status patterns belong to the pane's lastAgent only.
+        const det = new AgentDetector();
+        const cb = vi.fn();
+        det.onEvent(cb);
+        det.feed('\u001b[9;1H│ >_ OpenAI Codex (v0.149.1)            │\r\n');
+        expect(det.getLastAgent()).toBe('Codex CLI');
+        cb.mockClear();
+        det.feed(FIRST_DRAW);
+        det.feed(PADDED_REPAINT);
+        expect(cb).not.toHaveBeenCalled();
+      });
+
+      it('an idle prompt drawn on a cursor-positioned row is not read as waiting', () => {
+        // The dialog scan is Claude's and approval-only: OpenClaude's bare `>`
+        // input row must not report Ready for input from inside a repaint.
+        const det = new AgentDetector();
+        const cb = vi.fn();
+        det.onEvent(cb);
+        det.feed('OpenClaude\n');
+        expect(det.getLastAgent()).toBe('OpenClaude');
+        cb.mockClear();
+        det.feed('\u001b[10;1H⏺ Working on it\u001b[12;1H>\u001b[13;1Hesc to interrupt\r\n');
+        expect(cb).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('manual-mode footer (default permission mode, no splash)', () => {
+      // A fan-out worker launched as `claude "<prompt>"` in the default
+      // permission mode: OSC title, then this footer. No splash, no
+      // `shift+tab to cycle`, no `bypass permissions on`.
+      const TITLE = '\u001b[?25l\u001b]0;✳ Claude Code\u0007\u001b[H';
+      const FOOTER_SPACED = '\r\u001b[2C\u001b[2B\u001b[38;2;153;153;153m⏸ manual mode on · ← for agents\u001b[39m\u001b[24;1H\u001b[21;3H\u001b[?25h\r';
+      const FOOTER_CURSOR_DRAWN = '\r\r\n\u001b[3G\u001b[38;2;153;153;153m⏸\u001b[5Gmanual\u001b[12Gmode\u001b[17Gon\u001b[20G·\u001b[22Gesc\u001b[26Gto\u001b[29Ginterrupt\u001b[39G·\u001b[41G←\u001b[43G2\u001b[45Gagents\u001b[39m\r\r\n';
+
+      for (const [name, footer] of [['spaced', FOOTER_SPACED], ['cursor-drawn', FOOTER_CURSOR_DRAWN]] as const) {
+        it(`opens the gate from the OSC title + ${name} footer, and the prompt emits`, () => {
+          const det = new AgentDetector();
+          const cb = vi.fn();
+          det.onEvent(cb);
+          det.feed(TITLE);
+          det.feed(footer);
+          expect(det.getLastAgent()).toBe('Claude Code');
+          det.feed(PROCEED_CURSOR_DRAWN);
+          expect(cb.mock.calls.map((c) => c[0].status)).toEqual(['running', 'awaiting_input']);
+        });
+      }
+
+      it('does not emit waiting for the footer — it is on screen mid-turn too', () => {
+        const det = new AgentDetector();
+        const cb = vi.fn();
+        det.onEvent(cb);
+        det.feed(FOOTER_CURSOR_DRAWN);   // prompt half first (evidence stored)
+        det.feed(TITLE);                 // banner half opens the gate
+        expect(cb.mock.calls.map((c) => c[0].status)).toEqual(['running']);
+      });
+
+      it('the footer alone does not open the gate', () => {
+        const det = new AgentDetector();
+        det.feed(FOOTER_SPACED);
+        expect(det.getLastAgent()).toBeNull();
+      });
     });
   });
 });

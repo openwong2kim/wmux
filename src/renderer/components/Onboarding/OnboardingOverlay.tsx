@@ -1,5 +1,9 @@
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useId, useMemo, useRef } from 'react';
 import OnboardingHighlight from './OnboardingHighlight';
+import Button from '../ui/Button';
+import MediaPreview from '../ui/MediaPreview';
+import { useModalLayer } from '../ui/modalLayer';
+import { MEDIA_CLIPS } from '../../assets/media';
 import { ONBOARDING_STEPS } from './steps';
 import type { OnboardingStep } from './steps';
 import type { TooltipPlacement } from './OnboardingHighlight';
@@ -58,23 +62,30 @@ export default function OnboardingOverlay({
     onComplete();
   }, [onComplete]);
 
-  // Close on Escape
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onComplete();
-      }
-    };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
-  }, [onComplete]);
+  // Keyboard path: each step puts focus on its forward action. The card
+  // mounts only once the target is measured, so focus is taken from the
+  // Next button's ref callback rather than an effect on the step index.
+  // The backdrop blocks the pointer everywhere else, so the card is modal
+  // for the keyboard too: the shared modal layer contains Tab inside it,
+  // routes Escape (never mid-IME) to Skip, and returns focus to the element
+  // that had it before the tour.
+  const focusedStepRef = useRef<string | null>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+  const attachLayer = useModalLayer({ onEscape: onComplete });
 
   if (!step) return null;
 
   const isFirst = currentIndex === 0;
   const isLast = currentIndex === availableSteps.length - 1;
   const stepLabel = `${currentIndex + 1} / ${availableSteps.length}`;
+  const clip = step.media ? MEDIA_CLIPS[step.media] : null;
+  const focusNext = (el: HTMLButtonElement | null) => {
+    if (el && focusedStepRef.current !== step.id) {
+      focusedStepRef.current = step.id;
+      el.focus();
+    }
+  };
 
   return (
     <div
@@ -103,147 +114,59 @@ export default function OnboardingOverlay({
       >
         {(placement: TooltipPlacement) => (
           <div
-            className="onboarding-tooltip-card"
-            style={{
-              backgroundColor: 'var(--bg-base)',
-              border: '1px solid var(--bg-surface)',
-              borderRadius: 10,
-              padding: '16px 20px',
-              boxShadow: '0 12px 40px rgba(0, 0, 0, 0.5)',
-              fontFamily: 'ui-monospace, monospace',
-              // Fade-in animation
-              animation: 'onboarding-fade-in 0.2s ease-out',
-            }}
+            ref={attachLayer}
+            className="onboarding-tooltip-card ui-surface"
+            role="dialog"
+            aria-modal="true"
+            tabIndex={-1}
+            aria-labelledby={titleId}
+            aria-describedby={descriptionId}
             onClick={(e) => e.stopPropagation()}
             data-placement={placement}
             data-testid="onboarding-card"
           >
+            {clip && (
+              <MediaPreview
+                key={step.id}
+                clip={clip}
+                label={t(step.titleKey)}
+                data-testid="onboarding-media"
+              />
+            )}
+
             {/* Step indicator */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                marginBottom: 8,
-              }}
-            >
-              <span
-                style={{
-                  fontSize: 10,
-                  color: 'var(--text-subtle)',
-                  letterSpacing: '0.05em',
-                  textTransform: 'uppercase',
-                }}
-              >
+            <div className="onboarding-step-row">
+              <span className="onboarding-step-label">
                 {t('onboarding.step', { n: stepLabel })}
               </span>
-              {/* Dot indicators */}
-              <div style={{ display: 'flex', gap: 4 }}>
-                {availableSteps.map((_, i) => (
-                  <span
-                    key={i}
-                    style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      backgroundColor:
-                        i === currentIndex
-                          ? 'var(--accent-blue)'
-                          : 'var(--bg-overlay)',
-                      transition: 'background-color 0.2s ease',
-                    }}
-                  />
+              <div className="onboarding-dots" aria-hidden="true">
+                {availableSteps.map((s, i) => (
+                  <span key={s.id} className="onboarding-dot" data-active={i === currentIndex} />
                 ))}
               </div>
             </div>
 
-            {/* Title */}
-            <h3
-              style={{
-                fontSize: 14,
-                fontWeight: 600,
-                color: 'var(--text-main)',
-                margin: '0 0 6px 0',
-              }}
-            >
+            <h3 id={titleId} className="onboarding-title">
               {t(step.titleKey)}
             </h3>
-
-            {/* Description */}
-            <p
-              style={{
-                fontSize: 12,
-                lineHeight: 1.5,
-                color: 'var(--text-sub)',
-                margin: '0 0 16px 0',
-              }}
-            >
+            <p id={descriptionId} className="onboarding-description">
               {t(step.descriptionKey)}
             </p>
 
-            {/* Navigation buttons */}
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-              }}
-            >
-              <button
-                onClick={handleSkip}
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  color: 'var(--text-subtle)',
-                  fontSize: 11,
-                  cursor: 'pointer',
-                  padding: '4px 0',
-                  fontFamily: 'inherit',
-                }}
-                data-testid="onboarding-skip"
-              >
+            {/* Navigation: Skip (ghost) · Back (raised) · Next (the one primary) */}
+            <div className="onboarding-actions">
+              <Button size="md" variant="ghost" onClick={handleSkip} data-testid="onboarding-skip" className="onboarding-skip">
                 {t('onboarding.skip')}
-              </button>
-
-              <div style={{ display: 'flex', gap: 8 }}>
+              </Button>
+              <div className="onboarding-actions-end">
                 {!isFirst && (
-                  <button
-                    onClick={handlePrev}
-                    style={{
-                      backgroundColor: 'var(--bg-surface)',
-                      color: 'var(--text-sub)',
-                      border: 'none',
-                      borderRadius: 6,
-                      padding: '6px 14px',
-                      fontSize: 12,
-                      fontWeight: 500,
-                      cursor: 'pointer',
-                      fontFamily: 'inherit',
-                      transition: 'background-color 0.15s ease',
-                    }}
-                    data-testid="onboarding-prev"
-                  >
+                  <Button size="md" variant="secondary" onClick={handlePrev} data-testid="onboarding-prev">
                     {t('onboarding.back')}
-                  </button>
+                  </Button>
                 )}
-                <button
-                  onClick={handleNext}
-                  style={{
-                    backgroundColor: 'var(--accent-blue)',
-                    color: 'var(--bg-base)',
-                    border: 'none',
-                    borderRadius: 6,
-                    padding: '6px 14px',
-                    fontSize: 12,
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    fontFamily: 'inherit',
-                    transition: 'background-color 0.15s ease',
-                  }}
-                  data-testid="onboarding-next"
-                >
+                <Button ref={focusNext} size="md" variant="primary" onClick={handleNext} data-testid="onboarding-next">
                   {isLast ? t('onboarding.done') : t('onboarding.next')}
-                </button>
+                </Button>
               </div>
             </div>
           </div>

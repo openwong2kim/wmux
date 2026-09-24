@@ -16,6 +16,7 @@ import {
   grantReExamineLease,
   __resetReExamineLeasesForTesting,
 } from '../../../deck/reExamineLease';
+import type { TaskLedger } from '../../../../daemon/ledger/TaskLedger';
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
@@ -61,9 +62,25 @@ vi.mock('../../../deck/deckDecisionStore', async (orig) => {
 
 const fakeWindow = {} as BrowserWindow;
 
-function setup(): RpcRouter {
+type LedgerRow = { ownerWorkspaceId: string; taskWorkspaceId: string; status: string };
+
+/** The task ledger resolvePaneRoute consults for the fan-out owner lane (T5). */
+function fakeLedger(rows: LedgerRow[] = []): TaskLedger {
+  const open = new Set(['working', 'input_required', 'review_requested']);
+  return {
+    list: (f: { ownerWorkspaceId?: string; taskWorkspaceId?: string; openOnly?: boolean } = {}) =>
+      rows.filter(
+        (r) =>
+          (f.ownerWorkspaceId === undefined || r.ownerWorkspaceId === f.ownerWorkspaceId) &&
+          (f.taskWorkspaceId === undefined || r.taskWorkspaceId === f.taskWorkspaceId) &&
+          (!f.openOnly || open.has(r.status)),
+      ),
+  } as unknown as TaskLedger;
+}
+
+function setup(rows: LedgerRow[] = []): RpcRouter {
   const router = new RpcRouter();
-  registerDeckRpc(router, () => fakeWindow);
+  registerDeckRpc(router, () => fakeWindow, { getLedger: () => fakeLedger(rows) });
   return router;
 }
 
@@ -100,6 +117,37 @@ describe('deck.resolvePaneRoute', () => {
       id: '1',
       method: 'deck.resolvePaneRoute',
       params: { token, ptyId: 'pty-9' },
+    });
+
+    expect(res.ok).toBe(false);
+  });
+
+  // Fan-out T5: a pane in an OPEN task this brain delegated routes as the brain
+  // itself, so the input handlers' owner lane (not a caller-named workspace)
+  // decides — and labels what it reads as untrusted.
+  it("routes an open task pane of this brain to the brain's own workspace", async () => {
+    const token = mintCommanderToken('ws-mine');
+    sendToRendererMock.mockResolvedValue({ workspaceId: 'ws-task' });
+
+    const res = await setup([
+      { ownerWorkspaceId: 'ws-mine', taskWorkspaceId: 'ws-task', status: 'working' },
+    ]).dispatch({ id: '1', method: 'deck.resolvePaneRoute', params: { token, ptyId: 'pty-w' } });
+
+    expect(res.ok).toBe(true);
+    expect((res as { result: unknown }).result).toEqual({ workspaceId: 'ws-mine' });
+  });
+
+  it.each([
+    ['a finished task', { ownerWorkspaceId: 'ws-mine', taskWorkspaceId: 'ws-task', status: 'completed' }],
+    ["another brain's task", { ownerWorkspaceId: 'ws-other', taskWorkspaceId: 'ws-task', status: 'working' }],
+  ])('still fails closed on %s', async (_label, row) => {
+    const token = mintCommanderToken('ws-mine');
+    sendToRendererMock.mockResolvedValue({ workspaceId: 'ws-task' });
+
+    const res = await setup([row]).dispatch({
+      id: '1',
+      method: 'deck.resolvePaneRoute',
+      params: { token, ptyId: 'pty-w' },
     });
 
     expect(res.ok).toBe(false);

@@ -267,16 +267,9 @@ describe('PairedDevicesModal', () => {
     const { container, unmount } = render(<PairedDevicesModal onClose={() => { /* noop */ }} />);
     await flush();
 
-    const box = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
-    // React tracks `checked` behind a value setter, so assigning the property
-    // directly is invisible to onChange — same trick the sibling suites use.
-    const setChecked = Object.getOwnPropertyDescriptor(
-      window.HTMLInputElement.prototype, 'checked',
-    )!.set!;
-    act(() => {
-      setChecked.call(box, !box.checked);
-      box.dispatchEvent(new Event('click', { bubbles: true }));
-    });
+    // The grant is the shared Checkbox primitive (role="checkbox").
+    const box = container.querySelector('[role="checkbox"]') as HTMLButtonElement;
+    act(() => { box.click(); });
     await flush();
 
     expect(container.textContent).toContain('daemon is not running');

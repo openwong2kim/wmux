@@ -76,6 +76,7 @@ const VALID_PERMISSION_MODES: ReadonlySet<string> = new Set([
   'bypassPermissions',
   'acceptEdits',
   'plan',
+  'auto',
   'default',
 ]);
 

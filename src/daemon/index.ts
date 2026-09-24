@@ -1,3 +1,5 @@
+import { loadChatSkills } from './transcript/chatSkills';
+import { TerminalChatService } from './transcript/TerminalChatService';
 import {captureCodexRelayResume, codexRelayResumeCommand} from './web/codexRelayResume';
 import { recoverCodexPane } from './web/recoverCodexPane';
 import { CodexRelayUnavailableError } from './web/codexTuiRelay';
@@ -68,7 +70,10 @@ import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill'
 import {
   classifyReapIdentity,
   getProcessStartTime,
+  getWin32BootId,
+  getWin32BootIdSync,
   isPidAlive,
+  isWin32ShellProcess,
   isSameBootProven,
   mayReap,
   shouldReconcileTombstone,
@@ -92,7 +97,7 @@ import type { AgentEventStatus } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
 import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
-import { checkTranscriptPath } from './hooks/transcriptPathGuard';
+import { checkNativeTranscriptPath } from './transcript/providers';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { PushSender } from './push/PushSender';
@@ -123,7 +128,12 @@ import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
 import { chatAgentStatus } from './transcript/chatAgentStatus';
+import { terminalLaunchCommand, startNativeCodexRuntime } from './transcript/terminalLaunch';
 import { deliverChatPrompt } from './transcript/deliverChatPrompt';
+import { ChatSessionService } from './chat/ChatSessionService';
+import { chatProviders } from './chat/providers';
+import { record as chatRecord } from './chat/adapter';
+import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
 // registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives
@@ -156,6 +166,11 @@ let hookIngest: HookIngest | null = null;
 // handle at fire time and a null is simply "not configured yet".
 let webhookSink: WebhookSink | null = null;
 let transcriptProjector: TranscriptProjector | null = null;
+let chatSessions: ChatSessionService | null = null;
+let terminalChat: TerminalChatService | null = null;
+const chatSubscribers = new Map<string, Set<string>>();
+const chatPushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const chatPushSeq = new Map<string, number>();
 let transcriptDiscovery: TranscriptDiscovery | null = null;
 // #1163 — registerRpcHandlers' canonical agent-state reader (readDaemonAgentState),
 // read by BOTH WebTerminalServer construction sites for /api/workspaces. Module-
@@ -636,19 +651,8 @@ const MAX_RECOVER_SESSIONS = 40;
 async function getBootId(): Promise<string> {
   try {
     if (process.platform === 'win32') {
-      const { execFile } = require('child_process');
-      const { promisify } = require('util');
-      const execFileAsync = promisify(execFile);
-      const pathMod = require('path');
-      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-      const wmic = pathMod.join(systemRoot, 'System32', 'wbem', 'wmic.exe');
-      const { stdout } = await execFileAsync(
-        wmic,
-        ['os', 'get', 'LastBootUpTime', '/value'],
-        { encoding: 'utf-8', timeout: 5000, windowsHide: true },
-      );
-      const match = (stdout as string).match(/LastBootUpTime=(\S+)/);
-      return match ? match[1].trim() : `fallback-${os.uptime()}`;
+      // #1493: CIM LastBootUpTime, not wmic.exe (gone on current Windows 11).
+      return await getWin32BootId();
     } else if (process.platform === 'darwin') {
       // macOS: sysctl exposes the boot timestamp; encode it as a stable string.
       // Format: "{ sec = 1745678901, usec = 123456 } Mon Apr 28 ..."
@@ -676,17 +680,7 @@ async function getBootId(): Promise<string> {
 function getBootIdSync(): string {
   try {
     if (process.platform === 'win32') {
-      const { execFileSync } = require('child_process');
-      const pathMod = require('path');
-      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-      const wmic = pathMod.join(systemRoot, 'System32', 'wbem', 'wmic.exe');
-      const result = execFileSync(
-        wmic,
-        ['os', 'get', 'LastBootUpTime', '/value'],
-        { encoding: 'utf-8', timeout: 5000, windowsHide: true },
-      );
-      const match = result.match(/LastBootUpTime=(\S+)/);
-      return match ? match[1].trim() : `fallback-${os.uptime()}`;
+      return getWin32BootIdSync();
     } else if (process.platform === 'darwin') {
       const { execFileSync } = require('child_process');
       const result = execFileSync(
@@ -862,7 +856,7 @@ const RESUME_SPOOL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // prune orphans after 
 // a real client crash never reconnects, so it always fires.
 const ATTACHED_ORPHAN_GRACE_MS = 60_000;
 const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
-  'bypassPermissions', 'acceptEdits', 'plan', 'default',
+  'bypassPermissions', 'acceptEdits', 'plan', 'auto', 'default',
 ]);
 
 // Validate one spool record into a {ptyId, binding} pair, or null when it is
@@ -1146,22 +1140,7 @@ async function isOurShellProcess(pid: number, expectedCmd: string): Promise<bool
     const { promisify } = require('util');
     const execFileAsync = promisify(execFile);
     if (process.platform === 'win32') {
-      const pathMod = require('path');
-      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-      const wmic = pathMod.join(systemRoot, 'System32', 'wbem', 'wmic.exe');
-      const { stdout } = await execFileAsync(
-        wmic,
-        ['process', 'where', `ProcessId=${pid}`, 'get', 'ExecutablePath', '/value'],
-        { encoding: 'utf-8', timeout: 3000, windowsHide: true },
-      );
-      // WMIC output: "ExecutablePath=C:\Windows\...\powershell.exe\r\n"
-      const match = (stdout as string).match(/ExecutablePath=(.+)/i);
-      if (!match) return false;
-      const actualExe = match[1].trim().toLowerCase();
-      const expectedExe = expectedCmd.toLowerCase();
-      // Match if the actual executable path ends with the expected command
-      return actualExe.endsWith(pathMod.basename(expectedExe).toLowerCase()) ||
-             actualExe === expectedExe;
+      return await isWin32ShellProcess(pid, expectedCmd);
     } else {
       // Unix: check /proc/<pid>/exe or use ps
       const { stdout } = await execFileAsync('ps', ['-o', 'comm=', '-p', String(pid)], {
@@ -2961,7 +2940,7 @@ function registerRpcHandlers(
     // the writer half of the same rule.
     let vetted = resumeBinding;
     if (vetted.transcriptPath) {
-      const check = checkTranscriptPath(vetted.transcriptPath, vetted.sessionId, managed.meta.env);
+      const check = checkNativeTranscriptPath(vetted.agent, vetted.transcriptPath, vetted.sessionId, managed.meta.env);
       if (!check.ok) {
         log('warn', `[resume] refused transcript path for ${id}: ${check.reason}`);
         const { transcriptPath: _refused, ...rest } = vetted;
@@ -3000,21 +2979,22 @@ function registerRpcHandlers(
       // The hook is authoritative. Once it has delivered a real path there is
       // nothing left to discover.
       transcriptDiscovery?.cancel(id);
-    } else if (p.resumeBinding.agent === DISCOVERABLE_AGENT) {
-      transcriptDiscovery?.start(id, p.resumeBinding.sessionId, p.resumeBinding.cwd);
+    } else if (p.resumeBinding.agent === 'claude' || p.resumeBinding.agent === 'codex') {
+      transcriptDiscovery?.start(id, p.resumeBinding.sessionId, p.resumeBinding.cwd, p.resumeBinding.agent);
     }
     // codex P2: a SessionStart fired before its transcript exists (F9) sends the
     // #12235-UNSAFE payload.session_id as the id and carries NO transcriptPath.
     // Don't let that provisional capture overwrite an existing transcript-derived
     // (authoritative) binding for a DIFFERENT session — a reboot in between would
     // then `--resume <wrong id>`.
-    if (prev && prev.transcriptPath && !p.resumeBinding.transcriptPath
+    if (prev && prev.agent === 'claude' && p.resumeBinding.agent === 'claude' && prev.transcriptPath && !p.resumeBinding.transcriptPath
         && prev.sessionId !== p.resumeBinding.sessionId) {
       return true;
     }
     // Sticky-merge: a capture that couldn't read permissionMode (transcript tail
     // miss) must not wipe a previously-captured mode (codex review 2026-06-14).
-    const next = mergeResumeBinding(prev, p.resumeBinding);
+    // A synchronous exact-ID discovery may have just supplied the path.
+    const next = mergeResumeBinding(managed.meta.resumeBinding, p.resumeBinding);
     let durableChange = !prev
       || prev.sessionId !== next.sessionId
       || prev.agent !== next.agent
@@ -3072,7 +3052,18 @@ function registerRpcHandlers(
       // The persisted binding is the ONLY source of the transcript path — no
       // cwd→slug derivation (agentResume.ts rejects that mapping as
       // version-drift-prone, which is why the path is persisted at all).
-      getResumeBinding: (id) => sessionManager.getSession(id)?.meta.resumeBinding,
+      getResumeBinding: (id) => {
+        const pane = sessionManager.getSession(id);
+        const live = codexPaneRelays.liveSelection(id, pane);
+        if (live.live) {
+          const selection = live.selection;
+          return selection ? { agent: 'codex', sessionId: selection.threadId, cwd: selection.cwd,
+            transcriptPath: selection.transcriptPath, ts: Date.now() } : undefined;
+        }
+        const binding = pane?.meta.resumeBinding;
+        const current = agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '');
+        return current && binding?.agent !== current ? undefined : binding;
+      },
       // #782 — splits an absent binding into `stale-session` (agent running, no
       // binding yet) vs `no-hook` (no agent detected → hooks not installed).
       getDetectedAgent: (id) => sessionManager.getSession(id)?.meta.lastDetectedAgent,
@@ -3114,11 +3105,11 @@ function registerRpcHandlers(
       // relocate CLAUDE_CONFIG_DIR, which moves the root both the scan and the
       // containment check have to use.
       getSessionEnv: (id) => sessionManager.getSession(id)?.meta.env,
-      onFound: ({ sessionId, agentSessionId, transcriptPath, cwd }) => {
+      onFound: ({ sessionId, agentSessionId, transcriptPath, cwd, agent }) => {
         // Re-enter through the normal writer so the discovered path is vetted,
         // sticky-merged, and saveImmediate'd exactly like a hook-supplied one.
         applyResumeBinding(sessionId, {
-          agent: DISCOVERABLE_AGENT,
+          agent: agent ?? DISCOVERABLE_AGENT,
           sessionId: agentSessionId,
           cwd,
           transcriptPath,
@@ -3160,6 +3151,52 @@ function registerRpcHandlers(
     return {ok:desktopPhoneBridge!.complete(ctx.clientId,params)};
   });
   pipeServer.onClientClose(id => desktopPhoneBridge?.disconnect(id));
+  if (!chatSessions) {
+    try {
+      chatSessions = new ChatSessionService({
+        directory: path.join(wmuxDir, 'chat-sessions'), providers: chatProviders(wmuxDir),
+        pane: (id) => {
+          const pane = sessionManager.getSession(id);
+          return pane?.meta.spawnCwd ? { cwd: pane.meta.spawnCwd, env: pane.meta.env } : undefined;
+        },
+        changed: (id) => {
+          if (chatPushTimers.has(id)) return;
+          chatPushTimers.set(id, setTimeout(() => {
+            chatPushTimers.delete(id);
+            const page = chatSessions?.snapshot(id); const status = chatSessions?.status(id);
+            if (!page || !status) return;
+            const seq = (chatPushSeq.get(id) ?? 0) + 1; chatPushSeq.set(id, seq);
+            const event: DaemonEvent = { type: 'transcript.appended', sessionId: id,
+              data: { seq, events: page.events, cursor: page.cursor, status } };
+            for (const clientId of chatSubscribers.get(id) ?? []) {
+              if (!pipeServer.sendTo(clientId, event)) chatSubscribers.get(id)?.delete(clientId);
+            }
+          }, 200));
+        },
+      });
+      pipeServer.onClientClose((clientId) => {
+        for (const [id, clients] of chatSubscribers) {
+          clients.delete(clientId); if (!clients.size) chatSubscribers.delete(id);
+        }
+      });
+    } catch { log('error', '[chat] invalid provider configuration; managed chat disabled'); }
+  }
+  pipeServer.onRpc('daemon.chat.providers', async (_params, ctx) =>
+    firstPartyOnly(ctx.clientId, 'chat.providers') ? chatSessions?.listProviders() ?? [] : []);
+  for (const action of ['start', 'reconnect', 'cancel', 'respond', 'close'] as const) {
+    pipeServer.onRpc(`daemon.chat.${action}`, async (params, ctx) => {
+      if (!firstPartyOnly(ctx.clientId, `chat.${action}`) || !chatSessions) return { ok: false, error: 'Unavailable' };
+      const id = typeof params.id === 'string' && params.id.length < 256 ? params.id : '';
+      const sessionId = typeof params.agentSessionId === 'string' ? params.agentSessionId : '';
+      if (!id || !sessionManager.getSession(id)) return { ok: false, error: 'Pane unavailable' };
+      if (action === 'start') return chatSessions.start(id, typeof params.providerId === 'string' ? params.providerId : '');
+      if (action === 'respond') {
+        if (typeof params.requestId !== 'string' || !params.answer || JSON.stringify(params.answer).length > 32_000) return { ok: false, error: 'Invalid response' };
+        return chatSessions.respond(id, sessionId, params.requestId, chatRecord(params.answer) as ChatInteractionAnswer);
+      }
+      return chatSessions[action](id, sessionId);
+    });
+  }
 
   pipeServer.onRpc('daemon.client.identify', async (params, ctx) => {
     const role = typeof params['role'] === 'string' ? params['role'] : '';
@@ -3195,19 +3232,119 @@ function registerRpcHandlers(
     return { ok: true };
   });
 
+  if (!terminalChat) {
+    terminalChat = new TerminalChatService({ directory: path.join(wmuxDir, 'terminal-chat'),
+      owner: async id => {
+        const pane = sessionManager.getSession(id);
+        if (!pane?.meta.incarnationId || !['attached', 'detached'].includes(pane.meta.state)) return undefined;
+        const child = agentProcessTracker.pidFor(id);
+        const pid = pane.meta.exec
+          ? await agentProcessTracker.verifyOwnedRoot(id, pane.meta.pid, 'opencode') ? pane.meta.pid : undefined
+          : child && await agentProcessTracker.verifyLive(id, 'opencode') ? child : undefined;
+        if (!pid || !await ProcessMonitor.isRunning(pid) || sessionManager.getSession(id) !== pane) return undefined;
+        return { pid, incarnation: pane.meta.incarnationId };
+      },
+      emit: (id, data, clients) => {
+        for (const client of clients) if (!pipeServer.sendTo(client, { type: 'transcript.appended', sessionId: id, data })) terminalChat?.unsubscribe(client, id);
+      },
+    });
+    pipeServer.onClientClose(client => terminalChat?.dropClient(client));
+  }
+
+  pipeServer.onRpc('daemon.chat.skills', async (params, ctx) => {
+    const unavailable = { skills: [], state: 'unavailable' };
+    if (!firstPartyOnly(ctx.clientId, 'skills') || typeof params.id !== 'string') return unavailable;
+    const id = params.id;
+    const pane = sessionManager.getSession(id);
+    if (!pane || pane.meta.wslTarget || !['attached', 'detached'].includes(pane.meta.state)) return unavailable;
+    const liveAgent = agentDisplayToSlug(readChatAgentState(id).agentName ?? '');
+    if (liveAgent && liveAgent !== params.agent) return unavailable;
+    if (!['claude', 'codex'].includes(String(params.agent))) return unavailable;
+    const selection = params.agent === 'codex' ? codexPaneRelays.selection(id, pane) : undefined;
+    const cwd = selection?.cwd ?? pane.meta.cwd;
+    const capture = () => JSON.stringify([pane.meta.cwd, pane.meta.pid, pane.meta.incarnationId, pane.meta.state,
+      pane.meta.env?.CODEX_HOME, pane.meta.env?.CLAUDE_CONFIG_DIR,
+      params.agent === 'codex' ? codexPaneRelays.selection(id, pane) : undefined]);
+    const scope = capture();
+    const result = await loadChatSkills(String(params.agent), cwd, { ...process.env, ...pane.meta.env });
+    return sessionManager.getSession(id) === pane && capture() === scope &&
+      agentDisplayToSlug(readChatAgentState(id).agentName ?? '') === liveAgent ? result : unavailable;
+  });
+
+  const terminalLaunching = new Set<string>();
+  pipeServer.onRpc('daemon.chat.launchTerminal', async (params, ctx) => {
+    const id = typeof params.id === 'string' ? params.id : '';
+    if (!firstPartyOnly(ctx.clientId, 'launchTerminal') || !id || !['claude', 'codex'].includes(String(params.agent))) return { ok: false, error: 'Unavailable' };
+    if (terminalLaunching.has(id)) return { ok: false, error: 'Launch already pending' };
+    terminalLaunching.add(id);
+    let launchRelay: Awaited<ReturnType<CodexPaneRelays['prepare']>> | undefined;
+    let launched = false;
+    try {
+      const pane = sessionManager.getSession(id);
+      const revision = pane?.bridge.getInputRevision();
+      const ready = () => !!pane && sessionManager.getSession(id) === pane && !pane.meta.exec &&
+        ['attached', 'detached'].includes(pane.meta.state) && pane.bridge.isEmptyShellPrompt() &&
+        pane.bridge.getInputRevision() === revision && !pane.promptLog.isCommandRunning() &&
+        !!approvalRegistry && !approvalRegistry.list().pending.some(request => request.sessionId === id);
+      if (!ready() || !pane) return { ok: false, error: 'Use Terminal: an empty shell prompt is required.' };
+      if (!await agentProcessTracker.verifyIdleShell(pane.meta.pid) || !ready()) return { ok: false, error: 'Terminal changed or is busy.' };
+      buildAgentLaunch({ agent: params.agent }, await installedAgentLaunchOptions(pane.meta.env));
+      let command = terminalLaunchCommand(params.agent, params.prompt, params.mode);
+      if (params.agent === 'codex') {
+        // Hook session_id can name an invocation rather than the conversation.
+        // Observe the existing native TUI transport for authoritative thread IDs.
+        await codexPaneRelays.retire(id);
+        try { launchRelay = await codexPaneRelays.prepare(id, pane.meta.env?.CODEX_HOME); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof CodexRelayUnavailableError)) throw error;
+          if (!ready()) throw new Error('Terminal changed');
+          await startNativeCodexRuntime({ ...process.env, ...pane.meta.env });
+          launchRelay = await codexPaneRelays.prepare(id, pane.meta.env?.CODEX_HOME);
+        }
+        if (!/^unix:\/\/\/[A-Za-z0-9_./-]+$/.test(launchRelay.url)) throw new Error('Unsupported relay path');
+        command = command.replace(/^codex /, `codex --remote ${launchRelay.url} `);
+      }
+      if (!await agentProcessTracker.verifyIdleShell(pane.meta.pid) || !ready()) return { ok: false, error: 'Terminal changed or is busy.' };
+      // Fixed launcher only; no renderer-provided shell text, prompts or flags.
+      // noteInput consumes the empty-prompt evidence before another RPC can run.
+      if (launchRelay && !launchRelay.commit(pane)) throw new Error('Terminal changed');
+      const input = command + '\r';
+      pane.bridge.noteInput(input);
+      pane.ptyProcess.write(input);
+      launched = true;
+      return { ok: true };
+    } catch { return { ok: false, error: 'Could not start the installed agent. Check Terminal before retrying.' }; }
+    finally { if (!launched) await launchRelay?.close(); terminalLaunching.delete(id); }
+  });
+
   pipeServer.onRpc('daemon.transcript.status', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'status')) {
       return { available: false, reason: 'not-authorized' };
     }
     const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const native = await terminalChat?.read(id);
+    if (native) return native.status;
     const live = readChatAgentState(id);
-    return { ...projector.status(id), agentStatus: live.agentStatus, agentAlive: live.agentName === 'Claude Code' };
+    if (agentDisplayToSlug(live.agentName ?? '') === 'opencode') return { available: false, reason: 'unavailable' };
+    const managed = !live.agentName && !projector.status(id).available ? chatSessions?.status(id) : undefined;
+    if (managed) return managed;
+    const status = projector.status(id);
+    const slug = agentDisplayToSlug(live.agentName ?? '');
+    const agentAlive = !!slug && slug === status.terminal?.agent && live.agentVerified;
+    return { ...status, agentStatus: live.agentStatus, agentAlive,
+      ...(status.terminal ? { terminal: { ...status.terminal, capabilities: { ...status.terminal.capabilities,
+        send: agentAlive && ['claude', 'codex'].includes(slug!),
+      } } } : {}) };
   });
 
   pipeServer.onRpc('daemon.transcript.snapshot', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'snapshot')) return null;
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const before = typeof params['before'] === 'number' ? params['before'] : undefined;
+    const native = await terminalChat?.read(id);
+    if (native) return before === undefined ? native.page : { ...native.page, events: [], hasMore: false };
+    if (agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '') === 'opencode') return null;
+    if (!readDaemonAgentState(id).agentName && !projector.status(id).available && chatSessions?.has(id)) return chatSessions.snapshot(id, before);
     return projector.snapshot(id, before === undefined ? undefined : { before });
   });
 
@@ -3217,11 +3354,22 @@ function registerRpcHandlers(
     }
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     if (!id) return { ok: false, status: { available: false, reason: 'no-binding' } };
+    const native = await terminalChat?.read(id);
+    if (native) { terminalChat!.subscribe(ctx.clientId, id); return { ok: true, status: native.status }; }
+    if (agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '') === 'opencode') return { ok: false, status: { available: false, reason: 'unavailable' } };
+    if (!readDaemonAgentState(id).agentName && !projector.status(id).available && chatSessions?.has(id)) {
+      const clients = chatSubscribers.get(id) ?? new Set<string>();
+      clients.add(ctx.clientId); chatSubscribers.set(id, clients);
+      return { ok: true, status: chatSessions.status(id) };
+    }
     return { ok: true, status: projector.subscribe(ctx.clientId, id) };
   });
 
   pipeServer.onRpc('daemon.transcript.unsubscribe', async (params, ctx) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
+    terminalChat?.unsubscribe(ctx.clientId, id);
+    chatSubscribers.get(id)?.delete(ctx.clientId);
+    if (!chatSubscribers.get(id)?.size) chatSubscribers.delete(id);
     if (id) projector.unsubscribe(ctx.clientId, id);
     return { ok: true };
   });
@@ -3236,7 +3384,7 @@ function registerRpcHandlers(
     const srcOffset = typeof params['srcOffset'] === 'number' ? params['srcOffset'] : -1;
     const n = typeof params['n'] === 'number' ? params['n'] : -1;
     const eventId = typeof params['eventId'] === 'string' ? params['eventId'] : undefined;
-    if (!id) return null;
+    if (!id || !readDaemonAgentState(id).agentName && !projector.status(id).available && chatSessions?.has(id)) return null;
     return projector.codeBlock(id, { srcOffset, n, ...(eventId ? { eventId } : {}) });
   });
 
@@ -3581,7 +3729,7 @@ function registerRpcHandlers(
   const readChatAgentState = (id: string) => {
     const live = readDaemonAgentState(id);
     const bridge = sessionManager.getSession(id)?.bridge;
-    if (live.agentName === 'Claude Code' && bridge && live.agentStatus !== 'awaiting_input') {
+    if (['Claude Code', 'Codex CLI'].includes(live.agentName ?? '') && bridge && live.agentStatus !== 'awaiting_input') {
       const last = projector.snapshot(id)?.events.at(-1);
       return { ...live, agentStatus: chatAgentStatus(live.agentStatus, last, bridge.getLastTurnStartedAt()) };
     }
@@ -3647,12 +3795,17 @@ function registerRpcHandlers(
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const agentSessionId = typeof params['agentSessionId'] === 'string' ? params['agentSessionId'] : '';
     const text = typeof params['text'] === 'string' ? params['text'] : '';
+    const native = await terminalChat?.read(id);
+    if (native || agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '') === 'opencode') {
+      return { result: await terminalChat?.send(id, agentSessionId, text, typeof params.requestId === 'string' ? params.requestId : '') ?? 'unavailable' };
+    }
+    if (!readDaemonAgentState(id).agentName && !projector.status(id).available && chatSessions?.has(id)) return { result: await chatSessions.send(id, agentSessionId, text, typeof params.requestId === 'string' ? params.requestId : '') };
     if (!id || !approvalRegistry) return { result: 'unavailable' };
     if (chatSending.has(id)) return { result: 'busy' };
     chatSending.add(id);
     try {
       const result = await deliverChatPrompt(agentSessionId, text, {
-        getTranscriptSessionId: () => sessionManager.getSession(id)?.meta.resumeBinding?.sessionId,
+        getTranscriptSessionId: () => projector.status(id).agentSessionId,
         hasOpenApproval: () => !approvalRegistry || approvalRegistry.list().pending.some((r) => r.sessionId === id),
         readScreen: async () => {
           const managed = sessionManager.getSession(id);
@@ -3675,7 +3828,8 @@ function registerRpcHandlers(
           const pid = agentProcessTracker.pidFor(id);
           if (pid === undefined) return false;
           try {
-            return await agentProcessTracker.verifyLive(id, 'claude') &&
+            const slug = agentDisplayToSlug(readChatAgentState(id).agentName ?? '');
+            return !!slug && await agentProcessTracker.verifyLive(id, slug) &&
               await ProcessMonitor.isRunning(pid);
           } catch {
             return false;
@@ -4731,7 +4885,10 @@ function wireEvents(
     // (called by dropPty above) already flipped the record to expired.
     gateBroker?.cancelForSession(payload.id, 'pane-gone');
     // Transcript projection: the pane is gone, so its watch has no reader left…
+    chatSessions?.drop(payload.id);
+    chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
+    terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
     try {
@@ -5137,6 +5294,30 @@ function wireEvents(
     pipeServer.broadcast(event);
   });
 
+  // A human answered the dialog a pane was blocked on (DaemonPTYBridge
+  // noteInput: an option digit, ESC or Enter). The bridge has already dropped
+  // its awaiting state. Tell main the pane is running again — on a
+  // hook-governed pane nothing else would, because main mutes the byte
+  // heuristic while the hook's turn latch is held — and cancel a still-held
+  // awaiting window, which would otherwise re-mark the pane when it confirms.
+  sessionManager.on('session:answered', (payload: { sessionId: string }) => {
+    const managed = sessionManager.getSession(payload.sessionId);
+    const screenAgent = managed?.bridge.getLastAgent() ?? null;
+    const slug = (screenAgent ? agentDisplayToSlug(screenAgent) : undefined) ?? managed?.meta.lastDetectedAgent;
+    hookIngest?.noteAnswered(payload.sessionId, slug);
+    const agent = screenAgent ?? (slug ? agentSlugToDisplay(slug) : null);
+    if (!agent) return;
+    const data = {
+      agent,
+      status: 'running',
+      message: 'Prompt answered',
+      source: 'detector' as const,
+      decision: 'internal' as const,
+    };
+    pipeServer.broadcast({ type: 'agent.event', sessionId: payload.sessionId, data });
+    webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(payload.sessionId, data, Date.now()));
+  });
+
   // OSC 133 prompt/command markers — broadcast to main so
   // DaemonNotificationRouter can mirror the local-mode PTYBridge OSC 133
   // tee onto the EventBus as `source:'osc133'` agent.lifecycle events.
@@ -5210,7 +5391,10 @@ function wireEvents(
     recoveredResumeBindings.delete(payload.id); // X6 ③: drop the exact binding too (id reuse, CodeRabbit)
     hookIngest?.dropPty(payload.id); // M1: ...and the dedup ledger / hook authority
     // Transcript projection: the pane is gone, so its watch has no reader left…
+    chatSessions?.drop(payload.id);
+    chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
+    terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
     const event: DaemonEvent = {
@@ -5431,7 +5615,11 @@ async function shutdown(
   gateBroker?.cancelAll('daemon-restart');
   // Close every transcript fs.watch and poll timer. All of them are unref'd so
   // none held the process open; this just avoids a read firing mid-shutdown.
+  chatSessions?.dispose();
+  for (const timer of chatPushTimers.values()) clearTimeout(timer);
+  chatPushTimers.clear(); chatSubscribers.clear();
   transcriptProjector?.dispose();
+  terminalChat?.dispose();
   // Same for the discovery searches — unref'd watch handles and poll timers.
   transcriptDiscovery?.dispose();
 

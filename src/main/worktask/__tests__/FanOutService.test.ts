@@ -15,7 +15,14 @@ import {
   firstRunStuckSummary,
   WORKER_DELIVERY_PREAMBLE,
 } from '../FanOutService';
-import { MODEL_ENV_MARKER, reattachModelEnvMarker, splitModelEnvMarker } from '../../../shared/workerLaunch';
+import {
+  MODEL_ENV_MARKER,
+  applyWorkerPermissionFlags,
+  reattachModelEnvMarker,
+  splitModelEnvMarker,
+  workerLaunchFlags,
+} from '../../../shared/workerLaunch';
+import { commandChoosesModel } from '../../../shared/orchestratorRole';
 import { FIRST_RUN_CLEAN_READS } from '../agentFirstRun';
 import type { FanOutDaemonPort, FanOutRendererPort } from '../FanOutService';
 import type { TaskWorktreePlan } from '../TaskWorktreeManager';
@@ -23,12 +30,19 @@ import type { ProjectConfigState } from '../../../shared/wmuxProjectConfig';
 import { clearFanoutPortReservationsForTest } from '../fanoutEnvironment';
 import { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { setTaskLedgerForTests } from '../../deck/taskLedgerHost';
+import { FanOutGuards, setFanOutGuardsForTests } from '../fanoutGuards';
 
 let metaRoot: string;
+let lineage: FanOutGuards;
 beforeEach(() => {
   metaRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-fanout-'));
+  // The service stamps each task workspace's lineage; keep that out of the
+  // real wmux dir.
+  lineage = new FanOutGuards({ dir: metaRoot, countLiveTasks: () => 0, ledgerTaskOwner: () => null });
+  setFanOutGuardsForTests(lineage);
 });
 afterEach(() => {
+  setFanOutGuardsForTests(null);
   fs.rmSync(metaRoot, { recursive: true, force: true });
 });
 
@@ -43,6 +57,9 @@ function makePlan(slug: string): TaskWorktreePlan {
     metaDir: path.join(metaRoot, 'meta', slug),
   };
 }
+
+/** T3 — the commit the worktrees fake reports as origin's default branch. */
+const BASE_OID = 'c'.repeat(40);
 
 /** worktrees fake — preflight/createWorktree/removeWorktree 제어. */
 function makeWorktreesFake(opts?: {
@@ -64,6 +81,7 @@ function makeWorktreesFake(opts?: {
       return { ok: true as const, worktreePath: plan.worktreePath, branch: plan.branch };
     }),
     removeWorktree: vi.fn(async () => ({ ok: true as const })),
+    resolveBase: vi.fn(async () => ({ oid: BASE_OID, ref: 'refs/remotes/origin/main' })),
   } as any;
 }
 
@@ -168,7 +186,7 @@ describe('buildInitialCommand (§4 D4)', { timeout: SHELL_SPAWN_TIMEOUT_MS }, ()
     if (process.platform !== 'win32') {
       expect(buildInitialCommand('claude', '/m/prompt.md')).toBe("claude \"$(cat '/m/prompt.md')\"");
     } else {
-      expect(buildInitialCommand('claude', 'C:\\m\\prompt.md')).toContain('Get-Content -Raw -LiteralPath');
+      expect(buildInitialCommand('claude', 'C:\\m\\prompt.md')).toContain('Get-Content -Raw -Encoding UTF8 -LiteralPath');
     }
   });
 
@@ -176,13 +194,27 @@ describe('buildInitialCommand (§4 D4)', { timeout: SHELL_SPAWN_TIMEOUT_MS }, ()
     if (process.platform === 'win32') {
       // PowerShell: 단일따옴표 리터럴, 내부 `'`는 `''`.
       const cmd = buildInitialCommand('claude', "C:\\a b\\it's $x`.md");
-      expect(cmd).toBe("claude \"$(Get-Content -Raw -LiteralPath 'C:\\a b\\it''s $x`.md')\"");
+      expect(cmd.startsWith("claude \"$(Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\\a b\\it''s $x`.md' | ")).toBe(
+        true,
+      );
       return;
     }
     // POSIX: 각 위험 경로가 단일따옴표 리터럴 안에 담기고 `'`만 닫고-이스케이프-열기.
     expect(buildInitialCommand('claude', '/a b/prompt.md')).toBe("claude \"$(cat '/a b/prompt.md')\"");
     expect(buildInitialCommand('claude', "/a/it's.md")).toBe("claude \"$(cat '/a/it'\\''s.md')\"");
     expect(buildInitialCommand('claude', '/a/$x`y.md')).toBe("claude \"$(cat '/a/$x`y.md')\"");
+  });
+
+  it('win32 (#1490): the prompt argument stays one quoted word the flag appender leaves intact', () => {
+    // The quote character inside the PowerShell stage is spelled [char]34 / \x22:
+    // a literal `"` would end the `"$(…)"` word early for the launch-line
+    // tokenizers. The real-shell behaviour is FanOutService.powershell.runtime.test.ts.
+    const cmd = buildInitialCommand('claude', "C:\\a b\\it's.md", 'win32');
+    expect(cmd.startsWith('claude "$(')).toBe(true);
+    expect(cmd.endsWith(')"')).toBe(true);
+    expect(cmd.slice('claude "'.length, -1)).not.toContain('"');
+    expect(applyWorkerPermissionFlags(cmd, 'auto')).toBe(`${cmd} ${workerLaunchFlags('auto')}`);
+    expect(commandChoosesModel(cmd)).toBe(false);
   });
 
   it('POSIX: 실제 sh -c 왕복에서 파일 내용이 argv로 실린다(재해석 없음)', () => {
@@ -344,6 +376,132 @@ describe('firstRunStuckSummary (F15)', () => {
     expect(firstRunStuckSummary({ headline: 'fullscreen renderer upsell', reason: 'unanswered' })).toContain(
       'keypress',
     );
+  });
+});
+
+describe('T3 worktree base — one fetch per fan-out, OID pinned, warning surfaced', () => {
+  it('resolves the base once for N tasks, hands every createWorktree the same OID, and stamps it', async () => {
+    const worktrees = makeWorktreesFake();
+    const daemon = makeDaemonFake();
+    const svc = new FanOutService({ daemon: daemon.port, renderer: makeRendererFake().port, worktrees });
+    const res = await svc.start(baseReq({ titles: ['a', 'b', 'c'] }));
+    expect(res.ok).toBe(true);
+    expect(worktrees.resolveBase).toHaveBeenCalledTimes(1);
+    expect(worktrees.resolveBase).toHaveBeenCalledWith('/repo');
+    expect(worktrees.createWorktree).toHaveBeenCalledTimes(3);
+    for (const call of worktrees.createWorktree.mock.calls) {
+      expect(call[1]).toBe(BASE_OID);
+    }
+    // The stamp is what task-mode diffs read the base from.
+    for (const t of res.tasks) {
+      const stamp = JSON.parse(fs.readFileSync(path.join(metaRoot, 'meta', t.taskId!.slice(-8), 'task.json'), 'utf8'));
+      expect(stamp.baseOid).toBe(BASE_OID);
+    }
+    expect(res.warnings).toBeUndefined();
+    expect(daemon.calls.some((c) => c.method === 'a2a.channel.post')).toBe(false);
+  });
+
+  it('a base warning rides a still-successful result and is posted to every mission channel', async () => {
+    const worktrees = makeWorktreesFake();
+    const warning = 'git fetch origin main failed (offline); tasks branched from the local HEAD';
+    worktrees.resolveBase = vi.fn(async () => ({ warning }));
+    const daemon = makeDaemonFake();
+    const svc = new FanOutService({ daemon: daemon.port, renderer: makeRendererFake().port, worktrees });
+    const res = await svc.start(baseReq());
+    expect(res.ok).toBe(true);
+    expect(res.warnings).toEqual([warning]);
+    for (const call of worktrees.createWorktree.mock.calls) {
+      expect(call[1]).toBeUndefined();
+    }
+    for (const t of res.tasks) {
+      const stamp = JSON.parse(fs.readFileSync(path.join(metaRoot, 'meta', t.taskId!.slice(-8), 'task.json'), 'utf8'));
+      expect(stamp.baseOid).toBeUndefined();
+    }
+    const posts = daemon.calls.filter((c) => c.method === 'a2a.channel.post');
+    expect(posts.map((p) => p.params['channelId'])).toEqual(['ch-1', 'ch-2']);
+    for (const p of posts) {
+      expect(p.params['text']).toContain(warning);
+      expect(p.params['verifiedWorkspaceId']).toBe('ws-ceo');
+    }
+  });
+
+  it('a base refused for submodules/LFS refuses the whole fan-out before any task exists', async () => {
+    const worktrees = makeWorktreesFake();
+    worktrees.resolveBase = vi.fn(async () => ({ error: 'the base refs/remotes/origin/main contains submodules' }));
+    const daemon = makeDaemonFake();
+    const svc = new FanOutService({ daemon: daemon.port, renderer: makeRendererFake().port, worktrees });
+    const res = await svc.start(baseReq());
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/submodules/);
+    expect(res.tasks).toEqual([]);
+    expect(daemon.calls).toHaveLength(0);
+  });
+
+  it('a refused preflight never fetches', async () => {
+    const worktrees = makeWorktreesFake({ preflightFail: 'not a git repository' });
+    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: makeRendererFake().port, worktrees });
+    const res = await svc.start(baseReq());
+    expect(res.ok).toBe(false);
+    expect(worktrees.resolveBase).not.toHaveBeenCalled();
+  });
+});
+
+describe('depth-1 lineage stamp', () => {
+  it('asks the renderer to stamp each task workspace with its owner before launch, and confirms it main-side', async () => {
+    const daemon = makeDaemonFake();
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({ daemon: daemon.port, renderer: renderer.port, worktrees: makeWorktreesFake() });
+    const res = await svc.start(baseReq());
+    expect(res.ok).toBe(true);
+    for (const p of renderer.spawned) expect((p as { fanoutTaskOf?: string }).fanoutTaskOf).toBe('ws-ceo');
+    for (const t of res.tasks) expect(lineage.fanoutOwnerOf(t.workspaceId!)).toBe('ws-ceo');
+  });
+
+  it('hands the renderer the operator\'s worker permission mode for every task', async () => {
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+      workerPermissionMode: () => 'acceptEdits',
+    });
+    await svc.start(baseReq());
+    expect(renderer.spawned.map((p) => (p as { workerPermissionMode?: string }).workerPermissionMode)).toEqual([
+      'acceptEdits',
+      'acceptEdits',
+    ]);
+  });
+
+  it('uses the mode the caller read (the one it audited), reading the store at most once per run', async () => {
+    const renderer = makeRendererFake();
+    const read = vi.fn(() => 'acceptEdits' as const);
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+      workerPermissionMode: read,
+    });
+    await svc.start(baseReq({ workerPermissionMode: 'bypassPermissions' }));
+    expect(read).not.toHaveBeenCalled();
+    expect(renderer.spawned.map((p) => (p as { workerPermissionMode?: string }).workerPermissionMode)).toEqual([
+      'bypassPermissions',
+      'bypassPermissions',
+    ]);
+    await svc.start(baseReq({ idempotencyKey: 'fo-key-2' }));
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases its in-flight live-cap booking one task at a time', async () => {
+    const settled = vi.spyOn(lineage, 'taskSettled');
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: makeRendererFake({ spawnFailOn: (name) => name.includes('Task B') }).port,
+      worktrees: makeWorktreesFake(),
+    });
+    await svc.start(baseReq());
+    // Once per task, the failed one included.
+    expect(settled).toHaveBeenCalledTimes(2);
+    expect(settled).toHaveBeenCalledWith('fo-key-1');
   });
 });
 

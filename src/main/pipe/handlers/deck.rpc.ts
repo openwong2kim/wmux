@@ -17,6 +17,13 @@
 // Fail-closed: a missing/stale token, an unowned ptyId, or a pane outside the
 // token's workspace throws; the MCP client then falls back to the ordinary
 // (external) routing rules.
+//
+// Fan-out T5: one exception to the confinement. A pane in an OPEN task
+// workspace this brain delegated resolves to the brain's OWN workspace, not
+// the task's. The terminal call then reaches the input handlers carrying the
+// brain's home as `workspaceId`, where the own-workspace assert fails and the
+// owner lane grants it from the validated token — so the grant and the
+// "untrusted worker text" label stay in one place (ptyOwnership.ts).
 
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
@@ -39,6 +46,8 @@ import {
 } from '../../deck/deckWorkStore';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { DEFAULT_MAX_SNAPSHOT_AGE_MS, isOutstandingWorkerPane } from '../../deck/stopGate';
+import { getTaskLedger } from '../../deck/taskLedgerHost';
+import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 
 /** Minimum characters a self-resolve resolution must carry. The re-examine
  *  prompt demands the brain CITE the binding rule/basis that settles the
@@ -59,7 +68,14 @@ function readTaskState(task: unknown): string | null {
 
 type GetWindow = () => BrowserWindow | null;
 
-export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
+export interface DeckRpcDeps {
+  /** Injected in tests; defaults to the main-hosted task ledger. */
+  getLedger?: () => TaskLedger;
+}
+
+export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: DeckRpcDeps = {}): void {
+  const ledgerOf = deps.getLedger ?? getTaskLedger;
+
   router.register('deck.resolvePaneRoute', async (params) => {
     const token = params['token'];
     const tokenWorkspaceId = commanderTokenWorkspace(token);
@@ -80,6 +96,15 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
       throw new Error(`deck.resolvePaneRoute: no workspace owns PTY "${ptyId}"`);
     }
     if (owner !== tokenWorkspaceId) {
+      let ownTask = false;
+      try {
+        ownTask = ledgerOf()
+          .list({ ownerWorkspaceId: tokenWorkspaceId, taskWorkspaceId: owner, openOnly: true })
+          .length > 0;
+      } catch {
+        // fail closed — a ledger we cannot read grants nothing.
+      }
+      if (ownTask) return { workspaceId: tokenWorkspaceId };
       throw new Error(
         `deck.resolvePaneRoute: PTY "${ptyId}" is outside this orchestrator's workspace`,
       );

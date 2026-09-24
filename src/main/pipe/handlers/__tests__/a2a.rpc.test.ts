@@ -4,6 +4,7 @@ import { RpcRouter } from '../../RpcRouter';
 import { registerA2aRpc } from '../a2a.rpc';
 import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
 import type { RpcContext } from '../../../../shared/rpc';
+import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../../shared/executeApprovalBounds';
 
 const { sendToRendererMock } = vi.hoisted(() => ({
   sendToRendererMock: vi.fn(),
@@ -96,6 +97,30 @@ describe('a2a.rpc — execute confirmation gate', () => {
     expect(worker.execute).toHaveBeenCalledWith('task-2', 'ws-to-resolved', 'run this', '/tmp/foo');
     const methods = sendToRendererMock.mock.calls.map((c) => c[1]);
     expect(methods).toEqual(['a2a.task.send']);
+  });
+
+  // #1462 — the renderer holds an execute reply until the user answers the
+  // approval prompt (30 s auto-deny). The 5 s bridge default gave up first.
+  it('waits past the approval window for a new execute send, and only for that', async () => {
+    sendToRendererMock
+      .mockResolvedValueOnce({ ok: false, error: 'denied' })
+      .mockResolvedValueOnce({ ok: true, taskId: 't', toWorkspaceId: 'ws-to' });
+    const router = setupRouter(makeWorker());
+
+    await router.dispatch({
+      id: 'rpc-exec',
+      method: 'a2a.task.send',
+      params: { workspaceId: 'ws-from', to: 'ws-to', message: 'run this', execute: true },
+    });
+    const execOptions = sendToRendererMock.mock.calls[0][3] as { timeoutMs?: number } | undefined;
+    expect(execOptions?.timeoutMs).toBe(EXECUTE_SEND_MAIN_TIMEOUT_MS);
+
+    await router.dispatch({
+      id: 'rpc-plain',
+      method: 'a2a.task.send',
+      params: { workspaceId: 'ws-from', to: 'ws-to', message: 'hi' },
+    });
+    expect(sendToRendererMock.mock.calls[1][3]).toBeUndefined();
   });
 
   it('skips worker and does not cancel when renderer denies before task creation', async () => {

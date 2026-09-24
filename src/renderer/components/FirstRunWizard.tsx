@@ -28,6 +28,12 @@ import type { Pane, PaneLeaf } from '../../shared/types';
 import { isInstallTake } from '../../shared/statuslineOutcome';
 import { useStore } from '../stores';
 import { useT } from '../hooks/useT';
+import Dialog, { DialogBody, DialogFooter, DialogHeader } from './ui/Dialog';
+import Button from './ui/Button';
+import MediaPreview from './ui/MediaPreview';
+import { MEDIA_CLIPS } from '../assets/media';
+import { IconCheck, IconWarning } from './icons';
+import { FOCUS_RING } from './focusRing';
 
 // ─── Local type narrowing for electronAPI.firstRun ────────────────────────────
 //
@@ -238,7 +244,6 @@ const PTYID_WAIT_TIMEOUT_MS = 10_000;
 
 export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
   const t = useT();
-  const headerId = 'first-run-wizard-header';
 
   const [result, setResult] = useState<FirstRunCheckResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -252,7 +257,6 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
   const [hooksState, setHooksState] = useState<HooksSubState>('unknown');
   const [hooksError, setHooksError] = useState<string | null>(null);
 
-  const dialogRef = useRef<HTMLDivElement>(null);
   const firstFocusRef = useRef<HTMLButtonElement>(null);
 
   // Keep latest onClose in a ref so listeners installed once stay correct.
@@ -374,7 +378,10 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
     }
   }, []);
 
-  // ─── Dismiss / Escape ──────────────────────────────────────────────────────
+  // ─── Dismiss ───────────────────────────────────────────────────────────────
+  // Escape, the close button and focus handling come from <Dialog>: Escape is
+  // caught in the capture phase (so a focused terminal cannot swallow it) and
+  // focus starts on the close button and returns to the opener afterwards.
   const dismiss = useCallback(async () => {
     try {
       await firstRunBridge().dismiss();
@@ -383,23 +390,6 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
     }
     onCloseRef.current();
   }, []);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        void dismiss();
-      }
-    };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
-  }, [dismiss]);
-
-  // Focus first interactive element on mount.
-  useEffect(() => {
-    if (loading) return;
-    firstFocusRef.current?.focus();
-  }, [loading]);
 
   // ─── Register MCP ──────────────────────────────────────────────────────────
   const handleRegister = useCallback(async () => {
@@ -547,72 +537,37 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
   }, []);
 
   const ui = useMemo(() => decideUiState(result, mode), [result, mode]);
+  const primary = decidePrimaryAction({
+    uiState: ui,
+    claudeFound: result?.status.claudeFound ?? false,
+    mcpRegistered: result?.status.mcpRegistered ?? false,
+    registering,
+    hooksState: result?.status.claudeFound ? hooksState : 'unknown',
+    sampleState,
+  });
 
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
-    <div
-      className="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center"
-      style={{ backgroundColor: 'var(--backdrop-modal)' }}
-      data-testid="first-run-wizard-backdrop"
+    <Dialog
+      onClose={() => void dismiss()}
+      width={500}
+      initialFocusRef={firstFocusRef}
+      data-testid="first-run-wizard"
+      backdropTestId="first-run-wizard-backdrop"
     >
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={headerId}
-        className="flex flex-col gap-4 p-6 rounded-xl"
-        style={{
-          width: 480,
-          maxWidth: '90vw',
-          maxHeight: '90vh',
-          overflowY: 'auto',
-          backgroundColor: 'var(--bg-base)',
-          border: '1px solid var(--bg-surface)',
-          boxShadow: 'var(--shadow-modal)',
-          fontFamily: 'ui-monospace, monospace',
-        }}
-        data-testid="first-run-wizard"
-      >
-        {/* Header */}
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2
-              id={headerId}
-              className="text-display"
-              style={{ color: 'var(--text-main)', margin: 0 }}
-            >
-              {t('firstRunWizard.title')}
-            </h2>
-            <p
-              className="text-xs"
-              style={{ color: 'var(--text-sub)', margin: '4px 0 0 0' }}
-            >
-              {t('firstRunWizard.subtitle')}
-            </p>
-          </div>
-          <button
-            ref={firstFocusRef}
-            onClick={() => void dismiss()}
-            aria-label={t('firstRunWizard.closeButton')}
-            data-testid="first-run-wizard-close"
-            className="text-sm"
-            style={{
-              background: 'none',
-              border: 'none',
-              color: 'var(--text-subtle)',
-              cursor: 'pointer',
-              padding: '4px 8px',
-              lineHeight: 1,
-            }}
-          >
-            ×
-          </button>
-        </div>
+      <DialogHeader
+        ref={firstFocusRef}
+        title={t('firstRunWizard.title')}
+        description={t('firstRunWizard.subtitle')}
+        closeLabel={t('firstRunWizard.closeButton')}
+        closeTestId="first-run-wizard-close"
+      />
 
+      <DialogBody>
         {loading && (
           <div
-            className="text-xs"
-            style={{ color: 'var(--text-subtle)' }}
+            className="text-[13px]"
+            style={{ color: 'var(--text-muted)' }}
             data-testid="first-run-wizard-loading"
           >
             …
@@ -621,84 +576,66 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
 
         {!loading && result && (
           <>
-            {/* Claude detection status */}
-            <ClaudeStatusBlock
-              claudeFound={result.status.claudeFound}
-              mcpRegistered={result.status.mcpRegistered}
-              registering={registering}
-              onRegister={handleRegister}
-            />
+            {/* Setup checklist: one grouped container, one row per item. Rows
+                that need an action are notice rows with the action on the right. */}
+            <div className="ui-group" data-testid="first-run-wizard-checklist">
+              <ClaudeStatusBlock
+                claudeFound={result.status.claudeFound}
+                mcpRegistered={result.status.mcpRegistered}
+                registering={registering}
+                onRegister={handleRegister}
+                primary={primary === 'register'}
+              />
+
+              {/* Hook bridge — the required half of the integration. Shown even
+                  when already installed, as a check, so the checklist is complete. */}
+              {result.status.claudeFound && hooksState !== 'unknown' && (
+                <HooksBlock
+                  state={hooksState}
+                  errorDetail={hooksError}
+                  onInstall={() => void handleInstallHooks()}
+                  primary={primary === 'hooks'}
+                />
+              )}
+
+              {/* Statusline opt-in (only when Claude detected & installable) */}
+              {result.status.claudeFound && statuslineState !== 'unknown' && (
+                <StatuslineBlock
+                  state={statuslineState}
+                  errorDetail={statuslineError}
+                  onInstall={() => void handleInstallStatusline()}
+                />
+              )}
+            </div>
 
             {/* Tier 2 inline registration error (D10) */}
             {registerError && (
               <div
                 role="alert"
                 data-testid="first-run-wizard-register-error"
-                className="flex flex-col gap-1 p-3 rounded-[7px]"
-                style={{
-                  backgroundColor: 'var(--bg-surface)',
-                  border: '1px solid var(--accent-red)',
-                }}
+                className="wmux-welcome-alert"
               >
                 {(() => {
                   const keys = getRegisterErrorKeys(registerError.code);
                   return (
                     <>
-                      <p
-                        className="text-xs font-semibold"
-                        style={{ color: 'var(--text-main)', margin: 0 }}
-                      >
-                        {t(keys.problem)}
-                      </p>
-                      <p
-                        className="text-xs"
-                        style={{ color: 'var(--text-sub)', margin: 0 }}
-                      >
-                        {t(keys.cause)}
-                      </p>
-                      <p
-                        className="text-xs"
-                        style={{ color: 'var(--text-sub)', margin: 0 }}
-                      >
-                        {t(keys.fix)}
-                      </p>
-                      <button
+                      <p className="ui-row-title">{t(keys.problem)}</p>
+                      <p className="ui-row-detail">{withInlineCode(t(keys.cause))}</p>
+                      <p className="ui-row-detail">{withInlineCode(t(keys.fix))}</p>
+                      <Button
+                        size="sm"
+                        variant="secondary"
                         onClick={() => void handleRegister()}
                         disabled={registering}
                         data-testid="first-run-wizard-register-retry"
-                        className="self-start mt-2 px-3 py-1 rounded text-xs font-medium"
-                        style={{
-                          backgroundColor: 'var(--bg-overlay)',
-                          color: 'var(--text-main)',
-                          border: 'none',
-                          cursor: registering ? 'wait' : 'pointer',
-                        }}
+                        className="self-start mt-2"
                       >
                         {t('firstRunWizard.registerMcpButton')}
-                      </button>
+                      </Button>
                     </>
                   );
                 })()}
               </div>
-            )}
-
-            {/* Hook bridge — the required half of the integration. Shown even
-                when already installed, as a ✓, so the checklist is complete. */}
-            {result.status.claudeFound && hooksState !== 'unknown' && (
-              <HooksBlock
-                state={hooksState}
-                errorDetail={hooksError}
-                onInstall={() => void handleInstallHooks()}
-              />
-            )}
-
-            {/* Statusline opt-in (only when Claude detected & installable) */}
-            {result.status.claudeFound && statuslineState !== 'unknown' && (
-              <StatuslineBlock
-                state={statuslineState}
-                errorDetail={statuslineError}
-                onInstall={() => void handleInstallStatusline()}
-              />
             )}
 
             {/* Sample task block */}
@@ -708,115 +645,189 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
               completedAt={result.completedAt}
               onTry={handleTrySampleTask}
               onFallbackContinue={handleFallbackContinue}
+              primary={primary === 'try' || primary === 'fallback'}
             />
-
-            {/* Footer */}
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                onClick={() => void dismiss()}
-                data-testid="first-run-wizard-skip"
-                className="px-4 py-1.5 rounded-[5px] text-xs font-medium"
-                style={{
-                  backgroundColor: 'var(--bg-surface)',
-                  color: 'var(--text-subtle)',
-                  border: 'none',
-                  cursor: 'pointer',
-                }}
-              >
-                {t('firstRunWizard.skipButton')}
-              </button>
-            </div>
           </>
         )}
-      </div>
-    </div>
+      </DialogBody>
+
+      {!loading && result && (
+        <DialogFooter>
+          <Button
+            size="md"
+            variant="ghost"
+            onClick={() => void dismiss()}
+            data-testid="first-run-wizard-skip"
+          >
+            {t('firstRunWizard.skipButton')}
+          </Button>
+        </DialogFooter>
+      )}
+    </Dialog>
+  );
+}
+
+/**
+ * Which action gets the dialog's single solid (primary) button. DESIGN.md:
+ * at most one filled warm action per surface, and never one that is disabled
+ * or already running. Order follows what unblocks the operator first: the
+ * timeout fallback's Continue, then MCP registration, then the required hook
+ * install, then the sample task. While any of those is in flight, nothing is
+ * primary — the emphasis does not jump to the next step mid-install. The
+ * optional statusline offer is never primary.
+ */
+export type WizardPrimaryAction = 'fallback' | 'register' | 'hooks' | 'try' | null;
+
+export function decidePrimaryAction({
+  uiState,
+  claudeFound,
+  mcpRegistered,
+  registering,
+  hooksState,
+  sampleState,
+}: {
+  uiState: WizardUiState | null;
+  claudeFound: boolean;
+  mcpRegistered: boolean;
+  registering: boolean;
+  hooksState: HooksSubState;
+  sampleState: SampleSubState;
+}): WizardPrimaryAction {
+  if (sampleState === 'timeout-fallback') return 'fallback';
+  if (sampleState === 'splitting' || sampleState === 'awaiting-prompt') return null;
+  // Read from the check result, not uiState: reopen mode still offers Register.
+  if (claudeFound && !mcpRegistered) return registering ? null : 'register';
+  if (hooksState === 'installing') return null;
+  if (hooksState === 'offer' || hooksState === 'error') return 'hooks';
+  if (uiState === 'ready' && sampleState === 'idle') return 'try';
+  return null;
+}
+
+/**
+ * Renders `backtick` spans as mono code — commands are machine evidence.
+ * Only balanced pairs become code: a stray backtick (an odd count, e.g. from a
+ * translation) stays literal instead of turning the rest of the text to code.
+ */
+export function withInlineCode(text: string): React.ReactNode {
+  const parts = text.split('`');
+  if (parts.length < 3) return text;
+  if (parts.length % 2 === 0) {
+    // Odd number of backticks: the last one has no partner.
+    const tail = parts.pop() as string;
+    parts[parts.length - 1] = `${parts[parts.length - 1]}\`${tail}`;
+    if (parts.length < 3) return parts[0];
+  }
+  return parts.map((part, i) =>
+    i % 2 === 1 ? <code key={i} className="ui-code">{part}</code> : part,
   );
 }
 
 // ─── Sub-blocks (exported for unit tests) ─────────────────────────────────────
+
+type RowStatus = 'ok' | 'todo' | 'warn' | 'error';
+
+/**
+ * One row of a grouped list: status icon, title + optional muted detail, and
+ * for a notice row the action on the right behind a vertical divider.
+ */
+function SetupRow({
+  status,
+  title,
+  detail,
+  action,
+  children,
+  testId,
+}: {
+  status: RowStatus;
+  title: React.ReactNode;
+  detail?: React.ReactNode;
+  action?: React.ReactNode;
+  children?: React.ReactNode;
+  testId?: string;
+}) {
+  return (
+    <div className="ui-row" data-status={status} data-testid={testId}>
+      <span className="ui-row-icon" aria-hidden="true">
+        {status === 'ok' && <span className="wmux-welcome-glyph-ok"><IconCheck size={14} /></span>}
+        {status === 'warn' && <span className="wmux-welcome-glyph-warn"><IconWarning size={14} /></span>}
+        {status === 'error' && <span className="wmux-welcome-glyph-error"><IconWarning size={14} /></span>}
+        {status === 'todo' && <span className="wmux-welcome-todo" />}
+      </span>
+      <div className="ui-row-text">
+        <p className="ui-row-title">{title}</p>
+        {detail != null && <p className="ui-row-detail">{detail}</p>}
+        {children}
+      </div>
+      {action != null && <div className="ui-row-action">{action}</div>}
+    </div>
+  );
+}
 
 export function ClaudeStatusBlock({
   claudeFound,
   mcpRegistered,
   registering,
   onRegister,
+  primary = true,
 }: {
   claudeFound: boolean;
   mcpRegistered: boolean;
   registering: boolean;
   onRegister: () => void;
+  /** Draw Register as the dialog's primary action (never while registering). */
+  primary?: boolean;
 }) {
   const t = useT();
 
   if (!claudeFound) {
     return (
-      <div
-        className="flex flex-col gap-2"
-        data-testid="first-run-wizard-claude-missing"
+      <SetupRow
+        status="warn"
+        testId="first-run-wizard-claude-missing"
+        title={t('firstRunWizard.claudeNotDetected')}
+        detail={t('firstRunWizard.claudeInstallHint')}
       >
-        <p className="text-sm" style={{ color: 'var(--text-main)', margin: 0 }}>
-          ⚠ {t('firstRunWizard.claudeNotDetected')}
-        </p>
-        <p className="text-xs" style={{ color: 'var(--text-sub)', margin: 0 }}>
-          {t('firstRunWizard.claudeInstallHint')}
-        </p>
         <a
           href="https://claude.ai/code"
           onClick={(e) => {
             e.preventDefault();
             void shellOpenExternal('https://claude.ai/code').catch(() => undefined);
           }}
-          className="text-xs underline self-start"
-          style={{ color: 'var(--accent-blue)' }}
+          className={`wmux-welcome-link ${FOCUS_RING}`}
           data-testid="first-run-wizard-install-link"
         >
           claude.ai/code
         </a>
-      </div>
+      </SetupRow>
     );
   }
 
   return (
-    <div
-      className="flex flex-col gap-2"
-      data-testid="first-run-wizard-claude-detected"
-    >
-      <p className="text-sm" style={{ color: 'var(--text-main)', margin: 0 }}>
-        ✓ {t('firstRunWizard.claudeDetected')}
-      </p>
+    <div className="contents" data-testid="first-run-wizard-claude-detected">
+      <SetupRow status="ok" title={t('firstRunWizard.claudeDetected')} />
       {mcpRegistered ? (
-        <p
-          className="text-xs"
-          style={{ color: 'var(--text-sub)', margin: 0 }}
-          data-testid="first-run-wizard-mcp-registered"
-        >
-          ✓ {t('firstRunWizard.mcpRegistered')}
-        </p>
+        <SetupRow
+          status="ok"
+          testId="first-run-wizard-mcp-registered"
+          title={t('firstRunWizard.mcpRegistered')}
+        />
       ) : (
-        <div className="flex items-center gap-3">
-          <p
-            className="text-xs"
-            style={{ color: 'var(--text-sub)', margin: 0 }}
-            data-testid="first-run-wizard-mcp-not-registered"
-          >
-            {t('firstRunWizard.mcpNotRegistered')}
-          </p>
-          <button
-            onClick={onRegister}
-            disabled={registering}
-            data-testid="first-run-wizard-register"
-            className="px-3 py-1 rounded text-xs font-medium"
-            style={{
-              backgroundColor: 'var(--accent)',
-              color: 'var(--bg-base)',
-              border: 'none',
-              cursor: registering ? 'wait' : 'pointer',
-              opacity: registering ? 0.7 : 1,
-            }}
-          >
-            {t('firstRunWizard.registerMcpButton')}
-          </button>
-        </div>
+        <SetupRow
+          status="todo"
+          testId="first-run-wizard-mcp-not-registered"
+          title={t('firstRunWizard.mcpNotRegistered')}
+          action={
+            <Button
+              size="sm"
+              variant={primary && !registering ? 'primary' : 'ghost'}
+              onClick={onRegister}
+              disabled={registering}
+              data-testid="first-run-wizard-register"
+            >
+              {t('firstRunWizard.registerMcpButton')}
+            </Button>
+          }
+        />
       )}
     </div>
   );
@@ -826,73 +837,53 @@ export function HooksBlock({
   state,
   errorDetail,
   onInstall,
+  primary = true,
 }: {
   state: HooksSubState;
   errorDetail?: string | null;
   onInstall: () => void;
+  /** Draw Install as the dialog's primary action (never while installing). */
+  primary?: boolean;
 }) {
   const t = useT();
 
   if (state === 'installed') {
     return (
-      <div
-        className="flex flex-col gap-1 p-3 rounded-[7px]"
-        style={{
-          backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--accent-green)',
-        }}
-        data-testid="first-run-wizard-hooks-installed"
-      >
-        <p className="text-sm font-semibold" style={{ color: 'var(--text-main)', margin: 0 }}>
-          ✓ {t('firstRunWizard.hooksInstalled')}
-        </p>
-        <p className="text-xs" style={{ color: 'var(--text-sub)', margin: 0 }}>
-          {t('firstRunWizard.hooksInstalledHint')}
-        </p>
-      </div>
+      <SetupRow
+        status="ok"
+        testId="first-run-wizard-hooks-installed"
+        title={t('firstRunWizard.hooksInstalled')}
+        detail={t('firstRunWizard.hooksInstalledHint')}
+      />
     );
   }
 
+  const installing = state === 'installing';
   return (
-    <div
-      className="flex flex-col gap-2 p-3 rounded-[7px]"
-      style={{ backgroundColor: 'var(--bg-surface)' }}
-      data-testid="first-run-wizard-hooks-offer"
-    >
-      <p className="text-sm font-semibold" style={{ color: 'var(--text-main)', margin: 0 }}>
-        {t('firstRunWizard.hooksHeading')}
-      </p>
-      <p className="text-xs" style={{ color: 'var(--text-sub)', margin: 0 }}>
-        {t('firstRunWizard.hooksDescription')}
-      </p>
-      {state === 'error' && (
-        <p
-          className="text-xs"
-          style={{ color: 'var(--accent-red)', margin: 0 }}
-          data-testid="first-run-wizard-hooks-error"
+    <SetupRow
+      status={state === 'error' ? 'error' : 'todo'}
+      testId="first-run-wizard-hooks-offer"
+      title={t('firstRunWizard.hooksHeading')}
+      detail={t('firstRunWizard.hooksDescription')}
+      action={
+        <Button
+          size="sm"
+          variant={primary && !installing ? 'primary' : 'ghost'}
+          onClick={onInstall}
+          disabled={installing}
+          data-testid="first-run-wizard-hooks-install"
         >
-          {t('firstRunWizard.hooksError')}
-          {errorDetail ? ` (${errorDetail})` : ''}
+          {installing ? t('firstRunWizard.hooksInstalling') : t('firstRunWizard.hooksEnableButton')}
+        </Button>
+      }
+    >
+      {state === 'error' && (
+        <p className="ui-row-error" data-testid="first-run-wizard-hooks-error">
+          {withInlineCode(t('firstRunWizard.hooksError'))}
+          {errorDetail ? <> (<code className="ui-code">{errorDetail}</code>)</> : null}
         </p>
       )}
-      <button
-        onClick={onInstall}
-        disabled={state === 'installing'}
-        data-testid="first-run-wizard-hooks-install"
-        className="self-start px-3 py-1 rounded text-xs font-medium"
-        style={{
-          backgroundColor: 'var(--accent)',
-          color: 'var(--bg-base)',
-          border: 'none',
-          cursor: state === 'installing' ? 'wait' : 'pointer',
-          opacity: state === 'installing' ? 0.7 : 1,
-        }}
-      >
-        {state === 'installing'
-          ? t('firstRunWizard.hooksInstalling')
-          : t('firstRunWizard.hooksEnableButton')}
-      </button>
-    </div>
+    </SetupRow>
   );
 }
 
@@ -909,79 +900,66 @@ export function StatuslineBlock({
 
   if (state === 'installed') {
     return (
-      <div
-        className="flex flex-col gap-1 p-3 rounded-[7px]"
-        style={{
-          backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--accent-green)',
-        }}
-        data-testid="first-run-wizard-statusline-installed"
-      >
-        <p className="text-sm font-semibold" style={{ color: 'var(--text-main)', margin: 0 }}>
-          ✓ {t('firstRunWizard.statuslineInstalled')}
-        </p>
-        <p className="text-xs" style={{ color: 'var(--text-sub)', margin: 0 }}>
-          {t('firstRunWizard.statuslineInstalledHint')}
-        </p>
-      </div>
+      <SetupRow
+        status="ok"
+        testId="first-run-wizard-statusline-installed"
+        title={t('firstRunWizard.statuslineInstalled')}
+        detail={t('firstRunWizard.statuslineInstalledHint')}
+      />
     );
   }
 
+  // Optional and cosmetic, so never the primary action.
   return (
-    <div
-      className="flex flex-col gap-2 p-3 rounded-[7px]"
-      style={{ backgroundColor: 'var(--bg-surface)' }}
-      data-testid="first-run-wizard-statusline-offer"
-    >
-      <p className="text-sm font-semibold" style={{ color: 'var(--text-main)', margin: 0 }}>
-        {t('firstRunWizard.statuslineHeading')}
-      </p>
-      <p className="text-xs" style={{ color: 'var(--text-sub)', margin: 0 }}>
-        {t('firstRunWizard.statuslineDescription')}
-      </p>
-      {state === 'error' && (
-        <p
-          className="text-xs"
-          style={{ color: 'var(--accent-red)', margin: 0 }}
-          data-testid="first-run-wizard-statusline-error"
+    <SetupRow
+      status={state === 'error' ? 'error' : 'todo'}
+      testId="first-run-wizard-statusline-offer"
+      title={t('firstRunWizard.statuslineHeading')}
+      detail={t('firstRunWizard.statuslineDescription')}
+      action={
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={onInstall}
+          disabled={state === 'installing'}
+          data-testid="first-run-wizard-statusline-install"
         >
-          {t('firstRunWizard.statuslineError')}
-          {errorDetail ? ` (${errorDetail})` : ''}
+          {state === 'installing'
+            ? t('firstRunWizard.statuslineInstalling')
+            : t('firstRunWizard.statuslineEnableButton')}
+        </Button>
+      }
+    >
+      {state === 'error' && (
+        <p className="ui-row-error" data-testid="first-run-wizard-statusline-error">
+          {withInlineCode(t('firstRunWizard.statuslineError'))}
+          {errorDetail ? <> (<code className="ui-code">{errorDetail}</code>)</> : null}
         </p>
       )}
-      <button
-        onClick={onInstall}
-        disabled={state === 'installing'}
-        data-testid="first-run-wizard-statusline-install"
-        className="self-start px-3 py-1 rounded text-xs font-medium"
-        style={{
-          backgroundColor: 'var(--accent)',
-          color: 'var(--bg-base)',
-          border: 'none',
-          cursor: state === 'installing' ? 'wait' : 'pointer',
-          opacity: state === 'installing' ? 0.7 : 1,
-        }}
-      >
-        {state === 'installing'
-          ? t('firstRunWizard.statuslineInstalling')
-          : t('firstRunWizard.statuslineEnableButton')}
-      </button>
-    </div>
+    </SetupRow>
   );
 }
 
+/**
+ * The sample task offer: the clip, then a notice row (title + description ·
+ * divider · action). Try / Continue are the dialog's primary only when
+ * {@link decidePrimaryAction} says so, and never while disabled.
+ */
 export function SampleTaskBlock({
   uiState,
   sampleState,
   completedAt,
   onTry,
   onFallbackContinue,
+  primary = true,
 }: {
   uiState: WizardUiState | null;
   sampleState: SampleSubState;
   completedAt: string | undefined;
   onTry: () => void;
   onFallbackContinue: () => void;
+  /** Draw Try / Continue as the dialog's primary action. */
+  primary?: boolean;
 }) {
   const t = useT();
 
@@ -989,114 +967,93 @@ export function SampleTaskBlock({
   const isReopen = uiState === 'reopen';
   const date = formatCompletedAt(completedAt);
 
+  const frame = (testId: string, row: React.ReactNode, withClip = false) => (
+    <section className="ui-group wmux-welcome-sample" data-testid={testId}>
+      {withClip && (
+        <div className="p-3 pb-0">
+          <MediaPreview
+            clip={MEDIA_CLIPS.split}
+            label={t('firstRunWizard.sampleTaskDescription')}
+            data-testid="first-run-wizard-sample-preview"
+          />
+        </div>
+      )}
+      {row}
+    </section>
+  );
+
   // Sample task in progress — show progress states.
   if (sampleState === 'splitting' || sampleState === 'awaiting-prompt') {
-    return (
-      <div
-        className="flex flex-col gap-2 p-3 rounded-[7px]"
-        style={{ backgroundColor: 'var(--bg-surface)' }}
-        data-testid="first-run-wizard-sample-running"
-      >
-        <p className="text-sm font-semibold" style={{ color: 'var(--text-main)', margin: 0 }}>
-          {t('firstRunWizard.sampleTaskHeading')}
-        </p>
-        <p className="text-xs" style={{ color: 'var(--text-sub)', margin: 0 }}>
-          {sampleState === 'splitting'
-            ? t('firstRunWizard.sampleTaskDescription')
-            : t('firstRunWizard.sampleTaskDescription')}
-        </p>
-      </div>
+    return frame(
+      'first-run-wizard-sample-running',
+      <div className="ui-row">
+        <span className="ui-row-icon" aria-hidden="true"><span className="wmux-welcome-running-dot" /></span>
+        <div className="ui-row-text">
+          <p className="ui-row-title">{t('firstRunWizard.sampleTaskHeading')}</p>
+          <p className="ui-row-detail">{t('firstRunWizard.sampleTaskDescription')}</p>
+        </div>
+      </div>,
     );
   }
 
   if (sampleState === 'success') {
-    return (
-      <div
-        className="flex flex-col gap-2 p-3 rounded-[7px]"
-        style={{
-          backgroundColor: 'var(--bg-surface)',
-          border: '1px solid var(--accent-green)',
-        }}
-        data-testid="first-run-wizard-sample-success"
-      >
-        <p className="text-sm font-semibold" style={{ color: 'var(--text-main)', margin: 0 }}>
-          ✓ {t('firstRunWizard.sampleTaskHeading')}
-        </p>
-      </div>
+    return frame(
+      'first-run-wizard-sample-success',
+      <SetupRow status="ok" title={t('firstRunWizard.sampleTaskHeading')} />,
     );
   }
 
   if (sampleState === 'timeout-fallback') {
-    return (
-      <div
-        className="flex flex-col gap-2 p-3 rounded-[7px]"
-        style={{ backgroundColor: 'var(--bg-surface)' }}
-        data-testid="first-run-wizard-sample-fallback"
-      >
-        <p className="text-sm" style={{ color: 'var(--text-main)', margin: 0 }}>
-          {t('firstRunWizard.fallbackPressEnter')}
-        </p>
-        <button
-          onClick={onFallbackContinue}
-          data-testid="first-run-wizard-fallback-continue"
-          className="self-start px-3 py-1 rounded text-xs font-medium"
-          style={{
-            backgroundColor: 'var(--accent)',
-            color: 'var(--bg-base)',
-            border: 'none',
-            cursor: 'pointer',
-          }}
-        >
-          {t('firstRunWizard.fallbackButton')}
-        </button>
-      </div>
+    return frame(
+      'first-run-wizard-sample-fallback',
+      <SetupRow
+        status="todo"
+        title={t('firstRunWizard.fallbackPressEnter')}
+        action={
+          <Button
+            size="sm"
+            variant={primary ? 'primary' : 'secondary'}
+            onClick={onFallbackContinue}
+            data-testid="first-run-wizard-fallback-continue"
+          >
+            {t('firstRunWizard.fallbackButton')}
+          </Button>
+        }
+      />,
     );
   }
 
   if (sampleState === 'error') {
-    return (
-      <div
-        className="flex flex-col gap-2 p-3 rounded-[7px]"
-        style={{ backgroundColor: 'var(--bg-surface)' }}
-        data-testid="first-run-wizard-sample-error"
-      >
-        <p className="text-sm" style={{ color: 'var(--text-main)', margin: 0 }}>
-          {t('firstRunWizard.error.UNKNOWN.problem')}
-        </p>
-      </div>
+    return frame(
+      'first-run-wizard-sample-error',
+      <SetupRow status="error" title={t('firstRunWizard.error.UNKNOWN.problem')} />,
     );
   }
 
   // idle — render the trigger / disabled trigger.
-  return (
-    <div
-      className="flex flex-col gap-2 p-3 rounded-[7px]"
-      style={{ backgroundColor: 'var(--bg-surface)' }}
-      data-testid="first-run-wizard-sample-idle"
-    >
-      <p className="text-sm font-semibold" style={{ color: 'var(--text-main)', margin: 0 }}>
-        {t('firstRunWizard.sampleTaskHeading')}
-      </p>
-      <p className="text-xs" style={{ color: 'var(--text-sub)', margin: 0 }}>
-        {isReopen
-          ? t('firstRunWizard.alreadyCompleted', { date: date || '—' })
-          : t('firstRunWizard.sampleTaskDescription')}
-      </p>
-      <button
-        onClick={onTry}
-        disabled={!enabled}
-        data-testid="first-run-wizard-try"
-        className="self-start px-3 py-1 rounded text-xs font-medium"
-        style={{
-          backgroundColor: enabled ? 'var(--accent)' : 'var(--bg-overlay)',
-          color: enabled ? 'var(--bg-base)' : 'var(--text-subtle)',
-          border: 'none',
-          cursor: enabled ? 'pointer' : 'not-allowed',
-          opacity: enabled ? 1 : 0.6,
-        }}
-      >
-        {t('firstRunWizard.tryItButton')}
-      </button>
-    </div>
+  return frame(
+    'first-run-wizard-sample-idle',
+    <div className="ui-row">
+      <div className="ui-row-text">
+        <h3 className="ui-row-title">{t('firstRunWizard.sampleTaskHeading')}</h3>
+        <p className="ui-row-detail">
+          {isReopen
+            ? t('firstRunWizard.alreadyCompleted', { date: date || '—' })
+            : t('firstRunWizard.sampleTaskDescription')}
+        </p>
+      </div>
+      <div className="ui-row-action">
+        <Button
+          size="sm"
+          variant={enabled && primary ? 'primary' : 'secondary'}
+          onClick={onTry}
+          disabled={!enabled}
+          data-testid="first-run-wizard-try"
+        >
+          {t('firstRunWizard.tryItButton')}
+        </Button>
+      </div>
+    </div>,
+    true,
   );
 }

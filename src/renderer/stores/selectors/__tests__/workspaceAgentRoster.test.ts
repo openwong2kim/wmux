@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   selectWorkspaceAgentRoster,
   createWorkspaceAgentRosterSelector,
+  buildRosterChip,
+  type WorkspaceAgentRosterRow,
 } from '../workspaceAgentRoster';
 import { HOOK_RUNNING_TTL_MS } from '../fleet';
 import { BRAIN_PTY_ID_PREFIX } from '../../../../shared/constants';
@@ -766,5 +768,85 @@ describe('selectWorkspaceAgentRoster — stashed panes', () => {
 
     const unstashed = { ...ws, stashedPanes: [] };
     expect(select(state({ workspaces: [unstashed], activeWorkspaceId: 'ws-1' }))).not.toBe(first);
+  });
+});
+
+// #1481 — the identity glyph reads a slug off every row.
+describe('roster row slug', () => {
+  it('prefers the detector slug and falls back to the display name', () => {
+    const ws = workspace('ws-1', leaf('p1', [surface('s1', 'pty-1'), surface('s2', 'pty-2'), surface('s3', 'pty-3')]), 'p1');
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        surfaceAgent: {
+          'pty-1': { name: 'Claude Code', status: 'idle', slug: 'claude' } as { name: string; status: AgentStatus },
+          'pty-2': { name: 'Codex CLI', status: 'idle' },
+          'pty-3': { name: 'Some New Agent', status: 'idle' },
+        },
+      }),
+      'ws-1',
+    );
+    expect(r.rows.map((row) => row.slug)).toEqual(['claude', 'codex', undefined]);
+  });
+
+  it('derives a remote row slug from the mirror agent name', () => {
+    const remote = {
+      id: 'rs1', ptyId: '', title: 'rs1', shell: 'ssh', cwd: '/r',
+      surfaceType: 'remote-terminal' as const, remoteHostId: 'host-1', remoteSessionId: 'rsession-9',
+    };
+    const ws = workspace('ws-1', leaf('p1', [remote], 'rs1'), 'p1');
+    const r = selectWorkspaceAgentRoster(
+      state({
+        workspaces: [ws],
+        remoteWorkspaces: [{
+          key: 'host-1:rw-1', hostId: 'host-1', hostLabel: 'office', workspaceId: 'rw-1', name: 'proj',
+          panes: [{ sessionId: 'rsession-9', shell: 'zsh', agentName: 'Gemini CLI', agentStatus: 'running' }],
+        }] as unknown as StoreState['remoteWorkspaces'],
+      }),
+      'ws-1',
+    );
+    expect(r.rows[0]?.slug).toBe('gemini');
+  });
+
+  it('treats a slug change as a new projection (selector equality)', () => {
+    const ws = workspace('ws-1', leaf('p1', [surface('s1', 'pty-1')]), 'p1');
+    const select = createWorkspaceAgentRosterSelector('ws-1');
+    const first = select(state({ workspaces: [ws], surfaceAgent: { 'pty-1': { name: 'Claude Code', status: 'idle' } } }));
+    const same = select(state({ workspaces: [ws], surfaceAgent: { 'pty-1': { name: 'Claude Code', status: 'idle' } } }));
+    expect(same).toBe(first);
+    const changed = select(state({
+      workspaces: [ws],
+      surfaceAgent: { 'pty-1': { name: 'Claude Code', status: 'idle', slug: 'openclaude' } as { name: string; status: AgentStatus } },
+    }));
+    expect(changed).not.toBe(first);
+    expect(changed.rows[0]?.slug).toBe('openclaude');
+  });
+});
+
+// #1481 — the collapsed summary chip.
+describe('buildRosterChip', () => {
+  const row = (ptyId: string, status: AgentStatus, slug?: string, stashed = false) =>
+    ({ ptyId, status, slug, agentName: slug ?? 'shell', stashed } as unknown as WorkspaceAgentRosterRow);
+
+  it('keeps up to three agents, most urgent first, grouped by status, and counts the rest', () => {
+    const chip = buildRosterChip({
+      rows: [row('a', 'idle', 'claude'), row('b', 'running', 'codex'), row('c', 'awaiting_input', 'gemini'), row('d', 'running', 'claude'), row('e', 'idle', 'aider')],
+      agentCount: 5,
+      needsAttentionCount: 1,
+      stashedCount: 0,
+    });
+    expect(chip.agents.map((a) => `${a.status}:${a.slug}`)).toEqual(['awaiting_input:gemini', 'running:codex', 'running:claude']);
+    expect(chip.extra).toBe(2);
+  });
+
+  it('leaves stashed rows out of the glyphs', () => {
+    const chip = buildRosterChip({
+      rows: [row('a', 'running', 'claude'), row('s', 'running', 'codex', true)],
+      agentCount: 1,
+      needsAttentionCount: 0,
+      stashedCount: 1,
+    });
+    expect(chip.agents.map((a) => a.slug)).toEqual(['claude']);
+    expect(chip.extra).toBe(0);
   });
 });

@@ -775,6 +775,8 @@ export default function SurfaceTabs({
           {(['terminal', 'chat'] as const).map((view) => <button key={view} type="button"
             className={FOCUS_RING} data-surface-view={view}
             aria-pressed={(surface.viewMode ?? 'terminal') === view}
+            onPointerEnter={() => { if (view === 'chat') void import('../Chat/ChatView').catch(() => undefined); }}
+            onFocus={() => { if (view === 'chat') void import('../Chat/ChatView').catch(() => undefined); }}
             onClick={(e) => { e.stopPropagation(); useStore.getState().setSurfaceViewMode(surface.id, view); }}>
             {t(`chat.${view}`)}
           </button>)}

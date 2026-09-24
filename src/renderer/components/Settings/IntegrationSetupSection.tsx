@@ -27,6 +27,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { isInstallTake } from '../../../shared/statuslineOutcome';
+import { IconCheck } from '../icons';
+import Badge from '../ui/Badge';
 
 // ─── Injected API (jsdom-testable; the container binds the preload bridges) ───
 
@@ -202,6 +204,10 @@ function foreignNote(
 
 // ─── The card ────────────────────────────────────────────────────────────────
 
+/** Fired after any MCP (re)register / unregister from Settings, so every
+ *  surface that shows MCP state re-reads it instead of going stale. */
+export const MCP_STATUS_CHANGED_EVENT = 'wmux:settings-mcp-changed';
+
 export function IntegrationSetupSection({
   api,
 }: {
@@ -306,6 +312,12 @@ export function IntegrationSetupSection({
   }, [api, commit]);
 
   useEffect(() => { probeAll(); }, [probeAll]);
+  useEffect(() => {
+    // Another Settings surface changed MCP registration: re-read it.
+    const onChanged = () => probeAll();
+    window.addEventListener(MCP_STATUS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(MCP_STATUS_CHANGED_EVENT, onChanged);
+  }, [probeAll]);
 
   const runInstall = useCallback(
     async (
@@ -376,6 +388,7 @@ export function IntegrationSetupSection({
     commit(setMcp, { state: 'working', error: null }, gen);
     try {
       const status = await api.mcp.reregister();
+      window.dispatchEvent(new CustomEvent(MCP_STATUS_CHANGED_EVENT));
       if (mcpRegistered(status.targets)) {
         probeAll();
         return;
@@ -403,88 +416,95 @@ export function IntegrationSetupSection({
       .catch(() => { /* leave the line up: the refusal is still in force */ });
   }, [api]);
 
-  return (
-    <div
-      className="rounded-[7px] p-4 flex flex-col gap-3"
-      style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
-      data-integration-setup
-    >
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold text-[color:var(--text-main)] font-mono">
-          {t('integrationSetup.title')}
-        </span>
-      </div>
-      <p className="text-xs text-[color:var(--text-muted)] leading-relaxed">
-        {t('integrationSetup.description')}
-      </p>
+  // DESIGN.md "One primary per surface": the first row that needs the user
+  // carries the warm primary; every other action on the card is secondary.
+  // A row mid-install keeps the slot (drawn secondary while it runs), so the
+  // emphasis does not jump to the next row until that install settles.
+  const needsAction = (m: RowModel) => m.state === 'missing' || m.state === 'error' || m.state === 'working';
+  const primaryRow = needsAction(hooks) ? 'hooks' : needsAction(mcp) ? 'mcp' : needsAction(statusline) ? 'statusline' : null;
 
-      <SetupRow
-        id="hooks"
-        required
-        title={t('integrationSetup.hooks.title')}
-        description={t('integrationSetup.hooks.description')}
-        model={hooks}
-        actionLabel={t('integrationSetup.installButton')}
-        onAction={() => { if (api.hooks) void runInstall(setHooks, api.hooks.install); }}
-      />
-      {promptSuppressed === true && (
-        <div
-          className="flex items-center justify-between gap-2 text-xs text-[color:var(--text-muted)] -mt-1 pl-1"
-          data-hooks-prompt-suppressed
-        >
-          <span>{t('integrationSetup.hooks.promptSuppressed')}</span>
-          <button
-            type="button"
-            data-hooks-prompt-reenable
-            onClick={reenablePrompt}
-            className="px-2 py-0.5 rounded text-[color:var(--text-sub)] hover:text-[color:var(--text-main)] underline"
-          >
-            {t('integrationSetup.hooks.promptReenable')}
-          </button>
-        </div>
-      )}
-      <SetupRow
-        id="mcp"
-        required
-        title={t('integrationSetup.mcp.title')}
-        description={t('integrationSetup.mcp.description')}
-        model={mcp}
-        actionLabel={t('integrationSetup.registerButton')}
-        onAction={() => void registerMcp()}
-      />
-      <SetupRow
-        id="statusline"
-        required={false}
-        title={t('integrationSetup.statusline.title')}
-        description={t('integrationSetup.statusline.description')}
-        model={statusline}
-        actionLabel={t('integrationSetup.installButton')}
-        onAction={() => {
-          const sl = api.statusline;
-          if (sl) void runInstall(setStatusline, () => sl.install());
-        }}
-        // Offered whenever the probe knows another tool owns a config — which
-        // includes the row that already says "installed" because a DIFFERENT
-        // account took the write. The overwrite still costs a deliberate click
-        // on a button that names what it replaces.
-        note={foreignNote(t, statusline.foreign)}
-        secondaryLabel={
-          (statusline.foreign?.length ?? 0) > 0 || statusline.skip === 'foreign'
-            ? t('integrationSetup.replaceButton')
-            : null
-        }
-        onSecondary={() => {
-          const sl = api.statusline;
-          if (sl) void runInstall(setStatusline, () => sl.install({ force: true }));
-        }}
-      />
-    </div>
+  return (
+    <section
+      className="settings-section scroll-mt-4"
+      data-integration-setup
+      data-setting-id="setup"
+    >
+      <div className="settings-section-head">
+        <h3 className="ui-group-label settings-section-title">{t('integrationSetup.title')}</h3>
+      </div>
+      <p className="settings-section-desc">{t('integrationSetup.description')}</p>
+
+      <div className="ui-group">
+        <SetupRow
+          id="hooks"
+          required
+          primary={primaryRow === 'hooks'}
+          title={t('integrationSetup.hooks.title')}
+          description={t('integrationSetup.hooks.description')}
+          model={hooks}
+          actionLabel={t('integrationSetup.installButton')}
+          onAction={() => { if (api.hooks) void runInstall(setHooks, api.hooks.install); }}
+        />
+        {promptSuppressed === true && (
+          <div className="ui-row" data-hooks-prompt-suppressed>
+            <span className="ui-row-icon" aria-hidden="true" />
+            <div className="ui-row-text">
+              <p className="ui-row-detail">{t('integrationSetup.hooks.promptSuppressed')}</p>
+            </div>
+            <button
+              type="button"
+              data-hooks-prompt-reenable
+              onClick={reenablePrompt}
+              className="ui-btn ui-btn-ghost ui-btn-sm shrink-0"
+            >
+              {t('integrationSetup.hooks.promptReenable')}
+            </button>
+          </div>
+        )}
+        <SetupRow
+          id="mcp"
+          required
+          primary={primaryRow === 'mcp'}
+          title={t('integrationSetup.mcp.title')}
+          description={t('integrationSetup.mcp.description')}
+          model={mcp}
+          actionLabel={t('integrationSetup.registerButton')}
+          onAction={() => void registerMcp()}
+        />
+        <SetupRow
+          id="statusline"
+          required={false}
+          primary={primaryRow === 'statusline'}
+          title={t('integrationSetup.statusline.title')}
+          description={t('integrationSetup.statusline.description')}
+          model={statusline}
+          actionLabel={t('integrationSetup.installButton')}
+          onAction={() => {
+            const sl = api.statusline;
+            if (sl) void runInstall(setStatusline, () => sl.install());
+          }}
+          note={foreignNote(t, statusline.foreign)}
+          secondaryLabel={
+            (statusline.foreign?.length ?? 0) > 0 || statusline.skip === 'foreign'
+              ? t('integrationSetup.replaceButton')
+              : null
+          }
+          onSecondary={() => {
+            const sl = api.statusline;
+            if (sl) void runInstall(setStatusline, () => sl.install({ force: true }));
+          }}
+        />
+      </div>
+    </section>
   );
 }
 
+/** A notice row (DESIGN.md): state icon · title + one-line description ·
+ *  state badge · vertical hairline · action. */
 function SetupRow({
   id,
   required,
+  primary = false,
   title,
   description,
   model,
@@ -496,6 +516,8 @@ function SetupRow({
 }: {
   id: string;
   required: boolean;
+  /** This row's action is the card's one primary. */
+  primary?: boolean;
   title: string;
   description: string;
   model: RowModel;
@@ -510,33 +532,38 @@ function SetupRow({
   const t = useT();
   const installed = model.state === 'installed';
   const working = model.state === 'working';
+  // Nothing to click for a row we cannot act on: `unknown` has not been
+  // probed, and `unavailable` has no bridge to install through.
+  const showAction = !installed && model.state !== 'unknown' && model.state !== 'unavailable';
+  const showSecondary = !!secondaryLabel && !!onSecondary && !working;
 
   return (
     <div
-      className="flex items-start justify-between gap-3 py-2 border-t"
-      style={{ borderColor: 'var(--bg-surface)' }}
+      className="ui-row"
+      style={{ alignItems: 'flex-start' }}
       data-setup-row={id}
       data-setup-row-state={model.state}
     >
-      <div className="flex flex-col gap-0.5 min-w-0">
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs font-medium text-[color:var(--text-main)]">{title}</span>
+      <span className="ui-row-icon" style={{ height: 20 }} aria-hidden="true">
+        {installed ? (
+          <span className="wmux-welcome-glyph-ok inline-flex"><IconCheck size={14} /></span>
+        ) : (
+          <span className="wmux-welcome-todo" />
+        )}
+      </span>
+      <div className="ui-row-text">
+        <p className="ui-row-title">
+          {title}{' '}
           {/* Required is stated in text, not color: the color grammar reserves
               red for destructive, and a red "required" on a healthy install
               would read as an error. */}
-          <span className="text-[10px] text-[color:var(--text-muted)]">
+          <span className="font-normal text-[color:var(--text-sub)]">
             {required ? t('integrationSetup.required') : t('integrationSetup.recommended')}
           </span>
-        </div>
-        <span className="text-[11px] text-[color:var(--text-muted)] leading-relaxed">
-          {description}
-        </span>
+        </p>
+        <p className="ui-row-detail">{description}</p>
         {model.state === 'error' && (
-          <span
-            className="text-[11px]"
-            style={{ color: 'var(--accent-red)' }}
-            data-setup-row-error
-          >
+          <p className="ui-row-error" data-setup-row-error>
             {/* A skip is not a crash: it says what wmux chose not to touch and
                 what to do about it, in words. Printing the raw outcome token
                 (`skipped-foreign`) told the user nothing they could act on. */}
@@ -549,87 +576,63 @@ function SetupRow({
                   : model.skip === 'corrupt'
                     ? t('integrationSetup.skippedCorrupt')
                     : `${t('integrationSetup.installFailed')}${model.error ? ` (${model.error})` : ''}`}
-          </span>
+          </p>
         )}
         {/* A note and an error never both apply: the error already carries the
             same fact in stronger words. */}
         {note && model.state !== 'error' && (
-          // Set apart from the description above it: this is a fact about the
-          // operator's own machine, and butted straight against the static copy
-          // it read as a third sentence of it. Spacing only — the color grammar
-          // reserves the accent for alive/focus, and a note is neither.
-          <span className="text-[11px] text-[color:var(--text-muted)] mt-1" data-setup-row-note>
+          <p className="ui-row-detail mt-1" data-setup-row-note>
             {note}
-          </span>
+          </p>
         )}
       </div>
-      <div className="shrink-0 flex items-center gap-2">
-        <StateChip state={model.state} />
-        {/* Nothing to click for a row we cannot act on: `unknown` has not been
-            probed, and `unavailable` has no bridge to install through. */}
-        {secondaryLabel && onSecondary && !working && (
-          <button
-            type="button"
-            onClick={onSecondary}
-            data-setup-row-secondary
-            className="text-[11px] font-mono px-2.5 py-1 rounded-md transition-colors"
-            style={{
-              backgroundColor: 'transparent',
-              color: 'var(--text-muted)',
-              border: '1px solid var(--bg-overlay)',
-              cursor: 'pointer',
-            }}
-          >
-            {secondaryLabel}
-          </button>
-        )}
-        {!installed && model.state !== 'unknown' && model.state !== 'unavailable' && (
-          <button
-            type="button"
-            onClick={onAction}
-            disabled={working}
-            data-setup-row-action
-            className="text-[11px] font-mono px-2.5 py-1 rounded-md transition-colors disabled:opacity-50"
-            style={{
-              backgroundColor: 'var(--bg-surface)',
-              color: 'var(--text-main)',
-              border: '1px solid var(--bg-overlay)',
-              cursor: working ? 'wait' : 'pointer',
-            }}
-          >
-            {working ? t('integrationSetup.working') : actionLabel}
-          </button>
-        )}
-      </div>
+      <StateChip state={model.state} />
+      {(showAction || showSecondary) && (
+        <div className="ui-row-action flex-col gap-1.5" style={{ alignSelf: 'stretch' }}>
+          {showAction && (
+            <button
+              type="button"
+              onClick={onAction}
+              disabled={working}
+              data-setup-row-action
+              className={`ui-btn ${primary && !working ? 'ui-btn-primary' : 'ui-btn-secondary'} ui-btn-md`}
+              style={{ cursor: working ? 'wait' : 'pointer' }}
+            >
+              {working ? t('integrationSetup.working') : actionLabel}
+            </button>
+          )}
+          {showSecondary && (
+            <button
+              type="button"
+              onClick={onSecondary}
+              data-setup-row-secondary
+              className="ui-btn ui-btn-ghost ui-btn-md"
+            >
+              {secondaryLabel}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 function StateChip({ state }: { state: RowState }): React.ReactElement {
   const t = useT();
-  // Installed is the only state that earns the alive accent; everything else is
-  // muted status text (DESIGN.md — amber means alive, and a checklist of grey
-  // rows should not glow).
   const label =
     state === 'installed' ? t('integrationSetup.state.installed')
     : state === 'working' ? t('integrationSetup.state.working')
     : state === 'unknown' ? t('integrationSetup.state.unknown')
-    // Without its own label an error row read "not installed" right next to the
-    // failure text it had just printed — two answers to the same question.
     : state === 'error' ? t('integrationSetup.state.error')
     : state === 'unavailable' ? t('integrationSetup.state.unavailable')
     : t('integrationSetup.state.missing');
+  // Status, not an action: a neutral/success/danger Badge, never the warm
+  // accent (DESIGN.md: there is no action-coloured badge).
+  const tone = state === 'installed' ? 'success' : state === 'error' ? 'danger' : 'neutral';
   return (
-    <span
-      className="text-[10px] font-mono px-1.5 py-0.5 rounded"
-      style={{
-        color: state === 'installed' ? 'var(--accent)' : 'var(--text-muted)',
-        backgroundColor: 'rgba(var(--bg-surface-rgb), 0.6)',
-      }}
-      data-setup-row-chip
-    >
+    <Badge tone={tone} className="shrink-0 self-start mt-0.5" data-setup-row-chip>
       {label}
-    </span>
+    </Badge>
   );
 }
 

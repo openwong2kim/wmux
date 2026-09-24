@@ -196,20 +196,22 @@ describe('KeyboardCheatSheetView (renderToStaticMarkup)', () => {
 
   it('renders an unchecked "Don\'t show again" checkbox by default', () => {
     const html = renderView({ dontShowAgain: false });
-    // checkbox input should be present, no "checked" attribute.
-    expect(html).toContain('type="checkbox"');
-    expect(html).not.toMatch(/<input[^>]*checked/);
+    // The token checkbox (ui/Checkbox), unchecked, with its visible label.
+    expect(html).toContain('role="checkbox"');
+    expect(html).toContain('aria-checked="false"');
+    expect(html).toMatch(/<label[^>]*for="[^"]+"[^>]*>Don(&#x27;|')t show again<\/label>/);
   });
 
   it('renders a checked "Don\'t show again" checkbox when dontShowAgain=true', () => {
     const html = renderView({ dontShowAgain: true });
-    expect(html).toMatch(/<input[^>]*checked/);
+    expect(html).toContain('aria-checked="true"');
   });
 
   it('renders the close button with proper aria-label', () => {
     const html = renderView({ dismissLabel: 'Dismiss' });
     expect(html).toContain('aria-label="Dismiss"');
-    expect(html).toContain('✕');
+    // A monochrome icon, not a text glyph (DESIGN.md: no glyphs in chrome).
+    expect(html).not.toContain('✕');
   });
 
   it('renders the progress bar at full width when progress=1', () => {
@@ -236,7 +238,8 @@ describe('KeyboardCheatSheetView (renderToStaticMarkup)', () => {
     const html = renderView({ shortcuts: buildShortcuts('win32') });
     // Each shortcut entry is rendered inside a <li>; count occurrences of the
     // opening <li tag inside the list to verify all 12 made it.
-    const liMatches = html.match(/<li/g) ?? [];
+    // (`<li[\s>]`, not `<li`: the close icon's SVG <line>s would match too.)
+    const liMatches = html.match(/<li[\s>]/g) ?? [];
     expect(liMatches.length).toBe(12);
   });
 });

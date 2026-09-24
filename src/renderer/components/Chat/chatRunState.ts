@@ -20,6 +20,8 @@ export function chatRunState(args: {
   // A recorded end_turn rebuts byte-only `running` (a dialog repaint, a resize)
   // once no submitted or hook-signaled turn is open — both were ruled out above.
   const last = args.events.at(-1);
+  if (last?.kind === 'meta' && last.subtype === 'turn_complete') return 'complete';
+  if (last?.kind === 'meta' && last.subtype === 'turn_aborted') return 'unconfirmed';
   if (last?.kind === 'assistant_text' && last.turnComplete) return 'complete';
   if (args.status === 'running') return 'working';
   if (!args.events.length) return 'ready';

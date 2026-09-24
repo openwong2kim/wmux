@@ -430,11 +430,11 @@
 .wmux-chat { display: flex; flex-direction: column; height: 100%; min-height: 0; font-family: var(--font-ui); font-size: 15px; color: var(--text-main); container-type: inline-size; }
 .wmux-chat-viewport { position: relative; display: flex; flex: 1; min-height: 0; flex-direction: column; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; }
 .wmux-chat-column { display: flex; flex: 1; flex-direction: column; width: 100%; max-width: 44rem; margin: 0 auto; padding: 24px 20px 0; }
-.wmux-chat-column[data-empty="true"] { justify-content: center; }
+
 .wmux-chat-messages { display: flex; flex-direction: column; gap: 24px; margin-bottom: 48px; }
 .wmux-chat-messages:empty { display: none; }
 .wmux-chat-message { min-width: 0; overflow-wrap: anywhere; }
-.wmux-chat-user { align-self: flex-end; max-width: 85%; padding: 0 8px; }
+.wmux-chat-user { align-self: flex-end; width: fit-content; max-width: 85%; margin-left: auto; margin-right: 0; padding: 0 8px; }
 .wmux-chat-user-text { padding: 10px 16px; background: var(--bg-surface); border-radius: 16px; white-space: pre-wrap; line-height: 1.65; }
 .wmux-chat-assistant { padding: 0 8px; }
 .wmux-chat-caption { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--text-sub); font-weight: 400; margin-bottom: 6px; }
@@ -451,7 +451,7 @@
 .wmux-chat-empty strong { color: var(--text-main); font-size: 24px; line-height: 1.35; letter-spacing: -.025em; font-weight: 500; text-wrap: balance; }
 .wmux-chat-empty p { font-size: 14px; }
 .wmux-chat-footer { position: sticky; bottom: 0; display: flex; flex-direction: column; gap: 10px; margin-top: auto; padding: 12px 0 24px; background: var(--bg-base); border-radius: 16px 16px 0 0; }
-.wmux-chat-footer[data-empty="true"] { position: relative; margin-top: 0; }
+
 .wmux-chat-notice { padding: 4px 8px; font-size: 13px; line-height: 1.6; color: var(--text-sub); }
 .wmux-chat-notice button { text-decoration: underline; min-height: 28px; margin-left: 5px; }
 .wmux-chat-composer { display: flex; flex-shrink: 0; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--border-soft); border-radius: 16px; background: var(--bg-mantle); transition: border-color 150ms; }
@@ -699,3 +699,453 @@
 .wmux-channel-send:hover:not(:disabled) { opacity: .8; }
 .wmux-channel-send:disabled { opacity: .3; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) { .wmux-channel-composer, .wmux-channel-send { transition: none; } }
+
+/* ─── Dialogs & forms: quiet surfaces (owner, 2026-09-24) ───────────────────
+ * ui/Dialog, the onboarding tour card and the form primitives. Window chrome
+ * keeps its 5/6/7 radii and machined controls; SURFACES (dialogs, popovers,
+ * grouped containers, inputs inside them) are quiet: 8px buttons, 10–12px
+ * containers and inputs, 14px panels, full-round pills, neutral fills, 1px
+ * low-contrast hairlines, one soft floating shadow, no bevels or inset
+ * highlights. The single warm fill is the primary action. Every colour is a
+ * token or a color-mix of one, so all built-in and custom themes inherit. */
+
+.ui-surface,
+.ui-popover {
+  --surface-hairline: color-mix(in srgb, var(--text-main) 9%, transparent);
+  --surface-fill: color-mix(in srgb, var(--text-main) 4%, transparent);
+  --surface-fill-hover: color-mix(in srgb, var(--text-main) 8%, transparent);
+  --surface-shadow: 0 18px 48px rgba(0, 0, 0, 0.32), 0 2px 8px rgba(0, 0, 0, 0.16);
+}
+
+/* Button sizes. Opt-in: a Button without `size` keeps the chrome recipe the
+ * existing dialogs were drawn with. */
+.ui-btn-sm { min-height: 26px; padding: 0 10px; font-size: 11px; line-height: 16px; border-radius: 8px; }
+.ui-btn-md { min-height: 32px; padding: 0 14px; font-size: 13px; line-height: 20px; border-radius: 8px; }
+
+/* Buttons on a surface: flat. Secondary = subtle neutral fill + hairline,
+ * ghost = text until hover, primary = the solid warm fill without a bevel. */
+.ui-surface .ui-btn { border-radius: 8px; }
+.ui-surface .ui-btn-secondary {
+  background: var(--surface-fill);
+  border-color: var(--surface-hairline);
+  box-shadow: none;
+}
+.ui-surface .ui-btn-secondary:hover:not(:disabled) {
+  background: var(--surface-fill-hover);
+  border-color: var(--surface-hairline);
+  box-shadow: none;
+}
+.ui-surface .ui-btn-secondary:active:not(:disabled),
+.ui-surface .ui-btn-primary:active:not(:disabled) { transform: none; box-shadow: none; }
+.ui-surface .ui-btn-primary { box-shadow: none; }
+.ui-surface .ui-btn-ghost:hover:not(:disabled) { background: var(--surface-fill-hover); }
+.ui-surface .ui-input,
+.ui-surface .ui-select > select {
+  border-radius: 10px;
+  background: var(--surface-fill);
+  border-color: var(--surface-hairline);
+  box-shadow: none;
+}
+/* The flat rule above ties `.ui-input:focus` on specificity and comes later,
+ * so without this the steel focus ring vanished inside every surface. */
+.ui-surface .ui-input:focus,
+.ui-surface .ui-input:focus-visible,
+.ui-surface .ui-select > select:focus-visible {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 22%, transparent);
+}
+
+/* Dialog panel: the one floating elevation. */
+.ui-dialog {
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  background: var(--bg-base);
+  border: 1px solid var(--surface-hairline);
+  border-radius: 14px;
+  box-shadow: var(--surface-shadow);
+  color: var(--text-main);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 20px;
+  outline: none;
+}
+.ui-dialog-header { display: flex; align-items: flex-start; gap: 12px; padding: 20px 20px 0 24px; }
+.ui-dialog-heading { flex: 1; min-width: 0; padding-top: 4px; }
+/* 16px = the existing display step (--text-display-size), dialog titles only. */
+.ui-dialog-title { margin: 0; font-size: var(--text-display-size, 16px); font-weight: 600; line-height: 24px; color: var(--text-main); }
+.ui-dialog-description { margin: 4px 0 0; font-size: 13px; line-height: 20px; color: var(--text-sub); }
+.ui-dialog-close { width: 32px; height: 32px; flex-shrink: 0; border-radius: 8px; }
+.ui-dialog-body { display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow-y: auto; padding: 20px 24px; }
+.ui-dialog-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 4px 24px 24px; }
+/* A group or notice in the body keeps its full height, so a long list scrolls
+ * the body instead of being clipped: as a flex item with overflow:hidden its
+ * automatic minimum height would otherwise be 0. */
+.ui-dialog-body > .ui-group,
+.ui-dialog-body > .ui-notice { flex-shrink: 0; }
+
+/* Popover panel: the same quiet floating card as a dialog, anchored to its
+ * trigger. Sections stack inside it: a muted sentence-case header with an
+ * optional trailing action (e.g. +), icon + label rows beneath, and a
+ * hairline between sections. */
+.ui-popover {
+  background: var(--bg-base);
+  border: 1px solid var(--surface-hairline);
+  border-radius: 14px;
+  box-shadow: var(--surface-shadow);
+  padding: 6px;
+  color: var(--text-main);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+.ui-section { padding: 6px 0; }
+.ui-section + .ui-section { border-top: 1px solid var(--surface-hairline); }
+.ui-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+  padding: 0 4px 0 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-sub);
+}
+.ui-section-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--text-main);
+}
+.ui-section-row > svg { flex-shrink: 0; color: var(--text-sub); }
+.ui-section-row:hover { background: var(--surface-fill-hover); }
+/* A popover that holds a form or prose rather than a menu: a wider inset, and
+ * sections that sit flush with it. */
+.ui-popover-padded { padding: 16px; }
+.ui-popover-padded .ui-section { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; }
+.ui-popover-padded .ui-section:first-child { padding-top: 0; }
+.ui-popover-padded .ui-section:last-child { padding-bottom: 0; }
+.ui-popover-padded .ui-section-header { min-height: 20px; padding: 0; line-height: 20px; }
+/* A muted one-line note under a control (security notes, hints). */
+.ui-note { margin: 0; font-size: 11px; line-height: 16px; color: var(--text-sub); }
+/* Keyboard key hint: machine evidence, so mono. */
+.ui-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0 5px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--text-main) 10%, transparent);
+  background: color-mix(in srgb, var(--text-main) 5%, transparent);
+  color: var(--text-sub);
+  font-family: var(--font-mono, 'Cascadia Code', 'JetBrains Mono', ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+/* Icon-only toggles on a surface show "on" as a faint filled chip, not a colour. */
+.ui-surface .ui-icon-btn { border-radius: 8px; }
+.ui-surface .ui-icon-btn[aria-pressed="true"],
+.ui-surface .ui-icon-btn[aria-expanded="true"] { background: var(--surface-fill-hover); color: var(--text-main); }
+
+/* Group label: sentence case, muted, never uppercase-tracked inside surfaces. */
+.ui-group-label { margin: 0 0 8px; font-size: 13px; font-weight: 500; line-height: 20px; color: var(--text-sub); }
+
+/* Grouped rows: ONE rounded container with inner dividers. */
+.ui-group {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--surface-hairline);
+  border-radius: 12px;
+  background: var(--surface-fill);
+  overflow: hidden;
+}
+.ui-group > * + * { border-top: 1px solid var(--surface-hairline); }
+/* A display:contents wrapper draws no box, so its rows carry the dividers:
+ * between each other, and on its first row when the wrapper is not first. */
+.ui-group > .contents > .ui-row + .ui-row,
+.ui-group > * + .contents > .ui-row:first-child { border-top: 1px solid var(--surface-hairline); }
+.ui-row { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 10px 14px; }
+.ui-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  color: var(--text-sub);
+}
+.ui-row-text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.ui-row-title { margin: 0; font-size: 13px; font-weight: 500; line-height: 20px; color: var(--text-main); }
+.ui-row-detail { margin: 0; font-size: 11px; line-height: 16px; color: var(--text-sub); }
+.ui-row-error { margin: 2px 0 0; font-size: 11px; line-height: 16px; color: var(--accent-red); }
+/* Notice row: icon · title + description · vertical divider · action. */
+.ui-row-action {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  align-self: stretch;
+  justify-content: center;
+  min-width: 132px;
+  margin: -10px -6px -10px 0;
+  padding-left: 12px;
+  border-left: 1px solid var(--surface-hairline);
+}
+.ui-notice { border: 1px solid var(--surface-hairline); border-radius: 12px; background: var(--surface-fill); }
+
+/* Field row: label + description on the left, control on the right
+ * (`inline`), or the control under the text (`stacked`). */
+.ui-field { display: flex; gap: 16px; align-items: center; justify-content: space-between; min-height: 36px; }
+.ui-field[data-layout="stacked"] { flex-direction: column; align-items: stretch; gap: 8px; }
+.ui-field-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ui-field-label { font-size: 13px; font-weight: 500; line-height: 20px; color: var(--text-main); }
+.ui-field-description { font-size: 11px; line-height: 16px; color: var(--text-sub); }
+.ui-field-control { flex-shrink: 0; display: flex; align-items: center; }
+.ui-field[data-layout="stacked"] .ui-field-control { flex-shrink: 1; }
+
+/* Switch: neutral in both states. Off = dim track, light knob; on = light
+ * track, dark knob. No warm fill: the warm is kept for the primary action. */
+.ui-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 20px;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--text-main) 16%, transparent);
+  cursor: pointer;
+  transition: background-color 140ms ease-out;
+}
+/* 24px hit area without growing the drawn track. */
+.ui-switch::before { content: ''; position: absolute; inset: -2px; }
+.ui-switch-knob {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: var(--text-sub);
+  transition: transform 140ms ease-out, background-color 140ms ease-out;
+}
+.ui-switch[aria-checked="true"] { background: color-mix(in srgb, var(--text-main) 88%, transparent); }
+.ui-switch[aria-checked="true"] .ui-switch-knob { transform: translateX(14px); background: var(--bg-base); }
+.ui-switch:disabled, .ui-checkbox:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Checkbox: hairline box; checked = light fill with a dark check. */
+.ui-checkbox {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  background: var(--surface-fill, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-main) 28%, transparent);
+  color: var(--bg-base);
+  cursor: pointer;
+  transition: background-color 140ms ease-out, border-color 140ms ease-out;
+}
+.ui-checkbox::before { content: ''; position: absolute; inset: -4px; }
+.ui-checkbox > svg { visibility: hidden; }
+.ui-checkbox[aria-checked="true"] {
+  background: color-mix(in srgb, var(--text-main) 88%, transparent);
+  border-color: transparent;
+}
+.ui-checkbox[aria-checked="true"] > svg { visibility: visible; }
+
+/* Select: native <select> with its own chevron. */
+.ui-select { position: relative; display: inline-flex; align-items: center; min-width: 0; }
+.ui-select > select {
+  appearance: none;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 30px 0 12px;
+  border-radius: 10px;
+  background: var(--surface-fill, color-mix(in srgb, var(--text-main) 4%, transparent));
+  border: 1px solid color-mix(in srgb, var(--text-main) 10%, transparent);
+  color: var(--text-main);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 140ms ease-out, box-shadow 140ms ease-out;
+}
+.ui-select > select:focus-visible {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 22%, transparent);
+}
+.ui-select > select:disabled { opacity: 0.5; cursor: not-allowed; }
+.ui-select > svg { position: absolute; right: 10px; pointer-events: none; color: var(--text-sub); }
+
+/* Segmented control: full-round track, the active pill filled neutral. */
+.ui-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--text-main) 6%, transparent);
+}
+.ui-segment {
+  min-height: 26px;
+  padding: 0 12px;
+  border-radius: 9999px;
+  border: 0;
+  background: transparent;
+  color: var(--text-sub);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 140ms ease-out, color 140ms ease-out;
+}
+.ui-segment:hover:not([aria-disabled="true"]) { color: var(--text-main); }
+.ui-segment[aria-checked="true"] { background: color-mix(in srgb, var(--text-main) 12%, transparent); color: var(--text-main); }
+.ui-segment[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
+
+/* Badge: full-round neutral label; status tones tint text + hairline only.
+ * `warning` is the theme's warning hue (amber in the amber theme by design). */
+.ui-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 9999px;
+  border: 1px solid color-mix(in srgb, var(--text-main) 10%, transparent);
+  background: color-mix(in srgb, var(--text-main) 4%, transparent);
+  color: var(--text-sub);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.ui-badge[data-tone="success"] {
+  color: color-mix(in srgb, var(--accent-green) 80%, var(--text-main));
+  border-color: color-mix(in srgb, var(--accent-green) 35%, transparent);
+}
+.ui-badge[data-tone="warning"] {
+  color: color-mix(in srgb, var(--accent-yellow) 80%, var(--text-main));
+  border-color: color-mix(in srgb, var(--accent-yellow) 35%, transparent);
+}
+.ui-badge[data-tone="danger"] {
+  color: color-mix(in srgb, var(--accent-red) 80%, var(--text-main));
+  border-color: color-mix(in srgb, var(--accent-red) 35%, transparent);
+}
+
+/* Media preview (welcome + tour): a fixed 16:10 frame, so the card's height
+ * is known before the clip's metadata loads. */
+.ui-media {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--bg-mantle);
+  border: 1px solid color-mix(in srgb, var(--text-main) 8%, transparent);
+}
+.ui-media > video, .ui-media > img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top center; }
+
+/* Inline machine evidence (commands, paths, error codes) inside prose. */
+.ui-code {
+  font-family: var(--font-mono, 'Cascadia Code', 'JetBrains Mono', ui-monospace, monospace);
+  font-size: 11px;
+  padding: 0 4px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--text-main) 7%, transparent);
+  color: var(--text-sub);
+  overflow-wrap: anywhere;
+}
+
+/* Welcome (first-run) dialog specifics. */
+.wmux-welcome-glyph-ok { color: var(--accent-green); }
+.wmux-welcome-glyph-warn { color: var(--accent-yellow); }
+.wmux-welcome-glyph-error { color: var(--accent-red); }
+.wmux-welcome-todo { width: 10px; height: 10px; border-radius: 9999px; border: 1.3px solid var(--text-muted); }
+.wmux-welcome-link {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 5px;
+  color: var(--accent-blue);
+  font-size: 11px;
+  text-decoration: none;
+}
+.wmux-welcome-link:hover { text-decoration: underline; }
+.wmux-welcome-alert {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent-red) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-red) 28%, transparent);
+}
+.wmux-welcome-sample { display: flex; flex-direction: column; gap: 12px; }
+.wmux-welcome-running-dot { width: 6px; height: 6px; border-radius: 9999px; background: var(--accent-cursor, var(--accent)); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-switch, .ui-switch-knob, .ui-checkbox, .ui-select > select, .ui-segment { transition: none; }
+}
+
+/* Provider-independent chat controls; uses the existing wmux theme. */
+.wmux-chat-controls { flex-shrink: 0; padding: 8px 16px; font-size: 12px; max-height: 42%; overflow: auto; }
+.wmux-chat-controls:empty { display: none; }
+.wmux-chat-control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.wmux-chat-control-row select { background: var(--bg-base); color: var(--text-main); border: 1px solid var(--border-soft); padding: 6px; }
+.wmux-chat-controls p { margin: 6px 0; color: var(--text-sub); }
+.wmux-chat-interaction { margin-top: 12px; padding: 12px; border: 1px solid var(--border-soft); border-radius: 8px; }
+.wmux-chat-interaction pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; margin: 8px 0; }
+.wmux-chat-interaction fieldset { display: grid; gap: 6px; margin: 8px 0; }
+.wmux-chat-interaction label { display: flex; align-items: center; gap: 6px; }
+.wmux-chat-interaction input[type=text], .wmux-chat-interaction input[type=password] { background: var(--bg-base); color: var(--text-main); border: 1px solid var(--border-soft); padding: 8px; }
+
+.wmux-chat-activity { border-bottom: 1px solid var(--border-soft); padding: 12px 0; }
+.wmux-chat-activity > summary { cursor: pointer; color: var(--text-sub); font-size: 12px; }
+
+.wmux-chat-file { border: 1px solid var(--border-soft); border-radius: 10px; padding: 12px 16px; margin: 8px 0; }
+.wmux-chat-file summary { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; cursor: pointer; }
+.wmux-chat-file summary > span:first-child { flex: 1; overflow-wrap: anywhere; min-width: 100px; }
+.wmux-chat-file-counts { display: flex; gap: 6px; font-variant-numeric: tabular-nums; }
+.wmux-chat-added { color: var(--accent-green); }
+.wmux-chat-deleted { color: var(--accent-red); }
+.wmux-chat-file pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; font-size: 12px; margin-top: 12px; }
+
+.wmux-chat-launch-options { display: flex; flex-wrap: wrap; gap: 8px; padding: 2px 8px; }
+.wmux-chat-launch-options select { min-height: 28px; max-width: 100%; padding: 3px 8px; border: 1px solid var(--border-soft); border-radius: 6px; background: var(--bg-base); color: var(--text-main); font-size: 12px; }
+
+/* Keep discovery attached to the composer, with room for long plugin catalogs. */
+.wmux-chat-input-wrap { position: relative; }
+.wmux-chat-input-wrap .wmux-chat-input { padding-right: 38px; }
+.wmux-chat-skills-trigger { position: absolute; right: 10px; bottom: 10px; border: 1px solid var(--border-soft); border-radius: 5px; padding: 1px 7px; color: var(--text-sub); background: transparent; cursor: pointer; }
+.wmux-chat-skills { position: absolute; z-index: 20; bottom: calc(100% + 8px); left: 0; right: 0; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--bg-base); box-shadow: 0 8px 28px #0003; overflow: hidden; }
+.wmux-chat-skills-heading { display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: space-between; padding: 12px; border-bottom: 1px solid var(--border-soft); }
+.wmux-chat-skills-heading span, .wmux-chat-skills-keys, .wmux-chat-skills p { font-size: 12px; color: var(--text-sub); }
+.wmux-chat-skills p { margin: 12px; }
+.wmux-chat-skills-list { overflow-y: auto; max-height: min(280px, 35vh); }
+.wmux-chat-skills-list button { display: block; width: 100%; border: 0; border-radius: 0; text-align: left; padding: 9px 12px; color: var(--text-main); background: transparent; cursor: pointer; }
+.wmux-chat-skills-list button[aria-selected="true"] { background: var(--bg-surface); }
+.wmux-chat-skills-list button > span:first-child { display: flex; justify-content: space-between; gap: 12px; }
+.wmux-chat-skills-list strong { font-size: 13px; overflow-wrap: anywhere; }
+.wmux-chat-skills-list small { color: var(--text-sub); flex-shrink: 0; }
+.wmux-chat-skill-description { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 12px; color: var(--text-sub); margin-top: 3px; overflow-wrap: anywhere; }
+.wmux-chat-skills-keys { padding: 8px 12px; border-top: 1px solid var(--border-soft); }
+.wmux-chat-skills-trigger:focus-visible, .wmux-chat-skills button:focus-visible { outline: 2px solid var(--text-sub); outline-offset: -2px; }
+.wmux-chat-model-dialog { position: fixed; inset: 0; margin: auto; max-height: calc(100dvh - 48px); overflow: auto; width: min(440px, calc(100vw - 40px)); border: 1px solid var(--border-soft); border-radius: 12px; padding: 24px; background: var(--bg-base); color: var(--text-main); }
+.wmux-chat-model-dialog::backdrop { background: #0008; }
+.wmux-chat-model-dialog h2 { font-size: 18px; margin-bottom: 18px; }
+.wmux-chat-model-dialog p { font-size: 13px; color: var(--text-sub); margin: 12px 0; }
+.wmux-chat-model-dialog label { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; font-size: 13px; }
+.wmux-chat-model-dialog select { padding: 8px; border: 1px solid var(--border-soft); background: var(--bg-surface); color: var(--text-main); border-radius: 6px; }
+.wmux-chat-model-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.wmux-chat-model-actions button { padding: 7px 10px; border: 1px solid var(--border-soft); border-radius: 6px; }
+.wmux-chat-model-actions button:disabled { opacity: .45; }

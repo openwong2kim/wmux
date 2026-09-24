@@ -28,6 +28,37 @@ function fixture(connected = true, lateWindow = false) {
   return { client, wc, event, call, revealWindow: () => { windowReady = true; } };
 }
 describe('private desktop transcript bridge', () => {
+  it('refuses model settings from untrusted frames or malformed choices before any RPC', async () => {
+    const f=fixture(); f.client.rpc.mockClear();
+    await handlers.get(CHAT_IPC.settings)!({ ...f.event, sender: {} }, {ptyId:'pane'});
+    await f.call('settings',{ptyId:'pane',choice:{model:'model',effort:'low'}});
+    expect(f.client.rpc).not.toHaveBeenCalled();
+  });
+  it('scopes skill lookup to a trusted pane and drops arbitrary filesystem fields', async () => {
+    const f=fixture();
+    await f.call('skills',{ptyId:'pane',agent:'codex',cwd:'/private',path:'/private'});
+    expect(f.client.rpc).toHaveBeenCalledWith('daemon.chat.skills',{id:'pane',agent:'codex'},{timeoutMs:30000});
+    f.client.rpc.mockClear();
+    await f.call('skills',{ptyId:'pane',agent:'shell'});
+    expect(f.client.rpc).not.toHaveBeenCalled();
+  });
+  it('limits terminal launch to first-party callers and fixed agent choices', async () => {
+    const f = fixture();
+    await f.call('launchTerminal', { ptyId: 'pane', agent: 'codex', prompt: 'hello' });
+    expect(f.client.rpc).toHaveBeenCalledWith('daemon.chat.launchTerminal', { id: 'pane', agent: 'codex', prompt: 'hello' }, { timeoutMs: 30000 });
+    f.client.rpc.mockClear();
+    await f.call('launchTerminal', { ptyId: 'pane', agent: 'sh', prompt: 'hello' });
+    await handlers.get(CHAT_IPC.launchTerminal)!({ ...f.event, sender: {} }, { ptyId: 'pane', agent: 'claude', prompt: 'hello' });
+    expect(f.client.rpc).not.toHaveBeenCalled();
+  });
+  it('forwards explicit launch mode and refuses another provider mode', async () => {
+    const f = fixture();
+    await f.call('launchTerminal', { ptyId: 'pane', agent: 'codex', prompt: 'hello', mode: 'yolo' });
+    expect(f.client.rpc).toHaveBeenCalledWith('daemon.chat.launchTerminal', { id: 'pane', agent: 'codex', prompt: 'hello', mode: 'yolo' }, { timeoutMs: 30000 });
+    f.client.rpc.mockClear();
+    await f.call('launchTerminal', { ptyId: 'pane', agent: 'claude', prompt: 'hello', mode: 'yolo' });
+    expect(f.client.rpc).not.toHaveBeenCalled();
+  });
   it('reports live activity separately from readable saved history', async () => {
     const f = fixture();
     expect(await f.call('status', 'pty')).toMatchObject({ available: true, agentAlive: true, agentStatus: 'running' });

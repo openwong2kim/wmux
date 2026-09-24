@@ -39,6 +39,10 @@ describe('deadlineForItem (C-3)', () => {
     expect(deadlineForItem(a2a)).toBe(T0 + 30_000);
   });
 
+  it('reads an A2A row whose countdown has not started as no deadline, not 0s (#1462)', () => {
+    expect(deadlineForItem({ ...a2a, expiresAt: 0 })).toBeUndefined();
+  });
+
   it('renders no deadline for an MCP prompt until the record carries one', () => {
     expect(deadlineForItem(mcp)).toBeUndefined();
     expect(deadlineForItem(mcp, () => undefined)).toBeUndefined();

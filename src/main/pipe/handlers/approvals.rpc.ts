@@ -217,7 +217,7 @@ export const PRESS_DEADLOCK_REASONS: ReadonlySet<string> = new Set([
  */
 export const PRESS_BLOCK_LIFT_MS = 10 * 60_000;
 
-const pressBlockLifts = new Map<string, { until: number; reason: string }>();
+const pressBlockLifts = new Map<string, { until: number; reason: string; byWorkspace?: string }>();
 
 /**
  * Hard ceiling on the map. Reached only by something pathological (a brain
@@ -227,8 +227,17 @@ const pressBlockLifts = new Map<string, { until: number; reason: string }>();
  */
 export const PRESS_BLOCK_LIFT_MAX = 256;
 
-/** Record that this pane's press was refused by policy, so typing is allowed. */
-export function liftPressBlock(ptyId: string, reason: string, now = Date.now()): void {
+/**
+ * Record that this pane's press was refused by policy, so typing is allowed.
+ * `byWorkspace` is the brain whose press was refused: the lift is that brain's
+ * way out of a deadlock, not a licence for every caller to type at the pane.
+ */
+export function liftPressBlock(
+  ptyId: string,
+  reason: string,
+  now = Date.now(),
+  byWorkspace?: string,
+): void {
   if (!ptyId) return;
   // Sweep on write. `pressBlockLift` only ever drops the entry it was asked
   // about, so a pane that is pressed once and then closed left its lift in the
@@ -244,7 +253,11 @@ export function liftPressBlock(ptyId: string, reason: string, now = Date.now()):
     if (oldest.done) break;
     pressBlockLifts.delete(oldest.value);
   }
-  pressBlockLifts.set(ptyId, { until: now + PRESS_BLOCK_LIFT_MS, reason });
+  pressBlockLifts.set(ptyId, {
+    until: now + PRESS_BLOCK_LIFT_MS,
+    reason,
+    ...(byWorkspace ? { byWorkspace } : {}),
+  });
   console.warn(
     `[approval.press] press refused (${reason}) on pane ${ptyId} — ` +
       'lifting the terminal_send approval block for it so the brain is not deadlocked',
@@ -252,14 +265,17 @@ export function liftPressBlock(ptyId: string, reason: string, now = Date.now()):
 }
 
 /** The live lift for a pane, or null. Expired entries are dropped on read. */
-export function pressBlockLift(ptyId: string, now = Date.now()): { reason: string } | null {
+export function pressBlockLift(
+  ptyId: string,
+  now = Date.now(),
+): { reason: string; byWorkspace?: string } | null {
   const entry = pressBlockLifts.get(ptyId);
   if (!entry) return null;
   if (entry.until <= now) {
     pressBlockLifts.delete(ptyId);
     return null;
   }
-  return { reason: entry.reason };
+  return { reason: entry.reason, ...(entry.byWorkspace ? { byWorkspace: entry.byWorkspace } : {}) };
 }
 
 /** Test-only: the lift map is module state shared by two handlers. */
@@ -500,7 +516,7 @@ export function registerApprovalsRpc(
     // with no move while terminal_send is blocked on the same pane, so the block
     // is lifted for it. Transient refusals do not lift, and neither does a pane
     // this caller does not own — that one never reaches here. See the header.
-    if (PRESS_DEADLOCK_REASONS.has(reason)) liftPressBlock(targetPtyId, reason);
+    if (PRESS_DEADLOCK_REASONS.has(reason)) liftPressBlock(targetPtyId, reason, Date.now(), callerWs);
 
     return {
       ok: false,

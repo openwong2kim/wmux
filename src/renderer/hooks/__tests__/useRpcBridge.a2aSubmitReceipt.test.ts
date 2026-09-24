@@ -45,7 +45,7 @@ describe('useRpcBridge — A2A submit receipt wiring', () => {
     // Exactly one raw call in this file: the one inside submitToPty itself.
     expect(rawCalls(bridge)).toHaveLength(1);
     // ...and a2a.broadcast is one of the callers (it used to be missed).
-    expect(bridge).toMatch(/submitToPty\(ptyId, formatA2aBroadcast\(fromName, message\)\)/);
+    expect(bridge).toMatch(/submitToPty\(ptyId, formatA2aBroadcast\(fromName, message, undefined, a2aFormatOptionsFor\(ptyId\)\)\)/);
   });
 
   it('computes the receipt from the pty that was actually written to', () => {

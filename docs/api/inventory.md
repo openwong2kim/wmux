@@ -372,3 +372,32 @@ The capability column below summarises the table. Three sentinels:
 Methods marked **bold** are surfaced in the approval dialog with stronger user-facing language (spec §3.6 — terminal-content / terminal-input risk classes).
 
 The full machine-readable map (with path extractors and `multiPathMode` flags) lives at `src/main/mcp/methodCapabilityMap.ts`. `tsc --noEmit` enforces totality via `Record<RpcMethod, ...>` so a new RPC method without a map entry fails the build.
+
+### Terminal launch and managed chat (internal, first-party desktop only)
+
+`daemon.chat.launchTerminal` starts a fixed installed Claude/Codex CLI with an initial message and an optional agent-specific mode (`default`, Claude `bypass`, or Codex `yolo`) in the same pane. It requires an unchanged, positively empty POSIX shell prompt, fresh shell process attribution without children, and no pending approval. It never creates a managed session.
+
+`daemon.chat.providers`, `daemon.chat.start`, `daemon.chat.reconnect`,
+`daemon.chat.cancel`, `daemon.chat.respond`, and `daemon.chat.close` are private
+main-process RPCs, guarded by the existing first-party client identity. They are
+not exposed as public MCP tools or HTTP routes. Managed chat reuses the private
+`daemon.transcript.*` read/send subscription surface; optional managed status,
+request IDs, file previews, and history generations are defined in
+`src/shared/transcript/`. See [managed chat](../managed-chat.md) for delivery,
+retention, and capability semantics. A future mobile bridge needs its own
+explicit authenticated contract; these methods grant no remote access.
+
+
+`daemon.chat.skills` is first-party-only read-only discovery for an existing pane:
+`{ id, agent: "claude" | "codex" }` → `{ state: "ready" | "partial" | "unavailable",
+skills: [{ name, description, invocation, source }] }`. Cwd/account are resolved by
+the daemon; arbitrary paths and provider RPC methods are not accepted. No public
+MCP or phone HTTP route is added by this internal method.
+
+
+Private desktop `chat:settings` accepts `{ptyId, choice?: {model, effort,
+expectedRevision}}` and returns `{ok, settings?, error?}` for the existing native
+Codex session. Read returns only model/effort/catalogue, busy state and a scoped
+opaque revision. Write rechecks pane identity and runtime revision, rejects busy
+or unsupported choices, and confirms the result by rereading the runtime.
+It is not registered in the public RPC/MCP or phone HTTP routers.

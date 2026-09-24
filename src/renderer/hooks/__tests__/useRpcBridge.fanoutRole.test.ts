@@ -71,7 +71,8 @@ describe('useRpcBridge — fan-out task roles', () => {
     // with, so the role rewrite, the marker decision and the workspace profile
     // are all already in it.
     expect(block).toMatch(/const launchCommand = createOptions\.initialCommand \?\? ''/);
-    expect(block).toMatch(/pty\.create\(createOptions\)/);
+    // (Spread with only the lineage owner added — the command is unchanged.)
+    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf \} : createOptions,?\s*\)/);
   });
 
   it('applies the binding to the launch command via withRoleBinding', () => {
@@ -137,11 +138,42 @@ describe('useRpcBridge — fan-out task roles', () => {
     // "[role: Reviewer]" without seeing it means another CLI, another model, or
     // extra flags would make the approved text and the executed command differ.
     const m = src.match(/if \(method === 'fanout\.requestApproval'\)[\s\S]*?\n {2}\}\n/);
-    expect(m?.[0]).toMatch(/describeFanOutRoles\(params\.roles\)/);
+    expect(m?.[0]).toMatch(/fanOutRoleLines\(params\.roles\)/);
+    expect(m?.[0]).toMatch(/describeFanOutRoles\(roleCommands\)/);
     // Only claim a model that will actually be injected.
-    const helper = src.match(/function describeFanOutRoles\([\s\S]*?\n\}/);
+    const helper = src.match(/function fanOutRoleLines\([\s\S]*?\n\}/);
     expect(helper?.[0]).toMatch(/bindingEnforcesModel\(b\)/);
     expect(helper?.[0]).toMatch(/no binding/);
+  });
+
+  it('hands the lineage owner to pty.create (main stamps it inside the create), with no await before it', () => {
+    const block = fanoutSpawnBlock();
+    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf \} : createOptions/);
+    // An await between addWorkspace and pty.create lets the empty-leaf funnel
+    // spawn a plain shell into the new pane first.
+    const end = block.indexOf('await window.electronAPI.pty.create(');
+    expect(end).toBeGreaterThan(-1);
+    const between = block
+      .slice(block.indexOf('store.addWorkspace(name)'), end)
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('//'))
+      .join('\n');
+    expect(between).not.toMatch(/\bawait\b/);
+  });
+
+  it('appends the worker permission flags after the role rewrite and before the marker goes back on', () => {
+    const block = fanoutSpawnBlock();
+    const bind = block.indexOf('withRoleBinding(seeded, roleBinding, role)');
+    const flags = block.indexOf('applyWorkerPermissionFlags(roleBound.initialCommand, workerMode)');
+    const marker = block.indexOf('reattachModelEnvMarker(marker, bound.initialCommand');
+    expect(bind).toBeGreaterThan(-1);
+    expect(flags).toBeGreaterThan(bind);
+    expect(marker).toBeGreaterThan(flags);
+  });
+
+  it('toasts once for an unattended fan-out', () => {
+    const m = src.match(/if \(method === 'fanout\.requestApproval'\)[\s\S]*?\n {2}\}\n/);
+    expect(m?.[0]).toMatch(/verdict\.outcome === 'auto'[\s\S]*pushToast/);
   });
 
   it('restores focus before the role write, not after', () => {

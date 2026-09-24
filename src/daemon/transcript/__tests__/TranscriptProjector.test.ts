@@ -84,9 +84,9 @@ describe('TranscriptProjector.status — unavailable reasons', () => {
     expect(harness.projector.status('pty-1')).toEqual({ available: false, reason: 'stale-session' });
   });
 
-  it('not-claude for an agent that publishes no structured transcript', () => {
-    harness.bindings.set('pty-1', binding({ agent: 'codex', transcriptPath: '/tmp/x.jsonl' }));
-    expect(harness.projector.status('pty-1')).toEqual({ available: false, reason: 'not-claude' });
+  it('unsupported-agent for an agent that publishes no structured transcript', () => {
+    harness.bindings.set('pty-1', binding({ agent: 'grok', transcriptPath: '/tmp/x.jsonl' }));
+    expect(harness.projector.status('pty-1')).toEqual({ available: false, reason: 'unsupported-agent' });
   });
 
   it('no-transcript-path before the first turn ends (SessionStart has no path)', () => {

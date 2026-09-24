@@ -44,29 +44,29 @@ function typeAgentCmd(value: string): void {
 
 describe('FanOutDialog — skip permissions', () => {
   it('starts on the default claude command with the flag off', () => {
-    const box = q<HTMLInputElement>('fanout-skip-permissions');
+    const box = q<HTMLButtonElement>('fanout-skip-permissions');
     expect(box).not.toBeNull();
-    expect(box?.checked).toBe(false);
+    expect(box?.getAttribute('aria-checked')).toBe('false');
     expect(preview()).toBe('claude');
   });
 
   it('checking the box appends the flag to the launch command', () => {
-    const box = q<HTMLInputElement>('fanout-skip-permissions') as HTMLInputElement;
+    const box = q<HTMLButtonElement>('fanout-skip-permissions') as HTMLButtonElement;
     act(() => {
       box.click();
     });
     expect(preview()).toBe(`claude ${SKIP_PERMISSIONS_FLAG}`);
-    expect(q<HTMLInputElement>('fanout-skip-permissions')?.checked).toBe(true);
+    expect(q<HTMLButtonElement>('fanout-skip-permissions')?.getAttribute('aria-checked')).toBe('true');
     // ...and unchecking strips it again.
     act(() => {
-      (q<HTMLInputElement>('fanout-skip-permissions') as HTMLInputElement).click();
+      (q<HTMLButtonElement>('fanout-skip-permissions') as HTMLButtonElement).click();
     });
     expect(preview()).toBe('claude');
   });
 
   it('typing the flag by hand ticks the box (the command is the source of truth)', () => {
     typeAgentCmd(`claude ${SKIP_PERMISSIONS_FLAG} --model haiku`);
-    expect(q<HTMLInputElement>('fanout-skip-permissions')?.checked).toBe(true);
+    expect(q<HTMLButtonElement>('fanout-skip-permissions')?.getAttribute('aria-checked')).toBe('true');
     expect(preview()).toBe(`claude ${SKIP_PERMISSIONS_FLAG} --model haiku`);
   });
 
@@ -81,7 +81,7 @@ describe('FanOutDialog — skip permissions', () => {
     typeAgentCmd('');
     expect(preview()).toBe('claude');
     act(() => {
-      (q<HTMLInputElement>('fanout-skip-permissions') as HTMLInputElement).click();
+      (q<HTMLButtonElement>('fanout-skip-permissions') as HTMLButtonElement).click();
     });
     expect(preview()).toBe(`claude ${SKIP_PERMISSIONS_FLAG}`);
   });

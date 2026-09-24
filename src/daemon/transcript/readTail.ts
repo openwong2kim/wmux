@@ -49,6 +49,7 @@ export interface ReadPageOptions {
    * pass a previous `cursor.headOffset`, which is always a line boundary.
    */
   before?: number;
+  parseLine?: typeof parseTranscriptLine;
   maxBytes?: number;
 }
 
@@ -108,7 +109,7 @@ export function readTranscriptPage(
   // A seek past byte 0 lands INSIDE a line, so that fragment is the head to
   // drop. A read from 0 has no fragment.
   const truncatedHead = start > 0;
-  const scanned = scanLines(raw, start, { dropTrailingPartial: true, skipHead: truncatedHead });
+  const scanned = scanLines(raw, start, { dropTrailingPartial: true, skipHead: truncatedHead }, opts?.parseLine);
   let headOffset = truncatedHead ? scanned.firstOffset : 0;
   // D1(c) — when the last complete record before `end` is OVERSIZED, the window
   // holds the fragment plus at most that record's terminating newline, so
@@ -145,6 +146,7 @@ export function readTranscriptDelta(
   transcriptPath: string,
   fromOffset: number,
   maxBytes?: number,
+  parseLine: typeof parseTranscriptLine = parseTranscriptLine,
 ): TranscriptDelta | null {
   const stat = statRegularFile(transcriptPath);
   if (!stat) return null;
@@ -153,7 +155,7 @@ export function readTranscriptDelta(
   const from = Number.isFinite(fromOffset) && fromOffset > 0 ? Math.floor(fromOffset) : 0;
 
   if (stat.size < from) {
-    const page = readTranscriptPage(transcriptPath, { maxBytes: limit });
+    const page = readTranscriptPage(transcriptPath, { maxBytes: limit, parseLine });
     if (!page) return null;
     return { events: page.events, cursor: page.cursor, reset: true };
   }
@@ -174,7 +176,7 @@ export function readTranscriptDelta(
   const capped = length < stat.size - from;
   // `from` is a line boundary the caller got from a previous cursor, so there
   // is no partial head here — dropping one would silently lose an entry.
-  const scanned = scanLines(raw, from, { dropTrailingPartial: true, skipHead: false });
+  const scanned = scanLines(raw, from, { dropTrailingPartial: true, skipHead: false }, parseLine);
 
   let events = scanned.events;
   let tailOffset = scanned.tailOffset;
@@ -404,6 +406,7 @@ function scanLines(
   raw: Buffer,
   windowStart: number,
   opts: { dropTrailingPartial: boolean; skipHead: boolean },
+  parseLine: typeof parseTranscriptLine = parseTranscriptLine,
 ): ScannedLines {
   const events: TurnEvent[] = [];
   let firstOffset = windowStart;
@@ -427,7 +430,7 @@ function scanLines(
       firstOffset = advanced;
       tailOffset = advanced;
     } else {
-      events.push(...parseTranscriptLine(raw.toString('utf8', cursor, lineEnd), lineOffset));
+      events.push(...parseLine(raw.toString('utf8', cursor, lineEnd), lineOffset));
       tailOffset = advanced;
     }
     cursor = next;

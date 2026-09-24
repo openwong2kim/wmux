@@ -12,11 +12,17 @@ import { generateId } from '../../shared/types';
 import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
 import { findStashedEntry, paneStashedError, stashedPaneLiveness } from '../../shared/paneStash';
 import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
-import { reattachModelEnvMarker, splitModelEnvMarker } from '../../shared/workerLaunch';
+import {
+  applyWorkerPermissionFlags,
+  isFanoutWorkerPermissionMode,
+  reattachModelEnvMarker,
+  splitModelEnvMarker,
+} from '../../shared/workerLaunch';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
-import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
+import { t } from '../i18n';
+import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName, type A2aFormatOptions } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
-import { requestExecuteApproval, requestFanOutApproval, requestTaskApproval } from '../utils/executeApprovalGate';
+import { findPendingExecuteRequest, requestExecuteApproval, requestFanOutApproval, requestTaskApproval } from '../utils/executeApprovalGate';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 import {
   closeBrowserTabInWorkspace,
@@ -33,7 +39,7 @@ import {
 } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
-import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
@@ -63,26 +69,33 @@ import { buildFleetTriage, fleetTriageScopeError } from '../utils/fleetTriage';
  * Saying "codex --model o3" when o3 will not be passed is the exact failure the
  * enforcement predicate exists to prevent elsewhere.
  *
- * Returns '' when no task carries a role, so the ordinary preview is unchanged.
+ * Returns [] when no task carries a role. The same lines go into the fan-out
+ * audit record, so what was shown and what was logged cannot differ.
  */
-function describeFanOutRoles(raw: unknown): string {
-  if (!Array.isArray(raw)) return '';
+function fanOutRoleLines(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
   const seen: string[] = [];
   for (const entry of raw) {
     const role = typeof entry === 'string' ? entry.trim() : '';
     if (role && !seen.includes(role)) seen.push(role);
   }
-  if (seen.length === 0) return '';
+  if (seen.length === 0) return [];
   const bindings = useStore.getState().orchestratorRoleBindings;
-  const lines = seen.map((role) => {
+  return seen.map((role) => {
     const b = bindings[role];
-    if (!b || (!b.agent && !b.model && !b.args)) return `  ${role} → the default agent (no binding)`;
+    if (!b || (!b.agent && !b.model && !b.args)) return `${role} → the default agent (no binding)`;
     const parts: string[] = [b.agent || 'the default agent'];
     if (b.model) parts.push(bindingEnforcesModel(b) ? `--model ${b.model}` : `(model "${b.model}" is configured but will NOT be applied)`);
     if (b.args) parts.push(b.args);
-    return `  ${role} → ${parts.join(' ')}`;
+    return `${role} → ${parts.join(' ')}`;
   });
-  return `\n\nRoles resolve to:\n${lines.join('\n')}`;
+}
+
+/** The role lines as the approval dialog shows them; '' when no task has a
+ *  role, so the ordinary preview is unchanged. */
+function describeFanOutRoles(lines: string[]): string {
+  if (lines.length === 0) return '';
+  return `\n\nRoles resolve to:\n${lines.map((l) => `  ${l}`).join('\n')}`;
 }
 
 interface DaemonTextRow { text: string; wrapped: boolean }
@@ -252,6 +265,20 @@ function ptyAgent(ptyId: string): { name?: string; status?: string } {
 
 function submitToPty(ptyId: string, text: string): void {
   submitBracketedPasteToPty(ptyId, text, { agent: ptyAgent(ptyId).name });
+}
+
+// Whether an A2A envelope bound for `ptyId` may keep its body's real newlines:
+// only when the pane runs a detected, still-live agent TUI. A shell (or an
+// unknown pane) keeps the `␤` fold. Read at write time for the same reason as
+// ptyAgent.
+function a2aFormatOptionsFor(ptyId: string): A2aFormatOptions {
+  const s = useStore.getState();
+  return {
+    multiline: !!detectedAgentTuiSlug(ptyId, s.surfaceAgent, {
+      agentAlive: s.agentAliveByPtyId,
+      commandRunning: s.commandRunningByPtyId,
+    }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -439,7 +466,8 @@ export function useRpcBridge(): void {
 //
 // #1337: the ptyId, not a bare boolean, because the receipt has to describe the
 // pane that received the bytes — see `ptyAgent`.
-function deliverPtyNotification(
+// Exported for tests only (a2aFormat.delivery.test.ts).
+export function deliverPtyNotification(
   targetWs: { rootPane: Pane; activePaneId: string; name: string; stashedPanes?: Workspace['stashedPanes'] },
   senderName: string,
   message: string,
@@ -451,7 +479,7 @@ function deliverPtyNotification(
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
   if (ptyId) {
-    submitToPty(ptyId, formatA2aMessage(senderName, targetWs.name, message));
+    submitToPty(ptyId, formatA2aMessage(senderName, targetWs.name, message, undefined, a2aFormatOptionsFor(ptyId)));
     return ptyId;
   }
   return null;
@@ -488,8 +516,9 @@ function deliverPtyNudge(
 // A2A silent-default for TUI receivers (S-C2 ②). A receiver running a live
 // TUI agent gets its input box corrupted by a full bracketed-paste; for those
 // we DEFAULT to the EventBus pointer + a one-line nudge instead of the body.
-// A receiver with NO live agent keeps today's loud full-body paste (never
-// regress a peer that never polls). An explicit params.silent === true still
+// A receiver whose detected agent is not live keeps the loud full-body paste
+// (never regress a peer that never polls); a pane with no detected agent gets
+// nothing at all (a2aTargetHasAgent). An explicit params.silent === true still
 // fully suppresses (handled at the call sites).
 //
 // "live TUI agent" = an agentName is present AND agentStatus is one of the
@@ -517,6 +546,27 @@ function deliveryLiveMeta(
   if (!explicitPty) return fallbackMeta;
   const a = surfaceAgent[explicitPty];
   return a ? { agentName: a.name, agentStatus: a.status } : undefined;
+}
+
+// #1489 — may an A2A delivery write to `pty` (or, with no pty, the target's
+// active pane) at all? Only a pane with a detected agent, or the single visible
+// terminal of a workspace whose metadata evidences a live agent (detection not
+// landed per pane, remote panes — see wsMetadataMayStandIn). Neither an explicit
+// pane_id / pinned task anchor nor `silent:false` overrides this: the `␤` fold
+// keeps a body on one line, but that line still runs once a shell gets Enter.
+function a2aTargetHasAgent(
+  targetWs: Pick<Workspace, 'rootPane' | 'metadata'>,
+  pty: string | undefined,
+): boolean {
+  const s = useStore.getState();
+  if (pty && paneHasDetectedAgent(pty, s.surfaceAgent, {
+    agentAlive: s.agentAliveByPtyId,
+    commandRunning: s.commandRunningByPtyId,
+  })) return true;
+  const visible = findLeafPanes(targetWs.rootPane);
+  return isLiveTuiAgent(targetWs.metadata)
+    && wsMetadataMayStandIn(visible)
+    && (!pty || isTerminalPtyInLeaves(visible, pty));
 }
 
 /**
@@ -592,7 +642,8 @@ function isSelectableBrowserPartition(partition: string): boolean {
   );
 }
 
-async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcResult> {
+// Exported for tests only (a2aFormat.delivery.test.ts).
+export async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcResult> {
   // Always read the freshest state via getState() to avoid stale closures.
   const store = useStore.getState();
 
@@ -783,11 +834,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   }
 
   if (method === 'fanout.requestApproval') {
-    // 파이프/MCP fan-out의 승인 게이트. 큐·다이얼로그·30s 타이머는 A2A execute
-    // 게이트와 공유하지만 전역 auto-approve 토글(a2aAutoApproveExecute)은 타지
-    // 않는다 — 그 토글은 백그라운드 에이전트 스폰에 대한 동의지 worktree N개
-    // 생성에 대한 동의가 아니다(requestFanOutApproval). 렌더러 다이얼로그가
-    // 시작하는 fan-out(FanOutDialog)은 사람 클릭이 곧 승인이라 이 경로를 타지 않는다.
+    // The pipe/MCP fan-out approval gate. Main decides whether to ask
+    // (`requireApproval`; off by default): off, the fan-out runs unattended
+    // (outcome 'auto') behind main's depth-1, caps and audit log, and gets one
+    // toast so it is never invisible. Anything but a literal `false` asks. On, it shares the A2A execute queue, dialog and 30s timer, but never the
+    // a2aAutoApproveExecute toggle (requestFanOutApproval). A fan-out the GUI
+    // FanOutDialog starts is a human click and does not come through here.
     //
     // outcome을 그대로 돌려준다: main은 이미 호출자에게 accepted를 반환한 뒤라,
     // 자동 거부가 "조용히 사라지는" 대신 폴 응답에 이유로 실려야 한다.
@@ -801,14 +853,22 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // binding silently adds a different CLI, another model, or extra flags
     // would make the approved text and the executed command two different
     // things — the one property this gate exists to hold.
-    const previewWithRoles = promptPreview + describeFanOutRoles(params.roles);
+    const roleCommands = fanOutRoleLines(params.roles);
+    const previewWithRoles = promptPreview + describeFanOutRoles(roleCommands);
     const verdict = await requestFanOutApproval({
       workspaceId: callerWsId,
       repoPath,
       taskCount,
       messagePreview: previewWithRoles,
+      requireApproval: params.requireApproval !== false,
     });
-    return { approved: verdict.approved, outcome: verdict.outcome };
+    if (verdict.outcome === 'auto') {
+      useStore.getState().pushToast({
+        message: t('fanout.autoRunToast', { count: taskCount, repo: repoPath }),
+        level: 'info',
+      });
+    }
+    return { approved: verdict.approved, outcome: verdict.outcome, roleCommands };
   }
 
   if (method === 'task.requestApproval') {
@@ -890,6 +950,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const newWsId = newWs.id;
     const paneId = newWs.activePaneId;
 
+    // Depth-1 lineage: main stamps this workspace as a task of its owner
+    // INSIDE pty.create, before the PTY (and the agent) exists; a failed stamp
+    // fails the create and the rollback below runs. No separate round-trip
+    // here: an await between addWorkspace and pty.create would let the
+    // empty-leaf funnel spawn a plain shell into this pane first.
+    const fanoutTaskOf = typeof params.fanoutTaskOf === 'string' ? params.fanoutTaskOf : '';
+    // #1481 — lets the sidebar nest this workspace under its owner right away.
+    if (fanoutTaskOf) useStore.getState().noteFanoutSpawn?.(newWsId, fanoutTaskOf);
+
     // Unnested so the FINAL command is readable: withDefaultShell first (there
     // has to be a command to rewrite), then the role binding, then the marker
     // goes back on, and withWorkspaceProfile stays outermost so the profile's
@@ -903,7 +972,18 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       },
       useStore.getState().defaultShell,
     );
-    const bound = withRoleBinding(seeded, roleBinding, role);
+    const roleBound = withRoleBinding(seeded, roleBinding, role);
+    // Worker permission mode + allow-list, AFTER the role rewrite: only then is
+    // the final launcher known (a binding may have swapped claude for codex,
+    // which rejects these flags), and only then can a permission flag the
+    // binding's args added be replaced rather than doubled.
+    const workerMode = isFanoutWorkerPermissionMode(params.workerPermissionMode)
+      ? params.workerPermissionMode
+      : undefined;
+    const bound =
+      workerMode && roleBound.initialCommand
+        ? { ...roleBound, initialCommand: applyWorkerPermissionFlags(roleBound.initialCommand, workerMode) }
+        : roleBound;
     // `bound.initialCommand` stays undefined for the "environment only" launch,
     // and it has to: withWorkspaceProfile fills a MISSING command from the
     // profile's defaultPaneCommand, and an empty string is not missing.
@@ -927,7 +1007,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
 
     let ptyId: string;
     try {
-      const created = await window.electronAPI.pty.create(createOptions);
+      const created = await window.electronAPI.pty.create(
+        fanoutTaskOf ? { ...createOptions, fanoutTaskOf } : createOptions,
+      );
       ptyId = created.id;
     } catch (err) {
       const rollback = useStore.getState();
@@ -2254,7 +2336,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // one-line nudge (its prompt is not flooded); a receiver with no live
     // agent keeps today's loud full-body paste (don't regress a non-poller).
     // An explicit silent (true OR false) is honored verbatim — explicit true
-    // = full suppression, explicit false = loud full paste.
+    // = full suppression, explicit false = loud full paste. #1489: the loud
+    // paste only ever reaches a pane with a detected agent; a pane without one
+    // gets nothing written, exactly as when silent is omitted.
     //
     // Only a real BOOLEAN counts as explicit. A direct main-pipe RPC client
     // (which bypasses the MCP zod schema) may serialize an omitted optional as
@@ -2416,7 +2500,6 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
             // anchorless one is suppressed above), so only the cross-ws
             // active-pane fallback reaches this.
             let replyPty = explicitPty;
-            let replyHasAgent = true;
             let ambiguous = false;
             if (!replyPty) {
               const pick = resolveUnaddressedDelivery(findLeafPanes(targetWs.rootPane), store.surfaceAgent, {
@@ -2425,7 +2508,6 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
               });
               if (pick.kind === 'ambiguous') ambiguous = true;
               else if (pick.kind === 'agent') replyPty = pick.address.ptyId;
-              else replyHasAgent = false;
             }
             if (ambiguous) {
               // The reply is already stored on the task (addTaskMessage above),
@@ -2451,12 +2533,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
             // here would recreate the exact false receipt this change removes.
             let wrotePty: string | null;
             let mode: 'nudge' | 'notification' | 'no-agent-pane' = 'nudge';
-            // Same ws-level-metadata fallback as the create path: a target
-            // evidenced only at workspace level still gets its nudge.
-            const replyNoAgentTarget =
-              !replyHasAgent
-              && !(isLiveTuiAgent(targetWs.metadata) && wsMetadataMayStandIn(findLeafPanes(targetWs.rootPane)))
-              && params.silent !== false;
+            // Same gate as the create path (a2aTargetHasAgent): a target
+            // evidenced only at workspace level still gets its nudge, and a
+            // pinned anchor or silent:false no longer reaches a shell (#1489).
+            const replyNoAgentTarget = !a2aTargetHasAgent(targetWs, replyPty);
             if (decision.sameWs) {
               // Same-ws sibling: pointer-only nudge (no full-body injection).
               wrotePty = deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), replyPty);
@@ -2587,7 +2667,6 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // create an ambiguity nor become the delivery target — nobody is looking at
     // it), and a pane whose agent is known gone is not a candidate.
     let resolvedFallback: PaneAddress | undefined;
-    let fallbackHasAgent = true;
     if (!silent && !sameWsDecision.suppressPaste && !resolvedAddr) {
       const pick = resolveUnaddressedDelivery(findLeafPanes(target.rootPane), store.surfaceAgent, {
         agentAlive: store.agentAliveByPtyId,
@@ -2596,12 +2675,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       if (pick.kind === 'ambiguous') {
         return { error: `a2a.task.send: ${describeAmbiguousDelivery(target.name, pick.candidates)}` };
       }
-      if (pick.kind === 'agent') resolvedFallback = pick.address;
-      // 'no_agent' keeps fallbackHasAgent false: no pane is written to at all,
+      // 'no_agent' leaves resolvedFallback unset: no pane is written to at all,
       // unless the workspace-level metadata still evidences a live TUI agent
-      // (detection sources differ — see the delivery block) or the caller
-      // explicitly asked for the loud paste with silent:false.
-      else fallbackHasAgent = false;
+      // (detection sources differ — see a2aTargetHasAgent).
+      if (pick.kind === 'agent') resolvedFallback = pick.address;
     }
 
     // S-C2: capture the sender's pane anchor (symmetric with `to`) so a reply can
@@ -2619,12 +2696,45 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
 
     if (executeRequested) {
       const cwd = typeof params.cwd === 'string' ? params.cwd : null;
+      // #1462 — a caller that resends while its first request is still on the
+      // approval prompt joins that prompt instead of raising a second one, and
+      // gets its verdict. The first request creates the task and main spawns
+      // its worker; the retry reports that task and must not spawn another,
+      // so it never claims executeApproved.
+      const identity = {
+        senderWorkspaceId: workspaceId,
+        senderPtyId,
+        receiverWorkspaceId: target.id,
+        targetPtyId: toAnchor?.ptyId ?? '',
+        cwd,
+        message,
+      };
+      const pending = findPendingExecuteRequest(identity);
+      if (pending) {
+        const joinedApproved = await pending.verdict;
+        if (!joinedApproved) {
+          return {
+            ok: false,
+            error: `a2a.task.send: execute approval denied (this resend joined the pending request for task ${pending.taskId})`,
+          };
+        }
+        return {
+          ok: true,
+          taskId: pending.taskId,
+          toWorkspaceId: target.id,
+          joinedPendingRequest: true,
+          hint:
+            'An identical execute request was already waiting for approval; this send joined it. ' +
+            `Task ${pending.taskId} was approved and started once, by that request.`,
+        };
+      }
       const approved = await requestExecuteApproval({
         taskId: newTaskId,
         senderWorkspaceId: workspaceId,
         receiverWorkspaceId: target.id,
         messagePreview: message.slice(0, 500),
         cwd,
+        identity,
       });
       if (!approved) {
         return { ok: false, error: 'a2a.task.send: execute approval denied' };
@@ -2656,7 +2766,8 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // When silent, the task is only persisted in the store and the
     // receiver must poll via a2a_task_query to discover it. silent-default:
     // an unset silent + live-TUI receiver gets a one-line nudge (prompt not
-    // flooded); no live agent (or explicit silent:false) keeps the loud paste.
+    // flooded); a detected but not live agent (or explicit silent:false) keeps
+    // the loud paste; a pane with no detected agent gets nothing (#1336, #1489).
     // Suppress the PTY paste when the user asked (silent) OR when a same-ws send
     // can't be proven non-self (decideSameWsSend → suppressPaste). The task is
     // still created + teed onto the EventBus below, so a sibling can poll it via
@@ -2679,18 +2790,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       // candidate scan reads, and the workspace-level metadata this path has
       // always trusted. A target that only has the latter (detection not landed
       // per-pane, remote panes) must keep waking up as before — dropping it to
-      // "no agent" would silently stop delivering to a real agent. An explicit
-      // silent:false is the documented "paste it loudly anyway" override and
-      // still wins; that is a caller asking for the old behavior by name.
-      // ...but only where "the active pane" and "the pane the metadata
-      // describes" cannot be different panes (CodeRabbit, Major): with two
-      // terminals the fallback writes to whichever is focused, which is
-      // exactly the shell paste this change removes.
-      const wsLevelAgent =
-        isLiveTuiAgent(target.metadata) && wsMetadataMayStandIn(findLeafPanes(target.rootPane));
-      // `silent` is normalized to `params.silent === true`, so it is `false`
-      // for an OMITTED flag too — the override must read the raw param.
-      const noAgentTarget = !fallbackHasAgent && !wsLevelAgent && params.silent !== false;
+      // "no agent" would silently stop delivering to a real agent. Both are
+      // read by a2aTargetHasAgent, which also checks an explicitly addressed
+      // pane. #1489: silent:false no longer overrides it — it was the
+      // "paste it loudly anyway" switch, and into a shell that runs the body.
+      const noAgentTarget = !a2aTargetHasAgent(target, explicitPty);
       let wrotePty: string | null;
       let mode: 'nudge' | 'notification' | 'no-agent-pane' = 'nudge';
       if (noAgentTarget) {
@@ -2920,23 +3024,21 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
             // into whatever pane was focused, so the very bug the other two
             // paths now refuse survived on the third one.
             let updatePty = explicitPty;
-            let updateHasAgent = true;
             if (!updatePty) {
               const pick = resolveUnaddressedDelivery(findLeafPanes(targetWs.rootPane), store.surfaceAgent, {
                 agentAlive: store.agentAliveByPtyId,
                 commandRunning: store.commandRunningByPtyId,
               });
-              if (pick.kind === 'agent') updatePty = pick.address.ptyId;
               // Ambiguous is treated like no-agent here: this delivery is a
               // side-effect of a status change (the transition is already
               // committed and teed onto the bus), so an arbitrary pick is the
               // only thing worth refusing.
-              else updateHasAgent = false;
+              if (pick.kind === 'agent') updatePty = pick.address.ptyId;
             }
             const liveMeta = deliveryLiveMeta(store.surfaceAgent, updatePty, targetWs.metadata);
-            const updateWsStandIn =
-              isLiveTuiAgent(targetWs.metadata) && wsMetadataMayStandIn(findLeafPanes(targetWs.rootPane));
-            if (!updateHasAgent && !updateWsStandIn) {
+            // #1489 — a pinned anchor on a shell pane is refused like an
+            // unaddressed one.
+            if (!a2aTargetHasAgent(targetWs, updatePty)) {
               // Write nothing; the receiver follows the EventBus pointer.
             } else if (isLiveTuiAgent(liveMeta)) {
               deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), updatePty);
@@ -3046,7 +3148,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         skipped++;
         continue;
       }
-      for (const ptyId of ptyIds) submitToPty(ptyId, formatA2aBroadcast(fromName, message));
+      for (const ptyId of ptyIds) {
+        submitToPty(ptyId, formatA2aBroadcast(fromName, message, undefined, a2aFormatOptionsFor(ptyId)));
+      }
       sent++;
     }
     // `skipped` counts workspaces with no detected agent pane — previously

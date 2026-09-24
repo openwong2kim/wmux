@@ -20,6 +20,7 @@
 // and a denial must be reported instead of going quiet.
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RpcContext } from '../../../../shared/rpc';
@@ -36,6 +37,7 @@ import { loadWorkspaceDecision } from '../../../deck/deckDecisionStore';
 import { registerFanOutRpc, FANOUT_WIRE_AGENT_CMD, FANOUT_IDEMPOTENCY_KEY_MAX_BYTES } from '../fanout.rpc';
 import type { FanOutRequest, FanOutResult, FanOutService, FanOutStatus } from '../../../worktask/FanOutService';
 import type { RpcRouter } from '../../RpcRouter';
+import { FanOutGuards } from '../../../worktask/fanoutGuards';
 
 const CALLER_WS = 'ws-caller';
 // Resolved to NATIVE form. The handler runs the caller's cwd through
@@ -79,6 +81,8 @@ interface Harness {
   moveCaller: (cwd: string | null) => void;
   /** The preview the approval prompt was actually raised with. */
   preview: () => string;
+  /** The `requireApproval` main sent with the last approval request. */
+  requireApprovalSent: () => unknown;
   /** Drop a completed key from the service's result LRU — what the real
    *  FanOutService does once 1000 newer fan-outs have finished. */
   forgetResult: (callerKey: string) => void;
@@ -96,6 +100,10 @@ function setup(opts?: {
   /** What workspace.list reports as the commander workspace's active pty.
    *  '' models a workspace with no resolvable active pane. */
   commanderAnchorPtyId?: string;
+  /** Lineage/caps/audit store. Defaults to a fresh one in a temp dir. */
+  guards?: FanOutGuards;
+  /** Main's approval switch. Defaults to on, so the dialog tests stay dialog tests. */
+  requireApproval?: boolean;
 }): Harness {
   const commanderAnchorPtyId =
     opts?.commanderAnchorPtyId === undefined ? 'pty-1' : opts.commanderAnchorPtyId;
@@ -135,6 +143,7 @@ function setup(opts?: {
   const approval: ApprovalStub = opts?.approval ?? { approved: true, outcome: 'approved' };
   let approvals = 0;
   let lastPreview = '';
+  let lastRequireApproval: unknown;
   let releaseApproval: ((v: unknown) => void) | null = null;
 
   vi.mocked(sendToRenderer).mockImplementation(async (_win, method: string, p?: unknown) => {
@@ -161,6 +170,7 @@ function setup(opts?: {
     if (method === 'fanout.requestApproval') {
       approvals += 1;
       lastPreview = String((p as Record<string, unknown>)?.promptPreview ?? '');
+      lastRequireApproval = (p as Record<string, unknown>)?.requireApproval;
       if (approval === 'throw') throw new Error('renderer unavailable');
       // A prompt nobody has answered YET — the unattended case, and also the
       // handle a test uses to answer it late (approveHungPrompt).
@@ -183,7 +193,18 @@ function setup(opts?: {
     return { stdout: '', stderr: 'not a git repository', code: 128 };
   });
 
-  registerFanOutRpc(router, service, () => null);
+  const guards =
+    opts?.guards ??
+    new FanOutGuards({
+      dir: fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wmux-fanout-rpc-')),
+      countLiveTasks: () => 0,
+      ledgerTaskOwner: () => null,
+    });
+  registerFanOutRpc(router, service, () => null, {
+    guards,
+    workerPermissionMode: () => 'auto',
+    requireApproval: () => opts?.requireApproval ?? true,
+  });
   const handler = handlers.get('task.fanout.start');
   if (!handler) throw new Error('task.fanout.start was not registered');
 
@@ -200,6 +221,7 @@ function setup(opts?: {
       currentCwd = next;
     },
     preview: () => lastPreview,
+    requireApprovalSent: () => lastRequireApproval,
     forgetResult: (callerKey) => state.delete(`${ownerWs}::${callerKey}`),
     approveHungPrompt: () => releaseApproval?.({ approved: true, outcome: 'approved' }),
   };
@@ -436,6 +458,16 @@ describe('the caller is answered without waiting for the fan-out', () => {
     expect(await h.call(goodParams())).toMatchObject({ ok: true, status: 'completed', result });
     // Three calls, ONE run: polling must never re-fan-out.
     expect(h.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('lifts a completed result\'s warnings onto the envelope (the MCP tool prints them as WARNING lines)', async () => {
+    const h = setup({ run: 'hang' });
+    await h.call(goodParams());
+    await h.flush();
+    const warnings = ['git fetch origin main failed (offline); tasks branched from the local HEAD'];
+    h.finishRun({ ok: true, tasks: [{ index: 0, title: 'first task', ok: true }], warnings });
+    await h.flush();
+    expect(await h.call(goodParams())).toMatchObject({ ok: true, status: 'completed', warnings });
   });
 
   it('reports awaiting_approval, and does not raise a second prompt for the same key', async () => {
@@ -1134,5 +1166,197 @@ describe('the accepted reply warns about a pending decision on the owner', () =>
       throw new Error('torn store');
     });
     expect(await setup().call(goodParams())).toMatchObject({ ok: true, status: 'accepted' });
+  });
+});
+
+// ─── Runaway brakes: depth-1, global caps, audit ──────────────────────────
+// Fan-out runs without a person in the loop by default, so these three are
+// what stop a loop. Each is asserted through the wire handler, not only the
+// store, because the ordering (before the poll branch, in the claim tick,
+// before the spawn) is the part a refactor would break.
+
+function guardsIn(dir: string, opts: { ledger?: (ws: string) => string | null; live?: () => number } = {}): FanOutGuards {
+  return new FanOutGuards({
+    dir,
+    countLiveTasks: opts.live ?? (() => 0),
+    ledgerTaskOwner: opts.ledger ?? (() => null),
+  });
+}
+
+function tmp(): string {
+  return fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wmux-fanout-brakes-'));
+}
+
+describe('task.fanout.start — depth-1', () => {
+  it('refuses a caller whose workspace carries the lineage stamp', async () => {
+    const g = guardsIn(tmp());
+    g.markTask(CALLER_WS, 'ws-brain');
+    const h = setup({ guards: g });
+    const err = errorOf(await h.call(goodParams()));
+    expect(err.code).toBe('NOT_AUTHORIZED');
+    expect(err.message).toMatch(/fan-out task of ws-brain/);
+    await h.flush();
+    expect(h.approvalCount()).toBe(0);
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it('refuses a worker that marked its own ledger row failed (status-independent)', async () => {
+    // The ledger port answers for any status; there is no stamp at all here, so
+    // only the ledger fallback can refuse it.
+    const h = setup({ guards: guardsIn(tmp(), { ledger: (ws) => (ws === CALLER_WS ? 'ws-brain' : null) }) });
+    expect(errorOf(await h.call(goodParams())).code).toBe('NOT_AUTHORIZED');
+  });
+
+  it('refuses a commander bound to a stamped workspace too', async () => {
+    const g = guardsIn(tmp());
+    g.markTask(CALLER_WS, 'ws-brain');
+    const h = setup({ guards: g });
+    const res = await h.call(goodParams({ senderPtyId: undefined }), { origin: 'local', commanderWorkspace: CALLER_WS });
+    expect(errorOf(res).code).toBe('NOT_AUTHORIZED');
+  });
+
+  it('fails closed when the lineage store cannot be read', async () => {
+    const dir = tmp();
+    fs.writeFileSync(nodePath.join(dir, 'fanout-lineage.json'), 'garbage', 'utf8');
+    const h = setup({ guards: guardsIn(dir) });
+    const err = errorOf(await h.call(goodParams()));
+    expect(err.code).toBe('FAILED_PRECONDITION');
+    expect(err.message).toMatch(/lineage store/);
+    expect(h.start).not.toHaveBeenCalled();
+  });
+});
+
+describe('task.fanout.start — global caps', () => {
+  it('refuses with RESOURCE_EXHAUSTED and raises no approval prompt', async () => {
+    const h = setup({ guards: guardsIn(tmp(), { live: () => 7 }) });
+    const err = errorOf(await h.call(goodParams()));
+    expect(err.code).toBe('RESOURCE_EXHAUSTED');
+    expect(err.message).toMatch(/at most 8 fan-out tasks may be live/);
+    await h.flush();
+    expect(h.approvalCount()).toBe(0);
+  });
+
+  it('holds the reservation while one fan-out is awaiting approval', async () => {
+    const h = setup({ guards: guardsIn(tmp()), approval: 'hang' });
+    expect((await h.call(goodParams({ idempotencyKey: 'a', titles: ['1', '2', '3', '4', '5'] }))).status).toBe('accepted');
+    const err = errorOf(await h.call(goodParams({ idempotencyKey: 'b', titles: ['1', '2', '3', '4'] })));
+    expect(err.code).toBe('RESOURCE_EXHAUSTED');
+  });
+
+  it('gives the slots back when the fan-out is denied', async () => {
+    const g = guardsIn(tmp());
+    const denied = setup({ guards: g, approval: { approved: false, outcome: 'declined' } });
+    await denied.call(goodParams({ idempotencyKey: 'a', titles: ['1', '2', '3', '4', '5', '6', '7', '8'] }));
+    await denied.flush();
+    const next = setup({ guards: g });
+    expect((await next.call(goodParams({ idempotencyKey: 'b', titles: ['1', '2', '3', '4', '5', '6', '7', '8'] }))).status).toBe(
+      'accepted',
+    );
+  });
+});
+
+describe('task.fanout.start — audit record', () => {
+  it('records who, where, what (hashed) and that nobody approved it', async () => {
+    const dir = tmp();
+    const g = guardsIn(dir);
+    const h = setup({ guards: g, approval: { approved: true, outcome: 'auto' } });
+    await h.call(goodParams({ titles: ['a', 'b'], taskPrompts: ['pa', ''], roles: ['Builder'] }));
+    await h.flush();
+    await h.flush();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    const [launched, rec] = g.recentAudit(2);
+    expect(launched).toMatchObject({ kind: 'launched', idempotencyKey: 'fanout-key-1', launched: [] });
+    expect(rec).toMatchObject({
+      idempotencyKey: 'fanout-key-1',
+      ownerWorkspaceId: CALLER_WS,
+      callerIdentity: 'pty',
+      repoPath: CALLER_REPO_ROOT,
+      titles: ['a', 'b'],
+      roles: ['Builder', ''],
+      approvedBy: 'auto',
+      workerPermissionMode: 'auto',
+    });
+    const { createHash } = await import('node:crypto');
+    const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
+    expect(rec.promptSha256).toEqual([sha('do the thing\n\npa'), sha('do the thing')]);
+    // No prompt body in the log.
+    expect(fs.readFileSync(nodePath.join(dir, 'fanout-audit.jsonl'), 'utf8')).not.toMatch(/do the thing/);
+  });
+
+  it('marks a dialog approval as human', async () => {
+    const g = guardsIn(tmp());
+    const h = setup({ guards: g });
+    await h.call(goodParams());
+    await h.flush();
+    await h.flush();
+    expect(g.recentAudit(2).every((r) => r.approvedBy === 'human')).toBe(true);
+  });
+
+  it('does not run a fan-out whose audit record cannot be written', async () => {
+    const g = guardsIn(tmp());
+    vi.spyOn(g, 'appendAudit').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const h = setup({ guards: g, approval: { approved: true, outcome: 'auto' } });
+    await h.call(goodParams());
+    await h.flush();
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+    const polled = await h.call(goodParams());
+    expect(polled).toMatchObject({ status: 'denied', reason: 'audit-unavailable' });
+  });
+});
+
+describe('task.fanout.start — review follow-ups', () => {
+  it('lets main decide whether anyone is asked, and says so to the renderer', async () => {
+    const off = setup({ requireApproval: false, approval: { approved: true, outcome: 'auto' } });
+    await off.call(goodParams());
+    await off.flush();
+    expect(off.requireApprovalSent()).toBe(false);
+    const on = setup({ requireApproval: true });
+    await on.call(goodParams());
+    await on.flush();
+    expect(on.requireApprovalSent()).toBe(true);
+  });
+
+  it('shows the worker launch flags in what is approved', async () => {
+    const h = setup();
+    await h.call(goodParams());
+    await h.flush();
+    expect(h.preview()).toMatch(/claude workers launch with: --permission-mode auto --allowedTools "[^"]+" --disallowedTools "[^"]*mcp__wmux__fanout_start/);
+  });
+
+  it('holds the live cap against N concurrent callers with different keys', async () => {
+    const h = setup({ approval: 'hang' });
+    const results = await Promise.all(
+      [0, 1, 2, 3, 4].map((k) => h.call(goodParams({ idempotencyKey: `k${k}`, titles: ['a', 'b'] }))),
+    );
+    const accepted = results.filter((r) => r.status === 'accepted').length;
+    const refused = results.filter((r) => (r.error as { code?: string } | undefined)?.code === 'RESOURCE_EXHAUSTED').length;
+    expect(accepted).toBe(4);
+    expect(refused).toBe(1);
+  });
+
+  it('releases the reservation and records a denial when the detached run throws before spawning', async () => {
+    const g = guardsIn(tmp());
+    const h = setup({ guards: g });
+    // The approval-time repo re-derivation blows up (a git failure, not a
+    // non-repo answer) — nothing may stay booked or awaiting.
+    let calls = 0;
+    vi.mocked(git).mockImplementation(async () => {
+      calls += 1;
+      if (calls > 1) throw new Error('git exploded');
+      return { stdout: `${CALLER_REPO_ROOT}\n`, stderr: '', code: 0 };
+    });
+    await h.call(goodParams({ idempotencyKey: 'boom', titles: ['1', '2', '3', '4', '5', '6', '7', '8'] }));
+    await h.flush();
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+    expect(await h.call(goodParams({ idempotencyKey: 'boom' }))).toMatchObject({ status: 'denied', reason: 'unavailable' });
+    // All 8 slots are free again.
+    const next = setup({ guards: g });
+    expect((await next.call(goodParams({ idempotencyKey: 'after', titles: ['1', '2', '3', '4', '5', '6', '7', '8'] }))).status).toBe(
+      'accepted',
+    );
   });
 });

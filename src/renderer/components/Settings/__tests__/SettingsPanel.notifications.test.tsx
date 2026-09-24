@@ -139,18 +139,16 @@ describe('NotificationsView — initial render', () => {
       paneFlashEnabled: false,
       taskbarFlashEnabled: false,
     })));
-    // Find the aria-label="settings.paneRing" switch and assert it is aria-checked=false.
-    const m = html.match(/aria-checked="(true|false)"[^>]*aria-label="settings.paneRing"/);
-    expect(m).not.toBeNull();
-    expect(m && m[1]).toBe('false');
-
-    const m2 = html.match(/aria-checked="(true|false)"[^>]*aria-label="settings.paneFlash"/);
-    expect(m2).not.toBeNull();
-    expect(m2 && m2[1]).toBe('false');
-
-    const m3 = html.match(/aria-checked="(true|false)"[^>]*aria-label="settings.taskbarFlash"/);
-    expect(m3).not.toBeNull();
-    expect(m3 && m3[1]).toBe('false');
+    // Find the aria-label="settings.paneRing" switch and assert it is
+    // aria-checked=false. Attribute order is the primitive's business, so the
+    // switch's opening tag is found first and its state read from it.
+    const switchState = (label: string): string | null => {
+      const tag = html.match(new RegExp(`<button[^>]*aria-label="${label}"[^>]*>`));
+      return tag ? (tag[0].match(/aria-checked="(true|false)"/)?.[1] ?? null) : null;
+    };
+    expect(switchState('settings.paneRing')).toBe('false');
+    expect(switchState('settings.paneFlash')).toBe('false');
+    expect(switchState('settings.taskbarFlash')).toBe('false');
   });
 });
 

@@ -199,12 +199,27 @@ export function IconChevronDir({ dir, size = 12 }: { dir: 'left' | 'right'; size
   );
 }
 
-/** Gear — workspace profile / project config badges. */
+/** Gear — settings entry point and workspace profile / project config badges.
+ *  An eight-tooth cog outline around a hub. The previous glyph (hub + eight
+ *  detached rays) read as a sun / brightness control, not as settings.
+ *  At 10px and below (the 9px workspace badges) eight teeth and a hub blur
+ *  into a smudge, so small sizes draw a ring with six short teeth on a
+ *  heavier stroke instead. */
 export function IconGear({ size = 14 }: { size?: number }) {
+  if (size <= 10) {
+    return (
+      <Icon size={size}>
+        <g strokeWidth="1.8">
+          <circle cx="7" cy="7" r="3.2" />
+          <path d="M7 1.4v2.4M7 10.2v2.4M2.15 4.2l2.08 1.2M9.77 8.6l2.08 1.2M2.15 9.8l2.08-1.2M9.77 5.4l2.08-1.2" />
+        </g>
+      </Icon>
+    );
+  }
   return (
     <Icon size={size}>
-      <circle cx="7" cy="7" r="2" />
-      <path d="M7 1.8v1.6M7 10.6v1.6M1.8 7h1.6M10.6 7h1.6M3.3 3.3l1.1 1.1M9.6 9.6l1.1 1.1M3.3 10.7l1.1-1.1M9.6 4.4l1.1-1.1" />
+      <path d="M5.86 2.75 L6.11 1.37 A5.7 5.7 0 0 1 7.89 1.37 L8.14 2.75 A4.4 4.4 0 0 1 9.2 3.19 L10.35 2.39 A5.7 5.7 0 0 1 11.61 3.65 L10.81 4.8 A4.4 4.4 0 0 1 11.25 5.86 L12.63 6.11 A5.7 5.7 0 0 1 12.63 7.89 L11.25 8.14 A4.4 4.4 0 0 1 10.81 9.2 L11.61 10.35 A5.7 5.7 0 0 1 10.35 11.61 L9.2 10.81 A4.4 4.4 0 0 1 8.14 11.25 L7.89 12.63 A5.7 5.7 0 0 1 6.11 12.63 L5.86 11.25 A4.4 4.4 0 0 1 4.8 10.81 L3.65 11.61 A5.7 5.7 0 0 1 2.39 10.35 L3.19 9.2 A4.4 4.4 0 0 1 2.75 8.14 L1.37 7.89 A5.7 5.7 0 0 1 1.37 6.11 L2.75 5.86 A4.4 4.4 0 0 1 3.19 4.8 L2.39 3.65 A5.7 5.7 0 0 1 3.65 2.39 L4.8 3.19 A4.4 4.4 0 0 1 5.86 2.75 Z" />
+      <circle cx="7" cy="7" r="1.9" />
     </Icon>
   );
 }
@@ -388,4 +403,53 @@ export function IconRemoteDevices({ size = 14 }: { size?: number }) {
     <rect x="9" y="5.5" width="4" height="7" rx=".8" />
     <path d="M10.7 10.8h.6" />
   </Icon>;
+}
+
+/** Worktree — a branch that lives in its own checkout: the branch glyph's
+ *  side node boxed. Replaces the ⊕ text mark on the sidebar's git line. */
+export function IconWorktree({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <circle cx="4" cy="3.4" r="1.5" />
+      <circle cx="4" cy="10.6" r="1.5" />
+      <line x1="4" y1="4.9" x2="4" y2="9.1" />
+      <rect x="8.2" y="3.4" width="3.8" height="3.8" rx="0.8" />
+      <path d="M8.2 5.3 H6.8 a2 2 0 0 0 -2 2 V9" />
+    </Icon>
+  );
+}
+
+/** Fan-out — one node splitting into three. Marks a workspace a fan-out
+ *  created (sidebar task rows, provenance). */
+export function IconFanOut({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <circle cx="2.8" cy="7" r="1.3" />
+      <path d="M4.1 7 H6 L10.6 3" />
+      <line x1="6" y1="7" x2="10.6" y2="7" />
+      <path d="M6 7 L10.6 11" />
+    </Icon>
+  );
+}
+
+/** Corner up-left — "go up to the parent". The task workspace's link back to
+ *  the workspace that fanned it out. */
+export function IconCornerUpLeft({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <polyline points="5.4,2.8 2.6,5.6 5.4,8.4" />
+      <path d="M2.6 5.6 H8.4 a2.8 2.8 0 0 1 2.8 2.8 V11.4" />
+    </Icon>
+  );
+}
+
+/** Vertical ellipsis — an overflow menu trigger. */
+export function IconMoreVertical({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <line x1="7" y1="3" x2="7" y2="3.1" />
+      <line x1="7" y1="7" x2="7" y2="7.1" />
+      <line x1="7" y1="11" x2="7" y2="11.1" />
+    </Icon>
+  );
 }

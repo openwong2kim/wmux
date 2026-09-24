@@ -54,6 +54,8 @@ interface TaskMeta {
   channelArchived: boolean;
   /** F11 — closed면 close/PR 버튼을 감춘다(worktree 제거됨·닫을 것 없음). */
   status: 'open' | 'closed';
+  /** A detached task is closed but keeps its worktree — its diff is still live. */
+  detached: boolean;
 }
 
 // F10 — diff 코멘트 역조회(미션 채널의 diff-comment 앵커 메시지).
@@ -187,6 +189,7 @@ async function resolveTaskMeta(taskId: string, verifiedWorkspaceId: string): Pro
         worktreePath?: string;
         branch?: string;
         missionChannelId?: string;
+        detachedAt?: number;
       }>;
     };
     const task = res?.tasks?.find((t) => t.id === taskId);
@@ -216,6 +219,7 @@ async function resolveTaskMeta(taskId: string, verifiedWorkspaceId: string): Pro
       missionChannelId: channelId,
       channelArchived,
       status: task.status === 'closed' ? 'closed' : 'open',
+      detached: typeof task.detachedAt === 'number',
     };
   } catch {
     return null;
@@ -378,45 +382,78 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
   const pushToast = useStore((s) => s.pushToast);
   const t = useT();
 
+  // Bumped by every load() and by a successful Close. A load whose generation
+  // is no longer current drops its results, so a read that was in flight when
+  // Close succeeded cannot put back the 'open' meta or the removed hunks.
+  const loadGenRef = useRef(0);
+
   const load = useCallback(async () => {
+    const gen = ++loadGenRef.current;
+    const superseded = () => gen !== loadGenRef.current;
     setLoading(true);
     setError(null);
     setApplyMsg(null);
     setFailedProbes(new Set());
-    let readPath: string;
-    if (isTask) {
-      const m = await resolveTaskMeta(taskId, verifiedWorkspaceId);
-      if (!m) {
-        setError(t('diff.taskNotFound'));
+    try {
+      let readPath: string;
+      if (isTask) {
+        const m = await resolveTaskMeta(taskId, verifiedWorkspaceId);
+        if (superseded()) return;
+        if (!m) {
+          setError(t('diff.taskNotFound'));
+          setLoading(false);
+          return;
+        }
+        setMeta(m);
+        // A closed task's worktree has been removed: say so instead of reading a
+        // path that no longer exists (and offering its stale hunks for adoption).
+        if (m.status === 'closed' && !m.detached) {
+          setData(null);
+          setError(t('diff.taskClosed'));
+          setLoading(false);
+          return;
+        }
+        // F10: 코멘트 역조회(실패는 빈 목록 — diff 렌더는 막지 않음).
+        const loadedComments = await loadDiffComments(m.missionChannelId, taskId, verifiedWorkspaceId);
+        if (superseded()) return;
+        setComments(loadedComments);
+        readPath = m.worktreePath;
+      } else {
+        // 워크스페이스 모드 — 태스크 역참조·코멘트 없음. repoPath는 diff:resolveRepo가
+        // 정규화한 worktree toplevel이다.
+        readPath = repoPath;
+      }
+      const bridge = getDiffBridge();
+      if (!bridge) {
+        setError(t('diff.bridgeUnavailable'));
         setLoading(false);
         return;
       }
-      setMeta(m);
-      // F10: 코멘트 역조회(실패는 빈 목록 — diff 렌더는 막지 않음).
-      setComments(await loadDiffComments(m.missionChannelId, taskId, verifiedWorkspaceId));
-      readPath = m.worktreePath;
-    } else {
-      // 워크스페이스 모드 — 태스크 역참조·코멘트 없음. repoPath는 diff:resolveRepo가
-      // 정규화한 worktree toplevel이다.
-      readPath = repoPath;
-    }
-    const bridge = getDiffBridge();
-    if (!bridge) {
-      setError(t('diff.bridgeUnavailable'));
+      // workspace 모드는 명시 전달 — 자기 HEAD 대비 미커밋만(본 repo 매핑 없음).
+      // linked worktree에서 브랜치 커밋이 diff로 새는 것을 막는다(Codex P2).
+      const res = await bridge.read(readPath, undefined, isTask ? 'task' : 'workspace');
+      if (superseded()) return;
+      if (!res.ok) {
+        setError(res.error);
+        setData(null);
+      } else {
+        setData(res);
+        // Stay on the file being reviewed when it is still in the diff.
+        if (res.files.length > 0) {
+          setSelectedFile((prev) =>
+            prev && res.files.some((f) => f.path === prev) ? prev : res.files[0].path,
+          );
+        }
+      }
       setLoading(false);
-      return;
-    }
-    // workspace 모드는 명시 전달 — 자기 HEAD 대비 미커밋만(본 repo 매핑 없음).
-    // linked worktree에서 브랜치 커밋이 diff로 새는 것을 막는다(Codex P2).
-    const res = await bridge.read(readPath, undefined, isTask ? 'task' : 'workspace');
-    if (!res.ok) {
-      setError(res.error);
+    } catch (e) {
+      // A rejected IPC call must not leave the panel on "Loading" or surface as
+      // an unhandled rejection from the `void load()` callers.
+      if (superseded()) return;
+      setError(e instanceof Error ? e.message : String(e));
       setData(null);
-    } else {
-      setData(res);
-      if (res.files.length > 0) setSelectedFile(res.files[0].path);
+      setLoading(false);
     }
-    setLoading(false);
   }, [isTask, taskId, repoPath, verifiedWorkspaceId, t]);
 
   useEffect(() => {
@@ -506,12 +543,28 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     setFailedProbes(new Set());
     const snapshot: DiffTargetSnapshot = data.snapshot;
     const req: DiffApplyRequest = { taskId, snapshot, selections };
-    const res = await bridge.applyHunks(req, meta.worktreePath);
+    let res: DiffApplyResult;
+    try {
+      res = await bridge.applyHunks(req, meta.worktreePath);
+    } catch (e) {
+      setApplying(false);
+      setApplyMsg(e instanceof Error ? e.message : String(e));
+      return;
+    }
     setApplying(false);
     if (res.ok) {
-      setApplyMsg(t('diff.adopted', { count: res.appliedFiles.length }));
-      // 재열람: 채택분은 여전히 태스크 worktree diff에 보이며 "적용됨" 뱃지로 표시됨.
-      void load();
+      const adoptedMsg = t('diff.adopted', { count: res.appliedFiles.length });
+      // Adopting writes the target, not the task worktree, so the adopted hunks
+      // are still in the reloaded diff with unchanged digests and the stale-
+      // selection sweep would keep their ticks. Clear them so a second click
+      // cannot re-apply the same hunks.
+      setSelection({});
+      setSelectionDigest({});
+      // load() clears the message bar, so the confirmation goes up after it.
+      // The adopt did land in the target even if this reload fails; load()
+      // shows its own error in the panel body and never throws.
+      await load();
+      setApplyMsg(adoptedMsg);
     } else {
       if (res.code === 'probe' && res.failedProbes) {
         setFailedProbes(new Set(res.failedProbes.map((p) => `${p.path}#${p.hunkIndex}`)));
@@ -610,7 +663,16 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
       if (res.ok) {
         // F11과 정합: close가 커밋됐으니 로컬 meta도 closed로 — PR/닫기 버튼이
         // 제거된 worktree를 상대로 다시 눌리지 않게 즉시 숨긴다.
-        setMeta((m) => (m ? { ...m, status: 'closed' } : m));
+        setMeta((m) => (m ? { ...m, status: 'closed', detached: false } : m));
+        // The worktree is gone: drop its hunks and ticks so nothing can be
+        // adopted from it, and discard any load still in flight.
+        loadGenRef.current += 1;
+        setLoading(false);
+        setData(null);
+        setSelection({});
+        setSelectionDigest({});
+        setApplyMsg(null);
+        setError(t('diff.taskClosed'));
         pushToast({
           level: res.archivePending ? 'warn' : 'info',
           message: res.unmaterialized
@@ -624,6 +686,11 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
           level: 'warn',
           message: t('diff.closePreserved'),
         });
+        // Right after an adopt the agent's edits are still uncommitted in the
+        // worktree, so Close refuses. Keep the way out on screen (the toast
+        // times out): discard them there, or commit and open a PR.
+        const preserved = res.preservedWorktree ?? meta?.worktreePath;
+        if (preserved) setApplyMsg(t('diff.closePreservedAt', { path: preserved }));
       } else if (res.reason === 'unpushed') {
         pushToast({
           level: 'warn',
@@ -637,7 +704,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     } finally {
       setLifecycleBusy(null);
     }
-  }, [lifecycleBusy, taskId, verifiedWorkspaceId, pushToast, t]);
+  }, [lifecycleBusy, taskId, verifiedWorkspaceId, meta, pushToast, t]);
 
   // diff→오케스트레이터 질문: hunk 컨텍스트 블록 + 질문을 단일 메시지로
   // 조립해 pendingBrainPrompt 릴레이에 싣고 Orchestrator 탭으로 전환한다
@@ -769,10 +836,11 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
           {t('diff.reload')}
         </button>
         {/* 채택은 태스크 모드 전용 — 워크스페이스 모드는 repo 자신 대상이라 무의미(읽기 전용). */}
-        {isTask && (
+        {isTask && !(meta?.status === 'closed' && !meta.detached) && (
           <button
             className={`px-2 py-0.5 text-[10px] ${BTN_PRIMARY_WARM} disabled:opacity-40`}
             onClick={() => void handleAdopt()}
+            data-testid="diff-adopt"
             disabled={applying || selectedCount === 0}
             title={t('diff.adoptTitle')}
           >

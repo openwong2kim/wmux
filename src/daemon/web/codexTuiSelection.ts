@@ -58,7 +58,7 @@ export class CodexTuiSelectionTracker {
     const threadId = typeof params?.threadId === 'string' ? params.threadId : undefined;
     // Codex TUI creates ephemeral system threads for automatic title generation.
     // Their correlated replies are not foreground selection changes.
-    if (message.method === 'thread/start' && params?.ephemeral === true && params.threadSource === 'system') {
+    if (message.method === 'thread/start' && params?.ephemeral === true && ['system', 'thread_title'].includes(String(params.threadSource))) {
       if (this.pending?.id === message.id) this.close();
       return;
     }

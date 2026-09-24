@@ -3,6 +3,7 @@ import { isBrainPtyId } from '../../../shared/constants';
 import { getLeafPanes } from '../../../shared/paneUtils';
 import { stashedPaneLiveness, type StashedLiveness } from '../../../shared/paneStash';
 import { remoteAgentKey } from '../../../shared/remoteHosts';
+import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import type { StoreState } from '../index';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { HOOK_RUNNING_TTL_MS, isHookRunning, pickStashedRepresentativeSurface, resolveRemoteAgent } from './fleet';
@@ -14,6 +15,12 @@ export interface WorkspaceAgentRosterRow {
   surfaceId: string;
   ptyId: string;
   agentName: string;
+  /**
+   * #1481 — the agent kind for the row's identity glyph: the detector's slug
+   * when it reported one, else derived from the display name. Undefined for an
+   * unknown kind or a plain shell (the glyph falls back to a terminal mark).
+   */
+  slug?: string;
   paneName: string;
   surfaceTitle?: string;
   surfaceIndex: number;
@@ -122,6 +129,7 @@ export function selectWorkspaceAgentRoster(
           surfaceId: surface.id,
           ptyId: remoteAgentKey(hostId, sessionId),
           agentName: remoteAgent.agentName,
+          slug: agentDisplayToSlug(remoteAgent.agentName),
           paneName,
           surfaceTitle: nonEmpty(surface.title),
           surfaceIndex,
@@ -195,6 +203,7 @@ export function selectWorkspaceAgentRoster(
         surfaceId: surface.id,
         ptyId,
         agentName: agent.name,
+        slug: agent.slug ?? agentDisplayToSlug(agent.name),
         paneName,
         surfaceTitle: nonEmpty(surface.title),
         surfaceIndex,
@@ -275,6 +284,7 @@ export function selectWorkspaceAgentRoster(
       surfaceId: surface.id,
       ptyId,
       agentName: agent?.name ?? '',
+      slug: agent ? agent.slug ?? agentDisplayToSlug(agent.name) : undefined,
       paneName: paneDisplayName(
         state.paneLabel[leaf.id],
         showCoordinates ? computePaneAutoName(workspace.wsOrdinal ?? 0, leaf.ordinal ?? 0) : '',
@@ -322,6 +332,7 @@ function rowsEqual(
       a.surfaceId !== b.surfaceId ||
       a.ptyId !== b.ptyId ||
       a.agentName !== b.agentName ||
+      a.slug !== b.slug ||
       a.paneName !== b.paneName ||
       a.surfaceTitle !== b.surfaceTitle ||
       a.surfaceIndex !== b.surfaceIndex ||
@@ -389,6 +400,90 @@ export function createWorkspaceAgentRosterSelector(
     ) {
       return previous;
     }
+    previous = next;
+    return next;
+  };
+}
+
+/** #1481 — one agent in the collapsed-row summary. */
+export interface RosterChipAgent {
+  slug?: string;
+  agentName: string;
+  status: AgentStatus;
+}
+
+/** #1481 — what a collapsed workspace row shows instead of a bare count. */
+export interface RosterChip {
+  agentCount: number;
+  stashedCount: number;
+  /** Up to CHIP_MAX_GLYPHS agents, most urgent status first, grouped by status. */
+  agents: RosterChipAgent[];
+  /** Agents not drawn (agentCount - agents.length). */
+  extra: number;
+}
+
+export const CHIP_MAX_GLYPHS = 3;
+
+/** Lower = more urgent. Needs-you first, then error, running, done, idle. */
+export function chipStatusRank(status: AgentStatus): number {
+  switch (status) {
+    case 'awaiting_input':
+    case 'waiting':
+      return 0;
+    case 'error':
+      return 1;
+    case 'running':
+      return 2;
+    case 'complete':
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+/**
+ * Pure: pick the chip's agents from roster rows. Visible agents only (stashed
+ * panes keep their own glyph in the summary), stable-sorted by urgency so rows
+ * sharing a status sit together, capped at CHIP_MAX_GLYPHS.
+ */
+export function buildRosterChip(projection: WorkspaceAgentRosterProjection): RosterChip {
+  const visible = projection.rows.filter((row) => !row.stashed);
+  const ranked = visible
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => chipStatusRank(a.row.status) - chipStatusRank(b.row.status) || a.index - b.index)
+    .slice(0, CHIP_MAX_GLYPHS)
+    .map(({ row }) => ({ slug: row.slug, agentName: row.agentName, status: row.status }));
+  return {
+    agentCount: projection.agentCount,
+    stashedCount: projection.stashedCount,
+    agents: ranked,
+    extra: Math.max(0, projection.agentCount - ranked.length),
+  };
+}
+
+function chipsEqual(a: RosterChip, b: RosterChip): boolean {
+  if (a.agentCount !== b.agentCount || a.stashedCount !== b.stashedCount || a.extra !== b.extra) return false;
+  if (a.agents.length !== b.agents.length) return false;
+  for (let i = 0; i < a.agents.length; i += 1) {
+    const x = a.agents[i];
+    const y = b.agents[i];
+    if (x.slug !== y.slug || x.agentName !== y.agentName || x.status !== y.status) return false;
+  }
+  return true;
+}
+
+/**
+ * Reference-stable chip projection for the workspace row: re-renders the row
+ * only when a drawn glyph, its status or a count changes — never on terminal
+ * output or activity text.
+ */
+export function createWorkspaceRosterChipSelector(
+  workspaceId: string,
+): (state: StoreState) => RosterChip {
+  let previous: RosterChip | undefined;
+  return (state) => {
+    const next = buildRosterChip(selectWorkspaceAgentRoster(state, workspaceId));
+    if (previous && chipsEqual(previous, next)) return previous;
     previous = next;
     return next;
   };

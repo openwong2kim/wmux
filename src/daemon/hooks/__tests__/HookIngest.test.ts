@@ -1000,6 +1000,99 @@ describe('HookIngest', () => {
       expect(awaitingInput).toEqual(['pty-a']);
     });
   });
+
+  describe('Claude PermissionRequest is pane status only', () => {
+    // The approval card's keystroke map and screen check are built for an
+    // AskUserQuestion select. A permission dialog carries no question to show,
+    // so a card would let a phone press `1` on a Bash command nobody read.
+    function ingestTracking() {
+      const base = makeDeps([session({ id: 'pty-a' })]);
+      const awaitingInput: string[] = [];
+      const ingestWithCards = new HookIngest({
+        ...base.deps,
+        approvals: {
+          ...base.deps.approvals,
+          noteHookAwaitingInput: (input) => { awaitingInput.push(input.sessionId); },
+        },
+      });
+      return { ingestWithCards, awaitingInput, emitted: base.emitted };
+    }
+
+    it('broadcasts awaiting_input but raises no approval card', () => {
+      const { ingestWithCards, awaitingInput, emitted } = ingestTracking();
+
+      ingestWithCards.handle(makeSignal({
+        kind: 'agent.awaiting_input',
+        ptyId: 'pty-a',
+        payload: { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'rm -rf build' } },
+      }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+      expect(awaitingInput).toEqual([]);
+      expect(emitted.at(-1)?.data).toMatchObject({ status: 'awaiting_input', source: 'hook' });
+    });
+
+    it('an AskUserQuestion awaiting_input still raises its card', () => {
+      const { ingestWithCards, awaitingInput } = ingestTracking();
+
+      ingestWithCards.handle(makeSignal({
+        kind: 'agent.awaiting_input',
+        ptyId: 'pty-a',
+        payload: { hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion' },
+      }));
+
+      expect(awaitingInput).toEqual(['pty-a']);
+    });
+
+    const PERMISSION_REQUEST = { hook_event_name: 'PermissionRequest', tool_name: 'Bash' };
+    const awaitingEmits = (base: { emitted: Array<{ data: HookAgentEventData }> }) =>
+      base.emitted.filter((e) => e.data.status === 'awaiting_input');
+
+    it('an answer inside the window cancels the held awaiting (no late re-lock)', () => {
+      const base = makeDeps([session({ id: 'pty-a' })]);
+      const ing = new HookIngest(base.deps);
+      ing.handle(makeSignal({ kind: 'agent.awaiting_input', ptyId: 'pty-a', payload: PERMISSION_REQUEST }));
+      vi.advanceTimersByTime(300);
+      ing.noteAnswered('pty-a', 'claude');
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
+      expect(awaitingEmits(base)).toEqual([]);
+    });
+
+    it('subagent tool activity during the window does not cancel it', () => {
+      const base = makeDeps([session({ id: 'pty-a' })]);
+      const ing = new HookIngest(base.deps);
+      ing.handle(makeSignal({ kind: 'agent.awaiting_input', ptyId: 'pty-a', payload: PERMISSION_REQUEST }));
+      ing.handle(makeSignal({ kind: 'agent.activity', ptyId: 'pty-a', payload: { tool_name: 'Grep' } }));
+      ing.notePaneWorking('pty-a', 'claude');
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(awaitingEmits(base)).toHaveLength(1);
+    });
+
+    it('the hook and the detector reporting one dialog produce one awaiting broadcast', () => {
+      const base = makeDeps([session({ id: 'pty-a' })]);
+      const ing = new HookIngest(base.deps);
+      ing.handle(makeSignal({ kind: 'agent.awaiting_input', ptyId: 'pty-a', payload: PERMISSION_REQUEST }));
+      vi.advanceTimersByTime(100);
+      const arb = ing.arbitrateDetector('pty-a', { agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested' });
+      expect(arb.decision).toBe('pending');
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
+      const detectorAwaiting = base.detectorEmitted.filter((e) => e.data.status === 'awaiting_input');
+      expect(awaitingEmits(base).length + detectorAwaiting.length).toBe(1);
+    });
+
+    it('leaves the Codex PermissionRequest card path as it was', () => {
+      const { ingestWithCards, awaitingInput } = ingestTracking();
+
+      ingestWithCards.handle(makeSignal({
+        kind: 'agent.awaiting_input',
+        agent: 'codex',
+        ptyId: 'pty-a',
+        payload: { hook_event_name: 'PermissionRequest', tool_name: 'Bash' },
+      }));
+
+      expect(awaitingInput).toEqual(['pty-a']);
+    });
+  });
 });
 
 describe('resolveSessionIdForSignal', () => {

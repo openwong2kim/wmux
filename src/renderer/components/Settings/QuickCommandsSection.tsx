@@ -1,8 +1,13 @@
 import { useEffect, useState } from 'react';
 import type { QuickCommandSnapshot } from '../../../shared/quickCommands';
+import { useT } from '../../hooks/useT';
+import Button from '../ui/Button';
+import Input from '../ui/Input';
+import { SettingsSection } from './SettingsLayout';
 
 /** Reusable instructions are copied/inserted for review, never executed by saving. */
 export function QuickCommandsSection(): React.ReactElement {
+  const t = useT();
   const [snapshot, setSnapshot] = useState<QuickCommandSnapshot | null>(null);
   const [title, setTitle] = useState('');
   const [text, setText] = useState('');
@@ -13,7 +18,7 @@ export function QuickCommandsSection(): React.ReactElement {
   async function refresh() {
     setBusy(true);
     try { setSnapshot(await window.electronAPI.quickCommands.list()); setError(''); }
-    catch { setError('Could not read quick commands.'); }
+    catch { setError(t('settings.quickCommandsReadError')); }
     finally { setBusy(false); }
   }
   useEffect(() => { void refresh(); }, []);
@@ -24,42 +29,43 @@ export function QuickCommandsSection(): React.ReactElement {
       setError(''); setEditing(null); setTitle(''); setText('');
     } catch {
       setSnapshot(null);
-      setError('The list may have changed elsewhere. Refresh and review before saving again. Your editor text is retained.');
+      setError(t('settings.quickCommandsSaveConflict'));
     } finally { setBusy(false); }
   }
-  return <section className="mt-5 border-t border-[var(--border-subtle)] pt-4">
-    <div className="flex items-center justify-between gap-2">
-      <h3 className="text-sm text-[var(--text-main)]">Quick commands</h3>
-      <button type="button" disabled={busy} onClick={() => void refresh()} className="text-xs text-[var(--text-subtle)]">Refresh</button>
-    </div>
-    <p className="mt-1 text-xs text-[var(--text-muted)]">Shared with paired phones on this Mac. Copy or insert instructions, then review before sending.</p>
-    {error && <p role="alert" className="mt-2 text-xs text-[var(--text-main)]">{error}</p>}
-    <div className="mt-3 divide-y divide-[var(--border-subtle)]">
-      {snapshot?.commands.map(command => <div key={command.id} className="py-2">
-        <div className="flex items-center justify-between gap-3">
-          <span className="text-xs text-[var(--text-main)]">{command.title}</span>
-          <div className="flex gap-3 text-xs text-[var(--text-subtle)]">
-            <button type="button" onClick={() => { void navigator.clipboard.writeText(command.text).then(() => setCopied(command.id)).catch(() => setError('Could not copy the command.')); }}>{copied === command.id ? 'Copied' : 'Copy'}</button>
-            <button type="button" disabled={busy} onClick={() => { setEditing(command.id); setTitle(command.title); setText(command.text); }}>Edit</button>
-            <button type="button" disabled={busy} onClick={() => void save({ ...snapshot, commands: snapshot.commands.filter(row => row.id !== command.id) })}>Delete</button>
-          </div>
+  const canSave = !!snapshot && !busy && !!title.trim() && !!text.trim();
+  return <SettingsSection
+    title={t('settings.quickCommands')}
+    description={t('settings.quickCommandsDesc')}
+    action={<Button variant="ghost" size="sm" disabled={busy} onClick={() => void refresh()}>{t('settings.quickCommandsRefresh')}</Button>}
+    data-testid="quick-commands"
+  >
+      {error && <p role="alert" className="settings-note" data-tone="danger">{error}</p>}
+      {snapshot?.commands.map(command => <div key={command.id} className="ui-row" data-quick-command={command.id}>
+        <div className="ui-row-text">
+          <p className="ui-row-title truncate">{command.title}</p>
+          {/* The instruction text is what gets pasted: machine evidence, mono. */}
+          <p className="ui-row-detail truncate font-mono">{command.text}</p>
         </div>
-        <p className="mt-1 truncate text-xs text-[var(--text-muted)]">{command.text}</p>
+        <div className="flex shrink-0 gap-1">
+          <Button variant="ghost" size="sm" onClick={() => { void navigator.clipboard.writeText(command.text).then(() => setCopied(command.id)).catch(() => setError(t('settings.quickCommandsCopyError'))); }}>{copied === command.id ? t('settings.quickCommandsCopied') : t('settings.quickCommandsCopy')}</Button>
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => { setEditing(command.id); setTitle(command.title); setText(command.text); }}>{t('settings.quickCommandsEdit')}</Button>
+          <Button variant="destructive" size="sm" disabled={busy} onClick={() => void save({ ...snapshot, commands: snapshot.commands.filter(row => row.id !== command.id) })}>{t('settings.quickCommandsDelete')}</Button>
+        </div>
       </div>)}
-    </div>
-    <form className="mt-3 flex flex-col gap-2" onSubmit={event => {
-      event.preventDefault();
-      if (!snapshot || busy || !title.trim() || !text.trim()) return;
-      const command = { id: editing ?? crypto.randomUUID(), title: title.trim(), text };
-      const found = snapshot.commands.some(row => row.id === command.id);
-      void save({ ...snapshot, commands: found ? snapshot.commands.map(row => row.id === command.id ? command : row) : [...snapshot.commands, command] });
-    }}>
-      <input aria-label="Quick command title" placeholder="Title" value={title} maxLength={120} onChange={event => setTitle(event.target.value)} className="rounded border border-[var(--border-subtle)] bg-[var(--bg-base)] px-2 py-1 text-xs text-[var(--text-main)]" />
-      <textarea aria-label="Quick command instructions" placeholder="Reusable instructions" value={text} maxLength={16000} rows={4} onChange={event => setText(event.target.value)} className="resize-y rounded border border-[var(--border-subtle)] bg-[var(--bg-base)] px-2 py-2 text-xs text-[var(--text-main)]" />
-      <div className="flex gap-3 text-xs">
-        <button type="submit" disabled={busy || !snapshot || !title.trim() || !text.trim()} className="text-[var(--accent-amber)] disabled:opacity-40">{editing ? 'Save changes' : 'Add command'}</button>
-        {editing && <button type="button" onClick={() => { setEditing(null); setTitle(''); setText(''); }}>Cancel edit</button>}
-      </div>
-    </form>
-  </section>;
+      <form className="settings-block" onSubmit={event => {
+        event.preventDefault();
+        if (!snapshot || busy || !title.trim() || !text.trim()) return;
+        const command = { id: editing ?? crypto.randomUUID(), title: title.trim(), text };
+        const found = snapshot.commands.some(row => row.id === command.id);
+        void save({ ...snapshot, commands: found ? snapshot.commands.map(row => row.id === command.id ? command : row) : [...snapshot.commands, command] });
+      }}>
+        <Input aria-label={t('settings.quickCommandsTitleLabel')} placeholder={t('settings.quickCommandsTitlePlaceholder')} value={title} maxLength={120} onChange={event => setTitle(event.target.value)} className="settings-input" />
+        <textarea aria-label={t('settings.quickCommandsTextLabel')} placeholder={t('settings.quickCommandsTextPlaceholder')} value={text} maxLength={16000} rows={4} onChange={event => setText(event.target.value)} className="ui-input resize-y font-mono" style={{ fontSize: 11, padding: '8px 10px' }} />
+        <div className="flex justify-end gap-2">
+          {editing && <Button variant="ghost" size="md" onClick={() => { setEditing(null); setTitle(''); setText(''); }}>{t('settings.quickCommandsCancelEdit')}</Button>}
+          {/* Primary only while it can act: a disabled action is never the primary. */}
+          <Button type="submit" variant={canSave ? 'primary' : 'secondary'} size="md" disabled={!canSave}>{editing ? t('settings.quickCommandsSave') : t('settings.quickCommandsAdd')}</Button>
+        </div>
+      </form>
+  </SettingsSection>;
 }

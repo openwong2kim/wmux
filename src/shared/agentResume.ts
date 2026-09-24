@@ -76,7 +76,7 @@ export function resumeGrammarFor(agent: string): ResumeGrammar | undefined {
  * on resume, or a `--dangerously-skip-permissions` workflow drops back to prompts
  * after a reboot.
  */
-export type PermissionMode = 'bypassPermissions' | 'acceptEdits' | 'plan' | 'default';
+export type PermissionMode = 'bypassPermissions' | 'acceptEdits' | 'plan' | 'auto' | 'default';
 
 /**
  * permissionMode → the launch flag that re-enables it. `default` maps to no flag
@@ -87,6 +87,7 @@ export const PERMISSION_FLAG: Readonly<Record<PermissionMode, string>> = {
   bypassPermissions: '--dangerously-skip-permissions',
   acceptEdits: '--permission-mode acceptEdits',
   plan: '--permission-mode plan',
+  auto: '--permission-mode auto',
   default: '',
 };
 

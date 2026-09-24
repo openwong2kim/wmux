@@ -123,7 +123,7 @@ export class TaskPrService {
       return {
         ok: false,
         reason: 'gh-missing',
-        error: 'GitHub CLI(gh)가 설치되어 있지 않습니다',
+        error: 'GitHub CLI (gh) is not installed.',
         browseFallback: `브라우저에서 직접 PR을 생성하세요: 브랜치 ${branch}를 push 후 GitHub 비교 화면 이용`,
       };
     }
@@ -133,7 +133,7 @@ export class TaskPrService {
       return {
         ok: false,
         reason: 'gh-unauth',
-        error: 'GitHub CLI가 인증되지 않았습니다 — `gh auth login` 후 다시 시도하세요',
+        error: 'GitHub CLI is not signed in — run `gh auth login` and try again.',
         browseFallback: `또는 브라우저에서 브랜치 ${branch}로 직접 PR을 생성하세요`,
       };
     }
@@ -145,11 +145,11 @@ export class TaskPrService {
         return {
           ok: false,
           reason: 'dirty',
-          error: '미커밋 변경이 있습니다 — 커밋하지 않은 산출물은 PR에 포함되지 않습니다. 먼저 커밋하세요',
+          error: 'The worktree has uncommitted changes — they would not be in the PR. Commit them first.',
         };
       }
     } catch (err) {
-      return { ok: false, reason: 'error', error: `git status 실패: ${errMsg(err)}` };
+      return { ok: false, reason: 'error', error: `git status failed: ${errMsg(err)}` };
     }
 
     // origin remote 존재 검증(fork·다중 remote 자동 추측 금지 — §7·CL9).
@@ -160,11 +160,11 @@ export class TaskPrService {
         return {
           ok: false,
           reason: 'no-origin',
-          error: `origin remote가 없습니다(remotes: ${remotes.join(', ') || '없음'}) — head 추론을 자동 추측하지 않습니다. origin을 설정하세요`,
+          error: `No origin remote (remotes: ${remotes.join(', ') || 'none'}) — the PR head is not guessed. Set up origin.`,
         };
       }
     } catch (err) {
-      return { ok: false, reason: 'error', error: `git remote 조회 실패: ${errMsg(err)}` };
+      return { ok: false, reason: 'error', error: `git remote failed: ${errMsg(err)}` };
     }
 
     // ── ③ push -u origin -- {branch}(execFile argv + `--` 세퍼레이터 — F6: 브랜치명이
@@ -172,7 +172,7 @@ export class TaskPrService {
     try {
       await this.git(['push', '-u', 'origin', '--', branch], worktreePath);
     } catch (err) {
-      return { ok: false, reason: 'push-failed', error: `git push 실패: ${errMsg(err)}` };
+      return { ok: false, reason: 'push-failed', error: `git push failed: ${errMsg(err)}` };
     }
 
     // base = repo default(CL4·[J2대조]4 — fan-out 원본 브랜치 미기록이라 default 조회).
@@ -185,10 +185,10 @@ export class TaskPrService {
       );
       base = stdout.trim();
     } catch (err) {
-      return { ok: false, reason: 'pr-failed', error: `base 브랜치(repo default)를 확인할 수 없습니다: ${errMsg(err)}` };
+      return { ok: false, reason: 'pr-failed', error: `Could not determine the base branch (repo default): ${errMsg(err)}` };
     }
     if (!base) {
-      return { ok: false, reason: 'pr-failed', error: 'base 브랜치(repo default)를 확인할 수 없습니다(빈 응답) — origin의 defaultBranchRef가 없습니다' };
+      return { ok: false, reason: 'pr-failed', error: 'Could not determine the base branch (empty response) — origin has no defaultBranchRef.' };
     }
 
     // ── ④ gh pr create --head --title --body --base ──
@@ -205,7 +205,7 @@ export class TaskPrService {
       if (recovered) {
         return this.finalize(taskId, verifiedWorkspaceId, worktreePath, branch, recovered, true);
       }
-      return { ok: false, reason: 'pr-failed', error: `gh pr create 실패: ${errMsg(createErr)}` };
+      return { ok: false, reason: 'pr-failed', error: `gh pr create failed: ${errMsg(createErr)}` };
     }
 
     if (!prUrl || !WORKTASK_PR_URL_RE.test(prUrl)) {
@@ -217,7 +217,7 @@ export class TaskPrService {
       return {
         ok: false,
         reason: 'pr-failed',
-        error: `PR은 생성됐으나 URL을 파싱하지 못했습니다: ${prUrl || '(빈 출력)'}`,
+        error: `The PR was created but its URL could not be parsed: ${prUrl || '(empty output)'}`,
       };
     }
 

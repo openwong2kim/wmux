@@ -8,11 +8,35 @@ import { StatusClockUsage, StatusClockTime } from './StatusClock';
 import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspaceProjections';
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24 } from '../hitArea';
-import { IconGear } from '../icons';
+import { IconGear, IconCornerUpLeft } from '../icons';
 import { selectFleetPanes, sortFleetPanes, countNeedsAttention, type FleetPane } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 import DeckToggle from '../Deck/DeckToggle';
+import { FOCUS_RING } from '../focusRing';
+import type { StoreState } from '../../stores';
+import { displayWorkspaceName, resolveTaskLink } from '../../utils/fanoutProvenance';
+
+/**
+ * #1481 — when the active workspace is a fan-out task, the workspace that fanned
+ * it out (for the header's `↰ owner` link) and whether the active one is a task
+ * at all (its name is shown without the `wtask: ` prefix). A detached task, or
+ * one whose owner is gone, has no link.
+ */
+export function selectActiveTaskOwner(s: Pick<StoreState, 'workspaces' | 'activeWorkspaceId' | 'missionByPaneGroup' | 'fanoutLineage' | 'fanoutSpawnOwner'>): {
+  isTask: boolean;
+  ownerId: string;
+  ownerName: string;
+} {
+  const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+  const none = { isTask: false, ownerId: '', ownerName: '' };
+  if (!ws) return none;
+  const link = resolveTaskLink(s.missionByPaneGroup?.[ws.id], s.fanoutLineage?.[ws.id], s.fanoutSpawnOwner?.[ws.id]);
+  if (!link || link.detached) return none;
+  const owner = link.ownerId ? s.workspaces.find((w) => w.id === link.ownerId) : undefined;
+  if (!owner || owner.id === ws.id) return { ...none, isTask: true };
+  return { isTask: true, ownerId: owner.id, ownerName: displayWorkspaceName(owner.name, false) };
+}
 
 /**
  * Compute the unread notification count, excluding notifications whose
@@ -108,6 +132,7 @@ export default function StatusBar() {
   //  - unreadCount: computeUnreadCount를 셀렉터 안으로 옮겨 number를 직접 구독.
   //    number 반환이라 zustand 기본 Object.is 비교로 값이 바뀔 때만 리렌더된다.
   const activeWs = useStore(useShallow(selectActiveWorkspaceSummary));
+  const taskOwner = useStore(useShallow(selectActiveTaskOwner));
   const unreadCount = useStore((s) => computeUnreadCount(s.notifications, s.workspaces));
 
   // E5 — push unread count to main for the dock/tray badge whenever it changes.
@@ -191,7 +216,22 @@ export default function StatusBar() {
       {/* Left: current workspace (back at its original status-row spot —
           owner call) + transient indicators (prefix mode, branch, badge) */}
       <div className="flex items-center gap-3 min-w-0" style={noDrag}>
-        <span className="text-[13px] text-[var(--text-main)] font-medium truncate" {...tokenAttrs('textMain', 'text')}>{activeWs.name || 'wmux'}</span>
+        <span className="text-[13px] text-[var(--text-main)] font-medium truncate" {...tokenAttrs('textMain', 'text')}>{displayWorkspaceName(activeWs.name, taskOwner.isTask) || 'wmux'}</span>
+        {/* #1481 — inside a fan-out task, one hop back to the workspace that
+            fanned it out. A link, so steel on hover; muted at rest. */}
+        {taskOwner.ownerId && (
+          <button
+            type="button"
+            className={`flex min-w-0 items-center gap-1 rounded px-1 min-h-[24px] text-[11px] text-[var(--text-muted)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+            onClick={() => useStore.getState().setActiveWorkspace(taskOwner.ownerId)}
+            title={t('sidebar.tasks.backToOwner', { owner: taskOwner.ownerName })}
+            aria-label={t('sidebar.tasks.backToOwner', { owner: taskOwner.ownerName })}
+            data-task-owner-link
+          >
+            <span className="flex-none" aria-hidden="true"><IconCornerUpLeft size={11} /></span>
+            <span className="truncate max-w-[180px]">{taskOwner.ownerName}</span>
+          </button>
+        )}
         {prefixMode && (
           <span className="text-[var(--accent-red)] font-bold animate-pulse" {...tokenAttrs('danger', 'accent')}>
             [PREFIX]

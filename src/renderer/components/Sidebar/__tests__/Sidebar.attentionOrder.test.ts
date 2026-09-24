@@ -20,18 +20,18 @@ const sidebarSrc = readFileSync(resolve(SIDEBAR_DIR, 'Sidebar.tsx'), 'utf8');
 const miniSrc = readFileSync(resolve(SIDEBAR_DIR, 'MiniSidebar.tsx'), 'utf8');
 const itemSrc = readFileSync(resolve(SIDEBAR_DIR, 'WorkspaceItem.tsx'), 'utf8');
 
-describe('Sidebar — needs-you-first ordering wiring', () => {
-  it('imports and applies orderByAttention', () => {
-    expect(sidebarSrc).toMatch(/import\s+\{\s*orderByAttention\s*\}\s+from\s+['"]\.\/attentionOrder['"]/);
-    expect(sidebarSrc).toContain('orderByAttention(');
+describe('Sidebar — ordering wiring (#1481: manual / needs-you-first / recent)', () => {
+  it('imports and applies orderWorkspaces', () => {
+    expect(sidebarSrc).toMatch(/import\s+\{\s*orderWorkspaces\s*\}\s+from\s+['"]\.\/attentionOrder['"]/);
+    expect(sidebarSrc).toContain('orderWorkspaces(');
   });
 
-  it('reads the opt-in setting from the store', () => {
-    expect(sidebarSrc).toMatch(/useStore\(\(s\)\s*=>\s*s\.sidebarAttentionFirst\)/);
+  it('reads the sort mode from the store', () => {
+    expect(sidebarSrc).toMatch(/useStore\(\(s\)\s*=>\s*s\.sidebarSortMode\)/);
   });
 
-  it('renders the ordered list, not the filtered one', () => {
-    expect(sidebarSrc).toContain('orderedWorkspaces.map(');
+  it('builds the rendered tree from the ordered list, not the filtered one', () => {
+    expect(sidebarSrc).toMatch(/buildSidebarTree\(\s*orderedWorkspaces,/);
     expect(sidebarSrc).not.toContain('filteredWorkspaces.map(');
   });
 
@@ -42,10 +42,10 @@ describe('Sidebar — needs-you-first ordering wiring', () => {
   });
 });
 
-describe('MiniSidebar — needs-you-first ordering wiring', () => {
-  it('imports and applies orderByAttention', () => {
-    expect(miniSrc).toMatch(/import\s+\{\s*orderByAttention\s*\}\s+from\s+['"]\.\/attentionOrder['"]/);
-    expect(miniSrc).toContain('orderByAttention(');
+describe('MiniSidebar — ordering wiring', () => {
+  it('imports and applies orderWorkspaces', () => {
+    expect(miniSrc).toMatch(/import\s+\{\s*orderWorkspaces\s*\}\s+from\s+['"]\.\/attentionOrder['"]/);
+    expect(miniSrc).toContain('orderWorkspaces(');
   });
 
   it('renders the ordered rail', () => {
@@ -75,7 +75,10 @@ describe('drag reorder is paused while the ordering is on', () => {
   // disagree. Both surfaces gate `draggable` on the setting rather than each
   // shipping its own translation between the two orders.
   it('gates draggable on the setting, on both surfaces', () => {
-    expect(itemSrc).toContain('draggable={!sidebarAttentionFirst}');
+    // WorkspaceItem folds the sort mode and task rows into one flag (#1481).
+    expect(itemSrc).toContain("const sortPaused = useStore((s) => s.sidebarSortMode !== 'manual');");
+    expect(itemSrc).toContain('draggable={!reorderOff}');
     expect(miniSrc).toContain('draggable={!sidebarAttentionFirst}');
+    expect(miniSrc).toContain("const sidebarAttentionFirst = sidebarSortMode !== 'manual';");
   });
 });

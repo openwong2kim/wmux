@@ -299,6 +299,10 @@ const config: ForgeConfig = {
         copyDirSync(srcAddonApi, path.join(tempDir, 'node_modules', 'node-addon-api'));
       }
       copyKoffiInto(path.join(tempDir, 'node_modules'));
+      // Main keeps ws external to preserve its optional native-accelerator
+      // requires. Forge omits node_modules, so ship its dependency-free JS
+      // implementation explicitly, just like the other main externals.
+      copyDirSync(path.join(__dirname, 'node_modules', 'ws'), path.join(tempDir, 'node_modules', 'ws'));
 
       // 3. Repack asar with native files unpacked
       console.log('[postPackage] Repacking asar...');

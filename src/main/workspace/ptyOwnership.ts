@@ -26,6 +26,16 @@
 //     unforgeable fix is peer-PID, deferred). A ≤10s-stale answer does not
 //     change that threat model. Misses still round-trip, and the fail-closed
 //     '' contract at the call sites is preserved.
+//   - task-owner lane (fan-out T5, `assertCallerMayAccessPty`): a pane in a
+//     workspace that is an OPEN ledger task of the caller is reachable across
+//     workspaces. The caller is who MAIN says it is — a validated commander
+//     token, or the workspace main resolves the caller's walked ptyId to —
+//     never `params.workspaceId`. Like the assert posture, the mirror may only
+//     short-circuit the ALLOW (owner is one of the caller's task workspaces);
+//     anything else round-trips before the deny. Any lookup failure denies.
+//     A runaway brake for honest orchestrators, not a same-user boundary (#113):
+//     the walked ptyId arrives as a request field, and main can only check
+//     which workspace owns it, not that the caller is that pane.
 
 import type { BrowserWindow } from 'electron';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
@@ -59,12 +69,19 @@ function parseOwner(result: unknown): string | null {
 export async function resolvePtyOwnerWorkspace(
   getWindow: GetWindow,
   ptyId: string,
-  opts: { expected?: string } = {},
+  opts: { expected?: string | readonly string[] } = {},
 ): Promise<string | null> {
   const peeked = getWorkspaceMirror().peek();
   if (peeked && peeked.ageMs < STALE_TRUST_MS) {
     const owner = findWorkspaceIdForPty(ptyId, peeked.entries);
-    if (opts.expected !== undefined ? owner === opts.expected : owner !== null) {
+    const expected = opts.expected;
+    const agrees =
+      expected === undefined
+        ? owner !== null
+        : typeof expected === 'string'
+          ? owner === expected
+          : owner !== null && expected.includes(owner);
+    if (agrees) {
       return owner;
     }
   }
@@ -99,6 +116,61 @@ export async function assertWorkspaceOwnsPty(
         `(actual owner: ${owner ?? 'none'}). Cross-workspace terminal access is not allowed.`,
     );
   }
+}
+
+/** How a caller reached a pane: its own workspace, or an open task it owns. */
+export type PtyAccess =
+  | { lane: 'own' }
+  | { lane: 'task-owner'; taskWorkspaceId: string; callerWorkspaceId: string };
+
+/** The main-verified inputs for the task-owner lane. */
+export interface TaskOwnerLane {
+  /** The workspace a validated commander token is bound to (ctx.commanderWorkspace). */
+  commanderWorkspace?: string;
+  /** The caller's walked ptyId; main resolves its workspace. Never a workspace id. */
+  callerPtyId?: string;
+  /** The open task workspaces the given workspace owns, from the task ledger. */
+  openTaskWorkspacesOf: (ownerWorkspaceId: string) => string[];
+}
+
+/**
+ * `assertWorkspaceOwnsPty`, plus the fan-out owner lane (T5): a caller may
+ * also reach a pane whose workspace is an OPEN task it owns. See the TRUST
+ * MODEL note at the top of this file. Throws the original ownership error when
+ * neither lane allows, including when any lookup on the owner lane fails.
+ */
+export async function assertCallerMayAccessPty(
+  getWindow: GetWindow,
+  ptyId: string,
+  expectedWorkspaceId: string | undefined,
+  rpcName: string,
+  lane: TaskOwnerLane | undefined,
+): Promise<PtyAccess> {
+  try {
+    await assertWorkspaceOwnsPty(getWindow, ptyId, expectedWorkspaceId, rpcName);
+    return { lane: 'own' };
+  } catch (ownErr) {
+    const viaTask = lane ? await resolveTaskOwnerAccess(getWindow, ptyId, lane).catch(() => null) : null;
+    if (viaTask) return viaTask;
+    throw ownErr;
+  }
+}
+
+async function resolveTaskOwnerAccess(
+  getWindow: GetWindow,
+  ptyId: string,
+  lane: TaskOwnerLane,
+): Promise<PtyAccess | null> {
+  let callerWorkspaceId = lane.commanderWorkspace ?? '';
+  if (!callerWorkspaceId && lane.callerPtyId) {
+    callerWorkspaceId = (await resolvePtyOwnerWorkspace(getWindow, lane.callerPtyId)) ?? '';
+  }
+  if (!callerWorkspaceId) return null;
+  const taskWorkspaces = lane.openTaskWorkspacesOf(callerWorkspaceId);
+  if (taskWorkspaces.length === 0) return null;
+  const owner = await resolvePtyOwnerWorkspace(getWindow, ptyId, { expected: taskWorkspaces });
+  if (owner === null || owner === callerWorkspaceId || !taskWorkspaces.includes(owner)) return null;
+  return { lane: 'task-owner', taskWorkspaceId: owner, callerWorkspaceId };
 }
 
 /**

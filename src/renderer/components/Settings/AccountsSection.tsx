@@ -4,6 +4,14 @@ import type { CredentialStatus } from '../../../main/ipc/handlers/account.handle
 import type { AccountUsageEntry } from '../../../main/account/AccountUsageService';
 import { t } from '../../i18n';
 import { useT } from '../../hooks/useT';
+import { FOCUS_RING } from '../focusRing';
+import { IconRefresh, IconX } from '../icons';
+import Badge from '../ui/Badge';
+import Button from '../ui/Button';
+import Checkbox from '../ui/Checkbox';
+import Input from '../ui/Input';
+import SegmentedControl from '../ui/SegmentedControl';
+import { SettingsSection } from './SettingsLayout';
 
 type Vendor = 'claude' | 'codex';
 type AccountRow = Account & { status: CredentialStatus };
@@ -23,10 +31,11 @@ function fmtAge(fetchedAtMs: number | null): string {
   return t('accounts.ageHours', { n: Math.round(mins / 60) });
 }
 
-/** Amber once a window crosses 80% — the "getting close" cue (DESIGN.md: amber =
- *  alive + focus). Below that it stays muted so the panel isn't a wall of color. */
+/** The warning hue once a window crosses 80% — the "getting close" cue (amber
+ *  in the amber theme, by DESIGN.md's warning rule). Below that it stays muted
+ *  so the panel isn't a wall of color. */
 function pctColor(pct: number): string {
-  return pct >= 80 ? 'var(--accent-amber)' : 'var(--text-subtle)';
+  return pct >= 80 ? 'var(--accent-yellow)' : 'var(--text-sub)';
 }
 
 function UsageBit({ entry, onRefresh }: {
@@ -35,19 +44,20 @@ function UsageBit({ entry, onRefresh }: {
 }): React.ReactElement {
   const t = useT();
   const refreshBtn = (
-    <button
-      className="text-[10px] px-1 rounded text-[var(--text-subtle)] hover:text-[var(--accent-amber)] hover:bg-[var(--bg-overlay)]"
+    <Button
+      variant="icon"
       onClick={onRefresh}
       title={t('accounts.refreshUsageTitle')}
+      aria-label={t('accounts.refreshUsageTitle')}
     >
-      ↻
-    </button>
+      <IconRefresh size={12} />
+    </Button>
   );
   if (!entry) return refreshBtn;
   if (entry.status === 'ok' && entry.snapshot) {
     const s = entry.snapshot;
     return (
-      <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
+      <span className="flex items-center gap-1 text-[11px] text-[var(--text-sub)] tabular-nums">
         <span style={{ color: pctColor(s.sessionPct) }}>5h {s.sessionPct}%</span>
         <span className="text-[var(--text-subtle)]">·</span>
         <span style={{ color: pctColor(s.weeklyPct) }}>7d {s.weeklyPct}%</span>
@@ -62,7 +72,7 @@ function UsageBit({ entry, onRefresh }: {
     : entry.status === 'token-missing' ? '' // logged-out badge already conveys this
     : t('accounts.statusUnavailable');
   return (
-    <span className="flex items-center gap-1 text-[10px] text-[var(--text-subtle)]">
+    <span className="flex items-center gap-1 text-[11px] text-[var(--text-sub)] tabular-nums">
       {entry.snapshot && (
         <span title={t('accounts.lastKnownTitle')}>5h {entry.snapshot.sessionPct}% · 7d {entry.snapshot.weeklyPct}% ({t('accounts.stale')})</span>
       )}
@@ -83,15 +93,15 @@ function UsageBit({ entry, onRefresh }: {
 function statusBadge(status: CredentialStatus): React.ReactElement {
   if (status.loggedIn) {
     return (
-      <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ color: 'var(--accent-green)', background: 'color-mix(in srgb, var(--accent-green) 12%, transparent)' }}>
+      <Badge tone="success" className="shrink-0">
         {status.subscriptionType ? status.subscriptionType : t('accounts.loggedIn')}
-      </span>
+      </Badge>
     );
   }
   return (
-    <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ color: 'var(--accent-red)', background: 'color-mix(in srgb, var(--accent-red) 12%, transparent)' }}>
+    <Badge tone="danger" className="shrink-0">
       {t('accounts.loggedOut')}
-    </span>
+    </Badge>
   );
 }
 
@@ -157,52 +167,50 @@ function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: 
   }, [vendor, name, share, commit]);
 
   return (
-    <div className="mt-2 p-3 rounded-[7px]" style={{ background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}>
+    <div className="settings-row" data-account-wizard>
       {phase === 'form' && (
-        <div className="flex flex-col gap-2">
-          <div className="flex gap-2">
-            {(['claude', 'codex'] as const).map((v) => (
-              <button
-                key={v}
-                className="px-2 py-1 text-xs rounded transition-colors"
-                style={vendor === v
-                  ? { color: 'var(--accent-amber)', background: 'color-mix(in srgb, var(--accent-amber) 14%, transparent)' }
-                  : { color: 'var(--text-muted)', background: 'var(--bg-overlay)' }}
-                onClick={() => setVendor(v)}
-              >
-                {v === 'claude' ? 'Claude' : 'Codex'}
-              </button>
-            ))}
-          </div>
-          <input
-            className="px-2 py-1 text-xs rounded bg-[var(--bg-overlay)] text-[var(--text-main)] outline-none"
+        <div className="flex flex-col gap-3">
+          <SegmentedControl
+            value={vendor}
+            onValueChange={setVendor}
+            ariaLabel={t('accounts.addAccount')}
+            options={[
+              { value: 'claude', label: 'Claude' },
+              { value: 'codex', label: 'Codex' },
+            ]}
+          />
+          <Input
+            className="settings-input"
             placeholder={t('accounts.namePlaceholder')}
+            aria-label={t('accounts.namePlaceholder')}
             value={name}
             onChange={(e) => setName(e.target.value)}
             autoFocus
           />
-          <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
-            <input type="checkbox" checked={share} onChange={(e) => setShare(e.target.checked)} />
+          <label className="flex items-center gap-2 text-[13px] text-[var(--text-main)] cursor-pointer">
+            <Checkbox checked={share} onCheckedChange={setShare} aria-label={t('accounts.copyDefaultSettings')} />
             {t('accounts.copyDefaultSettings')}
           </label>
-          {error && <div className="text-[10px] text-[var(--accent-red)]">{error}</div>}
+          {error && <div className="text-[11px] text-[var(--accent-red)]">{error}</div>}
           <div className="flex justify-end gap-2">
-            <button className="px-2 py-1 text-xs rounded text-[var(--text-subtle)] hover:bg-[var(--bg-overlay)]" onClick={onCancel}>{t('common.cancel')}</button>
-            <button className="px-2 py-1 text-xs rounded" style={{ color: 'var(--accent-amber)', background: 'color-mix(in srgb, var(--accent-amber) 14%, transparent)' }} onClick={prepare}>{t('accounts.createAndLogin')}</button>
+            <Button variant="ghost" size="md" onClick={onCancel}>{t('common.cancel')}</Button>
+            <Button variant="primary" size="md" onClick={prepare}>{t('accounts.createAndLogin')}</Button>
           </div>
         </div>
       )}
       {phase === 'login' && prep && (
-        <div className="flex flex-col gap-2">
-          <div className="text-xs text-[var(--text-main)]">
+        <div className="flex flex-col gap-3">
+          <div className="text-[13px] text-[var(--text-main)]">
             {vendor === 'claude' ? t('accounts.runLoginCommandClaude') : t('accounts.runLoginCommand')}
           </div>
           <div className="flex items-center gap-2">
-            <code className="flex-1 px-2 py-1 text-[11px] rounded bg-[var(--bg-overlay)] text-[var(--accent-blue)] font-mono truncate" title={prep.loginCommand}>
+            {/* The login command is machine evidence: mono. */}
+            <code className="ui-code flex-1 truncate" style={{ fontSize: 11, padding: '6px 8px' }} title={prep.loginCommand}>
               {prep.loginCommand}
             </code>
-            <button
-              className="px-2 py-1 text-[10px] rounded text-[var(--text-subtle)] hover:bg-[var(--bg-overlay)]"
+            <Button
+              variant="secondary"
+              size="md"
               onClick={() => {
                 void window.clipboardAPI?.writeText(prep.loginCommand);
                 setCopied(true);
@@ -210,41 +218,40 @@ function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: 
               }}
             >
               {copied ? t('common.copied') : t('common.copy')}
-            </button>
+            </Button>
           </div>
           {share && (
-            <div className="text-[10px] text-[var(--text-muted)]">
+            <div className="text-[11px] text-[var(--text-sub)]">
               {t('accounts.independentProfile')}
             </div>
           )}
           {!prep.credentialReadSupported && (
-            <div className="text-[10px] text-[var(--text-muted)]">
+            <div className="text-[11px] text-[var(--text-sub)]">
               {t('accounts.macosManualLogin')}
             </div>
           )}
           {prep.credentialReadSupported && !pollTimedOut ? (
-            <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
+            <div className="flex items-center gap-2 text-[11px] text-[var(--text-sub)]">
+              {/* Amber = alive: the one live wait on this surface. */}
               <span className="inline-block w-2 h-2 rounded-full animate-pulse" style={{ background: 'var(--accent-amber)' }} />
               {t('accounts.waitingForLogin')}
             </div>
           ) : null}
-          {error && <div className="text-[10px] text-[var(--accent-red)]">{error}</div>}
+          {error && <div className="text-[11px] text-[var(--accent-red)]">{error}</div>}
           <div className="flex justify-end gap-2">
-            <button className="px-2 py-1 text-xs rounded text-[var(--text-subtle)] hover:bg-[var(--bg-overlay)]" onClick={() => { stopPoll(); onCancel(); }}>{t('common.cancel')}</button>
+            <Button variant="ghost" size="md" onClick={() => { stopPoll(); onCancel(); }}>{t('common.cancel')}</Button>
             {(pollTimedOut || !prep.credentialReadSupported) && (
-              <button className="px-2 py-1 text-xs rounded" style={{ color: 'var(--accent-amber)', background: 'color-mix(in srgb, var(--accent-amber) 14%, transparent)' }} onClick={() => { stopPoll(); commit(prep.configDir); }}>
+              <Button variant="primary" size="md" onClick={() => { stopPoll(); commit(prep.configDir); }}>
                 {t('accounts.iveLoggedIn')}
-              </button>
+              </Button>
             )}
           </div>
         </div>
       )}
       {phase === 'done' && (
-        <div className="flex flex-col gap-2">
-          <div className="text-xs" style={{ color: 'var(--accent-green)' }}>{t('accounts.accountAdded')}</div>
-          <div className="flex justify-end">
-            <button className="px-2 py-1 text-xs rounded" style={{ color: 'var(--accent-amber)', background: 'color-mix(in srgb, var(--accent-amber) 14%, transparent)' }} onClick={onDone}>{t('common.done')}</button>
-          </div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-[13px]" style={{ color: 'var(--accent-green)' }}>{t('accounts.accountAdded')}</div>
+          <Button variant="primary" size="md" onClick={onDone}>{t('common.done')}</Button>
         </div>
       )}
     </div>
@@ -334,18 +341,19 @@ export function AccountsSection(): React.ReactElement | null {
   };
 
   return (
-    <div className="flex flex-col gap-1">
-      <div data-setting-id="claudeacct" className="text-[11px] uppercase tracking-wide text-[var(--text-muted)] mb-1 scroll-mt-4">{t('accounts.title')}</div>
-      {removeNotice && <div className="text-[10px] text-[var(--accent-amber)] mb-1">{removeNotice}</div>}
+    // No heading: the Accounts page title already names this, its only group.
+    <SettingsSection id="claudeacct">
+      {removeNotice && <p className="settings-note">{removeNotice}</p>}
       {loaded && rows.length === 0 && !adding && (
-        <div className="text-xs text-[var(--text-muted)]">{t('accounts.empty')}</div>
+        <p className="settings-note">{t('accounts.empty')}</p>
       )}
       {rows.map((r) => (
-        <div key={r.id} className="flex items-center gap-2 py-1">
-          <span className="text-[10px] px-1 rounded bg-[var(--bg-overlay)] text-[var(--text-subtle)]">{r.vendor}</span>
+        <div key={r.id} className="ui-row" data-account-row={r.id}>
+          <Badge className="shrink-0">{r.vendor}</Badge>
           {editingId === r.id ? (
-            <input
-              className="flex-1 px-2 py-0.5 text-xs rounded bg-[var(--bg-overlay)] text-[var(--text-main)] outline-none"
+            <Input
+              className="settings-input flex-1"
+              aria-label={t('accounts.namePlaceholder')}
               value={editName}
               onChange={(e) => setEditName(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') rename(r.id); if (e.key === 'Escape') setEditingId(null); }}
@@ -353,7 +361,11 @@ export function AccountsSection(): React.ReactElement | null {
               autoFocus
             />
           ) : (
-            <button className="flex-1 text-left text-xs text-[var(--text-main)] truncate hover:underline" onClick={() => { setEditingId(r.id); setEditName(r.name); }}>
+            <button
+              type="button"
+              className={`flex-1 min-w-0 text-left text-[13px] font-medium text-[var(--text-main)] truncate hover:underline rounded ${FOCUS_RING}`}
+              onClick={() => { setEditingId(r.id); setEditName(r.name); }}
+            >
               {r.name}
             </button>
           )}
@@ -365,22 +377,38 @@ export function AccountsSection(): React.ReactElement | null {
             />
           )}
           {confirmRemove === r.id ? (
-            <>
-              <button className="text-[10px] text-[var(--accent-red)]" onClick={() => remove(r.id)}>{t('common.remove')}</button>
-              <button className="text-[10px] text-[var(--text-subtle)]" onClick={() => setConfirmRemove(null)}>{t('common.cancel')}</button>
-            </>
+            <span className="flex items-center gap-2 shrink-0">
+              <Button variant="ghost" size="md" onClick={() => setConfirmRemove(null)}>{t('common.cancel')}</Button>
+              <Button variant="danger" size="md" onClick={() => remove(r.id)}>{t('common.remove')}</Button>
+            </span>
           ) : (
-            <button className="text-[10px] text-[var(--text-subtle)] hover:text-[var(--accent-red)]" onClick={() => setConfirmRemove(r.id)} title={t('accounts.unregisterTitle')}>×</button>
+            <Button
+              variant="icon"
+              className="shrink-0"
+              onClick={() => setConfirmRemove(r.id)}
+              title={t('accounts.unregisterTitle')}
+              aria-label={t('accounts.unregisterTitle')}
+            >
+              <IconX size={12} />
+            </Button>
           )}
         </div>
       ))}
       {adding ? (
         <AddAccountWizard onDone={() => { setAdding(false); reload(); }} onCancel={() => setAdding(false)} />
       ) : (
-        <button className="self-start mt-1 px-2 py-1 text-xs rounded text-[var(--accent-amber)] hover:bg-[var(--bg-overlay)]" onClick={() => setAdding(true)}>
-          {t('accounts.addAccount')}
-        </button>
+        <div className="settings-row" style={{ minHeight: 0 }}>
+          {/* With no account yet, adding one is what the tab is for. */}
+          <Button
+            variant={rows.length === 0 ? 'primary' : 'secondary'}
+            size="md"
+            className="self-start"
+            onClick={() => setAdding(true)}
+          >
+            {t('accounts.addAccount')}
+          </Button>
+        </div>
       )}
-    </div>
+    </SettingsSection>
   );
 }

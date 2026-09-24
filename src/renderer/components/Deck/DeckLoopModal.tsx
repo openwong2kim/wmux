@@ -16,8 +16,13 @@
 //
 // 순수 UI: 모든 IPC는 주입된 api로만(jsdom 테스트 가능). Esc/백드롭 닫기.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { tokenAttrs } from '../../themes';
-import { FOCUS_RING } from '../focusRing';
+import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
+import Button from '../ui/Button';
+import Field from '../ui/Field';
+import Input from '../ui/Input';
+import Select from '../ui/Select';
+import Badge from '../ui/Badge';
+import { IconCheck, IconPlus, IconWarning, IconX } from '../icons';
 import type { LoopTier } from '../../../main/deck/deckLoopStateStore';
 import type { SkillCatalogEntry } from '../../../main/deck/skillCatalogScan';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
@@ -113,19 +118,6 @@ export function DeckLoopModal({
     };
   }, [api, cwd]);
 
-  useEffect(() => {
-    objectiveRef.current?.focus();
-  }, []);
-
-  // Esc 닫기 — 모달 전역.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
   const setStep = useCallback((idx: number, value: string) => {
     setSteps((prev) => prev.map((s, i) => (i === idx ? value : s)));
   }, []);
@@ -166,281 +158,233 @@ export function DeckLoopModal({
     onClose();
   };
 
-  const labelCls = 'text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]';
-  const inputCls =
-    'w-full text-[13px] rounded-[4px] px-2.5 py-1.5 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none';
-
+  // Focus, Escape (never mid-IME) and the backdrop come from ui/Dialog; the
+  // objective field takes focus on open.
   return (
-    <div
-      data-deck-loop-modal
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh]"
-      style={{ backgroundColor: 'var(--bg-overlay-scrim, rgba(0, 0, 0, 0.55))' }}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        className="w-[520px] max-w-[92vw] max-h-[72vh] overflow-y-auto rounded-[7px] px-5 py-4 space-y-3"
-        style={{
-          backgroundColor: 'var(--bg-mantle)',
-          border: '1px solid var(--border-soft)',
-          boxShadow: 'var(--shadow-modal-soft)',
-        }}
-        onMouseDown={(e) => e.stopPropagation()}
-        {...tokenAttrs('bgMantle', 'bg')}
+    <div className="contents" data-deck-loop-modal>
+      <Dialog
+        onClose={onClose}
+        closeOnBackdrop
+        width={520}
+        initialFocusRef={objectiveRef}
+        zIndexClassName="z-50"
       >
-        {/* 헤더 */}
-        <div className="flex items-center">
-          <span className="text-[13px] font-semibold text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>
-            {t('deck.loopModalTitle') || 'Start a loop'}
-          </span>
-          <div className="flex-1" />
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={t('deck.loopModalClose') || 'Close'}
-            className={`w-6 h-6 rounded text-[var(--text-muted)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
-            {...tokenAttrs('textMuted', 'text')}
-          >
-            ✕
-          </button>
-        </div>
+        <DialogHeader
+          title={t('deck.loopModalTitle') || 'Start a loop'}
+          closeLabel={t('deck.loopModalClose') || 'Close'}
+        />
+        <DialogBody>
+          <Field label={t('deck.loopObjective') || 'Objective'} layout="stacked">
+            <Input
+              ref={objectiveRef}
+              type="text"
+              data-deck-loop-objective-input
+              value={objective}
+              onChange={(e) => setObjective(e.target.value)}
+              placeholder={t('deck.loopObjectivePlaceholder') || 'What should this loop accomplish? e.g. keep CI green on this branch'}
+              className="w-full text-[13px]"
+            />
+          </Field>
 
-        {/* Objective */}
-        <div className="space-y-1">
-          <div className={labelCls}>{t('deck.loopObjective') || 'Objective'}</div>
-          <input
-            ref={objectiveRef}
-            type="text"
-            data-deck-loop-objective-input
-            value={objective}
-            onChange={(e) => setObjective(e.target.value)}
-            placeholder={t('deck.loopObjectivePlaceholder') || 'What should this loop accomplish? e.g. keep CI green on this branch'}
-            className={inputCls}
-            style={{ borderColor: 'var(--border-soft)' }}
-          />
-        </div>
-
-        {/* Steps — 매 iteration 절차(선택) + 스킬 자동완성 */}
-        <div className="space-y-1">
-          <div className={labelCls}>
-            {t('deck.loopSteps') || 'Steps — each iteration (optional)'}
-          </div>
-          {steps.map((step, idx) => {
-            const suggestions = suggestFor === idx ? filterSkillSuggestions(catalog, step) : [];
-            return (
-              <div key={idx} className="relative">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-4 text-right text-[11px] font-mono text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
-                    {idx + 1}.
-                  </span>
-                  <input
-                    type="text"
-                    data-deck-loop-step
-                    value={step}
-                    onChange={(e) => {
-                      setStep(idx, e.target.value);
-                      setSuggestFor(idx);
-                    }}
-                    onFocus={() => setSuggestFor(idx)}
-                    onBlur={() => window.setTimeout(() => setSuggestFor((v) => (v === idx ? -1 : v)), 150)}
-                    placeholder={t('deck.loopStepPlaceholder') || 'e.g. run /qa, or: fix whatever the tests report'}
-                    className={`${inputCls} text-[11px] font-mono`}
-                    style={{ borderColor: 'var(--border-soft)' }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => removeStep(idx)}
-                    aria-label={t('deck.loopStepRemove') || 'Remove step'}
-                    className={`shrink-0 w-6 h-6 rounded text-[var(--text-muted)] hover:text-[var(--accent-red)] ${FOCUS_RING}`}
-                    {...tokenAttrs('textMuted', 'text')}
-                  >
-                    ✕
-                  </button>
-                </div>
-                {/* "/..." 입력 시 pane 스킬/커맨드 자동완성. */}
-                {suggestions.length > 0 && (
-                  <div
-                    data-deck-loop-skill-suggest
-                    className="absolute left-6 right-8 mt-0.5 z-10 rounded-[4px] overflow-hidden"
-                    style={{ backgroundColor: 'var(--bg-base)', border: '1px solid var(--border-soft)' }}
-                  >
-                    {suggestions.map((s) => (
-                      <button
-                        key={`${s.source}:${s.name}`}
-                        type="button"
-                        onMouseDown={(e) => {
-                          e.preventDefault(); // blur 전에 선택 처리.
-                          setStep(idx, `/${s.name}`);
-                          setSuggestFor(-1);
+          {/* Steps — each iteration's procedure (optional) + skill autocomplete */}
+          <section>
+            <p className="ui-group-label">{t('deck.loopSteps') || 'Steps — each iteration (optional)'}</p>
+            <div className="flex flex-col gap-2">
+              {steps.map((step, idx) => {
+                const suggestions = suggestFor === idx ? filterSkillSuggestions(catalog, step) : [];
+                return (
+                  <div key={idx} className="relative">
+                    <div className="flex items-center gap-2">
+                      <span className="w-4 text-right text-[11px] tabular-nums text-[var(--text-sub)]">{idx + 1}.</span>
+                      <Input
+                        type="text"
+                        data-deck-loop-step
+                        value={step}
+                        onChange={(e) => {
+                          setStep(idx, e.target.value);
+                          setSuggestFor(idx);
                         }}
-                        className="block w-full text-left px-2 py-1 text-[11px] hover:bg-[rgba(var(--bg-surface-rgb),0.7)]"
+                        onFocus={() => setSuggestFor(idx)}
+                        onBlur={() => window.setTimeout(() => setSuggestFor((v) => (v === idx ? -1 : v)), 150)}
+                        placeholder={t('deck.loopStepPlaceholder') || 'e.g. run /qa, or: fix whatever the tests report'}
+                        className="min-w-0 flex-1 font-mono text-[12px]"
+                      />
+                      <Button
+                        variant="icon"
+                        className="w-8 h-8 shrink-0"
+                        onClick={() => removeStep(idx)}
+                        aria-label={t('deck.loopStepRemove') || 'Remove step'}
                       >
-                        <span className="font-mono text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>
-                          /{s.name}
-                        </span>
-                        {s.description && (
-                          <span className="ml-1.5 text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
-                            {s.description.slice(0, 60)}
-                          </span>
-                        )}
-                        <span className="ml-1.5 text-[9.5px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
-                          {s.source === 'project' ? (t('deck.loopSkillProject') || 'project') : (t('deck.loopSkillUser') || 'user')}
-                        </span>
-                      </button>
-                    ))}
+                        <IconX size={12} />
+                      </Button>
+                    </div>
+                    {/* "/..." shows the pane agent's skills and commands. */}
+                    {suggestions.length > 0 && (
+                      <div
+                        data-deck-loop-skill-suggest
+                        className="ui-popover absolute left-6 right-10 mt-1 z-10"
+                      >
+                        {suggestions.map((s) => (
+                          <button
+                            key={`${s.source}:${s.name}`}
+                            type="button"
+                            onMouseDown={(e) => {
+                              e.preventDefault(); // select before the input blurs.
+                              setStep(idx, `/${s.name}`);
+                              setSuggestFor(-1);
+                            }}
+                            className="ui-section-row w-full text-left text-[12px]"
+                          >
+                            <span className="font-mono text-[var(--text-main)]">/{s.name}</span>
+                            {s.description && (
+                              <span className="min-w-0 flex-1 truncate text-[var(--text-sub)]">
+                                {s.description.slice(0, 60)}
+                              </span>
+                            )}
+                            <Badge className="ml-auto">
+                              {s.source === 'project' ? (t('deck.loopSkillProject') || 'project') : (t('deck.loopSkillUser') || 'user')}
+                            </Badge>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                )}
+                );
+              })}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="self-start gap-1"
+                data-deck-loop-step-add
+                onClick={() => setSteps((prev) => [...prev, ''])}
+              >
+                <IconPlus size={12} />
+                {t('deck.loopStepAdd') || 'Add step'}
+              </Button>
+              <p className="m-0 text-[11px] leading-4 text-[var(--text-sub)]">
+                {t('deck.loopStepsHint') ||
+                  'Steps starting with "/" pick from the pane agent\'s skills — running one means the orchestrator types it into the pane.'}
+              </p>
+            </div>
+          </section>
+
+          <Field label={t('deck.loopDoneWhen') || 'Done when (optional)'} layout="stacked">
+            <textarea
+              data-deck-loop-donewhen
+              value={doneWhen}
+              onChange={(e) => setDoneWhen(e.target.value)}
+              rows={3}
+              placeholder={t('deck.loopDoneWhenPlaceholder') || 'One item per line — you tick these off; the loop is done when all pass.'}
+              className="ui-input w-full text-[13px] resize-y"
+            />
+          </Field>
+
+          {/* Run settings — fit on one row at the modal's width. */}
+          <div className="flex items-center gap-2 flex-wrap text-[13px]">
+            <Select
+              data-deck-loop-tier
+              value={tier}
+              onChange={(e) => setTier(e.target.value === 'continue' ? 'continue' : 'report')}
+              aria-label={t('deck.loopTier') || 'Autonomy'}
+            >
+              <option value="report">{t('deck.loopTierReport') || 'Report only'}</option>
+              <option value="continue">{t('deck.loopTierContinue') || 'Continue (may nudge panes)'}</option>
+            </Select>
+            <label
+              className="flex items-center gap-1.5 whitespace-nowrap text-[var(--text-sub)]"
+              title={t('deck.loopIterations') || 'How many times the loop may auto-wake to work before it pauses for you (one wake ≈ one iteration). Raise it for long unattended runs.'}
+            >
+              {t('deck.loopIterationsLabel') || 'pause after'}
+              <Input
+                type="number"
+                data-deck-loop-iterations
+                value={iterations}
+                min={1}
+                max={100}
+                onChange={(e) => setIterations(Number(e.target.value))}
+                className="text-[13px] tabular-nums"
+                style={{ width: 64 }}
+              />
+              {t('deck.loopIterationsUnit') || 'auto-wakes'}
+            </label>
+            <Select
+              data-deck-loop-cadence
+              value={cadence}
+              onChange={(e) => setCadence(Number(e.target.value))}
+              aria-label={t('deck.loopCadence') || 'Cadence'}
+            >
+              {CADENCE_OPTIONS.map((o) => (
+                <option key={o.minutes} value={o.minutes}>
+                  {t(o.labelKey) || o.fallback}
+                </option>
+              ))}
+            </Select>
+          </div>
+
+          {/* Effective-authority preview — a loop's real caps are
+              min(modeCeiling, tier), and press lives on the workspace MODE, not
+              this dialog. Spell out what THIS loop will actually be allowed to do
+              so the mode↔loop dependency isn't invisible (dogfood: users set up a
+              "continue" loop expecting unattended approvals, then it stalled on
+              the first prompt because the workspace was only Assist). */}
+          {mode && (() => {
+            const driving = tier === 'continue';
+            const drivePanes = driving && (mode === 'assist' || mode === 'danger');
+            const pressApprovals = driving && mode === 'danger';
+            const mark = (on: boolean) => (
+              <span aria-hidden="true" className={on ? 'text-[var(--text-main)]' : 'text-[var(--text-muted)]'}>
+                {on ? <IconCheck size={12} /> : <IconX size={12} />}
+              </span>
+            );
+            return (
+              <div
+                data-deck-loop-authority
+                data-mode={mode}
+                className="ui-notice flex flex-col gap-1.5 px-3.5 py-3 text-[13px]"
+              >
+                <p className="m-0 text-[var(--text-sub)]">
+                  {t('deck.loopAuthorityIntro') || 'This loop will'} · {t('deck.mode.label') || 'Mode'}: {t(`deck.mode.${mode}`) || mode}
+                </p>
+                <div className="flex items-center gap-4 text-[var(--text-main)]">
+                  <span className="flex items-center gap-1.5" data-deck-loop-auth-drive={drivePanes ? 'on' : 'off'}>
+                    {mark(drivePanes)} {t('deck.loopAuthDrive') || 'drive panes'}
+                  </span>
+                  <span className="flex items-center gap-1.5" data-deck-loop-auth-press={pressApprovals ? 'on' : 'off'}>
+                    {mark(pressApprovals)} {t('deck.loopAuthPress') || 'press approvals'}
+                  </span>
+                </div>
+                {mode === 'off' ? (
+                  <p className="m-0 flex items-start gap-1.5 text-[11px] leading-4" style={{ color: 'var(--accent-yellow)' }}>
+                    <span className="shrink-0 pt-0.5"><IconWarning size={12} /></span>
+                    {t('deck.loopAuthModeOff') ||
+                      'Workspace mode is Off — raise it to Assist or Danger, or the loop stays idle.'}
+                  </p>
+                ) : !driving ? (
+                  <p className="m-0 text-[11px] leading-4 text-[var(--text-sub)]">
+                    {t('deck.loopAuthReport') || 'Report only — it observes and summarizes; it won’t touch panes.'}
+                  </p>
+                ) : mode !== 'danger' ? (
+                  <p className="m-0 text-[11px] leading-4 text-[var(--text-sub)]">
+                    {t('deck.loopAuthRaiseAuto') ||
+                      'Raise the workspace to Danger to let it press approvals unattended.'}
+                  </p>
+                ) : null}
               </div>
             );
-          })}
-          <button
-            type="button"
-            data-deck-loop-step-add
-            onClick={() => setSteps((prev) => [...prev, ''])}
-            className={`text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
-            {...tokenAttrs('textSub', 'text')}
-          >
-            + {t('deck.loopStepAdd') || 'Add step'}
-          </button>
-          <div className="text-[10px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
-            {t('deck.loopStepsHint') ||
-              'Steps starting with "/" pick from the pane agent\'s skills — running one means the orchestrator types it into the pane.'}
-          </div>
-        </div>
+          })()}
 
-        {/* Done when */}
-        <div className="space-y-1">
-          <div className={labelCls}>{t('deck.loopDoneWhen') || 'Done when (optional)'}</div>
-          <textarea
-            data-deck-loop-donewhen
-            value={doneWhen}
-            onChange={(e) => setDoneWhen(e.target.value)}
-            rows={3}
-            placeholder={t('deck.loopDoneWhenPlaceholder') || 'One item per line — you tick these off; the loop is done when all pass.'}
-            className={`${inputCls} text-[11px] font-mono resize-y`}
-            style={{ borderColor: 'var(--border-soft)' }}
-          />
-        </div>
-
-        {/* 고급 행 — 모달 폭에선 한 줄에 여유 있게 들어간다. */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <select
-            data-deck-loop-tier
-            value={tier}
-            onChange={(e) => setTier(e.target.value === 'continue' ? 'continue' : 'report')}
-            className="text-[11px] font-mono rounded-[4px] px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
-            style={{ borderColor: 'var(--border-soft)' }}
-            aria-label={t('deck.loopTier') || 'Autonomy'}
-          >
-            <option value="report">{t('deck.loopTierReport') || 'Report only'}</option>
-            <option value="continue">{t('deck.loopTierContinue') || 'Continue (may nudge panes)'}</option>
-          </select>
-          <label
-            className="flex items-center gap-1 text-[11px] text-[var(--text-muted)]"
-            title={t('deck.loopIterations') || 'How many times the loop may auto-wake to work before it pauses for you (one wake ≈ one iteration). Raise it for long unattended runs.'}
-            {...tokenAttrs('textMuted', 'text')}
-          >
-            {t('deck.loopIterationsLabel') || 'pause after'}
-            <input
-              type="number"
-              data-deck-loop-iterations
-              value={iterations}
-              min={1}
-              max={100}
-              onChange={(e) => setIterations(Number(e.target.value))}
-              className="w-[56px] text-[11px] font-mono rounded-[4px] px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
-              style={{ borderColor: 'var(--border-soft)' }}
-            />
-            {t('deck.loopIterationsUnit') || 'auto-wakes'}
-          </label>
-          <select
-            data-deck-loop-cadence
-            value={cadence}
-            onChange={(e) => setCadence(Number(e.target.value))}
-            className="text-[11px] font-mono rounded-[4px] px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
-            style={{ borderColor: 'var(--border-soft)' }}
-            aria-label={t('deck.loopCadence') || 'Cadence'}
-          >
-            {CADENCE_OPTIONS.map((o) => (
-              <option key={o.minutes} value={o.minutes}>
-                {t(o.labelKey) || o.fallback}
-              </option>
-            ))}
-          </select>
-          <div className="flex-1" />
-          <button
-            type="button"
-            data-deck-loop-start
-            onClick={() => void handleStart()}
-            className={`shrink-0 whitespace-nowrap px-3 py-1 rounded-[4px] text-[12px] font-semibold bg-[var(--accent)] text-[var(--bg-base)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--surface-highlight)_22%,transparent),0_1px_2px_rgba(0,0,0,0.3)] hover:bg-[color-mix(in_srgb,var(--accent)_88%,var(--text-main))] transition-colors ${FOCUS_RING}`}
-            {...tokenAttrs('accent', 'bg')}
-          >
+          {error && (
+            <p role="alert" data-deck-loop-error className="ui-row-error text-[13px] leading-5 !m-0">
+              {error}
+            </p>
+          )}
+        </DialogBody>
+        <DialogFooter>
+          <Button size="md" variant="primary" data-deck-loop-start onClick={() => void handleStart()}>
             {t('deck.loopStart') || 'Start loop'}
-          </button>
-        </div>
-
-        {/* Effective-authority preview — a loop's real caps are
-            min(modeCeiling, tier), and press lives on the workspace MODE, not
-            this dialog. Spell out what THIS loop will actually be allowed to do
-            so the mode↔loop dependency isn't invisible (dogfood: users set up a
-            "continue" loop expecting unattended approvals, then it stalled on
-            the first prompt because the workspace was only Assist). */}
-        {mode && (() => {
-          const driving = tier === 'continue';
-          const drivePanes = driving && (mode === 'assist' || mode === 'danger');
-          const pressApprovals = driving && mode === 'danger';
-          const mark = (on: boolean) => (
-            <span
-              aria-hidden="true"
-              className={on ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}
-              {...(on ? tokenAttrs('accent', 'text') : tokenAttrs('textMuted', 'text'))}
-            >
-              {on ? '✓' : '✗'}
-            </span>
-          );
-          return (
-            <div
-              data-deck-loop-authority
-              data-mode={mode}
-              className="rounded-[5px] px-2.5 py-2 text-[11px] space-y-1 bg-[rgba(var(--bg-surface-rgb),0.5)]"
-            >
-              <div className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
-                {t('deck.loopAuthorityIntro') || 'This loop will'} · {t('deck.mode.label') || 'Mode'}: {t(`deck.mode.${mode}`) || mode}
-              </div>
-              <div className="flex items-center gap-4 font-mono text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')}>
-                <span className="flex items-center gap-1" data-deck-loop-auth-drive={drivePanes ? 'on' : 'off'}>
-                  {mark(drivePanes)} {t('deck.loopAuthDrive') || 'drive panes'}
-                </span>
-                <span className="flex items-center gap-1" data-deck-loop-auth-press={pressApprovals ? 'on' : 'off'}>
-                  {mark(pressApprovals)} {t('deck.loopAuthPress') || 'press approvals'}
-                </span>
-              </div>
-              {mode === 'off' ? (
-                <div className="text-[var(--accent)]" {...tokenAttrs('accent', 'text')}>
-                  {t('deck.loopAuthModeOff') ||
-                    'Workspace mode is Off — raise it to Assist or Danger, or the loop stays idle.'}
-                </div>
-              ) : !driving ? (
-                <div className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
-                  {t('deck.loopAuthReport') || 'Report only — it observes and summarizes; it won’t touch panes.'}
-                </div>
-              ) : mode !== 'danger' ? (
-                <div className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
-                  {t('deck.loopAuthRaiseAuto') ||
-                    'Raise the workspace to Danger to let it press approvals unattended.'}
-                </div>
-              ) : null}
-            </div>
-          );
-        })()}
-
-        {error && (
-          <div role="alert" data-deck-loop-error className="text-[11px] text-[var(--accent-red)]" {...tokenAttrs('danger', 'text')}>
-            {error}
-          </div>
-        )}
-      </div>
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   );
 }

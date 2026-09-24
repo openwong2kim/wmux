@@ -85,7 +85,7 @@ export function registerWorktaskHandlers(
       if (error) return { ok: false, taskId: '', reason: 'error' as const, error };
 
       const task = await resolveTask(daemonPort, taskId, verifiedWorkspaceId);
-      if (!task) return { ok: false, taskId, reason: 'error' as const, error: 'task:close: 태스크를 찾을 수 없음(projection 부재)' };
+      if (!task) return { ok: false, taskId, reason: 'error' as const, error: 'task:close: task not found (not in the task list).' };
 
       // F3 — close-only 라우팅: worktreePath 부재(미물질화 CX4) / 디스크 결측
       // (fs.existsSync false) / 본 repo 해석 불가(worktree 손상)면 remove 단계를
@@ -120,12 +120,12 @@ export function registerWorktaskHandlers(
       if (error) return { ok: false, reason: 'error' as const, error };
 
       const task = await resolveTask(daemonPort, taskId, verifiedWorkspaceId);
-      if (!task) return { ok: false, reason: 'error' as const, error: 'task:create-pr: 태스크를 찾을 수 없음' };
+      if (!task) return { ok: false, reason: 'error' as const, error: 'task:create-pr: task not found.' };
       if (!task.worktreePath || !task.branch) {
         return {
           ok: false,
           reason: 'error' as const,
-          error: 'task:create-pr: 미물질화 태스크(worktree·branch 부재)는 PR을 생성할 수 없습니다',
+          error: 'task:create-pr: this task has no worktree or branch yet, so there is nothing to open a PR from.',
         };
       }
       return prService.createPr({
@@ -247,12 +247,12 @@ function isUnderWorktreeRoot(worktreePath: string): boolean {
 
 /** {taskId, verifiedWorkspaceId} 방어적 파싱(렌더러 신뢰이나 형태 검증). */
 function parseTaskRef(raw: unknown): { taskId: string; verifiedWorkspaceId: string; error?: string } {
-  if (!raw || typeof raw !== 'object') return { taskId: '', verifiedWorkspaceId: '', error: '요청 객체가 필요합니다' };
+  if (!raw || typeof raw !== 'object') return { taskId: '', verifiedWorkspaceId: '', error: 'A request object is required.' };
   const r = raw as Record<string, unknown>;
   const taskId = typeof r.taskId === 'string' ? r.taskId : '';
   const verifiedWorkspaceId = typeof r.verifiedWorkspaceId === 'string' ? r.verifiedWorkspaceId : '';
-  if (!taskId) return { taskId, verifiedWorkspaceId, error: 'taskId가 필요합니다' };
-  if (!verifiedWorkspaceId) return { taskId, verifiedWorkspaceId, error: 'verifiedWorkspaceId가 필요합니다' };
+  if (!taskId) return { taskId, verifiedWorkspaceId, error: 'taskId is required.' };
+  if (!verifiedWorkspaceId) return { taskId, verifiedWorkspaceId, error: 'verifiedWorkspaceId is required.' };
   return { taskId, verifiedWorkspaceId };
 }
 

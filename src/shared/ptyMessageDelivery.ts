@@ -187,7 +187,7 @@ export function submitProfileForAgent(
  * is recognised here without touching this file — while the behavior tables
  * above stay explicit opt-in.
  */
-function resolveAgentSlug(agent?: string | null): AgentSlug | undefined {
+export function resolveAgentSlug(agent?: string | null): AgentSlug | undefined {
   if (!agent) return undefined;
   return agentDisplayToSlug(agent) ?? (isAgentSlug(agent) ? agent : undefined);
 }

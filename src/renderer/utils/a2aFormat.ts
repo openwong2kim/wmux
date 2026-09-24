@@ -17,8 +17,15 @@ const ESC_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 // eslint-disable-next-line no-control-regex
 const ESC_OTHER_RE = /\x1b[@-_]/g;
 
+// Repeat until nothing changes: removing one sequence can join the bytes
+// around it into a new one (`\x1b\x1b@[201~` → `\x1b[201~`).
 function stripEscapes(input: string): string {
-  return input.replace(ESC_CSI_RE, '').replace(ESC_OTHER_RE, '');
+  let out = input;
+  for (;;) {
+    const next = out.replace(ESC_CSI_RE, '').replace(ESC_OTHER_RE, '');
+    if (next === out) return out;
+    out = next;
+  }
 }
 
 /**
@@ -37,10 +44,43 @@ function safeName(name: string): string {
   return sanitizeA2aName(name);
 }
 
+// CR is dropped BEFORE escapes are stripped: dropped after, `\x1b\r[201~`
+// would pass the scan and then close up into `\x1b[201~`.
 function safeBody(message: string): string {
-  return stripEscapes(sanitizePtyText(message))
-    .replace(/\r/g, '')
+  return stripEscapes(sanitizePtyText(message).replace(/\r/g, ''))
     .replace(/\n/g, '\u2424');
+}
+
+/**
+ * Prefix carried by every body line when real newlines are kept. With the
+ * body spread over several lines, a sender could otherwise write its own
+ * `━━━ END ━━━` line followed by a fresh `━━━ WMUX A2A ━━━` / `From:` / `To:`
+ * block and forge a second envelope from someone else. A line that starts
+ * with this prefix can never be read as a delimiter or header line, so the
+ * guard needs no list of patterns to keep in sync with the envelope.
+ */
+export const A2A_BODY_LINE_PREFIX = '│ ';
+
+function safeMultilineBody(message: string): string {
+  return stripEscapes(sanitizePtyText(message).replace(/\r/g, ''))
+    .trimEnd()
+    .split('\n')
+    .map((line) => `${A2A_BODY_LINE_PREFIX}${line}`)
+    .join('\n');
+}
+
+export interface A2aFormatOptions {
+  /**
+   * Keep the body's line breaks as real newlines (each line prefixed with
+   * {@link A2A_BODY_LINE_PREFIX}) instead of folding them into `␤`. Only for a
+   * receiver that is a detected agent TUI: a shell would run each body line as
+   * its own command once the paste is submitted. Default: fold.
+   */
+  multiline?: boolean;
+}
+
+function formatBody(message: string, opts: A2aFormatOptions): string {
+  return opts.multiline ? safeMultilineBody(message) : safeBody(message).trimEnd();
 }
 
 /**
@@ -59,6 +99,7 @@ export function formatA2aMessage(
   to: string,
   message: string,
   priority?: A2aPriority,
+  opts: A2aFormatOptions = {},
 ): string {
   const priLine = priority && priority !== 'normal' ? ` [Priority: ${priority.toUpperCase()}]` : '';
   return [
@@ -67,7 +108,7 @@ export function formatA2aMessage(
     `From: ${safeName(from)}`,
     `To: ${safeName(to)}`,
     '',
-    safeBody(message).trimEnd(),
+    formatBody(message, opts),
     `━━━ END ━━━`,
     '',
   ].join('\n');
@@ -86,6 +127,7 @@ export function formatA2aBroadcast(
   from: string,
   message: string,
   priority?: A2aPriority,
+  opts: A2aFormatOptions = {},
 ): string {
   const priLine = priority && priority !== 'normal' ? ` [Priority: ${priority.toUpperCase()}]` : '';
   return [
@@ -93,7 +135,7 @@ export function formatA2aBroadcast(
     `━━━ WMUX A2A BROADCAST${priLine} ━━━`,
     `From: ${safeName(from)}`,
     '',
-    safeBody(message).trimEnd(),
+    formatBody(message, opts),
     `━━━ END ━━━`,
     '',
   ].join('\n');

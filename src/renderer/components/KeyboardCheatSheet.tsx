@@ -23,10 +23,14 @@
  * effect machinery, while the default export wires up timers and store
  * subscriptions.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useStore } from '../stores';
 import { useT } from '../hooks/useT';
 import { t as translate } from '../i18n';
+import Popover, { PopoverSection } from './ui/Popover';
+import Button from './ui/Button';
+import Checkbox from './ui/Checkbox';
+import { IconX } from './icons';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 export const CHEAT_SHEET_DURATION_MS = 30_000;
@@ -140,72 +144,72 @@ export function KeyboardCheatSheetView({
   translateLabel,
 }: KeyboardCheatSheetViewProps) {
   const clamped = Math.max(0, Math.min(1, progress));
+  const dontShowId = useId();
   return (
-    <div
+    <Popover
       role="region"
+      padded
       aria-label={title}
       data-testid="keyboard-cheat-sheet"
-      className="fixed bottom-4 right-4 z-[var(--z-cheatsheet)] w-[280px] rounded-[7px] shadow-lg overflow-hidden text-xs"
-      style={{
-        backgroundColor: 'var(--bg-mantle)',
-        border: '1px solid color-mix(in srgb, var(--text-main) 8%, transparent)',
-        color: 'var(--text-main)',
-      }}
+      className="fixed bottom-4 right-4 z-[var(--z-cheatsheet)] w-[280px] overflow-hidden"
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
       onFocus={onFocus}
       onBlur={onBlur}
     >
-      <div className="flex items-center justify-between px-3 py-2 font-semibold">
-        <span>{title}</span>
-        <button
-          type="button"
-          aria-label={dismissLabel}
-          onClick={onDismiss}
-          className="text-[color:var(--text-muted)] hover:text-[color:var(--text-main)] transition-colors"
-          data-testid="keyboard-cheat-sheet-close"
-        >
-          {'✕'}
-        </button>
-      </div>
-      <ul className="px-3 pb-2 space-y-1" data-testid="keyboard-cheat-sheet-list">
-        {shortcuts.map((entry) => (
-          <li key={`${entry.label}-${entry.combo}`} className="flex items-center justify-between gap-3">
-            <span className="truncate">{entry.literal ? entry.label : translateLabel(entry.label)}</span>
-            <kbd
-              className="font-mono text-[10px] px-1.5 py-0.5 rounded"
-              style={{
-                backgroundColor: 'color-mix(in srgb, var(--text-main) 8%, transparent)',
-                color: 'var(--text-main)',
-              }}
-              data-testid={`combo-${entry.label}`}
-            >
-              {entry.combo}
-            </kbd>
-          </li>
-        ))}
-      </ul>
-      <label className="flex items-center gap-2 px-3 pb-2 cursor-pointer select-none">
-        <input
-          type="checkbox"
-          checked={dontShowAgain}
-          onChange={(e) => onDontShowAgainChange(e.target.checked)}
-          aria-label={dontShowAgainLabel}
-          data-testid="keyboard-cheat-sheet-dont-show-again"
+      <PopoverSection
+        title={title}
+        action={
+          <Button
+            variant="icon"
+            className="-my-1 -mr-1 h-7 w-7 shrink-0"
+            aria-label={dismissLabel}
+            onClick={onDismiss}
+            data-testid="keyboard-cheat-sheet-close"
+          >
+            <IconX size={12} />
+          </Button>
+        }
+      >
+        <ul className="m-0 flex list-none flex-col gap-1.5 p-0" data-testid="keyboard-cheat-sheet-list">
+          {shortcuts.map((entry) => (
+            <li key={`${entry.label}-${entry.combo}`} className="flex items-center justify-between gap-3">
+              <span className="truncate text-[13px] leading-5">{entry.literal ? entry.label : translateLabel(entry.label)}</span>
+              <kbd className="ui-kbd" data-testid={`combo-${entry.label}`}>
+                {entry.combo}
+              </kbd>
+            </li>
+          ))}
+        </ul>
+      </PopoverSection>
+      <PopoverSection>
+        <div className="flex items-center gap-2">
+          <Checkbox
+            id={dontShowId}
+            checked={dontShowAgain}
+            onCheckedChange={onDontShowAgainChange}
+            aria-label={dontShowAgainLabel}
+            data-testid="keyboard-cheat-sheet-dont-show-again"
+          />
+          <label htmlFor={dontShowId} className="ui-note cursor-pointer select-none">
+            {dontShowAgainLabel}
+          </label>
+        </div>
+        {/* Inside the last section, so that section stays the popover's last
+            child and its bottom inset collapses; absolute, so it still spans
+            the card's bottom edge. */}
+        <div
+          aria-hidden="true"
+          className="absolute bottom-0 left-0 h-[2px]"
+          style={{
+            width: `${clamped * 100}%`,
+            backgroundColor: 'color-mix(in srgb, var(--text-main) 22%, transparent)',
+            transition: 'width 100ms linear',
+          }}
+          data-testid="keyboard-cheat-sheet-progress"
         />
-        <span className="text-[color:var(--text-muted)]">{dontShowAgainLabel}</span>
-      </label>
-      <div
-        aria-hidden="true"
-        className="h-[1px]"
-        style={{
-          width: `${clamped * 100}%`,
-          backgroundColor: 'var(--accent-blue)',
-          transition: 'width 100ms linear',
-        }}
-        data-testid="keyboard-cheat-sheet-progress"
-      />
-    </div>
+      </PopoverSection>
+    </Popover>
   );
 }
 
