@@ -851,6 +851,8 @@
   align-items: center;
   flex-shrink: 0;
   align-self: stretch;
+  justify-content: center;
+  min-width: 132px;
   margin: -10px -6px -10px 0;
   padding-left: 12px;
   border-left: 1px solid var(--surface-hairline);
