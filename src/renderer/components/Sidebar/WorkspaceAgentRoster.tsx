@@ -14,7 +14,7 @@ import { HIT_TARGET_24_ROW } from '../hitArea';
 import { timeAgo } from '../../utils/timeAgo';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { fleetIdleForMs, formatStaleMinutes, selectUnverifiablePaneMinutes } from '../../stores/selectors/fleet';
-import { AgentGlyph, StatusMarkView } from './AgentMarks';
+import { StatusMarkView } from './AgentMarks';
 import { selectSidebarUnseen } from '../../stores/selectors/sidebarSeen';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 
@@ -254,9 +254,7 @@ function WorkspaceRosterSummary({
       {groupChipAgents(agents).map((group, gi) => (
         <span key={`${group[0].status}-${gi}`} className="flex items-center gap-0.5" data-roster-chip-group={group[0].status}>
           {group[0].status !== 'idle' && <StatusMarkView status={group[0].status} quiet neutralRunning />}
-          {group.map((agent, ai) => (
-            <AgentGlyph key={ai} slug={agent.slug} name={agent.agentName} decorative />
-          ))}
+          <span>{group.length}</span>
         </span>
       ))}
       {extra > 0 && agents.length > 0 && <span data-roster-chip-extra>+{extra}</span>}
@@ -442,7 +440,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                   }}
                 >
                   {/* #1481 — status by shape (StatusMarkView) then identity by
-                      monogram (AgentGlyph). A stashed row keeps a FILLED mark
+                      the agent kind in muted text (non-Claude only). A stashed row keeps a FILLED mark
                       for its live statuses (DESIGN.md 2026-08-24): the mark
                       table's shapes are all border- or fill-drawn, none uses
                       box-shadow, so forced-colors keeps every one. #1176 — a
@@ -454,7 +452,6 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     unverifiable={!!unverifiableLabel}
                     quiet={!!row.questionSeen && !row.attentionStatus}
                   />
-                  <AgentGlyph slug={row.slug} name={agentLabel} decorative />
                   {/* Name and location on one line. The title truncates first;
                       the coordinate (w85-1 etc.) takes at most 40% before it
                       ellipses too. */}
@@ -471,6 +468,14 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     <span className="min-w-0 flex-1 truncate text-[10px] font-semibold text-[var(--text-main)]">
                       {primary}
                     </span>
+                    {/* Claude is the default agent and gets no mark; any other
+                        agent names itself in muted text so the exception is
+                        the only thing that reads. */}
+                    {row.slug && row.slug !== 'claude' && (
+                      <span className="flex-none text-[10px] text-[var(--text-muted)]" data-roster-agent-kind>
+                        {agentLabel}
+                      </span>
+                    )}
                     {row.ptyId && unseenByPtyId[row.ptyId] && (
                       <span className="h-1.5 w-1.5 flex-none self-center rounded-full bg-[var(--text-main)]" aria-hidden="true" data-sidebar-unseen />
                     )}

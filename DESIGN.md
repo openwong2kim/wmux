@@ -379,6 +379,7 @@ from the Dialogs & forms primitives plus `Settings/SettingsLayout.tsx`
 | 2026-09-24 | Owner: quiet surfaces for dialogs and forms. Surface radii 8/12/14 (chrome keeps 5/6/7), flat secondary buttons, neutral switches and checkboxes, sentence-case muted labels, grouped rows in one container, the notice row, the popover section model, 16px dialog titles, one soft shadow and no bevels | The first pass carried the chrome's machined look into dialogs, and they read heavy and busy. The owner chose a quieter, almost colourless surface where the single warm primary is the only colour, lists read as one calm group, and a status that needs an action carries it on the same row |
 | 2026-09-24 | Settings reorganised into one-question tabs (Claude Code, Accounts, Orchestrator, Roles & fan-out, Remote & phone split out of the old Accounts/Agents tabs; the agent toolbar moves to Appearance, first-run setup to General) and rebuilt on the quiet-surface primitives: one container per section, Field rows, Learn more for long copy, a language Select without flags, an Inter header and no footer | The Accounts and Agents tabs each held four or five unrelated things and the categories did not sort; every tab mixed card-per-row boxes, mono headings, uppercase labels and bright input borders. One question per tab makes a setting findable by where it belongs, and one row grammar makes every tab read the same |
 | 2026-09-24 | Sidebar redesign (#1481): the roster lives in the sidebar with a drawn identity monogram per agent kind; status is told by shape (dot / ring / ✕ / check / hollow ring / none) and an idle active workspace is no longer green; collapsed rows summarise agents by glyph and status; fan-out tasks nest under their owner with a rollup, provenance tooltip, a link back to the owner and a close-finished action; a Recent activity order; the sidebar is 264px and resizable 220–400px | With several agents per workspace and fan-outs creating a workspace per task, the flat list could not say which agent was which, whether "green" meant done or merely selected, or which workspace a task came from and who asked for it. Shape survives colour-blindness and forced-colors; nesting keeps a fan-out's tasks next to the work that spawned them; the width was the first thing the new row content needed |
+| 2026-09-25 | Sidebar agent monograms removed (owner: the one-letter frame read as cheap and repeated the same C on every row): Claude is unmarked, other agents are named in muted text, the collapsed summary counts per status group | Identity only matters as the exception; the default agent carrying a mark on every row was noise |
 | 2026-09-25 | The sidebar becomes a glance board: Attention is the default order (needs you → finished → running → unconfirmed → idle, newest first, pins keep their slot, new workspaces hold the top, re-sorts wait for a 3 s settle or the pointer leaving); rows carry a --text-main "changed since you last looked" dot; the sidebar and Fleet read one attention classification | Owner call: with the roster in every row, the sidebar already was where the eye goes, and making it navigation only sent the user to Fleet for the one question the list could answer itself. Fleet keeps what a list of rows cannot hold — search, filters, bulk verbs, previews. Rows that jump while the pointer is on them destroy aim, so the order is applied only when nobody is reaching for a row |
 
 ### Desktop conversation view
@@ -406,20 +407,21 @@ regeneration, message editing and voice controls are hidden until supported.
   is committed on release, so terminals refit once rather than on every move.
   The titlebar's left segment follows the width. The compact rail stays 48px.
 - **Workspace row:** status mark · name (13px) · collapsed summary · needs-you
-  label · hover actions. The collapsed summary is up to three agent glyphs,
-  most urgent first and grouped by status with one mark per group, then `+N`;
+  label · hover actions. The collapsed summary is one status mark and a count per
+  status group, most urgent first;
   it stays visible at rest. The git line uses the branch and worktree icons;
   no text glyphs that can render as emoji (⎇ ⊕ ⚠ ✓ ✗).
-- **Agent row:** status mark · identity glyph · title · muted trailer (live
+- **Agent row:** status mark · title · agent kind (non-Claude only) · muted trailer (live
   activity while running, else the pane coordinate) · elapsed time since the
   last activity, right-aligned (10px like the rest of the roster row, muted,
   tabular). A pending question
   keeps its own red second line. Stashed rows keep their status word (their
   proof of life, 2026-08-24).
-- **Identity glyph:** an 11px monogram in a rounded frame drawn in-house — one
-  or two letters per agent kind, steel/muted, never amber; unknown kinds and
-  shells get a neutral terminal mark. The agent's name is the tooltip and the
-  accessible name. Never a vendor logo or favicon (trademarks).
+- **Agent kind:** no identity glyph. Claude is the default and gets no mark;
+  any other agent names itself in muted 10px text after the title (`codex`,
+  `gemini`), so the exception is the only thing that reads. Shells get nothing.
+  The name stays in the tooltip and accessible name. Never a vendor logo or
+  favicon (trademarks; written permission required).
 - **Fan-out nesting:** a task workspace renders under the workspace that fanned
   it out, indented on a hairline guide, with a fold chevron. A group is open
   while its owner is active or one of its tasks needs you, otherwise folded; a

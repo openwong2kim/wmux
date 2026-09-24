@@ -4,8 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { AGENT_STATUS_ICON } from '../agentStatusIcon';
-import { agentMonogram, AGENT_MONOGRAM, rowStatusMark } from '../AgentMarks';
-import { AGENT_SLUGS } from '../../../../shared/agentIdentity';
+import { rowStatusMark } from '../AgentMarks';
 import type { AgentStatus } from '../../../../shared/types';
 
 const STATUSES = Object.keys(AGENT_STATUS_ICON) as AgentStatus[];
@@ -44,19 +43,5 @@ describe('sidebar status mark mapping', () => {
 
   it('draws the unconfirmed ring whenever the running claim is unverifiable', () => {
     expect(rowStatusMark('running', true)).toBe('unconfirmed');
-  });
-});
-
-describe('agent monogram', () => {
-  it('covers every known agent with a distinct monogram', () => {
-    const letters = AGENT_SLUGS.map((slug) => agentMonogram(slug));
-    expect(letters.every((l) => typeof l === 'string' && l.length > 0)).toBe(true);
-    expect(new Set(letters).size).toBe(AGENT_SLUGS.length);
-    expect(Object.keys(AGENT_MONOGRAM).sort()).toEqual([...AGENT_SLUGS].sort());
-  });
-
-  it('has no monogram for an unknown kind or a plain shell', () => {
-    expect(agentMonogram(undefined)).toBeNull();
-    expect(agentMonogram('not-an-agent')).toBeNull();
   });
 });
