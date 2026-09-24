@@ -905,24 +905,59 @@ describe('DaemonSessionManager', () => {
       }
     });
 
-    it('#1464: on Windows a size change at a LATER resize inside the window still discards', () => {
+    it('#1464: on Windows a size change at a LATER resize inside the window discards, then asks ConPTY to repaint', () => {
       // The first resize keeps the saved size, the second (the Resume row
-      // shrinking the pane) changes it: ConPTY's stale-geometry flush can now
-      // be among the held bytes, so none of it may be replayed.
+      // shrinking the pane) changes it: the held bytes may mix ConPTY frames
+      // from both sizes, so none are replayed. The prompt comes back from a
+      // same-size resize after the unmute, which ConPTY answers with a full
+      // repaint at the current geometry.
       vi.useFakeTimers();
       try {
         manager.createSession({ id: 'rec-win', cmd: 'cmd.exe', cwd: '.', cols: 62, rows: 44, deferOutput: true });
         const managed = manager.getSession('rec-win');
+        const pty = lastMockPty!;
+        const sizes: Array<[number, number]> = [];
+        const resize = pty.resize.bind(pty);
+        pty.resize = (cols: number, rows: number) => {
+          sizes.push([cols, rows]);
+          resize(cols, rows);
+        };
         withPlatform('win32', () => {
-          lastMockPty?.simulateData('prompt-at-saved-geometry > ');
+          pty.simulateData('prompt-at-saved-geometry > ');
           manager.resizeSession('rec-win', 62, 44);
           vi.advanceTimersByTime(50);
           manager.resizeSession('rec-win', 62, 42);
-          lastMockPty?.simulateData('conpty-stale-flush');
+          pty.simulateData('conpty-frame-at-62x42 > ');
           vi.advanceTimersByTime(50);
         });
         expect(managed?.bridge.isMuted).toBe(false);
         expect(managed?.ringBuffer.readAll().toString()).toBe('');
+        // One real change, then the repaint request at the current geometry.
+        expect(sizes).toEqual([[62, 42], [62, 42]]);
+        // The repaint ConPTY sends in answer goes out live.
+        pty.simulateData('conpty-repaint > ');
+        expect(managed?.ringBuffer.readAll().toString()).toBe('conpty-repaint > ');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('#1464: no repaint request when nothing changed size, or off Windows', () => {
+      vi.useFakeTimers();
+      try {
+        for (const [platform, id, to] of [
+          ['win32', 'rec-win-same', [62, 44]],
+          ['linux', 'rec-linux-diff', [62, 42]],
+        ] as const) {
+          manager.createSession({ id, cmd: 'sh', cwd: '.', cols: 62, rows: 44, deferOutput: true });
+          const pty = lastMockPty!;
+          withPlatform(platform, () => {
+            manager.resizeSession(id, to[0], to[1]);
+            const before = pty.resizeCalls;
+            vi.advanceTimersByTime(100);
+            expect(pty.resizeCalls).toBe(before);
+          });
+        }
       } finally {
         vi.useRealTimers();
       }
