@@ -17,10 +17,19 @@ interface WorkerSession {
   taskId: string;
   lineBuffer: string;
   sessionId: string | null;
+  /** Ends a run that never reports a result (see WORKER_RUN_TIMEOUT_MS). */
+  runTimer?: ReturnType<typeof setTimeout>;
 }
 
 const MAX_CONCURRENT = 4;
 const MAX_BUFFER_BYTES = 10 * 1024 * 1024; // 10 MB
+
+/**
+ * The longest one background run may take before its task is failed and the
+ * process killed. Generous — a real task can be long — but finite: a worker that
+ * hangs must not leave its task in `working` forever (#1472).
+ */
+export const WORKER_RUN_TIMEOUT_MS = 30 * 60_000;
 
 /**
  * Background Claude Code worker — spawns CLI in stream-json mode
@@ -63,6 +72,8 @@ export class ClaudeWorker {
 
     const args = [
       '-p',
+      // The message below is a stream-json user message, not prompt text.
+      '--input-format', 'stream-json',
       '--output-format', 'stream-json',
       '--verbose',
       '--permission-mode', 'bypassPermissions',
@@ -92,11 +103,30 @@ export class ClaudeWorker {
     };
     this.sessions.set(taskId, session);
 
-    // Send the user message as first stdin input
+    session.runTimer = setTimeout(() => {
+      if (this.sessions.get(taskId) !== session) return;
+      this.endSession(session);
+      this.killWithFallback(proc);
+      const reason = `Worker produced no result within ${WORKER_RUN_TIMEOUT_MS / 60_000} min and was stopped`;
+      this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', reason, { summary: reason, items: [] });
+    }, WORKER_RUN_TIMEOUT_MS);
+    session.runTimer.unref?.();
+
+    // A worker that dies before reading its input turns the write into EPIPE on
+    // this stream; without a listener that is an uncaught error in main. The
+    // exit itself is reported by the close handler below.
+    proc.stdin!.on('error', (err) => {
+      console.warn(`[ClaudeWorker] task=${taskId} stdin error: ${err.message}`);
+    });
+
+    // Send the user message, then close stdin: `claude -p` reads its input to
+    // EOF before it starts, so an open stdin left the run waiting forever and
+    // the task stuck in `working` (#1472).
     proc.stdin!.write(JSON.stringify({
       type: 'user',
       message: { role: 'user', content: message },
     }) + '\n');
+    proc.stdin!.end();
 
     // Process NDJSON stdout
     proc.stdout!.on('data', (chunk: Buffer) => {
@@ -125,19 +155,22 @@ export class ClaudeWorker {
 
     proc.on('error', (err) => {
       console.error(`[ClaudeWorker] spawn error for task ${taskId}:`, err);
-      this.sessions.delete(taskId);
+      if (this.sessions.get(taskId) !== session) return;
+      this.endSession(session);
       const reason = `Spawn error: ${err.message}`;
       this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', reason, { summary: reason, items: [] });
     });
 
-    proc.on('close', (code) => {
-      const sess = this.sessions.get(taskId);
-      if (!sess) return; // already handled via processLine 'result'
-      this.sessions.delete(taskId);
-      if (code !== 0) {
-        const reason = `Process exited with code ${code}`;
-        this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', reason, { summary: reason, items: [] });
-      }
+    proc.on('close', (code, signal) => {
+      // Gone from the map: already settled by a result, the timeout, or cancel.
+      if (this.sessions.get(taskId) !== session) return;
+      this.endSession(session);
+      // Still here means no result line arrived. A clean exit without one is a
+      // failure too — reporting nothing left the task in `working`.
+      const reason = code === 0
+        ? 'Worker exited without a result'
+        : `Process exited with ${signal ? `signal ${signal}` : `code ${code}`}`;
+      this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', reason, { summary: reason, items: [] });
     });
   }
 
@@ -161,7 +194,7 @@ export class ClaudeWorker {
       const isError = parsed.is_error as boolean;
       const costUsd = parsed.total_cost_usd as number;
 
-      this.sessions.delete(session.taskId);
+      this.endSession(session);
 
       const status = isError ? 'failed' : 'completed';
       const statusMessage = isError
@@ -259,18 +292,27 @@ export class ClaudeWorker {
     const session = this.sessions.get(taskId);
     if (!session) return false;
 
-    session.proc.kill('SIGTERM');
-    this.sessions.delete(taskId);
+    this.endSession(session);
+    this.killWithFallback(session.proc);
 
-    // Fallback SIGKILL after 5s
-    const pid = session.proc.pid;
+    return true;
+  }
+
+  /** Drop a session and its run timer. */
+  private endSession(session: WorkerSession): void {
+    if (session.runTimer) clearTimeout(session.runTimer);
+    if (this.sessions.get(session.taskId) === session) this.sessions.delete(session.taskId);
+  }
+
+  /** SIGTERM, then SIGKILL after 5 s if the process is still there. */
+  private killWithFallback(proc: ChildProcess): void {
+    proc.kill('SIGTERM');
+    const pid = proc.pid;
     if (pid) {
       setTimeout(() => {
         try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
       }, 5000);
     }
-
-    return true;
   }
 
   /**
@@ -278,6 +320,7 @@ export class ClaudeWorker {
    */
   stop(): void {
     for (const [taskId, session] of this.sessions) {
+      if (session.runTimer) clearTimeout(session.runTimer);
       session.proc.kill('SIGTERM');
       console.log(`[ClaudeWorker] Stopping task ${taskId}`);
     }
