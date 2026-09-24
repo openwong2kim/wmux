@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { Workspace } from '../../../shared/types';
 import { isSecretLikeEnvKey, isValidEnvKey } from '../../../shared/workspaceProfile';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Button from '../ui/Button';
+import Input from '../ui/Input';
+import Field from '../ui/Field';
+import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
+import { IconWarning, IconX } from '../icons';
 
 interface WorkspaceProfileModalProps {
   workspace: Workspace;
@@ -39,14 +43,6 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
   const [rows, setRows] = useState<EnvRow[]>(() => rowsFromProfile(workspace));
   const [command, setCommand] = useState<string>(workspace.profile?.defaultPaneCommand ?? '');
   const [startupCwd, setStartupCwd] = useState<string>(workspace.profile?.startupCwd ?? '');
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   const updateRow = useCallback((id: number, patch: Partial<EnvRow>) => {
     setRows((prev) => {
@@ -107,133 +103,111 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
     return set;
   }, [rows]);
 
+  // Escape and the backdrop close it without saving (ui/Dialog).
   return (
-    <div
-      className="fixed inset-0 z-[var(--z-modal-top)] flex items-center justify-center"
-      style={{ background: 'rgba(0,0,0,0.45)' }}
-      onMouseDown={onClose}
-    >
-      <div
-        className="w-[460px] max-h-[80vh] overflow-y-auto rounded-[7px] shadow-2xl"
-        style={{ background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="px-5 pt-4 pb-3 border-b" style={{ borderColor: 'var(--bg-overlay)' }}>
-          <div className="text-sm font-bold" style={{ color: 'var(--text-main)' }}>
-            {t('workspaceProfile.title')}
-          </div>
-          <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-subtle)' }}>
-            {t('workspaceProfile.subtitle', { name: workspace.name })}
-          </div>
-        </div>
-
-        <div className="px-5 py-4 space-y-4">
-          {/* Env rows */}
-          <div>
-            <div className="text-[11px] font-semibold mb-1.5" style={{ color: 'var(--text-sub)' }}>
-              {t('workspaceProfile.envHeading')}
-            </div>
-            <div className="space-y-1.5">
-              {rows.map((row) => (
-                <div key={row.id}>
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      className="ui-input flex-1 min-w-0 text-[11px] font-mono"
-                      style={invalidIds.has(row.id) ? { borderColor: 'var(--accent-red)' } : undefined}
-                      placeholder={t('workspaceProfile.keyPlaceholder')}
-                      value={row.key}
-                      spellCheck={false}
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      onChange={(e) => updateRow(row.id, { key: e.target.value })}
-                    />
-                    <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>=</span>
-                    <input
-                      className="ui-input flex-1 min-w-0 text-[11px] font-mono"
-                      placeholder={t('workspaceProfile.valuePlaceholder')}
-                      value={row.value}
-                      spellCheck={false}
-                      autoCapitalize="off"
-                      autoCorrect="off"
-                      onChange={(e) => updateRow(row.id, { value: e.target.value })}
-                    />
-                    <button
-                      className="text-[var(--text-subtle)] hover:text-[var(--accent-red)] text-[12px] px-1 flex-shrink-0"
-                      title={t('workspaceProfile.removeRow')}
-                      aria-label={t('workspaceProfile.removeRow')}
-                      onClick={() => removeRow(row.id)}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                  {invalidIds.has(row.id) && (
-                    <div className="text-[10px] mt-0.5 ml-0.5" style={{ color: 'var(--accent-red)' }}>
-                      {t('workspaceProfile.invalidKey')}
-                    </div>
-                  )}
-                  {secretIds.has(row.id) && !invalidIds.has(row.id) && (
-                    <div className="text-[10px] mt-0.5 ml-0.5" style={{ color: 'var(--accent-yellow)' }}>
-                      {t('workspaceProfile.secretKeyWarning')}
-                    </div>
-                  )}
+    <Dialog onClose={onClose} closeOnBackdrop width={480} zIndexClassName="z-[var(--z-modal-top)]">
+      <DialogHeader
+        title={t('workspaceProfile.title')}
+        description={t('workspaceProfile.subtitle', { name: workspace.name })}
+      />
+      <DialogBody>
+        {/* Env rows */}
+        <section>
+          <p className="ui-group-label">{t('workspaceProfile.envHeading')}</p>
+          <div className="flex flex-col gap-2">
+            {rows.map((row) => (
+              <div key={row.id}>
+                <div className="flex items-center gap-2">
+                  <Input
+                    className="flex-1 min-w-0 text-[12px] font-mono"
+                    style={invalidIds.has(row.id) ? { borderColor: 'var(--accent-red)' } : undefined}
+                    placeholder={t('workspaceProfile.keyPlaceholder')}
+                    value={row.key}
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    onChange={(e) => updateRow(row.id, { key: e.target.value })}
+                  />
+                  <span className="text-[13px] text-[var(--text-sub)]" aria-hidden="true">=</span>
+                  <Input
+                    className="flex-1 min-w-0 text-[12px] font-mono"
+                    placeholder={t('workspaceProfile.valuePlaceholder')}
+                    value={row.value}
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    onChange={(e) => updateRow(row.id, { value: e.target.value })}
+                  />
+                  <Button
+                    variant="icon"
+                    className="w-7 h-7 flex-shrink-0"
+                    title={t('workspaceProfile.removeRow')}
+                    aria-label={t('workspaceProfile.removeRow')}
+                    onClick={() => removeRow(row.id)}
+                  >
+                    <IconX size={12} />
+                  </Button>
                 </div>
-              ))}
-            </div>
+                {invalidIds.has(row.id) && (
+                  <p className="ui-row-error">{t('workspaceProfile.invalidKey')}</p>
+                )}
+                {secretIds.has(row.id) && !invalidIds.has(row.id) && (
+                  <p className="m-0 mt-0.5 text-[11px] leading-4" style={{ color: 'var(--accent-yellow)' }}>
+                    {t('workspaceProfile.secretKeyWarning')}
+                  </p>
+                )}
+              </div>
+            ))}
           </div>
+        </section>
 
-          {/* Startup command */}
-          <div>
-            <div className="text-[11px] font-semibold mb-1.5" style={{ color: 'var(--text-sub)' }}>
-              {t('workspaceProfile.commandHeading')}
-            </div>
-            <input
-              className="ui-input text-[11px] font-mono"
-              placeholder={t('workspaceProfile.commandPlaceholder')}
-              value={command}
-              spellCheck={false}
-              onChange={(e) => setCommand(e.target.value)}
-            />
-          </div>
+        <Field label={t('workspaceProfile.commandHeading')} layout="stacked">
+          <Input
+            className="w-full text-[12px] font-mono"
+            placeholder={t('workspaceProfile.commandPlaceholder')}
+            value={command}
+            spellCheck={false}
+            onChange={(e) => setCommand(e.target.value)}
+          />
+        </Field>
 
-          {/* Startup directory (issue #175) */}
-          <div>
-            <div className="text-[11px] font-semibold mb-1.5" style={{ color: 'var(--text-sub)' }}>
-              {t('workspaceProfile.startupCwdHeading')}
-            </div>
-            <input
-              className="ui-input text-[11px] font-mono"
-              placeholder={t('workspaceProfile.startupCwdPlaceholder')}
-              value={startupCwd}
-              spellCheck={false}
-              autoCapitalize="off"
-              autoCorrect="off"
-              onChange={(e) => setStartupCwd(e.target.value)}
-            />
-            <div className="text-[10px] mt-0.5 ml-0.5" style={{ color: 'var(--text-muted)' }}>
-              {t('workspaceProfile.startupCwdHint')}
-            </div>
-          </div>
-
-          {/* Warnings */}
-          <div className="space-y-1 text-[10px] leading-snug" style={{ color: 'var(--text-muted)' }}>
-            <div>⚠ {t('workspaceProfile.warningNewPanes')}</div>
-            <div>{t('workspaceProfile.warningNotSandbox')}</div>
-            <div>{t('workspaceProfile.warningPlaintext')}</div>
-          </div>
-        </div>
-
-        <div
-          className="px-5 py-3 flex justify-end gap-2 border-t"
-          style={{ borderColor: 'var(--bg-overlay)' }}
+        {/* Startup directory (issue #175) */}
+        <Field
+          label={t('workspaceProfile.startupCwdHeading')}
+          description={t('workspaceProfile.startupCwdHint')}
+          layout="stacked"
         >
-          <Button variant="secondary" onClick={onClose}>
-            {t('workspaceProfile.cancel')}
-          </Button>
-          <Button variant="primary" onClick={handleSave}>
-            {t('workspaceProfile.save')}
-          </Button>
+          <Input
+            className="w-full text-[12px] font-mono"
+            placeholder={t('workspaceProfile.startupCwdPlaceholder')}
+            value={startupCwd}
+            spellCheck={false}
+            autoCapitalize="off"
+            autoCorrect="off"
+            onChange={(e) => setStartupCwd(e.target.value)}
+          />
+        </Field>
+
+        {/* Warnings */}
+        <div className="ui-notice flex items-start gap-2.5 px-3.5 py-3">
+          <span className="shrink-0 pt-0.5 text-[var(--text-sub)]" aria-hidden="true">
+            <IconWarning size={12} />
+          </span>
+          <div className="flex flex-col gap-1 text-[11px] leading-4 text-[var(--text-sub)]">
+            <p className="m-0 text-[var(--text-main)]">{t('workspaceProfile.warningNewPanes')}</p>
+            <p className="m-0">{t('workspaceProfile.warningNotSandbox')}</p>
+            <p className="m-0">{t('workspaceProfile.warningPlaintext')}</p>
+          </div>
         </div>
-      </div>
-    </div>
+      </DialogBody>
+      <DialogFooter>
+        <Button size="md" variant="secondary" onClick={onClose}>
+          {t('workspaceProfile.cancel')}
+        </Button>
+        <Button size="md" variant="primary" onClick={handleSave}>
+          {t('workspaceProfile.save')}
+        </Button>
+      </DialogFooter>
+    </Dialog>
   );
 }
