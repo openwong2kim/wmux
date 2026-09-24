@@ -26,8 +26,9 @@ export function clampSidebarWidth(width: unknown): number {
 /**
  * How the workspace list is ordered. Display only — the stored order, Ctrl+N
  * labels and drag positions are defined on the manual order in every mode.
- *   manual    — the order the user dragged (default)
- *   attention — needs-you rows lifted to the top, otherwise manual
+ *   attention — the glance board (default, 2026-09-25): needs you → finished →
+ *               running → unconfirmed → idle; pinned rows keep their place
+ *   manual    — the order the user dragged
  *   recent    — most recent terminal/agent activity first
  */
 export type SidebarSortMode = 'manual' | 'attention' | 'recent';
@@ -39,16 +40,21 @@ export function isSidebarSortMode(value: unknown): value is SidebarSortMode {
 }
 
 /**
- * Resolve the persisted sort mode. Sessions written before the mode existed
- * carry only the old `sidebarAttentionFirst` boolean; that flag maps onto the
- * attention mode so nobody's list changes order on upgrade.
+ * Resolve the persisted sort mode (owner decision 2026-09-25: Attention is the
+ * default). A mode the user explicitly chose in Settings (`sidebarSortModeChosen`)
+ * is kept, Manual included. 'recent' was only ever reachable by choosing it, so
+ * it is kept too. Anything else — an old session with only the attention
+ * flag, or a stored 'manual' that was merely the previous default — becomes
+ * Attention.
  */
 export function resolveSidebarSortMode(data: {
   sidebarSortMode?: unknown;
+  sidebarSortModeChosen?: unknown;
   sidebarAttentionFirst?: unknown;
 }): SidebarSortMode {
-  if (isSidebarSortMode(data.sidebarSortMode)) return data.sidebarSortMode;
-  return data.sidebarAttentionFirst === true ? 'attention' : 'manual';
+  if (data.sidebarSortModeChosen === true && isSidebarSortMode(data.sidebarSortMode)) return data.sidebarSortMode;
+  if (data.sidebarSortMode === 'recent') return 'recent';
+  return 'attention';
 }
 
 /** Remembered-expansion key of the "From closed workspace" group. */

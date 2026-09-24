@@ -938,6 +938,100 @@ export function fleetIdleForMs(ptyId: string, ctx: FleetGroupContext): number | 
   return newest === undefined ? undefined : Math.max(0, ctx.now - newest);
 }
 
+/**
+ * #1481 glance board — the one attention classification both surfaces use.
+ * Fleet folds it into three sections (sectionOfAttentionClass); the sidebar
+ * sorts workspaces by it. Order of urgency: needs you → finished (a turn that
+ * ended and has not been looked at: `complete` is retained until the pane is
+ * focused) → running → unconfirmed (running, but silent past the hook window)
+ * → idle.
+ */
+export type FleetAttentionClass = 'needsYou' | 'finished' | 'running' | 'unconfirmed' | 'idle';
+
+export const ATTENTION_CLASS_RANK: Record<FleetAttentionClass, number> = {
+  needsYou: 0,
+  finished: 1,
+  running: 2,
+  unconfirmed: 3,
+  idle: 4,
+};
+
+export function fleetAttentionClass(
+  pane: Pick<FleetPane, 'agentStatus' | 'unverifiable' | 'supervision'>,
+  question?: string,
+): FleetAttentionClass {
+  if (pane.supervision?.status === 'stopped') return 'needsYou';
+  if (pane.unverifiable) return 'unconfirmed';
+  switch (pane.agentStatus) {
+    case 'awaiting_input':
+    case 'error':
+      return 'needsYou';
+    case 'waiting':
+      return question ? 'needsYou' : 'idle';
+    case 'complete':
+      return 'finished';
+    case 'running':
+      return 'running';
+    default:
+      return 'idle';
+  }
+}
+
+/** Fleet's section for a class. Unconfirmed and finished are "needs you" there. */
+export function sectionOfAttentionClass(cls: FleetAttentionClass): FleetSection {
+  if (cls === 'running') return 'running';
+  if (cls === 'idle') return 'idle';
+  return 'needsYou';
+}
+
+/** Newest activity / output / turn stamp for a pty, or 0. */
+export function newestPaneStamp(
+  ptyId: string,
+  ctx: Pick<FleetGroupContext, 'surfaceActivityAt' | 'surfaceOutputAt' | 'surfaceTurnOpenAt'>,
+): number {
+  if (!ptyId) return 0;
+  let newest = 0;
+  for (const stamp of [ctx.surfaceActivityAt?.[ptyId], ctx.surfaceOutputAt?.[ptyId], ctx.surfaceTurnOpenAt?.[ptyId]]) {
+    if (typeof stamp === 'number' && Number.isFinite(stamp) && stamp > newest) newest = stamp;
+  }
+  return newest;
+}
+
+/** Agent rows only — the filter the titlebar vitals and Fleet apply. */
+export function isFleetAgentPane(p: Pick<FleetPane, 'remote' | 'ptyId' | 'surfaceType'>): boolean {
+  return p.remote ? true : p.ptyId !== '' && p.surfaceType === 'terminal';
+}
+
+/**
+ * #1481 glance board — workspace id → sort score for the Attention order:
+ * the most urgent class among its agent panes, then (within the class) the
+ * newest stamp of those panes, floored to the minute so the subscription does
+ * not change on every byte. Lower score sorts first. Workspaces with no agent
+ * pane score as idle with no stamp.
+ */
+export function selectWorkspaceAttentionScores(
+  state: FleetSelectorState & { surfaceOutputAt?: Record<string, number> },
+): Record<string, number> {
+  const best: Record<string, { rank: number; at: number }> = {};
+  for (const pane of selectFleetPanes(state)) {
+    if (!isFleetAgentPane(pane)) continue;
+    const target = fleetTargetPtyId(pane);
+    const question = target ? state.surfacePendingQuestion?.[target]?.trim() || undefined : undefined;
+    const rank = ATTENTION_CLASS_RANK[fleetAttentionClass(pane, question)];
+    const at = Math.floor(newestPaneStamp(target, state) / 60_000);
+    const cur = best[pane.workspaceId];
+    if (!cur || rank < cur.rank || (rank === cur.rank && at > cur.at)) best[pane.workspaceId] = { rank, at };
+  }
+  const out: Record<string, number> = {};
+  for (const ws of state.workspaces) out[ws.id] = attentionScore(best[ws.id]?.rank ?? ATTENTION_CLASS_RANK.idle, best[ws.id]?.at ?? 0);
+  return out;
+}
+
+/** rank first, then newer minute first — one comparable number. */
+export function attentionScore(rank: number, atMinute: number): number {
+  return rank * 1e9 + (1e9 - 1 - Math.max(0, Math.min(atMinute, 1e9 - 1)));
+}
+
 /** One row's section and detail — `groupFleetPanes` without the grouping. */
 export function fleetRow(pane: FleetPane, ctx: FleetGroupContext = {}): FleetRow {
   const target = fleetTargetPtyId(pane);
@@ -948,37 +1042,41 @@ export function fleetRow(pane: FleetPane, ctx: FleetGroupContext = {}): FleetRow
   const activity = pane.surfaceType === 'terminal' ? flattenAgentText(pane.activity ?? '') || undefined : undefined;
   const idleForMs = fleetIdleForMs(target, ctx);
   const base = { pane, idleForMs };
+  // #1481 glance board — the section comes from the shared class, so the
+  // sidebar (which sorts by class) and Fleet (which groups by section) cannot
+  // read one pane two ways.
+  const section = sectionOfAttentionClass(fleetAttentionClass(pane, question));
   if (pane.supervision?.status === 'stopped') {
-    return { ...base, section: 'needsYou', detailKey: 'fleet.detail.supervisionStopped' };
+    return { ...base, section, detailKey: 'fleet.detail.supervisionStopped' };
   }
   if (pane.unverifiable) {
-    return { ...base, section: 'needsYou', detailKey: 'fleet.detail.unconfirmed' };
+    return { ...base, section, detailKey: 'fleet.detail.unconfirmed' };
   }
   switch (pane.agentStatus) {
     case 'awaiting_input':
       return question
-        ? { ...base, section: 'needsYou', detail: question, detailSource: 'question', detailKey: 'fleet.needsYourInput' }
-        : { ...base, section: 'needsYou', detailKey: 'fleet.needsYourInput' };
+        ? { ...base, section, detail: question, detailSource: 'question', detailKey: 'fleet.needsYourInput' }
+        : { ...base, section, detailKey: 'fleet.needsYourInput' };
     case 'waiting':
       return question
-        ? { ...base, section: 'needsYou', detail: question, detailSource: 'question', detailKey: 'fleet.needsYourInput' }
+        ? { ...base, section, detail: question, detailSource: 'question', detailKey: 'fleet.needsYourInput' }
         : lastMessage
-          ? { ...base, section: 'idle', detail: lastMessage, detailSource: 'lastMessage', detailKey: 'fleet.detail.idle' }
-          : { ...base, section: 'idle', detailKey: 'fleet.detail.idle' };
+          ? { ...base, section, detail: lastMessage, detailSource: 'lastMessage', detailKey: 'fleet.detail.idle' }
+          : { ...base, section, detailKey: 'fleet.detail.idle' };
     case 'error':
-      return { ...base, section: 'needsYou', detailKey: 'fleet.detail.error' };
+      return { ...base, section, detailKey: 'fleet.detail.error' };
     case 'complete':
       return lastMessage
-        ? { ...base, section: 'needsYou', detail: lastMessage, detailSource: 'lastMessage', detailKey: 'fleet.detail.complete' }
-        : { ...base, section: 'needsYou', detailKey: 'fleet.detail.complete' };
+        ? { ...base, section, detail: lastMessage, detailSource: 'lastMessage', detailKey: 'fleet.detail.complete' }
+        : { ...base, section, detailKey: 'fleet.detail.complete' };
     case 'running':
       return activity
-        ? { ...base, section: 'running', detail: activity, detailSource: 'activity', detailKey: 'fleet.detail.running' }
-        : { ...base, section: 'running', detailKey: 'fleet.detail.running' };
+        ? { ...base, section, detail: activity, detailSource: 'activity', detailKey: 'fleet.detail.running' }
+        : { ...base, section, detailKey: 'fleet.detail.running' };
     default:
       return lastMessage
-        ? { ...base, section: 'idle', detail: lastMessage, detailSource: 'lastMessage', detailKey: 'fleet.detail.idle' }
-        : { ...base, section: 'idle', detailKey: 'fleet.detail.idle' };
+        ? { ...base, section, detail: lastMessage, detailSource: 'lastMessage', detailKey: 'fleet.detail.idle' }
+        : { ...base, section, detailKey: 'fleet.detail.idle' };
   }
 }
 

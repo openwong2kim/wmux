@@ -59,6 +59,7 @@ import { useDeckStream } from '../../hooks/useDeckStream';
 import { useChannelsEventSubscription } from '../../hooks/useChannelsEventSubscription';
 import { useChannelsHydration } from '../../hooks/useChannelsHydration';
 import { useMissionsPolling } from '../../hooks/useMissionsPolling';
+import { SidebarSeenTracker } from '../../hooks/useSidebarSeenTracker';
 import { useColdParkSweep } from '../../hooks/useColdParkSweep';
 import { usePaneDecorationChannel } from '../../plugins/usePaneDecorationChannel';
 import { useIpc } from '../../hooks/useIpc';
@@ -389,6 +390,8 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     sidebarAttentionFirst: state.sidebarAttentionFirst,
     sidebarShowPaneCoordinates: state.sidebarShowPaneCoordinates,
     sidebarSortMode: state.sidebarSortMode,
+    sidebarSortModeChosen: state.sidebarSortModeChosen,
+    sidebarPinnedIds: state.sidebarPinnedIds,
     sidebarWidth: state.sidebarWidth,
     sidebarTaskGroupExpanded: state.sidebarTaskGroupExpanded,
     multiviewArrangement: state.multiviewArrangement,
@@ -1862,6 +1865,10 @@ export default function AppLayout() {
             NOT in AppLayout, so the switch re-renders these tiny components
             instead of the ~1300-line chrome (2026-07-13 switch-lag fix). */}
         <EmptyLeafFunnel />
+        {/* Glance board: the sidebar's "changed since you last looked"
+            snapshot. A null component so its subscription never re-renders
+            this layout. */}
+        <SidebarSeenTracker />
         <FocusManager />
         <ErrorBoundary name="ComposeHost">
           <ComposeHost />

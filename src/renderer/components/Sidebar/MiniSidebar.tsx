@@ -1,11 +1,11 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceRailSummary } from '../../stores/selectors/workspaceProjections';
-import { formatStaleMinutes, selectAllWorkspaceAgentStatus, selectAllWorkspaceUnverifiableMinutes, selectAllWorkspaceLastActivityMinute } from '../../stores/selectors/fleet';
+import { formatStaleMinutes, selectAllWorkspaceAgentStatus, selectAllWorkspaceUnverifiableMinutes } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { orderWorkspaces } from './attentionOrder';
+import { useGlanceBoardOrder } from './useGlanceBoardOrder';
 import { tokenAttrs } from '../../themes';
 import { expandDirection } from './sidebarGlyphs';
 import { IconPlus, IconChevronDir, IconGear } from '../icons';
@@ -16,9 +16,6 @@ import PresetPicker from './PresetPicker';
 
 /** PresetPicker width (w-52), used to keep the flyout on-screen. */
 const PICKER_MENU_WIDTH = 208;
-
-/** Frozen stand-in while the recent-activity order is off (#1481). */
-const NO_ACTIVITY: Record<string, number> = {};
 
 export default function MiniSidebar() {
   const t = useT();
@@ -39,13 +36,9 @@ export default function MiniSidebar() {
   // any non-manual mode (the drop is judged in display order).
   const sidebarSortMode = useStore((s) => s.sidebarSortMode);
   const sidebarAttentionFirst = sidebarSortMode !== 'manual';
-  const lastActivityById = useStore(
-    useShallow((s) => (s.sidebarSortMode === 'recent' ? selectAllWorkspaceLastActivityMinute(s) : NO_ACTIVITY)),
-  );
-  const orderedWorkspaces = useMemo(
-    () => orderWorkspaces(workspaces, sidebarSortMode, (id) => agentStatusById[id] ?? 'idle', (id) => lastActivityById[id] ?? 0),
-    [workspaces, agentStatusById, lastActivityById, sidebarSortMode],
-  );
+  // Same glance-board order and settle rule as the full sidebar.
+  const { ordered: orderedWorkspaces, onPointerEnter: onRailPointerEnter, onPointerLeave: onRailPointerLeave } =
+    useGlanceBoardOrder(workspaces);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
@@ -107,7 +100,7 @@ export default function MiniSidebar() {
       {pickerOpen && <PresetPicker onClose={closePicker} anchorStyle={pickerAnchor} />}
 
       {/* Workspace dots */}
-      <div className="flex-1 overflow-y-auto py-2 flex flex-col items-center gap-1">
+      <div className="flex-1 overflow-y-auto py-2 flex flex-col items-center gap-1" onPointerEnter={onRailPointerEnter} onPointerLeave={onRailPointerLeave}>
         {orderedWorkspaces.map((ws, i) => {
           // `i` is the DISPLAY position and drives only the drop indicator.
           // Everything the user reads or reorders against — the Ctrl+N label,

@@ -453,3 +453,13 @@ export function IconMoreVertical({ size = 14 }: { size?: number }) {
     </Icon>
   );
 }
+
+/** Pin — a row that keeps its place in the sidebar's Attention order. */
+export function IconPin({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M5 2.2 H9 L8.4 5.6 L10.4 7.6 H3.6 L5.6 5.6 Z" />
+      <line x1="7" y1="7.6" x2="7" y2="11.8" />
+    </Icon>
+  );
+}

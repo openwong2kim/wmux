@@ -21,13 +21,10 @@ const miniSrc = readFileSync(resolve(SIDEBAR_DIR, 'MiniSidebar.tsx'), 'utf8');
 const itemSrc = readFileSync(resolve(SIDEBAR_DIR, 'WorkspaceItem.tsx'), 'utf8');
 
 describe('Sidebar — ordering wiring (#1481: manual / needs-you-first / recent)', () => {
-  it('imports and applies orderWorkspaces', () => {
-    expect(sidebarSrc).toMatch(/import\s+\{\s*orderWorkspaces\s*\}\s+from\s+['"]\.\/attentionOrder['"]/);
-    expect(sidebarSrc).toContain('orderWorkspaces(');
-  });
-
-  it('reads the sort mode from the store', () => {
-    expect(sidebarSrc).toMatch(/useStore\(\(s\)\s*=>\s*s\.sidebarSortMode\)/);
+  // Glance board (2026-09-25): every mode goes through one shared hook.
+  it('orders through the shared glance-board hook', () => {
+    expect(sidebarSrc).toContain("import { useGlanceBoardOrder } from './useGlanceBoardOrder';");
+    expect(sidebarSrc).toContain('useGlanceBoardOrder(filteredWorkspaces)');
   });
 
   it('builds the rendered tree from the ordered list, not the filtered one', () => {
@@ -43,9 +40,8 @@ describe('Sidebar — ordering wiring (#1481: manual / needs-you-first / recent)
 });
 
 describe('MiniSidebar — ordering wiring', () => {
-  it('imports and applies orderWorkspaces', () => {
-    expect(miniSrc).toMatch(/import\s+\{\s*orderWorkspaces\s*\}\s+from\s+['"]\.\/attentionOrder['"]/);
-    expect(miniSrc).toContain('orderWorkspaces(');
+  it('orders through the same shared hook as the full sidebar', () => {
+    expect(miniSrc).toContain('useGlanceBoardOrder(workspaces)');
   });
 
   it('renders the ordered rail', () => {

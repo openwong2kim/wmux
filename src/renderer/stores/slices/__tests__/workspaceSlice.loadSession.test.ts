@@ -25,6 +25,7 @@ type TestState = WorkspaceSlice & {
   a2aAutoApproveExecute: boolean;
   sidebarPosition: 'left' | 'right';
   sidebarAttentionFirst: boolean;
+  sidebarSortMode?: string;
   multiviewArrangement: 'auto' | 'columns' | 'rows';
   notificationSoundEnabled: boolean;
   toastEnabled: boolean;
@@ -624,11 +625,19 @@ describe('loadSession — sidebar attention-first ordering', () => {
     expect(store.getState().sidebarAttentionFirst).toBe(true);
   });
 
-  it('ignores a non-boolean instead of parking it in the store', () => {
-    // A corrupted session file holding the string "false" must not read as
-    // truthy and start reordering the list the user never asked to reorder.
+  // Owner decision 2026-09-25: Attention is the default order. Only a mode the
+  // user explicitly chose survives the flip.
+  it('defaults a session with no explicit choice to Attention', () => {
     const store = createTestStore();
     store.getState().loadSession(sessionWith('false'));
+    expect(store.getState().sidebarSortMode).toBe('attention');
+    expect(store.getState().sidebarAttentionFirst).toBe(true);
+  });
+
+  it('keeps an explicitly chosen Manual order', () => {
+    const store = createTestStore();
+    store.getState().loadSession({ ...sessionWith(false), sidebarSortMode: 'manual', sidebarSortModeChosen: true } as SessionData);
+    expect(store.getState().sidebarSortMode).toBe('manual');
     expect(store.getState().sidebarAttentionFirst).toBe(false);
   });
 });

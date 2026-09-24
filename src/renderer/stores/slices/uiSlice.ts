@@ -478,6 +478,20 @@ export interface UISlice {
    *  recent activity). `sidebarAttentionFirst` stays in lockstep with the
    *  'attention' mode so its existing readers keep their meaning. */
   sidebarSortMode: SidebarSortMode;
+  /** The user picked the sort mode in Settings (kept across the default flip). */
+  sidebarSortModeChosen: boolean;
+  /** Workspaces that keep their manual position in the Attention order. */
+  sidebarPinnedIds: string[];
+  toggleSidebarPin: (workspaceId: string) => void;
+  /** Session-only: when a workspace was created, for the new-workspace hold. */
+  sidebarNewAt: Record<string, number>;
+  /**
+   * Session-only: per agent pty, the status + question as the user last saw
+   * it (the pane's workspace was on screen). Same entry shape Fleet's
+   * last-seen snapshot keeps; drives the sidebar's "changed" dot.
+   */
+  sidebarSeen: Record<string, FleetSeenEntry>;
+  markSidebarSeen: (entries: Record<string, FleetSeenEntry>) => void;
   setSidebarSortMode: (mode: SidebarSortMode) => void;
 
   /** #1481 — expanded sidebar width in px (clamped 220–400, default 264). */
@@ -1434,17 +1448,35 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.sidebarPosition = position;
   }),
 
-  sidebarAttentionFirst: false,
+  sidebarAttentionFirst: true,
 
   setSidebarAttentionFirst: (enabled) => set((state) => {
     state.sidebarAttentionFirst = enabled;
     state.sidebarSortMode = enabled ? 'attention' : 'manual';
   }),
 
-  sidebarSortMode: 'manual',
+  sidebarSortMode: 'attention',
+  sidebarSortModeChosen: false,
+  sidebarPinnedIds: [],
+  toggleSidebarPin: (workspaceId) => set((state) => {
+    if (!workspaceId) return;
+    const i = state.sidebarPinnedIds.indexOf(workspaceId);
+    if (i >= 0) state.sidebarPinnedIds.splice(i, 1);
+    else state.sidebarPinnedIds.push(workspaceId);
+  }),
+  sidebarNewAt: {},
+  sidebarSeen: {},
+  markSidebarSeen: (entries) => set((state) => {
+    for (const [ptyId, entry] of Object.entries(entries)) {
+      const prior = state.sidebarSeen[ptyId];
+      if (prior && prior.status === entry.status && (prior.question || '') === (entry.question || '')) continue;
+      state.sidebarSeen[ptyId] = entry.question ? { status: entry.status, question: entry.question } : { status: entry.status };
+    }
+  }),
 
   setSidebarSortMode: (mode) => set((state) => {
     state.sidebarSortMode = mode;
+    state.sidebarSortModeChosen = true;
     state.sidebarAttentionFirst = mode === 'attention';
   }),
 

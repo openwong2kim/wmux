@@ -8,7 +8,8 @@ import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { StatusMarkView } from './AgentMarks';
-import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning, IconFanOut } from '../icons';
+import { selectSidebarUnseenWorkspaces } from '../../stores/selectors/sidebarSeen';
+import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning, IconFanOut, IconPin } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24_CLUSTER, HIT_TARGET_24_IN_CLUSTER } from '../hitArea';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
@@ -334,6 +335,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // system lets us paint (DESIGN.md: the only permitted wash is the danger
   // needs-input row). Two renditions and no more — the wash and the label.
   const needsYou = agentStatus === 'waiting' || agentStatus === 'awaiting_input';
+  // Glance board (2026-09-25): something here changed since it was last in
+  // view, and it wants a look. Fleet's changed-dot rule: --text-main, never amber.
+  const unseen = useStore((s) => !!selectSidebarUnseenWorkspaces(s)[workspaceId]);
+  const pinned = useStore((s) => s.sidebarPinnedIds.includes(workspaceId));
+  const toggleSidebarPin = useStore((s) => s.toggleSidebarPin);
   // Name first. At rest the row shows the workspace name and the signals that
   // change on their own (status dot, unread, idle, "needs you"); the project
   // badge, the agent count and the shortcut hint are chrome you only look for
@@ -832,6 +838,20 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                 >
                   {displayName}
                 </span>
+                {unseen && (
+                  <span
+                    className="h-1.5 w-1.5 flex-none rounded-full bg-[var(--text-main)]"
+                    role="img"
+                    aria-label={t('sidebar.changedSinceSeen')}
+                    title={t('sidebar.changedSinceSeen')}
+                    data-sidebar-unseen
+                  />
+                )}
+                {pinned && (
+                  <span className="flex-none text-[var(--text-muted)]" role="img" aria-label={t('sidebar.pinned')} title={t('sidebar.pinned')} data-sidebar-pinned>
+                    <IconPin size={10} />
+                  </span>
+                )}
                 {hasProfile && (
                   <span
                     className="text-[10px] leading-none flex-shrink-0 text-[var(--accent-blue)]"
@@ -1074,6 +1094,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             onClick={() => { setMenuPos(null); onArchive(workspaceId); }}
           >
             {t('workspace.archive')}
+          </button>
+          {/* Glance board: a pinned row keeps its manual place in the
+              Attention order instead of moving with its status. */}
+          <button
+            className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+            style={{ color: 'var(--text-main)' }}
+            onClick={() => { setMenuPos(null); toggleSidebarPin(workspaceId); }}
+            data-workspace-action="pin"
+          >
+            {pinned ? t('sidebar.unpin') : t('sidebar.pin')}
           </button>
           {/* Color tag — hover to reveal the swatch row. A single row of eight
               swatches plus "None" keeps the whole picker one click deep; a

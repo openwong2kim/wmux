@@ -809,8 +809,9 @@ describe('UISlice — sidebar attention-first ordering', () => {
   let store: ReturnType<typeof createTestStore>;
   beforeEach(() => { store = createTestStore(); });
 
-  it('defaults to off — the list must not reorder itself unasked', () => {
-    expect(store.getState().sidebarAttentionFirst).toBe(false);
+  it('defaults to on — Attention is the default order (owner decision 2026-09-25)', () => {
+    expect(store.getState().sidebarAttentionFirst).toBe(true);
+    expect(store.getState().sidebarSortMode).toBe('attention');
   });
 
   it('setSidebarAttentionFirst flips the flag both ways', () => {

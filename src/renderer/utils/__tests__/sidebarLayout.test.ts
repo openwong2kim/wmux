@@ -30,17 +30,21 @@ describe('clampSidebarWidth (#1481)', () => {
 });
 
 describe('resolveSidebarSortMode (#1481)', () => {
-  it('reads a known mode as-is', () => {
+  it('keeps a mode the user explicitly chose, Manual included', () => {
+    expect(resolveSidebarSortMode({ sidebarSortMode: 'manual', sidebarSortModeChosen: true })).toBe('manual');
+    expect(resolveSidebarSortMode({ sidebarSortMode: 'attention', sidebarSortModeChosen: true })).toBe('attention');
+  });
+
+  it('keeps Recent activity, which was only ever reachable by choosing it', () => {
     expect(resolveSidebarSortMode({ sidebarSortMode: 'recent' })).toBe('recent');
   });
 
-  it('maps a pre-mode session with the attention flag onto the attention mode', () => {
+  it('migrates everything else to Attention (2026-09-25 default)', () => {
     expect(resolveSidebarSortMode({ sidebarAttentionFirst: true })).toBe('attention');
-    expect(resolveSidebarSortMode({})).toBe('manual');
-  });
-
-  it('ignores an unknown mode string', () => {
-    expect(resolveSidebarSortMode({ sidebarSortMode: 'alphabetical', sidebarAttentionFirst: false })).toBe('manual');
+    expect(resolveSidebarSortMode({ sidebarAttentionFirst: false })).toBe('attention');
+    expect(resolveSidebarSortMode({})).toBe('attention');
+    expect(resolveSidebarSortMode({ sidebarSortMode: 'manual' })).toBe('attention');
+    expect(resolveSidebarSortMode({ sidebarSortMode: 'alphabetical', sidebarSortModeChosen: true })).toBe('attention');
   });
 });
 
@@ -65,6 +69,7 @@ describe('uiSlice sidebar width + sort mode (#1481)', () => {
 
   it('keeps the attention flag in lockstep with the sort mode', () => {
     const store = makeStore();
+    expect(store.getState().sidebarSortModeChosen).toBe(false);
     store.getState().setSidebarSortMode('attention');
     expect(store.getState().sidebarAttentionFirst).toBe(true);
     store.getState().setSidebarSortMode('recent');

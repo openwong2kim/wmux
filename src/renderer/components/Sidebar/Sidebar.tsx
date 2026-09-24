@@ -2,8 +2,7 @@ import { Fragment, useState, useCallback, useMemo, useRef, useEffect } from 'rea
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
-import { selectAllWorkspaceAgentStatus, selectAllWorkspaceLastActivityMinute } from '../../stores/selectors/fleet';
-import { orderWorkspaces } from './attentionOrder';
+import { useGlanceBoardOrder } from './useGlanceBoardOrder';
 import { buildSidebarTree, ORPHAN_GROUP_KEY } from './sidebarTree';
 import SidebarTaskGroup from './SidebarTaskGroup';
 import SidebarResizeHandle from './SidebarResizeHandle';
@@ -13,7 +12,7 @@ import RemoteWorkspaceItem from './RemoteWorkspaceItem';
 import OrphanSessions from './OrphanSessions';
 import ArchivedWorkspaces from './ArchivedWorkspaces';
 import MissionsSection from './MissionsSection';
-import type { AgentStatus, Workspace } from '../../../shared/types';
+import type { Workspace } from '../../../shared/types';
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
 import { selectAttachedRemoteWorkspaces } from '../../stores/slices/remoteWorkspacesSlice';
@@ -30,11 +29,6 @@ import SidebarNavigation from './SidebarNavigation';
 import PresetPicker from './PresetPicker';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 
-// Frozen stand-in the attention selector returns while the setting is off, so
-// useShallow sees the same empty map every time and nothing re-renders.
-const NO_AGENT_STATUS: Record<string, AgentStatus> = {};
-/** The same frozen stand-in for the recent-activity map (#1481). */
-const NO_ACTIVITY: Record<string, number> = {};
 
 // 워크스페이스가 소유한 모든 PTY를 dispose
 // (traversal is the shared canonical walk; the dispose policy stays local)
@@ -64,27 +58,10 @@ export default function Sidebar() {
     const q = wsSearch.toLowerCase();
     return workspaces.filter((ws) => ws.name.toLowerCase().includes(q));
   }, [workspaces, wsSearch]);
-  // Display-only ordering (attentionOrder.ts): manual, needs-you-first, or
-  // recent activity (#1481). Subscribing to the status or activity roll-up
-  // unconditionally would re-couple this component to the per-pane churn the
-  // A1 refactor above decoupled it from, so each selector short-circuits to a
-  // frozen empty map unless its mode is on. Activity is minute-floored.
-  const sidebarSortMode = useStore((s) => s.sidebarSortMode);
-  const agentStatusById = useStore(
-    useShallow((s) => (s.sidebarSortMode === 'attention' ? selectAllWorkspaceAgentStatus(s) : NO_AGENT_STATUS)),
-  );
-  const lastActivityById = useStore(
-    useShallow((s) => (s.sidebarSortMode === 'recent' ? selectAllWorkspaceLastActivityMinute(s) : NO_ACTIVITY)),
-  );
-  const orderedWorkspaces = useMemo(
-    () => orderWorkspaces(
-      filteredWorkspaces,
-      sidebarSortMode,
-      (id) => agentStatusById[id] ?? 'idle',
-      (id) => lastActivityById[id] ?? 0,
-    ),
-    [filteredWorkspaces, agentStatusById, lastActivityById, sidebarSortMode],
-  );
+  // Glance board (2026-09-25): Attention by default, applied only after a
+  // settle or when the pointer leaves the list (useSettledOrder).
+  const { ordered: orderedWorkspaces, onPointerEnter: onListPointerEnter, onPointerLeave: onListPointerLeave } =
+    useGlanceBoardOrder(filteredWorkspaces);
   // #1481 — fan-out nesting. Both maps change only when a fan-out lands, a
   // task closes or detaches, or the audit log is re-read — not on output.
   const missionByPaneGroup = useStore((s) => s.missionByPaneGroup);
@@ -270,6 +247,8 @@ export default function Sidebar() {
           drags hover-through the container untouched. */
       <div
         className="flex-1 min-h-0 overflow-y-auto px-2 pb-2 space-y-1"
+        onPointerEnter={onListPointerEnter}
+        onPointerLeave={onListPointerLeave}
         onDragOver={(e) => {
           if (useStore.getState().draggedWorkspaceIndex !== null) {
             e.preventDefault();

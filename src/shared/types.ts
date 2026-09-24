@@ -915,6 +915,10 @@ export interface SessionData {
   /** #1481 — workspace list order ('manual' | 'attention' | 'recent'). Absent in
    *  older sessions; `sidebarAttentionFirst` then decides. Whitelisted on load. */
   sidebarSortMode?: string;
+  /** The sort mode was chosen by the user (kept across the 2026-09-25 default flip). */
+  sidebarSortModeChosen?: boolean;
+  /** Workspaces pinned to their manual position in the Attention order. */
+  sidebarPinnedIds?: string[];
   /** #1481 — expanded sidebar width in px. Clamped on load. */
   sidebarWidth?: number;
   /** #1481 — owner workspace id → user-chosen expansion of its fan-out task group. */

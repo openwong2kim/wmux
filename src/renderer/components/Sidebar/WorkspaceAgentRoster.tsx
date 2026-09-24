@@ -15,6 +15,7 @@ import { timeAgo } from '../../utils/timeAgo';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { fleetIdleForMs, formatStaleMinutes, selectUnverifiablePaneMinutes } from '../../stores/selectors/fleet';
 import { AgentGlyph, StatusMarkView } from './AgentMarks';
+import { selectSidebarUnseen } from '../../stores/selectors/sidebarSeen';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 
 /** How long the just-stashed row stays highlighted. Long enough to catch the
@@ -300,6 +301,8 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
   // be running but has reported nothing for the hook-authority window. Keyed by
   // ptyId, which is the id these rows already carry; verifiable panes are absent.
   const unverifiableMinutesByPtyId = useStore(useShallow(selectUnverifiablePaneMinutes));
+  // Glance board: per-pane "changed since you last looked".
+  const unseenByPtyId = useStore(useShallow(selectSidebarUnseen));
 
   if (roster.agentCount === 0 && roster.stashedCount === 0) return null;
 
@@ -371,7 +374,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
               ? (exited ? t('roster.recoverAction') : t('roster.unstashAction'))
               : undefined;
             const stashedAgo = row.stashedAt ? timeAgo(row.stashedAt) : undefined;
-            const rowAriaLabel = [primary, agentLabel !== primary ? agentLabel : undefined, secondary, unverifiableLabel ?? statusLabel, elapsed, stashedAgo, detail, verb]
+            const rowAriaLabel = [row.ptyId && unseenByPtyId[row.ptyId] ? t('sidebar.changedSinceSeen') : undefined, primary, agentLabel !== primary ? agentLabel : undefined, secondary, unverifiableLabel ?? statusLabel, elapsed, stashedAgo, detail, verb]
               .filter(Boolean)
               .join(', ');
             return (
@@ -466,6 +469,9 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     <span className="min-w-0 flex-1 truncate text-[10px] font-semibold text-[var(--text-main)]">
                       {primary}
                     </span>
+                    {row.ptyId && unseenByPtyId[row.ptyId] && (
+                      <span className="h-1.5 w-1.5 flex-none self-center rounded-full bg-[var(--text-main)]" aria-hidden="true" data-sidebar-unseen />
+                    )}
                     {/* #1326 — secondary can be empty now (coordinate hidden,
                         no title, no label): drop the "·" too, or a titleless,
                         coordinate-hidden row would end in a dangling dot.

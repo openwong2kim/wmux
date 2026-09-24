@@ -270,8 +270,9 @@ describe('settings persist across tabs', () => {
     await openTab('about');
     await openTab('appearance');
     expect(radios()[2].getAttribute('aria-checked')).toBe('true');
-    await act(async () => { radios()[1].click(); });
+    await act(async () => { radios()[0].click(); });
     expect(useStore.getState().sidebarAttentionFirst).toBe(true);
+    expect(useStore.getState().sidebarSortModeChosen).toBe(true);
     act(() => useStore.getState().setSidebarSortMode(before));
   });
 
