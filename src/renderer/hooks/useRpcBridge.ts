@@ -14,7 +14,7 @@ import { findStashedEntry, paneStashedError, stashedPaneLiveness } from '../../s
 import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
 import { reattachModelEnvMarker, splitModelEnvMarker } from '../../shared/workerLaunch';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
-import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
+import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName, type A2aFormatOptions } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
 import { requestExecuteApproval, requestFanOutApproval, requestTaskApproval } from '../utils/executeApprovalGate';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
@@ -33,7 +33,7 @@ import {
 } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
-import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
@@ -254,6 +254,20 @@ function submitToPty(ptyId: string, text: string): void {
   submitBracketedPasteToPty(ptyId, text, { agent: ptyAgent(ptyId).name });
 }
 
+// Whether an A2A envelope bound for `ptyId` may keep its body's real newlines:
+// only when the pane runs a detected, still-live agent TUI. A shell (or an
+// unknown pane) keeps the `␤` fold. Read at write time for the same reason as
+// ptyAgent.
+function a2aFormatOptionsFor(ptyId: string): A2aFormatOptions {
+  const s = useStore.getState();
+  return {
+    multiline: !!detectedAgentTuiSlug(ptyId, s.surfaceAgent, {
+      agentAlive: s.agentAliveByPtyId,
+      commandRunning: s.commandRunningByPtyId,
+    }),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // RPC method handler type
 // ---------------------------------------------------------------------------
@@ -451,7 +465,7 @@ function deliverPtyNotification(
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
   if (ptyId) {
-    submitToPty(ptyId, formatA2aMessage(senderName, targetWs.name, message));
+    submitToPty(ptyId, formatA2aMessage(senderName, targetWs.name, message, undefined, a2aFormatOptionsFor(ptyId)));
     return ptyId;
   }
   return null;
@@ -3046,7 +3060,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         skipped++;
         continue;
       }
-      for (const ptyId of ptyIds) submitToPty(ptyId, formatA2aBroadcast(fromName, message));
+      for (const ptyId of ptyIds) {
+        submitToPty(ptyId, formatA2aBroadcast(fromName, message, undefined, a2aFormatOptionsFor(ptyId)));
+      }
       sent++;
     }
     // `skipped` counts workspaces with no detected agent pane — previously

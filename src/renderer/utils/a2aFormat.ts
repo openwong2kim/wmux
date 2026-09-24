@@ -44,6 +44,39 @@ function safeBody(message: string): string {
 }
 
 /**
+ * Prefix carried by every body line when real newlines are kept. With the
+ * body spread over several lines, a sender could otherwise write its own
+ * `━━━ END ━━━` line followed by a fresh `━━━ WMUX A2A ━━━` / `From:` / `To:`
+ * block and forge a second envelope from someone else. A line that starts
+ * with this prefix can never be read as a delimiter or header line, so the
+ * guard needs no list of patterns to keep in sync with the envelope.
+ */
+export const A2A_BODY_LINE_PREFIX = '│ ';
+
+function safeMultilineBody(message: string): string {
+  return stripEscapes(sanitizePtyText(message))
+    .replace(/\r/g, '')
+    .trimEnd()
+    .split('\n')
+    .map((line) => `${A2A_BODY_LINE_PREFIX}${line}`)
+    .join('\n');
+}
+
+export interface A2aFormatOptions {
+  /**
+   * Keep the body's line breaks as real newlines (each line prefixed with
+   * {@link A2A_BODY_LINE_PREFIX}) instead of folding them into `␤`. Only for a
+   * receiver that is a detected agent TUI: a shell would run each body line as
+   * its own command once the paste is submitted. Default: fold.
+   */
+  multiline?: boolean;
+}
+
+function formatBody(message: string, opts: A2aFormatOptions): string {
+  return opts.multiline ? safeMultilineBody(message) : safeBody(message).trimEnd();
+}
+
+/**
  * Wraps an A2A message in a structured envelope with Unicode box-drawing
  * delimiters (━) so the receiving agent can clearly identify it.
  *
@@ -59,6 +92,7 @@ export function formatA2aMessage(
   to: string,
   message: string,
   priority?: A2aPriority,
+  opts: A2aFormatOptions = {},
 ): string {
   const priLine = priority && priority !== 'normal' ? ` [Priority: ${priority.toUpperCase()}]` : '';
   return [
@@ -67,7 +101,7 @@ export function formatA2aMessage(
     `From: ${safeName(from)}`,
     `To: ${safeName(to)}`,
     '',
-    safeBody(message).trimEnd(),
+    formatBody(message, opts),
     `━━━ END ━━━`,
     '',
   ].join('\n');
@@ -86,6 +120,7 @@ export function formatA2aBroadcast(
   from: string,
   message: string,
   priority?: A2aPriority,
+  opts: A2aFormatOptions = {},
 ): string {
   const priLine = priority && priority !== 'normal' ? ` [Priority: ${priority.toUpperCase()}]` : '';
   return [
@@ -93,7 +128,7 @@ export function formatA2aBroadcast(
     `━━━ WMUX A2A BROADCAST${priLine} ━━━`,
     `From: ${safeName(from)}`,
     '',
-    safeBody(message).trimEnd(),
+    formatBody(message, opts),
     `━━━ END ━━━`,
     '',
   ].join('\n');
