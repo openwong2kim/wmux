@@ -13,6 +13,7 @@ import { markRetentionMigrationDone } from '../retentionMigration';
 import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
 import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
 import { ADVERTISED_SHORTCUTS } from '../../../shared/keymap';
+import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth, type SidebarSortMode } from '../../utils/sidebarLayout';
 
 /**
  * #517: read main's authoritative browser backend synchronously at store-module
@@ -472,6 +473,22 @@ export interface UISlice {
    *  components/Sidebar/attentionOrder.ts for why it is opt-in. */
   sidebarAttentionFirst: boolean;
   setSidebarAttentionFirst: (enabled: boolean) => void;
+
+  /** #1481 — how the workspace list is ordered (manual / needs-you-first /
+   *  recent activity). `sidebarAttentionFirst` stays in lockstep with the
+   *  'attention' mode so its existing readers keep their meaning. */
+  sidebarSortMode: SidebarSortMode;
+  setSidebarSortMode: (mode: SidebarSortMode) => void;
+
+  /** #1481 — expanded sidebar width in px (clamped 220–400, default 264). */
+  sidebarWidth: number;
+  setSidebarWidth: (width: number) => void;
+
+  /** #1481 — owner workspace id → whether its fan-out task group is expanded
+   *  by the user. Absent = follow the default (expanded while the owner is
+   *  active or a task needs you). */
+  sidebarTaskGroupExpanded: Record<string, boolean>;
+  setSidebarTaskGroupExpanded: (ownerId: string, expanded: boolean) => void;
 
   /** #1326 — show the auto-generated `w<ws>-<pane>` coordinate in the agent
    *  roster's muted trailer for panes that have no explicit label. On by
@@ -1421,6 +1438,27 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setSidebarAttentionFirst: (enabled) => set((state) => {
     state.sidebarAttentionFirst = enabled;
+    state.sidebarSortMode = enabled ? 'attention' : 'manual';
+  }),
+
+  sidebarSortMode: 'manual',
+
+  setSidebarSortMode: (mode) => set((state) => {
+    state.sidebarSortMode = mode;
+    state.sidebarAttentionFirst = mode === 'attention';
+  }),
+
+  sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
+
+  setSidebarWidth: (width) => set((state) => {
+    state.sidebarWidth = clampSidebarWidth(width);
+  }),
+
+  sidebarTaskGroupExpanded: {},
+
+  setSidebarTaskGroupExpanded: (ownerId, expanded) => set((state) => {
+    if (!ownerId) return;
+    state.sidebarTaskGroupExpanded[ownerId] = expanded;
   }),
 
   sidebarShowPaneCoordinates: true,

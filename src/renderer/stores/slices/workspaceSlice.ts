@@ -19,6 +19,7 @@ import { retentionMigrationDone, markRetentionMigrationDone } from '../retention
 import { decUnread } from './notificationSlice';
 import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { stashedPaneLiveness } from '../../../shared/paneStash';
+import { clampSidebarWidth, resolveSidebarSortMode } from '../../utils/sidebarLayout';
 import {
   collectLeafIds,
   getLeafPanes,
@@ -1327,6 +1328,18 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (typeof data.sidebarShowPaneCoordinates === 'boolean') {
         state.sidebarShowPaneCoordinates = data.sidebarShowPaneCoordinates;
+      }
+      // #1481 — the sort mode supersedes the attention flag; a session that
+      // predates it carries only the flag, which maps onto 'attention'.
+      state.sidebarSortMode = resolveSidebarSortMode(data);
+      state.sidebarAttentionFirst = state.sidebarSortMode === 'attention';
+      if (data.sidebarWidth !== undefined) state.sidebarWidth = clampSidebarWidth(data.sidebarWidth);
+      if (data.sidebarTaskGroupExpanded && typeof data.sidebarTaskGroupExpanded === 'object') {
+        const expanded: Record<string, boolean> = {};
+        for (const [ownerId, value] of Object.entries(data.sidebarTaskGroupExpanded)) {
+          if (typeof value === 'boolean') expanded[ownerId] = value;
+        }
+        state.sidebarTaskGroupExpanded = expanded;
       }
       // Whitelisted, not a bare truthiness check: a forward-version session file
       // that names a fourth arrangement must not park an unknown string in the

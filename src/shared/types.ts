@@ -912,6 +912,13 @@ export interface SessionData {
   /** #1326 — whether the agent roster's muted trailer shows the auto `w<ws>-<pane>`
    *  coordinate for unlabeled panes. Default true. */
   sidebarShowPaneCoordinates?: boolean;
+  /** #1481 — workspace list order ('manual' | 'attention' | 'recent'). Absent in
+   *  older sessions; `sidebarAttentionFirst` then decides. Whitelisted on load. */
+  sidebarSortMode?: string;
+  /** #1481 — expanded sidebar width in px. Clamped on load. */
+  sidebarWidth?: number;
+  /** #1481 — owner workspace id → user-chosen expansion of its fan-out task group. */
+  sidebarTaskGroupExpanded?: Record<string, boolean>;
   /** How the multiview grid arranges its tiles (#746). Whitelisted on load. */
   multiviewArrangement?: 'auto' | 'columns' | 'rows';
   notificationSoundEnabled?: boolean;
