@@ -427,11 +427,16 @@ regeneration, message editing and voice controls are hidden until supported.
   hint only on hover — the indent leaves the name no width to spare. The owner's rollup line reads `N tasks · M need
   you` and draws nothing at zero; "need you" is red only while the group is
   folded (unfolded, the task row is the evidence). Its ⋮ menu holds `Close
-  finished tasks (N)`, which uses the task close path: a task with uncommitted
-  or unpushed work is kept and the reason is said. Detached tasks are ordinary
+  finished tasks (N)`: finished means every agent pane in the task reports
+  complete (idle never counts); the confirm lists the tasks by name, each is
+  re-checked right before its close, and the close is the task close path — a
+  task with uncommitted or unpushed work is kept and the reason is said. The
+  collapsed-row summary draws a running agent neutral, so a workspace spends
+  one amber point, not two. Detached tasks are ordinary
   top-level rows; tasks whose owner is gone collect under "From closed
-  workspace". The `wtask: ` prefix is dropped on screen only. Task rows are not
-  reorder sources or targets.
+  workspace". The `wtask: ` prefix is dropped on screen only. Nesting trusts the task
+  record and the fan-out lineage stamp, never the name. Task rows are not
+  reorder sources or targets and carry no Ctrl+N hint.
 - **Provenance:** a task row carries a muted fan-out glyph whose tooltip reads
   `Fanned out by <owner> · <you (GUI) | orchestrator | calling pane> · <time>`.
   Inside a task workspace the titlebar's workspace name is followed by a muted
