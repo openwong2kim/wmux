@@ -448,11 +448,14 @@ export function chipStatusRank(status: AgentStatus): number {
  */
 export function buildRosterChip(projection: WorkspaceAgentRosterProjection): RosterChip {
   const visible = projection.rows.filter((row) => !row.stashed);
+  const eff = (row: WorkspaceAgentRosterRow) => (row.status === 'waiting' && !row.pendingQuestion ? 'idle' : row.status);
   const ranked = visible
     .map((row, index) => ({ row, index }))
-    .sort((a, b) => chipStatusRank(a.row.status) - chipStatusRank(b.row.status) || a.index - b.index)
+    .sort((a, b) => chipStatusRank(eff(a.row)) - chipStatusRank(eff(b.row)) || a.index - b.index)
     .slice(0, CHIP_MAX_GLYPHS)
-    .map(({ row }) => ({ slug: row.slug, agentName: row.agentName, status: row.status }));
+    // Plain waiting with no question is idle in the shared class
+    // (fleetAttentionClass) — the summary must not draw it as needs you.
+    .map(({ row }) => ({ slug: row.slug, agentName: row.agentName, status: row.status === 'waiting' && !row.pendingQuestion ? 'idle' as const : row.status }));
   return {
     agentCount: projection.agentCount,
     stashedCount: projection.stashedCount,

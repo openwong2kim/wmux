@@ -108,8 +108,11 @@ describe('changed-since-you-last-looked', () => {
     expect(selectSidebarUnseen(state({ a: 'complete' }, { sidebarSeen: seen }))).toEqual({ 'pty-a': true });
   });
 
-  it('prunes records of tabs that no longer exist', () => {
-    expect(seenUpdates(seenTabs(state({ a: 'idle' })), new Set(), { 'pty-gone': rec('idle') }).removed).toEqual(['pty-gone']);
+  it('prunes records of ptys that no longer exist, but keeps one whose agent is momentarily undetected', () => {
+    const s = state({ a: 'idle' });
+    expect(seenUpdates(seenTabs(s), new Set(), { 'pty-gone': rec('idle') }, new Set(['pty-a'])).removed).toEqual(['pty-gone']);
+    // pty-b still has a surface, its agent just restarted: the record stays.
+    expect(seenUpdates([], new Set(), { 'pty-b': rec('running') }, new Set(['pty-b'])).removed).toEqual([]);
   });
 
   // Review #5 — per agent TAB: a background tab gets its own record and dot.

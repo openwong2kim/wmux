@@ -21,6 +21,7 @@ import { fleetAttentionClass, type FleetSelectorState } from './fleet';
 import { selectWorkspaceAgentRoster } from './workspaceAgentRoster';
 import { isRemoteMirrorVisible } from '../slices/remoteWorkspacesSlice';
 import type { StoreState } from '../index';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 
 export interface SeenRecord {
   entry: FleetSeenEntry;
@@ -64,6 +65,15 @@ export function seenTabs(state: SeenState): SeenTab[] {
   return out;
 }
 
+/** Every pty bound to a surface anywhere (stashed panes included). */
+export function surfacePtyIds(state: Pick<StoreState, 'workspaces'>): Set<string> {
+  const ids = new Set<string>();
+  for (const ws of state.workspaces) {
+    for (const leaf of getWorkspaceLeafPanes(ws)) for (const s of leaf.surfaces) if (s.ptyId) ids.add(s.ptyId);
+  }
+  return ids;
+}
+
 /** Workspaces the user has in view right now (see the file note). */
 export function visibleWorkspaceIds(
   state: Pick<SeenState, 'activeWorkspaceId' | 'multiviewIds' | 'activeRemoteKey'> & { remoteWorkspaces?: StoreState['remoteWorkspaces'] },
@@ -89,11 +99,13 @@ export function seenUpdates(
   tabs: readonly SeenTab[],
   visible: ReadonlySet<string>,
   seen: Readonly<Record<string, SeenRecord>>,
+  /** Every pty still bound to a surface. A record is pruned only when its pty
+   *  is gone — not when its agent is momentarily undetected (a restart), or
+   *  the next status would be compared against a fresh seed and lost. */
+  livePtyIds: ReadonlySet<string> = new Set(tabs.map((t) => t.ptyId)),
 ): { updates: Record<string, SeenRecord>; removed: string[] } {
   const updates: Record<string, SeenRecord> = {};
-  const live = new Set<string>();
   for (const tab of tabs) {
-    live.add(tab.ptyId);
     const prior = seen[tab.ptyId];
     const inView = visible.has(tab.workspaceId) && !tab.stashed;
     if (!prior) {
@@ -106,7 +118,7 @@ export function seenUpdates(
     const seenRev = inView ? rev : prior.seenRev;
     if (changed || seenRev !== prior.seenRev) updates[tab.ptyId] = { entry: tab.entry, rev, seenRev };
   }
-  const removed = Object.keys(seen).filter((id) => !live.has(id));
+  const removed = Object.keys(seen).filter((id) => !livePtyIds.has(id));
   return { updates, removed };
 }
 

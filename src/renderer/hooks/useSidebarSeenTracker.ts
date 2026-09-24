@@ -6,7 +6,7 @@
 import { useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../stores';
-import { seenTabs, seenUpdates, visibleWorkspaceIds } from '../stores/selectors/sidebarSeen';
+import { seenTabs, seenUpdates, surfacePtyIds, visibleWorkspaceIds } from '../stores/selectors/sidebarSeen';
 
 export function useSidebarSeenTracker(): void {
   // A compact key per tab plus the visible set: the effect re-runs only when
@@ -19,7 +19,7 @@ export function useSidebarSeenTracker(): void {
   }));
   useEffect(() => {
     const s = useStore.getState();
-    const { updates, removed } = seenUpdates(seenTabs(s), visibleWorkspaceIds(s), s.sidebarSeen ?? {});
+    const { updates, removed } = seenUpdates(seenTabs(s), visibleWorkspaceIds(s), s.sidebarSeen ?? {}, surfacePtyIds(s));
     if (Object.keys(updates).length > 0 || removed.length > 0) s.markSidebarSeen(updates, removed);
   }, [key]);
 }

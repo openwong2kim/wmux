@@ -88,7 +88,10 @@ export default function Sidebar() {
   const nestedOwnerOf = useCallback((id: string) => {
     const liveIds = new Set(workspaces.map((w) => w.id));
     const link = resolveTaskLink(missionByPaneGroup[id], fanoutLineage[id], fanoutSpawnOwner[id]);
-    if (!link || link.detached || !link.ownerId || link.ownerId === id || !liveIds.has(link.ownerId)) return undefined;
+    if (!link || link.detached) return undefined;
+    // A task whose owner is gone renders in the "From closed workspace"
+    // group, so it takes no top-level slot either (it lifts no owner).
+    if (!link.ownerId || link.ownerId === id || !liveIds.has(link.ownerId)) return ORPHAN_GROUP_KEY;
     return link.ownerId;
   }, [workspaces, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
   const {
