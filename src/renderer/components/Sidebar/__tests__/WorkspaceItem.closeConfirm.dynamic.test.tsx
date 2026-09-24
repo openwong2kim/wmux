@@ -78,10 +78,33 @@ describe('CloseWorkspaceConfirm placement (#1482)', () => {
     expect(buttons.map((b) => b.textContent)).toEqual(['Cancel', 'Close']);
     // The final confirm of a destructive flow is the solid red, not amber.
     expect(buttons[1].className).toContain('ui-btn-danger');
-    expect(el.className).not.toContain('ui-btn-primary');
+    expect(el.querySelector('.ui-btn-primary')).toBeNull();
     act(() => buttons[1].click());
     expect(handlers.onConfirm).toHaveBeenCalledTimes(1);
     act(() => buttons[0].click());
     expect(handlers.onCancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CloseWorkspaceConfirm dismissal when its anchor moves (#1482)', () => {
+  it('dismisses on a window resize', () => {
+    const { handlers } = renderAt({ top: 100, bottom: 124, left: 270, right: 294 });
+    act(() => window.dispatchEvent(new Event('resize')));
+    expect(handlers.onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('dismisses when something containing it scrolls (the sidebar list)', () => {
+    const { handlers } = renderAt({ top: 100, bottom: 124, left: 270, right: 294 });
+    act(() => container.dispatchEvent(new Event('scroll')));
+    expect(handlers.onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores scrolls elsewhere, such as a terminal printing output', () => {
+    const { handlers } = renderAt({ top: 100, bottom: 124, left: 270, right: 294 });
+    const terminal = document.createElement('div');
+    document.body.appendChild(terminal);
+    act(() => terminal.dispatchEvent(new Event('scroll')));
+    terminal.remove();
+    expect(handlers.onCancel).not.toHaveBeenCalled();
   });
 });

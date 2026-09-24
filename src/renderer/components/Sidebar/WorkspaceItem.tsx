@@ -1316,6 +1316,26 @@ export function CloseWorkspaceConfirm({
     const measured = ref.current?.offsetHeight ?? 0;
     if (measured > 0 && Math.abs(measured - height) > 0.5) setHeight(measured);
   });
+  // The anchor is the button's rect at click time. A window resize or a
+  // scroll of the sidebar (anything that contains this popover — it is a DOM
+  // descendant of its row) moves the button, and a stale anchor would put the
+  // confirm off-screen again (#1482), so either dismisses it, like an outside
+  // click. Scrolls elsewhere (a terminal printing output) do not.
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
+  useEffect(() => {
+    const dismiss = () => onCancelRef.current();
+    const onScroll = (e: Event) => {
+      const el = ref.current;
+      if (el && e.target instanceof Node && e.target !== el && e.target.contains(el)) dismiss();
+    };
+    window.addEventListener('resize', dismiss);
+    document.addEventListener('scroll', onScroll, true);
+    return () => {
+      window.removeEventListener('resize', dismiss);
+      document.removeEventListener('scroll', onScroll, true);
+    };
+  }, []);
   const pos = placePopover(anchor, { width: CLOSE_CONFIRM_WIDTH, height });
   return (
     <Popover
