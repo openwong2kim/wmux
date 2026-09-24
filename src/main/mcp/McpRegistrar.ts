@@ -1,3 +1,4 @@
+import { openCodeTerminalChatIntegration } from '../../shared/openCodeTerminalChatIntegration';
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
@@ -458,6 +459,9 @@ export class McpRegistrar {
       );
       return;
     }
+    const chat = openCodeTerminalChatIntegration({ configRoot, startDir: app.getAppPath(), install: true,
+      ...(app.isPackaged ? { sourcePath: path.join(process.resourcesPath, 'cli-bundle', 'wmux-chat-tui.mjs') } : {}) });
+    if (chat.state !== 'current') console.warn(`[McpRegistrar] OpenCode terminal chat: ${chat.state}; add ${chat.pluginUrl} to ${chat.configPath} plugin list`);
     if (installed.action !== 'none') {
       console.log(`[McpRegistrar] OpenCode lifecycle plugin ${installed.action} → ${dest}`);
     }

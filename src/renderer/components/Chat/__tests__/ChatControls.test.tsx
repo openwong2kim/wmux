@@ -25,11 +25,11 @@ function fixture() {
   return { controls, status, render: async (value = status) => { await act(async () => root.render(<ChatControls ptyId="pane" status={value} refresh={vi.fn()} />)); } };
 }
 describe('chat controls', () => {
-  it('starts an explicit separate session using a registered provider ID only', async () => {
-    const f = fixture(); await f.render({ available: false, reason: 'not-claude' });
-    expect(host.textContent).toContain('chat.startHint');
-    await act(async () => [...host.querySelectorAll('button')].find((b) => b.textContent === 'chat.startNew')!.click());
-    expect(f.controls.start).toHaveBeenCalledWith({ ptyId: 'pane', providerId: 'codex' });
+  it('never starts or advertises a separate process when terminal history is unavailable', async () => {
+    const f = fixture(); await f.render({ available: false, reason: 'unsupported-agent' });
+    expect(host.textContent).toBe('');
+    expect(f.controls.providers).not.toHaveBeenCalled();
+    expect(f.controls.start).not.toHaveBeenCalled();
   });
   it('binds an approval to its displayed native session and request', async () => {
     const f = fixture(); await f.render();

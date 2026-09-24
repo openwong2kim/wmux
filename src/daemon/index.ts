@@ -1,3 +1,4 @@
+import { TerminalChatService } from './transcript/TerminalChatService';
 import {captureCodexRelayResume, codexRelayResumeCommand} from './web/codexRelayResume';
 import { recoverCodexPane } from './web/recoverCodexPane';
 import { CodexRelayUnavailableError } from './web/codexTuiRelay';
@@ -92,7 +93,7 @@ import type { AgentEventStatus } from '../main/pty/AgentDetector';
 import { HookIngest, type HookArbitration } from './hooks/HookIngest';
 import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/hooks/signal-types';
-import { checkTranscriptPath } from './hooks/transcriptPathGuard';
+import { checkNativeTranscriptPath } from './transcript/providers';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { PushSender } from './push/PushSender';
@@ -161,6 +162,7 @@ let hookIngest: HookIngest | null = null;
 let webhookSink: WebhookSink | null = null;
 let transcriptProjector: TranscriptProjector | null = null;
 let chatSessions: ChatSessionService | null = null;
+let terminalChat: TerminalChatService | null = null;
 const chatSubscribers = new Map<string, Set<string>>();
 const chatPushTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const chatPushSeq = new Map<string, number>();
@@ -2969,7 +2971,7 @@ function registerRpcHandlers(
     // the writer half of the same rule.
     let vetted = resumeBinding;
     if (vetted.transcriptPath) {
-      const check = checkTranscriptPath(vetted.transcriptPath, vetted.sessionId, managed.meta.env);
+      const check = checkNativeTranscriptPath(vetted.agent, vetted.transcriptPath, vetted.sessionId, managed.meta.env);
       if (!check.ok) {
         log('warn', `[resume] refused transcript path for ${id}: ${check.reason}`);
         const { transcriptPath: _refused, ...rest } = vetted;
@@ -3008,21 +3010,22 @@ function registerRpcHandlers(
       // The hook is authoritative. Once it has delivered a real path there is
       // nothing left to discover.
       transcriptDiscovery?.cancel(id);
-    } else if (p.resumeBinding.agent === DISCOVERABLE_AGENT) {
-      transcriptDiscovery?.start(id, p.resumeBinding.sessionId, p.resumeBinding.cwd);
+    } else if (p.resumeBinding.agent === 'claude' || p.resumeBinding.agent === 'codex') {
+      transcriptDiscovery?.start(id, p.resumeBinding.sessionId, p.resumeBinding.cwd, p.resumeBinding.agent);
     }
     // codex P2: a SessionStart fired before its transcript exists (F9) sends the
     // #12235-UNSAFE payload.session_id as the id and carries NO transcriptPath.
     // Don't let that provisional capture overwrite an existing transcript-derived
     // (authoritative) binding for a DIFFERENT session — a reboot in between would
     // then `--resume <wrong id>`.
-    if (prev && prev.transcriptPath && !p.resumeBinding.transcriptPath
+    if (prev && prev.agent === 'claude' && p.resumeBinding.agent === 'claude' && prev.transcriptPath && !p.resumeBinding.transcriptPath
         && prev.sessionId !== p.resumeBinding.sessionId) {
       return true;
     }
     // Sticky-merge: a capture that couldn't read permissionMode (transcript tail
     // miss) must not wipe a previously-captured mode (codex review 2026-06-14).
-    const next = mergeResumeBinding(prev, p.resumeBinding);
+    // A synchronous exact-ID discovery may have just supplied the path.
+    const next = mergeResumeBinding(managed.meta.resumeBinding, p.resumeBinding);
     let durableChange = !prev
       || prev.sessionId !== next.sessionId
       || prev.agent !== next.agent
@@ -3080,7 +3083,18 @@ function registerRpcHandlers(
       // The persisted binding is the ONLY source of the transcript path — no
       // cwd→slug derivation (agentResume.ts rejects that mapping as
       // version-drift-prone, which is why the path is persisted at all).
-      getResumeBinding: (id) => sessionManager.getSession(id)?.meta.resumeBinding,
+      getResumeBinding: (id) => {
+        const pane = sessionManager.getSession(id);
+        const live = codexPaneRelays.liveSelection(id, pane);
+        if (live.live) {
+          const selection = live.selection;
+          return selection ? { agent: 'codex', sessionId: selection.threadId, cwd: selection.cwd,
+            transcriptPath: selection.transcriptPath, ts: Date.now() } : undefined;
+        }
+        const binding = pane?.meta.resumeBinding;
+        const current = agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '');
+        return current && binding?.agent !== current ? undefined : binding;
+      },
       // #782 — splits an absent binding into `stale-session` (agent running, no
       // binding yet) vs `no-hook` (no agent detected → hooks not installed).
       getDetectedAgent: (id) => sessionManager.getSession(id)?.meta.lastDetectedAgent,
@@ -3122,11 +3136,11 @@ function registerRpcHandlers(
       // relocate CLAUDE_CONFIG_DIR, which moves the root both the scan and the
       // containment check have to use.
       getSessionEnv: (id) => sessionManager.getSession(id)?.meta.env,
-      onFound: ({ sessionId, agentSessionId, transcriptPath, cwd }) => {
+      onFound: ({ sessionId, agentSessionId, transcriptPath, cwd, agent }) => {
         // Re-enter through the normal writer so the discovered path is vetted,
         // sticky-merged, and saveImmediate'd exactly like a hook-supplied one.
         applyResumeBinding(sessionId, {
-          agent: DISCOVERABLE_AGENT,
+          agent: agent ?? DISCOVERABLE_AGENT,
           sessionId: agentSessionId,
           cwd,
           transcriptPath,
@@ -3249,22 +3263,53 @@ function registerRpcHandlers(
     return { ok: true };
   });
 
+  if (!terminalChat) {
+    terminalChat = new TerminalChatService({ directory: path.join(wmuxDir, 'terminal-chat'),
+      owner: async id => {
+        const pane = sessionManager.getSession(id);
+        if (!pane?.meta.incarnationId || !['attached', 'detached'].includes(pane.meta.state)) return undefined;
+        const child = agentProcessTracker.pidFor(id);
+        const pid = pane.meta.exec
+          ? await agentProcessTracker.verifyOwnedRoot(id, pane.meta.pid, 'opencode') ? pane.meta.pid : undefined
+          : child && await agentProcessTracker.verifyLive(id, 'opencode') ? child : undefined;
+        if (!pid || !await ProcessMonitor.isRunning(pid) || sessionManager.getSession(id) !== pane) return undefined;
+        return { pid, incarnation: pane.meta.incarnationId };
+      },
+      emit: (id, data, clients) => {
+        for (const client of clients) if (!pipeServer.sendTo(client, { type: 'transcript.appended', sessionId: id, data })) terminalChat?.unsubscribe(client, id);
+      },
+    });
+    pipeServer.onClientClose(client => terminalChat?.dropClient(client));
+  }
+
   pipeServer.onRpc('daemon.transcript.status', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'status')) {
       return { available: false, reason: 'not-authorized' };
     }
     const id = typeof params['id'] === 'string' ? params['id'] : '';
-    const managed = chatSessions?.status(id);
-    if (managed) return managed;
+    const native = await terminalChat?.read(id);
+    if (native) return native.status;
     const live = readChatAgentState(id);
-    return { ...projector.status(id), agentStatus: live.agentStatus, agentAlive: live.agentName === 'Claude Code' };
+    if (agentDisplayToSlug(live.agentName ?? '') === 'opencode') return { available: false, reason: 'unavailable' };
+    const managed = !live.agentName && !projector.status(id).available ? chatSessions?.status(id) : undefined;
+    if (managed) return managed;
+    const status = projector.status(id);
+    const slug = agentDisplayToSlug(live.agentName ?? '');
+    const agentAlive = !!slug && slug === status.terminal?.agent && live.agentVerified;
+    return { ...status, agentStatus: live.agentStatus, agentAlive,
+      ...(status.terminal ? { terminal: { ...status.terminal, capabilities: { ...status.terminal.capabilities,
+        send: agentAlive && ['claude', 'codex'].includes(slug!),
+      } } } : {}) };
   });
 
   pipeServer.onRpc('daemon.transcript.snapshot', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'snapshot')) return null;
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const before = typeof params['before'] === 'number' ? params['before'] : undefined;
-    if (chatSessions?.has(id)) return chatSessions.snapshot(id, before);
+    const native = await terminalChat?.read(id);
+    if (native) return before === undefined ? native.page : { ...native.page, events: [], hasMore: false };
+    if (agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '') === 'opencode') return null;
+    if (!readDaemonAgentState(id).agentName && !projector.status(id).available && chatSessions?.has(id)) return chatSessions.snapshot(id, before);
     return projector.snapshot(id, before === undefined ? undefined : { before });
   });
 
@@ -3274,7 +3319,10 @@ function registerRpcHandlers(
     }
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     if (!id) return { ok: false, status: { available: false, reason: 'no-binding' } };
-    if (chatSessions?.has(id)) {
+    const native = await terminalChat?.read(id);
+    if (native) { terminalChat!.subscribe(ctx.clientId, id); return { ok: true, status: native.status }; }
+    if (agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '') === 'opencode') return { ok: false, status: { available: false, reason: 'unavailable' } };
+    if (!readDaemonAgentState(id).agentName && !projector.status(id).available && chatSessions?.has(id)) {
       const clients = chatSubscribers.get(id) ?? new Set<string>();
       clients.add(ctx.clientId); chatSubscribers.set(id, clients);
       return { ok: true, status: chatSessions.status(id) };
@@ -3284,6 +3332,7 @@ function registerRpcHandlers(
 
   pipeServer.onRpc('daemon.transcript.unsubscribe', async (params, ctx) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
+    terminalChat?.unsubscribe(ctx.clientId, id);
     chatSubscribers.get(id)?.delete(ctx.clientId);
     if (!chatSubscribers.get(id)?.size) chatSubscribers.delete(id);
     if (id) projector.unsubscribe(ctx.clientId, id);
@@ -3300,7 +3349,7 @@ function registerRpcHandlers(
     const srcOffset = typeof params['srcOffset'] === 'number' ? params['srcOffset'] : -1;
     const n = typeof params['n'] === 'number' ? params['n'] : -1;
     const eventId = typeof params['eventId'] === 'string' ? params['eventId'] : undefined;
-    if (!id || chatSessions?.has(id)) return null;
+    if (!id || !readDaemonAgentState(id).agentName && !projector.status(id).available && chatSessions?.has(id)) return null;
     return projector.codeBlock(id, { srcOffset, n, ...(eventId ? { eventId } : {}) });
   });
 
@@ -3645,7 +3694,7 @@ function registerRpcHandlers(
   const readChatAgentState = (id: string) => {
     const live = readDaemonAgentState(id);
     const bridge = sessionManager.getSession(id)?.bridge;
-    if (live.agentName === 'Claude Code' && bridge && live.agentStatus !== 'awaiting_input') {
+    if (['Claude Code', 'Codex CLI'].includes(live.agentName ?? '') && bridge && live.agentStatus !== 'awaiting_input') {
       const last = projector.snapshot(id)?.events.at(-1);
       return { ...live, agentStatus: chatAgentStatus(live.agentStatus, last, bridge.getLastTurnStartedAt()) };
     }
@@ -3711,13 +3760,17 @@ function registerRpcHandlers(
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const agentSessionId = typeof params['agentSessionId'] === 'string' ? params['agentSessionId'] : '';
     const text = typeof params['text'] === 'string' ? params['text'] : '';
-    if (chatSessions?.has(id)) return { result: await chatSessions.send(id, agentSessionId, text, typeof params.requestId === 'string' ? params.requestId : '') };
+    const native = await terminalChat?.read(id);
+    if (native || agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '') === 'opencode') {
+      return { result: await terminalChat?.send(id, agentSessionId, text, typeof params.requestId === 'string' ? params.requestId : '') ?? 'unavailable' };
+    }
+    if (!readDaemonAgentState(id).agentName && !projector.status(id).available && chatSessions?.has(id)) return { result: await chatSessions.send(id, agentSessionId, text, typeof params.requestId === 'string' ? params.requestId : '') };
     if (!id || !approvalRegistry) return { result: 'unavailable' };
     if (chatSending.has(id)) return { result: 'busy' };
     chatSending.add(id);
     try {
       const result = await deliverChatPrompt(agentSessionId, text, {
-        getTranscriptSessionId: () => sessionManager.getSession(id)?.meta.resumeBinding?.sessionId,
+        getTranscriptSessionId: () => projector.status(id).agentSessionId,
         hasOpenApproval: () => !approvalRegistry || approvalRegistry.list().pending.some((r) => r.sessionId === id),
         readScreen: async () => {
           const managed = sessionManager.getSession(id);
@@ -3740,7 +3793,8 @@ function registerRpcHandlers(
           const pid = agentProcessTracker.pidFor(id);
           if (pid === undefined) return false;
           try {
-            return await agentProcessTracker.verifyLive(id, 'claude') &&
+            const slug = agentDisplayToSlug(readChatAgentState(id).agentName ?? '');
+            return !!slug && await agentProcessTracker.verifyLive(id, slug) &&
               await ProcessMonitor.isRunning(pid);
           } catch {
             return false;
@@ -4799,6 +4853,7 @@ function wireEvents(
     chatSessions?.drop(payload.id);
     chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
+    terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
     try {
@@ -5304,6 +5359,7 @@ function wireEvents(
     chatSessions?.drop(payload.id);
     chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
+    terminalChat?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
     const event: DaemonEvent = {
@@ -5528,6 +5584,7 @@ async function shutdown(
   for (const timer of chatPushTimers.values()) clearTimeout(timer);
   chatPushTimers.clear(); chatSubscribers.clear();
   transcriptProjector?.dispose();
+  terminalChat?.dispose();
   // Same for the discovery searches — unref'd watch handles and poll timers.
   transcriptDiscovery?.dispose();
 

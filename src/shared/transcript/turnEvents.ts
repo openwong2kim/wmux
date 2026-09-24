@@ -161,6 +161,9 @@ export interface MetaEvent extends TurnEventBase {
    * as if the operator had typed them.
    */
   subtype:
+    | 'turn_started'
+    | 'turn_complete'
+    | 'turn_aborted'
     | 'session_start'
     | 'slash_command'
     | 'caveat'
@@ -200,6 +203,7 @@ export interface TranscriptPage {
 }
 
 export interface TranscriptStatus {
+  terminal?: import('./terminalChat').TerminalChatBinding;
   managed?: import('./chatSession').ManagedChatStatus;
   /** Live daemon state, separate from whether saved history can be read. */
   agentStatus?: import('../types').AgentStatus;
@@ -247,7 +251,7 @@ export type ChatSendResult = 'sent' | 'busy' | 'blocked' | 'unconfirmed' | 'sess
 
 export interface ChatBridgeApi {
   controls?: import('./chatSession').ChatControls;
-  /** Identity-bound, daemon-serialized input into the existing Claude process. */
+  /** Identity-bound, daemon-serialized input into the existing terminal agent process. */
   send: (args: { ptyId: string; agentSessionId: string; text: string; requestId?: string }) => Promise<{ result: ChatSendResult }>;
   status: (ptyId: string) => Promise<TranscriptStatus>;
   /** `before` pages BACKWARD from a prior cursor.headOffset; omit for the tail. */

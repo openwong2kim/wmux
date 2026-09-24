@@ -97,3 +97,25 @@ Codex 문서에는 app-server에 CLI TUI를 연결하는 경로가 있으나, �
 검증에는 합성 fixture와 직접 생성한 테스트 세션을 사용한다. 경쟁 제품의 fixtures/tests는 가져오지 않는다. 각 어댑터에서 순서가 바뀐 이벤트, 재연결, 중단, 오래된 승인, 전송 직후 연결 종료, 대용량 출력, 이력 페이지 경계를 확인한다. 실제 연동은 격리된 테스트 저장소에서 실시하고 기존 사용자 세션을 재사용하지 않는다.
 
 초기 조사에서는 문서·라이선스·패키지 메타데이터만 확인했다. 이후 사용자 승인에 따라 공식 ACP/OpenCode SDK와 wmux 자체 어댑터를 구현하고 실제 Codex·OpenCode·ACP 응답 및 이력 복원을 검증했다. 경쟁 제품 코드는 다운로드하거나 복사하지 않았다. 구현 범위와 남은 검증은 [managed-chat.md](managed-chat.md)에 기록했다.
+
+
+## Same-terminal implementation correction
+
+The primary requirement is the already-running terminal conversation, not a new
+managed process. Default view switching therefore uses native ownership:
+
+- Codex 0.156.1 rollout display events, hook-supplied exact native UUIDs and the
+  existing owned TUI relay. Native app-server remains optional for separate
+  managed sessions. Reference: https://learn.chatgpt.com/docs/app-server.
+- OpenCode 1.18.30 TUI plugin API (MIT package `@opencode-ai/plugin` declarations),
+  verified against the installed CLI. `api.route.current`, `api.state.session`,
+  `api.state.part`, `api.client` and disposal hooks let wmux read/send inside the
+  original TUI. Only official API declarations were consulted; the wmux bridge
+  implementation is original. Reference: https://opencode.ai/docs/server/.
+  The official server documentation explicitly distinguishes connecting to the
+  existing TUI server from starting a new `opencode serve` process.
+
+The plugin has no dependency on competitor application code and imports only
+Node built-ins. Future providers must demonstrate the same pane/process/session
+ownership before advertising input capability. See `docs/managed-chat.md` for
+installation, contract, validation and remaining platform/phone work.

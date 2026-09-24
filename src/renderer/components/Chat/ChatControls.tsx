@@ -1,22 +1,15 @@
-import { useEffect, useState } from 'react';
-import type { ChatControlResult, ChatInteraction, ChatInteractionAnswer, ChatProviderInfo } from '../../../shared/transcript/chatSession';
+import { useState } from 'react';
+import type { ChatControlResult, ChatInteraction, ChatInteractionAnswer } from '../../../shared/transcript/chatSession';
 import type { TranscriptStatus } from '../../../shared/transcript/turnEvents';
 import { useT } from '../../hooks/useT';
 
 export function ChatControls({ ptyId, status, refresh }: { ptyId: string; status: TranscriptStatus; refresh: () => void }) {
   const t = useT();
-  const [providers, setProviders] = useState<ChatProviderInfo[]>([]);
-  const [provider, setProvider] = useState('codex');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const controls = window.electronAPI?.chat?.controls;
   const managed = status.managed;
-  useEffect(() => {
-    let alive = true;
-    void controls?.providers().then((items) => { if (alive) setProviders(items); }).catch(() => undefined);
-    return () => { alive = false; };
-  }, [controls]);
-  if (!controls) return null;
+  if (!controls || !managed) return null;
   const run = async (operation: () => Promise<ChatControlResult>) => {
     if (busy) return;
     setBusy(true); setError('');
@@ -39,12 +32,6 @@ export function ChatControls({ ptyId, status, refresh }: { ptyId: string; status
       {managed.historyTruncated && <p>{t('chat.retentionLimit')}</p>}
       {managed.pending.map((request) => <Interaction key={request.id} request={request} busy={busy}
         answer={(answer) => run(() => controls.respond({ ...identity, requestId: request.id, answer }))} />)}
-    </> : !status.available && providers.length > 0 ? <>
-      <p>{t('chat.startHint')}</p>
-      <div className="wmux-chat-control-row"><select aria-label={t('chat.provider')} value={provider} disabled={busy} onChange={(e) => setProvider(e.target.value)}>
-        {providers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-      </select><button type="button" className="ui-btn" disabled={busy} onClick={() => void run(() => controls.start({ ptyId, providerId: provider }))}>
-        {busy ? t('chat.loading') : t('chat.startNew')}</button></div>
     </> : null}
     {error && <p role="alert">{error}</p>}
   </div>;

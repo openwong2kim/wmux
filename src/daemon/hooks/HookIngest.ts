@@ -62,7 +62,7 @@ import { agentDisplayToSlug, agentStatusToSignalKind, type AgentEventStatus } fr
 import type { ResumeBinding, PermissionMode } from '../../shared/agentResume';
 import type { ApprovalHookSink } from '../approvals/types';
 import { extractAskUserQuestion } from '../approvals/askUserQuestion';
-import { checkTranscriptPath } from './transcriptPathGuard';
+import { checkNativeTranscriptPath } from '../transcript/providers';
 
 /** Rolling flood-summary interval. Mirrors the main-side handler. */
 const HOOK_FLOOD_LOG_INTERVAL_MS = 30_000;
@@ -800,7 +800,7 @@ export class HookIngest {
       let transcriptPath: string | undefined;
       if (claimedPath) {
         const sessionEnv = sessions.find((s) => s.id === sessionId)?.env;
-        const check = checkTranscriptPath(claimedPath, signal.agentSessionId, sessionEnv);
+        const check = checkNativeTranscriptPath(signal.agent, claimedPath, signal.agentSessionId, sessionEnv);
         if (check.ok) {
           transcriptPath = claimedPath;
         } else {

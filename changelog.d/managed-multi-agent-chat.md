@@ -1,6 +1,3 @@
 ### Added
-- Managed chat sessions for Codex app-server, OpenCode, and operator-configured ACP agents, with streaming, activity groups, file previews, permissions, cancellation, and explicit reconnect.
-- Durable send intents and session-bound approvals prevent automatic resend after uncertain delivery. Existing Claude transcript chat remains available.
-
-### Fixed
-- Recognize a requested OpenCode cancellation as a confirmed stop while preserving unconfirmed handling for unexpected failures.
+- Experimental Chat view can show and continue the same terminal conversation for Codex and OpenCode, alongside Claude Code, with provider-specific session identity and input guards. OpenCode TUI integration installs through `wmux setup-hooks` on supported versions.
+- Shared agent-neutral conversation/activity UI and optional private managed Codex, OpenCode and ACP adapters. ACP is supplementary; opening Chat does not create a separate agent session.

@@ -38,10 +38,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { checkTranscriptPath, claudeProjectRoots } from '../hooks/transcriptPathGuard';
+import { claudeProjectRoots } from '../hooks/transcriptPathGuard';
 
 /** Only Claude Code publishes a transcript wmux can discover today. */
 export const DISCOVERABLE_AGENT = 'claude';
+export type DiscoverableAgent = 'claude' | 'codex';
+import { checkNativeTranscriptPath, codexSessionRoot } from './providers';
+const rootsFor = (agent: DiscoverableAgent, env?: Record<string, string>) => agent === 'codex' ? [codexSessionRoot(env)] : claudeProjectRoots(env);
 
 /**
  * Immediate subdirectories examined per root, per scan. A projects root holds
@@ -81,6 +84,7 @@ export interface TranscriptDiscoveryDeps {
    * it through the normal resume-binding path; this module never writes state.
    */
   onFound: (found: {
+    agent?: DiscoverableAgent;
     sessionId: string;
     agentSessionId: string;
     transcriptPath: string;
@@ -93,6 +97,7 @@ export interface TranscriptDiscoveryDeps {
 }
 
 interface SearchState {
+  agent: DiscoverableAgent;
   /** The id whose `<id>.jsonl` we are looking for. */
   agentSessionId: string;
   /** The pane cwd the SessionStart carried, replayed into the found binding. */
@@ -174,14 +179,15 @@ export class TranscriptDiscovery {
    * DIFFERENT id supersedes: that is a `/clear` or a fresh claude in the same
    * pane, and the previous session's file is no longer the one to adopt.
    */
-  start(sessionId: string, agentSessionId: string, cwd: string): void {
+  start(sessionId: string, agentSessionId: string, cwd: string, agent: DiscoverableAgent = 'claude'): void {
     if (this.disposed || !sessionId || !agentSessionId) return;
     const existing = this.searches.get(sessionId);
     if (existing) {
-      if (existing.agentSessionId === agentSessionId) return;
+      if (existing.agentSessionId === agentSessionId && existing.agent === agent) return;
       this.stop(existing);
     }
     const state: SearchState = {
+      agent,
       agentSessionId,
       cwd,
       watchers: [],
@@ -226,8 +232,8 @@ export class TranscriptDiscovery {
   /** Scan, validate, and (on success) finish the search. Returns true if done. */
   private tryAdopt(sessionId: string, state: SearchState): boolean {
     const env = this.deps.getSessionEnv?.(sessionId);
-    for (const candidate of scanForTranscript(state.agentSessionId, env)) {
-      const check = checkTranscriptPath(candidate, state.agentSessionId, env);
+    for (const candidate of (state.agent === 'codex' ? scanForCodexTranscript(state.agentSessionId, env) : scanForTranscript(state.agentSessionId, env))) {
+      const check = checkNativeTranscriptPath(state.agent, candidate, state.agentSessionId, env);
       if (!check.ok) {
         // A same-named file reachable through the root but resolving OUTSIDE it
         // (a symlinked project directory). Refused exactly as a forged hook path
@@ -242,6 +248,7 @@ export class TranscriptDiscovery {
       this.searches.delete(sessionId);
       try {
         this.deps.onFound({
+          ...(state.agent === 'codex' ? { agent: state.agent } : {}),
           sessionId,
           agentSessionId: state.agentSessionId,
           transcriptPath: candidate,
@@ -262,7 +269,7 @@ export class TranscriptDiscovery {
    */
   private arm(sessionId: string, state: SearchState): void {
     if (this.disposed) return;
-    for (const root of claudeProjectRoots(this.deps.getSessionEnv?.(sessionId))) {
+    for (const root of rootsFor(state.agent, this.deps.getSessionEnv?.(sessionId))) {
       try {
         const watcher = fs.watch(root, { persistent: false }, () => {
           this.schedule(sessionId, state);
@@ -339,4 +346,33 @@ export class TranscriptDiscovery {
     this.warned.add(key);
     this.deps.log?.('warn', message);
   }
+}
+
+/** Exact UUID lookup, never latest-by-cwd. Bound directory depth, total entries
+ * and directory reads; no symlinks are followed while searching. */
+export function scanForCodexTranscript(id: string, env?: Record<string, string>): string[] {
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) return [];
+  const queue = [{ directory: codexSessionRoot(env), depth: 0 }];
+  const found: string[] = [];
+  let examined = 0;
+  let directories = 0;
+  while (queue.length && directories++ < 512 && examined < 16000) {
+    const next = queue.pop()!;
+    let dir: fs.Dir | undefined;
+    try {
+      dir = fs.opendirSync(next.directory);
+      let entry: fs.Dirent | null;
+      while (examined++ < 16000 && (entry = dir.readSync())) {
+        const file = path.join(next.directory, entry.name);
+        if (entry.isDirectory() && next.depth < 3 && queue.length < 512) queue.push({ directory: file, depth: next.depth + 1 });
+        else if (entry.isFile() && entry.name.endsWith(`-${id}.jsonl`)) {
+          found.push(file);
+          if (found.length >= 2) return [];
+        }
+      }
+    } catch { /* Missing/unreadable account: no candidate. */ }
+    finally { dir?.closeSync(); }
+  }
+  // Ambiguous duplicate copies must not choose a conversation by directory order.
+  return found.length === 1 ? found : [];
 }

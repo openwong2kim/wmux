@@ -29,9 +29,11 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
   const agentStatus = useStore((s) => s.surfaceAgentStatus[ptyId]);
   const turnOpenAt = useStore((s) => s.surfaceTurnOpenAt?.[ptyId]);
   const managed = data.status.managed;
-  const blocked = managed ? managed.phase === 'blocked' : data.blocked || agentStatus === 'awaiting_input' || data.status.agentStatus === 'awaiting_input';
+  const nativeTui = data.status.terminal?.agent === 'opencode';
+  const readOnly = data.status.terminal?.capabilities.send === false;
+  const blocked = managed ? managed.phase === 'blocked' : nativeTui ? data.status.agentStatus === 'awaiting_input' : data.blocked || agentStatus === 'awaiting_input' || data.status.agentStatus === 'awaiting_input';
   const legacyProgress = chatRunState({ ...data, available: data.status.available, agentAlive: data.status.agentAlive,
-    sending, sent: sendState === 'sent', blocked, turnOpen: !!turnOpenAt, status: agentStatus ?? data.status.agentStatus });
+    sending, sent: sendState === 'sent', blocked, turnOpen: nativeTui ? false : !!turnOpenAt, status: nativeTui ? data.status.agentStatus : agentStatus ?? data.status.agentStatus });
   const progress = managed ? ({ connecting: 'connecting', ready: 'ready', running: 'working', blocked: 'blocked', disconnected: 'disconnected', unconfirmed: 'unconfirmed' } as const)[managed.phase] : legacyProgress;
   const busy = progress === 'working' || progress === 'waiting';
   const ended = progress === 'ended';
@@ -52,13 +54,13 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
   }, [latestUser, sendState]);
   const onNew = useCallback(async (message: AppendMessage) => {
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
-    if (inFlight.current || busy || blocked || uncertain || data.status.agentAlive === false || data.error || !data.status.agentSessionId || !data.status.available) {
+    if (inFlight.current || readOnly || busy || blocked || uncertain || data.status.agentAlive === false || data.error || !data.status.agentSessionId || !data.status.available) {
       throw new MessageNotSentError(t('chat.sendUnavailable'));
     }
     sentAfterUser.current = latestUser;
     inFlight.current = true; setSending(true); setSendState(null);
     try {
-      const response = await window.electronAPI.chat.send({ ptyId, agentSessionId: data.status.agentSessionId, text, ...(managed ? { requestId: crypto.randomUUID() } : {}) });
+      const response = await window.electronAPI.chat.send({ ptyId, agentSessionId: data.status.agentSessionId, text, ...((managed || data.status.terminal) ? { requestId: crypto.randomUUID() } : {}) });
       if (response.result !== 'sent') {
         setSendState(response.result);
         // Keep the draft on a refused/uncertain delivery. The error text makes
@@ -71,9 +73,9 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
       setSendState('error');
       throw new MessageNotSentError(t('chat.send.error'));
     } finally { inFlight.current = false; setSending(false); }
-  }, [busy, blocked, uncertain, data.status.agentAlive, data.error, data.status.agentSessionId, data.status.available, latestUser, ptyId, t, managed]);
+  }, [readOnly, busy, blocked, uncertain, data.status.agentAlive, data.error, data.status.agentSessionId, data.status.available, latestUser, ptyId, t, managed]);
   const runtime = useExternalStoreRuntime({ messages, isRunning: busy || sending, isLoading: data.loading,
-    isSendDisabled: blocked || busy || uncertain || data.error || !data.status.available || data.status.agentAlive === false || sending, onNew });
+    isSendDisabled: readOnly || blocked || busy || uncertain || data.error || !data.status.available || data.status.agentAlive === false || sending, onNew });
   useEffect(() => {
     const session = data.status.agentSessionId;
     if (!session) return;
@@ -90,7 +92,7 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
   const reasonKey = ['no-hook', 'stale-session', 'no-transcript-path', 'not-claude', 'unsafe-transcript-path', 'unreadable'].includes(data.status.reason)
     ? `chat.reason.${data.status.reason}` : 'chat.reason.unavailable';
   return <ChatPtyContext.Provider value={ptyId}><AssistantRuntimeProvider runtime={runtime}>
-    <Thread status={<><ChatProgress state={progress} lastSyncedAt={data.lastSyncedAt} onTerminal={onTerminal} /><ChatControls ptyId={ptyId} status={data.status} refresh={data.retry} /></>} empty={messages.length === 0} working={busy} disabled={!data.status.available || data.loading || ended || !!managed && (managed.phase !== 'ready' || !managed.capabilities.send)}
+    <Thread status={<><ChatProgress state={progress} lastSyncedAt={data.lastSyncedAt} onTerminal={onTerminal} /><ChatControls ptyId={ptyId} status={data.status} refresh={data.retry} /></>} empty={messages.length === 0} working={busy} disabled={readOnly || !data.status.available || data.loading || ended || !!managed && (managed.phase !== 'ready' || !managed.capabilities.send)}
       placeholder={ended ? t('chat.placeholderEnded') : undefined}
       history={data.hasMore && <button type="button" className="wmux-chat-earlier ui-btn" disabled={data.loadingEarlier}
         onClick={() => void data.loadEarlier()}>{data.loadingEarlier ? t('chat.loading') : t('chat.loadEarlier')}</button>}
@@ -99,6 +101,7 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
           <button type="button" className="ui-btn" onClick={onTerminal}>{t('chat.openTerminal')}</button></div>
         : messages.length === 0 ? <div className="wmux-chat-empty"><strong>{t('chat.empty')}</strong><p>{t('chat.emptyHint')}</p></div> : null}
       notices={<>
+        {data.status.terminal?.historyTruncated && <div className="wmux-chat-notice">{t('chat.retentionLimit')}</div>}
         {/* A refusal already says why below; one state, one notice. */}
         {uncertain && !managed && !sendState && <div className="wmux-chat-notice">{t('chat.send.unconfirmed')}</div>}
         {data.error && <div className="wmux-chat-notice" role="alert">{t('chat.connectionError')} <button type="button" onClick={data.retry}>{t('chat.retry')}</button></div>}

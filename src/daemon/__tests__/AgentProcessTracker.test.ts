@@ -401,3 +401,19 @@ describe('AgentProcessTracker', () => {
     expect(await tracker.verifyLive('s1', 'claude')).toBe(false);
   });
 });
+
+describe('owned native agent root', () => {
+  it('accepts only the armed PTY root with freshly matching executable metadata', async () => {
+    let entries = [entry(100, 1, 'opencode')];
+    const watcher = { watch: vi.fn(), unwatch: vi.fn() };
+    const tracker = new AgentProcessTracker(watcher, async () => entries);
+    expect(await tracker.verifyOwnedRoot('pane', 100, 'opencode')).toBe(false);
+    tracker.arm('pane', 100);
+    expect(await tracker.verifyOwnedRoot('pane', 100, 'opencode')).toBe(true);
+    expect(await tracker.verifyOwnedRoot('pane', 100, 'codex')).toBe(false);
+    entries = [entry(100, 1, 'zsh')];
+    expect(await tracker.verifyOwnedRoot('pane', 100, 'opencode')).toBe(false);
+    tracker.disarm('pane');
+    expect(await tracker.verifyOwnedRoot('pane', 100, 'opencode')).toBe(false);
+  });
+});

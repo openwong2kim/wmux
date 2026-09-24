@@ -564,6 +564,18 @@ export class AgentProcessTracker {
     }
   }
 
+  /** Exec panes may own the agent as their PTY root, without a shell child.
+   * Verify that exact armed root from fresh process metadata; never accept an
+   * arbitrary PID or infer its executable from pane text. */
+  async verifyOwnedRoot(sessionId: string, pid: number, expectedSlug: AgentSlug): Promise<boolean> {
+    if (this.shellPids.get(sessionId) !== pid) return false;
+    try {
+      const root = (await this.snapshot()).find(entry => entry.pid === pid);
+      return this.shellPids.get(sessionId) === pid && !!root &&
+        selectAgentProcess([{ ...root, ppid: -1 }], -1)?.slug === expectedSlug;
+    } catch { return false; }
+  }
+
   /** Drop all tracking for a session (died / interrupted / killed). */
   disarm(sessionId: string): void {
     this.generation.set(sessionId, (this.generation.get(sessionId) ?? 0) + 1);

@@ -1,3 +1,4 @@
+import { openCodeTerminalChatIntegration } from '../../shared/openCodeTerminalChatIntegration';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -1516,13 +1517,15 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
 
   const lifecycle = await import('../../shared/lifecycleIntegrations');
   const lifecyclePaths = lifecycle.resolveLifecycleIntegrationPaths(os.homedir(), __dirname);
+  const terminalChatOptions = { configRoot: path.dirname(path.dirname(lifecyclePaths.opencode.destinationPath)), startDir: __dirname };
 
   if (status) {
     const claude = statusHooks(paths);
     const integrations = lifecycle.statusLifecycleIntegrations(lifecyclePaths);
     // Preserve the legacy Claude-only root fields for scripts while exposing
     // the richer per-integration objects alongside them.
-    const outcome = { ...claude, claude, ...integrations };
+    const opencodeTerminalChat = openCodeTerminalChatIntegration(terminalChatOptions);
+    const outcome = { ...claude, claude, ...integrations, opencodeTerminalChat };
     if (jsonMode) {
       console.log(JSON.stringify(outcome, null, 2));
     } else {
@@ -1545,6 +1548,7 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
         console.log(`codex notify: NOT registered (${integrations.codexNotify.configPath})`);
       }
       printAssetStatus('opencode plugin', integrations.opencodePlugin);
+      console.log(`opencode terminal chat: ${opencodeTerminalChat.state} (${opencodeTerminalChat.configPath})`);
       printAssetStatus('codex hooks bridge', integrations.codexHooksBridge);
       printCodexHooksStatus(integrations.codexHooks);
     }
@@ -1560,9 +1564,11 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   const claude = installHooks(paths, requestedProfile);
   const codexVersionOutput = probeCodexVersion();
   const integrations = lifecycle.installLifecycleIntegrations(lifecyclePaths, { codexVersionOutput });
+  const opencodeTerminalChat = openCodeTerminalChatIntegration({ ...terminalChatOptions, install: true });
   const outcome = {
     ...claude,
     ...integrations,
+    opencodeTerminalChat,
     ok: claude.ok && integrations.ok,
     claude,
   };
@@ -1585,6 +1591,9 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
       console.log(`codex notify: already registered in ${integrations.codexNotify.configPath}`);
     }
     printAssetInstall('opencode plugin', integrations.opencodePlugin);
+    console.log(`opencode terminal chat: ${opencodeTerminalChat.state}`);
+    if (opencodeTerminalChat.state === 'manual-config') console.log(`Add ${opencodeTerminalChat.pluginUrl} to the plugin array in ${opencodeTerminalChat.configPath} (or tui.jsonc).`);
+    if (opencodeTerminalChat.state === 'current') console.log('Restart existing OpenCode terminals to enable the same-session Chat view.');
     if (integrations.opencodePlugin.action !== 'none') {
       console.log('Restart existing OpenCode sessions so they load the wmux plugin.');
     }

@@ -111,6 +111,7 @@ export function useTranscript(ptyId: string, active: boolean, api: ChatBridgeApi
     const apply = (delta: TranscriptAppendData) => {
       if (!current() || !connected) return;
       if (loading) { queued.push(delta); return; }
+      if (delta.status?.terminal) setState((s) => ({ ...s, status: delta.status!, blocked: delta.status!.agentStatus === 'awaiting_input' }));
       if (delta.status?.managed) setState((s) => ({ ...s, status: delta.status!, blocked: delta.status!.managed!.phase !== 'ready' }));
       if (delta.reset || (pageRef.current && delta.cursor.historyEpoch !== pageRef.current.cursor.historyEpoch) || (lastSeq !== undefined && delta.seq > lastSeq + 1)) {
         lastSeq = delta.seq;

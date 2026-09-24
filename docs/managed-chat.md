@@ -1,111 +1,104 @@
-# Managed multi-agent chat
+# Terminal chat and optional managed sessions
 
-wmux owns the chat session lifecycle in the daemon. Renderer components consume
-wmux events and capabilities rather than SDK-specific objects. Codex uses its
-native app-server protocol, OpenCode its official HTTP/SSE SDK, and other agents
-can use the official ACP SDK. ACP is an optional adapter, not the common data model.
+The default Chat view projects the conversation already running in the pane's
+terminal. Switching Terminal ↔ Chat must not spawn an agent, create a native
+session, resume a second execution owner, or send a prompt. Claude, Codex and
+OpenCode feed the same wmux `TurnEvent` model. ACP is an optional transport for
+separately managed sessions; it does not establish ownership of an existing TUI.
 No competitor implementation code was used.
 
-## Using it
+## Using terminal chat
 
-Enable the experimental chat view in Settings, then open Chat on a terminal pane without an attached Claude transcript, select Codex
-or OpenCode, and choose **Start new chat**. Install and authenticate the agent CLI
-first. The new chat uses the pane's original working directory. It is a separate
-session; it does not take over the program running in the terminal.
+Enable the experimental Chat view in Settings. Install/authenticate the agent
+CLI, run `wmux setup-hooks`, and start or resume the agent in a terminal. Open
+Chat to see that same conversation. Existing terminals may need restarting to
+load a newly installed integration; native history remains with the agent.
 
-The chat supports streaming, collapsed activity, provider-supplied file change
-previews, permission/questions where supported, stop, reconnect, and close.
-Closing archives the wmux record; it does not delete native agent history.
-Existing Claude transcript chat remains available.
+- **Claude Code:** existing hook-bound JSONL projection and guarded PTY input.
+- **Codex:** native rollout records are decoded using a separate adapter. Hooks
+  or the daemon's owned TUI relay supply the exact thread identity. If a binding
+  has an ID but no path, discovery searches for that exact UUID in the account's
+  sessions directory, with bounded traversal. It never chooses the newest file
+  or guesses a conversation from cwd. Chat input uses the same PTY and fresh
+  process, session, draft, approval and input-revision checks. Codex hooks require
+  native trust review. An empty/unknown composer layout refuses input. Rollout
+  text appears when the CLI writes display records, rather than token-by-token.
+- **OpenCode 1.18.30+ (1.x):** `wmux-chat-tui.mjs` runs inside the existing TUI.
+  It reads the TUI's selected route, native messages, parts and approval state.
+  Chat sends through that TUI's own SDK client to the selected session; native
+  events update its terminal too. It does not launch `opencode serve`. Local
+  composer drafts are left untouched. The plugin is registered in `tui.json`,
+  separately from the server lifecycle plugin. JSONC/malformed configurations
+  and user-owned assets are preserved; setup prints the plugin URL for manual
+  addition when needed. Unverified API generations are not auto-registered.
 
-## Adding ACP agents
+The OpenCode plugin exposes only `read` and identity-bound `send` on an
+unadvertised authenticated loopback endpoint. A mode-0600 descriptor is bound to
+the pane's verified live native PID and incarnation. The daemon checks ownership
+before and after I/O, validates response shapes and limits response bytes.
+Renderer clients cannot supply a PID, port, token, path or arbitrary RPC method.
+Changing the selected route changes the history epoch and rejects stale sends.
+Disconnect disables input and preserves the last readable history. Requests are
+never automatically resent; uncertain dispatch is reported as unconfirmed.
 
-Create `chat-providers.json` in the active wmux data directory (normally
-`~/.wmux`, with the application's development/profile suffix if configured):
+History projection and safe input are separate capabilities in
+`TranscriptStatus.terminal`. Native permissions and cancellation remain in
+Terminal for this iteration; file undo is unavailable. OpenCode display history
+is bounded, with truncation disclosed. Its native history remains authoritative.
 
-```json
-{
-  "version": 1,
-  "providers": [
-    {
-      "id": "opencode-acp",
-      "name": "OpenCode (ACP)",
-      "transport": "acp",
-      "command": "/absolute/path/to/opencode",
-      "args": ["acp"]
-    }
-  ]
-}
-```
+## Extending to another agent
 
-Restart the daemon after changes. Commands must be absolute paths. The renderer
-cannot submit arbitrary executables; repository files and agent output cannot
-register providers. The user is responsible for installing/authenticating the
-configured agent. Grok or another future agent requires a supported native
-adapter or ACP implementation; a model name alone does not provide tool execution,
-approvals, or session resume.
+A provider must establish the existing pane/process, selected native session,
+account scope and connection generation. Then implement a bounded native history
+reader and normalize messages, tools, changes and turn boundaries into wmux
+events. Declare input/approval/cancel/undo capabilities independently; having a
+model name or readable output is not proof that input is safe.
 
-## Delivery and recovery
+`src/daemon/transcript/providers.ts` is the file-provider seam, including each
+provider's parser and path/identity guard. `TerminalChatService` is the TUI bridge
+seam. A new provider must not inherit another provider's path rules or reuse a
+cwd/latest-session heuristic. Grok and other agents can be added through their
+native integration mechanisms when these ownership guarantees are available.
+Unsupported capabilities stay disabled; opening Chat never substitutes a new
+background conversation.
 
-The daemon atomically persists send intent before dispatch. Request IDs are
-idempotent within the session. A lost connection produces an unconfirmed state;
-reconnect restores provider history and never automatically resends the prompt.
-Permissions are tied to the current native session/connection and running turn.
-Closing a view does not stop the agent. Explicit stop requests cancellation and
-waits for a confirmed turn boundary; an unresponsive provider is disconnected.
+## Optional managed adapters
 
-Records live under `chat-sessions/` with restrictive file permissions. History is
-bounded to 2,000 events / 4 MiB; individual display bodies are truncated. Retention
-and reconnect change the history generation so stale pagination is discarded.
-OpenCode runs on authenticated loopback with random per-process credentials.
-ACP clients currently do not expose filesystem or terminal client methods.
+The daemon also retains explicit private lifecycle adapters for Codex app-server,
+OpenCode HTTP/SSE and ACP. These create separate execution owners and are not the
+default Terminal ↔ Chat path. The default UI no longer offers **Start new chat**
+as a substitute for an unavailable terminal conversation. Previously created
+managed records can still be viewed/closed when no native terminal conversation
+is selected. Creation remains an explicit private RPC for future separate-mode
+UI work, not a view-switch side effect.
 
-## Current limits and validation
+Managed sends persist intent before dispatch; reconnect never resends an
+uncertain prompt. Managed records live in `chat-sessions/` with restrictive
+permissions and bounded retention. Custom ACP providers are configured by the
+operator in the active wmux data directory's `chat-providers.json`, with absolute
+executable paths. ACP currently exposes neither filesystem nor terminal client
+methods. These adapters do not attach to an arbitrary running TUI.
 
-File undo and live terminal takeover are unavailable. File previews are bounded
-excerpts, not a complete review system. Attachments/model selection, an archived
-session picker, and a managed Claude SDK adapter are not implemented. Provider
-permissions and native sandboxes remain provider-specific; ACP is not a sandbox.
-The mobile HTTP bridge is a separate change. Windows process launching is
-implemented but still needs live agent qualification on Windows hardware.
+## Validation and remaining scope
 
-On the PR branch based on main `0d7f2b64`, real desktop checks passed for both
-Codex and OpenCode: create, composer send, response rendering, confirmed
-completion, and terminal/chat switching. Both providers also passed requested
-cancellation and forced provider-process death: the composer becomes disabled,
-the outcome is unconfirmed, and reconnect restores the same native session and
-history without resending the request. OpenCode's native `MessageAbortedError`
-is accepted only after an explicit cancellation request; an unsolicited abort
-remains a failure. Regression tests cover that distinction.
+Real macOS checks passed for Codex 0.156.1 and OpenCode 1.18.30: existing terminal
+history, Chat input, native reply, identical native session ID, exactly one user
+turn, and the reply appearing in the original terminal after switching back.
+The repeatable probe is `scripts/terminal-chat-live-e2e.mjs`; it requires an
+explicit loopback CDP endpoint and disposable `wmux-chat-*` pane, with an existing
+completed native turn. It consumes provider tokens. English UI and experimental
+Chat view must be enabled.
 
-Earlier live checks also covered an OpenCode one-time file-write approval, file
-preview, and daemon restart/history recovery. Codex CLI 0.156.1, OpenCode 1.18.30,
-and OpenCode through ACP passed native prompt/resume probes. The previously seen
-OpenCode home-directory delay did not reproduce in the latest native probe
-(about 3.9 seconds including resume) or the latest home-directory desktop check;
-its original cause remains unknown.
+Unit/runtime coverage includes path containment, malformed records, native-ID
+discovery, lazy body fetch, process ownership, stale route epochs, duplicate
+requests, uncertain dispatch, dialogs, and existing Claude regression checks.
+Actual Windows native-agent execution is still unverified. The new terminal
+bridge has not yet been exposed through the iOS HTTP chat routes. Phone routes
+must keep existing device/operator permissions, workspace ownership and
+transcript opt-in, and call the same native service instead of exposing its
+loopback endpoint or arbitrary daemon RPCs.
 
-Root type checking, daemon build, and production dependency license checks pass.
-Third-party notices are generated. See the PR test plan for the latest complete
-suite and CI results; automated Windows CI is distinct from live Windows agent
-qualification.
-
-## Repeating live checks
-
-These opt-in scripts consume the configured provider's tokens. Use a disposable
-profile and test workspace, never an existing user conversation.
-
-- `scripts/chat-agent-probe.ts`: bundle with esbuild and choose `codex`,
-  `opencode`, or `acp-opencode`. `--prompt --resume` sends one small request and
-  verifies history restoration. `--home` explicitly diagnoses home-directory
-  behavior; tool requests remain denied and cleanup only removes the separately
-  allocated temporary directory.
-- `scripts/managed-chat-live-e2e.mjs`: real desktop send/response/view-switch
-  checks against an explicitly supplied development app and temporary workspace.
-- `scripts/managed-chat-fault-probe.mjs`: real cancellation and process-death
-  checks. It verifies the temporary workspace and isolated daemon socket, and
-  refuses to kill a process unless it is the sole matching provider descendant
-  of that daemon. Currently POSIX only.
-
-The desktop probes currently expect the English UI with experimental Chat view
-enabled. Their file headers document the required environment variables.
+The older managed smoke/fault scripts exercise only separate-session adapters;
+their results are not evidence for same-terminal behavior. The old managed UI
+creation probe is retained as a historical/optional-mode probe and requires a
+separate explicit creation UI before it can run again.

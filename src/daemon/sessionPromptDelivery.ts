@@ -27,6 +27,8 @@ export interface ScheduledPromptDeliveryDeps {
   /** Returns false if the session disappeared before this write. */
   write: (data: string) => boolean;
   delay?: (ms: number) => Promise<void>;
+  /** Native composer submission, when different from Claude multiline input. */
+  submitKeys?: '\r';
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -99,7 +101,7 @@ export async function deliverScheduledPrompt(
   }
 
   try {
-    const submit = isMultilinePtyPayload(prompt) ? '\r\r' : '\r';
+    const submit = deps.submitKeys ?? (isMultilinePtyPayload(prompt) ? '\r\r' : '\r');
     return deps.write(submit) ? 'sent' : 'error';
   } catch {
     return 'error';
