@@ -37,6 +37,22 @@ describe('OpenCode native projection', () => {
       files: [{ path: '/tmp/proof.txt', patch: 'After:\nhello', truncated: false, additions: 1, deletions: 0 }] }));
     adapter.close();
   });
+  it('accepts a requested native cancellation even when its terminal message precedes abort acknowledgement', async () => {
+    const adapter = new OpenCodeChatAdapter(); await adapter.connect(context());
+    let complete!: (value: unknown) => void;
+    client.session.prompt.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
+    client.session.abort.mockImplementation(async () => {
+      complete({ data: { info: { error: { name: 'MessageAbortedError', data: { message: 'Aborted' } } }, parts: [] } });
+      await Promise.resolve(); return { data: true };
+    });
+    const turn = adapter.prompt('long answer', 'request');
+    await adapter.cancel(); await expect(turn).resolves.toBeUndefined(); adapter.close();
+  });
+  it('does not classify an unsolicited native abort as a successful turn', async () => {
+    const adapter = new OpenCodeChatAdapter(); await adapter.connect(context());
+    client.session.prompt.mockResolvedValue({ data: { info: { error: { name: 'MessageAbortedError', data: { message: 'Aborted' } } } } });
+    await expect(adapter.prompt('hello', 'request')).rejects.toThrow('Aborted'); adapter.close();
+  });
   it('restores the snapshot before consuming live events', async () => {
     const order: string[] = [];
     client.session.messages.mockImplementation(async () => { order.push('history'); return { data: [] }; });

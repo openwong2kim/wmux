@@ -14,6 +14,7 @@ export class OpenCodeChatAdapter implements ChatAdapter {
   private abort = new AbortController();
   private session = '';
   private active = false;
+  private cancelRequested = false;
   private roles = new Map<string, string>();
   private parts = new Map<string, Record<string, unknown>>();
   constructor(private executable = 'opencode') {}
@@ -68,18 +69,25 @@ export class OpenCodeChatAdapter implements ChatAdapter {
   }
   async prompt(text: string, _requestId: string): Promise<void> {
     if (!this.client || this.active) throw new Error('OpenCode unavailable or busy');
-    this.active = true;
+    this.active = true; this.cancelRequested = false;
     try {
       const result = await this.client.session.prompt({ sessionID: this.session, parts: [{ type: 'text', text }] });
       const message = record(result.data); const info = record(message.info);
-      if (info.error) throw new Error(string(record(info.error).message) || 'OpenCode turn failed');
+      const error = record(info.error);
+      // OpenCode returns this terminal message before abort() acknowledges.
+      // It confirms a requested cancellation, not uncertain delivery.
+      if (info.error && !(this.cancelRequested && error.name === 'MessageAbortedError')) {
+        throw new Error(string(record(error.data).message) || string(error.message) || 'OpenCode turn failed');
+      }
       this.roles.set(string(info.id), string(info.role));
       for (const part of array(message.parts)) this.part(record(part));
     } finally { this.active = false; }
   }
   async cancel(): Promise<void> {
     if (!this.client) throw new Error('OpenCode disconnected');
-    await deadline(this.client.session.abort({ sessionID: this.session }));
+    this.cancelRequested = true;
+    const result = await deadline(this.client.session.abort({ sessionID: this.session }));
+    if (result.data !== true) throw new Error('OpenCode did not acknowledge cancellation');
   }
   close(): void { this.abort.abort(); if (this.child) stopAgent(this.child); this.child = undefined; this.client = undefined; }
 

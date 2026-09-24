@@ -15,7 +15,10 @@ async function main() {
   if (!['codex', 'opencode', 'acp-opencode'].includes(provider)) throw new Error('Choose codex, opencode or acp-opencode');
   const create = () => provider === 'codex' ? new CodexChatAdapter() : provider === 'opencode' ? new OpenCodeChatAdapter() : new AcpChatAdapter('opencode', ['acp']);
   let adapter = create();
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-chat-probe-'));
+  const temporaryCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-chat-probe-'));
+  // Explicit diagnostic for cwd-dependent startup/response latency. Tools remain denied.
+  const cwd = process.argv.includes('--home') ? os.homedir() : temporaryCwd;
+  const startedAt = Date.now();
   const events = new Map<string, TurnEvent>();
   let disconnected = false;
   try {
@@ -32,7 +35,7 @@ async function main() {
       const restored = await deadline(adapter.connect({ cwd, env: process.env, sessionId: id, emit: (event) => events.set(event.id, event), request: async () => ({}), disconnected: () => {} }), 30_000);
       if (restored !== id || (process.argv.includes('--prompt') && ![...events.values()].some((event) => event.kind === 'assistant_text' && event.text.includes('WMUX_CHAT_OK')))) throw new Error('History was not restored');
     }
-    process.stdout.write(JSON.stringify({ provider, connected: true, resumed: process.argv.includes('--resume'), prompt: process.argv.includes('--prompt'), eventCount: events.size, capabilities: adapter.capabilities }) + '\n');
-  } finally { adapter.close(); fs.rmSync(cwd, { recursive: true, force: true }); }
+    process.stdout.write(JSON.stringify({ provider, cwdKind: process.argv.includes('--home') ? 'home' : 'temporary', elapsedMs: Date.now() - startedAt, connected: true, resumed: process.argv.includes('--resume'), prompt: process.argv.includes('--prompt'), eventCount: events.size, capabilities: adapter.capabilities }) + '\n');
+  } finally { adapter.close(); fs.rmSync(temporaryCwd, { recursive: true, force: true }); }
 }
 main().catch((error: unknown) => { process.stderr.write((error instanceof Error ? error.message : 'Probe failed') + '\n'); process.exitCode = 1; });

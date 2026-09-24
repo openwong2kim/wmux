@@ -46,7 +46,7 @@ try {
   await until(async () => (await status()).managed?.phase === 'ready');
   await page.locator('[data-surface-view="terminal"]:visible').click();
   await page.locator('[data-surface-view="chat"]:visible').click();
-  await page.locator('.wmux-chat-prose').filter({ hasText: 'WMUX_CHAT_UI_OK' }).waitFor();
+  await page.locator('.wmux-chat-prose:visible').filter({ hasText: 'WMUX_CHAT_UI_OK' }).waitFor();
   if (process.env.WMUX_CHAT_E2E_SCREENSHOT) await page.screenshot({ path: process.env.WMUX_CHAT_E2E_SCREENSHOT });
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ passed: true, provider, checks: ['UI start', 'composer send', 'real response', 'provider completion', 'view switching', 'no renderer errors'] }));

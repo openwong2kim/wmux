@@ -1,4 +1,18 @@
 export const pl = {
+  'chat.closeManaged': "Zamknij czat",
+  'chat.reviewChanges': "Przejrzyj zmiany",
+  'chat.activity': "Działania agenta",
+  'chat.managedSession': "Sesja czatu · niezależna od terminala",
+  'chat.stop': "Zatrzymaj",
+  'chat.reconnect': "Połącz ponownie i przejrzyj historię",
+  'chat.deliveryUnknown': "Ostatnie żądanie mogło zostać dostarczone. Połącz się ponownie i przejrzyj rozmowę przed wysłaniem kolejnej wiadomości. Żądanie nie zostanie ponowione automatycznie.",
+  'chat.retentionLimit': "Starsze dane przekraczają lokalny limit wyświetlania. Agent zachowuje własną historię sesji.",
+  'chat.startHint': "Rozpocznij osobną sesję czatu w tym obszarze roboczym. Nie przejmuje ona agenta działającego w terminalu.",
+  'chat.provider': "Agent czatu",
+  'chat.startNew': "Rozpocznij nowy czat",
+  'chat.controlFailed': "Nie udało się potwierdzić operacji czatu.",
+  'chat.customAnswer': "Twoja odpowiedź",
+  'chat.submitAnswer': "Wyślij odpowiedź",
   // Czat transkrypcji bieżącej sesji
   'chat.state.connecting': 'Łączenie…',
   'chat.state.disconnected': 'Utracono aktualizacje · nieznany stan odpowiedzi',
