@@ -160,6 +160,8 @@ describe('WebPopoverBody — off state', () => {
     const busy = renderBody({ info: { running: false }, busy: true });
     expect(busy).toContain('web.starting');
     expect(busy).toContain('disabled');
+    // An in-flight action is never the primary.
+    expect(busy).not.toContain('ui-btn-primary');
   });
 });
 

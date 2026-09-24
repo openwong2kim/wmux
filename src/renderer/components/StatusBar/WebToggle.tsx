@@ -292,7 +292,9 @@ export function WebPopoverBody({
         </PopoverSection>
         <div className="flex items-center justify-between gap-2">
           {devicesLink}
-          <Button variant="primary" size="md" onClick={onStart} disabled={busy}>
+          {/* In flight it is not the primary: DESIGN.md keeps the warm fill off
+              disabled and running actions. */}
+          <Button variant={busy ? 'secondary' : 'primary'} size="md" onClick={onStart} disabled={busy}>
             {busy ? t('web.starting') : t('web.start')}
           </Button>
         </div>
