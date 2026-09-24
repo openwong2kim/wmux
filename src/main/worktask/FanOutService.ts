@@ -420,6 +420,9 @@ export class FanOutService {
     // the owner happens to have checked out. A failure is a warning, not a
     // refusal: the tasks then branch from HEAD, as they did before.
     const base = await this.worktrees.resolveBase(repoRoot);
+    if (base.error) {
+      return { ok: false, error: `fanout preflight failed: ${base.error}`, tasks: [] };
+    }
 
     // ── T2 per-repo fan-out environment(포트 창·setup 훅) ──
     // 신뢰 게이트를 한 번만 통과하고 N개 태스크가 그 결과를 공유한다. 포트는 스폰
@@ -442,7 +445,8 @@ export class FanOutService {
         missionIdemKey,
         port: env.ports[k],
         setupCommand: env.setupCommand,
-        baseRef: base.ref,
+        baseOid: base.oid,
+        baseWarning: base.warning,
         ...(entries[k].role ? { role: entries[k].role } : {}),
       });
       tasks.push(r);
@@ -530,8 +534,10 @@ export class FanOutService {
     setupCommand?: string;
     /** Orchestrator role for this task's pane (absent = unroled). */
     role?: string;
-    /** T3 — ref the task branch starts from (absent = HEAD). */
-    baseRef?: string;
+    /** T3 — commit the task branch starts from (absent = HEAD). */
+    baseOid?: string;
+    /** T3 — why the base is not a fresh origin commit; posted to the mission channel. */
+    baseWarning?: string;
   }): Promise<FanOutTaskResult> {
     const base: FanOutTaskResult = { index: ctx.index, title: ctx.title, ok: false };
 
@@ -564,7 +570,7 @@ export class FanOutService {
       return { ...base, error: `worktree preflight failed: ${pf.error}` };
     }
     const plan: TaskWorktreePlan = pf.plan;
-    const created = await this.worktrees.createWorktree(plan, ctx.baseRef);
+    const created = await this.worktrees.createWorktree(plan, ctx.baseOid);
     if (!created.ok) {
       await this.compensate(taskId, ctx.verifiedWorkspaceId);
       return { ...base, error: `worktree create failed: ${created.error}` };
@@ -586,7 +592,12 @@ export class FanOutService {
         // 파일 자체가 없으므로 계약문도 붙지 않는다 — 사람이 직접 입력한다.
         fs.writeFileSync(promptPath, ctx.prompt + WORKER_DELIVERY_PREAMBLE, 'utf8');
       }
-      const stamp: WorkTaskMetaStamp = { taskId, title: ctx.title, createdAt: Date.now() };
+      const stamp: WorkTaskMetaStamp = {
+        taskId,
+        title: ctx.title,
+        createdAt: Date.now(),
+        ...(ctx.baseOid ? { baseOid: ctx.baseOid } : {}),
+      };
       fs.writeFileSync(path.join(plan.metaDir, WORKTASK_META_FILENAME), JSON.stringify(stamp), 'utf8');
     } catch (err) {
       await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
@@ -715,6 +726,22 @@ export class FanOutService {
       if (!invited?.ok) channelDisconnected = true;
     } catch {
       channelDisconnected = true;
+    }
+
+    // T3 — the worker should know its base is not a fresh origin commit. Posted
+    // as the owner, after the invite so the worker is a member; best-effort.
+    if (ctx.baseWarning) {
+      try {
+        await this.daemon.rpc('a2a.channel.post', {
+          channelId,
+          sender: { workspaceId: ctx.verifiedWorkspaceId, memberId: ctx.verifiedWorkspaceId },
+          text: `[fan-out] base warning: ${ctx.baseWarning}`,
+          verifiedWorkspaceId: ctx.verifiedWorkspaceId,
+          clientMsgId: `${ctx.missionIdemKey}-base-warning`,
+        });
+      } catch {
+        // best-effort — the fan-out result carries the same warning.
+      }
     }
 
     // A-1 — the worker is up; make sure it is not sitting on a first-run screen.

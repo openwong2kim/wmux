@@ -149,19 +149,26 @@ export type CreateResult =
   | { ok: false; error: string };
 
 /**
- * Where fan-out task branches start. `ref` is the fully qualified
- * remote-tracking ref of origin's default branch (`refs/remotes/origin/<name>`);
- * absent means "branch from HEAD", and then `warning` says why.
+ * Where fan-out task branches start. `oid` is the commit every task of one
+ * fan-out branches from — origin's default branch, pinned once so a fetch or
+ * pull landing mid-fan-out cannot split the tasks across commits. `ref` names
+ * it for messages. Absent `oid` means "branch from HEAD", and `warning` says
+ * why. `error` refuses the fan-out (the base carries submodules or LFS).
  */
 export interface WorktreeBase {
+  oid?: string;
   ref?: string;
   warning?: string;
+  error?: string;
 }
 
-/** Injectable git runner options — a per-call timeout and no credential prompts. */
+/** Injectable git runner options for network calls: a per-call timeout, no
+ *  credential prompts, and (when the user has no ssh command of their own)
+ *  ssh in batch mode so a host-key or passphrase prompt fails fast. */
 export interface RunGitOptions {
   timeoutMs?: number;
   noPrompt?: boolean;
+  sshBatchMode?: boolean;
 }
 
 type RunGit = (args: string[], cwd: string, opts?: RunGitOptions) => Promise<{ stdout: string; stderr: string }>;
@@ -187,7 +194,12 @@ export class TaskWorktreeManager {
       (async (args, cwd, runOpts) => {
         // GIT_TERMINAL_PROMPT=0: the GUI process has no TTY, so a credential
         // prompt would only sit there until the timeout fires.
-        const env = runOpts?.noPrompt ? { ...getExecEnv(), GIT_TERMINAL_PROMPT: '0' } : getExecEnv();
+        let env = runOpts?.noPrompt ? { ...getExecEnv(), GIT_TERMINAL_PROMPT: '0' } : getExecEnv();
+        // GIT_TERMINAL_PROMPT does not cover ssh, which prompts on /dev/tty.
+        // An ssh command the user already set in the environment wins.
+        if (runOpts?.sshBatchMode && !env.GIT_SSH_COMMAND && !env.GIT_SSH) {
+          env = { ...env, GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' };
+        }
         const { stdout, stderr } = await execFileAsync('git', args, {
           cwd,
           timeout: runOpts?.timeoutMs ?? 30000,
@@ -316,20 +328,39 @@ export class TaskWorktreeManager {
 
   /**
    * Resolve the base every task branch of one fan-out starts from: origin's
-   * default branch, freshly fetched. Called once per fan-out, outside the
-   * per-repo lock (a network call there would serialize every task behind it).
+   * default branch, freshly fetched, pinned to one commit. Called once per
+   * fan-out, outside the per-repo lock (a network call there would serialize
+   * every task behind it).
    *
-   *   1. Name from local refs: `origin/HEAD`, else `origin/main`, else `origin/master`.
-   *   2. `git fetch origin <name>` with a short timeout and no prompts.
-   *   3. `rev-parse --verify` the fully qualified `refs/remotes/origin/<name>`.
+   *   1. Name from local refs: `origin/HEAD`, else `origin/main`, else
+   *      `origin/master`; with none (never fetched), ask the remote once
+   *      (`ls-remote --symref origin HEAD`).
+   *   2. `git fetch origin +refs/heads/<name>:refs/remotes/origin/<name>` — an
+   *      explicit refspec, because a bare `fetch origin <name>` only moves
+   *      FETCH_HEAD when remote.origin.fetch does not cover the branch
+   *      (single-branch clones, narrowed refspecs).
+   *   3. Pin `refs/remotes/origin/<name>` to an OID.
    *
-   * Any failure → no `ref` (branch from HEAD, as before) plus a `warning` the
-   * fan-out result carries back to the caller. Never throws.
+   * A failed fetch keeps the existing remote-tracking ref (with a "stale"
+   * warning) — a concurrent fetch holding the ref lock is a common cause, and
+   * the owner's checkout may be an unrelated feature branch. HEAD is the base
+   * only when no remote-tracking ref exists at all. Never throws.
    */
   async resolveBase(repoRoot: string): Promise<WorktreeBase> {
     const fallback = (why: string): WorktreeBase => ({
       warning: `${why}; tasks branched from the local HEAD, which may not match origin's default branch`,
     });
+    if (!repoRoot) return fallback('no repository root to resolve a base in');
+
+    // ssh prompts are only suppressed when the user has not configured their own ssh command.
+    let sshBatchMode = true;
+    try {
+      const { stdout } = await this.runGit(['config', '--get', 'core.sshCommand'], repoRoot);
+      if (stdout.trim()) sshBatchMode = false;
+    } catch {
+      // unset — batch mode applies.
+    }
+    const netOpts: RunGitOptions = { timeoutMs: BASE_FETCH_TIMEOUT_MS, noPrompt: true, sshBatchMode };
 
     let name: string | undefined;
     try {
@@ -341,10 +372,18 @@ export class TaskWorktreeManager {
     }
     if (!name) {
       for (const candidate of ['main', 'master']) {
-        if (await this.refExists(`refs/remotes/origin/${candidate}`, repoRoot)) {
+        if (await this.commitOf(`refs/remotes/origin/${candidate}`, repoRoot)) {
           name = candidate;
           break;
         }
+      }
+    }
+    if (!name) {
+      try {
+        const { stdout } = await this.runGit(['ls-remote', '--symref', 'origin', 'HEAD'], repoRoot, netOpts);
+        name = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(stdout)?.[1];
+      } catch {
+        // no origin, or unreachable — reported below.
       }
     }
     if (!name) return fallback('could not resolve the default branch of remote "origin"');
@@ -354,36 +393,60 @@ export class TaskWorktreeManager {
       return fallback(`origin's default branch name was rejected (${(err as Error).message})`);
     }
 
+    const ref = `refs/remotes/origin/${name}`;
+    let staleWarning: string | undefined;
     try {
-      await this.runGit(['fetch', 'origin', name], repoRoot, { timeoutMs: BASE_FETCH_TIMEOUT_MS, noPrompt: true });
+      await this.runGit(['fetch', 'origin', `+refs/heads/${name}:${ref}`], repoRoot, netOpts);
     } catch (err) {
-      return fallback(`git fetch origin ${name} failed (${gitErrorDetail(err)})`);
+      staleWarning = `git fetch origin ${name} failed (${gitErrorDetail(err)}); tasks branched from the last fetched ${ref}, which may be stale`;
     }
 
-    const ref = `refs/remotes/origin/${name}`;
-    if (!(await this.refExists(ref, repoRoot))) {
-      return fallback(`${ref} does not exist after git fetch origin ${name}`);
+    const oid = await this.commitOf(ref, repoRoot);
+    if (!oid) {
+      return fallback(
+        staleWarning ? `git fetch origin ${name} failed and ${ref} does not exist` : `${ref} does not exist after git fetch origin ${name}`,
+      );
     }
-    return { ref };
+
+    // The preflight looked at the owner's checkout; the tasks get the base
+    // commit's tree, so its submodules/LFS are checked here (same fail-closed rule).
+    try {
+      await this.runGit(['cat-file', '-e', `${oid}:.gitmodules`], repoRoot);
+      return { error: `the base ${ref} contains submodules, which are not supported (J1)` };
+    } catch {
+      // no .gitmodules at the base.
+    }
+    let attrs = '';
+    try {
+      attrs = (await this.runGit(['show', `${oid}:.gitattributes`], repoRoot)).stdout;
+    } catch {
+      // no .gitattributes at the base.
+    }
+    if (/filter=lfs/.test(attrs)) {
+      return { error: `the base ${ref} uses git-LFS, which is not supported (J1)` };
+    }
+
+    return { oid, ref, ...(staleWarning ? { warning: staleWarning } : {}) };
   }
 
-  /** `rev-parse --verify --quiet <ref>^{commit}` — true when the ref names a commit. */
-  private async refExists(ref: string, cwd: string): Promise<boolean> {
+  /** `rev-parse --verify --quiet <ref>^{commit}` — the commit OID, or undefined. */
+  private async commitOf(ref: string, cwd: string): Promise<string | undefined> {
     try {
-      await this.runGit(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd);
-      return true;
+      const { stdout } = await this.runGit(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd);
+      const oid = stdout.trim();
+      return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(oid) ? oid : undefined;
     } catch {
-      return false;
+      return undefined;
     }
   }
 
   /**
    * worktree 생성(§3 — per-repo 직렬 큐 하). `git worktree add {path} -b {branch}`.
    * 기존 브랜치 충돌은 명시 에러(자동 접미사 금지). plan은 preflight 산출을 그대로 받는다.
-   * With a resolved base ref the branch starts there, `--no-track` so the task
-   * branch does not adopt origin's default branch as its upstream.
+   * With a resolved base commit the branch starts there, `--no-track` so the
+   * task branch does not adopt origin's default branch as its upstream.
    */
-  async createWorktree(plan: TaskWorktreePlan, baseRef?: string): Promise<CreateResult> {
+  async createWorktree(plan: TaskWorktreePlan, baseOid?: string): Promise<CreateResult> {
     return this.withRepoLock(plan.repoHash, async () => {
       const safeBranch = validateGitRef(plan.branch, 'branch');
       const safePath = validatePath(plan.worktreePath, 'worktreePath');
@@ -398,8 +461,8 @@ export class TaskWorktreeManager {
       }
 
       try {
-        const args = baseRef
-          ? ['worktree', 'add', '--no-track', safePath, '-b', safeBranch, validateGitRef(baseRef, 'baseRef')]
+        const args = baseOid
+          ? ['worktree', 'add', '--no-track', safePath, '-b', safeBranch, validateGitRef(baseOid, 'baseOid')]
           : ['worktree', 'add', safePath, '-b', safeBranch];
         await this.runGit(args, plan.repoRoot);
       } catch (err) {

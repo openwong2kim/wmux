@@ -44,6 +44,9 @@ function makePlan(slug: string): TaskWorktreePlan {
   };
 }
 
+/** T3 — the commit the worktrees fake reports as origin's default branch. */
+const BASE_OID = 'c'.repeat(40);
+
 /** worktrees fake — preflight/createWorktree/removeWorktree 제어. */
 function makeWorktreesFake(opts?: {
   preflightFail?: string;
@@ -64,7 +67,7 @@ function makeWorktreesFake(opts?: {
       return { ok: true as const, worktreePath: plan.worktreePath, branch: plan.branch };
     }),
     removeWorktree: vi.fn(async () => ({ ok: true as const })),
-    resolveBase: vi.fn(async () => ({ ref: 'refs/remotes/origin/main' })),
+    resolveBase: vi.fn(async () => ({ oid: BASE_OID, ref: 'refs/remotes/origin/main' })),
   } as any;
 }
 
@@ -348,30 +351,62 @@ describe('firstRunStuckSummary (F15)', () => {
   });
 });
 
-describe('T3 worktree base — one fetch per fan-out, warning surfaced', () => {
-  it('resolves the base once for N tasks and hands the same ref to every createWorktree', async () => {
+describe('T3 worktree base — one fetch per fan-out, OID pinned, warning surfaced', () => {
+  it('resolves the base once for N tasks, hands every createWorktree the same OID, and stamps it', async () => {
     const worktrees = makeWorktreesFake();
-    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: makeRendererFake().port, worktrees });
+    const daemon = makeDaemonFake();
+    const svc = new FanOutService({ daemon: daemon.port, renderer: makeRendererFake().port, worktrees });
     const res = await svc.start(baseReq({ titles: ['a', 'b', 'c'] }));
     expect(res.ok).toBe(true);
     expect(worktrees.resolveBase).toHaveBeenCalledTimes(1);
+    expect(worktrees.resolveBase).toHaveBeenCalledWith('/repo');
     expect(worktrees.createWorktree).toHaveBeenCalledTimes(3);
     for (const call of worktrees.createWorktree.mock.calls) {
-      expect(call[1]).toBe('refs/remotes/origin/main');
+      expect(call[1]).toBe(BASE_OID);
+    }
+    // The stamp is what task-mode diffs read the base from.
+    for (const t of res.tasks) {
+      const stamp = JSON.parse(fs.readFileSync(path.join(metaRoot, 'meta', t.taskId!.slice(-8), 'task.json'), 'utf8'));
+      expect(stamp.baseOid).toBe(BASE_OID);
     }
     expect(res.warnings).toBeUndefined();
+    expect(daemon.calls.some((c) => c.method === 'a2a.channel.post')).toBe(false);
   });
 
-  it('a base fallback is a warning on a still-successful result, and tasks branch from HEAD', async () => {
+  it('a base warning rides a still-successful result and is posted to every mission channel', async () => {
     const worktrees = makeWorktreesFake();
-    worktrees.resolveBase = vi.fn(async () => ({ warning: 'git fetch origin main failed (offline)' }));
-    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: makeRendererFake().port, worktrees });
+    const warning = 'git fetch origin main failed (offline); tasks branched from the local HEAD';
+    worktrees.resolveBase = vi.fn(async () => ({ warning }));
+    const daemon = makeDaemonFake();
+    const svc = new FanOutService({ daemon: daemon.port, renderer: makeRendererFake().port, worktrees });
     const res = await svc.start(baseReq());
     expect(res.ok).toBe(true);
-    expect(res.warnings).toEqual(['git fetch origin main failed (offline)']);
+    expect(res.warnings).toEqual([warning]);
     for (const call of worktrees.createWorktree.mock.calls) {
       expect(call[1]).toBeUndefined();
     }
+    for (const t of res.tasks) {
+      const stamp = JSON.parse(fs.readFileSync(path.join(metaRoot, 'meta', t.taskId!.slice(-8), 'task.json'), 'utf8'));
+      expect(stamp.baseOid).toBeUndefined();
+    }
+    const posts = daemon.calls.filter((c) => c.method === 'a2a.channel.post');
+    expect(posts.map((p) => p.params['channelId'])).toEqual(['ch-1', 'ch-2']);
+    for (const p of posts) {
+      expect(p.params['text']).toContain(warning);
+      expect(p.params['verifiedWorkspaceId']).toBe('ws-ceo');
+    }
+  });
+
+  it('a base refused for submodules/LFS refuses the whole fan-out before any task exists', async () => {
+    const worktrees = makeWorktreesFake();
+    worktrees.resolveBase = vi.fn(async () => ({ error: 'the base refs/remotes/origin/main contains submodules' }));
+    const daemon = makeDaemonFake();
+    const svc = new FanOutService({ daemon: daemon.port, renderer: makeRendererFake().port, worktrees });
+    const res = await svc.start(baseReq());
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/submodules/);
+    expect(res.tasks).toEqual([]);
+    expect(daemon.calls).toHaveLength(0);
   });
 
   it('a refused preflight never fetches', async () => {

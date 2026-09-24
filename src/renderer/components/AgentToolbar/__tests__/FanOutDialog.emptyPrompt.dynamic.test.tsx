@@ -149,6 +149,20 @@ describe('FanOutDialog — the launch report', () => {
     expect(toasts[1]?.message).toContain('task #1');
   });
 
+  it('shows each result warning as its own warn toast (T3: a HEAD or stale-base fallback)', async () => {
+    const warning = 'git fetch origin main failed (offline); tasks branched from the local HEAD';
+    start.mockResolvedValue({ ok: true, tasks: readyTasks(1), warnings: [warning] });
+    fillRepo();
+    typeInto('fanout-prompt', 'do the thing');
+    await act(async () => {
+      q<HTMLElement>('fanout-submit')?.click();
+      await Promise.resolve();
+    });
+    const warns = useStore.getState().toasts.filter((t) => t.message === warning);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.level).toBe('warn');
+  });
+
   it('posts no readiness toast when nothing materialized', async () => {
     await launchWith([{ ok: true, title: 'unmaterialized', unmaterialized: true }]);
     // Just the summary — there is no diff to open.

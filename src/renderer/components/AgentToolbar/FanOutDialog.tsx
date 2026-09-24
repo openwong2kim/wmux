@@ -492,6 +492,8 @@ function didLaunch(res: unknown): boolean {
 interface FanOutResultLike {
   ok?: boolean;
   error?: string;
+  /** T3 — e.g. the tasks branched from HEAD because origin could not be fetched. */
+  warnings?: string[];
   tasks?: Array<{
     ok?: boolean;
     title?: string;
@@ -564,6 +566,9 @@ function reportResult(res: unknown, pushToast: PushToast, ownerWorkspaceId: stri
     level: fail > 0 ? 'error' : disconnected > 0 || unmaterialized > 0 ? 'warn' : 'info',
     message: parts.join(' · '),
   });
+  for (const w of r.warnings ?? []) {
+    if (typeof w === 'string' && w.trim()) pushToast({ level: 'warn', message: w });
+  }
 
   // F5 — ONE toast for the diff entry point, not one per task. A fan-out of 8
   // pushed 8 identical-looking cards on top of the summary that had just been

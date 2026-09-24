@@ -18,6 +18,8 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { git } from '../../git/git';
 import { resolveAccessiblePath } from './fs.handler';
+import { metaDirForWorktree } from '../../worktask/TaskWorktreeManager';
+import { WORKTASK_META_FILENAME } from '../../../shared/workTask';
 import {
   parseUnifiedDiff,
   reassemblePatch,
@@ -172,6 +174,19 @@ const EMPTY_TREE_OID = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 // counts describe the same diff the panel renders.
 const DIFF_ALGORITHM = '--histogram';
 
+// T3 — the commit a fan-out task branched from, from its task.json stamp (the
+// meta dir sits beside the worktree). Undefined for tasks that fell back to
+// the owner's HEAD, for stamps written before T3, and for non-task worktrees.
+async function readTaskBaseOid(worktreePath: string): Promise<string | undefined> {
+  try {
+    const raw = await readFile(join(metaDirForWorktree(worktreePath), WORKTASK_META_FILENAME), 'utf8');
+    const oid = (JSON.parse(raw) as { baseOid?: unknown }).baseOid;
+    return typeof oid === 'string' && /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(oid) ? oid : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // diff:read 구현.
 //
 // mode:
@@ -219,9 +234,14 @@ async function readDiff(
       const h = await git(['rev-parse', 'HEAD'], targetRepoPath);
       headOid = h.code === 0 ? h.stdout.trim() : '';
     }
+    // T3: a task that branched from origin's default branch is compared against
+    // that commit, not the owner's HEAD — a local main behind origin (or a
+    // feature-branch checkout) would otherwise show every upstream commit in
+    // between as the worker's change, and as an adoptable hunk.
+    const baseOid = await readTaskBaseOid(worktreePath);
     // mergeBase = merge-base HEAD {targetHeadOid} — 단일 출처(§2 G8).
-    const mb = await git(['merge-base', 'HEAD', headOid], worktreePath);
-    mergeBase = mb.code === 0 && mb.stdout.trim() ? mb.stdout.trim() : headOid;
+    const mb = await git(['merge-base', 'HEAD', baseOid ?? headOid], worktreePath);
+    mergeBase = mb.code === 0 && mb.stdout.trim() ? mb.stdout.trim() : (baseOid ?? headOid);
   }
 
   // 1-arg 워킹트리 대조(미커밋 포함). untracked 제외 — 별도 합성.
