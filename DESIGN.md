@@ -221,10 +221,11 @@ Build every modal and settings row from `src/renderer/components/ui/`
   description + a 28px close ×. Body scrolls; Footer is a hairline-topped,
   right-aligned action row with the primary last. Focus is trapped, Escape
   closes the top-most dialog, focus returns to the opener.
-- **One primary per dialog.** Exactly one solid warm (`--accent`) button per
+- **One primary per dialog.** At most one solid warm (`--accent`) button per
   dialog state, chosen by what unblocks the user first; every other action is
   secondary (raised), ghost (dismiss / skip) or destructive (red tint; solid
-  red only for a final confirm). A disabled action is never the primary.
+  red only for a final confirm). A disabled action is never the primary, so a
+  state with nothing to do has none.
 - **Field row:** 13px/500 label + 11px `--text-sub` description on the left,
   control on the right (`inline`) or underneath (`stacked`, for text inputs).
   The row wires `htmlFor` and `aria-describedby` into its control.
