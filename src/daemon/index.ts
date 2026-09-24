@@ -124,6 +124,7 @@ import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
 import { chatAgentStatus } from './transcript/chatAgentStatus';
+import { terminalLaunchCommand, startNativeCodexRuntime } from './transcript/terminalLaunch';
 import { deliverChatPrompt } from './transcript/deliverChatPrompt';
 import { ChatSessionService } from './chat/ChatSessionService';
 import { chatProviders } from './chat/providers';
@@ -3281,6 +3282,52 @@ function registerRpcHandlers(
     });
     pipeServer.onClientClose(client => terminalChat?.dropClient(client));
   }
+
+  const terminalLaunching = new Set<string>();
+  pipeServer.onRpc('daemon.chat.launchTerminal', async (params, ctx) => {
+    const id = typeof params.id === 'string' ? params.id : '';
+    if (!firstPartyOnly(ctx.clientId, 'launchTerminal') || !id || !['claude', 'codex'].includes(String(params.agent))) return { ok: false, error: 'Unavailable' };
+    if (terminalLaunching.has(id)) return { ok: false, error: 'Launch already pending' };
+    terminalLaunching.add(id);
+    let launchRelay: Awaited<ReturnType<CodexPaneRelays['prepare']>> | undefined;
+    let launched = false;
+    try {
+      const pane = sessionManager.getSession(id);
+      const revision = pane?.bridge.getInputRevision();
+      const ready = () => !!pane && sessionManager.getSession(id) === pane && !pane.meta.exec &&
+        ['attached', 'detached'].includes(pane.meta.state) && pane.bridge.isEmptyShellPrompt() &&
+        pane.bridge.getInputRevision() === revision && !pane.promptLog.isCommandRunning() &&
+        !!approvalRegistry && !approvalRegistry.list().pending.some(request => request.sessionId === id);
+      if (!ready() || !pane) return { ok: false, error: 'Use Terminal: an empty shell prompt is required.' };
+      if (!await agentProcessTracker.verifyIdleShell(pane.meta.pid) || !ready()) return { ok: false, error: 'Terminal changed or is busy.' };
+      buildAgentLaunch({ agent: params.agent }, await installedAgentLaunchOptions(pane.meta.env));
+      let command = terminalLaunchCommand(params.agent, params.prompt);
+      if (params.agent === 'codex') {
+        // Hook session_id can name an invocation rather than the conversation.
+        // Observe the existing native TUI transport for authoritative thread IDs.
+        await codexPaneRelays.retire(id);
+        try { launchRelay = await codexPaneRelays.prepare(id, pane.meta.env?.CODEX_HOME); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof CodexRelayUnavailableError)) throw error;
+          if (!ready()) throw new Error('Terminal changed');
+          await startNativeCodexRuntime({ ...process.env, ...pane.meta.env });
+          launchRelay = await codexPaneRelays.prepare(id, pane.meta.env?.CODEX_HOME);
+        }
+        if (!/^unix:\/\/\/[A-Za-z0-9_./-]+$/.test(launchRelay.url)) throw new Error('Unsupported relay path');
+        command = command.replace('codex -- ', `codex --remote ${launchRelay.url} -- `);
+      }
+      if (!await agentProcessTracker.verifyIdleShell(pane.meta.pid) || !ready()) return { ok: false, error: 'Terminal changed or is busy.' };
+      // Fixed launcher only; no renderer-provided shell text, prompts or flags.
+      // noteInput consumes the empty-prompt evidence before another RPC can run.
+      if (launchRelay && !launchRelay.commit(pane)) throw new Error('Terminal changed');
+      const input = command + '\r';
+      pane.bridge.noteInput(input);
+      pane.ptyProcess.write(input);
+      launched = true;
+      return { ok: true };
+    } catch { return { ok: false, error: 'Could not start the installed agent. Check Terminal before retrying.' }; }
+    finally { if (!launched) await launchRelay?.close(); terminalLaunching.delete(id); }
+  });
 
   pipeServer.onRpc('daemon.transcript.status', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'status')) {

@@ -373,7 +373,9 @@ Methods marked **bold** are surfaced in the approval dialog with stronger user-f
 
 The full machine-readable map (with path extractors and `multiPathMode` flags) lives at `src/main/mcp/methodCapabilityMap.ts`. `tsc --noEmit` enforces totality via `Record<RpcMethod, ...>` so a new RPC method without a map entry fails the build.
 
-### Managed chat (internal, first-party desktop only)
+### Terminal launch and managed chat (internal, first-party desktop only)
+
+`daemon.chat.launchTerminal` starts a fixed installed Claude/Codex CLI with a single-line initial message in the same pane. It requires an unchanged, positively empty POSIX shell prompt, fresh shell process attribution without children, and no pending approval. It never creates a managed session.
 
 `daemon.chat.providers`, `daemon.chat.start`, `daemon.chat.reconnect`,
 `daemon.chat.cancel`, `daemon.chat.respond`, and `daemon.chat.close` are private

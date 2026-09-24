@@ -25,6 +25,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { IPty } from 'node-pty';
 import { DaemonPTYBridge } from '../DaemonPTYBridge';
+import { PromptEventLog } from '../PromptEventLog';
 import { RingBuffer } from '../RingBuffer';
 
 const BIG = 'x'.repeat(3000); // > ActivityMonitor's 2 KB active threshold
@@ -60,12 +61,26 @@ describe('DaemonPTYBridge turn priority', () => {
     active = [];
     bridge.on('idle', (e: { sessionId: string }) => idle.push(e.sessionId));
     bridge.on('active', (e: { sessionId: string }) => active.push(e.sessionId));
-    bridge.setupDataForwarding(fake.pty, new RingBuffer(65536), 'sess-1');
+    bridge.setupDataForwarding(fake.pty, new RingBuffer(65536), 'sess-1', new PromptEventLog());
   });
 
   afterEach(() => {
     bridge.cleanup();
     vi.useRealTimers();
+  });
+
+  it('requires positive empty prompt evidence and never treats a draft redraw as empty', () => {
+    expect(bridge.isEmptyShellPrompt()).toBe(false);
+    feed('\x1b]133;B\x07');
+    expect(bridge.isEmptyShellPrompt()).toBe(true);
+    bridge.noteInput('draft');
+    expect(bridge.isEmptyShellPrompt()).toBe(false);
+    feed('\x1b]133;A\x07\x1b]133;B\x07');
+    expect(bridge.isEmptyShellPrompt()).toBe(false);
+    feed('\x1b]133;C\x07\x1b]133;D;0\x07\x1b]133;A\x07\x1b]133;B\x07');
+    expect(bridge.isEmptyShellPrompt()).toBe(true);
+    bridge.noteInput('codex -- hello\r');
+    expect(bridge.isEmptyShellPrompt()).toBe(false);
   });
 
   describe('baseline (unsettled pane)', () => {

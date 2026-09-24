@@ -51,6 +51,7 @@ interface McpStatusPayload {
 }
 
 const chat: ChatBridgeApi = {
+  launchTerminal: (args) => ipcRenderer.invoke(CHAT_IPC.launchTerminal, args),
   controls: {
     close: (args) => ipcRenderer.invoke(CHAT_IPC.close, args),
     providers: () => ipcRenderer.invoke(CHAT_IPC.providers),

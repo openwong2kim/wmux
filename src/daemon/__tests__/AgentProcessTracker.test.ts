@@ -417,3 +417,16 @@ describe('owned native agent root', () => {
     expect(await tracker.verifyOwnedRoot('pane', 100, 'opencode')).toBe(false);
   });
 });
+
+describe('idle shell launch verification', () => {
+  it('refuses a child process, replaced root or missing PID', async () => {
+    let entries = [entry(100, 1, 'zsh')];
+    const tracker = new AgentProcessTracker({ watch: vi.fn(), unwatch: vi.fn() }, async () => entries);
+    expect(await tracker.verifyIdleShell(100)).toBe(true);
+    entries.push(entry(101, 100, 'vim'));
+    expect(await tracker.verifyIdleShell(100)).toBe(false);
+    entries = [entry(100, 1, 'codex')];
+    expect(await tracker.verifyIdleShell(100)).toBe(false);
+    expect(await tracker.verifyIdleShell(200)).toBe(false);
+  });
+});

@@ -102,3 +102,32 @@ The older managed smoke/fault scripts exercise only separate-session adapters;
 their results are not evidence for same-terminal behavior. The old managed UI
 creation probe is retained as a historical/optional-mode probe and requires a
 separate explicit creation UI before it can run again.
+
+## Start from Chat
+
+An empty pane offers Claude and Codex launch buttons plus an initial-message field.
+The private launch RPC starts the installed CLI in that same PTY and includes the
+first message as a literal argument, so native conversation discovery can connect
+Chat without requiring an initial terminal prompt. No managed session is created.
+Existing readable conversations are retained and do not offer replacement launch.
+
+Launch currently supports zsh/bash/sh with OSC 133 shell integration and a
+positively empty prompt. Draft input, foreground/background child processes,
+pending approvals, unknown shell state, Windows and other shells are refused.
+The initial message is one line, at most 2,000 characters; subsequent chat messages
+retain the regular multiline composer. Login/trust onboarding remains in Terminal.
+No automatic launch retry occurs after a failed or uncertain response.
+
+Codex launch uses its native account server;
+wmux observes the TUI connection through its existing private relay to obtain the
+actual conversation ID (hook invocation IDs are not sufficient). If that server
+is not running, the explicit launch action calls the official idempotent
+`codex app-server daemon start` command before connecting the TUI. This starts
+only the native runtime, not another conversation, and never restarts an existing
+server or enables remote control. Failure stops before typing into the shell.
+
+Validation probe: `scripts/terminal-chat-launch-live-e2e.mjs` starts from an empty
+selected test pane and verifies the initial native answer, one user turn, and
+Terminal/Chat round-trip without a managed conversation. Native Codex transport
+accepts bounded 16 MiB metadata frames (Chat history keeps its smaller limits),
+and excludes ephemeral `thread_title` sessions from foreground selection.

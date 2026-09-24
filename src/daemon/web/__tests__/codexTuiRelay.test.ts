@@ -1,6 +1,6 @@
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
-import {mkdtemp,mkdir,rm,stat,access} from 'node:fs/promises';
+import {mkdtemp,mkdir,rm,stat,access,symlink} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket,{WebSocketServer} from 'ws';
@@ -9,7 +9,7 @@ import {createCodexTuiRelay,CodexRelayUnavailableError} from '../codexTuiRelay';
 const threadId='01234567-89ab-4cde-8123-456789abcdef';
 const systemThreadId='11111111-89ab-4cde-8123-456789abcdef';
 const otherThreadId='22222222-89ab-4cde-8123-456789abcdef';
-async function fixture(options:{onStateChange?:()=>void; onUpstreamRequest?:(request:{id?:unknown;method?:unknown})=>void}={}) {
+async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpstreamRequest?:(request:{id?:unknown;method?:unknown})=>void}={}) {
   // macOS's per-user tmpdir is too long for a Unix socket path (sun_path is
   // 104 bytes there); /tmp keeps the fixture sockets addressable.
   const home=await mkdtemp(path.join(process.platform === 'darwin' ? '/tmp' : os.tmpdir(),'wmux-relay-test-'));
@@ -29,7 +29,9 @@ async function fixture(options:{onStateChange?:()=>void; onUpstreamRequest?:(req
       socket.send(JSON.stringify({id:request.id,result:{thread:{id:system?systemThreadId:threadId,cwd:'/repo'}}}));
     });
   });
-  await new Promise<void>(resolve=>server.listen(upstreamPath,resolve));
+  const actualPath = options.linked ? path.join(home, 'actual.sock') : upstreamPath;
+  await new Promise<void>(resolve=>server.listen(actualPath,resolve));
+  if (options.linked) await symlink(actualPath, upstreamPath);
   const relay=await createCodexTuiRelay({codeHome:home,onStateChange:options.onStateChange});
   ready=true;
   const connect=async(origin?:string)=>{
@@ -51,6 +53,11 @@ async function select(client:WebSocket,id:number) {
 }
 // The relay is Unix-socket only; Windows panes take the ordinary launch path.
 describe.skipIf(process.platform === 'win32')('pane-owned Codex Unix relay',()=>{
+  it('supports the native daemon short-path socket link without losing ownership checks', async () => {
+    const f = await fixture({ linked: true });
+    try { const client = await f.connect(); await select(client, 1); expect(f.relay.current()?.threadId).toBe(threadId); client.terminate(); }
+    finally { await f.cleanup(); }
+  });
   it('refuses a stale socket inode before creating a TUI endpoint',async()=>{
     const home=await mkdtemp('/tmp/wmux-stale-codex-');
     const socketPath=path.join(home,'app-server-control','app-server-control.sock');
@@ -80,6 +87,18 @@ describe.skipIf(process.platform === 'win32')('pane-owned Codex Unix relay',()=>
       await new Promise<void>(resolve=>server.close(()=>resolve()));
       await rm(home,{recursive:true,force:true});
     }
+  });
+  it('forwards bounded native app metadata larger than the Chat display budget', async () => {
+    const f = await fixture();
+    try {
+      const client = await f.connect(); await select(client, 1);
+      const received = new Promise<number>(resolve => client.once('message', bytes => resolve(Buffer.byteLength(bytes as Buffer))));
+      const payload = JSON.stringify({ id: 99, result: { metadata: 'x'.repeat(11 * 1024 * 1024) } });
+      f.upstream()?.send(payload);
+      expect(await received).toBe(Buffer.byteLength(payload));
+      expect(f.relay.retired()).toBe(false);
+      client.terminate();
+    } finally { await f.cleanup(); }
   });
   it('uses private permissions, rejects another client, and retires on disconnect without stopping upstream',async()=>{
     const f=await fixture();

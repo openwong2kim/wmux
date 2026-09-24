@@ -416,6 +416,13 @@ export class AgentProcessTracker {
     private readonly enumerate: () => Promise<ProcessTreeEntry[]> = enumerateProcesses,
   ) {}
 
+  async verifyIdleShell(pid: number): Promise<boolean> {
+    const entries = await this.snapshot();
+    const root = entries.find(entry => entry.pid === pid);
+    return !!root && /^(?:-?)(?:zsh|bash|sh)$/i.test(path.basename(root.name)) &&
+      !entries.some(entry => entry.ppid === pid);
+  }
+
   private static watchKey(sessionId: string): string {
     // Namespaced so it can never collide with the daemon's shell-PID watches,
     // which key ProcessMonitor by the raw session id.

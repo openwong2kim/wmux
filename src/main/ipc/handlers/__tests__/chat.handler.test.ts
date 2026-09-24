@@ -28,6 +28,15 @@ function fixture(connected = true, lateWindow = false) {
   return { client, wc, event, call, revealWindow: () => { windowReady = true; } };
 }
 describe('private desktop transcript bridge', () => {
+  it('limits terminal launch to first-party callers and fixed agent choices', async () => {
+    const f = fixture();
+    await f.call('launchTerminal', { ptyId: 'pane', agent: 'codex', prompt: 'hello' });
+    expect(f.client.rpc).toHaveBeenCalledWith('daemon.chat.launchTerminal', { id: 'pane', agent: 'codex', prompt: 'hello' }, { timeoutMs: 30000 });
+    f.client.rpc.mockClear();
+    await f.call('launchTerminal', { ptyId: 'pane', agent: 'sh', prompt: 'hello' });
+    await handlers.get(CHAT_IPC.launchTerminal)!({ ...f.event, sender: {} }, { ptyId: 'pane', agent: 'claude', prompt: 'hello' });
+    expect(f.client.rpc).not.toHaveBeenCalled();
+  });
   it('reports live activity separately from readable saved history', async () => {
     const f = fixture();
     expect(await f.call('status', 'pty')).toMatchObject({ available: true, agentAlive: true, agentStatus: 'running' });

@@ -250,6 +250,7 @@ export interface TranscriptAppendData {
 export type ChatSendResult = 'sent' | 'busy' | 'blocked' | 'unconfirmed' | 'session_changed' | 'unavailable' | 'error';
 
 export interface ChatBridgeApi {
+  launchTerminal?: (args: { ptyId: string; agent: 'claude' | 'codex'; prompt: string }) => Promise<{ ok: boolean; error?: string }>;
   controls?: import('./chatSession').ChatControls;
   /** Identity-bound, daemon-serialized input into the existing terminal agent process. */
   send: (args: { ptyId: string; agentSessionId: string; text: string; requestId?: string }) => Promise<{ result: ChatSendResult }>;

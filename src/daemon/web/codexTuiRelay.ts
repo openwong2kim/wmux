@@ -1,5 +1,5 @@
 import {createServer} from 'node:http';
-import {chmod,lstat,mkdtemp,rm} from 'node:fs/promises';
+import {chmod,lstat,realpath,mkdtemp,rm} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket,{WebSocketServer,type RawData} from 'ws';
@@ -10,8 +10,10 @@ export class CodexRelayUnavailableError extends Error {
   constructor() {super('Codex account server is not ready');}
 }
 
-const MAX_FRAME = 4 * 1024 * 1024;
-const MAX_BUFFER = 8 * 1024 * 1024;
+// Native app/read includes installed app metadata (~11 MiB observed).
+// Keep transport bounds separate from the much smaller Chat display budget.
+const MAX_FRAME = 16 * 1024 * 1024;
+const MAX_BUFFER = 32 * 1024 * 1024;
 
 /** A single-use endpoint for a daemon-owned TUI. It never starts/stops Codex's
  * account server; the pane lifecycle owns and must close this relay. */
@@ -19,7 +21,18 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
   const codeHome = options.codeHome ?? path.join(os.homedir(),'.codex');
   if (!path.isAbsolute(codeHome) || codeHome.includes('\0') || codeHome.includes(':')) throw new Error('Invalid Codex account scope');
   const upstreamPath = path.join(codeHome,'app-server-control','app-server-control.sock');
-  const stat = await lstat(upstreamPath);
+  const link = await lstat(upstreamPath);
+  const target = link.isSymbolicLink() ? await realpath(upstreamPath) : upstreamPath;
+  const stat = await lstat(target);
+  if (link.isSymbolicLink()) {
+    // Current Codex places its Unix socket in a private short-path directory.
+    // Accept that indirection only when both directories belong to this user
+    // and cannot be written by anyone else; never accept a foreign socket.
+    for (const directory of [path.dirname(upstreamPath), path.dirname(target)]) {
+      const parent = await lstat(directory);
+      if (!parent.isDirectory() || parent.mode & 0o022 || typeof process.getuid === 'function' && parent.uid !== process.getuid()) throw new Error('Unsafe Codex socket directory');
+    }
+  }
   if (!stat.isSocket() || typeof process.getuid === 'function' && stat.uid !== process.getuid()) throw new Error('Codex account socket unavailable');
   // A socket inode alone does not prove a running/compatible account server.
   // Probe before publishing a TUI endpoint; never start or restart the server.

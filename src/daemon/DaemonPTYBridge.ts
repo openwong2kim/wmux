@@ -133,6 +133,9 @@ export class DaemonPTYBridge extends EventEmitter {
   private lastInputAt = 0;
   /** Monotonic stdin write counter used to detect input racing a scheduled paste. */
   private inputRevision = 0;
+  private emptyShellPrompt = false;
+  private completedShellCommand = false;
+  private shellCommandRunning = false;
   /**
    * At least one full activity window. A shorter one would let bytes banked
    * before a keystroke combine, inside the same 3 s measurement window, with
@@ -215,6 +218,8 @@ export class DaemonPTYBridge extends EventEmitter {
     if (data.length > 0) {
       this.lastInputAt = Date.now();
       this.inputRevision += 1;
+      this.emptyShellPrompt = false;
+      this.completedShellCommand = false;
     }
 
     // A pane blocked on a human is answered by a lone option digit or a lone
@@ -307,6 +312,8 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /** Current stdin generation; every non-empty write advances it once. */
+  isEmptyShellPrompt(): boolean { return this.emptyShellPrompt; }
+
   getInputRevision(): number {
     return this.inputRevision;
   }
@@ -529,6 +536,12 @@ export class DaemonPTYBridge extends EventEmitter {
       if (event.code === 133 && promptLog) {
         const parsed = parseOsc133Payload(event.data, Date.now(), ringBuffer.totalBytesWritten);
         if (parsed) {
+          if (parsed.type === 'command_end') { this.completedShellCommand = this.shellCommandRunning; this.shellCommandRunning = false; }
+          if (parsed.type === 'command_start') { this.shellCommandRunning = true; this.completedShellCommand = false; this.emptyShellPrompt = false; }
+          if (parsed.type === 'prompt_end') {
+            this.emptyShellPrompt = this.inputRevision === 0 || this.completedShellCommand;
+            this.completedShellCommand = false;
+          }
           promptLog.append(parsed);
           this.emit('prompt', { sessionId, event: parsed });
         }
@@ -770,6 +783,9 @@ export class DaemonPTYBridge extends EventEmitter {
     this.inputInBracketedPaste = false;
     this.lastInputAt = 0;
     this.inputRevision = 0;
+    this.shellCommandRunning = false;
+    this.emptyShellPrompt = false;
+    this.completedShellCommand = false;
     this.settledStatus = null;
     this.settledAtMs = 0;
     this.awaitingHuman = false;
