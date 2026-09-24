@@ -62,7 +62,15 @@ export function useMissionsPolling(): void {
     refreshProvenanceThenParents();
 
     // 성긴 배경 폴링(상태 드리프트용).
-    const timer = setInterval(refreshAllParents, MISSION_POLL_INTERVAL_MS);
+    // #1481 — the audit log's launch record lands only after every task of a
+    // fan-out has spawned, i.e. after the id-set change above fired. While a
+    // spawned task still has no provenance, the poll re-reads it too.
+    const timer = setInterval(() => {
+      const st = useStore.getState();
+      const missing = Object.keys(st.fanoutSpawnOwner ?? {}).some((id) => !st.fanoutProvenance?.[id]);
+      if (missing) refreshProvenanceThenParents();
+      else refreshAllParents();
+    }, MISSION_POLL_INTERVAL_MS);
 
     // daemon (re)connect 시 콜드부트/리스폰 후 재수화.
     let disposed = false;

@@ -956,6 +956,8 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // here: an await between addWorkspace and pty.create would let the
     // empty-leaf funnel spawn a plain shell into this pane first.
     const fanoutTaskOf = typeof params.fanoutTaskOf === 'string' ? params.fanoutTaskOf : '';
+    // #1481 — lets the sidebar nest this workspace under its owner right away.
+    if (fanoutTaskOf) useStore.getState().noteFanoutSpawn?.(newWsId, fanoutTaskOf);
 
     // Unnested so the FINAL command is readable: withDefaultShell first (there
     // has to be a command to rewrite), then the role binding, then the marker

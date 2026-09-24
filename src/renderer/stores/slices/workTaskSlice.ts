@@ -116,6 +116,15 @@ export interface WorkTaskSlice {
    * the sidebar's nesting fallback and provenance tooltip.
    */
   fanoutProvenance: Record<string, FanoutProvenance>;
+  /**
+   * #1481 — task workspace id → owner id, stamped by the renderer the moment a
+   * fan-out creates the workspace. Bridges the window before the ledger
+   * record materializes and the audit log's launch record is written, so a
+   * task mid-spawn nests under its owner instead of looking orphaned.
+   * Session-only.
+   */
+  fanoutSpawnOwner: Record<string, string>;
+  noteFanoutSpawn: (workspaceId: string, ownerWorkspaceId: string) => void;
   /** Re-read the audit log's recent launches into `fanoutProvenance` (best-effort). */
   refreshFanoutProvenance: () => Promise<void>;
 
@@ -164,6 +173,13 @@ export const createWorkTaskSlice: StateCreator<
   taskPtyRegistry: {},
   departedPaneGroups: {},
   fanoutProvenance: {},
+  fanoutSpawnOwner: {},
+
+  noteFanoutSpawn: (workspaceId, ownerWorkspaceId) =>
+    set((state: StoreState) => {
+      if (!workspaceId || !ownerWorkspaceId) return;
+      state.fanoutSpawnOwner[workspaceId] = ownerWorkspaceId;
+    }),
 
   refreshFanoutProvenance: async () => {
     const api = (window as unknown as {

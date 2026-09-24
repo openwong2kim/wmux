@@ -115,7 +115,11 @@ export function isTaskGroupExpanded(args: {
   remembered: boolean | undefined;
   ownerActive: boolean;
   anyNeedsYou: boolean;
+  /** One of the group's own tasks is the active workspace: always open, or
+   *  the row you are working in would vanish from the list. */
+  childActive?: boolean;
 }): boolean {
+  if (args.childActive) return true;
   if (args.remembered !== undefined) return args.remembered;
   return args.ownerActive || args.anyNeedsYou;
 }

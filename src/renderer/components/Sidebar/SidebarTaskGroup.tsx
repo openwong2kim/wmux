@@ -49,7 +49,8 @@ function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, renderTask, o
   const statusById = new Map(taskIds.map((id, i) => [id, statuses[i]]));
   const rollup = taskRollup(taskIds, (id) => statusById.get(id) ?? 'idle');
   const anyNeedsYou = (rollup?.needYou ?? 0) > 0;
-  const expanded = isTaskGroupExpanded({ remembered, ownerActive, anyNeedsYou });
+  const childActive = useStore((s) => taskIds.includes(s.activeWorkspaceId ?? ''));
+  const expanded = isTaskGroupExpanded({ remembered, ownerActive, anyNeedsYou, childActive });
   const finishedIds = taskIds.filter((id, i) => isFinishedTask(statuses[i] ?? 'idle', missionClosed[i] ?? false));
 
   const [menuAnchor, setMenuAnchor] = useState<CloseConfirmAnchor | null>(null);

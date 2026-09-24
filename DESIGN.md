@@ -421,7 +421,10 @@ regeneration, message editing and voice controls are hidden until supported.
 - **Fan-out nesting:** a task workspace renders under the workspace that fanned
   it out, indented on a hairline guide, with a fold chevron. A group is open
   while its owner is active or one of its tasks needs you, otherwise folded; a
-  user toggle is remembered. The owner's rollup line reads `N tasks · M need
+  user toggle is remembered, and a group always opens while one of its own
+  tasks is the active workspace. A task row carries no "Needs you" word (its
+  wash and red ring stay; the rollup names the count) and shows its shortcut
+  hint only on hover — the indent leaves the name no width to spare. The owner's rollup line reads `N tasks · M need
   you` and draws nothing at zero; "need you" is red only while the group is
   folded (unfolded, the task row is the evidence). Its ⋮ menu holds `Close
   finished tasks (N)`, which uses the task close path: a task with uncommitted

@@ -61,6 +61,8 @@ describe('resolveTaskLink', () => {
     expect(resolveTaskLink({ id: 't', name: 'x' }, undefined, { ownerWorkspaceId: 'o', callerIdentity: 'gui', at: 1 }))
       .toEqual({ ownerId: 'o', detached: false });
     expect(resolveTaskLink({ id: 't', name: 'wtask: x' }, undefined, undefined)).toEqual({ ownerId: '', detached: false });
+    // Mid-spawn: neither record exists yet, but the renderer stamped the owner.
+    expect(resolveTaskLink({ id: 't', name: 'wtask: x' }, undefined, undefined, 'owner')).toEqual({ ownerId: 'owner', detached: false });
     expect(resolveTaskLink({ id: 't', name: 'plain' }, undefined, undefined)).toBeNull();
   });
 });

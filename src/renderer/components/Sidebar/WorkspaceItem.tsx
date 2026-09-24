@@ -415,7 +415,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // #1481 — provenance for a task row: the audit record (who asked, when) and
   // the owner's current name. Undefined for every other row.
   const provenance = useStore((s) => (taskRow ? s.fanoutProvenance[workspaceId] : undefined));
-  const taskOwnerId = taskRow ? childMission?.owner?.verifiedWorkspaceId ?? provenance?.ownerWorkspaceId : undefined;
+  const spawnOwner = useStore((s) => (taskRow ? s.fanoutSpawnOwner[workspaceId] : undefined));
+  const taskOwnerId = taskRow ? childMission?.owner?.verifiedWorkspaceId ?? provenance?.ownerWorkspaceId ?? spawnOwner : undefined;
   const taskOwnerName = useStore((s) => (taskOwnerId ? s.workspaces.find((w) => w.id === taskOwnerId)?.name : undefined));
 
   // Idle badge — how long since ANY of this workspace's surfaces last showed
@@ -940,14 +941,18 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             On hover the row's chrome comes back and the label steps aside for
             it (the wash and the red dot keep saying "needs you"); the active
             row, which shows its chrome permanently, keeps the label too. */}
-        {needsYou && (
+        {/* #1481 — not on a nested task row: its wash and red ring stay, and the
+            owner's rollup line already says "N need you" for the group. */}
+        {needsYou && !taskRow && (
           <span className={`font-sans text-[10px] font-semibold text-[var(--accent-red)] flex-shrink-0 mt-0.5 ${isActive ? '' : 'group-hover:hidden'}`}>
             {t('workspace.needsYou')}
           </span>
         )}
 
         {/* Shortcut hint */}
-        <span className={`text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5 ${restHidden}`}>
+        {/* #1481 — a nested task row is indented, so even the active one gives
+            the hint back to its name at rest. */}
+        <span className={`text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5 ${taskRow ? `${REST_HIDDEN} ${REST_HIDDEN_GAP_ROW}` : restHidden}`}>
           {index < 9 ? `^${index + 1}` : ''}
         </span>
 

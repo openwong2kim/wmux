@@ -89,6 +89,7 @@ export default function Sidebar() {
   // task closes or detaches, or the audit log is re-read — not on output.
   const missionByPaneGroup = useStore((s) => s.missionByPaneGroup);
   const fanoutProvenance = useStore((s) => s.fanoutProvenance);
+  const fanoutSpawnOwner = useStore((s) => s.fanoutSpawnOwner);
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   const tree = useMemo(() => {
     const byId = new Map(workspaces.map((w) => [w.id, w]));
@@ -96,11 +97,11 @@ export default function Sidebar() {
       orderedWorkspaces,
       (id) => {
         const ws = byId.get(id);
-        return ws ? resolveTaskLink(ws, missionByPaneGroup[id], fanoutProvenance[id]) : null;
+        return ws ? resolveTaskLink(ws, missionByPaneGroup[id], fanoutProvenance[id], fanoutSpawnOwner[id]) : null;
       },
       new Set(workspaces.map((w) => w.id)),
     );
-  }, [orderedWorkspaces, workspaces, missionByPaneGroup, fanoutProvenance]);
+  }, [orderedWorkspaces, workspaces, missionByPaneGroup, fanoutProvenance, fanoutSpawnOwner]);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   // #1329 — rows that only exist to poll a remote-terminal PANE's host are not
   // attachments and must not render here: the user never asked for a mirror,

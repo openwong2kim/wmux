@@ -64,6 +64,10 @@ describe('isTaskGroupExpanded', () => {
     expect(isTaskGroupExpanded({ remembered: undefined, ownerActive: false, anyNeedsYou: true })).toBe(true);
   });
 
+  it('always opens while one of its tasks is the active workspace', () => {
+    expect(isTaskGroupExpanded({ remembered: false, ownerActive: false, anyNeedsYou: false, childActive: true })).toBe(true);
+  });
+
   it('lets the remembered toggle win', () => {
     expect(isTaskGroupExpanded({ remembered: false, ownerActive: true, anyNeedsYou: true })).toBe(false);
     expect(isTaskGroupExpanded({ remembered: true, ownerActive: false, anyNeedsYou: false })).toBe(true);

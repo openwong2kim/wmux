@@ -235,6 +235,8 @@ export default function FanOutDialog({ onClose, workspaceId, align = 'left' }: F
       // 배경 폴링을 기다리지 않고 사이드바 "Missions" 섹션을 바로 채운다).
       const parentId = workspace?.id;
       if (parentId) void useStore.getState().refreshMissions(parentId);
+      // #1481 — the launch record now exists; pick up its provenance.
+      void useStore.getState().refreshFanoutProvenance?.();
       onClose();
     } catch (err) {
       pushToast({ level: 'error', message: t('fanout.failed', { error: err instanceof Error ? err.message : String(err) }) });

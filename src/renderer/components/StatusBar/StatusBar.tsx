@@ -23,7 +23,7 @@ import { displayWorkspaceName, resolveTaskLink } from '../../utils/fanoutProvena
  * at all (its name is shown without the `wtask: ` prefix). A detached task, or
  * one whose owner is gone, has no link.
  */
-export function selectActiveTaskOwner(s: Pick<StoreState, 'workspaces' | 'activeWorkspaceId' | 'missionByPaneGroup' | 'fanoutProvenance'>): {
+export function selectActiveTaskOwner(s: Pick<StoreState, 'workspaces' | 'activeWorkspaceId' | 'missionByPaneGroup' | 'fanoutProvenance' | 'fanoutSpawnOwner'>): {
   isTask: boolean;
   ownerId: string;
   ownerName: string;
@@ -31,7 +31,7 @@ export function selectActiveTaskOwner(s: Pick<StoreState, 'workspaces' | 'active
   const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
   const none = { isTask: false, ownerId: '', ownerName: '' };
   if (!ws) return none;
-  const link = resolveTaskLink(ws, s.missionByPaneGroup?.[ws.id], s.fanoutProvenance?.[ws.id]);
+  const link = resolveTaskLink(ws, s.missionByPaneGroup?.[ws.id], s.fanoutProvenance?.[ws.id], s.fanoutSpawnOwner?.[ws.id]);
   if (!link || link.detached) return none;
   const owner = link.ownerId ? s.workspaces.find((w) => w.id === link.ownerId) : undefined;
   if (!owner || owner.id === ws.id) return { ...none, isTask: true };

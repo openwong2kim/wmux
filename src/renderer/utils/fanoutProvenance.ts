@@ -108,11 +108,14 @@ export function resolveTaskLink(
   workspace: { id: string; name: string },
   mission: WorkTask | undefined,
   provenance: FanoutProvenance | undefined,
+  /** Owner stamped at spawn time, before either record exists. */
+  spawnOwner?: string,
 ): TaskLink | null {
   if (mission) {
     return { ownerId: mission.owner?.verifiedWorkspaceId ?? '', detached: mission.detachedAt !== undefined };
   }
   if (provenance) return { ownerId: provenance.ownerWorkspaceId, detached: false };
+  if (spawnOwner) return { ownerId: spawnOwner, detached: false };
   if (workspace.name.startsWith(TASK_WORKSPACE_PREFIX)) return { ownerId: '', detached: false };
   return null;
 }
