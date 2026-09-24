@@ -51,7 +51,7 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 │ [mantle: mark + workspace]      (drag)      [native overlay] │
 ├───────────┬──────────────────────────────────┬──────────────┤
 │ sidebar   │  terminal grid  (THE HERO,       │ mission      │
-│ 240px     │  largest area; focused pane =    │ control      │
+│ 264px     │  largest area; focused pane =    │ control      │
 │ navigation│  steel tab-strip underline)      │ 248–320px    │
 │ + spaces  │                                  │ ┌ tabs ────┐ │
 │ (mantle)  │                                  │ │text tabs │ │
@@ -67,7 +67,9 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   agent overview overlay. Workspace destinations follow under
   their own heading and add action; settings sits at the foot. Collapsing the
   sidebar keeps those shortcuts as named icon buttons. These open existing
-  surfaces; agent rosters and conversations remain in their owning panels.
+  surfaces; conversations remain in their owning panels. Each workspace row
+  carries its agent roster (2026-09-24): the roster is a map of who is where,
+  and a click on an agent jumps to its pane — see "Sidebar rows" below.
   This Orca-inspired navigation updates the earlier workspace-only rule
   (owner decision 2026-09-21). The deck retains its own tabs and a labeled tools-panel toggle in the titlebar.
   Settings has one entry point at the sidebar foot, including the compact rail.
@@ -214,8 +216,11 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   raised chip (not a color change alone). AI-directed actions (fan-out,
   broadcast) stay neutral at rest.
 - No emoji glyphs in chrome; use monochrome glyphs/icons only.
-- Status dot vocabulary: amber = running · green = ok/idle-complete · gray =
-  idle · red = needs input (with wash).
+- Status mark vocabulary (2026-09-24) — shape first, colour second, one shared
+  helper (`AGENT_STATUS_ICON.mark`): running = filled amber dot · needs input =
+  red ring (with the row wash) · error = red ✕ drawn as SVG · complete = green
+  check · unconfirmed = hollow amber ring · idle = no mark. Selection is never
+  painted as a status: an active-but-idle workspace has no dot.
 
 ### Dialogs & forms
 
@@ -372,6 +377,7 @@ from the Dialogs & forms primitives plus `Settings/SettingsLayout.tsx`
 | 2026-09-24 | Dialogs and forms get shared primitives (Dialog, Field, Switch, Checkbox, Select, SegmentedControl, Badge; Button sizes and a destructive alias) and a "Dialogs & forms" rule set; the welcome dialog and the onboarding tour are the first adopters, with short preview clips. The settings gear becomes a cog | The outer chrome had the Bridge design but every modal still used the old UI: monospace prose, green borders, several amber buttons per dialog and a steel-filled Next. Shared primitives make the grammar the default, and a clip shows what a feature does where text alone did not |
 | 2026-09-24 | Owner: quiet surfaces for dialogs and forms. Surface radii 8/12/14 (chrome keeps 5/6/7), flat secondary buttons, neutral switches and checkboxes, sentence-case muted labels, grouped rows in one container, the notice row, the popover section model, 16px dialog titles, one soft shadow and no bevels | The first pass carried the chrome's machined look into dialogs, and they read heavy and busy. The owner chose a quieter, almost colourless surface where the single warm primary is the only colour, lists read as one calm group, and a status that needs an action carries it on the same row |
 | 2026-09-24 | Settings reorganised into one-question tabs (Claude Code, Accounts, Orchestrator, Roles & fan-out, Remote & phone split out of the old Accounts/Agents tabs; the agent toolbar moves to Appearance, first-run setup to General) and rebuilt on the quiet-surface primitives: one container per section, Field rows, Learn more for long copy, a language Select without flags, an Inter header and no footer | The Accounts and Agents tabs each held four or five unrelated things and the categories did not sort; every tab mixed card-per-row boxes, mono headings, uppercase labels and bright input borders. One question per tab makes a setting findable by where it belongs, and one row grammar makes every tab read the same |
+| 2026-09-24 | Sidebar redesign (#1481): the roster lives in the sidebar with a drawn identity monogram per agent kind; status is told by shape (dot / ring / ✕ / check / hollow ring / none) and an idle active workspace is no longer green; collapsed rows summarise agents by glyph and status; fan-out tasks nest under their owner with a rollup, provenance tooltip, a link back to the owner and a close-finished action; a Recent activity order; the sidebar is 264px and resizable 220–400px | With several agents per workspace and fan-outs creating a workspace per task, the flat list could not say which agent was which, whether "green" meant done or merely selected, or which workspace a task came from and who asked for it. Shape survives colour-blindness and forced-colors; nesting keeps a fan-out's tasks next to the work that spawned them; the width was the first thing the new row content needed |
 
 ### Desktop conversation view
 
@@ -389,6 +395,47 @@ verified live Claude session. Updates follow recorded events, not a separate mod
 connection. Tool bodies and code blocks load on expansion; approvals stay in
 Terminal. Drafts survive view switches within the same conversation. Attachments,
 regeneration, message editing and voice controls are hidden until supported.
+
+### Sidebar rows (2026-09-24)
+
+- **Width:** 264px by default, resizable 220–400px from the inner edge (a 10px
+  seam, `role="separator"`, arrow keys when focused), persisted, double-click
+  resets. While dragging only a 1px steel guide follows the pointer; the width
+  is committed on release, so terminals refit once rather than on every move.
+  The titlebar's left segment follows the width. The compact rail stays 48px.
+- **Workspace row:** status mark · name (13px) · collapsed summary · needs-you
+  label · hover actions. The collapsed summary is up to three agent glyphs,
+  most urgent first and grouped by status with one mark per group, then `+N`;
+  it stays visible at rest. The git line uses the branch and worktree icons;
+  no text glyphs that can render as emoji (⎇ ⊕ ⚠ ✓ ✗).
+- **Agent row:** status mark · identity glyph · title · muted trailer (live
+  activity while running, else the pane coordinate) · elapsed time since the
+  last activity, right-aligned (10px like the rest of the roster row, muted,
+  tabular). A pending question
+  keeps its own red second line. Stashed rows keep their status word (their
+  proof of life, 2026-08-24).
+- **Identity glyph:** an 11px monogram in a rounded frame drawn in-house — one
+  or two letters per agent kind, steel/muted, never amber; unknown kinds and
+  shells get a neutral terminal mark. The agent's name is the tooltip and the
+  accessible name. Never a vendor logo or favicon (trademarks).
+- **Fan-out nesting:** a task workspace renders under the workspace that fanned
+  it out, indented on a hairline guide, with a fold chevron. A group is open
+  while its owner is active or one of its tasks needs you, otherwise folded; a
+  user toggle is remembered. The owner's rollup line reads `N tasks · M need
+  you` and draws nothing at zero; "need you" is red only while the group is
+  folded (unfolded, the task row is the evidence). Its ⋮ menu holds `Close
+  finished tasks (N)`, which uses the task close path: a task with uncommitted
+  or unpushed work is kept and the reason is said. Detached tasks are ordinary
+  top-level rows; tasks whose owner is gone collect under "From closed
+  workspace". The `wtask: ` prefix is dropped on screen only. Task rows are not
+  reorder sources or targets.
+- **Provenance:** a task row carries a muted fan-out glyph whose tooltip reads
+  `Fanned out by <owner> · <you (GUI) | orchestrator | calling pane> · <time>`.
+  Inside a task workspace the titlebar's workspace name is followed by a muted
+  `↰ <owner>` link (steel on hover) that jumps to the owner.
+- **Order:** Manual (default), Needs you first, or Recent activity — Settings
+  › Appearance › Sidebar. The two non-manual orders are display-only and pause
+  drag-to-reorder while on.
 
 ### Sidebar shortcuts and Agent dock refinement (2026-09-21)
 
