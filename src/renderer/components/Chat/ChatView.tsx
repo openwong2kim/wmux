@@ -127,9 +127,9 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
           {launchAgent === 'claude' ? <option value="bypass">{t('chat.modeBypass')}</option> : <option value="yolo">{t('chat.modeYolo')}</option>}
         </select>
       </div>}
-      history={data.hasMore && <button type="button" className="wmux-chat-earlier ui-btn" disabled={data.loadingEarlier}
+      history={data.hasMore && !data.loading && <button type="button" className="wmux-chat-earlier ui-btn" disabled={data.loadingEarlier}
         onClick={() => void data.loadEarlier()}>{data.loadingEarlier ? t('chat.loading') : t('chat.loadEarlier')}</button>}
-      welcome={data.loading ? <div className="wmux-chat-empty" role="status">{t('chat.loading')}</div>
+      welcome={data.loading && messages.length === 0 ? <div className="wmux-chat-empty" role="status">{t('chat.loading')}</div>
         : canLaunch ? <div className="wmux-chat-empty"><strong>{t('chat.startNew')}</strong><p>{t('chat.chooseAgentHint')}</p></div>
         : !data.status.available && messages.length === 0 ? <div className="wmux-chat-empty"><strong>{t('chat.unavailable')}</strong><p>{t(reasonKey)}</p>
           <button type="button" className="ui-btn" onClick={onTerminal}>{t('chat.openTerminal')}</button></div>

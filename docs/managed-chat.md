@@ -194,3 +194,14 @@ is checked again after discovery. No fallback occurs on authorization/transport
 errors. `chat:settings` uses the same scoped desktop adapter with the native
 model-settings allowlist. It never exposes an arbitrary RPC method or path.
 Neither desktop method introduces a phone HTTP route.
+
+### Returning to a conversation
+
+The renderer overlaps subscription registration with the initial snapshot read,
+while buffering append events until both finish. Hovering or focusing Chat warms
+the UI module. A bounded memory-only cache (eight panes, at most 1,000 events and
+512 Ki characters per entry) can show previous history after fresh status confirms
+the same native session, transcript basename, size and modification time. Changed
+files and replacement conversations do not reuse that preview. Sending remains
+blocked until the fresh snapshot and subscription are ready; cached history never
+authorizes input. Providers without a file fingerprint skip this cache.

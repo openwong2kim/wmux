@@ -15,6 +15,19 @@ interface State {
 const initial: State = { events: [], status: { available: false, reason: 'loading' }, loading: true,
   loadingEarlier: false, hasMore: false, blocked: true, error: false, lastSyncedAt: null };
 
+// Small renderer-only history cache. Never authorizes sending, and never paints
+// until a fresh status confirms the same native conversation in this PTY.
+interface CachedHistory { status: TranscriptStatus; events: TurnEvent[]; hasMore: boolean }
+const historyCaches = new WeakMap<ChatBridgeApi, Map<string, CachedHistory>>();
+function remember(api: ChatBridgeApi, id: string, state: State) {
+  if (!state.status.agentSessionId || !state.status.transcriptBasename || state.status.sizeBytes === undefined || state.status.mtimeMs === undefined || state.events.length > 1000 || JSON.stringify(state.events).length > 512 * 1024) return;
+  const cache = historyCaches.get(api) ?? new Map<string, CachedHistory>();
+  cache.delete(id);
+  cache.set(id, {status: state.status, events: state.events, hasMore: state.hasMore});
+  while (cache.size > 8) { const oldest = cache.keys().next().value; if (oldest !== undefined) cache.delete(oldest); }
+  historyCaches.set(api, cache);
+}
+
 /** Only visible chat surfaces own transcript subscriptions. The hidden terminal
  * remains mounted independently; workspace switches release these watchers. */
 export function useTranscript(ptyId: string, active: boolean, api: ChatBridgeApi | undefined = window.electronAPI?.chat) {
@@ -26,6 +39,10 @@ export function useTranscript(ptyId: string, active: boolean, api: ChatBridgeApi
   const historyVersion = useRef(0);
   const earlierPending = useRef(false);
   const retry = useCallback(() => setRevision((n) => n + 1), []);
+
+  useEffect(() => {
+    if (api && !state.loading && !state.error && state.status.available && ownerPty.current === ptyId) remember(api, ptyId, state);
+  }, [api, ptyId, state]);
 
   useEffect(() => {
     const epoch = ++generation.current;
@@ -72,7 +89,15 @@ export function useTranscript(ptyId: string, active: boolean, api: ChatBridgeApi
           return;
         }
         sessionId = status.agentSessionId;
-        if (!subscribed) {
+        const cached = historyCaches.get(api)?.get(ptyId);
+        if (cached && cached.status.agentSessionId === status.agentSessionId && cached.status.transcriptBasename === status.transcriptBasename &&
+          cached.status.sizeBytes === status.sizeBytes && cached.status.mtimeMs === status.mtimeMs) {
+          setState(s => s.events.length ? s : { ...s, status, events: cached.events, hasMore: cached.hasMore, blocked: true, loading: true });
+        } else if (changed) {
+          setState(s => ({ ...s, status, events: [], hasMore: false, blocked: true, loading: true }));
+        }
+        const ensureSubscription = async () => {
+          if (subscribed) return;
           const sub = await api.subscribe(ptyId);
           subscribed = true; // balance even failed registrations in main
           if (!current()) { void api.unsubscribe(ptyId).catch(() => undefined); return; }
@@ -82,8 +107,13 @@ export function useTranscript(ptyId: string, active: boolean, api: ChatBridgeApi
             await api.unsubscribe(ptyId);
             throw new Error('subscribe unavailable');
           }
-        }
-        const page = await api.snapshot(ptyId);
+        };
+        // Append listeners are already installed and queue deltas while loading.
+        // Neither a read-only snapshot nor subscription needs to wait for the other.
+        const [subscription, snapshot] = await Promise.allSettled([ensureSubscription(), api.snapshot(ptyId)]);
+        if (subscription.status === 'rejected') throw subscription.reason;
+        if (snapshot.status === 'rejected') throw snapshot.reason;
+        const page = snapshot.value;
         if (!fresh()) return;
         if (!page) throw new Error('snapshot unavailable');
         const previous = pageRef.current;
