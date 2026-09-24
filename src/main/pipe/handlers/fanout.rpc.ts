@@ -643,6 +643,8 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
         status: 'completed' as const,
         idempotencyKey: callerKey,
         result: known.result,
+        // Lifted to the envelope so the MCP tool prints each as a WARNING line.
+        ...(known.result.warnings?.length ? { warnings: known.result.warnings } : {}),
       };
     }
     if (pending.get(key)?.phase === 'awaiting') {

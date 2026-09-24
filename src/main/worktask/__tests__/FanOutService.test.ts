@@ -64,6 +64,7 @@ function makeWorktreesFake(opts?: {
       return { ok: true as const, worktreePath: plan.worktreePath, branch: plan.branch };
     }),
     removeWorktree: vi.fn(async () => ({ ok: true as const })),
+    resolveBase: vi.fn(async () => ({ ref: 'refs/remotes/origin/main' })),
   } as any;
 }
 
@@ -344,6 +345,41 @@ describe('firstRunStuckSummary (F15)', () => {
     expect(firstRunStuckSummary({ headline: 'fullscreen renderer upsell', reason: 'unanswered' })).toContain(
       'keypress',
     );
+  });
+});
+
+describe('T3 worktree base — one fetch per fan-out, warning surfaced', () => {
+  it('resolves the base once for N tasks and hands the same ref to every createWorktree', async () => {
+    const worktrees = makeWorktreesFake();
+    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: makeRendererFake().port, worktrees });
+    const res = await svc.start(baseReq({ titles: ['a', 'b', 'c'] }));
+    expect(res.ok).toBe(true);
+    expect(worktrees.resolveBase).toHaveBeenCalledTimes(1);
+    expect(worktrees.createWorktree).toHaveBeenCalledTimes(3);
+    for (const call of worktrees.createWorktree.mock.calls) {
+      expect(call[1]).toBe('refs/remotes/origin/main');
+    }
+    expect(res.warnings).toBeUndefined();
+  });
+
+  it('a base fallback is a warning on a still-successful result, and tasks branch from HEAD', async () => {
+    const worktrees = makeWorktreesFake();
+    worktrees.resolveBase = vi.fn(async () => ({ warning: 'git fetch origin main failed (offline)' }));
+    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: makeRendererFake().port, worktrees });
+    const res = await svc.start(baseReq());
+    expect(res.ok).toBe(true);
+    expect(res.warnings).toEqual(['git fetch origin main failed (offline)']);
+    for (const call of worktrees.createWorktree.mock.calls) {
+      expect(call[1]).toBeUndefined();
+    }
+  });
+
+  it('a refused preflight never fetches', async () => {
+    const worktrees = makeWorktreesFake({ preflightFail: 'not a git repository' });
+    const svc = new FanOutService({ daemon: makeDaemonFake().port, renderer: makeRendererFake().port, worktrees });
+    const res = await svc.start(baseReq());
+    expect(res.ok).toBe(false);
+    expect(worktrees.resolveBase).not.toHaveBeenCalled();
   });
 });
 

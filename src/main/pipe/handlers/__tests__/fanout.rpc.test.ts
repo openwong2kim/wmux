@@ -438,6 +438,16 @@ describe('the caller is answered without waiting for the fan-out', () => {
     expect(h.start).toHaveBeenCalledTimes(1);
   });
 
+  it('lifts a completed result\'s warnings onto the envelope (the MCP tool prints them as WARNING lines)', async () => {
+    const h = setup({ run: 'hang' });
+    await h.call(goodParams());
+    await h.flush();
+    const warnings = ['git fetch origin main failed (offline); tasks branched from the local HEAD'];
+    h.finishRun({ ok: true, tasks: [{ index: 0, title: 'first task', ok: true }], warnings });
+    await h.flush();
+    expect(await h.call(goodParams())).toMatchObject({ ok: true, status: 'completed', warnings });
+  });
+
   it('reports awaiting_approval, and does not raise a second prompt for the same key', async () => {
     const h = setup({ approval: 'hang' });
     await h.call(goodParams());

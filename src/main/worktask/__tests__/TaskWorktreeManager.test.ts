@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import type { RunGitOptions } from '../TaskWorktreeManager';
 
 let home: string;
 let prevHome: string | undefined;
@@ -44,11 +45,14 @@ function toPosix(p: string): string {
 
 /** git fake: rev-parse/status/worktree 등 인자별 응답 스크립트. */
 function makeGitFake(script: (args: string[], cwd: string) => { stdout?: string; stderr?: string } | Error) {
-  return vi.fn(async (args: string[], cwd: string) => {
-    const r = script(args, cwd);
-    if (r instanceof Error) throw r;
-    return { stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
-  });
+  // Typed with the optional third (per-call options) parameter so tests can read it back.
+  return vi.fn<(args: string[], cwd: string, opts?: RunGitOptions) => Promise<{ stdout: string; stderr: string }>>(
+    async (args, cwd) => {
+      const r = script(args, cwd);
+      if (r instanceof Error) throw r;
+      return { stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    },
+  );
 }
 
 /** 정상 repo git fake — toplevel·non-bare·branch 부재·worktree add 성공. */
@@ -302,5 +306,148 @@ describe('per-repo 직렬 큐 (§3 index.lock 경합 차단)', () => {
       mgr.createWorktree({ ...base, worktreePath: '/wt/s3', branch: 'wtask/s3' }),
     ]);
     expect(maxActive).toBe(1); // 직렬 — 동시 실행 0
+  });
+});
+
+describe('T3 worktree base — origin default branch, --no-track, HEAD fallback', () => {
+  /** git fake for base resolution: `refs` are the remote-tracking refs that exist;
+   *  `originHead` is what origin/HEAD points at (absent = unset). */
+  function baseGit(opts: { originHead?: string; refs?: string[]; fetchFails?: Error; refsAfterFetch?: string[] }) {
+    let fetched = false;
+    return makeGitFake((args) => {
+      if (args[0] === 'symbolic-ref') {
+        return opts.originHead ? { stdout: `${opts.originHead}\n` } : new Error('not a symbolic ref');
+      }
+      if (args[0] === 'fetch') {
+        if (opts.fetchFails) return opts.fetchFails;
+        fetched = true;
+        return { stdout: '' };
+      }
+      if (args[0] === 'rev-parse' && args.includes('--verify')) {
+        const ref = (args[args.length - 1] ?? '').replace(/\^\{commit\}$/, '');
+        const known = fetched && opts.refsAfterFetch ? opts.refsAfterFetch : (opts.refs ?? []);
+        return known.includes(ref) ? { stdout: 'abc123\n' } : new Error('unknown revision');
+      }
+      return { stdout: '' };
+    });
+  }
+
+  it('uses origin/HEAD, fetches that branch once with a short no-prompt timeout, returns the qualified ref', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = baseGit({ originHead: 'refs/remotes/origin/trunk', refs: ['refs/remotes/origin/trunk'] });
+    const mgr = new TaskWorktreeManager({ runGit: git });
+    const base = await mgr.resolveBase('/repo');
+    expect(base).toEqual({ ref: 'refs/remotes/origin/trunk' });
+    const fetches = git.mock.calls.filter((c) => c[0][0] === 'fetch');
+    expect(fetches).toHaveLength(1);
+    expect(fetches[0][0]).toEqual(['fetch', 'origin', 'trunk']);
+    expect(fetches[0][2]).toEqual({ timeoutMs: 10000, noPrompt: true });
+  });
+
+  it('falls back to origin/main, then origin/master, when origin/HEAD is unset', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const mainMgr = new TaskWorktreeManager({ runGit: baseGit({ refs: ['refs/remotes/origin/main'] }) });
+    expect(await mainMgr.resolveBase('/repo')).toEqual({ ref: 'refs/remotes/origin/main' });
+    const masterMgr = new TaskWorktreeManager({ runGit: baseGit({ refs: ['refs/remotes/origin/master'] }) });
+    expect(await masterMgr.resolveBase('/repo')).toEqual({ ref: 'refs/remotes/origin/master' });
+  });
+
+  it('no resolvable default branch → HEAD fallback with a warning, and no fetch', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = baseGit({});
+    const base = await new TaskWorktreeManager({ runGit: git }).resolveBase('/repo');
+    expect(base.ref).toBeUndefined();
+    expect(base.warning).toMatch(/default branch of remote "origin"/);
+    expect(base.warning).toMatch(/local HEAD/);
+    expect(git.mock.calls.some((c) => c[0][0] === 'fetch')).toBe(false);
+  });
+
+  it('a failed fetch → HEAD fallback with the git error in the warning (stale origin ref is not used)', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const err = Object.assign(new Error('Command failed'), { stderr: 'fatal: unable to access remote\nmore' });
+    const git = baseGit({ originHead: 'refs/remotes/origin/main', refs: ['refs/remotes/origin/main'], fetchFails: err });
+    const base = await new TaskWorktreeManager({ runGit: git }).resolveBase('/repo');
+    expect(base.ref).toBeUndefined();
+    expect(base.warning).toContain('git fetch origin main failed (fatal: unable to access remote)');
+  });
+
+  it('a fetch timeout is reported as such', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const err = Object.assign(new Error('Command failed'), { killed: true });
+    const git = baseGit({ originHead: 'refs/remotes/origin/main', refs: ['refs/remotes/origin/main'], fetchFails: err });
+    const base = await new TaskWorktreeManager({ runGit: git }).resolveBase('/repo');
+    expect(base.warning).toContain('(timed out)');
+  });
+
+  it('the ref missing after the fetch → HEAD fallback with a warning', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = baseGit({ refs: ['refs/remotes/origin/main'], refsAfterFetch: [] });
+    const base = await new TaskWorktreeManager({ runGit: git }).resolveBase('/repo');
+    expect(base.ref).toBeUndefined();
+    expect(base.warning).toMatch(/does not exist after git fetch origin main/);
+  });
+
+  it('createWorktree with a base ref adds --no-track and the explicit start point', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = healthyRepoGit('/repo');
+    const mgr = new TaskWorktreeManager({ runGit: git });
+    const plan = { repoRoot: '/repo', repoHash: 'h', taskSlug: 's', metaDir: '/m', worktreePath: '/wt/s', branch: 'wtask/s' };
+    const res = await mgr.createWorktree(plan, 'refs/remotes/origin/main');
+    expect(res.ok).toBe(true);
+    const add = git.mock.calls.find((c) => c[0][0] === 'worktree' && c[0][1] === 'add');
+    expect(add?.[0]).toEqual(['worktree', 'add', '--no-track', path.resolve('/wt/s'), '-b', 'wtask/s', 'refs/remotes/origin/main']);
+  });
+
+  it('createWorktree without a base ref keeps the HEAD argv unchanged', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const git = healthyRepoGit('/repo');
+    const mgr = new TaskWorktreeManager({ runGit: git });
+    const plan = { repoRoot: '/repo', repoHash: 'h', taskSlug: 's', metaDir: '/m', worktreePath: '/wt/s', branch: 'wtask/s' };
+    await mgr.createWorktree(plan);
+    const add = git.mock.calls.find((c) => c[0][0] === 'worktree' && c[0][1] === 'add');
+    expect(add?.[0]).toEqual(['worktree', 'add', path.resolve('/wt/s'), '-b', 'wtask/s']);
+  });
+
+  it('real git: the task branch starts at the fetched origin tip, not the stale local checkout, with no upstream', async () => {
+    const { TaskWorktreeManager } = await loadModule();
+    const { execFileSync } = await import('node:child_process');
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'init.defaultBranch=main', ...args], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-twm-base-'));
+    try {
+      const origin = path.join(root, 'origin.git');
+      git(root, 'init', '--bare', origin);
+      const seed = path.join(root, 'seed');
+      git(root, 'clone', origin, seed);
+      git(seed, 'commit', '--allow-empty', '-m', 'one');
+      git(seed, 'push', 'origin', 'HEAD:main');
+      const repo = path.join(root, 'repo');
+      git(root, 'clone', origin, repo);
+      // The owner is on a feature branch; origin moves on after the clone.
+      git(repo, 'checkout', '-b', 'feature');
+      git(repo, 'commit', '--allow-empty', '-m', 'local only');
+      git(seed, 'commit', '--allow-empty', '-m', 'two');
+      git(seed, 'push', 'origin', 'HEAD:main');
+      const originTip = git(seed, 'rev-parse', 'HEAD');
+
+      const mgr = new TaskWorktreeManager();
+      const base = await mgr.resolveBase(repo);
+      expect(base).toEqual({ ref: 'refs/remotes/origin/main' });
+      const wt = path.join(root, 'wt');
+      const res = await mgr.createWorktree(
+        { repoRoot: repo, repoHash: 'real', taskSlug: 's', metaDir: path.join(root, 'm'), worktreePath: wt, branch: 'wtask/s' },
+        base.ref,
+      );
+      expect(res.ok).toBe(true);
+      expect(git(wt, 'rev-parse', 'HEAD')).toBe(originTip);
+      // --no-track: the task branch has no upstream to pull from or push to by accident.
+      expect(() => git(repo, 'config', '--get', 'branch.wtask/s.merge')).toThrow();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

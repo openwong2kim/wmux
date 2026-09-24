@@ -229,6 +229,10 @@ export interface FanOutResult {
    *  privileged/inverted bounds, or wider than the cap), so no task got a
    *  WMUX_TASK_PORT. Distinct from "no range declared", which reports nothing. */
   portRangeInvalid?: true;
+  /** T3 — conditions that did not stop the fan-out but the caller should know,
+   *  e.g. the tasks branched from the local HEAD because origin's default
+   *  branch could not be fetched. */
+  warnings?: string[];
 }
 
 export interface FanOutServiceOptions {
@@ -399,6 +403,7 @@ export class FanOutService {
     // 전체를 선검증한다 — 부적격이 하나라도 있으면 mission.start 전에 N개 전부 거부해
     // "부적격이면 태스크 생성 0" 계약을 이행한다. 실 taskId는 아직 없으므로 인덱스별
     // 자리표시자로 slug/경로/branch를 파생·검증한다.
+    let repoRoot = '';
     for (const [k, preflightTitle] of titles.entries()) {
       const placeholder = `wtask-preflight-${String(k).padStart(8, '0')}`;
       const pf = await this.worktrees.preflight(req.repoPath, preflightTitle, placeholder, {
@@ -407,7 +412,14 @@ export class FanOutService {
       if (!pf.ok) {
         return { ok: false, error: `fanout preflight failed (task ${k + 1}): ${pf.error}`, tasks: [] };
       }
+      repoRoot = pf.plan.repoRoot;
     }
+
+    // ── T3 base: origin's default branch, fetched once for the whole fan-out ──
+    // Every task branches from the same freshly fetched ref, not from whatever
+    // the owner happens to have checked out. A failure is a warning, not a
+    // refusal: the tasks then branch from HEAD, as they did before.
+    const base = await this.worktrees.resolveBase(repoRoot);
 
     // ── T2 per-repo fan-out environment(포트 창·setup 훅) ──
     // 신뢰 게이트를 한 번만 통과하고 N개 태스크가 그 결과를 공유한다. 포트는 스폰
@@ -430,6 +442,7 @@ export class FanOutService {
         missionIdemKey,
         port: env.ports[k],
         setupCommand: env.setupCommand,
+        baseRef: base.ref,
         ...(entries[k].role ? { role: entries[k].role } : {}),
       });
       tasks.push(r);
@@ -444,6 +457,7 @@ export class FanOutService {
       tasks,
       ...(env.setupSkipped ? { setupSkipped: env.setupSkipped } : {}),
       ...(env.portRangeInvalid ? { portRangeInvalid: true as const } : {}),
+      ...(base.warning ? { warnings: [base.warning] } : {}),
     };
   }
 
@@ -516,6 +530,8 @@ export class FanOutService {
     setupCommand?: string;
     /** Orchestrator role for this task's pane (absent = unroled). */
     role?: string;
+    /** T3 — ref the task branch starts from (absent = HEAD). */
+    baseRef?: string;
   }): Promise<FanOutTaskResult> {
     const base: FanOutTaskResult = { index: ctx.index, title: ctx.title, ok: false };
 
@@ -548,7 +564,7 @@ export class FanOutService {
       return { ...base, error: `worktree preflight failed: ${pf.error}` };
     }
     const plan: TaskWorktreePlan = pf.plan;
-    const created = await this.worktrees.createWorktree(plan);
+    const created = await this.worktrees.createWorktree(plan, ctx.baseRef);
     if (!created.ok) {
       await this.compensate(taskId, ctx.verifiedWorkspaceId);
       return { ...base, error: `worktree create failed: ${created.error}` };

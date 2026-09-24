@@ -33,6 +33,11 @@ const MAX_WORKTREE_PATH_LEN = 260;
 const TITLE_SLUG_MAX = 24;
 /** taskSlug: taskId 말미 길이(§3 — 충돌 흡수 엔트로피). */
 const TASK_ID_SUFFIX_LEN = 8;
+/** One `git fetch origin <default>` per fan-out — short, so an offline or
+ *  credential-prompting remote degrades to the HEAD fallback quickly. */
+const BASE_FETCH_TIMEOUT_MS = 10000;
+/** Cap on git stderr quoted back in a base warning. */
+const BASE_WARNING_DETAIL_MAX = 200;
 
 /**
  * git ref(브랜치명) 검증 — 플래그 주입·traversal 방어(company/WorktreeManager 계승).
@@ -75,6 +80,15 @@ function validatePath(p: string, label: string): string {
     throw new Error(`${label} must not contain control characters`);
   }
   return path.resolve(trimmed);
+}
+
+/** First line of a git failure (stderr when execFile attached it), capped. */
+function gitErrorDetail(err: unknown): string {
+  const e = err as { stderr?: unknown; message?: unknown; killed?: boolean };
+  if (e?.killed) return 'timed out';
+  const raw = typeof e?.stderr === 'string' && e.stderr.trim() ? e.stderr : String(e?.message ?? err);
+  const line = raw.trim().split('\n')[0] ?? '';
+  return line.length > BASE_WARNING_DETAIL_MAX ? `${line.slice(0, BASE_WARNING_DETAIL_MAX)}…` : line;
 }
 
 /** title → slug(소문자·영숫자·하이픈, 최대 TITLE_SLUG_MAX자). */
@@ -134,6 +148,24 @@ export type CreateResult =
   | { ok: true; worktreePath: string; branch: string }
   | { ok: false; error: string };
 
+/**
+ * Where fan-out task branches start. `ref` is the fully qualified
+ * remote-tracking ref of origin's default branch (`refs/remotes/origin/<name>`);
+ * absent means "branch from HEAD", and then `warning` says why.
+ */
+export interface WorktreeBase {
+  ref?: string;
+  warning?: string;
+}
+
+/** Injectable git runner options — a per-call timeout and no credential prompts. */
+export interface RunGitOptions {
+  timeoutMs?: number;
+  noPrompt?: boolean;
+}
+
+type RunGit = (args: string[], cwd: string, opts?: RunGitOptions) => Promise<{ stdout: string; stderr: string }>;
+
 export type RemoveResult =
   | { ok: true }
   | { ok: false; error: string; preserved?: boolean };
@@ -147,15 +179,20 @@ export class TaskWorktreeManager {
   private readonly repoChains = new Map<string, Promise<unknown>>();
 
   /** 주입 가능한 git 러너(테스트) — 기본 execFile. */
-  private readonly runGit: (args: string[], cwd: string) => Promise<{ stdout: string; stderr: string }>;
+  private readonly runGit: RunGit;
 
-  constructor(opts?: {
-    runGit?: (args: string[], cwd: string) => Promise<{ stdout: string; stderr: string }>;
-  }) {
+  constructor(opts?: { runGit?: RunGit }) {
     this.runGit =
       opts?.runGit ??
-      (async (args, cwd) => {
-        const { stdout, stderr } = await execFileAsync('git', args, { cwd, timeout: 30000, env: getExecEnv() });
+      (async (args, cwd, runOpts) => {
+        // GIT_TERMINAL_PROMPT=0: the GUI process has no TTY, so a credential
+        // prompt would only sit there until the timeout fires.
+        const env = runOpts?.noPrompt ? { ...getExecEnv(), GIT_TERMINAL_PROMPT: '0' } : getExecEnv();
+        const { stdout, stderr } = await execFileAsync('git', args, {
+          cwd,
+          timeout: runOpts?.timeoutMs ?? 30000,
+          env,
+        });
         return { stdout, stderr };
       });
   }
@@ -278,10 +315,75 @@ export class TaskWorktreeManager {
   }
 
   /**
+   * Resolve the base every task branch of one fan-out starts from: origin's
+   * default branch, freshly fetched. Called once per fan-out, outside the
+   * per-repo lock (a network call there would serialize every task behind it).
+   *
+   *   1. Name from local refs: `origin/HEAD`, else `origin/main`, else `origin/master`.
+   *   2. `git fetch origin <name>` with a short timeout and no prompts.
+   *   3. `rev-parse --verify` the fully qualified `refs/remotes/origin/<name>`.
+   *
+   * Any failure → no `ref` (branch from HEAD, as before) plus a `warning` the
+   * fan-out result carries back to the caller. Never throws.
+   */
+  async resolveBase(repoRoot: string): Promise<WorktreeBase> {
+    const fallback = (why: string): WorktreeBase => ({
+      warning: `${why}; tasks branched from the local HEAD, which may not match origin's default branch`,
+    });
+
+    let name: string | undefined;
+    try {
+      const { stdout } = await this.runGit(['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], repoRoot);
+      const target = stdout.trim();
+      if (target.startsWith('refs/remotes/origin/')) name = target.slice('refs/remotes/origin/'.length);
+    } catch {
+      // origin/HEAD unset (common for repos that were not cloned) — try the usual names.
+    }
+    if (!name) {
+      for (const candidate of ['main', 'master']) {
+        if (await this.refExists(`refs/remotes/origin/${candidate}`, repoRoot)) {
+          name = candidate;
+          break;
+        }
+      }
+    }
+    if (!name) return fallback('could not resolve the default branch of remote "origin"');
+    try {
+      name = validateGitRef(name, 'default branch');
+    } catch (err) {
+      return fallback(`origin's default branch name was rejected (${(err as Error).message})`);
+    }
+
+    try {
+      await this.runGit(['fetch', 'origin', name], repoRoot, { timeoutMs: BASE_FETCH_TIMEOUT_MS, noPrompt: true });
+    } catch (err) {
+      return fallback(`git fetch origin ${name} failed (${gitErrorDetail(err)})`);
+    }
+
+    const ref = `refs/remotes/origin/${name}`;
+    if (!(await this.refExists(ref, repoRoot))) {
+      return fallback(`${ref} does not exist after git fetch origin ${name}`);
+    }
+    return { ref };
+  }
+
+  /** `rev-parse --verify --quiet <ref>^{commit}` — true when the ref names a commit. */
+  private async refExists(ref: string, cwd: string): Promise<boolean> {
+    try {
+      await this.runGit(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], cwd);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * worktree 생성(§3 — per-repo 직렬 큐 하). `git worktree add {path} -b {branch}`.
    * 기존 브랜치 충돌은 명시 에러(자동 접미사 금지). plan은 preflight 산출을 그대로 받는다.
+   * With a resolved base ref the branch starts there, `--no-track` so the task
+   * branch does not adopt origin's default branch as its upstream.
    */
-  async createWorktree(plan: TaskWorktreePlan): Promise<CreateResult> {
+  async createWorktree(plan: TaskWorktreePlan, baseRef?: string): Promise<CreateResult> {
     return this.withRepoLock(plan.repoHash, async () => {
       const safeBranch = validateGitRef(plan.branch, 'branch');
       const safePath = validatePath(plan.worktreePath, 'worktreePath');
@@ -296,7 +398,10 @@ export class TaskWorktreeManager {
       }
 
       try {
-        await this.runGit(['worktree', 'add', safePath, '-b', safeBranch], plan.repoRoot);
+        const args = baseRef
+          ? ['worktree', 'add', '--no-track', safePath, '-b', safeBranch, validateGitRef(baseRef, 'baseRef')]
+          : ['worktree', 'add', safePath, '-b', safeBranch];
+        await this.runGit(args, plan.repoRoot);
       } catch (err) {
         return { ok: false, error: `createWorktree: git worktree add failed: ${(err as Error).message}` };
       }
