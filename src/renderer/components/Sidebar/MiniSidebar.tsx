@@ -2,10 +2,10 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceRailSummary } from '../../stores/selectors/workspaceProjections';
-import { formatStaleMinutes, selectAllWorkspaceAgentStatus, selectAllWorkspaceUnverifiableMinutes } from '../../stores/selectors/fleet';
+import { formatStaleMinutes, selectAllWorkspaceAgentStatus, selectAllWorkspaceUnverifiableMinutes, selectAllWorkspaceLastActivityMinute } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { orderByAttention } from './attentionOrder';
+import { orderWorkspaces } from './attentionOrder';
 import { tokenAttrs } from '../../themes';
 import { expandDirection } from './sidebarGlyphs';
 import { IconPlus, IconChevronDir, IconGear } from '../icons';
@@ -16,6 +16,9 @@ import PresetPicker from './PresetPicker';
 
 /** PresetPicker width (w-52), used to keep the flyout on-screen. */
 const PICKER_MENU_WIDTH = 208;
+
+/** Frozen stand-in while the recent-activity order is off (#1481). */
+const NO_ACTIVITY: Record<string, number> = {};
 
 export default function MiniSidebar() {
   const t = useT();
@@ -32,10 +35,16 @@ export default function MiniSidebar() {
   const unverifiableMinutesById = useStore(useShallow(selectAllWorkspaceUnverifiableMinutes));
   // Needs-you-first ordering (attentionOrder.ts) — display only, same setting
   // and same roll-up as the full sidebar so the two surfaces never disagree.
-  const sidebarAttentionFirst = useStore((s) => s.sidebarAttentionFirst);
+  // #1481 — the same three-way order as the full sidebar; reorder pauses for
+  // any non-manual mode (the drop is judged in display order).
+  const sidebarSortMode = useStore((s) => s.sidebarSortMode);
+  const sidebarAttentionFirst = sidebarSortMode !== 'manual';
+  const lastActivityById = useStore(
+    useShallow((s) => (s.sidebarSortMode === 'recent' ? selectAllWorkspaceLastActivityMinute(s) : NO_ACTIVITY)),
+  );
   const orderedWorkspaces = useMemo(
-    () => orderByAttention(workspaces, (id) => agentStatusById[id] ?? 'idle', sidebarAttentionFirst),
-    [workspaces, agentStatusById, sidebarAttentionFirst],
+    () => orderWorkspaces(workspaces, sidebarSortMode, (id) => agentStatusById[id] ?? 'idle', (id) => lastActivityById[id] ?? 0),
+    [workspaces, agentStatusById, lastActivityById, sidebarSortMode],
   );
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);

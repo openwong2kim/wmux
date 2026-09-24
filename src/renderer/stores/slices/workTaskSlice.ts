@@ -22,6 +22,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { WorkTask } from '../../../shared/workTask';
 import { unwrapRpc } from '../../utils/unwrapRpc';
+import { provenanceFromAudit, sameProvenance, type FanoutAuditLike, type FanoutProvenance } from '../../utils/fanoutProvenance';
 
 /** The mission bridge useRpcBridge installs (reads + the close used for workspace-lifetime binding). */
 interface MissionRpcBridge {
@@ -109,6 +110,14 @@ export interface WorkTaskSlice {
   taskPtyRegistry: Record<string, TaskPtyEntry>;
   /** J3 §4 — paneGroupId(=태스크 워크스페이스 id) → 이탈한 cwd(경계 밖). 없으면 부재. */
   departedPaneGroups: Record<string, string>;
+  /**
+   * #1481 — task workspace id → who fanned it out (owner, caller kind, calling
+   * pane, time), joined from the fan-out audit log. Read-only display data for
+   * the sidebar's nesting fallback and provenance tooltip.
+   */
+  fanoutProvenance: Record<string, FanoutProvenance>;
+  /** Re-read the audit log's recent launches into `fanoutProvenance` (best-effort). */
+  refreshFanoutProvenance: () => Promise<void>;
 
   /** 한 부모의 미션 목록을 통째로 교체하고 역인덱스를 재구성한다(정본=데몬). */
   setMissions: (parentWorkspaceId: string, tasks: WorkTask[]) => void;
@@ -154,6 +163,26 @@ export const createWorkTaskSlice: StateCreator<
   missionByPaneGroup: {},
   taskPtyRegistry: {},
   departedPaneGroups: {},
+  fanoutProvenance: {},
+
+  refreshFanoutProvenance: async () => {
+    const api = (window as unknown as {
+      electronAPI?: { fanout?: { recentAudit?: (limit: number) => Promise<unknown> } };
+    }).electronAPI?.fanout;
+    if (!api?.recentAudit) return;
+    let records: unknown;
+    try {
+      records = await api.recentAudit(100);
+    } catch {
+      return; // main not ready — the next trigger retries
+    }
+    if (!Array.isArray(records)) return;
+    const next = provenanceFromAudit(records as FanoutAuditLike[]);
+    if (sameProvenance(get().fanoutProvenance, next)) return;
+    set((state: StoreState) => {
+      state.fanoutProvenance = next;
+    });
+  },
 
   registerTaskPtys: (entries) =>
     set((state: StoreState) => {

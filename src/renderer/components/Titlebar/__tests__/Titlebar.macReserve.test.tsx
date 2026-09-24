@@ -47,12 +47,20 @@ function render(): { header: HTMLElement; segment: HTMLElement; cleanup: () => v
 }
 
 describe('Titlebar macOS traffic-light reserve', () => {
-  it('확장 사이드바(240px): 예약이 세그먼트 안쪽 패딩으로 들어가고 헤더는 0', () => {
-    act(() => useStore.setState({ sidebarPosition: 'left', sidebarVisible: true }));
+  it('확장 사이드바(264px default): 예약이 세그먼트 안쪽 패딩으로 들어가고 헤더는 0', () => {
+    act(() => useStore.setState({ sidebarPosition: 'left', sidebarVisible: true, sidebarWidth: 264 }));
     const { header, segment } = render();
     expect(header.style.paddingLeft).toBe('0px');
     expect(segment.style.paddingLeft).toBe(`${MAC_TRAFFIC_LIGHT_RESERVE}px`);
-    expect(segment.style.width).toBe('240px');
+    expect(segment.style.width).toBe('264px');
+  });
+
+  // #1481 — the segment follows the user's dragged width (DESIGN.md: the
+  // titlebar's left segment is width-matched to the sidebar).
+  it('tracks a resized sidebar width', () => {
+    act(() => useStore.setState({ sidebarPosition: 'left', sidebarVisible: true, sidebarWidth: 332 }));
+    const { segment } = render();
+    expect(segment.style.width).toBe('332px');
   });
 
   it('미니 사이드바(48px): 세그먼트가 예약보다 좁으니 헤더가 예약을 진다', () => {

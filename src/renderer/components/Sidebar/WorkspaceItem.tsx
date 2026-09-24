@@ -8,7 +8,7 @@ import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { StatusMarkView } from './AgentMarks';
-import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning } from '../icons';
+import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning, IconFanOut } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24_CLUSTER, HIT_TARGET_24_IN_CLUSTER } from '../hitArea';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
@@ -23,6 +23,8 @@ import WorkspaceChromeProfileMenu from './WorkspaceChromeProfileMenu';
 import WorkspaceAgentRoster, { WorkspaceRosterSummaryMemo, STASH_PULSE_MS } from './WorkspaceAgentRoster';
 import { displayPath } from '../../utils/displayPath';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
+import { timeAgo } from '../../utils/timeAgo';
+import { displayWorkspaceName, provenanceCallerLabel, provenanceTooltip, resolveCallerPane } from '../../utils/fanoutProvenance';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 
 interface WorkspaceItemProps {
@@ -42,6 +44,13 @@ interface WorkspaceItemProps {
   onCopyInfo: (id: string) => void;
   onDuplicate: (id: string) => void;
   onReorder: (fromIndex: number, toIndex: number) => void;
+  /**
+   * #1481 — this row is a fan-out task rendered under its owner (or in the
+   * closed-owner group): shown without the `wtask: ` prefix, marked with the
+   * fan-out glyph + provenance tooltip, and not a reorder source or target —
+   * the drop math assumes flat siblings, and a task's place is its owner's.
+   */
+  taskRow?: boolean;
 }
 
 /**
@@ -274,7 +283,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
   const workspace = useStore(selectWorkspaceById(workspaceId));
@@ -302,7 +311,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // DISPLAY order would move the row to a different ARRAY index than the
   // indicator promised. Reorder is paused while it is on; Ctrl+N and the
   // stored order are untouched.
-  const sidebarAttentionFirst = useStore((s) => s.sidebarAttentionFirst);
+  // #1481 — any non-manual order ('attention' or 'recent') is display-only in
+  // the same way, so reorder pauses for both; task rows never reorder.
+  const sortPaused = useStore((s) => s.sidebarSortMode !== 'manual');
+  const reorderOff = sortPaused || taskRow;
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
   const metadata = workspace?.metadata;
@@ -400,6 +412,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const childMission = useStore((s) => s.missionByPaneGroup[workspaceId]);
   const detachMissionForPaneGroup = useStore((s) => s.detachMissionForPaneGroup);
   const isDependentChild = childMission?.status === 'open';
+  // #1481 — provenance for a task row: the audit record (who asked, when) and
+  // the owner's current name. Undefined for every other row.
+  const provenance = useStore((s) => (taskRow ? s.fanoutProvenance[workspaceId] : undefined));
+  const taskOwnerId = taskRow ? childMission?.owner?.verifiedWorkspaceId ?? provenance?.ownerWorkspaceId : undefined;
+  const taskOwnerName = useStore((s) => (taskOwnerId ? s.workspaces.find((w) => w.id === taskOwnerId)?.name : undefined));
 
   // Idle badge — how long since ANY of this workspace's surfaces last showed
   // life: agent activity (surfaceActivityAt, same stamps the fleet 'running'
@@ -534,7 +551,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDragStart = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!workspace || sidebarAttentionFirst) return;
+    if (!workspace || reorderOff) return;
     // Roster controls live inside this draggable card. Chromium chooses the
     // nearest draggable ancestor as the native source, so `draggable={false}`
     // on a nested button is not enough. Reject a drag whose pointer originated
@@ -579,7 +596,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    if (sidebarAttentionFirst) return;
+    if (reorderOff) return;
     e.preventDefault();
     const reorderFrom = useStore.getState().draggedWorkspaceIndex;
     if (reorderFrom === null) return;
@@ -605,7 +622,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    if (sidebarAttentionFirst) return;
+    if (reorderOff) return;
     e.preventDefault();
     setDropIndicator(null);
     // Reorder source comes from the store, not dataTransfer. A null
@@ -691,6 +708,15 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // 하므로 이 창은 찰나다.
   if (!workspace) return null;
 
+  const displayName = displayWorkspaceName(workspace.name, taskRow);
+  const provenanceTitle = taskRow
+    ? provenanceTooltip({
+      ownerName: taskOwnerName ? displayWorkspaceName(taskOwnerName, false) : undefined,
+      caller: provenanceCallerLabel(provenance, (ptyId) => resolveCallerPane(useStore.getState(), ptyId), t),
+      when: provenance?.at ?? childMission?.createdAt ? timeAgo(provenance?.at ?? childMission?.createdAt ?? 0) : undefined,
+    }, t)
+    : undefined;
+
   const hasProfile = workspace.profile !== undefined;
   // Color tag (optional). Undefined → every style below falls back to exactly
   // the pre-feature rendering, so an untagged workspace is pixel-identical.
@@ -730,7 +756,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       )}
 
       <div
-        draggable={!sidebarAttentionFirst}
+        draggable={!reorderOff}
         {...tokenAttrs('bgSurface', 'bg')}
         className={`group sidebar-row px-3 py-1.5 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive
@@ -785,11 +811,24 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     all, so a clipped name was simply unreadable. It carries the
                     idle minutes too, which is where they go when the roster
                     chip takes their place on the row (#997). */}
+                {taskRow && (
+                  // #1481 — provenance: a muted fan-out glyph whose tooltip says
+                  // who fanned this task out, from which caller, and when.
+                  <span
+                    className="flex-none text-[var(--text-muted)]"
+                    role="img"
+                    aria-label={provenanceTitle}
+                    title={provenanceTitle}
+                    data-task-provenance
+                  >
+                    <IconFanOut size={10} />
+                  </span>
+                )}
                 <span
                   className={`font-sans text-[13px] truncate ${unreadCount > 0 || isActive ? 'font-semibold' : 'font-medium'} ${idleLabel && !hasRoster ? 'text-[var(--text-sub)]' : ''}`}
-                  title={idleLabel ? `${workspace.name} · ${t('workspace.idleTooltip', { time: idleLabel })}` : workspace.name}
+                  title={idleLabel ? `${displayName} · ${t('workspace.idleTooltip', { time: idleLabel })}` : displayName}
                 >
-                  {workspace.name}
+                  {displayName}
                 </span>
                 {hasProfile && (
                   <span
@@ -1221,7 +1260,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       {closeConfirmPos && (
         <CloseWorkspaceConfirm
           anchor={closeConfirmPos}
-          title={t('workspace.closeConfirm', { name: workspace.name })}
+          title={t('workspace.closeConfirm', { name: displayName })}
           // Workspace-wide (#977): closing the workspace disposes stashed
           // PTYs too, so a visible-only count promises to close fewer panes
           // than it actually kills.

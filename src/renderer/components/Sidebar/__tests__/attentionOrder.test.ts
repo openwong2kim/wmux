@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { needsAttention, orderByAttention } from '../attentionOrder';
+import { needsAttention, orderByAttention, orderByRecentActivity, orderWorkspaces } from '../attentionOrder';
 import type { AgentStatus } from '../../../../shared/types';
 
 const rows = [
@@ -45,5 +45,23 @@ describe('orderByAttention', () => {
     const input = [...rows];
     orderByAttention(input, statusOf, true);
     expect(input.map((r) => r.id)).toEqual(['a', 'b', 'c', 'd']);
+  });
+});
+
+// #1481 — the "Recent activity" sort option.
+
+describe('recent-activity order', () => {
+  const items = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }];
+  const at: Record<string, number> = { a: 10, b: 30, c: 0, d: 30 };
+
+  it('puts the newest activity first, stable on ties, silent rows last', () => {
+    expect(orderByRecentActivity(items, (id) => at[id]).map((i) => i.id)).toEqual(['b', 'd', 'a', 'c']);
+  });
+
+  it('dispatches on the sort mode and leaves manual untouched', () => {
+    expect(orderWorkspaces(items, 'manual', () => 'idle', (id) => at[id])).toBe(items);
+    expect(orderWorkspaces(items, 'recent', () => 'idle', (id) => at[id]).map((i) => i.id)).toEqual(['b', 'd', 'a', 'c']);
+    expect(orderWorkspaces(items, 'attention', (id) => (id === 'c' ? 'awaiting_input' : 'idle'), () => 0).map((i) => i.id))
+      .toEqual(['c', 'a', 'b', 'd']);
   });
 });

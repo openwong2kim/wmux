@@ -237,7 +237,7 @@ describe('retired tab ids', () => {
 describe('settings persist across tabs', () => {
   it.each([
     ['terminal', 'splitcwd', 'splitInheritsCwd'],
-    ['appearance', 'sidebarattention', 'sidebarAttentionFirst'],
+    ['appearance', 'sidebarpanecoordinates', 'sidebarShowPaneCoordinates'],
     ['roles', 'a2a', 'a2aAutoApproveExecute'],
     ['browser', 'sitememory', 'siteMemoryEnabled'],
   ] as const)('%s › %s survives a trip to another tab', async (tab, id, key) => {

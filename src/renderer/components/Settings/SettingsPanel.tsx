@@ -3660,8 +3660,8 @@ function TabAppearance() {
   const setTerminalCursorStyle = useStore((s) => s.setTerminalCursorStyle);
 
   const sidebarPosition = useStore((s) => s.sidebarPosition);
-  const sidebarAttentionFirst = useStore((s) => s.sidebarAttentionFirst);
-  const setSidebarAttentionFirst = useStore((s) => s.setSidebarAttentionFirst);
+  const sidebarSortMode = useStore((s) => s.sidebarSortMode);
+  const setSidebarSortMode = useStore((s) => s.setSidebarSortMode);
   const sidebarShowPaneCoordinates = useStore((s) => s.sidebarShowPaneCoordinates);
   const setSidebarShowPaneCoordinates = useStore((s) => s.setSidebarShowPaneCoordinates);
   const setSidebarPosition = useStore((s) => s.setSidebarPosition);
@@ -3783,17 +3783,22 @@ function TabAppearance() {
             ]}
           />
         </SettingRow>
-        {/* Off by default on purpose: a list that reorders itself under the
-            user's eyes costs more than the scan it saves. */}
+        {/* Manual by default on purpose: a list that reorders itself under the
+            user's eyes costs more than the scan it saves. #1481 adds "Recent
+            activity" beside needs-you-first; the row id stays for deep links. */}
         <SettingRow
           id="sidebarattention"
-          label={t('settings.sidebarAttentionFirst')}
-          description={t('settings.sidebarAttentionFirstDesc')}
+          label={t('settings.sidebarSort')}
+          description={t('settings.sidebarSortDesc')}
         >
-          <Toggle
-            checked={sidebarAttentionFirst}
-            onChange={setSidebarAttentionFirst}
-            label={t('settings.sidebarAttentionFirst')}
+          <SegmentedControl
+            value={sidebarSortMode}
+            onValueChange={setSidebarSortMode}
+            options={[
+              { value: 'manual', label: t('settings.sidebarSortManual') },
+              { value: 'attention', label: t('settings.sidebarSortAttention') },
+              { value: 'recent', label: t('settings.sidebarSortRecent') },
+            ]}
           />
         </SettingRow>
         {/* #1326 — on by default: turning it off is an explicit opt-out, not a

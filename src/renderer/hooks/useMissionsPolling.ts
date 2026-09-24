@@ -28,10 +28,24 @@ export const MISSION_POLL_INTERVAL_MS = 15_000;
 /** 현재 워크스페이스 id 전부에 대해 미션을 refetch(각 owner-scoped 조회). */
 function refreshAllParents(): void {
   const state = useStore.getState();
-  const ids = state.workspaces.map((w) => w.id);
+  const ids = new Set(state.workspaces.map((w) => w.id));
+  // #1481 — also the owners the audit log names that are no longer open: their
+  // tasks can outlive them, and without the ledger record the sidebar cannot
+  // tell a detached task from an orphaned one, nor close a finished one.
+  for (const p of Object.values(state.fanoutProvenance ?? {})) {
+    if (p.ownerWorkspaceId) ids.add(p.ownerWorkspaceId);
+  }
   for (const id of ids) {
     void state.refreshMissions(id);
   }
+}
+
+/** #1481 — audit provenance first (it names closed owners), then the ledger. */
+function refreshProvenanceThenParents(): void {
+  const state = useStore.getState();
+  const read = state.refreshFanoutProvenance?.();
+  if (read) void read.finally(refreshAllParents);
+  else refreshAllParents();
 }
 
 /**
@@ -43,8 +57,9 @@ export function useMissionsPolling(): void {
   const workspaceIdsKey = useStore((s) => s.workspaces.map((w) => w.id).join(','));
 
   useEffect(() => {
-    // 마운트 + id 집합 변화 시 즉시 refetch.
-    refreshAllParents();
+    // 마운트 + id 집합 변화 시 즉시 refetch. The audit read rides only these
+    // triggers (a new fan-out always changes the id set), not the 15 s poll.
+    refreshProvenanceThenParents();
 
     // 성긴 배경 폴링(상태 드리프트용).
     const timer = setInterval(refreshAllParents, MISSION_POLL_INTERVAL_MS);
@@ -52,10 +67,10 @@ export function useMissionsPolling(): void {
     // daemon (re)connect 시 콜드부트/리스폰 후 재수화.
     let disposed = false;
     void window.electronAPI.daemon.whenReady().then(() => {
-      if (!disposed) refreshAllParents();
+      if (!disposed) refreshProvenanceThenParents();
     });
     const offConnected = window.electronAPI.daemon.onConnected(() => {
-      if (!disposed) refreshAllParents();
+      if (!disposed) refreshProvenanceThenParents();
     });
 
     return () => {
