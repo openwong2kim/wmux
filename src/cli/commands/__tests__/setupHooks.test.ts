@@ -100,7 +100,7 @@ describe('installHooks', () => {
     expect(outcome.ok).toBe(true);
     expect(outcome.error).toBeNull();
     expect(outcome.events.sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
+      ['PermissionRequest', 'PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
     );
     expect(fs.existsSync(bridgeDest)).toBe(true);
     expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
@@ -109,7 +109,7 @@ describe('installHooks', () => {
     const hooks = s.hooks as Record<string, unknown[]>;
     // Event KEYS (PreToolUse carries two groups: the gate + AskUserQuestion).
     expect(Object.keys(hooks).sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
+      ['PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
     );
     // Each entry references the stable dest path, NOT the source/install dir.
     const stop = hooks.Stop[0] as { hooks: { command: string }[] };
@@ -270,7 +270,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(true);
-    expect(outcome.removedForPlugin).toBe(8);
+    expect(outcome.removedForPlugin).toBe(9);
     expect(outcome.events).toEqual([]);
 
     // No wmux command remains; both foreign hooks are preserved.
@@ -290,10 +290,10 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
+    expect(outcome.events.sort()).toEqual(['PermissionRequest', 'PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
     const hooks = readSettings().hooks as Record<string, unknown[]>;
     expect(Object.keys(hooks).sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
+      ['PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
     );
   });
 
@@ -302,7 +302,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
+    expect(outcome.events.sort()).toEqual(['PermissionRequest', 'PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
     expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
   });
 
@@ -331,7 +331,7 @@ describe('installHooks — plugin-aware', () => {
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
-    expect(outcome.events.sort()).toEqual(['PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
+    expect(outcome.events.sort()).toEqual(['PermissionRequest', 'PostToolUse', 'PreToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
     expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
     // The user's enabledPlugins map is preserved untouched.
     expect((readSettings().enabledPlugins as Record<string, unknown>)[
@@ -375,7 +375,7 @@ describe('removeHooks', () => {
 
     const outcome = removeHooks(paths());
     expect(outcome.ok).toBe(true);
-    expect(outcome.removed).toBe(8);
+    expect(outcome.removed).toBe(9);
 
     const s = readSettings();
     expect(s.model).toBe('opus');
@@ -495,7 +495,7 @@ describe('statusHooks', () => {
     // installedEvents is a deduped event list, so PreToolUse appears once even
     // though it carries two wmux groups.
     expect(s.installedEvents.sort()).toEqual(
-      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
+      ['PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit'],
     );
     expect(s.bridgeExists).toBe(true);
     expect(s.bridgeStale).toBe(false);
@@ -966,6 +966,28 @@ describe('hook profile (#970)', () => {
     expect(detectProfile(readSettings())).toBe('full');
     installHooks(paths());
     expect(allHookCommands().some((c) => c.includes(GATE))).toBe(true);
+  });
+
+  it('both profiles install the PermissionRequest hook', () => {
+    installHooks(paths(), 'signals-only');
+    expect(allHookCommands().filter((c) => c.endsWith(' PermissionRequest'))).toHaveLength(1);
+    installHooks(paths(), 'full');
+    expect(allHookCommands().filter((c) => c.endsWith(' PermissionRequest'))).toHaveLength(1);
+  });
+
+  it('★ a signals-only install from before PermissionRequest stays signals-only on a bare re-run', () => {
+    // An install written before the hook existed has every signal and no gate.
+    // It must not read as a broken 'full' install, or the repair would add the
+    // wide gate back while adding the new hook.
+    installHooks(paths(), 'signals-only');
+    const settings = readSettings();
+    delete (settings.hooks as Record<string, unknown>)['PermissionRequest'];
+    fs.writeFileSync(settingsPath, JSON.stringify(settings), 'utf8');
+    expect(detectProfile(readSettings())).toBe('signals-only');
+    const again = installHooks(paths());
+    expect(again.profile).toBe('signals-only');
+    expect(allHookCommands().some((c) => c.includes(GATE))).toBe(false);
+    expect(allHookCommands().some((c) => c.endsWith(' PermissionRequest'))).toBe(true);
   });
 
   it('reads a settings.json with no wmux hooks as the full default', () => {

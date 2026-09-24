@@ -97,7 +97,8 @@ const ASK_QUESTION_HOOKS = [
 type HookEvent =
   | (typeof HOOK_EVENTS)[number]
   | (typeof ASK_QUESTION_HOOKS)[number]['event']
-  | 'PreToolUse'; // #783 — permission gate adds a wide PreToolUse
+  | 'PreToolUse' // #783 — permission gate adds a wide PreToolUse
+  | 'PermissionRequest';
 
 /**
  * #783 — the permission-gate hook. A WIDE PreToolUse matcher (every tool) that
@@ -111,6 +112,23 @@ const PERMISSION_GATE_SPEC = {
   event: 'PreToolUse' as const,
   matcher: '',
   extraArgs: '--permission-gate',
+};
+
+/**
+ * Claude Code's own permission dialog (`Do you want to proceed?`). Fires once
+ * per dialog — a human-paced event, not a per-tool-call cost — and the bridge
+ * maps it to `agent.awaiting_input`, so a pane blocked on a permission prompt
+ * reads "needs you" without depending on the screen detector reading the row.
+ *
+ * Not a SIGNAL_SPECS member on purpose: `detectProfile` reads "every signal
+ * spec present, gate absent" as the signals-only profile. An install made
+ * before this hook existed must keep reading as signals-only, not as a broken
+ * 'full' install whose repair would add the wide gate back. Both profiles
+ * install it; it is only ever written by a user-run install.
+ */
+const PERMISSION_REQUEST_SPEC = {
+  event: 'PermissionRequest' as const,
+  matcher: '',
 };
 
 /** One wmux-owned hook entry in settings.json. */
@@ -156,11 +174,11 @@ export type HookProfile = 'full' | 'signals-only';
 
 /** Every wmux-owned hook in settings.json as (event, matcher) specs — the
  *  single source `installHooks` writes and `statusHooks` checks against. */
-const HOOK_SPECS: readonly HookSpec[] = [...SIGNAL_SPECS, PERMISSION_GATE_SPEC];
+const HOOK_SPECS: readonly HookSpec[] = [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC, PERMISSION_GATE_SPEC];
 
 /** The specs a given profile installs. */
 function specsFor(profile: HookProfile): readonly HookSpec[] {
-  return profile === 'signals-only' ? SIGNAL_SPECS : HOOK_SPECS;
+  return profile === 'signals-only' ? [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC] : HOOK_SPECS;
 }
 
 /** Stable identity of a spec — event plus argv tail, since the approval pair

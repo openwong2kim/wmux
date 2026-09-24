@@ -1000,6 +1000,63 @@ describe('HookIngest', () => {
       expect(awaitingInput).toEqual(['pty-a']);
     });
   });
+
+  describe('Claude PermissionRequest is pane status only', () => {
+    // The approval card's keystroke map and screen check are built for an
+    // AskUserQuestion select. A permission dialog carries no question to show,
+    // so a card would let a phone press `1` on a Bash command nobody read.
+    function ingestTracking() {
+      const base = makeDeps([session({ id: 'pty-a' })]);
+      const awaitingInput: string[] = [];
+      const ingestWithCards = new HookIngest({
+        ...base.deps,
+        approvals: {
+          ...base.deps.approvals,
+          noteHookAwaitingInput: (input) => { awaitingInput.push(input.sessionId); },
+        },
+      });
+      return { ingestWithCards, awaitingInput, emitted: base.emitted };
+    }
+
+    it('broadcasts awaiting_input but raises no approval card', () => {
+      const { ingestWithCards, awaitingInput, emitted } = ingestTracking();
+
+      ingestWithCards.handle(makeSignal({
+        kind: 'agent.awaiting_input',
+        ptyId: 'pty-a',
+        payload: { hook_event_name: 'PermissionRequest', tool_name: 'Bash', tool_input: { command: 'rm -rf build' } },
+      }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+
+      expect(awaitingInput).toEqual([]);
+      expect(emitted.at(-1)?.data).toMatchObject({ status: 'awaiting_input', source: 'hook' });
+    });
+
+    it('an AskUserQuestion awaiting_input still raises its card', () => {
+      const { ingestWithCards, awaitingInput } = ingestTracking();
+
+      ingestWithCards.handle(makeSignal({
+        kind: 'agent.awaiting_input',
+        ptyId: 'pty-a',
+        payload: { hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion' },
+      }));
+
+      expect(awaitingInput).toEqual(['pty-a']);
+    });
+
+    it('leaves the Codex PermissionRequest card path as it was', () => {
+      const { ingestWithCards, awaitingInput } = ingestTracking();
+
+      ingestWithCards.handle(makeSignal({
+        kind: 'agent.awaiting_input',
+        agent: 'codex',
+        ptyId: 'pty-a',
+        payload: { hook_event_name: 'PermissionRequest', tool_name: 'Bash' },
+      }));
+
+      expect(awaitingInput).toEqual(['pty-a']);
+    });
+  });
 });
 
 describe('resolveSessionIdForSignal', () => {

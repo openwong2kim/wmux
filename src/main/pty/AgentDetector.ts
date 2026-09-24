@@ -131,7 +131,14 @@ const KIRO_PROMPT_LINE = /^[▸>❯]?\s*ask\s*a\s*question\s*or\s*describe\s*a\s
 // could never match a live pane, so the compound gate never closed its second
 // half and the whole Claude pattern block — waiting AND the approval
 // awaiting_input regexes — was dead code against the real product.
-const CLAUDE_PROMPT_RE = /bypass\s*permissions\s*on|shift\+tab\s*to\s*cycle/;
+//
+// `⏸ manual mode on`: the footer Claude Code 2.1.281 draws in the default
+// permission mode (`⏸ manual mode on · ← for agents`). It carries neither
+// fragment above, and a `claude "<prompt>"` launch — how a fan-out worker
+// starts — draws no splash either, so such a pane's gate never opened and its
+// first permission prompts were read by nobody. Gate evidence only: it is on
+// screen mid-turn too, so it never stands in for a `waiting` status.
+const CLAUDE_PROMPT_RE = /bypass\s*permissions\s*on|shift\+tab\s*to\s*cycle|⏸\s*manual\s*mode\s*on/;
 // Cheap `ap.gate` hint only — checkGates does not use this on the 4 KB
 // probe. Line-level `isClaudeBannerChrome` is the real banner signal.
 const CLAUDE_BANNER_RE = /(?<!Open)(?<!Open\s)Claude\s*Code|claude-code/;
@@ -209,8 +216,14 @@ const AGENT_PATTERNS: AgentPattern[] = [
       //     (`mcp__context7__get-library-docs`). Round-5 P2: the prior
       //     `mcp__[A-Za-z0-9_]+` rejected hyphens and accepted
       //     non-canonical single-`__` names like `mcp__github_create_issue`.
-      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do you want to proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                                                                  status: 'awaiting_input',   message: 'Approval requested' },
-      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Allow tool use for (?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
+      //
+      // `\s*` between words: Claude Code 2.1.281 draws this row with cursor
+      // moves on some frames (`Do ESC[5G you ESC[9G want ESC[14G to ESC[17G
+      // proceed?`), which strips to `Doyouwanttoproceed?`. In a replay of 33
+      // real Bash permission prompts, 15 had lost some or all spaces, so the
+      // literal-space form never marked those panes as needing the user.
+      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                                                                  status: 'awaiting_input',   message: 'Approval requested' },
+      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Allow\s*tool\s*use\s*for\s*(?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
       // File-edit approval prompts (`Do you want to create/overwrite/make this
       // edit to <file>?`). Live incident 2026-07-17: a worker pane sat on
       // `Do you want to overwrite calculator.html?` for 100 minutes because
@@ -253,8 +266,8 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // Waiting — the bare ">" prompt after trim, optionally followed by a
       // spinner character (○) when the TUI is waiting for input.
       { regex: /^>[\s○◌●]*$/,                                                                               status: 'waiting',          message: 'Ready for input' },
-      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do you want to proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                                              status: 'awaiting_input',   message: 'Approval requested' },
-      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Allow tool use for (?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
+      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                                              status: 'awaiting_input',   message: 'Approval requested' },
+      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Allow\s*tool\s*use\s*for\s*(?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
       { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)\s*\S[^?]*\?[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Edit approval requested' },
       { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,             status: 'awaiting_input',   message: 'Edit approval requested' },
     ],
@@ -280,7 +293,15 @@ const AGENT_PATTERNS: AgentPattern[] = [
     // — with the banner-only gate the trust pattern below could never fire.
     // checkGates runs before pattern matching on the same line, so the one
     // line both opens the gate and emits awaiting_input.
-    gate: /codex |OpenAI Codex|Do you trust the contents of this directory/,
+    //
+    // No bare `codex ` alternative. It matched any line naming the binary —
+    // `command -v codex >/dev/null` in a Claude pane running a review panel —
+    // and opening this gate makes Codex the pane's lastAgent, which silences
+    // every Claude pattern for the rest of the session. That hid the Claude
+    // permission prompt in 4 of 7 replayed Claude panes. The real TUI draws
+    // its banner (`│ >_ OpenAI Codex (v0.149.1) │`), and the PermissionRequest
+    // hook (#1107) is the primary approval signal for Codex anyway.
+    gate: /OpenAI Codex|Do you trust the contents of this directory/,
     patterns: [
       { regex: /^codex>\s*$/,                    status: 'waiting',   message: 'Waiting for input' },
       // Approval prompts — clean-room transcribed from a live Codex CLI
@@ -682,6 +703,7 @@ export class AgentDetector {
         // `bypasspermissionson` after the strip (see CLAUDE_PROMPT_RE), and
         // this prefilter runs on the stripped probe as well as the raw one.
         probe.includes('bypass permissions') || probe.includes('bypasspermissions') || probe.includes('shift+tab')
+        || probe.includes('⏸')
       );
       // #1392 — the versioned splash satisfies both signals (see
       // isClaudeSplashLine). Its own prefilter, because the banner one is
@@ -711,9 +733,12 @@ export class AgentDetector {
             // order. On a footer carrying both fragments with "shift+tab to
             // cycle" first, the two disagree and the same prompt emits two
             // 'waiting' events, because the dedup key is keyed on match text.
+            // A footer no waiting pattern reads (the manual-mode one) opens the
+            // gate without replaying a status.
             const replayText = CLAUDE_WAITING_PATTERNS
               .map((re) => stripped.match(re)?.[0])
-              .find((t): t is string => t !== undefined) ?? m[0];
+              .find((t): t is string => t !== undefined);
+            if (replayText === undefined) continue;
             this.claudePromptEvidence = {
               text: replayText,
               status: 'waiting',

@@ -991,6 +991,12 @@ export class HookIngest {
   ): void {
     const approvals = this.deps.approvals;
     if (!approvals) return;
+    // Claude Code's own permission dialog is pane status only, never a phone
+    // card. The card's keystroke map and screen check are built for an
+    // AskUserQuestion select (approvalKeystrokes.ts), and this payload carries
+    // no question to show — a remote "approve" would press `1` on a Bash command
+    // nobody on the phone has read. Remote tool approval is the #783 gate's job.
+    if (signal.agent === 'claude' && signal.payload?.hook_event_name === 'PermissionRequest') return;
     const session = sessions.find((s) => s.id === sessionId);
     // #1397 — same refusal as the gate path: the orchestrator brain's own pane
     // gets no approval record, so its prompt text never reaches a paired device
