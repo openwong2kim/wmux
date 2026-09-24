@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import type { TranslationKey } from '../../i18n/locales/en';
 import type { SettingsSearchHit } from '../../settings/searchSettings';
 import type { SettingsTabId } from '../../settings/catalog';
+import { FOCUS_RING } from '../focusRing';
 
 function highlight(text: string, query: string): ReactNode {
   const needle = query.trim();
@@ -34,7 +35,7 @@ export function SettingsSearchResults({
 }) {
   if (hits.length === 0) {
     return (
-      <p className="text-sm text-center py-8" style={{ color: 'var(--text-muted)' }} data-testid="settings-search-empty">
+      <p className="text-[13px] text-center py-8" style={{ color: 'var(--text-sub)' }} data-testid="settings-search-empty">
         {t('settings.searchNoMatches', { query })}
       </p>
     );
@@ -48,35 +49,28 @@ export function SettingsSearchResults({
   }
 
   return (
-    <div className="flex flex-col gap-4" data-testid="settings-search-results">
+    <div className="settings-page" data-testid="settings-search-results">
       {Array.from(groups.entries()).map(([tab, group]) => (
-        <section key={tab}>
-          <h3
-            className="text-[10px] font-semibold uppercase tracking-[0.09em] mb-2"
-            style={{ color: 'var(--text-muted)' }}
-          >
-            {tabLabel(tab)}
-          </h3>
-          <div className="flex flex-col gap-1.5">
+        <section key={tab} className="settings-section">
+          <div className="settings-section-head">
+            <h3 className="ui-group-label settings-section-title">{tabLabel(tab)}</h3>
+          </div>
+          <div className="ui-group">
             {group.map((hit) => (
               <button
                 key={hit.entry.id}
                 type="button"
                 data-jump={hit.entry.id}
                 onClick={() => onJump(hit.entry.id)}
-                className="text-left rounded-[5px] px-3 py-2.5"
-                style={{
-                  backgroundColor: 'var(--bg-mantle)',
-                  border: '1px solid var(--bg-surface)',
-                }}
+                className={`settings-row settings-search-hit text-left ${FOCUS_RING}`}
               >
-                <div className="text-sm" style={{ color: 'var(--text-main)' }}>
+                <span className="ui-field-label">
                   {highlight(t(hit.entry.labelKey), query)}
-                </div>
+                </span>
                 {hit.entry.descKey && (
-                  <div className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                  <span className="ui-field-description settings-clamp">
                     {highlight(t(hit.entry.descKey), query)}
-                  </div>
+                  </span>
                 )}
               </button>
             ))}

@@ -13,7 +13,6 @@ import { createElement, isValidElement, type ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { RoleBindingsView, roleBindingHint, type RoleBindingsViewProps } from '../SettingsPanel';
 import { t as translate } from '../../../i18n';
-import { FOCUS_RING } from '../../focusRing';
 
 describe('roleBindingHint — a row never lies about what it enforces (P2-4)', () => {
   it('flags a model with no agent', () => {
@@ -48,20 +47,20 @@ describe('RoleBindingsView render', () => {
     );
 
   // P2-9 — the 12 new controls had `outline-none` and no ring, so keyboard
-  // focus vanished inside this block.
+  // focus vanished inside this block. They are now the shared ui/Select and
+  // ui/Input, whose recipes (styles/ui.css) paint the steel focus ring.
   it('gives every control a focus ring', () => {
     const html = render();
-    const ringToken = 'focus-visible:ring-2';
-    expect(FOCUS_RING).toContain(ringToken);
-    // 4 roles × (agent select + model input + args input).
-    expect(html.split(ringToken).length - 1).toBe(12);
+    // 4 roles × agent select, and 4 roles × (model input + args input).
+    expect(html.split('class="ui-select').length - 1).toBe(4);
+    expect(html.split('class="ui-input').length - 1).toBe(8);
   });
 
-  // P2-9 — --bg-overlay is a BACKGROUND token; borders use the hairline token.
+  // P2-9 — --bg-overlay is a BACKGROUND token; borders use the hairline token
+  // (the ui recipes draw it from the surface hairline, never --bg-overlay).
   it('uses the border token, not a background token, for the field hairline', () => {
     const html = render();
-    expect(html).toContain('border-[color:var(--border-soft)]');
-    expect(html).not.toContain('1px solid var(--bg-overlay)');
+    expect(html).not.toContain('var(--bg-overlay)');
   });
 
   // P2-4 — a <select> of Claude aliases could not express a valid codex model.

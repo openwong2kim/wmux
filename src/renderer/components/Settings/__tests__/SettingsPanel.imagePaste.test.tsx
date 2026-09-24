@@ -26,8 +26,17 @@ function render(value: ImagePasteMode, onChange: (mode: ImagePasteMode) => void)
   return container;
 }
 
+// A segmented control: one radio per route, named by its label (the stub t
+// returns the key, so the label is the i18n key).
+const LABEL: Record<ImagePasteMode, string> = {
+  auto: 'settings.imagePasteAuto',
+  native: 'settings.imagePasteNative',
+  path: 'settings.imagePastePath',
+};
+
 function button(container: HTMLElement, mode: ImagePasteMode): HTMLButtonElement {
-  const el = container.querySelector<HTMLButtonElement>(`[data-image-paste-mode="${mode}"]`);
+  const el = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+    .find((b) => b.textContent === LABEL[mode]);
   if (!el) throw new Error(`Missing ${mode} button`);
   return el;
 }
@@ -36,9 +45,10 @@ describe('ImagePasteModeView (#1196)', () => {
   it('offers all three routes and marks the active one', () => {
     const container = render('auto', vi.fn());
 
-    expect(button(container, 'auto').getAttribute('aria-pressed')).toBe('true');
-    expect(button(container, 'native').getAttribute('aria-pressed')).toBe('false');
-    expect(button(container, 'path').getAttribute('aria-pressed')).toBe('false');
+    expect(container.querySelector('[role="radiogroup"]')).not.toBeNull();
+    expect(button(container, 'auto').getAttribute('aria-checked')).toBe('true');
+    expect(button(container, 'native').getAttribute('aria-checked')).toBe('false');
+    expect(button(container, 'path').getAttribute('aria-checked')).toBe('false');
   });
 
   it('reports the picked mode', () => {
