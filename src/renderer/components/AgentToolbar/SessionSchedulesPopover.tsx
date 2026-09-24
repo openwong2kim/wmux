@@ -347,14 +347,14 @@ export default function SessionSchedulesPopover({
               id="session-schedule-when"
               type="datetime-local"
               data-session-schedule-when
-              className="flex-1 min-w-[170px] ui-input py-1 font-mono text-[12px]"
+              className="flex-1 min-w-[170px] ui-input py-1 font-mono text-[11px]"
               value={when}
               aria-label={t('sessionSchedule.whenLabel')}
               onChange={(event) => setWhen(event.target.value)}
             />
             <select
               data-session-schedule-repeat
-              className="ui-input w-auto py-1 text-[12px]"
+              className="ui-input w-auto py-1 text-[11px]"
               value={repeat}
               aria-label={t('sessionSchedule.repeatLabel')}
               onChange={(event) => setRepeat(Number(event.target.value))}

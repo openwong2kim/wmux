@@ -568,7 +568,7 @@ export default function InspectOverlay(): React.ReactElement | null {
         <span>{t('settings.inspect.banner')}</span>
         <button
           type="button"
-          className="min-h-[28px] px-3 rounded-[8px] text-[12px]"
+          className="min-h-[28px] px-3 rounded-[8px] text-[13px]"
           style={{ backgroundColor: C.outline, color: C.chipBg, fontWeight: 600 }}
           onClick={(ev) => {
             ev.stopPropagation();

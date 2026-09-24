@@ -122,7 +122,7 @@ export default function BroadcastPopover({ onClose, triggerRef }: BroadcastPopov
       >
         <textarea
           ref={textareaRef}
-          className="ui-input h-20 resize-none font-mono text-[12px]"
+          className="ui-input h-20 resize-none font-mono text-[13px]"
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
