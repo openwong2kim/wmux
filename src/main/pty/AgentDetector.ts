@@ -1005,17 +1005,18 @@ export class AgentDetector {
     // Multiple gates can be in activeAgents (Grok reading this file will
     // still mention Claude chrome as source), but status patterns must not
     // flip lastAgent back to the other one.
-    // #1494: a Claude line that places rows with CUP is left to scanDialog for
-    // approvals. Read here, a question row redrawn while the dialog was up
-    // could be judged only when a later clear completed the line — after the
-    // user had answered.
+    // #1494: on a Claude line that places rows with CUP, the `Do you want to …`
+    // questions are left to scanDialog. Read here, a question row redrawn while
+    // the dialog was up could be judged only when a later clear completed the
+    // line — after the user had answered. `Allow tool use for` is not one of
+    // the scanned questions, so it keeps this pass.
     const dialogScanned = this.lastAgent === 'Claude Code' && CUP_RE.test(line);
     for (const ap of AGENT_PATTERNS) {
       if (ap.gate && !this.activeAgents.has(ap.agent)) continue;
       if (this.lastAgent && ap.agent !== this.lastAgent) continue;
 
       for (const p of ap.patterns) {
-        if (dialogScanned && p.status === 'awaiting_input') continue;
+        if (dialogScanned && p.status === 'awaiting_input' && p.message !== 'Tool approval requested') continue;
         const match = clean.match(p.regex);
         if (match) {
           const key = `${ap.agent}:${p.status}`;

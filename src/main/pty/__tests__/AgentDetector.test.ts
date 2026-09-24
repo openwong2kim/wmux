@@ -939,6 +939,12 @@ describe('AgentDetector', () => {
         expect(statuses(cb)).toEqual(EDIT_APPROVAL);
       });
 
+      it('a tool approval on a cursor-positioned row still reads as awaiting_input', () => {
+        const { det, cb } = claudeGated();
+        det.feed('\u001b[K\u001b[35;2HAllow tool use for mcp__wmux__channel_post?\r\n ' + OPTION + '\u001b[K\u001b[m\r\n');
+        expect(statuses(cb)).toEqual([{ agent: 'Claude Code', status: 'awaiting_input', message: 'Tool approval requested' }]);
+      });
+
       it('reads the dialog as soon as its rows are drawn, with no line break yet', () => {
         const { det, cb } = claudeGated();
         det.feed(FIRST_DRAW.slice(0, -2) + '\u001b[35;1H');
