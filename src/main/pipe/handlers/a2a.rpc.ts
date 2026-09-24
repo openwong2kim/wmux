@@ -33,6 +33,16 @@ type DaemonTaskGate =
 // 소유자)가 판정하도록 데몬이 의도적으로 미루는 신호다 — 거부가 아니라 폴백.
 const A2A_DAEMON_SOFT_ERRORS = ['task log unavailable', 'task not found', 'pane-authz deferred'];
 
+/**
+ * How long a NEW execute send may wait on the renderer. That reply is held
+ * until the user answers the approval prompt, which auto-denies 30 s after it
+ * is shown; the 5 s bridge default gave up long before that, so the caller saw
+ * a timeout, retried into a second prompt, and approving the first one spawned
+ * nothing because its reply had nowhere to go (#1462). Plain sends keep the
+ * default: nothing in them waits on a person.
+ */
+const EXECUTE_SEND_TIMEOUT_MS = 45_000;
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
@@ -423,7 +433,10 @@ export function registerA2aRpc(
       sendParams.commanderWorkspaceId = ctx.commanderWorkspace;
       sendParams.workspaceId = ctx.commanderWorkspace;
     }
-    const result = await sendToRenderer(getWindow, 'a2a.task.send', sendParams);
+    const awaitsApproval = params.execute === true && !params.taskId;
+    const result = awaitsApproval
+      ? await sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: EXECUTE_SEND_TIMEOUT_MS })
+      : await sendToRenderer(getWindow, 'a2a.task.send', sendParams);
 
     // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).
     // 실패는 soft-degrade: 이후 전이가 'task not found'로 렌더러 폴백을 탄다.

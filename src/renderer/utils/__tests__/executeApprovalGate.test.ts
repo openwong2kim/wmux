@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   beginApprovalCountdown,
+  findPendingExecuteRequest,
   requestExecuteApproval,
   requestFanOutApproval,
 } from '../executeApprovalGate';
@@ -116,6 +117,24 @@ describe('requestExecuteApproval (renderer execute gate)', () => {
     await expect(p2).resolves.toBe(true);
     await expect(p1).resolves.toBe(false);
     expect(useStore.getState().pendingExecuteApprovalOrder).toHaveLength(0);
+  });
+
+  // #1462 — a caller that retried while its first request was still on the
+  // prompt raised a second approval for the same work.
+  it('makes a pending request findable by its content until it settles', async () => {
+    const identity = { senderWorkspaceId: 'ws-from', receiverWorkspaceId: 'ws-to', cwd: null, message: 'run the build' };
+    const p = requestExecuteApproval({ ...INPUT, message: identity.message });
+
+    expect(findPendingExecuteRequest(identity)).toBe('task-1');
+    // A different message, target or cwd is a different request.
+    expect(findPendingExecuteRequest({ ...identity, message: 'run the build!' })).toBeUndefined();
+    expect(findPendingExecuteRequest({ ...identity, receiverWorkspaceId: 'ws-other' })).toBeUndefined();
+    expect(findPendingExecuteRequest({ ...identity, cwd: '/elsewhere' })).toBeUndefined();
+
+    resolveExecuteApproval(useStore.getState().pendingExecuteApprovalOrder[0], true);
+    await expect(p).resolves.toBe(true);
+    // Once answered, the same send is a new request again.
+    expect(findPendingExecuteRequest(identity)).toBeUndefined();
   });
 });
 

@@ -234,6 +234,15 @@ const WMUX_SEARCH_PANES_SHAPE = {
  */
 const EVENTS_POLL_BLOCK_MARGIN_MS = 150_000;
 
+/**
+ * Socket deadline for a send_message that asks for execution. wmux holds that
+ * reply until the user answers the approval prompt (30 s auto-deny, bounded at
+ * 45 s in main), so the 10 s default made the caller give up and retry while
+ * the prompt was still up (#1462). Sized above main's bound so main's own
+ * answer — approved, denied or timed out — is what the caller reads.
+ */
+const EXECUTE_SEND_TIMEOUT_MS = 60_000;
+
 const WMUX_EVENTS_POLL_SHAPE = {
   cursor: z.number().int().nonnegative().optional().describe('Last seen seq; 0 (default) replays the ring.'),
   types: z
@@ -1616,7 +1625,9 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
     params.data = data;
     params.dataMimeType = data_mime_type || 'application/json';
   }
-  return callRpc('a2a.task.send', params);
+  return execute && !task_id
+    ? callRpc('a2a.task.send', params, EXECUTE_SEND_TIMEOUT_MS)
+    : callRpc('a2a.task.send', params);
 };
 
 server.tool(

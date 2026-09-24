@@ -113,14 +113,51 @@ export function beginApprovalCountdown(approvalId: string): void {
   countdownStarters.get(approvalId)?.();
 }
 
+/** What makes two execute requests "the same request". The task id is minted
+ *  per call, so a caller's retry never shares it — the content has to. */
+interface ExecuteRequestIdentity {
+  senderWorkspaceId: string;
+  receiverWorkspaceId: string;
+  cwd: string | null;
+  /** The full message, not the 500-char preview the dialog shows. */
+  message: string;
+}
+
+/** Execute requests waiting on a verdict: request identity → the task id the
+ *  first one will create. */
+const pendingExecuteRequests = new Map<string, string>();
+
+function executeRequestKey(r: ExecuteRequestIdentity): string {
+  return JSON.stringify([r.senderWorkspaceId, r.receiverWorkspaceId, r.cwd, r.message]);
+}
+
+/**
+ * The task id of an identical execute request that is still waiting on the
+ * user, or undefined. A caller that gave up and resent must not raise a second
+ * prompt for the same work (#1462) — approving both would run it twice.
+ */
+export function findPendingExecuteRequest(request: ExecuteRequestIdentity): string | undefined {
+  return pendingExecuteRequests.get(executeRequestKey(request));
+}
+
 export function requestExecuteApproval(input: {
   taskId: string;
   senderWorkspaceId: string;
   receiverWorkspaceId: string;
   messagePreview: string;
   cwd: string | null;
+  /** Full message; when given, the request is findable by
+   *  findPendingExecuteRequest until it settles. */
+  message?: string;
 }): Promise<boolean> {
-  return enqueueApproval(input, true).then((v) => v.approved);
+  const { message, ...approvalInput } = input;
+  const key = message === undefined ? null : executeRequestKey({ ...input, message });
+  if (key) pendingExecuteRequests.set(key, input.taskId);
+  return enqueueApproval(approvalInput, true)
+    .then((v) => v.approved)
+    .finally(() => {
+      if (key && pendingExecuteRequests.get(key) === input.taskId) pendingExecuteRequests.delete(key);
+    });
 }
 
 /**

@@ -98,6 +98,30 @@ describe('a2a.rpc — execute confirmation gate', () => {
     expect(methods).toEqual(['a2a.task.send']);
   });
 
+  // #1462 — the renderer holds an execute reply until the user answers the
+  // approval prompt (30 s auto-deny). The 5 s bridge default gave up first.
+  it('waits past the approval window for a new execute send, and only for that', async () => {
+    sendToRendererMock
+      .mockResolvedValueOnce({ ok: false, error: 'denied' })
+      .mockResolvedValueOnce({ ok: true, taskId: 't', toWorkspaceId: 'ws-to' });
+    const router = setupRouter(makeWorker());
+
+    await router.dispatch({
+      id: 'rpc-exec',
+      method: 'a2a.task.send',
+      params: { workspaceId: 'ws-from', to: 'ws-to', message: 'run this', execute: true },
+    });
+    const execOptions = sendToRendererMock.mock.calls[0][3] as { timeoutMs?: number } | undefined;
+    expect(execOptions?.timeoutMs).toBeGreaterThan(30_000);
+
+    await router.dispatch({
+      id: 'rpc-plain',
+      method: 'a2a.task.send',
+      params: { workspaceId: 'ws-from', to: 'ws-to', message: 'hi' },
+    });
+    expect(sendToRendererMock.mock.calls[1][3]).toBeUndefined();
+  });
+
   it('skips worker and does not cancel when renderer denies before task creation', async () => {
     sendToRendererMock.mockResolvedValueOnce({ ok: false, error: 'a2a.task.send: execute approval denied' });
     const worker = makeWorker();

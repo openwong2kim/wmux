@@ -8,6 +8,7 @@ import type { RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
 import type { InboxItem } from '../../stores/selectors/approvalInbox';
 import { deadlineForItem, remainingSeconds } from './approvalCountdown';
 import { focusNotificationTarget } from '../../hooks/useNotificationListener';
+import { beginApprovalCountdown } from '../../utils/executeApprovalGate';
 import { IconWarning } from '../icons';
 
 // gpui button recipes (theme-safe). Approve = primary warm CTA; deny = danger
@@ -77,6 +78,19 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
   // Live countdown tick for any row that HAS a deadline (A2A always, an MCP
   // prompt once stamped), mirroring ExecuteApprovalDialog's now-tick. Gated so
   // an inbox of deadline-less prompts never spins a 250ms interval.
+  // While this tab is open AppLayout unmounts the execute dialog, which is the
+  // only other thing that starts an A2A prompt's auto-deny clock — so without
+  // this the row sat at "0s" and never expired. Every row is on screen at once
+  // here, so each one's 30 s is time a person can actually use. Idempotent.
+  const a2aApprovalIds = items
+    .filter((it): it is Extract<InboxItem, { source: 'a2a' }> => it.source === 'a2a')
+    .map((it) => it.approvalId)
+    .join(',');
+  useEffect(() => {
+    if (!a2aApprovalIds) return;
+    for (const id of a2aApprovalIds.split(',')) beginApprovalCountdown(id);
+  }, [a2aApprovalIds]);
+
   const hasDeadline = items.some((it) => deadlineForItem(it, mcpDeadlineAt) !== undefined);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -134,7 +148,7 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
         );
 
         if (item.source === 'a2a') {
-          const remainingSec = Math.ceil(Math.max(0, item.expiresAt - now) / 1000);
+          const deadline = deadlineForItem(item);
           const sameWs = !!item.senderWorkspaceId && item.senderWorkspaceId === item.receiverWorkspaceId;
           return (
             <div
@@ -153,9 +167,11 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
                   {t('fleet.approvals.a2aTitle')}
                 </span>
                 <div className="flex-1" />
-                <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
-                  {t('fleet.approvals.autoDenyIn', { seconds: remainingSec })}
-                </span>
+                {deadline !== undefined && (
+                  <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
+                    {t('fleet.approvals.autoDenyIn', { seconds: remainingSeconds(deadline, now) })}
+                  </span>
+                )}
               </div>
               {/* Who is asking + what they want — security context (subordinate,
                   muted, mono). Uses the from/to/a2aDescRemote/a2aDescSameWorkspace keys. */}

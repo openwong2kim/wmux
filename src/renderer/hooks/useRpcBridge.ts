@@ -16,7 +16,7 @@ import { reattachModelEnvMarker, splitModelEnvMarker } from '../../shared/worker
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
-import { requestExecuteApproval, requestFanOutApproval, requestTaskApproval } from '../utils/executeApprovalGate';
+import { findPendingExecuteRequest, requestExecuteApproval, requestFanOutApproval, requestTaskApproval } from '../utils/executeApprovalGate';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 import {
   closeBrowserTabInWorkspace,
@@ -2619,12 +2619,31 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
 
     if (executeRequested) {
       const cwd = typeof params.cwd === 'string' ? params.cwd : null;
+      // #1462 — a caller that retries while its first request is still on the
+      // approval prompt must not raise a second prompt for the same work.
+      const pendingTaskId = findPendingExecuteRequest({
+        senderWorkspaceId: workspaceId,
+        receiverWorkspaceId: target.id,
+        cwd,
+        message,
+      });
+      if (pendingTaskId) {
+        return {
+          ok: false,
+          pendingApproval: true,
+          pendingTaskId,
+          error:
+            `a2a.task.send: an identical execute request (task ${pendingTaskId}) is already ` +
+            'waiting for the user to approve it; no second approval was raised. Do not resend while it is pending.',
+        };
+      }
       const approved = await requestExecuteApproval({
         taskId: newTaskId,
         senderWorkspaceId: workspaceId,
         receiverWorkspaceId: target.id,
         messagePreview: message.slice(0, 500),
         cwd,
+        message,
       });
       if (!approved) {
         return { ok: false, error: 'a2a.task.send: execute approval denied' };
