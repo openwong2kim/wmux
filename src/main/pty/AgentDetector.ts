@@ -294,14 +294,14 @@ const AGENT_PATTERNS: AgentPattern[] = [
     // checkGates runs before pattern matching on the same line, so the one
     // line both opens the gate and emits awaiting_input.
     //
-    // No bare `codex ` alternative. It matched any line naming the binary —
-    // `command -v codex >/dev/null` in a Claude pane running a review panel —
-    // and opening this gate makes Codex the pane's lastAgent, which silences
-    // every Claude pattern for the rest of the session. That hid the Claude
-    // permission prompt in 4 of 7 replayed Claude panes. The real TUI draws
-    // its banner (`│ >_ OpenAI Codex (v0.149.1) │`), and the PermissionRequest
-    // hook (#1107) is the primary approval signal for Codex anyway.
-    gate: /OpenAI Codex|Do you trust the contents of this directory/,
+    // Cheap hint only — checkGates opens this gate through isCodexChrome, a
+    // line-level check. A substring gate (`codex `, then `OpenAI Codex`)
+    // opened on any line that merely named Codex — `command -v codex` in a
+    // review panel, a `git log -S"…OpenAI Codex"` echo — made Codex the
+    // lastAgent of a Claude pane and silenced every Claude pattern for the
+    // rest of the session. The PermissionRequest hook (#1107) is Codex's
+    // primary approval signal anyway.
+    gate: /OpenAI\s*Codex|Do you trust the contents of this directory/,
     patterns: [
       { regex: /^codex>\s*$/,                    status: 'waiting',   message: 'Waiting for input' },
       // Approval prompts — clean-room transcribed from a live Codex CLI
@@ -491,6 +491,20 @@ function isClaudePromptChrome(line: string): boolean {
   return !SOURCE_LINE_RE.test(stripped);
 }
 
+/**
+ * The Codex TUI's own chrome: the banner row (`│ >_ OpenAI Codex (v0.149.1) │`,
+ * measured on 0.149.1) or the first-boot trust prompt, which Codex draws
+ * before the banner. Both must START the row's visible text, so a shell
+ * command, a log line or prose that quotes either phrase does not count.
+ */
+function isCodexChrome(line: string): boolean {
+  const stripped = stripAnsi(line);
+  if (SOURCE_LINE_RE.test(stripped)) return false;
+  const v = visibleChrome(stripped);
+  return /^>_\s*OpenAI\s*Codex\b/.test(v)
+    || /^Do\s*you\s*trust\s*the\s*contents\s*of\s*this\s*directory\?/.test(v);
+}
+
 function isGrokChrome(line: string): boolean {
   const stripped = stripAnsi(line);
   const v = visibleChrome(stripped);
@@ -540,6 +554,11 @@ export class AgentDetector {
   private claudeBannerSeen = false;
   private claudePromptSeen = false;
   private claudePromptEvidence: { text: string; status: AgentEventStatus; message: string } | null = null;
+  // An OSC 133 prompt/command mark arrived since lastAgent took the pane: the
+  // shell is drawing its prompt again, so the owning agent has exited. Agent
+  // TUIs do not emit these mid-session (none in any replayed Claude buffer
+  // after launch), which is what lets a substring gate switch the pane.
+  private shellPromptSinceOwner = false;
 
   /**
    * Register a callback for agent status events.
@@ -596,6 +615,8 @@ export class AgentDetector {
   }
 
   feed(data: string): void {
+    // eslint-disable-next-line no-control-regex
+    if (this.lastAgent !== null && /\u001b\]133;[AD]/.test(data)) this.shellPromptSinceOwner = true;
     this.lineBuffer += data;
     if (this.lineBuffer.length > MAX_BUFFER) {
       this.lineBuffer = this.lineBuffer.slice(-MAX_BUFFER);
@@ -754,17 +775,30 @@ export class AgentDetector {
       // already-active agent; this keeps full-screen repaint traffic O(inactive
       // agents) and makes the Kiro additions cheaper than the previous loop.
       if (!ap.gate || this.activeAgents.has(ap.agent)) continue;
+      // Opening a gate makes its agent the lastAgent, and processLine then
+      // skips every other agent's patterns for the rest of the session. The
+      // chrome-checked gates (Claude, Kiro, Grok, Codex) may take a pane at any
+      // time — their evidence is the TUI itself. A substring gate may take a
+      // pane another agent owns only after the shell prompt has come back
+      // (OSC 133), i.e. the owner exited: mid-session, an echoed command or a
+      // sentence naming an agent ("Claude/OpenClaude", "opencode-sync-render")
+      // silenced a live Claude pane's permission prompts.
+      const substringTakeover = this.lastAgent !== null && this.lastAgent !== ap.agent
+        && !this.shellPromptSinceOwner;
       const gateMatched = ap.slug === 'kiro'
         ? this.kiroChromeSeen && this.kiroPromptSeen
         : ap.slug === 'claude'
           ? this.claudeBannerSeen && this.claudePromptSeen
           : ap.slug === 'grok'
             ? candidateLines(clean).some(isGrokChrome)
-            : ap.gate.test(clean);
+            : ap.slug === 'codex'
+              ? ap.gate.test(clean) && candidateLines(clean).some(isCodexChrome)
+              : !substringTakeover && ap.gate.test(clean);
       if (!gateMatched) continue;
 
       this.activeAgents.add(ap.agent);
       this.lastAgent = ap.agent;
+      this.shellPromptSinceOwner = false;
       for (const cb of this.callbacks) {
         cb({ agent: ap.agent, status: 'running', message: 'Agent started' });
       }

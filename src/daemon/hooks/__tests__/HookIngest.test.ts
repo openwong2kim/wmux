@@ -1044,6 +1044,42 @@ describe('HookIngest', () => {
       expect(awaitingInput).toEqual(['pty-a']);
     });
 
+    const PERMISSION_REQUEST = { hook_event_name: 'PermissionRequest', tool_name: 'Bash' };
+    const awaitingEmits = (base: { emitted: Array<{ data: HookAgentEventData }> }) =>
+      base.emitted.filter((e) => e.data.status === 'awaiting_input');
+
+    it('an answer inside the window cancels the held awaiting (no late re-lock)', () => {
+      const base = makeDeps([session({ id: 'pty-a' })]);
+      const ing = new HookIngest(base.deps);
+      ing.handle(makeSignal({ kind: 'agent.awaiting_input', ptyId: 'pty-a', payload: PERMISSION_REQUEST }));
+      vi.advanceTimersByTime(300);
+      ing.noteAnswered('pty-a', 'claude');
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
+      expect(awaitingEmits(base)).toEqual([]);
+    });
+
+    it('subagent tool activity during the window does not cancel it', () => {
+      const base = makeDeps([session({ id: 'pty-a' })]);
+      const ing = new HookIngest(base.deps);
+      ing.handle(makeSignal({ kind: 'agent.awaiting_input', ptyId: 'pty-a', payload: PERMISSION_REQUEST }));
+      ing.handle(makeSignal({ kind: 'agent.activity', ptyId: 'pty-a', payload: { tool_name: 'Grep' } }));
+      ing.notePaneWorking('pty-a', 'claude');
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(awaitingEmits(base)).toHaveLength(1);
+    });
+
+    it('the hook and the detector reporting one dialog produce one awaiting broadcast', () => {
+      const base = makeDeps([session({ id: 'pty-a' })]);
+      const ing = new HookIngest(base.deps);
+      ing.handle(makeSignal({ kind: 'agent.awaiting_input', ptyId: 'pty-a', payload: PERMISSION_REQUEST }));
+      vi.advanceTimersByTime(100);
+      const arb = ing.arbitrateDetector('pty-a', { agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested' });
+      expect(arb.decision).toBe('pending');
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
+      const detectorAwaiting = base.detectorEmitted.filter((e) => e.data.status === 'awaiting_input');
+      expect(awaitingEmits(base).length + detectorAwaiting.length).toBe(1);
+    });
+
     it('leaves the Codex PermissionRequest card path as it was', () => {
       const { ingestWithCards, awaitingInput } = ingestTracking();
 

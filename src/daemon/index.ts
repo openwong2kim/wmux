@@ -5137,6 +5137,30 @@ function wireEvents(
     pipeServer.broadcast(event);
   });
 
+  // A human answered the dialog a pane was blocked on (DaemonPTYBridge
+  // noteInput: an option digit, ESC or Enter). The bridge has already dropped
+  // its awaiting state. Tell main the pane is running again — on a
+  // hook-governed pane nothing else would, because main mutes the byte
+  // heuristic while the hook's turn latch is held — and cancel a still-held
+  // awaiting window, which would otherwise re-mark the pane when it confirms.
+  sessionManager.on('session:answered', (payload: { sessionId: string }) => {
+    const managed = sessionManager.getSession(payload.sessionId);
+    const screenAgent = managed?.bridge.getLastAgent() ?? null;
+    const slug = (screenAgent ? agentDisplayToSlug(screenAgent) : undefined) ?? managed?.meta.lastDetectedAgent;
+    hookIngest?.noteAnswered(payload.sessionId, slug);
+    const agent = screenAgent ?? (slug ? agentSlugToDisplay(slug) : null);
+    if (!agent) return;
+    const data = {
+      agent,
+      status: 'running',
+      message: 'Prompt answered',
+      source: 'detector' as const,
+      decision: 'internal' as const,
+    };
+    pipeServer.broadcast({ type: 'agent.event', sessionId: payload.sessionId, data });
+    webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(payload.sessionId, data, Date.now()));
+  });
+
   // OSC 133 prompt/command markers — broadcast to main so
   // DaemonNotificationRouter can mirror the local-mode PTYBridge OSC 133
   // tee onto the EventBus as `source:'osc133'` agent.lifecycle events.

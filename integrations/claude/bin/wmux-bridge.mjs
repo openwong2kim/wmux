@@ -964,6 +964,19 @@ async function main() {
     }
   }
 
+  // PermissionRequest fires under `claude -p` as well — measured on 2.1.281
+  // with entrypoint `sdk-cli` — where no dialog is shown and nobody is being
+  // waited on. A headless run nested in a pane inherits WMUX_PTY_ID, so it
+  // would mark the HOST pane "needs you". Only an interactive session can be
+  // blocked on a human.
+  if (hookName === 'PermissionRequest') {
+    const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT;
+    if (!entrypoint || !INTERACTIVE_ENTRYPOINTS.has(entrypoint)) {
+      logEvent('permission-request-skipped', { reason: 'headless', entrypoint: entrypoint ?? null });
+      return;
+    }
+  }
+
   let payload;
   try {
     payload = await readStdin();

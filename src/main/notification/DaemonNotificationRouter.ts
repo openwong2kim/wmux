@@ -876,9 +876,10 @@ export class DaemonNotificationRouter {
           // 'awaiting_input'. Claude's hooks.json wires PreToolUse ONLY for
           // the AskUserQuestion tool — the far more common approval
           // prompts ("Do you want to proceed?", "Allow tool use for X",
-          // Claude's default permission-mode Y/N gate) have NO hook at
-          // all; AgentDetector's regex patterns are the ONLY signal source
-          // for those. Vetoing 'awaiting_input' here would leave an agent
+          // Claude's default permission-mode Y/N gate) have a hook only
+          // where the PermissionRequest hook was installed by hand;
+          // elsewhere AgentDetector's regex patterns are the ONLY signal
+          // source for those. Vetoing 'awaiting_input' here would leave an agent
           // blocked on a real approval prompt completely silent for the
           // full authority TTL (up to 30 minutes) — worse than any bug
           // this PR set out to fix.

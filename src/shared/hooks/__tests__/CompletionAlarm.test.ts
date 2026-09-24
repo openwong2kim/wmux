@@ -22,6 +22,7 @@ function makeSignal(overrides: Partial<AgentSignal> = {}): AgentSignal {
 const STOP: AlarmCue = { class: 'stop', child: false, leftoverWork: 0 };
 const WORKING: AlarmCue = { class: 'working' };
 const ATTENTION: AlarmCue = { class: 'attention' };
+const FIRM_ATTENTION: AlarmCue = { class: 'attention', firm: true };
 
 interface Confirmed {
   pane: string;
@@ -233,6 +234,34 @@ describe('CompletionAlarm', () => {
     expect(confirmed).toHaveLength(0);
   });
 
+  // A hook-reported dialog is really on screen. The working cues that arrive
+  // while it is up are subagents and background shells behind it; rebutting
+  // on them meant a fan-out worker with parallel subagents never read
+  // "needs you".
+  it('working does NOT cancel a firm (hook-reported) attention window', () => {
+    alarm.observe('p1', 'claude', WORKING);
+    expect(alarm.observe('p1', 'claude', FIRM_ATTENTION)).toBe('hold');
+    expect(alarm.observe('p1', 'claude', WORKING)).toBe('drop');
+    expect(alarm.observe('p1', 'claude', WORKING)).toBe('drop');
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+    expect(confirmed).toEqual([expect.objectContaining({ cls: 'attention' })]);
+  });
+
+  it('a firm attention is still closed by the answer', () => {
+    expect(alarm.observe('p1', 'claude', FIRM_ATTENTION)).toBe('hold');
+    expect(alarm.observe('p1', 'claude', { class: 'answered' })).toBe('drop');
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 3);
+    expect(confirmed).toHaveLength(0);
+  });
+
+  it('the detector reporting the same dialog after the hook keeps one firm window', () => {
+    expect(alarm.observe('p1', 'claude', FIRM_ATTENTION)).toBe('hold');
+    expect(alarm.observe('p1', 'claude', ATTENTION)).toBe('hold');
+    expect(alarm.observe('p1', 'claude', WORKING)).toBe('drop');
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 3);
+    expect(confirmed).toEqual([expect.objectContaining({ cls: 'attention' })]);
+  });
+
   it('states are independent per (slug, pane) key', () => {
     alarm.observe('p1', 'claude', WORKING);
     // codex on the same pane has NO working evidence → its stop is rejected.
@@ -289,7 +318,7 @@ describe('normalizeHookCue', () => {
   });
 
   it('maps awaiting_input / answered / session_start', () => {
-    expect(normalizeHookCue(makeSignal({ kind: 'agent.awaiting_input' }))).toEqual({ class: 'attention' });
+    expect(normalizeHookCue(makeSignal({ kind: 'agent.awaiting_input' }))).toEqual({ class: 'attention', firm: true });
     expect(normalizeHookCue(makeSignal({ kind: 'agent.input_answered' }))).toEqual({ class: 'answered' });
     expect(normalizeHookCue(makeSignal({ kind: 'agent.permission_answered' }))).toEqual({ class: 'answered' });
     expect(normalizeHookCue(makeSignal({ kind: 'agent.session_start' }))).toEqual({ class: 'session' });

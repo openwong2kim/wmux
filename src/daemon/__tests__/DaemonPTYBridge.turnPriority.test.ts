@@ -391,8 +391,10 @@ describe('DaemonPTYBridge turn priority', () => {
       expect(active).toEqual(['sess-1']);
     });
 
-    it('without forceSubmitted the same bare digit stays inert', () => {
-      bridge.noteAgentStatus('awaiting_input');
+    it('without forceSubmitted a bare digit on a pane that is not blocked stays inert', () => {
+      // On a pane blocked on a dialog the same digit IS the answer — see
+      // DaemonPTYBridge.answerRelease.test.ts.
+      bridge.noteAgentStatus('waiting');
       bridge.noteInput('2');
       feed('.');
       expect(active).toEqual([]);

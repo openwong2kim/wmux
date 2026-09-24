@@ -7,15 +7,19 @@
 // ── What a hook-sourced awaiting_input ACTUALLY is (read this before editing
 //    the bytes below) ──────────────────────────────────────────────────────
 // The registry only ever acts on `source:'hook'` + `agent.awaiting_input`. For
-// Claude Code that signal has exactly ONE origin: the PreToolUse hook wired to
-// the `AskUserQuestion` matcher (integrations/claude/hooks/hooks.json), which
-// the bridge additionally re-checks by tool name before sending
-// (integrations/claude/bin/wmux-bridge.mjs — `tool_name === 'AskUserQuestion'`,
-// everything else is dropped). Claude's PERMISSION prompts ("Do you want to
-// proceed?", the tool-approval gate) have no hook at all — they are detector-
-// only, which is exactly why HookIngest.arbitrateDetector exempts
-// awaiting_input from the hook-authority veto, and why M2 refuses to act on
-// detector-sourced signals.
+// Claude Code that signal has two origins, and only ONE of them reaches here:
+//   - the PreToolUse hook wired to the `AskUserQuestion` matcher
+//     (integrations/claude/hooks/hooks.json), which the bridge re-checks by
+//     tool name before sending (integrations/claude/bin/wmux-bridge.mjs —
+//     `tool_name === 'AskUserQuestion'`, every other PreToolUse is dropped);
+//   - the PermissionRequest hook behind Claude's PERMISSION prompts ("Do you
+//     want to proceed?"). HookIngest.noteAwaitingInput refuses to create a
+//     record for it (`hook_event_name === 'PermissionRequest'`): it carries no
+//     question, and the mapping below is built for a select. It is pane status
+//     only. Without that hook installed the prompt is detector-only, which is
+//     why HookIngest.arbitrateDetector exempts awaiting_input from the
+//     hook-authority veto, and why M2 refuses to act on detector-sourced
+//     signals.
 //
 // So the prompt on screen when we press is an AskUserQuestion SELECT: a
 // question with the agent's own numbered options, rendered by Claude's TUI with

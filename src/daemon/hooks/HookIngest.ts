@@ -1046,8 +1046,11 @@ export class HookIngest {
    *   - 'awaiting_input' is deliberately EXEMPT from the hook-authority veto.
    *     Claude's hooks.json wires PreToolUse for the AskUserQuestion tool
    *     ONLY — the far more common approval prompts ("Do you want to
-   *     proceed?", the permission-mode Y/N gate) have no hook at all, so the
-   *     detector regexes are their only signal source. Vetoing them would
+   *     proceed?", the permission-mode Y/N gate) are reported by a hook only
+   *     where the PermissionRequest hook was installed (a user-run install),
+   *     so the detector regexes are often their only signal source. Where
+   *     both report one dialog, CompletionAlarm carries them in a single
+   *     attention window (a later attention supersedes). Vetoing them would
    *     leave a pane blocked on a real approval silent for the full 30-minute
    *     authority TTL, which is worse than the double-toast this arbitration
    *     exists to prevent.
@@ -1148,6 +1151,17 @@ export class HookIngest {
   notePaneWorking(sessionId: string, slug?: string): void {
     if (!slug) return;
     this.alarm.observe(sessionId, slug, { class: 'working' });
+  }
+
+  /**
+   * A human answered the dialog the pane was blocked on (DaemonPTYBridge saw
+   * the answer keystroke). Cancels a still-held awaiting window: confirming it
+   * after the answer would re-mark the pane "needs you" and re-arm the
+   * bridge's awaiting state with nothing left on screen to answer.
+   */
+  noteAnswered(sessionId: string, slug?: string): void {
+    if (!slug) return;
+    this.alarm.observe(sessionId, slug, { class: 'answered' });
   }
 
   /**

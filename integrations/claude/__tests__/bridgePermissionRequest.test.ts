@@ -56,14 +56,16 @@ describe('claude bridge PermissionRequest', () => {
     expect(groups.some((g) => g.matcher === '' && g.hooks.some((h) => h.command.endsWith('PermissionRequest')))).toBe(true);
   });
 
-  // Unix socket fake daemon; the bridge's Windows transport is a named pipe.
-  it.skipIf(process.platform === 'win32')('sends awaiting_input, writes nothing to stdout, exits 0', async () => {
+  type Captured = { id: unknown; method: string; params: { kind: string; payload: Record<string, unknown> } };
+
+  /** Run the real bridge for one PermissionRequest against a fake daemon socket. */
+  async function runBridge(entrypoint: string | undefined): Promise<{ code: number | null; stdout: string; requests: Captured[] }> {
     const home = mkdtempSync(path.join(tmp, 'home-'));
     mkdirSync(path.join(home, '.wmux'), { recursive: true });
     writeFileSync(path.join(home, '.wmux', 'daemon-auth-token'), 'test-token\n', 'utf8');
     const sock = path.join(home, 'd.sock');
 
-    const requests: Array<{ id: unknown; method: string; params: { kind: string; payload: Record<string, unknown> } }> = [];
+    const requests: Captured[] = [];
     const server: Server = createServer((conn) => {
       let buf = '';
       conn.on('data', (chunk) => {
@@ -92,7 +94,7 @@ describe('claude bridge PermissionRequest', () => {
           USERPROFILE: home,
           WMUX_PIPE_NAME: sock,
           WMUX_PTY_ID: 'pty-1',
-          CLAUDE_CODE_ENTRYPOINT: 'cli',
+          ...(entrypoint ? { CLAUDE_CODE_ENTRYPOINT: entrypoint } : {}),
         },
       });
       let stdout = '';
@@ -102,12 +104,30 @@ describe('claude bridge PermissionRequest', () => {
       child.stdin.end(JSON.stringify(payload));
     });
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    return { ...result, requests };
+  }
 
-    expect(result.code).toBe(0);
-    expect(result.stdout).toBe('');
+  // Unix socket fake daemon; the bridge's Windows transport is a named pipe.
+  it.skipIf(process.platform === 'win32')('sends awaiting_input, writes nothing to stdout, exits 0', async () => {
+    const { code, stdout, requests } = await runBridge('cli');
+    expect(code).toBe(0);
+    expect(stdout).toBe('');
     expect(requests).toHaveLength(1);
     expect(requests[0].method).toBe('daemon.hooks.signal');
     expect(requests[0].params.kind).toBe('agent.awaiting_input');
     expect(requests[0].params.payload.hook_event_name).toBe('PermissionRequest');
   });
+
+  // Measured on 2.1.281: `claude -p` fires PermissionRequest with entrypoint
+  // `sdk-cli`, and no dialog is on any screen. A nested headless run inherits
+  // the host pane's WMUX_PTY_ID, so it must not mark that pane.
+  it.skipIf(process.platform === 'win32').each(['sdk-cli', undefined])(
+    'sends nothing for a headless session (entrypoint %s)',
+    async (entrypoint) => {
+      const { code, stdout, requests } = await runBridge(entrypoint);
+      expect(code).toBe(0);
+      expect(stdout).toBe('');
+      expect(requests).toHaveLength(0);
+    },
+  );
 });

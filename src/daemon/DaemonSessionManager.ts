@@ -702,6 +702,11 @@ export class DaemonSessionManager extends EventEmitter {
       this.emit('session:critical', payload);
     });
 
+    // A human answered the dialog this pane was blocked on (see noteInput).
+    bridge.on('answered', (payload) => {
+      this.emit('session:answered', payload);
+    });
+
     // OSC 133 shell integration markers — daemon-side parsing populates
     // PromptEventLog (canonical, byte-offset indexed); this re-emit teases
     // out the same parsed PromptEvent so main-process notification routing

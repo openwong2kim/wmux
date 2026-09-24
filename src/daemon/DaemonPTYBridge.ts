@@ -198,8 +198,15 @@ export class DaemonPTYBridge extends EventEmitter {
       this.inputRevision += 1;
     }
 
+    // A pane blocked on a human is answered by a lone option digit or a lone
+    // ESC as well as by Enter: Claude Code's permission dialog takes `1`/`2`/`3`
+    // and ESC without a CR. Arrow keys (`ESC [ A`) move the selection and are
+    // not an answer; a paste is never one.
+    const wasAwaiting = this.awaitingHuman;
+    // eslint-disable-next-line no-control-regex
+    const answerKey = wasAwaiting && !this.inputInBracketedPaste && /^(?:[1-9]|\x1b)$/.test(data);
     const hasSubmitBoundary = this.scanSubmittedInput(data);
-    if (!forceSubmitted && !hasSubmitBoundary) return;
+    if (!forceSubmitted && !hasSubmitBoundary && !answerKey) return;
 
     this.lastTurnStartedAt = Date.now();
 
@@ -215,6 +222,10 @@ export class DaemonPTYBridge extends EventEmitter {
     if (this.activityMonitor && this.sessionId) {
       this.activityMonitor.beginTurn(this.sessionId);
     }
+    // The dialog is closed. On a hook-governed pane bytes cannot relight the
+    // status (main mutes the byte heuristic while the turn latch is held), so
+    // the daemon broadcasts `running` and cancels a still-held awaiting window.
+    if (wasAwaiting && this.sessionId) this.emit('answered', { sessionId: this.sessionId });
   }
 
   /**
@@ -248,7 +259,11 @@ export class DaemonPTYBridge extends EventEmitter {
     }
     this.explicitTerminalStatus = true;
     this.settledStatus = status;
+    // An authoritative turn end (the Stop / StopFailure hook) closes any dialog
+    // the turn was blocked on. The detector's own `waiting` / `complete` cannot:
+    // the idle footer under an approval box matches those patterns too.
     if (status === 'awaiting_input') this.awaitingHuman = true;
+    else if (authoritative) this.awaitingHuman = false;
     this.settledAtMs = Date.now();
     this.submittedTurnPending = false;
     if (this.resizeGuardTimer) {

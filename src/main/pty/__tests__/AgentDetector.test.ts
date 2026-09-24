@@ -498,6 +498,8 @@ describe('AgentDetector', () => {
       const det = new AgentDetector();
       // Claude compound gate needs both signals
       det.feed('Claude Code\n  shift+tab to cycle\n');
+      // Claude exits: the shell draws its prompt (OSC 133) and aider starts.
+      det.feed('\u001b]133;A\u0007% aider\n');
       det.feed('aider v0.50.0\n');
       expect(det.getActiveAgents().sort()).toEqual(['Aider', 'Claude Code'].sort());
     });
@@ -821,6 +823,30 @@ describe('AgentDetector', () => {
       expect(cb.mock.calls.map((c) => c[0])).toEqual([
         { agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested' },
       ]);
+    });
+
+    it('rows that merely name another agent do not take a live Claude pane', () => {
+      // Replayed from live Claude panes, each of which used to end the session
+      // owned by another agent: a `git log -S"…OpenAI Codex"` echo, a status
+      // line quoting "Claude/OpenClaude", a test path containing "opencode".
+      const { det, cb } = claudeGated();
+      det.feed('\r\u001b[2C\u001b[1Bfmzube; gi -C $W log -S"gate: /codex |OpenAI Codex" --oneline --\r');
+      det.feed('\r\u001b[1B⏺\u001b[3GDiagnosissettled.Editing:(1)\\s*intheClaude/OpenClaudeproceed+\r');
+      det.feed('\r\u001b[1Bcripts/__tests_/opencode-sync-render.runtime.test.mjs 2>&1 | grep -E\r');
+      det.feed('\r\u001b[1Bopencode-sync-render, fails because the Playwrightbrowserisn\'tinstalled\r');
+      expect(det.getActiveAgents()).toEqual(['Claude Code']);
+      det.feed(PROCEED_CURSOR_DRAWN);
+      expect(cb.mock.calls.map((c) => c[0])).toEqual([
+        { agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested' },
+      ]);
+    });
+
+    it('a substring gate takes the pane once the shell prompt is back (OSC 133)', () => {
+      // The owner exited: the shell draws its prompt, and the user starts
+      // another agent in the same pane.
+      const { det } = claudeGated();
+      det.feed('\u001b]133;D;0\u0007\u001b]133;A\u0007% opencode\r\n');
+      expect(det.getLastAgent()).toBe('OpenCode');
     });
 
     it('the real Codex banner row still opens the Codex gate', () => {
