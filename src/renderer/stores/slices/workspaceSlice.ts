@@ -703,8 +703,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // leave `closeMissionForRemovedWorkspace` unable to find those tasks when
         // the children are deleted later. The orphan bucket is harmless: it is
         // capped per workspace, `selectLiveMissions` filters rows by child
-        // workspace existence, and `refreshMissions` only ever visits workspaces
-        // that still exist, so it never grows again.
+        // workspace existence, and the poll only revisits a closed owner while the
+        // fan-out audit log still names it (#1481 — so its orphaned tasks can be
+        // told apart from detached ones and closed), so it stays bounded.
       }
     },
 
