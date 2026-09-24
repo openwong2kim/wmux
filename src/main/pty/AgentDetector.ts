@@ -876,6 +876,28 @@ export class AgentDetector {
     // agentName이 확정된다.
     this.checkGates(clean);
 
+    if (this.matchStatus(clean, false)) return;
+
+    // #1494: Claude Code often draws a permission prompt's first frame with
+    // cursor moves and no line break (`…approval ESC[28;2H Do…proceed?
+    // ESC[29;2H ❯ 1. Yes`), so the whole-line pass above sees the prompt row
+    // glued to its neighbours and the anchored approval patterns never match.
+    // Retry on the rows the TUI actually drew. Approval patterns only: they
+    // are whole-line anchored prompts, whereas anchored idle prompts such as
+    // OpenClaude's bare `>` would start firing on an input-box row mid-turn.
+    if (line.includes('\u001b[')) {
+      const rows = candidateLines(line);
+      if (rows.length > 1) {
+        for (const row of rows) {
+          const rowClean = stripAnsi(row).trim();
+          if (rowClean && this.matchStatus(rowClean, true)) return;
+        }
+      }
+    }
+  }
+
+  /** Run the owning agent's status patterns on one cleaned row; true when one matched. */
+  private matchStatus(clean: string, approvalOnly: boolean): boolean {
     // Only check patterns for the agent that currently owns this PTY.
     // Multiple gates can be in activeAgents (Grok reading this file will
     // still mention Claude chrome as source), but status patterns must not
@@ -885,20 +907,22 @@ export class AgentDetector {
       if (this.lastAgent && ap.agent !== this.lastAgent) continue;
 
       for (const p of ap.patterns) {
+        if (approvalOnly && p.status !== 'awaiting_input') continue;
         const match = clean.match(p.regex);
         if (match) {
           const key = `${ap.agent}:${p.status}`;
           const value = match[0];
-          if (this.lastEmittedFor.get(key) === value) return;
+          if (this.lastEmittedFor.get(key) === value) return true;
           this.lastEmittedFor.set(key, value);
           this.lastAgent = ap.agent;
 
           for (const cb of this.callbacks) {
             cb({ agent: ap.agent, status: p.status, message: match[1] || p.message });
           }
-          return;
+          return true;
         }
       }
     }
+    return false;
   }
 }
