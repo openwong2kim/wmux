@@ -17,11 +17,12 @@ interface OnboardingHighlightProps {
 
 const PADDING = 8;
 const TOOLTIP_GAP = 12;
-const TOOLTIP_WIDTH = 320;
+// Wide enough for a 16:10 preview clip above the copy.
+const TOOLTIP_WIDTH = 360;
 /** Minimum distance between the card and the viewport edge. */
 export const VIEWPORT_MARGIN = 16;
 /** Card height used until the rendered card has been measured. */
-const ESTIMATED_CARD_HEIGHT = 180;
+const ESTIMATED_CARD_HEIGHT = 340;
 
 export interface ViewportSize {
   width: number;
@@ -191,7 +192,7 @@ export default function OnboardingHighlight({
     boxShadow: '0 0 0 9999px var(--bg-overlay-scrim, rgba(0, 0, 0, 0.55))',
     pointerEvents: 'none',
     zIndex: 10000,
-    transition: 'top 0.3s ease, left 0.3s ease, width 0.3s ease, height 0.3s ease',
+    transition: 'top 150ms ease-out, left 150ms ease-out, width 150ms ease-out, height 150ms ease-out',
   };
 
   return (

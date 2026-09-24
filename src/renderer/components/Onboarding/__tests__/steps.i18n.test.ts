@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { ONBOARDING_STEPS } from '../steps';
 import { en } from '../../../i18n/locales/en';
+import { MEDIA_CLIPS } from '../../../assets/media';
 
 /**
  * Regression for #452: OnboardingOverlay rendered raw i18n keys
@@ -20,5 +21,17 @@ describe('ONBOARDING_STEPS i18n coverage (#452)', () => {
       if (!(step.descriptionKey in en)) missing.push(step.descriptionKey);
     }
     expect(missing).toEqual([]);
+  });
+});
+
+describe('ONBOARDING_STEPS media', () => {
+  it('only references clips that exist, each with a poster for reduced motion', () => {
+    for (const step of ONBOARDING_STEPS) {
+      if (!step.media) continue;
+      const clip = MEDIA_CLIPS[step.media];
+      expect(clip, step.id).toBeDefined();
+      expect(clip.src).toMatch(/\.webm/);
+      expect(clip.poster).toMatch(/\.webp/);
+    }
   });
 });
