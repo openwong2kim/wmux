@@ -275,6 +275,45 @@ stays on chrome.
   still poster and never plays. The clip must show what the copy next to it
   says; when no clip does, the step is text only.
 
+### Settings
+
+Settings is a full-screen surface under the titlebar (`.ui-surface`), built
+from the Dialogs & forms primitives plus `Settings/SettingsLayout.tsx`
+(`SettingsSection`, `SettingRow`, `SettingNote`).
+
+- **Information architecture** (owner-reviewed, 2026-09-24). Tabs, in nav
+  order: General (language, updates, startup, tutorial, first-run setup,
+  reset) · Appearance (theme, interface, sidebar, panes, terminal text, agent
+  toolbar) · Terminal (shell, input, rendering and memory, scrollback) ·
+  Keyboard (shortcuts, prefix mode, custom keybindings) · Notifications. Group
+  **Agents**: Claude Code (setup card, plugin signal health, usage meter, MCP
+  registration) · Accounts · Orchestrator · Roles & fan-out (role bindings,
+  A2A, fan-out approval and worker permissions) · Browser. Group
+  **Connections**: Remote & phone (paired devices, quick commands; the live
+  serve toggle stays in the sidebar Remote popover) · LAN. Then About. Each
+  tab answers one question; a setting lives on exactly one tab and the search
+  catalog (`settings/catalog.ts`) names that tab. Retired tab ids resolve
+  through `resolveSettingsTab` instead of breaking a deep link.
+- **Nav:** 13px icon + label rows; group headings muted sentence case (the
+  app group and About are unheaded); the selected row is the sidebar's active
+  row — neutral surface + a steel edge. No mono, no uppercase tracking.
+- **Page:** one centered column (720px max); the tab's name as a 16px/600
+  Inter title; sections 28px apart. A section is a muted sentence-case heading
+  over ONE rounded container of rows with hairline dividers — never a card per
+  row. A lead group whose only row names itself carries no heading.
+- **Row:** label + one-line muted description on the left, control on the
+  right. Copy that overflows its line collapses to one line with a Learn more
+  disclosure (measured, not guessed). A status that needs an action is a
+  notice row (hooks missing → Install); status words are Badges (neutral or
+  success), never amber mono.
+- **Controls:** Switch, Select, SegmentedControl, Input, Checkbox, Button,
+  Badge from `ui/`. At most one primary per tab, on the action that unblocks
+  the user (a staged update's Install, the first missing integration, starting
+  a LAN pairing); a destructive flow is red tint, solid red only on its final
+  confirm. Theme and cursor cards stay visual, on 10px radii and hairlines,
+  selected by a neutral outline + check.
+- **Escape** closes a dialog opened from Settings before Settings itself.
+
 ## Motion
 
 - Minimal-functional. Spinners and blink-cursor are the only perpetual motion.
@@ -332,6 +371,7 @@ stays on chrome.
 | 2026-09-23 | Fleet becomes a three-section attention board (Needs you / Running / collapsed Idle) with a one-line detail, elapsed time, a changed-since-last-look dot and row verbs; section and detail come from one pure selector | Twelve identical idle cards with no last activity answered nothing. Fleet is triage — what needs me, what is moving, what has gone quiet and for how long — and the sidebar stays the map |
 | 2026-09-24 | Dialogs and forms get shared primitives (Dialog, Field, Switch, Checkbox, Select, SegmentedControl, Badge; Button sizes and a destructive alias) and a "Dialogs & forms" rule set; the welcome dialog and the onboarding tour are the first adopters, with short preview clips. The settings gear becomes a cog | The outer chrome had the Bridge design but every modal still used the old UI: monospace prose, green borders, several amber buttons per dialog and a steel-filled Next. Shared primitives make the grammar the default, and a clip shows what a feature does where text alone did not |
 | 2026-09-24 | Owner: quiet surfaces for dialogs and forms. Surface radii 8/12/14 (chrome keeps 5/6/7), flat secondary buttons, neutral switches and checkboxes, sentence-case muted labels, grouped rows in one container, the notice row, the popover section model, 16px dialog titles, one soft shadow and no bevels | The first pass carried the chrome's machined look into dialogs, and they read heavy and busy. The owner chose a quieter, almost colourless surface where the single warm primary is the only colour, lists read as one calm group, and a status that needs an action carries it on the same row |
+| 2026-09-24 | Settings reorganised into one-question tabs (Claude Code, Accounts, Orchestrator, Roles & fan-out, Remote & phone split out of the old Accounts/Agents tabs; the agent toolbar moves to Appearance, first-run setup to General) and rebuilt on the quiet-surface primitives: one container per section, Field rows, Learn more for long copy, a language Select without flags, an Inter header and no footer | The Accounts and Agents tabs each held four or five unrelated things and the categories did not sort; every tab mixed card-per-row boxes, mono headings, uppercase labels and bright input borders. One question per tab makes a setting findable by where it belongs, and one row grammar makes every tab read the same |
 
 ### Desktop conversation view
 
