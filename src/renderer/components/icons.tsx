@@ -199,12 +199,14 @@ export function IconChevronDir({ dir, size = 12 }: { dir: 'left' | 'right'; size
   );
 }
 
-/** Gear — workspace profile / project config badges. */
+/** Gear — settings entry point and workspace profile / project config badges.
+ *  An eight-tooth cog outline around a hub. The previous glyph (hub + eight
+ *  detached rays) read as a sun / brightness control, not as settings. */
 export function IconGear({ size = 14 }: { size?: number }) {
   return (
     <Icon size={size}>
-      <circle cx="7" cy="7" r="2" />
-      <path d="M7 1.8v1.6M7 10.6v1.6M1.8 7h1.6M10.6 7h1.6M3.3 3.3l1.1 1.1M9.6 9.6l1.1 1.1M3.3 10.7l1.1-1.1M9.6 4.4l1.1-1.1" />
+      <path d="M5.86 2.75 L6.11 1.37 A5.7 5.7 0 0 1 7.89 1.37 L8.14 2.75 A4.4 4.4 0 0 1 9.2 3.19 L10.35 2.39 A5.7 5.7 0 0 1 11.61 3.65 L10.81 4.8 A4.4 4.4 0 0 1 11.25 5.86 L12.63 6.11 A5.7 5.7 0 0 1 12.63 7.89 L11.25 8.14 A4.4 4.4 0 0 1 10.81 9.2 L11.61 10.35 A5.7 5.7 0 0 1 10.35 11.61 L9.2 10.81 A4.4 4.4 0 0 1 8.14 11.25 L7.89 12.63 A5.7 5.7 0 0 1 6.11 12.63 L5.86 11.25 A4.4 4.4 0 0 1 4.8 10.81 L3.65 11.61 A5.7 5.7 0 0 1 2.39 10.35 L3.19 9.2 A4.4 4.4 0 0 1 2.75 8.14 L1.37 7.89 A5.7 5.7 0 0 1 1.37 6.11 L2.75 5.86 A4.4 4.4 0 0 1 3.19 4.8 L2.39 3.65 A5.7 5.7 0 0 1 3.65 2.39 L4.8 3.19 A4.4 4.4 0 0 1 5.86 2.75 Z" />
+      <circle cx="7" cy="7" r="1.9" />
     </Icon>
   );
 }
