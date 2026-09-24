@@ -17,8 +17,15 @@ const ESC_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 // eslint-disable-next-line no-control-regex
 const ESC_OTHER_RE = /\x1b[@-_]/g;
 
+// Repeat until nothing changes: removing one sequence can join the bytes
+// around it into a new one (`\x1b\x1b@[201~` → `\x1b[201~`).
 function stripEscapes(input: string): string {
-  return input.replace(ESC_CSI_RE, '').replace(ESC_OTHER_RE, '');
+  let out = input;
+  for (;;) {
+    const next = out.replace(ESC_CSI_RE, '').replace(ESC_OTHER_RE, '');
+    if (next === out) return out;
+    out = next;
+  }
 }
 
 /**
@@ -37,9 +44,10 @@ function safeName(name: string): string {
   return sanitizeA2aName(name);
 }
 
+// CR is dropped BEFORE escapes are stripped: dropped after, `\x1b\r[201~`
+// would pass the scan and then close up into `\x1b[201~`.
 function safeBody(message: string): string {
-  return stripEscapes(sanitizePtyText(message))
-    .replace(/\r/g, '')
+  return stripEscapes(sanitizePtyText(message).replace(/\r/g, ''))
     .replace(/\n/g, '\u2424');
 }
 
@@ -54,8 +62,7 @@ function safeBody(message: string): string {
 export const A2A_BODY_LINE_PREFIX = '│ ';
 
 function safeMultilineBody(message: string): string {
-  return stripEscapes(sanitizePtyText(message))
-    .replace(/\r/g, '')
+  return stripEscapes(sanitizePtyText(message).replace(/\r/g, ''))
     .trimEnd()
     .split('\n')
     .map((line) => `${A2A_BODY_LINE_PREFIX}${line}`)

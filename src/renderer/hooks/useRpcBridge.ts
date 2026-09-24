@@ -453,7 +453,8 @@ export function useRpcBridge(): void {
 //
 // #1337: the ptyId, not a bare boolean, because the receipt has to describe the
 // pane that received the bytes — see `ptyAgent`.
-function deliverPtyNotification(
+// Exported for tests only (a2aFormat.delivery.test.ts).
+export function deliverPtyNotification(
   targetWs: { rootPane: Pane; activePaneId: string; name: string; stashedPanes?: Workspace['stashedPanes'] },
   senderName: string,
   message: string,
@@ -606,7 +607,8 @@ function isSelectableBrowserPartition(partition: string): boolean {
   );
 }
 
-async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcResult> {
+// Exported for tests only (a2aFormat.delivery.test.ts).
+export async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcResult> {
   // Always read the freshest state via getState() to avoid stale closures.
   const store = useStore.getState();
 

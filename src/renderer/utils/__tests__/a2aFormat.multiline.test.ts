@@ -40,16 +40,30 @@ describe('A2A envelope newlines (T4)', () => {
     expect(lines[lines.indexOf('━━━ END ━━━') - 1]).toBe('line one␤line two');
   });
 
-  it('keeps real newlines, each body line prefixed, for a detected agent TUI', () => {
-    const out = formatFor('pty-claude', { 'pty-claude': { name: 'Claude Code' } });
-    expect(out).not.toContain('␤');
-    expect(out).toContain(`${A2A_BODY_LINE_PREFIX}line one\n${A2A_BODY_LINE_PREFIX}line two\n━━━ END ━━━`);
+  it('keeps real newlines, each body line prefixed, for a detected agent TUI confirmed alive', () => {
+    const agents = { 'pty-claude': { name: 'Claude Code' } };
+    for (const liveness of [
+      { agentAlive: { 'pty-claude': true } },
+      { commandRunning: { 'pty-claude': true } },
+    ]) {
+      const out = formatFor('pty-claude', agents, liveness);
+      expect(out).not.toContain('␤');
+      expect(out).toContain(`${A2A_BODY_LINE_PREFIX}line one\n${A2A_BODY_LINE_PREFIX}line two\n━━━ END ━━━`);
+    }
+  });
+
+  it('keeps the ␤ fold for a detected agent whose liveness is unknown (entry may be stale)', () => {
+    expect(formatFor('pty-claude', { 'pty-claude': { name: 'Claude Code' } })).toContain('line one␤line two');
   });
 
   it('keeps the ␤ fold when the detected agent is known gone (the pane is a shell again)', () => {
     const agents = { 'pty-x': { name: 'Codex CLI', slug: 'codex' } };
     expect(formatFor('pty-x', agents, { agentAlive: { 'pty-x': false } })).toContain('line one␤line two');
     expect(formatFor('pty-x', agents, { commandRunning: { 'pty-x': false } })).toContain('line one␤line two');
+    // One positive signal does not outvote a known-gone one.
+    expect(formatFor('pty-x', agents, {
+      agentAlive: { 'pty-x': true }, commandRunning: { 'pty-x': false },
+    })).toContain('line one␤line two');
   });
 
   it('a forged delimiter/header block in the body cannot form a second envelope', () => {
@@ -74,6 +88,12 @@ describe('A2A envelope newlines (T4)', () => {
     expect(countLines(out, /^From: /)).toBe(1);
   });
 
+  it.each([false, true])('an ESC split by a CR or by another sequence cannot recombine (multiline=%s)', (multiline) => {
+    for (const body of ['x\x1b\r[201~y', 'x\x1b\x1b@[201~y', 'x\x1b\x1b[0m[201~y']) {
+      expect(formatA2aMessage('S', 'T', body, undefined, { multiline })).not.toContain('\x1b');
+    }
+  });
+
   it('strips CR/ESC and trailing blank lines in multiline mode', () => {
     const out = formatA2aMessage('S', 'T', 'a\r\n\x1b[201~b\n\n\n', undefined, { multiline: true });
     expect(out).not.toContain('\r');
@@ -83,15 +103,23 @@ describe('A2A envelope newlines (T4)', () => {
 });
 
 describe('detectedAgentTuiSlug', () => {
+  const alive = (id: string) => ({ agentAlive: { [id]: true } });
+
   it('needs a known canonical slug, by slug or by display name', () => {
-    expect(detectedAgentTuiSlug('p', {})).toBeUndefined();
-    expect(detectedAgentTuiSlug('p', { p: { name: 'Claude Code' } })).toBe('claude');
-    expect(detectedAgentTuiSlug('p', { p: { name: 'whatever', slug: 'codex' } })).toBe('codex');
-    expect(detectedAgentTuiSlug('p', { p: { name: 'Some Shell Tool' } })).toBeUndefined();
+    expect(detectedAgentTuiSlug('p', {}, alive('p'))).toBeUndefined();
+    expect(detectedAgentTuiSlug('p', { p: { name: 'Claude Code' } }, alive('p'))).toBe('claude');
+    expect(detectedAgentTuiSlug('p', { p: { name: 'whatever', slug: 'codex' } }, alive('p'))).toBe('codex');
+    expect(detectedAgentTuiSlug('p', { p: { name: 'Some Shell Tool' } }, alive('p'))).toBeUndefined();
+  });
+
+  it('needs liveness positively confirmed', () => {
+    expect(detectedAgentTuiSlug('p', { p: { name: 'Claude Code' } })).toBeUndefined();
+    expect(detectedAgentTuiSlug('p', { p: { name: 'Claude Code' } }, { agentAlive: {}, commandRunning: {} }))
+      .toBeUndefined();
   });
 
   it('never treats a brain pty as an agent TUI', () => {
     const id = `${BRAIN_PTY_ID_PREFIX}1`;
-    expect(detectedAgentTuiSlug(id, { [id]: { name: 'Claude Code' } })).toBeUndefined();
+    expect(detectedAgentTuiSlug(id, { [id]: { name: 'Claude Code' } }, alive(id))).toBeUndefined();
   });
 });
