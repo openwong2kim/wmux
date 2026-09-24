@@ -258,6 +258,23 @@ describe('settings persist across tabs', () => {
     expect(useStore.getState()[key]).toBe(before);
   });
 
+  // #1481 — the sidebar order row is a three-way control now.
+  it('appearance › sidebarattention sets the workspace order and survives a trip to another tab', async () => {
+    const before = useStore.getState().sidebarSortMode;
+    await openTab('appearance');
+    const radios = () => [...(row('sidebarattention')?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [])];
+    expect(radios().length).toBe(3);
+    await act(async () => { radios()[2].click(); });
+    expect(useStore.getState().sidebarSortMode).toBe('recent');
+    expect(useStore.getState().sidebarAttentionFirst).toBe(false);
+    await openTab('about');
+    await openTab('appearance');
+    expect(radios()[2].getAttribute('aria-checked')).toBe('true');
+    await act(async () => { radios()[1].click(); });
+    expect(useStore.getState().sidebarAttentionFirst).toBe(true);
+    act(() => useStore.getState().setSidebarSortMode(before));
+  });
+
   it('keeps the language picked on General', async () => {
     const before = useStore.getState().locale;
     const select = row('language')!.querySelector('select')!;

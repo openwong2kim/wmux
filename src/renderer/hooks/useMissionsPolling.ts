@@ -25,27 +25,58 @@ import { useStore } from '../stores';
  */
 export const MISSION_POLL_INTERVAL_MS = 15_000;
 
-/** 현재 워크스페이스 id 전부에 대해 미션을 refetch(각 owner-scoped 조회). */
-function refreshAllParents(): void {
-  const state = useStore.getState();
-  const ids = new Set(state.workspaces.map((w) => w.id));
-  // #1481 — also the owners the audit log names that are no longer open: their
-  // tasks can outlive them, and without the ledger record the sidebar cannot
-  // tell a detached task from an orphaned one, nor close a finished one.
-  for (const p of Object.values(state.fanoutProvenance ?? {})) {
-    if (p.ownerWorkspaceId) ids.add(p.ownerWorkspaceId);
+/** #1481 — how many times a closed owner's task list is re-asked for before
+ *  the sidebar gives up on it (its tasks then stay in the closed-owner group). */
+export const MAX_CLOSED_OWNER_ATTEMPTS = 3;
+/** #1481 — how many 15 s polls may re-read the audit log for a spawned task
+ *  whose launch record has not landed yet. */
+export const MAX_AUDIT_RETRIES = 3;
+
+const closedOwnerAttempts = new Map<string, number>();
+let auditRetries = 0;
+
+/**
+ * #1481 — owners that are no longer open but still own an open task workspace
+ * whose ledger record is not loaded (so the sidebar cannot yet tell detached
+ * from orphaned, nor close it). Resolved owners drop out; each is asked at most
+ * MAX_CLOSED_OWNER_ATTEMPTS times.
+ */
+export function closedOwnersNeedingRecords(
+  state: {
+    workspaces: readonly { id: string }[];
+    missionByPaneGroup: Record<string, unknown>;
+    fanoutLineage?: Record<string, string>;
+    fanoutSpawnOwner?: Record<string, string>;
+  },
+  attempts: ReadonlyMap<string, number>,
+  maxAttempts = MAX_CLOSED_OWNER_ATTEMPTS,
+): string[] {
+  const live = new Set(state.workspaces.map((w) => w.id));
+  const out = new Set<string>();
+  for (const ws of state.workspaces) {
+    if (state.missionByPaneGroup[ws.id]) continue;
+    const owner = state.fanoutLineage?.[ws.id] ?? state.fanoutSpawnOwner?.[ws.id];
+    if (owner && !live.has(owner) && (attempts.get(owner) ?? 0) < maxAttempts) out.add(owner);
   }
-  for (const id of ids) {
-    void state.refreshMissions(id);
-  }
+  return [...out];
 }
 
-/** #1481 — audit provenance first (it names closed owners), then the ledger. */
-function refreshProvenanceThenParents(): void {
+/** 현재 워크스페이스 id 전부에 대해 미션을 refetch(각 owner-scoped 조회). */
+async function refreshAllParents(): Promise<void> {
   const state = useStore.getState();
-  const read = state.refreshFanoutProvenance?.();
-  if (read) void read.finally(refreshAllParents);
-  else refreshAllParents();
+  const ids = state.workspaces.map((w) => w.id);
+  const closed = closedOwnersNeedingRecords(state, closedOwnerAttempts);
+  for (const owner of closed) closedOwnerAttempts.set(owner, (closedOwnerAttempts.get(owner) ?? 0) + 1);
+  await Promise.all([...ids, ...closed].map((id) => state.refreshMissions(id)));
+}
+
+/** #1481 — lineage + audit first (they name closed owners), then the ledger;
+ *  the first full pass marks the sidebar's fan-out view as settled. */
+async function refreshProvenanceThenParents(): Promise<void> {
+  const state = useStore.getState();
+  await state.refreshFanoutProvenance?.({ audit: true });
+  await refreshAllParents();
+  useStore.getState().markFanoutRefreshSettled?.();
 }
 
 /**
@@ -59,26 +90,31 @@ export function useMissionsPolling(): void {
   useEffect(() => {
     // 마운트 + id 집합 변화 시 즉시 refetch. The audit read rides only these
     // triggers (a new fan-out always changes the id set), not the 15 s poll.
-    refreshProvenanceThenParents();
+    auditRetries = 0;
+    void refreshProvenanceThenParents();
 
-    // 성긴 배경 폴링(상태 드리프트용).
-    // #1481 — the audit log's launch record lands only after every task of a
-    // fan-out has spawned, i.e. after the id-set change above fired. While a
-    // spawned task still has no provenance, the poll re-reads it too.
+    // 성긴 배경 폴링(상태 드리프트용). #1481 — the audit log's launch record
+    // lands only after every task of a fan-out has spawned, i.e. after the
+    // id-set change above fired; while a spawned task still has none, a
+    // bounded number of polls re-read it. Otherwise the poll is ledger-only.
     const timer = setInterval(() => {
       const st = useStore.getState();
       const missing = Object.keys(st.fanoutSpawnOwner ?? {}).some((id) => !st.fanoutProvenance?.[id]);
-      if (missing) refreshProvenanceThenParents();
-      else refreshAllParents();
+      if (missing && auditRetries < MAX_AUDIT_RETRIES) {
+        auditRetries += 1;
+        void refreshProvenanceThenParents();
+      } else {
+        void refreshAllParents();
+      }
     }, MISSION_POLL_INTERVAL_MS);
 
     // daemon (re)connect 시 콜드부트/리스폰 후 재수화.
     let disposed = false;
     void window.electronAPI.daemon.whenReady().then(() => {
-      if (!disposed) refreshProvenanceThenParents();
+      if (!disposed) void refreshProvenanceThenParents();
     });
     const offConnected = window.electronAPI.daemon.onConnected(() => {
-      if (!disposed) refreshProvenanceThenParents();
+      if (!disposed) void refreshProvenanceThenParents();
     });
 
     return () => {

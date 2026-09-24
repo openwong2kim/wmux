@@ -416,7 +416,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // the owner's current name. Undefined for every other row.
   const provenance = useStore((s) => (taskRow ? s.fanoutProvenance[workspaceId] : undefined));
   const spawnOwner = useStore((s) => (taskRow ? s.fanoutSpawnOwner[workspaceId] : undefined));
-  const taskOwnerId = taskRow ? childMission?.owner?.verifiedWorkspaceId ?? provenance?.ownerWorkspaceId ?? spawnOwner : undefined;
+  const lineageOwner = useStore((s) => (taskRow ? s.fanoutLineage[workspaceId] : undefined));
+  const taskOwnerId = taskRow ? childMission?.owner?.verifiedWorkspaceId ?? lineageOwner ?? spawnOwner : undefined;
   const taskOwnerName = useStore((s) => (taskOwnerId ? s.workspaces.find((w) => w.id === taskOwnerId)?.name : undefined));
 
   // Idle badge — how long since ANY of this workspace's surfaces last showed
@@ -952,9 +953,14 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         {/* Shortcut hint */}
         {/* #1481 — a nested task row is indented, so even the active one gives
             the hint back to its name at rest. */}
-        <span className={`text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5 ${taskRow ? `${REST_HIDDEN} ${REST_HIDDEN_GAP_ROW}` : restHidden}`}>
-          {index < 9 ? `^${index + 1}` : ''}
-        </span>
+        {/* #1481 review — Ctrl+N follows the stored order, which nesting no
+            longer mirrors on screen; a nested task row would show a hint out
+            of sequence with the rows around it, so it shows none. */}
+        {!taskRow && (
+          <span className={`text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5 ${restHidden}`}>
+            {index < 9 ? `^${index + 1}` : ''}
+          </span>
+        )}
 
         {/* Hover actions. Each drew an 11px glyph in a 13px box; each is now a
             real 24x24 target. They sit in a cluster because three 24px boxes do
@@ -1310,6 +1316,8 @@ export interface CloseWorkspaceConfirmProps {
   detail: (count: number) => string;
   cancelLabel: string;
   confirmLabel: string;
+  /** #1481 — names of exactly what will be closed, listed under the detail. */
+  items?: readonly string[];
   onCancel: () => void;
   onConfirm: () => void;
 }
@@ -1329,6 +1337,7 @@ export function CloseWorkspaceConfirm({
   detail,
   cancelLabel,
   confirmLabel,
+  items,
   onCancel,
   onConfirm,
 }: CloseWorkspaceConfirmProps) {
@@ -1376,6 +1385,11 @@ export function CloseWorkspaceConfirm({
     >
       <p className="m-0 text-[13px] font-medium leading-5 text-[var(--text-main)] [overflow-wrap:anywhere]">{title}</p>
       {terminalCount > 0 ? <p className="ui-note mt-1">{detail(terminalCount)}</p> : null}
+      {items && items.length > 0 ? (
+        <ul className="m-0 mt-2 max-h-[132px] list-none overflow-y-auto p-0 text-[13px] leading-5 text-[var(--text-main)]" data-close-items>
+          {items.map((item, i) => <li key={i} className="truncate" title={item}>{item}</li>)}
+        </ul>
+      ) : null}
       <div className="mt-3 flex justify-end gap-2">
         <Button variant="ghost" size="sm" onClick={onCancel}>
           {cancelLabel}

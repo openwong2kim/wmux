@@ -88,8 +88,9 @@ export default function Sidebar() {
   // #1481 — fan-out nesting. Both maps change only when a fan-out lands, a
   // task closes or detaches, or the audit log is re-read — not on output.
   const missionByPaneGroup = useStore((s) => s.missionByPaneGroup);
-  const fanoutProvenance = useStore((s) => s.fanoutProvenance);
+  const fanoutLineage = useStore((s) => s.fanoutLineage);
   const fanoutSpawnOwner = useStore((s) => s.fanoutSpawnOwner);
+  const fanoutSettled = useStore((s) => s.fanoutRefreshSettled);
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   const tree = useMemo(() => {
     const byId = new Map(workspaces.map((w) => [w.id, w]));
@@ -97,11 +98,11 @@ export default function Sidebar() {
       orderedWorkspaces,
       (id) => {
         const ws = byId.get(id);
-        return ws ? resolveTaskLink(ws, missionByPaneGroup[id], fanoutProvenance[id], fanoutSpawnOwner[id]) : null;
+        return ws ? resolveTaskLink(missionByPaneGroup[id], fanoutLineage[id], fanoutSpawnOwner[id]) : null;
       },
       new Set(workspaces.map((w) => w.id)),
     );
-  }, [orderedWorkspaces, workspaces, missionByPaneGroup, fanoutProvenance, fanoutSpawnOwner]);
+  }, [orderedWorkspaces, workspaces, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   // #1329 — rows that only exist to poll a remote-terminal PANE's host are not
   // attachments and must not render here: the user never asked for a mirror,
@@ -296,6 +297,9 @@ export default function Sidebar() {
         {tree.top.map((node) => {
           const ws = workspaceById.get(node.id);
           if (!ws) return null;
+          // A task whose owner is only hidden by the search filter still
+          // renders as a task row (prefix stripped, provenance, no drag).
+          if (tree.taskIds.has(node.id)) return <Fragment key={node.id}>{renderTask(node.id)}</Fragment>;
           return (
             <Fragment key={node.id}>
               <WorkspaceItem
@@ -316,6 +320,7 @@ export default function Sidebar() {
                 <SidebarTaskGroup
                   groupKey={node.id}
                   taskIds={node.taskIds}
+                  ownerName={ws.name}
                   ownerActive={node.id === activeWorkspaceId}
                   renderTask={renderTask}
                   onCloseWorkspace={handleClose}
@@ -324,13 +329,18 @@ export default function Sidebar() {
             </Fragment>
           );
         })}
-        {tree.orphanTaskIds.length > 0 && (
+        {/* Until the first lineage + ledger refresh lands, a task whose owner
+            is not yet known to be gone is not called orphaned: it waits as a
+            plain task row instead of flashing into the group. */}
+        {!fanoutSettled && tree.orphanTaskIds.map((id) => <Fragment key={id}>{renderTask(id)}</Fragment>)}
+        {fanoutSettled && tree.orphanTaskIds.length > 0 && (
           <SidebarTaskGroup
             groupKey={ORPHAN_GROUP_KEY}
             taskIds={tree.orphanTaskIds}
             // Open by default: these are the tasks nobody is watching.
             ownerActive
             label={t('sidebar.tasks.orphanGroup')}
+            ownerName={t('sidebar.tasks.orphanGroup')}
             renderTask={renderTask}
             onCloseWorkspace={handleClose}
           />

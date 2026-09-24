@@ -50,3 +50,24 @@ export function resolveSidebarSortMode(data: {
   if (isSidebarSortMode(data.sidebarSortMode)) return data.sidebarSortMode;
   return data.sidebarAttentionFirst === true ? 'attention' : 'manual';
 }
+
+/** Remembered-expansion key of the "From closed workspace" group. */
+export const ORPHAN_GROUP_KEY = '__closed-owner__';
+
+/**
+ * #1481 — keep only the task-group expansion entries whose owner is still an
+ * open workspace (plus the closed-owner group's own key), dropping malformed
+ * values. Without this every owner ever closed would stay in the session file.
+ */
+export function pruneTaskGroupExpanded(
+  map: unknown,
+  liveIds: ReadonlySet<string>,
+): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  if (!map || typeof map !== 'object') return out;
+  for (const [ownerId, value] of Object.entries(map as Record<string, unknown>)) {
+    if (typeof value !== 'boolean') continue;
+    if (ownerId === ORPHAN_GROUP_KEY || liveIds.has(ownerId)) out[ownerId] = value;
+  }
+  return out;
+}

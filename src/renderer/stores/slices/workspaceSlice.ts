@@ -19,7 +19,7 @@ import { retentionMigrationDone, markRetentionMigrationDone } from '../retention
 import { decUnread } from './notificationSlice';
 import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { stashedPaneLiveness } from '../../../shared/paneStash';
-import { clampSidebarWidth, resolveSidebarSortMode } from '../../utils/sidebarLayout';
+import { clampSidebarWidth, pruneTaskGroupExpanded, resolveSidebarSortMode } from '../../utils/sidebarLayout';
 import {
   collectLeafIds,
   getLeafPanes,
@@ -697,6 +697,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // visibility rule reads workspace existence directly, so it is already
         // correct whether or not this RPC lands.
         void get().closeMissionForRemovedWorkspace?.(id);
+        // #1481 — sidebar display state keyed by this workspace goes with it.
+        get().pruneFanoutFor?.(id);
+        if (get().sidebarTaskGroupExpanded?.[id] !== undefined) {
+          set((s: StoreState) => { delete s.sidebarTaskGroupExpanded[id]; });
+        }
         // NOTE: deliberately NOT `clearMissionsFor(id)`. That bucket is keyed by
         // the fan-out PARENT, and its tasks' child workspaces routinely outlive
         // the parent — wiping it would hide live missions from the sidebar AND
@@ -1335,13 +1340,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.sidebarSortMode = resolveSidebarSortMode(data);
       state.sidebarAttentionFirst = state.sidebarSortMode === 'attention';
       if (data.sidebarWidth !== undefined) state.sidebarWidth = clampSidebarWidth(data.sidebarWidth);
-      if (data.sidebarTaskGroupExpanded && typeof data.sidebarTaskGroupExpanded === 'object') {
-        const expanded: Record<string, boolean> = {};
-        for (const [ownerId, value] of Object.entries(data.sidebarTaskGroupExpanded)) {
-          if (typeof value === 'boolean') expanded[ownerId] = value;
-        }
-        state.sidebarTaskGroupExpanded = expanded;
-      }
+      state.sidebarTaskGroupExpanded = pruneTaskGroupExpanded(
+        data.sidebarTaskGroupExpanded,
+        new Set((data.workspaces ?? []).map((w) => w.id)),
+      );
       // Whitelisted, not a bare truthiness check: a forward-version session file
       // that names a fourth arrangement must not park an unknown string in the
       // store, where the settings control would render with nothing selected.

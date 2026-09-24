@@ -98,25 +98,24 @@ export interface TaskLink {
 }
 
 /**
- * Resolve a workspace's task link. The ledger is authoritative (it knows
- * about detach); the audit log fills in when the ledger has no record, e.g.
- * after a restart, when the owner is gone and its task list is no longer
- * fetched. A workspace still carrying the task prefix with neither source is
- * a task whose owner cannot be named.
+ * Resolve a workspace's task link from durable evidence only. The ledger
+ * record is authoritative (it knows about detach); main's lineage stamp —
+ * written before the task's agent launched, kept on disk — answers when the
+ * ledger record is not loaded (e.g. its owner is closed); the spawn stamp
+ * bridges the moments before either exists. The audit log is NOT consulted:
+ * it only names the caller, and its window is bounded. Nor is the name — a
+ * workspace someone named `wtask: …` is not a task.
  */
 export function resolveTaskLink(
-  workspace: { id: string; name: string },
   mission: WorkTask | undefined,
-  provenance: FanoutProvenance | undefined,
-  /** Owner stamped at spawn time, before either record exists. */
+  lineageOwner?: string,
   spawnOwner?: string,
 ): TaskLink | null {
   if (mission) {
     return { ownerId: mission.owner?.verifiedWorkspaceId ?? '', detached: mission.detachedAt !== undefined };
   }
-  if (provenance) return { ownerId: provenance.ownerWorkspaceId, detached: false };
+  if (lineageOwner) return { ownerId: lineageOwner, detached: false };
   if (spawnOwner) return { ownerId: spawnOwner, detached: false };
-  if (workspace.name.startsWith(TASK_WORKSPACE_PREFIX)) return { ownerId: '', detached: false };
   return null;
 }
 

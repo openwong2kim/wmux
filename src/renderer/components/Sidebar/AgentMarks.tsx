@@ -111,13 +111,16 @@ interface StatusMarkViewProps {
   quiet?: boolean;
   /** Tooltip + accessible name. Omit when the row already speaks the status. */
   label?: string;
+  /** #1481 review — draw a running dot neutral: a secondary summary must not
+   *  spend a second amber point on a workspace whose row dot is already amber. */
+  neutralRunning?: boolean;
 }
 
 /**
  * A 10px box, the same footprint for every mark, so the name column starts at
  * the same x on every row whatever the status. Idle draws an empty box.
  */
-export function StatusMarkView({ status, unverifiable = false, quiet = false, label }: StatusMarkViewProps) {
+export function StatusMarkView({ status, unverifiable = false, quiet = false, label, neutralRunning = false }: StatusMarkViewProps) {
   const icon = AGENT_STATUS_ICON[status];
   const mark = rowStatusMark(status, unverifiable);
   const a11y = label ? { role: 'img' as const, 'aria-label': label, title: label } : { 'aria-hidden': true as const };
@@ -126,8 +129,8 @@ export function StatusMarkView({ status, unverifiable = false, quiet = false, la
     case 'dot':
       inner = (
         <span
-          className={`sidebar-dot h-1.5 w-1.5 rounded-full ${quiet ? '' : icon.glowClass}`}
-          style={{ backgroundColor: icon.dotVar }}
+          className={`sidebar-dot h-1.5 w-1.5 rounded-full ${quiet || neutralRunning ? '' : icon.glowClass}`}
+          style={{ backgroundColor: neutralRunning && status === 'running' ? 'var(--text-sub)' : icon.dotVar }}
         />
       );
       break;

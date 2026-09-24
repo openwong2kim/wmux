@@ -16,6 +16,8 @@
 
 import type { AgentStatus } from '../../../shared/types';
 import type { TaskLink } from '../../utils/fanoutProvenance';
+import type { WorkTask } from '../../../shared/workTask';
+import { ORPHAN_GROUP_KEY } from '../../utils/sidebarLayout';
 
 export interface SidebarTreeNode {
   id: string;
@@ -125,15 +127,54 @@ export function isTaskGroupExpanded(args: {
 }
 
 /**
- * A task counts as finished when its workspace's agents have all stopped
- * without an open problem — complete, or idle after the turn — or when its
- * ledger record is already closed. Running, needs-input and error tasks are
- * never offered for closing.
+ * #1481 review — a task is finished only when EVERY agent pane in it reports
+ * `complete`, decided per pane (never from the workspace roll-up, where
+ * `complete` outranks `running`). `idle` does not count — a booting, never
+ * started or hook-less quiet agent looks idle. A task with no agent pane at
+ * all is not finished either: there is nothing that said it was done. A
+ * closed ledger record does not make a still-running task finished.
  */
-export function isFinishedTask(status: AgentStatus, missionClosed: boolean): boolean {
-  if (missionClosed) return true;
-  return status === 'complete' || status === 'idle';
+export function paneRowsFinished(rows: readonly { status: AgentStatus }[]): boolean {
+  return rows.length > 0 && rows.every((row) => row.status === 'complete');
 }
 
-/** Storage key for the orphan group's remembered expansion. */
-export const ORPHAN_GROUP_KEY = '__closed-owner__';
+export type CloseSkipReason = 'gone' | 'no-record' | 'detached' | 'moved' | 'not-finished';
+
+/**
+ * Re-check one task right before it is closed, against the CURRENT store:
+ * it still exists, still has a task record, is not detached, still belongs
+ * to the group it was listed under, and all its agent panes are complete.
+ */
+export function revalidateTaskForClose(
+  state: {
+    workspaces: readonly { id: string }[];
+    missionByPaneGroup: Record<string, WorkTask | undefined>;
+  },
+  taskWorkspaceId: string,
+  groupKey: string,
+  paneRows: (workspaceId: string) => readonly { status: AgentStatus }[],
+): { ok: true; mission: WorkTask } | { ok: false; reason: CloseSkipReason } {
+  const live = new Set(state.workspaces.map((w) => w.id));
+  if (!live.has(taskWorkspaceId)) return { ok: false, reason: 'gone' };
+  const mission = state.missionByPaneGroup[taskWorkspaceId];
+  if (!mission) return { ok: false, reason: 'no-record' };
+  if (mission.detachedAt !== undefined) return { ok: false, reason: 'detached' };
+  const owner = mission.owner?.verifiedWorkspaceId ?? '';
+  const belongs = groupKey === ORPHAN_GROUP_KEY ? !live.has(owner) : owner === groupKey;
+  if (!belongs) return { ok: false, reason: 'moved' };
+  if (!paneRowsFinished(paneRows(taskWorkspaceId))) return { ok: false, reason: 'not-finished' };
+  return { ok: true, mission };
+}
+
+/** Settle within `ms` or reject with a timeout — a hung close must not hold the menu. */
+export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${Math.round(ms / 1000)}s`)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
+export { ORPHAN_GROUP_KEY };

@@ -788,30 +788,6 @@ export function selectAllWorkspaceAgentStatus(
  * over it would be false. The reported number is the FRESHEST stale pane's, the
  * only figure true of the workspace as a whole.
  */
-/**
- * #1481 — workspace id → newest activity/output stamp across ALL its terminal
- * surfaces (stashed included), floored to the minute, for the sidebar's
- * "Recent activity" order. Minute granularity so a shallow-compared
- * subscription does not re-sort the list on every byte of output.
- */
-export function selectAllWorkspaceLastActivityMinute(state: FleetSelectorState & {
-  surfaceOutputAt?: Record<string, number>;
-}): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const ws of state.workspaces) {
-    let last = 0;
-    for (const leaf of getWorkspaceLeafPanes(ws)) {
-      for (const surf of leaf.surfaces) {
-        if (!surf.ptyId) continue;
-        const at = Math.max(state.surfaceActivityAt?.[surf.ptyId] ?? 0, state.surfaceOutputAt?.[surf.ptyId] ?? 0);
-        if (at > last) last = at;
-      }
-    }
-    out[ws.id] = Math.floor(last / 60_000);
-  }
-  return out;
-}
-
 export function selectWorkspaceUnverifiableMinutes(
   state: FleetSelectorState,
   workspaceId: string,
@@ -1124,4 +1100,28 @@ export function selectFleetBoard(
     sortMode: opts.sortMode,
   });
   return { panes, groups };
+}
+
+/**
+ * #1481 — workspace id → newest activity/output stamp across ALL its terminal
+ * surfaces (stashed included), floored to the minute, for the sidebar's
+ * "Recent activity" order. Minute granularity so a shallow-compared
+ * subscription does not re-sort the list on every byte of output.
+ */
+export function selectAllWorkspaceLastActivityMinute(state: FleetSelectorState & {
+  surfaceOutputAt?: Record<string, number>;
+}): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const ws of state.workspaces) {
+    let last = 0;
+    for (const leaf of getWorkspaceLeafPanes(ws)) {
+      for (const surf of leaf.surfaces) {
+        if (!surf.ptyId) continue;
+        const at = Math.max(state.surfaceActivityAt?.[surf.ptyId] ?? 0, state.surfaceOutputAt?.[surf.ptyId] ?? 0);
+        if (at > last) last = at;
+      }
+    }
+    out[ws.id] = Math.floor(last / 60_000);
+  }
+  return out;
 }

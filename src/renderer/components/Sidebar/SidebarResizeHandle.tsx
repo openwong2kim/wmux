@@ -38,7 +38,7 @@ export default function SidebarResizeHandle() {
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
     e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
+    e.currentTarget.setPointerCapture?.(e.pointerId);
     const rect = e.currentTarget.parentElement?.getBoundingClientRect();
     const edgeX = rect ? (position === 'right' ? rect.left : rect.right) : e.clientX;
     drag.current = { startX: e.clientX, startWidth: width, edgeX };
@@ -53,12 +53,19 @@ export default function SidebarResizeHandle() {
     setGuideX(position === 'right' ? d.edgeX - delta : d.edgeX + delta);
   }, [position]);
 
+  /** A cancelled gesture (pointercancel, capture lost to the OS or another
+   *  element) ends the drag WITHOUT committing: the guide goes, the width stays. */
+  const abort = useCallback(() => {
+    drag.current = null;
+    setGuideX(null);
+  }, []);
+
   const finish = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const d = drag.current;
     if (!d) return;
     drag.current = null;
     setGuideX(null);
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    if (e.currentTarget.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
     const next = widthForDrag(d.startWidth, e.clientX - d.startX, position);
     if (next !== d.startWidth) setWidth(next);
   }, [position, setWidth]);
@@ -94,7 +101,8 @@ export default function SidebarResizeHandle() {
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={finish}
-        onPointerCancel={finish}
+        onPointerCancel={abort}
+        onLostPointerCapture={abort}
         onDoubleClick={() => setWidth(SIDEBAR_DEFAULT_WIDTH)}
         onKeyDown={onKeyDown}
       />

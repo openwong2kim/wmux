@@ -252,7 +252,7 @@ function WorkspaceRosterSummary({
       {agentCount > 0 && agents.length === 0 && <span>{agentCount}</span>}
       {groupChipAgents(agents).map((group, gi) => (
         <span key={`${group[0].status}-${gi}`} className="flex items-center gap-0.5" data-roster-chip-group={group[0].status}>
-          {group[0].status !== 'idle' && <StatusMarkView status={group[0].status} quiet />}
+          {group[0].status !== 'idle' && <StatusMarkView status={group[0].status} quiet neutralRunning />}
           {group.map((agent, ai) => (
             <AgentGlyph key={ai} slug={agent.slug} name={agent.agentName} decorative />
           ))}

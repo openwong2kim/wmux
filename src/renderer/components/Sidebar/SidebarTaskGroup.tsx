@@ -20,7 +20,9 @@ import { HIT_TARGET_24 } from '../hitArea';
 import Popover from '../ui/Popover';
 import { placePopover } from '../AgentToolbar/placePopover';
 import { CloseWorkspaceConfirm, type CloseConfirmAnchor } from './WorkspaceItem';
-import { isFinishedTask, isTaskGroupExpanded, taskRollup } from './sidebarTree';
+import { isTaskGroupExpanded, paneRowsFinished, revalidateTaskForClose, taskRollup, withTimeout, type CloseSkipReason } from './sidebarTree';
+import { selectWorkspaceAgentRoster } from '../../stores/selectors/workspaceAgentRoster';
+import type { TranslationKey } from '../../i18n/locales/en';
 import { displayWorkspaceName } from '../../utils/fanoutProvenance';
 
 interface SidebarTaskGroupProps {
@@ -31,6 +33,8 @@ interface SidebarTaskGroupProps {
   ownerActive: boolean;
   /** Leading label — set for the closed-owner group only. */
   label?: string;
+  /** Names the group for assistive tech ("Fan-out tasks of <owner>"). */
+  ownerName: string;
   renderTask: (id: string) => ReactNode;
   /** Sidebar's workspace close (disposes PTYs, removes the workspace). */
   onCloseWorkspace: (id: string) => void;
@@ -38,11 +42,24 @@ interface SidebarTaskGroupProps {
 
 const MENU_WIDTH = 220;
 
-function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, renderTask, onCloseWorkspace }: SidebarTaskGroupProps) {
+/** A close that has not answered in this long is reported stuck; the menu comes back. */
+export const TASK_CLOSE_TIMEOUT_MS = 90_000;
+
+const SKIP_KEY: Record<CloseSkipReason, TranslationKey> = {
+  gone: 'sidebar.tasks.skipGone',
+  'no-record': 'sidebar.tasks.noRecord',
+  detached: 'sidebar.tasks.skipDetached',
+  moved: 'sidebar.tasks.skipMoved',
+  'not-finished': 'sidebar.tasks.skipNotFinished',
+};
+
+function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, ownerName, renderTask, onCloseWorkspace }: SidebarTaskGroupProps) {
   const t = useT();
   const listId = useId();
   const statuses = useStore(useShallow((s) => taskIds.map((id) => selectWorkspaceAgentStatus(s, id))));
-  const missionClosed = useStore(useShallow((s) => taskIds.map((id) => s.missionByPaneGroup[id]?.status === 'closed')));
+  // #1481 review — finished is decided per agent PANE, never from the
+  // workspace roll-up (where `complete` outranks `running`).
+  const finishedFlags = useStore(useShallow((s) => taskIds.map((id) => paneRowsFinished(selectWorkspaceAgentRoster(s, id).rows))));
   const remembered = useStore((s) => s.sidebarTaskGroupExpanded[groupKey]);
   const setExpanded = useStore((s) => s.setSidebarTaskGroupExpanded);
 
@@ -51,7 +68,11 @@ function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, renderTask, o
   const anyNeedsYou = (rollup?.needYou ?? 0) > 0;
   const childActive = useStore((s) => taskIds.includes(s.activeWorkspaceId ?? ''));
   const expanded = isTaskGroupExpanded({ remembered, ownerActive, anyNeedsYou, childActive });
-  const finishedIds = taskIds.filter((id, i) => isFinishedTask(statuses[i] ?? 'idle', missionClosed[i] ?? false));
+  const finishedIds = taskIds.filter((_id, i) => finishedFlags[i]);
+  const workspaceNames = useStore(useShallow((s) => taskIds.map((id) => s.workspaces.find((w) => w.id === id)?.name ?? '')));
+  const nameOf = (id: string) => displayWorkspaceName(workspaceNames[taskIds.indexOf(id)] ?? '', true);
+  // The exact set the confirm lists — closed as listed, each re-checked.
+  const [confirmIds, setConfirmIds] = useState<string[]>([]);
 
   const [menuAnchor, setMenuAnchor] = useState<CloseConfirmAnchor | null>(null);
   const [confirmAnchor, setConfirmAnchor] = useState<CloseConfirmAnchor | null>(null);
@@ -93,27 +114,27 @@ function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, renderTask, o
     let closed = 0;
     try {
       for (const id of ids) {
+        // Re-validate against the CURRENT store right before each close: the
+        // task may have resumed, been detached or closed while the confirm
+        // was open or while an earlier close ran.
         const st = useStore.getState();
-        const ws = st.workspaces.find((w) => w.id === id);
-        if (!ws) continue;
-        const name = displayWorkspaceName(ws.name, true);
-        const mission = st.missionByPaneGroup[id];
-        if (!mission) {
-          kept.push(`${name}: ${t('sidebar.tasks.noRecord')}`);
+        const name = displayWorkspaceName(st.workspaces.find((w) => w.id === id)?.name ?? id, true);
+        const check = revalidateTaskForClose(st, id, groupKey, (wsId) => selectWorkspaceAgentRoster(st, wsId).rows);
+        if (!check.ok) {
+          kept.push(`${name}: ${t(SKIP_KEY[check.reason])}`);
           continue;
         }
-        if (mission.status === 'closed') {
-          // Already harvested (worktree removed); only the workspace is left.
-          onCloseWorkspace(id);
-          closed += 1;
-          continue;
-        }
-        const api = window.electronAPI.workTask;
+        const mission = check.mission;
         try {
-          // The existing task close path: refuses a dirty or unpushed worktree
-          // with the reason, removes the worktree and closes the task otherwise.
-          // Authz is the task owner — which works even when the owner is gone.
-          const res = await api.close(mission.id, mission.owner.verifiedWorkspaceId);
+          // Always the real task close — also for a record already closed in
+          // the ledger (it is idempotent there): it refuses a dirty or unpushed
+          // worktree with the reason and removes the worktree otherwise.
+          // The owner id is the same authz anchor the other GUI close paths
+          // pass (renderer-trusted IPC; see the PR notes).
+          const res = await withTimeout(
+            window.electronAPI.workTask.close(mission.id, mission.owner.verifiedWorkspaceId),
+            TASK_CLOSE_TIMEOUT_MS,
+          );
           if (res.ok) {
             onCloseWorkspace(id);
             closed += 1;
@@ -134,7 +155,7 @@ function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, renderTask, o
     const push = useStore.getState().pushToast;
     if (closed > 0) push({ level: 'info', message: t('sidebar.tasks.closeFinishedDone', { count: closed }) });
     for (const line of kept) push({ level: 'warn', message: line });
-  }, [onCloseWorkspace, t]);
+  }, [groupKey, onCloseWorkspace, t]);
 
   if (!rollup) return null;
 
@@ -152,7 +173,7 @@ function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, renderTask, o
           type="button"
           className={`flex min-w-0 flex-1 items-center gap-1.5 self-stretch rounded px-1 text-left hover:text-[var(--text-sub)] ${FOCUS_RING}`}
           aria-expanded={expanded}
-          aria-controls={listId}
+          aria-controls={expanded ? listId : undefined}
           aria-label={toggleLabel}
           title={toggleLabel}
           onClick={toggle}
@@ -194,7 +215,13 @@ function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, renderTask, o
         </button>
       </div>
       {expanded && (
-        <div id={listId} className="ml-[25px] space-y-1 border-l border-[var(--border-soft)]" data-task-group-list>
+        <div
+          id={listId}
+          role="group"
+          aria-label={t('sidebar.tasks.groupLabel', { owner: displayWorkspaceName(ownerName, false) })}
+          className="ml-[25px] space-y-1 border-l border-[var(--border-soft)]"
+          data-task-group-list
+        >
           {taskIds.map((id) => <div key={id}>{renderTask(id)}</div>)}
         </div>
       )}
@@ -213,6 +240,7 @@ function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, renderTask, o
             onClick={() => {
               const anchor = menuAnchor;
               setMenuAnchor(null);
+              setConfirmIds(finishedIds);
               setConfirmAnchor(anchor);
             }}
             data-close-finished
@@ -224,15 +252,16 @@ function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, renderTask, o
       {confirmAnchor && (
         <CloseWorkspaceConfirm
           anchor={confirmAnchor}
-          title={t('sidebar.tasks.closeFinishedConfirm', { count: finishedIds.length })}
-          terminalCount={finishedIds.length}
+          title={t('sidebar.tasks.closeFinishedConfirm', { count: confirmIds.length })}
+          terminalCount={confirmIds.length}
           detail={() => t('sidebar.tasks.closeFinishedDetail')}
+          items={confirmIds.map(nameOf)}
           cancelLabel={t('workspace.closeCancel')}
           confirmLabel={t('sidebar.tasks.closeFinishedYes')}
           onCancel={() => setConfirmAnchor(null)}
           onConfirm={() => {
             setConfirmAnchor(null);
-            void closeFinished(finishedIds);
+            void closeFinished(confirmIds);
           }}
         />
       )}

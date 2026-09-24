@@ -125,8 +125,25 @@ export interface WorkTaskSlice {
    */
   fanoutSpawnOwner: Record<string, string>;
   noteFanoutSpawn: (workspaceId: string, ownerWorkspaceId: string) => void;
-  /** Re-read the audit log's recent launches into `fanoutProvenance` (best-effort). */
-  refreshFanoutProvenance: () => Promise<void>;
+  /**
+   * #1481 — task workspace id → owner id from main's durable lineage stamps
+   * (`fanout-lineage.json`, written before the task's agent launches). With
+   * the ledger record, this is what nesting trusts; the audit log only names
+   * the caller. Only live workspaces are asked for and kept.
+   */
+  fanoutLineage: Record<string, string>;
+  /** #1481 — the first lineage + missions refresh has finished. Until then the
+   *  sidebar cannot tell an orphaned task from one whose records are loading. */
+  fanoutRefreshSettled: boolean;
+  markFanoutRefreshSettled: () => void;
+  /**
+   * Re-read the durable lineage for the open workspaces and, with `audit`,
+   * the audit log's recent launches (caller labels). Prunes spawn stamps the
+   * lineage or ledger now answers. Best-effort.
+   */
+  refreshFanoutProvenance: (opts?: { audit?: boolean }) => Promise<void>;
+  /** #1481 — drop every fan-out display entry keyed by a removed workspace. */
+  pruneFanoutFor: (workspaceId: string) => void;
 
   /** 한 부모의 미션 목록을 통째로 교체하고 역인덱스를 재구성한다(정본=데몬). */
   setMissions: (parentWorkspaceId: string, tasks: WorkTask[]) => void;
@@ -174,6 +191,21 @@ export const createWorkTaskSlice: StateCreator<
   departedPaneGroups: {},
   fanoutProvenance: {},
   fanoutSpawnOwner: {},
+  fanoutLineage: {},
+  fanoutRefreshSettled: false,
+
+  markFanoutRefreshSettled: () =>
+    set((state: StoreState) => {
+      if (!state.fanoutRefreshSettled) state.fanoutRefreshSettled = true;
+    }),
+
+  pruneFanoutFor: (workspaceId) =>
+    set((state: StoreState) => {
+      if (!workspaceId) return;
+      delete state.fanoutSpawnOwner[workspaceId];
+      delete state.fanoutLineage[workspaceId];
+      delete state.fanoutProvenance[workspaceId];
+    }),
 
   noteFanoutSpawn: (workspaceId, ownerWorkspaceId) =>
     set((state: StoreState) => {
@@ -181,22 +213,53 @@ export const createWorkTaskSlice: StateCreator<
       state.fanoutSpawnOwner[workspaceId] = ownerWorkspaceId;
     }),
 
-  refreshFanoutProvenance: async () => {
+  refreshFanoutProvenance: async (opts = { audit: true }) => {
     const api = (window as unknown as {
-      electronAPI?: { fanout?: { recentAudit?: (limit: number) => Promise<unknown> } };
+      electronAPI?: { fanout?: {
+        recentAudit?: (limit: number) => Promise<unknown>;
+        lineage?: (ids: string[]) => Promise<unknown>;
+      } };
     }).electronAPI?.fanout;
-    if (!api?.recentAudit) return;
-    let records: unknown;
-    try {
-      records = await api.recentAudit(100);
-    } catch {
-      return; // main not ready — the next trigger retries
+    if (!api) return;
+    const liveIds = get().workspaces.map((w) => w.id);
+    let lineage: Record<string, string> | null = null;
+    if (api.lineage) {
+      try {
+        const raw = await api.lineage(liveIds);
+        if (raw && typeof raw === 'object') {
+          lineage = {};
+          for (const [id, stamp] of Object.entries(raw as Record<string, { owner?: unknown }>)) {
+            if (typeof stamp?.owner === 'string' && stamp.owner) lineage[id] = stamp.owner;
+          }
+        }
+      } catch {
+        // main not ready — the next trigger retries
+      }
     }
-    if (!Array.isArray(records)) return;
-    const next = provenanceFromAudit(records as FanoutAuditLike[]);
-    if (sameProvenance(get().fanoutProvenance, next)) return;
+    let provenance: Record<string, FanoutProvenance> | null = null;
+    if (opts.audit && api.recentAudit) {
+      try {
+        const records = await api.recentAudit(100);
+        if (Array.isArray(records)) provenance = provenanceFromAudit(records as FanoutAuditLike[]);
+      } catch {
+        // same
+      }
+    }
     set((state: StoreState) => {
-      state.fanoutProvenance = next;
+      const live = new Set(state.workspaces.map((w) => w.id));
+      if (lineage && JSON.stringify(lineage) !== JSON.stringify(state.fanoutLineage)) state.fanoutLineage = lineage;
+      if (provenance) {
+        // Keep only open workspaces: the audit tail names closed ones too.
+        const kept: Record<string, FanoutProvenance> = {};
+        for (const [id, p] of Object.entries(provenance)) if (live.has(id)) kept[id] = p;
+        if (!sameProvenance(state.fanoutProvenance, kept)) state.fanoutProvenance = kept;
+      }
+      // A spawn stamp is only a bridge until the durable records answer.
+      for (const id of Object.keys(state.fanoutSpawnOwner)) {
+        if (!live.has(id) || state.fanoutLineage[id] || state.missionByPaneGroup[id]) {
+          delete state.fanoutSpawnOwner[id];
+        }
+      }
     });
   },
 

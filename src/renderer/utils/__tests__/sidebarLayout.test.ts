@@ -7,6 +7,8 @@ import {
   SIDEBAR_MIN_WIDTH,
   clampSidebarWidth,
   resolveSidebarSortMode,
+  ORPHAN_GROUP_KEY,
+  pruneTaskGroupExpanded,
 } from '../sidebarLayout';
 import { createUISlice, type UISlice } from '../../stores/slices/uiSlice';
 
@@ -69,5 +71,15 @@ describe('uiSlice sidebar width + sort mode (#1481)', () => {
     expect(store.getState().sidebarAttentionFirst).toBe(false);
     store.getState().setSidebarAttentionFirst(true);
     expect(store.getState().sidebarSortMode).toBe('attention');
+  });
+});
+
+// #1481 review B10 — expansion memory is pruned to open owners.
+
+describe('pruneTaskGroupExpanded', () => {
+  it('keeps open owners and the closed-owner key, drops the rest and bad values', () => {
+    expect(pruneTaskGroupExpanded({ a: true, gone: false, [ORPHAN_GROUP_KEY]: false, b: 'yes' }, new Set(['a', 'b'])))
+      .toEqual({ a: true, [ORPHAN_GROUP_KEY]: false });
+    expect(pruneTaskGroupExpanded(undefined, new Set())).toEqual({});
   });
 });

@@ -53,17 +53,18 @@ describe('resolveTaskLink', () => {
     ({ owner: { verifiedWorkspaceId: 'owner', principalId: 'owner' }, ...extra } as WorkTask);
 
   it('prefers the ledger, which knows about detach', () => {
-    expect(resolveTaskLink({ id: 't', name: 'wtask: x' }, mission({ detachedAt: 5 }), { ownerWorkspaceId: 'other', callerIdentity: 'gui', at: 1 }))
-      .toEqual({ ownerId: 'owner', detached: true });
+    expect(resolveTaskLink(mission({ detachedAt: 5 }), 'other', 'other')).toEqual({ ownerId: 'owner', detached: true });
   });
 
-  it('falls back to the audit record, then to the name prefix', () => {
-    expect(resolveTaskLink({ id: 't', name: 'x' }, undefined, { ownerWorkspaceId: 'o', callerIdentity: 'gui', at: 1 }))
-      .toEqual({ ownerId: 'o', detached: false });
-    expect(resolveTaskLink({ id: 't', name: 'wtask: x' }, undefined, undefined)).toEqual({ ownerId: '', detached: false });
-    // Mid-spawn: neither record exists yet, but the renderer stamped the owner.
-    expect(resolveTaskLink({ id: 't', name: 'wtask: x' }, undefined, undefined, 'owner')).toEqual({ ownerId: 'owner', detached: false });
-    expect(resolveTaskLink({ id: 't', name: 'plain' }, undefined, undefined)).toBeNull();
+  // #1481 review B6 — durable lineage, not the audit window, links an old task.
+  it('falls back to the durable lineage stamp, then the spawn stamp', () => {
+    expect(resolveTaskLink(undefined, 'o')).toEqual({ ownerId: 'o', detached: false });
+    expect(resolveTaskLink(undefined, undefined, 'owner')).toEqual({ ownerId: 'owner', detached: false });
+  });
+
+  // #1481 review B8 — a name is not evidence.
+  it('does not treat a workspace named with the task prefix as a task', () => {
+    expect(resolveTaskLink(undefined, undefined, undefined)).toBeNull();
   });
 });
 
