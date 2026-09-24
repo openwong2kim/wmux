@@ -662,7 +662,7 @@ export const zh = {
   'diff.closedArchiveDeferred': '任务已关闭 — 通道归档已延后（启动时的 reconcile 将会收敛）。',
   'diff.closedFull': '任务已关闭 — 已移除工作树并归档通道。',
   'diff.closePreserved': '存在未 commit 的产物，已保留 — 请查看 diff 以 commit/PR 或丢弃（任务保持打开）。',
-  'diff.closePreservedAt': '未关闭 — {path} 的任务工作树中仍有未 commit 的更改。采用只会把更改复制到目标，不会从工作树中移除。请继续采用所需内容，或 commit 后创建 PR。只有在不再需要任何内容时才丢弃：在 {path} 中运行 git restore --staged --worktree .; git clean -fd，然后再次关闭。这会永久删除那里所有未 commit 的更改，包括未采用的文件。',
+  'diff.closePreservedAt': '未关闭 — {path} 的任务工作树中仍有未 commit 的更改。采用只会把更改复制到目标，不会从工作树中移除。请继续采用所需内容，或 commit 后创建 PR。只有在不再需要任何内容时才丢弃：运行 git -C "{path}" restore --staged --worktree .; git -C "{path}" clean -fd，然后再次关闭。这会永久删除那里所有未 commit 的更改，包括未采用的文件。',
   'diff.taskClosed': '此任务已关闭，工作树已移除 — 没有可采用的内容。',
   'diff.closeUnpushed': '你有 {count} 个未 push 的 commit — 请创建 PR 或 push 后再次关闭。',
   'diff.closeFailed': 'close 失败：{error}',

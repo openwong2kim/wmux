@@ -1524,7 +1524,7 @@ export const ko = {
   'diff.closedArchiveDeferred': '태스크를 닫았습니다 — 채널 아카이브는 보류(부트 reconcile이 수렴).',
   'diff.closedFull': '태스크를 닫았습니다 — worktree 제거·채널 아카이브 완료.',
   'diff.closePreserved': '미커밋 산출물이 있어 보존했습니다 — diff를 확인해 커밋/PR 또는 폐기하세요(태스크는 열린 채 유지).',
-  'diff.closePreservedAt': '닫지 않음 — {path}의 태스크 worktree에 미커밋 변경이 남아 있습니다. 채택은 변경을 타겟에 복사할 뿐 worktree에서 지우지 않습니다. 더 필요한 것을 채택하거나, 커밋해서 PR을 여세요. 더 필요한 것이 없을 때만 폐기하세요: {path}에서 git restore --staged --worktree .; git clean -fd를 실행한 뒤 다시 닫습니다. 이 명령은 채택하지 않은 파일을 포함해 그곳의 미커밋 변경을 모두 영구 삭제합니다.',
+  'diff.closePreservedAt': '닫지 않음 — {path}의 태스크 worktree에 미커밋 변경이 남아 있습니다. 채택은 변경을 타겟에 복사할 뿐 worktree에서 지우지 않습니다. 더 필요한 것을 채택하거나, 커밋해서 PR을 여세요. 더 필요한 것이 없을 때만 폐기하세요: git -C "{path}" restore --staged --worktree .; git -C "{path}" clean -fd를 실행한 뒤 다시 닫습니다. 이 명령은 채택하지 않은 파일을 포함해 그곳의 미커밋 변경을 모두 영구 삭제합니다.',
   'diff.taskClosed': '닫힌 태스크입니다 — worktree가 제거되어 채택할 것이 없습니다.',
   'diff.closeUnpushed': 'push되지 않은 커밋 {count}개가 있습니다 — PR 생성 또는 push 후 다시 닫으세요.',
   'diff.closeFailed': 'close 실패: {error}',
