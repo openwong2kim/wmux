@@ -195,17 +195,20 @@ export function KeyboardCheatSheetView({
             {dontShowAgainLabel}
           </label>
         </div>
+        {/* Inside the last section, so that section stays the popover's last
+            child and its bottom inset collapses; absolute, so it still spans
+            the card's bottom edge. */}
+        <div
+          aria-hidden="true"
+          className="absolute bottom-0 left-0 h-[2px]"
+          style={{
+            width: `${clamped * 100}%`,
+            backgroundColor: 'color-mix(in srgb, var(--text-main) 22%, transparent)',
+            transition: 'width 100ms linear',
+          }}
+          data-testid="keyboard-cheat-sheet-progress"
+        />
       </PopoverSection>
-      <div
-        aria-hidden="true"
-        className="absolute bottom-0 left-0 h-[2px]"
-        style={{
-          width: `${clamped * 100}%`,
-          backgroundColor: 'color-mix(in srgb, var(--text-main) 22%, transparent)',
-          transition: 'width 100ms linear',
-        }}
-        data-testid="keyboard-cheat-sheet-progress"
-      />
     </Popover>
   );
 }
