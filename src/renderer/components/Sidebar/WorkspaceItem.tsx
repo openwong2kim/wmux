@@ -8,7 +8,7 @@ import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { StatusMarkView } from './AgentMarks';
-import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink } from '../icons';
+import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24_CLUSTER, HIT_TARGET_24_IN_CLUSTER } from '../hitArea';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
@@ -55,11 +55,12 @@ function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
     : pr.state === 'merged' ? 'var(--accent-blue)'
     : pr.state === 'closed' ? 'var(--accent-red)'
     : 'var(--text-muted)'; // draft
+  // #1481 — monochrome SVG marks, not text glyphs that can render as emoji.
   const checksGlyph =
-    pr.checks === 'passing' ? '✓'
-    : pr.checks === 'failing' ? '✗'
+    pr.checks === 'passing' ? <IconCheck size={9} />
+    : pr.checks === 'failing' ? <IconX size={9} />
     : pr.checks === 'pending' ? '●'
-    : '';
+    : null;
   const checksColor =
     pr.checks === 'passing' ? 'var(--accent-green)'
     : pr.checks === 'failing' ? 'var(--accent-red)'
@@ -79,7 +80,7 @@ function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
       }}
     >
       #{pr.number}
-      {checksGlyph && <span style={{ color: checksColor }}>{checksGlyph}</span>}
+      {checksGlyph && <span className="inline-flex" style={{ color: checksColor }}>{checksGlyph}</span>}
     </span>
   );
 }
@@ -136,8 +137,10 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
             className="min-w-0 truncate"
             title={`${t('workspace.gitBranch')}: ${metadata.gitBranch}${metadata.gitIsWorktree ? ` (${t('workspace.gitWorktree')})` : ''}`}
           >
-            ⎇ {metadata.gitBranch}
-            {metadata.gitIsWorktree ? <span className="text-[var(--accent-blue)]">⊕</span> : null}
+            {/* #1481 — branch and worktree marks are SVG icons, not ⎇ / ⊕. */}
+            <span className="mr-1 inline-flex align-[-1px]" aria-hidden="true"><IconGitBranch size={10} /></span>
+            {metadata.gitBranch}
+            {metadata.gitIsWorktree ? <span className="ml-1 inline-flex align-[-1px] text-[var(--accent-blue)]" aria-hidden="true"><IconWorktree size={10} /></span> : null}
           </span>
           {metadata.gitSync && <GitSyncBadge sync={metadata.gitSync} />}
           {metadata.pr && <PrBadge pr={metadata.pr} />}
@@ -844,7 +847,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     className="text-[10px] text-[var(--accent-yellow)] flex-shrink-0"
                     title={t('workspace.cwdDeparted', { cwd: departedCwd })}
                   >
-                    ⚠ {t('workspace.departed')}
+                    <span className="mr-0.5 inline-flex align-[-1px]" aria-hidden="true"><IconWarning size={10} /></span>
+                    {t('workspace.departed')}
                   </span>
                 )}
                 {/* #997 — the idle label and the roster chip answer the same
