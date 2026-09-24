@@ -33,7 +33,9 @@
 //     never `params.workspaceId`. Like the assert posture, the mirror may only
 //     short-circuit the ALLOW (owner is one of the caller's task workspaces);
 //     anything else round-trips before the deny. Any lookup failure denies.
-//     A runaway brake for honest orchestrators, not a same-user boundary (#113).
+//     A runaway brake for honest orchestrators, not a same-user boundary (#113):
+//     the walked ptyId arrives as a request field, and main can only check
+//     which workspace owns it, not that the caller is that pane.
 
 import type { BrowserWindow } from 'electron';
 import { sendToRenderer } from '../pipe/handlers/_bridge';

@@ -173,6 +173,15 @@ describe('terminal_send at a pane holding an approval', () => {
     expect(w.writes).toHaveLength(0);
   });
 
+  it('refuses a pane agent\'s selecting key too, but not its stop keys', async () => {
+    w = wire({ pending: [OWNED] });
+
+    expect((await asPaneAgent('input.sendKey', { ptyId: 'pty-w', key: 'enter' })).ok).toBe(false);
+    expect((await asPaneAgent('input.sendKey', { ptyId: 'pty-w', key: 'down' })).ok).toBe(false);
+    expect((await asPaneAgent('input.sendKey', { ptyId: 'pty-w', key: 'escape' })).ok).toBe(true);
+    expect(w.writes).toEqual([{ ptyId: 'pty-w', data: '\x1b' }]);
+  });
+
   it('lets the brain type when no record exists — a worker without wmux hooks', async () => {
     w = wire({ pending: [{ id: 'ap-1', sessionId: 'some-other-pane', workspaceId: 'ws-task' }] });
 
@@ -206,6 +215,20 @@ describe('the deadlock guard', () => {
     // …and now the typed path is open, so the brain is not stuck with no move.
     const after = await asBrain('input.send', { ptyId: 'pty-w', text: '1' });
     expect(after.ok).toBe(true);
+    expect(w.writes).toEqual([{ ptyId: 'pty-w', data: '1' }]);
+  });
+
+  // The lift is the refused brain's way out, not an open door: before this, a
+  // pane agent was never blocked, so a per-pane lift covered only the brain.
+  it('lifts only for the brain whose press was refused', async () => {
+    w = wire({
+      pending: [OWNED],
+      reply: { ok: false, reason: 'out-of-scope', pressRefusal: 'press-capability-off' },
+    });
+    await asBrain('approval.press', { ptyId: 'pty-w', decision: 'approve' });
+
+    expect((await asPaneAgent('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(false);
+    expect((await asBrain('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(true);
     expect(w.writes).toEqual([{ ptyId: 'pty-w', data: '1' }]);
   });
 

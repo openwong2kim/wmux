@@ -6,11 +6,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
-import { registerInputRpc } from '../input.rpc';
+import { registerInputRpc, taskPaneTextRefusal } from '../input.rpc';
 import { clearPressBlockLifts } from '../approvals.rpc';
 import { mintCommanderToken, __resetCommanderTrustForTesting } from '../../../deck/commanderTrust';
 import type { PTYManager } from '../../../pty/PTYManager';
 import type { TaskLedger } from '../../../../daemon/ledger/TaskLedger';
+import type { RpcContext } from '../../../../shared/rpc';
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
@@ -102,6 +103,12 @@ beforeEach(() => {
       return Promise.resolve({ workspaceId: PANE_OWNERS[params['ptyId'] as string] ?? null });
     }
     if (method === 'input.readScreen') {
+      // The renderer's own check (useRpcBridge input.readScreen): a pty named
+      // alongside a workspace must be one of that workspace's panes.
+      const ws = params['workspaceId'];
+      if (typeof ws === 'string' && PANE_OWNERS[params['ptyId'] as string] !== ws) {
+        return Promise.resolve({ error: `input.readScreen: PTY "${String(params['ptyId'])}" not in workspace "${ws}"` });
+      }
       return Promise.resolve({ ptyId: params['ptyId'], text: 'WORKER SCREEN' });
     }
     return Promise.resolve(null);
@@ -131,6 +138,38 @@ describe('input.readScreen — owner lane', () => {
 
     expect(res.ok).toBe(true);
     expect(res.result).toMatchObject({ text: 'WORKER SCREEN', untrusted: true });
+  });
+
+  it('names the TASK workspace to the renderer, not the caller\'s', async () => {
+    await asBrain(wire(), 'input.readScreen', { workspaceId: 'ws-owner', ptyId: 'pty-task' });
+
+    const reads = sendToRendererMock.mock.calls.filter(([, m]) => m === 'input.readScreen');
+    expect(reads).toHaveLength(1);
+    expect(reads[0][2]).toMatchObject({ ptyId: 'pty-task', workspaceId: 'ws-task' });
+  });
+
+  it('labels a non-object renderer answer too', async () => {
+    sendToRendererMock.mockImplementation((_w: unknown, method: string, params: Record<string, unknown>) =>
+      method === 'input.findOwnerWorkspace'
+        ? Promise.resolve({ workspaceId: PANE_OWNERS[params['ptyId'] as string] ?? null })
+        : Promise.resolve(null),
+    );
+
+    const res = await asBrain(wire(), 'input.readScreen', { workspaceId: 'ws-owner', ptyId: 'pty-task' });
+
+    expect(res.ok).toBe(true);
+    expect(res.result).toMatchObject({ value: null, untrusted: true });
+  });
+
+  it.each([
+    ['a stranger\'s pane', 'pty-stranger', 'working'],
+    ['a closed task', 'pty-task', 'completed'],
+  ])('refuses a commander on %s', async (_label, ptyId, status) => {
+    const w = wire({ entries: [{ ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', status }] });
+
+    const res = await asBrain(w, 'input.readScreen', { workspaceId: 'ws-owner', ptyId });
+
+    expect(res.ok).toBe(false);
   });
 
   it('does not label a read of the caller\'s own pane', async () => {
@@ -267,6 +306,116 @@ describe('input.send — owner lane', () => {
 
     expect(res.ok).toBe(false);
     expect(w.writes).toHaveLength(0);
+  });
+});
+
+describe('input.send — owner lane refuses control bytes and raw writes', () => {
+  it.each([
+    ['EOT', 'bye\x04'],
+    ['ctrl+c byte', '\x03'],
+    ['ctrl+z byte', '\x1a'],
+    ['an escape sequence', '\x1b[B'],
+    ['a carriage return', 'yes\r'],
+    ['DEL', 'x\x7f'],
+  ])('refuses %s', async (_label, text) => {
+    const w = wire();
+
+    const res = await asPane(w, 'input.send', {
+      workspaceId: 'ws-owner',
+      ptyId: 'pty-task',
+      callerPtyId: 'pty-owner',
+      text,
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('control characters are not allowed');
+    expect(w.writes).toHaveLength(0);
+  });
+
+  it('refuses raw:true even for plain text', async () => {
+    const w = wire();
+
+    const res = await asBrain(w, 'input.send', { workspaceId: 'ws-owner', ptyId: 'pty-task', text: 'ok', raw: true });
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('raw writes are not allowed');
+    expect(w.writes).toHaveLength(0);
+  });
+
+  it('allows tab and newline', () => {
+    expect(taskPaneTextRefusal('a\tb\nc', false)).toBeNull();
+  });
+
+  it('leaves the caller\'s own pane alone', async () => {
+    const w = wire();
+
+    const res = await asPane(w, 'input.send', {
+      workspaceId: 'ws-owner',
+      ptyId: 'pty-owner',
+      callerPtyId: 'pty-owner',
+      text: 'x\x1b[B',
+    });
+
+    expect(res.ok).toBe(true);
+  });
+});
+
+describe('commander lane on send / sendKey', () => {
+  it('sends text to its open task pane', async () => {
+    const w = wire();
+
+    const res = await asBrain(w, 'input.send', { workspaceId: 'ws-owner', ptyId: 'pty-task', text: 'go on' });
+
+    expect(res.ok).toBe(true);
+    expect(w.writes).toEqual([{ ptyId: 'pty-task', data: 'go on' }]);
+  });
+
+  it('is refused at an approval prompt, and pointed at approval_press', async () => {
+    const w = wire({ pending: [{ id: 'ap-1', sessionId: 'pty-task', workspaceId: 'ws-task', toolName: 'Bash' }] });
+
+    const res = await asBrain(w, 'input.send', { workspaceId: 'ws-owner', ptyId: 'pty-task', text: '1' });
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('approval_press({ ptyId: "pty-task"');
+    expect(w.writes).toHaveLength(0);
+  });
+
+  it('interrupts with ctrl+c but may not press enter', async () => {
+    const w = wire();
+
+    expect((await asBrain(w, 'input.sendKey', { workspaceId: 'ws-owner', ptyId: 'pty-task', key: 'ctrl+c' })).ok).toBe(true);
+    expect((await asBrain(w, 'input.sendKey', { workspaceId: 'ws-owner', ptyId: 'pty-task', key: 'enter' })).ok).toBe(false);
+    expect(w.writes).toEqual([{ ptyId: 'pty-task', data: '\x03' }]);
+  });
+
+  it('refuses a closed task on send', async () => {
+    const w = wire({ entries: [{ ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', status: 'failed' }] });
+
+    const res = await asBrain(w, 'input.send', { workspaceId: 'ws-owner', ptyId: 'pty-task', text: 'hi' });
+
+    expect(res.ok).toBe(false);
+    expect(w.writes).toHaveLength(0);
+  });
+});
+
+describe('non-local origin', () => {
+  // RpcRouter only ever builds 'local' contexts today (the LAN listener is a
+  // future transport), so drive the registered handler with a remote context.
+  it('gets no owner lane', async () => {
+    const handlers = new Map<string, (p: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>>();
+    const fakeRouter = { register: (name: string, fn: never) => handlers.set(name, fn) } as unknown as RpcRouter;
+    registerInputRpc(fakeRouter, { get: () => undefined } as unknown as PTYManager, () => fakeWindow, () => null, undefined, undefined, {
+      getLedger: () => ledgerOf([{ ownerWorkspaceId: 'ws-owner', taskWorkspaceId: 'ws-task', status: 'working' }]),
+    });
+
+    const readScreen = handlers.get('input.readScreen');
+    expect(readScreen).toBeDefined();
+    await expect(
+      (readScreen as NonNullable<typeof readScreen>)(
+        { workspaceId: 'ws-owner', ptyId: 'pty-task', callerPtyId: 'pty-owner' },
+        { origin: 'remote', commanderWorkspace: 'ws-owner' },
+      ),
+    ).rejects.toThrow(/Cross-workspace terminal access is not allowed/);
   });
 });
 
