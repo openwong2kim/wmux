@@ -15,21 +15,87 @@ type GetDaemonClient = () => DaemonRpcLike | null;
 interface WorkerSession {
   proc: ChildProcess;
   taskId: string;
+  receiverWorkspaceId: string;
   lineBuffer: string;
   sessionId: string | null;
-  /** Ends a run that never reports a result (see WORKER_RUN_TIMEOUT_MS). */
-  runTimer?: ReturnType<typeof setTimeout>;
+  /** Fails a run that has gone quiet (WORKER_IDLE_TIMEOUT_MS). */
+  idleTimer?: ReturnType<typeof setTimeout>;
+  /** Fails a run that has gone on too long in total (WORKER_HARD_TIMEOUT_MS). */
+  hardTimer?: ReturnType<typeof setTimeout>;
+  /** Settles a run whose process exited but whose stdout has not closed. */
+  drainTimer?: ReturnType<typeof setTimeout>;
 }
 
 const MAX_CONCURRENT = 4;
 const MAX_BUFFER_BYTES = 10 * 1024 * 1024; // 10 MB
 
+// A worker that hangs must not leave its task in `working` forever (#1472).
+// Two limits, so a long job that keeps streaming is not cut off by the clock:
+/** No stdout at all for this long ends the run. Reset by every chunk. */
+export const WORKER_IDLE_TIMEOUT_MS = 10 * 60_000;
+/** No run lasts longer than this, output or not. */
+export const WORKER_HARD_TIMEOUT_MS = 2 * 60 * 60_000;
+/** After the process exits, how long its stdout gets to deliver a final
+ *  result line before the run is settled on the exit alone. */
+export const WORKER_EXIT_DRAIN_MS = 2_000;
+/** SIGTERM to SIGKILL. */
+export const WORKER_KILL_GRACE_MS = 5_000;
+
 /**
- * The longest one background run may take before its task is failed and the
- * process killed. Generous — a real task can be long — but finite: a worker that
- * hangs must not leave its task in `working` forever (#1472).
+ * Send a signal to a worker's whole process tree. A bypassPermissions run
+ * starts its own children (shell tools, builds, MCP servers); signalling only
+ * the `claude` pid left them running and editing files after the task was
+ * already marked failed. On POSIX the worker leads its own process group
+ * (spawned detached), so the group gets the signal; Windows has no groups to
+ * signal, so `taskkill /T` walks the tree (and /F, as there is no SIGTERM).
  */
-export const WORKER_RUN_TIMEOUT_MS = 30 * 60_000;
+export function signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): void {
+  const pid = proc.pid;
+  if (!pid) {
+    proc.kill(signal);
+    return;
+  }
+  if (process.platform === 'win32') {
+    spawn('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true })
+      .on('error', (err) => console.warn(`[ClaudeWorker] taskkill ${pid} failed: ${err.message}`));
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    /* the group is already gone */
+  }
+}
+
+/**
+ * SIGTERM a worker's tree, then SIGKILL what is left after `graceMs`.
+ *
+ * The fallback decides from the ChildProcess, not by looking the pid up again:
+ * a pid the leader has released can belong to someone else by then. The group
+ * id is safer — a pid is not handed out while a process group with that id
+ * still has members — so a group that is still alive is still ours, and it is
+ * killed even when the leader itself already exited.
+ */
+export function terminateProcessTree(proc: ChildProcess, graceMs = WORKER_KILL_GRACE_MS): void {
+  signalProcessTree(proc, 'SIGTERM');
+  const pgid = proc.pid;
+  // taskkill /F is already final, and a pid-less process has no group.
+  if (process.platform === 'win32' || !pgid) return;
+  const fallback = setTimeout(() => {
+    const leaderAlive = proc.exitCode === null && proc.signalCode === null;
+    if (leaderAlive || processGroupAlive(pgid)) signalProcessTree(proc, 'SIGKILL');
+  }, graceMs);
+  fallback.unref?.();
+}
+
+function processGroupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Background Claude Code worker — spawns CLI in stream-json mode
@@ -37,6 +103,8 @@ export const WORKER_RUN_TIMEOUT_MS = 30 * 60_000;
  */
 export class ClaudeWorker {
   private readonly sessions = new Map<string, WorkerSession>();
+  /** Tasks between the capacity check and their session being registered. */
+  private readonly reserved = new Set<string>();
   private readonly getWindow: GetWindow;
   private readonly getDaemonClient: GetDaemonClient;
 
@@ -48,7 +116,7 @@ export class ClaudeWorker {
   }
 
   get isFull(): boolean {
-    return this.sessions.size >= MAX_CONCURRENT;
+    return this.sessions.size + this.reserved.size >= MAX_CONCURRENT;
   }
 
   /**
@@ -61,60 +129,102 @@ export class ClaudeWorker {
     message: string,
     cwd?: string,
   ): Promise<void> {
+    // One run per task: a second execute would overwrite the session and leave
+    // the first process running with nothing tracking it.
+    if (this.sessions.has(taskId) || this.reserved.has(taskId)) {
+      console.warn(`[ClaudeWorker] task=${taskId} is already running; ignoring a second execute`);
+      return;
+    }
     if (this.isFull) {
       const reason = 'Worker at capacity';
       await this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', reason, { summary: reason, items: [] });
       return;
     }
 
-    // Mark task as working
-    await this.updateTaskStatus(taskId, receiverWorkspaceId, 'working');
+    // Hold the slot across the await below. Checked-then-registered-later, a
+    // burst of approvals all passed the capacity check before any of them
+    // registered, and more than MAX_CONCURRENT ran.
+    this.reserved.add(taskId);
+    let proc: ChildProcess;
+    let session: WorkerSession;
+    try {
+      // Mark task as working
+      await this.updateTaskStatus(taskId, receiverWorkspaceId, 'working');
 
-    const args = [
-      '-p',
-      // The message below is a stream-json user message, not prompt text.
-      '--input-format', 'stream-json',
-      '--output-format', 'stream-json',
-      '--verbose',
-      '--permission-mode', 'bypassPermissions',
-    ];
+      const args = [
+        '-p',
+        // The message below is a stream-json user message, not prompt text.
+        '--input-format', 'stream-json',
+        '--output-format', 'stream-json',
+        '--verbose',
+        '--permission-mode', 'bypassPermissions',
+      ];
 
-    // Multi-account (M0): this background claude spawn bypasses the PTY path, so
-    // it must honor the receiving workspace's claude account binding too — else
-    // it silently runs on the default account (Codex 3-way review P1). Missing
-    // bound dir → default-credential fallback + warn.
-    const accountEnv = getAccountStore().resolveAccountEnv(receiverWorkspaceId, 'claude', (acc) =>
-      console.warn(
-        `[account] a2a worker ws ${receiverWorkspaceId}: bound account "${acc.name}" configDir missing ` +
-        `(${acc.configDir}) — falling back to the default credential.`,
-      ),
-    );
-    const proc = spawn('claude', args, {
-      cwd: cwd || undefined,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, ...accountEnv },
-    });
+      // Multi-account (M0): this background claude spawn bypasses the PTY path, so
+      // it must honor the receiving workspace's claude account binding too — else
+      // it silently runs on the default account (Codex 3-way review P1). Missing
+      // bound dir → default-credential fallback + warn.
+      const accountEnv = getAccountStore().resolveAccountEnv(receiverWorkspaceId, 'claude', (acc) =>
+        console.warn(
+          `[account] a2a worker ws ${receiverWorkspaceId}: bound account "${acc.name}" configDir missing ` +
+          `(${acc.configDir}) — falling back to the default credential.`,
+        ),
+      );
+      proc = spawn('claude', args, {
+        cwd: cwd || undefined,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, ...accountEnv },
+        // Its own process group, so the whole tree can be stopped (see
+        // signalProcessTree). Not on Windows, where it means a new console.
+        detached: process.platform !== 'win32',
+      });
 
-    const session: WorkerSession = {
-      proc,
-      taskId,
-      lineBuffer: '',
-      sessionId: null,
-    };
-    this.sessions.set(taskId, session);
+      session = {
+        proc,
+        taskId,
+        receiverWorkspaceId,
+        lineBuffer: '',
+        sessionId: null,
+      };
+      this.sessions.set(taskId, session);
+    } catch (err) {
+      const reason = `Spawn error: ${err instanceof Error ? err.message : String(err)}`;
+      await this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', reason, { summary: reason, items: [] });
+      return;
+    } finally {
+      this.reserved.delete(taskId);
+    }
 
-    session.runTimer = setTimeout(() => {
-      if (this.sessions.get(taskId) !== session) return;
+    // Every path below settles the task at most once: whichever gets here first
+    // takes the session out of the map, and the rest see it gone.
+    const isCurrent = () => this.sessions.get(taskId) === session;
+    const fail = (reason: string) => {
       this.endSession(session);
-      this.killWithFallback(proc);
-      const reason = `Worker produced no result within ${WORKER_RUN_TIMEOUT_MS / 60_000} min and was stopped`;
       this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', reason, { summary: reason, items: [] });
-    }, WORKER_RUN_TIMEOUT_MS);
-    session.runTimer.unref?.();
+    };
+    const stopRun = (reason: string) => {
+      if (!isCurrent()) return;
+      fail(reason);
+      terminateProcessTree(proc);
+    };
+    const armIdleTimer = () => {
+      if (session.idleTimer) clearTimeout(session.idleTimer);
+      session.idleTimer = setTimeout(
+        () => stopRun(`Worker produced no output for ${WORKER_IDLE_TIMEOUT_MS / 60_000} min and was stopped`),
+        WORKER_IDLE_TIMEOUT_MS,
+      );
+      session.idleTimer.unref?.();
+    };
+    armIdleTimer();
+    session.hardTimer = setTimeout(
+      () => stopRun(`Worker ran past the ${WORKER_HARD_TIMEOUT_MS / 3_600_000} h limit and was stopped`),
+      WORKER_HARD_TIMEOUT_MS,
+    );
+    session.hardTimer.unref?.();
 
     // A worker that dies before reading its input turns the write into EPIPE on
     // this stream; without a listener that is an uncaught error in main. The
-    // exit itself is reported by the close handler below.
+    // exit itself is reported by the exit/close handlers below.
     proc.stdin!.on('error', (err) => {
       console.warn(`[ClaudeWorker] task=${taskId} stdin error: ${err.message}`);
     });
@@ -130,16 +240,20 @@ export class ClaudeWorker {
 
     // Process NDJSON stdout
     proc.stdout!.on('data', (chunk: Buffer) => {
+      // A run already settled (timed out, cancelled) can still flush a result
+      // line as it dies; that must not become a second transition.
+      if (!isCurrent()) return;
+      armIdleTimer();
       session.lineBuffer += chunk.toString();
 
       if (session.lineBuffer.length > MAX_BUFFER_BYTES) {
         console.error(`[ClaudeWorker] Buffer overflow for task ${taskId}, destroying`);
-        proc.kill('SIGTERM');
+        stopRun('Worker output exceeded 10 MB and was stopped');
         return;
       }
 
       let newlineIndex: number;
-      while ((newlineIndex = session.lineBuffer.indexOf('\n')) !== -1) {
+      while (isCurrent() && (newlineIndex = session.lineBuffer.indexOf('\n')) !== -1) {
         const line = session.lineBuffer.slice(0, newlineIndex).trim();
         session.lineBuffer = session.lineBuffer.slice(newlineIndex + 1);
         if (line.length > 0) {
@@ -155,23 +269,31 @@ export class ClaudeWorker {
 
     proc.on('error', (err) => {
       console.error(`[ClaudeWorker] spawn error for task ${taskId}:`, err);
-      if (this.sessions.get(taskId) !== session) return;
-      this.endSession(session);
-      const reason = `Spawn error: ${err.message}`;
-      this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', reason, { summary: reason, items: [] });
+      if (!isCurrent()) return;
+      fail(`Spawn error: ${err.message}`);
     });
 
-    proc.on('close', (code, signal) => {
-      // Gone from the map: already settled by a result, the timeout, or cancel.
-      if (this.sessions.get(taskId) !== session) return;
-      this.endSession(session);
-      // Still here means no result line arrived. A clean exit without one is a
-      // failure too — reporting nothing left the task in `working`.
-      const reason = code === 0
+    // Still current at exit means no result line arrived. A clean exit without
+    // one is a failure too — reporting nothing left the task in `working`.
+    const settleExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (!isCurrent()) return;
+      fail(code === 0
         ? 'Worker exited without a result'
-        : `Process exited with ${signal ? `signal ${signal}` : `code ${code}`}`;
-      this.updateTaskStatus(taskId, receiverWorkspaceId, 'failed', reason, { summary: reason, items: [] });
+        : `Process exited with ${signal ? `signal ${signal}` : `code ${code}`}`);
+    };
+    proc.on('exit', (code, signal) => {
+      if (!isCurrent()) return;
+      // 'close' waits for stdout to close, and a child that inherited it can
+      // hold it open long after claude is gone. Give it a moment to deliver a
+      // final result line, then settle on the exit and stop what is left.
+      session.drainTimer = setTimeout(() => {
+        if (!isCurrent()) return;
+        settleExit(code, signal);
+        terminateProcessTree(proc);
+      }, WORKER_EXIT_DRAIN_MS);
+      session.drainTimer.unref?.();
     });
+    proc.on('close', (code, signal) => settleExit(code, signal));
   }
 
   /**
@@ -293,37 +415,34 @@ export class ClaudeWorker {
     if (!session) return false;
 
     this.endSession(session);
-    this.killWithFallback(session.proc);
+    terminateProcessTree(session.proc);
 
     return true;
   }
 
-  /** Drop a session and its run timer. */
+  /** Drop a session and its timers. */
   private endSession(session: WorkerSession): void {
-    if (session.runTimer) clearTimeout(session.runTimer);
+    if (session.idleTimer) clearTimeout(session.idleTimer);
+    if (session.hardTimer) clearTimeout(session.hardTimer);
+    if (session.drainTimer) clearTimeout(session.drainTimer);
     if (this.sessions.get(session.taskId) === session) this.sessions.delete(session.taskId);
-  }
-
-  /** SIGTERM, then SIGKILL after 5 s if the process is still there. */
-  private killWithFallback(proc: ChildProcess): void {
-    proc.kill('SIGTERM');
-    const pid = proc.pid;
-    if (pid) {
-      setTimeout(() => {
-        try { process.kill(pid, 0); process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
-      }, 5000);
-    }
   }
 
   /**
    * Stop all running tasks (graceful shutdown).
    */
   stop(): void {
-    for (const [taskId, session] of this.sessions) {
-      if (session.runTimer) clearTimeout(session.runTimer);
-      session.proc.kill('SIGTERM');
-      console.log(`[ClaudeWorker] Stopping task ${taskId}`);
+    // Called on quit, synchronously, just before the process exits: a delayed
+    // SIGKILL fallback would never fire, and a worker group runs detached, so
+    // anything a SIGTERM did not end would outlive wmux. Kill outright — the
+    // results have nowhere left to go — and fail the tasks rather than leave
+    // them in `working` (best effort; the daemon may still record it).
+    for (const session of [...this.sessions.values()]) {
+      console.log(`[ClaudeWorker] Stopping task ${session.taskId}`);
+      this.endSession(session);
+      signalProcessTree(session.proc, 'SIGKILL');
+      const reason = 'wmux quit while the worker was running';
+      void this.updateTaskStatus(session.taskId, session.receiverWorkspaceId, 'failed', reason, { summary: reason, items: [] });
     }
-    this.sessions.clear();
   }
 }
