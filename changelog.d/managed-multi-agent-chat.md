@@ -13,3 +13,5 @@
 - Preserve native Korean/IME composition in the Chat composer with synchronous input state, and prevent composition-confirming Enter from submitting a message.
 
 - Right-align content-sized user bubbles inside transcript wrappers; keep agent replies left-aligned.
+
+- Include the external WebSocket runtime in packaged apps so native chat support does not prevent startup.
