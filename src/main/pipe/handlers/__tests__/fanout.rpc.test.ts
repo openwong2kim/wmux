@@ -81,6 +81,8 @@ interface Harness {
   moveCaller: (cwd: string | null) => void;
   /** The preview the approval prompt was actually raised with. */
   preview: () => string;
+  /** The `requireApproval` main sent with the last approval request. */
+  requireApprovalSent: () => unknown;
   /** Drop a completed key from the service's result LRU — what the real
    *  FanOutService does once 1000 newer fan-outs have finished. */
   forgetResult: (callerKey: string) => void;
@@ -100,6 +102,8 @@ function setup(opts?: {
   commanderAnchorPtyId?: string;
   /** Lineage/caps/audit store. Defaults to a fresh one in a temp dir. */
   guards?: FanOutGuards;
+  /** Main's approval switch. Defaults to on, so the dialog tests stay dialog tests. */
+  requireApproval?: boolean;
 }): Harness {
   const commanderAnchorPtyId =
     opts?.commanderAnchorPtyId === undefined ? 'pty-1' : opts.commanderAnchorPtyId;
@@ -139,6 +143,7 @@ function setup(opts?: {
   const approval: ApprovalStub = opts?.approval ?? { approved: true, outcome: 'approved' };
   let approvals = 0;
   let lastPreview = '';
+  let lastRequireApproval: unknown;
   let releaseApproval: ((v: unknown) => void) | null = null;
 
   vi.mocked(sendToRenderer).mockImplementation(async (_win, method: string, p?: unknown) => {
@@ -165,6 +170,7 @@ function setup(opts?: {
     if (method === 'fanout.requestApproval') {
       approvals += 1;
       lastPreview = String((p as Record<string, unknown>)?.promptPreview ?? '');
+      lastRequireApproval = (p as Record<string, unknown>)?.requireApproval;
       if (approval === 'throw') throw new Error('renderer unavailable');
       // A prompt nobody has answered YET — the unattended case, and also the
       // handle a test uses to answer it late (approveHungPrompt).
@@ -194,7 +200,11 @@ function setup(opts?: {
       countLiveTasks: () => 0,
       ledgerTaskOwner: () => null,
     });
-  registerFanOutRpc(router, service, () => null, { guards, workerPermissionMode: () => 'auto' });
+  registerFanOutRpc(router, service, () => null, {
+    guards,
+    workerPermissionMode: () => 'auto',
+    requireApproval: () => opts?.requireApproval ?? true,
+  });
   const handler = handlers.get('task.fanout.start');
   if (!handler) throw new Error('task.fanout.start was not registered');
 
@@ -211,6 +221,7 @@ function setup(opts?: {
       currentCwd = next;
     },
     preview: () => lastPreview,
+    requireApprovalSent: () => lastRequireApproval,
     forgetResult: (callerKey) => state.delete(`${ownerWs}::${callerKey}`),
     approveHungPrompt: () => releaseApproval?.({ approved: true, outcome: 'approved' }),
   };
@@ -1253,7 +1264,8 @@ describe('task.fanout.start — audit record', () => {
     await h.flush();
     await h.flush();
     expect(h.start).toHaveBeenCalledTimes(1);
-    const [rec] = g.recentAudit(1);
+    const [launched, rec] = g.recentAudit(2);
+    expect(launched).toMatchObject({ kind: 'launched', idempotencyKey: 'fanout-key-1', launched: [] });
     expect(rec).toMatchObject({
       idempotencyKey: 'fanout-key-1',
       ownerWorkspaceId: CALLER_WS,
@@ -1277,7 +1289,7 @@ describe('task.fanout.start — audit record', () => {
     await h.call(goodParams());
     await h.flush();
     await h.flush();
-    expect(g.recentAudit(1)[0].approvedBy).toBe('human');
+    expect(g.recentAudit(2).every((r) => r.approvedBy === 'human')).toBe(true);
   });
 
   it('does not run a fan-out whose audit record cannot be written', async () => {
@@ -1292,5 +1304,59 @@ describe('task.fanout.start — audit record', () => {
     expect(h.start).not.toHaveBeenCalled();
     const polled = await h.call(goodParams());
     expect(polled).toMatchObject({ status: 'denied', reason: 'audit-unavailable' });
+  });
+});
+
+describe('task.fanout.start — review follow-ups', () => {
+  it('lets main decide whether anyone is asked, and says so to the renderer', async () => {
+    const off = setup({ requireApproval: false, approval: { approved: true, outcome: 'auto' } });
+    await off.call(goodParams());
+    await off.flush();
+    expect(off.requireApprovalSent()).toBe(false);
+    const on = setup({ requireApproval: true });
+    await on.call(goodParams());
+    await on.flush();
+    expect(on.requireApprovalSent()).toBe(true);
+  });
+
+  it('shows the worker launch flags in what is approved', async () => {
+    const h = setup();
+    await h.call(goodParams());
+    await h.flush();
+    expect(h.preview()).toMatch(/claude workers launch with: --permission-mode auto --allowedTools "[^"]+" --disallowedTools "[^"]*mcp__wmux__fanout_start/);
+  });
+
+  it('holds the live cap against N concurrent callers with different keys', async () => {
+    const h = setup({ approval: 'hang' });
+    const results = await Promise.all(
+      [0, 1, 2, 3, 4].map((k) => h.call(goodParams({ idempotencyKey: `k${k}`, titles: ['a', 'b'] }))),
+    );
+    const accepted = results.filter((r) => r.status === 'accepted').length;
+    const refused = results.filter((r) => (r.error as { code?: string } | undefined)?.code === 'RESOURCE_EXHAUSTED').length;
+    expect(accepted).toBe(4);
+    expect(refused).toBe(1);
+  });
+
+  it('releases the reservation and records a denial when the detached run throws before spawning', async () => {
+    const g = guardsIn(tmp());
+    const h = setup({ guards: g });
+    // The approval-time repo re-derivation blows up (a git failure, not a
+    // non-repo answer) — nothing may stay booked or awaiting.
+    let calls = 0;
+    vi.mocked(git).mockImplementation(async () => {
+      calls += 1;
+      if (calls > 1) throw new Error('git exploded');
+      return { stdout: `${CALLER_REPO_ROOT}\n`, stderr: '', code: 0 };
+    });
+    await h.call(goodParams({ idempotencyKey: 'boom', titles: ['1', '2', '3', '4', '5', '6', '7', '8'] }));
+    await h.flush();
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+    expect(await h.call(goodParams({ idempotencyKey: 'boom' }))).toMatchObject({ status: 'denied', reason: 'unavailable' });
+    // All 8 slots are free again.
+    const next = setup({ guards: g });
+    expect((await next.call(goodParams({ idempotencyKey: 'after', titles: ['1', '2', '3', '4', '5', '6', '7', '8'] }))).status).toBe(
+      'accepted',
+    );
   });
 });

@@ -39,29 +39,59 @@ export function registerWorkspaceRpc(router: RpcRouter, getWindow: GetWindow, de
    * "create a fresh workspace, start an agent there, fan out from it" does not
    * step around the depth limit on the honest path.
    *
-   * The caller is the validated commander binding, else the workspace that
-   * owns the stated senderPtyId. A stated pty is only a hint, and trusting it
-   * here is safe for the same reason the stamp is: inheriting a stamp can only
-   * take fan-out away. An unresolvable caller creates an unstamped workspace
-   * (no identity, nothing to inherit), and a failure never fails the create.
+   * Who inherits: a validated commander binding, or a caller that STATES a
+   * senderPtyId (the `wmux new-workspace` CLI sends its pane's WMUX_PTY_ID).
+   * A caller with neither has no pane to be a task in — the external MCP
+   * client's `mcp.claimWorkspace` sends only `{ name }` — and creates an
+   * unstamped workspace. Trusting a stated pty is safe here for the same reason
+   * the stamp is: inheriting can only take fan-out away.
+   *
+   * Fail-closed, in two halves. BEFORE the create: a stated senderPtyId that
+   * does not resolve, or a lineage store that cannot be read, refuses the
+   * call. AFTER it: if the caller is a task and the stamp cannot be written,
+   * the new workspace is closed again and the call fails — an unstamped
+   * workspace created by a task is exactly the escape this exists to stop.
+   *
+   * Returns the owner the new workspace must inherit, or null.
    */
-  const inheritLineage = async (
+  const lineageToInherit = async (
     params: Record<string, unknown>,
     ctx: RpcContext | undefined,
-    result: unknown,
-  ): Promise<void> => {
+    method: string,
+  ): Promise<string | null> => {
+    const senderPtyId = typeof params['senderPtyId'] === 'string' ? params['senderPtyId'].trim() : '';
+    let callerWs = ctx?.commanderWorkspace || null;
+    if (!callerWs && senderPtyId) {
+      callerWs = await resolveCaller(senderPtyId);
+      if (!callerWs) {
+        throw new Error(`${method}: senderPtyId ${senderPtyId} does not resolve to a workspace`);
+      }
+    }
+    if (!callerWs) return null;
+    const guards = deps.guards ?? getFanOutGuards();
     try {
-      if (!isRecord(result)) return;
-      const created = typeof result['id'] === 'string' ? result['id'] : result['workspaceId'];
-      if (typeof created !== 'string' || created.length === 0) return;
-      const senderPtyId = typeof params['senderPtyId'] === 'string' ? params['senderPtyId'].trim() : '';
-      const callerWs = ctx?.commanderWorkspace || (senderPtyId ? await resolveCaller(senderPtyId) : null);
-      if (!callerWs) return;
-      const guards = deps.guards ?? getFanOutGuards();
-      const owner = guards.fanoutOwnerOf(callerWs);
-      if (owner) guards.markTask(created, owner);
+      return guards.fanoutOwnerOf(callerWs);
     } catch (err) {
-      console.warn(`[workspace.rpc] fan-out lineage inheritance failed: ${String(err)}`);
+      throw new Error(`${method}: cannot tell whether the caller is a fan-out task (${(err as Error).message})`);
+    }
+  };
+
+  /** Stamp the created workspace, or close it and fail. */
+  const stampOrUndo = async (owner: string, result: unknown, method: string): Promise<void> => {
+    if (!isRecord(result)) return;
+    const created = typeof result['id'] === 'string' ? result['id'] : result['workspaceId'];
+    if (typeof created !== 'string' || created.length === 0) return;
+    try {
+      (deps.guards ?? getFanOutGuards()).markTask(created, owner);
+    } catch (err) {
+      try {
+        await sendToRenderer(getWindow, 'workspace.close', { id: created });
+      } catch {
+        // best-effort; the error below names the workspace either way
+      }
+      throw new Error(
+        `${method}: the caller is a fan-out task and the new workspace ${created} could not be stamped as one, so it was closed (${(err as Error).message})`,
+      );
     }
   };
   /**
@@ -77,8 +107,9 @@ export function registerWorkspaceRpc(router: RpcRouter, getWindow: GetWindow, de
    */
   router.register('workspace.new', async (params, ctx) => {
     const name = typeof params['name'] === 'string' ? params['name'] : undefined;
+    const owner = await lineageToInherit(params, ctx, 'workspace.new');
     const result = await sendToRenderer(getWindow, 'workspace.new', name !== undefined ? { name } : {});
-    await inheritLineage(params, ctx, result);
+    if (owner) await stampOrUndo(owner, result, 'workspace.new');
     return result;
   });
 
@@ -151,12 +182,13 @@ export function registerWorkspaceRpc(router: RpcRouter, getWindow: GetWindow, de
    */
   router.register('mcp.claimWorkspace', async (params, ctx) => {
     const name = typeof params['name'] === 'string' ? params['name'] : undefined;
+    const owner = await lineageToInherit(params, ctx, 'mcp.claimWorkspace');
     const result = await sendToRenderer(
       getWindow,
       'mcp.claimWorkspace',
       name !== undefined ? { name } : {},
     );
-    await inheritLineage(params, ctx, result);
+    if (owner) await stampOrUndo(owner, result, 'mcp.claimWorkspace');
 
     // ── #922 PR-A — issue the claim token ────────────────────────────────
     //

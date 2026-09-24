@@ -51,9 +51,9 @@
 //
 // R7 — by default fan-out does NOT ask (owner decision 2026-09-24): the
 // renderer answers `fanout.requestApproval` with outcome 'auto', shows one
-// toast, and R8's brakes carry the load. The Settings toggle
-// `fanoutRequireApproval` turns the ask back on, and then it is NOT the a2a
-// execute gate:
+// toast, and R8's brakes carry the load. The Settings switch (main-side,
+// fanoutWorkerPolicy.ts — main decides and passes `requireApproval`) turns the
+// ask back on, and then it is NOT the a2a execute gate:
 //
 //   * It reuses the execute approval queue and dialog (one inbox, one timer),
 //     but it goes through requestFanOutApproval, which does NOT consult
@@ -96,7 +96,8 @@ import { git as runGit } from '../../git/git';
 import { loadWorkspaceDecision } from '../../deck/deckDecisionStore';
 import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService';
 import { getFanOutGuards, promptDigest, type FanOutGuards } from '../../worktask/fanoutGuards';
-import { loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
+import { loadFanoutRequireApproval, loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
+import { workerLaunchFlags, type FanoutWorkerPermissionMode } from '../../../shared/workerLaunch';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -507,7 +508,9 @@ export interface FanOutRpcDeps {
   /** Injected in tests; defaults to the hosted lineage/caps/audit store. */
   guards?: FanOutGuards;
   /** Injected in tests; defaults to the main-side Settings store. */
-  workerPermissionMode?: () => string;
+  workerPermissionMode?: () => FanoutWorkerPermissionMode;
+  /** Injected in tests; defaults to the main-side Settings store. */
+  requireApproval?: () => boolean;
 }
 
 /**
@@ -795,6 +798,10 @@ export function registerFanOutRpc(
     // (R2), repoPath (R3). The request is constructed field by field — params
     // is never spread — so a field added to the wire later cannot leak through
     // by accident.
+    // Both policy reads happen ONCE, here: the approval decision, the preview,
+    // the audit record and every task's launch all use these same values.
+    const workerMode = (deps.workerPermissionMode ?? loadFanoutWorkerPermissionMode)();
+    const requireApproval = (deps.requireApproval ?? loadFanoutRequireApproval)();
     const req: FanOutRequest = {
       idempotencyKey: key,
       prompt: sharedPrompt,
@@ -809,6 +816,7 @@ export function registerFanOutRpc(
       // a command string.
       roles: parsed.roles,
       verifiedWorkspaceId: callerWorkspaceId,
+      workerPermissionMode: workerMode,
     };
 
     // ── R7: approval, then the detached run ──────────────────────────────
@@ -826,97 +834,139 @@ export function registerFanOutRpc(
     // is re-derived and compared below. A canonical hash would restate a
     // property the closure already guarantees.
     void (async () => {
-      let verdict: { approved?: unknown; outcome?: unknown; roleCommands?: unknown } | null = null;
       try {
-        verdict = (await sendToRenderer(
-          getWindow,
-          'fanout.requestApproval',
-          {
-            workspaceId: callerWorkspaceId,
+        let verdict: { approved?: unknown; outcome?: unknown; roleCommands?: unknown } | null = null;
+        try {
+          verdict = (await sendToRenderer(
+            getWindow,
+            'fanout.requestApproval',
+            {
+              workspaceId: callerWorkspaceId,
+              repoPath: callerRepoRoot,
+              taskCount: parsed.titles.length,
+              // Main decides whether anyone is asked (see fanoutWorkerPolicy.ts);
+              // the renderer only carries it out.
+              requireApproval,
+              // What a claude worker's line gets appended, so an approval covers
+              // the permission mode and tool rules, not just the prompt.
+              promptPreview:
+                buildFanOutPreview(sharedPrompt, parsed.titles, parsed.taskPrompts, parsed.roles) +
+                `\n\nclaude workers launch with: ${workerLaunchFlags(workerMode)}`,
+              // The roles again, as data. The preview prints the role NAME, but
+              // what a role resolves to — agent, model, extra args — lives in the
+              // renderer's bindings, and approving "[role: Reviewer]" without
+              // seeing that it means `codex --model o3 --some-flag` is approving
+              // a string that is not what runs. The renderer expands them.
+              roles: parsed.roles,
+            },
+            { timeoutMs: APPROVAL_TIMEOUT_MS },
+          )) as { approved?: unknown; outcome?: unknown; roleCommands?: unknown } | null;
+        } catch {
+          // Renderer unavailable / bridge timeout. Fail closed — an unattended
+          // spawn is exactly what the gate exists to prevent — but record WHY.
+          verdict = null;
+        }
+
+        if (!verdict || verdict.approved !== true) {
+          const reason: FanOutDenyReason =
+            !verdict ? 'unavailable' : verdict.outcome === 'timeout' ? 'timeout' : 'declined';
+          settle(key, { phase: 'denied', reason });
+          guards.release(key);
+          console.warn(`[fanout.rpc] fan-out ${key} denied (${reason})`);
+          return;
+        }
+
+        // R3, second half. The prompt named a repository and the user approved
+        // THAT repository; the call is asynchronous now, so between the preflight
+        // and this line the calling terminal may have moved (its own `cd`, or a
+        // sibling pane's if the surface reports no cwd of its own). Re-derive and
+        // require the same root, or the approval was given for one repo and spent
+        // on another.
+        const atApproval = await deriveCallerRepoRoot(getWindow, callerWorkspaceId, anchorPtyId);
+        if (!('root' in atApproval) || atApproval.root !== callerRepoRoot) {
+          settle(key, { phase: 'denied', reason: 'repo-moved' });
+          guards.release(key);
+          console.warn(`[fanout.rpc] fan-out ${key} denied (repo-moved)`);
+          return;
+        }
+
+        // The audit record goes down BEFORE anything spawns, and a fan-out that
+        // cannot leave one does not run: with no human in the loop by default,
+        // this line is the only after-the-fact account of what was launched.
+        try {
+          guards.appendAudit({
+            at: Date.now(),
+            idempotencyKey: callerKey,
+            ownerWorkspaceId: callerWorkspaceId,
+            callerIdentity: commanderWorkspaceId ? 'commander' : 'pty',
             repoPath: callerRepoRoot,
-            taskCount: parsed.titles.length,
-            promptPreview: buildFanOutPreview(sharedPrompt, parsed.titles, parsed.taskPrompts, parsed.roles),
-            // The roles again, as data. The preview prints the role NAME, but
-            // what a role resolves to — agent, model, extra args — lives in the
-            // renderer's bindings, and approving "[role: Reviewer]" without
-            // seeing that it means `codex --model o3 --some-flag` is approving
-            // a string that is not what runs. The renderer expands them.
+            titles: parsed.titles,
             roles: parsed.roles,
-          },
-          { timeoutMs: APPROVAL_TIMEOUT_MS },
-        )) as { approved?: unknown; outcome?: unknown; roleCommands?: unknown } | null;
-      } catch {
-        // Renderer unavailable / bridge timeout. Fail closed — an unattended
-        // spawn is exactly what the gate exists to prevent — but record WHY.
-        verdict = null;
-      }
+            roleCommands: Array.isArray(verdict.roleCommands)
+              ? verdict.roleCommands.filter((c): c is string => typeof c === 'string')
+              : [],
+            promptSha256: parsed.taskPrompts.map((own) =>
+              promptDigest([sharedPrompt, own].filter((p) => p.length > 0).join('\n\n')),
+            ),
+            approvedBy: verdict.outcome === 'auto' ? 'auto' : 'human',
+            workerPermissionMode: workerMode,
+          });
+        } catch (err) {
+          settle(key, { phase: 'denied', reason: 'audit-unavailable' });
+          guards.release(key);
+          console.warn(`[fanout.rpc] fan-out ${key} denied (audit-unavailable): ${String(err)}`);
+          return;
+        }
 
-      if (!verdict || verdict.approved !== true) {
-        const reason: FanOutDenyReason =
-          !verdict ? 'unavailable' : verdict.outcome === 'timeout' ? 'timeout' : 'declined';
-        settle(key, { phase: 'denied', reason });
-        guards.release(key);
-        console.warn(`[fanout.rpc] fan-out ${key} denied (${reason})`);
-        return;
-      }
-
-      // R3, second half. The prompt named a repository and the user approved
-      // THAT repository; the call is asynchronous now, so between the preflight
-      // and this line the calling terminal may have moved (its own `cd`, or a
-      // sibling pane's if the surface reports no cwd of its own). Re-derive and
-      // require the same root, or the approval was given for one repo and spent
-      // on another.
-      const atApproval = await deriveCallerRepoRoot(getWindow, callerWorkspaceId, anchorPtyId);
-      if (!('root' in atApproval) || atApproval.root !== callerRepoRoot) {
-        settle(key, { phase: 'denied', reason: 'repo-moved' });
-        guards.release(key);
-        console.warn(`[fanout.rpc] fan-out ${key} denied (repo-moved)`);
-        return;
-      }
-
-      // The audit record goes down BEFORE anything spawns, and a fan-out that
-      // cannot leave one does not run: with no human in the loop by default,
-      // this line is the only after-the-fact account of what was launched.
-      try {
-        guards.appendAudit({
-          at: Date.now(),
-          idempotencyKey: callerKey,
-          ownerWorkspaceId: callerWorkspaceId,
-          callerIdentity: commanderWorkspaceId ? 'commander' : 'pty',
-          repoPath: callerRepoRoot,
-          titles: parsed.titles,
-          roles: parsed.roles,
-          roleCommands: Array.isArray(verdict.roleCommands)
-            ? verdict.roleCommands.filter((c): c is string => typeof c === 'string')
-            : [],
-          promptSha256: parsed.taskPrompts.map((own) =>
-            promptDigest([sharedPrompt, own].filter((p) => p.length > 0).join('\n\n')),
-          ),
-          approvedBy: verdict.outcome === 'auto' ? 'auto' : 'human',
-          workerPermissionMode: (deps.workerPermissionMode ?? loadFanoutWorkerPermissionMode)(),
-        });
+        // start() registers the key in-flight synchronously, before its first
+        // await, so there is no window in which the gate says 'started' and the
+        // service still says 'unknown'.
+        settle(key, { phase: 'started' });
+        guards.commitStart(key);
+        try {
+          const result = await service.start(req);
+          // The second half of the record: the line each task was ACTUALLY
+          // launched with (after the role rewrite and the worker flags).
+          try {
+            guards.appendAudit({
+              at: Date.now(),
+              kind: 'launched',
+              idempotencyKey: callerKey,
+              ownerWorkspaceId: callerWorkspaceId,
+              callerIdentity: commanderWorkspaceId ? 'commander' : 'pty',
+              repoPath: callerRepoRoot,
+              titles: parsed.titles,
+              roles: parsed.roles,
+              roleCommands: [],
+              promptSha256: [],
+              approvedBy: verdict.outcome === 'auto' ? 'auto' : 'human',
+              workerPermissionMode: workerMode,
+              launched: result.tasks.map((t) => ({
+                title: t.title,
+                ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+                ...(t.initialCommand ? { command: t.initialCommand } : {}),
+                ...(t.error ? { error: t.error } : {}),
+              })),
+            });
+          } catch (err) {
+            console.warn(`[fanout.rpc] could not append the launch record for ${key}: ${String(err)}`);
+          }
+        } catch (err) {
+          // start() records a throw as a failed result rather than releasing the
+          // key, so this is belt-and-braces.
+          console.error(`[fanout.rpc] fan-out ${key} failed:`, err);
+        } finally {
+          // Whatever of it is still booked as spawning stops counting; the
+          // tasks that did start are counted by their open workspaces.
+          guards.settleStarted(key);
+        }
       } catch (err) {
-        settle(key, { phase: 'denied', reason: 'audit-unavailable' });
+        // Anything that throws before the spawn (a renderer round-trip, a git
+        // call in the repo re-derivation) must not leave the key awaiting and
+        // its cap reservation held until the app restarts.
+        if (!terminal.has(key)) settle(key, { phase: 'denied', reason: 'unavailable' });
         guards.release(key);
-        console.warn(`[fanout.rpc] fan-out ${key} denied (audit-unavailable): ${String(err)}`);
-        return;
-      }
-
-      // start() registers the key in-flight synchronously, before its first
-      // await, so there is no window in which the gate says 'started' and the
-      // service still says 'unknown'.
-      settle(key, { phase: 'started' });
-      guards.commitStart(key);
-      try {
-        await service.start(req);
-      } catch (err) {
-        // start() records a throw as a failed result rather than releasing the
-        // key, so this is belt-and-braces.
-        console.error(`[fanout.rpc] fan-out ${key} failed:`, err);
-      } finally {
-        // Its tasks are ledger rows now (or never became any); either way the
-        // in-flight live reservation stops counting. The hourly stamp stays.
-        guards.settleStarted(key);
+        console.error(`[fanout.rpc] fan-out ${key} aborted:`, err);
       }
     })();
 

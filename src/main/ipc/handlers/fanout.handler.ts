@@ -23,33 +23,15 @@ function asOrchRole(raw: unknown): string {
   return cleaned && (ORCH_ROLES as readonly string[]).includes(cleaned) ? cleaned : '';
 }
 import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService';
-import { getFanOutGuards } from '../../worktask/fanoutGuards';
+import { getFanOutGuards, promptDigest } from '../../worktask/fanoutGuards';
 import {
+  loadFanoutRequireApproval,
   loadFanoutWorkerPermissionMode,
+  setFanoutRequireApproval,
   setFanoutWorkerPermissionMode,
 } from '../../worktask/fanoutWorkerPolicy';
 
 export function registerFanOutHandler(service: FanOutService): () => void {
-  // Depth-1 lineage stamp, written by the renderer's fanout.spawnWorkspace
-  // after it creates the task workspace and BEFORE the agent pane launches.
-  // A stamp only ever restricts (it takes fan-out away), so a renderer-side
-  // caller cannot use it to gain anything.
-  ipcMain.removeHandler(IPC.FANOUT_MARK_TASK);
-  ipcMain.handle(
-    IPC.FANOUT_MARK_TASK,
-    wrapHandler(IPC.FANOUT_MARK_TASK, async (_event: Electron.IpcMainInvokeEvent, ws: unknown, owner: unknown) => {
-      if (typeof ws !== 'string' || !ws || typeof owner !== 'string' || !owner) {
-        return { ok: false, error: 'fanout:markTask: workspace ids are required' };
-      }
-      try {
-        getFanOutGuards().markTask(ws, owner);
-        return { ok: true };
-      } catch (err) {
-        return { ok: false, error: (err as Error).message };
-      }
-    }),
-  );
-
   // The Fleet Approvals tab's "recent unattended fan-outs" list.
   ipcMain.removeHandler(IPC.FANOUT_AUDIT_RECENT);
   ipcMain.handle(
@@ -75,22 +57,80 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     ),
   );
 
+  ipcMain.removeHandler(IPC.FANOUT_REQUIRE_APPROVAL_GET);
+  ipcMain.handle(
+    IPC.FANOUT_REQUIRE_APPROVAL_GET,
+    wrapHandler(IPC.FANOUT_REQUIRE_APPROVAL_GET, async () => loadFanoutRequireApproval()),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_REQUIRE_APPROVAL_SET);
+  ipcMain.handle(
+    IPC.FANOUT_REQUIRE_APPROVAL_SET,
+    wrapHandler(IPC.FANOUT_REQUIRE_APPROVAL_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
+      setFanoutRequireApproval(value),
+    ),
+  );
+
   ipcMain.removeHandler(IPC.FANOUT_START);
   ipcMain.handle(
     IPC.FANOUT_START,
     wrapHandler(IPC.FANOUT_START, async (_event: Electron.IpcMainInvokeEvent, rawReq: unknown) => {
       const req = normalizeRequest(rawReq);
       if ('error' in req) return { ok: false, error: req.error, tasks: [] };
-      return service.start(req);
+      // The dialog click is the approval; the audit log still records the
+      // run, the same way and with the same no-record-no-run rule as the wire.
+      const guards = getFanOutGuards();
+      const workerMode = loadFanoutWorkerPermissionMode();
+      const base = {
+        idempotencyKey: req.idempotencyKey,
+        ownerWorkspaceId: req.verifiedWorkspaceId,
+        callerIdentity: 'gui' as const,
+        repoPath: req.repoPath,
+        titles: req.titles,
+        roles: req.roles ?? [],
+        approvedBy: 'human' as const,
+        workerPermissionMode: workerMode,
+      };
+      try {
+        guards.appendAudit({
+          ...base,
+          at: Date.now(),
+          roleCommands: [],
+          promptSha256: req.titles.map((_t, k) =>
+            promptDigest([req.prompt.trim(), (req.taskPrompts?.[k] ?? '').trim()].filter((p) => p.length > 0).join('\n\n')),
+          ),
+        });
+      } catch (err) {
+        return { ok: false, error: `fan-out audit log could not be written: ${(err as Error).message}`, tasks: [] };
+      }
+      const result = await service.start({ ...req, workerPermissionMode: workerMode });
+      try {
+        guards.appendAudit({
+          ...base,
+          at: Date.now(),
+          kind: 'launched',
+          roleCommands: [],
+          promptSha256: [],
+          launched: result.tasks.map((t) => ({
+            title: t.title,
+            ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),
+            ...(t.initialCommand ? { command: t.initialCommand } : {}),
+            ...(t.error ? { error: t.error } : {}),
+          })),
+        });
+      } catch (err) {
+        console.warn(`[fanout] could not append the launch record: ${String(err)}`);
+      }
+      return result;
     }),
   );
 
   return () => {
     ipcMain.removeHandler(IPC.FANOUT_START);
-    ipcMain.removeHandler(IPC.FANOUT_MARK_TASK);
     ipcMain.removeHandler(IPC.FANOUT_AUDIT_RECENT);
     ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_GET);
     ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_SET);
+    ipcMain.removeHandler(IPC.FANOUT_REQUIRE_APPROVAL_GET);
+    ipcMain.removeHandler(IPC.FANOUT_REQUIRE_APPROVAL_SET);
   };
 }
 

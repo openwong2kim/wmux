@@ -56,8 +56,8 @@ export interface PendingExecuteApproval {
   /**
    * Present when the prompt is a fan-out request from the pipe/MCP surface
    * rather than an A2A `execute:true` send. Same queue and same timer, but NOT
-   * the same consent: fan-out never rides `a2aAutoApproveExecute` — it is only
-   * prompted at all when `fanoutRequireApproval` is on. The dialog
+   * the same consent: fan-out never rides `a2aAutoApproveExecute` — and it is
+   * only prompted at all when main's fan-out policy asks for approval. The dialog
    * also swaps its copy, because the A2A wording ("spawn a Claude CLI in this
    * workspace") misdescribes a fan-out, which spawns into N NEW worktree
    * workspaces.
@@ -99,11 +99,6 @@ export interface A2aSlice {
   pendingExecuteApproval: PendingExecuteApproval | null;
   /** Global YOLO mode: auto-approve new A2A execute:true requests. */
   a2aAutoApproveExecute: boolean;
-  /** Ask before a pipe/MCP fan-out runs. Default false (owner decision
-   *  2026-09-24): fan-out runs unattended behind main's depth-1, caps and
-   *  audit log. True restores the approval dialog — it can only tighten, so a
-   *  hand-edited session.json cannot loosen anything through it. */
-  fanoutRequireApproval: boolean;
 
   // Actions
   createA2aTask: (task: {
@@ -154,7 +149,6 @@ export interface A2aSlice {
   setExecuteApprovalExpiry: (approvalId: string, expiresAt: number) => void;
   removeExecuteApproval: (approvalId: string) => void;
   setA2aAutoApproveExecute: (enabled: boolean) => void;
-  setFanoutRequireApproval: (enabled: boolean) => void;
 
   // ── Channel-mention delivery tracking (P1 autoresponse) ──
   /** taskId → true once its nudge was pasted into the pane PTY. Kept OUT of the
@@ -177,7 +171,6 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
   pendingExecuteApprovalOrder: [],
   pendingExecuteApproval: null,
   a2aAutoApproveExecute: false,
-  fanoutRequireApproval: false,
   channelMentionDelivered: {},
 
   enqueueExecuteApproval: (approval) => set((state: StoreState) => {
@@ -218,10 +211,6 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
 
   setA2aAutoApproveExecute: (enabled) => set((state: StoreState) => {
     state.a2aAutoApproveExecute = enabled;
-  }),
-
-  setFanoutRequireApproval: (enabled) => set((state: StoreState) => {
-    state.fanoutRequireApproval = enabled;
   }),
 
   createA2aTask: (input) => {

@@ -812,10 +812,10 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
   }
 
   if (method === 'fanout.requestApproval') {
-    // The pipe/MCP fan-out approval gate. Off by default: the fan-out runs
-    // unattended (outcome 'auto') behind main's depth-1, caps and audit log,
-    // and gets one toast so it is never invisible. With `fanoutRequireApproval`
-    // on it shares the A2A execute queue, dialog and 30s timer, but never the
+    // The pipe/MCP fan-out approval gate. Main decides whether to ask
+    // (`requireApproval`; off by default): off, the fan-out runs unattended
+    // (outcome 'auto') behind main's depth-1, caps and audit log, and gets one
+    // toast so it is never invisible. Anything but a literal `false` asks. On, it shares the A2A execute queue, dialog and 30s timer, but never the
     // a2aAutoApproveExecute toggle (requestFanOutApproval). A fan-out the GUI
     // FanOutDialog starts is a human click and does not come through here.
     //
@@ -838,6 +838,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       repoPath,
       taskCount,
       messagePreview: previewWithRoles,
+      requireApproval: params.requireApproval !== false,
     });
     if (verdict.outcome === 'auto') {
       useStore.getState().pushToast({
@@ -927,25 +928,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     const newWsId = newWs.id;
     const paneId = newWs.activePaneId;
 
-    // Depth-1 lineage: stamp this workspace as a task of its owner main-side
-    // BEFORE the pane's agent exists. A worker that could reach fan-out in the
-    // gap between launch and the stamp would be exactly the runaway the stamp
-    // is there to stop, so a failed stamp means no launch.
+    // Depth-1 lineage: main stamps this workspace as a task of its owner
+    // INSIDE pty.create, before the PTY (and the agent) exists; a failed stamp
+    // fails the create and the rollback below runs. No separate round-trip
+    // here: an await between addWorkspace and pty.create would let the
+    // empty-leaf funnel spawn a plain shell into this pane first.
     const fanoutTaskOf = typeof params.fanoutTaskOf === 'string' ? params.fanoutTaskOf : '';
-    if (fanoutTaskOf) {
-      let stamped: { ok: boolean; error?: string } | null = null;
-      try {
-        stamped = await window.electronAPI.fanout.markTask(newWsId, fanoutTaskOf);
-      } catch (err) {
-        stamped = { ok: false, error: err instanceof Error ? err.message : String(err) };
-      }
-      if (!stamped?.ok) {
-        const rollback = useStore.getState();
-        rollback.removeWorkspace(newWsId);
-        rollback.setActiveWorkspace(previousActiveId);
-        return { error: `fanout.spawnWorkspace: lineage stamp failed — ${stamped?.error ?? 'unknown'}` };
-      }
-    }
 
     // Unnested so the FINAL command is readable: withDefaultShell first (there
     // has to be a command to rewrite), then the role binding, then the marker
@@ -995,7 +983,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
 
     let ptyId: string;
     try {
-      const created = await window.electronAPI.pty.create(createOptions);
+      const created = await window.electronAPI.pty.create(
+        fanoutTaskOf ? { ...createOptions, fanoutTaskOf } : createOptions,
+      );
       ptyId = created.id;
     } catch (err) {
       const rollback = useStore.getState();

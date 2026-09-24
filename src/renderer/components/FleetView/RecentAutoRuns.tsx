@@ -13,6 +13,7 @@ import { useT } from '../../hooks/useT';
 
 interface AutoRun {
   at: number;
+  kind?: string;
   ownerWorkspaceId: string;
   repoPath: string;
   titles: string[];
@@ -30,7 +31,8 @@ export default function RecentAutoRuns() {
     window.electronAPI?.fanout?.recentAudit?.(LIMIT * 3)
       .then((records) => {
         if (cancelled || !Array.isArray(records)) return;
-        setRuns(records.filter((r) => r.approvedBy === 'auto').slice(0, LIMIT));
+        // The pre-spawn record only; the 'launched' follow-up describes the same run.
+        setRuns(records.filter((r) => r.approvedBy === 'auto' && r.kind !== 'launched').slice(0, LIMIT));
       })
       .catch(() => undefined);
     return () => {
@@ -45,13 +47,13 @@ export default function RecentAutoRuns() {
     <section className="px-3 py-2 flex flex-col gap-1" aria-label={t('fleet.approvals.recentAutoRuns')}>
       <p className="text-[11px] font-semibold text-[var(--text-muted)]">{t('fleet.approvals.recentAutoRuns')}</p>
       <ul className="flex flex-col gap-0.5">
-        {runs.map((r) => (
+        {runs.map((r, k) => (
           <li
-            key={`${r.at}-${r.ownerWorkspaceId}`}
+            key={`${k}-${r.at}`}
             className="text-[11px] text-[var(--text-sub)] truncate"
             title={`${r.repoPath}\n${r.titles.join('\n')}`}
           >
-            <span className="font-mono text-[var(--text-muted)]">{new Date(r.at).toLocaleTimeString()}</span>{' '}
+            <span className="font-mono text-[var(--text-muted)]">{new Date(r.at).toLocaleString()}</span>{' '}
             {t('fleet.approvals.autoRunRow', {
               count: r.titles.length,
               workspace: wsName(r.ownerWorkspaceId),

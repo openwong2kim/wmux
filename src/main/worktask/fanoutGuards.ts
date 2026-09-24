@@ -13,14 +13,16 @@
 //             FANOUT_HOURLY_TASK_CAP started tasks per rolling hour, app-wide.
 //             Checked and reserved synchronously at claim time; over a cap the
 //             call is refused (no dialog, so nothing queues up behind it).
-//   audit   — one jsonl line per wire fan-out that is about to run: who, where,
-//             what (prompt hashes, not bodies), and whether a person approved.
+//   audit   — one jsonl line per fan-out that is about to run: who, where,
+//             what (prompt hashes, not bodies), and whether a person approved;
+//             then one line with what each task actually launched.
 //
 // Threat model: these are brakes against loops and accidental amplification on
 // the HONEST paths, not a defence against hostile local code — anything
 // running as the user can edit these files or call `claude` directly. They are
 // built to be correct and fail closed where the answer is uncertain (an
-// unreadable lineage store refuses the fan-out), not to be spoof-proof.
+// unreadable lineage store refuses the fan-out, a torn caps file counts as a
+// full hour), not to be spoof-proof.
 //
 // Storage sits beside the task ledger in the WMUX_DATA_SUFFIX-scoped wmux dir.
 
@@ -30,6 +32,7 @@ import { createHash } from 'node:crypto';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicWriteJSONSync } from '../../daemon/util/atomicWrite';
 import { getTaskLedger } from '../deck/taskLedgerHost';
+import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
 
 export const FANOUT_LIVE_TASK_CAP = 8;
 export const FANOUT_HOURLY_TASK_CAP = 24;
@@ -45,6 +48,8 @@ const AUDIT_MAX_BYTES = 1024 * 1024;
 export const FANOUT_LINEAGE_FILENAME = 'fanout-lineage.json';
 export const FANOUT_CAPS_FILENAME = 'fanout-caps.json';
 export const FANOUT_AUDIT_FILENAME = 'fanout-audit.jsonl';
+/** Suffix a torn store is renamed to (followed by a timestamp). */
+const CORRUPT_SUFFIX = '.corrupt-';
 
 interface LineageStamp {
   owner: string;
@@ -52,7 +57,7 @@ interface LineageStamp {
 }
 
 interface HourlyStamp {
-  /** Reservation id (the fan-out's scoped idempotency key). */
+  /** The fan-out's scoped idempotency key (informational; not unique). */
   id: string;
   at: number;
   count: number;
@@ -60,11 +65,13 @@ interface HourlyStamp {
 
 export interface FanOutAuditRecord {
   at: number;
+  /** Absent/'start' = the pre-spawn record; 'launched' = what each task ran. */
+  kind?: 'start' | 'launched';
   /** The caller's own idempotency key (not the workspace-scoped one). */
   idempotencyKey: string;
   ownerWorkspaceId: string;
-  /** How the caller proved who it is. */
-  callerIdentity: 'pty' | 'commander';
+  /** How the caller proved who it is (`gui` = the renderer's fan-out dialog). */
+  callerIdentity: 'pty' | 'commander' | 'gui';
   repoPath: string;
   titles: string[];
   roles: string[];
@@ -76,6 +83,8 @@ export interface FanOutAuditRecord {
   approvedBy: 'auto' | 'human';
   /** The worker permission mode the tasks launch with (Settings → Agents). */
   workerPermissionMode: string;
+  /** kind 'launched': the line each task's pane was actually started with. */
+  launched?: { title: string; workspaceId?: string; command?: string; error?: string }[];
 }
 
 export type CapReservation = { ok: true } | { ok: false; message: string };
@@ -84,7 +93,11 @@ export interface FanOutGuardsOptions {
   /** Data dir. Defaults to the wmux dir. */
   dir?: string;
   now?: () => number;
-  /** Open tasks app-wide. Defaults to the task ledger's open rows. */
+  /** Open workspace ids, or null when unknown (renderer not up yet). Defaults
+   *  to the main-side workspace mirror. */
+  openWorkspaceIds?: () => string[] | null;
+  /** Override for the live-task count (tests). Defaults to "stamped task
+   *  workspaces that are still open". */
   countLiveTasks?: () => number;
   /** Owner of `workspaceId` if the ledger knows it as a task workspace (any
    *  status). Defaults to the hosted ledger. */
@@ -103,7 +116,8 @@ function formatClock(ms: number): string {
 export class FanOutGuards {
   private readonly dir: string;
   private readonly now: () => number;
-  private readonly countLiveTasks: () => number;
+  private readonly openWorkspaceIds: () => string[] | null;
+  private readonly countLiveOverride?: () => number;
   private readonly ledgerTaskOwner: (workspaceId: string) => string | null;
 
   /** null until first read. */
@@ -114,18 +128,34 @@ export class FanOutGuards {
    *  reservation stands for tasks that have not started, and after a restart
    *  they never will. */
   private readonly pending = new Map<string, number>();
-  /** Started fan-outs whose tasks are still spawning (live cap only; their
-   *  hourly stamp is already on disk). */
+  /** Started fan-outs: key → tasks not yet through their spawn. Each task
+   *  leaves this count as it settles (see taskSettled), by which time its
+   *  stamped workspace is what counts it. */
   private readonly spawning = new Map<string, number>();
 
   constructor(opts: FanOutGuardsOptions = {}) {
     this.dir = opts.dir ?? getWmuxDir();
     this.now = opts.now ?? Date.now;
-    this.countLiveTasks =
-      opts.countLiveTasks ?? (() => getTaskLedger().list({ openOnly: true }).length);
+    this.openWorkspaceIds =
+      opts.openWorkspaceIds ?? (() => getWorkspaceMirror().getEntries()?.map((e) => e.id) ?? null);
+    this.countLiveOverride = opts.countLiveTasks;
     this.ledgerTaskOwner =
       opts.ledgerTaskOwner ??
       ((ws) => getTaskLedger().findByTaskWorkspace(ws)?.ownerWorkspaceId ?? null);
+  }
+
+  /** Rename a torn store out of the way, so the next write starts clean and
+   *  the evidence survives. Returns the new path, or null if the rename failed. */
+  private quarantine(p: string): string | null {
+    const dest = `${p}${CORRUPT_SUFFIX}${this.now()}`;
+    try {
+      fs.renameSync(p, dest);
+      console.warn(`[fanout] ${path.basename(p)} was unreadable; moved it to ${dest}`);
+      return dest;
+    } catch (err) {
+      console.warn(`[fanout] ${path.basename(p)} is unreadable and could not be moved: ${String(err)}`);
+      return null;
+    }
   }
 
   // ── lineage ──────────────────────────────────────────────────────────────
@@ -134,23 +164,41 @@ export class FanOutGuards {
     return path.join(this.dir, FANOUT_LINEAGE_FILENAME);
   }
 
-  /** Load the lineage store. THROWS when the file exists but cannot be read
-   *  or parsed — a caller must treat that as "maybe a task" and refuse. */
+  /** Quarantined lineage stores still on disk. While one exists, the stamps it
+   *  held are lost, so no wire caller can be shown not to be a task. */
+  private quarantinedLineage(): string | null {
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.dir);
+    } catch {
+      return null;
+    }
+    const hit = names.find((n) => n.startsWith(FANOUT_LINEAGE_FILENAME + CORRUPT_SUFFIX));
+    return hit ? path.join(this.dir, hit) : null;
+  }
+
+  /** Load the lineage store. A file that exists but does not parse is moved
+   *  aside (and reported by fanoutOwnerOf until the operator removes it), and
+   *  a fresh, empty store takes its place — so markTask keeps working. */
   private loadLineage(): Map<string, LineageStamp> {
     if (this.lineage) return this.lineage;
     const p = this.lineagePath();
     const map = new Map<string, LineageStamp>();
     if (fs.existsSync(p)) {
-      const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as unknown;
-      const tasks = (raw as { tasks?: unknown } | null)?.tasks;
-      if (!tasks || typeof tasks !== 'object' || Array.isArray(tasks)) {
-        throw new Error(`${FANOUT_LINEAGE_FILENAME} has no tasks map`);
-      }
-      for (const [ws, v] of Object.entries(tasks as Record<string, unknown>)) {
-        const s = v as Partial<LineageStamp> | null;
-        if (s && typeof s.owner === 'string' && s.owner.length > 0) {
-          map.set(ws, { owner: s.owner, at: typeof s.at === 'number' ? s.at : 0 });
+      try {
+        const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as unknown;
+        const tasks = (raw as { tasks?: unknown } | null)?.tasks;
+        if (!tasks || typeof tasks !== 'object' || Array.isArray(tasks)) {
+          throw new Error('no tasks map');
         }
+        for (const [ws, v] of Object.entries(tasks as Record<string, unknown>)) {
+          const s = v as Partial<LineageStamp> | null;
+          if (s && typeof s.owner === 'string' && s.owner.length > 0) {
+            map.set(ws, { owner: s.owner, at: typeof s.at === 'number' ? s.at : 0 });
+          }
+        }
+      } catch {
+        if (!this.quarantine(p)) throw new Error(`${FANOUT_LINEAGE_FILENAME} is unreadable and could not be moved aside`);
       }
     }
     this.lineage = map;
@@ -161,10 +209,19 @@ export class FanOutGuards {
    * The workspace that fanned `workspaceId` out, or null when it is not a
    * fan-out task. Reads the stamp first, then the ledger (status-independent:
    * a worker that marked itself `failed` is still a task). THROWS when the
-   * stamp store is unreadable — the depth-1 check refuses on a throw.
+   * stamps cannot be trusted — an unreadable store, or one that was torn and
+   * moved aside — and the depth-1 check refuses on a throw.
    */
   fanoutOwnerOf(workspaceId: string): string | null {
-    const stamp = this.loadLineage().get(workspaceId);
+    const map = this.loadLineage();
+    const lost = this.quarantinedLineage();
+    if (lost) {
+      throw new Error(
+        `the fan-out lineage store was unreadable and was moved to ${lost}; the task stamps it held are lost. ` +
+          'Delete that file once no fan-out task is still running to allow agent fan-out again',
+      );
+    }
+    const stamp = map.get(workspaceId);
     if (stamp) return stamp.owner;
     return this.ledgerTaskOwner(workspaceId);
   }
@@ -187,6 +244,22 @@ export class FanOutGuards {
     this.lineage = next;
   }
 
+  /**
+   * Live fan-out tasks: stamped task workspaces that are still OPEN. Not the
+   * ledger status — a worker can mark its own row completed or failed while
+   * its agent keeps running, and a task whose materialization failed never
+   * gets a row at all. THROWS when the open set is unknown (renderer not up).
+   */
+  liveTaskCount(): number {
+    if (this.countLiveOverride) return this.countLiveOverride();
+    const open = this.openWorkspaceIds();
+    if (!open) throw new Error('the open workspace list is not available yet');
+    const stamps = this.loadLineage();
+    let n = 0;
+    for (const ws of open) if (stamps.has(ws)) n++;
+    return n;
+  }
+
   // ── caps ─────────────────────────────────────────────────────────────────
 
   private capsPath(): string {
@@ -195,25 +268,36 @@ export class FanOutGuards {
 
   private loadHourly(): HourlyStamp[] {
     if (this.hourly) return this.hourly;
+    const p = this.capsPath();
     let list: HourlyStamp[] = [];
-    try {
-      const p = this.capsPath();
-      if (fs.existsSync(p)) {
+    if (fs.existsSync(p)) {
+      try {
         const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as { starts?: unknown };
-        if (Array.isArray(raw.starts)) {
-          list = raw.starts.filter(
-            (s): s is HourlyStamp =>
-              !!s &&
-              typeof (s as HourlyStamp).id === 'string' &&
-              typeof (s as HourlyStamp).at === 'number' &&
-              typeof (s as HourlyStamp).count === 'number',
-          );
+        if (!Array.isArray(raw.starts)) throw new Error('no starts list');
+        list = raw.starts.filter(
+          (s): s is HourlyStamp =>
+            !!s &&
+            typeof (s as HourlyStamp).id === 'string' &&
+            typeof (s as HourlyStamp).at === 'number' &&
+            typeof (s as HourlyStamp).count === 'number',
+        );
+      } catch {
+        // A torn caps file must not hand a loop a fresh hour: treat the hour
+        // it was last written in as FULL, and keep the file for inspection.
+        let mtime = this.now();
+        try {
+          mtime = fs.statSync(p).mtimeMs;
+        } catch {
+          // keep now
+        }
+        this.quarantine(p);
+        list = [{ id: 'unreadable-caps-file', at: mtime, count: FANOUT_HOURLY_TASK_CAP }];
+        try {
+          atomicWriteJSONSync(p, { version: 1, starts: list });
+        } catch {
+          // in memory is enough for this process
         }
       }
-    } catch {
-      // A torn caps file must not refuse fan-out forever; an empty window is
-      // the honest reading of "no record".
-      list = [];
     }
     this.hourly = list;
     return list;
@@ -238,22 +322,34 @@ export class FanOutGuards {
     for (const n of this.pending.values()) pendingCount += n;
     let spawningCount = 0;
     for (const n of this.spawning.values()) spawningCount += n;
-    const live = this.countLiveTasks() + pendingCount + spawningCount;
+    let liveNow: number;
+    try {
+      liveNow = this.liveTaskCount();
+    } catch (err) {
+      return {
+        ok: false,
+        message: `fan-out refused: the live-task count is unavailable (${(err as Error).message}); retry shortly`,
+      };
+    }
+    const live = liveNow + pendingCount + spawningCount;
     if (live + count > FANOUT_LIVE_TASK_CAP) {
       return {
         ok: false,
         message:
           `fan-out refused: at most ${FANOUT_LIVE_TASK_CAP} fan-out tasks may be live at once across wmux ` +
-          `(${live} live now, ${count} requested). It frees as live tasks finish — close or complete one first.`,
+          `(${live} live now, ${count} requested). It frees as task workspaces are closed — close one first.`,
       };
     }
 
-    const started = hourly.reduce((sum, s) => sum + s.count, 0) + pendingCount;
+    const recorded = hourly.reduce((sum, s) => sum + s.count, 0);
+    const started = recorded + pendingCount;
     if (started + count > FANOUT_HOURLY_TASK_CAP) {
-      // Walk the window oldest-first to the stamp whose expiry makes room.
+      // Walk the recorded window oldest-first to the stamp whose expiry makes
+      // room. Pending reservations do not expire on a clock — if the excess is
+      // theirs, room frees when those fan-outs start or are dropped.
       const sorted = [...hourly].sort((a, b) => a.at - b.at);
       let freed = 0;
-      let freesAt = now + FANOUT_CAP_WINDOW_MS;
+      let freesAt: number | null = null;
       for (const s of sorted) {
         freed += s.count;
         if (started - freed + count <= FANOUT_HOURLY_TASK_CAP) {
@@ -261,11 +357,15 @@ export class FanOutGuards {
           break;
         }
       }
+      const when =
+        freesAt !== null
+          ? `Room frees at ${formatClock(freesAt)}.`
+          : 'Room frees as the fan-outs still waiting to start begin or are dropped.';
       return {
         ok: false,
         message:
           `fan-out refused: at most ${FANOUT_HOURLY_TASK_CAP} fan-out tasks may start per rolling hour across wmux ` +
-          `(${started} started in the last hour, ${count} requested). Room frees at ${formatClock(freesAt)}.`,
+          `(${started} started or starting in the last hour, ${count} requested). ${when}`,
       };
     }
 
@@ -273,25 +373,26 @@ export class FanOutGuards {
     return { ok: true };
   }
 
-  /** The fan-out never started (preflight failure, denial, repo moved): its
-   *  reservation stops counting against either cap. */
+  /** The fan-out never started (preflight failure, denial, repo moved, a
+   *  throw): its reservation stops counting against either cap. */
   release(key: string): void {
     this.pending.delete(key);
   }
 
   /**
    * The fan-out is about to spawn: its hourly stamp goes to disk, so a restart
-   * does not hand a loop a fresh hour, and its slots keep counting against the
-   * live cap until {@link settleStarted}. Only STARTED fan-outs are persisted —
-   * a reservation that was denied never touched the file.
+   * does not hand a loop a fresh hour, and its tasks keep counting against the
+   * live cap until each one settles. Only STARTED fan-outs are persisted — a
+   * reservation that was denied never touched the file. Stamps are only ever
+   * appended, never replaced: a key reused after a restart adds to the hour.
    */
   commitStart(key: string): void {
     const count = this.pending.get(key);
     if (count === undefined) return;
     this.pending.delete(key);
-    this.spawning.set(key, count);
+    this.spawning.set(key, (this.spawning.get(key) ?? 0) + count);
     const now = this.now();
-    const hourly = this.loadHourly().filter((s) => s.at > now - FANOUT_CAP_WINDOW_MS && s.id !== key);
+    const hourly = this.loadHourly().filter((s) => s.at > now - FANOUT_CAP_WINDOW_MS);
     const next = [...hourly, { id: key, at: now, count }];
     try {
       this.saveHourly(next);
@@ -302,8 +403,15 @@ export class FanOutGuards {
     }
   }
 
-  /** The fan-out finished spawning: its tasks are ledger rows now, so its
-   *  in-flight slots stop counting. The hourly stamp stays — it started. */
+  /** One task of a started fan-out finished its spawn (either way). From here
+   *  its stamped workspace, if it got one, is what counts it. */
+  taskSettled(key: string): void {
+    const left = (this.spawning.get(key) ?? 0) - 1;
+    if (left > 0) this.spawning.set(key, left);
+    else this.spawning.delete(key);
+  }
+
+  /** The fan-out's run returned: whatever is still booked for it is dropped. */
   settleStarted(key: string): void {
     this.spawning.delete(key);
   }
@@ -347,6 +455,25 @@ export class FanOutGuards {
     }
     return out;
   }
+}
+
+/**
+ * The pty.create half of the lineage stamp. A fan-out task pane's create carries
+ * `fanoutTaskOf`; the stamp is written right there, before the PTY (and the
+ * agent its initialCommand launches) exists. Doing it inside the create rather
+ * than as a separate renderer round-trip keeps the renderer's spawn free of an
+ * extra await — during which the empty-leaf funnel would race it with a plain
+ * shell. Throws (failing the create) when the stamp cannot be written.
+ */
+export function stampFanoutTaskPane(
+  options: { fanoutTaskOf?: unknown; workspaceId?: unknown } | undefined,
+  guards: Pick<FanOutGuards, 'markTask'> = getFanOutGuards(),
+): void {
+  const owner = typeof options?.fanoutTaskOf === 'string' ? options.fanoutTaskOf : '';
+  if (!owner) return;
+  const ws = typeof options?.workspaceId === 'string' ? options.workspaceId : '';
+  if (!ws) throw new Error('PTY_CREATE: a fan-out task pane needs its workspaceId for the lineage stamp');
+  guards.markTask(ws, owner);
 }
 
 let hosted: FanOutGuards | null = null;

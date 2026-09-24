@@ -2483,8 +2483,9 @@ function TabBrowser() {
 // it is read and written over IPC, never through the renderer store.
 function FanoutWorkersSection() {
   const t = useT();
-  const fanoutRequireApproval = useStore((s) => s.fanoutRequireApproval);
-  const setFanoutRequireApproval = useStore((s) => s.setFanoutRequireApproval);
+  // Main-side too: main makes the approval decision, so the switch it reads
+  // is the one this row writes.
+  const [requireApproval, setRequireApprovalState] = useState(false);
   const [mode, setMode] = useState<FanoutWorkerPermissionMode>(DEFAULT_FANOUT_WORKER_PERMISSION_MODE);
   const [allowResult, setAllowResult] = useState<string | null>(null);
   const [allowing, setAllowing] = useState(false);
@@ -2494,6 +2495,11 @@ function FanoutWorkersSection() {
     window.electronAPI?.fanout?.getWorkerPermissionMode?.()
       .then((m) => {
         if (!cancelled && isFanoutWorkerPermissionMode(m)) setMode(m);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getRequireApproval?.()
+      .then((v) => {
+        if (!cancelled && typeof v === 'boolean') setRequireApprovalState(v);
       })
       .catch(() => undefined);
     return () => {
@@ -2506,6 +2512,13 @@ function FanoutWorkersSection() {
     window.electronAPI.fanout
       .setWorkerPermissionMode(next)
       .then((stored) => setMode(stored))
+      .catch(() => undefined);
+  };
+
+  const onRequireApprovalChange = (next: boolean) => {
+    window.electronAPI.fanout
+      .setRequireApproval(next)
+      .then((stored) => setRequireApprovalState(stored))
       .catch(() => undefined);
   };
 
@@ -2532,8 +2545,8 @@ function FanoutWorkersSection() {
         description={t('settings.fanoutRequireApprovalDesc')}
       >
         <Toggle
-          checked={fanoutRequireApproval}
-          onChange={setFanoutRequireApproval}
+          checked={requireApproval}
+          onChange={onRequireApprovalChange}
           label={t('settings.fanoutRequireApproval')}
         />
       </SettingRow>

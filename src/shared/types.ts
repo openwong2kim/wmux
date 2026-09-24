@@ -906,8 +906,6 @@ export interface SessionData {
    * bypassPermissions without showing the per-request approval prompt.
    */
   a2aAutoApproveExecute?: boolean;
-  /** Ask before a pipe/MCP fan-out runs. Default false. */
-  fanoutRequireApproval?: boolean;
   sidebarPosition?: 'left' | 'right';
   /** Whether the sidebar lifts needs-you workspaces to the top. Default false. */
   sidebarAttentionFirst?: boolean;

@@ -138,9 +138,10 @@ export const IPC = {
   // 조립한다. 렌더러 신뢰 신원(verifiedWorkspaceId)은 channelLocal과 동일 trust
   // basis(Electron 프로세스 경계). 파이프 미노출 — 같은 사용자 MCP 클라가 못 닿는다.
   FANOUT_START: 'fanout:start',
-  FANOUT_MARK_TASK: 'fanout:markTask',
   FANOUT_WORKER_MODE_GET: 'fanout:workerMode:get',
   FANOUT_WORKER_MODE_SET: 'fanout:workerMode:set',
+  FANOUT_REQUIRE_APPROVAL_GET: 'fanout:requireApproval:get',
+  FANOUT_REQUIRE_APPROVAL_SET: 'fanout:requireApproval:set',
   FANOUT_AUDIT_RECENT: 'fanout:audit:recent',
   // J3 태스크 수명주기 — renderer → main(파이프 미노출, channelLocal과 동일 trust).
   //  TASK_CLOSE: remove 성공→close 커밋 순서 오케스트레이션(TaskCloseService).

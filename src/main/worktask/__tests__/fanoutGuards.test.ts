@@ -15,6 +15,7 @@ import {
   FANOUT_LIVE_TASK_CAP,
   FanOutGuards,
   promptDigest,
+  stampFanoutTaskPane,
   type FanOutAuditRecord,
 } from '../fanoutGuards';
 
@@ -129,5 +130,104 @@ describe('audit log', () => {
     expect(recent.map((r) => r.idempotencyKey)).toEqual(['k2', 'k1']);
     expect(fs.readFileSync(path.join(dir, FANOUT_AUDIT_FILENAME), 'utf8').split('\n').filter(Boolean)).toHaveLength(2);
     expect(recent[1].promptSha256[0]).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe('review follow-ups', () => {
+  it('counts live tasks by stamped workspaces that are still open, not by ledger status', () => {
+    const dir = tmpDir();
+    let open: string[] | null = ['ws-a', 'ws-b', 'ws-plain'];
+    const g = new FanOutGuards({ dir, now: () => 1_000_000, openWorkspaceIds: () => open, ledgerTaskOwner: () => null });
+    g.markTask('ws-a', 'ws-owner');
+    g.markTask('ws-b', 'ws-owner');
+    g.markTask('ws-closed', 'ws-owner');
+    expect(g.liveTaskCount()).toBe(2);
+    open = ['ws-plain'];
+    expect(g.liveTaskCount()).toBe(0);
+    // Unknown open set (renderer not up) refuses rather than guessing zero.
+    open = null;
+    const r = g.reserve('k', 1);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.message).toMatch(/live-task count is unavailable/);
+  });
+
+  it('stops counting a task as spawning once it settles, so a spawn is not counted twice', () => {
+    let live = 0;
+    const g = guards(tmpDir(), { live: () => live });
+    expect(g.reserve('big', 4)).toEqual({ ok: true });
+    g.commitStart('big');
+    // Two tasks spawned: their open workspaces now count them.
+    live = 2;
+    g.taskSettled('big');
+    g.taskSettled('big');
+    // 2 live + 2 still spawning = 4, so 4 more fit exactly.
+    expect(g.reserve('other', 4)).toEqual({ ok: true });
+  });
+
+  it('never shrinks the hour: a key reused after a restart adds to it', () => {
+    const dir = tmpDir();
+    const first = guards(dir);
+    expect(first.reserve('same', 8)).toEqual({ ok: true });
+    first.commitStart('same');
+    first.settleStarted('same');
+    const restarted = guards(dir);
+    expect(restarted.reserve('same', 1)).toEqual({ ok: true });
+    restarted.commitStart('same');
+    restarted.settleStarted('same');
+    const raw = JSON.parse(fs.readFileSync(path.join(dir, 'fanout-caps.json'), 'utf8')) as { starts: { count: number }[] };
+    expect(raw.starts.reduce((n, s) => n + s.count, 0)).toBe(9);
+  });
+
+  it('treats a torn caps file as a full hour from its mtime, and keeps the file', () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, 'fanout-caps.json'), '{ torn', 'utf8');
+    const g = new FanOutGuards({ dir, countLiveTasks: () => 0, ledgerTaskOwner: () => null });
+    const r = g.reserve('k', 1);
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.message).toMatch(/per rolling hour/);
+    expect(fs.readdirSync(dir).some((n) => n.startsWith('fanout-caps.json.corrupt-'))).toBe(true);
+  });
+
+  it('names the pending fan-outs, not a clock, when they are what fills the hour', () => {
+    const g = guards(tmpDir());
+    for (let k = 0; k < 3; k++) {
+      expect(g.reserve(`p${k}`, 8)).toEqual({ ok: true });
+      g.commitStart(`p${k}`);
+      g.settleStarted(`p${k}`);
+    }
+    // All 24 are recorded, so a reservation cannot fit until the oldest ages out.
+    const r = g.reserve('x', 1);
+    expect(!r.ok && r.message).toMatch(/Room frees at/);
+
+    const pendingOnly = guards(tmpDir(), { live: () => -100 });
+    for (let k = 0; k < 3; k++) expect(pendingOnly.reserve(`q${k}`, 8)).toEqual({ ok: true });
+    const r2 = pendingOnly.reserve('y', 1);
+    expect(!r2.ok && r2.message).toMatch(/waiting to start/);
+  });
+
+  it('moves a torn lineage store aside: fan-out stays refused with a recovery hint, stamping keeps working', () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, FANOUT_LINEAGE_FILENAME), 'garbage', 'utf8');
+    const g = guards(dir);
+    expect(() => g.fanoutOwnerOf('ws-x')).toThrow(/Delete that file once no fan-out task is still running/);
+    // A human GUI fan-out still stamps its tasks.
+    g.markTask('ws-new-task', 'ws-owner');
+    const moved = fs.readdirSync(dir).find((n) => n.startsWith(`${FANOUT_LINEAGE_FILENAME}.corrupt-`));
+    expect(moved).toBeTruthy();
+    fs.unlinkSync(path.join(dir, moved!));
+    expect(guards(dir).fanoutOwnerOf('ws-new-task')).toBe('ws-owner');
+  });
+});
+
+describe('stampFanoutTaskPane (the pty.create half)', () => {
+  it('stamps a task pane before it is created, ignores ordinary panes, and fails the create when it cannot stamp', () => {
+    const g = guards(tmpDir());
+    stampFanoutTaskPane({ workspaceId: 'ws-plain' }, g);
+    expect(g.fanoutOwnerOf('ws-plain')).toBeNull();
+    stampFanoutTaskPane({ workspaceId: 'ws-task', fanoutTaskOf: 'ws-owner' }, g);
+    expect(g.fanoutOwnerOf('ws-task')).toBe('ws-owner');
+    expect(() => stampFanoutTaskPane({ fanoutTaskOf: 'ws-owner' }, g)).toThrow(/needs its workspaceId/);
+    const broken = { markTask: () => { throw new Error('disk full'); } };
+    expect(() => stampFanoutTaskPane({ workspaceId: 'ws-x', fanoutTaskOf: 'ws-owner' }, broken)).toThrow(/disk full/);
   });
 });

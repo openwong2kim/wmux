@@ -71,7 +71,8 @@ describe('useRpcBridge — fan-out task roles', () => {
     // with, so the role rewrite, the marker decision and the workspace profile
     // are all already in it.
     expect(block).toMatch(/const launchCommand = createOptions\.initialCommand \?\? ''/);
-    expect(block).toMatch(/pty\.create\(createOptions\)/);
+    // (Spread with only the lineage owner added — the command is unchanged.)
+    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf \} : createOptions,?\s*\)/);
   });
 
   it('applies the binding to the launch command via withRoleBinding', () => {
@@ -145,11 +146,19 @@ describe('useRpcBridge — fan-out task roles', () => {
     expect(helper?.[0]).toMatch(/no binding/);
   });
 
-  it('stamps the depth-1 lineage main-side BEFORE the pane (and its agent) exists', () => {
+  it('hands the lineage owner to pty.create (main stamps it inside the create), with no await before it', () => {
     const block = fanoutSpawnBlock();
-    const stamp = block.indexOf('fanout.markTask(newWsId, fanoutTaskOf)');
-    expect(stamp).toBeGreaterThan(-1);
-    expect(stamp).toBeLessThan(block.indexOf('pty.create(createOptions)'));
+    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf \} : createOptions/);
+    // An await between addWorkspace and pty.create lets the empty-leaf funnel
+    // spawn a plain shell into the new pane first.
+    const end = block.indexOf('await window.electronAPI.pty.create(');
+    expect(end).toBeGreaterThan(-1);
+    const between = block
+      .slice(block.indexOf('store.addWorkspace(name)'), end)
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('//'))
+      .join('\n');
+    expect(between).not.toMatch(/\bawait\b/);
   });
 
   it('appends the worker permission flags after the role rewrite and before the marker goes back on', () => {

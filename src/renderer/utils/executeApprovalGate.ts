@@ -218,10 +218,12 @@ export function requestExecuteApproval(input: {
 /**
  * Gate for a fan-out started over the pipe/MCP surface.
  *
- * By default there is no prompt (owner decision 2026-09-24): fan-out runs
- * unattended, and the brakes are main-side — depth-1, the global caps and the
- * audit log (worktask/fanoutGuards.ts). `fanoutRequireApproval` turns the
- * prompt back on.
+ * Whether anyone is asked is MAIN's decision (worktask/fanoutWorkerPolicy.ts),
+ * passed in as `requireApproval`: by default there is no prompt (owner decision
+ * 2026-09-24) and the brakes are main-side — depth-1, the global caps and the
+ * audit log (worktask/fanoutGuards.ts). Deciding it here, from a store that is
+ * only complete once the session has loaded, would let an early request be
+ * waved through by a not-yet-restored default.
  *
  * When it is on: same queue, same dialog, same 30s timer as the execute gate —
  * but deliberately NOT the same consent. `a2aAutoApproveExecute` is the user
@@ -237,8 +239,9 @@ export function requestFanOutApproval(input: {
   repoPath: string;
   taskCount: number;
   messagePreview: string;
+  requireApproval: boolean;
 }): Promise<{ approved: boolean; outcome: ApprovalOutcome }> {
-  if (!useStore.getState().fanoutRequireApproval) {
+  if (!input.requireApproval) {
     return Promise.resolve({ approved: true, outcome: 'auto' });
   }
   return enqueueApproval(

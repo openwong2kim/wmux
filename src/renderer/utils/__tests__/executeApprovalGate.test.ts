@@ -240,32 +240,24 @@ const FANOUT_INPUT = {
   messagePreview: 'refactor the parser',
 };
 
-describe('requestFanOutApproval — default: no prompt', () => {
-  beforeEach(() => {
-    resetGate();
-    useStore.getState().setFanoutRequireApproval(false);
-  });
-
-  it('is off by default', () => {
-    // A fresh store, not the one the other tests toggle.
-    expect(useStore.getInitialState().fanoutRequireApproval).toBe(false);
-  });
+describe('requestFanOutApproval — main said no approval', () => {
+  beforeEach(resetGate);
 
   it('answers approved/auto without raising a dialog', async () => {
-    await expect(requestFanOutApproval(FANOUT_INPUT)).resolves.toEqual({ approved: true, outcome: 'auto' });
+    await expect(requestFanOutApproval({ ...FANOUT_INPUT, requireApproval: false })).resolves.toEqual({
+      approved: true,
+      outcome: 'auto',
+    });
     expect(useStore.getState().pendingExecuteApprovalOrder).toHaveLength(0);
   });
 });
 
-describe('requestFanOutApproval (pipe/MCP fan-out gate, approval turned on)', () => {
-  beforeEach(() => {
-    resetGate();
-    useStore.getState().setFanoutRequireApproval(true);
-  });
+describe('requestFanOutApproval (pipe/MCP fan-out gate, main asked for approval)', () => {
+  beforeEach(resetGate);
 
   it('still asks even when the A2A auto-approve toggle is on', async () => {
     useStore.getState().setA2aAutoApproveExecute(true);
-    const p = requestFanOutApproval(FANOUT_INPUT);
+    const p = requestFanOutApproval({ ...FANOUT_INPUT, requireApproval: true });
     const order = useStore.getState().pendingExecuteApprovalOrder;
     // The execute gate short-circuits here and enqueues nothing; fan-out must not.
     expect(order).toHaveLength(1);
@@ -274,7 +266,7 @@ describe('requestFanOutApproval (pipe/MCP fan-out gate, approval turned on)', ()
   });
 
   it('carries the fan-out shape so the dialog can describe what really happens', async () => {
-    const p = requestFanOutApproval(FANOUT_INPUT);
+    const p = requestFanOutApproval({ ...FANOUT_INPUT, requireApproval: true });
     const approvalId = useStore.getState().pendingExecuteApprovalOrder[0];
     const row = useStore.getState().pendingExecuteApproval;
     expect(row?.fanout).toEqual({ taskCount: 3, repoPath: '/repo' });
@@ -283,7 +275,7 @@ describe('requestFanOutApproval (pipe/MCP fan-out gate, approval turned on)', ()
   });
 
   it('reports a user denial as declined', async () => {
-    const p = requestFanOutApproval(FANOUT_INPUT);
+    const p = requestFanOutApproval({ ...FANOUT_INPUT, requireApproval: true });
     resolveExecuteApproval(useStore.getState().pendingExecuteApprovalOrder[0], false);
     await expect(p).resolves.toEqual({ approved: false, outcome: 'declined' });
   });
@@ -293,7 +285,7 @@ describe('requestFanOutApproval (pipe/MCP fan-out gate, approval turned on)', ()
     // what a fleet running overnight sees on its next poll.
     vi.useFakeTimers();
     try {
-      const p = requestFanOutApproval(FANOUT_INPUT);
+      const p = requestFanOutApproval({ ...FANOUT_INPUT, requireApproval: true });
       beginApprovalCountdown(useStore.getState().pendingExecuteApprovalOrder[0]);
       await vi.advanceTimersByTimeAsync(30_000);
       await expect(p).resolves.toEqual({ approved: false, outcome: 'timeout' });

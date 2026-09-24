@@ -450,6 +450,38 @@ describe('depth-1 lineage stamp', () => {
       'acceptEdits',
     ]);
   });
+
+  it('uses the mode the caller read (the one it audited), reading the store at most once per run', async () => {
+    const renderer = makeRendererFake();
+    const read = vi.fn(() => 'acceptEdits' as const);
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+      workerPermissionMode: read,
+    });
+    await svc.start(baseReq({ workerPermissionMode: 'bypassPermissions' }));
+    expect(read).not.toHaveBeenCalled();
+    expect(renderer.spawned.map((p) => (p as { workerPermissionMode?: string }).workerPermissionMode)).toEqual([
+      'bypassPermissions',
+      'bypassPermissions',
+    ]);
+    await svc.start(baseReq({ idempotencyKey: 'fo-key-2' }));
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases its in-flight live-cap booking one task at a time', async () => {
+    const settled = vi.spyOn(lineage, 'taskSettled');
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: makeRendererFake({ spawnFailOn: (name) => name.includes('Task B') }).port,
+      worktrees: makeWorktreesFake(),
+    });
+    await svc.start(baseReq());
+    // Once per task, the failed one included.
+    expect(settled).toHaveBeenCalledTimes(2);
+    expect(settled).toHaveBeenCalledWith('fo-key-1');
+  });
 });
 
 describe('§0 E2E 정상 — N=2 전부 성공', () => {
