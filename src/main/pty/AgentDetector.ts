@@ -437,6 +437,46 @@ function candidateLines(text: string): string[] {
   return text.split(new RegExp(ROW_BREAK_RE.source, 'g')).filter((l) => l.length > 0);
 }
 
+/**
+ * #1494 — Claude Code's permission dialog, recognised by its structure rather
+ * than by one whole line.
+ *
+ * Ink draws the dialog in whatever shape the frame diff calls for: the
+ * question row can be placed by a CUP with no line break, glued after a diff
+ * row by width padding and autowrap, or split from its filename by a wrap. The
+ * whole-line anchored patterns miss all of those. Loosening them to the row
+ * the TUI drew is not enough on its own: Claude's transcript can hold the same
+ * question on a row of its own (a reply that prints it), and every full
+ * repaint draws that row again.
+ *
+ * What only the live dialog has is the first option row, `❯ 1. Yes`, as the
+ * next thing drawn after the question. So a question counts only when the
+ * next non-blank row is that option row, or when the option is glued onto the
+ * question row by padding. Ink's diff redraw can skip unchanged cells, so the
+ * `.` after the `1` is optional.
+ */
+const DIALOG_FRAME = '[\\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]';
+const DIALOG_QUESTION_RE = new RegExp(
+  `(?:^|${DIALOG_FRAME})(Do\\s*you\\s*want\\s*to\\s*(?:(proceed)\\?|(?:create|overwrite|make\\s*this\\s*edit\\s*to)(?:\\s*\\S[^?]*\\?)?))`,
+  'g',
+);
+const DIALOG_OPTION_RE = new RegExp(`^${DIALOG_FRAME}*❯\\s*1\\.?\\s*Yes\\b`);
+const DIALOG_BLANK_RE = new RegExp(`^${DIALOG_FRAME}*$`);
+const DIALOG_FILENAME_RE = new RegExp(`^${DIALOG_FRAME}*(\\S[^?]*\\?)`);
+const ROW_BREAK_G = new RegExp(ROW_BREAK_RE.source, 'g');
+// eslint-disable-next-line no-control-regex
+const CUP_RE = /\u001b\[[0-9]{0,4}(?:;[0-9]{0,4})?[Hf]/;
+/** Longest incomplete row the dialog scan carries between chunks. */
+const MAX_DIALOG_ROW = 4096;
+interface DialogQuestion {
+  text: string;
+  proceed: boolean;
+  /** `make this edit to` wrapped before its filename. */
+  needsFilename: boolean;
+  /** The whole-line pass emitted an approval in the feed that drew this row. */
+  reported: boolean;
+}
+
 function stripAnsi(line: string): string {
   return line.includes('\u001b') ? line.replace(ANSI_STRIP, '') : line;
 }
@@ -559,6 +599,12 @@ export class AgentDetector {
   // TUIs do not emit these mid-session (none in any replayed Claude buffer
   // after launch), which is what lets a substring gate switch the pane.
   private shellPromptSinceOwner = false;
+  // #1494 dialog scan: the incomplete row carried to the next chunk, and a
+  // question row still waiting for its option row (see DIALOG_QUESTION_RE).
+  private dialogRow = '';
+  private dialogQuestion: DialogQuestion | null = null;
+  // The whole-line pass already reported an approval in this feed() call.
+  private approvalEmittedInFeed = false;
 
   /**
    * Register a callback for agent status events.
@@ -643,6 +689,85 @@ export class AgentDetector {
     // Raw-tail gate check — see processLine: current Claude Code only carries
     // its name inside the OSC window-title escape, which the strip removes.
     if (this.lineBuffer) this.checkGates(this.lineBuffer);
+
+    this.scanDialog(data);
+  }
+
+  /**
+   * Walk the rows of Claude's output as each one completes (the next CR, LF
+   * or CUP arrives), not when the whole line does. Judging a row at the time
+   * it is drawn matters: a dialog row redrawn just before the user answered
+   * can sit in an unfinished line until the post-answer clear completes it,
+   * and reading it then re-raised the dialog after it was gone.
+   */
+  private scanDialog(data: string): void {
+    const approvalEmitted = this.approvalEmittedInFeed;
+    this.approvalEmittedInFeed = false;
+    if (this.lastAgent !== 'Claude Code' || !this.activeAgents.has('Claude Code')) {
+      this.dialogRow = '';
+      this.dialogQuestion = null;
+      return;
+    }
+    const rows = (this.dialogRow + data).split(ROW_BREAK_G);
+    const tail = rows.pop() ?? '';
+    this.dialogRow = tail.length > MAX_DIALOG_ROW ? tail.slice(-MAX_DIALOG_ROW) : tail;
+    for (const row of rows) {
+      if (!this.dialogQuestion && !row.includes('want')) continue;
+      const clean = stripAnsi(row).trim();
+      if (!clean) continue;
+      const q = this.dialogQuestion;
+      this.dialogQuestion = null;
+      if (q) {
+        if (!q.needsFilename && DIALOG_OPTION_RE.test(clean)) {
+          this.emitDialog(q);
+          continue;
+        }
+        if (q.needsFilename) {
+          const m = DIALOG_FILENAME_RE.exec(clean);
+          if (m) {
+            this.afterQuestion({ ...q, text: `${q.text} ${m[1]}`, needsFilename: false }, clean.slice(m[0].length));
+            continue;
+          }
+        }
+      }
+      if (!clean.includes('want')) continue;
+      let last: RegExpExecArray | null = null;
+      DIALOG_QUESTION_RE.lastIndex = 0;
+      for (let m = DIALOG_QUESTION_RE.exec(clean); m; m = DIALOG_QUESTION_RE.exec(clean)) last = m;
+      if (!last) continue;
+      const text = last[1];
+      this.afterQuestion(
+        { text, proceed: last[2] !== undefined, needsFilename: !text.endsWith('?'), reported: approvalEmitted },
+        clean.slice(last.index + last[0].length),
+      );
+    }
+  }
+
+  /** A question row was read; `rest` is what the row holds after it. */
+  private afterQuestion(q: DialogQuestion, rest: string): void {
+    if (DIALOG_BLANK_RE.test(rest)) {
+      this.dialogQuestion = q;
+    } else if (!q.needsFilename && DIALOG_OPTION_RE.test(rest)) {
+      this.emitDialog(q);
+    }
+  }
+
+  private emitDialog(q: DialogQuestion): void {
+    // The whole-line pass already reported this dialog in the feed that drew
+    // its question; a second event with differently spaced text would only
+    // repeat it.
+    if (q.reported) return;
+    const key = 'Claude Code:awaiting_input';
+    const value = q.text.replace(/\s+/g, '');
+    if (this.lastEmittedFor.get(key) === value) return;
+    this.lastEmittedFor.set(key, value);
+    for (const cb of this.callbacks) {
+      cb({
+        agent: 'Claude Code',
+        status: 'awaiting_input',
+        message: q.proceed ? 'Approval requested' : 'Edit approval requested',
+      });
+    }
   }
 
   /**
@@ -876,53 +1001,36 @@ export class AgentDetector {
     // agentName이 확정된다.
     this.checkGates(clean);
 
-    if (this.matchStatus(clean, false)) return;
-
-    // #1494: Claude Code often draws a permission prompt's first frame with
-    // cursor moves and no line break (`…approval ESC[28;2H Do…proceed?
-    // ESC[29;2H ❯ 1. Yes`), so the whole-line pass above sees the prompt row
-    // glued to its neighbours and the anchored approval patterns never match.
-    // Retry on the rows the TUI actually drew. Approval patterns only: they
-    // are whole-line anchored prompts, whereas anchored idle prompts such as
-    // OpenClaude's bare `>` would start firing on an input-box row mid-turn.
-    if (line.includes('\u001b[')) {
-      const rows = candidateLines(line);
-      if (rows.length > 1) {
-        for (const row of rows) {
-          const rowClean = stripAnsi(row).trim();
-          if (rowClean && this.matchStatus(rowClean, true)) return;
-        }
-      }
-    }
-  }
-
-  /** Run the owning agent's status patterns on one cleaned row; true when one matched. */
-  private matchStatus(clean: string, approvalOnly: boolean): boolean {
     // Only check patterns for the agent that currently owns this PTY.
     // Multiple gates can be in activeAgents (Grok reading this file will
     // still mention Claude chrome as source), but status patterns must not
     // flip lastAgent back to the other one.
+    // #1494: a Claude line that places rows with CUP is left to scanDialog for
+    // approvals. Read here, a question row redrawn while the dialog was up
+    // could be judged only when a later clear completed the line — after the
+    // user had answered.
+    const dialogScanned = this.lastAgent === 'Claude Code' && CUP_RE.test(line);
     for (const ap of AGENT_PATTERNS) {
       if (ap.gate && !this.activeAgents.has(ap.agent)) continue;
       if (this.lastAgent && ap.agent !== this.lastAgent) continue;
 
       for (const p of ap.patterns) {
-        if (approvalOnly && p.status !== 'awaiting_input') continue;
+        if (dialogScanned && p.status === 'awaiting_input') continue;
         const match = clean.match(p.regex);
         if (match) {
           const key = `${ap.agent}:${p.status}`;
           const value = match[0];
-          if (this.lastEmittedFor.get(key) === value) return true;
+          if (this.lastEmittedFor.get(key) === value) return;
           this.lastEmittedFor.set(key, value);
           this.lastAgent = ap.agent;
+          if (p.status === 'awaiting_input') this.approvalEmittedInFeed = true;
 
           for (const cb of this.callbacks) {
             cb({ agent: ap.agent, status: p.status, message: match[1] || p.message });
           }
-          return true;
+          return;
         }
       }
     }
-    return false;
   }
 }
