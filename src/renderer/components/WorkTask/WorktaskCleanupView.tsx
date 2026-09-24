@@ -275,6 +275,12 @@ export default function WorktaskCleanupView() {
       st.setActiveWorkspace(ws.id);
       // Bracketed paste, no trailing CR: the line lands at the prompt unrun.
       window.electronAPI.pty.write(ptyId, formatBracketedPastePayload(line));
+      // Hand focus to the terminal holding the line before the list closes, so
+      // the user's next Enter runs it instead of the dialog handing focus back
+      // to its opener (which reopens this list). Loaded lazily: the terminal
+      // registry pulls in xterm, which this view does not otherwise need.
+      const { terminalRegistry } = await import('../../hooks/useTerminal');
+      terminalRegistry.get(ptyId)?.focus();
       setVisible(false);
       pushToast({ level: 'info', message: t('worktask.cleanup.commitLinePrepared') });
     },
@@ -286,17 +292,25 @@ export default function WorktaskCleanupView() {
 
   if (!visible) return null;
 
-  // Escape, the backdrop and the header close all dismiss it (ui/Dialog).
+  // Escape, the backdrop and the header close all dismiss it (ui/Dialog) —
+  // except while a task close is in flight, whose result lands in this list.
+  const closeIfIdle = () => {
+    if (busyTaskId === null) setVisible(false);
+  };
   return (
     <Dialog
-      onClose={() => setVisible(false)}
+      onClose={closeIfIdle}
       closeOnBackdrop
       width={600}
       zIndexClassName="z-50"
       style={{ maxHeight: '70vh' }}
       data-testid="worktask-cleanup"
     >
-      <DialogHeader title={t('worktask.cleanup.title')} closeLabel={t('worktask.cleanup.dismiss')} />
+      <DialogHeader
+        title={t('worktask.cleanup.title')}
+        closeLabel={t('worktask.cleanup.dismiss')}
+        closeDisabled={busyTaskId !== null}
+      />
       <DialogBody className="!gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <p className="m-0 flex-1 min-w-0 truncate text-[11px] text-[var(--text-sub)]" title={scannedRoot || undefined}>
