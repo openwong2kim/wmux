@@ -1,25 +1,22 @@
-// Short muted loops for the welcome dialog and the onboarding tour, re-encoded
-// from the README clips in docs/readme/*.gif (VP9 WebM, 640px, 10 fps, no
-// audio). Each has a still poster for reduced motion and before playback.
-import panesSrc from './panes.webm';
-import panesPoster from './panes-poster.webp';
+// Short muted loops for the welcome dialog and the onboarding tour, recorded
+// from an isolated wmux instance (VP9 WebM, 640px, 10 fps, no audio). Each
+// clip shows exactly what the copy next to it says, and has a still poster
+// for reduced motion and for the frame before playback starts.
+import splitSrc from './split.webm';
+import splitPoster from './split-poster.webp';
 import workspacesSrc from './workspaces.webm';
 import workspacesPoster from './workspaces-poster.webp';
-import fleetSrc from './fleet.webm';
-import fleetPoster from './fleet-poster.webp';
 
 export interface MediaClip {
   src: string;
   poster: string;
 }
 
-export type MediaClipId = 'panes' | 'workspaces' | 'fleet';
+export type MediaClipId = 'split' | 'workspaces';
 
 export const MEDIA_CLIPS: Record<MediaClipId, MediaClip> = {
-  /** Several agents running side by side in split panes (hero.gif 5.3–8.3s). */
-  panes: { src: panesSrc, poster: panesPoster },
-  /** The workspace list growing as new workspaces are added (worktrees.gif 1.6–4.2s). */
+  /** One terminal split right, then down, into a 2x2 grid of shells. */
+  split: { src: splitSrc, poster: splitPoster },
+  /** The + button opening the layout picker and a new workspace joining the list. */
   workspaces: { src: workspacesSrc, poster: workspacesPoster },
-  /** Running and needs-you agents on the Fleet board (fleet.gif 1.8–7.8s). */
-  fleet: { src: fleetSrc, poster: fleetPoster },
 };

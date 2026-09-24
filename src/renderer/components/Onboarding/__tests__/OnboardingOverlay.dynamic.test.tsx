@@ -19,7 +19,7 @@ class NoopResizeObserver {
 }
 
 const STEPS: OnboardingStep[] = [
-  { id: 'a', titleKey: 'onboarding.step1.title', descriptionKey: 'onboarding.step1.description', targetSelector: '#target-a', placement: 'bottom', media: 'panes' },
+  { id: 'a', titleKey: 'onboarding.step1.title', descriptionKey: 'onboarding.step1.description', targetSelector: '#target-a', placement: 'bottom', media: 'split' },
   { id: 'b', titleKey: 'onboarding.step4.title', descriptionKey: 'onboarding.step4.description', targetSelector: '#target-b', placement: 'top' },
 ];
 
@@ -62,13 +62,13 @@ describe('OnboardingOverlay', () => {
     await mount();
     const card = q('onboarding-card');
     expect(card.getAttribute('role')).toBe('dialog');
-    expect(card.hasAttribute('aria-modal')).toBe(false);
+    expect(card.getAttribute('aria-modal')).toBe('true');
     expect(document.getElementById(card.getAttribute('aria-labelledby') ?? '')?.textContent).toBe('Your terminal');
 
     const media = q('onboarding-media');
     expect(media.getAttribute('role')).toBe('img');
     expect(media.getAttribute('aria-label')).toBe('Your terminal');
-    expect(media.querySelector('video')?.getAttribute('src')).toMatch(/panes.*\.webm/);
+    expect(media.querySelector('video')?.getAttribute('src')).toMatch(/split.*\.webm/);
 
     const primaries = card.querySelectorAll('.ui-btn-primary');
     expect(primaries).toHaveLength(1);
@@ -88,6 +88,32 @@ describe('OnboardingOverlay', () => {
     expect(document.activeElement).toBe(q('onboarding-next'));
   });
 
+  it('contains Tab inside the card and gives focus back to the opener at the end', async () => {
+    const opener = document.createElement('button');
+    document.body.appendChild(opener);
+    opener.focus();
+    const onComplete = vi.fn();
+    await mount(onComplete);
+    const card = q('onboarding-card');
+    const tab = (shiftKey = false) => {
+      const e = new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true, cancelable: true });
+      act(() => { (document.activeElement ?? document.body).dispatchEvent(e); });
+      return e;
+    };
+    // Next is last in the card; Tab wraps to Skip, Shift+Tab wraps back.
+    expect(document.activeElement).toBe(q('onboarding-next'));
+    expect(tab().defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(q('onboarding-skip'));
+    expect(tab(true).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(q('onboarding-next'));
+    expect(card.contains(document.activeElement)).toBe(true);
+
+    // The tour ends when its owner unmounts it.
+    await act(async () => root.render(createElement('div')));
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
   it('Done on the last step and Escape both complete the tour', async () => {
     const onComplete = await mount();
     await act(async () => q('onboarding-next').click());
@@ -97,6 +123,11 @@ describe('OnboardingOverlay', () => {
 
     await act(async () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    });
+    expect(onComplete).toHaveBeenCalledTimes(2);
+    // Mid-IME Escape is not a skip.
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true }));
     });
     expect(onComplete).toHaveBeenCalledTimes(2);
   });
@@ -111,6 +142,6 @@ describe('OnboardingOverlay', () => {
     const media = q('onboarding-media');
     expect(media.dataset.motion).toBe('reduced');
     expect(media.querySelector('video')).toBeNull();
-    expect(media.querySelector('img')?.getAttribute('src')).toMatch(/panes-poster.*\.webp/);
+    expect(media.querySelector('img')?.getAttribute('src')).toMatch(/split-poster.*\.webp/);
   });
 });

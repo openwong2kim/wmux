@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useId, useMemo, useRef } from 'react'
 import OnboardingHighlight from './OnboardingHighlight';
 import Button from '../ui/Button';
 import MediaPreview from '../ui/MediaPreview';
+import { useModalLayer } from '../ui/modalLayer';
 import { MEDIA_CLIPS } from '../../assets/media';
 import { ONBOARDING_STEPS } from './steps';
 import type { OnboardingStep } from './steps';
@@ -61,31 +62,17 @@ export default function OnboardingOverlay({
     onComplete();
   }, [onComplete]);
 
-  // Keyboard path: each step puts focus on its forward action, and the
-  // element that had focus before the tour gets it back afterwards. The card
+  // Keyboard path: each step puts focus on its forward action. The card
   // mounts only once the target is measured, so focus is taken from the
   // Next button's ref callback rather than an effect on the step index.
+  // The backdrop blocks the pointer everywhere else, so the card is modal
+  // for the keyboard too: the shared modal layer contains Tab inside it,
+  // routes Escape (never mid-IME) to Skip, and returns focus to the element
+  // that had it before the tour.
   const focusedStepRef = useRef<string | null>(null);
   const titleId = useId();
   const descriptionId = useId();
-  useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    return () => {
-      if (opener && opener.isConnected) opener.focus();
-    };
-  }, []);
-
-  // Close on Escape
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onComplete();
-      }
-    };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
-  }, [onComplete]);
+  const attachLayer = useModalLayer({ onEscape: onComplete });
 
   if (!step) return null;
 
@@ -126,11 +113,12 @@ export default function OnboardingOverlay({
         preferredPosition={step.placement}
       >
         {(placement: TooltipPlacement) => (
-          // A coach mark, not a modal: the spotlighted UI stays the subject,
-          // so the card is a labelled dialog without aria-modal.
           <div
-            className="onboarding-tooltip-card"
+            ref={attachLayer}
+            className="onboarding-tooltip-card ui-surface"
             role="dialog"
+            aria-modal="true"
+            tabIndex={-1}
             aria-labelledby={titleId}
             aria-describedby={descriptionId}
             onClick={(e) => e.stopPropagation()}

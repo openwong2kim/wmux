@@ -539,15 +539,18 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
   const ui = useMemo(() => decideUiState(result, mode), [result, mode]);
   const primary = decidePrimaryAction({
     uiState: ui,
-    sampleState,
+    claudeFound: result?.status.claudeFound ?? false,
+    mcpRegistered: result?.status.mcpRegistered ?? false,
+    registering,
     hooksState: result?.status.claudeFound ? hooksState : 'unknown',
+    sampleState,
   });
 
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <Dialog
       onClose={() => void dismiss()}
-      width={480}
+      width={500}
       initialFocusRef={firstFocusRef}
       data-testid="first-run-wizard"
       backdropTestId="first-run-wizard-backdrop"
@@ -573,8 +576,9 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
 
         {!loading && result && (
           <>
-            <div className="wmux-welcome-checklist">
-              {/* Claude detection status */}
+            {/* Setup checklist: one grouped container, one row per item. Rows
+                that need an action are notice rows with the action on the right. */}
+            <div className="ui-group" data-testid="first-run-wizard-checklist">
               <ClaudeStatusBlock
                 claudeFound={result.status.claudeFound}
                 mcpRegistered={result.status.mcpRegistered}
@@ -615,16 +619,16 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
                   const keys = getRegisterErrorKeys(registerError.code);
                   return (
                     <>
-                      <p className="wmux-welcome-row-title">{t(keys.problem)}</p>
-                      <p className="wmux-welcome-row-detail">{withInlineCode(t(keys.cause))}</p>
-                      <p className="wmux-welcome-row-detail">{withInlineCode(t(keys.fix))}</p>
+                      <p className="ui-row-title">{t(keys.problem)}</p>
+                      <p className="ui-row-detail">{withInlineCode(t(keys.cause))}</p>
+                      <p className="ui-row-detail">{withInlineCode(t(keys.fix))}</p>
                       <Button
                         size="sm"
                         variant="secondary"
                         onClick={() => void handleRegister()}
                         disabled={registering}
                         data-testid="first-run-wizard-register-retry"
-                        className="self-start mt-1"
+                        className="self-start mt-2"
                       >
                         {t('firstRunWizard.registerMcpButton')}
                       </Button>
@@ -665,33 +669,54 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
 
 /**
  * Which action gets the dialog's single solid (primary) button. DESIGN.md:
- * one filled warm action per surface — everything else is raised or ghost.
- * Order follows what unblocks the operator first: the timeout fallback's
- * Continue, then MCP registration, then the required hook install, then the
- * sample task. The optional statusline offer is never primary.
+ * at most one filled warm action per surface, and never one that is disabled
+ * or already running. Order follows what unblocks the operator first: the
+ * timeout fallback's Continue, then MCP registration, then the required hook
+ * install, then the sample task. While any of those is in flight, nothing is
+ * primary — the emphasis does not jump to the next step mid-install. The
+ * optional statusline offer is never primary.
  */
 export type WizardPrimaryAction = 'fallback' | 'register' | 'hooks' | 'try' | null;
 
 export function decidePrimaryAction({
   uiState,
-  sampleState,
+  claudeFound,
+  mcpRegistered,
+  registering,
   hooksState,
+  sampleState,
 }: {
   uiState: WizardUiState | null;
-  sampleState: SampleSubState;
+  claudeFound: boolean;
+  mcpRegistered: boolean;
+  registering: boolean;
   hooksState: HooksSubState;
+  sampleState: SampleSubState;
 }): WizardPrimaryAction {
   if (sampleState === 'timeout-fallback') return 'fallback';
-  if (uiState === 'needs-register') return 'register';
+  if (sampleState === 'splitting' || sampleState === 'awaiting-prompt') return null;
+  // Read from the check result, not uiState: reopen mode still offers Register.
+  if (claudeFound && !mcpRegistered) return registering ? null : 'register';
+  if (hooksState === 'installing') return null;
   if (hooksState === 'offer' || hooksState === 'error') return 'hooks';
   if (uiState === 'ready' && sampleState === 'idle') return 'try';
   return null;
 }
 
-/** Renders `backtick` spans as mono code — commands are machine evidence. */
+/**
+ * Renders `backtick` spans as mono code — commands are machine evidence.
+ * Only balanced pairs become code: a stray backtick (an odd count, e.g. from a
+ * translation) stays literal instead of turning the rest of the text to code.
+ */
 export function withInlineCode(text: string): React.ReactNode {
   const parts = text.split('`');
   if (parts.length < 3) return text;
+  if (parts.length % 2 === 0) {
+    // Odd number of backticks: the last one has no partner.
+    const tail = parts.pop() as string;
+    parts[parts.length - 1] = `${parts[parts.length - 1]}\`${tail}`;
+    if (parts.length < 3) return parts[0];
+  }
   return parts.map((part, i) =>
     i % 2 === 1 ? <code key={i} className="ui-code">{part}</code> : part,
   );
@@ -701,8 +726,11 @@ export function withInlineCode(text: string): React.ReactNode {
 
 type RowStatus = 'ok' | 'todo' | 'warn' | 'error';
 
-/** One checklist line: status glyph, title + optional detail, optional action. */
-function CheckRow({
+/**
+ * One row of a grouped list: status icon, title + optional muted detail, and
+ * for a notice row the action on the right behind a vertical divider.
+ */
+function SetupRow({
   status,
   title,
   detail,
@@ -718,19 +746,19 @@ function CheckRow({
   testId?: string;
 }) {
   return (
-    <div className="wmux-welcome-row" data-status={status} data-testid={testId}>
-      <span className="wmux-welcome-row-glyph" aria-hidden="true">
-        {status === 'ok' && <IconCheck size={14} />}
-        {status === 'warn' && <IconWarning size={14} />}
-        {status === 'error' && <IconWarning size={14} />}
-        {status === 'todo' && <span className="wmux-welcome-row-todo" />}
+    <div className="ui-row" data-status={status} data-testid={testId}>
+      <span className="ui-row-icon" aria-hidden="true">
+        {status === 'ok' && <span className="wmux-welcome-glyph-ok"><IconCheck size={14} /></span>}
+        {status === 'warn' && <span className="wmux-welcome-glyph-warn"><IconWarning size={14} /></span>}
+        {status === 'error' && <span className="wmux-welcome-glyph-error"><IconWarning size={14} /></span>}
+        {status === 'todo' && <span className="wmux-welcome-todo" />}
       </span>
-      <div className="wmux-welcome-row-text">
-        <p className="wmux-welcome-row-title">{title}</p>
-        {detail != null && <p className="wmux-welcome-row-detail">{detail}</p>}
+      <div className="ui-row-text">
+        <p className="ui-row-title">{title}</p>
+        {detail != null && <p className="ui-row-detail">{detail}</p>}
         {children}
       </div>
-      {action != null && <div className="wmux-welcome-row-action">{action}</div>}
+      {action != null && <div className="ui-row-action">{action}</div>}
     </div>
   );
 }
@@ -746,14 +774,14 @@ export function ClaudeStatusBlock({
   mcpRegistered: boolean;
   registering: boolean;
   onRegister: () => void;
-  /** Draw Register as the dialog's primary action. */
+  /** Draw Register as the dialog's primary action (never while registering). */
   primary?: boolean;
 }) {
   const t = useT();
 
   if (!claudeFound) {
     return (
-      <CheckRow
+      <SetupRow
         status="warn"
         testId="first-run-wizard-claude-missing"
         title={t('firstRunWizard.claudeNotDetected')}
@@ -770,28 +798,28 @@ export function ClaudeStatusBlock({
         >
           claude.ai/code
         </a>
-      </CheckRow>
+      </SetupRow>
     );
   }
 
   return (
     <div className="contents" data-testid="first-run-wizard-claude-detected">
-      <CheckRow status="ok" title={t('firstRunWizard.claudeDetected')} />
+      <SetupRow status="ok" title={t('firstRunWizard.claudeDetected')} />
       {mcpRegistered ? (
-        <CheckRow
+        <SetupRow
           status="ok"
           testId="first-run-wizard-mcp-registered"
           title={t('firstRunWizard.mcpRegistered')}
         />
       ) : (
-        <CheckRow
+        <SetupRow
           status="todo"
           testId="first-run-wizard-mcp-not-registered"
           title={t('firstRunWizard.mcpNotRegistered')}
           action={
             <Button
               size="sm"
-              variant={primary ? 'primary' : 'secondary'}
+              variant={primary && !registering ? 'primary' : 'ghost'}
               onClick={onRegister}
               disabled={registering}
               data-testid="first-run-wizard-register"
@@ -814,14 +842,14 @@ export function HooksBlock({
   state: HooksSubState;
   errorDetail?: string | null;
   onInstall: () => void;
-  /** Draw Install as the dialog's primary action. */
+  /** Draw Install as the dialog's primary action (never while installing). */
   primary?: boolean;
 }) {
   const t = useT();
 
   if (state === 'installed') {
     return (
-      <CheckRow
+      <SetupRow
         status="ok"
         testId="first-run-wizard-hooks-installed"
         title={t('firstRunWizard.hooksInstalled')}
@@ -830,8 +858,9 @@ export function HooksBlock({
     );
   }
 
+  const installing = state === 'installing';
   return (
-    <CheckRow
+    <SetupRow
       status={state === 'error' ? 'error' : 'todo'}
       testId="first-run-wizard-hooks-offer"
       title={t('firstRunWizard.hooksHeading')}
@@ -839,24 +868,22 @@ export function HooksBlock({
       action={
         <Button
           size="sm"
-          variant={primary ? 'primary' : 'secondary'}
+          variant={primary && !installing ? 'primary' : 'ghost'}
           onClick={onInstall}
-          disabled={state === 'installing'}
+          disabled={installing}
           data-testid="first-run-wizard-hooks-install"
         >
-          {state === 'installing'
-            ? t('firstRunWizard.hooksInstalling')
-            : t('firstRunWizard.hooksEnableButton')}
+          {installing ? t('firstRunWizard.hooksInstalling') : t('firstRunWizard.hooksEnableButton')}
         </Button>
       }
     >
       {state === 'error' && (
-        <p className="wmux-welcome-row-error" data-testid="first-run-wizard-hooks-error">
+        <p className="ui-row-error" data-testid="first-run-wizard-hooks-error">
           {withInlineCode(t('firstRunWizard.hooksError'))}
           {errorDetail ? <> (<code className="ui-code">{errorDetail}</code>)</> : null}
         </p>
       )}
-    </CheckRow>
+    </SetupRow>
   );
 }
 
@@ -873,7 +900,7 @@ export function StatuslineBlock({
 
   if (state === 'installed') {
     return (
-      <CheckRow
+      <SetupRow
         status="ok"
         testId="first-run-wizard-statusline-installed"
         title={t('firstRunWizard.statuslineInstalled')}
@@ -884,7 +911,7 @@ export function StatuslineBlock({
 
   // Optional and cosmetic, so never the primary action.
   return (
-    <CheckRow
+    <SetupRow
       status={state === 'error' ? 'error' : 'todo'}
       testId="first-run-wizard-statusline-offer"
       title={t('firstRunWizard.statuslineHeading')}
@@ -892,7 +919,7 @@ export function StatuslineBlock({
       action={
         <Button
           size="sm"
-          variant="secondary"
+          variant="ghost"
           onClick={onInstall}
           disabled={state === 'installing'}
           data-testid="first-run-wizard-statusline-install"
@@ -904,15 +931,20 @@ export function StatuslineBlock({
       }
     >
       {state === 'error' && (
-        <p className="wmux-welcome-row-error" data-testid="first-run-wizard-statusline-error">
+        <p className="ui-row-error" data-testid="first-run-wizard-statusline-error">
           {withInlineCode(t('firstRunWizard.statuslineError'))}
           {errorDetail ? <> (<code className="ui-code">{errorDetail}</code>)</> : null}
         </p>
       )}
-    </CheckRow>
+    </SetupRow>
   );
 }
 
+/**
+ * The sample task offer: the clip, then a notice row (title + description ·
+ * divider · action). Try / Continue are the dialog's primary only when
+ * {@link decidePrimaryAction} says so, and never while disabled.
+ */
 export function SampleTaskBlock({
   uiState,
   sampleState,
@@ -934,83 +966,86 @@ export function SampleTaskBlock({
   const enabled = uiState === 'ready' && sampleState === 'idle';
   const isReopen = uiState === 'reopen';
   const date = formatCompletedAt(completedAt);
-  const variant = primary ? 'primary' : 'secondary';
 
-  // The clip shows what the sample task does before anyone presses it.
-  const preview = (
-    <MediaPreview
-      clip={MEDIA_CLIPS.panes}
-      label={t('firstRunWizard.sampleTaskDescription')}
-      data-testid="first-run-wizard-sample-preview"
-    />
+  const frame = (testId: string, row: React.ReactNode, withClip = false) => (
+    <section className="ui-group wmux-welcome-sample" data-testid={testId}>
+      {withClip && (
+        <div className="p-3 pb-0">
+          <MediaPreview
+            clip={MEDIA_CLIPS.split}
+            label={t('firstRunWizard.sampleTaskDescription')}
+            data-testid="first-run-wizard-sample-preview"
+          />
+        </div>
+      )}
+      {row}
+    </section>
   );
 
   // Sample task in progress — show progress states.
   if (sampleState === 'splitting' || sampleState === 'awaiting-prompt') {
-    return (
-      <section className="ui-card wmux-welcome-sample" data-testid="first-run-wizard-sample-running">
-        <div className="wmux-welcome-sample-text">
-          <h3 className="wmux-welcome-row-title">
-            <span className="wmux-welcome-running-dot" aria-hidden="true" />
-            {t('firstRunWizard.sampleTaskHeading')}
-          </h3>
-          <p className="wmux-welcome-row-detail">{t('firstRunWizard.sampleTaskDescription')}</p>
+    return frame(
+      'first-run-wizard-sample-running',
+      <div className="ui-row">
+        <span className="ui-row-icon" aria-hidden="true"><span className="wmux-welcome-running-dot" /></span>
+        <div className="ui-row-text">
+          <p className="ui-row-title">{t('firstRunWizard.sampleTaskHeading')}</p>
+          <p className="ui-row-detail">{t('firstRunWizard.sampleTaskDescription')}</p>
         </div>
-      </section>
+      </div>,
     );
   }
 
   if (sampleState === 'success') {
-    return (
-      <section className="ui-card wmux-welcome-sample" data-testid="first-run-wizard-sample-success">
-        <CheckRow status="ok" title={t('firstRunWizard.sampleTaskHeading')} />
-      </section>
+    return frame(
+      'first-run-wizard-sample-success',
+      <SetupRow status="ok" title={t('firstRunWizard.sampleTaskHeading')} />,
     );
   }
 
   if (sampleState === 'timeout-fallback') {
-    return (
-      <section className="ui-card wmux-welcome-sample" data-testid="first-run-wizard-sample-fallback">
-        <div className="wmux-welcome-sample-text">
-          <p className="wmux-welcome-row-title">{t('firstRunWizard.fallbackPressEnter')}</p>
-        </div>
-        <Button
-          size="md"
-          variant={variant}
-          onClick={onFallbackContinue}
-          data-testid="first-run-wizard-fallback-continue"
-          className="self-start"
-        >
-          {t('firstRunWizard.fallbackButton')}
-        </Button>
-      </section>
+    return frame(
+      'first-run-wizard-sample-fallback',
+      <SetupRow
+        status="todo"
+        title={t('firstRunWizard.fallbackPressEnter')}
+        action={
+          <Button
+            size="sm"
+            variant={primary ? 'primary' : 'secondary'}
+            onClick={onFallbackContinue}
+            data-testid="first-run-wizard-fallback-continue"
+          >
+            {t('firstRunWizard.fallbackButton')}
+          </Button>
+        }
+      />,
     );
   }
 
   if (sampleState === 'error') {
-    return (
-      <section className="ui-card wmux-welcome-sample" data-testid="first-run-wizard-sample-error">
-        <CheckRow status="error" title={t('firstRunWizard.error.UNKNOWN.problem')} />
-      </section>
+    return frame(
+      'first-run-wizard-sample-error',
+      <SetupRow status="error" title={t('firstRunWizard.error.UNKNOWN.problem')} />,
     );
   }
 
   // idle — render the trigger / disabled trigger.
-  return (
-    <section className="ui-card wmux-welcome-sample" data-testid="first-run-wizard-sample-idle">
-      {preview}
-      <div className="wmux-welcome-sample-row">
-        <div className="wmux-welcome-sample-text">
-          <h3 className="wmux-welcome-row-title">{t('firstRunWizard.sampleTaskHeading')}</h3>
-          <p className="wmux-welcome-row-detail">
-            {isReopen
-              ? t('firstRunWizard.alreadyCompleted', { date: date || '—' })
-              : t('firstRunWizard.sampleTaskDescription')}
-          </p>
-        </div>
+  return frame(
+    'first-run-wizard-sample-idle',
+    <div className="ui-row">
+      <div className="ui-row-text">
+        <h3 className="ui-row-title">{t('firstRunWizard.sampleTaskHeading')}</h3>
+        <p className="ui-row-detail">
+          {isReopen
+            ? t('firstRunWizard.alreadyCompleted', { date: date || '—' })
+            : t('firstRunWizard.sampleTaskDescription')}
+        </p>
+      </div>
+      <div className="ui-row-action">
         <Button
-          size="md"
-          variant={enabled ? variant : 'secondary'}
+          size="sm"
+          variant={enabled && primary ? 'primary' : 'secondary'}
           onClick={onTry}
           disabled={!enabled}
           data-testid="first-run-wizard-try"
@@ -1018,6 +1053,7 @@ export function SampleTaskBlock({
           {t('firstRunWizard.tryItButton')}
         </Button>
       </div>
-    </section>
+    </div>,
+    true,
   );
 }

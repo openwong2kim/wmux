@@ -467,18 +467,41 @@ describe('HooksBlock', () => {
 const primaryCount = (html: string) => (html.match(/ui-btn-primary/g) ?? []).length;
 
 describe('decidePrimaryAction', () => {
+  const base = {
+    uiState: 'ready' as const,
+    claudeFound: true,
+    mcpRegistered: true,
+    registering: false,
+    hooksState: 'installed' as const,
+    sampleState: 'idle' as const,
+  };
+
   it('prefers what unblocks the operator first', () => {
-    expect(decidePrimaryAction({ uiState: 'ready', sampleState: 'timeout-fallback', hooksState: 'offer' })).toBe('fallback');
-    expect(decidePrimaryAction({ uiState: 'needs-register', sampleState: 'idle', hooksState: 'offer' })).toBe('register');
-    expect(decidePrimaryAction({ uiState: 'ready', sampleState: 'idle', hooksState: 'offer' })).toBe('hooks');
-    expect(decidePrimaryAction({ uiState: 'ready', sampleState: 'idle', hooksState: 'error' })).toBe('hooks');
-    expect(decidePrimaryAction({ uiState: 'ready', sampleState: 'idle', hooksState: 'installed' })).toBe('try');
+    expect(decidePrimaryAction({ ...base, sampleState: 'timeout-fallback', hooksState: 'offer' })).toBe('fallback');
+    expect(decidePrimaryAction({ ...base, uiState: 'needs-register', mcpRegistered: false, hooksState: 'offer' })).toBe('register');
+    expect(decidePrimaryAction({ ...base, hooksState: 'offer' })).toBe('hooks');
+    expect(decidePrimaryAction({ ...base, hooksState: 'error' })).toBe('hooks');
+    expect(decidePrimaryAction(base)).toBe('try');
   });
 
-  it('has no primary when nothing can be done', () => {
-    expect(decidePrimaryAction({ uiState: 'reopen', sampleState: 'idle', hooksState: 'installed' })).toBeNull();
-    expect(decidePrimaryAction({ uiState: 'claude-missing', sampleState: 'idle', hooksState: 'unknown' })).toBeNull();
-    expect(decidePrimaryAction({ uiState: 'ready', sampleState: 'awaiting-prompt', hooksState: 'installed' })).toBeNull();
+  it('never makes a disabled or in-flight action primary, and does not hand the emphasis on mid-flight', () => {
+    // Registering: Register is disabled, and nothing else takes over.
+    expect(decidePrimaryAction({ ...base, uiState: 'needs-register', mcpRegistered: false, registering: true })).toBeNull();
+    // Installing hooks: Try must not become primary while the install runs.
+    expect(decidePrimaryAction({ ...base, hooksState: 'installing' })).toBeNull();
+    // The sample task itself running.
+    expect(decidePrimaryAction({ ...base, sampleState: 'awaiting-prompt' })).toBeNull();
+    expect(decidePrimaryAction({ ...base, sampleState: 'splitting' })).toBeNull();
+  });
+
+  it('reopen mode still offers Register as the primary when MCP is unregistered', () => {
+    expect(decidePrimaryAction({ ...base, uiState: 'reopen', mcpRegistered: false })).toBe('register');
+    // With nothing to set up, reopen has no primary (the sample task is disabled).
+    expect(decidePrimaryAction({ ...base, uiState: 'reopen' })).toBeNull();
+  });
+
+  it('has no primary when Claude is missing', () => {
+    expect(decidePrimaryAction({ ...base, uiState: 'claude-missing', claudeFound: false, mcpRegistered: false, hooksState: 'unknown' })).toBeNull();
   });
 });
 
@@ -509,6 +532,15 @@ describe('primary styling follows the decision', () => {
       createElement(StatuslineBlock, { state: 'offer', onInstall: noop }),
     );
     expect(primaryCount(html)).toBe(0);
+  });
+
+  it('never draws a disabled Register or Install hooks as primary', () => {
+    const reg = renderToStaticMarkup(
+      createElement(ClaudeStatusBlock, { claudeFound: true, mcpRegistered: false, registering: true, onRegister: noop, primary: true }),
+    );
+    expect(primaryCount(reg)).toBe(0);
+    const hooks = renderToStaticMarkup(createElement(HooksBlock, { state: 'installing', onInstall: noop, primary: true }));
+    expect(primaryCount(hooks)).toBe(0);
   });
 
   it('draws Register and Install hooks as primary only when told to', () => {
@@ -550,5 +582,14 @@ describe('welcome typography and media', () => {
     );
     expect(html).toBe('<p>run <code class="ui-code">wmux setup-hooks</code> from a terminal</p>');
     expect(withInlineCode('no code here')).toBe('no code here');
+  });
+
+  it('leaves an unpaired backtick literal instead of turning the rest into code', () => {
+    const odd = renderToStaticMarkup(
+      createElement('p', null, withInlineCode('run `wmux setup-hooks` then don`t retry')),
+    );
+    expect(odd).toBe('<p>run <code class="ui-code">wmux setup-hooks</code> then don`t retry</p>');
+    const single = renderToStaticMarkup(createElement('p', null, withInlineCode('it`s fine')));
+    expect(single).toBe('<p>it`s fine</p>');
   });
 });

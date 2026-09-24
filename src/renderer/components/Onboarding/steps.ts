@@ -7,8 +7,8 @@ export interface OnboardingStep {
   targetSelector: string;
   /** Preferred tooltip placement relative to the highlighted element */
   placement: 'top' | 'bottom' | 'left' | 'right';
-  /** Short looping clip (assets/media) showing the feature in use. Steps
-   *  without a fitting clip show text only. */
+  /** Short looping clip (assets/media) that shows exactly what the step's
+   *  copy describes. Steps without such a clip show text only. */
   media?: MediaClipId;
 }
 
@@ -26,7 +26,7 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     descriptionKey: 'onboarding.step1.description',
     targetSelector: '[data-onboarding-target="pane-area"]',
     placement: 'bottom',
-    media: 'panes',
+    media: 'split',
   },
   {
     id: 'add-workspace',
@@ -42,7 +42,6 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     descriptionKey: 'onboarding.step3.description',
     targetSelector: '[data-onboarding-target="status-bar"]',
     placement: 'top',
-    media: 'fleet',
   },
   {
     id: 'command-palette',
@@ -57,6 +56,5 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     descriptionKey: 'onboarding.step5.description',
     targetSelector: '[data-onboarding-target="notification-bell"]',
     placement: 'top',
-    media: 'fleet',
   },
 ];
