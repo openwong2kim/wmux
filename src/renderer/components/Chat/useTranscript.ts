@@ -87,12 +87,12 @@ export function useTranscript(ptyId: string, active: boolean, api: ChatBridgeApi
         if (!fresh()) return;
         if (!page) throw new Error('snapshot unavailable');
         const previous = pageRef.current;
-        const reset = replace || changed || !previous || page.cursor.fileSize < previous.cursor.tailOffset;
+        const reset = replace || changed || !previous || page.cursor.historyEpoch !== previous.cursor.historyEpoch || page.cursor.fileSize < previous.cursor.tailOffset;
         if (reset) historyVersion.current++;
         pageRef.current = reset ? page : { ...page, hasMore: previous.hasMore,
           cursor: { ...page.cursor, headOffset: previous.cursor.headOffset } };
         setState((s) => ({ ...s, status, loading: false, error: false, lastSyncedAt: Date.now(),
-          blocked: gateAtStart === gateVersion ? gates === null || gates.includes(ptyId) : s.blocked,
+          blocked: status.managed ? status.managed.phase !== 'ready' : gateAtStart === gateVersion ? gates === null || gates.includes(ptyId) : s.blocked,
           events: reset ? page.events : mergeTranscriptEvents(s.events, page.events),
           hasMore: pageRef.current!.hasMore,
         }));
@@ -111,7 +111,8 @@ export function useTranscript(ptyId: string, active: boolean, api: ChatBridgeApi
     const apply = (delta: TranscriptAppendData) => {
       if (!current() || !connected) return;
       if (loading) { queued.push(delta); return; }
-      if (delta.reset || (lastSeq !== undefined && delta.seq > lastSeq + 1)) {
+      if (delta.status?.managed) setState((s) => ({ ...s, status: delta.status!, blocked: delta.status!.managed!.phase !== 'ready' }));
+      if (delta.reset || (pageRef.current && delta.cursor.historyEpoch !== pageRef.current.cursor.historyEpoch) || (lastSeq !== undefined && delta.seq > lastSeq + 1)) {
         lastSeq = delta.seq;
         historyVersion.current++;
         pageRef.current = null;
@@ -130,7 +131,7 @@ export function useTranscript(ptyId: string, active: boolean, api: ChatBridgeApi
     const offGate = api.onGate((id, gate) => {
       if (id === ptyId && current()) {
         gateVersion++;
-        setState((s) => ({ ...s, blocked: gate.kind === 'open' }));
+        setState((s) => s.status.managed ? s : ({ ...s, blocked: gate.kind === 'open' }));
       }
     });
     const offDisconnected = window.electronAPI?.daemon?.onDisconnected?.(() => {

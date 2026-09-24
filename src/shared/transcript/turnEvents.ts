@@ -19,6 +19,8 @@ export type TurnEventKind =
   | 'meta';
 
 interface TurnEventBase {
+  turnId?: string;
+  truncated?: boolean;
   /**
    * Transcript entry uuid when present, else `${offset}:${index}`. Stable
    * across re-reads so the renderer can key rows and dedup a re-snapshot.
@@ -146,6 +148,7 @@ export interface ToolResultEvent extends TurnEventBase {
    * Renders as the workspace-diff chip, never inline.
    */
   diffLike?: boolean;
+  files?: { path: string; patch: string; additions?: number; deletions?: number; truncated?: boolean }[];
 }
 
 export interface MetaEvent extends TurnEventBase {
@@ -177,6 +180,8 @@ export type TurnEvent =
 
 /** Byte-offset cursor into a transcript file (see daemon readTail). */
 export interface TranscriptCursor {
+  /** Managed-history generation; changes when retained indices become invalid. */
+  historyEpoch?: string;
   /** Byte offset of the first COMPLETE line in the returned page. */
   headOffset: number;
   /** Byte offset just past the last complete line consumed (the tail mark). */
@@ -195,6 +200,7 @@ export interface TranscriptPage {
 }
 
 export interface TranscriptStatus {
+  managed?: import('./chatSession').ManagedChatStatus;
   /** Live daemon state, separate from whether saved history can be read. */
   agentStatus?: import('../types').AgentStatus;
   agentAlive?: boolean;
@@ -217,6 +223,7 @@ export interface TranscriptStatus {
 }
 
 export interface TranscriptAppendData {
+  status?: TranscriptStatus;
   seq: number;
   /** File shrank/rotated or a new session started — consumer must re-snapshot. */
   reset?: boolean;
@@ -239,8 +246,9 @@ export interface TranscriptAppendData {
 export type ChatSendResult = 'sent' | 'busy' | 'blocked' | 'unconfirmed' | 'session_changed' | 'unavailable' | 'error';
 
 export interface ChatBridgeApi {
+  controls?: import('./chatSession').ChatControls;
   /** Identity-bound, daemon-serialized input into the existing Claude process. */
-  send: (args: { ptyId: string; agentSessionId: string; text: string }) => Promise<{ result: ChatSendResult }>;
+  send: (args: { ptyId: string; agentSessionId: string; text: string; requestId?: string }) => Promise<{ result: ChatSendResult }>;
   status: (ptyId: string) => Promise<TranscriptStatus>;
   /** `before` pages BACKWARD from a prior cursor.headOffset; omit for the tail. */
   snapshot: (ptyId: string, before?: number) => Promise<TranscriptPage | null>;

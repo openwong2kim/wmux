@@ -372,3 +372,15 @@ The capability column below summarises the table. Three sentinels:
 Methods marked **bold** are surfaced in the approval dialog with stronger user-facing language (spec §3.6 — terminal-content / terminal-input risk classes).
 
 The full machine-readable map (with path extractors and `multiPathMode` flags) lives at `src/main/mcp/methodCapabilityMap.ts`. `tsc --noEmit` enforces totality via `Record<RpcMethod, ...>` so a new RPC method without a map entry fails the build.
+
+### Managed chat (internal, first-party desktop only)
+
+`daemon.chat.providers`, `daemon.chat.start`, `daemon.chat.reconnect`,
+`daemon.chat.cancel`, `daemon.chat.respond`, and `daemon.chat.close` are private
+main-process RPCs, guarded by the existing first-party client identity. They are
+not exposed as public MCP tools or HTTP routes. Managed chat reuses the private
+`daemon.transcript.*` read/send subscription surface; optional managed status,
+request IDs, file previews, and history generations are defined in
+`src/shared/transcript/`. See [managed chat](../managed-chat.md) for delivery,
+retention, and capability semantics. A future mobile bridge needs its own
+explicit authenticated contract; these methods grant no remote access.

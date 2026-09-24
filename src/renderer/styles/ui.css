@@ -1091,3 +1091,26 @@
 @media (prefers-reduced-motion: reduce) {
   .ui-switch, .ui-switch-knob, .ui-checkbox, .ui-select > select, .ui-segment { transition: none; }
 }
+
+/* Provider-independent chat controls; uses the existing wmux theme. */
+.wmux-chat-controls { flex-shrink: 0; padding: 8px 16px; font-size: 12px; max-height: 42%; overflow: auto; }
+.wmux-chat-controls:empty { display: none; }
+.wmux-chat-control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.wmux-chat-control-row select { background: var(--bg-base); color: var(--text-main); border: 1px solid var(--border-soft); padding: 6px; }
+.wmux-chat-controls p { margin: 6px 0; color: var(--text-sub); }
+.wmux-chat-interaction { margin-top: 12px; padding: 12px; border: 1px solid var(--border-soft); border-radius: 8px; }
+.wmux-chat-interaction pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; margin: 8px 0; }
+.wmux-chat-interaction fieldset { display: grid; gap: 6px; margin: 8px 0; }
+.wmux-chat-interaction label { display: flex; align-items: center; gap: 6px; }
+.wmux-chat-interaction input[type=text], .wmux-chat-interaction input[type=password] { background: var(--bg-base); color: var(--text-main); border: 1px solid var(--border-soft); padding: 8px; }
+
+.wmux-chat-activity { border-bottom: 1px solid var(--border-soft); padding: 12px 0; }
+.wmux-chat-activity > summary { cursor: pointer; color: var(--text-sub); font-size: 12px; }
+
+.wmux-chat-file { border: 1px solid var(--border-soft); border-radius: 10px; padding: 12px 16px; margin: 8px 0; }
+.wmux-chat-file summary { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; cursor: pointer; }
+.wmux-chat-file summary > span:first-child { flex: 1; overflow-wrap: anywhere; min-width: 100px; }
+.wmux-chat-file-counts { display: flex; gap: 6px; font-variant-numeric: tabular-nums; }
+.wmux-chat-added { color: var(--accent-green); }
+.wmux-chat-deleted { color: var(--accent-red); }
+.wmux-chat-file pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; font-size: 12px; margin-top: 12px; }

@@ -124,6 +124,10 @@ import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, ty
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
 import { chatAgentStatus } from './transcript/chatAgentStatus';
 import { deliverChatPrompt } from './transcript/deliverChatPrompt';
+import { ChatSessionService } from './chat/ChatSessionService';
+import { chatProviders } from './chat/providers';
+import { record as chatRecord } from './chat/adapter';
+import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
 // registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives
@@ -156,6 +160,10 @@ let hookIngest: HookIngest | null = null;
 // handle at fire time and a null is simply "not configured yet".
 let webhookSink: WebhookSink | null = null;
 let transcriptProjector: TranscriptProjector | null = null;
+let chatSessions: ChatSessionService | null = null;
+const chatSubscribers = new Map<string, Set<string>>();
+const chatPushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const chatPushSeq = new Map<string, number>();
 let transcriptDiscovery: TranscriptDiscovery | null = null;
 // #1163 — registerRpcHandlers' canonical agent-state reader (readDaemonAgentState),
 // read by BOTH WebTerminalServer construction sites for /api/workspaces. Module-
@@ -3160,6 +3168,52 @@ function registerRpcHandlers(
     return {ok:desktopPhoneBridge!.complete(ctx.clientId,params)};
   });
   pipeServer.onClientClose(id => desktopPhoneBridge?.disconnect(id));
+  if (!chatSessions) {
+    try {
+      chatSessions = new ChatSessionService({
+        directory: path.join(wmuxDir, 'chat-sessions'), providers: chatProviders(wmuxDir),
+        pane: (id) => {
+          const pane = sessionManager.getSession(id);
+          return pane?.meta.spawnCwd ? { cwd: pane.meta.spawnCwd, env: pane.meta.env } : undefined;
+        },
+        changed: (id) => {
+          if (chatPushTimers.has(id)) return;
+          chatPushTimers.set(id, setTimeout(() => {
+            chatPushTimers.delete(id);
+            const page = chatSessions?.snapshot(id); const status = chatSessions?.status(id);
+            if (!page || !status) return;
+            const seq = (chatPushSeq.get(id) ?? 0) + 1; chatPushSeq.set(id, seq);
+            const event: DaemonEvent = { type: 'transcript.appended', sessionId: id,
+              data: { seq, events: page.events, cursor: page.cursor, status } };
+            for (const clientId of chatSubscribers.get(id) ?? []) {
+              if (!pipeServer.sendTo(clientId, event)) chatSubscribers.get(id)?.delete(clientId);
+            }
+          }, 200));
+        },
+      });
+      pipeServer.onClientClose((clientId) => {
+        for (const [id, clients] of chatSubscribers) {
+          clients.delete(clientId); if (!clients.size) chatSubscribers.delete(id);
+        }
+      });
+    } catch { log('error', '[chat] invalid provider configuration; managed chat disabled'); }
+  }
+  pipeServer.onRpc('daemon.chat.providers', async (_params, ctx) =>
+    firstPartyOnly(ctx.clientId, 'chat.providers') ? chatSessions?.listProviders() ?? [] : []);
+  for (const action of ['start', 'reconnect', 'cancel', 'respond', 'close'] as const) {
+    pipeServer.onRpc(`daemon.chat.${action}`, async (params, ctx) => {
+      if (!firstPartyOnly(ctx.clientId, `chat.${action}`) || !chatSessions) return { ok: false, error: 'Unavailable' };
+      const id = typeof params.id === 'string' && params.id.length < 256 ? params.id : '';
+      const sessionId = typeof params.agentSessionId === 'string' ? params.agentSessionId : '';
+      if (!id || !sessionManager.getSession(id)) return { ok: false, error: 'Pane unavailable' };
+      if (action === 'start') return chatSessions.start(id, typeof params.providerId === 'string' ? params.providerId : '');
+      if (action === 'respond') {
+        if (typeof params.requestId !== 'string' || !params.answer || JSON.stringify(params.answer).length > 32_000) return { ok: false, error: 'Invalid response' };
+        return chatSessions.respond(id, sessionId, params.requestId, chatRecord(params.answer) as ChatInteractionAnswer);
+      }
+      return chatSessions[action](id, sessionId);
+    });
+  }
 
   pipeServer.onRpc('daemon.client.identify', async (params, ctx) => {
     const role = typeof params['role'] === 'string' ? params['role'] : '';
@@ -3200,6 +3254,8 @@ function registerRpcHandlers(
       return { available: false, reason: 'not-authorized' };
     }
     const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const managed = chatSessions?.status(id);
+    if (managed) return managed;
     const live = readChatAgentState(id);
     return { ...projector.status(id), agentStatus: live.agentStatus, agentAlive: live.agentName === 'Claude Code' };
   });
@@ -3208,6 +3264,7 @@ function registerRpcHandlers(
     if (!firstPartyOnly(ctx.clientId, 'snapshot')) return null;
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const before = typeof params['before'] === 'number' ? params['before'] : undefined;
+    if (chatSessions?.has(id)) return chatSessions.snapshot(id, before);
     return projector.snapshot(id, before === undefined ? undefined : { before });
   });
 
@@ -3217,11 +3274,18 @@ function registerRpcHandlers(
     }
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     if (!id) return { ok: false, status: { available: false, reason: 'no-binding' } };
+    if (chatSessions?.has(id)) {
+      const clients = chatSubscribers.get(id) ?? new Set<string>();
+      clients.add(ctx.clientId); chatSubscribers.set(id, clients);
+      return { ok: true, status: chatSessions.status(id) };
+    }
     return { ok: true, status: projector.subscribe(ctx.clientId, id) };
   });
 
   pipeServer.onRpc('daemon.transcript.unsubscribe', async (params, ctx) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
+    chatSubscribers.get(id)?.delete(ctx.clientId);
+    if (!chatSubscribers.get(id)?.size) chatSubscribers.delete(id);
     if (id) projector.unsubscribe(ctx.clientId, id);
     return { ok: true };
   });
@@ -3236,7 +3300,7 @@ function registerRpcHandlers(
     const srcOffset = typeof params['srcOffset'] === 'number' ? params['srcOffset'] : -1;
     const n = typeof params['n'] === 'number' ? params['n'] : -1;
     const eventId = typeof params['eventId'] === 'string' ? params['eventId'] : undefined;
-    if (!id) return null;
+    if (!id || chatSessions?.has(id)) return null;
     return projector.codeBlock(id, { srcOffset, n, ...(eventId ? { eventId } : {}) });
   });
 
@@ -3647,6 +3711,7 @@ function registerRpcHandlers(
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const agentSessionId = typeof params['agentSessionId'] === 'string' ? params['agentSessionId'] : '';
     const text = typeof params['text'] === 'string' ? params['text'] : '';
+    if (chatSessions?.has(id)) return { result: await chatSessions.send(id, agentSessionId, text, typeof params.requestId === 'string' ? params.requestId : '') };
     if (!id || !approvalRegistry) return { result: 'unavailable' };
     if (chatSending.has(id)) return { result: 'busy' };
     chatSending.add(id);
@@ -4731,6 +4796,8 @@ function wireEvents(
     // (called by dropPty above) already flipped the record to expired.
     gateBroker?.cancelForSession(payload.id, 'pane-gone');
     // Transcript projection: the pane is gone, so its watch has no reader left…
+    chatSessions?.drop(payload.id);
+    chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
@@ -5234,6 +5301,8 @@ function wireEvents(
     recoveredResumeBindings.delete(payload.id); // X6 ③: drop the exact binding too (id reuse, CodeRabbit)
     hookIngest?.dropPty(payload.id); // M1: ...and the dedup ledger / hook authority
     // Transcript projection: the pane is gone, so its watch has no reader left…
+    chatSessions?.drop(payload.id);
+    chatSubscribers.delete(payload.id);
     transcriptProjector?.dropPty(payload.id);
     // …and nothing left to discover a transcript FOR.
     transcriptDiscovery?.cancel(payload.id);
@@ -5455,6 +5524,9 @@ async function shutdown(
   gateBroker?.cancelAll('daemon-restart');
   // Close every transcript fs.watch and poll timer. All of them are unref'd so
   // none held the process open; this just avoids a read firing mid-shutdown.
+  chatSessions?.dispose();
+  for (const timer of chatPushTimers.values()) clearTimeout(timer);
+  chatPushTimers.clear(); chatSubscribers.clear();
   transcriptProjector?.dispose();
   // Same for the discovery searches — unref'd watch handles and poll timers.
   transcriptDiscovery?.dispose();

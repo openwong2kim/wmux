@@ -21,4 +21,10 @@ describe('transcript message projection', () => {
     expect(mergeTranscriptEvents([user, call], [call, result])).toEqual([user, call, result]);
     expect(mergeTranscriptEvents([call, result], [user, call], true)).toEqual([user, call, result]);
   });
+  it('groups work without swallowing an answer or a file review card', () => {
+    const file: TurnEvent = { ...result, files: [{ path: 'app.ts', patch: '+hi', additions: 1, deletions: 0 }] };
+    const rows = transcriptMessages([user, call, file, { id: 'a', kind: 'assistant_text', text: 'done' }], true);
+    expect(rows.map((row) => row.id)).toEqual(['u', 'activity:t', 'r', 'a']);
+    expect((rows[1].metadata.custom.row as { activity: unknown[] }).activity).toHaveLength(1);
+  });
 });

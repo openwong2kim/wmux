@@ -335,3 +335,9 @@ A v3.0-aware client that follows these patterns is guaranteed to work across all
 8. **For metadata writes, prefer `expectedVersion` when concurrency matters** and skip it when you're the only writer.
 
 These are the patterns the v3.0 [`../PROTOCOL.md`](../PROTOCOL.md) elaborates on.
+
+Managed chat's `daemon.chat.*` methods and optional managed fields on private
+`daemon.transcript.*` responses are **internal**, outside the stable substrate
+contract. They are first-party desktop only, with no public MCP/HTTP exposure.
+See [managed chat](../managed-chat.md) for the current capability and recovery
+limits; clients must not infer terminal takeover or file undo from chat support.
