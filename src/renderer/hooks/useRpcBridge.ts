@@ -2619,22 +2619,36 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
 
     if (executeRequested) {
       const cwd = typeof params.cwd === 'string' ? params.cwd : null;
-      // #1462 — a caller that retries while its first request is still on the
-      // approval prompt must not raise a second prompt for the same work.
-      const pendingTaskId = findPendingExecuteRequest({
+      // #1462 — a caller that resends while its first request is still on the
+      // approval prompt joins that prompt instead of raising a second one, and
+      // gets its verdict. The first request creates the task and main spawns
+      // its worker; the retry reports that task and must not spawn another,
+      // so it never claims executeApproved.
+      const identity = {
         senderWorkspaceId: workspaceId,
+        senderPtyId,
         receiverWorkspaceId: target.id,
+        targetPtyId: toAnchor?.ptyId ?? '',
         cwd,
         message,
-      });
-      if (pendingTaskId) {
+      };
+      const pending = findPendingExecuteRequest(identity);
+      if (pending) {
+        const joinedApproved = await pending.verdict;
+        if (!joinedApproved) {
+          return {
+            ok: false,
+            error: `a2a.task.send: execute approval denied (this resend joined the pending request for task ${pending.taskId})`,
+          };
+        }
         return {
-          ok: false,
-          pendingApproval: true,
-          pendingTaskId,
-          error:
-            `a2a.task.send: an identical execute request (task ${pendingTaskId}) is already ` +
-            'waiting for the user to approve it; no second approval was raised. Do not resend while it is pending.',
+          ok: true,
+          taskId: pending.taskId,
+          toWorkspaceId: target.id,
+          joinedPendingRequest: true,
+          hint:
+            'An identical execute request was already waiting for approval; this send joined it. ' +
+            `Task ${pending.taskId} was approved and started once, by that request.`,
         };
       }
       const approved = await requestExecuteApproval({
@@ -2643,7 +2657,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         receiverWorkspaceId: target.id,
         messagePreview: message.slice(0, 500),
         cwd,
-        message,
+        identity,
       });
       if (!approved) {
         return { ok: false, error: 'a2a.task.send: execute approval denied' };

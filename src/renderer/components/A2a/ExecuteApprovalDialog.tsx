@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import { resolveExecuteApproval } from '../../utils/executeApproval';
-import { beginApprovalCountdown } from '../../utils/executeApprovalGate';
+import { beginApprovalCountdown, pauseApprovalCountdown } from '../../utils/executeApprovalGate';
 import { renderSentence } from '../../i18n/renderSentence';
 import { useT } from '../../hooks/useT';
 
@@ -29,9 +29,22 @@ export default function ExecuteApprovalDialog() {
   // queued behind this one have not started theirs, so a busy queue can no
   // longer expire an approval nobody was shown.
   const shownApprovalId = approval?.approvalId;
+  // Re-armed whenever the shown prompt's clock is not running, including after
+  // the Fleet inbox paused it on its way out (#1462).
+  const countdownStopped = approval ? approval.expiresAt <= 0 : false;
   useEffect(() => {
-    if (shownApprovalId) beginApprovalCountdown(shownApprovalId);
+    if (shownApprovalId && countdownStopped) beginApprovalCountdown(shownApprovalId);
+  }, [shownApprovalId, countdownStopped]);
+  // And it stops when this dialog goes away (the Fleet inbox took over), so a
+  // prompt nobody is looking at does not keep counting down. Unmount only: the
+  // shown prompt changes only once the previous one has settled.
+  const shownRef = useRef(shownApprovalId);
+  useEffect(() => {
+    shownRef.current = shownApprovalId;
   }, [shownApprovalId]);
+  useEffect(() => () => {
+    if (shownRef.current) pauseApprovalCountdown(shownRef.current);
+  }, []);
 
   useEffect(() => {
     if (!approval) return;

@@ -13,8 +13,10 @@
 import { useStore } from '../stores';
 import { generateId } from '../../shared/types';
 import { resolveExecuteApproval, setExecuteApprovalResolver } from './executeApproval';
-
-const EXECUTE_APPROVAL_TIMEOUT_MS = 30_000;
+import {
+  EXECUTE_APPROVAL_HARD_CAP_MS,
+  EXECUTE_APPROVAL_WINDOW_MS,
+} from '../../shared/executeApprovalBounds';
 
 /** How an approval prompt ended. `timeout` is the unattended case, and callers
  *  that report back over the wire need to tell it apart from a real denial. */
@@ -48,16 +50,22 @@ interface ApprovalInput {
  *
  * `autoApprovable` is what separates the two callers: the A2A execute path
  * honours the user's global auto-approve toggle, the fan-out path does not.
+ *
+ * `hardCapMs` bounds the prompt's whole life from the moment it is queued,
+ * shown or not. The execute path needs it because main stops waiting for the
+ * verdict at a fixed point; see EXECUTE_APPROVAL_HARD_CAP_MS.
  */
 function enqueueApproval(
   input: ApprovalInput,
   autoApprovable: boolean,
+  hardCapMs?: number,
 ): Promise<{ approved: boolean; outcome: ApprovalOutcome }> {
   if (autoApprovable && useStore.getState().a2aAutoApproveExecute) {
     return Promise.resolve({ approved: true, outcome: 'approved' });
   }
 
   const approvalId = generateId('approval');
+  const capAt = hardCapMs === undefined ? Infinity : Date.now() + hardCapMs;
 
   return new Promise<{ approved: boolean; outcome: ApprovalOutcome }>((resolve) => {
     let settled = false;
@@ -65,25 +73,42 @@ function enqueueApproval(
     // record which one fired before the verdict collapses to a boolean.
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let capTimer: ReturnType<typeof setTimeout> | null = null;
     const settle = (approved: boolean) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      countdownStarters.delete(approvalId);
+      if (capTimer) clearTimeout(capTimer);
+      countdowns.delete(approvalId);
       useStore.getState().removeExecuteApproval(approvalId);
       resolve({ approved, outcome: approved ? 'approved' : timedOut ? 'timeout' : 'declined' });
     };
-    // The timer starts when the dialog SHOWS this prompt, not now. Only one
-    // prompt is on screen at a time, so a second one used to burn its whole
-    // 30 s behind the first and auto-deny having never been visible — a denial
-    // nobody made, reported to the caller as a timeout.
-    countdownStarters.set(approvalId, () => {
-      if (settled || timer) return;
-      timer = setTimeout(() => {
-        timedOut = true;
-        resolveExecuteApproval(approvalId, false);
-      }, EXECUTE_APPROVAL_TIMEOUT_MS);
-      useStore.getState().setExecuteApprovalExpiry(approvalId, Date.now() + EXECUTE_APPROVAL_TIMEOUT_MS);
+    const expire = () => {
+      timedOut = true;
+      // Stamp the deadline as "now" first: a prompt the cap ends while it is
+      // still queued has expiresAt 0, and the auto-rejected log keys off it.
+      useStore.getState().setExecuteApprovalExpiry(approvalId, Date.now());
+      resolveExecuteApproval(approvalId, false);
+    };
+    if (hardCapMs !== undefined) capTimer = setTimeout(expire, hardCapMs);
+    // The timer starts when a surface SHOWS this prompt, not now. Only one
+    // prompt is on screen at a time in the dialog, so a second one used to
+    // burn its whole 30 s behind the first and auto-deny having never been
+    // visible — a denial nobody made, reported to the caller as a timeout.
+    countdowns.set(approvalId, {
+      start: () => {
+        if (settled || timer) return;
+        timer = setTimeout(expire, EXECUTE_APPROVAL_WINDOW_MS);
+        // The countdown shown is whichever ends first: the window, or the cap.
+        const expiresAt = Math.min(Date.now() + EXECUTE_APPROVAL_WINDOW_MS, capAt);
+        useStore.getState().setExecuteApprovalExpiry(approvalId, expiresAt);
+      },
+      pause: () => {
+        if (settled || !timer) return;
+        clearTimeout(timer);
+        timer = null;
+        useStore.getState().setExecuteApprovalExpiry(approvalId, 0);
+      },
     });
     setExecuteApprovalResolver(approvalId, settle);
     useStore.getState().enqueueExecuteApproval({
@@ -101,42 +126,69 @@ function enqueueApproval(
   });
 }
 
-/** Prompts whose countdown has not started yet, keyed by approval id. */
-const countdownStarters = new Map<string, () => void>();
+/** Countdown controls for every unsettled prompt, keyed by approval id. */
+const countdowns = new Map<string, { start: () => void; pause: () => void }>();
 
 /**
- * Start one prompt's auto-deny countdown. Called by the dialog when it renders
- * that prompt, so the 30 s a caller is told about is 30 s a person could have
- * used. Idempotent, and a no-op for a prompt that already settled.
+ * Start one prompt's auto-deny countdown. Called by the surface that renders
+ * that prompt (the dialog, or the Fleet inbox), so the 30 s a caller is told
+ * about is 30 s a person could have used. Idempotent, and a no-op for a prompt
+ * that already settled.
  */
 export function beginApprovalCountdown(approvalId: string): void {
-  countdownStarters.get(approvalId)?.();
+  countdowns.get(approvalId)?.start();
+}
+
+/**
+ * Stop a prompt's countdown because the surface showing it went away; the next
+ * surface that shows it starts a fresh one. Without this, closing the Fleet
+ * inbox left every row it had shown counting down behind the dialog, which
+ * shows one at a time — and those rows auto-denied unseen. An execute prompt
+ * still ends at its hard cap. No-op when the countdown is not running.
+ */
+export function pauseApprovalCountdown(approvalId: string): void {
+  countdowns.get(approvalId)?.pause();
 }
 
 /** What makes two execute requests "the same request". The task id is minted
  *  per call, so a caller's retry never shares it — the content has to. */
 interface ExecuteRequestIdentity {
   senderWorkspaceId: string;
+  /** The sending pane's pty, or '' when it could not be verified. */
+  senderPtyId: string;
   receiverWorkspaceId: string;
+  /** The pane the task is pinned to, or '' when none was resolved. */
+  targetPtyId: string;
   cwd: string | null;
   /** The full message, not the 500-char preview the dialog shows. */
   message: string;
 }
 
-/** Execute requests waiting on a verdict: request identity → the task id the
- *  first one will create. */
-const pendingExecuteRequests = new Map<string, string>();
+/** An execute request still waiting on the user. */
+export interface PendingExecuteRequest {
+  /** The task the first request creates if it is approved. */
+  taskId: string;
+  /** Resolves with the first request's verdict. */
+  verdict: Promise<boolean>;
+}
+
+/** Execute requests waiting on a verdict, by request identity. */
+const pendingExecuteRequests = new Map<string, PendingExecuteRequest>();
 
 function executeRequestKey(r: ExecuteRequestIdentity): string {
-  return JSON.stringify([r.senderWorkspaceId, r.receiverWorkspaceId, r.cwd, r.message]);
+  return JSON.stringify([
+    r.senderWorkspaceId, r.senderPtyId, r.receiverWorkspaceId, r.targetPtyId, r.cwd, r.message,
+  ]);
 }
 
 /**
- * The task id of an identical execute request that is still waiting on the
- * user, or undefined. A caller that gave up and resent must not raise a second
- * prompt for the same work (#1462) — approving both would run it twice.
+ * An identical execute request that is still waiting on the user, or
+ * undefined. A retry joins it rather than raising a second prompt for the same
+ * work (#1462) — approving both would run it twice. The entry lives exactly as
+ * long as the prompt, which the hard cap ends before main stops waiting, so a
+ * retry can never be pinned to a request nobody will answer.
  */
-export function findPendingExecuteRequest(request: ExecuteRequestIdentity): string | undefined {
+export function findPendingExecuteRequest(request: ExecuteRequestIdentity): PendingExecuteRequest | undefined {
   return pendingExecuteRequests.get(executeRequestKey(request));
 }
 
@@ -146,18 +198,19 @@ export function requestExecuteApproval(input: {
   receiverWorkspaceId: string;
   messagePreview: string;
   cwd: string | null;
-  /** Full message; when given, the request is findable by
-   *  findPendingExecuteRequest until it settles. */
-  message?: string;
+  /** When given, the request is findable by findPendingExecuteRequest until
+   *  it settles. */
+  identity?: ExecuteRequestIdentity;
 }): Promise<boolean> {
-  const { message, ...approvalInput } = input;
-  const key = message === undefined ? null : executeRequestKey({ ...input, message });
-  if (key) pendingExecuteRequests.set(key, input.taskId);
-  return enqueueApproval(approvalInput, true)
-    .then((v) => v.approved)
-    .finally(() => {
-      if (key && pendingExecuteRequests.get(key) === input.taskId) pendingExecuteRequests.delete(key);
-    });
+  const { identity, ...approvalInput } = input;
+  const verdict = enqueueApproval(approvalInput, true, EXECUTE_APPROVAL_HARD_CAP_MS).then((v) => v.approved);
+  if (!identity) return verdict;
+  const key = executeRequestKey(identity);
+  const entry: PendingExecuteRequest = { taskId: input.taskId, verdict };
+  pendingExecuteRequests.set(key, entry);
+  return verdict.finally(() => {
+    if (pendingExecuteRequests.get(key) === entry) pendingExecuteRequests.delete(key);
+  });
 }
 
 /**

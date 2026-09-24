@@ -4,6 +4,7 @@ import { RpcRouter } from '../../RpcRouter';
 import { registerA2aRpc } from '../a2a.rpc';
 import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
 import type { RpcContext } from '../../../../shared/rpc';
+import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../../shared/executeApprovalBounds';
 
 const { sendToRendererMock } = vi.hoisted(() => ({
   sendToRendererMock: vi.fn(),
@@ -112,7 +113,7 @@ describe('a2a.rpc — execute confirmation gate', () => {
       params: { workspaceId: 'ws-from', to: 'ws-to', message: 'run this', execute: true },
     });
     const execOptions = sendToRendererMock.mock.calls[0][3] as { timeoutMs?: number } | undefined;
-    expect(execOptions?.timeoutMs).toBeGreaterThan(30_000);
+    expect(execOptions?.timeoutMs).toBe(EXECUTE_SEND_MAIN_TIMEOUT_MS);
 
     await router.dispatch({
       id: 'rpc-plain',
