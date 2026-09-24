@@ -163,7 +163,9 @@ describe('DiffPanel — adopt and close lifecycle (#1461)', () => {
     // the panel. The discard recipe also unstages and warns what it deletes.
     expect(c.textContent).toContain('the task worktree at /wt still has uncommitted changes');
     expect(c.textContent).toContain('commit the changes and open a PR');
-    expect(c.textContent).toContain('git restore --staged --worktree . && git clean -fd in /wt');
+    expect(c.textContent).toContain('git restore --staged --worktree .; git clean -fd in /wt');
+    // `&&` is a parse error in Windows PowerShell 5.1, the default Windows pane shell.
+    expect(c.textContent).not.toContain('&&');
     expect(c.textContent).toContain('including files that were not adopted');
     expect(adoptButton(c)).not.toBeNull();
 
