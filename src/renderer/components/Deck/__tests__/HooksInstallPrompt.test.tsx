@@ -521,4 +521,23 @@ describe('HooksInstallPrompt — refusals', () => {
     await flush();
     expect(el.querySelector('[data-hooks-install-prompt]')).toBeTruthy();
   });
+
+  // On the shared Dialog: Escape is the same one-modal dismissal as Later —
+  // and, like Later, unavailable while the install write is in flight.
+  it('Escape dismisses like Later, but not mid-install', async () => {
+    let finish: (v: { ok: boolean; error: string | null }) => void = () => undefined;
+    const install = vi.fn(() => new Promise<{ ok: boolean; error: string | null }>((r) => { finish = r; }));
+    const el = render(<HooksInstallPrompt api={apiOf({ install })} t={t} />);
+    await flush();
+    const esc = () => act(() => {
+      (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    act(() => (el.querySelector('[data-hooks-install]') as HTMLButtonElement).click());
+    esc();
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeTruthy();
+    await act(async () => { finish({ ok: false, error: 'nope' }); });
+    await flush();
+    esc();
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeNull();
+  });
 });

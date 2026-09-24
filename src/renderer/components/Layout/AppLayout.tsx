@@ -17,6 +17,7 @@ import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import NotificationPanel from '../Notification/NotificationPanel';
 import FleetView from '../FleetView/FleetView';
+import AutoUpdatePrompt from './AutoUpdatePrompt';
 // TASK-2: the 4 always-mounted overlays are lazy-loaded + render-gated below so
 // their chunks stay out of the cold-boot critical path (SettingsPanel alone is
 // ~4k lines). React.lazy without a render gate is a no-op for FCP, so each is
@@ -1976,49 +1977,13 @@ export default function AppLayout() {
         wizardOpen: showFirstRunWizard !== null,
         firstRunSettled: firstRunCompleted,
       }) && (
-        <div
-          className="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center"
-          style={{ backgroundColor: 'var(--backdrop-modal)' }}
-        >
-          <div
-            className="flex flex-col gap-4 p-6 rounded-xl"
-            style={{
-              width: 400,
-              backgroundColor: 'var(--bg-base)',
-              border: '1px solid var(--bg-surface)',
-              boxShadow: 'var(--shadow-modal)',
-            }}
-          >
-            <p className="text-sm font-semibold text-[color:var(--text-main)] font-mono">
-              {t('firstRun.autoUpdateTitle')}
-            </p>
-            <p className="text-xs text-[color:var(--text-sub)]">
-              {t('firstRun.autoUpdateMessage')}
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => {
-                  useStore.getState().setAutoUpdateEnabled(false);
-                  window.electronAPI.settings.setAutoUpdateEnabled(false);
-                  setShowAutoUpdatePrompt(false);
-                }}
-                className="ui-btn ui-btn-secondary"
-              >
-                {t('firstRun.disable')}
-              </button>
-              <button
-                onClick={() => {
-                  useStore.getState().setAutoUpdateEnabled(true);
-                  window.electronAPI.settings.setAutoUpdateEnabled(true);
-                  setShowAutoUpdatePrompt(false);
-                }}
-                className="ui-btn ui-btn-primary"
-              >
-                {t('firstRun.enable')}
-              </button>
-            </div>
-          </div>
-        </div>
+        <AutoUpdatePrompt
+          onChoose={(enabled) => {
+            useStore.getState().setAutoUpdateEnabled(enabled);
+            window.electronAPI.settings.setAutoUpdateEnabled(enabled);
+            setShowAutoUpdatePrompt(false);
+          }}
+        />
       )}
 
       {/* First-run wizard (T8a). Sits at --z-dialog (70, declared inside the
