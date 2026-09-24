@@ -427,7 +427,7 @@ function KbdRow({ keys, description, disabled, onToggleDisabled, toggleTitle }: 
         {description}
       </span>
       <span className="flex items-center gap-3">
-        <kbd className="settings-kbd" data-disabled={disabled || undefined}>
+        <kbd className="ui-kbd settings-kbd-hint" data-disabled={disabled || undefined}>
           {keys}
         </kbd>
         {onToggleDisabled !== undefined && (

@@ -137,7 +137,7 @@ export function SettingNote({
   ...rest
 }: HTMLAttributes<HTMLParagraphElement> & { tone?: 'muted' | 'warning' | 'danger' }) {
   return (
-    <p className={`settings-note ${className}`} data-tone={tone} {...rest}>
+    <p className={`ui-note settings-note ${className}`} data-tone={tone} {...rest}>
       {children}
     </p>
   );

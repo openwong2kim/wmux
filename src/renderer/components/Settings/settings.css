@@ -125,7 +125,10 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.settings-kbd[data-disabled] { text-decoration: line-through; color: var(--text-muted); }
+/* Read-only shortcut hints are ui/.ui-kbd; these are the clickable key chips
+ * (prefix key, bindings) that open key capture. */
+.settings-kbd-hint { min-height: 22px; padding: 0 7px; }
+.settings-kbd-hint[data-disabled] { text-decoration: line-through; color: var(--text-muted); }
 button.settings-kbd { cursor: pointer; }
 button.settings-kbd:hover { color: var(--text-main); background: var(--surface-fill-hover); }
 
