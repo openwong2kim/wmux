@@ -307,6 +307,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     proc.emitData('Claude Code\n');
     proc.emitData('  bypass permissions on\n'); // #850: compound gate needs prompt evidence
     proc.emitData('Do you want to proceed?\n');
+    proc.emitData(' ❯ 1. Yes\n'); // #1506: the option row is what makes it the dialog
     flush();
 
     expect(mocks.broadcastMetadataUpdate).toHaveBeenCalledWith(
@@ -347,6 +348,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     proc.emitData('Claude Code\n');
     proc.emitData('  bypass permissions on\n'); // #850: compound gate needs prompt evidence
     proc.emitData('Do you want to proceed?\n');
+    proc.emitData(' ❯ 1. Yes\n'); // #1506: the option row is what makes it the dialog
     flush();
 
     // The point of this test is that awaiting_input is NOT vetoed by hook
@@ -490,6 +492,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     proc.emitData('Claude Code\n');
     proc.emitData('  bypass permissions on\n');
     proc.emitData('Do you want to proceed?\n');
+    proc.emitData(' ❯ 1. Yes\n'); // #1506: the option row is what makes it the dialog
     flush();
 
     const events = pollLifecycle();
@@ -531,6 +534,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     proc.emitData('Claude Code\n');
     proc.emitData('  bypass permissions on\n');
     proc.emitData('│ Do you want to proceed?   │\n');
+    proc.emitData('│ ❯ 1. Yes                  │\n'); // #1506: the option row is what makes it the dialog
     flush();
 
     const awaiting = pollLifecycle().find(
@@ -562,6 +566,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     proc.emitData('Claude Code\n');
     proc.emitData('  bypass permissions on\n');
     proc.emitData('│ Do you want to proceed? ╮\n');
+    proc.emitData('│ ❯ 1. Yes                ╯\n'); // #1506: the option row is what makes it the dialog
     flush();
 
     const awaiting = pollLifecycle().find(
@@ -597,6 +602,7 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     proc.emitData('Claude Code\n');
     proc.emitData('  bypass permissions on\n');
     proc.emitData('╭─ Do you want to proceed? ─╮\n');
+    proc.emitData('│ ❯ 1. Yes                  │\n'); // #1506: the option row is what makes it the dialog
     flush();
 
     const awaiting = pollLifecycle().find(

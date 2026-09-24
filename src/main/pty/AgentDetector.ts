@@ -222,6 +222,9 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // proceed?`), which strips to `Doyouwanttoproceed?`. In a replay of 33
       // real Bash permission prompts, 15 had lost some or all spaces, so the
       // literal-space form never marked those panes as needing the user.
+      //
+      // #1494/#1506: processLine skips the `Do you want to …` entries on a
+      // Claude pane; scanDialog judges those questions by the option row.
       { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                                                                  status: 'awaiting_input',   message: 'Approval requested' },
       { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Allow\s*tool\s*use\s*for\s*(?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
       // File-edit approval prompts (`Do you want to create/overwrite/make this
@@ -464,8 +467,6 @@ const DIALOG_OPTION_RE = new RegExp(`^${DIALOG_FRAME}*❯\\s*1\\.?\\s*Yes\\b`);
 const DIALOG_BLANK_RE = new RegExp(`^${DIALOG_FRAME}*$`);
 const DIALOG_FILENAME_RE = new RegExp(`^${DIALOG_FRAME}*(\\S[^?]*\\?)`);
 const ROW_BREAK_G = new RegExp(ROW_BREAK_RE.source, 'g');
-// eslint-disable-next-line no-control-regex
-const CUP_RE = /\u001b\[[0-9]{0,4}(?:;[0-9]{0,4})?[Hf]/;
 /** Longest incomplete row the dialog scan carries between chunks. */
 const MAX_DIALOG_ROW = 4096;
 interface DialogQuestion {
@@ -1005,12 +1006,16 @@ export class AgentDetector {
     // Multiple gates can be in activeAgents (Grok reading this file will
     // still mention Claude chrome as source), but status patterns must not
     // flip lastAgent back to the other one.
-    // #1494: on a Claude line that places rows with CUP, the `Do you want to …`
-    // questions are left to scanDialog. Read here, a question row redrawn while
-    // the dialog was up could be judged only when a later clear completed the
-    // line — after the user had answered. `Allow tool use for` is not one of
-    // the scanned questions, so it keeps this pass.
-    const dialogScanned = this.lastAgent === 'Claude Code' && CUP_RE.test(line);
+    // #1494: on a Claude pane, the `Do you want to …` questions are left to
+    // scanDialog. Read here, a question row redrawn while the dialog was up
+    // could be judged only when a later clear completed the line — after the
+    // user had answered. #1506: that holds for lines with no CUP too. A full
+    // redraw after a split or resize re-emits the transcript as plain CRLF
+    // lines, and a reply that printed the question on a line of its own then
+    // matched by itself; only the option row that follows tells the dialog
+    // apart. `Allow tool use for` is not one of the scanned questions, so it
+    // keeps this pass.
+    const dialogScanned = this.lastAgent === 'Claude Code';
     for (const ap of AGENT_PATTERNS) {
       if (ap.gate && !this.activeAgents.has(ap.agent)) continue;
       if (this.lastAgent && ap.agent !== this.lastAgent) continue;

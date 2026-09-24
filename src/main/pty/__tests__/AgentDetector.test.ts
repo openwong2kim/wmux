@@ -191,10 +191,12 @@ describe('AgentDetector', () => {
 
   describe('Claude file-edit approval prompts (live incident 2026-07-17)', () => {
     // Uses the top-level claudeGated() helper (banner + prompt → gate open).
+    // #1506: each question is followed by the dialog's first option row. A
+    // question on its own can be transcript text, which a redraw prints again.
 
     it('emits awaiting_input for a one-line overwrite prompt with filename', () => {
       const { det, cb } = claudeGated();
-      det.feed('│ Do you want to overwrite calculator.html? │\n');
+      det.feed('│ Do you want to overwrite calculator.html? │\n│ ❯ 1. Yes │\n');
       expect(cb).toHaveBeenCalledTimes(1);
       expect(cb.mock.calls[0][0]).toMatchObject({
         agent: 'Claude Code', status: 'awaiting_input', message: 'Edit approval requested',
@@ -203,8 +205,8 @@ describe('AgentDetector', () => {
 
     it('emits awaiting_input for create and make-this-edit variants', () => {
       const { det, cb } = claudeGated();
-      det.feed('  Do you want to create src/app.ts?\n');
-      det.feed('  Do you want to make this edit to src/app.ts?\n');
+      det.feed('  Do you want to create src/app.ts?\n ❯ 1. Yes\n');
+      det.feed('  Do you want to make this edit to src/app.ts?\n ❯ 1. Yes\n');
       const statuses = cb.mock.calls.map((c) => c[0].status);
       expect(statuses).toEqual(['awaiting_input', 'awaiting_input']);
     });
@@ -214,7 +216,7 @@ describe('AgentDetector', () => {
       // read `Doyouwanttooverwrite` — same phenomenon as the `ClaudeCode`
       // banner gate note.
       const { det, cb } = claudeGated();
-      det.feed('Doyouwanttooverwrite calculator.html?\n');
+      det.feed('Doyouwanttooverwrite calculator.html?\n❯1.Yes\n');
       expect(cb).toHaveBeenCalledTimes(1);
       expect(cb.mock.calls[0][0]).toMatchObject({ status: 'awaiting_input' });
     });
@@ -223,8 +225,9 @@ describe('AgentDetector', () => {
       const { det, cb } = claudeGated();
       det.feed('╌╌ Do you want to overwrite\n');
       det.feed(' calculator.html?\n');
-      // The verb-terminated first line alone must fire; the orphan filename
-      // line emits nothing on its own.
+      det.feed(' ❯ 1. Yes\n');
+      // The verb-terminated first line, its wrapped filename and the option
+      // row read as one dialog.
       expect(cb).toHaveBeenCalledTimes(1);
       expect(cb.mock.calls[0][0]).toMatchObject({ status: 'awaiting_input' });
     });
@@ -780,10 +783,13 @@ describe('AgentDetector', () => {
     // Hand-written fixtures with literal spaces are how these regexes passed
     // their tests while missing 15 of 33 real prompts.
 
+    // #1506: the dialog's first option row, drawn the same way, follows each
+    // question row below. The question alone can be transcript text.
+    const OPTION_ROW_DRAWN = '\u001b[1C\u001b[1B❯\u001b[4G1.\u001b[7GYes\r';
     // Cursor-drawn prompt row: CHA moves (`ESC[5G`) instead of spaces.
-    const PROCEED_CURSOR_DRAWN = '\r\u001b[1C\u001b[2BDo\u001b[5Gyou\u001b[9Gwant\u001b[14Gto\u001b[17Gproceed?\r';
+    const PROCEED_CURSOR_DRAWN = '\r\u001b[1C\u001b[2BDo\u001b[5Gyou\u001b[9Gwant\u001b[14Gto\u001b[17Gproceed?\r' + OPTION_ROW_DRAWN;
     // Same row as another frame painted it: the first gap is a CHA, the rest spaces.
-    const PROCEED_PARTLY_DRAWN = '\r\u001b[1C\u001b[1BDo\u001b[5Gyou want to proceed?\u001b[K\r';
+    const PROCEED_PARTLY_DRAWN = '\r\u001b[1C\u001b[1BDo\u001b[5Gyou want to proceed?\u001b[K\r' + OPTION_ROW_DRAWN;
 
     it('emits awaiting_input for a cursor-drawn "Do you want to proceed?" row', () => {
       const { det, cb } = claudeGated();
@@ -978,6 +984,107 @@ describe('AgentDetector', () => {
           + '\u001b[30;3HDo\u001b[1Cyou\u001b[1Cwant\u001b[1Cto\u001b[1Cproceed?\r\n \u001b[1CEND' + ' '.repeat(80) + '\u001b[32;3H\r\n');
         det.feed('\u001b[38;2;255;255;255m● \u001b[mOK\r\n  Do you want to proceed?' + ' '.repeat(100) + 'END\r\n');
         expect(cb).not.toHaveBeenCalled();
+      });
+
+      describe('#1506 — rows separated by CR/LF, with no cursor positioning', () => {
+        // A split or resize makes Claude re-emit its transcript as plain CRLF
+        // lines. A reply that printed the question on a line of its own then
+        // reads as a whole line with nothing else on it.
+        const CRLF_TRANSCRIPT =
+          '\u001b[38;2;255;255;255m● \u001b[mOK\u001b[K\r\n  Do you want to proceed?\u001b[K\r\n  END\u001b[K\r\n';
+        const CRLF_TRANSCRIPT_EDIT =
+          '\u001b[38;2;255;255;255m● \u001b[mOK\u001b[K\r\n  Do you want to create hello7.txt?\u001b[K\r\n\u001b[K\r\n  END\u001b[K\r\n';
+        // The live dialog drawn with the same CRLF row breaks.
+        const CRLF_DIALOG =
+          '\r\n Do you want to proceed?\u001b[K\r\n ' + OPTION + '\u001b[K\u001b[m\r\n'
+          + '   2. Yes, and don\'t ask again\u001b[K\r\n   3. No\u001b[K\r\n';
+
+        const feedIn = (det: AgentDetector, s: string, size: number) => {
+          for (let i = 0; i < s.length; i += size) det.feed(s.slice(i, i + size));
+        };
+        const splitAtCrLf = (det: AgentDetector, s: string) => {
+          for (const part of s.split(/(?<=\r)(?=\n)/)) det.feed(part);
+        };
+
+        it('a transcript line that is exactly the question stays silent on every redraw', () => {
+          const { det, cb } = claudeGated();
+          for (const redraw of [CRLF_TRANSCRIPT, CRLF_TRANSCRIPT_EDIT, CRLF_TRANSCRIPT, CRLF_TRANSCRIPT_EDIT]) {
+            det.feed(redraw);
+            det.resetEmissionState(); // each redraw starts a new activity cycle
+          }
+          expect(cb).not.toHaveBeenCalled();
+        });
+
+        it('stays silent however the redraw is chunked', () => {
+          for (const frame of [CRLF_TRANSCRIPT, CRLF_TRANSCRIPT_EDIT]) {
+            for (const size of [1, 2, 7, 64]) {
+              const { det, cb } = claudeGated();
+              feedIn(det, frame, size);
+              expect(cb).not.toHaveBeenCalled();
+            }
+            const { det, cb } = claudeGated();
+            splitAtCrLf(det, frame);
+            expect(cb).not.toHaveBeenCalled();
+          }
+        });
+
+        it('the dialog drawn with CRLF rows still emits once, however it is chunked', () => {
+          const whole = claudeGated();
+          whole.det.feed(CRLF_DIALOG);
+          expect(statuses(whole.cb)).toEqual(APPROVAL);
+          for (const size of [1, 2, 7, 64]) {
+            const { det, cb } = claudeGated();
+            feedIn(det, CRLF_DIALOG, size);
+            expect(statuses(cb)).toEqual(APPROVAL);
+          }
+          const { det, cb } = claudeGated();
+          splitAtCrLf(det, CRLF_DIALOG);
+          expect(statuses(cb)).toEqual(APPROVAL);
+        });
+
+        it('a framed file dialog drawn with CRLF rows still emits', () => {
+          const { det, cb } = claudeGated();
+          det.feed('│ Do you want to create hello.txt?   │\r\n│ ❯ 1. Yes                        │\r\n');
+          expect(statuses(cb)).toEqual(EDIT_APPROVAL);
+        });
+
+        it('judges the question when the option row arrives, not before', () => {
+          const { det, cb } = claudeGated();
+          det.feed('\r\n Do you want to proceed?\u001b[K\r\n');
+          expect(cb).not.toHaveBeenCalled();
+          det.feed(' ' + OPTION + '\u001b[K\u001b[m\r\n');
+          expect(statuses(cb)).toEqual(APPROVAL);
+        });
+
+        it('after the answer, a redraw of the transcript does not raise the dialog again', () => {
+          const { det, cb } = claudeGated();
+          det.feed(CRLF_DIALOG);
+          expect(statuses(cb)).toEqual(APPROVAL);
+          // The user answers: the daemon resets dedup, and a later split
+          // redraws the transcript, which now holds the question as text.
+          cb.mockClear();
+          det.resetEmissionState();
+          det.feed(CRLF_TRANSCRIPT);
+          det.resetEmissionState();
+          det.feed(CRLF_TRANSCRIPT);
+          expect(cb).not.toHaveBeenCalled();
+        });
+
+        it('a tool approval line keeps its whole-line match', () => {
+          const { det, cb } = claudeGated();
+          det.feed('\r\n Allow tool use for Bash?\u001b[K\r\n');
+          expect(statuses(cb)).toEqual([{ agent: 'Claude Code', status: 'awaiting_input', message: 'Tool approval requested' }]);
+        });
+
+        it('an OpenClaude pane keeps the whole-line approval match', () => {
+          const det = new AgentDetector();
+          const cb = vi.fn();
+          det.onEvent(cb);
+          det.feed('OpenClaude\n');
+          cb.mockClear();
+          det.feed('  Do you want to proceed?\r\n');
+          expect(statuses(cb)).toEqual([{ agent: 'OpenClaude', status: 'awaiting_input', message: 'Approval requested' }]);
+        });
       });
 
       it('a dialog row redrawn before the answer does not re-raise the dialog when a clear completes its line', () => {
