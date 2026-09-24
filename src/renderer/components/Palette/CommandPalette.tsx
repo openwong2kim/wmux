@@ -793,7 +793,15 @@ export default function CommandPalette() {
             </div>
           ) : (
             results.map((item, idx) => (
-              <div key={item.id} data-active={idx === activeIdx ? 'true' : undefined}>
+              <div
+                key={item.id}
+                data-active={idx === activeIdx ? 'true' : undefined}
+                // The pointer moves the selection, so the keyboard-active row
+                // and the hovered row are never two different highlights.
+                // mousemove, not mouseenter: rows scrolled under a still
+                // pointer by arrow keys must not steal the selection back.
+                onMouseMove={() => { if (idx !== activeIdx) setActiveIdx(idx); }}
+              >
                 <PaletteItem
                   item={item}
                   isActive={idx === activeIdx}

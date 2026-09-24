@@ -32,13 +32,14 @@ function PaletteItem({ item, isActive, onClick }: PaletteItemProps) {
       type="button"
       onClick={onClick}
       // Quiet list row (DESIGN.md "Dialogs & forms"): an 8px chip inside the
-      // panel inset, a faint neutral fill for the keyboard-active row, and a
-      // muted category label — no per-category colours.
+      // panel inset, a faint neutral fill for the active row only (pointer
+      // movement sets the active row, so hover needs no look of its own), and
+      // a muted category label — no per-category colours.
       className={[
         'mx-1.5 flex w-[calc(100%-12px)] items-center gap-3 rounded-[8px] px-3 py-2 text-left transition-colors',
         isActive
           ? 'bg-[var(--surface-fill-hover)] text-[var(--text-main)]'
-          : 'text-[var(--text-main)] hover:bg-[var(--surface-fill)]',
+          : 'text-[var(--text-main)]',
       ].join(' ')}
     >
       <span className="shrink-0 w-4 h-4 flex items-center justify-center text-[var(--text-sub)]">
