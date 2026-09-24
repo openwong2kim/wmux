@@ -123,12 +123,14 @@ const KNOWN_UNBOUND: Record<string, string> = {
 
 /**
  * Pattern 2a — the skipped PTY ownership check. Every call site passes the RPC
- * name as its last argument, which is the method the check belongs to.
+ * name as a quoted argument, which is the method the check belongs to: the last
+ * argument of `assertWorkspaceOwnsPty`, or the one before the owner lane in its
+ * fan-out T5 wrapper `assertCallerMayAccessPty` (which runs the same check).
  */
 function ptyOwnershipMethods(): string[] {
   const src = read('main/pipe/handlers/input.rpc.ts');
   const found = new Set<string>();
-  const re = /assertWorkspaceOwnsPty\([^)]*'([a-zA-Z0-9._]+)'\s*\)/g;
+  const re = /(?:assertWorkspaceOwnsPty|assertCallerMayAccessPty)\([^)]*'([a-zA-Z0-9._]+)'\s*[,)]/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(src)) !== null) found.add(m[1]);
   return [...found];
