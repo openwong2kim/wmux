@@ -15,6 +15,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import SettingsPanel from '../SettingsPanel';
+import { MCP_STATUS_CHANGED_EVENT } from '../IntegrationSetupSection';
 import { useStore } from '../../../stores';
 import {
   SETTINGS_CATALOG,
@@ -28,6 +29,14 @@ import {
 
 const resolved = <T,>(value: T) => () => Promise.resolve(value);
 const echoEnabled = (enabled: boolean) => Promise.resolve({ enabled });
+
+let mcpChecks = 0;
+const MCP_STATUS = {
+  targets: [{
+    id: 'claude', displayName: 'Claude Code', format: 'json', configPath: '/tmp/claude.json',
+    configExists: true, configModified: null, verified: true, wmux: { registered: true, path: null },
+  }],
+};
 
 /** Explicit answers for the bridges that decide what renders. */
 const EXPLICIT: Record<string, unknown> = {
@@ -60,12 +69,9 @@ const EXPLICIT: Record<string, unknown> = {
     statuslineBridge: { status: resolved({ installed: true }), install: resolved({ ok: true, error: null }) },
   },
   mcp: {
-    check: resolved({
-      targets: [{
-        id: 'claude', displayName: 'Claude Code', format: 'json', configPath: '/tmp/claude.json',
-        configExists: true, configModified: null, verified: true, wmux: { registered: true, path: null },
-      }],
-    }),
+    check: () => { mcpChecks += 1; return Promise.resolve(MCP_STATUS); },
+    reregister: () => Promise.resolve(MCP_STATUS),
+    unregister: () => Promise.resolve(MCP_STATUS),
   },
   accounts: { list: resolved({ accounts: [] }), usageList: resolved([]), onUsageUpdate: () => () => undefined },
   lanlink: {
@@ -287,5 +293,68 @@ describe('Escape with a dialog open over Settings', () => {
 
     await esc();
     expect(useStore.getState().settingsPanelVisible).toBe(false);
+  });
+});
+
+const key = async (init: KeyboardEventInit) => {
+  await act(async () => {
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }));
+  });
+  await flush();
+};
+
+describe('Settings keyboard ownership (review follow-up)', () => {
+  it('still closes on Escape while a dialog Settings does not own is mounted but hidden', async () => {
+    // The floating terminal stays mounted with display:none after first use.
+    const floating = document.createElement('div');
+    floating.setAttribute('role', 'dialog');
+    floating.setAttribute('aria-modal', 'true');
+    floating.style.display = 'none';
+    document.body.appendChild(floating);
+    try {
+      await key({ key: 'Escape' });
+      expect(useStore.getState().settingsPanelVisible).toBe(false);
+    } finally {
+      floating.remove();
+    }
+  });
+
+  it('leaves Ctrl/Cmd+F to the paired-devices dialog while it is open', async () => {
+    await openTab('remote');
+    await act(async () => { row('paireddevices')!.querySelector('button')!.click(); });
+    await flush();
+    const search = container.querySelector<HTMLInputElement>('[data-testid="settings-search"]')!;
+    await key({ key: 'f', ctrlKey: true });
+    expect(document.activeElement).not.toBe(search);
+    await key({ key: 'Escape' });
+    await key({ key: 'f', ctrlKey: true });
+    expect(document.activeElement).toBe(search);
+  });
+});
+
+describe('opening on a tab id', () => {
+  it.each([
+    ['agents', 'orchestrator'],
+    ['no-such-tab', 'general'],
+    ['lanlink', 'lanlink'],
+  ])('opens %s as %s', async (id, expected) => {
+    // A fresh mount: the tab is chosen once, when Settings opens.
+    act(() => root.unmount());
+    root = createRoot(container);
+    await act(async () => root.render(createElement(SettingsPanel, { initialTab: id })));
+    await flush();
+    expect(page().getAttribute('data-settings-page')).toBe(expected);
+    expect(container.querySelector('[data-testid="settings-page-title"]')?.textContent).toBeTruthy();
+  });
+});
+
+describe('one MCP state on the Claude Code tab', () => {
+  it('re-reads every MCP view when one of them changes registration', async () => {
+    await openTab('claude-integration');
+    const before = mcpChecks;
+    await act(async () => { window.dispatchEvent(new CustomEvent(MCP_STATUS_CHANGED_EVENT)); });
+    await flush();
+    // The setup card and the MCP servers list each re-read.
+    expect(mcpChecks - before).toBe(2);
   });
 });

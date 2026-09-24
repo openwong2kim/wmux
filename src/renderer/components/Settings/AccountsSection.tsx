@@ -205,7 +205,7 @@ function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: 
           </div>
           <div className="flex items-center gap-2">
             {/* The login command is machine evidence: mono. */}
-            <code className="ui-code flex-1 truncate" style={{ fontSize: 12, padding: '6px 8px' }} title={prep.loginCommand}>
+            <code className="ui-code flex-1 truncate" style={{ fontSize: 11, padding: '6px 8px' }} title={prep.loginCommand}>
               {prep.loginCommand}
             </code>
             <Button

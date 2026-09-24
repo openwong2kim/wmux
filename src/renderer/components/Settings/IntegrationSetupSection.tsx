@@ -204,6 +204,10 @@ function foreignNote(
 
 // ─── The card ────────────────────────────────────────────────────────────────
 
+/** Fired after any MCP (re)register / unregister from Settings, so every
+ *  surface that shows MCP state re-reads it instead of going stale. */
+export const MCP_STATUS_CHANGED_EVENT = 'wmux:settings-mcp-changed';
+
 export function IntegrationSetupSection({
   api,
 }: {
@@ -308,6 +312,12 @@ export function IntegrationSetupSection({
   }, [api, commit]);
 
   useEffect(() => { probeAll(); }, [probeAll]);
+  useEffect(() => {
+    // Another Settings surface changed MCP registration: re-read it.
+    const onChanged = () => probeAll();
+    window.addEventListener(MCP_STATUS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(MCP_STATUS_CHANGED_EVENT, onChanged);
+  }, [probeAll]);
 
   const runInstall = useCallback(
     async (
@@ -378,6 +388,7 @@ export function IntegrationSetupSection({
     commit(setMcp, { state: 'working', error: null }, gen);
     try {
       const status = await api.mcp.reregister();
+      window.dispatchEvent(new CustomEvent(MCP_STATUS_CHANGED_EVENT));
       if (mcpRegistered(status.targets)) {
         probeAll();
         return;
@@ -407,7 +418,9 @@ export function IntegrationSetupSection({
 
   // DESIGN.md "One primary per surface": the first row that needs the user
   // carries the warm primary; every other action on the card is secondary.
-  const needsAction = (m: RowModel) => m.state === 'missing' || m.state === 'error';
+  // A row mid-install keeps the slot (drawn secondary while it runs), so the
+  // emphasis does not jump to the next row until that install settles.
+  const needsAction = (m: RowModel) => m.state === 'missing' || m.state === 'error' || m.state === 'working';
   const primaryRow = needsAction(hooks) ? 'hooks' : needsAction(mcp) ? 'mcp' : needsAction(statusline) ? 'statusline' : null;
 
   return (

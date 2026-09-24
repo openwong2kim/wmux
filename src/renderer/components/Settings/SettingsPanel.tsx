@@ -1,5 +1,5 @@
 import { QuickCommandsSection } from './QuickCommandsSection';
-import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBackend';
 import { isWslShellPath } from '../../../shared/wslDistro';
 import type { ImagePasteMode } from '../../../shared/imagePaste';
@@ -45,7 +45,7 @@ import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { notifyBriefingConfigChanged } from '../Deck/deckBriefingConfigBus';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
-import { IntegrationSetupSectionContainer } from './IntegrationSetupSection';
+import { IntegrationSetupSectionContainer, MCP_STATUS_CHANGED_EVENT } from './IntegrationSetupSection';
 import { AccountsSection } from './AccountsSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
@@ -1001,6 +1001,12 @@ interface ElectronMcpApi {
  * Mirrors the `wmux mcp check` CLI output so users have a one-stop way to
  * verify Claude Code can discover the wmux MCP bridge — DX D4 decision.
  */
+/** Tell the setup card (and any other MCP view) to re-read. This section's
+ *  own listener re-reads too, which costs one extra check and nothing else. */
+function announceMcpChange(): void {
+  window.dispatchEvent(new CustomEvent(MCP_STATUS_CHANGED_EVENT));
+}
+
 function McpStatusSection() {
   const t = useT();
   const [status, setStatus] = useState<McpStatusPayload | null>(null);
@@ -1027,6 +1033,10 @@ function McpStatusSection() {
 
   useEffect(() => {
     void refresh();
+    // The setup card's Register writes the same configs: re-read after it.
+    const onChanged = () => void refresh();
+    window.addEventListener(MCP_STATUS_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(MCP_STATUS_CHANGED_EVENT, onChanged);
   }, [refresh]);
 
   const handleReregister = useCallback(async () => {
@@ -1035,6 +1045,7 @@ function McpStatusSection() {
     const result = await ipcInvoke(() => mcpApi.reregister());
     if (result.ok) setStatus(result.data);
     setPending(null);
+    announceMcpChange();
   }, [ipcInvoke, mcpApi]);
 
   const handleUnregister = useCallback(async () => {
@@ -1043,6 +1054,7 @@ function McpStatusSection() {
     const result = await ipcInvoke(() => mcpApi.unregister());
     if (result.ok) setStatus(result.data);
     setPending(null);
+    announceMcpChange();
     setConfirmingUnregister(false);
   }, [ipcInvoke, mcpApi]);
 
@@ -2274,7 +2286,9 @@ function FanoutWorkersSection() {
   // is the one this row writes.
   const [requireApproval, setRequireApprovalState] = useState(false);
   const [mode, setMode] = useState<FanoutWorkerPermissionMode>(DEFAULT_FANOUT_WORKER_PERMISSION_MODE);
-  const [allowResult, setAllowResult] = useState<string | null>(null);
+  // Shown as its own line under the row, not in the (one-line) description,
+  // so a failure's text is never cut off behind Learn more.
+  const [allowResult, setAllowResult] = useState<{ text: string; failed: boolean } | null>(null);
   const [allowing, setAllowing] = useState(false);
 
   useEffect(() => {
@@ -2313,11 +2327,11 @@ function FanoutWorkersSection() {
     setAllowing(true);
     try {
       const out = await window.electronAPI.deck.hooksBridge.allowWorkerTools();
-      if (!out.ok) setAllowResult(t('settings.fanoutAllowWorkerToolsFailed', { error: out.error ?? '' }));
-      else if (out.added.length === 0) setAllowResult(t('settings.fanoutAllowWorkerToolsAlready'));
-      else setAllowResult(t('settings.fanoutAllowWorkerToolsDone', { count: String(out.added.length) }));
+      if (!out.ok) setAllowResult({ text: t('settings.fanoutAllowWorkerToolsFailed', { error: out.error ?? '' }), failed: true });
+      else if (out.added.length === 0) setAllowResult({ text: t('settings.fanoutAllowWorkerToolsAlready'), failed: false });
+      else setAllowResult({ text: t('settings.fanoutAllowWorkerToolsDone', { count: String(out.added.length) }), failed: false });
     } catch (err) {
-      setAllowResult(t('settings.fanoutAllowWorkerToolsFailed', { error: err instanceof Error ? err.message : String(err) }));
+      setAllowResult({ text: t('settings.fanoutAllowWorkerToolsFailed', { error: err instanceof Error ? err.message : String(err) }), failed: true });
     } finally {
       setAllowing(false);
     }
@@ -2356,12 +2370,17 @@ function FanoutWorkersSection() {
       <SettingRow
         id="fanoutallowtools"
         label={t('settings.fanoutAllowWorkerTools')}
-        description={allowResult ?? t('settings.fanoutAllowWorkerToolsDesc')}
+        description={t('settings.fanoutAllowWorkerToolsDesc')}
       >
         <Button variant="secondary" onClick={onAllow} disabled={allowing}>
           {t('settings.fanoutAllowWorkerToolsButton')}
         </Button>
       </SettingRow>
+      {allowResult && (
+        <SettingNote tone={allowResult.failed ? 'danger' : 'muted'} role="status" data-testid="fanout-allow-result">
+          {allowResult.text}
+        </SettingNote>
+      )}
     </SettingsSection>
   );
 }
@@ -2457,6 +2476,7 @@ function TabClaudeCode() {
 function TabRemote() {
   const t = useT();
   const [devicesOpen, setDevicesOpen] = useState(false);
+  useOwnedDialog(devicesOpen);
   return (
     <div className="settings-page">
       <SettingsSection>
@@ -2904,7 +2924,7 @@ function CustomThemeEditor() {
           {t('settings.theme.basedOn', { preset: baseLabel })}
         </span>
         <select
-          className={`text-[12px] rounded-[8px] px-2 py-1 shrink-0 ${FOCUS_RING}`}
+          className={`text-[13px] rounded-[8px] px-2 py-1 shrink-0 ${FOCUS_RING}`}
           style={{ backgroundColor: 'var(--surface-fill)', color: 'var(--text-main)', border: '1px solid var(--surface-hairline)' }}
           aria-label={t('settings.theme.resetToPreset')}
           data-testid="reset-to-preset-select"
@@ -2929,7 +2949,7 @@ function CustomThemeEditor() {
           style={{ backgroundColor: 'var(--surface-fill)', border: '1px solid var(--surface-hairline)' }}
         >
           <div
-            className="px-3 py-1.5 text-[12px] font-medium"
+            className="px-3 py-1.5 text-[13px] font-medium"
             style={{ color: 'var(--text-muted)' }}
           >
             {t(`settings.tokenGroup.${group.label.toLowerCase()}`) || group.label}
@@ -2980,7 +3000,7 @@ function CustomThemeEditor() {
           </span>
         </div>
         <select
-          className={`text-[12px] rounded-[8px] px-2 py-1 ${FOCUS_RING}`}
+          className={`text-[13px] rounded-[8px] px-2 py-1 ${FOCUS_RING}`}
           style={{ backgroundColor: 'var(--surface-fill)', color: 'var(--text-main)', border: '1px solid var(--surface-hairline)' }}
           value={customThemeColors.xtermPaletteId}
           onChange={(e) => updateCustomThemeColor('xtermPaletteId', e.target.value as XtermPaletteId)}
@@ -3109,7 +3129,7 @@ function XtermOverrideEditor() {
           {XTERM_SLOT_GROUPS.map((group) => (
             <div key={group.labelKey}>
               <div
-                className="px-3 py-1 text-[12px] font-medium"
+                className="px-3 py-1 text-[13px] font-medium"
                 style={{ color: 'var(--text-muted)' }}
               >
                 {t(group.labelKey) || group.fallback}
@@ -3704,7 +3724,7 @@ function TabAppearance() {
                   className="flex items-center justify-between gap-1 px-2.5 py-1.5"
                   style={{ backgroundColor: palette.bgMantle, color: selected ? palette.textMain : palette.textSub }}
                 >
-                  <span className="text-[12px] truncate">{label}</span>
+                  <span className="text-[13px] truncate">{label}</span>
                   {selected && (
                     <span className="shrink-0 inline-flex" style={{ color: palette.textMain }} aria-hidden="true">
                       <IconCheck size={12} />
@@ -3844,7 +3864,7 @@ function TabAppearance() {
         </SettingRow>
       </SettingsSection>
 
-      <SettingsSection title={t('settings.terminal')}>
+      <SettingsSection title={t('settings.terminal')} overflowVisible>
         <SettingRow id="fontsize" label={t('settings.fontSize')} description={`${terminalFontSize}px — ${t('settings.fontSizeRange')}`}>
           <div className="flex items-center gap-2">
             <input
@@ -4214,10 +4234,30 @@ function TabNotifications() {
   );
 }
 
+// ─── Dialogs Settings owns ───────────────────────────────────────────────────
+//
+// A modal opened FROM Settings (key capture, paired devices) is the top-most
+// layer: Escape closes only it and Ctrl/Cmd+F must not pull focus to the
+// search box behind it. Settings' own key handler runs first (window,
+// capture), so it has to know when one is open. Each owner registers while it
+// is open; a DOM query for any aria-modal dialog would also match dialogs
+// Settings does not own (the floating terminal stays mounted, hidden).
+const OwnedDialogContext = createContext<(delta: number) => void>(() => undefined);
+
+function useOwnedDialog(open: boolean): void {
+  const register = useContext(OwnedDialogContext);
+  useEffect(() => {
+    if (!open) return;
+    register(1);
+    return () => register(-1);
+  }, [open, register]);
+}
+
 // ─── Key capture overlay ──────────────────────────────────────────────────────
 
 function KeyCaptureOverlay({ label, onCapture, onCancel }: { label: string; onCapture: (key: string, code: string) => void; onCancel: () => void }) {
   const t = useT();
+  useOwnedDialog(true);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       e.preventDefault();
@@ -4783,7 +4823,7 @@ function TabAbout() {
           <div className="flex items-baseline gap-2">
             <span className="text-[16px] font-semibold text-[color:var(--text-main)]">wmux</span>
             {/* The version string is machine evidence. */}
-            <span className="text-[12px] font-mono tabular-nums text-[color:var(--text-sub)]">v{__APP_VERSION__}</span>
+            <span className="text-[11px] font-mono tabular-nums text-[color:var(--text-sub)]">v{__APP_VERSION__}</span>
           </div>
           <p data-setting-id="version" className="ui-field-description m-0 mt-0.5 truncate scroll-mt-4">
             {t('settings.aboutTagline')}
@@ -4919,7 +4959,7 @@ export function InspectMinimizedBar({
   );
 }
 
-export default function SettingsPanel() {
+export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
   const t = useT();
   const visible   = useStore((s) => s.settingsPanelVisible);
   const setVisible = useStore((s) => s.setSettingsPanelVisible);
@@ -4948,7 +4988,12 @@ export default function SettingsPanel() {
   }, [inspectTargetToken, inspectXtermTarget, hasTarget]);
   const showBar = shouldShowInspectBar(inspectMinimized, hasTarget, dismissedTarget);
 
-  const [activeTab, setActiveTab] = useState<TabId>('general');
+  // Every id that reaches the state goes through resolveSettingsTab, so a
+  // retired or unknown id (an old deep link) opens a real tab, never nothing.
+  const [activeTab, setActiveTabState] = useState<TabId>(() => resolveSettingsTab(initialTab));
+  const setActiveTab = useCallback((id: string) => setActiveTabState(resolveSettingsTab(id)), []);
+  const ownedDialogs = useRef(0);
+  const registerOwnedDialog = useCallback((delta: number) => { ownedDialogs.current += delta; }, []);
   const [searchQuery, setSearchQuery] = useState('');
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -4964,9 +5009,9 @@ export default function SettingsPanel() {
     const entry = SETTINGS_CATALOG.find((item) => item.id === id);
     if (!entry) return;
     setSearchQuery('');
-    setActiveTab(resolveSettingsTab(entry.tab));
+    setActiveTab(entry.tab);
     setHighlightId(id);
-  }, []);
+  }, [setActiveTab]);
 
   useEffect(() => {
     if (!highlightId || searching) return;
@@ -4984,7 +5029,7 @@ export default function SettingsPanel() {
   // tab so the auto-opened TokenRow / xterm slot is actually on screen.
   useEffect(() => {
     if (hasTarget && !dismissedTarget) setActiveTab('appearance');
-  }, [hasTarget, dismissedTarget]);
+  }, [hasTarget, dismissedTarget, setActiveTab]);
 
   const TAB_META: Record<TabId, { label: string; icon: ReactNode }> = {
     general:              { label: t('settings.tabGeneral'),       icon: <IconGeneral /> },
@@ -5009,6 +5054,8 @@ export default function SettingsPanel() {
   useEffect(() => {
     if (!visible) return;
     const handler = (e: KeyboardEvent) => {
+      // A dialog Settings opened owns the keyboard (see useOwnedDialog).
+      if (ownedDialogs.current > 0) return;
       if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) {
         e.preventDefault();
         e.stopPropagation();
@@ -5018,11 +5065,6 @@ export default function SettingsPanel() {
       if (e.key === 'Escape') {
         // suppressed while inspect active — overlay handles ESC (D-esc).
         if (!shouldEscCloseSettings(inspectModeActive)) return;
-        // A modal opened from Settings (paired devices, key capture) is the
-        // top-most layer, and Escape closes only that one (DESIGN.md Dialog
-        // anatomy). This listener runs first (window, capture), so it has to
-        // step aside rather than tear Settings down under the dialog.
-        if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
         if (searchQuery.trim()) {
           e.stopPropagation();
           setSearchQuery('');
@@ -5070,6 +5112,7 @@ export default function SettingsPanel() {
     // bg-base — it reads as an app screen, not a dialog stacked on top. Closed
     // via Esc (keydown handler above) or the header X. `ui-surface` scopes the
     // quiet-surface tokens (hairlines, flat buttons, 10px inputs) to it.
+    <OwnedDialogContext.Provider value={registerOwnedDialog}>
     <div
       className="ui-surface settings-screen fixed inset-x-0 bottom-0 z-50 flex flex-col"
       style={{ top: 36, backgroundColor: 'var(--bg-base)' }}
@@ -5191,5 +5234,6 @@ export default function SettingsPanel() {
         </div>
       </div>
     </div>
+    </OwnedDialogContext.Provider>
   );
 }

@@ -66,6 +66,7 @@ export function SettingsSection({
   title,
   description,
   action,
+  overflowVisible = false,
   children,
   'data-testid': testId,
 }: {
@@ -75,6 +76,9 @@ export function SettingsSection({
   description?: string;
   /** Trailing control on the heading line (e.g. a Refresh or Reset). */
   action?: ReactNode;
+  /** For a group holding an in-place dropdown (the font list): the group's
+   *  rounded clip would otherwise cut the list off. */
+  overflowVisible?: boolean;
   children: ReactNode;
   'data-testid'?: string;
 }) {
@@ -93,7 +97,7 @@ export function SettingsSection({
           {clamp.toggle}
         </div>
       )}
-      <div className="ui-group">{children}</div>
+      <div className={`ui-group${overflowVisible ? ' settings-group-open' : ''}`}>{children}</div>
     </section>
   );
 }

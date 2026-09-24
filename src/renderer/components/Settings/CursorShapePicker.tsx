@@ -56,7 +56,7 @@ export function CursorShapePicker({
               <CursorGlyph style={style} />
             </div>
             <div
-              className="mt-1.5 text-[12px]"
+              className="mt-1.5 text-[13px]"
               style={{ color: selected ? 'var(--text-main)' : 'var(--text-sub)', fontWeight: selected ? 500 : 400 }}
             >
               {t(LABEL_KEY[style])}

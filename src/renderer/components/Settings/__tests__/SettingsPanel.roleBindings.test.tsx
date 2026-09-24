@@ -12,6 +12,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { createElement, isValidElement, type ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { RoleBindingsView, roleBindingHint, type RoleBindingsViewProps } from '../SettingsPanel';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { t as translate } from '../../../i18n';
 
 describe('roleBindingHint — a row never lies about what it enforces (P2-4)', () => {
@@ -48,12 +50,34 @@ describe('RoleBindingsView render', () => {
 
   // P2-9 — the 12 new controls had `outline-none` and no ring, so keyboard
   // focus vanished inside this block. They are now the shared ui/Select and
-  // ui/Input, whose recipes (styles/ui.css) paint the steel focus ring.
+  // ui/Input; the ring comes from the `.ui-surface` focus rules in ui.css
+  // (Settings' root carries `.ui-surface`). jsdom does not resolve :focus
+  // against the cascade, so the ring is pinned in the source: every control
+  // is one of those recipes, nothing on it or in settings.css strips the ring,
+  // and the focus rules paint it after the flat surface rule.
   it('gives every control a focus ring', () => {
     const html = render();
     // 4 roles × agent select, and 4 roles × (model input + args input).
     expect(html.split('class="ui-select').length - 1).toBe(4);
     expect(html.split('class="ui-input').length - 1).toBe(8);
+    expect(html).not.toContain('outline-none');
+    expect(html).not.toMatch(/style="[^"]*(box-shadow|border)[^"]*"/);
+
+    const read = (...p: string[]) => readFileSync(join(__dirname, ...p), 'utf8').replace(/\r\n/g, '\n');
+    const ui = read('..', '..', '..', 'styles', 'ui.css');
+    const flat = ui.indexOf('.ui-surface .ui-input,\n.ui-surface .ui-select > select {');
+    expect(flat).toBeGreaterThan(-1);
+    for (const selector of ['.ui-surface .ui-input:focus-visible', '.ui-surface .ui-select > select:focus-visible']) {
+      const at = ui.indexOf(selector, flat);
+      expect(at, `${selector} after the flat surface rule`).toBeGreaterThan(flat);
+      const open = ui.indexOf('{', at);
+      const body = ui.slice(open, ui.indexOf('}', open));
+      expect(body).toContain('border-color: var(--accent-blue)');
+      expect(body).toMatch(/box-shadow:[^;]*var\(--accent-blue\)/);
+    }
+    // settings.css must not undo it for the role fields.
+    const settings = read('..', 'settings.css');
+    expect(settings).not.toMatch(/:focus[^{]*\{[^}]*(outline:\s*none|box-shadow:\s*none)/);
   });
 
   // P2-9 — --bg-overlay is a BACKGROUND token; borders use the hairline token
