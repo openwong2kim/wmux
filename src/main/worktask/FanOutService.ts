@@ -47,6 +47,7 @@ import {
   type FanoutSetupSkipReason,
 } from './fanoutEnvironment';
 import { inheritTaskAutonomy } from './taskAutonomy';
+import { getFanOutGuards, type FanOutGuards } from './fanoutGuards';
 import { commandChoosesModel } from '../../shared/orchestratorRole';
 import {
   MODEL_ENV_MARKER,
@@ -122,6 +123,10 @@ export interface FanOutRendererPort {
      *  renderer rewrites the launch command through the same applyRoleBinding
      *  path a human-opened pane uses. Absent = launch the command as given. */
     role?: string;
+    /** Depth-1 lineage: the workspace that fanned this task out. The renderer
+     *  stamps it main-side (fanout:markTask) BEFORE the pane's agent launches,
+     *  and refuses the spawn if the stamp cannot be written. */
+    fanoutTaskOf?: string;
   }): Promise<
     | {
         workspaceId: string;
@@ -252,6 +257,8 @@ export interface FanOutServiceOptions {
   /** F15 — how long after a clean watch to look once more for the model error.
    *  Negative disables the re-check entirely. */
   firstRunRecheckMs?: number;
+  /** Depth-1 lineage store. Injected in tests; defaults to the hosted one. */
+  lineage?: Pick<FanOutGuards, 'markTask'>;
 }
 
 /**
@@ -282,6 +289,8 @@ export class FanOutService {
   private readonly firstRunRecheckMs: number;
   /** F15 — deferred re-checks still in flight (tests await them). */
   private pendingRechecks: Promise<void>[] = [];
+  /** Depth-1 lineage store (absent = the hosted one). */
+  private readonly lineage?: Pick<FanOutGuards, 'markTask'>;
 
   /** §2 G1 멱등: 키 → 완료 결과 LRU. 동일 키 재호출은 직전 결과 반환. */
   private readonly results = new Map<string, FanOutResult>();
@@ -297,6 +306,7 @@ export class FanOutService {
     this.autonomy = opts.autonomy;
     this.firstRunOptions = opts.firstRunOptions;
     this.firstRunRecheckMs = opts.firstRunRecheckMs ?? FIRST_RUN_MODEL_RECHECK_MS;
+    this.lineage = opts.lineage;
   }
 
   /**
@@ -655,6 +665,7 @@ export class FanOutService {
         initialCommand,
         ...(Object.keys(paneEnv).length > 0 ? { env: paneEnv } : {}),
         ...(ctx.role ? { role: ctx.role } : {}),
+        fanoutTaskOf: ctx.verifiedWorkspaceId,
       });
       if ('error' in spawned) {
         await this.compensate(taskId, ctx.verifiedWorkspaceId, plan);
@@ -671,6 +682,13 @@ export class FanOutService {
       return { ...base, error: `renderer spawn threw: ${(err as Error).message}`, preservedWorktree: plan.worktreePath };
     }
     base.workspaceId = workspaceId;
+    // The renderer already stamped the lineage before the agent launched; this
+    // second write is idempotent and covers a renderer that did not.
+    try {
+      (this.lineage ?? getFanOutGuards()).markTask(workspaceId, ctx.verifiedWorkspaceId);
+    } catch (err) {
+      console.warn(`[fanout] could not confirm the lineage stamp for ${workspaceId}: ${String(err)}`);
+    }
 
     // ④ task.update — 물질화 커밋({branch, worktreePath, paneGroupId=workspaceId}).
     // 이 RPC는 MCP 도구 표면은 없지만 파이프 라우터 등록으로 first-party 클라이언트에

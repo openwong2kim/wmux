@@ -470,6 +470,8 @@ const electronAPI = {
   // main의 FanOutService로 보낸다(renderer-trusted 신원, 파이프 미노출).
   fanout: {
     start: (req: Record<string, unknown>) => ipcRenderer.invoke(IPC.FANOUT_START, req),
+    markTask: (workspaceId: string, ownerWorkspaceId: string) =>
+      ipcRenderer.invoke(IPC.FANOUT_MARK_TASK, workspaceId, ownerWorkspaceId) as Promise<{ ok: boolean; error?: string }>,
   },
   // Command Deck Phase 2 — the Commander brain. `send` runs one orchestrator
   // turn (resolves with the accept/reject verdict; the turn's content streams

@@ -63,26 +63,33 @@ import { buildFleetTriage, fleetTriageScopeError } from '../utils/fleetTriage';
  * Saying "codex --model o3" when o3 will not be passed is the exact failure the
  * enforcement predicate exists to prevent elsewhere.
  *
- * Returns '' when no task carries a role, so the ordinary preview is unchanged.
+ * Returns [] when no task carries a role. The same lines go into the fan-out
+ * audit record, so what was shown and what was logged cannot differ.
  */
-function describeFanOutRoles(raw: unknown): string {
-  if (!Array.isArray(raw)) return '';
+function fanOutRoleLines(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
   const seen: string[] = [];
   for (const entry of raw) {
     const role = typeof entry === 'string' ? entry.trim() : '';
     if (role && !seen.includes(role)) seen.push(role);
   }
-  if (seen.length === 0) return '';
+  if (seen.length === 0) return [];
   const bindings = useStore.getState().orchestratorRoleBindings;
-  const lines = seen.map((role) => {
+  return seen.map((role) => {
     const b = bindings[role];
-    if (!b || (!b.agent && !b.model && !b.args)) return `  ${role} → the default agent (no binding)`;
+    if (!b || (!b.agent && !b.model && !b.args)) return `${role} → the default agent (no binding)`;
     const parts: string[] = [b.agent || 'the default agent'];
     if (b.model) parts.push(bindingEnforcesModel(b) ? `--model ${b.model}` : `(model "${b.model}" is configured but will NOT be applied)`);
     if (b.args) parts.push(b.args);
-    return `  ${role} → ${parts.join(' ')}`;
+    return `${role} → ${parts.join(' ')}`;
   });
-  return `\n\nRoles resolve to:\n${lines.join('\n')}`;
+}
+
+/** The role lines as the approval dialog shows them; '' when no task has a
+ *  role, so the ordinary preview is unchanged. */
+function describeFanOutRoles(lines: string[]): string {
+  if (lines.length === 0) return '';
+  return `\n\nRoles resolve to:\n${lines.map((l) => `  ${l}`).join('\n')}`;
 }
 
 interface DaemonTextRow { text: string; wrapped: boolean }
@@ -817,14 +824,15 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // binding silently adds a different CLI, another model, or extra flags
     // would make the approved text and the executed command two different
     // things — the one property this gate exists to hold.
-    const previewWithRoles = promptPreview + describeFanOutRoles(params.roles);
+    const roleCommands = fanOutRoleLines(params.roles);
+    const previewWithRoles = promptPreview + describeFanOutRoles(roleCommands);
     const verdict = await requestFanOutApproval({
       workspaceId: callerWsId,
       repoPath,
       taskCount,
       messagePreview: previewWithRoles,
     });
-    return { approved: verdict.approved, outcome: verdict.outcome };
+    return { approved: verdict.approved, outcome: verdict.outcome, roleCommands };
   }
 
   if (method === 'task.requestApproval') {
@@ -905,6 +913,26 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     }
     const newWsId = newWs.id;
     const paneId = newWs.activePaneId;
+
+    // Depth-1 lineage: stamp this workspace as a task of its owner main-side
+    // BEFORE the pane's agent exists. A worker that could reach fan-out in the
+    // gap between launch and the stamp would be exactly the runaway the stamp
+    // is there to stop, so a failed stamp means no launch.
+    const fanoutTaskOf = typeof params.fanoutTaskOf === 'string' ? params.fanoutTaskOf : '';
+    if (fanoutTaskOf) {
+      let stamped: { ok: boolean; error?: string } | null = null;
+      try {
+        stamped = await window.electronAPI.fanout.markTask(newWsId, fanoutTaskOf);
+      } catch (err) {
+        stamped = { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+      if (!stamped?.ok) {
+        const rollback = useStore.getState();
+        rollback.removeWorkspace(newWsId);
+        rollback.setActiveWorkspace(previousActiveId);
+        return { error: `fanout.spawnWorkspace: lineage stamp failed — ${stamped?.error ?? 'unknown'}` };
+      }
+    }
 
     // Unnested so the FINAL command is readable: withDefaultShell first (there
     // has to be a command to rewrite), then the role binding, then the marker

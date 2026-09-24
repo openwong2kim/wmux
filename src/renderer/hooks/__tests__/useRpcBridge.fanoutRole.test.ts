@@ -137,9 +137,10 @@ describe('useRpcBridge — fan-out task roles', () => {
     // "[role: Reviewer]" without seeing it means another CLI, another model, or
     // extra flags would make the approved text and the executed command differ.
     const m = src.match(/if \(method === 'fanout\.requestApproval'\)[\s\S]*?\n {2}\}\n/);
-    expect(m?.[0]).toMatch(/describeFanOutRoles\(params\.roles\)/);
+    expect(m?.[0]).toMatch(/fanOutRoleLines\(params\.roles\)/);
+    expect(m?.[0]).toMatch(/describeFanOutRoles\(roleCommands\)/);
     // Only claim a model that will actually be injected.
-    const helper = src.match(/function describeFanOutRoles\([\s\S]*?\n\}/);
+    const helper = src.match(/function fanOutRoleLines\([\s\S]*?\n\}/);
     expect(helper?.[0]).toMatch(/bindingEnforcesModel\(b\)/);
     expect(helper?.[0]).toMatch(/no binding/);
   });

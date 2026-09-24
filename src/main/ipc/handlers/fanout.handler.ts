@@ -23,8 +23,29 @@ function asOrchRole(raw: unknown): string {
   return cleaned && (ORCH_ROLES as readonly string[]).includes(cleaned) ? cleaned : '';
 }
 import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService';
+import { getFanOutGuards } from '../../worktask/fanoutGuards';
 
 export function registerFanOutHandler(service: FanOutService): () => void {
+  // Depth-1 lineage stamp, written by the renderer's fanout.spawnWorkspace
+  // after it creates the task workspace and BEFORE the agent pane launches.
+  // A stamp only ever restricts (it takes fan-out away), so a renderer-side
+  // caller cannot use it to gain anything.
+  ipcMain.removeHandler(IPC.FANOUT_MARK_TASK);
+  ipcMain.handle(
+    IPC.FANOUT_MARK_TASK,
+    wrapHandler(IPC.FANOUT_MARK_TASK, async (_event: Electron.IpcMainInvokeEvent, ws: unknown, owner: unknown) => {
+      if (typeof ws !== 'string' || !ws || typeof owner !== 'string' || !owner) {
+        return { ok: false, error: 'fanout:markTask: workspace ids are required' };
+      }
+      try {
+        getFanOutGuards().markTask(ws, owner);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    }),
+  );
+
   ipcMain.removeHandler(IPC.FANOUT_START);
   ipcMain.handle(
     IPC.FANOUT_START,
@@ -37,6 +58,7 @@ export function registerFanOutHandler(service: FanOutService): () => void {
 
   return () => {
     ipcMain.removeHandler(IPC.FANOUT_START);
+    ipcMain.removeHandler(IPC.FANOUT_MARK_TASK);
   };
 }
 

@@ -20,6 +20,7 @@
 // and a denial must be reported instead of going quiet.
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as nodePath from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RpcContext } from '../../../../shared/rpc';
@@ -36,6 +37,7 @@ import { loadWorkspaceDecision } from '../../../deck/deckDecisionStore';
 import { registerFanOutRpc, FANOUT_WIRE_AGENT_CMD, FANOUT_IDEMPOTENCY_KEY_MAX_BYTES } from '../fanout.rpc';
 import type { FanOutRequest, FanOutResult, FanOutService, FanOutStatus } from '../../../worktask/FanOutService';
 import type { RpcRouter } from '../../RpcRouter';
+import { FanOutGuards } from '../../../worktask/fanoutGuards';
 
 const CALLER_WS = 'ws-caller';
 // Resolved to NATIVE form. The handler runs the caller's cwd through
@@ -96,6 +98,8 @@ function setup(opts?: {
   /** What workspace.list reports as the commander workspace's active pty.
    *  '' models a workspace with no resolvable active pane. */
   commanderAnchorPtyId?: string;
+  /** Lineage/caps/audit store. Defaults to a fresh one in a temp dir. */
+  guards?: FanOutGuards;
 }): Harness {
   const commanderAnchorPtyId =
     opts?.commanderAnchorPtyId === undefined ? 'pty-1' : opts.commanderAnchorPtyId;
@@ -183,7 +187,14 @@ function setup(opts?: {
     return { stdout: '', stderr: 'not a git repository', code: 128 };
   });
 
-  registerFanOutRpc(router, service, () => null);
+  const guards =
+    opts?.guards ??
+    new FanOutGuards({
+      dir: fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wmux-fanout-rpc-')),
+      countLiveTasks: () => 0,
+      ledgerTaskOwner: () => null,
+    });
+  registerFanOutRpc(router, service, () => null, { guards });
   const handler = handlers.get('task.fanout.start');
   if (!handler) throw new Error('task.fanout.start was not registered');
 
@@ -1144,5 +1155,141 @@ describe('the accepted reply warns about a pending decision on the owner', () =>
       throw new Error('torn store');
     });
     expect(await setup().call(goodParams())).toMatchObject({ ok: true, status: 'accepted' });
+  });
+});
+
+// ─── Runaway brakes: depth-1, global caps, audit ──────────────────────────
+// Fan-out runs without a person in the loop by default, so these three are
+// what stop a loop. Each is asserted through the wire handler, not only the
+// store, because the ordering (before the poll branch, in the claim tick,
+// before the spawn) is the part a refactor would break.
+
+function guardsIn(dir: string, opts: { ledger?: (ws: string) => string | null; live?: () => number } = {}): FanOutGuards {
+  return new FanOutGuards({
+    dir,
+    countLiveTasks: opts.live ?? (() => 0),
+    ledgerTaskOwner: opts.ledger ?? (() => null),
+  });
+}
+
+function tmp(): string {
+  return fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wmux-fanout-brakes-'));
+}
+
+describe('task.fanout.start — depth-1', () => {
+  it('refuses a caller whose workspace carries the lineage stamp', async () => {
+    const g = guardsIn(tmp());
+    g.markTask(CALLER_WS, 'ws-brain');
+    const h = setup({ guards: g });
+    const err = errorOf(await h.call(goodParams()));
+    expect(err.code).toBe('NOT_AUTHORIZED');
+    expect(err.message).toMatch(/fan-out task of ws-brain/);
+    await h.flush();
+    expect(h.approvalCount()).toBe(0);
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it('refuses a worker that marked its own ledger row failed (status-independent)', async () => {
+    // The ledger port answers for any status; there is no stamp at all here, so
+    // only the ledger fallback can refuse it.
+    const h = setup({ guards: guardsIn(tmp(), { ledger: (ws) => (ws === CALLER_WS ? 'ws-brain' : null) }) });
+    expect(errorOf(await h.call(goodParams())).code).toBe('NOT_AUTHORIZED');
+  });
+
+  it('refuses a commander bound to a stamped workspace too', async () => {
+    const g = guardsIn(tmp());
+    g.markTask(CALLER_WS, 'ws-brain');
+    const h = setup({ guards: g });
+    const res = await h.call(goodParams({ senderPtyId: undefined }), { origin: 'local', commanderWorkspace: CALLER_WS });
+    expect(errorOf(res).code).toBe('NOT_AUTHORIZED');
+  });
+
+  it('fails closed when the lineage store cannot be read', async () => {
+    const dir = tmp();
+    fs.writeFileSync(nodePath.join(dir, 'fanout-lineage.json'), 'garbage', 'utf8');
+    const h = setup({ guards: guardsIn(dir) });
+    const err = errorOf(await h.call(goodParams()));
+    expect(err.code).toBe('FAILED_PRECONDITION');
+    expect(err.message).toMatch(/lineage store/);
+    expect(h.start).not.toHaveBeenCalled();
+  });
+});
+
+describe('task.fanout.start — global caps', () => {
+  it('refuses with RESOURCE_EXHAUSTED and raises no approval prompt', async () => {
+    const h = setup({ guards: guardsIn(tmp(), { live: () => 7 }) });
+    const err = errorOf(await h.call(goodParams()));
+    expect(err.code).toBe('RESOURCE_EXHAUSTED');
+    expect(err.message).toMatch(/at most 8 fan-out tasks may be live/);
+    await h.flush();
+    expect(h.approvalCount()).toBe(0);
+  });
+
+  it('holds the reservation while one fan-out is awaiting approval', async () => {
+    const h = setup({ guards: guardsIn(tmp()), approval: 'hang' });
+    expect((await h.call(goodParams({ idempotencyKey: 'a', titles: ['1', '2', '3', '4', '5'] }))).status).toBe('accepted');
+    const err = errorOf(await h.call(goodParams({ idempotencyKey: 'b', titles: ['1', '2', '3', '4'] })));
+    expect(err.code).toBe('RESOURCE_EXHAUSTED');
+  });
+
+  it('gives the slots back when the fan-out is denied', async () => {
+    const g = guardsIn(tmp());
+    const denied = setup({ guards: g, approval: { approved: false, outcome: 'declined' } });
+    await denied.call(goodParams({ idempotencyKey: 'a', titles: ['1', '2', '3', '4', '5', '6', '7', '8'] }));
+    await denied.flush();
+    const next = setup({ guards: g });
+    expect((await next.call(goodParams({ idempotencyKey: 'b', titles: ['1', '2', '3', '4', '5', '6', '7', '8'] }))).status).toBe(
+      'accepted',
+    );
+  });
+});
+
+describe('task.fanout.start — audit record', () => {
+  it('records who, where, what (hashed) and that nobody approved it', async () => {
+    const dir = tmp();
+    const g = guardsIn(dir);
+    const h = setup({ guards: g, approval: { approved: true, outcome: 'auto' } });
+    await h.call(goodParams({ titles: ['a', 'b'], taskPrompts: ['pa', ''], roles: ['Builder'] }));
+    await h.flush();
+    await h.flush();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    const [rec] = g.recentAudit(1);
+    expect(rec).toMatchObject({
+      idempotencyKey: 'fanout-key-1',
+      ownerWorkspaceId: CALLER_WS,
+      callerIdentity: 'pty',
+      repoPath: CALLER_REPO_ROOT,
+      titles: ['a', 'b'],
+      roles: ['Builder', ''],
+      approvedBy: 'auto',
+    });
+    const { createHash } = await import('node:crypto');
+    const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
+    expect(rec.promptSha256).toEqual([sha('do the thing\n\npa'), sha('do the thing')]);
+    // No prompt body in the log.
+    expect(fs.readFileSync(nodePath.join(dir, 'fanout-audit.jsonl'), 'utf8')).not.toMatch(/do the thing/);
+  });
+
+  it('marks a dialog approval as human', async () => {
+    const g = guardsIn(tmp());
+    const h = setup({ guards: g });
+    await h.call(goodParams());
+    await h.flush();
+    await h.flush();
+    expect(g.recentAudit(1)[0].approvedBy).toBe('human');
+  });
+
+  it('does not run a fan-out whose audit record cannot be written', async () => {
+    const g = guardsIn(tmp());
+    vi.spyOn(g, 'appendAudit').mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const h = setup({ guards: g, approval: { approved: true, outcome: 'auto' } });
+    await h.call(goodParams());
+    await h.flush();
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+    const polled = await h.call(goodParams());
+    expect(polled).toMatchObject({ status: 'denied', reason: 'audit-unavailable' });
   });
 });

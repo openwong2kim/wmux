@@ -1,10 +1,13 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
+import type { RpcContext } from '../../../shared/rpc';
 import { sendToRenderer } from './_bridge';
 import {
   mintWorkspaceClaimToken,
   revokeWorkspaceClaimTokensFor,
 } from '../../workspace/workspaceClaimTrust';
+import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
+import { getFanOutGuards, type FanOutGuards } from '../../worktask/fanoutGuards';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -12,7 +15,55 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-export function registerWorkspaceRpc(router: RpcRouter, getWindow: GetWindow): void {
+export interface WorkspaceRpcDeps {
+  /** Injected in tests; defaults to the hosted lineage store. */
+  guards?: Pick<FanOutGuards, 'fanoutOwnerOf' | 'markTask'>;
+  /** Injected in tests; defaults to the mirror/renderer resolution. */
+  resolveCallerWorkspace?: (senderPtyId: string) => Promise<string | null>;
+}
+
+export function registerWorkspaceRpc(router: RpcRouter, getWindow: GetWindow, deps: WorkspaceRpcDeps = {}): void {
+  const resolveCaller =
+    deps.resolveCallerWorkspace ??
+    (async (senderPtyId: string) => {
+      try {
+        return await resolvePtyOwnerWorkspace(getWindow, senderPtyId);
+      } catch {
+        return null;
+      }
+    });
+
+  /**
+   * Depth-1 lineage inheritance: a workspace created by a caller whose own
+   * workspace is a fan-out task is stamped as a task of the same owner, so
+   * "create a fresh workspace, start an agent there, fan out from it" does not
+   * step around the depth limit on the honest path.
+   *
+   * The caller is the validated commander binding, else the workspace that
+   * owns the stated senderPtyId. A stated pty is only a hint, and trusting it
+   * here is safe for the same reason the stamp is: inheriting a stamp can only
+   * take fan-out away. An unresolvable caller creates an unstamped workspace
+   * (no identity, nothing to inherit), and a failure never fails the create.
+   */
+  const inheritLineage = async (
+    params: Record<string, unknown>,
+    ctx: RpcContext | undefined,
+    result: unknown,
+  ): Promise<void> => {
+    try {
+      if (!isRecord(result)) return;
+      const created = typeof result['id'] === 'string' ? result['id'] : result['workspaceId'];
+      if (typeof created !== 'string' || created.length === 0) return;
+      const senderPtyId = typeof params['senderPtyId'] === 'string' ? params['senderPtyId'].trim() : '';
+      const callerWs = ctx?.commanderWorkspace || (senderPtyId ? await resolveCaller(senderPtyId) : null);
+      if (!callerWs) return;
+      const guards = deps.guards ?? getFanOutGuards();
+      const owner = guards.fanoutOwnerOf(callerWs);
+      if (owner) guards.markTask(created, owner);
+    } catch (err) {
+      console.warn(`[workspace.rpc] fan-out lineage inheritance failed: ${String(err)}`);
+    }
+  };
   /**
    * workspace.list — returns all workspaces as {id, name}[]
    */
@@ -24,9 +75,11 @@ export function registerWorkspaceRpc(router: RpcRouter, getWindow: GetWindow): v
    * workspace.new — creates a new workspace
    * params: { name?: string }
    */
-  router.register('workspace.new', (params) => {
+  router.register('workspace.new', async (params, ctx) => {
     const name = typeof params['name'] === 'string' ? params['name'] : undefined;
-    return sendToRenderer(getWindow, 'workspace.new', name !== undefined ? { name } : {});
+    const result = await sendToRenderer(getWindow, 'workspace.new', name !== undefined ? { name } : {});
+    await inheritLineage(params, ctx, result);
+    return result;
   });
 
   /**
@@ -103,6 +156,7 @@ export function registerWorkspaceRpc(router: RpcRouter, getWindow: GetWindow): v
       'mcp.claimWorkspace',
       name !== undefined ? { name } : {},
     );
+    await inheritLineage(params, ctx, result);
 
     // ── #922 PR-A — issue the claim token ────────────────────────────────
     //

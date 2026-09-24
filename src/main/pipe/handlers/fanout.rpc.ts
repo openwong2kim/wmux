@@ -87,6 +87,7 @@ import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { git as runGit } from '../../git/git';
 import { loadWorkspaceDecision } from '../../deck/deckDecisionStore';
 import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService';
+import { getFanOutGuards, promptDigest, type FanOutGuards } from '../../worktask/fanoutGuards';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -150,7 +151,7 @@ const FANOUT_PREVIEW_MIN_TASK_BYTES = 256;
 
 /** Why a fan-out never started. Reported on the poll so an unattended fleet
  *  learns WHY instead of watching a key go quiet. */
-export type FanOutDenyReason = 'declined' | 'timeout' | 'unavailable' | 'repo-moved';
+export type FanOutDenyReason = 'declined' | 'timeout' | 'unavailable' | 'repo-moved' | 'audit-unavailable';
 
 const DENY_MESSAGE: Record<FanOutDenyReason, string> = {
   declined: 'the user denied the fan-out approval prompt',
@@ -158,6 +159,7 @@ const DENY_MESSAGE: Record<FanOutDenyReason, string> = {
   unavailable: 'the fan-out approval prompt could not be shown (the wmux window is unavailable)',
   'repo-moved':
     "the calling terminal's repository changed between the request and the approval, so the approved repository is no longer the one that would be modified",
+  'audit-unavailable': 'the fan-out audit log could not be written, and a fan-out that leaves no record does not run',
 };
 
 /**
@@ -492,11 +494,22 @@ function parseTasks(
   };
 }
 
+export interface FanOutRpcDeps {
+  /** Injected in tests; defaults to the hosted lineage/caps/audit store. */
+  guards?: FanOutGuards;
+}
+
 /**
  * Register `task.fanout.start`. `service` MUST be the same instance the
  * renderer IPC handler uses — see worktask/createFanOutService.ts.
  */
-export function registerFanOutRpc(router: RpcRouter, service: FanOutService, getWindow: GetWindow): void {
+export function registerFanOutRpc(
+  router: RpcRouter,
+  service: FanOutService,
+  getWindow: GetWindow,
+  deps: FanOutRpcDeps = {},
+): void {
+  const guardsOf = (): FanOutGuards => deps.guards ?? getFanOutGuards();
   // Gate bookkeeping lives in this closure rather than at module scope: it is
   // per-router state, and a fresh map per registration keeps tests isolated.
   //
@@ -610,6 +623,28 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
         `'${HUMAN_WORKSPACE_ID}' is the reserved human workspace and cannot fan out from the pipe`,
       );
     }
+    // ── Depth-1: a fan-out task cannot fan out ───────────────────────────
+    // The caller's workspace carries the lineage stamp FanOutService wrote
+    // before its agent launched (or the one a workspace it created inherited),
+    // or the ledger knows it as a task workspace. Both reads ignore the ledger
+    // STATUS: a worker that marks itself `failed` is still a worker. A store
+    // that cannot be read refuses — "maybe a task" is not "not a task".
+    let fanoutOwner: string | null;
+    try {
+      fanoutOwner = guardsOf().fanoutOwnerOf(callerWorkspaceId);
+    } catch (err) {
+      return deny(
+        'FAILED_PRECONDITION',
+        `task.fanout.start could not read the fan-out lineage store, so it cannot rule out that the caller is itself a fan-out task (${(err as Error).message})`,
+      );
+    }
+    if (fanoutOwner !== null) {
+      return deny(
+        'NOT_AUTHORIZED',
+        `task.fanout.start refused: workspace ${callerWorkspaceId} is a fan-out task of ${fanoutOwner}, and fan-out is one level deep — ` +
+          'report back to the owner (ledger_update / channel_post) and let it fan out instead',
+      );
+    }
     /** Per-workspace key space (see above). The GUI mints uuid keys of its own,
      *  so a wire caller also cannot collide with an in-flight GUI fan-out.
      *
@@ -715,6 +750,14 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
     const parsed = parseTasks(params, sharedPrompt);
     if ('error' in parsed) return deny('INVALID_ARGUMENT', parsed.error);
 
+    // ── Global caps (live + rolling hour), reserved in this same tick ────
+    // Over a cap is a refusal, never a queued prompt: with approval off by
+    // default there is nobody to drain a queue, and with it on a loop would
+    // bury the operator in dialogs.
+    const guards = guardsOf();
+    const reservation = guards.reserve(key, parsed.titles.length);
+    if (!reservation.ok) return deny('RESOURCE_EXHAUSTED', reservation.message);
+
     // ── Claim the key ────────────────────────────────────────────────────
     // Last synchronous statement of the tick that read the gate above: from
     // here on a concurrent call on this key is a poll, not a second prompt.
@@ -731,6 +774,7 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
       // Nothing was started and nothing was asked, so the key must go back —
       // otherwise a transient renderer miss would brick it until eviction.
       pending.delete(key);
+      guards.release(key);
       return deny(preflight.code, preflight.message);
     }
     const callerRepoRoot = preflight.root;
@@ -771,7 +815,7 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
     // is re-derived and compared below. A canonical hash would restate a
     // property the closure already guarantees.
     void (async () => {
-      let verdict: { approved?: unknown; outcome?: unknown } | null = null;
+      let verdict: { approved?: unknown; outcome?: unknown; roleCommands?: unknown } | null = null;
       try {
         verdict = (await sendToRenderer(
           getWindow,
@@ -789,7 +833,7 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
             roles: parsed.roles,
           },
           { timeoutMs: APPROVAL_TIMEOUT_MS },
-        )) as { approved?: unknown; outcome?: unknown } | null;
+        )) as { approved?: unknown; outcome?: unknown; roleCommands?: unknown } | null;
       } catch {
         // Renderer unavailable / bridge timeout. Fail closed — an unattended
         // spawn is exactly what the gate exists to prevent — but record WHY.
@@ -800,6 +844,7 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
         const reason: FanOutDenyReason =
           !verdict ? 'unavailable' : verdict.outcome === 'timeout' ? 'timeout' : 'declined';
         settle(key, { phase: 'denied', reason });
+        guards.release(key);
         console.warn(`[fanout.rpc] fan-out ${key} denied (${reason})`);
         return;
       }
@@ -813,7 +858,35 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
       const atApproval = await deriveCallerRepoRoot(getWindow, callerWorkspaceId, anchorPtyId);
       if (!('root' in atApproval) || atApproval.root !== callerRepoRoot) {
         settle(key, { phase: 'denied', reason: 'repo-moved' });
+        guards.release(key);
         console.warn(`[fanout.rpc] fan-out ${key} denied (repo-moved)`);
+        return;
+      }
+
+      // The audit record goes down BEFORE anything spawns, and a fan-out that
+      // cannot leave one does not run: with no human in the loop by default,
+      // this line is the only after-the-fact account of what was launched.
+      try {
+        guards.appendAudit({
+          at: Date.now(),
+          idempotencyKey: callerKey,
+          ownerWorkspaceId: callerWorkspaceId,
+          callerIdentity: commanderWorkspaceId ? 'commander' : 'pty',
+          repoPath: callerRepoRoot,
+          titles: parsed.titles,
+          roles: parsed.roles,
+          roleCommands: Array.isArray(verdict.roleCommands)
+            ? verdict.roleCommands.filter((c): c is string => typeof c === 'string')
+            : [],
+          promptSha256: parsed.taskPrompts.map((own) =>
+            promptDigest([sharedPrompt, own].filter((p) => p.length > 0).join('\n\n')),
+          ),
+          approvedBy: verdict.outcome === 'auto' ? 'auto' : 'human',
+        });
+      } catch (err) {
+        settle(key, { phase: 'denied', reason: 'audit-unavailable' });
+        guards.release(key);
+        console.warn(`[fanout.rpc] fan-out ${key} denied (audit-unavailable): ${String(err)}`);
         return;
       }
 
@@ -827,6 +900,10 @@ export function registerFanOutRpc(router: RpcRouter, service: FanOutService, get
         // start() records a throw as a failed result rather than releasing the
         // key, so this is belt-and-braces.
         console.error(`[fanout.rpc] fan-out ${key} failed:`, err);
+      } finally {
+        // Its tasks are ledger rows now (or never became any); either way the
+        // in-flight live reservation stops counting. The hourly stamp stays.
+        guards.settleStarted(key);
       }
     })();
 
