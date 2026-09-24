@@ -62,17 +62,18 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
      (deck collapsed → that column is gone; reopen from the titlebar)
 ```
 
-- **Left sidebar = navigation only.** Global shortcuts at the top, in order:
-  Search, Remote, Fleet. Remote opens browser/phone pairing; Fleet opens the
-  agent overview overlay. Workspace destinations follow under
-  their own heading and add action; settings sits at the foot. Collapsing the
-  sidebar keeps those shortcuts as named icon buttons. These open existing
-  surfaces; conversations remain in their owning panels. Each workspace row
-  carries its agent roster (2026-09-24): the roster is a map of who is where,
-  and a click on an agent jumps to its pane — see "Sidebar rows" below.
-  This Orca-inspired navigation updates the earlier workspace-only rule
-  (owner decision 2026-09-21). The deck retains its own tabs and a labeled tools-panel toggle in the titlebar.
-  Settings has one entry point at the sidebar foot, including the compact rail.
+- **Left sidebar = glance board** (owner decision 2026-09-25, replacing
+  "navigation only"). Global shortcuts at the top, in order: Search, Remote,
+  Fleet; workspace rows under their own heading and add action; settings at
+  the foot. Collapsing keeps the shortcuts as named icon buttons. The list
+  answers "what wants me, and where" at a glance: rows sort by attention by
+  default, each row shows its status mark, agents and a "changed since you
+  last looked" dot, and a click jumps. **Fleet stays the triage surface** —
+  search, filters, bulk verbs, the output preview and the per-row detail live
+  there, not in the sidebar. Both read ONE classification
+  (`fleetAttentionClass`: needs you · finished · running · unconfirmed · idle),
+  which Fleet folds into its three sections, so a pane cannot read differently
+  in the two places. Conversations remain in their owning panels.
 - **Tools dock = opposite the workspace sidebar**, 248–320px wide, with
   labeled Agent, Git and Channels tabs. Git includes Review; Agent holds the
   orchestrator conversation. Remote lives in the sidebar. Fleet opens over
@@ -378,6 +379,7 @@ from the Dialogs & forms primitives plus `Settings/SettingsLayout.tsx`
 | 2026-09-24 | Owner: quiet surfaces for dialogs and forms. Surface radii 8/12/14 (chrome keeps 5/6/7), flat secondary buttons, neutral switches and checkboxes, sentence-case muted labels, grouped rows in one container, the notice row, the popover section model, 16px dialog titles, one soft shadow and no bevels | The first pass carried the chrome's machined look into dialogs, and they read heavy and busy. The owner chose a quieter, almost colourless surface where the single warm primary is the only colour, lists read as one calm group, and a status that needs an action carries it on the same row |
 | 2026-09-24 | Settings reorganised into one-question tabs (Claude Code, Accounts, Orchestrator, Roles & fan-out, Remote & phone split out of the old Accounts/Agents tabs; the agent toolbar moves to Appearance, first-run setup to General) and rebuilt on the quiet-surface primitives: one container per section, Field rows, Learn more for long copy, a language Select without flags, an Inter header and no footer | The Accounts and Agents tabs each held four or five unrelated things and the categories did not sort; every tab mixed card-per-row boxes, mono headings, uppercase labels and bright input borders. One question per tab makes a setting findable by where it belongs, and one row grammar makes every tab read the same |
 | 2026-09-24 | Sidebar redesign (#1481): the roster lives in the sidebar with a drawn identity monogram per agent kind; status is told by shape (dot / ring / ✕ / check / hollow ring / none) and an idle active workspace is no longer green; collapsed rows summarise agents by glyph and status; fan-out tasks nest under their owner with a rollup, provenance tooltip, a link back to the owner and a close-finished action; a Recent activity order; the sidebar is 264px and resizable 220–400px | With several agents per workspace and fan-outs creating a workspace per task, the flat list could not say which agent was which, whether "green" meant done or merely selected, or which workspace a task came from and who asked for it. Shape survives colour-blindness and forced-colors; nesting keeps a fan-out's tasks next to the work that spawned them; the width was the first thing the new row content needed |
+| 2026-09-25 | The sidebar becomes a glance board: Attention is the default order (needs you → finished → running → unconfirmed → idle, newest first, pins keep their slot, new workspaces hold the top, re-sorts wait for a 3 s settle or the pointer leaving); rows carry a --text-main "changed since you last looked" dot; the sidebar and Fleet read one attention classification | Owner call: with the roster in every row, the sidebar already was where the eye goes, and making it navigation only sent the user to Fleet for the one question the list could answer itself. Fleet keeps what a list of rows cannot hold — search, filters, bulk verbs, previews. Rows that jump while the pointer is on them destroy aim, so the order is applied only when nobody is reaching for a row |
 
 ### Desktop conversation view
 
@@ -441,9 +443,21 @@ regeneration, message editing and voice controls are hidden until supported.
   `Fanned out by <owner> · <you (GUI) | orchestrator | calling pane> · <time>`.
   Inside a task workspace the titlebar's workspace name is followed by a muted
   `↰ <owner>` link (steel on hover) that jumps to the owner.
-- **Order:** Manual (default), Needs you first, or Recent activity — Settings
-  › Appearance › Sidebar. The two non-manual orders are display-only and pause
-  drag-to-reorder while on.
+- **Order:** Attention (default), Manual, or Recent activity — Settings ›
+  Appearance › Sidebar. Attention: needs you → finished (a turn that ended and
+  was not looked at) → running → unconfirmed → idle; within a class the most
+  recent event first. A pinned workspace (row menu › Pin position, a muted pin
+  glyph) keeps its manual slot. A workspace created in the last three minutes
+  holds the top. Rows never move under the pointer: a re-sort applies after the
+  list has been quiet for 3 s, or at once when the pointer leaves it; adds and
+  removals land immediately. The non-manual orders are display-only and pause
+  drag-to-reorder. Sessions that never chose an order move to Attention; an
+  explicit choice is kept.
+- **Changed since you last looked:** a 6px `--text-main` dot (never amber —
+  Fleet's rule) after the name, on the workspace row and on the agent row,
+  when a pane's status or pending question changed since its workspace was
+  last on screen and it now needs you or has finished. Being on screen is
+  looking: it clears as soon as the workspace is active or in multiview.
 
 ### Sidebar shortcuts and Agent dock refinement (2026-09-21)
 
