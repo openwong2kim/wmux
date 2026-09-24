@@ -64,6 +64,27 @@ describe.skipIf(process.platform === 'win32')('terminateProcessTree (real proces
     expect(await waitFor(() => proc.exitCode !== null || proc.signalCode !== null, 3000)).toBe(true);
   });
 
+  // Claude Code runs each Bash tool command in a process group of its own, so
+  // signalling the worker's group alone left the command running, reparented
+  // to init. This child also ignores SIGTERM, and its parent dies on SIGTERM:
+  // only the groups snapshotted before the kill can still reach it.
+  it('reaches a child in its own process group after its parent is gone', async () => {
+    const childScript = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);";
+    const leaderScript =
+      "const { spawn } = require('node:child_process');" +
+      `const c = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { detached: true, stdio: 'ignore' });` +
+      'console.log(c.pid); setInterval(() => {}, 1000);';
+    const proc = spawn(process.execPath, ['-e', leaderScript], { stdio: ['ignore', 'pipe', 'ignore'], detached: true });
+    const child = Number(await firstLine(proc));
+    leftovers.push(child, proc.pid ?? 0);
+    expect(alive(child)).toBe(true);
+
+    terminateProcessTree(proc, 300);
+
+    expect(await waitFor(() => proc.exitCode !== null || proc.signalCode !== null, 3000)).toBe(true);
+    expect(await waitFor(() => !alive(child), 3000)).toBe(true);
+  });
+
   it('escalates to SIGKILL for a process that ignores SIGTERM', async () => {
     const proc = spawn(
       process.execPath,

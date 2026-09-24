@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import type { BrowserWindow } from 'electron';
 import { getAccountStore } from '../account/accountStore';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
@@ -42,48 +42,93 @@ export const WORKER_EXIT_DRAIN_MS = 2_000;
 export const WORKER_KILL_GRACE_MS = 5_000;
 
 /**
- * Send a signal to a worker's whole process tree. A bypassPermissions run
- * starts its own children (shell tools, builds, MCP servers); signalling only
- * the `claude` pid left them running and editing files after the task was
- * already marked failed. On POSIX the worker leads its own process group
- * (spawned detached), so the group gets the signal; Windows has no groups to
- * signal, so `taskkill /T` walks the tree (and /F, as there is no SIGTERM).
+ * Every process group in a worker's tree: its own, plus the groups of all its
+ * descendants. A bypassPermissions run starts its own children (shell tools,
+ * builds, MCP servers), and Claude Code runs each tool command in a process
+ * group of its own — so signalling only the worker's group left them running,
+ * reparented to init, after the task was already marked failed. Found by
+ * walking parentage, which only works while the worker is still their parent.
  */
-export function signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): void {
+function processGroupsOf(pid: number): number[] {
+  const groups = new Set<number>([pid]);
+  let table: string;
+  try {
+    table = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,pgid='], { encoding: 'utf8', timeout: 2000 });
+  } catch {
+    return [...groups];
+  }
+  const children = new Map<number, Array<{ pid: number; pgid: number }>>();
+  for (const line of table.split('\n')) {
+    const [cpid, ppid, pgid] = line.trim().split(/\s+/).map(Number);
+    if (!cpid || !ppid || !pgid) continue;
+    const list = children.get(ppid) ?? [];
+    list.push({ pid: cpid, pgid });
+    children.set(ppid, list);
+  }
+  const queue = [pid];
+  const seen = new Set<number>(queue);
+  while (queue.length > 0) {
+    for (const child of children.get(queue.shift() as number) ?? []) {
+      if (seen.has(child.pid)) continue;
+      seen.add(child.pid);
+      queue.push(child.pid);
+      groups.add(child.pgid);
+    }
+  }
+  // Never our own group, and never init's.
+  groups.delete(process.pid);
+  for (const g of groups) if (g <= 1) groups.delete(g);
+  return [...groups];
+}
+
+function signalGroups(groups: number[], signal: NodeJS.Signals): void {
+  for (const pgid of groups) {
+    try {
+      process.kill(-pgid, signal);
+    } catch {
+      /* that group is already gone */
+    }
+  }
+}
+
+/**
+ * Send a signal to a worker's whole process tree (see processGroupsOf). The
+ * worker leads its own group on POSIX (spawned detached). Windows has no
+ * groups to signal, so `taskkill /T` walks the tree (and /F, as there is no
+ * SIGTERM). Returns the groups it signalled.
+ */
+export function signalProcessTree(proc: ChildProcess, signal: NodeJS.Signals): number[] {
   const pid = proc.pid;
   if (!pid) {
     proc.kill(signal);
-    return;
+    return [];
   }
   if (process.platform === 'win32') {
     spawn('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true })
       .on('error', (err) => console.warn(`[ClaudeWorker] taskkill ${pid} failed: ${err.message}`));
-    return;
+    return [];
   }
-  try {
-    process.kill(-pid, signal);
-  } catch {
-    /* the group is already gone */
-  }
+  const groups = processGroupsOf(pid);
+  signalGroups(groups, signal);
+  return groups;
 }
 
 /**
  * SIGTERM a worker's tree, then SIGKILL what is left after `graceMs`.
  *
- * The fallback decides from the ChildProcess, not by looking the pid up again:
- * a pid the leader has released can belong to someone else by then. The group
- * id is safer — a pid is not handed out while a process group with that id
- * still has members — so a group that is still alive is still ours, and it is
- * killed even when the leader itself already exited.
+ * The fallback reuses the groups found at SIGTERM time: once the worker dies
+ * its children are reparented and can no longer be found through it. It
+ * decides by group, not by looking a pid up again — a pid a process released
+ * can belong to someone else by then, but a pid is not handed out while a
+ * process group with that id still has members, so a group that is still
+ * alive is still the one we signalled.
  */
 export function terminateProcessTree(proc: ChildProcess, graceMs = WORKER_KILL_GRACE_MS): void {
-  signalProcessTree(proc, 'SIGTERM');
-  const pgid = proc.pid;
+  const groups = signalProcessTree(proc, 'SIGTERM');
   // taskkill /F is already final, and a pid-less process has no group.
-  if (process.platform === 'win32' || !pgid) return;
+  if (groups.length === 0) return;
   const fallback = setTimeout(() => {
-    const leaderAlive = proc.exitCode === null && proc.signalCode === null;
-    if (leaderAlive || processGroupAlive(pgid)) signalProcessTree(proc, 'SIGKILL');
+    signalGroups(groups.filter(processGroupAlive), 'SIGKILL');
   }, graceMs);
   fallback.unref?.();
 }
