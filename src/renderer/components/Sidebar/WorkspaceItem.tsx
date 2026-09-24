@@ -1309,9 +1309,11 @@ export function CloseWorkspaceConfirm({
   const [height, setHeight] = useState(CLOSE_CONFIRM_HEIGHT_ESTIMATE);
   // Measure before paint and re-place with the real height: the detail line
   // is conditional and the title wraps with long names, so the estimate alone
-  // would flip too late (or too early).
+  // would flip too late (or too early). offsetHeight, not the bounding rect:
+  // the enter animation scales the card, and a rect read mid-animation is
+  // short by that scale.
   useLayoutEffect(() => {
-    const measured = ref.current?.getBoundingClientRect().height ?? 0;
+    const measured = ref.current?.offsetHeight ?? 0;
     if (measured > 0 && Math.abs(measured - height) > 0.5) setHeight(measured);
   });
   const pos = placePopover(anchor, { width: CLOSE_CONFIRM_WIDTH, height });

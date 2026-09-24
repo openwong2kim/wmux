@@ -14,16 +14,19 @@ import { CloseWorkspaceConfirm, CLOSE_CONFIRM_WIDTH, type CloseConfirmAnchor } f
 const MEASURED_HEIGHT = 140;
 let container: HTMLDivElement;
 let root: Root;
-let rectSpy: ReturnType<typeof vi.spyOn>;
+let offsetHeight: PropertyDescriptor | undefined;
 
 beforeEach(() => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 });
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 600 });
   // jsdom has no layout; give the popover a real height so the measure pass
   // has something to correct the opening estimate with.
-  rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
-    const h = this.hasAttribute('data-workspace-close-confirm') ? MEASURED_HEIGHT : 0;
-    return { top: 0, left: 0, right: 0, bottom: h, width: 0, height: h, x: 0, y: 0, toJSON: () => ({}) } as DOMRect;
+  offsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+  Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.hasAttribute('data-workspace-close-confirm') ? MEASURED_HEIGHT : 0;
+    },
   });
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -33,7 +36,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
-  rectSpy.mockRestore();
+  if (offsetHeight) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeight);
 });
 
 function renderAt(anchor: CloseConfirmAnchor, handlers = { onCancel: vi.fn(), onConfirm: vi.fn() }) {
