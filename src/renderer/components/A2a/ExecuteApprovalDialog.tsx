@@ -11,6 +11,7 @@ import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import Button from '../ui/Button';
 import Checkbox from '../ui/Checkbox';
 import { IconWarning } from '../icons';
+import { useActivationGuard } from '../Approval/useActivationGuard';
 
 /**
  * Approval prompt for `a2a_task_send` requests with `execute: true`.
@@ -29,7 +30,8 @@ export default function ExecuteApprovalDialog() {
   const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
   const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);
   const [now, setNow] = useState(() => Date.now());
-  const denyRef = useRef<HTMLButtonElement>(null);
+  // A click already on its way when a prompt appears must not answer it.
+  const guard = useActivationGuard(approval?.approvalId ?? '');
 
   // The auto-deny countdown belongs to the prompt that is ON SCREEN. Prompts
   // queued behind this one have not started theirs, so a busy queue can no
@@ -100,15 +102,19 @@ export default function ExecuteApprovalDialog() {
   );
 
   // No Escape, no backdrop, no close button: the prompt is answered with
-  // Approve or Deny, or it auto-denies when the countdown runs out. Focus
-  // starts on Deny so a stray Enter can only refuse.
+  // Approve or Deny, or it auto-denies when the countdown runs out. It opens by
+  // itself, so it leaves focus where the user is (a terminal, another dialog):
+  // their next Enter or Space cannot answer a prompt they have not read. Keyed
+  // by request id so each queued prompt starts fresh — without focus carried
+  // over from the one before, and with its own activation guard.
   return (
     <Dialog
+      key={approval.approvalId}
       role="alertdialog"
       onClose={() => resolveExecuteApproval(approval.approvalId, false)}
       closeOnEscape={false}
+      focusOnOpen="none"
       width={480}
-      initialFocusRef={denyRef}
     >
       <DialogHeader
         title={
@@ -194,7 +200,7 @@ export default function ExecuteApprovalDialog() {
           <label className="flex items-center gap-2 text-[13px] text-[var(--text-sub)] cursor-pointer">
             <Checkbox
               checked={a2aAutoApproveExecute}
-              onCheckedChange={setA2aAutoApproveExecute}
+              onCheckedChange={(next) => guard(() => setA2aAutoApproveExecute(next))()}
               data-approval-auto-approve
             />
             {t('fleet.approvals.a2aAutoApprove')}
@@ -207,16 +213,23 @@ export default function ExecuteApprovalDialog() {
           {remainingSec === null ? '' : t('approval.autoDeny', { sec: remainingSec })}
         </span>
         <Button
-          ref={denyRef}
           size="md"
           variant="secondary"
-          onClick={() => resolveExecuteApproval(approval.approvalId, false)}
+          onClick={guard(() => resolveExecuteApproval(approval.approvalId, false))}
         >
           {t('approval.deny')}
         </Button>
         {/* Solid red: this is the final confirm of an autonomous spawn or a
             push, the one place DESIGN.md allows the full danger fill. */}
-        <Button size="md" variant="danger" onClick={() => resolveExecuteApproval(approval.approvalId, true)}>
+        <Button
+          size="md"
+          variant="danger"
+          className="gap-1.5"
+          onClick={guard(() => resolveExecuteApproval(approval.approvalId, true))}
+        >
+          {/* Severity is not colour alone: in themes whose accent is red, the
+              danger and primary fills look alike. */}
+          <IconWarning size={12} />
           {t('approval.approve')}
         </Button>
       </DialogFooter>

@@ -17,11 +17,11 @@
 
 import { type RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
 import { groupCapabilities } from './capabilityGrouping';
-import { useRef } from 'react';
 import { useT } from '../../hooks/useT';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import Button from '../ui/Button';
 import { IconWarning } from '../icons';
+import { useActivationGuard } from './useActivationGuard';
 
 // Re-export the grouping helpers so existing importers of these symbols from
 // the dialog module keep working — the canonical home is now the pure
@@ -80,16 +80,19 @@ export function PermissionApprovalDialogView(
   const t = useT();
   const groups = groupCapabilities(props.declaredCapabilities);
   const hasCritical = groups.some((g) => g.copy.severity === 'critical');
-  const denyRef = useRef<HTMLButtonElement>(null);
-  // Deny takes focus so a stray Enter can only refuse. There is no Escape,
-  // backdrop or close button: the prompt is answered with a button.
+  // The container keys this view by prompt id, so each prompt gets its own
+  // guard window and no focus carried over from the one before.
+  const guard = useActivationGuard(props.clientName + '\u0000' + props.declaredCapabilities.join(','));
+  // It opens by itself, so it leaves focus where the user is: their next
+  // Enter or Space cannot answer a prompt they have not read. There is no
+  // Escape, backdrop or close button: the prompt is answered with a button.
   return (
     <Dialog
       role="alertdialog"
       onClose={props.onDeny}
       closeOnEscape={false}
+      focusOnOpen="none"
       width={540}
-      initialFocusRef={denyRef}
     >
       <DialogHeader
         title={
@@ -158,12 +161,20 @@ export function PermissionApprovalDialogView(
         )}
       </DialogBody>
       <DialogFooter>
-        <Button ref={denyRef} size="md" variant="secondary" onClick={props.onDeny}>
+        <Button size="md" variant="secondary" onClick={guard(props.onDeny)}>
           {t('approval.deny')}
         </Button>
         {/* Solid red only when the grant reaches the screen or the keyboard —
             that approval is the final confirm of a dangerous grant. */}
-        <Button size="md" variant={hasCritical ? 'danger' : 'primary'} onClick={props.onApprove}>
+        <Button
+          size="md"
+          variant={hasCritical ? 'danger' : 'primary'}
+          className={hasCritical ? 'gap-1.5' : undefined}
+          onClick={guard(props.onApprove)}
+        >
+          {/* Severity is not colour alone: in themes whose accent is red, the
+              danger and primary fills look alike. */}
+          {hasCritical && <IconWarning size={12} />}
           {t('approval.approve')}
         </Button>
       </DialogFooter>
