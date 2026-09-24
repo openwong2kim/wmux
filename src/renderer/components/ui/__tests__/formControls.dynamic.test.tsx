@@ -3,7 +3,7 @@
 // Switch, Checkbox, SegmentedControl and Field: the ARIA roles and keyboard
 // contracts that the native controls they replace gave for free.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import Switch from '../Switch';
@@ -76,6 +76,41 @@ describe.each(['switch', 'checkbox'] as const)('%s', (kind) => {
   });
 });
 
+describe('caller props compose instead of replacing the wiring', () => {
+  it('runs a caller onClick before toggling, and preventDefault cancels the toggle', () => {
+    const onCheckedChange = vi.fn();
+    const onClick = vi.fn();
+    act(() => root.render(createElement(Switch, { checked: false, onCheckedChange, onClick })));
+    const sw = container.querySelector('[role="switch"]') as HTMLButtonElement;
+    act(() => sw.click());
+    expect(onClick).toHaveBeenCalledTimes(1);
+    expect(onCheckedChange).toHaveBeenCalledWith(true);
+
+    const cancel = vi.fn((e: { preventDefault: () => void }) => e.preventDefault());
+    act(() => root.render(createElement(Checkbox, { checked: false, onCheckedChange, onClick: cancel })));
+    onCheckedChange.mockClear();
+    act(() => (container.querySelector('[role="checkbox"]') as HTMLButtonElement).click());
+    expect(cancel).toHaveBeenCalled();
+    expect(onCheckedChange).not.toHaveBeenCalled();
+  });
+
+  it('keeps the Field wiring when the caller passes its own id and aria-describedby', () => {
+    act(() =>
+      root.render(
+        createElement(Field, { label: 'Sound', description: 'Play a chime' },
+          createElement(Switch, { checked: false, onCheckedChange: () => undefined, id: 'my-switch', 'aria-describedby': 'extra' })),
+      ),
+    );
+    const sw = container.querySelector('[role="switch"]') as HTMLButtonElement;
+    expect(sw.id).toBe('my-switch');
+    // The label adopts the explicit id, so it still names the control.
+    expect(container.querySelector('label')?.getAttribute('for')).toBe('my-switch');
+    const described = (sw.getAttribute('aria-describedby') ?? '').split(' ');
+    expect(described[0]).toBe('extra');
+    expect(document.getElementById(described[1])?.textContent).toBe('Play a chime');
+  });
+});
+
 describe('Enter', () => {
   it('toggles a switch but not a checkbox (native checkbox behaviour)', () => {
     act(() => root.render(createElement('div', null, createElement(Controlled, { kind: 'switch' }), createElement(Controlled, { kind: 'checkbox' }))));
@@ -109,6 +144,48 @@ describe('SegmentedControl', () => {
     expect(container.querySelector('[role="radiogroup"]')?.getAttribute('aria-label')).toBe('Density');
     expect(radios().map((r) => r.tabIndex)).toEqual([0, -1, -1]);
     expect(radios().map((r) => r.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false']);
+  });
+
+  it('a value on a disabled option stays checked and keeps the tab stop; arrows move off it', () => {
+    function OnDisabled() {
+      const [v, setV] = useState<'a' | 'b' | 'c'>('b');
+      return createElement(SegmentedControl<'a' | 'b' | 'c'>, {
+        value: v,
+        onValueChange: setV,
+        ariaLabel: 'Density',
+        options: [
+          { value: 'a', label: 'A' },
+          { value: 'b', label: 'B', disabled: true },
+          { value: 'c', label: 'C' },
+        ],
+      });
+    }
+    act(() => root.render(createElement(OnDisabled)));
+    expect(radios().map((r) => r.getAttribute('aria-checked'))).toEqual(['false', 'true', 'false']);
+    expect(radios().map((r) => r.tabIndex)).toEqual([-1, 0, -1]);
+    expect(radios()[1].getAttribute('aria-disabled')).toBe('true');
+    // Clicking the disabled option does nothing; arrow keys step to a neighbour.
+    act(() => radios()[1].click());
+    expect(radios()[1].getAttribute('aria-checked')).toBe('true');
+    radios()[1].focus();
+    press(radios()[1], 'ArrowRight');
+    expect(radios()[2].getAttribute('aria-checked')).toBe('true');
+    expect(document.activeElement).toBe(radios()[2]);
+  });
+
+  it('inside a Field it is named by the Field label', () => {
+    act(() =>
+      root.render(
+        createElement(Field, { label: 'Density' },
+          createElement(SegmentedControl<'a' | 'b'>, {
+            value: 'a', onValueChange: () => undefined,
+            options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }],
+          })),
+      ),
+    );
+    const group = container.querySelector('[role="radiogroup"]') as HTMLElement;
+    expect(group.hasAttribute('aria-label')).toBe(false);
+    expect(document.getElementById(group.getAttribute('aria-labelledby') ?? '')?.textContent).toBe('Density');
   });
 
   it('arrow keys move and select, skipping disabled segments and wrapping', () => {

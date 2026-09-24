@@ -1,4 +1,4 @@
-import { createContext, useContext, useId } from 'react';
+import { createContext, useContext, useEffect, useId, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 
 /**
@@ -6,22 +6,46 @@ import type { ReactNode } from 'react';
  * (11px, --text-sub) and the control. `inline` puts the control on the right
  * of the text; `stacked` puts it underneath (text inputs, long selects).
  *
- * The row wires accessibility for the control it wraps: the primitives in
- * this folder (Switch, Checkbox, Select, Input) read {@link useFieldControl}
- * and pick up the label's `htmlFor` id and the description's
- * `aria-describedby`, so a call site never has to thread ids by hand.
+ * The row wires accessibility for the control it wraps. Controls in this
+ * folder call {@link useFieldWiring}: they take the row's control id (or keep
+ * an explicit id of their own, which the label then adopts), the
+ * description's `aria-describedby`, and — for group controls such as
+ * SegmentedControl that a `<label for>` cannot name — the label's id for
+ * `aria-labelledby`.
  */
 
-export interface FieldControlProps {
-  id: string;
-  'aria-describedby'?: string;
+interface FieldContextValue {
+  controlId: string;
+  labelId: string;
+  descriptionId: string | undefined;
+  adoptId: (id: string | undefined) => void;
 }
 
-const FieldContext = createContext<FieldControlProps | null>(null);
+const FieldContext = createContext<FieldContextValue | null>(null);
 
-/** Ids for the control inside the nearest Field, or null outside one. */
-export function useFieldControl(): FieldControlProps | null {
-  return useContext(FieldContext);
+export interface FieldWiring {
+  id: string | undefined;
+  'aria-describedby': string | undefined;
+  /** The Field label's id, for controls a `<label for>` cannot name. */
+  labelId: string | undefined;
+}
+
+/** Ids a control inside a Field needs. `id` / `describedBy` are the caller's
+ *  own props; they win over (and are merged with) the Field's. */
+export function useFieldWiring(id?: string, describedBy?: string): FieldWiring {
+  const field = useContext(FieldContext);
+  const adoptId = field?.adoptId;
+  useEffect(() => {
+    if (!id || !adoptId) return;
+    adoptId(id);
+    return () => adoptId(undefined);
+  }, [id, adoptId]);
+  const describedByAll = [describedBy, field?.descriptionId].filter(Boolean).join(' ') || undefined;
+  return {
+    id: id ?? field?.controlId,
+    'aria-describedby': describedByAll,
+    labelId: field?.labelId,
+  };
 }
 
 export interface FieldProps {
@@ -42,17 +66,25 @@ export default function Field({
   className = '',
   'data-testid': testId,
 }: FieldProps) {
-  const id = useId();
+  const generatedId = useId();
+  const labelId = useId();
   const descriptionId = useId();
+  const [adoptedId, setAdoptedId] = useState<string | undefined>(undefined);
   const hasDescription = description != null;
-  const control: FieldControlProps = {
-    id,
-    'aria-describedby': hasDescription ? descriptionId : undefined,
-  };
+  const controlId = adoptedId ?? generatedId;
+  const context = useMemo<FieldContextValue>(
+    () => ({
+      controlId,
+      labelId,
+      descriptionId: hasDescription ? descriptionId : undefined,
+      adoptId: setAdoptedId,
+    }),
+    [controlId, labelId, hasDescription, descriptionId],
+  );
   return (
     <div className={`ui-field${className ? ` ${className}` : ''}`} data-layout={layout} data-testid={testId}>
       <div className="ui-field-text">
-        <label htmlFor={id} className="ui-field-label">
+        <label id={labelId} htmlFor={controlId} className="ui-field-label">
           {label}
         </label>
         {hasDescription && (
@@ -62,7 +94,7 @@ export default function Field({
         )}
       </div>
       <div className="ui-field-control">
-        <FieldContext.Provider value={control}>{children}</FieldContext.Provider>
+        <FieldContext.Provider value={context}>{children}</FieldContext.Provider>
       </div>
     </div>
   );

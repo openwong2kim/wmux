@@ -1,47 +1,31 @@
-import { createContext, forwardRef, useContext, useEffect, useId, useRef, useState } from 'react';
+import { createContext, forwardRef, useCallback, useContext, useEffect, useId, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode, RefObject } from 'react';
 import { IconX } from '../icons';
 import { FOCUS_RING } from '../focusRing';
+import { focusableWithin, useModalLayer } from './modalLayer';
+
+export { focusableWithin } from './modalLayer';
 
 /**
  * Modal dialog primitive: backdrop + panel with Header / Body / Footer slots.
  *
- * Stacking and backdrop follow the existing modal convention (the first-run
- * wizard, approval and project dialogs): an inline `fixed inset-0` root at
- * `--z-dialog` over `--backdrop-modal`, panel shadow `--shadow-modal`. No
- * portal, so a dialog stacks exactly where the component that renders it
- * already did.
+ * Stacking and backdrop follow the existing modal convention (the approval
+ * and project dialogs): an inline `fixed inset-0` root at `--z-dialog` over
+ * `--backdrop-modal`. No portal, so a dialog stacks exactly where the
+ * component that renders it already did. The panel is a quiet surface: 14px
+ * radius, 24px padding, a hairline and one soft shadow (styles/ui.css).
  *
- * Behaviour:
+ * Behaviour (keyboard and focus live in ./modalLayer, shared with the tour):
  * - `role="dialog"`, `aria-modal`, labelled by the Header title and described
  *   by its description when present.
- * - Tab / Shift+Tab stay inside the panel.
- * - Escape closes (capture phase on window, so a focused terminal cannot eat
- *   it first). Only the top-most open dialog reacts. Pass `onEscape` to
- *   override, or `closeOnEscape={false}` to ignore Escape.
+ * - Escape closes the top-most dialog only (never mid-IME), and does not reach
+ *   anything underneath. Pass `onEscape` to override, or
+ *   `closeOnEscape={false}` to ignore it.
+ * - Tab / Shift+Tab wrap inside the panel while focus is inside it.
  * - Focus moves in on mount (`initialFocusRef`, else the first focusable
- *   control, else the panel) and returns to the element that had it before
- *   the dialog opened.
+ *   control, else the panel), comes back if a re-render drops it on <body>,
+ *   and returns to the opener on close.
  */
-
-const FOCUSABLE = [
-  'a[href]',
-  'button:not([disabled])',
-  'input:not([disabled]):not([type="hidden"])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
-
-/** Focusable descendants in DOM order, skipping anything hidden via `hidden`. */
-export function focusableWithin(root: HTMLElement): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-    (el) => !el.closest('[hidden]') && el.getAttribute('aria-hidden') !== 'true',
-  );
-}
-
-// Open dialogs, oldest first. Escape and the focus trap only act for the last.
-const openStack: symbol[] = [];
 
 interface DialogIds {
   titleId: string;
@@ -91,71 +75,27 @@ export default function Dialog({
   const titleId = useId();
   const descriptionId = useId();
   const [hasDescription, setHasDescription] = useState(false);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const tokenRef = useRef<symbol>(Symbol('dialog'));
+  const panelRef = useRef<HTMLDivElement | null>(null);
 
-  // Latest handlers in refs so the listeners below are installed once.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-  const onEscapeRef = useRef(onEscape);
-  onEscapeRef.current = onEscape;
-  const closeOnEscapeRef = useRef(closeOnEscape);
-  closeOnEscapeRef.current = closeOnEscape;
 
-  // Register on the stack, move focus in, and hand it back on unmount.
+  const attachLayer = useModalLayer({
+    onEscape: onEscape ?? (closeOnEscape ? () => onCloseRef.current() : undefined),
+  });
+  const setPanel = useCallback(
+    (el: HTMLDivElement | null) => {
+      panelRef.current = el;
+      attachLayer(el);
+    },
+    [attachLayer],
+  );
+
   useEffect(() => {
-    const token = tokenRef.current;
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    openStack.push(token);
-
     const panel = panelRef.current;
     const target = initialFocusRef?.current ?? (panel ? focusableWithin(panel)[0] : null) ?? panel;
     target?.focus();
-
-    return () => {
-      const i = openStack.lastIndexOf(token);
-      if (i !== -1) openStack.splice(i, 1);
-      if (opener && opener.isConnected) opener.focus();
-    };
-    // Mount/unmount only: initialFocusRef is read once, like autoFocus.
-  }, []);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (openStack[openStack.length - 1] !== tokenRef.current) return;
-      const panel = panelRef.current;
-      if (!panel) return;
-
-      if (e.key === 'Escape') {
-        if (!closeOnEscapeRef.current && !onEscapeRef.current) return;
-        e.stopPropagation();
-        e.preventDefault();
-        if (onEscapeRef.current) onEscapeRef.current();
-        else onCloseRef.current();
-        return;
-      }
-
-      if (e.key !== 'Tab') return;
-      const items = focusableWithin(panel);
-      if (items.length === 0) {
-        e.preventDefault();
-        panel.focus();
-        return;
-      }
-      const first = items[0];
-      const last = items[items.length - 1];
-      const active = document.activeElement;
-      const inside = active instanceof Node && panel.contains(active);
-      if (e.shiftKey && (active === first || !inside)) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && (active === last || !inside)) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
+    // Mount only: initialFocusRef is read once, like autoFocus.
   }, []);
 
   return (
@@ -169,14 +109,14 @@ export default function Dialog({
     >
       <DialogContext.Provider value={{ titleId, descriptionId, onClose, setHasDescription }}>
         <div
-          ref={panelRef}
+          ref={setPanel}
           role="dialog"
           aria-modal="true"
           aria-labelledby={ariaLabel ? undefined : titleId}
           aria-label={ariaLabel}
           aria-describedby={hasDescription ? descriptionId : undefined}
           tabIndex={-1}
-          className={`ui-dialog${className ? ` ${className}` : ''}`}
+          className={`ui-dialog ui-surface${className ? ` ${className}` : ''}`}
           style={{ width, ...style }}
           data-testid={testId}
         >
@@ -203,7 +143,7 @@ export interface DialogHeaderProps {
   onClose?: () => void;
 }
 
-/** Title (14px/600), optional description (13px, --text-sub), close ×. */
+/** Title (16px/600), optional description (13px, --text-sub), close ×. */
 export const DialogHeader = forwardRef<HTMLButtonElement, DialogHeaderProps>(function DialogHeader(
   { title, description, closeLabel, closeTestId, onClose },
   closeRef,

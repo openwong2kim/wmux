@@ -1,6 +1,6 @@
 import { forwardRef } from 'react';
 import type { InputHTMLAttributes } from 'react';
-import { useFieldControl } from './Field';
+import { useFieldWiring } from './Field';
 
 export type InputProps = InputHTMLAttributes<HTMLInputElement>;
 
@@ -12,17 +12,17 @@ export type InputProps = InputHTMLAttributes<HTMLInputElement>;
  * Inside a Field it takes the row's label id and description.
  */
 const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
-  { className = '', id, ...rest },
+  { className = '', id, 'aria-describedby': describedBy, ...rest },
   ref,
 ) {
-  const field = useFieldControl();
+  const wiring = useFieldWiring(id, describedBy);
   return (
     <input
       ref={ref}
-      id={id ?? field?.id}
-      aria-describedby={field?.['aria-describedby']}
-      className={`ui-input${className ? ` ${className}` : ''}`}
       {...rest}
+      id={wiring.id}
+      aria-describedby={wiring['aria-describedby']}
+      className={`ui-input${className ? ` ${className}` : ''}`}
     />
   );
 });

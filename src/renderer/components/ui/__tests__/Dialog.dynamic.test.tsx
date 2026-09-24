@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../Dialog';
+import Dialog, { DialogBody, DialogFooter, DialogHeader, focusableWithin } from '../Dialog';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -80,14 +80,39 @@ describe('Dialog', () => {
     expect(document.activeElement).toBe(close);
   });
 
-  it('pulls focus back in when it has escaped the panel', () => {
+  it('leaves Tab alone when focus was deliberately moved outside (e.g. into a terminal)', () => {
     act(() => root.render(createElement(Sample, { onClose: () => undefined })));
     const outside = document.createElement('button');
     document.body.appendChild(outside);
     outside.focus();
-    key('Tab');
-    expect(document.activeElement).toBe(container.querySelector('[aria-label="Close"]'));
+    const e = key('Tab');
+    expect(e.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(outside);
     outside.remove();
+  });
+
+  it('puts focus back inside when a re-render removes the focused control', async () => {
+    function Removing() {
+      const [show, setShow] = useState(true);
+      return createElement(
+        Dialog,
+        { onClose: () => undefined },
+        createElement(DialogHeader, { title: 'T', closeLabel: 'Close' }),
+        createElement(DialogBody, null,
+          show ? createElement('button', { 'data-id': 'go', onClick: () => setShow(false) }, 'Register') : createElement('span', null, 'Done'),
+        ),
+      );
+    }
+    act(() => root.render(createElement(Removing)));
+    const go = container.querySelector('[data-id="go"]') as HTMLButtonElement;
+    go.focus();
+    await act(async () => {
+      go.click();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-id="go"]')).toBeNull();
+    const panel = container.querySelector('[role="dialog"]') as HTMLElement;
+    expect(panel.contains(document.activeElement)).toBe(true);
   });
 
   it('closes on Escape and stops the key reaching the app', () => {
@@ -99,6 +124,28 @@ describe('Dialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(appHandler).not.toHaveBeenCalled();
     window.removeEventListener('keydown', appHandler);
+  });
+
+  it('ignores Escape while an IME composition is active', () => {
+    const onClose = vi.fn();
+    act(() => root.render(createElement(Sample, { onClose })));
+    const composing = key('Escape', { isComposing: true });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(composing.defaultPrevented).toBe(false);
+    key('Escape', { keyCode: 229 } as KeyboardEventInit);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('stops a capture-phase app listener (e.g. Settings) from also handling the same Escape', () => {
+    const onClose = vi.fn();
+    const settingsEscape = vi.fn();
+    // Registered before the dialog opens, as the Settings panel's is.
+    window.addEventListener('keydown', settingsEscape, true);
+    act(() => root.render(createElement(Sample, { onClose })));
+    key('Escape');
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(settingsEscape).not.toHaveBeenCalled();
+    window.removeEventListener('keydown', settingsEscape, true);
   });
 
   it('lets the caller override or disable Escape', () => {
@@ -123,6 +170,24 @@ describe('Dialog', () => {
           'div',
           null,
           createElement(Dialog, { onClose: outer }, createElement(DialogHeader, { title: 'Outer' })),
+          createElement(Dialog, { onClose: inner }, createElement(DialogHeader, { title: 'Inner' })),
+        ),
+      ),
+    );
+    key('Escape');
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(outer).not.toHaveBeenCalled();
+  });
+
+  it('a dialog nested inside another is the top-most one', () => {
+    const outer = vi.fn();
+    const inner = vi.fn();
+    act(() =>
+      root.render(
+        createElement(
+          Dialog,
+          { onClose: outer },
+          createElement(DialogHeader, { title: 'Outer' }),
           createElement(Dialog, { onClose: inner }, createElement(DialogHeader, { title: 'Inner' })),
         ),
       ),
@@ -166,5 +231,22 @@ describe('Dialog', () => {
     }
     act(() => root.render(createElement(WithRef)));
     expect(document.activeElement).toBe(container.querySelector('[data-id="primary"]'));
+  });
+});
+
+describe('focusableWithin', () => {
+  it('skips negative tabindex, hidden and aria-hidden subtrees', () => {
+    const rootEl = document.createElement('div');
+    rootEl.innerHTML = `
+      <button data-id="a">a</button>
+      <button tabindex="-1" data-id="roving">b</button>
+      <div hidden><button data-id="hidden">c</button></div>
+      <div aria-hidden="true"><button data-id="aria">d</button></div>
+      <div inert><button data-id="inert">e</button></div>
+      <button disabled data-id="disabled">f</button>
+      <span tabindex="0" data-id="span">g</span>`;
+    document.body.appendChild(rootEl);
+    expect(focusableWithin(rootEl).map((el) => el.dataset.id)).toEqual(['a', 'span']);
+    rootEl.remove();
   });
 });

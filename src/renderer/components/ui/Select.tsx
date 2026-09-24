@@ -1,7 +1,7 @@
 import { forwardRef } from 'react';
 import type { SelectHTMLAttributes } from 'react';
 import { Icon } from '../icons';
-import { useFieldControl } from './Field';
+import { useFieldWiring } from './Field';
 
 export type SelectProps = SelectHTMLAttributes<HTMLSelectElement>;
 
@@ -11,18 +11,13 @@ export type SelectProps = SelectHTMLAttributes<HTMLSelectElement>;
  * behaviour for free. Inside a Field it is labelled and described by the row.
  */
 const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select(
-  { className = '', id, children, ...rest },
+  { className = '', id, children, 'aria-describedby': describedBy, ...rest },
   ref,
 ) {
-  const field = useFieldControl();
+  const wiring = useFieldWiring(id, describedBy);
   return (
     <span className={`ui-select${className ? ` ${className}` : ''}`}>
-      <select
-        ref={ref}
-        id={id ?? field?.id}
-        aria-describedby={field?.['aria-describedby']}
-        {...rest}
-      >
+      <select ref={ref} {...rest} id={wiring.id} aria-describedby={wiring['aria-describedby']}>
         {children}
       </select>
       <Icon size={12}>
