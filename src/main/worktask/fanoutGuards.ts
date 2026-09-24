@@ -72,6 +72,10 @@ export interface FanOutAuditRecord {
   ownerWorkspaceId: string;
   /** How the caller proved who it is (`gui` = the renderer's fan-out dialog). */
   callerIdentity: 'pty' | 'commander' | 'gui';
+  /** #1481 — the calling pane's ptyId when callerIdentity is 'pty'. Optional
+   *  (additive): older records lack it and the sidebar falls back to a
+   *  generic "an agent pane". Display only, never an authority. */
+  callerPtyId?: string;
   repoPath: string;
   titles: string[];
   roles: string[];

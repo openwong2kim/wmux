@@ -899,6 +899,8 @@ export function registerFanOutRpc(
             idempotencyKey: callerKey,
             ownerWorkspaceId: callerWorkspaceId,
             callerIdentity: commanderWorkspaceId ? 'commander' : 'pty',
+            // #1481 — which pane asked, for the sidebar's provenance tooltip.
+            ...(commanderWorkspaceId || !senderPtyId ? {} : { callerPtyId: senderPtyId }),
             repoPath: callerRepoRoot,
             titles: parsed.titles,
             roles: parsed.roles,
@@ -934,6 +936,7 @@ export function registerFanOutRpc(
               idempotencyKey: callerKey,
               ownerWorkspaceId: callerWorkspaceId,
               callerIdentity: commanderWorkspaceId ? 'commander' : 'pty',
+              ...(commanderWorkspaceId || !senderPtyId ? {} : { callerPtyId: senderPtyId }),
               repoPath: callerRepoRoot,
               titles: parsed.titles,
               roles: parsed.roles,
