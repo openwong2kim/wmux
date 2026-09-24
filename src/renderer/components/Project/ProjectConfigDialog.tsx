@@ -7,8 +7,8 @@
 //     so an edit after approval demotes back to review).
 //   trusted — ACTIONS mode: run custom commands, apply the layout, revoke.
 //
-// Visual language mirrors PermissionApprovalDialog (centered modal, accent
-// border, right-rail actions).
+// Built on ui/Dialog like PermissionApprovalDialog: grouped rows, a notice for
+// the trust state, and Trust as the footer's one primary.
 
 import { useEffect, useState } from 'react';
 import { useStore } from '../../stores';
@@ -18,6 +18,9 @@ import type { WmuxProjectLayoutNode } from '../../../shared/wmuxProjectConfig';
 import { applyProjectLayoutFresh, decideProjectTrust, probeProjectConfig } from '../../utils/projectConfigProbe';
 import { runProjectCommand } from '../../utils/projectCommands';
 import Button from '../ui/Button';
+import Checkbox from '../ui/Checkbox';
+import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
+import { IconWarning } from '../icons';
 
 interface LayoutRow {
   label: string;
@@ -102,178 +105,157 @@ export default function ProjectConfigDialog() {
           ? t('project.untrustedNotice')
           : null;
 
-  const accent = isTrusted ? 'var(--accent-blue)' : trust === 'denied' ? 'var(--text-subtle)' : 'var(--accent-yellow)';
+  const noticeColor = trust === 'denied' ? 'var(--text-sub)' : 'var(--accent-yellow)';
 
   return (
-    <div
-      className="fixed inset-0 z-[var(--z-dialog)] flex items-center justify-center"
-      style={{ backgroundColor: 'rgba(0,0,0,0.65)' }}
-      role="dialog"
-      aria-labelledby="project-config-title"
-      onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}
-    >
-      <div
-        className="flex flex-col gap-4 p-5 rounded-[7px]"
-        style={{
-          width: 560,
-          maxWidth: '92vw',
-          maxHeight: '90vh',
-          overflowY: 'auto',
-          backgroundColor: 'var(--bg-base)',
-          border: `1px solid ${accent}`,
-          boxShadow: 'var(--shadow-modal)',
-        }}
-      >
-        <div className="flex items-center gap-2">
-          <span style={{ color: accent, fontSize: 16 }}>⛭</span>
-          <p id="project-config-title" className="text-sm font-semibold font-mono" style={{ color: 'var(--text-main)' }}>
-            {t('project.dialogTitle')}
-          </p>
-        </div>
-
-        <div className="text-xs font-mono break-all" style={{ color: 'var(--text-sub)' }}>
-          <span style={{ color: 'var(--text-subtle)' }}>{t('project.file')}:</span>{' '}
-          <span style={{ color: 'var(--text-main)' }}>{project.configPath}</span>
-        </div>
-
+    <Dialog onClose={close} closeOnBackdrop width={560} data-testid="project-config-dialog">
+      <DialogHeader
+        title={t('project.dialogTitle')}
+        description={
+          <>
+            {t('project.file')}: <span className="ui-code">{project.configPath}</span>
+          </>
+        }
+        closeLabel={t('project.close')}
+      />
+      <DialogBody>
         {notice && (
-          <div
-            className="text-xs p-3 rounded-md"
-            style={{
-              backgroundColor: 'var(--bg-mantle)',
-              color: trust === 'denied' ? 'var(--text-sub2)' : 'var(--accent-yellow)',
-            }}
-          >
-            {notice}
+          <div className="ui-notice flex items-start gap-2.5 px-3.5 py-3 text-[13px] leading-5">
+            <span className="shrink-0 pt-[3px]" style={{ color: noticeColor }} aria-hidden="true">
+              <IconWarning size={14} />
+            </span>
+            <span className="text-[var(--text-main)]">{notice}</span>
           </div>
         )}
 
         {commands.length > 0 && (
-          <div className="flex flex-col gap-1 p-3 rounded-md" style={{ backgroundColor: 'var(--bg-surface)', borderLeft: `3px solid ${accent}` }}>
-            <div className="text-xs font-semibold" style={{ color: 'var(--text-main)' }}>
-              {t('project.commandsHeading')}
-            </div>
-            <ul className="text-[11px] font-mono mt-1 flex flex-col gap-1" style={{ color: 'var(--text-sub2)' }}>
+          <section>
+            <p className="ui-group-label">{t('project.commandsHeading')}</p>
+            <div className="ui-group">
               {commands.map((cmd) => (
-                <li key={cmd.id} className="flex items-center gap-2 min-w-0">
-                  <span className="flex-1 min-w-0 break-all">
-                    <span style={{ color: 'var(--text-main)' }}>{cmd.title}</span>
-                    {' — '}
-                    <span>{cmd.command}</span>
-                  </span>
+                <div key={cmd.id} className="ui-row">
+                  <div className="ui-row-text">
+                    <p className="ui-row-title">{cmd.title}</p>
+                    <p className="ui-row-detail font-mono break-all">{cmd.command}</p>
+                  </div>
                   {isTrusted && (
-                    <button
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="shrink-0"
                       onClick={() => { void runProjectCommand(wsId, cmd.id); close(); }}
-                      className="px-2 py-0.5 rounded text-[10px] font-medium shrink-0"
-                      style={{ backgroundColor: 'var(--accent-blue)', color: 'var(--bg-base)' }}
                     >
                       {t('project.run')}
-                    </button>
+                    </Button>
                   )}
-                </li>
+                </div>
               ))}
-            </ul>
-          </div>
+            </div>
+          </section>
         )}
 
         {layout && (
-          <div className="flex flex-col gap-1 p-3 rounded-md" style={{ backgroundColor: 'var(--bg-surface)', borderLeft: `3px solid ${accent}` }}>
-            <div className="text-xs font-semibold flex items-center gap-2" style={{ color: 'var(--text-main)' }}>
-              <span className="flex-1">{t('project.layoutHeading', { count: countLayoutLeaves(layout) })}</span>
+          <section>
+            <div className="flex items-center gap-2 mb-2">
+              <p className="ui-group-label flex-1 !mb-0">{t('project.layoutHeading', { count: countLayoutLeaves(layout) })}</p>
               {isTrusted && (
-                <button
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="shrink-0"
                   onClick={() => { void applyProjectLayoutFresh(wsId); close(); }}
-                  className="px-2 py-0.5 rounded text-[10px] font-medium shrink-0"
-                  style={{ backgroundColor: 'var(--accent-blue)', color: 'var(--bg-base)' }}
                 >
                   {t('project.applyLayout')}
-                </button>
+                </Button>
               )}
             </div>
-            <ul className="text-[11px] font-mono mt-1" style={{ color: 'var(--text-sub2)' }}>
+            <div className="ui-group">
               {rows.map((row) => (
-                <li key={row.index} className="break-all">
-                  · {t('project.pane')} {row.index}: {row.label}
-                  {row.role && (
-                    <span className="ml-1" style={{ color: 'var(--text-sub)' }}>
-                      {t('project.roleBadge', { role: row.role })}
-                    </span>
-                  )}
-                  {row.supervision && (
-                    <span className="ml-1" style={{ color: 'var(--accent-yellow)' }}>
-                      {t('project.supervisionBadge', { restart: row.supervision.restart, burst: row.supervision.burst })}
-                    </span>
-                  )}
-                </li>
+                <div key={row.index} className="ui-row">
+                  <span className="w-12 shrink-0 text-[13px] text-[var(--text-sub)]">
+                    {t('project.pane')} {row.index}
+                  </span>
+                  <div className="ui-row-text">
+                    <p className="ui-row-title font-mono !text-[12px] break-all">{row.label}</p>
+                    {row.role && <p className="ui-row-detail">{t('project.roleBadge', { role: row.role })}</p>}
+                    {row.supervision && (
+                      <p className="ui-row-detail" style={{ color: 'var(--accent-yellow)' }}>
+                        {t('project.supervisionBadge', { restart: row.supervision.restart, burst: row.supervision.burst })}
+                      </p>
+                    )}
+                  </div>
+                </div>
               ))}
-            </ul>
-          </div>
+            </div>
+          </section>
         )}
 
         {!isTrusted && !project.invalid && unattendedRows.length > 0 && (
-          <label
-            className="flex flex-col gap-2 p-3 rounded-md cursor-pointer"
-            style={{ backgroundColor: 'var(--bg-surface)', borderLeft: '3px solid var(--accent-yellow)' }}
-          >
-            <div className="text-xs font-semibold" style={{ color: 'var(--accent-yellow)' }}>
+          <section className="ui-notice flex flex-col gap-2 px-3.5 py-3 text-[13px]">
+            <p className="m-0 flex items-center gap-2 font-medium" style={{ color: 'var(--accent-yellow)' }}>
+              <IconWarning size={14} />
               {t('project.unattendedHeading')}
-            </div>
-            <ul className="text-[11px] font-mono flex flex-col gap-0.5" style={{ color: 'var(--text-sub2)' }}>
+            </p>
+            <ul className="m-0 p-0 list-none flex flex-col gap-0.5">
               {unattendedRows.map((row) => (
-                <li key={row.index} className="break-all">· {t('project.pane')} {row.index}: {row.label}</li>
+                <li key={row.index} className="break-all text-[var(--text-sub)]">
+                  {t('project.pane')} {row.index}: <span className="font-mono text-[12px] text-[var(--text-main)]">{row.label}</span>
+                </li>
               ))}
             </ul>
-            <div className="flex items-start gap-2 text-[11px]" style={{ color: 'var(--text-sub)' }}>
-              <input
-                type="checkbox"
+            <label className="flex items-start gap-2 cursor-pointer text-[var(--text-sub)]">
+              <Checkbox
                 checked={unattendedConsent}
-                onChange={(e) => setUnattendedConsent(e.target.checked)}
-                className="mt-0.5 shrink-0"
+                onCheckedChange={setUnattendedConsent}
+                className="mt-0.5"
                 aria-label={t('project.unattendedHeading')}
               />
               <span>{t('project.unattendedConsent', { count: unattendedRows.length })}</span>
-            </div>
-          </label>
+            </label>
+          </section>
         )}
+      </DialogBody>
 
-        <div className="flex items-center justify-end gap-2">
-          {isTrusted ? (
-            <>
+      <DialogFooter>
+        {isTrusted ? (
+          <>
+            <Button
+              size="md"
+              variant="secondary"
+              onClick={() => { void decideProjectTrust(wsId, 'clear'); close(); }}
+            >
+              {t('project.revoke')}
+            </Button>
+            <Button size="md" variant="secondary" onClick={close}>
+              {t('project.close')}
+            </Button>
+          </>
+        ) : (
+          <>
+            {trust !== 'denied' && (
               <Button
+                size="md"
                 variant="secondary"
-                onClick={() => { void decideProjectTrust(wsId, 'clear'); close(); }}
+                onClick={() => { void decideProjectTrust(wsId, 'denied'); close(); }}
               >
-                {t('project.revoke')}
+                {t('project.deny')}
               </Button>
-              <Button variant="secondary" onClick={close}>
-                {t('project.close')}
+            )}
+            <Button size="md" variant="secondary" onClick={close}>
+              {t('project.notNow')}
+            </Button>
+            {!project.invalid && (
+              <Button
+                size="md"
+                variant="primary"
+                onClick={() => { void decideProjectTrust(wsId, 'trusted', unattendedConsent); close(); }}
+              >
+                {t('project.trust')}
               </Button>
-            </>
-          ) : (
-            <>
-              {trust !== 'denied' && (
-                <Button
-                  variant="secondary"
-                  onClick={() => { void decideProjectTrust(wsId, 'denied'); close(); }}
-                >
-                  {t('project.deny')}
-                </Button>
-              )}
-              <Button variant="secondary" onClick={close}>
-                {t('project.notNow')}
-              </Button>
-              {!project.invalid && (
-                <Button
-                  variant="primary"
-                  onClick={() => { void decideProjectTrust(wsId, 'trusted', unattendedConsent); close(); }}
-                >
-                  {t('project.trust')}
-                </Button>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
+            )}
+          </>
+        )}
+      </DialogFooter>
+    </Dialog>
   );
 }
