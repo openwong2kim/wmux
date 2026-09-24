@@ -700,104 +700,203 @@
 .wmux-channel-send:disabled { opacity: .3; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) { .wmux-channel-composer, .wmux-channel-send { transition: none; } }
 
-/* ─── Dialogs & forms (ui/Dialog, Field, Switch, Checkbox, Select, ─────────
- * SegmentedControl, Badge). DESIGN.md "Dialogs & forms": Inter prose on the
- * 4-step scale (14 title / 13 body / 11 meta / 10 labels), 5px controls,
- * 6px inputs, 7px panels, one solid warm primary per dialog. Every colour is
- * a token or a color-mix of one, so all built-in and custom themes inherit. */
+/* ─── Dialogs & forms: quiet surfaces (owner, 2026-09-24) ───────────────────
+ * ui/Dialog, the onboarding tour card and the form primitives. Window chrome
+ * keeps its 5/6/7 radii and machined controls; SURFACES (dialogs, popovers,
+ * grouped containers, inputs inside them) are quiet: 8px buttons, 10–12px
+ * containers and inputs, 14px panels, full-round pills, neutral fills, 1px
+ * low-contrast hairlines, one soft floating shadow, no bevels or inset
+ * highlights. The single warm fill is the primary action. Every colour is a
+ * token or a color-mix of one, so all built-in and custom themes inherit. */
 
-/* Button sizes. Opt-in: a Button without `size` keeps the legacy 12px recipe
- * the existing dialogs were drawn with. */
-.ui-btn-sm { min-height: 24px; padding: 0 8px; font-size: 11px; line-height: 16px; }
-.ui-btn-md { min-height: 28px; padding: 0 12px; font-size: 13px; line-height: 20px; }
+.ui-surface,
+.ui-popover {
+  --surface-hairline: color-mix(in srgb, var(--text-main) 9%, transparent);
+  --surface-fill: color-mix(in srgb, var(--text-main) 4%, transparent);
+  --surface-fill-hover: color-mix(in srgb, var(--text-main) 8%, transparent);
+  --surface-shadow: 0 18px 48px rgba(0, 0, 0, 0.32), 0 2px 8px rgba(0, 0, 0, 0.16);
+}
 
-/* Dialog panel = floating elevation (the one shadow level for overlays). */
+/* Button sizes. Opt-in: a Button without `size` keeps the chrome recipe the
+ * existing dialogs were drawn with. */
+.ui-btn-sm { min-height: 26px; padding: 0 10px; font-size: 11px; line-height: 16px; border-radius: 8px; }
+.ui-btn-md { min-height: 32px; padding: 0 14px; font-size: 13px; line-height: 20px; border-radius: 8px; }
+
+/* Buttons on a surface: flat. Secondary = subtle neutral fill + hairline,
+ * ghost = text until hover, primary = the solid warm fill without a bevel. */
+.ui-surface .ui-btn { border-radius: 8px; }
+.ui-surface .ui-btn-secondary {
+  background: var(--surface-fill);
+  border-color: var(--surface-hairline);
+  box-shadow: none;
+}
+.ui-surface .ui-btn-secondary:hover:not(:disabled) {
+  background: var(--surface-fill-hover);
+  border-color: var(--surface-hairline);
+  box-shadow: none;
+}
+.ui-surface .ui-btn-secondary:active:not(:disabled),
+.ui-surface .ui-btn-primary:active:not(:disabled) { transform: none; box-shadow: none; }
+.ui-surface .ui-btn-primary { box-shadow: none; }
+.ui-surface .ui-btn-ghost:hover:not(:disabled) { background: var(--surface-fill-hover); }
+.ui-surface .ui-input,
+.ui-surface .ui-select > select {
+  border-radius: 10px;
+  background: var(--surface-fill);
+  border-color: var(--surface-hairline);
+  box-shadow: none;
+}
+
+/* Dialog panel: the one floating elevation. */
 .ui-dialog {
   display: flex;
   flex-direction: column;
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 32px);
   background: var(--bg-base);
-  border: 1px solid color-mix(in srgb, var(--text-main) 10%, transparent);
-  border-radius: 7px;
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 5%, transparent), var(--shadow-modal);
+  border: 1px solid var(--surface-hairline);
+  border-radius: 14px;
+  box-shadow: var(--surface-shadow);
   color: var(--text-main);
   font-family: var(--font-ui);
   font-size: 13px;
   line-height: 20px;
   outline: none;
 }
-.ui-dialog-header {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 16px 16px 0 20px;
-}
+.ui-dialog-header { display: flex; align-items: flex-start; gap: 12px; padding: 20px 20px 0 24px; }
 .ui-dialog-heading { flex: 1; min-width: 0; padding-top: 4px; }
-.ui-dialog-title { margin: 0; font-size: 14px; font-weight: 600; line-height: 20px; color: var(--text-main); }
-.ui-dialog-description { margin: 2px 0 0; font-size: 13px; line-height: 20px; color: var(--text-sub); }
-.ui-dialog-close { width: 28px; height: 28px; flex-shrink: 0; }
-.ui-dialog-body {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 16px 20px;
+/* 16px = the existing display step (--text-display-size), dialog titles only. */
+.ui-dialog-title { margin: 0; font-size: var(--text-display-size, 16px); font-weight: 600; line-height: 24px; color: var(--text-main); }
+.ui-dialog-description { margin: 4px 0 0; font-size: 13px; line-height: 20px; color: var(--text-sub); }
+.ui-dialog-close { width: 32px; height: 32px; flex-shrink: 0; border-radius: 8px; }
+.ui-dialog-body { display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow-y: auto; padding: 20px 24px; }
+.ui-dialog-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 4px 24px 24px; }
+
+/* Popover panel: the same quiet floating card as a dialog, anchored to its
+ * trigger. Sections stack inside it: a muted sentence-case header with an
+ * optional trailing action (e.g. +), icon + label rows beneath, and a
+ * hairline between sections. */
+.ui-popover {
+  background: var(--bg-base);
+  border: 1px solid var(--surface-hairline);
+  border-radius: 14px;
+  box-shadow: var(--surface-shadow);
+  padding: 6px;
+  color: var(--text-main);
+  font-family: var(--font-ui);
+  font-size: 13px;
 }
-.ui-dialog-footer {
+.ui-section { padding: 6px 0; }
+.ui-section + .ui-section { border-top: 1px solid var(--surface-hairline); }
+.ui-section-header {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 8px;
-  padding: 12px 20px 16px;
-  border-top: 1px solid color-mix(in srgb, var(--text-main) 6%, transparent);
+  min-height: 28px;
+  padding: 0 4px 0 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-sub);
 }
+.ui-section-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--text-main);
+}
+.ui-section-row > svg { flex-shrink: 0; color: var(--text-sub); }
+.ui-section-row:hover { background: var(--surface-fill-hover); }
+/* Icon-only toggles on a surface show "on" as a faint filled chip, not a colour. */
+.ui-surface .ui-icon-btn { border-radius: 8px; }
+.ui-surface .ui-icon-btn[aria-pressed="true"],
+.ui-surface .ui-icon-btn[aria-expanded="true"] { background: var(--surface-fill-hover); color: var(--text-main); }
+
+/* Group label: sentence case, muted, never uppercase-tracked inside surfaces. */
+.ui-group-label { margin: 0 0 8px; font-size: 13px; font-weight: 500; line-height: 20px; color: var(--text-sub); }
+
+/* Grouped rows: ONE rounded container with inner dividers. */
+.ui-group {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--surface-hairline);
+  border-radius: 12px;
+  background: var(--surface-fill);
+  overflow: hidden;
+}
+.ui-group > * + * { border-top: 1px solid var(--surface-hairline); }
+/* A display:contents wrapper draws no box, so its rows carry the dividers:
+ * between each other, and on its first row when the wrapper is not first. */
+.ui-group > .contents > .ui-row + .ui-row,
+.ui-group > * + .contents > .ui-row:first-child { border-top: 1px solid var(--surface-hairline); }
+.ui-row { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 10px 14px; }
+.ui-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 16px;
+  color: var(--text-sub);
+}
+.ui-row-text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
+.ui-row-title { margin: 0; font-size: 13px; font-weight: 500; line-height: 20px; color: var(--text-main); }
+.ui-row-detail { margin: 0; font-size: 11px; line-height: 16px; color: var(--text-sub); }
+.ui-row-error { margin: 2px 0 0; font-size: 11px; line-height: 16px; color: var(--accent-red); }
+/* Notice row: icon · title + description · vertical divider · action. */
+.ui-row-action {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  align-self: stretch;
+  margin: -10px -6px -10px 0;
+  padding-left: 12px;
+  border-left: 1px solid var(--surface-hairline);
+}
+.ui-notice { border: 1px solid var(--surface-hairline); border-radius: 12px; background: var(--surface-fill); }
 
 /* Field row: label + description on the left, control on the right
  * (`inline`), or the control under the text (`stacked`). */
-.ui-field { display: flex; gap: 16px; align-items: center; justify-content: space-between; min-height: 32px; }
-.ui-field[data-layout="stacked"] { flex-direction: column; align-items: stretch; gap: 6px; }
+.ui-field { display: flex; gap: 16px; align-items: center; justify-content: space-between; min-height: 36px; }
+.ui-field[data-layout="stacked"] { flex-direction: column; align-items: stretch; gap: 8px; }
 .ui-field-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ui-field-label { font-size: 13px; font-weight: 500; line-height: 20px; color: var(--text-main); }
 .ui-field-description { font-size: 11px; line-height: 16px; color: var(--text-sub); }
 .ui-field-control { flex-shrink: 0; display: flex; align-items: center; }
 .ui-field[data-layout="stacked"] .ui-field-control { flex-shrink: 1; }
 
-/* Switch: recessed track at rest; on = tinted warm track + warm knob (a dot,
- * not a fill — the solid warm fill stays reserved for the primary button). */
+/* Switch: neutral in both states. Off = dim track, light knob; on = light
+ * track, dark knob. No warm fill: the warm is kept for the primary action. */
 .ui-switch {
   position: relative;
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
-  width: 32px;
-  height: 18px;
-  padding: 0 2px;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--bg-base) 92%, #000);
-  border: 1px solid color-mix(in srgb, var(--text-main) 14%, transparent);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.22);
+  width: 34px;
+  height: 20px;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--text-main) 16%, transparent);
   cursor: pointer;
-  transition: background-color 140ms ease-out, border-color 140ms ease-out;
+  transition: background-color 140ms ease-out;
 }
 /* 24px hit area without growing the drawn track. */
-.ui-switch::before { content: ''; position: absolute; inset: -4px -2px; }
+.ui-switch::before { content: ''; position: absolute; inset: -2px; }
 .ui-switch-knob {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   border-radius: 9999px;
-  background: var(--text-muted);
+  background: var(--text-sub);
   transition: transform 140ms ease-out, background-color 140ms ease-out;
 }
-.ui-switch[aria-checked="true"] {
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-}
-.ui-switch[aria-checked="true"] .ui-switch-knob { transform: translateX(14px); background: var(--accent); }
+.ui-switch[aria-checked="true"] { background: color-mix(in srgb, var(--text-main) 88%, transparent); }
+.ui-switch[aria-checked="true"] .ui-switch-knob { transform: translateX(14px); background: var(--bg-base); }
 .ui-switch:disabled, .ui-checkbox:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* Checkbox: recessed box; checked = tinted warm box + warm check glyph. */
+/* Checkbox: hairline box; checked = light fill with a dark check. */
 .ui-checkbox {
   position: relative;
   display: inline-flex;
@@ -806,33 +905,31 @@
   flex-shrink: 0;
   width: 16px;
   height: 16px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--bg-base) 92%, #000);
-  border: 1px solid color-mix(in srgb, var(--text-main) 18%, transparent);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.22);
-  color: var(--accent);
+  border-radius: 5px;
+  background: var(--surface-fill, transparent);
+  border: 1px solid color-mix(in srgb, var(--text-main) 28%, transparent);
+  color: var(--bg-base);
   cursor: pointer;
   transition: background-color 140ms ease-out, border-color 140ms ease-out;
 }
 .ui-checkbox::before { content: ''; position: absolute; inset: -4px; }
 .ui-checkbox > svg { visibility: hidden; }
 .ui-checkbox[aria-checked="true"] {
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--text-main) 88%, transparent);
+  border-color: transparent;
 }
 .ui-checkbox[aria-checked="true"] > svg { visibility: visible; }
 
-/* Select: native <select> in the recessed input skin with its own chevron. */
+/* Select: native <select> with its own chevron. */
 .ui-select { position: relative; display: inline-flex; align-items: center; min-width: 0; }
 .ui-select > select {
   appearance: none;
   width: 100%;
-  min-height: 28px;
-  padding: 0 28px 0 10px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--bg-base) 92%, #000);
+  min-height: 32px;
+  padding: 0 30px 0 12px;
+  border-radius: 10px;
+  background: var(--surface-fill, color-mix(in srgb, var(--text-main) 4%, transparent));
   border: 1px solid color-mix(in srgb, var(--text-main) 10%, transparent);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.22);
   color: var(--text-main);
   font-family: var(--font-ui);
   font-size: 13px;
@@ -842,27 +939,24 @@
 }
 .ui-select > select:focus-visible {
   border-color: var(--accent-blue);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.22),
-    0 0 0 3px color-mix(in srgb, var(--accent-blue) 22%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 22%, transparent);
 }
 .ui-select > select:disabled { opacity: 0.5; cursor: not-allowed; }
-.ui-select > svg { position: absolute; right: 9px; pointer-events: none; color: var(--text-sub); }
+.ui-select > svg { position: absolute; right: 10px; pointer-events: none; color: var(--text-sub); }
 
-/* Segmented control: recessed track, the active segment raised. */
+/* Segmented control: full-round track, the active pill filled neutral. */
 .ui-segmented {
   display: inline-flex;
   gap: 2px;
-  padding: 2px;
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--bg-base) 92%, #000);
-  border: 1px solid color-mix(in srgb, var(--text-main) 8%, transparent);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.18);
+  padding: 3px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--text-main) 6%, transparent);
 }
 .ui-segment {
-  min-height: 24px;
-  padding: 0 10px;
-  border-radius: 5px;
-  border: 1px solid transparent;
+  min-height: 26px;
+  padding: 0 12px;
+  border-radius: 9999px;
+  border: 0;
   background: transparent;
   color: var(--text-sub);
   font-family: var(--font-ui);
@@ -871,25 +965,21 @@
   cursor: pointer;
   transition: background-color 140ms ease-out, color 140ms ease-out;
 }
-.ui-segment:hover:not(:disabled) { color: var(--text-main); }
-.ui-segment[aria-checked="true"] {
-  background: var(--bg-surface);
-  border-color: color-mix(in srgb, var(--text-main) 10%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 6%, transparent);
-  color: var(--text-main);
-}
-.ui-segment:disabled { opacity: 0.4; cursor: not-allowed; }
+.ui-segment:hover:not([aria-disabled="true"]) { color: var(--text-main); }
+.ui-segment[aria-checked="true"] { background: color-mix(in srgb, var(--text-main) 12%, transparent); color: var(--text-main); }
+.ui-segment[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
 
-/* Badge: small neutral label; status tones tint text + hairline, never fill. */
+/* Badge: full-round neutral label; status tones tint text + hairline only.
+ * `warning` is the theme's warning hue (amber in the amber theme by design). */
 .ui-badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-height: 18px;
-  padding: 0 6px;
-  border-radius: 5px;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 9999px;
   border: 1px solid color-mix(in srgb, var(--text-main) 10%, transparent);
-  background: color-mix(in srgb, var(--bg-surface) 60%, transparent);
+  background: color-mix(in srgb, var(--text-main) 4%, transparent);
   color: var(--text-sub);
   font-family: var(--font-ui);
   font-size: 11px;
@@ -910,87 +1000,35 @@
   border-color: color-mix(in srgb, var(--accent-red) 35%, transparent);
 }
 
-/* Media preview (welcome + tour): a fixed-ratio recessed frame so the card's
- * height is known before the clip's metadata loads. */
+/* Media preview (welcome + tour): a fixed 16:10 frame, so the card's height
+ * is known before the clip's metadata loads. */
 .ui-media {
   display: block;
   width: 100%;
   aspect-ratio: 16 / 10;
   overflow: hidden;
-  border-radius: 6px;
+  border-radius: 10px;
   background: var(--bg-mantle);
   border: 1px solid color-mix(in srgb, var(--text-main) 8%, transparent);
 }
 .ui-media > video, .ui-media > img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top center; }
 
-@media (prefers-reduced-motion: reduce) {
-  .ui-switch, .ui-switch-knob, .ui-checkbox, .ui-select > select, .ui-segment { transition: none; }
-}
-
-/* Raised card (DESIGN.md gpui surfacing): faint surface fill, hairline, top
- * inset highlight. */
-.ui-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px;
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--bg-surface) 45%, transparent);
-  border: 1px solid color-mix(in srgb, var(--text-main) 8%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text-main) 5%, transparent);
-}
 /* Inline machine evidence (commands, paths, error codes) inside prose. */
 .ui-code {
   font-family: var(--font-mono, 'Cascadia Code', 'JetBrains Mono', ui-monospace, monospace);
   font-size: 11px;
-  padding: 0 3px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--bg-surface) 70%, transparent);
+  padding: 0 4px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--text-main) 7%, transparent);
   color: var(--text-sub);
   overflow-wrap: anywhere;
 }
 
-/* Welcome (first-run) dialog. */
-.wmux-welcome-checklist { display: flex; flex-direction: column; gap: 2px; }
-.wmux-welcome-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-height: 28px;
-  padding: 4px 0;
-}
-.wmux-welcome-row-glyph {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 16px;
-  height: 20px;
-  color: var(--text-muted);
-}
-.wmux-welcome-row[data-status="ok"] .wmux-welcome-row-glyph { color: var(--accent-green); }
-.wmux-welcome-row[data-status="warn"] .wmux-welcome-row-glyph { color: var(--accent-yellow); }
-.wmux-welcome-row[data-status="error"] .wmux-welcome-row-glyph { color: var(--accent-red); }
-.wmux-welcome-row-todo {
-  width: 10px;
-  height: 10px;
-  border-radius: 9999px;
-  border: 1.3px solid currentColor;
-}
-.wmux-welcome-row-text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
-.wmux-welcome-row-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 20px;
-  color: var(--text-main);
-}
-.wmux-welcome-row-detail { margin: 0; font-size: 11px; line-height: 16px; color: var(--text-sub); }
-.wmux-welcome-row-error { margin: 2px 0 0; font-size: 11px; line-height: 16px; color: var(--accent-red); }
-.wmux-welcome-row-action { flex-shrink: 0; padding-top: 0; }
+/* Welcome (first-run) dialog specifics. */
+.wmux-welcome-glyph-ok { color: var(--accent-green); }
+.wmux-welcome-glyph-warn { color: var(--accent-yellow); }
+.wmux-welcome-glyph-error { color: var(--accent-red); }
+.wmux-welcome-todo { width: 10px; height: 10px; border-radius: 9999px; border: 1.3px solid var(--text-muted); }
 .wmux-welcome-link {
   align-self: flex-start;
   display: inline-flex;
@@ -1006,17 +1044,14 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 10px 12px;
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--accent-red) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent-red) 30%, transparent);
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent-red) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-red) 28%, transparent);
 }
-.wmux-welcome-sample-row { display: flex; align-items: flex-end; gap: 12px; }
-.wmux-welcome-sample-text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
-.wmux-welcome-sample h3 { margin: 0; }
-.wmux-welcome-running-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 9999px;
-  background: var(--accent-cursor, var(--accent));
+.wmux-welcome-sample { display: flex; flex-direction: column; gap: 12px; }
+.wmux-welcome-running-dot { width: 6px; height: 6px; border-radius: 9999px; background: var(--accent-cursor, var(--accent)); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-switch, .ui-switch-knob, .ui-checkbox, .ui-select > select, .ui-segment { transition: none; }
 }
