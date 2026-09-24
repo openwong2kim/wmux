@@ -15,7 +15,14 @@ import {
   firstRunStuckSummary,
   WORKER_DELIVERY_PREAMBLE,
 } from '../FanOutService';
-import { MODEL_ENV_MARKER, reattachModelEnvMarker, splitModelEnvMarker } from '../../../shared/workerLaunch';
+import {
+  MODEL_ENV_MARKER,
+  applyWorkerPermissionFlags,
+  reattachModelEnvMarker,
+  splitModelEnvMarker,
+  workerLaunchFlags,
+} from '../../../shared/workerLaunch';
+import { commandChoosesModel } from '../../../shared/orchestratorRole';
 import { FIRST_RUN_CLEAN_READS } from '../agentFirstRun';
 import type { FanOutDaemonPort, FanOutRendererPort } from '../FanOutService';
 import type { TaskWorktreePlan } from '../TaskWorktreeManager';
@@ -179,7 +186,7 @@ describe('buildInitialCommand (§4 D4)', { timeout: SHELL_SPAWN_TIMEOUT_MS }, ()
     if (process.platform !== 'win32') {
       expect(buildInitialCommand('claude', '/m/prompt.md')).toBe("claude \"$(cat '/m/prompt.md')\"");
     } else {
-      expect(buildInitialCommand('claude', 'C:\\m\\prompt.md')).toContain('Get-Content -Raw -LiteralPath');
+      expect(buildInitialCommand('claude', 'C:\\m\\prompt.md')).toContain('Get-Content -Raw -Encoding UTF8 -LiteralPath');
     }
   });
 
@@ -187,13 +194,27 @@ describe('buildInitialCommand (§4 D4)', { timeout: SHELL_SPAWN_TIMEOUT_MS }, ()
     if (process.platform === 'win32') {
       // PowerShell: 단일따옴표 리터럴, 내부 `'`는 `''`.
       const cmd = buildInitialCommand('claude', "C:\\a b\\it's $x`.md");
-      expect(cmd).toBe("claude \"$(Get-Content -Raw -LiteralPath 'C:\\a b\\it''s $x`.md')\"");
+      expect(cmd.startsWith("claude \"$(Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\\a b\\it''s $x`.md' | ")).toBe(
+        true,
+      );
       return;
     }
     // POSIX: 각 위험 경로가 단일따옴표 리터럴 안에 담기고 `'`만 닫고-이스케이프-열기.
     expect(buildInitialCommand('claude', '/a b/prompt.md')).toBe("claude \"$(cat '/a b/prompt.md')\"");
     expect(buildInitialCommand('claude', "/a/it's.md")).toBe("claude \"$(cat '/a/it'\\''s.md')\"");
     expect(buildInitialCommand('claude', '/a/$x`y.md')).toBe("claude \"$(cat '/a/$x`y.md')\"");
+  });
+
+  it('win32 (#1490): the prompt argument stays one quoted word the flag appender leaves intact', () => {
+    // The quote character inside the PowerShell stage is spelled [char]34 / \x22:
+    // a literal `"` would end the `"$(…)"` word early for the launch-line
+    // tokenizers. The real-shell behaviour is FanOutService.powershell.runtime.test.ts.
+    const cmd = buildInitialCommand('claude', "C:\\a b\\it's.md", 'win32');
+    expect(cmd.startsWith('claude "$(')).toBe(true);
+    expect(cmd.endsWith(')"')).toBe(true);
+    expect(cmd.slice('claude "'.length, -1)).not.toContain('"');
+    expect(applyWorkerPermissionFlags(cmd, 'auto')).toBe(`${cmd} ${workerLaunchFlags('auto')}`);
+    expect(commandChoosesModel(cmd)).toBe(false);
   });
 
   it('POSIX: 실제 sh -c 왕복에서 파일 내용이 argv로 실린다(재해석 없음)', () => {
