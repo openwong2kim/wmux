@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import {
   createWorkspaceAgentRosterSelector,
-  createWorkspaceRosterCountsSelector,
+  type RosterChipAgent,
   type WorkspaceAgentRosterRow,
 } from '../../stores/selectors/workspaceAgentRoster';
 import { focusNotificationTarget, focusPaneByPtyId } from '../../hooks/useNotificationListener';
@@ -70,8 +70,23 @@ interface WorkspaceRosterSummaryProps {
    *  control holds no store subscription of its own and memoizes on numbers. */
   agentCount: number;
   stashedCount: number;
+  /** #1481 — up to three agents, most urgent first, grouped by status. */
+  agents?: readonly RosterChipAgent[];
+  /** Agents beyond the drawn ones ("+N"). */
+  extra?: number;
   open: boolean;
   onToggle: () => void;
+}
+
+/** Consecutive runs of the same status, so each run carries ONE mark. */
+export function groupChipAgents(agents: readonly RosterChipAgent[]): RosterChipAgent[][] {
+  const groups: RosterChipAgent[][] = [];
+  for (const agent of agents) {
+    const last = groups[groups.length - 1];
+    if (last && last[0].status === agent.status) last.push(agent);
+    else groups.push([agent]);
+  }
+  return groups;
 }
 
 /**
@@ -174,6 +189,8 @@ function WorkspaceRosterSummary({
   workspaceId,
   agentCount,
   stashedCount,
+  agents = [],
+  extra = 0,
   open,
   onToggle,
 }: WorkspaceRosterSummaryProps) {
@@ -229,7 +246,19 @@ function WorkspaceRosterSummary({
       >
         <IconChevron size={8} />
       </span>
-      {agentCount > 0 && <span>{agentCount}</span>}
+      {/* #1481 — who is here and what they are doing, instead of a bare
+          count: up to three identity glyphs, grouped by status with one mark
+          per group (idle groups draw no mark), then "+N" for the rest. */}
+      {agentCount > 0 && agents.length === 0 && <span>{agentCount}</span>}
+      {groupChipAgents(agents).map((group, gi) => (
+        <span key={`${group[0].status}-${gi}`} className="flex items-center gap-0.5" data-roster-chip-group={group[0].status}>
+          {group[0].status !== 'idle' && <StatusMarkView status={group[0].status} quiet />}
+          {group.map((agent, ai) => (
+            <AgentGlyph key={ai} slug={agent.slug} name={agent.agentName} decorative />
+          ))}
+        </span>
+      ))}
+      {extra > 0 && agents.length > 0 && <span data-roster-chip-extra>+{extra}</span>}
       {/* The stash glyph draws only when it is the ONLY thing to report.
           Beside an agent count it cost 17px of a row whose name column has
           none to spare (measured: it was the difference between eleven

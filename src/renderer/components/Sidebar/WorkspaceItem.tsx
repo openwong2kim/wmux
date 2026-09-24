@@ -3,7 +3,7 @@ import type { GitSyncStatus, PrStatus, WorkspaceMetadata } from '../../../shared
 import { useStore } from '../../stores';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
 import { formatStaleMinutes, selectWorkspaceAgentStatus, selectWorkspaceUnverifiableMinutes } from '../../stores/selectors/fleet';
-import { createWorkspaceRosterCountsSelector } from '../../stores/selectors/workspaceAgentRoster';
+import { createWorkspaceRosterChipSelector } from '../../stores/selectors/workspaceAgentRoster';
 import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
@@ -338,15 +338,19 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const toggleRoster = useCallback(() => setRosterOpen((value) => !value), []);
   // Counts only — a reference-stable projection of two integers, so this does
   // not rerender the row on terminal output the way the full roster would.
-  const rosterCountsSelector = useMemo(
-    () => createWorkspaceRosterCountsSelector(workspaceId),
+  // #1481 — the chip projection: counts plus up to three agents for the
+  // collapsed summary. Reference-stable; it changes only when a drawn glyph,
+  // its status or a count does, never on output.
+  const rosterChipSelector = useMemo(
+    () => createWorkspaceRosterChipSelector(workspaceId),
     [workspaceId],
   );
-  const rosterCounts = useStore(rosterCountsSelector);
+  const rosterCounts = useStore(rosterChipSelector);
   const hasRoster = rosterCounts.agentCount > 0 || rosterCounts.stashedCount > 0;
-  /** Rows whose roster summary must not wait for the pointer — see its JSX. */
-  const rosterAlwaysShown =
-    rosterOpen || (rosterCounts.agentCount === 0 && rosterCounts.stashedCount > 0);
+  /** Rows whose roster summary must not wait for the pointer — see its JSX.
+   *  #1481 — the summary now names who is here and what they are doing, which
+   *  is the reason to scan the list, so it no longer hides at rest. */
+  const rosterAlwaysShown = rosterOpen || hasRoster;
   // Newly selected workspaces reveal their agents automatically; workspaces
   // that move to the background collapse back to the count. The user can still
   // explicitly toggle either state until selection changes again.
@@ -879,6 +883,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               workspaceId={workspaceId}
               agentCount={rosterCounts.agentCount}
               stashedCount={rosterCounts.stashedCount}
+              agents={rosterOpen ? undefined : rosterCounts.agents}
+              extra={rosterCounts.extra}
               open={rosterOpen}
               onToggle={toggleRoster}
             />

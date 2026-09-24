@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   selectWorkspaceAgentRoster,
   createWorkspaceAgentRosterSelector,
+  buildRosterChip,
+  type WorkspaceAgentRosterRow,
 } from '../workspaceAgentRoster';
 import { HOOK_RUNNING_TTL_MS } from '../fleet';
 import { BRAIN_PTY_ID_PREFIX } from '../../../../shared/constants';
@@ -818,5 +820,33 @@ describe('roster row slug', () => {
     }));
     expect(changed).not.toBe(first);
     expect(changed.rows[0]?.slug).toBe('openclaude');
+  });
+});
+
+// #1481 — the collapsed summary chip.
+describe('buildRosterChip', () => {
+  const row = (ptyId: string, status: AgentStatus, slug?: string, stashed = false) =>
+    ({ ptyId, status, slug, agentName: slug ?? 'shell', stashed } as unknown as WorkspaceAgentRosterRow);
+
+  it('keeps up to three agents, most urgent first, grouped by status, and counts the rest', () => {
+    const chip = buildRosterChip({
+      rows: [row('a', 'idle', 'claude'), row('b', 'running', 'codex'), row('c', 'awaiting_input', 'gemini'), row('d', 'running', 'claude'), row('e', 'idle', 'aider')],
+      agentCount: 5,
+      needsAttentionCount: 1,
+      stashedCount: 0,
+    });
+    expect(chip.agents.map((a) => `${a.status}:${a.slug}`)).toEqual(['awaiting_input:gemini', 'running:codex', 'running:claude']);
+    expect(chip.extra).toBe(2);
+  });
+
+  it('leaves stashed rows out of the glyphs', () => {
+    const chip = buildRosterChip({
+      rows: [row('a', 'running', 'claude'), row('s', 'running', 'codex', true)],
+      agentCount: 1,
+      needsAttentionCount: 0,
+      stashedCount: 1,
+    });
+    expect(chip.agents.map((a) => a.slug)).toEqual(['claude']);
+    expect(chip.extra).toBe(0);
   });
 });

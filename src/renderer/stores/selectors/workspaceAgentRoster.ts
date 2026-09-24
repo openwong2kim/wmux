@@ -404,3 +404,87 @@ export function createWorkspaceAgentRosterSelector(
     return next;
   };
 }
+
+/** #1481 — one agent in the collapsed-row summary. */
+export interface RosterChipAgent {
+  slug?: string;
+  agentName: string;
+  status: AgentStatus;
+}
+
+/** #1481 — what a collapsed workspace row shows instead of a bare count. */
+export interface RosterChip {
+  agentCount: number;
+  stashedCount: number;
+  /** Up to CHIP_MAX_GLYPHS agents, most urgent status first, grouped by status. */
+  agents: RosterChipAgent[];
+  /** Agents not drawn (agentCount - agents.length). */
+  extra: number;
+}
+
+export const CHIP_MAX_GLYPHS = 3;
+
+/** Lower = more urgent. Needs-you first, then error, running, done, idle. */
+export function chipStatusRank(status: AgentStatus): number {
+  switch (status) {
+    case 'awaiting_input':
+    case 'waiting':
+      return 0;
+    case 'error':
+      return 1;
+    case 'running':
+      return 2;
+    case 'complete':
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+/**
+ * Pure: pick the chip's agents from roster rows. Visible agents only (stashed
+ * panes keep their own glyph in the summary), stable-sorted by urgency so rows
+ * sharing a status sit together, capped at CHIP_MAX_GLYPHS.
+ */
+export function buildRosterChip(projection: WorkspaceAgentRosterProjection): RosterChip {
+  const visible = projection.rows.filter((row) => !row.stashed);
+  const ranked = visible
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => chipStatusRank(a.row.status) - chipStatusRank(b.row.status) || a.index - b.index)
+    .slice(0, CHIP_MAX_GLYPHS)
+    .map(({ row }) => ({ slug: row.slug, agentName: row.agentName, status: row.status }));
+  return {
+    agentCount: projection.agentCount,
+    stashedCount: projection.stashedCount,
+    agents: ranked,
+    extra: Math.max(0, projection.agentCount - ranked.length),
+  };
+}
+
+function chipsEqual(a: RosterChip, b: RosterChip): boolean {
+  if (a.agentCount !== b.agentCount || a.stashedCount !== b.stashedCount || a.extra !== b.extra) return false;
+  if (a.agents.length !== b.agents.length) return false;
+  for (let i = 0; i < a.agents.length; i += 1) {
+    const x = a.agents[i];
+    const y = b.agents[i];
+    if (x.slug !== y.slug || x.agentName !== y.agentName || x.status !== y.status) return false;
+  }
+  return true;
+}
+
+/**
+ * Reference-stable chip projection for the workspace row: re-renders the row
+ * only when a drawn glyph, its status or a count changes — never on terminal
+ * output or activity text.
+ */
+export function createWorkspaceRosterChipSelector(
+  workspaceId: string,
+): (state: StoreState) => RosterChip {
+  let previous: RosterChip | undefined;
+  return (state) => {
+    const next = buildRosterChip(selectWorkspaceAgentRoster(state, workspaceId));
+    if (previous && chipsEqual(previous, next)) return previous;
+    previous = next;
+    return next;
+  };
+}
