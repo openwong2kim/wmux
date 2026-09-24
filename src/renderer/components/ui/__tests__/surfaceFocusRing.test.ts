@@ -10,7 +10,9 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const css = readFileSync(join(__dirname, '..', '..', '..', 'styles', 'ui.css'), 'utf8');
+// Normalize line endings: a Windows checkout reads ui.css with CRLF, and the
+// selectors below are matched with '\n'.
+const css = readFileSync(join(__dirname, '..', '..', '..', 'styles', 'ui.css'), 'utf8').replace(/\r\n/g, '\n');
 
 function ruleAt(selector: string): { index: number; body: string } {
   const index = css.indexOf(selector);
