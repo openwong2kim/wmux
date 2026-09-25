@@ -45,6 +45,7 @@ import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRem
 import { remoteAgentKey } from '../../shared/remoteHosts';
 import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
+import { buildPhoneSidebarSnapshot } from './phoneSidebarSnapshot';
 import { buildFleetTriage, fleetTriageScopeError } from '../utils/fleetTriage';
 
 // ---------------------------------------------------------------------------
@@ -667,6 +668,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // the mirror snapshot can never diverge from this reply (see
     // buildWorkspaceListEntries).
     return buildWorkspaceListEntries(store.workspaces);
+  }
+
+  if (method === 'workspace.phoneSidebar') {
+    // Phone Fleet only (reached through main's PhoneWorkspaces, never the
+    // public RPC router): the sidebar's own labels, projected and bounded.
+    return buildPhoneSidebarSnapshot(store);
   }
 
   if (method === 'workspace.phoneCreate') {
