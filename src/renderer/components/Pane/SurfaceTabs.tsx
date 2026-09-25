@@ -19,41 +19,7 @@ import { displayPath } from '../../utils/displayPath';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from './PaneActionsMenu';
 import { bindingEnforcesModel, type RoleBinding } from '../../../shared/orchestratorRole';
-
-/**
- * D2 — how much room the enforced-model badge must leave to its RIGHT.
- *
- * The badge is laid out in the header flow (that is what stopped it covering
- * the Terminal/Chat toggle), but the strip's top-right corner is still a stack
- * of ABSOLUTELY-positioned controls that flow layout cannot see:
- *   - the supervision ⟳ badge, at `cluster + 6` when the cluster is shown, else
- *     6 (or 54 zoomed);
- *   - the corner zoom/maximize button, which takes the corner when the cluster
- *     is hidden entirely (`right: 6`, pushed out to 32 by the supervision badge).
- * The action cluster itself is NOT in this list: it is a flow sibling, so it
- * simply sits beside the badge and needs no reservation.
- *
- * So the badge keeps a margin wide enough to clear whichever of those is
- * present. This is the same arithmetic the badge's old absolute `right` used,
- * minus the cluster width it no longer has to step over. Pure so it stays
- * testable without a DOM — the same reason paneClusterWidth is extracted.
- */
-export function enforcedModelBadgeGap(opts: {
-  mode: PaneActionsMode;
-  isZoomed: boolean;
-  supervised: boolean;
-}): number {
-  const { mode, isZoomed, supervised } = opts;
-  /** Rendered width of the supervision badge (10px glyph + 6px side padding). */
-  const SUPERVISION_W = 28;
-  /** Rendered width of a corner icon button plus its 6px gutter. */
-  const CORNER_BTN_W = 26;
-  if (paneClusterWidth({ mode }) > 0) return 6 + (supervised ? SUPERVISION_W : 0);
-  if (!supervised) return 6 + CORNER_BTN_W;
-  // Supervised: zoom sits at 6 and supervision at 54, else supervision at 6 and
-  // maximize at 32.
-  return isZoomed ? 54 + SUPERVISION_W : 32 + CORNER_BTN_W + 4;
-}
+import { paneHeaderTailGap } from './paneChrome';
 
 /** D2 — only a terminal surface can launch an agent, so only a terminal surface
  *  may claim a role-enforced model. An undefined `surfaceType` is a legacy
@@ -166,9 +132,47 @@ export const PANE_ACTIONS_MIN_PANE_WIDTH = PANE_ACTIONS_CLUSTER_WIDTH + MIN_TAB_
  * 0 is a genuinely hidden pane (a background workspace), which also keeps the
  * cluster so it is correct the instant it becomes visible.
  */
-export function paneActionsMode(width: number | null): PaneActionsMode {
+export function paneActionsMode(
+  width: number | null,
+  /** Width of the OTHER shrink-0 chrome this header is carrying — the view
+   *  toggle and the model badge. See paneHeaderExtraChromeWidth. */
+  extraChrome = 0,
+): PaneActionsMode {
   if (width === null || width === 0) return 'full';
-  return width >= PANE_ACTIONS_MIN_PANE_WIDTH ? 'full' : 'overflow';
+  return width >= PANE_ACTIONS_MIN_PANE_WIDTH + extraChrome ? 'full' : 'overflow';
+}
+
+/** Rendered width of the Terminal/Chat toggle: two 11px labels in 7px side
+ *  padding, a 2px gap and the group's own 5px margins. Its widest translation
+ *  decides it, so this is a measured ceiling, not a computed sum. */
+export const CHAT_TOGGLE_WIDTH = 84;
+
+/** The floor the enforced-model badge occupies even fully truncated: 5px of
+ *  padding and a 1px border on each side. `min-width: 0` zeroes a flex item's
+ *  CONTENT box, never its padding, so this much is unavoidable while the badge
+ *  is drawn at all — and it is exactly what pushed the action cluster off the
+ *  end of a 248px header before this was counted. */
+export const ENFORCED_MODEL_BADGE_MIN_WIDTH = 12;
+
+/**
+ * How much shrink-0 chrome the header carries BESIDES the action cluster.
+ *
+ * The affordability threshold used to be `cluster + a readable tab strip`,
+ * which was the whole header back when it was the whole header. The view
+ * toggle and the model badge are shrink-0 too, so when they are present the
+ * same width buys less: at 248px — comfortably "full" by the old threshold — a
+ * pane carrying both pushed the cluster 11px past its own right edge, and the
+ * clipped button was the ⋮/zoom corner, the way out of a narrow pane.
+ *
+ * The badge contributes only its truncated floor, because it is shrinkable:
+ * it gives up its own width first, and only what it cannot give up counts.
+ */
+export function paneHeaderExtraChromeWidth(opts: {
+  chatToggle: boolean;
+  enforcedModelBadge: boolean;
+}): number {
+  return (opts.chatToggle ? CHAT_TOGGLE_WIDTH : 0)
+    + (opts.enforcedModelBadge ? ENFORCED_MODEL_BADGE_MIN_WIDTH : 0);
 }
 
 /** Whether a pane of `width` can afford the full cluster. Kept as its own
@@ -375,12 +379,13 @@ export default function SurfaceTabs({
     paneRoleName ? s.orchestratorRoleBindings[paneRoleName] : undefined,
   );
   const mode: PaneActionsMode = actionsMode ?? (paneActionsSetting ? 'full' : 'none');
-  // The enforced-model badge reserves room for the absolute corner controls, and
-  // the supervision ⟳ badge is one of them — so the strip needs to know whether
-  // this pane is supervised. Same derivation as Pane.tsx.
-  const supervised = useStore((s) => {
+  // X8 — this pane's supervision state. The ⟳ badge it draws is laid out in
+  // this strip (it used to be absolutely positioned over the corner, where it
+  // covered whatever flow chrome happened to be underneath — the same defect
+  // the model badge had).
+  const supervision = useStore((s) => {
     const ptyId = surfaces.find((sf) => sf.id === activeSurfaceId)?.ptyId;
-    return ptyId ? !!s.supervisionByPtyId[ptyId] : false;
+    return ptyId ? s.supervisionByPtyId[ptyId] : undefined;
   });
   const enforcedModel = useMemo(() => {
     const surfaceType = surfaces.find((s) => s.id === activeSurfaceId)?.surfaceType;
@@ -394,6 +399,18 @@ export default function SurfaceTabs({
       binding: [paneRoleBinding?.agent, model].filter(Boolean).join(' · '),
     };
   }, [paneRoleBinding, surfaces, activeSurfaceId]);
+  // Both badges are labels, so each carries the SAME string as tooltip and as
+  // accessible name — a screen reader gets what the pointer gets. (The old
+  // absolute spans set `pointer-events: none`, which silently suppressed the
+  // title tooltip they went to the trouble of setting.)
+  const enforcedLaunchLabel = enforcedModel
+    ? t('pane.enforcedLaunch', { binding: enforcedModel.binding })
+    : '';
+  const supervisionLabel = !supervision
+    ? ''
+    : supervision.status === 'stopped'
+      ? t('supervision.stoppedTooltip')
+      : t('supervision.armedTooltip', { count: supervision.restartCount });
   // Zoom/maximize state for this pane — the cluster's fifth button toggles it
   // and reflects the current state (pressed when zoomed). Subscribing here (same
   // pattern as Pane.tsx) keeps the button in sync without prop threading.
@@ -690,6 +707,11 @@ export default function SurfaceTabs({
       // signal in the design system.
       style={{
         borderColor: 'var(--border-soft)',
+        // With no action cluster the corner zoom/maximize button is drawn
+        // absolutely over this strip's right end, so the strip's flow content
+        // stops short of it. With a cluster there is nothing to clear — the
+        // zoom verb is one of its buttons.
+        paddingRight: paneHeaderTailGap({ clusterShown: paneClusterWidth({ mode }) > 0 }),
         ...(paneActive ? { boxShadow: 'inset 0 -2px 0 var(--accent-blue)' } : {}),
       }}
       data-pane-tabs-active={paneActive ? 'true' : undefined}
@@ -889,13 +911,42 @@ export default function SurfaceTabs({
           <model>" and the Chat label was only visible peeking out behind it.
           A wider constant would not have fixed it: the toggle's width is its
           two translated labels, so every locale moves the target. Laying the
-          badge out as a sibling is what makes overlap unrepresentable. */}
+          badge out as a sibling is what makes overlap unrepresentable.
+
+          The supervision ⟳ badge above it moved here for the same reason and
+          in the same change: it was the other absolute span parked over this
+          corner, and with no role binding in play it covered the Chat button
+          by itself. Both are labels, not controls, so neither takes pointer
+          events away from anything — and being in the flow, both now keep
+          their own hover tooltip, which `pointer-events: none` used to eat. */}
+      {supervision && (
+        <span
+          data-pane-supervision={supervision.status}
+          className={`shrink-0 px-[6px] rounded-[3px] font-mono text-[10px] leading-4 font-bold tracking-[0.04em] select-none ${
+            supervision.status === 'stopped'
+              ? 'text-[var(--bg-main)] bg-[var(--accent-red)]'
+              : 'text-[var(--text-muted)] bg-[var(--bg-overlay)]'
+          }`}
+          title={supervisionLabel}
+          aria-label={supervisionLabel}
+        >
+          {supervision.status === 'stopped' ? '⟳!' : '⟳'}
+        </span>
+      )}
       {enforcedModel && (
         <span
           data-pane-enforced-model
-          className="shrink-0 px-[5px] rounded-[3px] font-mono text-[10px] leading-4 tracking-[0.02em] text-[var(--text-muted)] bg-[var(--bg-surface)] border border-[var(--border-soft)] select-none pointer-events-none"
-          title={t('pane.enforcedLaunch', { binding: enforcedModel.binding })}
-          style={{ marginRight: enforcedModelBadgeGap({ mode, isZoomed, supervised }) }}
+          // Shrinkable and capped, NOT shrink-0. A shrink-0 badge of unbounded
+          // width is a second way to break this header: a long model id (a
+          // dated full model name, say) takes its width out of the flow, and
+          // since the action cluster is shrink-0 too, what gives way is the
+          // right-hand end of the strip — the ⋮ that is the only way out of a
+          // narrow pane. Capped at 96px so a long id truncates instead of
+          // growing, and shrinkable so the badge, not the ⋮, is what yields
+          // when the pane runs out of room.
+          className="shrink min-w-0 max-w-[96px] truncate px-[5px] rounded-[3px] font-mono text-[10px] leading-4 tracking-[0.02em] text-[var(--text-muted)] bg-[var(--bg-surface)] border border-[var(--border-soft)] select-none"
+          title={enforcedLaunchLabel}
+          aria-label={enforcedLaunchLabel}
           {...tokenAttrs('textMuted', 'text')}
           {...tokenAttrs('bgSurface', 'bg')}
         >
