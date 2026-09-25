@@ -116,6 +116,7 @@ describe('teardown paths dispose everything the workspace owns', () => {
     ['Sidebar close button', read('components', 'Sidebar', 'Sidebar.tsx')],
     ['Settings reset-everything', read('components', 'Settings', 'SettingsPanel.tsx')],
     ['keyboard workspace kill', read('hooks', 'useKeyboard.ts')],
+    ['Fleet review close (disposeWorkspacePtys)', read('utils', 'paneTeardown.ts')],
   ])('%s uses getWorkspacePtyIds', (_name, source) => {
     // Every one of these kills a whole workspace. A stashed session that
     // survives it is an orphan nothing can reach.

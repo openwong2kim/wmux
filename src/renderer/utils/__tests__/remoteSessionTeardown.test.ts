@@ -108,6 +108,9 @@ describe('every explicit close path is wired to the teardown', () => {
     ['hooks/useRpcBridge.ts', /destroyWorkspaceRemoteSessions\(/],
     ['components/Sidebar/Sidebar.tsx', /destroyWorkspaceRemoteSessions\(/],
     ['components/Settings/SettingsPanel.tsx', /destroyWorkspaceRemoteSessions\(/],
+    // Fleet's Ready to review close (disposeWorkspacePtys).
+    ['utils/paneTeardown.ts', /destroyWorkspaceRemoteSessions\(/],
+    ['components/FleetView/FleetReviewRow.tsx', /disposeWorkspacePtys\(/],
   ];
 
   it.each(cases)('%s calls %s', (relPath, pattern) => {

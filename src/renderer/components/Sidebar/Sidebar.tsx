@@ -12,7 +12,9 @@ import RemoteWorkspaceItem from './RemoteWorkspaceItem';
 import OrphanSessions from './OrphanSessions';
 import ArchivedWorkspaces from './ArchivedWorkspaces';
 import MissionsSection from './MissionsSection';
-import { disposeWorkspacePtys as disposeAllPtys } from '../../utils/paneTeardown';
+import type { Workspace } from '../../../shared/types';
+import { getWorkspacePtyIds } from '../../../shared/paneUtils';
+import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
 import { selectAttachedRemoteWorkspaces } from '../../stores/slices/remoteWorkspacesSlice';
 import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
@@ -27,6 +29,20 @@ import SidebarNavigation from './SidebarNavigation';
 import PresetPicker from './PresetPicker';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 
+
+// 워크스페이스가 소유한 모든 PTY를 dispose
+// (traversal is the shared canonical walk; the dispose policy stays local)
+//
+// Workspace-wide (#977): closing a workspace kills everything it owns, and a
+// stashed pane's session is very much owned. Missing it would leave an orphan
+// daemon session burning tokens with no window left to show it.
+function disposeAllPtys(ws: Workspace) {
+  for (const ptyId of getWorkspacePtyIds(ws)) window.electronAPI.pty.dispose(ptyId);
+  // #1129 — a remote-terminal surface owns a session on another machine and
+  // carries no ptyId, so the walk above is blind to it. Same orphan argument
+  // as the stash: nothing else on the host will ever reap it.
+  destroyWorkspaceRemoteSessions(ws);
+}
 
 export default function Sidebar() {
   const t = useT();
