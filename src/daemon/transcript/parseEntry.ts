@@ -105,6 +105,16 @@ export function parseTranscriptLineDetailed(
   if (type === 'pr-link') {
     return single(metaEvent(baseId, ts, 'unknown', prLinkLabel(entry)), empty);
   }
+  // A prompt the human queued while tools ran reaches the model as an
+  // attachment, never as a `user` entry (Claude Code 2.1.282, probed 2026-09-25).
+  if (type === 'attachment' && entry['isSidechain'] !== true) {
+    const attachment = asObject(entry['attachment']);
+    const prompt = attachment?.['prompt'];
+    if (attachment?.['type'] === 'queued_command' && attachment['commandMode'] === 'prompt' && typeof prompt === 'string' && prompt.trim()) {
+      return single({ id: baseId, kind: 'user_text', text: capText(stripNul(prompt)), ...tsOf(ts) }, empty);
+    }
+    return empty;
+  }
   const isUser = type === 'user' || role === 'user';
   const isAssistant = type === 'assistant' || role === 'assistant';
   if (!isUser && !isAssistant) return empty;
@@ -192,6 +202,11 @@ function parseUserEntry(
   // Without an image block the line is the user's own words.
   if (!hasImage) parts.push(...sourceTexts);
   const prose = parts.join('\n').trim();
+  // Claude Code records an ESC interrupt as a text block of its own. A typed
+  // prompt is stored as a plain string, so the same words typed stay a message.
+  if (!hasImage && !out.length && /^\[Request interrupted by user(?: for tool use)?\]$/.test(prose)) {
+    return single(metaEvent(baseId, ts, 'turn_aborted', 'Interrupted'), empty);
+  }
   // Only classify when there IS prose: a bare tool-result entry keeps its
   // previous shape (results only, no chip) even if it carries `isMeta`.
   const meta = prose ? classifyMetaUser(entry, prose) : null;
@@ -267,10 +282,6 @@ function classifyMetaUser(
   // to a real message is stripped by `stripSystemReminders` instead, so the
   // human's own words still render.
   const head = text.trimStart();
-  // Claude Code records an ESC interrupt as a user entry; nobody typed it.
-  if (/^\[Request interrupted by user(?: for tool use)?\]\s*$/.test(head)) {
-    return { subtype: 'turn_aborted', label: 'Interrupted' };
-  }
   for (const known of INJECTED_USER_TAGS) {
     if (!head.startsWith(`<${known.tag}>`)) continue;
     return { subtype: known.subtype, label: injectedLabel(head, known.tag) || known.label };

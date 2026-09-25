@@ -3861,6 +3861,8 @@ function registerRpcHandlers(
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const agentSessionId = typeof params['agentSessionId'] === 'string' ? params['agentSessionId'] : '';
     if (!id || !approvalRegistry || await terminalChat?.read(id)) return { result: 'unavailable' };
+    // ESC between a send's pastes would strand them in the composer.
+    if (chatSending.has(id)) return { result: 'blocked' };
     const result = await interruptChatTurn(agentSessionId, {
       getTranscriptSessionId: () => projector.status(id).agentSessionId,
       hasOpenApproval: () => !approvalRegistry || approvalRegistry.list().pending.some((r) => r.sessionId === id),

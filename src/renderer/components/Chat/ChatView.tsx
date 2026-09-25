@@ -19,6 +19,8 @@ import { CHAT_ATTACHMENT_LIMIT } from '../../../shared/transcript/chatAttachment
 // Drafts survive view/workspace changes, but never cross conversation boundaries.
 const drafts = new Map<string, string>();
 const attachmentDrafts = new Map<string, ChatAttachment[]>();
+// Queued sends outlive a switch to Terminal and back until Claude records them.
+const pendingSends = new Map<string, PendingSend[]>();
 
 /** A sent message the transcript has not recorded yet (Claude records a queued one when it runs it). */
 interface PendingSend { id: string; text: string; images: ChatAttachment[]; queued: boolean; before: ReadonlySet<string> }
@@ -69,13 +71,17 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
   const draftKey = `${ptyId}:${data.status.agentSessionId ?? 'new'}`;
   const [attachments, setAttachments] = useState<ChatAttachment[]>(() => attachmentDrafts.get(draftKey) ?? []);
   const [attachError, setAttachError] = useState('');
-  const [pending, setPending] = useState<PendingSend[]>([]);
+  const [pending, setPending] = useState<PendingSend[]>(() => pendingSends.get(draftKey) ?? []);
   const [stopState, setStopState] = useState<StopState | null>(null);
   const stopBase = useRef<string | undefined>(undefined);
   const aborted = lastAborted(data.events);
   useEffect(() => {
     if (attachments.length) attachmentDrafts.set(draftKey, attachments); else attachmentDrafts.delete(draftKey);
   }, [attachments, draftKey]);
+  useEffect(() => {
+    if (pending.length) pendingSends.set(draftKey, pending); else pendingSends.delete(draftKey);
+    if (pendingSends.size > 100) pendingSends.delete(pendingSends.keys().next().value!);
+  }, [pending, draftKey]);
   const addPaths = useCallback(async (paths: string[]) => {
     const preview = window.electronAPI?.chat?.attachment;
     if (!canAttach || !preview) { setAttachError(t('chat.attach.unsupported')); return; }
@@ -101,11 +107,19 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
     const path = await window.clipboardAPI?.readImage?.(ptyId).catch(() => null);
     if (path) await addPaths([path]); else setAttachError(t('chat.attach.pasteFailed'));
   }, [addPaths, canAttach, ptyId, t]);
-  // A pending bubble leaves once the transcript records the same words as a new user row.
+  // A pending bubble leaves once the transcript records the same words as a new
+  // user row. One row settles one bubble, oldest first: the same words queued
+  // twice stay two bubbles until both are recorded.
   useEffect(() => {
     setPending((current) => {
-      const next = current.filter((item) => !data.events.some((e) => e.kind === 'user_text' && !item.before.has(e.id) && sameMessage(e.text, item.text)));
-      return next.length === current.length ? current : next;
+      const settled = new Set<string>();
+      const next = current.filter((item) => {
+        const row = data.events.find((e) => e.kind === 'user_text' && !item.before.has(e.id) && !settled.has(e.id) && sameMessage(e.text, item.text));
+        if (row) settled.add(row.id);
+        return !row;
+      });
+      return next.length === current.length ? current
+        : next.map((item) => ({ ...item, before: new Set([...item.before, ...settled]) }));
     });
   }, [data.events]);
   const stop = useCallback(async () => {
@@ -207,7 +221,8 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
       if (drafts.size > 100) drafts.delete(drafts.keys().next().value!);
     });
   }, [runtime, ptyId, data.status.agentSessionId]);
-  const showStop = canStop && (busy && !blocked || stopState === 'stopping');
+  // A send in flight owns the composer until its pastes land.
+  const showStop = canStop && (busy && !blocked && !sending || stopState === 'stopping');
   const runningHint = busy && !managed && !blocked
     ? t(canStop ? (canQueue ? 'chat.hint.runningQueue' : 'chat.hint.runningStop') : 'chat.hint.runningNoStop') : undefined;
   const keys = useMemo(() => ({

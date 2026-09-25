@@ -198,4 +198,20 @@ describe('sending while the agent works', () => {
     expect(host.querySelector('.wmux-chat-composer-footer')!.textContent).toContain('chat.hint.runningStop');
     await type('');
   });
+  it('settles one queued bubble per recorded row and keeps them across a view switch', async () => {
+    fixture.extra = running();
+    fixture.events = [{ id: 'u1', kind: 'user_text', text: 'long request' }];
+    vi.stubGlobal('electronAPI', { chat: { send: vi.fn(async () => ({ result: 'sent' })), interrupt: vi.fn() } });
+    await render();
+    for (let i = 0; i < 2; i++) { await type('again'); await key({ key: 'Enter' }); }
+    expect(host.querySelectorAll('.wmux-chat-pending')).toHaveLength(2);
+    await act(async () => root.render(null)); await render();
+    expect(host.querySelectorAll('.wmux-chat-pending')).toHaveLength(2);
+    fixture.events = [...fixture.events, { id: 'u2', kind: 'user_text', text: 'again' }];
+    await render();
+    expect(host.querySelectorAll('.wmux-chat-pending')).toHaveLength(1);
+    fixture.events = [...fixture.events, { id: 'u3', kind: 'user_text', text: 'again' }];
+    await render();
+    expect(host.querySelectorAll('.wmux-chat-pending')).toHaveLength(0);
+  });
 });

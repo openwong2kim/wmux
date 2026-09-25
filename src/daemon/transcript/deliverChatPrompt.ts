@@ -35,8 +35,10 @@ export async function deliverChatPrompt(
   // empty composer on screen is permission for either (running stays 'busy').
   const claudeEmpty = initial.slug === 'claude' && claudeComposerEmpty(rows);
   if (initial.slug === 'claude' && initial.status === 'idle' && !claudeEmpty) return 'unconfirmed';
-  // Image paths become attachments only in Claude's composer.
+  // Image paths become attachments only in Claude's composer, and only an
+  // empty one: a failed earlier send may have left paths behind to duplicate.
   if (attachments.length && initial.slug !== 'claude') return 'unavailable';
+  if (attachments.length && !claudeEmpty) return 'unconfirmed';
   // Codex's empty composer is a known placeholder. A draft, menu, picker or
   // unknown CLI layout cannot inherit permission from an idle status.
   if (initial.slug === 'codex' && !codexComposerEmpty(rows)) return 'unconfirmed';

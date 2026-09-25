@@ -79,13 +79,22 @@ export async function deliverScheduledPrompt(
     return 'unavailable';
   }
 
+  // Between our own pastes nothing else may have reached the composer: the
+  // same process, and exactly the writes we made so far.
+  const untouched = (writes: number): boolean => {
+    const now = deps.getAgentState();
+    return !!now && now.slug === expectedSlug && now.incarnationId === expectedIncarnationId &&
+      now.inputRevision === before.inputRevision + writes;
+  };
   try {
     for (const [index, paste] of leading.entries()) {
       // Only the first write can still be refused cleanly; after it the
       // composer already holds our input.
+      if (index > 0 && !untouched(index)) return 'error';
       if (!deps.write(formatBracketedPastePayload(paste))) return index === 0 ? 'unavailable' : 'error';
       await (deps.delay ?? sleep)(SESSION_PROMPT_ATTACHMENT_DELAY_MS);
     }
+    if (leading.length && !untouched(leading.length)) return 'error';
     if (!deps.write(formatBracketedPastePayload(leading.length ? ` ${prompt}` : prompt))) return leading.length ? 'error' : 'unavailable';
   } catch {
     return 'error';

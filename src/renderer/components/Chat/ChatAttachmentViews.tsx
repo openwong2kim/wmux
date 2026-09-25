@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { previewAttachment, type ChatAttachment } from './chatAttachments';
+import { validChatImagePath } from '../../../shared/transcript/chatAttachments';
 
 const baseName = (path: string) => path.split(/[\\/]/).pop() || path;
 
@@ -38,9 +39,11 @@ function SentImage({ path, thumbnail }: { path: string; thumbnail?: string }) {
 
 /** Images a sent (or queued) message carried; click opens the file. */
 export function ChatSentImages({ images }: { images: readonly (string | ChatAttachment)[] }) {
-  if (!images.length) return null;
+  // A transcript path opens on click, so only image files are offered.
+  const shown = images.filter((image) => validChatImagePath(typeof image === 'string' ? image : image.path));
+  if (!shown.length) return null;
   return <div className="wmux-chat-images">
-    {images.map((image) => typeof image === 'string'
+    {shown.map((image) => typeof image === 'string'
       ? <SentImage key={image} path={image} />
       : <SentImage key={image.path} path={image.path} thumbnail={image.thumbnail || undefined} />)}
   </div>;

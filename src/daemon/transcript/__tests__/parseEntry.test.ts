@@ -383,10 +383,20 @@ describe('parseTranscriptLine — pasted images and ESC interrupts', () => {
   });
 
   it('records an ESC interrupt as an aborted turn, not as something the user typed', () => {
-    for (const content of ['[Request interrupted by user]', [{ type: 'text', text: '[Request interrupted by user for tool use]' }]]) {
-      const [event] = user(content);
+    for (const text of ['[Request interrupted by user]', '[Request interrupted by user for tool use]']) {
+      const [event] = user([{ type: 'text', text }]);
       expect(event).toMatchObject({ kind: 'meta', subtype: 'turn_aborted', label: 'Interrupted' });
     }
+    // The same words typed by a person are stored as a string and stay a message.
+    expect(user('[Request interrupted by user]')[0]).toMatchObject({ kind: 'user_text', text: '[Request interrupted by user]' });
+  });
+
+  it('shows a prompt queued while tools ran, which Claude Code records as an attachment', () => {
+    const queued = (attachment: Record<string, unknown>) => parseTranscriptLine(JSON.stringify({ type: 'attachment', uuid: 'q', attachment }), 0);
+    expect(queued({ type: 'queued_command', prompt: 'Also say BANANA.', commandMode: 'prompt', humanTurn: true })[0])
+      .toMatchObject({ id: 'q', kind: 'user_text', text: 'Also say BANANA.' });
+    expect(queued({ type: 'queued_command', prompt: '/compact', commandMode: 'bash' })).toEqual([]);
+    expect(queued({ type: 'hook_success', content: 'x' })).toEqual([]);
   });
 });
 

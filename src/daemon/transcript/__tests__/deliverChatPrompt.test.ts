@@ -101,7 +101,12 @@ describe('chat delivery into Claude mid-turn and after Stop', () => {
     expect(restored.write).not.toHaveBeenCalled();
   });
   it('pastes each image path on its own before the prompt, then submits once', async () => {
+    const leftover = fixture();
+    leftover.show([RULE, '❯ [Image #1] What is this?', RULE]);
+    expect(await deliverChatPrompt('conversation-1', 'What is this?', leftover.deps, ['/tmp/a.png'])).toBe('unconfirmed');
+    expect(leftover.write).not.toHaveBeenCalled();
     const f = fixture();
+    f.show(emptyComposer(['● done']));
     expect(await deliverChatPrompt('conversation-1', 'What is this?', f.deps, ['/tmp/a.png', '/tmp/my shot.png'])).toBe('sent');
     expect(f.write.mock.calls.map((call) => (call as unknown[])[0])).toEqual([
       '\x1b[200~/tmp/a.png\x1b[201~', "\x1b[200~'/tmp/my shot.png'\x1b[201~", '\x1b[200~ What is this?\x1b[201~', '\r']);
@@ -112,9 +117,11 @@ describe('chat delivery into Claude mid-turn and after Stop', () => {
     expect(await deliverChatPrompt('conversation-1', 'look', codex.deps, ['/tmp/a.png'])).toBe('unavailable');
     expect(codex.write).not.toHaveBeenCalled();
     const f = fixture();
+    f.show(emptyComposer(['● done']));
     let delays = 0;
     f.deps.delay = async () => { if (delays++ === 0) f.state.inputRevision++; };
-    expect(await deliverChatPrompt('conversation-1', 'look', f.deps, ['/tmp/a.png'])).toBe('error');
-    expect(f.write).toHaveBeenCalledTimes(2);
+    expect(await deliverChatPrompt('conversation-1', 'look', f.deps, ['/tmp/a.png', '/tmp/b.png'])).toBe('error');
+    // Typing after the first path stops the second paste, not only Enter.
+    expect(f.write).toHaveBeenCalledTimes(1);
   });
 });
