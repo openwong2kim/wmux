@@ -909,40 +909,45 @@ export function StatuslineBlock({
     );
   }
 
-  // Optional and cosmetic, so never the primary action.
+  // Optional and cosmetic, so never the primary action. The clip spans the
+  // full group width under the row: the statusline is one long line of small
+  // text, unreadable at the width of the row's text column.
   return (
-    <SetupRow
-      status={state === 'error' ? 'error' : 'todo'}
-      testId="first-run-wizard-statusline-offer"
-      title={t('firstRunWizard.statuslineHeading')}
-      detail={t('firstRunWizard.statuslineDescription')}
-      action={
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={onInstall}
-          disabled={state === 'installing'}
-          data-testid="first-run-wizard-statusline-install"
-        >
-          {state === 'installing'
-            ? t('firstRunWizard.statuslineInstalling')
-            : t('firstRunWizard.statuslineEnableButton')}
-        </Button>
-      }
-    >
-      <MediaPreview
-        clip={MEDIA_CLIPS.statusline}
-        label={t('firstRunWizard.statuslineDescription')}
-        className="mt-2"
-        data-testid="first-run-wizard-statusline-preview"
-      />
-      {state === 'error' && (
-        <p className="ui-row-error" data-testid="first-run-wizard-statusline-error">
-          {withInlineCode(t('firstRunWizard.statuslineError'))}
-          {errorDetail ? <> (<code className="ui-code">{errorDetail}</code>)</> : null}
-        </p>
-      )}
-    </SetupRow>
+    <div>
+      <SetupRow
+        status={state === 'error' ? 'error' : 'todo'}
+        testId="first-run-wizard-statusline-offer"
+        title={t('firstRunWizard.statuslineHeading')}
+        detail={t('firstRunWizard.statuslineDescription')}
+        action={
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onInstall}
+            disabled={state === 'installing'}
+            data-testid="first-run-wizard-statusline-install"
+          >
+            {state === 'installing'
+              ? t('firstRunWizard.statuslineInstalling')
+              : t('firstRunWizard.statuslineEnableButton')}
+          </Button>
+        }
+      >
+        {state === 'error' && (
+          <p className="ui-row-error" data-testid="first-run-wizard-statusline-error">
+            {withInlineCode(t('firstRunWizard.statuslineError'))}
+            {errorDetail ? <> (<code className="ui-code">{errorDetail}</code>)</> : null}
+          </p>
+        )}
+      </SetupRow>
+      <div className="px-3 pb-3">
+        <MediaPreview
+          clip={MEDIA_CLIPS.statusline}
+          label={t('firstRunWizard.statuslineDescription')}
+          data-testid="first-run-wizard-statusline-preview"
+        />
+      </div>
+    </div>
   );
 }
 
