@@ -340,7 +340,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     if (idCheck === 'invalid') return refuse(clientMessageId, 'invalid-chat-request', { detail: 'clientMessageId' });
     // Before any receipt lookup, so an id stays refused after its receipt is pruned.
     if (idCheck === 'expired') return refuse(clientMessageId, 'message-id-expired');
-    const store = dedup ? deps.receipts : null;
+    let store = dedup ? deps.receipts : null;
     if (dedup && !store && owner !== 'desktop') return refuse(clientMessageId, 'chat-persist-failed');
     const fingerprint = ChatSendReceiptStore.fingerprint(req.id, req.agentSessionId, req.historyEpoch, req.text);
     const early = (entry: ReturnType<ChatSendReceiptStore['lookup']>) =>
@@ -382,8 +382,12 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         ...(req.historyEpoch !== undefined ? { historyEpoch: req.historyEpoch } : {}),
       });
       if (inserted === 'exists') return early(store.lookup(owner, clientMessageId)) ?? refuse(clientMessageId, 'message-id-conflict');
-      if (inserted === 'full') return refuse(clientMessageId, 'message-history-full');
-      if (inserted === 'persist-failed') return refuse(clientMessageId, 'chat-persist-failed');
+      if (inserted === 'full' || inserted === 'persist-failed') {
+        // The desktop sends without dedup, as when the store failed to load.
+        if (owner !== 'desktop') return refuse(clientMessageId, inserted === 'full' ? 'message-history-full' : 'chat-persist-failed');
+        deps.log('warn', `[chat] send receipt for ${req.id} not stored (${inserted}); desktop send without dedup`);
+        store = null;
+      }
     }
     let outcome: StoredChatOutcome;
     try {

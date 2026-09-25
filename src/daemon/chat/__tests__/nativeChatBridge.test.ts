@@ -278,6 +278,17 @@ describe('send', () => {
     expect(f.written).toEqual([]);
   });
 
+  it('desktop: a full or unwritable receipt store falls back to dispatch without dedup', async () => {
+    const f = fixture(); f.liveClaude();
+    const failing = createChatBridge({ ...f.deps, receipts: new ChatSendReceiptStore(f.dir, { write: () => { throw new Error('disk'); } }) });
+    expect(await failing.desktopSend({ id: 'pane', agentSessionId: 'conv', text: 'a', requestId: msgId() }))
+      .toEqual({ result: 'sent', effect: 'submitted', replayed: false });
+    const full = createChatBridge({ ...f.deps, receipts: new ChatSendReceiptStore(fs.mkdtempSync(path.join(f.dir, 'x')), { limit: 0 }) });
+    expect(await full.desktopSend({ id: 'pane', agentSessionId: 'conv', text: 'b', requestId: msgId() }))
+      .toEqual({ result: 'sent', effect: 'submitted', replayed: false });
+    expect(f.written).toEqual(['\x1b[200~a\x1b[201~', '\r', '\x1b[200~b\x1b[201~', '\r']);
+  });
+
   it('desktop: mints an id for a legacy request id and keeps the desktop result enum', async () => {
     const f = fixture(); f.liveClaude();
     expect(await f.bridge.desktopSend({ id: 'pane', agentSessionId: 'conv', text: 'hi', requestId: randomUUID() }))
