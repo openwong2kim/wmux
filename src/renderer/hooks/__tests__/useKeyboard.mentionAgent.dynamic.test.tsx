@@ -36,12 +36,12 @@ function mount(platform: NodeJS.Platform): void {
   act(() => { root.render(React.createElement(Harness)); });
 }
 
-function press(init: KeyboardEventInit): { event: KeyboardEvent; reachedTarget: boolean } {
+function press(init: KeyboardEventInit, target: EventTarget = window): { event: KeyboardEvent; reachedTarget: boolean } {
   let reachedTarget = false;
   const later = (): void => { reachedTarget = true; };
   window.addEventListener('keydown', later);
   const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
-  act(() => { window.dispatchEvent(event); });
+  act(() => { target.dispatchEvent(event); });
   window.removeEventListener('keydown', later);
   return { event, reachedTarget };
 }
@@ -114,6 +114,34 @@ describe('F2 capture gating (win32)', () => {
     expect(opened).toBe(0);
     expect(event.defaultPrevented).toBe(false);
     expect(reachedTarget).toBe(true);
+  });
+
+  it('F2 typed into a floating pane shell stays there while a leaf agent is active', () => {
+    seed(true);
+    mount('win32');
+    const floating = document.createElement('div');
+    floating.setAttribute('data-terminal-pty', 'pty-floating');
+    const textarea = document.createElement('textarea');
+    floating.appendChild(textarea);
+    document.body.appendChild(floating);
+    const { event, reachedTarget } = press({ key: 'F2', code: 'F2' }, textarea);
+    floating.remove();
+    expect(opened).toBe(0);
+    expect(event.defaultPrevented).toBe(false);
+    expect(reachedTarget).toBe(true);
+  });
+
+  it('F2 from the agent pane\'s own terminal opens the picker', () => {
+    seed(true);
+    mount('win32');
+    const own = document.createElement('div');
+    own.setAttribute('data-terminal-pty', 'pty-1');
+    const textarea = document.createElement('textarea');
+    own.appendChild(textarea);
+    document.body.appendChild(own);
+    press({ key: 'F2', code: 'F2' }, textarea);
+    own.remove();
+    expect(opened).toBe(1);
   });
 
   it('switched off in Settings, F2 reaches even an agent pane', () => {

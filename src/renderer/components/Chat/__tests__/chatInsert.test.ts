@@ -10,12 +10,12 @@ describe('mention insert into the Chat view composer', () => {
   });
 
   it('goes to the registered composer of that pane only, and not after unmount', () => {
-    const insert = vi.fn();
+    const insert = vi.fn(() => true);
     const unregister = registerChatInsertTarget('pty-1', { insert, focus: vi.fn() });
-    expect(deliverChatInsert('pty-2', 'x')).toBe(false);
+    expect(deliverChatInsert('pty-2', 'x')).toBeNull();
     expect(deliverChatInsert('pty-1', 'x')).toBe(true);
     expect(insert).toHaveBeenCalledWith('x');
     unregister();
-    expect(deliverChatInsert('pty-1', 'x')).toBe(false);
+    expect(deliverChatInsert('pty-1', 'x')).toBeNull();
   });
 });

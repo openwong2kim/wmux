@@ -24,17 +24,20 @@ export function deliverChatDrop(ptyId: string, paths: string[]): boolean {
  * in that pane's composer at its caret, not in the hidden terminal. The
  * mounted composer registers here, same shape as the drop targets above.
  */
-export interface ChatInsertTarget { insert: (text: string) => void; focus: () => void }
+export interface ChatInsertTarget {
+  /** False when the text does not fit under the composer's length limit. */
+  insert: (text: string) => boolean;
+  focus: () => void;
+}
 const insertTargets = new Map<string, ChatInsertTarget>();
 export function registerChatInsertTarget(ptyId: string, target: ChatInsertTarget): () => void {
   insertTargets.set(ptyId, target);
   return () => { if (insertTargets.get(ptyId) === target) insertTargets.delete(ptyId); };
 }
-export function deliverChatInsert(ptyId: string, text: string): boolean {
+/** True inserted, false no room, null no composer mounted for that pane. */
+export function deliverChatInsert(ptyId: string, text: string): boolean | null {
   const target = insertTargets.get(ptyId);
-  if (!target) return false;
-  target.insert(text);
-  return true;
+  return target ? target.insert(text) : null;
 }
 export function focusChatComposer(ptyId: string): boolean {
   const target = insertTargets.get(ptyId);

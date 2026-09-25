@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import {
   buildMentionReference,
@@ -6,6 +7,8 @@ import {
   describeMentionSendResult,
   filterMentionTargets,
   focusedMentionSource,
+  HUMAN_SEND_PREFIX,
+  mentionSourceForKey,
   type MentionPaneTarget,
 } from '../agentMention';
 import type { StoreState } from '../../stores';
@@ -70,6 +73,26 @@ describe('focusedMentionSource (the shortcut gate)', () => {
 
   it('is null in a plain shell pane, so F2 reaches the terminal', () => {
     expect(focusedMentionSource(state({ activeWorkspaceId: 'ws-2', workspaces: [wmux, { ...docs, activePaneId: 'pane-e' }] }))).toBeNull();
+  });
+
+  it('is null once the agent has exited back to its shell, before the name poll clears', () => {
+    expect(focusedMentionSource(state({ agentAliveByPtyId: { 'pty-a': false } }))).toBeNull();
+    expect(focusedMentionSource(state({ commandRunningByPtyId: { 'pty-a': false } }))).toBeNull();
+    expect(focusedMentionSource(state({ agentAliveByPtyId: { 'pty-a': true }, commandRunningByPtyId: { 'pty-a': true } }))).not.toBeNull();
+  });
+
+  it('declines a key typed into another terminal (floating pane, brain embed) while a leaf agent is active', () => {
+    const host = (ptyId: string) => {
+      const div = document.createElement('div');
+      div.setAttribute('data-terminal-pty', ptyId);
+      const textarea = document.createElement('textarea');
+      div.appendChild(textarea);
+      return textarea;
+    };
+    expect(mentionSourceForKey(state(), host('pty-floating'))).toBeNull();
+    expect(mentionSourceForKey(state(), host('pty-a'))).toMatchObject({ ptyId: 'pty-a' });
+    // Outside any terminal (Chat composer, sidebar): the active pane's.
+    expect(mentionSourceForKey(state(), document.createElement('input'))).toMatchObject({ ptyId: 'pty-a' });
   });
 
   it('accepts a pane in Chat view and marks it for the composer', () => {
@@ -164,18 +187,12 @@ describe('buildMentionReference', () => {
 describe('direct send (⌘Enter)', () => {
   const source = { workspaceId: 'ws-1', ptyId: 'pty-a' };
 
-  it('addresses the chosen pane as the focused pane, like send_message with pane_id', () => {
-    const [codex] = buildMentionTargets(state(), 'pty-a');
+  it('addresses the chosen pane as the focused pane, like send_message with pane_id, marked as the user\'s', () => {
+    const [codex] = buildMentionTargets(state(), 'pty-a') as MentionPaneTarget[];
     expect(buildMentionSendParams(source, codex, 'please review')).toEqual({
-      workspaceId: 'ws-1', senderPtyId: 'pty-a', to: 'ws-1', paneId: 'pane-b', message: 'please review',
+      workspaceId: 'ws-1', senderPtyId: 'pty-a', to: 'ws-1', paneId: 'pane-b',
+      message: `${HUMAN_SEND_PREFIX} please review`,
     });
-  });
-
-  it('sends a workspace row unaddressed, so a multi-agent workspace refuses it', () => {
-    const wsRow = buildMentionTargets(state(), 'pty-a').find((t) => t.kind === 'workspace')!;
-    const params = buildMentionSendParams(source, wsRow, 'hi');
-    expect(params).not.toHaveProperty('paneId');
-    expect(params).not.toHaveProperty('silent');
   });
 
   it('reads the send result as sent, stored or refused', () => {

@@ -15,7 +15,7 @@ import {
   destroyWorkspaceRemoteSessions,
 } from '../utils/remoteSessionTeardown';
 import { disposePanePtys } from '../utils/paneTeardown';
-import { focusedMentionSource } from '../utils/agentMention';
+import { mentionSourceForKey } from '../utils/agentMention';
 import { OPEN_MENTION_PICKER_EVENT } from '../utils/agentMentionInsert';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
@@ -712,9 +712,10 @@ export function useKeyboard() {
       const action = resolveShortcut(e, currentShortcutBindings());
       const run = action ? builtinActions[action] : undefined;
       // The mention picker claims its key only while an agent pane (or Chat
-      // view) has focus — whatever key it is bound to. In a plain shell F2
-      // belongs to mc / htop / vim, so the key goes on to the terminal.
-      const declined = action === 'mentionAgent' && !focusedMentionSource(store.getState());
+      // view) has focus — whatever key it is bound to — and only when the key
+      // came from that pane. In a plain shell, a floating pane or a brain
+      // embed, F2 belongs to mc / htop / vim, so it goes on to the terminal.
+      const declined = action === 'mentionAgent' && !mentionSourceForKey(store.getState(), e.target);
       if (action && run && !declined) {
         e.preventDefault();
         if (STOP_PROPAGATION_ACTIONS.has(action)) e.stopImmediatePropagation();

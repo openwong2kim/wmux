@@ -3,6 +3,7 @@ import { findLeaf } from '../../shared/paneUtils';
 import type { StoreState } from '../stores';
 import { selectWorkspaceAgentRoster } from '../stores/selectors/workspaceAgentRoster';
 import { computePaneAutoName } from './paneNaming';
+import { composeOwnerHost } from '../terminal/composeChord';
 
 /**
  * "Mention an agent": put another agent's address into the focused agent's
@@ -22,7 +23,8 @@ export interface MentionSource {
   chat: boolean;
 }
 
-type SourceState = Pick<StoreState, 'workspaces' | 'activeWorkspaceId' | 'surfaceAgent' | 'chatViewEnabled'>;
+type SourceState = Pick<StoreState, 'workspaces' | 'activeWorkspaceId' | 'surfaceAgent' | 'chatViewEnabled'>
+  & Partial<Pick<StoreState, 'agentAliveByPtyId' | 'commandRunningByPtyId'>>;
 
 /**
  * The focused pane, when it is one a mention can go into: a terminal running a
@@ -38,8 +40,32 @@ export function focusedMentionSource(state: SourceState): MentionSource | null {
   const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
   if (!surface || (surface.surfaceType ?? 'terminal') !== 'terminal' || !surface.ptyId) return null;
   const chat = !!state.chatViewEnabled && surface.viewMode === 'chat';
-  if (!chat && !state.surfaceAgent[surface.ptyId]?.name) return null;
+  if (!chat) {
+    if (!state.surfaceAgent[surface.ptyId]?.name) return null;
+    // The agent name outlives the agent by up to one detection poll (~15 s).
+    // An agent that just exited back to its shell is a shell again: F2 there
+    // belongs to mc / htop, not to the picker.
+    if (state.agentAliveByPtyId?.[surface.ptyId] === false) return null;
+    if (state.commandRunningByPtyId?.[surface.ptyId] === false) return null;
+  }
   return { workspaceId: ws.id, paneId: leaf.id, surfaceId: surface.id, ptyId: surface.ptyId, chat };
+}
+
+/**
+ * The mention source for a keydown, or null when the key is not the picker's.
+ *
+ * The source is the store's active leaf, but a key can come from another
+ * terminal: a floating pane or a Command Deck brain embed runs its own shell
+ * (mc, htop) while a leaf agent stays "active". A key typed into one of those
+ * belongs to that terminal and must reach it — the same ownership rule the
+ * Rich Input chord follows (#1280). A key from outside any terminal (the Chat
+ * view composer, the sidebar) is the active pane's.
+ */
+export function mentionSourceForKey(state: SourceState, target: EventTarget | null): MentionSource | null {
+  const source = focusedMentionSource(state);
+  if (!source) return null;
+  const owner = composeOwnerHost(target).ptyId;
+  return owner && owner !== source.ptyId ? null : source;
 }
 
 export interface MentionPaneTarget {
@@ -175,18 +201,33 @@ export function buildMentionReference(target: MentionTarget): string {
  * unverified; a workspace row sends unaddressed, so a workspace with several
  * agents refuses it — reported, never retargeted.
  */
+/**
+ * A direct send is written by the person at the keyboard, not by the focused
+ * agent — but it has to leave as that agent's pane (senderPtyId), or a
+ * same-workspace send is held as unverified. The a2a task has no field for a
+ * human author, so the text says it, and the receiver does not answer a peer
+ * agent that never spoke.
+ */
+export const HUMAN_SEND_PREFIX = '[sent by the user from wmux, not by an agent]';
+
+/**
+ * The `a2a.task.send` params for ⌘Enter / Ctrl+Enter: the same call
+ * send_message makes with pane_id, sent as the focused pane. A workspace row
+ * has no single pane to address, so it has no params at all (the picker never
+ * sends it — a workspace running several agents refuses unaddressed sends).
+ */
 export function buildMentionSendParams(
   source: Pick<MentionSource, 'workspaceId' | 'ptyId'>,
-  target: MentionTarget,
+  target: MentionPaneTarget,
   message: string,
 ): Record<string, unknown> {
   return {
     workspaceId: source.workspaceId,
     senderPtyId: source.ptyId,
     to: target.workspaceId,
-    message,
-    ...(target.kind === 'pane' && { paneId: target.paneId }),
-    ...(target.kind === 'pane' && target.surfaceId && { surfaceId: target.surfaceId }),
+    message: `${HUMAN_SEND_PREFIX} ${message}`,
+    paneId: target.paneId,
+    ...(target.surfaceId && { surfaceId: target.surfaceId }),
   };
 }
 
