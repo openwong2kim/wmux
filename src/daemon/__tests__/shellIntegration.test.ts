@@ -1,4 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'child_process';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { classifyShell, buildSpawnInjection, ZSH_RC, PWSH_INIT, BASH_INIT } from '../shell-integration';
 
 // zsh 지원(macOS 기본 셸) — ZDOTDIR 가로채기 방식의 핵심 불변식 검증.
@@ -179,6 +183,54 @@ describe('BASH_INIT — OSC 7 cwd report (#540)', () => {
     expect(BASH_INIT).toContain('"$(__wmux_osc7_encode "$p")"');
     // And no emission path passes the raw $p to printf anymore.
     expect(BASH_INIT).not.toContain('"${HOSTNAME-localhost}" "$p"');
+  });
+});
+
+// Without PS0 (bash < 4.4 — macOS /bin/bash is 3.2) nothing can emit C, and
+// prompt markers alone made PromptEventLog report "at a prompt" for the whole
+// life of every foreground command: a live `claude` lost its sidebar row on
+// each pty.list poll and wore a Resume chip. Older bash emits no OSC 133 so
+// commandRunning stays unknown and the renderer falls back to process truth.
+describe('BASH_INIT — OSC 133 only where PS0 exists', () => {
+  it('gates every OSC 133 emission on bash 4.4+ and keeps OSC 7 unconditional', () => {
+    expect(BASH_INIT).toMatch(/BASH_VERSINFO\[0\]:-0\}" -gt 4 \] \|\| \{ \[ "\$\{BASH_VERSINFO\[0\]:-0\}" -eq 4 \] && \[ "\$\{BASH_VERSINFO\[1\]:-0\}" -ge 4 \]/);
+    expect(BASH_INIT).toMatch(/if \[ "\$__wmux_osc133" = 1 \]; then\s+PS0=/);
+    expect(BASH_INIT).toMatch(/if \[ "\$__wmux_osc133" = 1 \]; then\s+printf '\\033\]133;D/);
+    expect(BASH_INIT).toMatch(/if \[ "\$__wmux_osc133" = 1 \]; then\s+case "\$PS1"/);
+    // OSC 7 sits outside the gate.
+    expect(BASH_INIT).toMatch(/\bfi\n  __wmux_osc7\n\}/);
+  });
+
+  const bash = process.platform === 'win32' ? undefined : ['/bin/bash', '/usr/bin/bash'].find((b) => fs.existsSync(b));
+  it.skipIf(!bash)('the real bash emits C when it has PS0 and no OSC 133 at all when it does not', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-bash-init-'));
+    try {
+      const rc = path.join(dir, 'init.bash');
+      fs.writeFileSync(rc, BASH_INIT);
+      const run = (script: string) =>
+        spawnSync(bash as string, ['--rcfile', rc, '-i'], {
+          input: script,
+          encoding: 'utf-8',
+          env: { HOME: dir, PATH: '/usr/bin:/bin', TERM: 'dumb' },
+          timeout: 10_000,
+        });
+      const version = run('echo "__V=${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"\nexit\n');
+      const m = /__V=(\d+)\.(\d+)/.exec(version.stdout);
+      expect(m).not.toBeNull();
+      const [major, minor] = [Number(m?.[1]), Number(m?.[2])];
+      const hasPs0 = major > 4 || (major === 4 && minor >= 4);
+      const out = run('true\nexit\n');
+      const all = `${out.stdout}${out.stderr}`;
+      expect(all).toContain('\x1b]7;file://');
+      if (hasPs0) {
+        expect(all).toContain('\x1b]133;C');
+        expect(all).toContain('\x1b]133;A');
+      } else {
+        expect(all).not.toContain('\x1b]133;');
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
