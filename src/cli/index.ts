@@ -88,6 +88,9 @@ WEB ACCESS (browser / PWA)
                                     paired phone (thinking, tool inputs, and
                                     contents of files the agent read). Off by
                                     default
+        [--allow-dangerous-launch]  Let a phone start Claude/Codex from chat
+                                    with approvals off (bypass/yolo), after
+                                    per-launch confirmation. Off by default
         [--allow-host <h1,h2>]      Extra Host names to accept and advertise,
                                     for a reverse proxy or native TLS DNS name
         [--new-token]               Mint a fresh access token, revoking every
