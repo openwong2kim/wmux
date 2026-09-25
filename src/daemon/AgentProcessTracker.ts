@@ -362,9 +362,9 @@ const GITSTATUS_SWITCHES = new Set(['-e', '-U', '-W', '-D']);
  * home, so a pane env or a checkout in /tmp cannot widen it, and the
  * `$GITSTATUS_DAEMON` override is not trusted.
  */
-export function isHelperImage(image: string | undefined, env: NodeJS.ProcessEnv = {}): boolean {
+export function isHelperImage(image: string | undefined, env: NodeJS.ProcessEnv = {}, userHome = os.homedir()): boolean {
   if (!image || !path.posix.isAbsolute(image) || path.posix.normalize(image) !== image) return false;
-  const home = path.posix.normalize(os.homedir()).replace(/\/+$/, '');
+  const home = path.posix.normalize(userHome).replace(/\/+$/, '');
   const underHome = (value: string) => home.length > 1 && value.startsWith(home + '/');
   const base = path.posix.basename(image);
   const dir = path.posix.dirname(image);
@@ -394,10 +394,11 @@ export function isVerifiedPassiveHelper(
   shellPid: number,
   entries: ReadonlyArray<ProcessTreeEntry>,
   env: NodeJS.ProcessEnv = {},
+  userHome = os.homedir(),
 ): boolean {
   if (entry.ppid !== shellPid || entries.some(other => other.ppid === entry.pid)) return false;
   const image = entry.name;
-  if (!isHelperImage(image, env)) return false;
+  if (!isHelperImage(image, env, userHome)) return false;
   const argv = (entry.cmdline ?? '').trim().split(/\s+/);
   if (argv[0] !== image || argv[1] !== '-G' || !/^v\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(argv[2] ?? '')) return false;
   for (let i = 3; i < argv.length; i++) {
@@ -498,6 +499,7 @@ export class AgentProcessTracker {
     private readonly watcher: PidWatcher,
     private readonly enumerate: () => Promise<ProcessTreeEntry[]> = enumerateProcesses,
     private readonly readImage: (pid: number) => Promise<string | undefined> = readExecutableImage,
+    private readonly userHome: string = os.homedir(),
   ) {}
 
   async verifyIdleShell(pid: number): Promise<boolean> {
@@ -513,8 +515,8 @@ export class AgentProcessTracker {
     if (!/^(?:-?)(?:zsh|bash|sh)$/i.test(path.basename(root.name))) return { ok: false, reason: 'unsupported-shell' };
     for (const child of entries.filter(entry => entry.ppid === pid)) {
       // The real image is read only for a child whose self-reported argv already qualifies.
-      if (!isVerifiedPassiveHelper(child, pid, entries, env) ||
-          !isHelperImage(await this.readImage(child.pid).catch(() => undefined), env)) {
+      if (!isVerifiedPassiveHelper(child, pid, entries, env, this.userHome) ||
+          !isHelperImage(await this.readImage(child.pid).catch(() => undefined), env, this.userHome)) {
         return { ok: false, reason: 'shell-has-children' };
       }
     }

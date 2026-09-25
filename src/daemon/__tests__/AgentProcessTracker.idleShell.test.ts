@@ -1,11 +1,10 @@
 import { spawn } from 'child_process';
 import os from 'os';
-import path from 'path';
 import { describe, expect, it } from 'vitest';
 import { AgentProcessTracker, isHelperImage, isVerifiedPassiveHelper, readExecutableImage, type ProcessTreeEntry } from '../AgentProcessTracker';
 
 const SHELL = 100;
-const HOME = path.posix.normalize(os.homedir());
+const HOME = '/Users/me';
 const ENV = {};
 const CACHE = `${HOME}/.cache/gitstatus/gitstatusd-darwin-arm64`;
 const ARGS = '-G v1.5.4 -s -1 -u -1 -c -1 -d -1 -m -1 -v FATAL -t 16';
@@ -14,7 +13,7 @@ const helper = (image = CACHE, args = ARGS, ppid = SHELL, pid = 200): ProcessTre
 /** By default the real image is what argv[0] claims; `exe` overrides it. */
 const tracker = (table: ProcessTreeEntry[], exe?: (pid: number) => Promise<string | undefined>) =>
   new AgentProcessTracker({ watch: () => undefined, unwatch: () => undefined }, async () => table,
-    exe ?? (async (pid) => table.find(entry => entry.pid === pid)?.name));
+    exe ?? (async (pid) => table.find(entry => entry.pid === pid)?.name), HOME);
 
 describe('idleShellState', () => {
   it('reports each failed launch precondition', async () => {
@@ -46,17 +45,19 @@ describe('idleShellState', () => {
   });
 
   it('accepts the plugin checkout and custom cache locations under home', () => {
-    expect(isVerifiedPassiveHelper(helper(`${HOME}/powerlevel10k/gitstatus/usrbin/gitstatusd`), SHELL, [], ENV)).toBe(true);
-    expect(isVerifiedPassiveHelper(helper(`${HOME}/gs/gitstatusd-linux-x86_64`), SHELL, [], { GITSTATUS_CACHE_DIR: `${HOME}/gs` })).toBe(true);
-    expect(isVerifiedPassiveHelper(helper(`${HOME}/xdg/gitstatus/gitstatusd-linux-aarch64`), SHELL, [], { XDG_CACHE_HOME: `${HOME}/xdg` })).toBe(true);
+    expect(isVerifiedPassiveHelper(helper(`${HOME}/powerlevel10k/gitstatus/usrbin/gitstatusd`), SHELL, [], ENV, HOME)).toBe(true);
+    expect(isVerifiedPassiveHelper(helper(`${HOME}/gs/gitstatusd-linux-x86_64`), SHELL, [], { GITSTATUS_CACHE_DIR: `${HOME}/gs` }, HOME)).toBe(true);
+    expect(isVerifiedPassiveHelper(helper(`${HOME}/xdg/gitstatus/gitstatusd-linux-aarch64`), SHELL, [], { XDG_CACHE_HOME: `${HOME}/xdg` }, HOME)).toBe(true);
   });
 
   it('refuses install roots outside home, whatever the pane env says', () => {
-    expect(isHelperImage('/opt/homebrew/share/powerlevel10k/gitstatus/usrbin/gitstatusd')).toBe(false);
-    expect(isHelperImage('/tmp/p10k/gitstatus/usrbin/gitstatusd')).toBe(false);
-    expect(isHelperImage('/data/gs/gitstatusd-linux-x86_64', { GITSTATUS_CACHE_DIR: '/data/gs' })).toBe(false);
-    expect(isHelperImage('/xdg/gitstatus/gitstatusd-linux-aarch64', { XDG_CACHE_HOME: '/xdg' })).toBe(false);
-    expect(isHelperImage(undefined)).toBe(false);
+    expect(isHelperImage('/opt/homebrew/share/powerlevel10k/gitstatus/usrbin/gitstatusd', {}, HOME)).toBe(false);
+    expect(isHelperImage('/tmp/p10k/gitstatus/usrbin/gitstatusd', {}, HOME)).toBe(false);
+    expect(isHelperImage('/data/gs/gitstatusd-linux-x86_64', { GITSTATUS_CACHE_DIR: '/data/gs' }, HOME)).toBe(false);
+    expect(isHelperImage('/xdg/gitstatus/gitstatusd-linux-aarch64', { XDG_CACHE_HOME: '/xdg' }, HOME)).toBe(false);
+    // A root home would put every path "under home".
+    expect(isHelperImage('/.cache/gitstatus/gitstatusd-linux-x86_64', {}, '/')).toBe(false);
+    expect(isHelperImage(undefined, {}, HOME)).toBe(false);
   });
 
   it('refuses spoofed helpers', () => {
@@ -76,14 +77,14 @@ describe('idleShellState', () => {
       ['GITSTATUS_DAEMON style override', helper('/opt/custom/gitstatusd-darwin-arm64'), []],
     ];
     for (const [label, candidate, extra] of refused) {
-      expect(isVerifiedPassiveHelper(candidate, SHELL, [shell, candidate, ...extra], ENV), label).toBe(false);
+      expect(isVerifiedPassiveHelper(candidate, SHELL, [shell, candidate, ...extra], ENV, HOME), label).toBe(false);
     }
   });
 });
 
 describe('readExecutableImage', () => {
   it.skipIf(process.platform !== 'darwin' && process.platform !== 'linux')('reads the real image, not a spoofed argv[0]', async () => {
-    const spoof = `${HOME}/.cache/gitstatus/gitstatusd-darwin-arm64`;
+    const spoof = `${os.homedir()}/.cache/gitstatus/gitstatusd-darwin-arm64`;
     const child = spawn('sleep', ['30'], { argv0: spoof, stdio: 'ignore' });
     try {
       await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
