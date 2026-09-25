@@ -12,7 +12,6 @@ import RemoteWorkspaceItem from './RemoteWorkspaceItem';
 import OrphanSessions from './OrphanSessions';
 import ArchivedWorkspaces from './ArchivedWorkspaces';
 import MissionsSection from './MissionsSection';
-import type { Workspace } from '../../../shared/types';
 import { disposeWorkspacePtys as disposeAllPtys } from '../../utils/paneTeardown';
 import { selectAttachedRemoteWorkspaces } from '../../stores/slices/remoteWorkspacesSlice';
 import { useT } from '../../hooks/useT';
