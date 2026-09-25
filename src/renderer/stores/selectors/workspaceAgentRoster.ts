@@ -77,12 +77,17 @@ function nonEmpty(value: string | undefined): string | undefined {
 
 const BARE_SHELL_TITLES = new Set([
   'bash', 'zsh', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'csh', 'nu', 'cmd',
-  'pwsh', 'powershell', 'windows powershell',
+  'pwsh', 'powershell', 'windows powershell', 'powershell 7', 'wsl',
+  // The placeholder wmux gives a new tab before the shell names itself.
+  'terminal',
 ]);
 
 /** True when a tab title is only a shell's name (`Bash`, `-zsh`, `pwsh.exe`). */
 export function isBareShellTitle(title: string): boolean {
-  const name = title.trim().toLowerCase().replace(/^-/, '').replace(/\.exe$/, '');
+  // A path title (`/bin/zsh`, `C:\\Windows\\System32\\cmd.exe`) is judged by
+  // its basename.
+  const base = title.trim().replace(/\\/g, '/').split('/').pop() ?? '';
+  const name = base.toLowerCase().replace(/^-/, '').replace(/\.exe$/, '');
   return BARE_SHELL_TITLES.has(name);
 }
 
@@ -92,8 +97,10 @@ export function isBareShellTitle(title: string): boolean {
  * dropped and the row falls back to the agent's name. Plain shell panes keep
  * their title; this is applied to agent rows only.
  */
-function agentSurfaceTitle(title: string | undefined): string | undefined {
-  const trimmed = nonEmpty(title);
+export function agentSurfaceTitle(surface: { title?: string; titleLocked?: boolean }): string | undefined {
+  const trimmed = nonEmpty(surface.title);
+  // A title the user typed is theirs even if it spells a shell name.
+  if (surface.titleLocked) return trimmed;
   return trimmed && !isBareShellTitle(trimmed) ? trimmed : undefined;
 }
 
@@ -153,7 +160,7 @@ export function selectWorkspaceAgentRoster(
           agentName: remoteAgent.agentName,
           slug: agentDisplayToSlug(remoteAgent.agentName),
           paneName,
-          surfaceTitle: agentSurfaceTitle(surface.title),
+          surfaceTitle: agentSurfaceTitle(surface),
           surfaceIndex,
           surfaceCount: leaf.surfaces.length,
           status,
@@ -227,7 +234,7 @@ export function selectWorkspaceAgentRoster(
         agentName: agent.name,
         slug: agent.slug ?? agentDisplayToSlug(agent.name),
         paneName,
-        surfaceTitle: agentSurfaceTitle(surface.title),
+        surfaceTitle: agentSurfaceTitle(surface),
         surfaceIndex,
         surfaceCount: leaf.surfaces.length,
         status,
@@ -311,7 +318,7 @@ export function selectWorkspaceAgentRoster(
         state.paneLabel[leaf.id],
         showCoordinates ? computePaneAutoName(workspace.wsOrdinal ?? 0, leaf.ordinal ?? 0) : '',
       ),
-      surfaceTitle: agent ? agentSurfaceTitle(surface.title) : nonEmpty(surface.title),
+      surfaceTitle: agent ? agentSurfaceTitle(surface) : nonEmpty(surface.title),
       surfaceIndex: Math.max(0, leaf.surfaces.findIndex((s) => s.id === surface.id)),
       surfaceCount: leaf.surfaces.length,
       status,
