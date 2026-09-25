@@ -88,7 +88,9 @@ export function buildChatObject(resolution: ChatResolution, blocked: ChatBlocked
       capabilities: {
         ...closed,
         launch: launch?.ready === true,
-        skills: (launch?.agents.length ?? 0) > 0,
+        // Only while a launcher could run: an agent that is not claude/codex
+        // holding the pane (`agent-running`) has no catalogue `/commands` serves.
+        skills: launch?.ready === true,
       },
       ...blockedField,
       ...(launch

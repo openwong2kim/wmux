@@ -441,6 +441,14 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(gone.body).not.toHaveProperty('cursor');
     });
 
+    it('binding none: skills off while a launch is not ready (a live OpenCode pane)', async () => {
+      const info = await start();
+      chatBox.resolution = { ...noneResolution(false), launch: { ready: false, reason: 'agent-running', agents: ['claude', 'codex'], maxPromptUnits: 2000 } } as ChatResolution;
+      const { body } = await turns(bearer(info.token as string));
+      expect(body.chat.capabilities).toMatchObject({ launch: false, skills: false });
+      expect(body.chat.launch).toMatchObject({ ready: false, reason: 'agent-running' });
+    });
+
     it('carries the read-time blocked state', async () => {
       chatBox.blocked = { by: 'approval', approvalId: 'ap-1' };
       const info = await start();
