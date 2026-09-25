@@ -1531,20 +1531,27 @@ not the desktop fields.
 - `gitSync` — `{ahead, behind, hasUpstream}` from the sidebar's git badge.
   The desktop shows `ahead`/`behind` only when `hasUpstream` is true; do the
   same.
-- `ownerWorkspaceId`, `detached`, `createdAt` — present only on a fan-out task
-  workspace, with the desktop's own judgement: `ownerWorkspaceId` is the
-  workspace that fanned it out (`null` when no source names one), `detached`
-  means the user detached it and the desktop draws it as an ordinary top-level
-  row, and `createdAt` (epoch ms, optional) is when it was fanned out. The
-  desktop nests a non-detached task under its owner only when the owner is
-  itself a listed row; otherwise it groups it under "From closed workspace".
-  A task workspace's `name` is its stored name, which usually starts with
-  `wtask: `; the desktop displays it without that prefix.
-- `taskSummary` — on an owner row with nested tasks only: `{tasks, needYou,
-  toReview, finished}` — the sidebar's rollup line. `needYou` counts tasks
-  waiting on the user, `toReview` counts open tasks whose every agent pane
-  reported complete (Fleet's "Ready to review"), and `finished` counts tasks
-  whose every agent pane reported complete.
+- `ownerWorkspaceId`, `detached`, `createdAt`, `nested` — present only on a
+  fan-out task workspace, with the desktop's own judgement:
+  `ownerWorkspaceId` is the workspace that fanned it out (`null` when no source
+  names one), `detached` means the user detached it and the desktop draws it as
+  an ordinary top-level row, and `createdAt` (epoch ms, optional) is when it
+  was fanned out. A task workspace's `name` is its stored name, which usually
+  starts with `wtask: `; the desktop displays it without that prefix.
+- `nested` — **the only nesting signal.** True when the desktop draws this task
+  indented under its owner AND that owner is a row of this same reply. Draw a
+  task under `ownerWorkspaceId` exactly when `nested` is true; never infer
+  nesting from `ownerWorkspaceId` being present. It is false for a detached
+  task, for a task whose owner is closed (the desktop groups those under "From
+  closed workspace"), for a task whose owner is itself a nested task (nesting
+  is one level deep), and for a task whose owner has no live pane and so is not
+  listed here.
+- `taskSummary` — on an owner row with at least one `nested` task only:
+  `{tasks, needYou, toReview, finished}`, the sidebar's rollup line computed
+  over exactly the rows of this reply that are `nested` under it. `needYou`
+  counts tasks waiting on the user, `toReview` counts open tasks whose every
+  agent pane reported complete (Fleet's "Ready to review"), and `finished`
+  counts tasks whose every agent pane reported complete.
 
 Top level of `GET /api/workspaces`: `activeWorkspaceId` — the workspace the
 desktop is showing, present only when it is one of the listed rows.

@@ -7209,10 +7209,13 @@ describe('WebTerminalServer', () => {
         {
           id: 'ws-1', order: 0, pinned: true, color: 'teal', gitBranch: 'main', gitIsWorktree: false,
           gitSync: { ahead: 2, behind: 0, hasUpstream: true },
-          taskSummary: { tasks: 1, needYou: 0, toReview: 1, finished: 1 },
         },
-        { id: 'ws-legacy', order: 1, pinned: false, task: { ownerWorkspaceId: 'ws-1', detached: false, createdAt: 1_700_000_000_000 } },
+        { id: 'ws-legacy', order: 1, pinned: false, task: { ownerWorkspaceId: 'ws-1', detached: false, createdAt: 1_700_000_000_000, nested: true, state: { needYou: false, toReview: true, finished: true } } },
         { id: 'ws-desktop-only', order: 2, pinned: false },
+        // Nested under ws-1 on the desktop but has no live pane: never a row, never counted.
+        { id: 'ws-unlisted-task', order: 4, pinned: false, task: { ownerWorkspaceId: 'ws-1', detached: false, nested: true, state: { needYou: true, toReview: true, finished: true } } },
+        // Nested on the desktop under an owner the phone does not list.
+        { id: 'ws-task-2', order: 5, pinned: false, task: { ownerWorkspaceId: 'ws-desktop-only', detached: false, nested: true, state: { needYou: true, toReview: false, finished: false } } },
         { id: 'ws-brain', order: 3, pinned: true, gitBranch: 'brain-branch' },
       ],
       panes: [
@@ -7245,7 +7248,11 @@ describe('WebTerminalServer', () => {
     type Row = Record<string, unknown>;
 
     it('merges the desktop fields by id, never adding rows and never leaking a brain entry', async () => {
-      live.push({ ...brainRow });
+      live.push({ ...brainRow }, {
+        id: 's-task-2', cwd: '/t2', cols: 80, rows: 24, state: 'detached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: { WMUX_WORKSPACE_ID: 'ws-task-2', WMUX_WORKSPACE_NAME: 'wtask: two' }, cmd: '/bin/zsh',
+      });
       try {
         const calls = attachDesktop(() => ({ workspaces: [], sidebar: sidebar() }));
         const info = await startRO();
@@ -7259,7 +7266,7 @@ describe('WebTerminalServer', () => {
         expect(calls).toEqual(['workspaces.list']);
 
         const sessions = sessionsBody.sessions as Row[];
-        expect(sessions.map((r) => r.id)).toEqual(['s1', 's2', 's3']);
+        expect(sessions.map((r) => r.id)).toEqual(['s1', 's2', 's3', 's-task-2']);
         expect(sessions[0]).toMatchObject({ id: 's1', workspaceId: 'ws-1', surfaceTitle: '✳ app review', paneName: 'w123-5' });
         expect(sessions[1]).toMatchObject({ id: 's2', workspaceId: 'ws-legacy' });
         for (const key of ['surfaceTitle', 'paneName']) {
@@ -7268,21 +7275,30 @@ describe('WebTerminalServer', () => {
         }
 
         const workspaces = workspacesBody.workspaces as Row[];
-        expect(workspaces.map((w) => w.id)).toEqual(['ws-1', 'ws-legacy']);
+        expect(workspaces.map((w) => w.id)).toEqual(['ws-1', 'ws-task-2', 'ws-legacy']);
         expect(workspaces[0]).toMatchObject({
           id: 'ws-1', name: 'Workspace 1', order: 0, pinned: true, color: 'teal', gitBranch: 'main', gitIsWorktree: false,
           gitSync: { ahead: 2, behind: 0, hasUpstream: true },
           taskSummary: { tasks: 1, needYou: 0, toReview: 1, finished: 1 },
         });
         expect(workspaces[0]).not.toHaveProperty('ownerWorkspaceId');
-        expect(workspaces[1]).toMatchObject({ id: 'ws-legacy', order: 1, pinned: false, ownerWorkspaceId: 'ws-1', detached: false, createdAt: 1_700_000_000_000 });
-        expect(workspaces[1]).not.toHaveProperty('task');
+        const legacy = workspaces.find((w) => w.id === 'ws-legacy')!;
+        expect(legacy).toMatchObject({ order: 1, pinned: false, ownerWorkspaceId: 'ws-1', detached: false, createdAt: 1_700_000_000_000, nested: true });
+        expect(legacy).not.toHaveProperty('task');
+        expect(legacy).not.toHaveProperty('state');
+        // The desktop nests ws-task-2 under a workspace the phone does not list:
+        // on the phone it is not nested, and nobody's summary counts it.
+        const task2 = workspaces.find((w) => w.id === 'ws-task-2')!;
+        expect(task2).toMatchObject({ ownerWorkspaceId: 'ws-desktop-only', nested: false });
+        expect(workspaces.filter((w) => 'taskSummary' in w).map((w) => w.id)).toEqual(['ws-1']);
         expect(workspacesBody.activeWorkspaceId).toBe('ws-1');
 
         const wire = JSON.stringify([sessionsBody, workspacesBody]);
-        for (const leaked of ['brain-abc', 'ws-brain', 'orchestrator title', 'brain-branch', 'ghost', 'ws-desktop-only']) {
+        expect(JSON.stringify(workspacesBody)).not.toContain('"state"');
+        for (const leaked of ['brain-abc', 'ws-brain', 'orchestrator title', 'brain-branch', 'ghost', 'ws-unlisted-task']) {
           expect(wire).not.toContain(leaked);
         }
+        expect((workspacesBody.workspaces as Row[]).map((w) => w.id)).not.toContain('ws-desktop-only');
       } finally {
         live.length = 3;
       }

@@ -119,13 +119,14 @@ describe('buildPhoneSidebarSnapshot — workspace rows', () => {
       }
     }
     // Audit time wins over the record's creation time; a lineage-only task has neither.
-    expect(byId.get('t1')!.task).toEqual({ ownerWorkspaceId: 'owner', detached: false, createdAt: 1_800_000_000_000 });
-    expect(byId.get('t2')!.task).toEqual({ ownerWorkspaceId: 'owner', detached: true, createdAt: 1_700_000_000_000 });
-    expect(byId.get('t3')!.task).toEqual({ ownerWorkspaceId: 'owner', detached: false });
-    expect(byId.get('t4')!.task?.ownerWorkspaceId).toBeNull();
+    expect(byId.get('t1')!.task).toMatchObject({ ownerWorkspaceId: 'owner', detached: false, createdAt: 1_800_000_000_000, nested: true });
+    expect(byId.get('t2')!.task).toEqual({ ownerWorkspaceId: 'owner', detached: true, createdAt: 1_700_000_000_000, nested: false });
+    expect(byId.get('t3')!.task).toMatchObject({ ownerWorkspaceId: 'owner', detached: false, nested: true });
+    expect(byId.get('t3')!.task).not.toHaveProperty('createdAt');
+    expect(byId.get('t4')!.task).toEqual({ ownerWorkspaceId: null, detached: false, createdAt: 1_700_000_000_000, nested: false });
   });
 
-  it('summarises the owner row with the sidebar rollup (nested tasks only)', () => {
+  it('marks nested exactly where buildSidebarTree nests, with the rollup bits on nested tasks only', () => {
     const owner = workspace('owner', [leaf('po', [surface('so', 'pty-o')])]);
     const waiting = workspace('t1', [leaf('p1', [surface('s1', 'pty-1')])]);
     const done = workspace('t2', [leaf('p2', [surface('s2', 'pty-2')])]);
@@ -142,8 +143,27 @@ describe('buildPhoneSidebarSnapshot — workspace rows', () => {
       status: { 'pty-1': 'awaiting_input', 'pty-2': 'complete', 'pty-3': 'complete', 'pty-4': 'complete' },
     }));
     const byId = new Map(snap.workspaces.map((w) => [w.id, w]));
-    expect(byId.get('owner')!.taskSummary).toEqual({ tasks: 2, needYou: 1, toReview: 1, finished: 1 });
-    for (const id of ['t1', 't2', 't3', 't4']) expect(byId.get(id)!.taskSummary).toBeUndefined();
+    expect(byId.get('owner')!.task).toBeUndefined();
+    expect(byId.get('t1')!.task).toMatchObject({ nested: true, state: { needYou: true, toReview: false, finished: false } });
+    expect(byId.get('t2')!.task).toMatchObject({ nested: true, state: { needYou: false, toReview: true, finished: true } });
+    // Detached: an ordinary row again. Owner closed: the "From closed workspace" group.
+    for (const id of ['t3', 't4']) {
+      expect(byId.get(id)!.task?.nested).toBe(false);
+      expect(byId.get(id)!.task).not.toHaveProperty('state');
+    }
+  });
+
+  it('draws a task whose owner is itself a nested task top-level (depth 1 only)', () => {
+    const grand = workspace('grand', [leaf('pg', [surface('sg', 'pty-g')])]);
+    const mid = workspace('mid', [leaf('pm', [surface('sm', 'pty-m')])]);
+    const leafTask = workspace('leafTask', [leaf('pl', [surface('sl', 'pty-l')])]);
+    const snap = buildPhoneSidebarSnapshot(state({
+      workspaces: [grand, mid, leafTask],
+      missions: { mid: mission('task-m', 'grand'), leafTask: mission('task-l', 'mid') },
+    }));
+    const byId = new Map(snap.workspaces.map((w) => [w.id, w]));
+    expect(byId.get('mid')!.task).toMatchObject({ ownerWorkspaceId: 'grand', nested: true });
+    expect(byId.get('leafTask')!.task).toMatchObject({ ownerWorkspaceId: 'mid', nested: false });
   });
 });
 

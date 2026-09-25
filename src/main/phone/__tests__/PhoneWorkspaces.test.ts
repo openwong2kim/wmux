@@ -43,7 +43,7 @@ describe('phone workspace bridge', () => {
       workspaces: [
         { id: 'ws-1', order: 0, pinned: true, color: 'teal', gitSync: { ahead: 1, behind: 2, hasUpstream: true, dirty: 9 }, cwd: '/private', env: { SECRET: 'x' } },
         { id: 'ws-bad', order: 'first', pinned: false },
-        { id: 'ws-2', order: 1, pinned: false, color: 'not-a-color', task: { ownerWorkspaceId: 'ws-1', detached: false, createdAt: 1_700_000_000_000, secret: 'x' } },
+        { id: 'ws-2', order: 1, pinned: false, color: 'not-a-color', task: { ownerWorkspaceId: 'ws-1', detached: false, createdAt: 1_700_000_000_000, nested: true, state: { needYou: false, toReview: true, finished: true, secret: 'x' }, secret: 'x' } },
       ],
       panes: [{ ptyId: 's1', workspaceId: 'ws-1', surfaceTitle: 'app review', paneName: 'w1-2', transcript: 'secret' }],
       debug: { renderer: 'state' },
@@ -57,7 +57,7 @@ describe('phone workspace bridge', () => {
         activeWorkspaceId: 'ws-1',
         workspaces: [
           { id: 'ws-1', order: 0, pinned: true, color: 'teal', gitSync: { ahead: 1, behind: 2, hasUpstream: true } },
-          { id: 'ws-2', order: 1, pinned: false, task: { ownerWorkspaceId: 'ws-1', detached: false, createdAt: 1_700_000_000_000 } },
+          { id: 'ws-2', order: 1, pinned: false, task: { ownerWorkspaceId: 'ws-1', detached: false, createdAt: 1_700_000_000_000, nested: true, state: { needYou: false, toReview: true, finished: true } } },
         ],
         panes: [{ ptyId: 's1', workspaceId: 'ws-1', surfaceTitle: 'app review', paneName: 'w1-2' }],
       },

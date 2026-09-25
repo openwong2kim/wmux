@@ -13,7 +13,9 @@
 //   - pinned/color: `sidebarPinnedIds` / `Workspace.color`
 //   - git fields:   `Workspace.metadata` (the git sync badge's own source)
 //   - task:         `resolveTaskLink`, with WorkspaceItem's provenance time
-//   - taskSummary:  `buildSidebarTree` nesting + SidebarTaskGroup's rollup
+//   - nested:       `buildSidebarTree` membership (drawn under its owner)
+//   - task state:   SidebarTaskGroup's rollup bits, per nested task; the
+//                   daemon folds them into the owner's summary
 //   - panes:        the roster's pane display name and surface title rules
 //
 // Store-free (state in, plain object out) so it is unit-testable directly.
@@ -49,7 +51,7 @@ export function buildPhoneSidebarSnapshot(state: StoreState): PhoneSidebarSnapsh
   // Order does not change membership, so the manual order stands in for the
   // sidebar's display sort here.
   const tree = buildSidebarTree(workspaces, linkOf, liveIds);
-  const nestedTaskIds = new Map(tree.top.map((node) => [node.id, node.taskIds]));
+  const nestedTaskIds = new Set(tree.top.flatMap((node) => node.taskIds));
   const pinned = new Set(state.sidebarPinnedIds ?? []);
 
   const workspaceRows: PhoneSidebarWorkspace[] = [];
@@ -66,22 +68,27 @@ export function buildPhoneSidebarSnapshot(state: StoreState): PhoneSidebarSnapsh
     if (link) {
       // WorkspaceItem's tooltip time: who-asked audit record first, else the task record.
       const createdAt = state.fanoutProvenance?.[ws.id]?.at ?? state.missionByPaneGroup[ws.id]?.createdAt;
+      const nested = nestedTaskIds.has(ws.id);
       row.task = {
         ownerWorkspaceId: link.ownerId || null,
         detached: link.detached,
         ...(typeof createdAt === 'number' && createdAt > 0 ? { createdAt } : {}),
+        nested,
       };
-    }
-
-    const taskIds = nestedTaskIds.get(ws.id) ?? [];
-    const rollup = taskRollup(
-      taskIds,
-      (id) => selectWorkspaceAgentStatus(state, id),
-      (id) => isTaskReadyForReview(state, id),
-    );
-    if (rollup) {
-      const finished = taskIds.filter((id) => paneRowsFinished(selectWorkspaceAgentRoster(state, id).rows)).length;
-      row.taskSummary = { ...rollup, finished };
+      if (nested) {
+        // One task through SidebarTaskGroup's own rollup and finished rule, so
+        // each bit is exactly what the owner's rollup line counts for it.
+        const one = taskRollup(
+          [ws.id],
+          (id) => selectWorkspaceAgentStatus(state, id),
+          (id) => isTaskReadyForReview(state, id),
+        );
+        row.task.state = {
+          needYou: (one?.needYou ?? 0) > 0,
+          toReview: (one?.toReview ?? 0) > 0,
+          finished: paneRowsFinished(selectWorkspaceAgentRoster(state, ws.id).rows),
+        };
+      }
     }
     workspaceRows.push(row);
   });

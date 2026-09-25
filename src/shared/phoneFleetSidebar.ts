@@ -33,6 +33,28 @@ export interface PhoneSidebarTaskLink {
   detached: boolean;
   /** Epoch ms: the fan-out audit record's time, else the task record's creation time. */
   createdAt?: number;
+  /**
+   * The desktop draws this task indented under its owner — straight from
+   * `buildSidebarTree`, so false for a detached task, a task whose owner is
+   * closed, and a task whose owner is itself a nested task (depth-1 only).
+   */
+  nested: boolean;
+  /**
+   * The per-task bits the owner's rollup line counts, present only on a nested
+   * task. Internal to the desktop → daemon hop: the daemon folds them into the
+   * owner's `taskSummary` over the rows it actually lists, so the summary
+   * counts exactly the tasks the phone shows nested.
+   */
+  state?: PhoneSidebarTaskState;
+}
+
+export interface PhoneSidebarTaskState {
+  /** The task's agent is waiting on the user. */
+  needYou: boolean;
+  /** Open task whose every agent pane reported complete (Fleet's "Ready to review"). */
+  toReview: boolean;
+  /** Every agent pane reported complete, regardless of the task record. */
+  finished: boolean;
 }
 
 export interface PhoneSidebarTaskSummary {
@@ -56,7 +78,6 @@ export interface PhoneSidebarWorkspace {
   gitIsWorktree?: boolean;
   gitSync?: { ahead: number; behind: number; hasUpstream: boolean };
   task?: PhoneSidebarTaskLink;
-  taskSummary?: PhoneSidebarTaskSummary;
 }
 
 export interface PhoneSidebarPane {
@@ -127,8 +148,15 @@ function isColorId(value: unknown): value is WorkspaceColorId {
   return typeof value === 'string' && (WORKSPACE_COLOR_IDS as readonly string[]).includes(value);
 }
 
+function parseTaskState(value: unknown): PhoneSidebarTaskState | undefined {
+  if (!isRecord(value)) return undefined;
+  const { needYou, toReview, finished } = value;
+  if (typeof needYou !== 'boolean' || typeof toReview !== 'boolean' || typeof finished !== 'boolean') return undefined;
+  return { needYou, toReview, finished };
+}
+
 function parseTask(value: unknown): PhoneSidebarTaskLink | undefined {
-  if (!isRecord(value) || typeof value.detached !== 'boolean') return undefined;
+  if (!isRecord(value) || typeof value.detached !== 'boolean' || typeof value.nested !== 'boolean') return undefined;
   let ownerWorkspaceId: string | null;
   if (value.ownerWorkspaceId === null) ownerWorkspaceId = null;
   else {
@@ -137,18 +165,16 @@ function parseTask(value: unknown): PhoneSidebarTaskLink | undefined {
     ownerWorkspaceId = owner;
   }
   const createdAt = timestamp(value.createdAt);
-  return { ownerWorkspaceId, detached: value.detached, ...(createdAt !== undefined ? { createdAt } : {}) };
-}
-
-function parseTaskSummary(value: unknown): PhoneSidebarTaskSummary | undefined {
-  if (!isRecord(value)) return undefined;
-  const tasks = count(value.tasks);
-  const needYou = count(value.needYou);
-  const toReview = count(value.toReview);
-  const finished = count(value.finished);
-  if (tasks === undefined || needYou === undefined || toReview === undefined || finished === undefined) return undefined;
-  if (tasks === 0 || needYou > tasks || toReview > tasks || finished > tasks) return undefined;
-  return { tasks, needYou, toReview, finished };
+  // A nested task needs an owner to sit under; the state bits ride only there.
+  const nested = value.nested && ownerWorkspaceId !== null;
+  const state = nested ? parseTaskState(value.state) : undefined;
+  return {
+    ownerWorkspaceId,
+    detached: value.detached,
+    ...(createdAt !== undefined ? { createdAt } : {}),
+    nested,
+    ...(state ? { state } : {}),
+  };
 }
 
 function parseGitSync(value: unknown): PhoneSidebarWorkspace['gitSync'] {
@@ -173,8 +199,6 @@ function parseWorkspace(value: unknown): PhoneSidebarWorkspace | null {
   if (gitSync) row.gitSync = gitSync;
   const task = parseTask(value.task);
   if (task) row.task = task;
-  const taskSummary = parseTaskSummary(value.taskSummary);
-  if (taskSummary) row.taskSummary = taskSummary;
   return row;
 }
 
@@ -237,4 +261,35 @@ export function clampSidebarString(value: string | undefined | null, max: number
     out = out.trimEnd();
   }
   return out.length > 0 ? out : undefined;
+}
+
+/**
+ * The nesting and owner rollups as the phone can draw them, over the rows the
+ * daemon actually lists (`listedIds`). A task is nested iff the desktop nests
+ * it AND its owner is a listed row — the desktop may nest under an owner the
+ * phone cannot show (one with no live pane). Each owner's summary counts
+ * exactly its tasks that come out nested here, so the rollup line and the rows
+ * under it can never disagree.
+ */
+export function phoneTaskNesting(
+  workspaces: readonly PhoneSidebarWorkspace[],
+  listedIds: ReadonlySet<string>,
+): { nested: Map<string, boolean>; summaries: Map<string, PhoneSidebarTaskSummary> } {
+  const nested = new Map<string, boolean>();
+  const summaries = new Map<string, PhoneSidebarTaskSummary>();
+  for (const row of workspaces) {
+    const task = row.task;
+    if (!task || !listedIds.has(row.id)) continue;
+    const owner = task.ownerWorkspaceId;
+    const isNested = task.nested && owner !== null && owner !== row.id && listedIds.has(owner);
+    nested.set(row.id, isNested);
+    if (!isNested || owner === null) continue;
+    const summary = summaries.get(owner) ?? { tasks: 0, needYou: 0, toReview: 0, finished: 0 };
+    summary.tasks += 1;
+    if (task.state?.needYou) summary.needYou += 1;
+    if (task.state?.toReview) summary.toReview += 1;
+    if (task.state?.finished) summary.finished += 1;
+    summaries.set(owner, summary);
+  }
+  return { nested, summaries };
 }

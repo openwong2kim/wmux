@@ -10,7 +10,7 @@ import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFil
 import http from 'node:http';
 import type { AgentStatus } from '../../shared/types';
 import { isRemoteAgentStatus } from '../../shared/remoteHosts';
-import { parsePhoneSidebarSnapshot, type PhoneSidebarSnapshot, type PhoneSidebarWorkspace } from '../../shared/phoneFleetSidebar';
+import { parsePhoneSidebarSnapshot, phoneTaskNesting, type PhoneSidebarSnapshot, type PhoneSidebarTaskSummary, type PhoneSidebarWorkspace } from '../../shared/phoneFleetSidebar';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -2585,9 +2585,10 @@ export class WebTerminalServer {
     // Merged onto the daemon's own rows only: a workspace still exists here iff
     // a live, non-brain pane runs in it, and the desktop cannot add one.
     const fields = new Map(sidebar.workspaces.map((w) => [w.id, w]));
+    const nesting = phoneTaskNesting(sidebar.workspaces, new Set(byId.keys()));
     const merged = workspaces.map((w) => {
       const extra = fields.get(w.id);
-      return extra ? { ...w, ...sidebarWorkspaceFields(extra) } : w;
+      return extra ? { ...w, ...sidebarWorkspaceFields(extra, nesting.nested.get(w.id), nesting.summaries.get(w.id)) } : w;
     });
     // Only an id this reply lists, so the active workspace cannot name one the
     // phone is not allowed to see (a brain-only workspace, for one).
@@ -6573,10 +6574,16 @@ function sameCaller(original: WebPrincipal, now: WebPrincipal): boolean {
 
 /**
  * A sidebar workspace row as `/api/workspaces` carries it: the task link is
- * flattened onto the row (`ownerWorkspaceId`, `detached`, `createdAt`), present
- * only on a fan-out task workspace; `taskSummary` only on an owner row.
+ * flattened onto the row (`ownerWorkspaceId`, `detached`, `createdAt`,
+ * `nested`), present only on a fan-out task workspace; `taskSummary` only on
+ * an owner row with nested tasks. `nested` and the summary are the phone-list
+ * view from `phoneTaskNesting`; the per-task state bits stay internal.
  */
-function sidebarWorkspaceFields(row: PhoneSidebarWorkspace): Record<string, unknown> {
+function sidebarWorkspaceFields(
+  row: PhoneSidebarWorkspace,
+  nested: boolean | undefined,
+  taskSummary: PhoneSidebarTaskSummary | undefined,
+): Record<string, unknown> {
   const { task } = row;
   return {
     order: row.order,
@@ -6585,12 +6592,13 @@ function sidebarWorkspaceFields(row: PhoneSidebarWorkspace): Record<string, unkn
     ...(row.gitBranch !== undefined ? { gitBranch: row.gitBranch } : {}),
     ...(row.gitIsWorktree !== undefined ? { gitIsWorktree: row.gitIsWorktree } : {}),
     ...(row.gitSync !== undefined ? { gitSync: row.gitSync } : {}),
-    ...(row.taskSummary !== undefined ? { taskSummary: row.taskSummary } : {}),
+    ...(taskSummary !== undefined ? { taskSummary } : {}),
     ...(task
       ? {
           ownerWorkspaceId: task.ownerWorkspaceId,
           detached: task.detached,
           ...(task.createdAt !== undefined ? { createdAt: task.createdAt } : {}),
+          nested: nested === true,
         }
       : {}),
   };
