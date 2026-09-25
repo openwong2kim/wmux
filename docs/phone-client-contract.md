@@ -1494,8 +1494,9 @@ the pane stream).
 **Presence.** Every field below except `workspaceId` exists only in the desktop
 app. The daemon keeps a snapshot of them and answers every poll from it at
 once, refreshing it in the background about once a second; a poll never waits
-on the desktop, except the very first one after the daemon (re)starts with no
-snapshot yet, which may wait up to a quarter of a second so the first screen
+on the desktop, except when there is no usable snapshot — the first poll
+after the daemon (re)starts, or the first poll after more than 10 seconds with
+nobody polling — which may wait up to a quarter of a second so the screen
 paints with the fields. When the desktop is slow or its bridge is momentarily
 busy, the last snapshot keeps being served for up to 10 seconds; after that,
 and at once when the desktop disconnects, the keys are **omitted** (never

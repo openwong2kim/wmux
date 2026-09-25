@@ -155,7 +155,10 @@ function parseTaskState(value: unknown): PhoneSidebarTaskState | undefined {
   return { needYou, toReview, finished };
 }
 
-function parseTask(value: unknown): PhoneSidebarTaskLink | undefined {
+/** Receives why an item was dropped — a fixed reason tag, never the value. */
+export type SidebarDropReporter = (reason: string) => void;
+
+function parseTask(value: unknown, drop: SidebarDropReporter): PhoneSidebarTaskLink | undefined {
   if (!isRecord(value) || typeof value.detached !== 'boolean' || typeof value.nested !== 'boolean') return undefined;
   let ownerWorkspaceId: string | null;
   if (value.ownerWorkspaceId === null) ownerWorkspaceId = null;
@@ -168,6 +171,7 @@ function parseTask(value: unknown): PhoneSidebarTaskLink | undefined {
   // A nested task needs an owner to sit under; the state bits ride only there.
   const nested = value.nested && ownerWorkspaceId !== null;
   const state = nested ? parseTaskState(value.state) : undefined;
+  if (nested && value.state !== undefined && !state) drop('workspace.task.state');
   return {
     ownerWorkspaceId,
     detached: value.detached,
@@ -185,24 +189,31 @@ function parseGitSync(value: unknown): PhoneSidebarWorkspace['gitSync'] {
   return { ahead, behind, hasUpstream: value.hasUpstream };
 }
 
-function parseWorkspace(value: unknown): PhoneSidebarWorkspace | null {
+function parseWorkspace(value: unknown, drop: SidebarDropReporter): PhoneSidebarWorkspace | null {
   if (!isRecord(value)) return null;
   const id = idString(value.id);
   const order = count(value.order);
   if (id === undefined || order === undefined || typeof value.pinned !== 'boolean') return null;
   const row: PhoneSidebarWorkspace = { id, order, pinned: value.pinned };
+  // An optional field that is present but invalid is dropped on its own and
+  // reported; the row stays.
   if (isColorId(value.color)) row.color = value.color;
+  else if (value.color !== undefined) drop('workspace.color');
   const gitBranch = boundedString(value.gitBranch, PHONE_SIDEBAR_LIMITS.gitBranch);
   if (gitBranch !== undefined) row.gitBranch = gitBranch;
+  else if (value.gitBranch !== undefined) drop('workspace.gitBranch');
   if (typeof value.gitIsWorktree === 'boolean') row.gitIsWorktree = value.gitIsWorktree;
+  else if (value.gitIsWorktree !== undefined) drop('workspace.gitIsWorktree');
   const gitSync = parseGitSync(value.gitSync);
   if (gitSync) row.gitSync = gitSync;
-  const task = parseTask(value.task);
+  else if (value.gitSync !== undefined) drop('workspace.gitSync');
+  const task = parseTask(value.task, drop);
   if (task) row.task = task;
+  else if (value.task !== undefined) drop('workspace.task');
   return row;
 }
 
-function parsePane(value: unknown): PhoneSidebarPane | null {
+function parsePane(value: unknown, drop: SidebarDropReporter): PhoneSidebarPane | null {
   if (!isRecord(value)) return null;
   const ptyId = idString(value.ptyId);
   const workspaceId = idString(value.workspaceId);
@@ -210,38 +221,63 @@ function parsePane(value: unknown): PhoneSidebarPane | null {
   const row: PhoneSidebarPane = { ptyId, workspaceId };
   const surfaceTitle = boundedString(value.surfaceTitle, PHONE_SIDEBAR_LIMITS.surfaceTitle);
   if (surfaceTitle !== undefined) row.surfaceTitle = surfaceTitle;
+  else if (value.surfaceTitle !== undefined) drop('pane.surfaceTitle');
   const paneName = boundedString(value.paneName, PHONE_SIDEBAR_LIMITS.paneName);
   if (paneName !== undefined) row.paneName = paneName;
+  else if (value.paneName !== undefined) drop('pane.paneName');
   return row;
 }
 
 /**
  * Strict parse of a sidebar snapshot. Null when the envelope itself is not
  * one (absent, wrong type, a renderer error object); otherwise every row and
- * field that survives the allowlist, deduplicated by id (first wins).
+ * field that survives the allowlist, deduplicated by id (first wins). A bad
+ * row or field never costs more than itself: it is dropped alone, and
+ * `onDrop` hears a reason tag for it (never the value — a title is pane
+ * output and does not belong in a log).
  */
-export function parsePhoneSidebarSnapshot(value: unknown): PhoneSidebarSnapshot | null {
+export function parsePhoneSidebarSnapshot(value: unknown, onDrop?: SidebarDropReporter): PhoneSidebarSnapshot | null {
+  const drop: SidebarDropReporter = onDrop ?? (() => undefined);
   if (!isRecord(value) || !Array.isArray(value.workspaces) || !Array.isArray(value.panes)) return null;
   const workspaces: PhoneSidebarWorkspace[] = [];
   const seenWorkspaces = new Set<string>();
   for (const raw of value.workspaces) {
-    if (workspaces.length >= PHONE_SIDEBAR_LIMITS.workspaces) break;
-    const row = parseWorkspace(raw);
-    if (!row || seenWorkspaces.has(row.id)) continue;
+    if (workspaces.length >= PHONE_SIDEBAR_LIMITS.workspaces) { drop('workspace.overLimit'); break; }
+    const row = parseWorkspace(raw, drop);
+    if (!row) { drop('workspace.row'); continue; }
+    if (seenWorkspaces.has(row.id)) { drop('workspace.duplicate'); continue; }
     seenWorkspaces.add(row.id);
     workspaces.push(row);
   }
   const panes: PhoneSidebarPane[] = [];
   const seenPanes = new Set<string>();
   for (const raw of value.panes) {
-    if (panes.length >= PHONE_SIDEBAR_LIMITS.panes) break;
-    const row = parsePane(raw);
-    if (!row || seenPanes.has(row.ptyId)) continue;
+    if (panes.length >= PHONE_SIDEBAR_LIMITS.panes) { drop('pane.overLimit'); break; }
+    const row = parsePane(raw, drop);
+    if (!row) { drop('pane.row'); continue; }
+    if (seenPanes.has(row.ptyId)) { drop('pane.duplicate'); continue; }
     seenPanes.add(row.ptyId);
     panes.push(row);
   }
-  const activeWorkspaceId = idString(value.activeWorkspaceId) ?? null;
+  let activeWorkspaceId: string | null = null;
+  if (value.activeWorkspaceId !== null && value.activeWorkspaceId !== undefined) {
+    activeWorkspaceId = idString(value.activeWorkspaceId) ?? null;
+    if (activeWorkspaceId === null) drop('activeWorkspaceId');
+  }
   return { activeWorkspaceId, workspaces, panes };
+}
+
+/**
+ * Collects drop reasons over one parse and renders them as one log line body
+ * (`workspace.task×2, pane.surfaceTitle×1`), sorted so the same problem
+ * always reads the same — callers log only when the line changes.
+ */
+export function createSidebarDropLog(): { report: SidebarDropReporter; summary: () => string } {
+  const counts = new Map<string, number>();
+  return {
+    report: (reason) => counts.set(reason, (counts.get(reason) ?? 0) + 1),
+    summary: () => [...counts.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([reason, n]) => `${reason}×${n}`).join(', '),
+  };
 }
 
 /**

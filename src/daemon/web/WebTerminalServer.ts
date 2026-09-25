@@ -10,7 +10,7 @@ import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFil
 import http from 'node:http';
 import type { AgentStatus } from '../../shared/types';
 import { isRemoteAgentStatus } from '../../shared/remoteHosts';
-import { parsePhoneSidebarSnapshot, phoneTaskNesting, type PhoneSidebarSnapshot, type PhoneSidebarTaskSummary, type PhoneSidebarWorkspace } from '../../shared/phoneFleetSidebar';
+import { createSidebarDropLog, parsePhoneSidebarSnapshot, phoneTaskNesting, type PhoneSidebarSnapshot, type PhoneSidebarTaskSummary, type PhoneSidebarWorkspace } from '../../shared/phoneFleetSidebar';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -725,10 +725,11 @@ const MAX_LAST_ASSISTANT_READS_PER_POLL = 8;
  *     fields are omitted. A desktop that is gone drops them at once;
  *   - RETRY: after a failed refresh, how long before the next attempt, so a
  *     failing desktop is not asked on every poll;
- *   - FIRST_PAINT: with no snapshot at all, polls may wait this long after the
- *     first refresh STARTED (a deadline shared by every such poll, not a wait
- *     each), so a phone opening the Fleet paints with the fields when the
- *     desktop is healthy; a slow desktop costs this once, not per poll.
+ *   - FIRST_PAINT: with no servable snapshot (none yet, or one past MAX_STALE
+ *     because nobody polled for a while), polls may wait this long after the
+ *     refresh STARTED (a deadline shared by every such poll, not a wait each),
+ *     so a phone opening or returning to the Fleet paints with the fields when
+ *     the desktop is healthy; a slow desktop costs this once, not per poll.
  */
 const DESKTOP_SIDEBAR_TTL_MS = 1000;
 const DESKTOP_SIDEBAR_MAX_STALE_MS = 10_000;
@@ -1119,6 +1120,8 @@ export class WebTerminalServer {
    * land after a restart; it must touch neither the cache nor the slot.
    */
   private desktopSidebarGeneration = 0;
+  /** The last sidebar drop summary logged (see warnDesktopSidebar). */
+  private desktopSidebarLastWarning = '';
   /**
    * Last liveness state seen per pane, for the `/api/sessions` snapshot.
    *
@@ -2661,7 +2664,14 @@ export class WebTerminalServer {
     if ((!cached || now - cached.at >= DESKTOP_SIDEBAR_TTL_MS) && now - this.desktopSidebarFailedAt >= DESKTOP_SIDEBAR_RETRY_MS) {
       this.refreshDesktopSidebar(desktop);
     }
-    if (cached) return now - cached.at <= DESKTOP_SIDEBAR_MAX_STALE_MS ? cached.value : null;
+    if (cached && now - cached.at <= DESKTOP_SIDEBAR_MAX_STALE_MS) return cached.value;
+    // No servable snapshot: none yet, or one too old to serve as-is. "Too old"
+    // is usually NOT a failing desktop — it is a quiet spell with nobody
+    // polling, so nothing refreshed it (a phone in the background, a client
+    // polling every 15 s). That case must paint like a first poll: the refresh
+    // just started above, so wait for it until the shared first-paint
+    // deadline. A desktop that is actually failing is in back-off with no
+    // refresh running, and answers at once without the fields.
     const inFlight = this.desktopSidebarInFlight;
     if (!inFlight) return null;
     const firstPaintMs = this.deps.desktopSidebarFirstPaintMs ?? DESKTOP_SIDEBAR_FIRST_PAINT_MS;
@@ -2670,7 +2680,19 @@ export class WebTerminalServer {
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([inFlight.promise, new Promise<void>((resolve) => { timer = setTimeout(resolve, remaining); })]);
     clearTimeout(timer);
-    return this.desktopSidebarCache?.value ?? null;
+    const fresh = this.desktopSidebarCache;
+    return fresh && this.now() - fresh.at <= DESKTOP_SIDEBAR_MAX_STALE_MS ? fresh.value : null;
+  }
+
+  /**
+   * Log what the sidebar parse dropped — reason tags only, never values —
+   * when the set of reasons changes, not on every refresh (one a second while
+   * a phone polls).
+   */
+  private warnDesktopSidebar(summary: string): void {
+    if (summary === this.desktopSidebarLastWarning) return;
+    this.desktopSidebarLastWarning = summary;
+    if (summary) this.deps.log('warn', `[web] desktop sidebar fields left out: ${summary}`);
   }
 
   /** Start the single background refresh, unless one is already running. */
@@ -2682,7 +2704,11 @@ export class WebTerminalServer {
       .then(
         (reply) => {
           if (generation !== this.desktopSidebarGeneration) return;
-          const value = parsePhoneSidebarSnapshot((reply as { sidebar?: unknown } | null)?.sidebar);
+          const raw = (reply as { sidebar?: unknown } | null)?.sidebar;
+          const drops = createSidebarDropLog();
+          const value = parsePhoneSidebarSnapshot(raw, drops.report);
+          if (!value && raw !== undefined) drops.report('sidebar.notSnapshot');
+          this.warnDesktopSidebar(drops.summary());
           if (value) {
             this.desktopSidebarCache = { at: this.now(), value };
             this.desktopSidebarFailedAt = 0;

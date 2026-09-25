@@ -116,6 +116,29 @@ describe('phone workspace bridge', () => {
     expect(reply.sidebar?.panes).toHaveLength(512);
     expect(reply.sidebar?.panes.some((p) => 'surfaceTitle' in p)).toBe(false);
   });
+  it('keeps the good rows when one is bad, and warns once with reasons only', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const list = [{ id: 'ws-1', name: 'One', activePtyId: 's1' }];
+      send.mockImplementation(async (_getWindow: unknown, method: string) => method === 'workspace.list' ? list : {
+        activeWorkspaceId: 'ws-1',
+        workspaces: [
+          { id: 'ws-1', order: 0, pinned: false, gitBranch: 'main' },
+          { id: 'ws-2', order: 1, pinned: false, task: { ownerWorkspaceId: 'ws-1', detached: 'SECRET-VALUE', nested: true } },
+        ],
+        panes: [{ ptyId: 's1', workspaceId: 'ws-1', paneName: 'w1-1' }],
+      });
+      for (let i = 0; i < 3; i++) {
+        const reply = await handlePhoneWorkspaces('workspaces.list', {}, () => null) as { sidebar: PhoneSidebarSnapshot };
+        expect(reply.sidebar.workspaces).toEqual([{ id: 'ws-1', order: 0, pinned: false, gitBranch: 'main' }, { id: 'ws-2', order: 1, pinned: false }]);
+        expect(reply.sidebar.panes).toHaveLength(1);
+      }
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toBe('[phone] workspaces.list sidebar: workspace.task×1');
+    } finally {
+      warn.mockRestore();
+    }
+  });
   it('does not dispatch arbitrary operations', async () => {
     await expect(handlePhoneWorkspaces('workspace.close', {}, () => null)).rejects.toThrow('Unsupported');
     expect(send).not.toHaveBeenCalled();

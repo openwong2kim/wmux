@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { clampSidebarString, hasUnsafeSidebarText, parsePhoneSidebarSnapshot, phoneTaskNesting, PHONE_SIDEBAR_LIMITS } from '../phoneFleetSidebar';
+import { clampSidebarString, createSidebarDropLog, hasUnsafeSidebarText, parsePhoneSidebarSnapshot, phoneTaskNesting, PHONE_SIDEBAR_LIMITS } from '../phoneFleetSidebar';
 
 const valid = {
   activeWorkspaceId: 'ws-1',
@@ -141,5 +141,52 @@ describe('clampSidebarString', () => {
     expect(clampSidebarString('  a\tb\n ', 10)).toBe('a b');
     expect(clampSidebarString('   ', 10)).toBeUndefined();
     expect(clampSidebarString(`${'a'.repeat(4)}😀`, 5)).toBe('aaaa');
+  });
+});
+
+describe('real fan-out data and per-item drops', () => {
+  // The renderer projection captured from a live fan-out (owner + two tasks).
+  const OWNER = 'ws-phone-e9b00e1b-60c6-46e4-9ae8-9b54e0b2cd77';
+  const live = {
+    activeWorkspaceId: OWNER,
+    workspaces: [
+      { id: 'ws-edaf3c5f-4aa1-420c-8c7c-12f4f7fdf5a4', order: 0, pinned: false, gitIsWorktree: false },
+      { id: OWNER, order: 1, pinned: false, gitBranch: 'main', gitIsWorktree: false, gitSync: { ahead: 0, behind: 0, hasUpstream: false } },
+      { id: 'ws-208c08e3-96bb-4b07-a9b4-e5bdad9728b6', order: 2, pinned: false, gitBranch: 'wtask/finish-quickly-63gs0w4a', gitIsWorktree: true, gitSync: { ahead: 0, behind: 0, hasUpstream: false },
+        task: { ownerWorkspaceId: OWNER, detached: false, createdAt: 1790368163922, nested: true, state: { needYou: false, toReview: true, finished: true } } },
+      { id: 'ws-706df135-6033-47b7-bd3e-d0de474ea35a', order: 3, pinned: false, gitBranch: 'wtask/ask-the-user-n9znqi5b', gitIsWorktree: true, gitSync: { ahead: 0, behind: 0, hasUpstream: false },
+        task: { ownerWorkspaceId: OWNER, detached: false, createdAt: 1790368170163, nested: true, state: { needYou: true, toReview: false, finished: false } } },
+    ],
+    panes: [
+      { ptyId: 'daemon-5b9aa7c3', workspaceId: 'ws-208c08e3-96bb-4b07-a9b4-e5bdad9728b6', surfaceTitle: '✳ Wmux task protocol and ledger', paneName: 'w3-1' },
+      { ptyId: 'daemon-4b1edf50', workspaceId: 'ws-706df135-6033-47b7-bd3e-d0de474ea35a', surfaceTitle: '✳ Tabs or spaces preference', paneName: 'w4-1' },
+    ],
+  };
+
+  it('parses the live snapshot unchanged, with nothing dropped', () => {
+    const drops = createSidebarDropLog();
+    expect(parsePhoneSidebarSnapshot(JSON.parse(JSON.stringify(live)), drops.report)).toEqual(live);
+    expect(drops.summary()).toBe('');
+  });
+
+  it('drops only the offending field or row, and reports a reason tag without the value', () => {
+    const broken = JSON.parse(JSON.stringify(live));
+    broken.workspaces[2].task.createdAt = 'yesterday';            // tolerated: createdAt is optional
+    broken.workspaces[3].task.state = { needYou: 'yes' };         // state only
+    broken.workspaces[1].gitSync = { ahead: -1, behind: 0, hasUpstream: true }; // field only
+    broken.workspaces.push({ id: 'SECRET-ROW', order: 'x', pinned: false }); // row
+    broken.panes[0].surfaceTitle = 'SECRET\u202etitle';           // field only
+    const drops = createSidebarDropLog();
+    const parsed = parsePhoneSidebarSnapshot(broken, drops.report)!;
+    expect(parsed.workspaces.map((w) => w.id)).toEqual(live.workspaces.map((w) => w.id));
+    expect(parsed.workspaces[1]).not.toHaveProperty('gitSync');
+    expect(parsed.workspaces[1].gitBranch).toBe('main');
+    expect(parsed.workspaces[2].task).toEqual({ ownerWorkspaceId: OWNER, detached: false, nested: true, state: { needYou: false, toReview: true, finished: true } });
+    expect(parsed.workspaces[3].task).toEqual({ ownerWorkspaceId: OWNER, detached: false, createdAt: 1790368170163, nested: true });
+    expect(parsed.panes[0]).toEqual({ ptyId: 'daemon-5b9aa7c3', workspaceId: 'ws-208c08e3-96bb-4b07-a9b4-e5bdad9728b6', paneName: 'w3-1' });
+    expect(parsed.activeWorkspaceId).toBe(OWNER);
+    const summary = drops.summary();
+    expect(summary).toBe('pane.surfaceTitle×1, workspace.gitSync×1, workspace.row×1, workspace.task.state×1');
+    expect(summary).not.toMatch(/SECRET|yesterday/);
   });
 });

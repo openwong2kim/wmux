@@ -7456,6 +7456,127 @@ describe('WebTerminalServer', () => {
       expect(desktop.stub.request).toHaveBeenCalledTimes(2);
     });
 
+    // Captured from a live fan-out (owner + "finish quickly" + "ask the user"):
+    // the renderer's projection, verbatim, as it crossed into the daemon.
+    const OWNER = 'ws-phone-e9b00e1b-60c6-46e4-9ae8-9b54e0b2cd77';
+    const TASK_DONE = 'ws-208c08e3-96bb-4b07-a9b4-e5bdad9728b6';
+    const TASK_ASK = 'ws-706df135-6033-47b7-bd3e-d0de474ea35a';
+    const PLAIN = 'ws-edaf3c5f-4aa1-420c-8c7c-12f4f7fdf5a4';
+    const liveFanoutSnapshot = {
+      activeWorkspaceId: OWNER,
+      workspaces: [
+        { id: PLAIN, order: 0, pinned: false, gitIsWorktree: false },
+        { id: OWNER, order: 1, pinned: false, gitBranch: 'main', gitIsWorktree: false, gitSync: { ahead: 0, behind: 0, hasUpstream: false } },
+        {
+          id: TASK_DONE, order: 2, pinned: false, gitBranch: 'wtask/finish-quickly-63gs0w4a', gitIsWorktree: true,
+          gitSync: { ahead: 0, behind: 0, hasUpstream: false },
+          task: { ownerWorkspaceId: OWNER, detached: false, createdAt: 1790368163922, nested: true, state: { needYou: false, toReview: true, finished: true } },
+        },
+        {
+          id: TASK_ASK, order: 3, pinned: false, gitBranch: 'wtask/ask-the-user-n9znqi5b', gitIsWorktree: true,
+          gitSync: { ahead: 0, behind: 0, hasUpstream: false },
+          task: { ownerWorkspaceId: OWNER, detached: false, createdAt: 1790368170163, nested: true, state: { needYou: true, toReview: false, finished: false } },
+        },
+      ],
+      panes: [
+        { ptyId: 'daemon-0567273e', workspaceId: PLAIN, surfaceTitle: 'Zsh', paneName: 'w1-1' },
+        { ptyId: 'daemon-41e038ce', workspaceId: OWNER, surfaceTitle: 'Zsh', paneName: 'w2-1' },
+        { ptyId: 'daemon-5b9aa7c3', workspaceId: TASK_DONE, surfaceTitle: '✳ Wmux task protocol and ledger', paneName: 'w3-1' },
+        { ptyId: 'daemon-4b1edf50', workspaceId: TASK_ASK, surfaceTitle: '✳ Tabs or spaces preference', paneName: 'w4-1' },
+      ],
+    };
+    const liveFanoutSessions = () => [
+      ['daemon-0567273e', PLAIN, 'Workspace 1'],
+      ['daemon-41e038ce', OWNER, 'fleet owner'],
+      ['daemon-5b9aa7c3', TASK_DONE, 'wtask: finish quickly'],
+      ['daemon-4b1edf50', TASK_ASK, 'wtask: ask the user'],
+    ].map(([id, ws, name]) => ({
+      id, cwd: '/repo', cols: 80, rows: 24, state: 'attached',
+      agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+      env: { WMUX_WORKSPACE_ID: ws, WMUX_WORKSPACE_NAME: name }, cmd: '/bin/zsh',
+    }));
+
+    it('still serves the fields on the first poll after a quiet spell (live fan-out data)', async () => {
+      // Regression: a snapshot older than the staleness bound because NOBODY
+      // polled (not because the desktop failed) was dropped, so any client
+      // polling less often than every 10 s saw no sidebar fields at all.
+      const fixture = live.splice(0, live.length, ...liveFanoutSessions());
+      try {
+        const calls = attachDesktop(() => ({ workspaces: [], sidebar: liveFanoutSnapshot }));
+        const info = await startRO();
+        const token = info.token as string;
+        const check = async () => {
+          const body = await getJson(token, '/api/workspaces');
+          expect(body.activeWorkspaceId).toBe(OWNER);
+          const rows = new Map((body.workspaces as Row[]).map((w) => [w.id as string, w]));
+          expect(rows.get(OWNER)).toMatchObject({ order: 1, gitBranch: 'main', taskSummary: { tasks: 2, needYou: 1, toReview: 1, finished: 1 } });
+          for (const id of [TASK_DONE, TASK_ASK]) expect(rows.get(id)).toMatchObject({ ownerWorkspaceId: OWNER, detached: false, nested: true });
+          expect(rows.get(PLAIN)).toMatchObject({ order: 0, gitIsWorktree: false });
+          const sessions = (await getJson(token, '/api/sessions')).sessions as Row[];
+          expect(sessions.find((r) => r.id === 'daemon-4b1edf50')).toMatchObject({ surfaceTitle: '✳ Tabs or spaces preference', paneName: 'w4-1' });
+        };
+        await check();
+        // Twelve quiet seconds, then a single poll.
+        clockOffsetMs += 12_000;
+        await check();
+        expect(calls).toEqual(['workspaces.list', 'workspaces.list']);
+      } finally {
+        live.splice(0, live.length, ...fixture);
+      }
+    });
+
+    it('keeps every other field when one live task row is malformed, and logs the reason once', async () => {
+      const logs: string[] = [];
+      const fixture = live.splice(0, live.length, ...liveFanoutSessions());
+      const logged = new WebTerminalServer({
+        sessionManager,
+        desktop: () => desktopBridge,
+        desktopSidebarFirstPaintMs: 150,
+        now: () => Date.now() + clockOffsetMs,
+        log: (level, msg) => { if (level === 'warn') logs.push(msg); },
+        assetsDir: os.tmpdir(),
+      } as ConstructorParameters<typeof WebTerminalServer>[0]);
+      try {
+        const broken = JSON.parse(JSON.stringify(liveFanoutSnapshot));
+        broken.workspaces[3].task.ownerWorkspaceId = { SECRET: 'value' };
+        attachDesktop(() => ({ workspaces: [], sidebar: broken }));
+        const info = await logged.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
+        const get = async (route: string) => (await fetch(`http://127.0.0.1:${info.port}${route}`, { headers: bearer(info.token as string) })).json() as Promise<Record<string, unknown>>;
+        for (let i = 0; i < 3; i++) {
+          const body = await get('/api/workspaces');
+          const rows = new Map((body.workspaces as Row[]).map((w) => [w.id as string, w]));
+          expect(body.activeWorkspaceId).toBe(OWNER);
+          expect(rows.get(TASK_ASK)).toMatchObject({ order: 3, gitBranch: 'wtask/ask-the-user-n9znqi5b' });
+          expect(rows.get(TASK_ASK)).not.toHaveProperty('ownerWorkspaceId');
+          expect(rows.get(TASK_DONE)).toMatchObject({ ownerWorkspaceId: OWNER, nested: true });
+          expect(rows.get(OWNER)).toMatchObject({ taskSummary: { tasks: 1, needYou: 0, toReview: 1, finished: 1 } });
+          clockOffsetMs += 1500; // each poll after the first refreshes again
+        }
+        expect(logs.filter((m) => m.includes('sidebar'))).toEqual(['[web] desktop sidebar fields left out: workspace.task×1']);
+      } finally {
+        await logged.stop();
+        live.splice(0, live.length, ...fixture);
+      }
+    });
+
+    it('answers at once without the fields when a quiet spell meets a hung desktop', async () => {
+      const desktop = manualDesktop();
+      const info = await startRO();
+      const token = info.token as string;
+      desktop.stub.autoReply = snapshotTitled('A');
+      expect(await titleOf(token)).toBe('A');
+      desktop.stub.autoReply = undefined;
+      clockOffsetMs += 12_000;
+      // One bounded wait on the refresh it started, then no more waiting and no duplicate request.
+      expect(await titleOf(token)).toBeUndefined();
+      clockOffsetMs += 1000;
+      expect(await titleOf(token)).toBeUndefined();
+      expect(desktop.stub.request).toHaveBeenCalledTimes(2);
+      desktop.answer(1, snapshotTitled('B'));
+      await flush();
+      expect(await titleOf(token)).toBe('B');
+    });
+
     it('ignores a refresh that lands after the server restarted', async () => {
       const desktop = manualDesktop();
       let info = await startRO();

@@ -210,3 +210,24 @@ describe('buildPhoneSidebarSnapshot — pane rows', () => {
     expect(parsePhoneSidebarSnapshot(JSON.parse(JSON.stringify(snap)))).toEqual(snap);
   });
 });
+
+describe('buildPhoneSidebarSnapshot — one bad part never costs the snapshot', () => {
+  it('leaves out only the task that throws, and only the pane that throws, and reports why', () => {
+    const owner = workspace('owner', [leaf('po', [surface('so', 'pty-o')], 1)], { wsOrdinal: 1, metadata: { gitBranch: 'main' } });
+    const task = workspace('t1', [leaf('p1', [surface('s1', 'pty-1')], 1)], { wsOrdinal: 2, metadata: { gitBranch: 'wtask/x' } });
+    const other = workspace('other', [leaf('px', [surface('sx', 'pty-x')], 1)], { wsOrdinal: 3 });
+    // A task record whose owner cannot be read, and a leaf whose surfaces cannot be.
+    const poisoned = new Proxy({} as WorkTask, { get: () => { throw new Error('corrupt record'); } });
+    const badLeaf = leaf('pbad', [surface('sbad', 'pty-bad')], 2);
+    Object.defineProperty(badLeaf, 'surfaces', { get: () => { throw new Error('corrupt leaf'); } });
+    other.rootPane = { id: 'root-other', type: 'branch', direction: 'horizontal', children: [leaf('px', [surface('sx', 'pty-x')], 1), badLeaf] } as Pane;
+    const reasons: string[] = [];
+    const snap = buildPhoneSidebarSnapshot(state({ workspaces: [owner, task, other], missions: { t1: poisoned } }), (r) => reasons.push(r));
+    expect(snap.workspaces.map((w) => w.id)).toEqual(['owner', 't1', 'other']);
+    expect(snap.workspaces[1]).toEqual({ id: 't1', order: 1, pinned: false, gitBranch: 'wtask/x' });
+    expect(snap.workspaces[0]).toMatchObject({ gitBranch: 'main' });
+    expect(snap.panes.map((p) => p.ptyId)).toEqual(['pty-o', 'pty-1', 'pty-x']);
+    expect(reasons).toEqual(expect.arrayContaining(['task.tree', 'workspace.task', 'pane.row']));
+    expect(reasons.join(' ')).not.toContain('corrupt');
+  });
+});
