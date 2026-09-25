@@ -262,14 +262,15 @@ describe('native chat routes (contract v0.3.1)', () => {
   };
 
   /**
-   * POST whose body is held open until the header-time authentication has
-   * run, so the test can change the credential between headers and body.
+   * POST whose body is held open until the route has passed its entry gates
+   * (the pane lookup is the last of them), so the test can change the
+   * credential or the pane between headers and body.
    */
   const midBody = async (url: string, deviceId: string, body: string, change: () => void) => {
     let entered!: () => void;
-    const authenticated = new Promise<void>((resolve) => { entered = resolve; });
-    const lookup = Map.prototype.get.bind(roster);
-    const spy = vi.spyOn(roster, 'get').mockImplementation((id: string) => { entered(); return lookup(id); });
+    const gated = new Promise<void>((resolve) => { entered = resolve; });
+    const lookup = Map.prototype.get.bind(panes);
+    const spy = vi.spyOn(panes, 'get').mockImplementation((id: string) => { entered(); return lookup(id); });
     let request!: ReturnType<typeof httpReq>;
     const response = new Promise<{ status?: number; body: string }>((resolve, reject) => {
       request = httpReq(url, { method: 'POST', headers: { ...bearer(`${deviceId}.secret-${deviceId}`), 'Content-Type': 'application/json' } }, (res) => {
@@ -281,11 +282,8 @@ describe('native chat routes (contract v0.3.1)', () => {
       request.write(body.slice(0, 10));
     });
     try {
-      await authenticated;
+      await gated;
       spy.mockRestore();
-      // Let the route pass its entry gates (they run after the header-time
-      // authentication resolves) while the body is still open.
-      await new Promise((r) => setTimeout(r, 30));
       change();
       request.end(body.slice(10));
       return await response;
