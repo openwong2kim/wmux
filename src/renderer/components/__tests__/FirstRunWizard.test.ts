@@ -569,6 +569,16 @@ describe('welcome typography and media', () => {
     expect(html).toMatch(/fleet[^"]*\.webm/);
   });
 
+  it('shows the statusline clip, labelled by the row copy, only while the statusline is offered', () => {
+    const offer = renderToStaticMarkup(createElement(StatuslineBlock, { state: 'offer', onInstall: noop }));
+    expect(offer).toContain('first-run-wizard-statusline-preview');
+    expect(offer).toMatch(/aria-label="Show model, context usage, and rate limits/);
+    expect(offer).toMatch(/statusline[^"]*\.webm/);
+
+    const installed = renderToStaticMarkup(createElement(StatuslineBlock, { state: 'installed', onInstall: noop }));
+    expect(installed).not.toContain('first-run-wizard-statusline-preview');
+  });
+
   it('draws no emoji-style status glyphs in the chrome', () => {
     const html = renderToStaticMarkup(
       createElement(ClaudeStatusBlock, { claudeFound: false, mcpRegistered: false, registering: false, onRegister: noop }),

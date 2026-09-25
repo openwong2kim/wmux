@@ -930,6 +930,12 @@ export function StatuslineBlock({
         </Button>
       }
     >
+      <MediaPreview
+        clip={MEDIA_CLIPS.statusline}
+        label={t('firstRunWizard.statuslineDescription')}
+        className="mt-2"
+        data-testid="first-run-wizard-statusline-preview"
+      />
       {state === 'error' && (
         <p className="ui-row-error" data-testid="first-run-wizard-statusline-error">
           {withInlineCode(t('firstRunWizard.statuslineError'))}
