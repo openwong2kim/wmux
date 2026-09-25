@@ -5317,7 +5317,19 @@ function wireEvents(
   // hook-governed pane nothing else would, because main mutes the byte
   // heuristic while the hook's turn latch is held — and cancel a still-held
   // awaiting window, which would otherwise re-mark the pane when it confirms.
-  sessionManager.on('session:answered', (payload: { sessionId: string }) => {
+  // Input that reached a pane blocked on a human. Logged by size only — never
+  // the text — so a dogfood log shows whether an answer arrived in a shape the
+  // lone-key check did not recognise (glued to mouse reports, for instance).
+  sessionManager.on('session:awaitingActivity', (payload: {
+    sessionId: string; cause: 'input' | 'output'; bytes?: number; nonKeyBytes?: number; answered?: boolean;
+  }) => {
+    if (payload.cause === 'input') {
+      log('debug', `[awaiting] input on ${payload.sessionId} while awaiting: ${payload.bytes ?? 0} byte(s), ` +
+        `${payload.nonKeyBytes ?? 0} non-key, answered=${payload.answered === true}`);
+    }
+  });
+
+  sessionManager.on('session:answered', (payload: { sessionId: string; reason?: 'input' | 'screen-cleared' }) => {
     const managed = sessionManager.getSession(payload.sessionId);
     const screenAgent = managed?.bridge.getLastAgent() ?? null;
     const slug = (screenAgent ? agentDisplayToSlug(screenAgent) : undefined) ?? managed?.meta.lastDetectedAgent;

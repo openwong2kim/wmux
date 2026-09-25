@@ -714,6 +714,12 @@ export class DaemonSessionManager extends EventEmitter {
       this.emit('session:answered', payload);
     });
 
+    // Stdin or output on a pane blocked on a human: the awaiting-state screen
+    // verifier in daemon/index.ts schedules its check off this.
+    bridge.on('awaitingActivity', (payload) => {
+      this.emit('session:awaitingActivity', payload);
+    });
+
     // OSC 133 shell integration markers — daemon-side parsing populates
     // PromptEventLog (canonical, byte-offset indexed); this re-emit teases
     // out the same parsed PromptEvent so main-process notification routing
