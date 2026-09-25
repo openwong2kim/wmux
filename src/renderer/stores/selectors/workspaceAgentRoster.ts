@@ -75,6 +75,28 @@ function nonEmpty(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+const BARE_SHELL_TITLES = new Set([
+  'bash', 'zsh', 'sh', 'fish', 'dash', 'ksh', 'tcsh', 'csh', 'nu', 'cmd',
+  'pwsh', 'powershell', 'windows powershell',
+]);
+
+/** True when a tab title is only a shell's name (`Bash`, `-zsh`, `pwsh.exe`). */
+export function isBareShellTitle(title: string): boolean {
+  const name = title.trim().toLowerCase().replace(/^-/, '').replace(/\.exe$/, '');
+  return BARE_SHELL_TITLES.has(name);
+}
+
+/**
+ * The title an AGENT row may lead with. A tab still titled after the shell
+ * that hosts the agent ("Bash", "Zsh") says nothing about the agent, so it is
+ * dropped and the row falls back to the agent's name. Plain shell panes keep
+ * their title; this is applied to agent rows only.
+ */
+function agentSurfaceTitle(title: string | undefined): string | undefined {
+  const trimmed = nonEmpty(title);
+  return trimmed && !isBareShellTitle(trimmed) ? trimmed : undefined;
+}
+
 function needsAttention(status: AgentStatus): boolean {
   return status === 'awaiting_input' || status === 'waiting' || status === 'error';
 }
@@ -131,7 +153,7 @@ export function selectWorkspaceAgentRoster(
           agentName: remoteAgent.agentName,
           slug: agentDisplayToSlug(remoteAgent.agentName),
           paneName,
-          surfaceTitle: nonEmpty(surface.title),
+          surfaceTitle: agentSurfaceTitle(surface.title),
           surfaceIndex,
           surfaceCount: leaf.surfaces.length,
           status,
@@ -205,7 +227,7 @@ export function selectWorkspaceAgentRoster(
         agentName: agent.name,
         slug: agent.slug ?? agentDisplayToSlug(agent.name),
         paneName,
-        surfaceTitle: nonEmpty(surface.title),
+        surfaceTitle: agentSurfaceTitle(surface.title),
         surfaceIndex,
         surfaceCount: leaf.surfaces.length,
         status,
@@ -289,7 +311,7 @@ export function selectWorkspaceAgentRoster(
         state.paneLabel[leaf.id],
         showCoordinates ? computePaneAutoName(workspace.wsOrdinal ?? 0, leaf.ordinal ?? 0) : '',
       ),
-      surfaceTitle: nonEmpty(surface.title),
+      surfaceTitle: agent ? agentSurfaceTitle(surface.title) : nonEmpty(surface.title),
       surfaceIndex: Math.max(0, leaf.surfaces.findIndex((s) => s.id === surface.id)),
       surfaceCount: leaf.surfaces.length,
       status,
