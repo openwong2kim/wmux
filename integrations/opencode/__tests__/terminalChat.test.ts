@@ -91,9 +91,10 @@ describe('OpenCode existing TUI bridge', () => {
   });
   it('serves an epoch that carries no part of the loopback token', async () => {
     const home = mkdtempSync(join(tmpdir(), 'wmux-chat-tui-'));
-    const env = { HOME: process.env.HOME, WMUX_PTY_ID: process.env.WMUX_PTY_ID, WMUX_DATA_SUFFIX: process.env.WMUX_DATA_SUFFIX };
+    const env = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, WMUX_PTY_ID: process.env.WMUX_PTY_ID, WMUX_DATA_SUFFIX: process.env.WMUX_DATA_SUFFIX };
     const disposers: (() => void)[] = [];
-    Object.assign(process.env, { HOME: home, WMUX_PTY_ID: 'pty-epoch-test', WMUX_DATA_SUFFIX: '-epoch-test' });
+    // os.homedir() reads USERPROFILE on Windows, HOME elsewhere.
+    Object.assign(process.env, { HOME: home, USERPROFILE: home, WMUX_PTY_ID: 'pty-epoch-test', WMUX_DATA_SUFFIX: '-epoch-test' });
     try {
       const f = fixture();
       await tui({ ...f.api, lifecycle: { onDispose: (fn: () => void) => disposers.push(fn) } });
