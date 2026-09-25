@@ -109,6 +109,7 @@ export const en = {
   'chat.send.session_changed': "The session changed. Review the current conversation before sending again.",
   'chat.send.unavailable': "No active Claude session could be verified. Continue in Terminal.",
   'chat.send.error': "Delivery could not be confirmed. Text may already be in Terminal; check there before retrying.",
+  'chat.send.refused': "Nothing was sent. Your message is still in the composer; check Terminal, then send again.",
   'chat.bodyRetry': "Content unavailable · Retry",
   'chat.code': "Code",
   'chat.lines': "lines",

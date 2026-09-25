@@ -255,8 +255,15 @@ export interface ChatBridgeApi {
   skills?: (args: { ptyId: string; agent: string }) => Promise<import('./chatSkills').ChatSkillCatalog>;
   launchTerminal?: (args: { ptyId: string; agent: 'claude' | 'codex'; prompt: string; mode?: import('./terminalChat').TerminalLaunchMode }) => Promise<{ ok: boolean; error?: string }>;
   controls?: import('./chatSession').ChatControls;
-  /** Identity-bound, daemon-serialized input into the existing terminal agent process. */
-  send: (args: { ptyId: string; agentSessionId: string; text: string; requestId?: string }) => Promise<{ result: ChatSendResult }>;
+  /**
+   * Identity-bound, daemon-serialized input into the existing terminal agent process.
+   * `requestId` is `<13-digit ms>-<lowercase uuid>`. `effect`, when present, is
+   * what the send did to the pane and outranks `result` for the UI: `none`
+   * wrote nothing, `uncertain` may have written. An older daemon omits it.
+   */
+  send: (args: { ptyId: string; agentSessionId: string; text: string; requestId?: string }) => Promise<{
+    result: ChatSendResult; replayed?: boolean; effect?: 'none' | 'uncertain' | 'submitted';
+  }>;
   status: (ptyId: string) => Promise<TranscriptStatus>;
   /** `before` pages BACKWARD from a prior cursor.headOffset; omit for the tail. */
   snapshot: (ptyId: string, before?: number) => Promise<TranscriptPage | null>;

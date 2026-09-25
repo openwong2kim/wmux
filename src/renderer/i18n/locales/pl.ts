@@ -110,6 +110,7 @@ export const pl = {
   'chat.send.session_changed': 'Sesja się zmieniła. Sprawdź bieżącą rozmowę przed ponownym wysłaniem.',
   'chat.send.unavailable': 'Nie udało się zweryfikować aktywnej sesji Claude. Kontynuuj w Terminalu.',
   'chat.send.error': 'Nie udało się potwierdzić dostarczenia. Tekst może już być w Terminalu; sprawdź go przed ponowieniem.',
+  'chat.send.refused': 'Nic nie zostało wysłane. Wiadomość jest nadal w polu tekstowym; sprawdź Terminal i wyślij ponownie.',
   'chat.bodyRetry': 'Treść niedostępna · Spróbuj ponownie',
   'chat.code': 'Kod',
   'chat.lines': 'wierszy',
