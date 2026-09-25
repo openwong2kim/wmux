@@ -4877,10 +4877,6 @@ function wireEvents(
       sessionManager.getSession(sessionId)?.promptLog.commandRunningIfKnown() === true,
     probe: armIfAgent,
   });
-  // A daemon restart starts the tracker empty, and an agent that is already
-  // running emits no fresh command-start. One sweep over every live pane
-  // (a single shared process-table read) names those agents right away.
-  for (const session of sessionManager.listLiveSessions()) armIfAgent(session.id);
 
   // session:died → broadcast DaemonEvent + save state + cleanup.
   //

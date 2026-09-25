@@ -394,6 +394,8 @@ export class AgentProcessTracker {
   /** In-flight probe per session — coalesces the hook-storm case (a claude
    *  turn can fire several hooks back-to-back) into one enumeration. */
   private readonly inFlight = new Set<string>();
+  /** The in-flight probe came from armIfAgent (commits named agents only). */
+  private readonly slugOnlyInFlight = new Set<string>();
   /** Bumped by disarm(); a probe that resolves after its session was
    *  disarmed must not resurrect state for a destroyed pane. */
   private readonly generation = new Map<string, number>();
@@ -484,7 +486,7 @@ export class AgentProcessTracker {
   /**
    * Probe for a NAMED agent with no evidence that one is running — the
    * banner- and hook-independent trigger (a foreground command outlived its
-   * settle window, or the post-recovery sweep). An agent with no session-start
+   * settle window — see commandStartAgentProbe.ts). An agent with no session-start
    * hook (Codex) is otherwise named only by its banner, and a missed banner
    * left the pane anonymous until its first turn ended.
    *
@@ -501,8 +503,15 @@ export class AgentProcessTracker {
   }
 
   private probe(sessionId: string, shellPid: number, requireSlug = false): void {
-    if (this.inFlight.has(sessionId)) return;
+    if (this.inFlight.has(sessionId)) {
+      // A hook or banner arm arriving while an armIfAgent probe runs must not
+      // be swallowed: that probe discards a slugless pick, which this arm
+      // would have kept for liveness. Replay it once the probe lands.
+      if (!requireSlug && this.slugOnlyInFlight.has(sessionId)) this.forceQueued.add(sessionId);
+      return;
+    }
     this.inFlight.add(sessionId);
+    if (requireSlug) this.slugOnlyInFlight.add(sessionId);
     const gen = this.generation.get(sessionId) ?? 0;
     void (async () => {
       try {
@@ -540,6 +549,7 @@ export class AgentProcessTracker {
         if (!requireSlug) this.lastFailedAt.set(sessionId, Date.now());
       } finally {
         this.inFlight.delete(sessionId);
+        this.slugOnlyInFlight.delete(sessionId);
         // Replay a queued forced rearm DIRECTLY — routing it through rearm()
         // again would hit the cooldown already paid when the rearm queued it
         // (lastRearmAt was set seconds ago, so rearm() no-opped and the forced

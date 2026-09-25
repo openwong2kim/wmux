@@ -352,6 +352,22 @@ describe('AgentProcessTracker', () => {
     expect(tracker.identityFor('s1')).toEqual({ slug: 'codex', alive: false });
   });
 
+  it('an arm landing during an armIfAgent probe is replayed, not swallowed', async () => {
+    const watcher = makeWatcher();
+    const table = [entry(200, SHELL, 'somewrapper')];
+    const enumerate = vi.fn(async () => table);
+    const tracker = new AgentProcessTracker(watcher, enumerate);
+
+    tracker.armIfAgent('s1', SHELL); // agent-only probe in flight
+    tracker.arm('s1', SHELL); // hook evidence arrives meanwhile
+    await flush();
+    await flush();
+    // The agent-only probe dropped the slugless pick; the replayed arm keeps
+    // it for liveness, as a plain arm always has.
+    expect(enumerate).toHaveBeenCalledTimes(2);
+    expect(tracker.identityFor('s1')).toEqual({ alive: true });
+  });
+
   it('fires the state listener on attribution and on the death edge', async () => {
     const watcher = makeWatcher();
     const listener = vi.fn();
