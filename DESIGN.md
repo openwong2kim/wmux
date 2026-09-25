@@ -408,7 +408,7 @@ regeneration, message editing and voice controls are hidden until supported.
   The titlebar's left segment follows the width. The compact rail stays 48px.
 - **Workspace row:** status mark · name (13px) · collapsed summary · needs-you
   label · hover actions. The collapsed summary is one status mark and a count per
-  status group, most urgent first;
+  non-idle status group, most urgent first (the total alone when all are idle);
   it stays visible at rest. The git line uses the branch and worktree icons;
   no text glyphs that can render as emoji (⎇ ⊕ ⚠ ✓ ✗).
 - **Agent row:** status mark · title · agent kind (non-Claude only) · muted trailer (live
@@ -418,8 +418,10 @@ regeneration, message editing and voice controls are hidden until supported.
   keeps its own red second line. Stashed rows keep their status word (their
   proof of life, 2026-08-24).
 - **Agent kind:** no identity glyph. Claude is the default and gets no mark;
-  any other agent names itself in muted 10px text after the title (`codex`,
-  `gemini`), so the exception is the only thing that reads. Shells get nothing.
+  any other agent names itself in muted 10px text after the title (its display
+  name, e.g. `Codex CLI`, truncating before the title does), and only when the
+  row has its own title — otherwise the title slot already is the agent name.
+  The trailer no longer repeats the vendor. Shells get nothing.
   The name stays in the tooltip and accessible name. Never a vendor logo or
   favicon (trademarks; written permission required).
 - **Fan-out nesting:** a task workspace renders under the workspace that fanned

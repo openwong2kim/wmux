@@ -19,7 +19,11 @@ describe('roster agent kind', () => {
   });
 
   it('names only non-Claude agents, in muted text', () => {
-    expect(rosterSource).toMatch(/row\.slug && row\.slug !== 'claude' && \(/);
+    // Only beside a real title: without one the title slot already shows the
+    // agent name, and printing it again would read "Codex CLI Codex CLI".
+    expect(rosterSource).toMatch(/row\.surfaceTitle && row\.slug && row\.slug !== 'claude' && \(/);
+    // The trailer no longer repeats the vendor.
+    expect(rosterSource).toContain('rosterSecondaryLabel(row, { showVendor: false })');
     const at = rosterSource.indexOf('data-roster-agent-kind');
     expect(at).toBeGreaterThan(-1);
     const tag = rosterSource.slice(rosterSource.lastIndexOf('<span', at), at);
@@ -28,5 +32,6 @@ describe('roster agent kind', () => {
 
   it('the collapsed summary counts each status group instead of drawing glyphs', () => {
     expect(rosterSource).toContain('<span>{group.length}</span>');
+    expect(rosterSource).not.toContain('data-roster-chip-extra');
   });
 });

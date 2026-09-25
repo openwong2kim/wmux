@@ -416,9 +416,9 @@ export interface RosterChipAgent {
 export interface RosterChip {
   agentCount: number;
   stashedCount: number;
-  /** Up to CHIP_MAX_GLYPHS agents, most urgent status first, grouped by status. */
+  /** Every visible agent, most urgent status first, grouped by status. */
   agents: RosterChipAgent[];
-  /** Agents not drawn (agentCount - agents.length). */
+  /** Agents not listed in `agents` (stashed ones); kept for the summary's count. */
   extra: number;
 }
 
@@ -444,7 +444,8 @@ export function chipStatusRank(status: AgentStatus): number {
 /**
  * Pure: pick the chip's agents from roster rows. Visible agents only (stashed
  * panes keep their own glyph in the summary), stable-sorted by urgency so rows
- * sharing a status sit together, capped at CHIP_MAX_GLYPHS.
+ * sharing a status sit together. The summary counts per status, so the list
+ * is not capped.
  */
 export function buildRosterChip(projection: WorkspaceAgentRosterProjection): RosterChip {
   const visible = projection.rows.filter((row) => !row.stashed);
@@ -452,7 +453,6 @@ export function buildRosterChip(projection: WorkspaceAgentRosterProjection): Ros
   const ranked = visible
     .map((row, index) => ({ row, index }))
     .sort((a, b) => chipStatusRank(eff(a.row)) - chipStatusRank(eff(b.row)) || a.index - b.index)
-    .slice(0, CHIP_MAX_GLYPHS)
     // Plain waiting with no question is idle in the shared class
     // (fleetAttentionClass) — the summary must not draw it as needs you.
     .map(({ row }) => ({ slug: row.slug, agentName: row.agentName, status: row.status === 'waiting' && !row.pendingQuestion ? 'idle' as const : row.status }));

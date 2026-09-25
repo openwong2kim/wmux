@@ -828,15 +828,21 @@ describe('buildRosterChip', () => {
   const row = (ptyId: string, status: AgentStatus, slug?: string, stashed = false) =>
     ({ ptyId, status, slug, agentName: slug ?? 'shell', stashed } as unknown as WorkspaceAgentRosterRow);
 
-  it('keeps up to three agents, most urgent first, grouped by status, and counts the rest', () => {
+  it('lists every visible agent, most urgent first and grouped by status, so per-status counts are exact', () => {
     const chip = buildRosterChip({
       rows: [row('a', 'idle', 'claude'), row('b', 'running', 'codex'), row('c', 'awaiting_input', 'gemini'), row('d', 'running', 'claude'), row('e', 'idle', 'aider')],
       agentCount: 5,
       needsAttentionCount: 1,
       stashedCount: 0,
     });
-    expect(chip.agents.map((a) => `${a.status}:${a.slug}`)).toEqual(['awaiting_input:gemini', 'running:codex', 'running:claude']);
-    expect(chip.extra).toBe(2);
+    expect(chip.agents.map((a) => `${a.status}:${a.slug}`)).toEqual(['awaiting_input:gemini', 'running:codex', 'running:claude', 'idle:claude', 'idle:aider']);
+    expect(chip.extra).toBe(0);
+  });
+
+  it('counts six running agents as six, not a capped three', () => {
+    const rows = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => row(id, 'running', 'claude'));
+    const chip = buildRosterChip({ rows, agentCount: 6, needsAttentionCount: 0, stashedCount: 0 });
+    expect(chip.agents.filter((a) => a.status === 'running')).toHaveLength(6);
   });
 
   it('leaves stashed rows out of the glyphs', () => {
