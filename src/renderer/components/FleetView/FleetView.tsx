@@ -161,11 +161,12 @@ export default function FleetView() {
     ].some((value) => value?.toLocaleLowerCase().includes(term)));
     return { needsYou: groups.needsYou.filter(keep), running: groups.running.filter(keep), idle: groups.idle.filter(keep) };
   }, [groups, filter, query, missions]);
-  // Rows re-derive when a task's record, workspace (name, PR) or hook stamp
-  // changes; membership itself comes from reviewIds.
+  // Rows re-derive when a task's record, workspace (name, PR) or stamps
+  // change; the output stamp is read on the minute tick, as for the board.
+  // Membership itself comes from reviewIds.
   const reviewQueue = useMemo(
     () => (reviewIds.length === 0 ? [] : selectReviewQueue(useStore.getState())),
-    [reviewIds, workspaces, missions, surfaceActivityAt],
+    [reviewIds, workspaces, missions, surfaceActivityAt, surfaceTurnOpenAt, now],
   );
   const visibleReview = useMemo(() => {
     if (filter !== 'all' && filter !== 'complete') return [];

@@ -63,7 +63,9 @@ const summaryCache = new Map<string, ReviewChangeSummary | null>();
 /** The task's change summary from the task diff read (worktree vs target
  *  HEAD). Undefined while loading; null when the read failed. */
 function useReviewChangeSummary(entry: ReviewQueueEntry): ReviewChangeSummary | null | undefined {
-  const key = `${entry.taskId}:${entry.completedAt ?? 0}`;
+  // Minute-floored: a finished TUI's redraw moves the output stamp, and a
+  // re-read per redraw is not the point.
+  const key = `${entry.taskId}:${Math.floor((entry.completedAt ?? 0) / 60_000)}`;
   const [summary, setSummary] = useState<ReviewChangeSummary | null | undefined>(() => summaryCache.get(key));
   const worktreePath = entry.worktreePath;
   useEffect(() => {

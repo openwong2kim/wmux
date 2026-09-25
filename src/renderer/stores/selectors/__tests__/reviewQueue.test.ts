@@ -138,6 +138,12 @@ describe('reviewQueueEntry', () => {
     });
   });
 
+  it('takes the finish time from the output stamp when the turn end cleared the activity stamp', () => {
+    const s = state({ workspaces: [workspace('t1', [leaf('a', 'p1')])], missions: { t1: mission('task-1', 'gone') }, status: { p1: 'complete' }, activityAt: {} });
+    (s as unknown as { surfaceOutputAt: Record<string, number> }).surfaceOutputAt = { p1: 4_000 };
+    expect(reviewQueueEntry(s, 't1')?.completedAt).toBe(4_000);
+  });
+
   it('omits the owner name when the owner workspace is gone', () => {
     const s = state({ workspaces: [workspace('t1', [leaf('a', 'p1')])], missions: { t1: mission('task-1', 'gone') }, status: { p1: 'complete' } });
     expect(reviewQueueEntry(s, 't1')?.ownerName).toBeUndefined();

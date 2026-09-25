@@ -32,7 +32,7 @@ export interface ReviewQueueEntry {
   pr?: PrStatus;
   /** The PR the task's own "Create PR" recorded, when the poll has none yet. */
   prUrl?: string;
-  /** Newest hook activity across the task's agent panes — when it finished. */
+  /** Newest activity/output/turn stamp across the task's agent panes. */
   completedAt?: number;
 }
 
@@ -68,10 +68,13 @@ export function reviewQueueEntry(state: StoreState, workspaceId: string): Review
   if (!mission || !ws) return null;
   const ownerId = mission.owner?.verifiedWorkspaceId ?? '';
   const owner = ownerId ? state.workspaces.find((w) => w.id === ownerId) : undefined;
+  // The same stamps Fleet's pane rows age from (fleetIdleForMs): the turn end
+  // clears the activity stamp, so output and the turn latch carry the time.
   let completedAt: number | undefined;
   for (const row of selectWorkspaceAgentRoster(state, workspaceId).rows) {
-    const at = state.surfaceActivityAt[row.ptyId];
-    if (typeof at === 'number' && Number.isFinite(at) && (completedAt === undefined || at > completedAt)) completedAt = at;
+    for (const at of [state.surfaceActivityAt[row.ptyId], state.surfaceOutputAt?.[row.ptyId], state.surfaceTurnOpenAt?.[row.ptyId]]) {
+      if (typeof at === 'number' && Number.isFinite(at) && (completedAt === undefined || at > completedAt)) completedAt = at;
+    }
   }
   const pr = ws.metadata?.pr ?? undefined;
   return {
