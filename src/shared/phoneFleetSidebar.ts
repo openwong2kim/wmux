@@ -72,8 +72,28 @@ export interface PhoneSidebarSnapshot {
   panes: PhoneSidebarPane[];
 }
 
+/**
+ * Characters no sidebar string may carry across a boundary. A tab title is set
+ * by whatever runs in the pane (OSC 0/2), so it is untrusted text that ends up
+ * in a phone UI:
+ *   - line and format breakers: C0, DEL, C1 (including NEL, U+0085), and the
+ *     Unicode line / paragraph separators U+2028 / U+2029;
+ *   - bidi controls that can reorder what is displayed: the embeddings and
+ *     overrides U+202A–U+202E, the isolates U+2066–U+2069, and the implicit
+ *     marks U+200E / U+200F / U+061C.
+ * The renderer strips them (`clampSidebarString`); every parser refuses a
+ * string that still carries one, so the rule is the same at each hop.
+ */
 // eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/;
+// eslint-disable-next-line no-control-regex
+const LINE_BREAKERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g;
+const BIDI_CONTROLS = /[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c]/g;
+
+/** True when a string carries any character `UNSAFE_TEXT` names. */
+export function hasUnsafeSidebarText(value: string): boolean {
+  return UNSAFE_TEXT.test(value);
+}
 const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -83,7 +103,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /** A bounded, single-line, non-empty string, or undefined. */
 function boundedString(value: unknown, max: number): string | undefined {
   if (typeof value !== 'string') return undefined;
-  if (value.length === 0 || value.length > max || CONTROL_CHARS.test(value)) return undefined;
+  if (value.length === 0 || value.length > max || UNSAFE_TEXT.test(value)) return undefined;
   if (value.trim() !== value || value.trim().length === 0) return undefined;
   return value;
 }
@@ -201,13 +221,15 @@ export function parsePhoneSidebarSnapshot(value: unknown): PhoneSidebarSnapshot 
 }
 
 /**
- * Cut a display string to the bound without splitting a surrogate pair, and
- * flatten it to one line. Undefined when nothing readable is left.
+ * Cut a display string to the bound without splitting a surrogate pair, strip
+ * the characters `UNSAFE_TEXT` names, and flatten it to one line. Undefined
+ * when nothing readable is left. Its output always passes the parsers.
  */
 export function clampSidebarString(value: string | undefined | null, max: number): string | undefined {
   if (typeof value !== 'string') return undefined;
-  // eslint-disable-next-line no-control-regex
-  let out = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  // Bidi controls are removed outright (they draw nothing); anything that
+  // breaks a line becomes one space.
+  let out = value.replace(BIDI_CONTROLS, '').replace(LINE_BREAKERS, ' ').trim();
   if (out.length > max) {
     out = out.slice(0, max);
     const last = out.charCodeAt(out.length - 1);

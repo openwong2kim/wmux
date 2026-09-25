@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { clampSidebarString, parsePhoneSidebarSnapshot, PHONE_SIDEBAR_LIMITS } from '../phoneFleetSidebar';
+import { clampSidebarString, hasUnsafeSidebarText, parsePhoneSidebarSnapshot, PHONE_SIDEBAR_LIMITS } from '../phoneFleetSidebar';
 
 const valid = {
   activeWorkspaceId: 'ws-1',
@@ -76,6 +76,37 @@ describe('parsePhoneSidebarSnapshot', () => {
   it('caps the row counts', () => {
     const many = Array.from({ length: PHONE_SIDEBAR_LIMITS.panes + 10 }, (_, i) => ({ ptyId: `p${i}`, workspaceId: 'w' }));
     expect(parsePhoneSidebarSnapshot({ activeWorkspaceId: null, workspaces: [], panes: many })?.panes).toHaveLength(PHONE_SIDEBAR_LIMITS.panes);
+  });
+});
+
+describe('unsafe text (C1, separators, bidi controls)', () => {
+  const unsafe = ['\u0085', '\u009b', '\u2028', '\u2029', '\u202a', '\u202e', '\u2066', '\u2069', '\u200f', '\u061c', '\u001b', '\u007f'];
+
+  it('the parser refuses a field carrying any of them, at every string field', () => {
+    for (const ch of unsafe) {
+      const parsed = parsePhoneSidebarSnapshot({
+        activeWorkspaceId: `ws${ch}1`,
+        workspaces: [{ id: 'ws-1', order: 0, pinned: false, gitBranch: `main${ch}x` }, { id: `ws${ch}2`, order: 1, pinned: false }],
+        panes: [{ ptyId: 'p1', workspaceId: 'ws-1', surfaceTitle: `evil${ch}title`, paneName: `w1${ch}-2` }],
+      });
+      expect(parsed).toEqual({
+        activeWorkspaceId: null,
+        workspaces: [{ id: 'ws-1', order: 0, pinned: false }],
+        panes: [{ ptyId: 'p1', workspaceId: 'ws-1' }],
+      });
+    }
+  });
+
+  it('the renderer clamp strips them, and what it returns always passes the parser', () => {
+    expect(clampSidebarString('abc\u202edcba', 50)).toBe('abcdcba');
+    expect(clampSidebarString('\u2067app\u2069 review', 50)).toBe('app review');
+    expect(clampSidebarString('one\u2028two\u0085three', 50)).toBe('one two three');
+    for (const ch of unsafe) {
+      const clamped = clampSidebarString(`left${ch}right`, 50)!;
+      expect(hasUnsafeSidebarText(clamped)).toBe(false);
+      const parsed = parsePhoneSidebarSnapshot({ activeWorkspaceId: null, workspaces: [], panes: [{ ptyId: 'p', workspaceId: 'w', surfaceTitle: clamped }] });
+      expect(parsed?.panes[0].surfaceTitle).toBe(clamped);
+    }
   });
 });
 
