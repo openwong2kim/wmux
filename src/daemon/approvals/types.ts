@@ -58,8 +58,11 @@ export interface ApprovalRequest {
    * `awaiting_input` — an AskUserQuestion prompt (keystroke resolution).
    * `awaiting_permission` — a PreToolUse gate on a high-risk tool (RPC-waiter
    *   resolution, no keystroke). #783
+   * `terminal_prompt` — the agent's OWN terminal dialog (Claude Code's "Do you
+   *   want to proceed?" permission prompt), as opposed to an AskUserQuestion
+   *   select. Carries `toolName` (when known) and a sanitized `summary`.
    */
-  kind: 'awaiting_input' | 'awaiting_permission';
+  kind: 'awaiting_input' | 'awaiting_permission' | 'terminal_prompt';
   /**
    * A4 — WHAT is being asked, extracted from the hook envelope's `tool_input`
    * at creation time (see askUserQuestion.ts).
@@ -147,6 +150,12 @@ export interface ApprovalRequest {
    * command" / "what file" without a second round trip.
    */
   toolInputSummary?: string;
+  /**
+   * What the dialog is about, sanitized and capped at 200 characters. Present
+   * only on `kind:'terminal_prompt'` records, and only when known.
+   * Agent-authored text: render it as text, never as markup.
+   */
+  summary?: string;
   /** Who answered — free-form caller-supplied label ('web', an operator name). */
   resolvedBy?: string;
   resolvedAt?: number;
