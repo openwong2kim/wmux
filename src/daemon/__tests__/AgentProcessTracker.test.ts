@@ -290,6 +290,68 @@ describe('AgentProcessTracker', () => {
     expect(watcher.watches.size).toBe(0);
   });
 
+  it('armIfAgent names a resumed Codex that no hook or banner announced', async () => {
+    const watcher = makeWatcher();
+    const listener = vi.fn();
+    // zsh → node …/@openai/codex/bin/codex.js resume --last → native codex
+    const table = [
+      entry(200, SHELL, 'node', 'node /usr/local/lib/node_modules/@openai/codex/bin/codex.js resume --last'),
+      entry(201, 200, '/usr/local/lib/node_modules/@openai/codex/vendor/bin/codex', 'codex resume --last'),
+    ];
+    const tracker = new AgentProcessTracker(watcher, async () => table);
+    tracker.setStateChangeListener(listener);
+
+    tracker.armIfAgent('s1', SHELL);
+    await flush();
+    expect(tracker.identityFor('s1')).toEqual({ slug: 'codex', alive: true });
+    // The scoped launcher script names no agent; the native binary does.
+    expect(watcher.watches.get('agent:s1')?.pid).toBe(201);
+    expect(listener).toHaveBeenCalledWith('s1', { slug: 'codex', alive: true });
+  });
+
+  it('armIfAgent leaves no trace for a non-agent command and sets no backoff', async () => {
+    const watcher = makeWatcher();
+    const listener = vi.fn();
+    let table = [entry(200, SHELL, 'node', 'node /work/app/node_modules/.bin/vite')];
+    const enumerate = vi.fn(async () => table);
+    const tracker = new AgentProcessTracker(watcher, enumerate);
+    tracker.setStateChangeListener(listener);
+
+    tracker.armIfAgent('s1', SHELL);
+    await flush();
+    // A plain dev server is not an agent: no liveness flag (so no later
+    // processExit edge), no watch, no listener call.
+    expect(tracker.statusFor('s1')).toBeUndefined();
+    expect(watcher.watches.size).toBe(0);
+    expect(listener).not.toHaveBeenCalled();
+
+    // The miss must not hold back an agent launched right after it.
+    table = [entry(300, SHELL, 'claude')];
+    tracker.arm('s1', SHELL);
+    await flush();
+    expect(enumerate).toHaveBeenCalledTimes(2);
+    expect(tracker.identityFor('s1')).toEqual({ slug: 'claude', alive: true });
+  });
+
+  it('armIfAgent does not resurrect a dead agent or re-probe a live one', async () => {
+    const watcher = makeWatcher();
+    let table = [entry(200, SHELL, 'codex')];
+    const enumerate = vi.fn(async () => table);
+    const tracker = new AgentProcessTracker(watcher, enumerate);
+
+    tracker.armIfAgent('s1', SHELL);
+    await flush();
+    tracker.armIfAgent('s1', SHELL); // live pick → no-op
+    await flush();
+    expect(enumerate).toHaveBeenCalledTimes(1);
+
+    watcher.watches.get('agent:s1')?.onDead();
+    table = []; // the shell is back at its prompt: nothing under it
+    tracker.armIfAgent('s1', SHELL);
+    await flush();
+    expect(tracker.identityFor('s1')).toEqual({ slug: 'codex', alive: false });
+  });
+
   it('fires the state listener on attribution and on the death edge', async () => {
     const watcher = makeWatcher();
     const listener = vi.fn();

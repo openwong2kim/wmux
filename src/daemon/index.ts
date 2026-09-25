@@ -63,6 +63,7 @@ import { WorkTaskService } from './worktask/WorkTaskService';
 import { isTaskState, type AgentStatus, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
 import { AgentProcessTracker } from './AgentProcessTracker';
+import { CommandStartAgentProbe } from './commandStartAgentProbe';
 import { resolveCanonicalAgentIdentity, detectorSuppressedBy, reportedAgentName, provesLiveAgent, type CanonicalAgentIdentity } from './canonicalAgent';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
@@ -2433,8 +2434,16 @@ function registerRpcHandlers(
       // Only a shell that has proven it emits C can say "at a prompt" — see
       // PromptEventLog.commandRunningIfKnown.
       const commandRunning = managedForPrompt?.promptLog.commandRunningIfKnown();
-      const withPrompt =
+      const withCommand =
         commandRunning === undefined ? withAgent : { ...withAgent, commandRunning };
+      // The agent the pane's LIVE process is — process truth only, the one
+      // tier with a death edge, so the renderer can name a pane whose hook and
+      // banner both stayed silent (a resumed Codex) and a dead agent is never
+      // reported. Unlike agentProcessAlive it does not wait for a binding.
+      const tracked = agentProcessTracker.identityFor(s.id);
+      const withPrompt = tracked?.alive && tracked.slug
+        ? { ...withCommand, liveAgent: tracked.slug }
+        : withCommand;
       if (!surfacedBinding) return withPrompt;
       // Resume-chip edge trigger — process truth for the chip's busy gate,
       // reported ONLY alongside a surfaced binding (the only consumer). Three
@@ -4854,6 +4863,25 @@ function wireEvents(
   agentProcessTracker: AgentProcessTracker,
   sessionDataListeners: Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>,
 ): void {
+  // Names an agent from process truth when neither a hook nor its banner did
+  // (see commandStartAgentProbe.ts). Exec units have no shell and emit no
+  // OSC 133, so only interactive panes reach it.
+  const armIfAgent = (sessionId: string): void => {
+    const managed = sessionManager.getSession(sessionId);
+    if (!managed || managed.meta.exec) return;
+    if (managed.meta.state !== 'attached' && managed.meta.state !== 'detached') return;
+    agentProcessTracker.armIfAgent(sessionId, managed.meta.pid);
+  };
+  const commandStartAgentProbe = new CommandStartAgentProbe({
+    stillRunning: (sessionId) =>
+      sessionManager.getSession(sessionId)?.promptLog.commandRunningIfKnown() === true,
+    probe: armIfAgent,
+  });
+  // A daemon restart starts the tracker empty, and an agent that is already
+  // running emits no fresh command-start. One sweep over every live pane
+  // (a single shared process-table read) names those agents right away.
+  for (const session of sessionManager.listLiveSessions()) armIfAgent(session.id);
+
   // session:died → broadcast DaemonEvent + save state + cleanup.
   //
   // Each side-effect runs inside its own try/catch. A single broken pipe,
@@ -5330,6 +5358,7 @@ function wireEvents(
       data: payload.event,
     };
     pipeServer.broadcast(event);
+    commandStartAgentProbe.onPromptEvent(payload.sessionId, payload.event.type);
   });
 
   // Desktop-notification sequences (OSC 9/777/99) parsed in the daemon

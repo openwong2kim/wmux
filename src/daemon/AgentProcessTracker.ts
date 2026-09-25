@@ -481,7 +481,26 @@ export class AgentProcessTracker {
     this.probe(sessionId, shellPid);
   }
 
-  private probe(sessionId: string, shellPid: number): void {
+  /**
+   * Probe for a NAMED agent with no evidence that one is running — the
+   * banner- and hook-independent trigger (a foreground command outlived its
+   * settle window, or the post-recovery sweep). An agent with no session-start
+   * hook (Codex) is otherwise named only by its banner, and a missed banner
+   * left the pane anonymous until its first turn ended.
+   *
+   * Commits ONLY a pick that resolves to an agent slug. A plain long-running
+   * command (`npm run dev`, `vim`) leaves no state behind, so it can mint
+   * neither an alive flag nor a later `agent.processExit` edge. A miss sets no
+   * backoff either: this trigger fires on guesses, and a guess that found no
+   * agent must not delay the arm() of an agent launched seconds later.
+   */
+  armIfAgent(sessionId: string, shellPid: number): void {
+    this.shellPids.set(sessionId, shellPid);
+    if (this.states.get(sessionId)?.alive) return;
+    this.probe(sessionId, shellPid, true);
+  }
+
+  private probe(sessionId: string, shellPid: number, requireSlug = false): void {
     if (this.inFlight.has(sessionId)) return;
     this.inFlight.add(sessionId);
     const gen = this.generation.get(sessionId) ?? 0;
@@ -490,6 +509,8 @@ export class AgentProcessTracker {
         const entries = await this.snapshot();
         if ((this.generation.get(sessionId) ?? 0) !== gen) return; // disarmed meanwhile
         const pick = selectAgentProcess(entries, shellPid);
+        // armIfAgent: no named agent → leave the session exactly as it was.
+        if (requireSlug && !pick?.slug) return;
         // No attributable descendant (agent already gone, or an exotic launch
         // we can't see) → stay undecided so the renderer keeps its heuristic.
         if (!pick) {
@@ -516,7 +537,7 @@ export class AgentProcessTracker {
         this.emitState(sessionId, { ...(pick.slug ? { slug: pick.slug } : {}), alive: true });
       } catch {
         // Enumeration failed (timeout, spawn error) — undecided, never a lie.
-        this.lastFailedAt.set(sessionId, Date.now());
+        if (!requireSlug) this.lastFailedAt.set(sessionId, Date.now());
       } finally {
         this.inFlight.delete(sessionId);
         // Replay a queued forced rearm DIRECTLY — routing it through rearm()
