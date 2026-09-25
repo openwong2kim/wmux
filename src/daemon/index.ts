@@ -1,6 +1,6 @@
 import { loadChatSkills } from './transcript/chatSkills';
 import { TerminalChatService } from './transcript/TerminalChatService';
-import type { ChatBridge } from './chat/chatBridge';
+import type { ChatBridge, ChatLaunchRequest } from './chat/chatBridge';
 import { ChatSendReceiptStore } from './chat/ChatSendReceiptStore';
 import { createChatBridge, type NativeChatBridge } from './chat/nativeChatBridge';
 import {captureCodexRelayResume, codexRelayResumeCommand} from './web/codexRelayResume';
@@ -3340,7 +3340,7 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.chat.launchTerminal', async (params, ctx) => {
     const id = typeof params.id === 'string' ? params.id : '';
     if (!firstPartyOnly(ctx.clientId, 'launchTerminal') || !id || !['claude', 'codex'].includes(String(params.agent))) return { ok: false, error: 'Unavailable' };
-    const outcome = await bridge.launch({ id, agent: params.agent as 'claude' | 'codex', prompt: params.prompt as string, mode: params.mode as never });
+    const outcome = await bridge.launch({ id, agent: params.agent as 'claude' | 'codex', prompt: params.prompt as string, mode: params.mode as ChatLaunchRequest['mode'] });
     if (outcome.ok) return { ok: true };
     // The desktop wire stays prose; the tags are the phone's.
     const error = outcome.error === 'launch-pending' ? 'Launch already pending'
