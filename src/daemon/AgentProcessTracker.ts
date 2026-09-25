@@ -412,8 +412,8 @@ export function isHelperImage(
  * argv is self-reported (`exec -a`), so `idleShellState` also checks the real
  * executable image. Note the current plugin starts the daemon from a
  * backgrounded process substitution, which usually reparents it away from the
- * shell; this covers installs where it does stay the shell's child. Pure —
- * exported for tests.
+ * shell; this covers installs where it does stay the shell's child. Pure
+ * apart from resolving the fixed package roots — exported for tests.
  */
 export function isVerifiedPassiveHelper(
   entry: ProcessTreeEntry,
