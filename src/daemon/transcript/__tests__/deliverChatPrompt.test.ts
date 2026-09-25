@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { claudeComposerEmpty, deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
+import { claudeComposerEmpty, codexComposerEmpty, deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
 import type { ScheduledPromptAgentState } from '../../sessionPromptDelivery';
 import { generateTextSnapshot } from '../../HeadlessSnapshot';
 
@@ -157,5 +157,26 @@ describe('Claude\'s dimmed next-prompt suggestion', () => {
     draft.deps.readScreen = async () => typedRows;
     expect(await deliverChatPrompt('conversation-1', 'next', draft.deps)).toBe('unconfirmed');
     expect(draft.write).not.toHaveBeenCalled();
+  });
+});
+
+describe('Codex 0.157 composer', () => {
+  // Captured shape: a dim placeholder, the model/cwd/thread footer, then a
+  // `? for shortcuts` hint row that 0.156 did not draw.
+  const screenBytes = (prompt: string) => Buffer.from(
+    `• pong\r\n\r\n› ${prompt}\x1b[0m\r\n\r\n  gpt-5 medium · ~/project · Reply with pong\r\n  ? for shortcuts`);
+  const render = async (bytes: Buffer) => {
+    const outcome = await generateTextSnapshot({ cols: 80, rows: 24, scrollback: 0, initial: bytes, undimmed: true });
+    if (!outcome.ok) throw new Error('snapshot failed');
+    return Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) });
+  };
+  it('is empty with its dim placeholder or a dim suggestion, not with typed text', async () => {
+    expect(codexComposerEmpty(await render(screenBytes('\x1b[2mAsk Codex to do anything\x1b[22m')))).toBe(true);
+    expect(codexComposerEmpty(await render(screenBytes('\x1b[2mExplain this codebase\x1b[22m')))).toBe(true);
+    expect(codexComposerEmpty(await render(screenBytes('half-typed in Terminal')))).toBe(false);
+  });
+  it('still refuses an unknown extra row under the footer', async () => {
+    const rows = await render(Buffer.from(`› \x1b[2mAsk Codex to do anything\x1b[22m\r\n\r\n  gpt-5 medium · ~/project\r\n  Press enter to confirm`));
+    expect(codexComposerEmpty(rows)).toBe(false);
   });
 });
