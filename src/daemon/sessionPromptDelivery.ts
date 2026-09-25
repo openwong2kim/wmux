@@ -92,19 +92,19 @@ export async function deliverScheduledPrompt(
   }
 
   await (deps.delay ?? sleep)(SESSION_PROMPT_SUBMIT_DELAY_MS);
-  // A grant withdrawn inside the submit delay must not be pressed through.
-  // Before the liveness and state checks, which stay the last thing before Enter.
-  try {
-    if (deps.authorized && !(await deps.authorized())) return 'error';
-  } catch {
-    return 'error';
-  }
-
   // #1307 — the agent can exit inside the submit delay, leaving the paste in
   // the shell's input line. Checked before the state re-read, so the input
   // revision check stays the last thing before Enter.
   try {
     if (!(await deps.isAgentProcessAlive())) return 'error';
+  } catch {
+    return 'error';
+  }
+
+  // A grant withdrawn inside the submit delay must not be pressed through.
+  // The last await before Enter: only synchronous state checks follow it.
+  try {
+    if (deps.authorized && !(await deps.authorized())) return 'error';
   } catch {
     return 'error';
   }

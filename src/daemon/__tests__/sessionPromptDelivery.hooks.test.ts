@@ -17,11 +17,11 @@ function harness(authorize: (call: number) => boolean) {
 }
 
 describe('deliverScheduledPrompt re-authorization hooks', () => {
-  it('re-authorizes right before the paste and again before the liveness and state checks that precede Enter', async () => {
+  it('re-authorizes right before the paste and again as the last await before Enter', async () => {
     const h = harness(() => true);
     expect(await h.run()).toBe('sent');
     expect(h.log).toEqual(['state', 'alive', 'auth', 'on:paste', 'write:"\\u001b[200~hi\\u001b[201~"', 'delay',
-      'auth', 'alive', 'state', 'on:submit', 'write:"\\r"']);
+      'alive', 'auth', 'state', 'on:submit', 'write:"\\r"']);
   });
 
   it('writes nothing when refused before the paste', async () => {
