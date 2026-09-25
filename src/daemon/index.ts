@@ -3802,7 +3802,7 @@ function registerRpcHandlers(
     const text = typeof params['text'] === 'string' ? params['text'] : '';
     const native = await terminalChat?.read(id);
     if (native || agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '') === 'opencode') {
-      return { result: await terminalChat?.send(id, agentSessionId, text, typeof params.requestId === 'string' ? params.requestId : '') ?? 'unavailable' };
+      return { result: (await terminalChat?.send(id, agentSessionId, text, typeof params.requestId === 'string' ? params.requestId : ''))?.result ?? 'unavailable' };
     }
     if (!readDaemonAgentState(id).agentName && !projector.status(id).available && chatSessions?.has(id)) return { result: await chatSessions.send(id, agentSessionId, text, typeof params.requestId === 'string' ? params.requestId : '') };
     if (!id || !approvalRegistry) return { result: 'unavailable' };

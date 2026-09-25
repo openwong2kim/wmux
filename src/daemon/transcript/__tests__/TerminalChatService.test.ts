@@ -27,8 +27,8 @@ async function fixture(run: (f: { service: TerminalChatService; setOwner: (value
 describe('native TUI attachment', () => {
   it('reads through the owned process, and sends only to the displayed native session', async () => fixture(async f => {
     expect((await f.service.read('pane'))?.status).toMatchObject({ agentSessionId: 'ses_one', terminal: { agent: 'opencode', capabilities: { send: true } } });
-    expect(await f.service.send('pane', 'ses_other', 'hello', 'request-1234567890')).toBe('session_changed');
-    expect(await f.service.send('pane', 'ses_one', 'hello', 'request-1234567890')).toBe('sent');
+    expect(await f.service.send('pane', 'ses_other', 'hello', 'request-1234567890')).toEqual({ result: 'session_changed' });
+    expect(await f.service.send('pane', 'ses_one', 'hello', 'request-1234567890')).toEqual({ result: 'sent' });
     expect(f.requests.filter((r: any) => r.action === 'send')).toEqual([{ action: 'send', sessionId: 'ses_one', epoch: 'epoch:1', text: 'hello', requestId: 'request-1234567890' }]);
   }));
   it('refuses a descriptor from another process before any network request', async () => fixture(async f => {
