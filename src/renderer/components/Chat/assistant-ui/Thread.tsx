@@ -6,14 +6,17 @@
 import { useState, type ReactNode } from 'react';
 import { ComposerPrimitive, ThreadPrimitive } from '@assistant-ui/react';
 import { useT } from '../../../hooks/useT';
-import { ChatComposerInput, type SkillComposer, type ChatSkillScope } from '../ChatComposerInput';
+import { ChatComposerInput, type ChatComposerKeys, type SkillComposer, type ChatSkillScope } from '../ChatComposerInput';
 import { ChatMessage } from '../ChatMessage';
 
 const MESSAGE_COMPONENTS = { Message: ChatMessage };
 
-export function Thread({ status, empty, welcome, history, notices, working, disabled, placeholder, composerOptions, maxLength, skillScope, composer }: {
+export function Thread({ status, empty, welcome, history, notices, working, disabled, placeholder, composerOptions, maxLength, skillScope, composer,
+  pending, attachments, hint, stop, keys }: {
   status?: ReactNode; empty: boolean; welcome: ReactNode; history: ReactNode; notices: ReactNode;
   working: boolean; disabled: boolean; placeholder?: string; composerOptions?: ReactNode; maxLength?: number; skillScope?: ChatSkillScope; composer: SkillComposer;
+  /** Sent messages the transcript has not recorded yet. */
+  pending?: ReactNode; attachments?: ReactNode; hint?: string; stop?: ReactNode; keys?: ChatComposerKeys;
 }) {
   const t = useT();
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
@@ -25,6 +28,7 @@ export function Thread({ status, empty, welcome, history, notices, working, disa
         {welcome}
         <div className="wmux-chat-messages">
           <ThreadPrimitive.Messages components={MESSAGE_COMPONENTS} />
+          {pending}
           {working && <div className="wmux-chat-working" role="status"><span aria-hidden="true">●</span>{t('chat.working')}</div>}
         </div>
         <ThreadPrimitive.ViewportFooter className="wmux-chat-footer" data-empty={empty}>
@@ -34,8 +38,10 @@ export function Thread({ status, empty, welcome, history, notices, working, disa
           {notices}
           <ComposerPrimitive.Root className="wmux-chat-composer aui-composer-root">
             {composerOptions}
-            <ChatComposerInput composer={composer} onDiscoveryOpenChange={setDiscoveryOpen} scope={skillScope} disabled={disabled} placeholder={placeholder ?? t('chat.placeholder')} maxLength={maxLength ?? 16_000} />
-            <div className="wmux-chat-composer-footer"><span>{t(skillScope && ['claude', 'codex'].includes(skillScope.agent) ? 'chat.inputSkillsHint' : 'chat.inputHint')}</span>
+            {attachments}
+            <ChatComposerInput composer={composer} onDiscoveryOpenChange={setDiscoveryOpen} scope={skillScope} disabled={disabled} placeholder={placeholder ?? t('chat.placeholder')} maxLength={maxLength ?? 16_000} keys={keys} />
+            <div className="wmux-chat-composer-footer"><span>{hint ?? t(skillScope && ['claude', 'codex'].includes(skillScope.agent) ? 'chat.inputSkillsHint' : 'chat.inputHint')}</span>
+              {stop}
               <ComposerPrimitive.Send disabled={discoveryOpen} className="wmux-chat-send wmux-chat-icon-button" aria-label={t('chat.send')} title={t('chat.send')}>
                 <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6" /></svg>
               </ComposerPrimitive.Send>

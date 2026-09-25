@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback, lazy, Suspense } from 'react';
 import { isBrowserBackend } from '../../../shared/browserBackend';
+import { deliverChatDrop } from '../Chat/chatAttachments';
 import type { AgentSlug } from '../../../shared/events';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import { useStore } from '../../stores';
@@ -965,6 +966,10 @@ export default function AppLayout() {
       const activeSurface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
       // browser/editor/diff는 PTY가 없어 경로 붙여넣기 대상이 아님(J2 — diff 추가).
       if (!activeSurface || activeSurface.surfaceType === 'browser' || activeSurface.surfaceType === 'editor' || activeSurface.surfaceType === 'diff' || activeSurface.surfaceType === 'remote-terminal') return;
+
+      // Chat view shows the drop as a composer chip; typing the path into the
+      // hidden terminal would attach it where the user cannot see it.
+      if (activeSurface.viewMode === 'chat' && state.chatViewEnabled && activeSurface.ptyId && deliverChatDrop(activeSurface.ptyId, paths)) return;
 
       const text = paths.map((p) => (p.includes(' ') ? `"${p}"` : p)).join(' ');
       // Route the joined path string through the paste chunker. Single-file

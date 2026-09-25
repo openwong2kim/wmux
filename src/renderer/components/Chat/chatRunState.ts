@@ -1,7 +1,7 @@
 import type { AgentStatus } from '../../../shared/types';
 import type { TurnEvent } from '../../../shared/transcript/turnEvents';
 
-export type ChatRunState = 'connecting' | 'disconnected' | 'unavailable' | 'ended' | 'sending' | 'blocked' | 'working' | 'waiting' | 'complete' | 'ready' | 'unconfirmed';
+export type ChatRunState = 'connecting' | 'disconnected' | 'unavailable' | 'ended' | 'sending' | 'blocked' | 'working' | 'waiting' | 'complete' | 'stopped' | 'ready' | 'unconfirmed';
 
 /** Silence and an assistant text row are not proof that a turn completed. */
 export function chatRunState(args: {
@@ -21,7 +21,9 @@ export function chatRunState(args: {
   // once no submitted or hook-signaled turn is open — both were ruled out above.
   const last = args.events.at(-1);
   if (last?.kind === 'meta' && last.subtype === 'turn_complete') return 'complete';
-  if (last?.kind === 'meta' && last.subtype === 'turn_aborted') return 'unconfirmed';
+  // The agent recorded the interrupt itself. Whether its composer got the
+  // prompt back is the daemon's screen check at the next send.
+  if (last?.kind === 'meta' && last.subtype === 'turn_aborted') return 'stopped';
   if (last?.kind === 'assistant_text' && last.turnComplete) return 'complete';
   if (args.status === 'running') return 'working';
   if (!args.events.length) return 'ready';

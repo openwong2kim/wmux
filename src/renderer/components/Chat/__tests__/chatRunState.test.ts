@@ -32,4 +32,9 @@ describe('truthful chat progress', () => {
     expect(chatRunState({ ...base, sent: true, status: 'complete' })).toBe('waiting');
     expect(chatRunState({ ...base, agentAlive: false })).toBe('ended');
   });
+  it('reports a recorded interrupt as stopped, and a newer prompt as running again', () => {
+    const aborted: TurnEvent[] = [...events, { id: 'x', kind: 'meta', subtype: 'turn_aborted', label: 'Interrupted' }];
+    expect(chatRunState({ ...base, events: aborted, status: 'running' })).toBe('stopped');
+    expect(chatRunState({ ...base, events: [...aborted, { id: 'q', kind: 'user_text', text: 'queued' }], status: 'running' })).toBe('working');
+  });
 });
