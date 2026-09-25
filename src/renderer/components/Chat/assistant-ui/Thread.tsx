@@ -19,7 +19,7 @@ export function Thread({ status, empty, welcome, history, notices, working, disa
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
   return <ThreadPrimitive.Root className="wmux-chat aui-thread-root" data-chat-view>
     {status}
-    <ThreadPrimitive.Viewport className="wmux-chat-viewport" turnAnchor="top" autoScroll>
+    <ThreadPrimitive.Viewport className="wmux-chat-viewport" autoScroll>
       <div className="wmux-chat-column" data-empty={empty}>
         {history}
         {welcome}

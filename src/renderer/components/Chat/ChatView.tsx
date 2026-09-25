@@ -97,7 +97,10 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
       throw new MessageNotSentError(t('chat.send.error'));
     } finally { inFlight.current = false; setSending(false); }
   }, [canLaunch, launch, launchAgent, launchMode, data.loading, data.retry, readOnly, busy, blocked, uncertain, data.status.agentAlive, data.error, data.status.agentSessionId, data.status.available, latestUser, ptyId, t, managed]);
-  const runtime = useExternalStoreRuntime({ messages, isRunning: busy || sending, isLoading: data.loading,
+  // assistant-ui only learns about our own send. A turn the agent is running is
+  // shown by the working row; telling the runtime would inject an empty
+  // optimistic reply row and make Enter insert a newline instead of sending.
+  const runtime = useExternalStoreRuntime({ messages, isRunning: sending, isLoading: data.loading,
     isSendDisabled: canLaunch ? sending || data.loading : launched || readOnly || blocked || busy || uncertain || data.error || !data.status.available || data.status.agentAlive === false || sending, onNew });
   useEffect(() => {
     const session = data.status.agentSessionId ?? 'new';

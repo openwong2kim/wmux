@@ -4,11 +4,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ChatView from '../ChatView';
 
-const fixture = vi.hoisted(() => ({ reason: 'ok', session: 'draft-a', available: true, events: [] as unknown[], hasMore: false, loadEarlier: (() => undefined) as () => void }));
+const fixture = vi.hoisted(() => ({ reason: 'ok', session: 'draft-a', available: true, events: [] as unknown[], hasMore: false, loadEarlier: (() => undefined) as () => void, extra: {} as Record<string, unknown> }));
 vi.mock('../../../stores', () => ({ useStore: (select: (s: unknown) => unknown) => select({ surfaceAgentStatus: {} }) }));
 vi.mock('../../../hooks/useT', () => { const t = (key: string) => key; return { useT: () => t }; });
 vi.mock('../useTranscript', () => ({ useTranscript: () => ({
-  events: fixture.events, status: { available: fixture.available, reason: fixture.reason, agentSessionId: fixture.session },
+  events: fixture.events, status: { available: fixture.available, reason: fixture.reason, agentSessionId: fixture.session, ...fixture.extra },
   loading: false, loadingEarlier: false, hasMore: fixture.hasMore, blocked: false, error: false,
   retry: vi.fn(), loadEarlier: fixture.loadEarlier,
 }) }));
@@ -19,7 +19,7 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('ResizeObserver', class { observe = vi.fn(); unobserve = vi.fn(); disconnect = vi.fn(); });
   Element.prototype.scrollTo = vi.fn();
-  fixture.reason = 'ok'; fixture.session = 'draft-a'; fixture.available = true; fixture.events = []; fixture.hasMore = false; fixture.loadEarlier = vi.fn();
+  fixture.reason = 'ok'; fixture.session = 'draft-a'; fixture.available = true; fixture.events = []; fixture.hasMore = false; fixture.loadEarlier = vi.fn(); fixture.extra = {};
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -203,5 +203,14 @@ describe('assistant-ui composer connected to session drafts', () => {
     fixture.events = [{ id: 'u', kind: 'user_text', text: 'hi' }, { id: 'a', kind: 'assistant_text', text: 'done', turnComplete: true }];
     await render();
     expect(fixture.loadEarlier).not.toHaveBeenCalled();
+  });
+  it('shows a running turn as one working row, never an empty reply block', async () => {
+    fixture.session = 'running-turn';
+    fixture.extra = { agentAlive: true, agentStatus: 'running' };
+    fixture.events = [{ id: 'u', kind: 'user_text', text: 'long request' }];
+    await render();
+    expect(host.querySelectorAll('.wmux-chat-working')).toHaveLength(1);
+    expect(host.querySelector('.wmux-chat-assistant')).toBeNull();
+    expect(host.querySelector('.wmux-chat-user-text')!.textContent).toBe('long request');
   });
 });

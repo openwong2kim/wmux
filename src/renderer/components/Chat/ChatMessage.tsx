@@ -56,6 +56,8 @@ export function ChatMessage() {
   const role = useAuiState((s) => s.message.role);
   // assistant-ui may briefly expose its optimistic send before a transcript
   // event exists (including a send the daemon later refuses).
+  const empty = useAuiState((s) => s.message.content.length === 0);
+  if (!row && empty) return null;
   if (!row) return <MessagePrimitive.Root className={`wmux-chat-message ${role === 'user' ? 'wmux-chat-user' : 'wmux-chat-assistant'}`}>
     <div className={role === 'user' ? 'wmux-chat-user-text' : 'wmux-chat-prose'}><MessagePrimitive.Parts /></div>
   </MessagePrimitive.Root>;
