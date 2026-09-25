@@ -1,4 +1,4 @@
-import { CHAT_LAUNCH_RETENTION_MS, type ChatEffect, type ChatOwner } from '../chat/chatBridge';
+import { CHAT_ID_CLOCK_SKEW_MS, CHAT_LAUNCH_RETENTION_MS, chatIdTime, type ChatEffect, type ChatOwner } from '../chat/chatBridge';
 
 /**
  * Memory-only launch receipts for `POST /api/sessions/:id/chat/launch`
@@ -19,7 +19,8 @@ export type LaunchReceiptState = 'pending' | 'submitted' | 'refused' | 'uncertai
 interface Entry {
   paneId: string;
   fingerprint: string;
-  at: number;
+  /** From the id's own time prefix: kept while the route still accepts the id. */
+  expiresAt: number;
   state: Exclude<LaunchReceiptState, 'unknown'>;
   /** The final HTTP answer, replayed verbatim (plus `replayed:true`). */
   final?: { status: number; body: Record<string, unknown> };
@@ -57,8 +58,10 @@ export class ChatLaunchReceiptStore {
       if (existing.state === 'pending' || !existing.final) return { kind: 'pending' };
       return { kind: 'replay', status: existing.final.status, body: existing.final.body };
     }
-    if (this.entries.size >= this.cap && !this.evictOneFinal()) return { kind: 'full' };
-    this.entries.set(key, { paneId, fingerprint, at: now, state: 'pending' });
+    // Never evict a receipt inside its window: a retry of that id would find
+    // nothing and type the launcher a second time.
+    if (this.entries.size >= this.cap) return { kind: 'full' };
+    this.entries.set(key, { paneId, fingerprint, expiresAt: chatIdTime(clientLaunchId) + this.ttlMs + CHAT_ID_CLOCK_SKEW_MS, state: 'pending' });
     return { kind: 'new' };
   }
 
@@ -79,18 +82,8 @@ export class ChatLaunchReceiptStore {
     // A pending entry is never aged out: dropping it while its launch is still
     // running would let a retry with the same id dispatch a second time.
     for (const [key, entry] of this.entries) {
-      if (entry.state !== 'pending' && now - entry.at >= this.ttlMs) this.entries.delete(key);
+      if (entry.state !== 'pending' && now >= entry.expiresAt) this.entries.delete(key);
     }
-  }
-
-  private evictOneFinal(): boolean {
-    for (const [key, entry] of this.entries) {
-      if (entry.state !== 'pending') {
-        this.entries.delete(key);
-        return true;
-      }
-    }
-    return false;
   }
 }
 
