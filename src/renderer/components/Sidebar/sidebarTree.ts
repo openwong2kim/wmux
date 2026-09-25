@@ -17,6 +17,7 @@
 import type { AgentStatus } from '../../../shared/types';
 import type { TaskLink } from '../../utils/fanoutProvenance';
 import type { WorkTask } from '../../../shared/workTask';
+import type { TranslationKey } from '../../i18n/locales/en';
 import { ORPHAN_GROUP_KEY } from '../../utils/sidebarLayout';
 
 export interface SidebarTreeNode {
@@ -146,6 +147,16 @@ export function paneRowsFinished(rows: readonly { status: AgentStatus }[]): bool
 }
 
 export type CloseSkipReason = 'gone' | 'no-record' | 'detached' | 'moved' | 'not-finished';
+
+/** Why a task was kept instead of closed — shared by the sidebar's
+ *  close-finished action and Fleet's review rows. */
+export const CLOSE_SKIP_KEY: Record<CloseSkipReason, TranslationKey> = {
+  gone: 'sidebar.tasks.skipGone',
+  'no-record': 'sidebar.tasks.noRecord',
+  detached: 'sidebar.tasks.skipDetached',
+  moved: 'sidebar.tasks.skipMoved',
+  'not-finished': 'sidebar.tasks.skipNotFinished',
+};
 
 /**
  * Re-check one task right before it is closed, against the CURRENT store:

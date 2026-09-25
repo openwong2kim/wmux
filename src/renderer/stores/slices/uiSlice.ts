@@ -204,6 +204,10 @@ export interface UISlice {
   // collapsed to one summary row. Session-only: not in buildSessionData.
   fleetIdleExpanded: boolean;
   setFleetIdleExpanded: (expanded: boolean) => void;
+  // One-shot request from the sidebar's `N to review` link: Fleet consumes it
+  // (focuses the first Ready to review row) and clears it. Session-only.
+  fleetFocusReview: boolean;
+  setFleetFocusReview: (focus: boolean) => void;
   // Fleet's "changed since you last looked" baseline, written when the overlay
   // closes. Session-only: not in buildSessionData; null until the first close.
   fleetLastSeen: FleetSeenSnapshot | null;
@@ -1055,6 +1059,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setFleetIdleExpanded: (expanded) => set((state) => {
     state.fleetIdleExpanded = expanded;
+  }),
+
+  fleetFocusReview: false,
+
+  setFleetFocusReview: (focus) => set((state) => {
+    state.fleetFocusReview = focus;
   }),
 
   fleetLastSeen: null,

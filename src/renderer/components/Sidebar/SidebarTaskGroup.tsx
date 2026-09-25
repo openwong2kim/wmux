@@ -20,9 +20,9 @@ import { HIT_TARGET_24 } from '../hitArea';
 import Popover from '../ui/Popover';
 import { placePopover } from '../AgentToolbar/placePopover';
 import { CloseWorkspaceConfirm, type CloseConfirmAnchor } from './WorkspaceItem';
-import { isTaskGroupExpanded, paneRowsFinished, revalidateTaskForClose, taskRollup, withTimeout, type CloseSkipReason } from './sidebarTree';
+import { CLOSE_SKIP_KEY as SKIP_KEY, isTaskGroupExpanded, paneRowsFinished, revalidateTaskForClose, taskRollup, withTimeout } from './sidebarTree';
 import { selectWorkspaceAgentRoster } from '../../stores/selectors/workspaceAgentRoster';
-import type { TranslationKey } from '../../i18n/locales/en';
+import { isTaskReadyForReview } from '../../stores/selectors/reviewQueue';
 import { displayWorkspaceName } from '../../utils/fanoutProvenance';
 
 interface SidebarTaskGroupProps {
@@ -45,14 +45,6 @@ const MENU_WIDTH = 220;
 /** A close that has not answered in this long is reported stuck; the menu comes back. */
 export const TASK_CLOSE_TIMEOUT_MS = 90_000;
 
-const SKIP_KEY: Record<CloseSkipReason, TranslationKey> = {
-  gone: 'sidebar.tasks.skipGone',
-  'no-record': 'sidebar.tasks.noRecord',
-  detached: 'sidebar.tasks.skipDetached',
-  moved: 'sidebar.tasks.skipMoved',
-  'not-finished': 'sidebar.tasks.skipNotFinished',
-};
-
 function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, ownerName, renderTask, onCloseWorkspace }: SidebarTaskGroupProps) {
   const t = useT();
   const listId = useId();
@@ -60,11 +52,14 @@ function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, ownerName, re
   // #1481 review — finished is decided per agent PANE, never from the
   // workspace roll-up (where `complete` outranks `running`).
   const finishedFlags = useStore(useShallow((s) => taskIds.map((id) => paneRowsFinished(selectWorkspaceAgentRoster(s, id).rows))));
+  // Ready to review — the same predicate as Fleet's section (#1508 parity).
+  const readyFlags = useStore(useShallow((s) => taskIds.map((id) => isTaskReadyForReview(s, id))));
   const remembered = useStore((s) => s.sidebarTaskGroupExpanded[groupKey]);
   const setExpanded = useStore((s) => s.setSidebarTaskGroupExpanded);
 
   const statusById = new Map(taskIds.map((id, i) => [id, statuses[i]]));
-  const rollup = taskRollup(taskIds, (id) => statusById.get(id) ?? 'idle');
+  const readyById = new Map(taskIds.map((id, i) => [id, readyFlags[i]]));
+  const rollup = taskRollup(taskIds, (id) => statusById.get(id) ?? 'idle', (id) => readyById.get(id) ?? false);
   const anyNeedsYou = (rollup?.needYou ?? 0) > 0;
   const childActive = useStore((s) => taskIds.includes(s.activeWorkspaceId ?? ''));
   const expanded = isTaskGroupExpanded({ remembered, ownerActive, anyNeedsYou, childActive });
@@ -160,6 +155,14 @@ function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, ownerName, re
   if (!rollup) return null;
 
   const toggle = () => setExpanded(groupKey, !expanded);
+  const toReview = rollup.toReview;
+  // Opens Fleet on its Ready to review section (a navigation link: steel on hover).
+  const openReview = () => {
+    const st = useStore.getState();
+    st.setFleetFocusReview(true);
+    st.setFleetActiveTab('fleet');
+    st.setFleetViewVisible(true);
+  };
   const rollupText = rollup.tasks === 1 ? t('sidebar.tasks.countOne') : t('sidebar.tasks.count', { count: rollup.tasks });
   const toggleLabel = [label, rollupText, anyNeedsYou ? t('strip.needsYou', { count: rollup.needYou }) : undefined,
     expanded ? t('sidebar.tasks.collapse') : t('sidebar.tasks.expand')].filter(Boolean).join(', ');
@@ -171,7 +174,7 @@ function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, ownerName, re
       <div className="mx-2 flex h-6 items-center gap-1 pl-[22px] pr-1 text-[11px] text-[var(--text-muted)]" data-task-rollup>
         <button
           type="button"
-          className={`flex min-w-0 flex-1 items-center gap-1.5 self-stretch rounded px-1 text-left hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+          className={`flex min-w-0 ${toReview > 0 ? 'flex-initial' : 'flex-1'} items-center gap-1.5 self-stretch rounded px-1 text-left hover:text-[var(--text-sub)] ${FOCUS_RING}`}
           aria-expanded={expanded}
           aria-controls={expanded ? listId : undefined}
           aria-label={toggleLabel}
@@ -197,6 +200,22 @@ function SidebarTaskGroup({ groupKey, taskIds, ownerActive, label, ownerName, re
             )}
           </span>
         </button>
+        {toReview > 0 && (
+          <>
+            <span className="flex-none" aria-hidden="true">·</span>
+            <button
+              type="button"
+              className={`flex-none self-stretch truncate rounded px-1 hover:text-[var(--accent-blue)] ${FOCUS_RING}`}
+              aria-label={t('sidebar.tasks.toReviewLabel', { count: toReview })}
+              title={t('sidebar.tasks.toReviewLabel', { count: toReview })}
+              onClick={openReview}
+              data-task-to-review={toReview}
+            >
+              {t('sidebar.tasks.toReview', { count: toReview })}
+            </button>
+            <span className="flex-1" aria-hidden="true" />
+          </>
+        )}
         <button
           type="button"
           className={`${HIT_TARGET_24} flex-none rounded text-[var(--text-muted)] hover:text-[var(--text-main)] ${FOCUS_RING}`}

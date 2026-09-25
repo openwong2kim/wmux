@@ -11,6 +11,7 @@ import {
   type FleetRow,
 } from '../../stores/selectors/fleet';
 import { selectApprovalInbox } from '../../stores/selectors/approvalInbox';
+import { selectReviewQueue, selectReviewQueueIds, type ReviewQueueEntry } from '../../stores/selectors/reviewQueue';
 import { selectRemoteInbox } from '../../stores/selectors/remoteInbox';
 import { resolveInboxItem } from '../../utils/resolveInboxItem';
 import {
@@ -22,6 +23,8 @@ import { fleetChangedSinceSeen, type FleetSeenEntry, type FleetTab } from '../..
 import { tailForPty } from '../../utils/terminalTail';
 import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
+import FleetReviewRow, { reviewPrVerb, reviewRowKey, type ReviewEditorKind } from './FleetReviewRow';
+import { openTaskDiff } from '../../utils/openTaskDiff';
 import { FleetRowMenu, FleetRowEditor, fleetRowVerbsFromState, toggleFleetStash, type FleetEditorKind } from './FleetRowActions';
 import ApprovalInboxList from './ApprovalInboxList';
 import RecentAutoRuns from './RecentAutoRuns';
@@ -63,6 +66,11 @@ export default function FleetView() {
   const hookRunningByPtyId = useStore(useShallow(selectHookRunningByPtyId));
   const unverifiableMinutes = useStore(useShallow(selectUnverifiablePaneMinutes));
   const missions = useStore((s) => s.missionByPaneGroup);
+  // Ready to review: finished fan-out tasks whose record is still open. The
+  // id list is the shared selector the sidebar rollup counts with (#1508).
+  const reviewIds = useStore(useShallow(selectReviewQueueIds));
+  const setFleetFocusReview = useStore((s) => s.setFleetFocusReview);
+  const fleetFocusReview = useStore((s) => s.fleetFocusReview);
   const surfaceLastMessage = useStore((s) => s.surfaceLastMessage);
   const fleetIdleExpanded = useStore((s) => s.fleetIdleExpanded);
   // Baseline from the previous close; only written on unmount, so it stays
@@ -97,6 +105,8 @@ export default function FleetView() {
   const [previewOpen, setPreviewOpen] = useState(false);
   // The one inline row editor that is open (message / label / close confirm).
   const [editor, setEditor] = useState<{ paneId: string; kind: FleetEditorKind } | null>(null);
+  // The inline confirm open under a review row (close task / create PR).
+  const [reviewEditor, setReviewEditor] = useState<{ workspaceId: string; kind: ReviewEditorKind } | null>(null);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), IDLE_TICK_MS);
@@ -151,6 +161,19 @@ export default function FleetView() {
     ].some((value) => value?.toLocaleLowerCase().includes(term)));
     return { needsYou: groups.needsYou.filter(keep), running: groups.running.filter(keep), idle: groups.idle.filter(keep) };
   }, [groups, filter, query, missions]);
+  // Rows re-derive when a task's record, workspace (name, PR) or hook stamp
+  // changes; membership itself comes from reviewIds.
+  const reviewQueue = useMemo(
+    () => (reviewIds.length === 0 ? [] : selectReviewQueue(useStore.getState())),
+    [reviewIds, workspaces, missions, surfaceActivityAt],
+  );
+  const visibleReview = useMemo(() => {
+    if (filter !== 'all' && filter !== 'complete') return [];
+    const term = query.trim().toLocaleLowerCase();
+    if (!term) return reviewQueue;
+    return reviewQueue.filter((entry) => [entry.title, entry.ownerName, entry.branch]
+      .some((value) => value?.toLocaleLowerCase().includes(term)));
+  }, [reviewQueue, filter, query]);
   // Idle stays collapsed to one summary row unless expanded, or unless the
   // user is searching / filtering to idle (a hidden match would read as none).
   const idleForced = filter === 'idle' || query.trim() !== '';
@@ -163,14 +186,17 @@ export default function FleetView() {
     () => [...visibleGroups.needsYou, ...visibleGroups.running, ...(idleShown ? visibleGroups.idle : [])],
     [visibleGroups, idleShown],
   );
-  // Roving order = DOM order: needs-you rows, running rows, the idle toggle,
-  // then the idle rows when expanded. Keys are pane ids plus one sentinel.
+  // Roving order = DOM order: needs-you rows, ready-to-review rows, running
+  // rows, the idle toggle, then the idle rows when expanded. Keys are pane ids,
+  // review keys and one sentinel.
   const rovingKeys = useMemo(() => [
-    ...[...visibleGroups.needsYou, ...visibleGroups.running].map((row) => row.pane.paneId),
+    ...visibleGroups.needsYou.map((row) => row.pane.paneId),
+    ...visibleReview.map((entry) => reviewRowKey(entry.workspaceId)),
+    ...visibleGroups.running.map((row) => row.pane.paneId),
     ...(idleToggleShown ? [IDLE_TOGGLE_KEY] : []),
     ...(idleShown ? visibleGroups.idle.map((row) => row.pane.paneId) : []),
-  ], [visibleGroups, idleToggleShown, idleShown]);
-  const matchCount = visibleGroups.needsYou.length + visibleGroups.running.length + visibleGroups.idle.length;
+  ], [visibleGroups, visibleReview, idleToggleShown, idleShown]);
+  const matchCount = visibleGroups.needsYou.length + visibleReview.length + visibleGroups.running.length + visibleGroups.idle.length;
   const idleOldestMs = visibleGroups.idle.reduce<number | undefined>(
     (max, row) => (row.idleForMs !== undefined && (max === undefined || row.idleForMs > max) ? row.idleForMs : max),
     undefined,
@@ -183,6 +209,7 @@ export default function FleetView() {
     setFocusedPaneId(rovingKeys[index] ?? null);
   }, [focusedIdx, rovingKeys]);
   const selectedPane = visibleRows.find((row) => row.pane.paneId === focusedKey)?.pane;
+  const focusedReview = visibleReview.find((entry) => reviewRowKey(entry.workspaceId) === focusedKey);
   const previewPtyId = previewOpen && tab === 'fleet' && selectedPane?.surfaceType === 'terminal'
     ? selectedPane.ptyId : '';
   const allRows = [...groups.needsYou, ...groups.running, ...groups.idle];
@@ -348,7 +375,7 @@ export default function FleetView() {
   // 않는다. 마운트 효과와 로빙 효과가 공유하는 단일 포커스 경로.
   const focusActiveItem = useCallback(() => {
     if (tab === 'fleet' && rovingKeys.length > 0) {
-      const cards = listRef.current?.querySelectorAll<HTMLElement>('[data-fleet-card], [data-fleet-idle-toggle]');
+      const cards = listRef.current?.querySelectorAll<HTMLElement>('[data-fleet-card], [data-fleet-review-row], [data-fleet-idle-toggle]');
       const el = cards && cards[focusedIdx];
       if (el) { el.focus(); return true; }
     } else if (tab === 'approvals' && inbox.length > 0) {
@@ -372,6 +399,7 @@ export default function FleetView() {
   // may be gone after a close; then the next row takes the slot).
   const closeEditor = useCallback(() => {
     setEditor(null);
+    setReviewEditor(null);
     requestAnimationFrame(() => { focusActiveItemRef.current(); });
   }, []);
   // An editor whose pane left the visible rows (closed elsewhere, filtered
@@ -379,6 +407,41 @@ export default function FleetView() {
   useEffect(() => {
     if (editor && !visibleRows.some((row) => row.pane.paneId === editor.paneId)) setEditor(null);
   }, [editor, visibleRows]);
+  // Same for a review row that left the queue (an agent resumed, the task
+  // closed) — except while its own action is running, which closes it.
+  useEffect(() => {
+    if (reviewEditor && !visibleReview.some((entry) => entry.workspaceId === reviewEditor.workspaceId)) setReviewEditor(null);
+  }, [reviewEditor, visibleReview]);
+
+  const openReviewDiff = useCallback((entry: ReviewQueueEntry) => {
+    openTaskDiff(entry.taskId, entry.workspaceId, entry.title, entry.ownerWorkspaceId);
+    setVisible(false);
+  }, [setVisible]);
+  const jumpToReviewTask = useCallback((entry: ReviewQueueEntry) => {
+    focusNotificationTarget(() => useStore.getState(), { workspaceId: entry.workspaceId });
+    setVisible(false);
+  }, [setVisible]);
+  const openReviewEditor = useCallback((entry: ReviewQueueEntry, kind: ReviewEditorKind) => {
+    setFocusedPaneId(reviewRowKey(entry.workspaceId));
+    setEditor(null);
+    setReviewEditor({ workspaceId: entry.workspaceId, kind });
+  }, []);
+
+  // The sidebar's `N to review` link opens Fleet on this section: clear
+  // anything that could hide it and select its first row, once.
+  useEffect(() => {
+    if (!fleetFocusReview) return;
+    setFleetFocusReview(false);
+    const first = reviewQueue[0];
+    if (!first) return;
+    setQuery('');
+    setFilter('all');
+    setFocusedPaneId(reviewRowKey(first.workspaceId));
+    requestAnimationFrame(() => {
+      listRef.current?.querySelector('[data-fleet-section="review"]')?.scrollIntoView({ block: 'nearest' });
+      focusActiveItemRef.current();
+    });
+  }, [fleetFocusReview, reviewQueue, setFleetFocusReview]);
 
   // The ⋮ menu that is open, if any (its close function), so Escape closes the
   // menu rather than the overlay.
@@ -454,7 +517,7 @@ export default function FleetView() {
         e.stopPropagation();
         // Innermost first: an open ⋮ menu, then an open row editor, then Fleet.
         if (closeRowMenuRef.current) closeRowMenuRef.current();
-        else if (editor) closeEditor();
+        else if (editor || reviewEditor) closeEditor();
         else setVisible(false);
         return;
       }
@@ -509,6 +572,21 @@ export default function FleetView() {
           e.stopPropagation();
           const it = remoteInbox[remoteIdx];
           if (it) dismissRemoteItem(it.recordId);
+          return;
+        }
+      }
+
+      // Review row verbs: d diff, p PR (open or create), j jump, Backspace
+      // close. Enter/Space stay native (the row's click opens the diff).
+      if (tab === 'fleet' && onOptionRow && focusedReview && !e.ctrlKey && !e.metaKey && !e.altKey && !isEditableTarget(e.target)) {
+        const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+        if (key === 'd' || key === 'p' || key === 'j' || key === 'Backspace') {
+          e.preventDefault();
+          e.stopPropagation();
+          if (key === 'd') openReviewDiff(focusedReview);
+          else if (key === 'p') reviewPrVerb(focusedReview, openReviewEditor);
+          else if (key === 'j') jumpToReviewTask(focusedReview);
+          else openReviewEditor(focusedReview, 'close');
           return;
         }
       }
@@ -568,7 +646,8 @@ export default function FleetView() {
         }
       }
     }, [tab, rovingKeys.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible, setFocusedIdx,
-      editor, closeEditor, visibleRows, focusedKey, verbsFor]);
+      editor, reviewEditor, closeEditor, visibleRows, focusedKey, verbsFor,
+      focusedReview, openReviewDiff, openReviewEditor, jumpToReviewTask]);
 
   const idleSummary = idleOldestMs !== undefined && idleOldestMs >= IDLE_SHOW_AFTER_MS
     ? t('fleet.section.idleOldest', { count: visibleGroups.idle.length, age: formatIdle(idleOldestMs) })
@@ -699,19 +778,39 @@ export default function FleetView() {
             </div>
           ) : (
             <>
-              {visibleGroups.needsYou.length === 0 && visibleGroups.running.length === 0 && (
+              {visibleGroups.needsYou.length === 0 && visibleReview.length === 0 && visibleGroups.running.length === 0 && (
                 <p className="wmux-fleet-quiet" aria-hidden="true" data-fleet-all-quiet>{t('fleet.allQuiet')}</p>
               )}
               <div ref={listRef} role="listbox" aria-label={t('fleet.title')} className="wmux-fleet-list">
                 {/* One flat keyed sibling array (headers interleaved), so a row
                     that changes section keeps its DOM node — and its focus. */}
                 {[
-                  ...([
-                    ['needsYou', visibleGroups.needsYou, t('fleet.section.needsYou')],
-                    ['running', visibleGroups.running, t('fleet.section.running')],
-                  ] as const).flatMap(([id, rows, label]) => rows.length === 0 ? [] : [
-                    <div key={`section:${id}`} role="presentation" className="wmux-fleet-section-header" data-fleet-section={id}>{label}</div>,
-                    ...rows.map(renderRow),
+                  ...(visibleGroups.needsYou.length === 0 ? [] : [
+                    <div key="section:needsYou" role="presentation" className="wmux-fleet-section-header" data-fleet-section="needsYou">{t('fleet.section.needsYou')}</div>,
+                    ...visibleGroups.needsYou.map(renderRow),
+                  ]),
+                  // Ready to review: task-level rows, drawn only when non-empty.
+                  ...(visibleReview.length === 0 ? [] : [
+                    <div key="section:review" role="presentation" className="wmux-fleet-section-header" data-fleet-section="review">{t('fleet.section.review')}</div>,
+                    ...visibleReview.map((entry) => (
+                      <FleetReviewRow
+                        key={reviewRowKey(entry.workspaceId)}
+                        entry={entry}
+                        now={now}
+                        focused={reviewRowKey(entry.workspaceId) === focusedKey}
+                        onFocus={() => setFocusedPaneId(reviewRowKey(entry.workspaceId))}
+                        onOpenDiff={openReviewDiff}
+                        onJump={jumpToReviewTask}
+                        onEdit={openReviewEditor}
+                        onMenuOpenChange={onRowMenuOpenChange}
+                        editor={reviewEditor?.workspaceId === entry.workspaceId ? reviewEditor.kind : undefined}
+                        onEditorDone={closeEditor}
+                      />
+                    )),
+                  ]),
+                  ...(visibleGroups.running.length === 0 ? [] : [
+                    <div key="section:running" role="presentation" className="wmux-fleet-section-header" data-fleet-section="running">{t('fleet.section.running')}</div>,
+                    ...visibleGroups.running.map(renderRow),
                   ]),
                   ...(visibleGroups.idle.length === 0 ? [] : [idleToggleShown ? (
                     <button
