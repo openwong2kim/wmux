@@ -17,7 +17,7 @@ const HANDLER = SRC.slice(start, SRC.indexOf('// Right-click behavior', start));
 describe('mentionAgent pane gate', () => {
   it('bubbles only when the focused pane is a mention source', () => {
     expect(HANDLER).toMatch(
-      /\} else if \(shortcut === 'mentionAgent'\) \{[\s\S]{0,300}?if \(focusedMentionSource\(useStore\.getState\(\)\)\) return false;\n {6}\} else if \(shortcut !== null\) \{/,
+      /\} else if \(shortcut === 'mentionAgent'\) \{[\s\S]{0,300}?if \(focusedMentionSource\(useStore\.getState\(\)\)\) return false;\r?\n {6}\} else if \(shortcut !== null\) \{/,
     );
   });
 
