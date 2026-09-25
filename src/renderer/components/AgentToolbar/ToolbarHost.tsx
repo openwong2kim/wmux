@@ -41,7 +41,9 @@ export default function ToolbarHost() {
  * pointermove in the app.
  */
 function RevealHost() {
-  const pinned = useStore((s) => s.agentToolbarPinned);
+  // A tour step pointing at the bar holds it up like a pin, without touching
+  // the persisted pin preference.
+  const pinned = useStore((s) => s.agentToolbarPinned || s.agentToolbarTourHold);
   const [hold, setHold] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
   // Keep-alive band = the bar plus a small margin, derived from the bar's own

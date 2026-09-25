@@ -10,6 +10,19 @@ export interface OnboardingStep {
   /** Short looping clip (assets/media) that shows exactly what the step's
    *  copy describes. Steps without such a clip show text only. */
   media?: MediaClipId;
+  /** Spotlighted instead when `targetSelector` matches nothing (e.g. the agent
+   *  toolbar is switched off), so the step is not silently skipped. */
+  fallbackSelector?: string;
+  /** The target lives on the hover-revealed agent toolbar: hold the bar up
+   *  while this step is on screen. */
+  revealsAgentToolbar?: boolean;
+}
+
+/** The selector a step spotlights right now, or null when nothing matches. */
+export function resolveStepTarget(step: OnboardingStep): string | null {
+  if (document.querySelector(step.targetSelector)) return step.targetSelector;
+  if (step.fallbackSelector && document.querySelector(step.fallbackSelector)) return step.fallbackSelector;
+  return null;
 }
 
 /**
@@ -32,8 +45,10 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     id: 'fan-out',
     titleKey: 'onboarding.step2.title',
     descriptionKey: 'onboarding.step2.description',
-    targetSelector: '[data-onboarding-target="add-workspace"]',
-    placement: 'right',
+    targetSelector: '[data-onboarding-target="fanout"]',
+    fallbackSelector: '[data-onboarding-target="pane-area"]',
+    revealsAgentToolbar: true,
+    placement: 'top',
     media: 'worktrees',
   },
   {

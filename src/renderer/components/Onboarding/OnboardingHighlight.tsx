@@ -153,11 +153,15 @@ export default function OnboardingHighlight({
       rafRef.current = requestAnimationFrame(measure);
     };
     window.addEventListener('resize', handleResize);
+    // A target that slides in (the agent toolbar's reveal is a transform, which
+    // ResizeObserver does not see) is re-measured once its transition ends.
+    document.addEventListener('transitionend', handleResize, true);
 
     return () => {
       observerRef.current?.disconnect();
       cancelAnimationFrame(rafRef.current);
       window.removeEventListener('resize', handleResize);
+      document.removeEventListener('transitionend', handleResize, true);
     };
   }, [targetSelector, measure]);
 

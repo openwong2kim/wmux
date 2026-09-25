@@ -246,6 +246,7 @@ export default function AgentToolbar({ barHandlers, revealed, onHoldChange, onFo
         onClick={handleFanOut}
         title={t('fanout.title')}
         data-testid="fanout-button"
+        data-onboarding-target="fanout"
       >
         <IconSparkles size={13} /> <span className="wmux-toolbar-label whitespace-nowrap">{t('toolbar.fanOut')}</span>
       </button>

@@ -4,7 +4,8 @@ import Button from '../ui/Button';
 import MediaPreview from '../ui/MediaPreview';
 import { useModalLayer } from '../ui/modalLayer';
 import { MEDIA_CLIPS } from '../../assets/media';
-import { ONBOARDING_STEPS } from './steps';
+import { ONBOARDING_STEPS, resolveStepTarget } from './steps';
+import { useStore } from '../../stores';
 import type { OnboardingStep } from './steps';
 import type { TooltipPlacement } from './OnboardingHighlight';
 import { t } from '../../i18n';
@@ -34,7 +35,7 @@ export default function OnboardingOverlay({
   // Filter to only steps whose target actually exists in the DOM.
   // Re-evaluated on every render so freshly-mounted targets are picked up.
   const availableSteps = useMemo(() => {
-    return steps.filter((step) => document.querySelector(step.targetSelector) !== null);
+    return steps.filter((step) => resolveStepTarget(step) !== null);
   }, [steps, currentIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // If no steps are available at all, complete immediately.
@@ -45,6 +46,16 @@ export default function OnboardingOverlay({
   }, [availableSteps.length, onComplete]);
 
   const step = availableSteps[currentIndex] as OnboardingStep | undefined;
+
+  // Hold the hover-revealed agent toolbar up while a step points at it, and
+  // let it go on the next step or when the tour ends.
+  const revealsToolbar = step?.revealsAgentToolbar === true;
+  useEffect(() => {
+    if (!revealsToolbar) return;
+    const { setAgentToolbarTourHold } = useStore.getState();
+    setAgentToolbarTourHold(true);
+    return () => setAgentToolbarTourHold(false);
+  }, [revealsToolbar]);
 
   const handleNext = useCallback(() => {
     if (currentIndex + 1 >= availableSteps.length) {
@@ -109,7 +120,7 @@ export default function OnboardingOverlay({
       />
 
       <OnboardingHighlight
-        targetSelector={step.targetSelector}
+        targetSelector={resolveStepTarget(step) ?? step.targetSelector}
         preferredPosition={step.placement}
       >
         {(placement: TooltipPlacement) => (

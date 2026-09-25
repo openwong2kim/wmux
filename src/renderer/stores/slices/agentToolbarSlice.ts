@@ -30,6 +30,11 @@ export interface AgentToolbarSlice {
   agentToolbarPinned: boolean;
   setAgentToolbarPinned: (pinned: boolean) => void;
 
+  /** The onboarding tour is pointing at a control on the bar, so the bar
+   *  stays revealed while that step is on screen. Transient. */
+  agentToolbarTourHold: boolean;
+  setAgentToolbarTourHold: (hold: boolean) => void;
+
   /** Fan-out dialog target. Transient; null = closed. */
   fanOutWorkspaceId: string | null;
   fanOutAnchor: FanOutAnchor | null;
@@ -70,6 +75,11 @@ export const createAgentToolbarSlice: StateCreator<
   agentToolbarPinned: false,
   setAgentToolbarPinned: (pinned) => set((draft: StoreState) => {
     draft.agentToolbarPinned = pinned;
+  }),
+
+  agentToolbarTourHold: false,
+  setAgentToolbarTourHold: (hold) => set((draft: StoreState) => {
+    draft.agentToolbarTourHold = hold;
   }),
 
   toolbarSnippets: [],
