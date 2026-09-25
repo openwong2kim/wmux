@@ -123,8 +123,8 @@ describe('reviewQueueEntry', () => {
       workspaces: [workspace('owner', [leaf('po', 'pty-o')], { name: 'My project' }), workspace('t1', [leaf('a', 'p1'), leaf('b', 'p2')], { metadata: { pr } })],
       missions: { t1: mission('task-1', 'owner') },
       status: { p1: 'complete', p2: 'complete' },
-      activityAt: { p1: 100, p2: 250 },
     });
+    Object.assign(s, { surfaceTurnEndAt: { p1: 100, p2: 250 } });
     expect(reviewQueueEntry(s, 't1')).toEqual({
       workspaceId: 't1',
       taskId: 'task-1',
@@ -138,9 +138,15 @@ describe('reviewQueueEntry', () => {
     });
   });
 
-  it('takes the finish time from the output stamp when the turn end cleared the activity stamp', () => {
+  it('takes the finish time from the turn-end stamp, not later output or the turn latch', () => {
     const s = state({ workspaces: [workspace('t1', [leaf('a', 'p1')])], missions: { t1: mission('task-1', 'gone') }, status: { p1: 'complete' }, activityAt: {} });
-    (s as unknown as { surfaceOutputAt: Record<string, number> }).surfaceOutputAt = { p1: 4_000 };
+    Object.assign(s, { surfaceTurnEndAt: { p1: 3_000 }, surfaceOutputAt: { p1: 9_000 }, surfaceTurnOpenAt: { p1: 9_500 } });
+    expect(reviewQueueEntry(s, 't1')?.completedAt).toBe(3_000);
+  });
+
+  it('falls back to the last output for a pane with no turn-end stamp', () => {
+    const s = state({ workspaces: [workspace('t1', [leaf('a', 'p1')])], missions: { t1: mission('task-1', 'gone') }, status: { p1: 'complete' }, activityAt: {} });
+    Object.assign(s, { surfaceOutputAt: { p1: 4_000 } });
     expect(reviewQueueEntry(s, 't1')?.completedAt).toBe(4_000);
   });
 
@@ -154,8 +160,8 @@ describe('reviewQueueEntry', () => {
       workspaces: [workspace('owner', [leaf('po', 'pty-o')]), workspace('t1', [leaf('a', 'p1')]), workspace('t2', [leaf('b', 'p2')])],
       missions: { t1: mission('task-1', 'owner'), t2: mission('task-2', 'owner') },
       status: { p1: 'complete', p2: 'complete' },
-      activityAt: { p1: 10, p2: 20 },
     });
+    Object.assign(s, { surfaceTurnEndAt: { p1: 10, p2: 20 } });
     expect(selectReviewQueue(s).map((e) => e.workspaceId)).toEqual(['t2', 't1']);
   });
 });

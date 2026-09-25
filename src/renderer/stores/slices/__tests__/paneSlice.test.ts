@@ -627,6 +627,25 @@ describe('PaneSlice', () => {
       expect(map['pty-4']).toBe('error');
     });
 
+    it('stamps the turn end once per turn, keeps it through the focus clear, drops it when a turn opens', () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(1_000);
+        store.getState().setSurfaceAgentStatus('pty-1', 'complete');
+        vi.setSystemTime(5_000);
+        store.getState().setSurfaceAgentStatus('pty-1', null);
+        store.getState().setSurfaceAgentStatus('pty-1', 'complete');
+        expect(store.getState().surfaceTurnEndAt['pty-1']).toBe(1_000);
+        store.getState().markSurfaceTurnOpen('pty-1');
+        expect(store.getState().surfaceTurnEndAt['pty-1']).toBeUndefined();
+        vi.setSystemTime(9_000);
+        store.getState().setSurfaceAgentStatus('pty-1', 'complete');
+        expect(store.getState().surfaceTurnEndAt['pty-1']).toBe(9_000);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('clears the entry on running / idle (non-attention statuses)', () => {
       store.getState().setSurfaceAgentStatus('pty-1', 'complete');
       store.getState().setSurfaceAgentStatus('pty-1', 'running');

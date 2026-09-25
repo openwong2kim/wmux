@@ -289,6 +289,10 @@ export interface PaneSlice {
   // otherwise cross the 120 s TTL and read as idle mid-turn, which is the
   // exact bug the hook was installed to fix.
   surfaceTurnOpenAt: Record<string, number>;
+  // When each pty's turn last ended as `complete` (stamped on the transition
+  // into complete, not on repeats). Fleet's Ready to review ages and orders
+  // finished tasks by it; output stamps move with every TUI redraw.
+  surfaceTurnEndAt: Record<string, number>;
   markSurfaceTurnOpen: (ptyId: string) => void;
   clearSurfaceTurnOpen: (ptyId: string) => void;
   // A SETTLE from main (`settled:true` on an idle broadcast): the turn is over,
@@ -629,6 +633,14 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // Store only attention-worthy statuses; everything else (running, idle,
     // null) clears the entry so the blink stops as soon as the agent
     // resumes, goes idle, or the PTY exits.
+    // Turn-end stamp: set on the first `complete` after a turn opened, kept
+    // through repeats and through the focus clear (null), withdrawn when the
+    // agent runs again.
+    if (status === 'complete' && state.surfaceTurnEndAt[ptyId] === undefined) {
+      state.surfaceTurnEndAt[ptyId] = Date.now();
+    } else if (status === 'running') {
+      delete state.surfaceTurnEndAt[ptyId];
+    }
     if (status && ATTENTION_STATUSES.has(status)) {
       state.surfaceAgentStatus[ptyId] = status;
     } else {
@@ -713,6 +725,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   surfaceActivity: {},
   surfaceActivityAt: {},
   surfaceTurnOpenAt: {},
+  surfaceTurnEndAt: {},
   surfacePendingQuestion: {},
   surfaceLastMessage: {},
   surfaceQuestionSeen: {},
@@ -795,6 +808,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // Stop between them (the human hit ESC and re-submitted) is the SAME open
     // turn, but the silence clock must run from the latest submission.
     state.surfaceTurnOpenAt[ptyId] = Date.now();
+    delete state.surfaceTurnEndAt[ptyId];
   }),
 
   clearSurfaceTurnOpen: (ptyId) => set((state: StoreState) => {
@@ -1035,6 +1049,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
             // latch outranks the byte heuristic, so a leaked one would pin the
             // new pane at 'running' with nothing left alive to withdraw it.
             delete state.surfaceTurnOpenAt[s.ptyId];
+            delete state.surfaceTurnEndAt[s.ptyId];
             delete state.surfaceOutputAt[s.ptyId];
             delete state.surfacePorts[s.ptyId];
             delete state.surfaceAgentStatus[s.ptyId];
