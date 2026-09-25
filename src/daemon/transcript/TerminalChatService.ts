@@ -3,9 +3,11 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { ChatSendResult, TranscriptAppendData, TranscriptPage, TranscriptStatus, TurnEvent } from '../../shared/transcript/turnEvents';
 import { validStoredEvent } from '../chat/storedEvent';
+import { OPENCODE_REQUEST_MAX_BYTES } from '../chat/chatBridge';
 
 interface Owner { pid: number; incarnation: string }
 interface NativeRead { status: TranscriptStatus; page: TranscriptPage }
+export interface TerminalChatSendOutcome { result: ChatSendResult; reason?: 'receipts-full' | 'transport-lost' | 'too-large' | 'unauthorized' }
 interface Watch { clients: Set<string>; timer: ReturnType<typeof setInterval>; busy: boolean; seq: number; digest?: string; epoch?: string; ids?: Set<string>; last?: NativeRead }
 export interface TerminalChatDependencies {
   directory: string;
@@ -38,16 +40,35 @@ export class TerminalChatService {
     }, page: { ...this.page(result.events as TurnEvent[], epoch), truncatedHead: result.truncated === true } };
   }
 
-  async send(id: string, sessionId: string, text: string, requestId: string): Promise<ChatSendResult> {
+  /**
+   * `expectedRawEpoch` pins the history the caller last read: a route switch
+   * away and back keeps the `ses_` id but not the generation, and the fresh
+   * read's epoch would otherwise be forwarded unchecked (N15). `reason` tells
+   * "nothing reached the plugin" from "the request left and the answer was
+   * lost" (`transport-lost`, uncertain) and names the plugin's own refusals.
+   */
+  async send(id: string, sessionId: string, text: string, requestId: string,
+    opts: { expectedRawEpoch?: string; authorized?: () => Promise<boolean> } = {}): Promise<TerminalChatSendOutcome> {
     const read = await this.read(id);
-    if (!read?.status.available) return 'unavailable';
-    if (read.status.agentSessionId !== sessionId) return 'session_changed';
+    if (!read?.status.available) return { result: 'unavailable' };
+    if (read.status.agentSessionId !== sessionId) return { result: 'session_changed' };
+    const epoch = read.page.cursor.historyEpoch ?? '';
+    if (opts.expectedRawEpoch !== undefined && opts.expectedRawEpoch !== epoch) return { result: 'session_changed' };
     // Plugin repeats the selected-session, phase and generation checks directly
     // beside native dispatch; a server-side route switch cannot target another chat.
-    const result = await this.request(id, { action: 'send', sessionId, epoch: read.page.cursor.historyEpoch, text, requestId });
-    if (!result) return 'unconfirmed';
-    const value = result.result;
-    return ['sent', 'busy', 'blocked', 'unconfirmed', 'session_changed', 'unavailable', 'error'].includes(String(value)) ? value as ChatSendResult : 'unconfirmed';
+    const request = { action: 'send', sessionId, epoch, text, requestId };
+    // The plugin destroys an oversize body mid-read; that must never read as
+    // "may have been delivered" (N16).
+    if (Buffer.byteLength(JSON.stringify(request)) > OPENCODE_REQUEST_MAX_BYTES) return { result: 'error', reason: 'too-large' };
+    try {
+      if (opts.authorized && !await opts.authorized()) return { result: 'error', reason: 'unauthorized' };
+    } catch { return { result: 'error', reason: 'unauthorized' }; }
+    const answer = await this.exchange(id, request);
+    if (!answer.ok) return answer.left ? { result: 'unconfirmed', reason: 'transport-lost' } : { result: 'unavailable' };
+    const value = answer.body.result;
+    const result = ['sent', 'busy', 'blocked', 'unconfirmed', 'session_changed', 'unavailable', 'error'].includes(String(value)) ? value as ChatSendResult : 'unconfirmed';
+    // An older plugin answers a full receipt map with a bare `unavailable`.
+    return result === 'unavailable' && answer.body.reason === 'receipts-full' ? { result, reason: 'receipts-full' } : { result };
   }
 
   subscribe(client: string, id: string): void {
@@ -93,31 +114,48 @@ export class TerminalChatService {
   }
 
   private async request(id: string, request: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+    const answer = await this.exchange(id, request);
+    return answer.ok ? answer.body : null;
+  }
+
+  /** `left` is true once the request may have reached the plugin. */
+  private async exchange(id: string, request: Record<string, unknown>): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; left: boolean }> {
+    let left = false;
     try {
       const owner = await this.deps.owner(id);
-      if (!owner) return null;
+      if (!owner) return { ok: false, left };
       const file = path.join(this.deps.directory, `${createHash('sha256').update(id).digest('hex')}.json`);
       const stat = await fs.lstat(file);
-      if (!stat.isFile() || stat.size > 1024 || process.platform !== 'win32' && (stat.mode & 0o077 || typeof process.getuid === 'function' && stat.uid !== process.getuid())) return null;
+      if (!stat.isFile() || stat.size > 1024 || process.platform !== 'win32' && (stat.mode & 0o077 || typeof process.getuid === 'function' && stat.uid !== process.getuid())) return { ok: false, left };
       const record = object(JSON.parse(await fs.readFile(file, 'utf8')));
       if (record.version !== 1 || record.agent !== 'opencode' || record.pid !== owner.pid || !Number.isInteger(record.port) ||
-          Number(record.port) < 1 || Number(record.port) > 65535 || typeof record.token !== 'string' || !/^[0-9a-f]{64}$/.test(record.token)) return null;
+          Number(record.port) < 1 || Number(record.port) > 65535 || typeof record.token !== 'string' || !/^[0-9a-f]{64}$/.test(record.token)) return { ok: false, left };
       const sameOwner = async () => JSON.stringify(await this.deps.owner(id)) === JSON.stringify(owner);
-      if (!await sameOwner()) return null;
-      const response = await fetch(`http://127.0.0.1:${record.port}/`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000),
-        headers: { Authorization: `Bearer ${record.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(request) });
-      if (!response.ok || !response.body) return null;
+      if (!await sameOwner()) return { ok: false, left };
+      left = true;
+      let response: Response;
+      try {
+        response = await fetch(`http://127.0.0.1:${record.port}/`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(5000),
+          headers: { Authorization: `Bearer ${record.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(request) });
+      } catch (error) {
+        // A refused connection provably delivered nothing.
+        if ((error as { cause?: { code?: unknown } })?.cause?.code === 'ECONNREFUSED') left = false;
+        throw error;
+      }
+      // The plugin answers non-2xx only before dispatch (bad auth, unparsable body).
+      if (!response.ok) return { ok: false, left: false };
+      if (!response.body) return { ok: false, left };
       const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let bytes = 0;
       try {
         for (;;) {
           const chunk = await reader.read(); if (chunk.done) break;
           bytes += chunk.value.byteLength;
-          if (bytes > 128000) { await reader.cancel(); return null; }
+          if (bytes > 128000) { await reader.cancel(); return { ok: false, left }; }
           chunks.push(chunk.value);
         }
       } finally { reader.releaseLock(); }
-      if (!await sameOwner()) return null;
-      return object(JSON.parse(Buffer.concat(chunks).toString('utf8')));
-    } catch { return null; }
+      if (!await sameOwner()) return { ok: false, left };
+      return { ok: true, body: object(JSON.parse(Buffer.concat(chunks).toString('utf8'))) };
+    } catch { return { ok: false, left }; }
   }
 }

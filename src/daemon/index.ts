@@ -1,6 +1,8 @@
 import { loadChatSkills } from './transcript/chatSkills';
 import { TerminalChatService } from './transcript/TerminalChatService';
-import type { ChatBridge } from './chat/chatBridge';
+import type { ChatBridge, ChatLaunchRequest } from './chat/chatBridge';
+import { ChatSendReceiptStore } from './chat/ChatSendReceiptStore';
+import { createChatBridge, type NativeChatBridge } from './chat/nativeChatBridge';
 import {captureCodexRelayResume, codexRelayResumeCommand} from './web/codexRelayResume';
 import { recoverCodexPane } from './web/recoverCodexPane';
 import { CodexRelayUnavailableError } from './web/codexTuiRelay';
@@ -129,8 +131,7 @@ import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
 import { chatAgentStatus } from './transcript/chatAgentStatus';
-import { terminalLaunchCommand, startNativeCodexRuntime } from './transcript/terminalLaunch';
-import { deliverChatPrompt } from './transcript/deliverChatPrompt';
+import { startNativeCodexRuntime } from './transcript/terminalLaunch';
 import { ChatSessionService } from './chat/ChatSessionService';
 import { chatProviders } from './chat/providers';
 import { record as chatRecord } from './chat/adapter';
@@ -170,6 +171,8 @@ let transcriptProjector: TranscriptProjector | null = null;
 // Phone native chat bridge (contract v0.3.1). Built in registerRpcHandlers next
 // to the services it wraps; the web server reads it lazily per request.
 let chatBridge: ChatBridge | null = null;
+// One writer per daemon, even if registerRpcHandlers runs twice. `undefined` = not loaded yet.
+let chatSendReceipts: ChatSendReceiptStore | null | undefined;
 let chatSessions: ChatSessionService | null = null;
 let terminalChat: TerminalChatService | null = null;
 const chatSubscribers = new Map<string, Set<string>>();
@@ -3171,6 +3174,8 @@ function registerRpcHandlers(
           return pane?.meta.spawnCwd ? { cwd: pane.meta.spawnCwd, env: pane.meta.env } : undefined;
         },
         changed: (id) => {
+          // N7: a phone reading this pane's managed record re-reads on the nudge.
+          webTerminalServer?.emitTranscriptNudge(id);
           if (chatPushTimers.has(id)) return;
           chatPushTimers.set(id, setTimeout(() => {
             chatPushTimers.delete(id);
@@ -3256,107 +3261,113 @@ function registerRpcHandlers(
         return { pid, incarnation: pane.meta.incarnationId };
       },
       emit: (id, data, clients) => {
-        for (const client of clients) if (!pipeServer.sendTo(client, { type: 'transcript.appended', sessionId: id, data })) terminalChat?.unsubscribe(client, id);
+        for (const client of clients) {
+          // The phone bridge's watch carries no content: a live-only nudge makes
+          // watching phones re-read /turns, and it is never dropped for backpressure.
+          if (client.startsWith('web:')) { webTerminalServer?.emitTranscriptNudge(id); continue; }
+          if (!pipeServer.sendTo(client, { type: 'transcript.appended', sessionId: id, data })) terminalChat?.unsubscribe(client, id);
+        }
       },
     });
     pipeServer.onClientClose(client => terminalChat?.dropClient(client));
   }
 
+  if (chatSendReceipts === undefined) {
+    try { chatSendReceipts = new ChatSendReceiptStore(wmuxDir); }
+    catch (error) {
+      // Refusing phone sends beats forgetting which ids may already have been typed.
+      chatSendReceipts = null;
+      log('error', `[chat] send receipts unreadable; phone chat send disabled: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  // Phone native chat bridge (contract v0.3.1). The desktop RPCs below call the
+  // same functions, so binding resolution, receipts, launch and skills cannot
+  // drift between the two transports.
+  const bridge: NativeChatBridge = createChatBridge({
+    pane: (id) => sessionManager.getSession(id),
+    agentState: (id) => readDaemonAgentState(id),
+    chatAgentState: (id) => readChatAgentState(id),
+    projector,
+    terminalChat: () => terminalChat,
+    managed: () => chatSessions,
+    approvals: () => approvalRegistry ? {
+      pendingFor: (id) => approvalRegistry?.list().pending.find((request) => request.sessionId === id)?.id,
+    } : null,
+    readScreen: async (id) => {
+      const managed = sessionManager.getSession(id);
+      if (!managed) return null;
+      const outcome = await generateTextSnapshot({
+        cols: managed.meta.cols ?? 80,
+        rows: managed.meta.rows ?? 24,
+        scrollback: 0,
+        initial: managed.ringBuffer.readAll(),
+      });
+      return outcome.ok ? outcome.rows.map((r) => r.text) : null;
+    },
+    agentProcessAlive: async (id, slug) => {
+      const pid = agentProcessTracker.pidFor(id);
+      if (pid === undefined || !isAgentSlug(slug)) return false;
+      return await agentProcessTracker.verifyLive(id, slug) && await ProcessMonitor.isRunning(pid);
+    },
+    write: (id, data) => {
+      const managed = sessionManager.getSession(id);
+      if (!managed) return false;
+      managed.ptyProcess.write(data);
+      managed.bridge.noteInput(data);
+      return true;
+    },
+    receipts: chatSendReceipts,
+    idleShell: (pid, env) => agentProcessTracker.idleShellState(pid, env),
+    installedAgents: (env) => installedAgentLaunchOptions(env),
+    relays: {
+      retire: (id) => codexPaneRelays.retire(id),
+      prepare: async (id, pane) => {
+        const relay = await codexPaneRelays.prepare(id, pane.meta.env?.CODEX_HOME);
+        return { url: relay.url, commit: () => relay.commit(pane), close: () => relay.close() };
+      },
+      unavailable: (error) => (error as NodeJS.ErrnoException)?.code === 'ENOENT' || error instanceof CodexRelayUnavailableError,
+      selection: (id, pane) => codexPaneRelays.selection(id, pane),
+    },
+    startCodexRuntime: (env) => startNativeCodexRuntime(env),
+    loadSkills: (agent, cwd, env) => loadChatSkills(agent, cwd, env),
+    log: (level, message) => log(level, message),
+    // Main shows `source:'security'` as an always-on toast. Straight onto the
+    // pipe, not session:notification, which would also reach phones as attention.
+    notify: (paneId, title, body) => pipeServer.broadcast({ type: 'notification.event', sessionId: paneId,
+      data: { source: 'security', title, body, ts: Date.now() } }),
+  });
+  chatBridge = bridge;
+
   pipeServer.onRpc('daemon.chat.skills', async (params, ctx) => {
-    const unavailable = { skills: [], state: 'unavailable' };
-    if (!firstPartyOnly(ctx.clientId, 'skills') || typeof params.id !== 'string') return unavailable;
-    const id = params.id;
-    const pane = sessionManager.getSession(id);
-    if (!pane || pane.meta.wslTarget || !['attached', 'detached'].includes(pane.meta.state)) return unavailable;
-    const liveAgent = agentDisplayToSlug(readChatAgentState(id).agentName ?? '');
-    if (liveAgent && liveAgent !== params.agent) return unavailable;
-    if (!['claude', 'codex'].includes(String(params.agent))) return unavailable;
-    const selection = params.agent === 'codex' ? codexPaneRelays.selection(id, pane) : undefined;
-    const cwd = selection?.cwd ?? pane.meta.cwd;
-    const capture = () => JSON.stringify([pane.meta.cwd, pane.meta.pid, pane.meta.incarnationId, pane.meta.state,
-      pane.meta.env?.CODEX_HOME, pane.meta.env?.CLAUDE_CONFIG_DIR,
-      params.agent === 'codex' ? codexPaneRelays.selection(id, pane) : undefined]);
-    const scope = capture();
-    const result = await loadChatSkills(String(params.agent), cwd, { ...process.env, ...pane.meta.env });
-    return sessionManager.getSession(id) === pane && capture() === scope &&
-      agentDisplayToSlug(readChatAgentState(id).agentName ?? '') === liveAgent ? result : unavailable;
+    if (!firstPartyOnly(ctx.clientId, 'skills') || typeof params.id !== 'string') return { skills: [], state: 'unavailable' };
+    return bridge.desktopSkills(params.id, params.agent);
   });
 
-  const terminalLaunching = new Set<string>();
   pipeServer.onRpc('daemon.chat.launchTerminal', async (params, ctx) => {
     const id = typeof params.id === 'string' ? params.id : '';
     if (!firstPartyOnly(ctx.clientId, 'launchTerminal') || !id || !['claude', 'codex'].includes(String(params.agent))) return { ok: false, error: 'Unavailable' };
-    if (terminalLaunching.has(id)) return { ok: false, error: 'Launch already pending' };
-    terminalLaunching.add(id);
-    let launchRelay: Awaited<ReturnType<CodexPaneRelays['prepare']>> | undefined;
-    let launched = false;
-    try {
-      const pane = sessionManager.getSession(id);
-      const revision = pane?.bridge.getInputRevision();
-      const ready = () => !!pane && sessionManager.getSession(id) === pane && !pane.meta.exec &&
-        ['attached', 'detached'].includes(pane.meta.state) && pane.bridge.isEmptyShellPrompt() &&
-        pane.bridge.getInputRevision() === revision && !pane.promptLog.isCommandRunning() &&
-        !!approvalRegistry && !approvalRegistry.list().pending.some(request => request.sessionId === id);
-      if (!ready() || !pane) return { ok: false, error: 'Use Terminal: an empty shell prompt is required.' };
-      if (!await agentProcessTracker.verifyIdleShell(pane.meta.pid) || !ready()) return { ok: false, error: 'Terminal changed or is busy.' };
-      buildAgentLaunch({ agent: params.agent }, await installedAgentLaunchOptions(pane.meta.env));
-      let command = terminalLaunchCommand(params.agent, params.prompt, params.mode);
-      if (params.agent === 'codex') {
-        // Hook session_id can name an invocation rather than the conversation.
-        // Observe the existing native TUI transport for authoritative thread IDs.
-        await codexPaneRelays.retire(id);
-        try { launchRelay = await codexPaneRelays.prepare(id, pane.meta.env?.CODEX_HOME); }
-        catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof CodexRelayUnavailableError)) throw error;
-          if (!ready()) throw new Error('Terminal changed');
-          await startNativeCodexRuntime({ ...process.env, ...pane.meta.env });
-          launchRelay = await codexPaneRelays.prepare(id, pane.meta.env?.CODEX_HOME);
-        }
-        if (!/^unix:\/\/\/[A-Za-z0-9_./-]+$/.test(launchRelay.url)) throw new Error('Unsupported relay path');
-        command = command.replace(/^codex /, `codex --remote ${launchRelay.url} `);
-      }
-      if (!await agentProcessTracker.verifyIdleShell(pane.meta.pid) || !ready()) return { ok: false, error: 'Terminal changed or is busy.' };
-      // Fixed launcher only; no renderer-provided shell text, prompts or flags.
-      // noteInput consumes the empty-prompt evidence before another RPC can run.
-      if (launchRelay && !launchRelay.commit(pane)) throw new Error('Terminal changed');
-      const input = command + '\r';
-      pane.bridge.noteInput(input);
-      pane.ptyProcess.write(input);
-      launched = true;
-      return { ok: true };
-    } catch { return { ok: false, error: 'Could not start the installed agent. Check Terminal before retrying.' }; }
-    finally { if (!launched) await launchRelay?.close(); terminalLaunching.delete(id); }
+    const outcome = await bridge.launch({ id, agent: params.agent as 'claude' | 'codex', prompt: params.prompt as string, mode: params.mode as ChatLaunchRequest['mode'] });
+    if (outcome.ok) return { ok: true };
+    // The desktop wire stays prose; the tags are the phone's.
+    const error = outcome.error === 'launch-pending' ? 'Launch already pending'
+      : outcome.error === 'launch-not-ready' ? 'Use Terminal: an empty shell prompt is required.'
+        : outcome.error === 'launch-unsupported' ? 'Terminal changed or is busy.'
+          : 'Could not start the installed agent. Check Terminal before retrying.';
+    return { ok: false, error };
   });
 
   pipeServer.onRpc('daemon.transcript.status', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'status')) {
       return { available: false, reason: 'not-authorized' };
     }
-    const id = typeof params['id'] === 'string' ? params['id'] : '';
-    const native = await terminalChat?.read(id);
-    if (native) return native.status;
-    const live = readChatAgentState(id);
-    if (agentDisplayToSlug(live.agentName ?? '') === 'opencode') return { available: false, reason: 'unavailable' };
-    const managed = !live.agentName && !projector.status(id).available ? chatSessions?.status(id) : undefined;
-    if (managed) return managed;
-    const status = projector.status(id);
-    const slug = agentDisplayToSlug(live.agentName ?? '');
-    const agentAlive = !!slug && slug === status.terminal?.agent && live.agentVerified;
-    return { ...status, agentStatus: live.agentStatus, agentAlive,
-      ...(status.terminal ? { terminal: { ...status.terminal, capabilities: { ...status.terminal.capabilities,
-        send: agentAlive && ['claude', 'codex'].includes(slug!),
-      } } } : {}) };
+    return bridge.status(typeof params['id'] === 'string' ? params['id'] : '');
   });
 
   pipeServer.onRpc('daemon.transcript.snapshot', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'snapshot')) return null;
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const before = typeof params['before'] === 'number' ? params['before'] : undefined;
-    const native = await terminalChat?.read(id);
-    if (native) return before === undefined ? native.page : { ...native.page, events: [], hasMore: false };
-    if (agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '') === 'opencode') return null;
-    if (!readDaemonAgentState(id).agentName && !projector.status(id).available && chatSessions?.has(id)) return chatSessions.snapshot(id, before);
-    return projector.snapshot(id, before === undefined ? undefined : { before });
+    return bridge.snapshot(id, before);
   });
 
   pipeServer.onRpc('daemon.transcript.subscribe', async (params, ctx) => {
@@ -3365,10 +3376,10 @@ function registerRpcHandlers(
     }
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     if (!id) return { ok: false, status: { available: false, reason: 'no-binding' } };
-    const native = await terminalChat?.read(id);
-    if (native) { terminalChat!.subscribe(ctx.clientId, id); return { ok: true, status: native.status }; }
-    if (agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '') === 'opencode') return { ok: false, status: { available: false, reason: 'unavailable' } };
-    if (!readDaemonAgentState(id).agentName && !projector.status(id).available && chatSessions?.has(id)) {
+    const found = await bridge.route(id);
+    if (found.kind === 'native') { terminalChat!.subscribe(ctx.clientId, id); return { ok: true, status: found.read.status }; }
+    if (found.kind === 'opencode') return { ok: false, status: { available: false, reason: 'unavailable' } };
+    if (found.kind === 'managed' && chatSessions) {
       const clients = chatSubscribers.get(id) ?? new Set<string>();
       clients.add(ctx.clientId); chatSubscribers.set(id, clients);
       return { ok: true, status: chatSessions.status(id) };
@@ -3800,62 +3811,14 @@ function registerRpcHandlers(
 
   // Human chat input shares the scheduler's input-revision/identity guards,
   // with the displayed conversation and approval state checked at both writes.
-  const chatSending = new Set<string>();
+  // The phone's send route runs the same bridge function under its own owner.
   pipeServer.onRpc('daemon.transcript.send', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'send')) return { result: 'unavailable' };
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const agentSessionId = typeof params['agentSessionId'] === 'string' ? params['agentSessionId'] : '';
     const text = typeof params['text'] === 'string' ? params['text'] : '';
-    const native = await terminalChat?.read(id);
-    if (native || agentDisplayToSlug(readDaemonAgentState(id).agentName ?? '') === 'opencode') {
-      return { result: await terminalChat?.send(id, agentSessionId, text, typeof params.requestId === 'string' ? params.requestId : '') ?? 'unavailable' };
-    }
-    if (!readDaemonAgentState(id).agentName && !projector.status(id).available && chatSessions?.has(id)) return { result: await chatSessions.send(id, agentSessionId, text, typeof params.requestId === 'string' ? params.requestId : '') };
-    if (!id || !approvalRegistry) return { result: 'unavailable' };
-    if (chatSending.has(id)) return { result: 'busy' };
-    chatSending.add(id);
-    try {
-      const result = await deliverChatPrompt(agentSessionId, text, {
-        getTranscriptSessionId: () => projector.status(id).agentSessionId,
-        hasOpenApproval: () => !approvalRegistry || approvalRegistry.list().pending.some((r) => r.sessionId === id),
-        readScreen: async () => {
-          const managed = sessionManager.getSession(id);
-          if (!managed) return null;
-          const outcome = await generateTextSnapshot({
-            cols: managed.meta.cols ?? 80,
-            rows: managed.meta.rows ?? 24,
-            scrollback: 0,
-            initial: managed.ringBuffer.readAll(),
-          });
-          return outcome.ok ? outcome.rows.map((r) => r.text) : null;
-        },
-        getAgentState: () => {
-          const current = readChatAgentState(id);
-          const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;
-          return slug && current.agentVerified ? { slug, incarnationId: current.incarnationId, status: current.agentStatus,
-            inputQuiet: current.inputQuiet, inputRevision: current.inputRevision } : null;
-        },
-        isAgentProcessAlive: async () => {
-          const pid = agentProcessTracker.pidFor(id);
-          if (pid === undefined) return false;
-          try {
-            const slug = agentDisplayToSlug(readChatAgentState(id).agentName ?? '');
-            return !!slug && await agentProcessTracker.verifyLive(id, slug) &&
-              await ProcessMonitor.isRunning(pid);
-          } catch {
-            return false;
-          }
-        },
-        write: (data) => {
-          const managed = sessionManager.getSession(id);
-          if (!managed) return false;
-          managed.ptyProcess.write(data);
-          managed.bridge.noteInput(data);
-          return true;
-        },
-      });
-      return { result };
-    } finally { chatSending.delete(id); }
+    if (!id) return { result: 'unavailable' };
+    return bridge.desktopSend({ id, agentSessionId, text, requestId: params.requestId });
   });
 
   // daemon.readPromptEvents — read structured OSC 133 prompt/command events
