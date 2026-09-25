@@ -983,6 +983,7 @@ export const ko = {
   'firstRunWizard.registerMcpButton': '등록',
   'firstRunWizard.sampleTaskHeading': '샘플 작업 시도',
   'firstRunWizard.sampleTaskDescription': '2x2 분할을 열고 Claude에게 웹 검색을 시켜봅니다.',
+  'firstRunWizard.sampleTaskClipLabel': '에이전트 세 개가 있는 Fleet: 하나가 턴을 마치고 Needs you 아래로 올라갑니다.',
   'firstRunWizard.tryItButton': '샘플 작업 실행',
   'firstRunWizard.skipButton': '건너뛰기',
   'firstRunWizard.closeButton': '닫기',

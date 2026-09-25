@@ -1533,6 +1533,7 @@ export const en = {
   'firstRunWizard.registerMcpButton': 'Register',
   'firstRunWizard.sampleTaskHeading': 'Try a sample task',
   'firstRunWizard.sampleTaskDescription': 'Open a 2x2 split and let Claude search the web for you.',
+  'firstRunWizard.sampleTaskClipLabel': 'Fleet with three agents: one finishes its turn and moves up under Needs you.',
   'firstRunWizard.tryItButton': 'Try sample task',
   'firstRunWizard.skipButton': 'Skip for now',
   'firstRunWizard.closeButton': 'Close',

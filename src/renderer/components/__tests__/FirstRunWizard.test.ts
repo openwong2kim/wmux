@@ -564,7 +564,7 @@ describe('welcome typography and media', () => {
     );
     expect(html).toContain('first-run-wizard-sample-preview');
     expect(html).toContain('role="img"');
-    expect(html).toMatch(/aria-label="Open a 2x2 split/);
+    expect(html).toMatch(/aria-label="Fleet with three agents/);
     expect(html).toMatch(/<video[^>]*autoPlay|<video[^>]*autoplay/);
     expect(html).toMatch(/fleet[^"]*\.webm/);
   });

@@ -1333,6 +1333,7 @@ export const zh = {
   'firstRunWizard.registerMcpButton': '注册',
   'firstRunWizard.sampleTaskHeading': '试试示例任务',
   'firstRunWizard.sampleTaskDescription': '打开一个 2x2 分割，让 Claude 为你搜索网页。',
+  'firstRunWizard.sampleTaskClipLabel': '舰队中有三个智能体：其中一个完成回合后移到 Needs you 下方。',
   'firstRunWizard.tryItButton': '运行示例任务',
   'firstRunWizard.skipButton': '暂不设置',
   'firstRunWizard.closeButton': '关闭',

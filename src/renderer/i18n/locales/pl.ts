@@ -1519,6 +1519,7 @@ export const pl = {
   'firstRunWizard.registerMcpButton': 'Zarejestruj',
   'firstRunWizard.sampleTaskHeading': 'Wypróbuj przykładowe zadanie',
   'firstRunWizard.sampleTaskDescription': 'Otwórz podział 2x2 i pozwól Claude przeszukać sieć za Ciebie.',
+  'firstRunWizard.sampleTaskClipLabel': 'Flota z trzema agentami: jeden kończy turę i przesuwa się wyżej, pod Needs you.',
   'firstRunWizard.tryItButton': 'Wypróbuj przykładowe zadanie',
   'firstRunWizard.skipButton': 'Pomiń na razie',
   'firstRunWizard.closeButton': 'Zamknij',
