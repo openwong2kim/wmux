@@ -97,6 +97,17 @@ describe('ToastManager (OS-aware notifications)', () => {
     expect(electronMocks.notificationInstances).toHaveLength(0);
   });
 
+  it('shows a security notice with toasts disabled and a focused window', async () => {
+    electronMocks.BrowserWindow.getFocusedWindow.mockReturnValue(electronMocks.win);
+    const { ToastManager } = await import('../ToastManager');
+    const mgr = new ToastManager();
+    mgr.enabled = false;
+    mgr.showDirect('t', 'b', undefined, { ignoreToastSetting: true });
+    expect(electronMocks.notificationInstances).toHaveLength(1);
+    mgr.showDirect('t', 'b');
+    expect(electronMocks.notificationInstances).toHaveLength(1);
+  });
+
   it('skips when a window is currently focused', async () => {
     electronMocks.BrowserWindow.getFocusedWindow.mockReturnValue(electronMocks.win);
     const { ToastManager } = await import('../ToastManager');
