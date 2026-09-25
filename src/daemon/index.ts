@@ -1,5 +1,6 @@
 import { loadChatSkills } from './transcript/chatSkills';
 import { TerminalChatService } from './transcript/TerminalChatService';
+import type { ChatBridge } from './chat/chatBridge';
 import {captureCodexRelayResume, codexRelayResumeCommand} from './web/codexRelayResume';
 import { recoverCodexPane } from './web/recoverCodexPane';
 import { CodexRelayUnavailableError } from './web/codexTuiRelay';
@@ -166,6 +167,9 @@ let hookIngest: HookIngest | null = null;
 // handle at fire time and a null is simply "not configured yet".
 let webhookSink: WebhookSink | null = null;
 let transcriptProjector: TranscriptProjector | null = null;
+// Phone native chat bridge (contract v0.3.1). Built in registerRpcHandlers next
+// to the services it wraps; the web server reads it lazily per request.
+let chatBridge: ChatBridge | null = null;
 let chatSessions: ChatSessionService | null = null;
 let terminalChat: TerminalChatService | null = null;
 const chatSubscribers = new Map<string, Set<string>>();
@@ -470,6 +474,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         // first resume binding, so a getter resolves the live instance per
         // request rather than capturing a null at construction.
         projector: () => transcriptProjector,
+        chat: () => chatBridge,
         // #783 — expose the gated-tools list and the runtime escape hatch at
         // BOTH construction sites (restore + operator start).
         gateConfig: () => coerceGate(loadConfig().gate),
@@ -2693,6 +2698,7 @@ function registerRpcHandlers(
       uploadsDir: path.join(wmuxDir, 'uploads', 'phone'),
       // See the restore path: lazy projector for the phone turn view (#782).
       projector: () => transcriptProjector,
+      chat: () => chatBridge,
       // #783 — see the restore path.
       gateConfig: () => coerceGate(loadConfig().gate),
       // See the restore path — the read side of the runtime escape hatch.

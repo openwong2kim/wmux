@@ -417,10 +417,16 @@ export class AgentProcessTracker {
   ) {}
 
   async verifyIdleShell(pid: number): Promise<boolean> {
+    return (await this.idleShellState(pid)).ok;
+  }
+
+  /** Which launch precondition failed, so a phone can be told what to do. */
+  async idleShellState(pid: number): Promise<{ ok: true } | { ok: false; reason: 'missing' | 'unsupported-shell' | 'shell-has-children' }> {
     const entries = await this.snapshot();
     const root = entries.find(entry => entry.pid === pid);
-    return !!root && /^(?:-?)(?:zsh|bash|sh)$/i.test(path.basename(root.name)) &&
-      !entries.some(entry => entry.ppid === pid);
+    if (!root) return { ok: false, reason: 'missing' };
+    if (!/^(?:-?)(?:zsh|bash|sh)$/i.test(path.basename(root.name))) return { ok: false, reason: 'unsupported-shell' };
+    return entries.some(entry => entry.ppid === pid) ? { ok: false, reason: 'shell-has-children' } : { ok: true };
   }
 
   private static watchKey(sessionId: string): string {

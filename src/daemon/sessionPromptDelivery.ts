@@ -29,6 +29,13 @@ export interface ScheduledPromptDeliveryDeps {
   delay?: (ms: number) => Promise<void>;
   /** Native composer submission, when different from Claude multiline input. */
   submitKeys?: '\r';
+  /** Caller re-authorization, run immediately before the paste write and
+   *  again immediately before the submit write. `false` stops with `error`
+   *  and writes nothing further; the caller tells the two apart itself. */
+  authorized?: () => Promise<boolean>;
+  /** Called immediately before each write is attempted, so a caller can tell
+   *  "nothing reached the PTY" from "the paste may be visible". */
+  onWrite?: (stage: 'paste' | 'submit') => void;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -72,12 +79,27 @@ export async function deliverScheduledPrompt(
   }
 
   try {
+    if (deps.authorized && !(await deps.authorized())) return 'error';
+  } catch {
+    return 'error';
+  }
+
+  try {
+    deps.onWrite?.('paste');
     if (!deps.write(formatBracketedPastePayload(prompt))) return 'unavailable';
   } catch {
     return 'error';
   }
 
   await (deps.delay ?? sleep)(SESSION_PROMPT_SUBMIT_DELAY_MS);
+  // A grant withdrawn inside the submit delay must not be pressed through.
+  // Before the liveness and state checks, which stay the last thing before Enter.
+  try {
+    if (deps.authorized && !(await deps.authorized())) return 'error';
+  } catch {
+    return 'error';
+  }
+
   // #1307 — the agent can exit inside the submit delay, leaving the paste in
   // the shell's input line. Checked before the state re-read, so the input
   // revision check stays the last thing before Enter.
@@ -102,6 +124,7 @@ export async function deliverScheduledPrompt(
 
   try {
     const submit = deps.submitKeys ?? (isMultilinePtyPayload(prompt) ? '\r\r' : '\r');
+    deps.onWrite?.('submit');
     return deps.write(submit) ? 'sent' : 'error';
   } catch {
     return 'error';

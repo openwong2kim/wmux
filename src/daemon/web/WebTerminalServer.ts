@@ -64,6 +64,7 @@ import {
   PHONE_PROTOCOL_VERSION,
 } from './protocolVersion';
 import { startSseHeartbeat } from './sseHeartbeat';
+import type { ChatBridge } from '../chat/chatBridge';
 import { buildWebCsp } from './webCsp';
 
 /**
@@ -496,6 +497,13 @@ interface WebTerminalServerDeps {
    * resolves the live instance per request.
    */
   projector?: () => TranscriptProjector | null;
+  /**
+   * Phone native chat bridge (contract v0.3.1): binding resolution, shared send
+   * receipts, guarded launch and skills. Lazy like `projector`, because the
+   * daemon builds it after the server. Absent → the chat routes answer 503
+   * `chat-unavailable` and `/api/config` does not advertise them.
+   */
+  chat?: () => ChatBridge | null;
   /**
    * #783 — the gated-tools list from daemon config, so `/api/config` can expose
    * it and the phone can explain "why is this call waiting?". A getter (not a
