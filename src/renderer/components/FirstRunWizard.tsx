@@ -944,6 +944,7 @@ export function StatuslineBlock({
         <MediaPreview
           clip={MEDIA_CLIPS.statusline}
           label={t('firstRunWizard.statuslineDescription')}
+          className="wmux-welcome-statusline-clip"
           data-testid="first-run-wizard-statusline-preview"
         />
       </div>
@@ -952,7 +953,7 @@ export function StatuslineBlock({
 }
 
 /**
- * The sample task offer: the clip, then a notice row (title + description ·
+ * The sample task offer: a notice row (title + description ·
  * divider · action). Try / Continue are the dialog's primary only when
  * {@link decidePrimaryAction} says so, and never while disabled.
  */
@@ -978,17 +979,8 @@ export function SampleTaskBlock({
   const isReopen = uiState === 'reopen';
   const date = formatCompletedAt(completedAt);
 
-  const frame = (testId: string, row: React.ReactNode, withClip = false) => (
+  const frame = (testId: string, row: React.ReactNode) => (
     <section className="ui-group wmux-welcome-sample" data-testid={testId}>
-      {withClip && (
-        <div className="p-3 pb-0">
-          <MediaPreview
-            clip={MEDIA_CLIPS.fleet}
-            label={t('firstRunWizard.sampleTaskClipLabel')}
-            data-testid="first-run-wizard-sample-preview"
-          />
-        </div>
-      )}
       {row}
     </section>
   );
@@ -1065,6 +1057,5 @@ export function SampleTaskBlock({
         </Button>
       </div>
     </div>,
-    true,
   );
 }

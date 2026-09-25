@@ -1091,6 +1091,12 @@
   border: 1px solid color-mix(in srgb, var(--accent-red) 28%, transparent);
 }
 .wmux-welcome-sample { display: flex; flex-direction: column; gap: 12px; }
+/* The statusline clip inside the checklist: a short strip anchored to the
+ * bottom of the frame, where the statusline sits, so the dialog's actions stay
+ * above the fold at 1280x800. */
+.ui-media.wmux-welcome-statusline-clip { aspect-ratio: auto; height: 160px; }
+.ui-media.wmux-welcome-statusline-clip > video,
+.ui-media.wmux-welcome-statusline-clip > img { object-position: bottom center; }
 .wmux-welcome-running-dot { width: 6px; height: 6px; border-radius: 9999px; background: var(--accent-cursor, var(--accent)); }
 
 @media (prefers-reduced-motion: reduce) {

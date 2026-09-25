@@ -555,18 +555,16 @@ describe('primary styling follows the decision', () => {
 });
 
 describe('welcome typography and media', () => {
-  it('shows a labelled preview clip on the idle sample task card', () => {
+  it('keeps the sample task card text only: its copy describes the task, not a clip', () => {
     const html = renderToStaticMarkup(
       createElement(SampleTaskBlock, {
         uiState: 'ready', sampleState: 'idle', completedAt: undefined,
         onTry: noop, onFallbackContinue: noop,
       }),
     );
-    expect(html).toContain('first-run-wizard-sample-preview');
-    expect(html).toContain('role="img"');
-    expect(html).toMatch(/aria-label="Fleet with three agents/);
-    expect(html).toMatch(/<video[^>]*autoPlay|<video[^>]*autoplay/);
-    expect(html).toMatch(/fleet[^"]*\.webm/);
+    expect(html).toContain('first-run-wizard-try');
+    expect(html).not.toContain('first-run-wizard-sample-preview');
+    expect(html).not.toContain('<video');
   });
 
   it('shows the statusline clip, labelled by the row copy, only while the statusline is offered', () => {
