@@ -44,6 +44,8 @@ import { decideWebStartPolicy } from './web/webStartPolicy';
 import { scheduleTokenFileReHarden } from '../shared/security';
 import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
+import { AwaitingScreenVerifier, renderPaneScreen } from './AwaitingScreenVerifier';
+import { isClaudeFamilyAgent } from './approvals/terminalPrompt';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
 import { LanLinkInbox } from './lanlink/inbox';
@@ -4872,6 +4874,27 @@ function wireEvents(
   agentProcessTracker: AgentProcessTracker,
   sessionDataListeners: Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>,
 ): void {
+  // Awaiting-state screen verifier: releases a Claude-family pane stuck at
+  // awaiting_input once its dialog is gone from the screen (two dialog-free
+  // reads in a row). Renders only for awaiting panes, one at a time per pane,
+  // on the shared snapshot queue. See AwaitingScreenVerifier.ts.
+  const paneAgentSlug = (id: string): string | undefined => {
+    const managed = sessionManager.getSession(id);
+    const screenAgent = managed?.bridge.getLastAgent() ?? null;
+    return (screenAgent ? agentDisplayToSlug(screenAgent) : undefined) ?? managed?.meta.lastDetectedAgent;
+  };
+  const awaitingVerifier = new AwaitingScreenVerifier({
+    isAwaiting: (id) => sessionManager.getSession(id)?.bridge.isAwaitingHuman() === true,
+    eligible: (id) => isClaudeFamilyAgent(paneAgentSlug(id)),
+    outputMark: (id) => sessionManager.getSession(id)?.ringBuffer.totalBytesWritten ?? null,
+    render: (id) => renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot),
+    clear: (id) => { sessionManager.getSession(id)?.bridge.clearAwaiting('screen-cleared'); },
+    log: (level, message) => log(level, message),
+  });
+  const forgetAwaiting = (payload: { id: string }): void => awaitingVerifier.forget(payload.id);
+  sessionManager.on('session:died', forgetAwaiting);
+  sessionManager.on('session:destroyed', forgetAwaiting);
+
   // session:died → broadcast DaemonEvent + save state + cleanup.
   //
   // Each side-effect runs inside its own try/catch. A single broken pipe,
@@ -5165,6 +5188,9 @@ function wireEvents(
   });
 
   sessionManager.on('session:active', (payload: { sessionId: string; agentName?: string; likelyRepaint?: boolean }) => {
+    // An output burst on an awaiting pane may be its dialog closing. A no-op
+    // for every pane that is not awaiting.
+    awaitingVerifier.trigger(payload.sessionId, 'output');
     // CompletionAlarm byte-activity feed (brief rule 4 / D3): any PTY output
     // — the user typing the next prompt, a background build chattering —
     // rebuts an open completion window and arms the turn gate. The detected
@@ -5327,9 +5353,11 @@ function wireEvents(
       log('debug', `[awaiting] input on ${payload.sessionId} while awaiting: ${payload.bytes ?? 0} byte(s), ` +
         `${payload.nonKeyBytes ?? 0} non-key, answered=${payload.answered === true}`);
     }
+    if (payload.answered !== true) awaitingVerifier.trigger(payload.sessionId, payload.cause);
   });
 
   sessionManager.on('session:answered', (payload: { sessionId: string; reason?: 'input' | 'screen-cleared' }) => {
+    awaitingVerifier.forget(payload.sessionId);
     const managed = sessionManager.getSession(payload.sessionId);
     const screenAgent = managed?.bridge.getLastAgent() ?? null;
     const slug = (screenAgent ? agentDisplayToSlug(screenAgent) : undefined) ?? managed?.meta.lastDetectedAgent;

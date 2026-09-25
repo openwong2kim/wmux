@@ -23,3 +23,22 @@ export function screenBlocksChatSend(rows: readonly string[] | null): boolean {
   if (!rows || rows.every((row) => !row.trim())) return true;
   return looksLikeApprovalPrompt(rows) || rows.some((row) => DIALOG_FOOTER_ROW.test(row));
 }
+
+/** The question line of Claude Code's permission dialog. */
+const PROCEED_QUESTION_ROW = /\bDo you want to proceed\b/i;
+
+/**
+ * Does a READABLE, non-blank grid still show a Claude Code permission or select
+ * dialog: the `Do you want to proceed?` line, a `❯ <n>.` cursor option row, or
+ * the `Esc to cancel…` footer?
+ *
+ * The awaiting-state verifier clears a pane only when this is false on two
+ * reads in a row. It is deliberately the same row tests as
+ * `screenBlocksChatSend`, minus that gate's "blank means blocked": a blank or
+ * unreadable grid is no evidence either way, and the caller keeps the pane
+ * awaiting on its own rule rather than through this answer.
+ */
+export function screenShowsAgentDialog(rows: readonly string[]): boolean {
+  return looksLikeApprovalPrompt(rows)
+    || rows.some((row) => DIALOG_FOOTER_ROW.test(row) || PROCEED_QUESTION_ROW.test(row));
+}
