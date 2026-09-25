@@ -381,6 +381,7 @@ function persistWebState(
       allowInput: info.allowInput === true,
       allowUpload: info.allowUpload === true,
       allowTranscript: info.allowTranscript === true,
+      ...(info.allowDangerousLaunch === true ? { allowDangerousLaunch: true } : {}),
       ...(info.tls === true && tls ? { tls } : {}),
       allowedHosts,
       tailscale,
@@ -504,6 +505,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
       allowInput: state.allowInput,
       allowUpload: state.allowUpload,
       allowTranscript: state.allowTranscript,
+      allowDangerousLaunch: state.allowDangerousLaunch === true,
       ...(state.tls ? { tls: state.tls } : {}),
       allowedHosts: state.allowedHosts,
       // Replayed, not re-established: the serve registration lives with the
@@ -2728,6 +2730,7 @@ function registerRpcHandlers(
       allowInput?: boolean;
       allowUpload?: boolean;
       allowTranscript?: boolean;
+      allowDangerousLaunch?: boolean;
       allowedHosts?: unknown;
       newToken?: boolean;
       tailscale?: boolean;
@@ -2744,6 +2747,8 @@ function registerRpcHandlers(
     const allowUpload = p.allowUpload === true;
     // Its own opt-in like upload, fail-closed when the caller says nothing.
     const allowTranscript = p.allowTranscript === true;
+    // The chat dangerous-launch ceiling (contract §3.4), fail-closed the same way.
+    const allowDangerousLaunch = p.allowDangerousLaunch === true;
     // Extra Host-header names for reverse-proxy fronts (`tailscale serve`
     // forwards the MagicDNS name). Strings only; anything else is dropped.
     const allowedHosts = Array.isArray(p.allowedHosts)
@@ -2767,6 +2772,7 @@ function registerRpcHandlers(
       allowInput,
       allowUpload,
       allowTranscript,
+      allowDangerousLaunch,
       allowedHosts,
       tailscale,
       ...(tls ? { tls } : {}),

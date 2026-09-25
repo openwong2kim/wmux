@@ -240,6 +240,14 @@ describe('webStateStore (#596 — wmux web survives a daemon restart)', () => {
     expect(coerceWebState({ ...enabled(), enabled: 1 }).enabled).toBe(false);
   });
 
+  it('restores the dangerous-launch ceiling only from a literal true', () => {
+    saveWebState(dir, enabled({ allowDangerousLaunch: true }));
+    expect(loadWebState(dir).allowDangerousLaunch).toBe(true);
+    expect(coerceWebState({ ...enabled(), allowDangerousLaunch: 'yes' })).not.toHaveProperty('allowDangerousLaunch');
+    expect(coerceWebState({ ...enabled(), allowDangerousLaunch: false })).not.toHaveProperty('allowDangerousLaunch');
+    expect(coerceWebState(enabled())).not.toHaveProperty('allowDangerousLaunch');
+  });
+
   it('keeps a pre-TLS state enabled as plaintext for backward compatibility', () => {
     const loaded = coerceWebStateWithDiagnostics(enabled());
     expect(loaded.state.enabled).toBe(true);

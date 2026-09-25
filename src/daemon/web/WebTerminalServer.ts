@@ -64,7 +64,28 @@ import {
   PHONE_PROTOCOL_VERSION,
 } from './protocolVersion';
 import { startSseHeartbeat } from './sseHeartbeat';
-import type { ChatBridge } from '../chat/chatBridge';
+import {
+  CHAT_LAUNCH_RETENTION_MS,
+  checkChatId,
+  type ChatBlocked,
+  type ChatBridge,
+  type ChatOwner,
+  type ChatResolution,
+} from '../chat/chatBridge';
+import type { TranscriptCursor } from '../../shared/transcript/turnEvents';
+import { cursorMatches, decodeChatCursor, encodeChatCursor, type ReadSource } from './chatCursor';
+import { ChatLaunchReceiptStore, type LaunchReceiptState } from './chatLaunchReceipts';
+import {
+  buildChatObject,
+  hasConversation,
+  launchResponse,
+  parseLaunchBody,
+  parseSendBody,
+  resolutionAgentSessionId,
+  resolutionEpoch,
+  sendResponse,
+  type WireResponse,
+} from './chatWire';
 import { buildWebCsp } from './webCsp';
 
 /**
@@ -195,6 +216,16 @@ export interface WebTerminalStartOptions {
    */
   allowTranscript?: boolean;
   /**
+   * Whether `POST /api/sessions/:id/chat/launch` may start an agent with its
+   * approvals (Claude `bypass`) or approvals and sandbox (Codex `yolo`) turned
+   * off (`--allow-dangerous-launch`). A server CEILING, not a device grant:
+   * from a phone this is a category change — an agent that runs tools on this
+   * machine without asking anyone — so the operator opts in on the host, and
+   * every request still has to name the exact combination in `confirm`.
+   * Absent → false, like `allowTranscript`. (contract §3.4)
+   */
+  allowDangerousLaunch?: boolean;
+  /**
    * Terminate HTTPS in the daemon with operator-supplied PEM files.
    *
    * Paths are absolute because the CLI and daemon do not necessarily share a
@@ -238,6 +269,8 @@ export interface WebTerminalInfo {
   allowUpload?: boolean;
   /** Whether `GET /api/sessions/:id/turns` is armed. Its own opt-in (#782). */
   allowTranscript?: boolean;
+  /** Whether chat launch may use `bypass`/`yolo`. Its own opt-in (contract §3.4). */
+  allowDangerousLaunch?: boolean;
   /** True when this listener terminates HTTPS inside the daemon. */
   tls?: boolean;
   token?: string;
@@ -677,6 +710,23 @@ const MAX_LAST_ASSISTANT_READS_PER_POLL = 8;
 /** A decision body is two fields; anything larger is not one of ours. */
 const MAX_JSON_BODY_BYTES = 8 * 1024;
 /**
+ * Chat send body cap (contract §3.5): 16,000 UTF-16 units at the 6-byte
+ * worst case of a client that escapes every unit as `\uXXXX`, plus the
+ * envelope. The unit rule itself is the daemon's, checked after parsing.
+ */
+const CHAT_SEND_MAX_BODY_BYTES = 96 * 1024;
+/** Chat launch body cap: 2,000 units × 6 bytes plus the envelope. */
+const CHAT_LAUNCH_MAX_BODY_BYTES = 16 * 1024;
+/** Same 1 Hz floor as the nudge: a blocked badge must be right, not instant. */
+const CHAT_BLOCKED_COALESCE_MS = 1000;
+/**
+ * N7 — a bridge watch outlives its last reader by at most this long: four of
+ * the client's 30 s stale windows (contract §5.5). A visible chat reads every
+ * 10 s, so it never loses its watch.
+ */
+const CHAT_WATCH_IDLE_MS = 120_000;
+const CHAT_WATCH_SWEEP_MS = 30_000;
+/**
  * Ceiling on ONE expanded code block / tool body served to a phone. The desktop
  * reads these over a local pipe; a phone may be on cellular, and a `cat` of a
  * large file is one legitimate transcript entry. Over the cap the response is a
@@ -1009,6 +1059,23 @@ export class WebTerminalServer {
   private readonly transcriptNudgeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Per-pane coalescing timers for the non-recording liveness event. */
   private readonly livenessTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * N3 — the last read-time `chat.blocked` value per pane, as a comparable
+   * key ('' = not blocked). Only transitions become live events; the value
+   * itself is never served from here, `/turns` recomputes it on every read.
+   */
+  private readonly chatBlockedState = new Map<string, string>();
+  /** Per-pane coalescing timers for the `chat.blocked` recompute. */
+  private readonly chatBlockedTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * N7 — per pane, per watcher key: when that principal last read the pane's
+   * OpenCode conversation successfully. A pane is in this map exactly while
+   * this server holds a bridge watch on it.
+   */
+  private readonly chatWatchReads = new Map<string, Map<string, number>>();
+  private chatWatchSweep: ReturnType<typeof setInterval> | null = null;
+  /** Memory-only, owner-bound launch receipts (contract §6.4). */
+  private readonly chatLaunchReceipts = new ChatLaunchReceiptStore();
   /** Latest liveness state per pane, held for the open coalescing window. */
   private readonly phoneGit = new SessionGitController();
   private phoneGitRequests = 0;
@@ -1380,8 +1447,13 @@ export class WebTerminalServer {
 
     this.deps.log(
       'info',
-      `[web] ${options.tls ? 'HTTPS' : 'HTTP'} listening on ${this.opts.host}:${this.opts.port} (input ${options.allowInput ? 'ENABLED' : 'read-only'}, uploads ${options.allowUpload ? 'ENABLED' : 'off'})`,
+      `[web] ${options.tls ? 'HTTPS' : 'HTTP'} listening on ${this.opts.host}:${this.opts.port} (input ${options.allowInput ? 'ENABLED' : 'read-only'}, uploads ${options.allowUpload ? 'ENABLED' : 'off'}${options.allowDangerousLaunch ? ', dangerous chat launch ENABLED' : ''})`,
     );
+    // N7 — the bridge's OpenCode watches poll the plugin once a second, so a
+    // watch nobody reads any more has to end on its own. Unref'd: this timer
+    // must never be what keeps the daemon alive.
+    this.chatWatchSweep = setInterval(() => this.sweepChatWatches(), CHAT_WATCH_SWEEP_MS);
+    this.chatWatchSweep.unref?.();
     return this.status();
   }
 
@@ -1431,6 +1503,22 @@ export class WebTerminalServer {
     this.livenessTimers.clear();
     this.pendingLiveness.clear();
     this.transcriptWatchers.clear();
+    // Chat: no reader survives the stop, so every bridge watch this server
+    // opened ends here rather than polling the plugin until the next start.
+    if (this.chatWatchSweep) clearInterval(this.chatWatchSweep);
+    this.chatWatchSweep = null;
+    const chat = this.deps.chat?.() ?? null;
+    for (const id of this.chatWatchReads.keys()) {
+      try {
+        chat?.unwatch(id);
+      } catch (err) {
+        this.deps.log('warn', `[web] chat unwatch failed for ${id}: ${errMsg(err)}`);
+      }
+    }
+    this.chatWatchReads.clear();
+    for (const timer of this.chatBlockedTimers.values()) clearTimeout(timer);
+    this.chatBlockedTimers.clear();
+    this.chatBlockedState.clear();
 
     const server = this.server;
     this.server = null;
@@ -1684,6 +1772,7 @@ export class WebTerminalServer {
         allowInput: this.opts.allowInput,
         allowUpload: this.opts.allowUpload,
         allowTranscript: this.opts?.allowTranscript === true,
+        allowDangerousLaunch: this.opts.allowDangerousLaunch === true,
         tls: this.opts.tls !== undefined,
         token: this.token,
         urls: this.buildUrls(),
@@ -1702,6 +1791,7 @@ export class WebTerminalServer {
       allowInput: this.opts.allowInput,
       allowUpload: this.opts.allowUpload,
       allowTranscript: this.opts.allowTranscript === true,
+      allowDangerousLaunch: this.opts.allowDangerousLaunch === true,
       tls: this.opts.tls !== undefined,
       token: this.token,
       urls: this.buildUrls(),
@@ -1934,6 +2024,10 @@ export class WebTerminalServer {
         desktopAccounts: this.opts?.allowTranscript === true && desktopAvailable,
         gitControl: this.mayInput(principal),
         runHistory: this.opts?.allowTranscript === true && this.deps.runHistory !== undefined,
+        // Native chat (contract §4). OMITTED, not false, when the bridge is not
+        // wired: that is the shape a daemon predating the routes serves, and a
+        // phone reads both as "no native chat here".
+        ...this.chatConfig(principal),
         // Whether this daemon can drive a Live Activity over APNs. A phone that
         // sees it true registers a push-to-start token and lets the daemon
         // start the activity; a phone talking to a daemon that omits the key
@@ -1985,6 +2079,22 @@ export class WebTerminalServer {
     }
     if (p.startsWith('/api/sessions/')) {
       const rest = p.slice('/api/sessions/'.length);
+      // Native chat writes and their receipts nest under the pane (contract
+      // §3.2), so the pane is resolved and checked before any body is read.
+      const chatRoute = /^([^/]+)\/chat\/(messages|launch)(?:\/([^/]+))?$/.exec(rest);
+      if (chatRoute) {
+        const [, rawId, kind, rawReceipt] = chatRoute;
+        if (req.method === 'POST' && rawReceipt === undefined) {
+          return kind === 'messages'
+            ? this.handleChatSend(req, res, rawId, url, principal)
+            : this.handleChatLaunch(req, res, rawId, url, principal);
+        }
+        if (req.method === 'GET' && rawReceipt !== undefined) {
+          return kind === 'messages'
+            ? this.handleChatSendReceipt(res, rawId, rawReceipt, principal)
+            : this.handleChatLaunchReceipt(res, rawId, rawReceipt, principal);
+        }
+      }
       if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/agent-settings')) return this.handleAgentSettings(req,res,rest.slice(0,-'/agent-settings'.length),url,principal);
       if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/browser')) return this.handlePhoneBrowser(req,res,rest.slice(0,-'/browser'.length),url,principal);
       if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/accounts')) {
@@ -2003,7 +2113,7 @@ export class WebTerminalServer {
         return this.handleSessionDiff(res, rest.slice(0, -'/diff'.length), principal);
       }
       if (req.method === 'GET' && rest.endsWith('/commands')) {
-        return this.handleSessionCommands(res, rest.slice(0, -'/commands'.length), principal);
+        return this.handleSessionCommands(res, rest.slice(0, -'/commands'.length), url, principal);
       }
       if (req.method === 'GET' && rest.endsWith('/turns/image')) {
         return this.handleSessionTurnImage(req, res, rest.slice(0, -'/turns/image'.length));
@@ -2803,11 +2913,16 @@ export class WebTerminalServer {
    * an empty list rather than a refusal — "this pane has no commands" is a
    * usable answer for a composer, "409" is not.
    */
-  private handleSessionCommands(res: http.ServerResponse, rawId: string, principal: WebPrincipal): void {
+  private handleSessionCommands(res: http.ServerResponse, rawId: string, url: URL, principal: WebPrincipal): void {
     const id = decodePathSegment(rawId);
     if (id === null) return this.json(res, 404, { error: 'session not found' });
     const managed = this.attachableSession(principal, id);
     if (!managed) return this.json(res, 404, { error: 'session not found' });
+    const agent = url.searchParams.get('agent');
+    if (agent !== null) {
+      void this.handleChatSkills(res, id, agent).catch((err: unknown) => this.failRequest(res, err));
+      return;
+    }
 
     const cwd = managed.meta.spawnCwd;
     if (!cwd) return this.json(res, 200, { commands: [] });
@@ -2909,6 +3024,14 @@ export class WebTerminalServer {
       this.json(res, 404, { error: 'session not found' });
       return;
     }
+    // Native chat (contract §5): the same three-way dispatch the desktop uses.
+    // Without the bridge the route stays byte-for-byte what it was.
+    const chat = this.deps.chat?.() ?? null;
+    if (chat) {
+      this.noteTranscriptWatcher(sessionId, principal);
+      void this.handleChatTurns(req, res, sessionId, principal, chat).catch((err: unknown) => this.failRequest(res, err));
+      return;
+    }
     const projector = this.deps.projector?.() ?? null;
     if (!projector) {
       this.json(res, 503, { error: 'transcript projector unavailable' });
@@ -2962,6 +3085,586 @@ export class WebTerminalServer {
       cursor: encodeTurnCursor(result.cursor),
       reset: result.reset,
       ...(result.budgetDropped ? { budgetDropped: true } : {}),
+    });
+  }
+
+  // --- native chat bridge (contract v0.3.1) ---------------------------------
+
+  /**
+   * `/turns` with the bridge wired (N1, N2, N11). The binding is resolved
+   * fresh on every read — `tui` (OpenCode plugin), `managed`, `file` (Claude
+   * JSONL / Codex rollout) or `none` — and every 200 carries `chat`, so the
+   * phone never has to infer what the pane is from the rows it holds.
+   *
+   * `reset` appears exactly when the request carried a cursor. Old clients
+   * tell a snapshot from a delta by that key alone, and treat a delta as
+   * upsert-plus-append, so a full `tui`/`managed` page answered without
+   * `reset:true` would make them keep rows the page no longer has.
+   */
+  private async handleChatTurns(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    sessionId: string,
+    principal: WebPrincipal,
+    chat: ChatBridge,
+  ): Promise<void> {
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const dir = (url.searchParams.get('dir') ?? 'forward') === 'back' ? 'back' : 'forward';
+    const rawCursor = url.searchParams.get('cursor');
+    const carried = !!rawCursor;
+    const cursor = decodeChatCursor(rawCursor);
+
+    const resolution = await chat.resolve(sessionId);
+    const blocked = await this.readChatBlocked(chat, sessionId, resolution);
+    if (res.destroyed || res.writableEnded) return;
+    this.noteChatBlocked(sessionId, resolution, blocked);
+    const chatBody = buildChatObject(resolution, blocked);
+    const reply = (body: Record<string, unknown>) => this.json(res, 200, { ...body, chat: chatBody });
+    // No `cursor` on purpose: a client that had a conversation drops its rows
+    // and reads again from nothing.
+    const unavailable = (reason: string) =>
+      reply({ available: false, reason, ...(carried ? { reset: true, events: [] } : {}) });
+
+    if (resolution.source === 'none' || !hasConversation(resolution)) {
+      return unavailable(resolution.status.reason);
+    }
+    const src: ReadSource = resolution.source;
+    const agentSessionId = resolutionAgentSessionId(resolution) ?? '';
+    const epoch = resolutionEpoch(resolution) ?? '';
+    const valid = cursorMatches(cursor, { src, agentSessionId, epoch }) ? cursor : null;
+    const bound = { v: 2 as const, src, a: agentSessionId, e: epoch };
+
+    if (resolution.source === 'file') {
+      const projector = this.deps.projector?.() ?? null;
+      if (!projector) return this.json(res, 503, { error: 'transcript projector unavailable' });
+      const fileCursor = (c: TranscriptCursor) =>
+        encodeChatCursor({ ...bound, head: c.headOffset, tail: c.tailOffset, fileSize: c.fileSize });
+      // Rules 1–4 failed (or a v1 cursor, or none at all): the tail of the
+      // CURRENT conversation, replacing whatever the client holds.
+      if (!valid || (dir === 'forward' && valid.tail === undefined)) {
+        const page = projector.snapshot(sessionId);
+        if (!page) return unavailable('unreadable');
+        return reply({
+          available: true,
+          mode: 'snapshot',
+          ...(carried ? { reset: true } : {}),
+          events: page.events,
+          cursor: fileCursor(page.cursor),
+          hasMore: page.hasMore,
+          ...(page.truncatedHead ? { truncatedHead: true } : {}),
+        });
+      }
+      if (dir === 'back') {
+        const page = projector.snapshot(sessionId, { before: valid.head });
+        if (!page) return unavailable('unreadable');
+        return reply({
+          available: true,
+          mode: 'older',
+          reset: false,
+          events: page.events,
+          cursor: fileCursor(page.cursor),
+          hasMore: page.hasMore,
+          ...(page.truncatedHead ? { truncatedHead: true } : {}),
+        });
+      }
+      const result = projector.delta(sessionId, valid.tail as number, { cursorFileSize: valid.fileSize });
+      if (!result) return unavailable('unreadable');
+      return reply({
+        available: true,
+        mode: result.reset ? 'snapshot' : 'delta',
+        reset: result.reset,
+        events: result.events,
+        cursor: fileCursor(result.cursor),
+        ...(result.budgetDropped ? { budgetDropped: true } : {}),
+      });
+    }
+
+    // `tui` and `managed` are snapshot-only: a full bounded page on every
+    // read, no back paging (managed eviction shifts positions, N9).
+    const page = resolution.source === 'tui' ? resolution.page : chat.managedSnapshot(sessionId);
+    if (!page) return unavailable('unreadable');
+    const next = encodeChatCursor({ ...bound, head: page.cursor.headOffset });
+    if (resolution.source === 'tui') this.noteChatWatch(chat, sessionId, principal);
+    if (carried && dir === 'back' && valid) {
+      return reply({ available: true, mode: 'older', reset: false, events: [], cursor: next, hasMore: false });
+    }
+    return reply({
+      available: true,
+      mode: 'snapshot',
+      ...(carried ? { reset: true } : {}),
+      events: page.events,
+      cursor: next,
+      hasMore: false,
+      ...(page.truncatedHead ? { truncatedHead: true } : {}),
+    });
+  }
+
+  /**
+   * The read-time blocked state, or undefined. A bridge failure reads as "not
+   * blocked" rather than failing the page: the send path re-checks every gate
+   * itself, so a missed badge costs a refused send, not a wrong one.
+   */
+  private async readChatBlocked(chat: ChatBridge, sessionId: string, resolution: ChatResolution): Promise<ChatBlocked | undefined> {
+    // Producer-side brain gate (#1397/#1402): computed for no brain pane,
+    // whichever path asks.
+    if (this.isBrainApproval(sessionId)) return undefined;
+    try {
+      return await chat.blocked(sessionId, resolution);
+    } catch (err) {
+      this.deps.log('warn', `[web] chat.blocked failed for ${sessionId}: ${errMsg(err)}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * N3 — turn a changed read-time `chat.blocked` into a live event for the
+   * pane's `/turns` watchers. The FIRST observation of a pane is recorded
+   * without an event: whoever made it just read the value in `/turns`.
+   */
+  private noteChatBlocked(sessionId: string, resolution: ChatResolution, blocked: ChatBlocked | undefined): void {
+    if (this.isBrainApproval(sessionId)) return;
+    const key = blocked ? JSON.stringify([blocked.by, blocked.approvalId ?? null]) : '';
+    const previous = this.chatBlockedState.get(sessionId);
+    this.chatBlockedState.set(sessionId, key);
+    if (previous === undefined || previous === key) return;
+    const agent = resolution.status.terminal?.agent;
+    const body = blocked
+      ? {
+          sessionId,
+          by: blocked.by,
+          ...(blocked.approvalId ? { approvalId: blocked.approvalId } : {}),
+          ...(agent ? { agent } : {}),
+          at: this.now(),
+        }
+      : { sessionId, at: this.now() };
+    this.deliverChatEvent(sessionId, blocked ? 'chat.blocked' : 'chat.unblocked', JSON.stringify(body));
+  }
+
+  /**
+   * LIVE-ONLY, like `transcript.nudge`: no `id:`, never in `attentionLog`,
+   * never replayed. A pane flapping between blocked and unblocked would
+   * otherwise evict a pending approval from the 100-entry replay window, and a
+   * phone replaying after a reconnect would clear a badge while a human is
+   * still being waited on. `/turns` is the authoritative state.
+   */
+  private deliverChatEvent(sessionId: string, event: 'chat.blocked' | 'chat.unblocked', body: string): void {
+    const watchers = this.transcriptWatchers.get(sessionId);
+    if (!watchers || watchers.size === 0) return;
+    for (const client of this.eventClients) {
+      if (!watchers.has(this.watcherKey(client.principal))) continue;
+      try {
+        writeSse(client.res, event, body);
+      } catch {
+        /* client stream broken — its own 'close' handler cleans up */
+      }
+    }
+  }
+
+  /** Whether some principal that read this pane's `/turns` holds `/api/events` open. */
+  private hasLiveChatWatcher(sessionId: string): boolean {
+    const watchers = this.transcriptWatchers.get(sessionId);
+    if (!watchers || watchers.size === 0) return false;
+    for (const client of this.eventClients) {
+      if (watchers.has(this.watcherKey(client.principal))) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Something that can change a pane's blocked state happened (an approval
+   * event, a liveness change, a transcript nudge). Recompute it once per
+   * second at most, and only for a pane somebody is actually watching —
+   * resolving a binding is a plugin read for OpenCode, not a map lookup.
+   */
+  private scheduleChatBlockedCheck(sessionId: string): void {
+    if (this.opts?.allowTranscript !== true || this.chatBlockedTimers.has(sessionId)) return;
+    if (this.isBrainApproval(sessionId) || !this.readableSession(sessionId)) return;
+    if (!(this.deps.chat?.() ?? null) || !this.hasLiveChatWatcher(sessionId)) return;
+    const timer = setTimeout(() => {
+      this.chatBlockedTimers.delete(sessionId);
+      void this.recomputeChatBlocked(sessionId).catch((err: unknown) =>
+        this.deps.log('warn', `[web] chat blocked recompute failed for ${sessionId}: ${errMsg(err)}`),
+      );
+    }, CHAT_BLOCKED_COALESCE_MS);
+    timer.unref?.();
+    this.chatBlockedTimers.set(sessionId, timer);
+  }
+
+  private async recomputeChatBlocked(sessionId: string): Promise<void> {
+    const chat = this.deps.chat?.() ?? null;
+    if (!chat || this.opts?.allowTranscript !== true) return;
+    if (!this.readableSession(sessionId)) {
+      this.chatBlockedState.delete(sessionId);
+      return;
+    }
+    if (!this.hasLiveChatWatcher(sessionId)) return;
+    const resolution = await chat.resolve(sessionId);
+    const blocked = await this.readChatBlocked(chat, sessionId, resolution);
+    if (!this.server) return;
+    this.noteChatBlocked(sessionId, resolution, blocked);
+  }
+
+  /**
+   * N7 — record a successful OpenCode read and (re)arm the bridge watch that
+   * nudges this pane's phone watchers on TUI changes. `watch` is called on
+   * every such read; the bridge keeps one watch per pane.
+   */
+  private noteChatWatch(chat: ChatBridge, sessionId: string, principal: WebPrincipal): void {
+    let reads = this.chatWatchReads.get(sessionId);
+    if (!reads) {
+      reads = new Map();
+      this.chatWatchReads.set(sessionId, reads);
+    }
+    reads.set(this.watcherKey(principal), this.now());
+    try {
+      chat.watch(sessionId);
+    } catch (err) {
+      this.deps.log('warn', `[web] chat watch failed for ${sessionId}: ${errMsg(err)}`);
+    }
+  }
+
+  /**
+   * End every bridge watch no reader holds any more: a watch survives only
+   * while some principal that read the pane within `CHAT_WATCH_IDLE_MS` has
+   * an `/api/events` connection open. `transcriptWatchers` is deliberately
+   * never pruned; this map is the one with a lifetime.
+   */
+  private sweepChatWatches(): void {
+    if (this.chatWatchReads.size === 0) return;
+    const now = this.now();
+    const connected = new Set<string>();
+    for (const client of this.eventClients) connected.add(this.watcherKey(client.principal));
+    const chat = this.deps.chat?.() ?? null;
+    for (const [sessionId, reads] of this.chatWatchReads) {
+      for (const [key, at] of reads) {
+        if (now - at > CHAT_WATCH_IDLE_MS) reads.delete(key);
+      }
+      if ([...reads.keys()].some((key) => connected.has(key))) continue;
+      this.chatWatchReads.delete(sessionId);
+      try {
+        chat?.unwatch(sessionId);
+      } catch (err) {
+        this.deps.log('warn', `[web] chat unwatch failed for ${sessionId}: ${errMsg(err)}`);
+      }
+    }
+  }
+
+  /** The `/api/config` chat keys (contract §4), or none without the bridge. */
+  private chatConfig(principal: WebPrincipal): Record<string, unknown> {
+    if (!(this.deps.chat?.() ?? null)) return {};
+    const chatBinding = this.opts?.allowTranscript === true;
+    const writable = chatBinding && this.mayInput(principal);
+    const dangerous = this.opts?.allowDangerousLaunch === true;
+    return {
+      chatBinding,
+      chatSend: writable,
+      chatLaunch: writable,
+      ...(writable
+        ? {
+            chatLaunchModes: {
+              claude: dangerous ? ['default', 'bypass'] : ['default'],
+              codex: dangerous ? ['default', 'yolo'] : ['default'],
+            },
+          }
+        : {}),
+      chatSkills: true,
+      chatVersion: 1,
+    };
+  }
+
+  private refuseTranscript(res: http.ServerResponse): void {
+    return this.json(res, 403, {
+      error: 'transcript-disabled: server started without --allow-transcript',
+      detail: 'restart with: wmux web --allow-transcript <your other flags>',
+    });
+  }
+
+  /**
+   * §3.3 steps 3–5, after the body: the credential that sent the headers must
+   * still be the same caller, still hold input, and the pane must still be the
+   * SAME incarnation. Answers the request itself and returns null on refusal.
+   */
+  private async reauthorizeChatWrite(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    principal: WebPrincipal,
+    id: string,
+    pane: ManagedSession,
+    incarnation: string | undefined,
+  ): Promise<WebPrincipal | null> {
+    const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+    if (!fresh.ok || !sameCaller(principal, fresh.principal)) {
+      this.json(res, 401, { error: 'authorization-expired' });
+      return null;
+    }
+    if (!this.mayInput(fresh.principal)) {
+      this.refuseInput(res, fresh.principal, 'Input permission changed');
+      return null;
+    }
+    if (this.attachableSession(fresh.principal, id) !== pane || pane.meta.incarnationId !== incarnation) {
+      this.json(res, 409, { error: 'pane-incarnation-changed' });
+      return null;
+    }
+    return fresh.principal;
+  }
+
+  /**
+   * The predicate the daemon runs immediately before its first PTY/plugin
+   * write and again before Enter (§3.3 steps 6–7): the same checks as above,
+   * plus a caller that is still waiting for the answer. A phone that hung up
+   * has nobody to tell what was typed.
+   */
+  private chatWriteAuthorizer(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    principal: WebPrincipal,
+    id: string,
+    pane: ManagedSession,
+    incarnation: string | undefined,
+    extra?: () => boolean,
+  ): () => Promise<boolean> {
+    return async () => {
+      if (res.destroyed || res.writableEnded || this.opts?.allowTranscript !== true) return false;
+      if (extra && !extra()) return false;
+      const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+      return now.ok && sameCaller(principal, now.principal) && this.mayInput(now.principal) &&
+        this.attachableSession(now.principal, id) === pane && pane.meta.incarnationId === incarnation;
+    };
+  }
+
+  /**
+   * `POST /api/sessions/:id/chat/messages` (N4). The route adds the principal
+   * gates and the wire mapping; binding, identity, receipts and the guarded
+   * write are the daemon's shared send path, the same one the desktop uses.
+   */
+  private handleChatSend(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+    url: URL,
+    principal: WebPrincipal,
+  ): void {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+    if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Sending to a chat types into this pane');
+    const id = decodePathSegment(rawId);
+    const pane = id === null ? undefined : this.attachableSession(principal, id);
+    if (!pane || id === null) return this.json(res, 404, { error: 'session not found' });
+    const chat = this.deps.chat?.() ?? null;
+    if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
+    const incarnation = pane.meta.incarnationId;
+
+    this.readJsonBody(req, res, (body) => {
+      void (async () => {
+        const fresh = await this.reauthorizeChatWrite(req, res, url, principal, id, pane, incarnation);
+        if (!fresh) return;
+        const parsed = parseSendBody(body);
+        if (!parsed.ok) {
+          return this.json(res, 400, {
+            error: 'invalid-chat-request',
+            detail: parsed.detail,
+            effect: 'none',
+            ...(parsed.clientMessageId !== undefined ? { clientMessageId: parsed.clientMessageId } : {}),
+          });
+        }
+        const { clientMessageId } = parsed.value;
+        let outcome;
+        try {
+          outcome = await chat.send({
+            owner: chatOwner(fresh),
+            id,
+            ...parsed.value,
+            managedReadOnly: true,
+            authorized: this.chatWriteAuthorizer(req, res, url, principal, id, pane, incarnation),
+          });
+        } catch (err) {
+          // No `effect`: the write stage is unknown, and the client's rule for a
+          // 5xx without one is "unknown — ask the receipt", never "nothing sent".
+          this.deps.log('warn', `[web] chat send threw for ${id}: ${errMsg(err)}`);
+          return this.json(res, 500, { error: 'chat-send-failed', clientMessageId });
+        }
+        const wire = sendResponse(outcome, clientMessageId);
+        this.json(res, wire.status, wire.body);
+      })().catch((err: unknown) => this.failRequest(res, err));
+    }, CHAT_SEND_MAX_BODY_BYTES);
+  }
+
+  /**
+   * `GET /api/sessions/:id/chat/messages/:clientMessageId` (§6.3). No
+   * `mayInput` on purpose: a device whose grant was withdrawn after a send
+   * must still learn whether that send landed. Owner binding keeps one device
+   * from reading another's receipts.
+   */
+  private handleChatSendReceipt(res: http.ServerResponse, rawId: string, rawMessageId: string, principal: WebPrincipal): void {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+    const id = decodePathSegment(rawId);
+    if (id === null || !this.attachableSession(principal, id)) return this.json(res, 404, { error: 'session not found' });
+    const chat = this.deps.chat?.() ?? null;
+    if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
+    const clientMessageId = decodePathSegment(rawMessageId) ?? '';
+    const view = chat.receipt(chatOwner(principal), id, clientMessageId);
+    return this.json(res, 200, {
+      clientMessageId,
+      state: view.state,
+      ...(view.result ? { result: view.result } : {}),
+      ...(view.error ? { error: view.error } : {}),
+      ...(view.agentSessionId ? { agentSessionId: view.agentSessionId } : {}),
+      ...(view.historyEpoch ? { historyEpoch: view.historyEpoch } : {}),
+      ...(typeof view.at === 'number' ? { at: view.at } : {}),
+    });
+  }
+
+  /**
+   * `POST /api/sessions/:id/chat/launch` (N8). Types a fixed launcher into
+   * the pane's own empty shell; the daemon owns every readiness check. The
+   * dangerous modes need the operator's server ceiling AND a per-request
+   * `confirm` naming the exact combination (§3.4), and the ceiling is read
+   * again inside the predicate that runs just before the launcher is typed.
+   */
+  private handleChatLaunch(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+    url: URL,
+    principal: WebPrincipal,
+  ): void {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+    if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Starting an agent runs a command on this machine');
+    const id = decodePathSegment(rawId);
+    const pane = id === null ? undefined : this.attachableSession(principal, id);
+    if (!pane || id === null) return this.json(res, 404, { error: 'session not found' });
+    const chat = this.deps.chat?.() ?? null;
+    if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
+    const incarnation = pane.meta.incarnationId;
+
+    this.readJsonBody(req, res, (body) => {
+      void (async () => {
+        const fresh = await this.reauthorizeChatWrite(req, res, url, principal, id, pane, incarnation);
+        if (!fresh) return;
+        const parsed = parseLaunchBody(body);
+        if (!parsed.ok) {
+          return this.json(res, 400, {
+            error: 'invalid-chat-request',
+            detail: parsed.detail,
+            effect: 'none',
+            ...(parsed.clientLaunchId !== undefined ? { clientLaunchId: parsed.clientLaunchId } : {}),
+          });
+        }
+        const { agent, mode, prompt, clientLaunchId } = parsed.value;
+        const age = checkChatId(clientLaunchId, this.now(), CHAT_LAUNCH_RETENTION_MS);
+        if (age === 'invalid') {
+          return this.json(res, 400, {
+            error: 'invalid-chat-request',
+            detail: 'clientLaunchId must be <13-digit ms>-<lowercase uuid>',
+            effect: 'none',
+            clientLaunchId,
+          });
+        }
+        // Past the receipt lifetime `unknown` no longer proves "never typed",
+        // so the id is refused rather than risking a second launcher.
+        if (age === 'expired') return this.json(res, 400, { error: 'launch-id-expired', effect: 'none', clientLaunchId });
+
+        const owner = chatOwner(fresh);
+        const dangerous = mode !== 'default';
+        const trace = (outcome: string): void => {
+          if (!dangerous) return;
+          try {
+            chat.traceDangerousLaunch({ at: this.now(), owner, paneId: id, agent, mode, clientLaunchId, outcome });
+          } catch (err) {
+            this.deps.log('warn', `[web] dangerous launch trace failed: ${errMsg(err)}`);
+          }
+        };
+        if (dangerous && this.opts?.allowDangerousLaunch !== true) {
+          trace('dangerous-launch-disabled');
+          return this.json(res, 403, {
+            error: 'dangerous-launch-disabled: server started without --allow-dangerous-launch',
+            detail: 'restart with: wmux web --allow-dangerous-launch <your other flags>',
+            effect: 'none',
+            clientLaunchId,
+          });
+        }
+        if (dangerous && parsed.value.confirm !== `${agent}:${mode}`) {
+          trace('dangerous-mode-unconfirmed');
+          return this.json(res, 428, { error: 'dangerous-mode-unconfirmed', effect: 'none', clientLaunchId });
+        }
+
+        const fingerprint = JSON.stringify([id, incarnation ?? null, agent, mode, prompt]);
+        const begun = this.chatLaunchReceipts.begin(owner, clientLaunchId, id, fingerprint, this.now());
+        if (begun.kind === 'conflict') return this.json(res, 409, { error: 'launch-id-conflict', effect: 'none', clientLaunchId });
+        if (begun.kind === 'pending') return this.json(res, 202, { state: 'pending', replayed: true, clientLaunchId });
+        if (begun.kind === 'replay') return this.json(res, 200, { ...begun.body, replayed: true });
+        if (begun.kind === 'full') return this.json(res, 429, { error: 'launch-busy', effect: 'none', clientLaunchId });
+
+        const authorized = this.chatWriteAuthorizer(req, res, url, principal, id, pane, incarnation,
+          () => !dangerous || this.opts?.allowDangerousLaunch === true);
+        let wire: WireResponse;
+        let effect: 'none' | 'uncertain' | 'submitted';
+        try {
+          const outcome = await chat.launch({ id, agent, prompt, mode, refuseConversation: true, authorized });
+          wire = launchResponse(outcome, clientLaunchId);
+          effect = outcome.ok ? 'submitted' : outcome.effect;
+          if (outcome.ok) trace('submitted');
+          else if (outcome.error === 'launch-unconfirmed') trace('launch-unconfirmed');
+        } catch (err) {
+          // The daemon passed its checks and then failed: whether the launcher
+          // reached the shell is unknown, which is exactly `launch-unconfirmed`.
+          this.deps.log('warn', `[web] chat launch threw for ${id}: ${errMsg(err)}`);
+          wire = { status: 502, body: { error: 'launch-unconfirmed', effect: 'uncertain', clientLaunchId } };
+          effect = 'uncertain';
+          trace('launch-unconfirmed');
+        }
+        this.chatLaunchReceipts.finish(owner, clientLaunchId, effect, wire.status, wire.body);
+        this.json(res, wire.status, wire.body);
+      })().catch((err: unknown) => this.failRequest(res, err));
+    }, CHAT_LAUNCH_MAX_BODY_BYTES);
+  }
+
+  /** `GET /api/sessions/:id/chat/launch/:clientLaunchId` — owner-bound, memory only. */
+  private handleChatLaunchReceipt(res: http.ServerResponse, rawId: string, rawLaunchId: string, principal: WebPrincipal): void {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+    const id = decodePathSegment(rawId);
+    if (id === null || !this.attachableSession(principal, id)) return this.json(res, 404, { error: 'session not found' });
+    const clientLaunchId = decodePathSegment(rawLaunchId) ?? '';
+    const state: LaunchReceiptState = this.chatLaunchReceipts.state(chatOwner(principal), id, clientLaunchId, this.now());
+    return this.json(res, 200, { clientLaunchId, state });
+  }
+
+  /**
+   * `GET /api/sessions/:id/commands?agent=` (N6): the native catalogue the
+   * composer offers after `/` (Claude) or `$` (Codex). Names, descriptions
+   * and the verbatim invocation only — the same no-new-grant reasoning as the
+   * legacy list. Every refusal is a 200 `unavailable`, as the desktop RPC
+   * answers, so a composer never has to tell "none" from "not now".
+   */
+  private async handleChatSkills(res: http.ServerResponse, id: string, agent: string): Promise<void> {
+    if (agent !== 'claude' && agent !== 'codex') {
+      return this.json(res, 400, { error: 'invalid-chat-request', detail: 'agent must be claude or codex' });
+    }
+    const unavailable = { state: 'unavailable', commands: [] };
+    const chat = this.deps.chat?.() ?? null;
+    if (!chat) return this.json(res, 200, unavailable);
+    let catalog;
+    try {
+      catalog = await chat.skills(id, agent);
+    } catch (err) {
+      this.deps.log('warn', `[web] chat skills failed for ${id}: ${errMsg(err)}`);
+      return this.json(res, 200, unavailable);
+    }
+    return this.json(res, 200, {
+      state: catalog.state,
+      ...(catalog.reason ? { reason: catalog.reason } : {}),
+      commands: catalog.skills.map((skill) => ({
+        name: skill.name,
+        description: skill.description,
+        source: skill.source,
+        kind: 'skill',
+        invocation: skill.invocation,
+      })),
     });
   }
 
@@ -4681,6 +5384,8 @@ export class WebTerminalServer {
     // — sitting in the replay window. FLAT, like the liveness gate: the desk
     // drives the brain over RPC, not this fan-out.
     if (this.isBrainApproval(r.sessionId)) return;
+    // N3 — an approval opening or closing moves the pane's blocked state.
+    this.scheduleChatBlockedCheck(r.sessionId);
     this.publish('approval', {
       sessionId: r.sessionId,
       // NOT `id`: the envelope's own `id` is the replay cursor, and identity
@@ -4814,6 +5519,8 @@ export class WebTerminalServer {
    */
   emitTranscriptNudge(sessionId: string): void {
     if (this.eventClients.size === 0) return;
+    // N3 — a new transcript row can open or close an OpenCode dialog.
+    this.scheduleChatBlockedCheck(sessionId);
     // 1s coalescing per pane. The FIRST nudge of a burst arms the timer; later
     // ones in the same window are dropped on purpose (a refetch is already
     // pending, and the cursor checks on that refetch subsume later writes).
@@ -4888,6 +5595,8 @@ export class WebTerminalServer {
     // is gated against. Same gate as the transcript routes, so the orchestrator
     // brain's pane is refused here too.
     if (!this.readableSession(sessionId)) return;
+    // N3 — `awaiting_input` and its end are blocked-state transitions.
+    this.scheduleChatBlockedCheck(sessionId);
     // Both sinks, not just the fleet one (#1315): a phone on the terminal face
     // holds a pane stream and no `/api/events` connection at all, and bailing on
     // `eventClients` alone left it with nothing to render.
@@ -5688,6 +6397,18 @@ function decodePathSegment(raw: string): string | null {
   }
   if (!id || id.includes('/')) return null;
   return id;
+}
+
+/** Receipt owner namespace for an HTTP principal, as `/api/input` keys its receipts. */
+function chatOwner(principal: WebPrincipal): ChatOwner {
+  return principal.kind === 'device' ? `device:${principal.deviceId}` : 'operator';
+}
+
+/** Same credential class and, for a device, the same device (the #1447 rule). */
+function sameCaller(original: WebPrincipal, now: WebPrincipal): boolean {
+  return now.kind === 'operator'
+    ? original.kind === 'operator'
+    : original.kind === 'device' && now.deviceId === original.deviceId;
 }
 
 function workspaceLabelOf(env: Record<string, string> | undefined): { workspace?: string } {
