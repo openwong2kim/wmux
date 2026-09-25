@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  AGENT_MISS_BACKOFF_MS,
   AgentProcessTracker,
   parsePipeDelimited,
   parsePsOutput,
@@ -309,47 +310,125 @@ describe('AgentProcessTracker', () => {
     expect(listener).toHaveBeenCalledWith('s1', { slug: 'codex', alive: true });
   });
 
-  it('armIfAgent leaves no trace for a non-agent command and sets no backoff', async () => {
+  it('armIfAgent leaves no trace for a non-agent command and backs off only itself', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const watcher = makeWatcher();
+      const listener = vi.fn();
+      let table = [entry(200, SHELL, 'node', 'node /work/app/node_modules/.bin/vite')];
+      const enumerate = vi.fn(async () => table);
+      const tracker = new AgentProcessTracker(watcher, enumerate);
+      tracker.setStateChangeListener(listener);
+
+      tracker.armIfAgent('s1', SHELL);
+      await flush();
+      // A plain dev server is not an agent: no liveness flag (so no later
+      // processExit edge), no watch, no listener call.
+      expect(tracker.statusFor('s1')).toBeUndefined();
+      expect(watcher.watches.size).toBe(0);
+      expect(listener).not.toHaveBeenCalled();
+
+      // The miss keeps the next guess away for a few seconds…
+      tracker.armIfAgent('s1', SHELL);
+      await flush();
+      expect(enumerate).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(AGENT_MISS_BACKOFF_MS);
+      tracker.armIfAgent('s1', SHELL);
+      await flush();
+      expect(enumerate).toHaveBeenCalledTimes(2);
+
+      // …but never holds back an agent that hook or banner evidence names.
+      table = [entry(300, SHELL, 'claude')];
+      tracker.arm('s1', SHELL);
+      await flush();
+      expect(enumerate).toHaveBeenCalledTimes(3);
+      expect(tracker.identityFor('s1')).toEqual({ slug: 'claude', alive: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('armIfAgent backs off for ARM_BACKOFF_MS after an enumeration failure', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const enumerate = vi.fn(async (): Promise<ProcessTreeEntry[]> => {
+        throw new Error('ps timeout');
+      });
+      const tracker = new AgentProcessTracker(makeWatcher(), enumerate);
+      tracker.armIfAgent('s1', SHELL);
+      await flush();
+      vi.advanceTimersByTime(AGENT_MISS_BACKOFF_MS);
+      tracker.armIfAgent('s1', SHELL);
+      await flush();
+      expect(enumerate).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(30_000);
+      tracker.armIfAgent('s1', SHELL);
+      await flush();
+      expect(enumerate).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('armIfAgent names the next agent when the tracked one exited before the monitor noticed', async () => {
     const watcher = makeWatcher();
     const listener = vi.fn();
-    let table = [entry(200, SHELL, 'node', 'node /work/app/node_modules/.bin/vite')];
-    const enumerate = vi.fn(async () => table);
-    const tracker = new AgentProcessTracker(watcher, enumerate);
+    let table = [entry(200, SHELL, 'claude')];
+    const tracker = new AgentProcessTracker(watcher, async () => table);
+    tracker.setStateChangeListener(listener);
+
+    tracker.arm('s1', SHELL);
+    await flush();
+    expect(tracker.identityFor('s1')).toEqual({ slug: 'claude', alive: true });
+
+    // claude exits, codex starts inside the monitor's polling gap: the tracker
+    // still reads claude as alive when codex's command-start arrives.
+    table = [entry(300, SHELL, 'codex')];
+    tracker.armIfAgent('s1', SHELL);
+    await flush();
+    expect(tracker.identityFor('s1')).toEqual({ slug: 'codex', alive: true });
+    expect(watcher.watches.get('agent:s1')?.pid).toBe(300);
+    expect(listener.mock.calls).toEqual([
+      ['s1', { slug: 'claude', alive: true }],
+      ['s1', { slug: 'claude', alive: false }],
+      ['s1', { slug: 'codex', alive: true }],
+    ]);
+  });
+
+  it('armIfAgent keeps a live agent and does not resurrect a dead one', async () => {
+    const watcher = makeWatcher();
+    let table = [entry(200, SHELL, 'codex')];
+    const listener = vi.fn();
+    const tracker = new AgentProcessTracker(watcher, async () => table);
     tracker.setStateChangeListener(listener);
 
     tracker.armIfAgent('s1', SHELL);
     await flush();
-    // A plain dev server is not an agent: no liveness flag (so no later
-    // processExit edge), no watch, no listener call.
-    expect(tracker.statusFor('s1')).toBeUndefined();
-    expect(watcher.watches.size).toBe(0);
-    expect(listener).not.toHaveBeenCalled();
-
-    // The miss must not hold back an agent launched right after it.
-    table = [entry(300, SHELL, 'claude')];
-    tracker.arm('s1', SHELL);
+    tracker.armIfAgent('s1', SHELL); // still in the table → unchanged
     await flush();
-    expect(enumerate).toHaveBeenCalledTimes(2);
-    expect(tracker.identityFor('s1')).toEqual({ slug: 'claude', alive: true });
-  });
-
-  it('armIfAgent does not resurrect a dead agent or re-probe a live one', async () => {
-    const watcher = makeWatcher();
-    let table = [entry(200, SHELL, 'codex')];
-    const enumerate = vi.fn(async () => table);
-    const tracker = new AgentProcessTracker(watcher, enumerate);
-
-    tracker.armIfAgent('s1', SHELL);
-    await flush();
-    tracker.armIfAgent('s1', SHELL); // live pick → no-op
-    await flush();
-    expect(enumerate).toHaveBeenCalledTimes(1);
+    expect(tracker.identityFor('s1')).toEqual({ slug: 'codex', alive: true });
+    expect(listener).toHaveBeenCalledTimes(1);
 
     watcher.watches.get('agent:s1')?.onDead();
     table = []; // the shell is back at its prompt: nothing under it
     tracker.armIfAgent('s1', SHELL);
     await flush();
     expect(tracker.identityFor('s1')).toEqual({ slug: 'codex', alive: false });
+  });
+
+  it('an armIfAgent call during an in-flight probe is queued, not dropped', async () => {
+    const watcher = makeWatcher();
+    let table: ProcessTreeEntry[] = [];
+    const enumerate = vi.fn(async () => table);
+    const tracker = new AgentProcessTracker(watcher, enumerate);
+
+    tracker.arm('s1', SHELL); // plain probe in flight, sees an empty table
+    table = [entry(300, SHELL, 'codex')];
+    tracker.armIfAgent('s1', SHELL);
+    await flush();
+    await flush();
+    expect(enumerate).toHaveBeenCalledTimes(2);
+    expect(tracker.identityFor('s1')).toEqual({ slug: 'codex', alive: true });
   });
 
   it('an arm landing during an armIfAgent probe is replayed, not swallowed', async () => {

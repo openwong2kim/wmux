@@ -4875,6 +4875,10 @@ function wireEvents(
   const commandStartAgentProbe = new CommandStartAgentProbe({
     stillRunning: (sessionId) =>
       sessionManager.getSession(sessionId)?.promptLog.commandRunningIfKnown() === true,
+    named: (sessionId) => {
+      const tracked = agentProcessTracker.identityFor(sessionId);
+      return tracked?.alive === true && tracked.slug !== undefined;
+    },
     probe: armIfAgent,
   });
 
