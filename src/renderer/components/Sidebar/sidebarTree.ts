@@ -95,17 +95,24 @@ function needsYou(status: AgentStatus): boolean {
 }
 
 /**
- * The owner row's rollup: how many tasks, how many need you. Null at zero
- * tasks — the row shows nothing then (no dead gauges).
+ * The owner row's rollup: how many tasks, how many need you, how many are
+ * ready to review (`readyOf` is the shared review-queue predicate, so this
+ * count and Fleet's "Ready to review" section agree). Null at zero tasks —
+ * the row shows nothing then (no dead gauges).
  */
 export function taskRollup(
   taskIds: readonly string[],
   statusOf: (id: string) => AgentStatus,
-): { tasks: number; needYou: number } | null {
+  readyOf: (id: string) => boolean = () => false,
+): { tasks: number; needYou: number; toReview: number } | null {
   if (taskIds.length === 0) return null;
   let needYou = 0;
-  for (const id of taskIds) if (needsYou(statusOf(id))) needYou += 1;
-  return { tasks: taskIds.length, needYou };
+  let toReview = 0;
+  for (const id of taskIds) {
+    if (needsYou(statusOf(id))) needYou += 1;
+    if (readyOf(id)) toReview += 1;
+  }
+  return { tasks: taskIds.length, needYou, toReview };
 }
 
 /**

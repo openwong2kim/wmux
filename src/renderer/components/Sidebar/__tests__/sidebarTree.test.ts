@@ -52,7 +52,7 @@ describe('taskRollup', () => {
   const status = (map: Record<string, AgentStatus>) => (id: string) => map[id] ?? 'idle';
 
   it('counts tasks and the ones that need you', () => {
-    expect(taskRollup(['a', 'b', 'c'], status({ a: 'awaiting_input', b: 'running', c: 'waiting' }))).toEqual({ tasks: 3, needYou: 2 });
+    expect(taskRollup(['a', 'b', 'c'], status({ a: 'awaiting_input', b: 'running', c: 'waiting' }))).toEqual({ tasks: 3, needYou: 2, toReview: 0 });
   });
 
   it('is nothing at zero tasks', () => {
