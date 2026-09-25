@@ -336,6 +336,16 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(projectorMock.snapshot).toHaveBeenCalledWith('s1');
     });
 
+    it('never advertises Stop or image attachments, which the phone has no route for; queue passes through', async () => {
+      const info = await start();
+      const resolution = chatBox.resolution as Extract<ChatResolution, { source: 'file' }>;
+      chatBox.resolution = { ...resolution, status: { ...resolution.status, terminal: { ...resolution.status.terminal!,
+        capabilities: { ...resolution.status.terminal!.capabilities, cancel: true, images: true, queue: true } } } };
+      const { body } = await turns(bearer(info.token as string));
+      expect(body.chat.capabilities).toMatchObject({ send: true, cancel: false, queue: true });
+      expect(body.chat.capabilities).not.toHaveProperty('images');
+    });
+
     it('file forward read with a matching cursor is a delta with reset:false', async () => {
       const info = await start();
       const first = await turns(bearer(info.token as string));

@@ -10,6 +10,7 @@ import {
 } from '../chat/chatBridge';
 import {
   validTerminalLaunchMode,
+  type TerminalChatBinding,
   type TerminalLaunchAgent,
   type TerminalLaunchMode,
 } from '../../shared/transcript/terminalChat';
@@ -131,7 +132,7 @@ export function buildChatObject(resolution: ChatResolution, blocked: ChatBlocked
     ...(resolution.source === 'tui' ? { maxSendBytes: OPENCODE_MAX_SEND_BYTES } : {}),
     ...liveness,
     capabilities: {
-      ...(terminal ? { ...terminal.capabilities } : closed),
+      ...(terminal ? phoneTerminalCapabilities(terminal.capabilities) : closed),
       // Rollout and JSONL rows land per record, not per token. OpenCode part
       // streaming is unverified, so its key is omitted (= unknown).
       ...(resolution.source === 'file' ? { streaming: false } : {}),
@@ -140,6 +141,18 @@ export function buildChatObject(resolution: ChatResolution, blocked: ChatBlocked
     },
     ...blockedField,
   };
+}
+
+/**
+ * The desktop's terminal capabilities, minus what the phone has no route for:
+ * Stop (`cancel`, desktop-only ESC) and image attachments (`images`). `queue`
+ * passes through; it pairs with a send's `queued:true`.
+ */
+type TerminalCapabilities = TerminalChatBinding['capabilities'];
+function phoneTerminalCapabilities(capabilities: TerminalCapabilities): Omit<TerminalCapabilities, 'images'> {
+  const { images, ...rest } = capabilities;
+  void images;
+  return { ...rest, cancel: false };
 }
 
 // --- send -----------------------------------------------------------------

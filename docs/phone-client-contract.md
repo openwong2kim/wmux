@@ -1647,7 +1647,9 @@ transcript), then the Claude/Codex transcript file — and adds `chat` to every
   `launch` is true only on a `none` binding with `launch.ready`. `streaming` is
   `false` on transcript-file bindings (Claude/Codex rows land per record, not
   per token) and absent for OpenCode. A `managed` binding has `history:true`
-  and every other capability `false` or absent.
+  and every other capability `false` or absent. `cancel` is always `false` on
+  the phone (Stop is in Terminal). `queue:true` (live Claude) means a send
+  during a running turn can be accepted and answered with `queued:true`.
 - **`blocked` is authoritative and computed at read time**: a pending approval
   (`by:"approval"`), or `by:"terminal"` for a hook `awaiting_input`, an OpenCode
   `awaiting_input` phase, or a dialog the send screen gate sees on the rendered
