@@ -449,6 +449,17 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(body.chat.launch).toMatchObject({ ready: false, reason: 'agent-running' });
     });
 
+    it('reads the file page before the blocked await, so a binding that moves meanwhile never leaks in', async () => {
+      const info = await start();
+      chat.blocked.mockImplementationOnce(async () => {
+        projectorMock.snapshot.mockReturnValue(page([{ id: 'x1', kind: 'user_text', text: 'another conversation' }]));
+        return undefined;
+      });
+      const { body } = await turns(bearer(info.token as string));
+      expect(body.events).toEqual([{ id: 'u1', kind: 'user_text', text: 'snap' }]);
+      expect(body.chat.agentSessionId).toBe('sess-a');
+    });
+
     it('carries the read-time blocked state', async () => {
       chatBox.blocked = { by: 'approval', approvalId: 'ap-1' };
       const info = await start();

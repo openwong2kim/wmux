@@ -3115,11 +3115,28 @@ export class WebTerminalServer {
     const cursor = decodeChatCursor(rawCursor);
 
     const resolution = await chat.resolve(sessionId);
+    // The page is read before the blocked await (a screen render): a binding
+    // that moved meanwhile must not have its rows served under this identity.
+    const body = this.readChatTurnsPage(res, sessionId, principal, chat, resolution, dir, carried, cursor);
+    if (!body) return;
     const blocked = await this.readChatBlocked(chat, sessionId, resolution);
     if (res.destroyed || res.writableEnded) return;
     this.noteChatBlocked(sessionId, resolution, blocked);
-    const chatBody = buildChatObject(resolution, blocked);
-    const reply = (body: Record<string, unknown>) => this.json(res, 200, { ...body, chat: chatBody });
+    this.json(res, 200, { ...body, chat: buildChatObject(resolution, blocked) });
+  }
+
+  /** The `/turns` page for a resolved binding, read synchronously; undefined once answered (503). */
+  private readChatTurnsPage(
+    res: http.ServerResponse,
+    sessionId: string,
+    principal: WebPrincipal,
+    chat: ChatBridge,
+    resolution: ChatResolution,
+    dir: 'back' | 'forward',
+    carried: boolean,
+    cursor: ReturnType<typeof decodeChatCursor>,
+  ): Record<string, unknown> | undefined {
+    const reply = (body: Record<string, unknown>) => body;
     // No `cursor` on purpose: a client that had a conversation drops its rows
     // and reads again from nothing.
     const unavailable = (reason: string) =>
@@ -3136,7 +3153,10 @@ export class WebTerminalServer {
 
     if (resolution.source === 'file') {
       const projector = this.deps.projector?.() ?? null;
-      if (!projector) return this.json(res, 503, { error: 'transcript projector unavailable' });
+      if (!projector) {
+        this.json(res, 503, { error: 'transcript projector unavailable' });
+        return undefined;
+      }
       const fileCursor = (c: TranscriptCursor) =>
         encodeChatCursor({ ...bound, head: c.headOffset, tail: c.tailOffset, fileSize: c.fileSize });
       // Rules 1–4 failed (or a v1 cursor, or none at all): the tail of the
