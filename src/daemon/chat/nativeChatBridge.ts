@@ -139,13 +139,21 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       } } } : {}) };
   };
 
-  // installedAgentLaunchOptions caches the two `--help` probes for 5 minutes
-  // and coalesces concurrent loads; only a Codex cache file is read per call.
-  const installed = async (pane: P | undefined): Promise<TerminalLaunchAgent[]> => {
-    try {
-      const options = await deps.installedAgents({ ...process.env, ...pane?.meta.env });
-      return options.map(option => option.agent).filter((agent): agent is TerminalLaunchAgent => agent === 'claude' || agent === 'codex');
-    } catch { return []; }
+  // installedAgentLaunchOptions caches its two `--help` probes for 5 minutes,
+  // but reads the Codex model cache on every call; the preview runs on every
+  // phone read of an idle pane, so the names are held briefly here too.
+  const installedCache = new Map<string, { until: number; agents: Promise<TerminalLaunchAgent[]> }>();
+  const installed = (pane: P | undefined): Promise<TerminalLaunchAgent[]> => {
+    const env = { ...process.env, ...pane?.meta.env };
+    const key = env.CODEX_HOME ?? '';
+    const cached = installedCache.get(key);
+    if (cached && cached.until > now()) return cached.agents;
+    const agents = deps.installedAgents(env).then(
+      options => options.map(option => option.agent).filter((agent): agent is TerminalLaunchAgent => agent === 'claude' || agent === 'codex'),
+      () => [] as TerminalLaunchAgent[]);
+    if (installedCache.size >= 16) installedCache.clear();
+    installedCache.set(key, { until: now() + 5000, agents });
+    return agents;
   };
 
   const unsupportedPlatform = (pane: ChatPane) => platform === 'win32' || !!pane.meta.wslTarget;

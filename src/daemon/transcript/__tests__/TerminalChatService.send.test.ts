@@ -65,4 +65,9 @@ describe('TerminalChatService.send (phone bridge)', () => {
     expect(await f.service.send('pane', 'ses_one', 'hi', ID)).toEqual({ result: 'unconfirmed', reason: 'transport-lost' });
     expect(sends(f.plugin)).toHaveLength(1);
   }));
+
+  it('treats a plugin refusal status as nothing dispatched', async () => fixture(async f => {
+    f.plugin.answer = res => { res.writeHead(400); res.end(); };
+    expect(await f.service.send('pane', 'ses_one', 'hi', ID)).toEqual({ result: 'unavailable' });
+  }));
 });

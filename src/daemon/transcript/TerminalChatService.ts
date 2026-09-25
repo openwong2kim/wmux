@@ -142,7 +142,9 @@ export class TerminalChatService {
         if ((error as { cause?: { code?: unknown } })?.cause?.code === 'ECONNREFUSED') left = false;
         throw error;
       }
-      if (!response.ok || !response.body) return { ok: false, left };
+      // The plugin answers non-2xx only before dispatch (bad auth, unparsable body).
+      if (!response.ok) return { ok: false, left: false };
+      if (!response.body) return { ok: false, left };
       const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let bytes = 0;
       try {
         for (;;) {
