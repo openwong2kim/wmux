@@ -75,8 +75,8 @@ function lookupAccountName(home, want) {
  * Logged-in identity from the config dir's `.claude.json` (oauthAccount).
  * CLAUDE_CONFIG_DIR partitions the whole config, so a bound account's file
  * lives at `<configDir>/.claude.json`; the default profile's lives at
- * `~/.claude.json`. Returns the email's local part ("wykim777" for
- * wykim777@naver.com) to keep the line compact; null when unavailable.
+ * `~/.claude.json`. Returns the email's local part ("name" for
+ * name@example.com) to keep the line compact; null when unavailable.
  */
 function lookupLoginEmail(home, configDir, isDefaultDir) {
   const candidates = isDefaultDir
