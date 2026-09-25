@@ -10,7 +10,7 @@ function harness(authorize: (call: number) => boolean) {
     isAgentProcessAlive: async () => { log.push('alive'); return true; },
     write: (data) => { log.push(`write:${JSON.stringify(data)}`); current = { ...current, inputRevision: current.inputRevision + 1 }; return true; },
     delay: async () => { log.push('delay'); },
-    authorized: async () => { log.push('auth'); return authorize(++calls); },
+    authorized: async (stage) => { log.push(`auth:${stage}`); return authorize(++calls); },
     onWrite: (stage) => { log.push(`on:${stage}`); },
   });
   return { run, log };
@@ -20,8 +20,8 @@ describe('deliverScheduledPrompt re-authorization hooks', () => {
   it('re-authorizes right before the paste and again as the last await before Enter', async () => {
     const h = harness(() => true);
     expect(await h.run()).toBe('sent');
-    expect(h.log).toEqual(['state', 'alive', 'auth', 'on:paste', 'write:"\\u001b[200~hi\\u001b[201~"', 'delay',
-      'alive', 'auth', 'state', 'on:submit', 'write:"\\r"']);
+    expect(h.log).toEqual(['state', 'alive', 'auth:first-write', 'on:paste', 'write:"\\u001b[200~hi\\u001b[201~"', 'delay',
+      'alive', 'auth:submit', 'state', 'on:submit', 'write:"\\r"']);
   });
 
   it('writes nothing when refused before the paste', async () => {

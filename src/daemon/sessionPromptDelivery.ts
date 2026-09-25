@@ -29,10 +29,10 @@ export interface ScheduledPromptDeliveryDeps {
   delay?: (ms: number) => Promise<void>;
   /** Native composer submission, when different from Claude multiline input. */
   submitKeys?: '\r';
-  /** Caller re-authorization, run immediately before the paste write and
-   *  again immediately before the submit write. `false` stops with `error`
-   *  and writes nothing further; the caller tells the two apart itself. */
-  authorized?: () => Promise<boolean>;
+  /** Caller re-authorization, run immediately before the paste write
+   *  (`first-write`) and again immediately before the submit write (`submit`).
+   *  `false` stops with `error` and writes nothing further. */
+  authorized?: (stage: 'first-write' | 'submit') => Promise<boolean>;
   /** Called immediately before each write is attempted, so a caller can tell
    *  "nothing reached the PTY" from "the paste may be visible". */
   onWrite?: (stage: 'paste' | 'submit') => void;
@@ -79,7 +79,7 @@ export async function deliverScheduledPrompt(
   }
 
   try {
-    if (deps.authorized && !(await deps.authorized())) return 'error';
+    if (deps.authorized && !(await deps.authorized('first-write'))) return 'error';
   } catch {
     return 'error';
   }
@@ -104,7 +104,7 @@ export async function deliverScheduledPrompt(
   // A grant withdrawn inside the submit delay must not be pressed through.
   // The last await before Enter: only synchronous state checks follow it.
   try {
-    if (deps.authorized && !(await deps.authorized())) return 'error';
+    if (deps.authorized && !(await deps.authorized('submit'))) return 'error';
   } catch {
     return 'error';
   }

@@ -60,10 +60,11 @@ export interface ChatSendRequest {
   /** Phone: refuse managed bindings (read-only in v1). The desktop keeps managed send. */
   managedReadOnly?: boolean;
   /**
-   * Re-authorization, called immediately before the first PTY/plugin write and
-   * again immediately before Enter on the paste path. `false` writes nothing more.
+   * Re-authorization, called immediately before the first PTY/plugin write
+   * (`first-write`) and again immediately before Enter on the paste path
+   * (`submit`). `false` writes nothing more.
    */
-  authorized?: () => Promise<boolean>;
+  authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean>;
 }
 
 /** HTTP-facing error tags a send can end in (contract §6.2 table). */
@@ -113,8 +114,8 @@ export interface ChatLaunchRequest {
   mode?: TerminalLaunchMode;
   /** Phone: refuse a pane that already has a readable conversation (desktop eligibility rule). */
   refuseConversation?: boolean;
-  /** Called immediately before the launcher is typed. `false` types nothing. */
-  authorized?: () => Promise<boolean>;
+  /** Called (`first-write`) immediately before the launcher is typed. `false` types nothing. */
+  authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean>;
 }
 
 export type ChatLaunchTag =

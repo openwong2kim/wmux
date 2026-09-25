@@ -282,9 +282,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         },
         write: (data) => deps.write(id, data),
         ...(deps.delay ? { delay: deps.delay } : {}),
-        ...(authorize ? { authorized: async () => {
+        ...(authorize ? { authorized: async (stage: 'first-write' | 'submit') => {
           let ok = false;
-          try { ok = await authorize(); } catch { /* a failed check is a refusal */ }
+          try { ok = await authorize(stage); } catch { /* a failed check is a refusal */ }
           if (!ok) denied = pasted ? 'submit' : 'paste';
           return ok;
         } } : {}),
@@ -451,7 +451,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       if (secondIdle) return secondIdle;
       if (req.authorized) {
         let ok = false;
-        try { ok = await req.authorized(); } catch { /* a failed check is a refusal */ }
+        try { ok = await req.authorized('first-write'); } catch { /* a failed check is a refusal */ }
         if (!ok) return fail('authorization-expired');
       }
       // The authorization await yielded; the synchronous proof is the last thing before typing.

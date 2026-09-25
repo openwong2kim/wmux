@@ -592,14 +592,42 @@ describe('native chat routes (contract v0.3.1)', () => {
       await start();
       const h = device('dev-1');
       chatBox.send = async (req) => {
-        expect(await req.authorized!()).toBe(true);
+        expect(await req.authorized!('first-write')).toBe(true);
         roster.get('dev-1')!.allowInput = false;
-        expect(await req.authorized!()).toBe(false);
+        expect(await req.authorized!('submit')).toBe(false);
         return { clientMessageId: req.clientMessageId, replayed: false, error: 'authorization-expired', result: 'error', effect: 'uncertain' };
       };
       const res = await postJson(url(), h, sendBody());
       expect(res.status).toBe(401);
       expect(await res.json()).toMatchObject({ error: 'authorization-expired', result: 'error', effect: 'uncertain' });
+    });
+
+    it('a phone that hangs up between paste and Enter still gets Enter while its grant holds', async () => {
+      await start();
+      const h = device('dev-1');
+      let pasted!: () => void;
+      const afterPaste = new Promise<void>((resolve) => { pasted = resolve; });
+      let done!: (v: { hungUp: boolean; submit: boolean }) => void;
+      const seen = new Promise<{ hungUp: boolean; submit: boolean }>((resolve) => { done = resolve; });
+      chatBox.send = async (req) => {
+        expect(await req.authorized!('first-write')).toBe(true);
+        pasted();
+        // Wait until the server sees the hang-up: the first-write check then refuses.
+        let hungUp = false;
+        for (let i = 0; i < 300 && !hungUp; i++) {
+          hungUp = !(await req.authorized!('first-write'));
+          if (!hungUp) await new Promise((r) => setTimeout(r, 10));
+        }
+        done({ hungUp, submit: await req.authorized!('submit') });
+        return { clientMessageId: req.clientMessageId, replayed: false, result: 'sent', effect: 'submitted' };
+      };
+      const ac = new AbortController();
+      const request = fetch(url(), { method: 'POST', signal: ac.signal, headers: { ...h, 'Content-Type': 'application/json' },
+        body: JSON.stringify(sendBody()) }).catch(() => undefined);
+      await afterPaste;
+      ac.abort();
+      await request;
+      expect(await seen).toEqual({ hungUp: true, submit: true });
     });
 
     it('the predicate also fails for a pane restarted after the body', async () => {

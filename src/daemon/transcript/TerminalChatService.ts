@@ -48,7 +48,7 @@ export class TerminalChatService {
    * lost" (`transport-lost`, uncertain) and names the plugin's own refusals.
    */
   async send(id: string, sessionId: string, text: string, requestId: string,
-    opts: { expectedRawEpoch?: string; authorized?: () => Promise<boolean> } = {}): Promise<TerminalChatSendOutcome> {
+    opts: { expectedRawEpoch?: string; authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean> } = {}): Promise<TerminalChatSendOutcome> {
     const read = await this.read(id);
     if (!read?.status.available) return { result: 'unavailable' };
     if (read.status.agentSessionId !== sessionId) return { result: 'session_changed' };
@@ -118,7 +118,7 @@ export class TerminalChatService {
 
   /** `left` is true once the request may have reached the plugin. `authorized`
    *  runs as the last await before the request leaves, after the owner checks. */
-  private async exchange(id: string, request: Record<string, unknown>, authorized?: () => Promise<boolean>):
+  private async exchange(id: string, request: Record<string, unknown>, authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean>):
     Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; left: boolean; unauthorized?: true }> {
     let left = false;
     try {
@@ -134,7 +134,7 @@ export class TerminalChatService {
       if (!await sameOwner()) return { ok: false, left };
       if (authorized) {
         let ok = false;
-        try { ok = await authorized(); } catch { /* a failed check is a refusal */ }
+        try { ok = await authorized('first-write'); } catch { /* a failed check is a refusal */ }
         if (!ok) return { ok: false, left, unauthorized: true };
       }
       left = true;

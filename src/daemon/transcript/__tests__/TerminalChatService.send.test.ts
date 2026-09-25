@@ -56,10 +56,10 @@ describe('TerminalChatService.send (phone bridge)', () => {
   it('re-authorizes after the owner lookup, descriptor read and owner re-check, right before the request', async () => {
     const log: string[] = [];
     await fixture(async f => {
-      const authorized = async () => { log.push('auth'); return true; };
+      const authorized = async (stage?: string) => { log.push(`auth:${stage}`); return true; };
       expect(await f.service.send('pane', 'ses_one', 'hi', ID, { authorized })).toEqual({ result: 'sent' });
     }, log);
-    expect(log).toEqual(['owner', 'owner', 'plugin:read', 'owner', 'owner', 'owner', 'auth', 'plugin:send', 'owner']);
+    expect(log).toEqual(['owner', 'owner', 'plugin:read', 'owner', 'owner', 'owner', 'auth:first-write', 'plugin:send', 'owner']);
   });
 
   it('maps receipts-full distinctly and tolerates an old plugin with a bare unavailable', async () => fixture(async f => {

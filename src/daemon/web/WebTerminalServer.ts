@@ -3439,8 +3439,10 @@ export class WebTerminalServer {
   /**
    * The predicate the daemon runs immediately before its first PTY/plugin
    * write and again before Enter (§3.3 steps 6–7): the same checks as above,
-   * plus a caller that is still waiting for the answer. A phone that hung up
-   * has nobody to tell what was typed.
+   * plus, before the first write only, a caller that is still waiting for the
+   * answer — a phone that hung up has nobody to tell what was typed. Before
+   * Enter a hang-up no longer stops the send: that would leave a half-typed
+   * paste in the agent's composer, and the receipt GET recovers the outcome.
    */
   private chatWriteAuthorizer(
     req: http.IncomingMessage,
@@ -3451,9 +3453,10 @@ export class WebTerminalServer {
     pane: ManagedSession,
     incarnation: string | undefined,
     extra?: () => boolean,
-  ): () => Promise<boolean> {
-    return async () => {
-      if (res.destroyed || res.writableEnded || this.opts?.allowTranscript !== true) return false;
+  ): (stage?: 'first-write' | 'submit') => Promise<boolean> {
+    return async (stage) => {
+      if (stage !== 'submit' && (res.destroyed || res.writableEnded)) return false;
+      if (this.opts?.allowTranscript !== true) return false;
       if (extra && !extra()) return false;
       const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
       return now.ok && sameCaller(principal, now.principal) && this.mayInput(now.principal) &&

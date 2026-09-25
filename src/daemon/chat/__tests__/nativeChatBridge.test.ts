@@ -212,6 +212,16 @@ describe('send', () => {
     expect(f.bridge.receipt('device:a', 'pane', req.clientMessageId).state).toBe('uncertain');
   });
 
+  it('tells the caller which write each re-authorization guards', async () => {
+    const f = fixture(); f.liveClaude();
+    const stages: unknown[] = [];
+    const authorized = async (stage?: string) => { stages.push(stage); return true; };
+    expect(await f.bridge.send(phoneSend('a', { authorized }))).toMatchObject({ result: 'sent' });
+    f.state.projector = { available: false, reason: 'no-hook' }; f.state.agent.agentName = null;
+    expect(await f.bridge.launch({ id: 'pane', agent: 'claude', prompt: 'go', authorized })).toMatchObject({ ok: true });
+    expect(stages).toEqual(['first-write', 'submit', 'first-write']);
+  });
+
   it('refuses before any receipt: bad ids, blank or long text, identity changes, no conversation, managed', async () => {
     const f = fixture(); f.liveClaude();
     expect(await f.bridge.send(phoneSend('x', { clientMessageId: 'nope' }))).toMatchObject({ error: 'invalid-chat-request', effect: 'none' });
