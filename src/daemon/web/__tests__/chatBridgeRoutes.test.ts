@@ -653,6 +653,22 @@ describe('native chat routes (contract v0.3.1)', () => {
 
   // ------------------------------------------------------------ send receipt
 
+  describe('brain pane', () => {
+    it('the operator token gets 404 on every chat write and receipt route', async () => {
+      const info = await start();
+      const h = bearer(info.token as string);
+      const brain = `${base()}/api/sessions/brain-1`;
+      expect((await postJson(`${brain}/chat/messages`, h, sendBody())).status).toBe(404);
+      expect((await fetch(`${brain}/chat/messages/${freshId()}`, { headers: h })).status).toBe(404);
+      expect((await postJson(`${brain}/chat/launch`, h, launchBody())).status).toBe(404);
+      expect((await fetch(`${brain}/chat/launch/${freshId()}`, { headers: h })).status).toBe(404);
+      expect(chat.send).not.toHaveBeenCalled();
+      expect(chat.launch).not.toHaveBeenCalled();
+      expect(chat.receipt).not.toHaveBeenCalled();
+      expect(panes.get('brain-1')!.ptyProcess.write).not.toHaveBeenCalled();
+    });
+  });
+
   describe('GET /chat/messages/:clientMessageId', () => {
     it('is owner-bound, needs no input grant, and 404s a brain or missing pane', async () => {
       await start();

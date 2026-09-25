@@ -3383,6 +3383,9 @@ export class WebTerminalServer {
    * §3.3 steps 3–5, after the body: the credential that sent the headers must
    * still be the same caller, still hold input, and the pane must still be the
    * SAME incarnation. Answers the request itself and returns null on refusal.
+   * Every chat route resolves its pane with `readableSession`, whatever the
+   * principal: `/turns` 404s a brain pane for the operator too, so a chat
+   * write or receipt must not reach one either.
    */
   private async reauthorizeChatWrite(
     req: http.IncomingMessage,
@@ -3402,7 +3405,7 @@ export class WebTerminalServer {
       this.refuseInput(res, fresh.principal, 'Input permission changed');
       return null;
     }
-    if (this.attachableSession(fresh.principal, id) !== pane || pane.meta.incarnationId !== incarnation) {
+    if (this.readableSession(id) !== pane || pane.meta.incarnationId !== incarnation) {
       this.json(res, 409, { error: 'pane-incarnation-changed' });
       return null;
     }
@@ -3430,7 +3433,7 @@ export class WebTerminalServer {
       if (extra && !extra()) return false;
       const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
       return now.ok && sameCaller(principal, now.principal) && this.mayInput(now.principal) &&
-        this.attachableSession(now.principal, id) === pane && pane.meta.incarnationId === incarnation;
+        this.readableSession(id) === pane && pane.meta.incarnationId === incarnation;
     };
   }
 
@@ -3450,7 +3453,7 @@ export class WebTerminalServer {
     if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
     if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Sending to a chat types into this pane');
     const id = decodePathSegment(rawId);
-    const pane = id === null ? undefined : this.attachableSession(principal, id);
+    const pane = id === null ? undefined : this.readableSession(id);
     if (!pane || id === null) return this.json(res, 404, { error: 'session not found' });
     const chat = this.deps.chat?.() ?? null;
     if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
@@ -3501,7 +3504,7 @@ export class WebTerminalServer {
     res.setHeader('Cache-Control', 'no-store');
     if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
     const id = decodePathSegment(rawId);
-    if (id === null || !this.attachableSession(principal, id)) return this.json(res, 404, { error: 'session not found' });
+    if (id === null || !this.readableSession(id)) return this.json(res, 404, { error: 'session not found' });
     const chat = this.deps.chat?.() ?? null;
     if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
     const clientMessageId = decodePathSegment(rawMessageId) ?? '';
@@ -3535,7 +3538,7 @@ export class WebTerminalServer {
     if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
     if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Starting an agent runs a command on this machine');
     const id = decodePathSegment(rawId);
-    const pane = id === null ? undefined : this.attachableSession(principal, id);
+    const pane = id === null ? undefined : this.readableSession(id);
     if (!pane || id === null) return this.json(res, 404, { error: 'session not found' });
     const chat = this.deps.chat?.() ?? null;
     if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
@@ -3628,7 +3631,7 @@ export class WebTerminalServer {
     res.setHeader('Cache-Control', 'no-store');
     if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
     const id = decodePathSegment(rawId);
-    if (id === null || !this.attachableSession(principal, id)) return this.json(res, 404, { error: 'session not found' });
+    if (id === null || !this.readableSession(id)) return this.json(res, 404, { error: 'session not found' });
     const clientLaunchId = decodePathSegment(rawLaunchId) ?? '';
     const state: LaunchReceiptState = this.chatLaunchReceipts.state(chatOwner(principal), id, clientLaunchId, this.now());
     return this.json(res, 200, { clientLaunchId, state });
