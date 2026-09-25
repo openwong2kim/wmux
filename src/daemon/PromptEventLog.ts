@@ -29,6 +29,8 @@ export interface PromptEvent {
 export class PromptEventLog {
   private events: PromptEvent[] = [];
   private readonly capacity: number;
+  /** Sticky: this shell has emitted a command-start (C) at least once. */
+  private sawCommandStart = false;
 
   constructor(capacity = 256) {
     if (capacity <= 0 || !Number.isInteger(capacity)) {
@@ -38,6 +40,7 @@ export class PromptEventLog {
   }
 
   append(event: PromptEvent): void {
+    if (event.type === 'command_start') this.sawCommandStart = true;
     this.events.push(event);
     if (this.events.length > this.capacity) {
       // FIFO eviction — drop oldest
@@ -104,12 +107,26 @@ export class PromptEventLog {
     return false; // no decisive marker yet → assume at prompt
   }
 
+  /**
+   * isCommandRunning() as a REPORTABLE answer: `undefined` until this shell
+   * has proven it emits command-start (C). A shell that draws prompt markers
+   * but never C — bash < 4.4 (no PS0, macOS /bin/bash is 3.2), pwsh without
+   * PSReadLine or with Enter rebound — would otherwise read "at a prompt" for
+   * the whole life of every foreground command, and a live agent in that pane
+   * lost its identity and got a Resume chip. Unknown lets readers fall back to
+   * process truth. Sticky across FIFO eviction: one C is proof enough.
+   */
+  commandRunningIfKnown(): boolean | undefined {
+    return this.sawCommandStart ? this.isCommandRunning() : undefined;
+  }
+
   get size(): number {
     return this.events.length;
   }
 
   clear(): void {
     this.events = [];
+    this.sawCommandStart = false;
   }
 
   /** Test / debugging aid — returns a shallow copy. */

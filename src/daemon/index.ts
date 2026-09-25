@@ -2430,10 +2430,9 @@ function registerRpcHandlers(
       // even while the agent sits idle past the activity TTL — the exact gap the
       // heuristic alone can't close.
       const managedForPrompt = sessionManager.getSession(s.id);
-      const commandRunning =
-        managedForPrompt && managedForPrompt.promptLog.size > 0
-          ? managedForPrompt.promptLog.isCommandRunning()
-          : undefined;
+      // Only a shell that has proven it emits C can say "at a prompt" — see
+      // PromptEventLog.commandRunningIfKnown.
+      const commandRunning = managedForPrompt?.promptLog.commandRunningIfKnown();
       const withPrompt =
         commandRunning === undefined ? withAgent : { ...withAgent, commandRunning };
       if (!surfacedBinding) return withPrompt;
@@ -3666,7 +3665,7 @@ function registerRpcHandlers(
     // #1307 — agentVerified proves a live process (see provesLiveAgent),
     // stricter than the display name: hook/screen naming has no death
     // edge, and an OSC 133 prompt means the foreground command returned.
-    const shellAtPrompt = session.promptLog.size > 0 && !session.promptLog.isCommandRunning();
+    const shellAtPrompt = session.promptLog.commandRunningIfKnown() === false;
     // #1392 — the shell is back at its prompt, so whatever agent this pane ran
     // has returned. The screen tier is sticky by design and the process
     // tracker's death edge needs an attributed process — on Windows that
@@ -3703,7 +3702,7 @@ function registerRpcHandlers(
     if (!managed) return undefined;
     const durable = managed.meta.resumeBinding;
     const binding = durable && bindingTranscriptLives(durable) ? durable : undefined;
-    const commandRunning = managed.promptLog.size > 0 ? managed.promptLog.isCommandRunning() : undefined;
+    const commandRunning = managed.promptLog.commandRunningIfKnown();
     // Same three-state derivation as pty.list: an exec unit IS its agent
     // process, a tracked pane answers from the tracker, and anything else stays
     // undecided so the desktop keeps its own heuristic.

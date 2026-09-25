@@ -4,6 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { classifyShell, buildSpawnInjection, ZSH_RC, PWSH_INIT, BASH_INIT } from '../shell-integration';
+import { PromptEventLog, parseOsc133Payload } from '../PromptEventLog';
 
 // zsh 지원(macOS 기본 셸) — ZDOTDIR 가로채기 방식의 핵심 불변식 검증.
 describe('classifyShell', () => {
@@ -186,47 +187,60 @@ describe('BASH_INIT — OSC 7 cwd report (#540)', () => {
   });
 });
 
-// Without PS0 (bash < 4.4 — macOS /bin/bash is 3.2) nothing can emit C, and
-// prompt markers alone made PromptEventLog report "at a prompt" for the whole
-// life of every foreground command: a live `claude` lost its sidebar row on
-// each pty.list poll and wore a Resume chip. Older bash emits no OSC 133 so
-// commandRunning stays unknown and the renderer falls back to process truth.
-describe('BASH_INIT — OSC 133 only where PS0 exists', () => {
-  it('gates every OSC 133 emission on bash 4.4+ and keeps OSC 7 unconditional', () => {
-    expect(BASH_INIT).toMatch(/BASH_VERSINFO\[0\]:-0\}" -gt 4 \] \|\| \{ \[ "\$\{BASH_VERSINFO\[0\]:-0\}" -eq 4 \] && \[ "\$\{BASH_VERSINFO\[1\]:-0\}" -ge 4 \]/);
-    expect(BASH_INIT).toMatch(/if \[ "\$__wmux_osc133" = 1 \]; then\s+PS0=/);
-    expect(BASH_INIT).toMatch(/if \[ "\$__wmux_osc133" = 1 \]; then\s+printf '\\033\]133;D/);
-    expect(BASH_INIT).toMatch(/if \[ "\$__wmux_osc133" = 1 \]; then\s+case "\$PS1"/);
-    // OSC 7 sits outside the gate.
-    expect(BASH_INIT).toMatch(/\bfi\n {2}__wmux_osc7\n\}/);
+// bash < 4.4 has no PS0, so the integration can never emit C (command start)
+// there, while D/A/B still arrive every prompt. The prompt markers stay — exit
+// codes, the shell-prompt settle and the Welcome sample task depend on them —
+// but the daemon must not read "no C" as "at a prompt": a live agent in the
+// pane would lose its identity every poll. PromptEventLog.commandRunningIfKnown
+// stays unknown until the shell has proven it emits C.
+function bashVersion(): { bin: string; major: number; minor: number } | undefined {
+  if (process.platform === 'win32') return undefined;
+  const bin = ['/bin/bash', '/usr/bin/bash'].find((b) => fs.existsSync(b));
+  if (!bin) return undefined;
+  const r = spawnSync(bin, ['-c', 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"'], {
+    encoding: 'utf-8', timeout: 2_000, env: { PATH: '/usr/bin:/bin' },
   });
+  const m = /^(\d+)\.(\d+)/.exec(r.stdout ?? '');
+  return m ? { bin, major: Number(m[1]), minor: Number(m[2]) } : undefined;
+}
+const realBash = bashVersion();
 
-  const bash = process.platform === 'win32' ? undefined : ['/bin/bash', '/usr/bin/bash'].find((b) => fs.existsSync(b));
-  it.skipIf(!bash)('the real bash emits C when it has PS0 and no OSC 133 at all when it does not', () => {
+describe('BASH_INIT — prompt markers on every bash, command state only once C is proven', () => {
+  it.skipIf(!realBash)('real bash: D/A/B always arrive; command state is known only where PS0 emits C', () => {
+    const bash = realBash;
+    if (!bash) return;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-bash-init-'));
     try {
       const rc = path.join(dir, 'init.bash');
       fs.writeFileSync(rc, BASH_INIT);
-      const run = (script: string) =>
-        spawnSync(bash as string, ['--rcfile', rc, '-i'], {
-          input: script,
-          encoding: 'utf-8',
-          env: { HOME: dir, PATH: '/usr/bin:/bin', TERM: 'dumb' },
-          timeout: 10_000,
-        });
-      const version = run('echo "__V=${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"\nexit\n');
-      const m = /__V=(\d+)\.(\d+)/.exec(version.stdout);
-      expect(m).not.toBeNull();
-      const [major, minor] = [Number(m?.[1]), Number(m?.[2])];
-      const hasPs0 = major > 4 || (major === 4 && minor >= 4);
-      const out = run('true\nexit\n');
+      const out = spawnSync(bash.bin, ['--rcfile', rc, '-i'], {
+        input: 'true\nexit\n',
+        encoding: 'utf-8',
+        env: { HOME: dir, PATH: '/usr/bin:/bin', TERM: 'dumb' },
+        timeout: 5_000,
+      });
+      const log = new PromptEventLog();
       const all = `${out.stdout}${out.stderr}`;
-      expect(all).toContain('\x1b]7;file://');
+      let i = 0;
+      const esc = String.fromCharCode(0x1b);
+      const bel = String.fromCharCode(0x07);
+      for (const m of all.matchAll(new RegExp(`${esc}\\]133;([^${bel}]*)${bel}`, 'g'))) {
+        const ev = parseOsc133Payload(m[1], i, i);
+        i += 1;
+        if (ev) log.append(ev);
+      }
+      const types = new Set(log.snapshot().map((e) => e.type));
+      expect(types.has('prompt_start')).toBe(true);
+      expect(types.has('prompt_end')).toBe(true);
+      expect(types.has('command_end')).toBe(true);
+      const hasPs0 = bash.major > 4 || (bash.major === 4 && bash.minor >= 4);
       if (hasPs0) {
-        expect(all).toContain('\x1b]133;C');
-        expect(all).toContain('\x1b]133;A');
+        expect(types.has('command_start')).toBe(true);
+        expect(log.commandRunningIfKnown()).toBe(false);
       } else {
-        expect(all).not.toContain('\x1b]133;');
+        expect(types.has('command_start')).toBe(false);
+        // An agent launched here would be running now — and must not read as idle.
+        expect(log.commandRunningIfKnown()).toBeUndefined();
       }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

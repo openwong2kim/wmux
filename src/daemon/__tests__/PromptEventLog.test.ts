@@ -154,3 +154,39 @@ describe('isCommandRunning (OSC 133 resume-chip gate)', () => {
     expect(log.isCommandRunning()).toBe(true);
   });
 });
+
+describe('PromptEventLog.commandRunningIfKnown — only a shell that emits C can claim "at a prompt"', () => {
+  const ev = (payload: string, n: number) => {
+    const parsed = parseOsc133Payload(payload, n, n);
+    if (!parsed) throw new Error(`unparsed ${payload}`);
+    return parsed;
+  };
+
+  it('stays unknown on a prompt-only marker stream (bash < 4.4, pwsh without PSReadLine)', () => {
+    const log = new PromptEventLog();
+    for (const [i, p] of ['D;0', 'A', 'B', 'D;0', 'A', 'B'].entries()) log.append(ev(p, i));
+    expect(log.isCommandRunning()).toBe(false);
+    expect(log.commandRunningIfKnown()).toBeUndefined();
+  });
+
+  it('reports true/false once C has been seen, and stays known after the C is evicted', () => {
+    const log = new PromptEventLog(3);
+    log.append(ev('A', 1));
+    log.append(ev('B', 2));
+    log.append(ev('C', 3));
+    expect(log.commandRunningIfKnown()).toBe(true);
+    log.append(ev('D;0', 4));
+    log.append(ev('A', 5));
+    log.append(ev('B', 6));
+    expect(log.snapshot().some((e) => e.type === 'command_start')).toBe(false);
+    expect(log.commandRunningIfKnown()).toBe(false);
+  });
+
+  it('clear() forgets the proof', () => {
+    const log = new PromptEventLog();
+    log.append(ev('C', 1));
+    log.clear();
+    log.append(ev('A', 2));
+    expect(log.commandRunningIfKnown()).toBeUndefined();
+  });
+});

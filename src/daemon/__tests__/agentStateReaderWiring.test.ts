@@ -65,7 +65,7 @@ describe('readDaemonAgentState wiring (#1303)', () => {
     const provesIdx = body.indexOf('provesLiveAgent(agentProcessTracker.identityFor(id), canonical.slug)');
     expect(provesIdx).toBeGreaterThan(canonicalIdx);
     expect(body).toMatch(
-      /session\.promptLog\.size > 0 && !session\.promptLog\.isCommandRunning\(\)/,
+      /session\.promptLog\.commandRunningIfKnown\(\) === false/,
     );
     expect(body).toMatch(/const agentVerified =/);
   });

@@ -53,14 +53,7 @@ import { isMac } from '../shared/platform';
 // successful cmdlet failed with the previous native command's code. Movement
 // since the last prompt is what separates "this number describes the command
 // that just ran" from "this number is left over".
-// v12: bash older than 4.4 emits no OSC 133 at all. PS0 (the only source of C)
-// is a 4.4 feature, so on macOS's /bin/bash 3.2 the pane logged D/A/B but never
-// C — and the daemon read that as "at a prompt" for the whole life of every
-// foreground command. A live `claude` then lost its sidebar row on each 15 s
-// poll and wore a Resume chip. With no markers the daemon reports
-// commandRunning as unknown and the renderer uses process truth instead. OSC 7
-// (cwd) still ships on every version.
-const INTEGRATION_VERSION = 12;
+const INTEGRATION_VERSION = 11;
 const VERSION_FILE = '.version';
 
 // -----------------------------------------------------------------------
@@ -222,9 +215,7 @@ if (Get-Module -ListAvailable -Name PSReadLine) {
 
 // -----------------------------------------------------------------------
 // Bash 4.4+ — uses PS0 (pre-execution) for C and PROMPT_COMMAND for D/A.
-// PS1 suffix emits B. Older bash (macOS /bin/bash is 3.2) has no PS0, so it
-// gets OSC 7 only: half a marker stream (prompts but never a command start)
-// would claim the pane sits at a prompt while a command runs (v12 note above).
+// PS1 suffix emits B.
 // -----------------------------------------------------------------------
 export const BASH_INIT = `# wmux shell integration — OSC 133 semantic markers (v${INTEGRATION_VERSION})
 # shellcheck shell=bash
@@ -242,14 +233,6 @@ if [ -r "\$HOME/.bashrc" ] && [ -z "\${__WMUX_BASHRC_SOURCED:-}" ]; then
 fi
 
 __wmux_last_exit=0
-
-# OSC 133 only where PS0 exists (bash 4.4+). Without a command-start marker the
-# prompt markers alone read as "idle at a prompt" during every foreground
-# command, so an older bash emits none of them.
-__wmux_osc133=0
-if [ "\${BASH_VERSINFO[0]:-0}" -gt 4 ] || { [ "\${BASH_VERSINFO[0]:-0}" -eq 4 ] && [ "\${BASH_VERSINFO[1]:-0}" -ge 4 ]; }; then
-  __wmux_osc133=1
-fi
 
 __wmux_preexec() {
   printf '\\033]133;C\\a'
@@ -300,16 +283,12 @@ __wmux_osc7() {
 
 __wmux_precmd() {
   __wmux_last_exit=\$?
-  if [ "\$__wmux_osc133" = 1 ]; then
-    printf '\\033]133;D;%d\\a\\033]133;A\\a' "\$__wmux_last_exit"
-  fi
+  printf '\\033]133;D;%d\\a\\033]133;A\\a' "\$__wmux_last_exit"
   __wmux_osc7
 }
 
 # PS0 runs after Enter, before the command executes (bash 4.4+).
-if [ "\$__wmux_osc133" = 1 ]; then
-  PS0='\$(__wmux_preexec)'
-fi
+PS0='\$(__wmux_preexec)'
 
 # PROMPT_COMMAND runs before PS1 is printed — emit D (prev command end) + A (prompt start).
 case ";\${PROMPT_COMMAND:-};" in
@@ -318,12 +297,10 @@ case ";\${PROMPT_COMMAND:-};" in
 esac
 
 # Append B (prompt end) to PS1 if not already present.
-if [ "\$__wmux_osc133" = 1 ]; then
-  case "\$PS1" in
-    *"133;B"*) ;;
-    *) PS1="\${PS1}\\[\\033]133;B\\a\\]" ;;
-  esac
-fi
+case "\$PS1" in
+  *"133;B"*) ;;
+  *) PS1="\${PS1}\\[\\033]133;B\\a\\]" ;;
+esac
 `;
 
 // -----------------------------------------------------------------------
