@@ -1,3 +1,442 @@
+## [3.61.0] — 2026-09-25
+
+### Added
+
+- **Every built-in shortcut can be moved or switched off.** Settings →
+  Shortcuts now lists all of wmux's keyboard shortcuts — workspace switching,
+  tab and pane cycling, focus movement, zoom, panels — each with its current
+  key. Click the key to record a new one, untick the row to hand the key to
+  the terminal, or reset it. Alt+Up / Alt+Down (previous / next workspace)
+  were the trigger: TUI apps such as Codex and Crush bind them, and wmux took
+  them with no way to give them back. A new key is refused when it would
+  take a key another shortcut uses, copy / paste, the prefix key, or a key
+  with no Ctrl / ⌘ / Alt. Sessions that switched shortcuts off under the old
+  toggle keep those settings (#1456).
+
+- **A fan-out owner can read and nudge its workers' panes.** The agent or
+  orchestrator that started a fan-out can now read the terminal of each open
+  task it delegated, send it plain text, and stop it with Ctrl+C or Escape,
+  without anyone switching workspaces. Before, those panes were out of reach
+  because they live in other workspaces. Access ends when the task is
+  finished. Text read from a worker comes back marked as untrusted, since the
+  worker printed it. Text sent to a worker's pane may contain only letters,
+  tabs and newlines: control characters and raw writes are refused, so text
+  can't do what the key tool withholds. Note the limit: a pane agent's
+  identity is the pane id its MCP server reports. wmux checks which workspace
+  owns that pane, but it can't prove the caller is that pane, so another
+  program running as you could claim to be the owner.
+
+- **Worker permission mode for fan-out.** Settings → Agents → Fan-out workers
+  picks the Claude Code permission mode workers launch with (Auto by default;
+  Accept edits, Bypass permissions or Manual). In every mode a worker may
+  record its task ledger row and read its mission channel without a prompt,
+  and is denied the wmux tools that reach beyond its own task: fan-out, typing
+  into other panes, messaging other agents and the browser.
+
+- **"Allow wmux worker tools in Claude Code" button.** Adds the same minimal
+  allow list to `permissions.allow` in `~/.claude/settings.json`, keeping
+  everything else in the file. That file applies to every Claude Code session
+  on the machine, and the button says so.
+
+- **Recent unattended fan-outs in Fleet → Approvals.** Shows what ran without a
+  prompt, when, from which workspace and in which repository.
+
+- **The sidebar shows who each agent is.** Every agent row leads with a small
+  drawn monogram for its kind (C Claude Code, X Codex, G Gemini, A Aider,
+  O OpenCode, P Copilot, OC OpenClaude, K Kiro, R Grok; a terminal mark for a
+  shell), and a collapsed workspace shows up to three of them grouped by
+  status instead of a bare agent count. Agent rows also show live activity
+  and how long ago the agent last did something.
+
+- **Fan-out tasks nest under the workspace that launched them.** Task
+  workspaces sit indented under their owner with a fold chevron and a
+  `N tasks · M need you` line, and a menu on that line closes every finished
+  task at once — worktree and workspace — while keeping any task with
+  uncommitted or unpushed work and saying why. A task counts as finished only
+  when every agent in it has finished. Tasks whose owner was closed
+  collect under "From closed workspace"; detached tasks stay on their own.
+  The `wtask: ` prefix no longer shows.
+
+- **Where a task came from.** A task row's fan-out mark says which workspace
+  fanned it out, who asked (you from the Multi Task dialog, the
+  orchestrator, or the pane that called it) and when, and a task workspace's
+  titlebar has a link back to its owner.
+
+- **Recent activity order.** Settings › Appearance › Sidebar › Workspace
+  order now offers Recent activity next to Manual and Needs you first.
+
+- **Resizable sidebar.** Drag the sidebar's inner edge (220–400px, default
+  264px); double-click to reset. Terminals resize once, when you let go.
+
+- **"Changed since you last looked" dot.** A small dot on a workspace row
+  and its agent row says an agent finished or started waiting for you while
+  that workspace was out of view. It clears as soon as you look.
+
+- **Finished fan-out tasks wait in one review queue.** Fleet has a new
+  "Ready to review" section: each fan-out task whose agents have all finished
+  and that is still open gets one row with its title, the workspace that fanned
+  it out, its branch, how many files and lines changed, its PR and state if
+  there is one, and how long ago it finished. From the row you can open the
+  diff, open or create the PR, jump to the task, or close it (a task with
+  uncommitted or unpushed work stays open and says why). The fan-out summary
+  under the owner workspace in the sidebar now reads `N to review` and opens
+  that section. Before, each finished task had to be opened one by one.
+
+- Experimental Chat view can show and continue the same terminal conversation for Codex and OpenCode, alongside Claude Code, with provider-specific session identity and input guards. OpenCode TUI integration installs through `wmux setup-hooks` on supported versions.
+
+- Shared agent-neutral conversation/activity UI and optional private managed Codex, OpenCode and ACP adapters. ACP is supplementary; opening Chat does not create a separate agent session.
+
+- Start Claude or Codex from Chat with a first message in the same terminal, guarded against existing shell drafts and running processes (zsh/bash/sh with shell integration).
+
+- Use one bottom composer for initial and follow-up messages, with explicit Claude Bypass and Codex YOLO startup mode selection.
+
+- Add bottom-composer skill search for native Claude/Codex with keyboard navigation, agent-correct invocation, source labels, draft-preserving selection and honest discovery states. Keep idle connection text and session placeholders agent-neutral.
+
+- Include native command destinations in the slash menu, add live Codex model/effort controls, and handle app/daemon version skew without restarting existing terminal sessions.
+
+- Reduce Chat re-entry waits by overlapping history reads and subscription setup, preloading the view, and reusing bounded history only after fresh conversation and file identity checks.
+
+- Preserve native Korean/IME composition in the Chat composer with synchronous input state, and prevent composition-confirming Enter from submitting a message.
+
+- Right-align content-sized user bubbles inside transcript wrappers; keep agent replies left-aligned.
+
+- Include the external WebSocket runtime in packaged apps so native chat support does not prevent startup.
+
+### Changed
+
+- **The README leads with what wmux does, not a wall of text.** A 16-second
+  clip at the top shows one prompt fanning out into three agents in separate
+  git worktrees, and one agent's question answered from an iPhone. A desktop +
+  phone image, shorter feature sections, and an install block near the top
+  replace the long pitch paragraph and the "Why wmux?" table. Stale figures were
+  corrected along the way (78 MCP tools in the full profile, scrollback up to
+  100K lines, 11 terminal palettes) (#1454).
+
+- **Every README feature now has a clip.** Short recordings replace the still
+  images under Features: phone approvals, worktree fan-out and hunk adoption,
+  the orchestrator, channels, Fleet View, and surviving a quit or a crash. New
+  sections show the two ways agents browse (built-in panes, or a dedicated
+  Chrome over CDP) and Claude Code and Codex exchanging a review over wmux. The
+  Resume description now matches how it works: a second click adds the exact
+  session's `--resume` for Claude Code, and you press Enter (#1457).
+
+- **Messages between agents keep their line breaks.** A message sent to a pane
+  running a detected agent (Claude Code, Codex and the other known agents) now
+  arrives with its real newlines, so code blocks, lists and diffs stay
+  readable. Before, every newline was folded into `␤` and the whole body
+  arrived as one line. Each body line is shown with a `│ ` prefix, so a message
+  cannot fake the end of its envelope and start a second one from someone
+  else. Shells and panes without a detected agent still get the folded form.
+
+- **Fan-out tasks start from origin's default branch.** Each task's worktree
+  used to branch from whatever you had checked out, so a worker could start on
+  a stale local `main` or on an unrelated feature branch. A fan-out now fetches
+  origin's default branch once and creates every task branch from that same
+  commit, with no upstream set. The task's diff compares against that commit,
+  so upstream changes your checkout lacks no longer show up as the worker's.
+  If the fetch fails, tasks start from the last fetched origin branch, or from
+  your HEAD when there is none. The fan-out dialog, the fan-out result and each
+  task's mission channel then carry a warning.
+
+- **Typing or pressing a selecting key at a pane that is waiting on an
+  approval is now refused for every agent, not only orchestrators.** A pane
+  agent that typed "1" or pressed Enter at a permission prompt used to answer
+  it blindly. It now gets a refusal saying the human answers the prompt in the
+  pane. Ctrl+C and Escape still work. This also applies to `wmux send` from a
+  shell. When the operator's policy refuses an orchestrator's approval press,
+  only that orchestrator gets the fallback of typing an answer.
+
+- **Agents can fan out without an approval prompt.** A fan-out started from a
+  pipe or MCP caller (an orchestrator brain, an agent in a pane) now runs
+  without waiting for a click, with one toast so it is never invisible.
+  Before, every such fan-out raised a dialog that auto-denied after 30 seconds
+  when nobody was at the keyboard. Turn the prompt back on in
+  Settings → Agents → "Ask before an agent fans out".
+
+- **Fan-out has runaway brakes.** A fan-out task cannot fan out again (one
+  level deep, including workspaces it creates), at most 8 fan-out task
+  workspaces may be open and 24 tasks may start per rolling hour across wmux,
+  and every fan-out — from an agent or from the fan-out dialog — is written to
+  an audit log before anything spawns, followed by the line each task was
+  launched with. Over a limit the call is refused with a message naming the
+  limit and when it frees.
+
+- **The welcome dialog and the onboarding tour match the rest of the app.**
+  Both used monospace text, green borders and several solid amber buttons,
+  and the tour's Next button was filled blue. They now use the app's UI font
+  on a quieter surface: rounded panels, neutral fills and one soft shadow.
+  The setup steps read as one list, and a step that needs doing carries its
+  button on the same row. Each state has at most one highlighted action (for
+  example, Install hooks when hooks are missing), and the highlight no longer
+  jumps to another button while an install is still running. The sample task
+  and the first two tour steps show a short clip of exactly what the text
+  describes. The clips show a still image when the system asks for reduced
+  motion. (#1479)
+
+- **The settings icon is a gear.** It used to look like a sun, which read as
+  a brightness control. The small gear on workspace badges is drawn in a
+  simpler form so it stays legible. (#1479)
+
+- **Popovers and overlays match the quieter dialogs.** The Remote popover,
+  Broadcast, Session schedules, the command palette, the keyboard shortcuts
+  card, the notification drawer and the close-workspace confirm used to mix
+  native checkboxes, monospace prose, full-width amber buttons and a different
+  colour for every palette category. They now share one rounded card with a
+  soft shadow, muted section headers and flat buttons. The one action that
+  moves you forward is the only warm button, and it is not highlighted while
+  it is disabled or still running. Options are grouped in one list, security
+  notes are a single muted line, and notification types are shown as icons
+  instead of emoji. Key hints, paths and codes stay monospace. (#1484)
+
+- **The remaining dialogs match the welcome dialog.** Approval prompts, the
+  hooks install prompt, the automatic-updates question, loop setup, the
+  wmux.json review, the remote-pane, attach-remote and paired-device dialogs,
+  the workspace profile editor, the task cleanup list and the Multi Task panel
+  now use the same quiet surface: the app's UI font (monospace only for paths,
+  commands and ids), lists as one grouped container, and at most one
+  highlighted action per dialog. Approval prompts keep their auto-deny
+  countdown in view. Warnings and read-only notes no longer use the accent
+  colour. (#1485)
+
+- **Prompts that open by themselves no longer take your keyboard.** Approval
+  prompts, the hooks install prompt and the automatic-updates question leave
+  focus where you were typing, so an Enter or Space meant for a terminal (or
+  for a dialog you have open) cannot answer them unseen. Approval buttons also
+  ignore clicks for half a second after a prompt appears, and each queued
+  approval starts fresh, so a button focused on the previous one cannot
+  approve the next. A long list of requested permissions now scrolls instead
+  of being cut off. (#1485)
+
+- **The task cleanup list stays open while a task is closing,** and after
+  Commit & close the terminal holding the prepared commit line has focus, so
+  Enter runs it. (#1485)
+
+- **Escape closes more dialogs.** The hooks install prompt (except while it is
+  installing), the wmux.json review and the task cleanup list now close on
+  Escape. Approval prompts and the automatic-updates question still wait for
+  an answer. (#1485)
+
+- **Settings tabs are sorted by what they configure.** The Accounts tab used
+  to mix Claude Code setup, plugin health, the usage meter, accounts and phone
+  quick commands, and the Agents tab mixed the orchestrator, role binding,
+  A2A, MCP registration and the agent toolbar. The Agents group now has one
+  tab per topic: Claude Code (setup, plugin health, usage meter, MCP
+  registration), Accounts, Orchestrator, Roles & fan-out, and Browser. A new
+  Connections group holds Remote & phone (paired devices and quick commands)
+  and LAN. The agent toolbar rows moved to Appearance, first-run setup moved
+  to General, and Shortcuts is now called Keyboard. Every setting is still
+  there, and search finds each one on its new tab. (#1487)
+
+- **Settings looks like the rest of the app.** Each section is one rounded
+  list of rows with a label and a one-line description, instead of a separate
+  box per row. Long explanations fold behind Learn more. The title and
+  headings use the UI font instead of monospace, input borders are quiet, and
+  status such as "installed" is a small neutral or green label instead of
+  amber monospace. Language is one dropdown of native language names, without
+  flags. Each tab highlights at most one action. (#1487)
+
+- **Status is told by shape.** Running is an amber dot, needs input a red
+  ring, an error a cross, a finished turn a green check, an unconfirmed turn
+  a hollow ring, and idle shows nothing. A selected but idle workspace is no
+  longer painted green, which read as "done".
+
+- **Sidebar marks no longer render as emoji.** The branch, worktree,
+  warning and PR-check marks are drawn as icons.
+
+- **The sidebar sorts by what needs you.** Workspaces are now ordered by
+  attention by default: needs you, then finished, running, unconfirmed and
+  idle, the most recent first within each. A fan-out task that needs you
+  lifts the workspace it belongs to. Rows never move while the pointer or
+  keyboard focus is on the list — the new order applies after a short pause
+  or when you move away — and a workspace you just created stays on top for
+  a few minutes. Pin a workspace (right-click › Pin position) to keep it
+  where it is. If your list was in Manual order it moves to Attention once,
+  with a notice that lets you keep Manual; a choice made in Settings is kept.
+
+- Sidebar agent rows no longer carry a one-letter monogram. Claude, the default, is unmarked; any other agent is named in muted text after the title, and a collapsed workspace shows a count per status instead of glyphs.
+
+- **The Welcome dialog and the tour show what wmux tells you.** The first two
+  tour steps used to show pane splitting and adding a workspace. They now show
+  the sidebar flag plus the Fleet board, and a fan-out whose tasks each get
+  their own worktree branch, with the second step pointing at the Multi Task
+  button. The Claude Code statusline row in the Welcome dialog also plays a
+  short clip of the line itself: model, account, context, and 5h / 7d usage.
+
+### Fixed
+
+- **The task diff opened after a fan-out loads again.** "Open first diff" on
+  the Multi Task toast opened a panel that always said "Task not found —
+  worktree lost or corrupted", so per-hunk adoption could never be used. The
+  panel was reading the task list, the mission channel's archived state, and
+  the diff comments from the wrong layer of the RPC reply. It now reads the
+  daemon's answer, so the diff renders, comments on the mission channel show
+  inline, and the comment button follows the channel's real state (#1453).
+
+- **Shortcut keys and terminal keys can no longer disagree.** Which keys are
+  shortcuts used to be decided in three places that were kept in sync by hand,
+  and every mismatch was a dead key. Bare Ctrl+Up / Ctrl+Down (not a shortcut)
+  never reached the terminal, a prefix key moved off Ctrl+B was also typed into
+  the pane while Ctrl+B went nowhere, and Ctrl+Shift+M never opened the message feed. One table and one
+  matcher now decide for all of them. Letter shortcuts also work with Caps
+  Lock on, and Ctrl+1–9 works on AZERTY (#1456).
+
+- **Recording a key in Settings no longer runs the shortcut it is bound to.**
+  Pressing a combo that was already a shortcut used to run it, so the recorder
+  never saw the key (#1456).
+
+- **Ctrl+letter shortcuts no longer fire twice while typing Korean.** With a
+  Hangul syllable still being composed, one Ctrl+D split the pane twice.
+  Every shortcut now runs once per key press, so Ctrl+T opens one tab and
+  Ctrl+W closes one tab (#1456).
+
+- **The Fleet Approvals inbox counts down background-execution requests
+  correctly.** A request from another agent to run in the background showed
+  "auto-deny in 0s" the moment it arrived, and while the Approvals tab stayed
+  open it never actually expired. The inbox now starts the same 30-second clock
+  the approval dialog uses and shows no countdown until that clock is running.
+  Requests the inbox was showing stop counting down when it closes, so none
+  expire behind the dialog while nobody can see them. (#1467)
+
+- **Agents asking to run work in the background no longer give up while you
+  are still deciding.** `send_message` with `execute: true` timed out on the
+  caller's side after about 5 seconds, while the approval stayed open for 30.
+  Agents retried, which raised a second approval for the same work, and
+  approving the first one afterwards started nothing. The caller now waits for
+  the answer, and every approval ends before the caller stops waiting, even one
+  queued behind another. Resending the same request while it is pending joins
+  the existing approval and gets its answer, instead of adding a second one.
+  (#1467)
+
+- **The task diff panel shows the result of Adopt and Close.** Before, a
+  successful adopt reloaded the panel without any confirmation, and it kept
+  your hunk selection, so a second click could re-apply the same hunks. Now
+  the confirmation stays up and the selection is cleared. After a successful
+  Close, the panel stops showing the removed worktree's hunks and hides Adopt.
+  When Close refuses because the task worktree still has uncommitted changes
+  (which is normal right after an adopt), the panel names the worktree and
+  tells you what to do: adopt what you still need, or commit the changes and
+  open a PR. It also gives the command to discard them, with a warning that
+  this deletes everything you did not adopt. Adopt, Close and PR errors are
+  now in English instead of Korean (#1468).
+
+- **Panes recovered after a crash show their prompt again.** When the app and
+  daemon were killed and relaunched, recovered panes came back blank and stayed
+  blank until a key was pressed. The shell's first prompt was thrown away while
+  the recovered pane waited for its first resize. Recovered panes now show the
+  prompt straight away, with the restored history in scrollback above it.
+  (#1469)
+
+- **The Resume pill no longer covers the tab title or the first terminal row.**
+  After a recovery, the Resume button and its `--dangerously-skip-permissions`
+  checkbox floated over the pane's tab name and over the line the resume
+  command is typed into. They now sit in their own row under the tab strip,
+  which goes away once you resume or dismiss it. (#1469)
+
+- **Approved background execution finishes again.** When an agent asked
+  another workspace to run work in the background (`send_message` with
+  `execute: true`) and you approved it, the worker started but never ran: it
+  waited for input that was never closed, and the task stayed "working"
+  forever. The worker now runs, and its result reaches the task. A run that
+  hangs is stopped after 30 minutes, and a worker that exits without a result
+  now marks its task failed with a reason, so a task can no longer be stuck
+  in "working". (#1473)
+
+- **A Claude Code permission prompt now shows "Needs you", and answering it
+  clears it.** A pane sitting on `Do you want to proceed?` often stayed on its
+  running or idle dot. The row is sometimes drawn with cursor moves. A command
+  or sentence mentioning another agent could make wmux treat a Claude pane as
+  that agent for the rest of the session. A pane started in the default
+  permission mode was never recognised as Claude. All three are fixed.
+  Answering with `1`, `2`, `3`, Esc or Enter now returns the pane to running
+  immediately; before, it stayed on "Needs you" until the turn ended. Re-run
+  `wmux setup-hooks` (or the in-app hook install) to also register Claude
+  Code's `PermissionRequest` hook, which marks the pane when the dialog opens
+  even while subagents keep working. It only changes the pane's status: it
+  never sends an approval card to your phone and ignores headless `claude -p`
+  runs (#1474).
+
+- **Escape in the welcome dialog closes only the dialog.** Pressing Escape
+  while typing with an input method no longer closes it, and one Escape no
+  longer also closes Settings underneath. Keyboard focus stays in the dialog
+  after a setup step finishes instead of falling to the terminal behind it.
+  (#1479)
+
+- **The close-workspace confirm stays inside the window.** For workspaces
+  near the bottom of the sidebar, the "Close workspace?" popover opened at
+  the pointer and its Close button could end up below the window edge. It
+  now opens from the close button and flips above it when there is no room
+  below. (#1484)
+
+- **Recovered panes on Windows show their prompt without a keypress.** After
+  the app and daemon were killed and relaunched, a recovered pane on Windows
+  could still come back blank until a key was pressed. Whether it did depended
+  on timing. Recovered panes on Windows now always show the prompt, with the
+  restored history in scrollback above it. (#1486)
+
+- **Escape in a dialog opened from Settings closes only that dialog.** In the
+  paired-devices list or while capturing a shortcut key, Escape used to close
+  all of Settings underneath. (#1487)
+
+- **The task diff panel's discard command now runs in Windows PowerShell.**
+  When Close is refused because the task worktree still has uncommitted
+  changes, the panel suggests a command to discard them. It joined its two
+  steps with `&&`, which Windows PowerShell 5.1 — the default Windows pane
+  shell — rejects as a parse error, so pasting it did nothing. The steps are
+  now joined with `;`, which works in PowerShell, bash and zsh. (#1495)
+
+- **A new execute approval no longer flashes a wrong countdown.** When an
+  execute approval appeared some time after the previous one, the dialog could
+  briefly read "auto-deny in 129s" before it settled on about 30 seconds. It
+  now shows the right number from the moment it appears. (#1496)
+
+- **An A2A message can no longer run as a command in another workspace's shell.**
+  `send_message` with `silent: false`, an explicit `pane_id` naming a plain
+  shell pane, or a reply/status update on a task pinned to one used to paste
+  the whole message into that shell and press Enter, so its first word ran as
+  a command. wmux now writes an A2A message only into a pane with a detected
+  agent; anywhere else the task is stored, nothing is typed, and the sender
+  gets `no_agent_pane`. `silent: false` still pastes the full message into an
+  agent's prompt. (#1498)
+
+- **Reboot detection and orphaned-shell cleanup work again on Windows builds
+  without `wmic.exe`.** Current Windows 11 has removed wmic, which the daemon
+  used to read the boot time and to check which process owns a pid. Every
+  daemon restart was logged as a reboot, shells left behind by earlier sessions
+  were never reaped, and every identity-checked kill was skipped. These reads
+  now go through CIM, and values saved by older versions still match. (#1499)
+
+- **Claude Code permission prompts now turn the pane to Needs you without the hook.** Claude Code draws its permission dialog in several shapes: it moves the cursor instead of starting a new line, or glues the question onto the row before it with padding when it repaints a long transcript. The detector read those rows glued together and missed the prompt, so on a signals-only install the pane stayed Running while the dialog waited for an answer. The detector now recognises the dialog by the question followed by its `1. Yes` option, so a reply that merely prints the question does not raise Needs you. (#1500)
+
+- **Panes restored at startup now use the right cell size as soon as the terminal font loads.** A pane recovered right after launch was measured with the fallback font before the bundled Cascadia Code finished loading, and kept that cell size. Its first resize (clicking Resume, splitting, toggling the sidebar) then left the text overflowing the pane and clipped on the right until the next resize. The cell is now re-measured when fonts finish loading, and any cell-size change refits the pane. (#1501)
+
+- **Fan-out workers on Windows PowerShell get their whole prompt.** A prompt
+  with quoted text that contains a space was cut off at the quotes, dropping
+  the rest of the task and the wmux instructions appended to it, and Korean
+  text or an em dash arrived garbled. The prompt now reaches the agent exactly
+  as written in Windows PowerShell 5.1 and in PowerShell 7 (#1502).
+
+- **Discarding a task's leftovers no longer blocks its Close on Windows.** The
+  task diff panel told you to run the discard commands inside the task
+  worktree. On Windows, a shell left in that folder locks it, so the next Close
+  failed with "Permission denied". The commands now point at the worktree with
+  `git -C`, so you can run them from anywhere. (#1504)
+
+- **A split or resize no longer shows a false Needs you on a Claude pane.**
+  When an earlier reply had printed `Do you want to proceed?` on a line of its
+  own, a split or resize made Claude redraw the transcript, and the redrawn
+  line looked like a permission prompt to wmux. The pane then showed "Needs
+  you" until the next keystroke. wmux now counts that question as a prompt only
+  when the dialog's `❯ 1. Yes` option comes right after it, however the rows
+  are drawn. Real permission dialogs are still detected (#1507).
+
+- **"Needs you" stays on the pane whose dialog is still open.** When an agent asked for permission in the pane you were looking at, moving focus to another pane (a new split, a click) dropped the "N need you" chip, the red Fleet row and the workspace dot, even though the dialog was still on screen. Now they stay until that pane answers the dialog, whichever pane has focus. A focused agent of the same kind no longer takes over another pane's dialog as its own. (#1510)
+
+- A sidebar agent row whose tab is still titled after its shell (Bash, zsh, pwsh) now shows the agent name instead of the shell name.
+
+- A Claude Code session in a pane whose shell never reports a command start (macOS's built-in bash 3.2, or PowerShell without PSReadLine) now keeps its sidebar row and shows Needs you on a permission prompt. Before, wmux read that pane as idle at a prompt for as long as any command ran, dropped the agent row every 15 seconds and put a Resume chip over the live agent. Those shells still report prompts and exit codes as before.
+
+- On a fresh install, the hooks install prompt no longer opens on top of the Welcome dialog, which already offers the same install. It asks again on a later launch if the hooks are still missing.
+
 ## [3.60.0] — 2026-09-23
 
 ### Added
