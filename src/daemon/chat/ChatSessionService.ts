@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { ChatControlResult, ChatInteraction, ChatInteractionAnswer, ManagedChatStatus } from '../../shared/transcript/chatSession';
 import type { ChatSendResult, TranscriptPage, TranscriptStatus, TurnEvent } from '../../shared/transcript/turnEvents';
 import { BASE_CAPABILITIES, deadline, type ChatAdapter, type ChatProvider } from './adapter';
+import { managedHistoryEpoch } from './chatBridge';
 
 interface StoredSession {
   version: 1;
@@ -18,6 +19,8 @@ interface StoredSession {
   receipts: Record<string, { textHash: string; result: ChatSendResult }>;
   historyTruncated?: boolean;
   historyEpoch?: string;
+  /** Bumped only when a reconnect replaces history with a native replay; eviction never moves it. */
+  replayGeneration?: number;
 }
 interface Session {
   saved: StoredSession;
@@ -66,6 +69,7 @@ export class ChatSessionService {
         !Number.isSafeInteger(saved.revision) || typeof saved.cwd !== 'string' || typeof saved.sessionId !== 'string' || saved.events.length > 2000 || saved.events.some((event) => !validStoredEvent(event)) ||
         typeof saved.receipts !== 'object' || Array.isArray(saved.receipts) ||
         (saved.historyEpoch !== undefined && typeof saved.historyEpoch !== 'string') ||
+        (saved.replayGeneration !== undefined && (!Number.isSafeInteger(saved.replayGeneration) || saved.replayGeneration < 0)) ||
         Object.values(saved.receipts).some((receipt) => !receipt || typeof receipt.textHash !== 'string' || !['sent', 'unconfirmed'].includes(receipt.result))) return;
       const provider = this.providers.get(saved.providerId); if (!provider) return;
       const session: Session = { saved, epoch: 0, bytes: Buffer.byteLength(JSON.stringify(saved.events)), sizes: new Map(saved.events.map((event) => [event.id, Buffer.byteLength(JSON.stringify(event))])), pending: new Map(), status: {
@@ -77,6 +81,12 @@ export class ChatSessionService {
     } catch { return; }
   }
   has(id: string) { return !!this.get(id); }
+  /** Phone epoch (N9): conversation identity plus replay generation, not the
+   * eviction-rotated `historyEpoch`, so a bounded history keeps its cursors. */
+  conversationEpoch(id: string): string | undefined {
+    const session = this.get(id); if (!session) return;
+    return managedHistoryEpoch(session.saved.sessionId ?? session.saved.id, session.saved.replayGeneration ?? 0);
+  }
   status(id: string): TranscriptStatus | undefined {
     const session = this.get(id); if (!session) return;
     const phase = session.status.phase;
@@ -189,7 +199,10 @@ export class ChatSessionService {
       }));
       if (epoch !== session.epoch) { adapter.close(); return { ok: false, error: 'Connection superseded' }; }
       session.saved.sessionId = nativeId;
-      if (replay.size) { session.saved.historyEpoch = randomUUID(); session.saved.events = []; session.sizes.clear(); session.bytes = 2; }
+      if (replay.size) {
+        session.saved.historyEpoch = randomUUID(); session.saved.replayGeneration = (session.saved.replayGeneration ?? 0) + 1;
+        session.saved.events = []; session.sizes.clear(); session.bytes = 2;
+      }
       connected = true;
       for (const event of replay.values()) this.emit(session, event);
       // Reconnect never resubmits a saved intent. The user explicitly reconciles

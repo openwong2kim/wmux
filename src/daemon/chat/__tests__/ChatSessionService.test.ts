@@ -110,6 +110,26 @@ describe('managed chat session contract', () => {
     expect(page?.cursor.historyEpoch).not.toBe(epoch);
     expect(f.service.snapshot('pane', 1)?.events[0].id).toBe('1');
   });
+  it('keeps the phone conversation epoch across eviction and moves it only on a history replay', async () => {
+    const f = fixture(); await f.service.start('pane', 'test');
+    const epoch = f.service.conversationEpoch('pane');
+    expect(epoch).toMatch(/^m1:/);
+    for (let i = 0; i < 2001; i++) f.context().emit({ id: String(i), kind: 'assistant_text', text: 'hello' });
+    expect(f.service.snapshot('pane')?.truncatedHead).toBe(true);
+    expect(f.service.conversationEpoch('pane')).toBe(epoch);
+    // A reconnect without a replay keeps it too.
+    expect(await f.service.reconnect('pane', 'native-session')).toEqual({ ok: true });
+    expect(f.service.conversationEpoch('pane')).toBe(epoch);
+    vi.mocked(f.adapter.connect).mockImplementationOnce(async (context) => {
+      context.emit({ id: 'replayed', kind: 'assistant_text', text: 'from native history' }); return 'native-session';
+    });
+    expect(await f.service.reconnect('pane', 'native-session')).toEqual({ ok: true });
+    const replayed = f.service.conversationEpoch('pane');
+    expect(replayed).not.toBe(epoch);
+    f.service.dispose();
+    const restored = new ChatSessionService(f.deps); cleanup.push(() => restored.dispose());
+    expect(restored.conversationEpoch('pane')).toBe(replayed);
+  });
   it('preserves malformed disk records and refuses to start over them', async () => {
     const f = fixture(); await f.service.start('pane', 'test'); f.service.dispose();
     const file = path.join(f.deps.directory, fs.readdirSync(f.deps.directory)[0]);
