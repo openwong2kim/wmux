@@ -107,16 +107,15 @@ function clearSurfaceAgentsKnownGone(
   }
 }
 
-/** Name panes from the daemon's process truth — see planLiveAgentSeed. Idle,
- *  not running: nothing here says a turn is in progress. */
+/** Name panes from the daemon's process truth — see planLiveAgentSeed. */
 function seedSurfaceAgentsFromProcess(
   sessions: ReadonlyArray<{ id: string; liveAgent?: string }>,
   agentAlive: Record<string, boolean>,
   commandRunning: Record<string, boolean>,
 ): void {
   const store = useStore.getState();
-  for (const { ptyId, slug } of planLiveAgentSeed(sessions, store.surfaceAgent, agentAlive, commandRunning)) {
-    store.setSurfaceAgent(ptyId, agentSlugToDisplay(slug), 'idle', slug);
+  for (const { ptyId, slug, status } of planLiveAgentSeed(sessions, store.surfaceAgent, agentAlive, commandRunning)) {
+    store.setSurfaceAgent(ptyId, agentSlugToDisplay(slug), status, slug);
     void useStore.getState().principalRegisterPane(ptyId);
   }
 }

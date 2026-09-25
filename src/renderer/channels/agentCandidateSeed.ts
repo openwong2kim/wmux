@@ -80,21 +80,28 @@ export function planAgentCandidateSeed(
  *
  * Runs after the known-gone wipe and never contradicts it: a pane whose agent
  * process was seen dying, or whose shell is back at its prompt, is skipped.
- * A pane that already has a name keeps it — live detection and hooks carry
- * status this seed does not know.
+ * A pane already named for the SAME agent keeps its entry — live detection and
+ * hooks carry status this seed does not know. A pane named for a different
+ * agent is renamed: the live process outranks a stale label (the #919 tier
+ * rule), which is what a quick exit-and-relaunch leaves behind.
+ *
+ * Status: `running` while OSC 133 says the agent owns the terminal — the same
+ * synthetic value identity-only hydration uses, which the roster shows as idle
+ * until activity or a hook proves a turn — and `idle` otherwise.
  */
 export function planLiveAgentSeed(
   sessions: ReadonlyArray<{ id: string; liveAgent?: string }>,
-  surfaceAgent: Readonly<Record<string, { name: string } | undefined>>,
+  surfaceAgent: Readonly<Record<string, { name: string; slug?: string } | undefined>>,
   agentAlive: Readonly<Record<string, boolean>>,
   commandRunning: Readonly<Record<string, boolean>>,
-): Array<{ ptyId: string; slug: AgentSlug }> {
-  const seeds: Array<{ ptyId: string; slug: AgentSlug }> = [];
+): Array<{ ptyId: string; slug: AgentSlug; status: 'running' | 'idle' }> {
+  const seeds: Array<{ ptyId: string; slug: AgentSlug; status: 'running' | 'idle' }> = [];
   for (const { id, liveAgent } of sessions) {
     if (!id || !isAgentSlug(liveAgent)) continue;
-    if (surfaceAgent[id]?.name) continue;
+    const existing = surfaceAgent[id];
+    if (existing?.name && (existing.slug ?? agentDisplayToSlug(existing.name)) === liveAgent) continue;
     if (agentAlive[id] === false || commandRunning[id] === false) continue;
-    seeds.push({ ptyId: id, slug: liveAgent });
+    seeds.push({ ptyId: id, slug: liveAgent, status: commandRunning[id] === true ? 'running' : 'idle' });
   }
   return seeds;
 }
