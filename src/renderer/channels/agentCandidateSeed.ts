@@ -70,3 +70,31 @@ export function planAgentCandidateSeed(
     (id) => id.length > 0 && !surfaceAgent[id]?.name && !seedAttempted.has(id),
   );
 }
+
+/**
+ * Which panes can be named from the daemon's PROCESS truth (`pty.list`
+ * `liveAgent`) right now? A resumed agent with no session-start hook (Codex)
+ * whose banner the detector missed has no other name source until its first
+ * turn ends, and the resolveAgent seed above is one-shot per pane and runs
+ * before the user relaunches anything.
+ *
+ * Runs after the known-gone wipe and never contradicts it: a pane whose agent
+ * process was seen dying, or whose shell is back at its prompt, is skipped.
+ * A pane that already has a name keeps it — live detection and hooks carry
+ * status this seed does not know.
+ */
+export function planLiveAgentSeed(
+  sessions: ReadonlyArray<{ id: string; liveAgent?: string }>,
+  surfaceAgent: Readonly<Record<string, { name: string } | undefined>>,
+  agentAlive: Readonly<Record<string, boolean>>,
+  commandRunning: Readonly<Record<string, boolean>>,
+): Array<{ ptyId: string; slug: AgentSlug }> {
+  const seeds: Array<{ ptyId: string; slug: AgentSlug }> = [];
+  for (const { id, liveAgent } of sessions) {
+    if (!id || !isAgentSlug(liveAgent)) continue;
+    if (surfaceAgent[id]?.name) continue;
+    if (agentAlive[id] === false || commandRunning[id] === false) continue;
+    seeds.push({ ptyId: id, slug: liveAgent });
+  }
+  return seeds;
+}

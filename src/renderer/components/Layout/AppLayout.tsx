@@ -75,7 +75,8 @@ import { probeProjectConfig, maybeAutoApplyProjectLayout, workspaceProbeCwd } fr
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
-import { planAgentCandidateSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
+import { planAgentCandidateSeed, planLiveAgentSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
+import { agentSlugToDisplay } from '../../../shared/agentIdentity';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import ComposeHost from '../AgentToolbar/ComposeHost';
 import ToolbarHost, { AGENT_TOOLBAR_HEIGHT } from '../AgentToolbar/ToolbarHost';
@@ -103,6 +104,20 @@ function clearSurfaceAgentsKnownGone(
   }
   for (const [id, running] of Object.entries(commandRunning)) {
     if (running === false) store.clearSurfaceAgent(id);
+  }
+}
+
+/** Name panes from the daemon's process truth — see planLiveAgentSeed. Idle,
+ *  not running: nothing here says a turn is in progress. */
+function seedSurfaceAgentsFromProcess(
+  sessions: ReadonlyArray<{ id: string; liveAgent?: string }>,
+  agentAlive: Record<string, boolean>,
+  commandRunning: Record<string, boolean>,
+): void {
+  const store = useStore.getState();
+  for (const { ptyId, slug } of planLiveAgentSeed(sessions, store.surfaceAgent, agentAlive, commandRunning)) {
+    store.setSurfaceAgent(ptyId, agentSlugToDisplay(slug), 'idle', slug);
+    void useStore.getState().principalRegisterPane(ptyId);
   }
 }
 
@@ -1652,6 +1667,7 @@ export default function AppLayout() {
         // auto-name, image-paste `auto`, and the principal registry stop
         // treating the leftover shell as Claude.
         clearSurfaceAgentsKnownGone(agentAliveSnapshot, commandRunningSnapshot);
+        seedSurfaceAgentsFromProcess(sessions, agentAliveSnapshot, commandRunningSnapshot);
         // 4d (channels): seed agent identity for panes the user has NOT
         // visited yet, so recovered agents show up as invite/mention
         // candidates right after boot instead of only after a visit.
@@ -1728,6 +1744,9 @@ export default function AppLayout() {
         useStore.getState().hydrateCommandRunning(cmdSnapshot);
         useStore.getState().hydrateAgentAlive(agentAliveSnapshot);
         clearSurfaceAgentsKnownGone(agentAliveSnapshot, cmdSnapshot);
+        // An agent relaunched after boot (the Resume pill) is attributed by
+        // the daemon seconds later; this tick is what brings its row back.
+        seedSurfaceAgentsFromProcess(sessions, agentAliveSnapshot, cmdSnapshot);
       }).catch(() => { /* transient list failure — the next tick self-heals */ });
     };
     const id = window.setInterval(refreshBindings, 15_000);

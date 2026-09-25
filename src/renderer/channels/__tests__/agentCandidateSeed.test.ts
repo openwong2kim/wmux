@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   planAgentCandidateSeed,
+  planLiveAgentSeed,
   asAgentSlug,
   markSeedAttempted,
   __resetSeedAttemptedForTests,
@@ -53,5 +54,42 @@ describe('asAgentSlug', () => {
   it('returns undefined for unknown values (future agents seed name-only)', () => {
     expect(asAgentSlug('some-new-agent')).toBeUndefined();
     expect(asAgentSlug('')).toBeUndefined();
+  });
+});
+
+describe('planLiveAgentSeed', () => {
+  it('names a recovered Codex pane from process truth before any turn', () => {
+    const seeds = planLiveAgentSeed(
+      [
+        { id: 'daemon-codex', liveAgent: 'codex' },
+        { id: 'daemon-shell' },
+      ],
+      {},
+      {},
+      { 'daemon-codex': true },
+    );
+    expect(seeds).toEqual([{ ptyId: 'daemon-codex', slug: 'codex' }]);
+  });
+
+  it('never resurrects an agent known to be gone', () => {
+    const sessions = [
+      { id: 'died', liveAgent: 'codex' },
+      { id: 'at-prompt', liveAgent: 'gemini' },
+    ];
+    expect(planLiveAgentSeed(sessions, {}, { died: false }, { 'at-prompt': false })).toEqual([]);
+  });
+
+  it('keeps a name that live detection or a hook already set', () => {
+    const seeds = planLiveAgentSeed(
+      [{ id: 'p1', liveAgent: 'codex' }],
+      { p1: { name: 'Claude Code' } },
+      {},
+      {},
+    );
+    expect(seeds).toEqual([]);
+  });
+
+  it('ignores a value that is not an agent slug', () => {
+    expect(planLiveAgentSeed([{ id: 'p1', liveAgent: 'Codex CLI' }], {}, {}, {})).toEqual([]);
   });
 });
