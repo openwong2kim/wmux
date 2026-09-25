@@ -81,7 +81,9 @@ export function shouldShowCheatSheet(gate: CheatSheetGate): boolean {
 export type HooksLaunchCheck = 'wait' | 'check' | 'skip';
 
 export interface HooksLaunchCheckGate {
-  /** The wizard probe has settled (same input as AutoUpdatePromptGate). */
+  /** firstRun.check has answered, failed or is unavailable. Fed from local
+   *  state set only by that probe — never the store's firstRunCompleted,
+   *  which session load can set first. A failed probe counts as settled. */
   firstRunSettled: boolean;
   /** The first-run wizard was mounted on this boot. It carries its own
    *  "Claude Code hooks · Install hooks" row, so a launch-time hooks modal

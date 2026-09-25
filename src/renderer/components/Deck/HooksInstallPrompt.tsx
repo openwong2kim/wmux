@@ -78,9 +78,9 @@ export function HooksInstallPrompt({
    *  it until the first-run probe settles, `skip` drops it for this boot. It
    *  runs at most once either way. */
   launchCheck?: HooksLaunchCheck;
-  /** Another first-boot dialog (the first-run wizard) owns the screen. A
-   *  prompt that is due stays pending and appears once this clears, instead
-   *  of opening on top. */
+  /** Another first-boot dialog (the first-run wizard) owns the screen. The
+   *  initial ask stays pending and is re-checked once this clears, instead of
+   *  opening on top. An install or refusal already in flight stays visible. */
   deferred?: boolean;
 }): React.ReactElement | null {
   const [phase, setPhase] = useState<Phase>('hidden');
@@ -215,6 +215,18 @@ export function HooksInstallPrompt({
     if (launchCheck === 'check') maybePrompt();
   }, [checkOnMount, launchCheck, maybePrompt]);
 
+  // Deferral ended with an ask still pending: that ask is as old as the
+  // wizard, which can install the hooks itself (or the user can refuse in
+  // Settings meanwhile). Drop it and ask again from fresh status/preference.
+  const wasDeferredRef = useRef(deferred);
+  useEffect(() => {
+    const was = wasDeferredRef.current;
+    wasDeferredRef.current = deferred;
+    if (!was || deferred || phase !== 'prompt') return;
+    setPhase('hidden');
+    maybePrompt();
+  }, [deferred, phase, maybePrompt]);
+
   useEffect(() => {
     const onRequest = () => maybePrompt();
     window.addEventListener(HOOKS_PROMPT_EVENT, onRequest);
@@ -241,7 +253,7 @@ export function HooksInstallPrompt({
       });
   }, [api]);
 
-  if (phase === 'hidden' || deferred) return null;
+  if (phase === 'hidden' || (deferred && phase === 'prompt')) return null;
 
   // Later, Escape, the backdrop and the post-install Close share one
   // lifetime (this modal only) — and none of them works mid-write.

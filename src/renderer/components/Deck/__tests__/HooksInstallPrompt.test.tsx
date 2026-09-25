@@ -613,4 +613,35 @@ describe('HooksInstallPrompt — first boot (never on top of the Welcome dialog)
     await flush();
     expect(el.querySelector('[data-hooks-install-prompt]')).toBeTruthy();
   });
+
+  it('re-checks status when the deferral ends: hooks installed by the wizard means no prompt', async () => {
+    let installed = false;
+    const status = vi.fn(async () => ({ installed }));
+    const api = apiOf({ status });
+    const { el, rerender } = mount(<HooksInstallPrompt api={api} t={t} checkOnMount={false} deferred />);
+    act(() => requestHooksInstallPrompt());
+    await flush();
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeNull();
+
+    installed = true; // the wizard's own "Install hooks" row ran
+    rerender(<HooksInstallPrompt api={api} t={t} checkOnMount={false} deferred={false} />);
+    await flush();
+    await flush();
+    expect(status).toHaveBeenCalledTimes(2);
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeNull();
+  });
+
+  it('never hides an install already in flight when a deferral starts', async () => {
+    let finish: (v: { ok: boolean; error: string | null }) => void = () => undefined;
+    const install = vi.fn(() => new Promise<{ ok: boolean; error: string | null }>((r) => { finish = r; }));
+    const api = apiOf({ install });
+    const { el, rerender } = mount(<HooksInstallPrompt api={api} t={t} />);
+    await flush();
+    act(() => (el.querySelector('[data-hooks-install]') as HTMLButtonElement).click());
+    rerender(<HooksInstallPrompt api={api} t={t} deferred />);
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeTruthy();
+    await act(async () => { finish({ ok: true, error: null }); });
+    await flush();
+    expect(el.textContent).toContain('hooks.prompt.doneTitle');
+  });
 });

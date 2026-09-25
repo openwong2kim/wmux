@@ -749,6 +749,11 @@ export default function AppLayout() {
   // The wizard ran on this boot — it offered the hooks install itself, so the
   // launch-time hooks prompt stands down (hooksLaunchCheck).
   const [firstRunWizardRanThisBoot, setFirstRunWizardRanThisBoot] = useState(false);
+  // Set only by the firstRun.check outcome (resolved, rejected or absent).
+  // The store's firstRunCompleted is not enough: loadSession can set it before
+  // the probe answers, which would let the hooks check run before we know the
+  // wizard is coming.
+  const [firstRunProbeSettled, setFirstRunProbeSettled] = useState(false);
 
   const [showAutoUpdatePrompt, setShowAutoUpdatePrompt] = useState(false);
   const t = useT();
@@ -1422,9 +1427,14 @@ export default function AppLayout() {
   useEffect(() => {
     let cancelled = false;
     const api = window.electronAPI.firstRun;
-    if (!api) return; // preload may not yet expose firstRun in non-Electron contexts (tests)
+    if (!api) {
+      // preload may not yet expose firstRun in non-Electron contexts (tests)
+      setFirstRunProbeSettled(true);
+      return;
+    }
     void api.check().then((result) => {
       if (cancelled) return;
+      setFirstRunProbeSettled(true);
       if (!result.shown) {
         setShowFirstRunWizard('firstRun');
         setFirstRunWizardRanThisBoot(true);
@@ -1434,7 +1444,10 @@ export default function AppLayout() {
     }).catch(() => {
       // Best-effort. If main is unreachable, fall back to "completed" so
       // the user is not blocked by a missing wizard channel.
-      if (!cancelled) setFirstRunCompleted(true);
+      if (!cancelled) {
+        setFirstRunCompleted(true);
+        setFirstRunProbeSettled(true);
+      }
     });
     return () => {
       cancelled = true;
@@ -2052,7 +2065,7 @@ export default function AppLayout() {
       <ToastContainer />
       <HooksInstallPromptContainer
         t={t}
-        launchCheck={hooksLaunchCheck({ firstRunSettled: firstRunCompleted, firstRunWizardRanThisBoot })}
+        launchCheck={hooksLaunchCheck({ firstRunSettled: firstRunProbeSettled, firstRunWizardRanThisBoot })}
         deferred={showFirstRunWizard !== null}
       />
       </div>
