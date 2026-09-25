@@ -120,6 +120,16 @@ interface WatchState {
   staleAgentSessionId: string | null;
 }
 
+/**
+ * A SHRINK (size < cursor) means the file was truncated/rewritten. A grow is a
+ * normal append. Rotation past the cursor is caught by isLineBoundary (review:
+ * Claude+Codex 2-MODEL).
+ */
+function cursorStale(transcriptPath: string, size: number, offset: number, cursorFileSize: number | undefined): boolean {
+  if (cursorFileSize !== undefined && size < cursorFileSize) return true;
+  return offset > 0 && !isLineBoundary(transcriptPath, offset);
+}
+
 export class TranscriptProjector {
   private readonly deps: TranscriptProjectorDeps;
   private readonly debounceMs: number;
@@ -227,6 +237,18 @@ export class TranscriptProjector {
    *
    * `budgetDropped` is surfaced so the phone can render an "omitted" seam
    * instead of the silent hole `fit` left the push path with. */
+  /**
+   * `delta`'s two reset signals for a cursor offset the phone pages BACK from:
+   * true when the file shrank below the cursor's `fileSize` or `offset` is no
+   * longer a line boundary (and when the transcript cannot be read at all).
+   */
+  staleCursor(sessionId: string, offset: number, cursorFileSize?: number): boolean {
+    const resolved = this.resolvePath(sessionId);
+    if (!resolved.ok) return true;
+    const stat = statTranscript(resolved.transcriptPath);
+    return !stat || cursorStale(resolved.transcriptPath, stat.size, offset, cursorFileSize);
+  }
+
   delta(
     sessionId: string,
     fromOffset: number,
@@ -237,12 +259,7 @@ export class TranscriptProjector {
     const stat = statTranscript(resolved.transcriptPath);
     if (!stat) return null;
 
-    let reset = false;
-    // A SHRINK (size < cursor) means the file was truncated/rewritten. A grow
-    // is a normal append. Rotation past the cursor is caught by isLineBoundary
-    // below (review: Claude+Codex 2-MODEL).
-    if (opts?.cursorFileSize !== undefined && stat.size < opts.cursorFileSize) reset = true;
-    if (fromOffset > 0 && !isLineBoundary(resolved.transcriptPath, fromOffset)) reset = true;
+    const reset = cursorStale(resolved.transcriptPath, stat.size, fromOffset, opts?.cursorFileSize);
     // A shrunk file (stat.size < from) is readTranscriptDelta's own reset path.
 
     if (reset) {

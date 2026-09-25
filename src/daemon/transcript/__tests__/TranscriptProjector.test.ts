@@ -754,6 +754,16 @@ describe('TranscriptProjector — #782 phone turn-view contract (stateless delta
     expect(result.reset).toBe(true);
   });
 
+  it('staleCursor applies the same shrink and line-boundary checks to a back-paging head', () => {
+    const file = fixture('claude-basic.jsonl');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    const snap = harness.projector.snapshot('pty-1')!;
+    expect(harness.projector.staleCursor('pty-1', snap.cursor.headOffset, snap.cursor.fileSize)).toBe(false);
+    expect(harness.projector.staleCursor('pty-1', snap.cursor.headOffset, snap.cursor.fileSize + 1000)).toBe(true);
+    expect(harness.projector.staleCursor('pty-1', 5, snap.cursor.fileSize)).toBe(true);
+    expect(harness.projector.staleCursor('pty-unbound', 0)).toBe(true);
+  });
+
   it('codeBlock refuses a mid-line offset (#782 boundary check)', () => {
     const file = fixture('claude-basic.jsonl');
     harness.bindings.set('pty-1', binding({ transcriptPath: file }));

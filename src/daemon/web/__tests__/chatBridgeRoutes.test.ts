@@ -158,7 +158,7 @@ describe('native chat routes (contract v0.3.1)', () => {
   let chatBox: ReturnType<typeof makeFakeChat>['box'];
   let chat: ReturnType<typeof makeFakeChat>['bridge'];
   let chatWired: boolean;
-  let projectorMock: { status: ReturnType<typeof vi.fn>; transcriptPath: ReturnType<typeof vi.fn>; snapshot: ReturnType<typeof vi.fn>; delta: ReturnType<typeof vi.fn> };
+  let projectorMock: { status: ReturnType<typeof vi.fn>; transcriptPath: ReturnType<typeof vi.fn>; snapshot: ReturnType<typeof vi.fn>; delta: ReturnType<typeof vi.fn>; staleCursor: ReturnType<typeof vi.fn> };
   let approvalRecords: ApprovalRequest[];
   let approvalListeners: Set<(e: ApprovalEvent) => void>;
   let clock: number | null;
@@ -176,6 +176,7 @@ describe('native chat routes (contract v0.3.1)', () => {
       transcriptPath: vi.fn(() => null),
       snapshot: vi.fn(() => page([{ id: 'u1', kind: 'user_text', text: 'snap' }], { headOffset: 5, tailOffset: 50, fileSize: 50, mtimeMs: 1 }, { hasMore: true })),
       delta: vi.fn(() => ({ events: [{ id: 'd1', kind: 'assistant_text', text: 'delta' }], cursor: { headOffset: 5, tailOffset: 80, fileSize: 80, mtimeMs: 1 }, reset: false })),
+      staleCursor: vi.fn(() => false),
     };
     approvalRecords = [];
     approvalListeners = new Set();
@@ -382,6 +383,17 @@ describe('native chat routes (contract v0.3.1)', () => {
       const { body } = await turns(h, `?cursor=${first.body.cursor}&dir=back`);
       expect(projectorMock.snapshot).toHaveBeenLastCalledWith('s1', { before: 5 });
       expect(body).toMatchObject({ mode: 'older', reset: false });
+      expect(projectorMock.staleCursor).toHaveBeenCalledWith('s1', 5, 50);
+    });
+
+    it('a back read whose file shrank or moved off a line boundary is a tail snapshot with reset:true', async () => {
+      const info = await start();
+      const h = bearer(info.token as string);
+      const first = await turns(h);
+      projectorMock.staleCursor.mockReturnValue(true);
+      const { body } = await turns(h, `?cursor=${first.body.cursor}&dir=back`);
+      expect(projectorMock.snapshot).toHaveBeenLastCalledWith('s1');
+      expect(body).toMatchObject({ available: true, mode: 'snapshot', reset: true, events: [{ id: 'u1' }] });
     });
 
     it('tui: full page every read; reset:true on every forward read with a cursor; raw epoch never leaves', async () => {

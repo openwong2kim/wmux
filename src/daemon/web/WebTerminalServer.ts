@@ -3159,9 +3159,8 @@ export class WebTerminalServer {
       }
       const fileCursor = (c: TranscriptCursor) =>
         encodeChatCursor({ ...bound, head: c.headOffset, tail: c.tailOffset, fileSize: c.fileSize });
-      // Rules 1–4 failed (or a v1 cursor, or none at all): the tail of the
-      // CURRENT conversation, replacing whatever the client holds.
-      if (!valid || (dir === 'forward' && valid.tail === undefined)) {
+      // The tail of the CURRENT conversation, replacing whatever the client holds.
+      const tail = () => {
         const page = projector.snapshot(sessionId);
         if (!page) return unavailable('unreadable');
         return reply({
@@ -3173,8 +3172,13 @@ export class WebTerminalServer {
           hasMore: page.hasMore,
           ...(page.truncatedHead ? { truncatedHead: true } : {}),
         });
-      }
+      };
+      // Rules 1–4 failed (or a v1 cursor, or none at all).
+      if (!valid || (dir === 'forward' && valid.tail === undefined)) return tail();
       if (dir === 'back') {
+        // Same conversation, but the file may have been rewritten under the
+        // cursor: the forward path's shrink and line-boundary checks apply.
+        if (projector.staleCursor(sessionId, valid.head, valid.fileSize)) return tail();
         const page = projector.snapshot(sessionId, { before: valid.head });
         if (!page) return unavailable('unreadable');
         return reply({
