@@ -1484,7 +1484,8 @@ exactly the workspaces with a live pane.
 
 `fleetSidebar: true` in `/api/config` says this daemon merges the desktop
 sidebar's own view into the two polled list routes. It describes support, not
-whether the desktop is attached right now; an older daemon omits the key. The
+whether the desktop is attached right now; a daemon with no desktop bridge, and
+an older daemon, omit the key. The
 fields are read-only and additive, and they ride exactly the gates the two
 routes already have (bearer auth; no `--allow-input` or `--allow-transcript` —
 a tab title is terminal output the paired device can already read in full on

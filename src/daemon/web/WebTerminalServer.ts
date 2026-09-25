@@ -2102,10 +2102,10 @@ export class WebTerminalServer {
           : {}),
         // This daemon merges the desktop sidebar's fields into
         // `/api/sessions` and `/api/workspaces` whenever the desktop answers.
-        // It says the daemon SUPPORTS them, not that they are present now —
-        // each field is omitted while the desktop is away. An older daemon
-        // omits the key.
-        fleetSidebar: true,
+        // It says the daemon SUPPORTS them — a desktop bridge is wired — not
+        // that they are present now: each field is omitted while the desktop
+        // is away. Omitted without a bridge, and by an older daemon.
+        ...(this.deps.desktop ? { fleetSidebar: true } : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
         minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
         serverVersion: daemonServerVersion(),

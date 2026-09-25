@@ -7514,7 +7514,8 @@ describe('WebTerminalServer', () => {
       expect(JSON.stringify(body)).not.toMatch(/secret-extra|secret-cwd/);
     });
 
-    it('advertises fleetSidebar in /api/config whether or not the desktop is attached', async () => {
+    it('advertises fleetSidebar when a desktop bridge is wired, attached or not', async () => {
+      // Wired, nothing attached (the getter returns no bridge right now).
       desktopBridge = null;
       let info = await startRO();
       expect((await getJson(info.token as string, '/api/config')).fleetSidebar).toBe(true);
@@ -7522,6 +7523,22 @@ describe('WebTerminalServer', () => {
       attachDesktop(() => ({ workspaces: [], sidebar: sidebar() }));
       info = await startRO();
       expect((await getJson(info.token as string, '/api/config')).fleetSidebar).toBe(true);
+    });
+
+    it('omits fleetSidebar from a daemon with no desktop bridge wired', async () => {
+      const bare = new WebTerminalServer({
+        sessionManager,
+        log: () => { /* silent in tests */ },
+        assetsDir: os.tmpdir(),
+      } as ConstructorParameters<typeof WebTerminalServer>[0]);
+      const info = await bare.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
+      try {
+        const res = await fetch(`http://127.0.0.1:${info.port}/api/config`, { headers: bearer(info.token as string) });
+        expect(res.status).toBe(200);
+        expect('fleetSidebar' in ((await res.json()) as Record<string, unknown>)).toBe(false);
+      } finally {
+        await bare.stop();
+      }
     });
   });
 
