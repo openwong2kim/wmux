@@ -92,7 +92,7 @@ export function ChatComposerInput({ disabled, placeholder, maxLength, scope, com
       if (event.key === 'Enter' && !event.nativeEvent.isComposing) event.preventDefault();
       return;
     }
-    if (!open && event.key === 'Escape' && !text && keys?.escape?.()) { event.preventDefault(); return; }
+    if (!open && event.key === 'Escape' && !text.trim() && keys?.escape?.()) { event.preventDefault(); return; }
     const field = event.currentTarget;
     if (event.key === 'Backspace' && field.selectionStart === 0 && field.selectionEnd === 0 && keys?.backspaceAtStart?.()) { event.preventDefault(); return; }
     if (!open) return;

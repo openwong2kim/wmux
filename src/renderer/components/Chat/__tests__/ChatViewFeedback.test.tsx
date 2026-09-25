@@ -116,6 +116,8 @@ describe('Stop and Esc while a turn runs', () => {
     vi.stubGlobal('electronAPI', { chat: { send: vi.fn(), interrupt } });
     await render();
     expect(host.querySelector('.wmux-chat-composer-footer')!.textContent).toContain('chat.hint.runningQueue');
+    // A stray newline left after a send still counts as an empty composer.
+    await type('\n');
     await key({ key: 'Escape' });
     expect(interrupt).toHaveBeenCalledWith({ ptyId: 'pty-1', agentSessionId: fixture.session });
     expect(host.querySelector('.wmux-chat-stop')!.textContent).toBe('chat.stopping');
