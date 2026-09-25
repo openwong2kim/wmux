@@ -214,7 +214,9 @@ describe('BASH_INIT — prompt markers on every bash, command state only once C 
       const rc = path.join(dir, 'init.bash');
       fs.writeFileSync(rc, BASH_INIT);
       const out = spawnSync(bash.bin, ['--rcfile', rc, '-i'], {
-        input: 'true\nexit\n',
+        // End on EOF, not `exit`: PS0 fires for `exit` too and leaves a
+        // trailing C with no D after it.
+        input: 'true\n',
         encoding: 'utf-8',
         env: { HOME: dir, PATH: '/usr/bin:/bin', TERM: 'dumb' },
         timeout: 5_000,
