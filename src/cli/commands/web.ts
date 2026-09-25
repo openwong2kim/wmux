@@ -24,6 +24,8 @@ interface WebInfo {
   allowUpload?: boolean;
   /** Whether `GET /api/sessions/:id/turns` serves the transcript turn view. */
   allowTranscript?: boolean;
+  /** Whether chat launch may start an agent with approvals or the sandbox off. */
+  allowDangerousLaunch?: boolean;
   /** True when the daemon itself terminates HTTPS. */
   tls?: boolean;
   token?: string;
@@ -150,6 +152,10 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
   // blocks, full tool inputs, file contents the agent read), far wider reading
   // than a mirror, and the device credential never expires — off until asked.
   const allowTranscript = hasFlag(args, '--allow-transcript');
+  // The ceiling for chat launches with approvals (Claude) or approvals and the
+  // sandbox (Codex) off. Only ever sent when set, so the daemon's fail-closed
+  // default is what every other invocation gets.
+  const allowDangerousLaunch = hasFlag(args, '--allow-dangerous-launch');
   // Extra Host-header names the server should accept (comma-separated). A
   // reverse proxy in front of the loopback bind forwards the browser's Host
   // verbatim — `tailscale serve` sends the MagicDNS name, which the default
@@ -190,6 +196,7 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
         allowInput,
         allowUpload,
         allowTranscript,
+        ...(allowDangerousLaunch ? { allowDangerousLaunch: true } : {}),
         allowedHosts: hosts,
         newToken,
         // Explicit false distinguishes "the operator chose HTTP" from an
@@ -361,7 +368,7 @@ function report(
   const nativeTls = info.tls === true;
 
   console.log('');
-  console.log(`  wmux web ${mode === 'start' ? 'started' : 'running'} — ${info.allowInput ? 'INPUT ENABLED' : 'read-only'}${info.allowUpload ? '  ·  uploads ENABLED' : ''}${info.allowTranscript ? '  ·  transcript ENABLED' : ''}`);
+  console.log(`  wmux web ${mode === 'start' ? 'started' : 'running'} — ${info.allowInput ? 'INPUT ENABLED' : 'read-only'}${info.allowUpload ? '  ·  uploads ENABLED' : ''}${info.allowTranscript ? '  ·  transcript ENABLED' : ''}${info.allowDangerousLaunch ? '  ·  DANGEROUS LAUNCH ENABLED' : ''}`);
   console.log(`  bind ${info.host}:${info.port}${typeof info.clients === 'number' ? `  ·  ${info.clients} viewer(s)` : ''}`);
   console.log('');
 
@@ -474,6 +481,11 @@ function report(
   } else {
     console.log('  Transcript access is off. Re-run with --allow-transcript to let a');
     console.log('  paired phone read the full Claude session transcript.');
+  }
+  if (info.allowDangerousLaunch) {
+    console.log('  Dangerous launch is ENABLED: a paired phone with input can start Claude');
+    console.log('  with --dangerously-skip-permissions or Codex with approvals and the');
+    console.log('  sandbox off. Each launch needs an explicit confirmation and is logged.');
   }
   if (tailnet || nativeTls) {
     console.log('  PWA: served over HTTPS, so "Add to Home Screen", Android install and');

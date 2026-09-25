@@ -50,6 +50,13 @@ export interface WebPersistedState {
    * restored server never gains a permission the operator did not ask for.
    */
   allowTranscript?: boolean;
+  /**
+   * Whether chat launch may start an agent with approvals or the sandbox off
+   * (`--allow-dangerous-launch`). Persisted only when true, and absent reads as
+   * false, so a restored server never gains the ceiling unless the operator
+   * set it on the host.
+   */
+  allowDangerousLaunch?: boolean;
   /** Native HTTPS PEM paths. Key bytes are never persisted here. */
   tls?: WebTlsConfig;
   allowedHosts: string[];
@@ -188,6 +195,7 @@ export function coerceWebStateWithDiagnostics(parsed: unknown): WebStateLoadResu
       // Optional on purpose: absent (pre-flag file) and false both read as
       // false at /api/config, so the field is omitted entirely unless true.
       ...(o['allowTranscript'] === true ? { allowTranscript: true } : {}),
+      ...(o['allowDangerousLaunch'] === true ? { allowDangerousLaunch: true } : {}),
       ...(tls ? { tls } : {}),
       allowedHosts,
       tailscale,
