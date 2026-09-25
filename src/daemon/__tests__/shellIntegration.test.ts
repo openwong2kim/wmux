@@ -198,7 +198,7 @@ describe('BASH_INIT — OSC 133 only where PS0 exists', () => {
     expect(BASH_INIT).toMatch(/if \[ "\$__wmux_osc133" = 1 \]; then\s+printf '\\033\]133;D/);
     expect(BASH_INIT).toMatch(/if \[ "\$__wmux_osc133" = 1 \]; then\s+case "\$PS1"/);
     // OSC 7 sits outside the gate.
-    expect(BASH_INIT).toMatch(/\bfi\n  __wmux_osc7\n\}/);
+    expect(BASH_INIT).toMatch(/\bfi\n {2}__wmux_osc7\n\}/);
   });
 
   const bash = process.platform === 'win32' ? undefined : ['/bin/bash', '/usr/bin/bash'].find((b) => fs.existsSync(b));
