@@ -44,6 +44,11 @@ export function projectTuiMessages(api, sessionId) {
   return { events: retained, truncated: truncated || retained.length !== events.length || messages.length >= 300 };
 }
 
+// The daemon refuses request ids whose time prefix is 24 h old, and accepts a
+// prefix up to 60 s ahead of its clock. The margin keeps a receipt until no
+// such id can still be accepted.
+const RECEIPT_RETENTION_MS = 24 * 60 * 60 * 1000 + 5 * 60 * 1000;
+
 /** Exported separately for protocol/identity tests without opening a socket. */
 export function terminalChatHandler(api, epoch = randomBytes(16).toString('hex')) {
   const requests = new Map();
@@ -81,9 +86,15 @@ export function terminalChatHandler(api, epoch = randomBytes(16).toString('hex')
     if (previous) return previous.fingerprint === fingerprint ? previous.result : { result: 'session_changed' };
     if (state.phase === 'awaiting_input') return { result: 'blocked' };
     if (state.phase === 'running') return { result: 'busy' };
-    // Refuse when full rather than evict a receipt and make a replay executable.
-    if (requests.size >= 512) return { result: 'unavailable' };
-    const record = { fingerprint, result: { result: 'unconfirmed' } };
+    // A receipt past the retention can never be replayed: drop it.
+    if (requests.size >= 512) {
+      const oldest = Date.now() - RECEIPT_RETENTION_MS;
+      for (const [id, receipt] of requests) if (receipt.at <= oldest) requests.delete(id);
+    }
+    // Refuse when full rather than evict a younger receipt and make a replay
+    // executable. `unavailable` keeps an older daemon reading it as a refusal.
+    if (requests.size >= 512) return { result: 'unavailable', reason: 'receipts-full' };
+    const record = { fingerprint, at: Date.now(), result: { result: 'unconfirmed' } };
     requests.set(requestId, record);
     // HTTP acceptance can precede the TUI's busy event. Keep an admission
     // fence until native completion is observed; elapsed time is not proof.
@@ -107,7 +118,9 @@ export async function tui(api) {
   const directory = join(homedir(), `.wmux${process.env.WMUX_DATA_SUFFIX || ''}`, 'terminal-chat');
   const file = join(directory, `${createHash('sha256').update(ptyId).digest('hex')}.json`);
   const token = randomBytes(32).toString('hex');
-  const handler = terminalChatHandler(api, token.slice(0, 32));
+  // The epoch is minted independently: it is serialized to the daemon and must
+  // not carry any part of the loopback bearer token.
+  const handler = terminalChatHandler(api);
   const server = createServer({ maxHeaderSize: 4096, requestTimeout: 5000, headersTimeout: 5000, keepAliveTimeout: 1000 }, (req, res) => {
     const authorization = str(req.headers.authorization);
     const expected = `Bearer ${token}`;
