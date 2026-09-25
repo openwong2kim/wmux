@@ -1047,10 +1047,10 @@ export const ko = {
   'firstRunWizard.error.UNKNOWN.fix': '재시도하거나 터미널에서 `wmux mcp register`를 실행하세요.',
 
   // Onboarding spotlight tour (steps.ts / OnboardingOverlay) — #452
-  'onboarding.step1.title': '터미널',
-  'onboarding.step1.description': '이 창은 완전한 터미널입니다. 창을 분할해 여러 세션을 나란히 실행하세요.',
-  'onboarding.step2.title': '워크스페이스 추가',
-  'onboarding.step2.description': '+를 눌러 새 워크스페이스를 만드세요. 각 워크스페이스는 자체 창·레이아웃·실행 중인 에이전트를 유지합니다.',
+  'onboarding.step1.title': '모든 에이전트를 한눈에',
+  'onboarding.step1.description': '에이전트가 입력을 기다리면 사이드바에 바로 표시됩니다. Fleet을 열면 모든 에이전트를 한 화면에서, 기다리는 것부터 볼 수 있습니다.',
+  'onboarding.step2.title': '병렬로 나눠 맡기기',
+  'onboarding.step2.description': '프롬프트 하나를 여러 에이전트에게 나눠 주세요. 작업마다 자체 git 워크트리와 wtask/ 브랜치에서 실행되고, 시작한 워크스페이스 아래에 표시됩니다.',
   'onboarding.step3.title': '상태 표시줄',
   'onboarding.step3.description': '실행 중인 에이전트, 채널, 알림이 모두 여기에 한눈에 표시됩니다.',
   'onboarding.step4.title': '설정',

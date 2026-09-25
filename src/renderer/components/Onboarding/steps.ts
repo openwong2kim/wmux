@@ -21,20 +21,20 @@ export interface OnboardingStep {
  */
 export const ONBOARDING_STEPS: OnboardingStep[] = [
   {
-    id: 'split-pane',
+    id: 'fleet',
     titleKey: 'onboarding.step1.title',
     descriptionKey: 'onboarding.step1.description',
-    targetSelector: '[data-onboarding-target="pane-area"]',
-    placement: 'bottom',
-    media: 'split',
+    targetSelector: '[data-sidebar-nav="fleet"]',
+    placement: 'right',
+    media: 'fleet-board',
   },
   {
-    id: 'add-workspace',
+    id: 'fan-out',
     titleKey: 'onboarding.step2.title',
     descriptionKey: 'onboarding.step2.description',
     targetSelector: '[data-onboarding-target="add-workspace"]',
     placement: 'right',
-    media: 'workspaces',
+    media: 'worktrees',
   },
   {
     id: 'open-browser',

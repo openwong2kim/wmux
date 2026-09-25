@@ -972,7 +972,7 @@ export function SampleTaskBlock({
       {withClip && (
         <div className="p-3 pb-0">
           <MediaPreview
-            clip={MEDIA_CLIPS.split}
+            clip={MEDIA_CLIPS.fleet}
             label={t('firstRunWizard.sampleTaskDescription')}
             data-testid="first-run-wizard-sample-preview"
           />

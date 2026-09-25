@@ -1602,10 +1602,10 @@ export const pl = {
   // Onboarding spotlight tour (steps.ts / OnboardingOverlay) — shown after the
   // first-run wizard completes (AppLayout gates on firstRunCompleted). Missing
   // these keys is what surfaced raw "onboarding.stepN.title" placeholders (#452).
-  'onboarding.step1.title': 'Twój terminal',
-  'onboarding.step1.description': 'Ten panel to pełny terminal. Podziel go na więcej paneli, aby uruchomić kilka sesji obok siebie.',
-  'onboarding.step2.title': 'Dodaj obszar roboczy',
-  'onboarding.step2.description': 'Kliknij +, aby utworzyć obszar roboczy. Każdy trzyma własne panele, układ i działających agentów.',
+  'onboarding.step1.title': 'Wszyscy agenci na jednej tablicy',
+  'onboarding.step1.description': 'Gdy agent czeka na Ciebie, pasek boczny od razu to pokazuje. Otwórz Flotę, aby zobaczyć wszystkich agentów naraz, najpierw tych, którzy na Ciebie czekają.',
+  'onboarding.step2.title': 'Rozdziel pracę równolegle',
+  'onboarding.step2.description': 'Przekaż jeden prompt kilku agentom. Każde zadanie działa we własnym drzewie roboczym git na gałęzi wtask/ i jest widoczne pod obszarem roboczym, który je uruchomił.',
   'onboarding.step3.title': 'Pasek stanu',
   'onboarding.step3.description': 'Działający agenci, kanały i powiadomienia pojawiają się tu na pierwszy rzut oka.',
   'onboarding.step4.title': 'Ustawienia',

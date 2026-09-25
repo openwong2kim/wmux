@@ -566,7 +566,7 @@ describe('welcome typography and media', () => {
     expect(html).toContain('role="img"');
     expect(html).toMatch(/aria-label="Open a 2x2 split/);
     expect(html).toMatch(/<video[^>]*autoPlay|<video[^>]*autoplay/);
-    expect(html).toContain('.webm');
+    expect(html).toMatch(/fleet[^"]*\.webm/);
   });
 
   it('draws no emoji-style status glyphs in the chrome', () => {
