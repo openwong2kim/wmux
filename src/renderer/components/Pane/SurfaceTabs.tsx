@@ -18,6 +18,34 @@ import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOf
 import { displayPath } from '../../utils/displayPath';
 import { workspaceColorHex } from '../../../shared/workspaceColors';
 import PaneActionsMenu, { PANE_ACTIONS_MENU_WIDTH, type PaneActionItem } from './PaneActionsMenu';
+import { bindingEnforcesModel, type RoleBinding } from '../../../shared/orchestratorRole';
+import { paneHeaderTailGap } from './paneChrome';
+
+/** D2 — only a terminal surface can launch an agent, so only a terminal surface
+ *  may claim a role-enforced model. An undefined `surfaceType` is a legacy
+ *  terminal (the field postdates the original Surface shape). */
+export function isTerminalSurfaceType(surfaceType: string | undefined): boolean {
+  return surfaceType === undefined || surfaceType === 'terminal';
+}
+
+/**
+ * D2 — may this pane display a "role-enforced launch" model badge?
+ *
+ * Both halves are load-bearing and neither is obvious at the call site, which is
+ * why this is a named predicate rather than an inline `&&`:
+ *  - the binding must REALLY inject the model (bindingEnforcesModel). A
+ *    model-only binding, or one naming an agent whose `--model` grammar wmux has
+ *    not verified, is stored and shown in Settings but never applied — badging it
+ *    would tell the operator a pane is pinned to a model while the launch goes
+ *    out on the default.
+ *  - the surface must be a terminal, since nothing else launches an agent.
+ */
+export function showsEnforcedModelBadge(opts: {
+  binding: RoleBinding | undefined;
+  surfaceType: string | undefined;
+}): boolean {
+  return bindingEnforcesModel(opts.binding) && isTerminalSurfaceType(opts.surfaceType);
+}
 
 /** Rendered width (px) of the pane-action half of the cluster (split / browser /
  *  stash / zoom).
@@ -104,9 +132,47 @@ export const PANE_ACTIONS_MIN_PANE_WIDTH = PANE_ACTIONS_CLUSTER_WIDTH + MIN_TAB_
  * 0 is a genuinely hidden pane (a background workspace), which also keeps the
  * cluster so it is correct the instant it becomes visible.
  */
-export function paneActionsMode(width: number | null): PaneActionsMode {
+export function paneActionsMode(
+  width: number | null,
+  /** Width of the OTHER shrink-0 chrome this header is carrying — the view
+   *  toggle and the model badge. See paneHeaderExtraChromeWidth. */
+  extraChrome = 0,
+): PaneActionsMode {
   if (width === null || width === 0) return 'full';
-  return width >= PANE_ACTIONS_MIN_PANE_WIDTH ? 'full' : 'overflow';
+  return width >= PANE_ACTIONS_MIN_PANE_WIDTH + extraChrome ? 'full' : 'overflow';
+}
+
+/** Rendered width of the Terminal/Chat toggle: two 11px labels in 7px side
+ *  padding, a 2px gap and the group's own 5px margins. Its widest translation
+ *  decides it, so this is a measured ceiling, not a computed sum. */
+export const CHAT_TOGGLE_WIDTH = 84;
+
+/** The floor the enforced-model badge occupies even fully truncated: 5px of
+ *  padding and a 1px border on each side. `min-width: 0` zeroes a flex item's
+ *  CONTENT box, never its padding, so this much is unavoidable while the badge
+ *  is drawn at all — and it is exactly what pushed the action cluster off the
+ *  end of a 248px header before this was counted. */
+export const ENFORCED_MODEL_BADGE_MIN_WIDTH = 12;
+
+/**
+ * How much shrink-0 chrome the header carries BESIDES the action cluster.
+ *
+ * The affordability threshold used to be `cluster + a readable tab strip`,
+ * which was the whole header back when it was the whole header. The view
+ * toggle and the model badge are shrink-0 too, so when they are present the
+ * same width buys less: at 248px — comfortably "full" by the old threshold — a
+ * pane carrying both pushed the cluster 11px past its own right edge, and the
+ * clipped button was the ⋮/zoom corner, the way out of a narrow pane.
+ *
+ * The badge contributes only its truncated floor, because it is shrinkable:
+ * it gives up its own width first, and only what it cannot give up counts.
+ */
+export function paneHeaderExtraChromeWidth(opts: {
+  chatToggle: boolean;
+  enforcedModelBadge: boolean;
+}): number {
+  return (opts.chatToggle ? CHAT_TOGGLE_WIDTH : 0)
+    + (opts.enforcedModelBadge ? ENFORCED_MODEL_BADGE_MIN_WIDTH : 0);
 }
 
 /** Whether a pane of `width` can afford the full cluster. Kept as its own
@@ -305,7 +371,46 @@ export default function SurfaceTabs({
   // the two and passes the answer down.
   const paneActionsSetting = useStore((s) => s.paneActionsVisible);
   const chatViewEnabled = useStore((s) => s.chatViewEnabled);
+  // D2 — this pane's role→model binding, subscribed here (same pattern as the
+  // zoom state below) rather than prop-threaded: the badge it feeds is part of
+  // this strip's layout, so the strip is what has to reserve its width.
+  const paneRoleName = useStore((s) => s.paneRole[paneId]);
+  const paneRoleBinding = useStore((s) =>
+    paneRoleName ? s.orchestratorRoleBindings[paneRoleName] : undefined,
+  );
   const mode: PaneActionsMode = actionsMode ?? (paneActionsSetting ? 'full' : 'none');
+  // X8 — this pane's supervision state. The ⟳ badge it draws is laid out in
+  // this strip (it used to be absolutely positioned over the corner, where it
+  // covered whatever flow chrome happened to be underneath — the same defect
+  // the model badge had).
+  const supervision = useStore((s) => {
+    const ptyId = surfaces.find((sf) => sf.id === activeSurfaceId)?.ptyId;
+    return ptyId ? s.supervisionByPtyId[ptyId] : undefined;
+  });
+  const enforcedModel = useMemo(() => {
+    const surfaceType = surfaces.find((s) => s.id === activeSurfaceId)?.surfaceType;
+    // showsEnforcedModelBadge already implies a non-empty `model` (that is what
+    // bindingEnforcesModel checks), but the narrowing does not survive the
+    // predicate call, so the model is re-read defensively rather than asserted.
+    const model = paneRoleBinding?.model;
+    if (!model || !showsEnforcedModelBadge({ binding: paneRoleBinding, surfaceType })) return undefined;
+    return {
+      model,
+      binding: [paneRoleBinding?.agent, model].filter(Boolean).join(' · '),
+    };
+  }, [paneRoleBinding, surfaces, activeSurfaceId]);
+  // Both badges are labels, so each carries the SAME string as tooltip and as
+  // accessible name — a screen reader gets what the pointer gets. (The old
+  // absolute spans set `pointer-events: none`, which silently suppressed the
+  // title tooltip they went to the trouble of setting.)
+  const enforcedLaunchLabel = enforcedModel
+    ? t('pane.enforcedLaunch', { binding: enforcedModel.binding })
+    : '';
+  const supervisionLabel = !supervision
+    ? ''
+    : supervision.status === 'stopped'
+      ? t('supervision.stoppedTooltip')
+      : t('supervision.armedTooltip', { count: supervision.restartCount });
   // Zoom/maximize state for this pane — the cluster's fifth button toggles it
   // and reflects the current state (pressed when zoomed). Subscribing here (same
   // pattern as Pane.tsx) keeps the button in sync without prop threading.
@@ -602,6 +707,11 @@ export default function SurfaceTabs({
       // signal in the design system.
       style={{
         borderColor: 'var(--border-soft)',
+        // With no action cluster the corner zoom/maximize button is drawn
+        // absolutely over this strip's right end, so the strip's flow content
+        // stops short of it. With a cluster there is nothing to clear — the
+        // zoom verb is one of its buttons.
+        paddingRight: paneHeaderTailGap({ clusterShown: paneClusterWidth({ mode }) > 0 }),
         ...(paneActive ? { boxShadow: 'inset 0 -2px 0 var(--accent-blue)' } : {}),
       }}
       data-pane-tabs-active={paneActive ? 'true' : undefined}
@@ -784,6 +894,65 @@ export default function SurfaceTabs({
           </button>)}
         </div>;
       })()}
+
+      {/* D2 — muted enforced-model badge on a role-bound TERMINAL pane. Amber
+          stays reserved for alive+focus (DESIGN.md), so this rides the sub
+          tones. A browser/diff/editor surface never launches an agent, so the
+          badge would be a lie there — hence the surface-type gate, and the
+          enforceability gate beside it (see showsEnforcedModelBadge).
+
+          IN THE FLOW, not absolutely positioned over the strip. It used to be
+          an `position: absolute; right: <arithmetic past the action cluster>`
+          badge owned by Pane.tsx, and that arithmetic knew only about the
+          cluster, the zoom/maximize corner and the supervision badge — never
+          about this toggle, which is a flow child sitting exactly where the
+          offset landed. On a fan-out pane in Chat view the model pill covered
+          the second toggle button outright, so the switch read "Terminal
+          <model>" and the Chat label was only visible peeking out behind it.
+          A wider constant would not have fixed it: the toggle's width is its
+          two translated labels, so every locale moves the target. Laying the
+          badge out as a sibling is what makes overlap unrepresentable.
+
+          The supervision ⟳ badge above it moved here for the same reason and
+          in the same change: it was the other absolute span parked over this
+          corner, and with no role binding in play it covered the Chat button
+          by itself. Both are labels, not controls, so neither takes pointer
+          events away from anything — and being in the flow, both now keep
+          their own hover tooltip, which `pointer-events: none` used to eat. */}
+      {supervision && (
+        <span
+          data-pane-supervision={supervision.status}
+          className={`shrink-0 px-[6px] rounded-[3px] font-mono text-[10px] leading-4 font-bold tracking-[0.04em] select-none ${
+            supervision.status === 'stopped'
+              ? 'text-[var(--bg-main)] bg-[var(--accent-red)]'
+              : 'text-[var(--text-muted)] bg-[var(--bg-overlay)]'
+          }`}
+          title={supervisionLabel}
+          aria-label={supervisionLabel}
+        >
+          {supervision.status === 'stopped' ? '⟳!' : '⟳'}
+        </span>
+      )}
+      {enforcedModel && (
+        <span
+          data-pane-enforced-model
+          // Shrinkable and capped, NOT shrink-0. A shrink-0 badge of unbounded
+          // width is a second way to break this header: a long model id (a
+          // dated full model name, say) takes its width out of the flow, and
+          // since the action cluster is shrink-0 too, what gives way is the
+          // right-hand end of the strip — the ⋮ that is the only way out of a
+          // narrow pane. Capped at 96px so a long id truncates instead of
+          // growing, and shrinkable so the badge, not the ⋮, is what yields
+          // when the pane runs out of room.
+          className="shrink min-w-0 max-w-[96px] truncate px-[5px] rounded-[3px] font-mono text-[10px] leading-4 tracking-[0.02em] text-[var(--text-muted)] bg-[var(--bg-surface)] border border-[var(--border-soft)] select-none"
+          title={enforcedLaunchLabel}
+          aria-label={enforcedLaunchLabel}
+          {...tokenAttrs('textMuted', 'text')}
+          {...tokenAttrs('bgSurface', 'bg')}
+        >
+          {enforcedModel.model}
+        </span>
+      )}
 
       {/* Right-aligned pane action cluster. Native next to the per-tab close
           button (same quiet chrome): boxless at rest, a subtle surface lift on

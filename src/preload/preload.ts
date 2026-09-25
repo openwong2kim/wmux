@@ -68,6 +68,8 @@ const chat: ChatBridgeApi = {
   unsubscribe: (id) => ipcRenderer.invoke(CHAT_IPC.unsubscribe, id),
   codeBlock: (args) => ipcRenderer.invoke(CHAT_IPC.codeBlock, args),
   send: (args) => ipcRenderer.invoke(CHAT_IPC.send, args),
+  interrupt: (args) => ipcRenderer.invoke(CHAT_IPC.interrupt, args),
+  attachment: (args) => ipcRenderer.invoke(CHAT_IPC.attachment, args),
   openGates: () => ipcRenderer.invoke(CHAT_IPC.openGates),
   onAppend: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, ...args: Parameters<typeof callback>) => callback(...args);

@@ -692,6 +692,23 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(pending).not.toHaveProperty('effect');
     });
 
+    it('a send the agent queued mid-turn says queued:true on 202, on replay and on the receipt', async () => {
+      await start();
+      const h = device('dev-1');
+      const body = sendBody();
+      chatBox.send = async () => ({ clientMessageId: body.clientMessageId, replayed: false, result: 'sent', effect: 'submitted', queued: true });
+      let res = await postJson(url(), h, body);
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ result: 'sent', replayed: false, clientMessageId: body.clientMessageId, effect: 'submitted', queued: true });
+      chatBox.send = async () => ({ clientMessageId: body.clientMessageId, replayed: true, result: 'sent', effect: 'submitted', queued: true });
+      res = await postJson(url(), h, body);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ result: 'sent', replayed: true, queued: true });
+      chatBox.receipts.set(`device:dev-1|s1|${body.clientMessageId}`, { clientMessageId: body.clientMessageId, state: 'submitted', result: 'sent', queued: true });
+      res = await fetch(`${base()}/api/sessions/s1/chat/messages/${body.clientMessageId}`, { headers: h });
+      expect(await res.json()).toEqual({ clientMessageId: body.clientMessageId, state: 'submitted', result: 'sent', queued: true });
+    });
+
     it('a bridge that throws is a 500 without effect (unknown, never "nothing sent")', async () => {
       await start();
       chatBox.send = async () => { throw new Error('boom'); };

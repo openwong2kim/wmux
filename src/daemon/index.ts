@@ -132,6 +132,8 @@ import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, ty
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
 import { chatAgentStatus } from './transcript/chatAgentStatus';
 import { startNativeCodexRuntime } from './transcript/terminalLaunch';
+import { interruptChatTurn } from './transcript/interruptChatTurn';
+import { validChatAttachments } from '../shared/transcript/chatAttachments';
 import { ChatSessionService } from './chat/ChatSessionService';
 import { chatProviders } from './chat/providers';
 import { record as chatRecord } from './chat/adapter';
@@ -3817,8 +3819,45 @@ function registerRpcHandlers(
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const agentSessionId = typeof params['agentSessionId'] === 'string' ? params['agentSessionId'] : '';
     const text = typeof params['text'] === 'string' ? params['text'] : '';
+    const attachments = params['attachments'];
+    if (!validChatAttachments(attachments)) return { result: 'error' };
     if (!id) return { result: 'unavailable' };
-    return bridge.desktopSend({ id, agentSessionId, text, requestId: params.requestId });
+    return bridge.desktopSend({ id, agentSessionId, text, requestId: params.requestId, ...(attachments?.length ? { attachments } : {}) });
+  });
+
+  // Chat view's Stop for a terminal-bound agent: the same ESC its TUI takes,
+  // behind the same identity/approval/screen checks as a chat send.
+  pipeServer.onRpc('daemon.transcript.interrupt', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'interrupt')) return { result: 'unavailable' };
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const agentSessionId = typeof params['agentSessionId'] === 'string' ? params['agentSessionId'] : '';
+    // The bridge's dispatch order: a native TUI binding has no ESC path here.
+    if (!id || !approvalRegistry || (await bridge.route(id)).kind === 'native') return { result: 'unavailable' };
+    // ESC between a send's pastes would strand them in the composer.
+    if (bridge.sendInFlight(id)) return { result: 'blocked' };
+    const result = await interruptChatTurn(agentSessionId, {
+      getTranscriptSessionId: () => projector.status(id).agentSessionId,
+      hasOpenApproval: () => !approvalRegistry || approvalRegistry.list().pending.some((r) => r.sessionId === id),
+      readScreen: async () => {
+        const managed = sessionManager.getSession(id);
+        if (!managed) return null;
+        const outcome = await generateTextSnapshot({ cols: managed.meta.cols ?? 80, rows: managed.meta.rows ?? 24, scrollback: 0, initial: managed.ringBuffer.readAll() });
+        return outcome.ok ? outcome.rows.map((r) => r.text) : null;
+      },
+      getAgentState: () => {
+        const current = readChatAgentState(id);
+        const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;
+        return slug && current.agentVerified ? { slug, status: current.agentStatus } : null;
+      },
+      write: (data) => {
+        const managed = sessionManager.getSession(id);
+        if (!managed) return false;
+        managed.ptyProcess.write(data);
+        managed.bridge.noteInput(data);
+        return true;
+      },
+    });
+    return { result };
   });
 
   // daemon.readPromptEvents — read structured OSC 133 prompt/command events

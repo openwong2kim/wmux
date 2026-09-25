@@ -7,10 +7,15 @@
  * clickable. It also rendered on non-terminal surfaces. Both gates are pure
  * helpers so they can be asserted without a DOM (same pattern as
  * composePaneClassName).
+ *
+ * The badge is laid out in the header flow now — see
+ * SurfaceTabs.enforcedModelBadge.test.tsx for the toggle overlap those absolute
+ * coordinates caused, and paneChrome.test.ts for the one clearance that is
+ * still arithmetic. The two gates below decide only WHETHER the badge is drawn,
+ * which is unchanged.
  */
 import { describe, it, expect } from 'vitest';
-import { enforcedModelBadgeOffset, isTerminalSurfaceType, showsEnforcedModelBadge } from '../Pane';
-import { PANE_ACTIONS_CLUSTER_WIDTH } from '../SurfaceTabs';
+import { isTerminalSurfaceType, showsEnforcedModelBadge } from '../SurfaceTabs';
 
 describe('isTerminalSurfaceType — the badge only claims a terminal', () => {
   it('accepts a terminal surface and the legacy undefined shape', () => {
@@ -68,65 +73,6 @@ describe('showsEnforcedModelBadge — only claims a model wmux really injects', 
     for (const surfaceType of ['browser', 'editor', 'diff']) {
       expect(showsEnforcedModelBadge({ binding: { agent: 'claude', model: 'haiku' }, surfaceType }))
         .toBe(false);
-    }
-  });
-});
-
-describe('enforcedModelBadgeOffset — never lands on a corner control', () => {
-  /** The `right` each existing control claims, mirrored from Pane.tsx. */
-  const zoomBtn = 6;
-  const maximizeBtn = (supervised: boolean) => (supervised ? 32 : 6);
-  const supervisionBadge = (clusterShown: boolean, isZoomed: boolean) =>
-    clusterShown ? PANE_ACTIONS_CLUSTER_WIDTH + 6 : isZoomed ? 54 : 6;
-
-  it('clears the action cluster when it is visible', () => {
-    expect(enforcedModelBadgeOffset({ mode: 'full', isZoomed: false, supervised: false }))
-      .toBeGreaterThan(PANE_ACTIONS_CLUSTER_WIDTH);
-  });
-
-  it('clears the supervision badge parked beside the action cluster', () => {
-    const offset = enforcedModelBadgeOffset({
-      mode: 'full',
-      isZoomed: false,
-      supervised: true,
-    });
-    expect(offset).toBeGreaterThan(supervisionBadge(true, false));
-  });
-
-  it('clears the corner zoom/maximize button when the cluster is hidden', () => {
-    for (const isZoomed of [true, false]) {
-      const offset = enforcedModelBadgeOffset({ mode: 'none', isZoomed, supervised: false });
-      expect(offset).toBeGreaterThan(isZoomed ? zoomBtn : maximizeBtn(false));
-    }
-  });
-
-  it('clears BOTH the button and the supervision badge when supervised', () => {
-    const zoomedOffset = enforcedModelBadgeOffset({
-      mode: 'none',
-      isZoomed: true,
-      supervised: true,
-    });
-    expect(zoomedOffset).toBeGreaterThan(supervisionBadge(false, true));
-    expect(zoomedOffset).toBeGreaterThan(zoomBtn);
-
-    const unzoomedOffset = enforcedModelBadgeOffset({
-      mode: 'none',
-      isZoomed: false,
-      supervised: true,
-    });
-    expect(unzoomedOffset).toBeGreaterThan(maximizeBtn(true));
-    expect(unzoomedOffset).toBeGreaterThan(supervisionBadge(false, false));
-  });
-
-  it('never returns the bare corner (right: 6) — the original collision', () => {
-    for (const mode of ['full', 'overflow', 'none'] as const) {
-      for (const isZoomed of [true, false]) {
-        for (const supervised of [true, false]) {
-          expect(
-            enforcedModelBadgeOffset({ mode, isZoomed, supervised }),
-          ).toBeGreaterThan(6);
-        }
-      }
     }
   });
 });

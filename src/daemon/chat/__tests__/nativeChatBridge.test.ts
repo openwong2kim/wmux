@@ -314,6 +314,61 @@ describe('send', () => {
       .toMatchObject({ result: 'sent', effect: 'submitted' });
     expect(f.managed.send).toHaveBeenCalledWith('pane', 'conv', 'hi', 'legacy-1');
   });
+
+  // Claude Code 2.1 composer: the prompt row between two rules, nothing typed.
+  const RULE = '─'.repeat(40);
+  it('marks a send Claude accepted mid-turn as queued, in the answer, the replay and the receipt', async () => {
+    const f = fixture(); f.liveClaude();
+    f.state.agent.agentStatus = 'running';
+    f.state.screen = ['✢ Effecting… (9s · thinking)', RULE, '❯ ', RULE];
+    const req = phoneSend('then this');
+    expect(await f.bridge.send(req)).toMatchObject({ result: 'sent', effect: 'submitted', queued: true });
+    expect(f.written).toEqual(['\x1b[200~then this\x1b[201~', '\r']);
+    expect(await f.bridge.send(req)).toMatchObject({ result: 'sent', replayed: true, queued: true });
+    expect(f.bridge.receipt('device:a', 'pane', req.clientMessageId)).toMatchObject({ state: 'submitted', queued: true });
+    expect(f.bridge.sendInFlight('pane')).toBe(false);
+    // A draft in the running composer is never joined.
+    f.state.screen = [RULE, '❯ half-typed', RULE];
+    expect(await f.bridge.send(phoneSend())).toMatchObject({ error: 'chat-busy', effect: 'none' });
+    // An idle agent is submitted, not queued.
+    f.state.agent.agentStatus = 'complete'; f.state.screen = ['● done', RULE, '❯ ', RULE];
+    const idle = await f.bridge.send(phoneSend());
+    expect(idle).toMatchObject({ result: 'sent', effect: 'submitted' });
+    expect(idle).not.toHaveProperty('queued');
+    expect(await f.bridge.desktopSend({ id: 'pane', agentSessionId: 'conv', text: 'more', requestId: msgId() })).not.toHaveProperty('queued');
+  });
+
+  it('desktop: pastes image paths first, fingerprints them, and is uncertain once one was pasted', async () => {
+    const f = fixture(); f.liveClaude();
+    f.state.screen = ['● done', RULE, '❯ ', RULE];
+    // Text-only fingerprints stay what stored receipts were written with.
+    expect(ChatSendReceiptStore.fingerprint('pane', 'conv', undefined, 'hi', []))
+      .toBe(ChatSendReceiptStore.fingerprint('pane', 'conv', undefined, 'hi'));
+    const requestId = msgId();
+    expect(await f.bridge.desktopSend({ id: 'pane', agentSessionId: 'conv', text: 'look', requestId, attachments: ['/tmp/a.png'] }))
+      .toEqual({ result: 'sent', effect: 'submitted', replayed: false });
+    expect(f.written).toEqual(['\x1b[200~/tmp/a.png\x1b[201~', '\x1b[200~ look\x1b[201~', '\r']);
+    // The same id with other images is a different message, not a replay.
+    expect(await f.bridge.desktopSend({ id: 'pane', agentSessionId: 'conv', text: 'look', requestId, attachments: ['/tmp/b.png'] }))
+      .toMatchObject({ result: 'error', effect: 'none', replayed: false });
+    expect(await f.bridge.desktopSend({ id: 'pane', agentSessionId: 'conv', text: 'look', requestId, attachments: ['/tmp/a.png'] }))
+      .toMatchObject({ result: 'sent', replayed: true });
+    expect(f.written).toHaveLength(3);
+
+    // Typing lands after the first image path: nothing more is written, and the send is uncertain.
+    const deps = f.deps; const original = deps.write;
+    deps.write = (id, data) => { const ok = original(id, data); f.state.agent.inputRevision++; return ok; };
+    expect(await f.bridge.desktopSend({ id: 'pane', agentSessionId: 'conv', text: 'look', requestId: msgId(), attachments: ['/tmp/a.png', '/tmp/b.png'] }))
+      .toMatchObject({ result: 'error', effect: 'uncertain' });
+    expect(f.written).toHaveLength(4);
+    deps.write = original;
+
+    // No attachment input on an OpenCode TUI binding: refused before the plugin.
+    f.state.native = { status: TUI_STATUS, page: page('raw:1:ses_one') };
+    expect(await f.bridge.desktopSend({ id: 'pane', agentSessionId: 'ses_one', text: 'look', requestId: msgId(), attachments: ['/tmp/a.png'] }))
+      .toMatchObject({ result: 'unavailable', effect: 'none' });
+    expect(f.tuiSend).not.toHaveBeenCalled();
+  });
 });
 
 describe('launch', () => {

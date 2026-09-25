@@ -105,6 +105,16 @@ export function parseTranscriptLineDetailed(
   if (type === 'pr-link') {
     return single(metaEvent(baseId, ts, 'unknown', prLinkLabel(entry)), empty);
   }
+  // A prompt the human queued while tools ran reaches the model as an
+  // attachment, never as a `user` entry (Claude Code 2.1.282, probed 2026-09-25).
+  if (type === 'attachment' && entry['isSidechain'] !== true) {
+    const attachment = asObject(entry['attachment']);
+    const prompt = attachment?.['prompt'];
+    if (attachment?.['type'] === 'queued_command' && attachment['commandMode'] === 'prompt' && typeof prompt === 'string' && prompt.trim()) {
+      return single({ id: baseId, kind: 'user_text', text: capText(stripNul(prompt)), ...tsOf(ts) }, empty);
+    }
+    return empty;
+  }
   const isUser = type === 'user' || role === 'user';
   const isAssistant = type === 'assistant' || role === 'assistant';
   if (!isUser && !isAssistant) return empty;
@@ -166,12 +176,17 @@ function parseUserEntry(
   // One entry is one frame; the budget is spent across every body it carries.
   const budget = { remaining: INLINE_ENTRY_MAX_BYTES };
   let hasImage = false;
+  const images: string[] = [];
+  const sourceTexts: string[] = [];
   for (const raw of content) {
     const block = asObject(raw);
     const blockType = typeof block?.['type'] === 'string' ? (block['type'] as string) : '';
     if (blockType === 'text') {
       const t = typeof block?.['text'] === 'string' ? (block['text'] as string) : '';
-      if (t.trim()) parts.push(t);
+      // Claude Code follows a pasted-path image with `[Image: source: <path>]`.
+      const source = /^\[Image: source: (\/[^\n\0]{1,4096})\]$/.exec(t.trim());
+      if (source) { images.push(source[1]); sourceTexts.push(t); }
+      else if (t.trim()) parts.push(t);
     } else if (blockType === 'image') {
       hasImage = true;
     } else if (blockType === 'tool_result') {
@@ -179,7 +194,19 @@ function parseUserEntry(
     }
     // Any other block type (including invented ones) is skipped silently — R1.
   }
+  // The source note of the image in the previous entry: an `isMeta` entry of
+  // nothing but `[Image: source: …]` lines.
+  if (!hasImage && sourceTexts.length && !parts.length && !out.length && entry['isMeta'] === true) {
+    return single({ ...metaEvent(baseId, ts, 'caveat', 'Image source'), images: images.slice(0, 8) }, empty);
+  }
+  // Without an image block the line is the user's own words.
+  if (!hasImage) parts.push(...sourceTexts);
   const prose = parts.join('\n').trim();
+  // Claude Code records an ESC interrupt as a text block of its own. A typed
+  // prompt is stored as a plain string, so the same words typed stay a message.
+  if (!hasImage && !out.length && /^\[Request interrupted by user(?: for tool use)?\]$/.test(prose)) {
+    return single(metaEvent(baseId, ts, 'turn_aborted', 'Interrupted'), empty);
+  }
   // Only classify when there IS prose: a bare tool-result entry keeps its
   // previous shape (results only, no chip) even if it carries `isMeta`.
   const meta = prose ? classifyMetaUser(entry, prose) : null;
@@ -193,6 +220,7 @@ function parseUserEntry(
         kind: 'user_text',
         text: capText(stripNul(clean)),
         ...(hasImage ? { hasImage: true } : {}),
+        ...(hasImage && images.length ? { images: images.slice(0, 8) } : {}),
         ...tsOf(ts),
       };
       out.push(ev);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { deliverScheduledPrompt, type ScheduledPromptAgentState } from '../sessionPromptDelivery';
 
-function harness(authorize: (call: number) => boolean) {
+function harness(authorize: (call: number) => boolean, leadingPastes?: string[]) {
   let current: ScheduledPromptAgentState = { slug: 'claude', incarnationId: 'i', status: 'complete', inputQuiet: true, inputRevision: 0 };
   const log: string[] = [];
   let calls = 0;
@@ -12,6 +12,7 @@ function harness(authorize: (call: number) => boolean) {
     delay: async () => { log.push('delay'); },
     authorized: async (stage) => { log.push(`auth:${stage}`); return authorize(++calls); },
     onWrite: (stage) => { log.push(`on:${stage}`); },
+    ...(leadingPastes ? { leadingPastes } : {}),
   });
   return { run, log };
 }
@@ -35,5 +36,24 @@ describe('deliverScheduledPrompt re-authorization hooks', () => {
     expect(await h.run()).toBe('error');
     expect(h.log.filter(entry => entry.startsWith('write'))).toEqual(['write:"\\u001b[200~hi\\u001b[201~"']);
     expect(h.log).not.toContain('on:submit');
+  });
+
+  it('fences the first leading paste and Enter after the pastes', async () => {
+    const ok = harness(() => true, ['/tmp/a.png']);
+    expect(await ok.run()).toBe('sent');
+    expect(ok.log).toEqual(['state', 'alive', 'auth:first-write', 'on:paste', 'write:"\\u001b[200~/tmp/a.png\\u001b[201~"', 'delay',
+      'state', 'on:paste', 'write:"\\u001b[200~ hi\\u001b[201~"', 'delay', 'alive', 'auth:submit', 'state', 'on:submit', 'write:"\\r"']);
+
+    // Revoked before the first write: not even the image path reaches the PTY.
+    const early = harness(() => false, ['/tmp/a.png']);
+    expect(await early.run()).toBe('error');
+    expect(early.log.some(entry => entry.startsWith('write') || entry.startsWith('on:'))).toBe(false);
+
+    // Revoked before Enter: both pastes are in the composer, Enter never is.
+    const late = harness(call => call === 1, ['/tmp/a.png']);
+    expect(await late.run()).toBe('error');
+    expect(late.log.filter(entry => entry.startsWith('write'))).toEqual([
+      'write:"\\u001b[200~/tmp/a.png\\u001b[201~"', 'write:"\\u001b[200~ hi\\u001b[201~"']);
+    expect(late.log).not.toContain('on:submit');
   });
 });

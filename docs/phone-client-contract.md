@@ -1762,7 +1762,7 @@ OpenCode.
 
 | Outcome | HTTP | Body | `effect` |
 | --- | --- | --- | --- |
-| sent | 202 | `{result:"sent", replayed:false, clientMessageId}` | `submitted` |
+| sent | 202 | `{result:"sent", replayed:false, clientMessageId, queued?:true}` | `submitted` |
 | replay of a final outcome | 200 | the stored body, `replayed:true` | stored |
 | replay of a receipt left `pending` by a daemon restart | 200 | `{error:"delivery-unconfirmed", result:"unconfirmed", replayed:true}` | `uncertain` |
 | same id, first dispatch still running | 202 | `{state:"pending", replayed:true, clientMessageId}` | absent — poll the receipt |
@@ -1789,6 +1789,16 @@ OpenCode.
 Every body also carries `clientMessageId` (on a schema refusal, only when the
 body had a string one).
 
+**Mid-turn sends (Claude).** A Claude pane whose turn is still running accepts a
+send when its empty composer is on screen, the same rule the desktop Chat view
+uses: Claude's composer queues the prompt and runs it after the current turn.
+The daemon decides this from the pane's fresh screen and state, never from the
+request. Such a send answers `202` with `queued:true` (kept on replay and in the
+receipt); show it as queued until its `user_text` row appears in `/turns`. Absent
+`queued` means the prompt was submitted into an idle agent. A running Claude
+turn with a draft in the composer still answers `chat-busy`, and a running
+Codex turn is refused as before (`chat-busy` or `input-not-provably-empty`).
+
 `opencode-receipts-full` reaches the daemon from the plugin as
 `{result:"unavailable", reason:"receipts-full"}`, so a daemon that predates the
 reason still reads it as a plain refusal. The plugin drops receipts past the id
@@ -1806,13 +1816,14 @@ never assume `none`.
 ### Send receipt: `GET /api/sessions/<id>/chat/messages/<clientMessageId>`
 
 ```
-→ 200 {clientMessageId, state, result?, error?, agentSessionId?, historyEpoch?, at?}
+→ 200 {clientMessageId, state, result?, error?, queued?, agentSessionId?, historyEpoch?, at?}
 → 404 {error: 'session not found'}
 ```
 
 Read-only and bound to the owner **and the pane**; it needs `--allow-transcript`
 but **not** input permission, so a device whose input grant was withdrawn still
-learns whether its send landed. `at` is the id's own time prefix.
+learns whether its send landed. `at` is the id's own time prefix. `queued:true`
+rides on a `submitted` receipt the agent queued behind its running turn.
 
 | `state` | Client |
 | --- | --- |

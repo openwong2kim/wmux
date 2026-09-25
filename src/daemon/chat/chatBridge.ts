@@ -65,6 +65,8 @@ export interface ChatSendRequest {
    * (`submit`). `false` writes nothing more.
    */
   authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean>;
+  /** Desktop only: absolute image paths pasted ahead of the text (file binding, Claude). */
+  attachments?: readonly string[];
 }
 
 /** HTTP-facing error tags a send can end in (contract §6.2 table). */
@@ -92,6 +94,8 @@ export interface ChatSendOutcome {
   /** Current identity, on `session-changed`. */
   agentSessionId?: string;
   historyEpoch?: string;
+  /** `sent` while the agent's turn ran: its composer queued the prompt. Absent otherwise. */
+  queued?: true;
 }
 
 export type ChatReceiptState = 'pending' | 'submitted' | 'refused' | 'uncertain' | 'unknown';
@@ -105,6 +109,8 @@ export interface ChatSendReceiptView {
   historyEpoch?: string;
   /** Receipt creation, epoch ms. */
   at?: number;
+  /** A `submitted` send the agent queued behind its running turn. */
+  queued?: true;
 }
 
 export interface ChatLaunchRequest {

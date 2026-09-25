@@ -15,11 +15,19 @@ import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
 import RemotePaneSurface from '../Remote/RemotePaneSurface';
 import AddRemotePaneModal from '../Remote/AddRemotePaneModal';
-import SurfaceTabs, { paneClusterWidth, paneActionsMode, type PaneActionsMode } from './SurfaceTabs';
+import SurfaceTabs, {
+  paneClusterWidth,
+  paneActionsMode,
+  paneHeaderExtraChromeWidth,
+  isTerminalSurfaceType,
+  showsEnforcedModelBadge,
+  type PaneActionsMode,
+} from './SurfaceTabs';
+import { PANE_CORNER_GUTTER } from './paneChrome';
 import { useElementWidth } from '../../hooks/useElementWidth';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { agentSupportsPermissionFlag, permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
-import { applyRoleBinding, bindingEnforcesModel, type RoleBinding } from '../../../shared/orchestratorRole';
+import { applyRoleBinding, type RoleBinding } from '../../../shared/orchestratorRole';
 import { ResumeInfoChipGate } from './ResumeInfoChip';
 import { tokenAttrs } from '../../themes';
 import PaneDecorations from '../../plugins/PaneDecorations';
@@ -90,65 +98,6 @@ export function composePaneClassName(opts: {
   }
   if (flashing) classes.push('pane-flash');
   return classes.join(' ');
-}
-
-/** D2 — only a terminal surface can launch an agent, so only a terminal surface
- *  may claim a role-enforced model. An undefined `surfaceType` is a legacy
- *  terminal (the field postdates the original Surface shape). */
-export function isTerminalSurfaceType(surfaceType: string | undefined): boolean {
-  return surfaceType === undefined || surfaceType === 'terminal';
-}
-
-/**
- * D2 — may this pane display a "role-enforced launch" model badge?
- *
- * Both halves are load-bearing and neither is obvious at the call site, which is
- * why this is a named predicate rather than an inline `&&`:
- *  - the binding must REALLY inject the model (bindingEnforcesModel). A
- *    model-only binding, or one naming an agent whose `--model` grammar wmux has
- *    not verified, is stored and shown in Settings but never applied — badging it
- *    would tell the operator a pane is pinned to a model while the launch goes
- *    out on the default.
- *  - the surface must be a terminal, since nothing else launches an agent.
- */
-export function showsEnforcedModelBadge(opts: {
-  binding: RoleBinding | undefined;
-  surfaceType: string | undefined;
-}): boolean {
-  return bindingEnforcesModel(opts.binding) && isTerminalSurfaceType(opts.surfaceType);
-}
-
-/**
- * D2 — the `right` offset at which the enforced-model badge can sit without
- * covering the pane's top-right controls, which are all absolutely positioned
- * at `top: 4` with `zIndex: 20`:
- *   - cluster `full`     → SurfaceTabs owns the strip (PANE_ACTIONS_CLUSTER_WIDTH),
- *     with the supervision badge parked just left of it.
- *   - cluster `overflow` → the same, 31px wide (the ⋮ trigger alone).
- *   - cluster `none`     → the zoom (`right: 6`) or maximize button takes the
- *     corner, and the supervision badge sits at 6 (un-zoomed, pushing maximize
- *     out to 32) or 54 (zoomed).
- * The badge lands past whichever of those is rightmost. Pure so the arithmetic
- * is testable without a DOM — the same reason composePaneClassName is extracted.
- */
-export function enforcedModelBadgeOffset(opts: {
-  mode: PaneActionsMode;
-  isZoomed: boolean;
-  supervised: boolean;
-}): number {
-  const { mode, isZoomed, supervised } = opts;
-  /** Rendered width of the supervision badge (10px glyph + 6px side padding). */
-  const SUPERVISION_W = 28;
-  /** Rendered width of a corner icon button plus its 6px gutter. */
-  const CORNER_BTN_W = 26;
-  const cluster = paneClusterWidth({ mode });
-  if (cluster > 0) {
-    return cluster + 6 + (supervised ? SUPERVISION_W : 0);
-  }
-  if (!supervised) return 6 + CORNER_BTN_W;
-  // Supervised: zoom sits at 6 and supervision at 54, else supervision at 6 and
-  // maximize at 32.
-  return isZoomed ? 54 + SUPERVISION_W : 32 + CORNER_BTN_W + 4;
 }
 
 /**
@@ -564,24 +513,39 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // vertical menu — and the ⋮ persists to ANY width (the strip scrolls, and
   // the menu holds the ways out of a pane that narrow: zoom, stash). 'none'
   // is the Settings toggle's mode, never a width verdict.
+  // D2 — this pane's enforced role→model binding (if its role is bound). Threaded
+  // into the resume chip so a reconstructed resume command re-asserts the model
+  // flag (a naive resume rebuilds from the agent stem alone and would drop it).
+  const paneRoleName = useStore((s) => s.paneRole[pane.id]);
+  const paneRoleBinding = useStore((s) =>
+    paneRoleName ? s.orchestratorRoleBindings[paneRoleName] : undefined,
+  );
   const [paneRootRef, paneWidth] = useElementWidth<HTMLDivElement>();
+  // What the header carries BESIDES the cluster counts against the same width,
+  // so the collapse threshold has to know about it (see
+  // paneHeaderExtraChromeWidth). Both of these gate on the ACTIVE surface being
+  // a terminal, which is the same condition SurfaceTabs draws them under.
+  const activeSurfaceType = pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.surfaceType;
   const actionsMode: PaneActionsMode = paneActionsSetting
-    ? paneActionsMode(paneWidth)
+    ? paneActionsMode(
+        paneWidth,
+        paneHeaderExtraChromeWidth({
+          chatToggle: chatViewEnabled && isTerminalSurfaceType(activeSurfaceType),
+          enforcedModelBadge: showsEnforcedModelBadge({
+            binding: paneRoleBinding,
+            surfaceType: activeSurfaceType,
+          }),
+        }),
+      )
     : 'none';
 
-  // X8 supervision badge. Resolve the pane's active-surface ptyId → supervision
-  // slice. `⟳` when armed (auto-restarting); `⟳!` in a warning colour when the
-  // runaway guard tripped and stopped it. Absent for unsupervised panes. As
-  // light as the ZOOM badge — no extra component.
+  // X8 supervision. Resolve the pane's active-surface ptyId → supervision
+  // slice. The ⟳ badge itself is drawn by SurfaceTabs (it belongs to the header
+  // strip's layout); what is left here is the resume pill's gate — a supervised
+  // pane restarts itself, so it is never offered a manual resume.
   const supervision = useStore((s) =>
     activeSurfacePtyId ? s.supervisionByPtyId[activeSurfacePtyId] : undefined,
   );
-
-  const enforcedModelBadgeRight = enforcedModelBadgeOffset({
-    mode: actionsMode,
-    isZoomed,
-    supervised: !!supervision,
-  });
 
   // X6 ②/③ resume pill. A pane recovered-this-boot that was running an agent
   // gets a resume offer. Clickable only once the pane is interactive (first PTY
@@ -600,17 +564,6 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const resumePtyReady = useStore((s) =>
     activeSurfacePtyId ? !!s.ptyReadyByPtyId[activeSurfacePtyId] : false,
   );
-  // D2 — this pane's enforced role→model binding (if its role is bound). Threaded
-  // into the resume chip so a reconstructed resume command re-asserts the model
-  // flag (a naive resume rebuilds from the agent stem alone and would drop it).
-  const paneRoleName = useStore((s) => s.paneRole[pane.id]);
-  const paneRoleBinding = useStore((s) =>
-    paneRoleName ? s.orchestratorRoleBindings[paneRoleName] : undefined,
-  );
-  const showsEnforcedModel = showsEnforcedModelBadge({
-    binding: paneRoleBinding,
-    surfaceType: pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.surfaceType,
-  });
   // The persistent resume chip's "is this pane's agent busy?" gate — and the
   // store-wide `agentClockMs` decay-clock subscription it needs — lives in the
   // <ResumeInfoChipGate> leaf below, NOT here: Pane mounts that leaf only when a
@@ -704,7 +657,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           style={{
             position: 'absolute',
             top: 4,
-            right: 6,
+            right: PANE_CORNER_GUTTER,
             zIndex: 20,
             padding: '0 5px',
             height: 16,
@@ -737,9 +690,9 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           style={{
             position: 'absolute',
             top: 4,
-            // Sit left of the supervision badge when present (it owns right:6 on
-            // an un-zoomed pane); otherwise take the corner.
-            right: supervision ? 32 : 6,
+            // The corner is unconditional now: the supervision badge that used
+            // to own right:6 is laid out in the header strip (SurfaceTabs).
+            right: PANE_CORNER_GUTTER,
             zIndex: 20,
             padding: '0 5px',
             height: 16,
@@ -755,50 +708,6 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         >
           ⤢
         </button>
-      )}
-      {supervision && (
-        <span
-          title={
-            supervision.status === 'stopped'
-              ? t('supervision.stoppedTooltip')
-              : t('supervision.armedTooltip', { count: supervision.restartCount })
-          }
-          aria-label={
-            supervision.status === 'stopped'
-              ? t('supervision.stoppedTooltip')
-              : t('supervision.armedTooltip', { count: supervision.restartCount })
-          }
-          style={{
-            position: 'absolute',
-            top: 4,
-            // When the action cluster is shown it owns the strip's top-right, so
-            // anchor the badge just left of it (cluster width + a small gap) to
-            // avoid overlap — using the exported constant beside the cluster
-            // rather than a hardcoded pixel guess. Cluster-off keeps the prior
-            // behaviour: sit left of the ZOOM badge when both are present.
-            right: paneClusterWidth({ mode: actionsMode }) > 0
-              ? paneClusterWidth({ mode: actionsMode }) + 6
-              : isZoomed
-                ? 54
-                : 6,
-            zIndex: 20,
-            padding: '1px 6px',
-            fontSize: 10,
-            fontFamily: 'ui-monospace, monospace',
-            fontWeight: 700,
-            letterSpacing: '0.04em',
-            color: supervision.status === 'stopped' ? 'var(--bg-main)' : 'var(--text-muted)',
-            backgroundColor:
-              supervision.status === 'stopped' ? 'var(--accent-red)' : 'var(--bg-overlay)',
-            border: 'none',
-            borderRadius: 3,
-            opacity: 0.85,
-            pointerEvents: 'none',
-            userSelect: 'none',
-          }}
-        >
-          {supervision.status === 'stopped' ? '⟳!' : '⟳'}
-        </span>
       )}
       {/* Persistent per-pane resume affordance — shown whenever this agent pane
           carries a captured conversation binding but is NOT in the reboot-
@@ -816,42 +725,6 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
             workspace.metadata?.cwd,
           ]}
         />
-      )}
-      {/* D2 — muted enforced-model badge on a role-bound TERMINAL pane. Amber
-          stays reserved for alive+focus (DESIGN.md), so this rides the sub
-          tones. A browser/diff/editor surface never launches an agent, so the
-          badge would be a lie there — hence the surface-type gate, and the
-          enforceability gate beside it (see showsEnforcedModel). */}
-      {showsEnforcedModel && paneRoleBinding && (
-        <span
-          data-pane-enforced-model
-          title={t('pane.enforcedLaunch', {
-            binding: [paneRoleBinding.agent, paneRoleBinding.model].filter(Boolean).join(' · '),
-          })}
-          style={{
-            position: 'absolute',
-            top: 4,
-            // The pane's top-right is a stack of absolutely-positioned controls
-            // (zoom/maximize, the supervision badge, or SurfaceTabs' own action
-            // cluster). Anchor past whatever is present — the same approach the
-            // supervision badge above uses — so this never covers a button.
-            right: enforcedModelBadgeRight,
-            zIndex: 20,
-            padding: '0 5px',
-            fontSize: 10,
-            lineHeight: '16px',
-            fontFamily: 'ui-monospace, monospace',
-            letterSpacing: '0.02em',
-            color: 'var(--text-muted)',
-            backgroundColor: 'var(--bg-surface)',
-            border: '1px solid var(--border-soft)',
-            borderRadius: 3,
-            pointerEvents: 'none',
-            userSelect: 'none',
-          }}
-        >
-          {paneRoleBinding.model}
-        </span>
       )}
       {/* #645 — drop indicator. Drawn by the pane being hovered, not by the
           one being dragged, so it lands in the right coordinate space with no

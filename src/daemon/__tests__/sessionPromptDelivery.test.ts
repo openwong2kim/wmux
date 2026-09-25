@@ -263,4 +263,19 @@ describe('deliverScheduledPrompt', () => {
     expect(writes[0].split('\x1b[201~')).toHaveLength(2);
     expect(writes[1]).toBe('\r\r');
   });
+  it('refuses a running agent unless the chat caller opts in', async () => {
+    const running = () => {
+      let current = state({ slug: 'claude', status: 'running' });
+      const writes: string[] = [];
+      const deps = { getAgentState: () => current, isAgentProcessAlive: alwaysAlive, delay: async () => undefined,
+        write: (data: string) => { writes.push(data); current = { ...current, inputRevision: current.inputRevision + 1 }; return true; } };
+      return { deps, writes };
+    };
+    const scheduled = running();
+    expect(await deliverScheduledPrompt('claude', 'incarnation-1', 'next', scheduled.deps)).toBe('busy');
+    expect(scheduled.writes).toEqual([]);
+    const chat = running();
+    expect(await deliverScheduledPrompt('claude', 'incarnation-1', 'next', { ...chat.deps, acceptRunning: true })).toBe('sent');
+    expect(chat.writes).toEqual(['\x1b[200~next\x1b[201~', '\r']);
+  });
 });

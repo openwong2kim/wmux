@@ -9,6 +9,8 @@ import {
 } from '../shared/ptyMessageDelivery';
 
 export const SESSION_PROMPT_SUBMIT_DELAY_MS = 100;
+/** Claude Code reads a pasted image path asynchronously before the next paste. */
+export const SESSION_PROMPT_ATTACHMENT_DELAY_MS = 600;
 
 export interface ScheduledPromptAgentState {
   slug: AgentSlug;
@@ -29,13 +31,19 @@ export interface ScheduledPromptDeliveryDeps {
   delay?: (ms: number) => Promise<void>;
   /** Native composer submission, when different from Claude multiline input. */
   submitKeys?: '\r';
-  /** Caller re-authorization, run immediately before the paste write
-   *  (`first-write`) and again immediately before the submit write (`submit`).
+  /** Chat only: the agent's composer queues a prompt typed during a turn. */
+  acceptRunning?: boolean;
+  /** Chat only: pasted one by one before the prompt (image paths). */
+  leadingPastes?: readonly string[];
+  /** Caller re-authorization, run immediately before the first write
+   *  (`first-write`: the first leading paste, else the prompt paste) and
+   *  again as the last await before the submit write (`submit`).
    *  `false` stops with `error` and writes nothing further. */
   authorized?: (stage: 'first-write' | 'submit') => Promise<boolean>;
   /** Called immediately before each write is attempted, so a caller can tell
-   *  "nothing reached the PTY" from "the paste may be visible". */
-  onWrite?: (stage: 'paste' | 'submit') => void;
+   *  "nothing reached the PTY" from "the paste may be visible". `queued` is
+   *  true on `submit` when the prompt was accepted while the turn ran. */
+  onWrite?: (stage: 'paste' | 'submit', queued?: boolean) => void;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -68,7 +76,9 @@ export async function deliverScheduledPrompt(
   const before = deps.getAgentState();
   if (!before || before.slug !== expectedSlug) return 'unavailable';
   if (before.incarnationId !== expectedIncarnationId) return 'session_changed';
-  if (!isReady(before.status) || !before.inputQuiet) return 'busy';
+  const running = !!deps.acceptRunning && before.status === 'running';
+  if (!(isReady(before.status) || running) || !before.inputQuiet) return 'busy';
+  const leading = deps.leadingPastes ?? [];
 
   // A fresh read of the tracked pid, closing the gap between
   // getAgentState's snapshot above and the current process table.
@@ -78,6 +88,13 @@ export async function deliverScheduledPrompt(
     return 'unavailable';
   }
 
+  // Between our own pastes nothing else may have reached the composer: the
+  // same process, and exactly the writes we made so far.
+  const untouched = (writes: number): boolean => {
+    const now = deps.getAgentState();
+    return !!now && now.slug === expectedSlug && now.incarnationId === expectedIncarnationId &&
+      now.inputRevision === before.inputRevision + writes;
+  };
   try {
     if (deps.authorized && !(await deps.authorized('first-write'))) return 'error';
   } catch {
@@ -85,8 +102,17 @@ export async function deliverScheduledPrompt(
   }
 
   try {
+    for (const [index, paste] of leading.entries()) {
+      // Only the first write can still be refused cleanly; after it the
+      // composer already holds our input.
+      if (index > 0 && !untouched(index)) return 'error';
+      deps.onWrite?.('paste');
+      if (!deps.write(formatBracketedPastePayload(paste))) return index === 0 ? 'unavailable' : 'error';
+      await (deps.delay ?? sleep)(SESSION_PROMPT_ATTACHMENT_DELAY_MS);
+    }
+    if (leading.length && !untouched(leading.length)) return 'error';
     deps.onWrite?.('paste');
-    if (!deps.write(formatBracketedPastePayload(prompt))) return 'unavailable';
+    if (!deps.write(formatBracketedPastePayload(leading.length ? ` ${prompt}` : prompt))) return leading.length ? 'error' : 'unavailable';
   } catch {
     return 'error';
   }
@@ -114,8 +140,8 @@ export async function deliverScheduledPrompt(
     !after ||
     after.slug !== expectedSlug ||
     after.incarnationId !== expectedIncarnationId ||
-    !isSafeAfterPaste(before.status, after.status) ||
-    after.inputRevision !== before.inputRevision + 1
+    !(isSafeAfterPaste(before.status, after.status) || running && after.status === 'running') ||
+    after.inputRevision !== before.inputRevision + leading.length + 1
   ) {
     // The paste may already be visible. Never retry or press Enter after the
     // safety proof changed; the persisted occurrence is consumed as error.
@@ -124,7 +150,8 @@ export async function deliverScheduledPrompt(
 
   try {
     const submit = deps.submitKeys ?? (isMultilinePtyPayload(prompt) ? '\r\r' : '\r');
-    deps.onWrite?.('submit');
+    // Still running at Enter: the agent's composer queues the prompt.
+    deps.onWrite?.('submit', running && after.status === 'running');
     return deps.write(submit) ? 'sent' : 'error';
   } catch {
     return 'error';

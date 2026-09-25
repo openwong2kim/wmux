@@ -29,6 +29,8 @@ export interface StoredChatOutcome {
   maxSendBytes?: number;
   agentSessionId?: string;
   historyEpoch?: string;
+  /** `sent` while the turn ran: the agent's composer queued the prompt. */
+  queued?: true;
 }
 
 export interface ChatSendReceipt {
@@ -59,7 +61,8 @@ function validOutcome(value: unknown): value is StoredChatOutcome {
     (row.blockedBy === undefined || row.blockedBy === 'approval' || row.blockedBy === 'terminal') &&
     (row.limit === undefined || row.limit === 'units' || row.limit === 'bytes') &&
     (row.maxSendBytes === undefined || Number.isSafeInteger(row.maxSendBytes) && Number(row.maxSendBytes) > 0) &&
-    optionalString(row.agentSessionId, 256) && optionalString(row.historyEpoch, 64);
+    optionalString(row.agentSessionId, 256) && optionalString(row.historyEpoch, 64) &&
+    (row.queued === undefined || typeof row.queued === 'boolean');
 }
 
 function validEntry(key: string, value: unknown): value is ChatSendReceipt {
@@ -107,9 +110,12 @@ export class ChatSendReceiptStore {
   /**
    * Deliberately excludes the pane incarnation: a legitimate re-post after a
    * pane restart must replay the stored verdict, not read as a conflict.
+   * Attachments join the fingerprint only when present, so a text-only
+   * request keeps the fingerprint receipts were stored with before them.
    */
-  static fingerprint(paneId: string, agentSessionId: string, historyEpoch: string | undefined, text: string): string {
-    return hash([paneId, agentSessionId, historyEpoch ?? '', text]);
+  static fingerprint(paneId: string, agentSessionId: string, historyEpoch: string | undefined, text: string,
+    attachments?: readonly string[]): string {
+    return hash([paneId, agentSessionId, historyEpoch ?? '', text, ...(attachments?.length ? [JSON.stringify(attachments)] : [])]);
   }
 
   lookup(owner: ChatOwner, clientMessageId: string): Readonly<ChatSendReceipt> | undefined {
@@ -153,9 +159,9 @@ export class ChatSendReceiptStore {
     if (!entry || entry.paneId !== paneId) return { clientMessageId, state: 'unknown' };
     const identity = { agentSessionId: entry.agentSessionId, ...(entry.historyEpoch !== undefined ? { historyEpoch: entry.historyEpoch } : {}), at: entry.createdAt };
     if (entry.state === 'pending' || !entry.outcome) return { clientMessageId, state: 'pending', ...identity };
-    const { effect, result, error } = entry.outcome;
+    const { effect, result, error, queued } = entry.outcome;
     return { clientMessageId, state: effect === 'submitted' ? 'submitted' : effect === 'none' ? 'refused' : 'uncertain',
-      ...(result ? { result } : {}), ...(error ? { error } : {}), ...identity };
+      ...(result ? { result } : {}), ...(error ? { error } : {}), ...(queued === true ? { queued: true as const } : {}), ...identity };
   }
 
   private key(owner: ChatOwner, clientMessageId: string): string { return hash([owner, clientMessageId.toLowerCase()]); }

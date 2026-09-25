@@ -357,6 +357,49 @@ describe('parseTranscriptLine — unknown-blocks.jsonl (R1 skip-unknown)', () =>
   });
 });
 
+// Shapes recorded by Claude Code 2.1.x in a live probe (2026-09-25).
+describe('parseTranscriptLine — pasted images and ESC interrupts', () => {
+  const user = (content: unknown) => parseTranscriptLine(JSON.stringify({ type: 'user', uuid: 'u', message: { role: 'user', content } }), 0);
+
+  it('keeps the pasted image path out of the prose and exposes it', () => {
+    const [event] = user([
+      { type: 'text', text: '[Image #1] What is in this image? One line.' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+      { type: 'text', text: '[Image: source: /tmp/shots/red square.png]' },
+    ]);
+    expect(event).toMatchObject({ kind: 'user_text', text: '[Image #1] What is in this image? One line.', hasImage: true, images: ['/tmp/shots/red square.png'] });
+  });
+
+  it('reads the source note Claude Code writes as its own meta entry', () => {
+    const [event] = parseTranscriptLine(JSON.stringify({ type: 'user', uuid: 'm', isMeta: true, message: { role: 'user', content: [
+      { type: 'text', text: '[Image: source: /tmp/shots/red.png]' }] } }), 0);
+    expect(event).toMatchObject({ kind: 'meta', subtype: 'caveat', label: 'Image source', images: ['/tmp/shots/red.png'] });
+  });
+
+  it('does not invent a path without an image block', () => {
+    const [event] = user([{ type: 'text', text: '[Image: source: /tmp/a.png]' }, { type: 'text', text: 'hi' }]);
+    expect(event.kind === 'user_text' && event.images).toBeFalsy();
+    expect(event.kind === 'user_text' && event.text).toBe('hi\n[Image: source: /tmp/a.png]');
+  });
+
+  it('records an ESC interrupt as an aborted turn, not as something the user typed', () => {
+    for (const text of ['[Request interrupted by user]', '[Request interrupted by user for tool use]']) {
+      const [event] = user([{ type: 'text', text }]);
+      expect(event).toMatchObject({ kind: 'meta', subtype: 'turn_aborted', label: 'Interrupted' });
+    }
+    // The same words typed by a person are stored as a string and stay a message.
+    expect(user('[Request interrupted by user]')[0]).toMatchObject({ kind: 'user_text', text: '[Request interrupted by user]' });
+  });
+
+  it('shows a prompt queued while tools ran, which Claude Code records as an attachment', () => {
+    const queued = (attachment: Record<string, unknown>) => parseTranscriptLine(JSON.stringify({ type: 'attachment', uuid: 'q', attachment }), 0);
+    expect(queued({ type: 'queued_command', prompt: 'Also say BANANA.', commandMode: 'prompt', humanTurn: true })[0])
+      .toMatchObject({ id: 'q', kind: 'user_text', text: 'Also say BANANA.' });
+    expect(queued({ type: 'queued_command', prompt: '/compact', commandMode: 'bash' })).toEqual([]);
+    expect(queued({ type: 'hook_success', content: 'x' })).toEqual([]);
+  });
+});
+
 describe('extractCodeBlocks', () => {
   it('is a no-op on prose with no fences', () => {
     const out = extractCodeBlocks('just words', 10);

@@ -27,4 +27,13 @@ describe('transcript message projection', () => {
     expect(rows.map((row) => row.id)).toEqual(['u', 'activity:t', 'r', 'a']);
     expect((rows[1].metadata.custom.row as { activity: unknown[] }).activity).toHaveLength(1);
   });
+  it('folds an image source note into the prompt that carried the image', () => {
+    const prompt: TurnEvent = { id: 'p', kind: 'user_text', text: '[Image #1] what is this?', hasImage: true };
+    const note: TurnEvent = { id: 'n', kind: 'meta', subtype: 'caveat', label: 'Image source', images: ['/tmp/red.png'] };
+    const rows = transcriptMessages([prompt, note, { id: 'a', kind: 'assistant_text', text: 'red' }], true);
+    expect(rows.map((row) => row.id)).toEqual(['p', 'a']);
+    expect((rows[0].metadata.custom.row as { images: string[] }).images).toEqual(['/tmp/red.png']);
+    // Without its prompt (a page boundary) the note stays a quiet meta row.
+    expect(transcriptMessages([note]).map((row) => row.id)).toEqual(['n']);
+  });
 });

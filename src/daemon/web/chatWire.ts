@@ -194,7 +194,8 @@ export function sendResponse(outcome: ChatSendOutcome, clientMessageId: string):
   const effect = outcome.effect ?? 'uncertain';
   let response: WireResponse;
   if (!outcome.error && outcome.result === 'sent') {
-    response = { status: 202, body: { result: 'sent', replayed: false, clientMessageId, effect } };
+    // `queued`: the agent's composer holds the prompt behind its running turn.
+    response = { status: 202, body: { result: 'sent', replayed: false, clientMessageId, effect, ...(outcome.queued ? { queued: true } : {}) } };
   } else if (!outcome.error) {
     response = {
       status: 500,

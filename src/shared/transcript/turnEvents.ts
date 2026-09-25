@@ -35,6 +35,8 @@ export interface UserTextEvent extends TurnEventBase {
   kind: 'user_text';
   text: string;
   hasImage?: boolean;
+  /** Absolute source paths Claude Code recorded for attached images, when it did. */
+  images?: string[];
 }
 
 /**
@@ -172,6 +174,11 @@ export interface MetaEvent extends TurnEventBase {
     | 'system_reminder'
     | 'unknown';
   label: string;
+  /**
+   * Claude Code records a pasted image's source path in its own `isMeta` entry
+   * right after the prompt that carried the image; clients fold it into that row.
+   */
+  images?: string[];
 }
 
 export type TurnEvent =
@@ -248,6 +255,10 @@ export interface TranscriptAppendData {
  * toggle, not an error the renderer has to catch.
  */
 export type ChatSendResult = 'sent' | 'busy' | 'blocked' | 'unconfirmed' | 'session_changed' | 'unavailable' | 'error';
+/** `sent` means ESC reached the agent, not that the turn stopped; the transcript says that. */
+export type ChatInterruptResult = 'sent' | 'not_running' | 'blocked' | 'session_changed' | 'unavailable' | 'error';
+/** A staged composer image, validated and thumbnailed by main. */
+export type ChatAttachmentPreview = { ok: true; path: string; name: string; bytes: number; thumbnail: string } | { ok: false; reason: 'type' | 'size' | 'missing' };
 
 export interface ChatBridgeApi {
   settings?: (args: { ptyId: string; choice?: { model: string; effort: string; expectedRevision: string } }) => Promise<{ ok: boolean; settings?: { model: string; effort: string | null; busy: boolean; revision: string; models: { model: string; efforts: string[]; defaultEffort: string }[] }; error?: string }>;
@@ -260,10 +271,14 @@ export interface ChatBridgeApi {
    * `requestId` is `<13-digit ms>-<lowercase uuid>`. `effect`, when present, is
    * what the send did to the pane and outranks `result` for the UI: `none`
    * wrote nothing, `uncertain` may have written. An older daemon omits it.
+   * `queued` marks a `sent` the agent's composer queued behind a running turn.
    */
-  send: (args: { ptyId: string; agentSessionId: string; text: string; requestId?: string }) => Promise<{
-    result: ChatSendResult; replayed?: boolean; effect?: 'none' | 'uncertain' | 'submitted';
+  send: (args: { ptyId: string; agentSessionId: string; text: string; requestId?: string; attachments?: string[] }) => Promise<{
+    result: ChatSendResult; replayed?: boolean; effect?: 'none' | 'uncertain' | 'submitted'; queued?: true;
   }>;
+  /** ESC into the live terminal agent, only while its turn is running. */
+  interrupt?: (args: { ptyId: string; agentSessionId: string }) => Promise<{ result: ChatInterruptResult }>;
+  attachment?: (args: { path: string }) => Promise<ChatAttachmentPreview>;
   status: (ptyId: string) => Promise<TranscriptStatus>;
   /** `before` pages BACKWARD from a prior cursor.headOffset; omit for the tail. */
   snapshot: (ptyId: string, before?: number) => Promise<TranscriptPage | null>;

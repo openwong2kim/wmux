@@ -1,6 +1,7 @@
 import { deliverScheduledPrompt, type ScheduledPromptDeliveryDeps } from '../sessionPromptDelivery';
 import type { ChatSendResult } from '../../shared/transcript/turnEvents';
 import { screenBlocksChatSend } from './chatScreenGate';
+import { quoteImagePathForPty } from '../../shared/imagePaste';
 
 export interface ChatDeliveryDeps extends ScheduledPromptDeliveryDeps {
   getTranscriptSessionId: () => string | undefined;
@@ -15,8 +16,9 @@ export async function deliverChatPrompt(
   agentSessionId: string,
   text: string,
   deps: ChatDeliveryDeps,
+  attachments: readonly string[] = [],
 ): Promise<ChatSendResult> {
-  if (!agentSessionId || !text.trim() || text.length > 16_000) return 'error';
+  if (!agentSessionId || !text.trim() || text.length > 16_000 || attachments.length > 5) return 'error';
   if (deps.getTranscriptSessionId() !== agentSessionId) return 'session_changed';
   if (deps.hasOpenApproval()) return 'blocked';
   const initial = deps.getAgentState();
@@ -29,7 +31,14 @@ export async function deliverChatPrompt(
   if (screenBlocksChatSend(rows)) return 'blocked';
   // Claude restores the submitted draft after an interrupted turn. Idle alone
   // cannot prove its input is empty; pasting here could concatenate two tasks.
-  if (initial.slug === 'claude' && initial.status === 'idle') return 'unconfirmed';
+  // Mid-turn, a draft typed in Terminal would be joined the same way. Only the
+  // empty composer on screen is permission for either (running stays 'busy').
+  const claudeEmpty = initial.slug === 'claude' && claudeComposerEmpty(rows);
+  if (initial.slug === 'claude' && initial.status === 'idle' && !claudeEmpty) return 'unconfirmed';
+  // Image paths become attachments only in Claude's composer, and only an
+  // empty one: a failed earlier send may have left paths behind to duplicate.
+  if (attachments.length && initial.slug !== 'claude') return 'unavailable';
+  if (attachments.length && !claudeEmpty) return 'unconfirmed';
   // Codex's empty composer is a known placeholder. A draft, menu, picker or
   // unknown CLI layout cannot inherit permission from an idle status.
   if (initial.slug === 'codex' && !codexComposerEmpty(rows)) return 'unconfirmed';
@@ -39,6 +48,9 @@ export async function deliverChatPrompt(
     // Codex submits bracketed multiline paste with one Enter. Claude's existing
     // double-Enter behavior is retained by the scheduler's default.
     ...(initial.slug === 'codex' ? { submitKeys: '\r' } : {}),
+    // Claude queues a prompt submitted mid-turn, exactly as typed in Terminal.
+    ...(claudeEmpty ? { acceptRunning: true } : {}),
+    ...(attachments.length ? { leadingPastes: attachments.map(quoteImagePathForPty) } : {}),
     delay: async (ms) => {
       await (deps.delay ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))))(ms);
       if (initial.slug === 'codex') {
@@ -55,6 +67,17 @@ export async function deliverChatPrompt(
       return deps.write(data);
     },
   });
+}
+
+/** Claude Code 2.1 TUI: the prompt row between the two rules, with nothing typed. */
+export function claudeComposerEmpty(rows: readonly string[] | null): boolean {
+  if (!rows || screenBlocksChatSend(rows)) return false;
+  const tail = rows.map(row => row.trim());
+  const rule = (row: string | undefined) => !!row && /^─{8,}$/.test(row);
+  let at = -1;
+  tail.forEach((row, index) => { if (/^❯(?:\s|$)/.test(row)) at = index; });
+  // A fresh session dims a suggestion into the empty prompt: `❯ Try "…"`.
+  return at > 0 && /^❯(?: Try "[^"]*")?$/.test(tail[at]) && rule(tail[at - 1]) && rule(tail[at + 1]);
 }
 
 /** Codex 0.156 TUI; positive evidence, not an absence-of-errors heuristic.

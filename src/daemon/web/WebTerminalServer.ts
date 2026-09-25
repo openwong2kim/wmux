@@ -3544,6 +3544,7 @@ export class WebTerminalServer {
       state: view.state,
       ...(view.result ? { result: view.result } : {}),
       ...(view.error ? { error: view.error } : {}),
+      ...(view.queued ? { queued: true } : {}),
       ...(view.agentSessionId ? { agentSessionId: view.agentSessionId } : {}),
       ...(view.historyEpoch ? { historyEpoch: view.historyEpoch } : {}),
       ...(typeof view.at === 'number' ? { at: view.at } : {}),

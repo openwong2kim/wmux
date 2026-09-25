@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
 import { ChatModelSettings } from './ChatModelSettings';
 import { ComposerPrimitive } from '@assistant-ui/react';
 import { useT } from '../../hooks/useT';
@@ -11,8 +11,18 @@ export function skillQuery(text: string, caret: number): { query: string; end: n
   return match && caret > 0 && caret <= match[0].length ? { query: match[1], end: match[0].length } : null;
 }
 
-export function ChatComposerInput({ disabled, placeholder, maxLength, scope, composer, onDiscoveryOpenChange }: {
+export interface ChatComposerKeys {
+  /** Esc in an empty composer; returns true when it acted (Stop). */
+  escape?: () => boolean;
+  /** Backspace with the caret at the very start; returns true when it removed an attachment. */
+  backspaceAtStart?: () => boolean;
+  /** An image-only clipboard was pasted. */
+  pasteImage?: () => void;
+}
+
+export function ChatComposerInput({ disabled, placeholder, maxLength, scope, composer, onDiscoveryOpenChange, keys }: {
   disabled: boolean; placeholder: string; maxLength: number; composer: SkillComposer; scope?: ChatSkillScope; onDiscoveryOpenChange?: (open: boolean) => void;
+  keys?: ChatComposerKeys;
 }) {
   const t = useT();
   const input = useRef<HTMLTextAreaElement>(null);
@@ -82,6 +92,9 @@ export function ChatComposerInput({ disabled, placeholder, maxLength, scope, com
       if (event.key === 'Enter' && !event.nativeEvent.isComposing) event.preventDefault();
       return;
     }
+    if (!open && event.key === 'Escape' && !text.trim() && keys?.escape?.()) { event.preventDefault(); return; }
+    const field = event.currentTarget;
+    if (event.key === 'Backspace' && field.selectionStart === 0 && field.selectionEnd === 0 && keys?.backspaceAtStart?.()) { event.preventDefault(); return; }
     if (!open) return;
     if (['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) {
       event.preventDefault();
@@ -89,6 +102,13 @@ export function ChatComposerInput({ disabled, placeholder, maxLength, scope, com
       else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') setSelected((index + (event.key === 'ArrowDown' ? 1 : -1) + filtered.length) % Math.max(1, filtered.length));
       else if (filtered[index]) choose(filtered[index]);
     }
+  }
+  function paste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const data = event.clipboardData;
+    // A mixed clipboard (a browser copy carries text and a picture) pastes its text.
+    if (!keys?.pasteImage || data.getData('text/plain') || ![...data.files].some(file => file.type.startsWith('image/'))) return;
+    event.preventDefault();
+    keys.pasteImage();
   }
   return <div className="wmux-chat-input-wrap">
     {modelOpen && scope && <ChatModelSettings ptyId={scope.ptyId} onClose={() => {setModelOpen(false); input.current?.focus();}} onTerminal={() => scope.onTerminal?.()} />}
@@ -111,7 +131,7 @@ export function ChatComposerInput({ disabled, placeholder, maxLength, scope, com
       role={enabled ? 'combobox' : undefined} aria-autocomplete={enabled ? 'list' : undefined} aria-expanded={enabled ? open : undefined}
       aria-controls={open ? id : undefined} aria-activedescendant={open && filtered[index] ? `${id}-${index}` : undefined}
       disabled={disabled} maxLength={maxLength} rows={1} maxRows={8} submitMode="enter" enterKeyHint="send" addAttachmentOnPaste={false}
-      value={text} cancelOnEscape={!open} onKeyDown={keyDown}
+      value={text} cancelOnEscape={!open} onKeyDown={keyDown} onPaste={paste}
       onCompositionStart={() => { composing.current = true; }}
       onCompositionEnd={event => { composing.current = false; setText(event.currentTarget.value); }}
       onChange={event => { setText(event.target.value); setCaret(event.target.selectionStart); setDismissed(false); }}

@@ -397,8 +397,16 @@ Chat / Terminal switch accessible in Minimal mode.
 The desktop adapter currently reads Claude Code transcript events and sends to the
 verified live Claude session. Updates follow recorded events, not a separate model
 connection. Tool bodies and code blocks load on expansion; approvals stay in
-Terminal. Drafts survive view switches within the same conversation. Attachments,
-regeneration, message editing and voice controls are hidden until supported.
+Terminal. Drafts survive view switches within the same conversation. Regeneration,
+message editing and voice controls are hidden until supported.
+
+Chat feedback (2026-09-25, owner-approved): a file dropped or pasted into Chat
+view becomes a composer chip (thumbnail, name, × or Backspace removes it) and the
+sent message shows the picture; a refused file says why in one line. While a turn
+runs, a neutral Stop button (never amber; Esc in an empty composer, never during
+IME composition) reads Stopping…, then Stopped or "kept running". A message sent
+mid-turn to Claude shows as Queued until it runs. The thread anchors to the bottom:
+no empty reply row or reserved gap under the latest prompt.
 
 ### Sidebar rows (2026-09-24)
 

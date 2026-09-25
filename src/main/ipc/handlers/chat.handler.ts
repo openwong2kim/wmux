@@ -1,4 +1,6 @@
 import { compatibleChatSkills, compatibleCodexSettings } from './chatSkillCompatibility';
+import { previewChatAttachment } from './chatAttachment';
+import { validChatAttachments } from '../../../shared/transcript/chatAttachments';
 import { wrapHandler } from '../wrapHandler';
 import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import type { DaemonClient } from '../../DaemonClient';
@@ -127,13 +129,18 @@ export function registerChatHandlers(
     [CHAT_IPC.openGates]: (e) => trusted(e) ? openGates() : null,
     [CHAT_IPC.send]: (e, args) => {
       if (!trusted(e) || !args || !validId(args.ptyId) || !validId(args.agentSessionId) ||
-        typeof args.text !== 'string' || !args.text.trim() || args.text.length > 16_000) return { result: 'unavailable' };
+        typeof args.text !== 'string' || !args.text.trim() || args.text.length > 16_000 ||
+        !validChatAttachments(args.attachments)) return { result: 'unavailable' };
       if (args.requestId !== undefined && (typeof args.requestId !== 'string' || !CHAT_REQUEST_ID.test(args.requestId))) return { result: 'error' };
       return rpc<Awaited<ReturnType<ChatBridgeApi['send']>>>('daemon.transcript.send', {
         id: args.ptyId, agentSessionId: args.agentSessionId, text: args.text,
         ...(args.requestId === undefined ? {} : { requestId: args.requestId }),
+        ...(args.attachments?.length ? { attachments: args.attachments } : {}),
       }, { result: 'error' });
     },
+    [CHAT_IPC.interrupt]: (e, args) => trusted(e) && args && validId(args.ptyId) && validId(args.agentSessionId)
+      ? rpc('daemon.transcript.interrupt', { id: args.ptyId, agentSessionId: args.agentSessionId }, { result: 'error' }) : { result: 'unavailable' },
+    [CHAT_IPC.attachment]: (e, args) => trusted(e) && args ? previewChatAttachment(args.path) : { ok: false, reason: 'missing' },
   };
   handlers[CHAT_IPC.settings] = async (e, args) => {
     if (!trusted(e) || !args || !validId(args.ptyId) || disposed || !client?.isConnected) return { ok: false, error: 'unavailable' };

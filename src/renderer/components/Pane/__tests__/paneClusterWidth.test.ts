@@ -9,6 +9,9 @@ import {
   paneClusterWidth,
   paneActionsMode,
   paneFitsActionCluster,
+  paneHeaderExtraChromeWidth,
+  CHAT_TOGGLE_WIDTH,
+  ENFORCED_MODEL_BADGE_MIN_WIDTH,
 } from '../SurfaceTabs';
 
 describe('paneClusterWidth', () => {
@@ -232,5 +235,49 @@ describe('the ⋮ menu offers exactly what the cluster does', () => {
     expect(menu.filter((k) => !cluster.includes(k))).toEqual([
       'new-remote', 'rename-pane', 'split-down-remote', 'split-right-remote',
     ]);
+  });
+});
+
+describe('paneActionsMode — the ⋮ has to survive the rest of the header', () => {
+  // Regression, measured on a real 248px pane (Korean UI, Chat view on, a role
+  // enforcing a model): the header's shrink-0 items came to more than the pane
+  // could hold, so the action cluster was pushed 10.8px past its own right edge
+  // and the clipped button was the ⋮ — the only way to zoom or stash a pane
+  // that narrow. 248 cleared the old threshold (222) with room to spare,
+  // because the threshold counted only the cluster and a readable tab strip.
+  const BOUND_AGENT_PANE = paneHeaderExtraChromeWidth({
+    chatToggle: true,
+    enforcedModelBadge: true,
+  });
+
+  it('counts the toggle and the badge floor, not just the cluster', () => {
+    expect(BOUND_AGENT_PANE).toBe(CHAT_TOGGLE_WIDTH + ENFORCED_MODEL_BADGE_MIN_WIDTH);
+    expect(paneHeaderExtraChromeWidth({ chatToggle: false, enforcedModelBadge: false })).toBe(0);
+  });
+
+  it('collapses a 248px pane carrying both, which used to clip the ⋮', () => {
+    expect(paneActionsMode(248, BOUND_AGENT_PANE)).toBe('overflow');
+    // …while a bare header of the same width still affords the full cluster,
+    // so this costs nothing to panes that are not carrying the extra chrome.
+    expect(paneActionsMode(248)).toBe('full');
+  });
+
+  it('keeps every shrink-0 item inside the header once collapsed', () => {
+    // What "affordable" has to mean: the ⋮ plus everything else that refuses
+    // to shrink must fit, with the tab strip taking whatever is left.
+    const width = 248;
+    const mode = paneActionsMode(width, BOUND_AGENT_PANE);
+    const shrinkZero = paneClusterWidth({ mode }) + BOUND_AGENT_PANE;
+    expect(shrinkZero).toBeLessThanOrEqual(width);
+  });
+
+  it('is unchanged for a header with no extra chrome', () => {
+    expect(paneActionsMode(PANE_ACTIONS_MIN_PANE_WIDTH, 0)).toBe('full');
+    expect(paneActionsMode(PANE_ACTIONS_MIN_PANE_WIDTH - 1, 0)).toBe('overflow');
+    // The extra chrome raises the bar by exactly its own width.
+    expect(paneActionsMode(PANE_ACTIONS_MIN_PANE_WIDTH + BOUND_AGENT_PANE, BOUND_AGENT_PANE))
+      .toBe('full');
+    expect(paneActionsMode(PANE_ACTIONS_MIN_PANE_WIDTH + BOUND_AGENT_PANE - 1, BOUND_AGENT_PANE))
+      .toBe('overflow');
   });
 });

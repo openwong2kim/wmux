@@ -95,8 +95,10 @@ export interface NativeChatBridge extends ChatBridge {
   /** `daemon.transcript.snapshot`. */
   snapshot(id: string, before?: number): Promise<TranscriptPage | null>;
   /** `daemon.transcript.send`: never refuses a desktop request id, mints one instead. */
-  desktopSend(req: { id: string; agentSessionId: string; text: string; requestId: unknown }):
-    Promise<{ result: ChatSendResult; effect?: ChatEffect; replayed: boolean; pending?: true }>;
+  desktopSend(req: { id: string; agentSessionId: string; text: string; requestId: unknown; attachments?: readonly string[] }):
+    Promise<{ result: ChatSendResult; effect?: ChatEffect; replayed: boolean; pending?: true; queued?: true }>;
+  /** A file-binding send is between its first check and its last write (Stop must wait). */
+  sendInFlight(id: string): boolean;
   /** `daemon.chat.skills`: the desktop keeps its live-cwd fallback. */
   desktopSkills(id: string, agent: unknown): Promise<ChatSkillCatalog>;
 }
@@ -136,6 +138,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     return { ...status, agentStatus: live.agentStatus, agentAlive,
       ...(status.terminal ? { terminal: { ...status.terminal, capabilities: { ...status.terminal.capabilities,
         send: agentAlive && ['claude', 'codex'].includes(slug!),
+        cancel: agentAlive && ['claude', 'codex'].includes(slug!),
+        images: agentAlive && slug === 'claude',
+        queue: agentAlive && slug === 'claude',
       } } } : {}) };
   };
 
@@ -239,10 +244,12 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   const refuse = (clientMessageId: string, error: ChatSendTag, extra: Partial<ChatSendOutcome> = {}): ChatSendOutcome =>
     ({ clientMessageId, replayed: false, effect: 'none', error, ...extra });
 
-  const replay = (clientMessageId: string, entry: { state: 'pending' | 'final'; outcome?: StoredChatOutcome }): ChatSendOutcome =>
-    entry.state === 'pending' || !entry.outcome
-      ? { clientMessageId, replayed: true, pending: true }
-      : { clientMessageId, replayed: true, ...entry.outcome };
+  const replay = (clientMessageId: string, entry: { state: 'pending' | 'final'; outcome?: StoredChatOutcome }): ChatSendOutcome => {
+    if (entry.state === 'pending' || !entry.outcome) return { clientMessageId, replayed: true, pending: true };
+    // A stored `queued:false` (valid on load) reads as absent.
+    const { queued, ...outcome } = entry.outcome;
+    return { clientMessageId, replayed: true, ...outcome, ...(queued === true ? { queued: true as const } : {}) };
+  };
 
   const identityOf = (resolution: ChatResolution) => {
     const epoch = resolution.source === 'none' ? undefined : resolution.epoch;
@@ -263,6 +270,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     if (sending.has(id)) return { result: 'busy', effect: 'none', error: 'chat-busy' };
     sending.add(id);
     let pasted = false;
+    let queued = false;
     let denied: 'paste' | 'submit' | undefined;
     const authorize = req.authorized;
     try {
@@ -288,11 +296,12 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
           if (!ok) denied = pasted ? 'submit' : 'paste';
           return ok;
         } } : {}),
-        onWrite: (stage) => { if (stage === 'paste') pasted = true; },
-      });
+        // Any write, including the first leading image paste, may leave input in the composer.
+        onWrite: (stage, running) => { if (stage === 'paste') pasted = true; else queued = !!running; },
+      }, req.attachments ?? []);
       if (denied) return { result: 'error', effect: denied === 'submit' ? 'uncertain' : 'none', error: 'authorization-expired' };
       switch (result) {
-        case 'sent': return { result, effect: 'submitted' };
+        case 'sent': return { result, effect: 'submitted', ...(queued ? { queued: true as const } : {}) };
         case 'busy': return { result, effect: 'none', error: 'chat-busy' };
         case 'blocked': return { result, effect: 'none', error: 'chat-blocked', blockedBy: blockedBy(id) };
         case 'session_changed': return sessionChanged(id);
@@ -342,7 +351,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     if (idCheck === 'expired') return refuse(clientMessageId, 'message-id-expired');
     let store = dedup ? deps.receipts : null;
     if (dedup && !store && owner !== 'desktop') return refuse(clientMessageId, 'chat-persist-failed');
-    const fingerprint = ChatSendReceiptStore.fingerprint(req.id, req.agentSessionId, req.historyEpoch, req.text);
+    const fingerprint = ChatSendReceiptStore.fingerprint(req.id, req.agentSessionId, req.historyEpoch, req.text, req.attachments);
     const early = (entry: ReturnType<ChatSendReceiptStore['lookup']>) =>
       !entry ? undefined : entry.fingerprint !== fingerprint ? refuse(clientMessageId, 'message-id-conflict') : replay(clientMessageId, entry);
     // Deliberately ahead of binding resolution (a refinement of contract §6.2's
@@ -356,6 +365,11 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
 
     const resolution = await resolve(req.id);
     if (resolution.source === 'none') return refuse(clientMessageId, 'no-conversation');
+    // Image paths are pasted into a file-bound agent's composer only; the
+    // OpenCode plugin and managed sessions have no attachment input.
+    if (req.attachments?.length && resolution.source !== 'file') {
+      return refuse(clientMessageId, 'chat-unavailable', { result: 'unavailable' });
+    }
     if (resolution.source === 'managed') {
       if (req.managedReadOnly) return refuse(clientMessageId, 'managed-read-only');
       // Desktop managed chat keeps its own durable receipts keyed by requestId.
@@ -532,17 +546,20 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       if (found.kind === 'managed') return deps.managed()?.snapshot(id, before) ?? null;
       return deps.projector.snapshot(id, before === undefined ? undefined : { before });
     },
-    desktopSend: async ({ id, agentSessionId, text, requestId }) => {
+    desktopSend: async ({ id, agentSessionId, text, requestId, attachments }) => {
       // Older renderers send a bare UUID (or nothing): mint an id and keep
       // today's no-dedup behavior instead of refusing across a rolling upgrade.
       const wellFormed = typeof requestId === 'string' && checkChatId(requestId, now(), CHAT_MESSAGE_RETENTION_MS) !== 'invalid';
       const clientMessageId = wellFormed ? requestId as string : `${now()}-${randomUUID()}`;
-      const outcome = await sendWith({ owner: 'desktop', id, agentSessionId, text, clientMessageId }, wellFormed,
+      const outcome = await sendWith({ owner: 'desktop', id, agentSessionId, text, clientMessageId,
+        ...(attachments?.length ? { attachments } : {}) }, wellFormed,
         typeof requestId === 'string' ? requestId : '');
       const result: ChatSendResult = outcome.pending ? 'unconfirmed'
         : outcome.result ?? (outcome.error && DESKTOP_RESULT[outcome.error]) ?? 'error';
-      return { result, replayed: outcome.replayed, ...(outcome.effect ? { effect: outcome.effect } : {}), ...(outcome.pending ? { pending: true as const } : {}) };
+      return { result, replayed: outcome.replayed, ...(outcome.effect ? { effect: outcome.effect } : {}),
+        ...(outcome.pending ? { pending: true as const } : {}), ...(outcome.queued ? { queued: true as const } : {}) };
     },
+    sendInFlight: (id) => sending.has(id),
     desktopSkills: (id, agent) => skillsWith(id, agent, 'cwd'),
   };
 }

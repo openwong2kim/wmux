@@ -4,6 +4,8 @@ import type { CodeBlockRef, ToolBody, TurnEvent } from '../../../shared/transcri
 import { renderBrainMarkdown } from '../Deck/BrainMarkdown';
 import { useT } from '../../hooks/useT';
 import type { ChatRow } from './chatMessages';
+import { ChatSentImages } from './ChatAttachmentViews';
+import { withoutImageTokens } from './chatAttachments';
 
 export const ChatPtyContext = createContext('');
 
@@ -56,6 +58,8 @@ export function ChatMessage() {
   const role = useAuiState((s) => s.message.role);
   // assistant-ui may briefly expose its optimistic send before a transcript
   // event exists (including a send the daemon later refuses).
+  const empty = useAuiState((s) => s.message.content.length === 0);
+  if (!row && empty) return null;
   if (!row) return <MessagePrimitive.Root className={`wmux-chat-message ${role === 'user' ? 'wmux-chat-user' : 'wmux-chat-assistant'}`}>
     <div className={role === 'user' ? 'wmux-chat-user-text' : 'wmux-chat-prose'}><MessagePrimitive.Parts /></div>
   </MessagePrimitive.Root>;
@@ -91,8 +95,11 @@ function ChatRowContent({ row }: { row: ChatRow }) {
     </div>;
   }
   const user = event.kind === 'user_text';
+  const images = user ? [...(event.images ?? []), ...(row.images ?? [])] : [];
   return <div className={`wmux-chat-message ${user ? 'wmux-chat-user' : 'wmux-chat-assistant'}`}>
-    {user ? <div className="wmux-chat-user-text">{event.text}{event.hasImage && <p>{t('chat.imageInTerminal')}</p>}</div>
+    {user ? <>{images.length ? <ChatSentImages images={images} /> : null}
+      <div className="wmux-chat-user-text">{event.hasImage ? withoutImageTokens(event.text) : event.text}
+        {event.hasImage && !images.length && <p>{t('chat.imageInTerminal')}</p>}</div></>
       : event.thinking ? <details className="wmux-chat-thinking"><summary>{t('chat.thinking')}</summary><Prose event={event} /></details>
       : <div className="wmux-chat-prose"><Prose event={event} />{event.truncated && <p>{t('chat.truncated')}</p>}</div>}
   </div>;
