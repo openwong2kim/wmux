@@ -542,6 +542,8 @@ describe('WebTerminalServer', () => {
       setGateEnabled: (enabled) => { gateArmed = enabled; },
       agentState: (id) => agentStates[id],
       resumeState: (id) => resumeStates[id],
+      // Short enough that the "desktop does not answer" case does not stall the suite.
+      desktopSidebarTimeoutMs: 150,
       log: () => { /* silent in tests */ },
       assetsDir: os.tmpdir(), // no terminal.html needed for the /api/* tests
     });
@@ -705,7 +707,11 @@ describe('WebTerminalServer', () => {
     expect(wire).not.toContain('sk-secret');
     expect(wire).not.toContain('ANTHROPIC_API_KEY');
     expect(wire).not.toContain('/usr/bin');
-    expect(wire).not.toContain('ws-legacy');
+    // The workspace id is an ADDRESS, carried as `workspaceId` (the same id
+    // `/api/workspaces` already serves to this bearer) — never as the label.
+    expect(sessions[1].workspaceId).toBe('ws-legacy');
+    expect(sessions[0].workspaceId).toBe('ws-1');
+    expect('workspaceId' in sessions[2]).toBe(false);
   });
 
   it('★ #1319 a pane row names the detected agent and the cwd leaf, or carries neither key', async () => {
@@ -3793,13 +3799,16 @@ describe('WebTerminalServer', () => {
     const headers = bearer(rw.token as string);
     const legacy = await (await fetch(`${base()}/api/workspaces`,{headers})).json();
     expect(legacy.workspaces[0]).toHaveProperty('panes');
-    expect(calls).toEqual([]);
+    // The live roster asks the desktop only for its optional sidebar fields; a
+    // desktop-only workspace never becomes a roster row.
+    expect(legacy.workspaces.map((w: {id:string}) => w.id)).not.toContain('empty');
+    expect(calls).toEqual(['workspaces.list']);
     const registry = await (await fetch(`${base()}/api/desktop-workspaces`,{headers})).json();
     expect(registry.workspaces).toEqual([
       {id:'ws-1',name:'Workspace 1',sessionId:'s1'},
       {id:'empty',name:'Empty workspace',sessionId:null},
     ]);
-    expect(calls).toEqual(['workspaces.list']);
+    expect(calls).toEqual(['workspaces.list','workspaces.list']);
   });
 
   it('returns a named conflict when a phone-created workspace was already closed', async () => {
@@ -7184,6 +7193,184 @@ describe('WebTerminalServer', () => {
       } finally {
         live.length = 3;
       }
+    });
+  });
+
+  describe('phone Fleet sidebar fields on /api/sessions and /api/workspaces', () => {
+    const brainRow = {
+      id: 'brain-abc', cwd: '/b', cols: 80, rows: 24, state: 'attached',
+      agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+      env: { WMUX_BRAIN_PTY: '1', WMUX_WORKSPACE_ID: 'ws-brain', WMUX_WORKSPACE_NAME: 'Brain' },
+      cmd: '/usr/local/bin/claude',
+    };
+    const sidebar = (activeWorkspaceId: string | null = 'ws-1') => ({
+      activeWorkspaceId,
+      workspaces: [
+        {
+          id: 'ws-1', order: 0, pinned: true, color: 'teal', gitBranch: 'main', gitIsWorktree: false,
+          gitSync: { ahead: 2, behind: 0, hasUpstream: true },
+          taskSummary: { tasks: 1, needYou: 0, toReview: 1, finished: 1 },
+        },
+        { id: 'ws-legacy', order: 1, pinned: false, task: { ownerWorkspaceId: 'ws-1', detached: false, createdAt: 1_700_000_000_000 } },
+        { id: 'ws-desktop-only', order: 2, pinned: false },
+        { id: 'ws-brain', order: 3, pinned: true, gitBranch: 'brain-branch' },
+      ],
+      panes: [
+        { ptyId: 's1', workspaceId: 'ws-1', surfaceTitle: '✳ app review', paneName: 'w123-5' },
+        { ptyId: 'brain-abc', workspaceId: 'ws-brain', surfaceTitle: 'orchestrator title', paneName: 'w9-1' },
+        { ptyId: 'ghost', workspaceId: 'ws-1', surfaceTitle: 'ghost title', paneName: 'w1-9' },
+      ],
+    });
+    /** A desktop that answers `workspaces.list` with `reply`, counting calls. */
+    const attachDesktop = (reply: () => unknown, opts: { answer?: boolean; timeoutMs?: number } = {}) => {
+      const calls: string[] = [];
+      desktopBridge = new DesktopPhoneBridge((_owner, raw) => {
+        const data = (raw as { data: { requestId: string; command: string } }).data;
+        calls.push(data.command);
+        if (opts.answer !== false) {
+          const result = reply();
+          if (result instanceof Error) desktopBridge!.complete('main', { requestId: data.requestId, ok: false, error: result.message });
+          else desktopBridge!.complete('main', { requestId: data.requestId, ok: true, result });
+        }
+        return true;
+      }, opts.timeoutMs);
+      desktopBridge.register('main');
+      return calls;
+    };
+    const getJson = async (token: string, route: string) => {
+      const res = await fetch(`${base()}${route}`, { headers: bearer(token) });
+      expect(res.status).toBe(200);
+      return res.json() as Promise<Record<string, unknown>>;
+    };
+    type Row = Record<string, unknown>;
+
+    it('merges the desktop fields by id, never adding rows and never leaking a brain entry', async () => {
+      live.push({ ...brainRow });
+      try {
+        const calls = attachDesktop(() => ({ workspaces: [], sidebar: sidebar() }));
+        const info = await startRO();
+        const token = info.token as string;
+        // Three concurrent polls across both routes share ONE desktop fetch.
+        const [sessionsBody, workspacesBody] = await Promise.all([
+          getJson(token, '/api/sessions'),
+          getJson(token, '/api/workspaces'),
+          getJson(token, '/api/sessions'),
+        ]);
+        expect(calls).toEqual(['workspaces.list']);
+
+        const sessions = sessionsBody.sessions as Row[];
+        expect(sessions.map((r) => r.id)).toEqual(['s1', 's2', 's3']);
+        expect(sessions[0]).toMatchObject({ id: 's1', workspaceId: 'ws-1', surfaceTitle: '✳ app review', paneName: 'w123-5' });
+        expect(sessions[1]).toMatchObject({ id: 's2', workspaceId: 'ws-legacy' });
+        for (const key of ['surfaceTitle', 'paneName']) {
+          expect(key in sessions[1]).toBe(false);
+          expect(key in sessions[2]).toBe(false);
+        }
+
+        const workspaces = workspacesBody.workspaces as Row[];
+        expect(workspaces.map((w) => w.id)).toEqual(['ws-1', 'ws-legacy']);
+        expect(workspaces[0]).toMatchObject({
+          id: 'ws-1', name: 'Workspace 1', order: 0, pinned: true, color: 'teal', gitBranch: 'main', gitIsWorktree: false,
+          gitSync: { ahead: 2, behind: 0, hasUpstream: true },
+          taskSummary: { tasks: 1, needYou: 0, toReview: 1, finished: 1 },
+        });
+        expect(workspaces[0]).not.toHaveProperty('ownerWorkspaceId');
+        expect(workspaces[1]).toMatchObject({ id: 'ws-legacy', order: 1, pinned: false, ownerWorkspaceId: 'ws-1', detached: false, createdAt: 1_700_000_000_000 });
+        expect(workspaces[1]).not.toHaveProperty('task');
+        expect(workspacesBody.activeWorkspaceId).toBe('ws-1');
+
+        const wire = JSON.stringify([sessionsBody, workspacesBody]);
+        for (const leaked of ['brain-abc', 'ws-brain', 'orchestrator title', 'brain-branch', 'ghost', 'ws-desktop-only']) {
+          expect(wire).not.toContain(leaked);
+        }
+      } finally {
+        live.length = 3;
+      }
+    });
+
+    it('omits activeWorkspaceId when the active workspace is not a listed one', async () => {
+      live.push({ ...brainRow });
+      try {
+        attachDesktop(() => ({ workspaces: [], sidebar: sidebar('ws-brain') }));
+        const info = await startRO();
+        const body = await getJson(info.token as string, '/api/workspaces');
+        expect('activeWorkspaceId' in body).toBe(false);
+        expect(JSON.stringify(body)).not.toContain('ws-brain');
+      } finally {
+        live.length = 3;
+      }
+    });
+
+    it('omits every desktop key without a desktop, keeping the daemon-side workspaceId', async () => {
+      desktopBridge = null;
+      const info = await startRO();
+      const sessions = (await getJson(info.token as string, '/api/sessions')).sessions as Row[];
+      expect(sessions[0].workspaceId).toBe('ws-1');
+      expect(sessions.some((r) => 'surfaceTitle' in r || 'paneName' in r)).toBe(false);
+      const body = await getJson(info.token as string, '/api/workspaces');
+      expect('activeWorkspaceId' in body).toBe(false);
+      for (const w of body.workspaces as Row[]) expect(Object.keys(w).sort()).toEqual(['id', 'name', 'panes']);
+    });
+
+    it('answers without the fields when the desktop is slow, and does not re-ask on every poll', async () => {
+      const calls = attachDesktop(() => null, { answer: false, timeoutMs: 1000 });
+      const info = await startRO();
+      const token = info.token as string;
+      const started = Date.now();
+      const sessions = (await getJson(token, '/api/sessions')).sessions as Row[];
+      expect(Date.now() - started).toBeLessThan(900);
+      expect(sessions.some((r) => 'surfaceTitle' in r)).toBe(false);
+      const body = await getJson(token, '/api/workspaces');
+      for (const w of body.workspaces as Row[]) expect(w).not.toHaveProperty('order');
+      // The miss is remembered: the second poll did not queue another request.
+      expect(calls).toEqual(['workspaces.list']);
+    });
+
+    it('omits the fields when the desktop request fails', async () => {
+      const calls = attachDesktop(() => new Error('renderer unavailable'));
+      const info = await startRO();
+      const sessions = (await getJson(info.token as string, '/api/sessions')).sessions as Row[];
+      expect(calls).toEqual(['workspaces.list']);
+      expect(sessions.some((r) => 'surfaceTitle' in r || 'paneName' in r)).toBe(false);
+      expect(sessions[0].workspaceId).toBe('ws-1');
+    });
+
+    it('omits the fields for a desktop that predates them (no sidebar key)', async () => {
+      const calls = attachDesktop(() => ({ workspaces: [{ id: 'ws-1', name: 'Workspace 1', sessionId: 's1' }] }));
+      const info = await startRO();
+      const sessions = (await getJson(info.token as string, '/api/sessions')).sessions as Row[];
+      expect(calls).toEqual(['workspaces.list']);
+      expect(sessions.some((r) => 'surfaceTitle' in r || 'paneName' in r)).toBe(false);
+      const body = await getJson(info.token as string, '/api/workspaces');
+      for (const w of body.workspaces as Row[]) expect(Object.keys(w).sort()).toEqual(['id', 'name', 'panes']);
+    });
+
+    it('drops malformed desktop fields at the daemon boundary', async () => {
+      attachDesktop(() => ({ workspaces: [], sidebar: {
+        activeWorkspaceId: 'ws-1',
+        workspaces: [{ id: 'ws-1', order: 0, pinned: false, color: 'javascript:alert(1)', gitBranch: 'a\u0000b', extra: 'secret-extra' }],
+        panes: [{ ptyId: 's1', workspaceId: 'ws-1', surfaceTitle: 'x'.repeat(500), paneName: 'w1-1', cwd: '/secret-cwd' }],
+      } }));
+      const info = await startRO();
+      const sessions = (await getJson(info.token as string, '/api/sessions')).sessions as Row[];
+      expect(sessions[0]).toMatchObject({ paneName: 'w1-1' });
+      expect('surfaceTitle' in sessions[0]).toBe(false);
+      const body = await getJson(info.token as string, '/api/workspaces');
+      const ws1 = (body.workspaces as Row[]).find((w) => w.id === 'ws-1')!;
+      expect(ws1).toMatchObject({ order: 0, pinned: false });
+      expect(ws1).not.toHaveProperty('color');
+      expect(ws1).not.toHaveProperty('gitBranch');
+      expect(JSON.stringify(body)).not.toMatch(/secret-extra|secret-cwd/);
+    });
+
+    it('advertises fleetSidebar in /api/config whether or not the desktop is attached', async () => {
+      desktopBridge = null;
+      let info = await startRO();
+      expect((await getJson(info.token as string, '/api/config')).fleetSidebar).toBe(true);
+      await server.stop();
+      attachDesktop(() => ({ workspaces: [], sidebar: sidebar() }));
+      info = await startRO();
+      expect((await getJson(info.token as string, '/api/config')).fleetSidebar).toBe(true);
     });
   });
 

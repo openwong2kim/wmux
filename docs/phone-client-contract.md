@@ -351,11 +351,11 @@ GET /api/events?since=<cursor>     (Bearer)
 
 ```
 GET /api/config    → {allowInput, allowUpload, allowTranscript, liveActivityPush?,
-                      gatedTools, gateEnabled?, protocolVersion,
+                      gatedTools, gateEnabled?, fleetSidebar?, protocolVersion,
                       minProtocolVersion, serverVersion}
 GET /api/sessions  → {sessions: [{id, cwd, cols, rows, state, agent, lastActivity,
-                      workspace?, shell?, lastDetectedAgent?, cwdLeaf?,
-                      liveness?, lastAssistantText?}]}
+                      workspace?, workspaceId?, shell?, lastDetectedAgent?, cwdLeaf?,
+                      liveness?, lastAssistantText?, surfaceTitle?, paneName?}]}
 POST /api/input?session=<id>   body: raw bytes
 ```
 
@@ -383,6 +383,13 @@ an empty cwd, a root (`/` and `C:\` alike), or whitespace.
 It is the label of last resort, computed once by the daemon so every client
 agrees on it. Like `cwd` it is the directory the pane's own process last
 claimed, so it is a label and never a path to act on.
+
+`workspaceId` is the pane's workspace id — the same id `GET /api/workspaces`
+lists — read from the pane's spawn environment. It comes from the daemon, so it
+is present with or without the desktop app; it is absent only for a pane with
+no wmux workspace. It is an address, never a label: `workspace` stays the name.
+`surfaceTitle` and `paneName` come from the desktop sidebar and are present
+only while the desktop is attached; see *Desktop sidebar fields* below.
 
 `liveness` is `{state, at}` — the last agent state the daemon saw, with the same
 `state` union as the SSE event and no `tool`, dropped once a `busy`/`tool` state
@@ -1469,7 +1476,78 @@ The pre-existing `GET /api/workspaces` remains the daemon's live-pane roster
 (`{id,name,panes:[{sessionId,...}]}`), usable without Electron. It is distinct
 from the input-gated desktop registry. New pane selection uses the live roster's
 IDs even on older hosts; opening a newly created desktop workspace uses
-`/api/desktop-workspaces` to resolve its active pane.
+`/api/desktop-workspaces` to resolve its active pane. While the desktop is
+attached the roster also carries the sidebar fields below; its rows are still
+exactly the workspaces with a live pane.
+
+### Desktop sidebar fields (phone Fleet)
+
+`fleetSidebar: true` in `/api/config` says this daemon merges the desktop
+sidebar's own view into the two polled list routes. It describes support, not
+whether the desktop is attached right now; an older daemon omits the key. The
+fields are read-only and additive, and they ride exactly the gates the two
+routes already have (bearer auth; no `--allow-input` or `--allow-transcript` —
+a tab title is terminal output the paired device can already read in full on
+the pane stream).
+
+**Presence.** Every field below except `workspaceId` exists only in the desktop
+app. While the desktop is attached and answers within about 1.5 s, the daemon
+merges them; otherwise the keys are **omitted** (never `null` or `false`) and
+the route answers exactly as before. Treat an absent key as "the desktop did
+not say" and fall back to what you draw without it. The daemon reuses one
+desktop snapshot for about a second across all polling devices, and after a
+failure or timeout answers without the fields for a few seconds before asking
+again, so fields may appear or disappear between polls.
+
+Nothing is added: the fields are merged by id onto rows the daemon already
+lists. A desktop-only workspace with no live pane never becomes a row, and the
+orchestrator brain's pane and workspace stay excluded exactly as before.
+
+`GET /api/sessions`, per session:
+
+- `surfaceTitle` — the pane's tab title, the label the desktop sidebar leads a
+  roster row with (e.g. `"✳ app review"`). For a pane running a detected agent,
+  a title that is only the host shell's name (`zsh`, `bash`, `pwsh`, …) is
+  withheld unless the user typed it. At most 100 characters, one line.
+- `paneName` — the pane's display name: the user's pane label when set, else
+  the stable coordinate `w<workspace>-<pane>` (e.g. `"w123-5"`). Always the
+  coordinate, even when the desktop hides coordinates in its own sidebar. At
+  most 64 characters.
+- `workspaceId` — see above; daemon-side, always present when known.
+
+`POST /api/sessions` answers a daemon-only row: it carries `workspaceId` but
+not the desktop fields.
+
+`GET /api/workspaces`, per workspace:
+
+- `order` — the workspace's position in the desktop's manual list (0-based,
+  unfiltered, the order the user drags into). Sort by it to mirror that list.
+- `pinned` — the user pinned the row in the sidebar.
+- `color` — the color tag id, one of `red`, `orange`, `yellow`, `green`, `teal`,
+  `blue`, `purple`, `pink`, `amber`, `lime`, `mint`, `cyan`, `indigo`,
+  `magenta`, `rose`. Absent when untagged. Treat an unknown id as untagged.
+- `gitBranch`, `gitIsWorktree` — the branch the sidebar shows, and whether it
+  comes from a linked worktree rather than the main checkout.
+- `gitSync` — `{ahead, behind, hasUpstream}` from the sidebar's git badge.
+  The desktop shows `ahead`/`behind` only when `hasUpstream` is true; do the
+  same.
+- `ownerWorkspaceId`, `detached`, `createdAt` — present only on a fan-out task
+  workspace, with the desktop's own judgement: `ownerWorkspaceId` is the
+  workspace that fanned it out (`null` when no source names one), `detached`
+  means the user detached it and the desktop draws it as an ordinary top-level
+  row, and `createdAt` (epoch ms, optional) is when it was fanned out. The
+  desktop nests a non-detached task under its owner only when the owner is
+  itself a listed row; otherwise it groups it under "From closed workspace".
+  A task workspace's `name` is its stored name, which usually starts with
+  `wtask: `; the desktop displays it without that prefix.
+- `taskSummary` — on an owner row with nested tasks only: `{tasks, needYou,
+  toReview, finished}` — the sidebar's rollup line. `needYou` counts tasks
+  waiting on the user, `toReview` counts open tasks whose every agent pane
+  reported complete (Fleet's "Ready to review"), and `finished` counts tasks
+  whose every agent pane reported complete.
+
+Top level of `GET /api/workspaces`: `activeWorkspaceId` — the workspace the
+desktop is showing, present only when it is one of the listed rows.
 
 ### Isolated Electron preview smoke test
 
