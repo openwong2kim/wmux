@@ -5,7 +5,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { DesktopPhoneBridge } from '../../phone/DesktopPhoneBridge';
+import { DesktopPhoneBridge, DesktopPhoneError } from '../../phone/DesktopPhoneBridge';
 import { RunHistoryStore } from '../../history/RunHistoryStore';
 import { InputReceiptStore } from '../InputReceiptStore';
 import { EventEmitter } from 'node:events';
@@ -472,6 +472,8 @@ describe('WebTerminalServer', () => {
   /** Whether the daemon's Live Activity pusher reports itself enabled. */
   let liveActivityPushEnabled: boolean;
   let desktopBridge: DesktopPhoneBridge | null;
+  /** Added to the server's clock: the sidebar-cache tests age snapshots with it instead of sleeping. */
+  let clockOffsetMs: number;
   let agentLaunchEnv: NodeJS.ProcessEnv | undefined;
   let settingsCalls: Array<{id:string;choice:unknown}>;
   let settingsHook: ((authorized:()=>Promise<boolean>)=>Promise<void>) | undefined;
@@ -484,6 +486,7 @@ describe('WebTerminalServer', () => {
 
   beforeEach(() => {
     desktopBridge = null;
+    clockOffsetMs = 0;
     agentLaunchEnv = undefined;
     settingsCalls = []; settingsHook = undefined;
     gateArmed = true;
@@ -542,8 +545,9 @@ describe('WebTerminalServer', () => {
       setGateEnabled: (enabled) => { gateArmed = enabled; },
       agentState: (id) => agentStates[id],
       resumeState: (id) => resumeStates[id],
-      // Short enough that the "desktop does not answer" case does not stall the suite.
-      desktopSidebarTimeoutMs: 150,
+      // The first-paint wait, short so a "desktop does not answer" case costs little.
+      desktopSidebarFirstPaintMs: 150,
+      now: () => Date.now() + clockOffsetMs,
       log: () => { /* silent in tests */ },
       assetsDir: os.tmpdir(), // no terminal.html needed for the /api/* tests
     });
@@ -7328,18 +7332,149 @@ describe('WebTerminalServer', () => {
       for (const w of body.workspaces as Row[]) expect(Object.keys(w).sort()).toEqual(['id', 'name', 'panes']);
     });
 
-    it('answers without the fields when the desktop is slow, and does not re-ask on every poll', async () => {
-      const calls = attachDesktop(() => null, { answer: false, timeoutMs: 1000 });
+    /**
+     * A desktop whose every `workspaces.list` the test answers by hand, in
+     * order: `answer(i, value)` resolves request i, `fail(i, tag)` rejects it
+     * with a bridge error. While `autoReply` is set, a request is answered
+     * with it on arrival instead. `available` can be flipped to model a
+     * disconnect.
+     */
+    const manualDesktop = () => {
+      const pending: Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }> = [];
+      const stub = {
+        available: true,
+        autoReply: undefined as unknown,
+        request: vi.fn((_command: string) => new Promise<unknown>((resolve, reject) => {
+          pending.push({ resolve, reject });
+          if (stub.autoReply !== undefined) resolve(stub.autoReply);
+        })),
+      };
+      desktopBridge = stub as unknown as DesktopPhoneBridge;
+      return {
+        stub,
+        answer: (i: number, value: unknown) => pending[i].resolve(value),
+        fail: (i: number, tag: string) => pending[i].reject(new DesktopPhoneError(tag)),
+      };
+    };
+    /** Let a settled desktop answer run its handlers (they are promise callbacks). */
+    const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+    const snapshotTitled = (title: string) => ({ workspaces: [], sidebar: {
+      activeWorkspaceId: 'ws-1',
+      workspaces: [{ id: 'ws-1', order: 0, pinned: false }],
+      panes: [{ ptyId: 's1', workspaceId: 'ws-1', surfaceTitle: title, paneName: 'w1-1' }],
+    } });
+    const titleOf = async (token: string) => {
+      const sessions = (await getJson(token, '/api/sessions')).sessions as Row[];
+      return sessions.find((r) => r.id === 's1')?.surfaceTitle;
+    };
+
+    it('serves the current snapshot at once and refreshes it once in the background', async () => {
+      const desktop = manualDesktop();
       const info = await startRO();
       const token = info.token as string;
-      const started = Date.now();
-      const sessions = (await getJson(token, '/api/sessions')).sessions as Row[];
-      expect(Date.now() - started).toBeLessThan(900);
-      expect(sessions.some((r) => 'surfaceTitle' in r)).toBe(false);
+      // First paint: a healthy desktop's first answer is in the first reply.
+      desktop.stub.autoReply = snapshotTitled('A');
+      expect(await titleOf(token)).toBe('A');
+      desktop.stub.autoReply = undefined;
+      expect(desktop.stub.request).toHaveBeenCalledTimes(1);
+      // Fresh: no new request.
+      clockOffsetMs += 500;
+      expect(await titleOf(token)).toBe('A');
+      expect(desktop.stub.request).toHaveBeenCalledTimes(1);
+      // Stale: answered from the snapshot immediately while ONE refresh runs.
+      clockOffsetMs += 1000;
+      expect(await titleOf(token)).toBe('A');
+      expect(await titleOf(token)).toBe('A');
+      expect((await getJson(token, '/api/workspaces')).activeWorkspaceId).toBe('ws-1');
+      expect(desktop.stub.request).toHaveBeenCalledTimes(2);
+      desktop.answer(1, snapshotTitled('B'));
+      await flush();
+      expect(await titleOf(token)).toBe('B');
+    });
+
+    it('never waits on a slow desktop past the shared first-paint deadline, and asks it once', async () => {
+      const desktop = manualDesktop();
+      const info = await startRO();
+      const token = info.token as string;
+      // The first poll waits out the (short, injected) first-paint window.
+      expect(await titleOf(token)).toBeUndefined();
+      // Past the deadline every poll answers at once, without the fields, and
+      // the single in-flight request is not duplicated.
+      clockOffsetMs += 5000;
+      expect(await titleOf(token)).toBeUndefined();
       const body = await getJson(token, '/api/workspaces');
       for (const w of body.workspaces as Row[]) expect(w).not.toHaveProperty('order');
-      // The miss is remembered: the second poll did not queue another request.
-      expect(calls).toEqual(['workspaces.list']);
+      expect(desktop.stub.request).toHaveBeenCalledTimes(1);
+      // When it finally answers, the next poll has the fields.
+      desktop.answer(0, snapshotTitled('late'));
+      await flush();
+      expect(await titleOf(token)).toBe('late');
+    });
+
+    it('keeps a good snapshot through transient failures for a bounded time, then omits it', async () => {
+      const desktop = manualDesktop();
+      const info = await startRO();
+      const token = info.token as string;
+      desktop.stub.autoReply = snapshotTitled('A');
+      expect(await titleOf(token)).toBe('A');
+      desktop.stub.autoReply = undefined;
+      // Refresh hits a full bridge: the snapshot keeps serving.
+      clockOffsetMs += 1500;
+      expect(await titleOf(token)).toBe('A');
+      desktop.fail(1, 'desktop-busy');
+      await flush();
+      expect(await titleOf(token)).toBe('A');
+      // Retried after the back-off, times out: still served, still bounded.
+      clockOffsetMs += 2500;
+      expect(await titleOf(token)).toBe('A');
+      expect(desktop.stub.request).toHaveBeenCalledTimes(3);
+      desktop.fail(2, 'desktop-timeout');
+      await flush();
+      expect(await titleOf(token)).toBe('A');
+      // Past the staleness bound (10 s after the snapshot) the fields go.
+      clockOffsetMs = 10_500;
+      expect(await titleOf(token)).toBeUndefined();
+    });
+
+    it('drops the fields at once when the desktop is gone', async () => {
+      const desktop = manualDesktop();
+      const info = await startRO();
+      const token = info.token as string;
+      desktop.stub.autoReply = snapshotTitled('A');
+      expect(await titleOf(token)).toBe('A');
+      desktop.stub.autoReply = undefined;
+      // The refresh learns the desktop disconnected: no stale serving.
+      clockOffsetMs += 1500;
+      expect(await titleOf(token)).toBe('A');
+      desktop.fail(1, 'desktop-disconnected');
+      await flush();
+      expect(await titleOf(token)).toBeUndefined();
+      // And a bridge that reports no desktop drops them without asking.
+      desktop.stub.available = false;
+      clockOffsetMs += 5000;
+      expect(await titleOf(token)).toBeUndefined();
+      expect(desktop.stub.request).toHaveBeenCalledTimes(2);
+    });
+
+    it('ignores a refresh that lands after the server restarted', async () => {
+      const desktop = manualDesktop();
+      let info = await startRO();
+      expect(await titleOf(info.token as string)).toBeUndefined(); // request 0 still pending
+      await server.stop();
+      info = await startRO();
+      const token = info.token as string;
+      expect(await titleOf(token)).toBeUndefined(); // request 1, under the new generation
+      expect(desktop.stub.request).toHaveBeenCalledTimes(2);
+      // The pre-restart answer lands: it must neither fill the cache nor free
+      // the new generation's in-flight slot.
+      desktop.answer(0, snapshotTitled('OLD'));
+      await flush();
+      clockOffsetMs += 5000;
+      expect(await titleOf(token)).toBeUndefined();
+      expect(desktop.stub.request).toHaveBeenCalledTimes(2);
+      desktop.answer(1, snapshotTitled('NEW'));
+      await flush();
+      expect(await titleOf(token)).toBe('NEW');
     });
 
     it('omits the fields when the desktop request fails', async () => {

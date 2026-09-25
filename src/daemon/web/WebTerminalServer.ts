@@ -520,11 +520,11 @@ interface WebTerminalServerDeps {
    */
   now?: () => number;
   /**
-   * How long `/api/sessions` and `/api/workspaces` wait for the desktop's
-   * sidebar fields before answering without them. Test seam; defaults to
-   * DESKTOP_SIDEBAR_TIMEOUT_MS.
+   * How long the FIRST `/api/sessions` / `/api/workspaces` poll with no
+   * sidebar snapshot yet may wait for the desktop's first answer. Test seam;
+   * defaults to DESKTOP_SIDEBAR_FIRST_PAINT_MS.
    */
-  desktopSidebarTimeoutMs?: number;
+  desktopSidebarFirstPaintMs?: number;
   /**
    * The daemon's transcript projector — the phone turn-view contract (#782).
    * Optional like `approvals`: a daemon/test that has not wired one still serves
@@ -715,16 +715,25 @@ const LIVENESS_SNAPSHOT_STALE_MS = 300_000;
  */
 const MAX_LAST_ASSISTANT_READS_PER_POLL = 8;
 /**
- * The desktop sidebar fields on `/api/sessions` and `/api/workspaces`: how long
- * a poll waits for them, how long a snapshot is reused, and how long a failed
- * or slow fetch is remembered. Both routes are polled by every paired device,
- * so one snapshot serves them all, and a desktop that stopped answering costs
- * one wait per NEGATIVE window, not one per poll (each unanswered request also
- * holds a bridge slot for its full timeout).
+ * The desktop sidebar fields on `/api/sessions` and `/api/workspaces`, served
+ * stale-while-revalidate. Both routes are polled by every paired device (and
+ * `/api/workspaces` by attached remote desktops), so a poll never waits on the
+ * desktop once a snapshot exists:
+ *   - TTL: a snapshot older than this starts ONE background refresh;
+ *   - MAX_STALE: a good snapshot is served up to this age while refreshes
+ *     fail transiently (bridge busy, timeout, a failed request) — past it the
+ *     fields are omitted. A desktop that is gone drops them at once;
+ *   - RETRY: after a failed refresh, how long before the next attempt, so a
+ *     failing desktop is not asked on every poll;
+ *   - FIRST_PAINT: with no snapshot at all, polls may wait this long after the
+ *     first refresh STARTED (a deadline shared by every such poll, not a wait
+ *     each), so a phone opening the Fleet paints with the fields when the
+ *     desktop is healthy; a slow desktop costs this once, not per poll.
  */
-const DESKTOP_SIDEBAR_TIMEOUT_MS = 1500;
 const DESKTOP_SIDEBAR_TTL_MS = 1000;
-const DESKTOP_SIDEBAR_NEGATIVE_TTL_MS = 5000;
+const DESKTOP_SIDEBAR_MAX_STALE_MS = 10_000;
+const DESKTOP_SIDEBAR_RETRY_MS = 2000;
+const DESKTOP_SIDEBAR_FIRST_PAINT_MS = 250;
 /** A decision body is two fields; anything larger is not one of ours. */
 const MAX_JSON_BODY_BYTES = 8 * 1024;
 /**
@@ -1099,10 +1108,17 @@ export class WebTerminalServer {
   private phoneGitRequests = 0;
   private readonly agentSettingsRequests = new Set<string>();
   private readonly pendingLiveness = new Map<string, AgentLivenessBody>();
-  /** Last desktop sidebar snapshot (null = failed / unavailable) and when it was taken. */
-  private desktopSidebarCache: { at: number; value: PhoneSidebarSnapshot | null } | null = null;
-  /** The one in-flight desktop sidebar fetch every concurrent poll shares. */
-  private desktopSidebarInFlight: Promise<PhoneSidebarSnapshot | null> | null = null;
+  /** Last GOOD desktop sidebar snapshot and when it was taken. */
+  private desktopSidebarCache: { at: number; value: PhoneSidebarSnapshot } | null = null;
+  /** The one background refresh in flight, and when it started. */
+  private desktopSidebarInFlight: { promise: Promise<void>; startedAt: number } | null = null;
+  /** When the last refresh failed (0 = not since the last success). */
+  private desktopSidebarFailedAt = 0;
+  /**
+   * Bumped by stop(). A refresh started under an older generation may still
+   * land after a restart; it must touch neither the cache nor the slot.
+   */
+  private desktopSidebarGeneration = 0;
   /**
    * Last liveness state seen per pane, for the `/api/sessions` snapshot.
    *
@@ -1542,9 +1558,12 @@ export class WebTerminalServer {
     this.chatBlockedTimers.clear();
     this.chatBlockedState.clear();
     // A restarted server asks the desktop afresh rather than serving a
-    // snapshot (or a remembered miss) from before the stop.
+    // snapshot (or a remembered miss) from before the stop, and a refresh
+    // still in flight from before it lands in a dead generation.
+    this.desktopSidebarGeneration += 1;
     this.desktopSidebarCache = null;
     this.desktopSidebarInFlight = null;
+    this.desktopSidebarFailedAt = 0;
 
     const server = this.server;
     this.server = null;
@@ -2624,48 +2643,71 @@ export class WebTerminalServer {
   }
 
   /**
-   * The desktop sidebar snapshot for the two polled list routes, or null when
-   * the desktop is away, fails, or does not answer within the route's wait.
-   * Never rejects: a list route must not fail because the desktop did.
-   *
-   * One fetch is shared by every concurrent poll and reused for
-   * DESKTOP_SIDEBAR_TTL_MS; a failure or timeout is remembered for
-   * DESKTOP_SIDEBAR_NEGATIVE_TTL_MS so a hung desktop is not re-asked (and
-   * re-waited on) by every poll. A fetch that outlives the route's wait keeps
-   * running and refreshes the cache when it lands.
+   * The desktop sidebar snapshot for the two polled list routes, or null.
+   * Stale-while-revalidate (see DESKTOP_SIDEBAR_TTL_MS): answers from the
+   * current snapshot at once and refreshes it in the background; only a poll
+   * with no snapshot at all may wait, and only until the shared first-paint
+   * deadline. Never rejects: a list route must not fail because the desktop did.
    */
   private async desktopSidebar(): Promise<PhoneSidebarSnapshot | null> {
     const desktop = this.availableDesktop();
-    if (!desktop) return null;
-    const cached = this.desktopSidebarCache;
-    if (cached) {
-      const ttl = cached.value ? DESKTOP_SIDEBAR_TTL_MS : DESKTOP_SIDEBAR_NEGATIVE_TTL_MS;
-      if (this.now() - cached.at < ttl) return cached.value;
-    }
-    if (!this.desktopSidebarInFlight) {
-      const request = desktop.request('workspaces.list', {})
-        .then((reply) => parsePhoneSidebarSnapshot((reply as { sidebar?: unknown } | null)?.sidebar), () => null)
-        .then((value) => {
-          this.desktopSidebarCache = { at: this.now(), value };
-          return value;
-        });
-      this.desktopSidebarInFlight = request;
-      void request.finally(() => {
-        if (this.desktopSidebarInFlight === request) this.desktopSidebarInFlight = null;
-      });
-    }
-    const inFlight = this.desktopSidebarInFlight;
-    const waitMs = this.deps.desktopSidebarTimeoutMs ?? DESKTOP_SIDEBAR_TIMEOUT_MS;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timedOut = new Promise<'timeout'>((resolve) => { timer = setTimeout(() => resolve('timeout'), waitMs); });
-    const result = await Promise.race([inFlight, timedOut]);
-    clearTimeout(timer);
-    if (result === 'timeout') {
-      // Remember the miss unless the fetch has meanwhile landed a fresher answer.
-      if (this.desktopSidebarInFlight === inFlight) this.desktopSidebarCache = { at: this.now(), value: null };
+    if (!desktop) {
+      // Gone, not slow: its fields go with it.
+      this.desktopSidebarCache = null;
       return null;
     }
-    return result;
+    const now = this.now();
+    const cached = this.desktopSidebarCache;
+    if ((!cached || now - cached.at >= DESKTOP_SIDEBAR_TTL_MS) && now - this.desktopSidebarFailedAt >= DESKTOP_SIDEBAR_RETRY_MS) {
+      this.refreshDesktopSidebar(desktop);
+    }
+    if (cached) return now - cached.at <= DESKTOP_SIDEBAR_MAX_STALE_MS ? cached.value : null;
+    const inFlight = this.desktopSidebarInFlight;
+    if (!inFlight) return null;
+    const firstPaintMs = this.deps.desktopSidebarFirstPaintMs ?? DESKTOP_SIDEBAR_FIRST_PAINT_MS;
+    const remaining = inFlight.startedAt + firstPaintMs - now;
+    if (remaining <= 0) return null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([inFlight.promise, new Promise<void>((resolve) => { timer = setTimeout(resolve, remaining); })]);
+    clearTimeout(timer);
+    return this.desktopSidebarCache?.value ?? null;
+  }
+
+  /** Start the single background refresh, unless one is already running. */
+  private refreshDesktopSidebar(desktop: DesktopPhoneBridge): void {
+    if (this.desktopSidebarInFlight) return;
+    const generation = this.desktopSidebarGeneration;
+    const entry: { promise: Promise<void>; startedAt: number } = { promise: Promise.resolve(), startedAt: this.now() };
+    entry.promise = desktop.request('workspaces.list', {})
+      .then(
+        (reply) => {
+          if (generation !== this.desktopSidebarGeneration) return;
+          const value = parsePhoneSidebarSnapshot((reply as { sidebar?: unknown } | null)?.sidebar);
+          if (value) {
+            this.desktopSidebarCache = { at: this.now(), value };
+            this.desktopSidebarFailedAt = 0;
+          } else {
+            // The desktop answered and has no sidebar to give (an older build,
+            // or a renderer still starting): nothing to keep serving.
+            this.desktopSidebarCache = null;
+            this.desktopSidebarFailedAt = this.now();
+          }
+        },
+        (error: unknown) => {
+          if (generation !== this.desktopSidebarGeneration) return;
+          this.desktopSidebarFailedAt = this.now();
+          // A desktop that is gone drops its fields now. Anything else — the
+          // bridge's slots full, a timeout, a failed renderer call — is
+          // transient: the last good snapshot keeps serving until MAX_STALE.
+          if (error instanceof DesktopPhoneError && (error.tag === 'desktop-unavailable' || error.tag === 'desktop-disconnected')) {
+            this.desktopSidebarCache = null;
+          }
+        },
+      )
+      .finally(() => {
+        if (this.desktopSidebarInFlight === entry) this.desktopSidebarInFlight = null;
+      });
+    this.desktopSidebarInFlight = entry;
   }
 
   // --- pane diff (read-only git) -------------------------------------------

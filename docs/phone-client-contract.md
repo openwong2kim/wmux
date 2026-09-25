@@ -1491,13 +1491,17 @@ a tab title is terminal output the paired device can already read in full on
 the pane stream).
 
 **Presence.** Every field below except `workspaceId` exists only in the desktop
-app. While the desktop is attached and answers within about 1.5 s, the daemon
-merges them; otherwise the keys are **omitted** (never `null` or `false`) and
-the route answers exactly as before. Treat an absent key as "the desktop did
-not say" and fall back to what you draw without it. The daemon reuses one
-desktop snapshot for about a second across all polling devices, and after a
-failure or timeout answers without the fields for a few seconds before asking
-again, so fields may appear or disappear between polls.
+app. The daemon keeps a snapshot of them and answers every poll from it at
+once, refreshing it in the background about once a second; a poll never waits
+on the desktop, except the very first one after the daemon (re)starts with no
+snapshot yet, which may wait up to a quarter of a second so the first screen
+paints with the fields. When the desktop is slow or its bridge is momentarily
+busy, the last snapshot keeps being served for up to 10 seconds; after that,
+and at once when the desktop disconnects, the keys are **omitted** (never
+`null` or `false`) and the route answers exactly as before. Treat an absent key
+as "the desktop did not say" and fall back to what you draw without it; fields
+may appear or disappear between polls, and may lag the desktop by a second or
+two.
 
 Nothing is added: the fields are merged by id onto rows the daemon already
 lists. A desktop-only workspace with no live pane never becomes a row, and the
