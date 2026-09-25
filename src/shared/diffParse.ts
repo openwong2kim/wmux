@@ -104,6 +104,29 @@ export interface DiffTargetSnapshot {
   readonly targetDirtyFiles: readonly string[];
 }
 
+/**
+ * diff:summary — a task's change counts without the patch text (Fleet's
+ * Ready to review row). Committed + tracked uncommitted changes come from
+ * `git diff --numstat` against the task's merge base, untracked files are
+ * counted by reading them. `stateKey` fingerprints the worktree (HEAD, status,
+ * dirty-file mtimes/sizes); when the caller's key still matches, the counts
+ * are not recomputed and `unchanged` is set instead.
+ */
+export type DiffSummaryResult =
+  | { readonly ok: true; readonly stateKey: string; readonly unchanged: true }
+  | {
+      readonly ok: true;
+      readonly stateKey: string;
+      readonly unchanged?: false;
+      readonly files: number;
+      readonly additions: number;
+      readonly deletions: number;
+      /** Untracked files included in `files`. */
+      readonly untracked: number;
+      /** Files with no line counts (binary, symlink, unreadable). */
+      readonly binary: number;
+    };
+
 // diff:read 응답. files는 파싱된 diff, snapshot은 드리프트 게이트 재료.
 export interface DiffReadResult {
   readonly ok: true;

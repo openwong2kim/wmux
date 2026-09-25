@@ -953,6 +953,11 @@ const electronAPI = {
       >,
   },
   diff: {
+    // Fleet Ready to review — change counts only; `unchanged` when the state key matches.
+    summary: (worktreePath: string, knownStateKey?: string) =>
+      ipcRenderer.invoke(IPC.DIFF_SUMMARY, worktreePath, knownStateKey ?? '') as Promise<
+        import('../shared/diffParse').DiffSummaryResult | import('../shared/diffParse').DiffReadError
+      >,
     // 워크스페이스 diff — 임의 cwd를 자기 worktree toplevel로 정규화(비-git이면 ok:false).
     resolveRepo: (cwd: string) =>
       ipcRenderer.invoke(IPC.DIFF_RESOLVE_REPO, cwd) as Promise<

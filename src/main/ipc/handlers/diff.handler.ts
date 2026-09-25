@@ -10,6 +10,7 @@
 //   (plans/apply-hunks-toctou-design.md).
 import { ipcMain } from 'electron';
 import { readFile, lstat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -31,6 +32,7 @@ import {
   type DiffReadFile,
   type DiffReadResult,
   type DiffReadError,
+  type DiffSummaryResult,
   type DiffNumstat,
   type DiffTargetSnapshot,
   type DiffApplyRequest,
@@ -187,6 +189,115 @@ async function readTaskBaseOid(worktreePath: string): Promise<string | undefined
   }
 }
 
+// The base a task's diff is measured against (diff:read task mode and
+// diff:summary share it, so the row's counts describe the panel's diff).
+async function taskMergeBase(worktreePath: string, targetRepoPath: string, targetHeadOid: string): Promise<string> {
+  // targetHeadOid 미지정 시 타겟 repo의 현 HEAD를 사용(렌더러가 미리 알 필요 없음).
+  let headOid = targetHeadOid;
+  if (!headOid) {
+    const h = await git(['rev-parse', 'HEAD'], targetRepoPath);
+    headOid = h.code === 0 ? h.stdout.trim() : '';
+  }
+  // T3: a task that branched from origin's default branch is compared against
+  // that commit, not the owner's HEAD — a local main behind origin (or a
+  // feature-branch checkout) would otherwise show every upstream commit in
+  // between as the worker's change, and as an adoptable hunk.
+  const baseOid = await readTaskBaseOid(worktreePath);
+  // mergeBase = merge-base HEAD {targetHeadOid} — 단일 출처(§2 G8).
+  const mb = await git(['merge-base', 'HEAD', baseOid ?? headOid], worktreePath);
+  return mb.code === 0 && mb.stdout.trim() ? mb.stdout.trim() : (baseOid ?? headOid);
+}
+
+/** Lines in a file (a final line without a newline counts) and whether it is
+ *  binary (a NUL byte anywhere). Streamed, so a large file costs no memory. */
+function countFileLines(path: string): Promise<{ lines: number; binary: boolean }> {
+  return new Promise((resolve, reject) => {
+    let lines = 0;
+    let size = 0;
+    let last = -1;
+    let binary = false;
+    const stream = createReadStream(path);
+    stream.on('data', (chunk: Buffer | string) => {
+      const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      if (buf.length === 0) return;
+      size += buf.length;
+      if (buf.includes(0)) { binary = true; stream.destroy(); resolve({ lines: 0, binary: true }); return; }
+      for (let i = 0; i < buf.length; i++) if (buf[i] === 10) lines += 1;
+      last = buf[buf.length - 1];
+    });
+    stream.on('error', reject);
+    stream.on('close', () => {
+      if (binary) return;
+      resolve({ lines: size > 0 && last !== 10 ? lines + 1 : lines, binary: false });
+    });
+  });
+}
+
+/**
+ * diff:summary — the counts for Fleet's Ready to review row. No patch text
+ * and no size cap: `git diff --numstat` against the task merge base for
+ * committed + tracked changes, plus each untracked file counted by streaming
+ * it. When `knownStateKey` equals the worktree's current state key the counts
+ * are skipped — a redraw or a re-render asks again for free.
+ */
+export async function readDiffSummary(worktreePath: string, knownStateKey: string): Promise<DiffSummaryResult | DiffReadError> {
+  const targetRepoPath = await resolveTargetRepo(worktreePath);
+  if (!targetRepoPath) {
+    return { ok: false, error: 'Could not find the target repository — the task worktree may be damaged or removed.', code: 'no-repo' };
+  }
+  const [head, status] = await Promise.all([
+    git(['rev-parse', 'HEAD'], worktreePath),
+    git(['-c', 'core.quotepath=false', 'status', '--porcelain', '-uall', '-z'], worktreePath),
+  ]);
+  if (status.code !== 0) {
+    return { ok: false, error: `git status failed: ${status.stderr.slice(0, 200)}`, code: 'status-fail' };
+  }
+  const entries = parsePorcelainZ(status.stdout);
+  // State key: HEAD + status + each changed path's size/mtime (a second edit
+  // to an already-modified file leaves the status line as it was).
+  const hash = createHash('sha256').update(head.stdout.trim()).update('\0').update(status.stdout);
+  const stats = await Promise.all(entries.map((e) => lstat(join(worktreePath, e.path)).catch(() => null)));
+  entries.forEach((e, i) => {
+    const st = stats[i];
+    hash.update(`\0${e.path}\0${st ? `${st.size}:${st.mtimeMs}` : 'x'}`);
+  });
+  const stateKey = hash.digest('hex');
+  if (knownStateKey && knownStateKey === stateKey) return { ok: true, stateKey, unchanged: true };
+
+  const mergeBase = await taskMergeBase(worktreePath, targetRepoPath, '');
+  const num = await git(['diff', DIFF_ALGORITHM, '--numstat', mergeBase], worktreePath);
+  if (num.code !== 0) {
+    return { ok: false, error: `git diff --numstat failed: ${num.stderr.slice(0, 200)}`, code: 'numstat-fail' };
+  }
+  let files = 0;
+  let additions = 0;
+  let deletions = 0;
+  let binary = 0;
+  for (const n of parseNumstat(num.stdout)) {
+    files += 1;
+    if (n.additions === null || n.deletions === null) binary += 1;
+    additions += n.additions ?? 0;
+    deletions += n.deletions ?? 0;
+  }
+  let untracked = 0;
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (e.xy !== '??') continue;
+    untracked += 1;
+    files += 1;
+    const st = stats[i];
+    if (!st || !st.isFile()) { binary += 1; continue; }
+    try {
+      const counted = await countFileLines(join(worktreePath, e.path));
+      if (counted.binary) binary += 1;
+      else additions += counted.lines;
+    } catch {
+      binary += 1;
+    }
+  }
+  return { ok: true, stateKey, files, additions, deletions, untracked, binary };
+}
+
 // diff:read 구현.
 //
 // mode:
@@ -228,20 +339,7 @@ async function readDiff(
     const h = await git(['rev-parse', 'HEAD'], targetRepoPath);
     mergeBase = h.code === 0 && h.stdout.trim() ? h.stdout.trim() : EMPTY_TREE_OID;
   } else {
-    // targetHeadOid 미지정 시 타겟 repo의 현 HEAD를 사용(렌더러가 미리 알 필요 없음).
-    let headOid = targetHeadOid;
-    if (!headOid) {
-      const h = await git(['rev-parse', 'HEAD'], targetRepoPath);
-      headOid = h.code === 0 ? h.stdout.trim() : '';
-    }
-    // T3: a task that branched from origin's default branch is compared against
-    // that commit, not the owner's HEAD — a local main behind origin (or a
-    // feature-branch checkout) would otherwise show every upstream commit in
-    // between as the worker's change, and as an adoptable hunk.
-    const baseOid = await readTaskBaseOid(worktreePath);
-    // mergeBase = merge-base HEAD {targetHeadOid} — 단일 출처(§2 G8).
-    const mb = await git(['merge-base', 'HEAD', baseOid ?? headOid], worktreePath);
-    mergeBase = mb.code === 0 && mb.stdout.trim() ? mb.stdout.trim() : (baseOid ?? headOid);
+    mergeBase = await taskMergeBase(worktreePath, targetRepoPath, targetHeadOid);
   }
 
   // 1-arg 워킹트리 대조(미커밋 포함). untracked 제외 — 별도 합성.
@@ -615,6 +713,27 @@ export function registerDiffHandlers(): () => void {
     ),
   );
 
+  ipcMain.removeHandler(IPC.DIFF_SUMMARY);
+  ipcMain.handle(
+    IPC.DIFF_SUMMARY,
+    wrapHandler(
+      IPC.DIFF_SUMMARY,
+      async (
+        _event: Electron.IpcMainInvokeEvent,
+        worktreePath: unknown,
+        knownStateKey: unknown,
+      ): Promise<DiffSummaryResult | DiffReadError> => {
+        if (typeof worktreePath !== 'string' || !worktreePath) {
+          return { ok: false, error: 'worktreePath is required.', code: 'bad-args' };
+        }
+        // F2 (#615): confine the renderer path before it reaches `git -C`.
+        const safeWt = await resolveAccessiblePath(worktreePath);
+        if (!safeWt) return { ok: false, error: 'worktreePath is required.', code: 'bad-args' };
+        return readDiffSummary(safeWt, typeof knownStateKey === 'string' ? knownStateKey : '');
+      },
+    ),
+  );
+
   // 워크스페이스 diff 진입점 — cwd(서브디렉토리 가능)를 자기 worktree toplevel로
   // 정규화한다. diff:read의 worktreePath 계약(untracked 합성이 repo-root 상대경로를
   // join)이 toplevel을 전제하므로, 렌더러는 이 결과를 diffRepoPath로 영속한다.
@@ -667,6 +786,7 @@ export function registerDiffHandlers(): () => void {
 
   return () => {
     ipcMain.removeHandler(IPC.DIFF_READ);
+    ipcMain.removeHandler(IPC.DIFF_SUMMARY);
     ipcMain.removeHandler(IPC.DIFF_RESOLVE_REPO);
     ipcMain.removeHandler(IPC.DIFF_APPLY_HUNKS);
   };

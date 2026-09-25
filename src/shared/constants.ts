@@ -449,6 +449,9 @@ export const IPC = {
   // (서브디렉토리 cwd를 그대로 diff:read에 넘기면 untracked 합성의
   //  join(worktreePath, rel)이 repo-root 상대경로와 어긋난다.)
   DIFF_RESOLVE_REPO: 'diff:resolveRepo',
+  // Fleet Ready to review — a task's change counts only (numstat + untracked),
+  // no patch text; answers `unchanged` when the worktree state key matches.
+  DIFF_SUMMARY: 'diff:summary',
   // Deck Git 탭 — 워크트리 GUI (list/add/remove; remove는 --force 미제공)
   WORKTREE_LIST: 'worktree:list',
   WORKTREE_ADD: 'worktree:add',
