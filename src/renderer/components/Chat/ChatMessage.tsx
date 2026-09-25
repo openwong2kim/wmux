@@ -95,10 +95,11 @@ function ChatRowContent({ row }: { row: ChatRow }) {
     </div>;
   }
   const user = event.kind === 'user_text';
+  const images = user ? [...(event.images ?? []), ...(row.images ?? [])] : [];
   return <div className={`wmux-chat-message ${user ? 'wmux-chat-user' : 'wmux-chat-assistant'}`}>
-    {user ? <>{event.images?.length ? <ChatSentImages images={event.images} /> : null}
+    {user ? <>{images.length ? <ChatSentImages images={images} /> : null}
       <div className="wmux-chat-user-text">{event.hasImage ? withoutImageTokens(event.text) : event.text}
-        {event.hasImage && !event.images?.length && <p>{t('chat.imageInTerminal')}</p>}</div></>
+        {event.hasImage && !images.length && <p>{t('chat.imageInTerminal')}</p>}</div></>
       : event.thinking ? <details className="wmux-chat-thinking"><summary>{t('chat.thinking')}</summary><Prose event={event} /></details>
       : <div className="wmux-chat-prose"><Prose event={event} />{event.truncated && <p>{t('chat.truncated')}</p>}</div>}
   </div>;

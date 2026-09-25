@@ -370,6 +370,12 @@ describe('parseTranscriptLine — pasted images and ESC interrupts', () => {
     expect(event).toMatchObject({ kind: 'user_text', text: '[Image #1] What is in this image? One line.', hasImage: true, images: ['/tmp/shots/red square.png'] });
   });
 
+  it('reads the source note Claude Code writes as its own meta entry', () => {
+    const [event] = parseTranscriptLine(JSON.stringify({ type: 'user', uuid: 'm', isMeta: true, message: { role: 'user', content: [
+      { type: 'text', text: '[Image: source: /tmp/shots/red.png]' }] } }), 0);
+    expect(event).toMatchObject({ kind: 'meta', subtype: 'caveat', label: 'Image source', images: ['/tmp/shots/red.png'] });
+  });
+
   it('does not invent a path without an image block', () => {
     const [event] = user([{ type: 'text', text: '[Image: source: /tmp/a.png]' }, { type: 'text', text: 'hi' }]);
     expect(event.kind === 'user_text' && event.images).toBeFalsy();

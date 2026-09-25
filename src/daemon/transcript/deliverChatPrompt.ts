@@ -74,7 +74,8 @@ export function claudeComposerEmpty(rows: readonly string[] | null): boolean {
   const rule = (row: string | undefined) => !!row && /^─{8,}$/.test(row);
   let at = -1;
   tail.forEach((row, index) => { if (/^❯(?:\s|$)/.test(row)) at = index; });
-  return at > 0 && tail[at] === '❯' && rule(tail[at - 1]) && rule(tail[at + 1]);
+  // A fresh session dims a suggestion into the empty prompt: `❯ Try "…"`.
+  return at > 0 && /^❯(?: Try "[^"]*")?$/.test(tail[at]) && rule(tail[at - 1]) && rule(tail[at + 1]);
 }
 
 /** Codex 0.156 TUI; positive evidence, not an absence-of-errors heuristic.

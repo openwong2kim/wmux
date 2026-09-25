@@ -92,6 +92,9 @@ describe('chat delivery into Claude mid-turn and after Stop', () => {
     const f = fixture(); f.state.status = 'idle';
     f.show(emptyComposer(['  ⎿  Interrupted · What should Claude do instead?']));
     expect(await deliverChatPrompt('conversation-1', 'next', f.deps)).toBe('sent');
+    const fresh = fixture(); fresh.state.status = 'idle';
+    fresh.show([RULE, '❯ Try "refactor constants.ts"', RULE]);
+    expect(await deliverChatPrompt('conversation-1', 'next', fresh.deps)).toBe('sent');
     const restored = fixture(); restored.state.status = 'idle';
     restored.show([RULE, '❯ Write a 900-word essay about the history of tunnels.', RULE]);
     expect(await deliverChatPrompt('conversation-1', 'next', restored.deps)).toBe('unconfirmed');

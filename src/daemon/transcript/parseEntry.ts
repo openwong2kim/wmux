@@ -184,6 +184,11 @@ function parseUserEntry(
     }
     // Any other block type (including invented ones) is skipped silently — R1.
   }
+  // The source note of the image in the previous entry: an `isMeta` entry of
+  // nothing but `[Image: source: …]` lines.
+  if (!hasImage && sourceTexts.length && !parts.length && !out.length && entry['isMeta'] === true) {
+    return single({ ...metaEvent(baseId, ts, 'caveat', 'Image source'), images: images.slice(0, 8) }, empty);
+  }
   // Without an image block the line is the user's own words.
   if (!hasImage) parts.push(...sourceTexts);
   const prose = parts.join('\n').trim();

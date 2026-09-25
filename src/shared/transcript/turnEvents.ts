@@ -174,6 +174,11 @@ export interface MetaEvent extends TurnEventBase {
     | 'system_reminder'
     | 'unknown';
   label: string;
+  /**
+   * Claude Code records a pasted image's source path in its own `isMeta` entry
+   * right after the prompt that carried the image; clients fold it into that row.
+   */
+  images?: string[];
 }
 
 export type TurnEvent =

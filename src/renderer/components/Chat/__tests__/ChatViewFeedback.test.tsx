@@ -95,13 +95,16 @@ describe('composer attachments', () => {
     const attachment = vi.fn(async ({ path }: { path: string }) => preview(path));
     const openPath = vi.fn();
     vi.stubGlobal('electronAPI', { chat: { send: vi.fn(), attachment }, shell: { openPath } });
-    fixture.events = [{ id: 'u1', kind: 'user_text', text: '[Image #1] What is this?', hasImage: true, images: ['/tmp/red.png'] }];
+    // Claude Code 2.1.282 writes the source path as a separate meta entry.
+    fixture.events = [{ id: 'u1', kind: 'user_text', text: '[Image #1] What is this?', hasImage: true },
+      { id: 'n1', kind: 'meta', subtype: 'caveat', label: 'Image source', images: ['/tmp/red.png'] }];
     await render();
     await act(async () => undefined);
     expect(host.querySelector('.wmux-chat-user-text')!.textContent).toBe('What is this?');
     await act(async () => host.querySelector<HTMLButtonElement>('.wmux-chat-image')!.click());
     expect(openPath).toHaveBeenCalledWith('/tmp/red.png');
     expect(host.querySelector('.wmux-chat-image img')).not.toBeNull();
+    expect(host.textContent).not.toContain('Image source');
   });
 });
 
