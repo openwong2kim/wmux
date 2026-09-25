@@ -1,13 +1,20 @@
+import { spawn } from 'child_process';
+import os from 'os';
+import path from 'path';
 import { describe, expect, it } from 'vitest';
-import { AgentProcessTracker, isVerifiedPassiveHelper, type ProcessTreeEntry } from '../AgentProcessTracker';
+import { AgentProcessTracker, isHelperImage, isVerifiedPassiveHelper, readExecutableImage, type ProcessTreeEntry } from '../AgentProcessTracker';
 
 const SHELL = 100;
-const ENV = { HOME: '/Users/me' };
-const CACHE = '/Users/me/.cache/gitstatus/gitstatusd-darwin-arm64';
+const HOME = path.posix.normalize(os.homedir());
+const ENV = {};
+const CACHE = `${HOME}/.cache/gitstatus/gitstatusd-darwin-arm64`;
 const ARGS = '-G v1.5.4 -s -1 -u -1 -c -1 -d -1 -m -1 -v FATAL -t 16';
 const shell: ProcessTreeEntry = { pid: SHELL, ppid: 1, name: '-zsh', cmdline: '-zsh' };
 const helper = (image = CACHE, args = ARGS, ppid = SHELL, pid = 200): ProcessTreeEntry => ({ pid, ppid, name: image, cmdline: `${image} ${args}` });
-const tracker = (table: ProcessTreeEntry[]) => new AgentProcessTracker({ watch: () => undefined, unwatch: () => undefined }, async () => table);
+/** By default the real image is what argv[0] claims; `exe` overrides it. */
+const tracker = (table: ProcessTreeEntry[], exe?: (pid: number) => Promise<string | undefined>) =>
+  new AgentProcessTracker({ watch: () => undefined, unwatch: () => undefined }, async () => table,
+    exe ?? (async (pid) => table.find(entry => entry.pid === pid)?.name));
 
 describe('idleShellState', () => {
   it('reports each failed launch precondition', async () => {
@@ -24,19 +31,41 @@ describe('idleShellState', () => {
       .toEqual({ ok: false, reason: 'shell-has-children' });
   });
 
-  it('accepts the plugin checkout and custom cache locations', () => {
-    expect(isVerifiedPassiveHelper(helper('/opt/homebrew/share/powerlevel10k/gitstatus/usrbin/gitstatusd'), SHELL, [], ENV)).toBe(true);
-    expect(isVerifiedPassiveHelper(helper('/data/gs/gitstatusd-linux-x86_64'), SHELL, [], { ...ENV, GITSTATUS_CACHE_DIR: '/data/gs' })).toBe(true);
-    expect(isVerifiedPassiveHelper(helper('/xdg/gitstatus/gitstatusd-linux-aarch64'), SHELL, [], { ...ENV, XDG_CACHE_HOME: '/xdg' })).toBe(true);
+  it('refuses a helper whose argv is right but whose real executable is not (exec -a spoof)', async () => {
+    expect(await tracker([shell, helper()], async () => '/bin/sleep').idleShellState(SHELL, ENV))
+      .toEqual({ ok: false, reason: 'shell-has-children' });
+    expect(await tracker([shell, helper()], async () => '/tmp/gitstatusd-darwin-arm64').idleShellState(SHELL, ENV))
+      .toEqual({ ok: false, reason: 'shell-has-children' });
+  });
+
+  it('refuses a helper whose real executable cannot be read', async () => {
+    expect(await tracker([shell, helper()], async () => undefined).idleShellState(SHELL, ENV))
+      .toEqual({ ok: false, reason: 'shell-has-children' });
+    expect(await tracker([shell, helper()], async () => { throw new Error('lsof'); }).idleShellState(SHELL, ENV))
+      .toEqual({ ok: false, reason: 'shell-has-children' });
+  });
+
+  it('accepts the plugin checkout and custom cache locations under home', () => {
+    expect(isVerifiedPassiveHelper(helper(`${HOME}/powerlevel10k/gitstatus/usrbin/gitstatusd`), SHELL, [], ENV)).toBe(true);
+    expect(isVerifiedPassiveHelper(helper(`${HOME}/gs/gitstatusd-linux-x86_64`), SHELL, [], { GITSTATUS_CACHE_DIR: `${HOME}/gs` })).toBe(true);
+    expect(isVerifiedPassiveHelper(helper(`${HOME}/xdg/gitstatus/gitstatusd-linux-aarch64`), SHELL, [], { XDG_CACHE_HOME: `${HOME}/xdg` })).toBe(true);
+  });
+
+  it('refuses install roots outside home, whatever the pane env says', () => {
+    expect(isHelperImage('/opt/homebrew/share/powerlevel10k/gitstatus/usrbin/gitstatusd')).toBe(false);
+    expect(isHelperImage('/tmp/p10k/gitstatus/usrbin/gitstatusd')).toBe(false);
+    expect(isHelperImage('/data/gs/gitstatusd-linux-x86_64', { GITSTATUS_CACHE_DIR: '/data/gs' })).toBe(false);
+    expect(isHelperImage('/xdg/gitstatus/gitstatusd-linux-aarch64', { XDG_CACHE_HOME: '/xdg' })).toBe(false);
+    expect(isHelperImage(undefined)).toBe(false);
   });
 
   it('refuses spoofed helpers', () => {
     const refused: [string, ProcessTreeEntry, ProcessTreeEntry[]][] = [
       ['name only, outside an install location', helper('/tmp/gitstatusd-darwin-arm64'), []],
       ['relative image', helper('gitstatusd-darwin-arm64'), []],
-      ['non-normalized path', helper('/Users/me/.cache/gitstatus/../gitstatus/gitstatusd-darwin-arm64'), []],
-      ['usrbin image with a platform name', helper('/opt/p10k/gitstatus/usrbin/gitstatusd-darwin-arm64'), []],
-      ['other binary in the cache dir', helper('/Users/me/.cache/gitstatus/bash'), []],
+      ['non-normalized path', helper(`${HOME}/.cache/gitstatus/../gitstatus/gitstatusd-darwin-arm64`), []],
+      ['usrbin image with a platform name', helper(`${HOME}/p10k/gitstatus/usrbin/gitstatusd-darwin-arm64`), []],
+      ['other binary in the cache dir', helper(`${HOME}/.cache/gitstatus/bash`), []],
       ['unknown flag', helper(CACHE, ARGS + ' -x'), []],
       ['shell command smuggled in argv', helper(CACHE, ARGS + ' ; sh'), []],
       ['missing -G version', helper(CACHE, '-s -1 -t 16'), []],
@@ -49,5 +78,27 @@ describe('idleShellState', () => {
     for (const [label, candidate, extra] of refused) {
       expect(isVerifiedPassiveHelper(candidate, SHELL, [shell, candidate, ...extra], ENV), label).toBe(false);
     }
+  });
+});
+
+describe('readExecutableImage', () => {
+  it.skipIf(process.platform !== 'darwin' && process.platform !== 'linux')('reads the real image, not a spoofed argv[0]', async () => {
+    const spoof = `${HOME}/.cache/gitstatus/gitstatusd-darwin-arm64`;
+    const child = spawn('sleep', ['30'], { argv0: spoof, stdio: 'ignore' });
+    try {
+      await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+      let image: string | undefined;
+      for (let i = 0; i < 50 && !image?.length; i++) {
+        image = await readExecutableImage(child.pid!);
+        if (!image) await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(image).toBeDefined();
+      expect(image).not.toBe(spoof);
+      expect(isHelperImage(image)).toBe(false);
+    } finally { child.kill(); }
+  });
+
+  it('answers undefined for a pid that does not exist', async () => {
+    expect(await readExecutableImage(2 ** 22 + 12345)).toBeUndefined();
   });
 });
