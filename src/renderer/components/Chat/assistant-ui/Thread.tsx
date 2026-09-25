@@ -1,8 +1,9 @@
 // Adapted from assistant-ui's MIT-licensed registry Thread:
 // https://r.assistant-ui.com/thread.json (2026-09-21). See ./LICENSE.
-// Keep its 44rem column, viewport footer, composer and scroll anchor structure.
-// wmux supplies transcript rows and session notices; unsupported backend actions
-// (attachments, regeneration, editing and voice) are deliberately not exposed.
+// Keep its 44rem column, viewport footer, composer and scroll-to-latest control;
+// the thread anchors to the bottom (no top-anchor reserve, 2026-09-25).
+// wmux supplies transcript rows, session notices, composer attachments and Stop;
+// unsupported backend actions (regeneration, editing and voice) are not exposed.
 import { useState, type ReactNode } from 'react';
 import { ComposerPrimitive, ThreadPrimitive } from '@assistant-ui/react';
 import { useT } from '../../../hooks/useT';

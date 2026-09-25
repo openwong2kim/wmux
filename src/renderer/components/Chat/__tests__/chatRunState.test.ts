@@ -35,6 +35,8 @@ describe('truthful chat progress', () => {
   it('reports a recorded interrupt as stopped, and a newer prompt as running again', () => {
     const aborted: TurnEvent[] = [...events, { id: 'x', kind: 'meta', subtype: 'turn_aborted', label: 'Interrupted' }];
     expect(chatRunState({ ...base, events: aborted, status: 'running' })).toBe('stopped');
+    // An ESC pressed in Terminal leaves the hook latch open; the record still wins.
+    expect(chatRunState({ ...base, events: aborted, turnOpen: true, sent: true })).toBe('stopped');
     expect(chatRunState({ ...base, events: [...aborted, { id: 'q', kind: 'user_text', text: 'queued' }], status: 'running' })).toBe('working');
   });
 });
