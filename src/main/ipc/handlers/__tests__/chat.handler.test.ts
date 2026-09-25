@@ -117,4 +117,17 @@ describe('private desktop transcript bridge', () => {
     await f.call('send', { ptyId: 'pty', agentSessionId: 's', text: 'hello' });
     expect(f.client.rpc).toHaveBeenCalledWith('daemon.transcript.send', { id: 'pty', agentSessionId: 's', text: 'hello' });
   });
+  it('forwards Stop and image paths only in their validated shape', async () => {
+    const f = fixture();
+    await f.call('interrupt', { ptyId: 'pty', agentSessionId: 's', key: '\x03' });
+    expect(f.client.rpc).toHaveBeenCalledWith('daemon.transcript.interrupt', { id: 'pty', agentSessionId: 's' });
+    f.client.rpc.mockClear();
+    for (const attachments of [['relative.png'], ['/tmp/a.txt'], ['/tmp/a\n.png'], Array(6).fill('/tmp/a.png'), '/tmp/a.png']) {
+      expect(await f.call('send', { ptyId: 'pty', agentSessionId: 's', text: 'look', attachments })).toEqual({ result: 'unavailable' });
+    }
+    expect(await handlers.get(CHAT_IPC.interrupt)!({ ...f.event, sender: {} }, { ptyId: 'pty', agentSessionId: 's' })).toEqual({ result: 'unavailable' });
+    expect(f.client.rpc).not.toHaveBeenCalled();
+    await f.call('send', { ptyId: 'pty', agentSessionId: 's', text: 'look', attachments: ['/tmp/shot one.PNG'] });
+    expect(f.client.rpc).toHaveBeenCalledWith('daemon.transcript.send', { id: 'pty', agentSessionId: 's', text: 'look', attachments: ['/tmp/shot one.PNG'] });
+  });
 });

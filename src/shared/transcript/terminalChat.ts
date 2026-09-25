@@ -15,6 +15,10 @@ export interface TerminalChatBinding {
     permissions: boolean;
     cancel: boolean;
     fileUndo: boolean;
+    /** Image paths pasted before the prompt become attachments (Claude Code). */
+    images?: boolean;
+    /** A prompt sent mid-turn is queued by the agent's own composer (Claude Code). */
+    queue?: boolean;
   };
 }
 

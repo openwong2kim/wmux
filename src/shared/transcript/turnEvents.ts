@@ -35,6 +35,8 @@ export interface UserTextEvent extends TurnEventBase {
   kind: 'user_text';
   text: string;
   hasImage?: boolean;
+  /** Absolute source paths Claude Code recorded for attached images, when it did. */
+  images?: string[];
 }
 
 /**
@@ -248,6 +250,10 @@ export interface TranscriptAppendData {
  * toggle, not an error the renderer has to catch.
  */
 export type ChatSendResult = 'sent' | 'busy' | 'blocked' | 'unconfirmed' | 'session_changed' | 'unavailable' | 'error';
+/** `sent` means ESC reached the agent, not that the turn stopped; the transcript says that. */
+export type ChatInterruptResult = 'sent' | 'not_running' | 'blocked' | 'session_changed' | 'unavailable' | 'error';
+/** A staged composer image, validated and thumbnailed by main. */
+export type ChatAttachmentPreview = { ok: true; path: string; name: string; bytes: number; thumbnail: string } | { ok: false; reason: 'type' | 'size' | 'missing' };
 
 export interface ChatBridgeApi {
   settings?: (args: { ptyId: string; choice?: { model: string; effort: string; expectedRevision: string } }) => Promise<{ ok: boolean; settings?: { model: string; effort: string | null; busy: boolean; revision: string; models: { model: string; efforts: string[]; defaultEffort: string }[] }; error?: string }>;
@@ -256,7 +262,10 @@ export interface ChatBridgeApi {
   launchTerminal?: (args: { ptyId: string; agent: 'claude' | 'codex'; prompt: string; mode?: import('./terminalChat').TerminalLaunchMode }) => Promise<{ ok: boolean; error?: string }>;
   controls?: import('./chatSession').ChatControls;
   /** Identity-bound, daemon-serialized input into the existing terminal agent process. */
-  send: (args: { ptyId: string; agentSessionId: string; text: string; requestId?: string }) => Promise<{ result: ChatSendResult }>;
+  send: (args: { ptyId: string; agentSessionId: string; text: string; requestId?: string; attachments?: string[] }) => Promise<{ result: ChatSendResult }>;
+  /** ESC into the live terminal agent, only while its turn is running. */
+  interrupt?: (args: { ptyId: string; agentSessionId: string }) => Promise<{ result: ChatInterruptResult }>;
+  attachment?: (args: { path: string }) => Promise<ChatAttachmentPreview>;
   status: (ptyId: string) => Promise<TranscriptStatus>;
   /** `before` pages BACKWARD from a prior cursor.headOffset; omit for the tail. */
   snapshot: (ptyId: string, before?: number) => Promise<TranscriptPage | null>;

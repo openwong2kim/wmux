@@ -7,4 +7,5 @@ export const CHAT_IPC = {
   status: 'chat:status', snapshot: 'chat:snapshot', subscribe: 'chat:subscribe',
   unsubscribe: 'chat:unsubscribe', codeBlock: 'chat:code-block',
   append: 'chat:append', gate: 'chat:gate', openGates: 'chat:open-gates', send: 'chat:send',
+  interrupt: 'chat:interrupt', attachment: 'chat:attachment',
 } as const;

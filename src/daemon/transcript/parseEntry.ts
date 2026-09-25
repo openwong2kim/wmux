@@ -166,12 +166,17 @@ function parseUserEntry(
   // One entry is one frame; the budget is spent across every body it carries.
   const budget = { remaining: INLINE_ENTRY_MAX_BYTES };
   let hasImage = false;
+  const images: string[] = [];
+  const sourceTexts: string[] = [];
   for (const raw of content) {
     const block = asObject(raw);
     const blockType = typeof block?.['type'] === 'string' ? (block['type'] as string) : '';
     if (blockType === 'text') {
       const t = typeof block?.['text'] === 'string' ? (block['text'] as string) : '';
-      if (t.trim()) parts.push(t);
+      // Claude Code follows a pasted-path image with `[Image: source: <path>]`.
+      const source = /^\[Image: source: (\/[^\n\0]{1,4096})\]$/.exec(t.trim());
+      if (source) { images.push(source[1]); sourceTexts.push(t); }
+      else if (t.trim()) parts.push(t);
     } else if (blockType === 'image') {
       hasImage = true;
     } else if (blockType === 'tool_result') {
@@ -179,6 +184,8 @@ function parseUserEntry(
     }
     // Any other block type (including invented ones) is skipped silently — R1.
   }
+  // Without an image block the line is the user's own words.
+  if (!hasImage) parts.push(...sourceTexts);
   const prose = parts.join('\n').trim();
   // Only classify when there IS prose: a bare tool-result entry keeps its
   // previous shape (results only, no chip) even if it carries `isMeta`.
@@ -193,6 +200,7 @@ function parseUserEntry(
         kind: 'user_text',
         text: capText(stripNul(clean)),
         ...(hasImage ? { hasImage: true } : {}),
+        ...(hasImage && images.length ? { images: images.slice(0, 8) } : {}),
         ...tsOf(ts),
       };
       out.push(ev);
@@ -254,6 +262,10 @@ function classifyMetaUser(
   // to a real message is stripped by `stripSystemReminders` instead, so the
   // human's own words still render.
   const head = text.trimStart();
+  // Claude Code records an ESC interrupt as a user entry; nobody typed it.
+  if (/^\[Request interrupted by user(?: for tool use)?\]\s*$/.test(head)) {
+    return { subtype: 'turn_aborted', label: 'Interrupted' };
+  }
   for (const known of INJECTED_USER_TAGS) {
     if (!head.startsWith(`<${known.tag}>`)) continue;
     return { subtype: known.subtype, label: injectedLabel(head, known.tag) || known.label };
