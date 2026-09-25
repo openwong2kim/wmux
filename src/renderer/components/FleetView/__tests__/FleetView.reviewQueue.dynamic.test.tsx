@@ -13,6 +13,7 @@ import SidebarTaskGroup from '../../Sidebar/SidebarTaskGroup';
 import { useStore } from '../../../stores';
 import type { Workspace, Pane, Surface, AgentStatus } from '../../../../shared/types';
 import type { WorkTask } from '../../../../shared/workTask';
+import { resetReviewSummariesForTests } from '../reviewSummary';
 
 const act = React.act;
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -43,7 +44,7 @@ function mission(id: string, extra: Partial<WorkTask> = {}): WorkTask {
 
 let container: HTMLDivElement;
 let root: Root;
-const diffRead = vi.fn();
+const diffSummary = vi.fn();
 const close = vi.fn();
 const createPr = vi.fn();
 const dispose = vi.fn();
@@ -84,18 +85,15 @@ function setAgents(status: Record<string, AgentStatus>): void {
 }
 
 beforeEach(() => {
-  diffRead.mockReset().mockResolvedValue({
-    ok: true, files: [], truncated: [], unsupported: [],
-    numstat: [{ path: 'a.ts', additions: 3, deletions: 1 }, { path: 'b.png', additions: null, deletions: null }],
-    snapshot: {},
-  });
+  resetReviewSummariesForTests();
+  diffSummary.mockReset().mockResolvedValue({ ok: true, stateKey: 'k1', files: 2, additions: 3, deletions: 1, untracked: 0, binary: 1 });
   close.mockReset().mockResolvedValue({ ok: true });
   createPr.mockReset().mockResolvedValue({ ok: true, prUrl: 'https://github.com/o/r/pull/9' });
   dispose.mockReset();
   addDiffSurface.mockReset();
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     pty: { write: vi.fn(), dispose },
-    diff: { read: diffRead },
+    diff: { summary: diffSummary },
     workTask: { close, createPr },
   };
   act(() => {
@@ -110,7 +108,7 @@ beforeEach(() => {
         workspace('ws-t2', 'wtask: Fix t2', leaf('p2', 'pty-2')),
       ],
       missionByPaneGroup: { 'ws-t1': mission('t1'), 'ws-t2': mission('t2') },
-      surfaceActivityAt: { 'pty-1': Date.now() - 5 * 60_000 },
+      surfaceTurnEndAt: { 'pty-1': Date.now() - 5 * 60_000 },
       addDiffSurface,
     });
   });
@@ -136,7 +134,7 @@ describe('FleetView — Ready to review', () => {
     expect(row.textContent).toContain('Fix t1');
     expect(row.textContent).toContain('owner project');
     expect(row.querySelector('[data-fleet-review-branch]')?.textContent).toBe('wmux/t1');
-    expect(diffRead).toHaveBeenCalledWith('/wt/t1', '', 'task');
+    expect(diffSummary).toHaveBeenCalledWith('/wt/t1', undefined);
     expect(row.querySelector('[data-fleet-review-changes]')?.getAttribute('data-fleet-review-changes')).toBe('2:3:1');
     expect(row.textContent).toContain('2 files changed');
     expect(row.querySelector('[data-fleet-elapsed]')?.textContent).toBe('5m');
@@ -220,6 +218,130 @@ describe('FleetView — Ready to review', () => {
     key(again, 'p');
     expect(open).toHaveBeenCalledWith('https://github.com/o/r/pull/9', '_blank');
     open.mockRestore();
+  });
+});
+
+describe('FleetView — Ready to review, review fixes', () => {
+  it('reuses cached counts when the worktree state key is unchanged, and shows a failed read as unavailable', async () => {
+    mount();
+    await settle();
+    act(() => { root.unmount(); });
+    container.remove();
+    diffSummary.mockResolvedValue({ ok: true, stateKey: 'k1', unchanged: true });
+    mount();
+    await settle();
+    expect(diffSummary).toHaveBeenLastCalledWith('/wt/t1', 'k1');
+    expect(reviewRow('ws-t1')!.querySelector('[data-fleet-review-changes]')?.getAttribute('data-fleet-review-changes')).toBe('2:3:1');
+
+    resetReviewSummariesForTests();
+    act(() => { root.unmount(); });
+    container.remove();
+    diffSummary.mockResolvedValue({ ok: false, error: 'git failed' });
+    mount();
+    await settle();
+    const changes = reviewRow('ws-t1')!.querySelector('[data-fleet-review-changes]');
+    expect(changes?.getAttribute('data-fleet-review-changes')).toBe('unavailable');
+    expect(changes?.textContent).toBe('Changes unavailable');
+  });
+
+  it('refuses a second close while one runs, and shows it in progress', async () => {
+    let finish: (v: unknown) => void = () => undefined;
+    close.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    mount();
+    await settle();
+    const row = reviewRow('ws-t1')!;
+    act(() => { row.focus(); });
+    key(row, 'Backspace');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-fleet-review-confirm="close"]')!.click(); });
+    await settle();
+    expect(container.querySelector('[data-fleet-review-busy="close"]')?.textContent).toBe('Closing…');
+    const again = reviewRow('ws-t1')!;
+    act(() => { again.focus(); });
+    key(again, 'Backspace');
+    expect(container.querySelector('[data-fleet-review-confirm]')).toBeNull();
+    expect(close).toHaveBeenCalledTimes(1);
+    await act(async () => { finish({ ok: false, reason: 'dirty' }); });
+    await settle();
+    expect(container.querySelector('[data-fleet-review-busy]')).toBeNull();
+  });
+
+  it('a finished action leaves another row\'s open confirm and its focus alone', async () => {
+    setAgents({ 'pty-1': 'complete', 'pty-2': 'complete' });
+    act(() => { useStore.setState({ surfaceTurnEndAt: { 'pty-1': Date.now() - 60_000, 'pty-2': Date.now() - 120_000 } }); });
+    let finish: (v: unknown) => void = () => undefined;
+    createPr.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    mount();
+    await settle();
+    const r1 = reviewRow('ws-t1')!;
+    act(() => { r1.focus(); });
+    key(r1, 'p');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-fleet-review-confirm="pr"]')!.click(); });
+    await settle();
+    // Now open t2's close confirm while t1's PR is still running.
+    const r2 = reviewRow('ws-t2')!;
+    act(() => { r2.focus(); });
+    key(r2, 'Backspace');
+    await settle();
+    const cancel = container.querySelector<HTMLButtonElement>('[data-fleet-review="ws-t2"] [data-fleet-review-cancel]')!;
+    expect(document.activeElement).toBe(cancel);
+    await act(async () => { finish({ ok: true, prUrl: 'https://github.com/o/r/pull/3' }); });
+    await settle();
+    expect(container.querySelector('[data-fleet-review="ws-t2"] [data-fleet-review-cancel]')).not.toBeNull();
+    expect(document.activeElement).toBe(cancel);
+  });
+
+  it('verb keys do nothing while the row\'s confirm is open', async () => {
+    mount();
+    await settle();
+    const row = reviewRow('ws-t1')!;
+    act(() => { row.focus(); });
+    key(row, 'Backspace');
+    // Focus back on the row with the confirm still open: d must not open the diff.
+    act(() => { row.focus(); });
+    key(row, 'd');
+    expect(addDiffSurface).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-fleet-review-confirm="close"]')).not.toBeNull();
+  });
+
+  it('Close chosen from the ⋮ menu leaves focus on Cancel', async () => {
+    mount();
+    await settle();
+    const trigger = reviewRow('ws-t1')!.parentElement!.querySelector<HTMLButtonElement>('[data-fleet-row-trigger]')!;
+    act(() => { trigger.focus(); trigger.click(); });
+    const closeItem = document.body.querySelector<HTMLElement>('[data-pane-menu-action="close"]')!;
+    act(() => { closeItem.click(); });
+    await settle();
+    expect(document.activeElement).toBe(container.querySelector('[data-fleet-review-cancel]'));
+  });
+
+  it('a sidebar review request waits for the queue to hydrate before it is consumed', async () => {
+    setAgents({ 'pty-1': 'running', 'pty-2': 'running' });
+    act(() => { useStore.setState({ fleetFocusReview: true }); });
+    mount();
+    await settle();
+    expect(useStore.getState().fleetFocusReview).toBe(true);
+    setAgents({ 'pty-1': 'complete', 'pty-2': 'running' });
+    await settle();
+    await settle();
+    expect(useStore.getState().fleetFocusReview).toBe(false);
+    expect(document.activeElement).toBe(reviewRow('ws-t1'));
+  });
+
+  it('Open diff lands in the zoomed pane, not a hidden first pane', async () => {
+    const two: Pane = { id: 'b1', type: 'branch', direction: 'horizontal', children: [leaf('p1', 'pty-1'), leaf('p1b', 'pty-1b')] };
+    act(() => {
+      useStore.setState({
+        workspaces: useStore.getState().workspaces.map((w) => (w.id === 'ws-t1' ? { ...w, rootPane: two, activePaneId: 'p1b' } : w)),
+        zoomedPaneId: 'p1b',
+      });
+    });
+    setAgents({ 'pty-1': 'complete', 'pty-1b': 'complete', 'pty-2': 'running' });
+    mount();
+    await settle();
+    const row = reviewRow('ws-t1')!;
+    act(() => { row.focus(); });
+    key(row, 'd');
+    expect(addDiffSurface).toHaveBeenCalledWith('p1b', 't1', 'diff: Fix t1', 'ws-t1', 'ws-o');
   });
 });
 

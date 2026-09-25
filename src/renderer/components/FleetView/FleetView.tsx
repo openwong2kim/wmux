@@ -23,7 +23,8 @@ import { fleetChangedSinceSeen, type FleetSeenEntry, type FleetTab } from '../..
 import { tailForPty } from '../../utils/terminalTail';
 import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
-import FleetReviewRow, { reviewPrVerb, reviewRowKey, type ReviewEditorKind } from './FleetReviewRow';
+import FleetReviewRow, { reviewBusyKind, reviewPrVerb, reviewRowKey, type ReviewEditorKind } from './FleetReviewRow';
+import { pruneReviewSummaries } from './reviewSummary';
 import { openTaskDiff } from '../../utils/openTaskDiff';
 import { FleetRowMenu, FleetRowEditor, fleetRowVerbsFromState, toggleFleetStash, type FleetEditorKind } from './FleetRowActions';
 import ApprovalInboxList from './ApprovalInboxList';
@@ -38,6 +39,9 @@ function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   return target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT';
 }
+
+/** How long a sidebar "N to review" request waits for its row to appear. */
+const FOCUS_REVIEW_WAIT_MS = 5_000;
 
 /** Roving key of the collapsed "Idle N" row (pane ids never take this form). */
 const IDLE_TOGGLE_KEY = 'fleet:idle-toggle';
@@ -69,6 +73,7 @@ export default function FleetView() {
   // Ready to review: finished fan-out tasks whose record is still open. The
   // id list is the shared selector the sidebar rollup counts with (#1508).
   const reviewIds = useStore(useShallow(selectReviewQueueIds));
+  const surfaceTurnEndAt = useStore((s) => s.surfaceTurnEndAt);
   const setFleetFocusReview = useStore((s) => s.setFleetFocusReview);
   const fleetFocusReview = useStore((s) => s.fleetFocusReview);
   const surfaceLastMessage = useStore((s) => s.surfaceLastMessage);
@@ -107,6 +112,8 @@ export default function FleetView() {
   const [editor, setEditor] = useState<{ paneId: string; kind: FleetEditorKind } | null>(null);
   // The inline confirm open under a review row (close task / create PR).
   const [reviewEditor, setReviewEditor] = useState<{ workspaceId: string; kind: ReviewEditorKind } | null>(null);
+  const reviewEditorRef = useRef(reviewEditor);
+  reviewEditorRef.current = reviewEditor;
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), IDLE_TICK_MS);
@@ -161,13 +168,18 @@ export default function FleetView() {
     ].some((value) => value?.toLocaleLowerCase().includes(term)));
     return { needsYou: groups.needsYou.filter(keep), running: groups.running.filter(keep), idle: groups.idle.filter(keep) };
   }, [groups, filter, query, missions]);
-  // Rows re-derive when a task's record, workspace (name, PR) or stamps
-  // change; the output stamp is read on the minute tick, as for the board.
-  // Membership itself comes from reviewIds.
+  // Rows re-derive when a task's record, its workspace (name, metadata.pr —
+  // both live on the workspaces array) or a turn-end stamp changes. The
+  // output stamp (fallback for panes finished before stamping existed) is read
+  // on the minute tick, as for the board. Membership comes from reviewIds.
   const reviewQueue = useMemo(
     () => (reviewIds.length === 0 ? [] : selectReviewQueue(useStore.getState())),
-    [reviewIds, workspaces, missions, surfaceActivityAt, surfaceTurnOpenAt, now],
+    [reviewIds, workspaces, missions, surfaceTurnEndAt, now],
   );
+  // Cached change counts for tasks that left the queue are dropped.
+  useEffect(() => {
+    pruneReviewSummaries(new Set(reviewQueue.map((entry) => entry.taskId)));
+  }, [reviewQueue]);
   const visibleReview = useMemo(() => {
     if (filter !== 'all' && filter !== 'complete') return [];
     const term = query.trim().toLocaleLowerCase();
@@ -414,6 +426,14 @@ export default function FleetView() {
     if (reviewEditor && !visibleReview.some((entry) => entry.workspaceId === reviewEditor.workspaceId)) setReviewEditor(null);
   }, [reviewEditor, visibleReview]);
 
+  // A row closes only its own confirm: another row's may be open by now.
+  // Focus goes back to the list only when this confirm was the one open.
+  const finishReviewEditor = useCallback((workspaceId: string) => {
+    if (reviewEditorRef.current?.workspaceId !== workspaceId) return;
+    setReviewEditor(null);
+    requestAnimationFrame(() => { focusActiveItemRef.current(); });
+  }, []);
+
   const openReviewDiff = useCallback((entry: ReviewQueueEntry) => {
     openTaskDiff(entry.taskId, entry.workspaceId, entry.title, entry.ownerWorkspaceId);
     setVisible(false);
@@ -423,6 +443,8 @@ export default function FleetView() {
     setVisible(false);
   }, [setVisible]);
   const openReviewEditor = useCallback((entry: ReviewQueueEntry, kind: ReviewEditorKind) => {
+    // One close or PR at a time per task.
+    if (reviewBusyKind(entry.workspaceId)) return;
     setFocusedPaneId(reviewRowKey(entry.workspaceId));
     setEditor(null);
     setReviewEditor({ workspaceId: entry.workspaceId, kind });
@@ -430,16 +452,22 @@ export default function FleetView() {
 
   // The sidebar's `N to review` link opens Fleet on this section: clear
   // anything that could hide it and select its first row, once.
+  // Consumed only once the queue has a row to land on: right after launch
+  // the task records and statuses may still be hydrating. A request that
+  // never finds a row lapses after a few seconds.
   useEffect(() => {
     if (!fleetFocusReview) return;
-    setFleetFocusReview(false);
     const first = reviewQueue[0];
-    if (!first) return;
+    if (!first) {
+      const timer = window.setTimeout(() => setFleetFocusReview(false), FOCUS_REVIEW_WAIT_MS);
+      return () => window.clearTimeout(timer);
+    }
+    setFleetFocusReview(false);
     setQuery('');
     setFilter('all');
     setFocusedPaneId(reviewRowKey(first.workspaceId));
     requestAnimationFrame(() => {
-      listRef.current?.querySelector('[data-fleet-section="review"]')?.scrollIntoView({ block: 'nearest' });
+      listRef.current?.querySelector('[data-fleet-section="review"]')?.scrollIntoView?.({ block: 'nearest' });
       focusActiveItemRef.current();
     });
   }, [fleetFocusReview, reviewQueue, setFleetFocusReview]);
@@ -579,7 +607,11 @@ export default function FleetView() {
 
       // Review row verbs: d diff, p PR (open or create), j jump, Backspace
       // close. Enter/Space stay native (the row's click opens the diff).
-      if (tab === 'fleet' && onOptionRow && focusedReview && !e.ctrlKey && !e.metaKey && !e.altKey && !isEditableTarget(e.target)) {
+      // Only on the row itself — never while its confirm or a ⋮ menu is open.
+      const onReviewRow = !!focusedReview && active instanceof HTMLElement
+        && active.hasAttribute('data-fleet-review-row') && active.dataset.workspaceId === focusedReview.workspaceId;
+      if (tab === 'fleet' && onReviewRow && focusedReview && !reviewEditor && !closeRowMenuRef.current
+        && !e.ctrlKey && !e.metaKey && !e.altKey && !isEditableTarget(e.target)) {
         const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
         if (key === 'd' || key === 'p' || key === 'j' || key === 'Backspace') {
           e.preventDefault();
@@ -805,7 +837,7 @@ export default function FleetView() {
                         onEdit={openReviewEditor}
                         onMenuOpenChange={onRowMenuOpenChange}
                         editor={reviewEditor?.workspaceId === entry.workspaceId ? reviewEditor.kind : undefined}
-                        onEditorDone={closeEditor}
+                        onEditorDone={finishReviewEditor}
                       />
                     )),
                   ]),

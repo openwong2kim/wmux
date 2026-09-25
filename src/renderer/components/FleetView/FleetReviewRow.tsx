@@ -4,10 +4,10 @@
 // Jump to task and Close task, with d / p / j / Backspace on a focused row.
 // Every verb is an existing path: the task diff surface, the task PR IPC, the
 // workspace jump, and the task close (which refuses dirty or unpushed work).
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
-import type { DiffNumstat } from '../../../shared/diffParse';
+import { cachedReviewSummary, loadReviewSummary, type ReviewChangeSummary } from './reviewSummary';
 import type { PrStatus } from '../../../shared/types';
 import type { TranslationKey } from '../../i18n/locales/en';
 import type { ReviewQueueEntry } from '../../stores/selectors/reviewQueue';
@@ -38,48 +38,56 @@ export function reviewRowKey(workspaceId: string): string {
 
 // ─── Change summary ─────────────────────────────────────────────────────────
 
-export interface ReviewChangeSummary {
-  files: number;
-  additions: number;
-  deletions: number;
-}
-
-/** Files changed and lines added/removed. A binary file counts as a file and
- *  adds no lines. */
-export function summarizeNumstat(numstat: readonly DiffNumstat[]): ReviewChangeSummary {
-  let additions = 0;
-  let deletions = 0;
-  for (const n of numstat) {
-    additions += n.additions ?? 0;
-    deletions += n.deletions ?? 0;
-  }
-  return { files: numstat.length, additions, deletions };
-}
-
-// One read per task per completion: a reopened Fleet does not re-read a task
-// that has not run again since. Bounded by the open-task cap.
-const summaryCache = new Map<string, ReviewChangeSummary | null>();
-
-/** The task's change summary from the task diff read (worktree vs target
- *  HEAD). Undefined while loading; null when the read failed. */
+/** The task's change counts (counts-only diff:summary, cached by worktree
+ *  state). Undefined while the first read runs; null when it failed. Re-asks
+ *  only when the task finishes again — the key is the turn-end stamp. */
 function useReviewChangeSummary(entry: ReviewQueueEntry): ReviewChangeSummary | null | undefined {
-  // Minute-floored: a finished TUI's redraw moves the output stamp, and a
-  // re-read per redraw is not the point.
-  const key = `${entry.taskId}:${Math.floor((entry.completedAt ?? 0) / 60_000)}`;
-  const [summary, setSummary] = useState<ReviewChangeSummary | null | undefined>(() => summaryCache.get(key));
-  const worktreePath = entry.worktreePath;
+  const [summary, setSummary] = useState<ReviewChangeSummary | null | undefined>(() => cachedReviewSummary(entry.taskId));
+  const { taskId, worktreePath, completedAt } = entry;
   useEffect(() => {
-    if (summaryCache.has(key)) { setSummary(summaryCache.get(key)); return; }
-    if (!worktreePath || typeof window.electronAPI?.diff?.read !== 'function') { setSummary(null); return; }
     let cancelled = false;
-    window.electronAPI.diff.read(worktreePath, '', 'task').then((res) => {
-      const next = res.ok ? summarizeNumstat(res.numstat) : null;
-      summaryCache.set(key, next);
-      if (!cancelled) setSummary(next);
-    }).catch(() => { if (!cancelled) setSummary(null); });
+    void loadReviewSummary(taskId, worktreePath ?? '').then((next) => { if (!cancelled) setSummary(next); });
     return () => { cancelled = true; };
-  }, [key, worktreePath]);
+  }, [taskId, worktreePath, completedAt]);
   return summary;
+}
+
+// ─── In-flight actions ──────────────────────────────────────────────────────
+
+// A close or PR runs for up to a minute and outlives the row (Fleet may close
+// meanwhile). One action per task at a time; rows read this to show progress.
+const busyByWorkspace = new Map<string, ReviewEditorKind>();
+const busyListeners = new Set<() => void>();
+function setReviewBusy(workspaceId: string, kind: ReviewEditorKind | null): void {
+  if (kind) busyByWorkspace.set(workspaceId, kind);
+  else busyByWorkspace.delete(workspaceId);
+  for (const listener of busyListeners) listener();
+}
+
+/** The action running for a task, if any. */
+export function reviewBusyKind(workspaceId: string): ReviewEditorKind | undefined {
+  return busyByWorkspace.get(workspaceId);
+}
+
+function useReviewBusy(workspaceId: string): ReviewEditorKind | undefined {
+  return useSyncExternalStore(
+    (listener) => { busyListeners.add(listener); return () => { busyListeners.delete(listener); }; },
+    () => busyByWorkspace.get(workspaceId),
+  );
+}
+
+/** Run a close or PR for a task unless one is already running for it.
+ *  Resolves false when refused. */
+export async function runReviewAction(entry: ReviewQueueEntry, kind: ReviewEditorKind, t: Translate): Promise<boolean> {
+  if (busyByWorkspace.has(entry.workspaceId)) return false;
+  setReviewBusy(entry.workspaceId, kind);
+  try {
+    if (kind === 'close') await closeReviewTask(entry.workspaceId, t);
+    else await createReviewTaskPr(entry, t);
+    return true;
+  } finally {
+    setReviewBusy(entry.workspaceId, null);
+  }
 }
 
 // ─── Verbs ──────────────────────────────────────────────────────────────────
@@ -174,15 +182,25 @@ interface FleetReviewRowProps {
   onMenuOpenChange?: (close: (() => void) | null) => void;
   /** The inline confirm open under this row, if any. */
   editor?: ReviewEditorKind;
-  onEditorDone: () => void;
+  /** Close THIS row's confirm (FleetView checks it is still this row's). */
+  onEditorDone: (workspaceId: string) => void;
 }
 
 function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEdit, onMenuOpenChange, editor, onEditorDone }: FleetReviewRowProps) {
   const t = useT();
   const summary = useReviewChangeSummary(entry);
   const [anchor, setAnchor] = useState<{ top: number; left: number; right: number; bottom: number } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const busy = useReviewBusy(entry.workspaceId);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  // Opened from the ⋮ menu, the confirm mounts in the same commit the menu
+  // unmounts, and the menu's cleanup hands focus back to ⋮ afterwards. Take it
+  // on the next frame so Cancel (the safe default) holds focus.
+  useEffect(() => {
+    if (!editor) return;
+    const raf = requestAnimationFrame(() => cancelRef.current?.focus());
+    return () => cancelAnimationFrame(raf);
+  }, [editor]);
   const closeMenu = useCallback(() => {
     setAnchor(null);
     onMenuOpenChange?.(null);
@@ -200,13 +218,14 @@ function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEd
     ? summary.files === 0
       ? t('fleet.review.noChanges')
       : t(summary.files === 1 ? 'fleet.review.filesOne' : 'fleet.review.files', { count: summary.files })
-    : undefined;
+    : summary === null ? t('fleet.review.changesUnavailable') : undefined;
+  const busyText = busy === 'close' ? t('fleet.review.closing') : busy === 'pr' ? t('fleet.review.creatingPr') : undefined;
   const prText = entry.pr
     ? t('fleet.review.prState', { number: entry.pr.number, state: t(PR_STATE_KEY[entry.pr.state]) })
     : prUrl ? t('fleet.review.prLinked') : undefined;
   const label = [entry.title, t('fleet.review.statusLabel'), owner, entry.branch,
     changeText && summary && summary.files > 0 ? `${changeText}, +${summary.additions} −${summary.deletions}` : changeText,
-    prText, t('fleet.review.openDiff')].filter(Boolean).join(', ');
+    prText, busyText, t('fleet.review.openDiff')].filter(Boolean).join(', ');
 
   const items: PaneActionItem[] = [
     { key: 'diff', label: t('fleet.review.openDiff'), shortcut: 'D', icon: <IconReview size={12} />, onSelect: () => onOpenDiff(entry) },
@@ -215,21 +234,18 @@ function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEd
       label: prUrl ? t('diff.openPr') : t('fleet.review.createPr'),
       shortcut: 'P',
       icon: <IconExternalLink size={12} />,
+      disabled: busy !== undefined,
       onSelect: () => reviewPrVerb(entry, onEdit),
     },
     { key: 'jump', label: t('fleet.review.jump'), shortcut: 'J', icon: <IconChevron size={12} />, onSelect: () => onJump(entry) },
-    { key: 'close', label: t('fleet.review.close'), shortcut: '⌫', icon: <IconX size={12} />, separatorBefore: true, onSelect: () => onEdit(entry, 'close') },
+    { key: 'close', label: t('fleet.review.close'), shortcut: '⌫', icon: <IconX size={12} />, separatorBefore: true, disabled: busy !== undefined, onSelect: () => onEdit(entry, 'close') },
   ];
 
-  const run = async (kind: ReviewEditorKind) => {
-    setBusy(true);
-    try {
-      if (kind === 'close') await closeReviewTask(entry.workspaceId, t);
-      else await createReviewTaskPr(entry, t);
-    } finally {
-      setBusy(false);
-      onEditorDone();
-    }
+  // The confirm closes as the action starts; the action's end touches no
+  // editor and no focus (another row may own both by then).
+  const confirm = (kind: ReviewEditorKind) => {
+    onEditorDone(entry.workspaceId);
+    void runReviewAction(entry, kind, t);
   };
 
   return (
@@ -259,7 +275,7 @@ function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEd
         </span>
         <span className="wmux-fleet-progress">
           {/* Nothing is drawn until the read lands (no placeholder gauge). */}
-          <span className="wmux-fleet-detail" data-fleet-review-changes={summary ? `${summary.files}:${summary.additions}:${summary.deletions}` : undefined}>
+          <span className="wmux-fleet-detail" data-fleet-review-changes={summary ? `${summary.files}:${summary.additions}:${summary.deletions}` : summary === null ? 'unavailable' : undefined}>
             {changeText && (
               <>
                 {changeText}
@@ -274,6 +290,7 @@ function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEd
             )}
           </span>
           <span className="wmux-fleet-meta">
+            {busyText && <span data-fleet-review-busy={busy}>{busyText}</span>}
             {prText && <span data-fleet-review-pr={entry.pr?.state ?? 'linked'}>{prText}</span>}
             {elapsed && <span data-fleet-elapsed>{elapsed}</span>}
           </span>
@@ -311,11 +328,11 @@ function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEd
               : t('fleet.review.prConfirm', { branch: entry.branch ?? entry.title })}
           </span>
           {/* Cancel is first and focused, so Enter on arrival cancels. */}
-          <button type="button" autoFocus data-fleet-review-cancel onClick={onEditorDone} disabled={busy}>
+          <button ref={cancelRef} type="button" autoFocus data-fleet-review-cancel onClick={() => onEditorDone(entry.workspaceId)}>
             {t('fleet.close.cancel')}
           </button>
           <button type="button" className={editor === 'close' ? 'is-destructive' : undefined}
-            data-fleet-review-confirm={editor} disabled={busy} onClick={() => void run(editor)}>
+            data-fleet-review-confirm={editor} disabled={busy !== undefined} onClick={() => confirm(editor)}>
             {editor === 'close' ? t('fleet.review.close') : t('fleet.review.createPr')}
           </button>
         </div>
