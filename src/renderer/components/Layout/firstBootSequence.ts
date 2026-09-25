@@ -77,3 +77,26 @@ export function shouldShowCheatSheet(gate: CheatSheetGate): boolean {
   if (!gate.sessionSettled) return false;
   return !gate.autoUpdatePromptPending && !gate.onboardingActiveOrStarting;
 }
+
+export type HooksLaunchCheck = 'wait' | 'check' | 'skip';
+
+export interface HooksLaunchCheckGate {
+  /** The wizard probe has settled (same input as AutoUpdatePromptGate). */
+  firstRunSettled: boolean;
+  /** The first-run wizard was mounted on this boot. It carries its own
+   *  "Claude Code hooks · Install hooks" row, so a launch-time hooks modal
+   *  would ask the same question twice — once on top of the wizard. */
+  firstRunWizardRanThisBoot: boolean;
+}
+
+/**
+ * The launch-time hooks install check. It used to run on mount, before the
+ * wizard probe resolved, so a fresh profile opened the hooks modal on top of
+ * the Welcome dialog that already offers the same install. On the boot the
+ * wizard runs, the wizard is the offer; later boots (and a mode raise, which
+ * does not go through this gate) still ask.
+ */
+export function hooksLaunchCheck(gate: HooksLaunchCheckGate): HooksLaunchCheck {
+  if (gate.firstRunWizardRanThisBoot) return 'skip';
+  return gate.firstRunSettled ? 'check' : 'wait';
+}

@@ -570,3 +570,47 @@ describe('HooksInstallPrompt — refusals', () => {
     expect(el.querySelector('[data-hooks-install-prompt]')).toBeNull();
   });
 });
+
+describe('HooksInstallPrompt — first boot (never on top of the Welcome dialog)', () => {
+  function mount(node: React.ReactElement): { el: HTMLElement; rerender: (n: React.ReactElement) => void } {
+    const el = render(node);
+    const { root } = roots[roots.length - 1];
+    return { el, rerender: (n) => act(() => root.render(n)) };
+  }
+
+  it('holds the launch check while the gate waits, then runs it once', async () => {
+    const status = vi.fn(async () => ({ installed: false }));
+    const { el, rerender } = mount(<HooksInstallPrompt api={apiOf({ status })} t={t} launchCheck="wait" />);
+    await flush();
+    expect(status).not.toHaveBeenCalled();
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeNull();
+
+    rerender(<HooksInstallPrompt api={apiOf({ status })} t={t} launchCheck="check" />);
+    await flush();
+    expect(status).toHaveBeenCalledOnce();
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeTruthy();
+  });
+
+  it('skips the launch check on the wizard boot, but a later mode raise still asks', async () => {
+    const status = vi.fn(async () => ({ installed: false }));
+    const el = render(<HooksInstallPrompt api={apiOf({ status })} t={t} launchCheck="skip" />);
+    await flush();
+    expect(status).not.toHaveBeenCalled();
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeNull();
+
+    act(() => requestHooksInstallPrompt());
+    await flush();
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeTruthy();
+  });
+
+  it('a due prompt stays hidden while deferred and appears when the wizard closes', async () => {
+    const { el, rerender } = mount(<HooksInstallPrompt api={apiOf()} t={t} deferred />);
+    act(() => requestHooksInstallPrompt());
+    await flush();
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeNull();
+
+    rerender(<HooksInstallPrompt api={apiOf()} t={t} deferred={false} />);
+    await flush();
+    expect(el.querySelector('[data-hooks-install-prompt]')).toBeTruthy();
+  });
+});

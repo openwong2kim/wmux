@@ -42,6 +42,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import Button from '../ui/Button';
+import type { HooksLaunchCheck } from '../Layout/firstBootSequence';
 
 export const HOOKS_PROMPT_EVENT = 'wmux:hooks-install-prompt';
 
@@ -66,11 +67,21 @@ export function HooksInstallPrompt({
   api,
   t,
   checkOnMount = true,
+  launchCheck = 'check',
+  deferred = false,
 }: {
   api: HooksBridgeApi;
   t: (key: string) => string;
   /** The launch-time check. Disable in tests that only exercise the event path. */
   checkOnMount?: boolean;
+  /** When the launch-time check may run (see hooksLaunchCheck): `wait` holds
+   *  it until the first-run probe settles, `skip` drops it for this boot. It
+   *  runs at most once either way. */
+  launchCheck?: HooksLaunchCheck;
+  /** Another first-boot dialog (the first-run wizard) owns the screen. A
+   *  prompt that is due stays pending and appears once this clears, instead
+   *  of opening on top. */
+  deferred?: boolean;
 }): React.ReactElement | null {
   const [phase, setPhase] = useState<Phase>('hidden');
   const [errorDetail, setErrorDetail] = useState<string | null>(null);
@@ -195,9 +206,14 @@ export function HooksInstallPrompt({
       });
   }, [api]);
 
+  // One launch check per mount, and only once the gate opens: a fresh profile
+  // mounts this before the first-run probe knows the wizard is coming.
+  const launchCheckDoneRef = useRef(false);
   useEffect(() => {
-    if (checkOnMount) maybePrompt();
-  }, [checkOnMount, maybePrompt]);
+    if (!checkOnMount || launchCheckDoneRef.current || launchCheck === 'wait') return;
+    launchCheckDoneRef.current = true;
+    if (launchCheck === 'check') maybePrompt();
+  }, [checkOnMount, launchCheck, maybePrompt]);
 
   useEffect(() => {
     const onRequest = () => maybePrompt();
@@ -225,7 +241,7 @@ export function HooksInstallPrompt({
       });
   }, [api]);
 
-  if (phase === 'hidden') return null;
+  if (phase === 'hidden' || deferred) return null;
 
   // Later, Escape, the backdrop and the post-install Close share one
   // lifetime (this modal only) — and none of them works mid-write.
@@ -320,12 +336,16 @@ export function HooksInstallPrompt({
 /** Container: binds the preload bridge; renders nothing on older preloads. */
 export function HooksInstallPromptContainer({
   t,
+  launchCheck,
+  deferred,
 }: {
   t: (key: string) => string;
+  launchCheck?: HooksLaunchCheck;
+  deferred?: boolean;
 }): React.ReactElement | null {
   const api = (window as unknown as {
     electronAPI?: { deck?: { hooksBridge?: HooksBridgeApi } };
   }).electronAPI?.deck?.hooksBridge;
   if (!api) return null;
-  return <HooksInstallPrompt api={api} t={t} />;
+  return <HooksInstallPrompt api={api} t={t} launchCheck={launchCheck} deferred={deferred} />;
 }

@@ -3,7 +3,7 @@
  * onboarding spotlight, never stacked.
  */
 import { describe, it, expect } from 'vitest';
-import { shouldShowAutoUpdatePrompt, shouldShowCheatSheet, shouldStartOnboarding } from '../firstBootSequence';
+import { hooksLaunchCheck, shouldShowAutoUpdatePrompt, shouldShowCheatSheet, shouldStartOnboarding } from '../firstBootSequence';
 
 describe('shouldShowCheatSheet (#1276)', () => {
   const base = {
@@ -132,5 +132,20 @@ describe('shouldStartOnboarding', () => {
   it('does not restart for completed onboarding or multi-workspace users', () => {
     expect(shouldStartOnboarding({ ...base, onboardingCompleted: true })).toBe(false);
     expect(shouldStartOnboarding({ ...base, workspaceCount: 2 })).toBe(false);
+  });
+});
+
+describe('hooksLaunchCheck — the Welcome dialog already offers hooks', () => {
+  it('waits while the wizard probe is unsettled, so a fresh boot never checks before the wizard mounts', () => {
+    expect(hooksLaunchCheck({ firstRunSettled: false, firstRunWizardRanThisBoot: false })).toBe('wait');
+  });
+
+  it('skips the launch prompt on the boot the wizard ran, even after it closes', () => {
+    expect(hooksLaunchCheck({ firstRunSettled: false, firstRunWizardRanThisBoot: true })).toBe('skip');
+    expect(hooksLaunchCheck({ firstRunSettled: true, firstRunWizardRanThisBoot: true })).toBe('skip');
+  });
+
+  it('checks on a later boot (marker already written)', () => {
+    expect(hooksLaunchCheck({ firstRunSettled: true, firstRunWizardRanThisBoot: false })).toBe('check');
   });
 });

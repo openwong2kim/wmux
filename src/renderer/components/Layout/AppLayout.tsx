@@ -11,7 +11,7 @@ import { EmptyLeafFunnel } from './EmptyLeafFunnel';
 import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { selectInboxOwnsApprovals } from '../../stores/selectors/approvalInbox';
 import { shouldShowInstallError, shouldReannounceAfterError, truncateReason } from './updateNoticePolicy';
-import { shouldShowAutoUpdatePrompt, shouldShowCheatSheet, shouldStartOnboarding } from './firstBootSequence';
+import { hooksLaunchCheck, shouldShowAutoUpdatePrompt, shouldShowCheatSheet, shouldStartOnboarding } from './firstBootSequence';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
@@ -746,6 +746,9 @@ export default function AppLayout() {
   const cheatSheetForceShown = useStore((s) => s.cheatSheetForceShown);
   const setFirstRunCompleted = useStore((s) => s.setFirstRunCompleted);
   const [showFirstRunWizard, setShowFirstRunWizard] = useState<'firstRun' | 'reopen' | null>(null);
+  // The wizard ran on this boot — it offered the hooks install itself, so the
+  // launch-time hooks prompt stands down (hooksLaunchCheck).
+  const [firstRunWizardRanThisBoot, setFirstRunWizardRanThisBoot] = useState(false);
 
   const [showAutoUpdatePrompt, setShowAutoUpdatePrompt] = useState(false);
   const t = useT();
@@ -1424,6 +1427,7 @@ export default function AppLayout() {
       if (cancelled) return;
       if (!result.shown) {
         setShowFirstRunWizard('firstRun');
+        setFirstRunWizardRanThisBoot(true);
       } else {
         setFirstRunCompleted(true);
       }
@@ -2046,7 +2050,11 @@ export default function AppLayout() {
       )}
       <FloatingPane />
       <ToastContainer />
-      <HooksInstallPromptContainer t={t} />
+      <HooksInstallPromptContainer
+        t={t}
+        launchCheck={hooksLaunchCheck({ firstRunSettled: firstRunCompleted, firstRunWizardRanThisBoot })}
+        deferred={showFirstRunWizard !== null}
+      />
       </div>
     </div>
     </ErrorBoundary>
