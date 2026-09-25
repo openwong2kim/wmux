@@ -49,6 +49,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+import os from 'os';
 import { AGENT_SLUG_SET, type AgentSlug } from '../shared/agentIdentity';
 
 const execFileAsync = promisify(execFile);
@@ -345,6 +346,55 @@ export function selectAgentProcess(
   return directChild !== undefined ? { pid: directChild } : undefined;
 }
 
+const GITSTATUS_VALUE_FLAGS = new Map<string, RegExp>([
+  ['-s', /^-?\d{1,9}$/], ['-u', /^-?\d{1,9}$/], ['-c', /^-?\d{1,9}$/], ['-d', /^-?\d{1,9}$/],
+  ['-m', /^-?\d{1,12}$/], ['-t', /^\d{1,4}$/], ['-v', /^[A-Z]{1,8}$/],
+]);
+const GITSTATUS_SWITCHES = new Set(['-e', '-U', '-W', '-D']);
+
+/**
+ * A resident shell child that cannot be reading the terminal, so typing a
+ * launcher at the prompt still reaches the shell (N19). Only gitstatusd
+ * (gitstatus / powerlevel10k), and only when every property matches the way
+ * gitstatus.plugin.zsh starts it — a process NAME alone never qualifies:
+ *   - image `gitstatusd-<os>-<arch>` in the gitstatus download cache
+ *     (`$GITSTATUS_CACHE_DIR`, `${XDG_CACHE_HOME:-$HOME/.cache}/gitstatus`), or
+ *     `gitstatusd` in a plugin checkout's `gitstatus/usrbin`; absolute,
+ *     normalized path; the `$GITSTATUS_DAEMON` override is not trusted;
+ *   - argv exactly `<image> -G v<x.y.z>` followed only by the plugin's flags;
+ *   - a direct child of this shell with no children of its own.
+ * Note the current plugin starts the daemon from a backgrounded process
+ * substitution, which usually reparents it away from the shell; this covers
+ * installs where it does stay the shell's child. Pure — exported for tests.
+ */
+export function isVerifiedPassiveHelper(
+  entry: ProcessTreeEntry,
+  shellPid: number,
+  entries: ReadonlyArray<ProcessTreeEntry>,
+  env: NodeJS.ProcessEnv = {},
+): boolean {
+  if (entry.ppid !== shellPid || entries.some(other => other.ppid === entry.pid)) return false;
+  const image = entry.name;
+  if (!path.posix.isAbsolute(image) || path.posix.normalize(image) !== image) return false;
+  const base = path.posix.basename(image);
+  const dir = path.posix.dirname(image);
+  const home = env.HOME || os.homedir();
+  const cacheDirs = [env.GITSTATUS_CACHE_DIR, path.posix.join(env.XDG_CACHE_HOME || path.posix.join(home, '.cache'), 'gitstatus'),
+    path.posix.join(os.homedir(), '.cache', 'gitstatus')].filter((value): value is string => !!value && path.posix.isAbsolute(value))
+    .map(value => path.posix.normalize(value).replace(/\/+$/, ''));
+  const located = /^gitstatusd-[a-z0-9_]+-[a-z0-9_]+$/.test(base) && cacheDirs.includes(dir) ||
+    base === 'gitstatusd' && dir.endsWith('/gitstatus/usrbin');
+  if (!located) return false;
+  const argv = (entry.cmdline ?? '').trim().split(/\s+/);
+  if (argv[0] !== image || argv[1] !== '-G' || !/^v\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(argv[2] ?? '')) return false;
+  for (let i = 3; i < argv.length; i++) {
+    const value = GITSTATUS_VALUE_FLAGS.get(argv[i]);
+    if (value) { if (!value.test(argv[++i] ?? '')) return false; continue; }
+    if (!GITSTATUS_SWITCHES.has(argv[i])) return false;
+  }
+  return true;
+}
+
 /** One full process-table snapshot (pid/ppid/name[/cmdline]). Windows has no
  *  PPID in tasklist, so this shells out to Windows PowerShell 5.1 (always
  *  present, absolute System32 path — no PATH trust) for a single CIM
@@ -420,13 +470,15 @@ export class AgentProcessTracker {
     return (await this.idleShellState(pid)).ok;
   }
 
-  /** Which launch precondition failed, so a phone can be told what to do. */
-  async idleShellState(pid: number): Promise<{ ok: true } | { ok: false; reason: 'missing' | 'unsupported-shell' | 'shell-has-children' }> {
+  /** Which launch precondition failed, so a phone can be told what to do.
+   *  `env` is the pane's spawn env, used only to locate a helper's install. */
+  async idleShellState(pid: number, env: NodeJS.ProcessEnv = {}): Promise<{ ok: true } | { ok: false; reason: 'missing' | 'unsupported-shell' | 'shell-has-children' }> {
     const entries = await this.snapshot();
     const root = entries.find(entry => entry.pid === pid);
     if (!root) return { ok: false, reason: 'missing' };
     if (!/^(?:-?)(?:zsh|bash|sh)$/i.test(path.basename(root.name))) return { ok: false, reason: 'unsupported-shell' };
-    return entries.some(entry => entry.ppid === pid) ? { ok: false, reason: 'shell-has-children' } : { ok: true };
+    return entries.some(entry => entry.ppid === pid && !isVerifiedPassiveHelper(entry, pid, entries, env))
+      ? { ok: false, reason: 'shell-has-children' } : { ok: true };
   }
 
   private static watchKey(sessionId: string): string {
