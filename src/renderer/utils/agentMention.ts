@@ -68,6 +68,13 @@ export interface MentionWorkspaceTarget {
 
 export type MentionTarget = MentionPaneTarget | MentionWorkspaceTarget;
 
+// Agents put a status glyph in front of their tab title (`✳ Claude Code`), so
+// a title is only worth showing when it says more than the agent's name.
+function sameName(title: string, agentName: string): boolean {
+  const bare = (v: string) => v.replace(/^[^\p{L}\p{N}]+/u, '').trim().toLowerCase();
+  return bare(title) === bare(agentName);
+}
+
 type TargetState = Parameters<typeof selectWorkspaceAgentRoster>[0];
 
 /**
@@ -96,7 +103,7 @@ export function buildMentionTargets(state: TargetState, excludePtyId: string | n
         paneId: r.paneId,
         ...(r.surfaceCount > 1 && { surfaceId: r.surfaceId }),
         agentName: r.agentName,
-        ...(title && title !== r.agentName && { title }),
+        ...(title && !sameName(title, r.agentName) && { title }),
         coordinate,
         status: r.status,
       };

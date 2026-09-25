@@ -97,6 +97,16 @@ describe('buildMentionTargets', () => {
     expect(codex.surfaceId).toBeUndefined();
   });
 
+  it('drops a tab title that only repeats the agent name behind a status glyph', () => {
+    const s = state({
+      workspaces: [wmux, workspace('ws-5', 'glyph', 3, [leaf('pane-g', 1, [surface('s-g', 'pty-g', { title: '✳ Claude Code' })])], 'pane-g')],
+      surfaceAgent: { 'pty-a': { name: 'Claude Code', status: 'idle' }, 'pty-g': { name: 'Claude Code', status: 'idle' } },
+    });
+    const [glyph] = buildMentionTargets(s, 'pty-a') as MentionPaneTarget[];
+    expect(glyph.paneId).toBe('pane-g');
+    expect(glyph.title).toBeUndefined();
+  });
+
   it('adds a workspace row only when two or more agent panes remain', () => {
     const targets = buildMentionTargets(state(), 'pty-a');
     const wsRow = targets.find((t) => t.kind === 'workspace');

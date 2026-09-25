@@ -259,7 +259,7 @@ export default function AgentMentionPicker() {
 
         <div className="flex items-center gap-4 px-4 pb-2.5 min-h-[28px]">
           {feedback ? (
-            <span role="status" className="truncate text-[12px] leading-4" style={{ color: feedbackColor }} data-agent-mention-feedback>
+            <span role="status" className="truncate text-[12px] leading-4" style={{ color: feedbackColor }} title={feedback.text} data-agent-mention-feedback>
               {feedback.text}
             </span>
           ) : (
