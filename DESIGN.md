@@ -380,6 +380,7 @@ from the Dialogs & forms primitives plus `Settings/SettingsLayout.tsx`
 | 2026-09-24 | Settings reorganised into one-question tabs (Claude Code, Accounts, Orchestrator, Roles & fan-out, Remote & phone split out of the old Accounts/Agents tabs; the agent toolbar moves to Appearance, first-run setup to General) and rebuilt on the quiet-surface primitives: one container per section, Field rows, Learn more for long copy, a language Select without flags, an Inter header and no footer | The Accounts and Agents tabs each held four or five unrelated things and the categories did not sort; every tab mixed card-per-row boxes, mono headings, uppercase labels and bright input borders. One question per tab makes a setting findable by where it belongs, and one row grammar makes every tab read the same |
 | 2026-09-24 | Sidebar redesign (#1481): the roster lives in the sidebar with a drawn identity monogram per agent kind; status is told by shape (dot / ring / ✕ / check / hollow ring / none) and an idle active workspace is no longer green; collapsed rows summarise agents by glyph and status; fan-out tasks nest under their owner with a rollup, provenance tooltip, a link back to the owner and a close-finished action; a Recent activity order; the sidebar is 264px and resizable 220–400px | With several agents per workspace and fan-outs creating a workspace per task, the flat list could not say which agent was which, whether "green" meant done or merely selected, or which workspace a task came from and who asked for it. Shape survives colour-blindness and forced-colors; nesting keeps a fan-out's tasks next to the work that spawned them; the width was the first thing the new row content needed |
 | 2026-09-25 | Sidebar agent monograms removed (owner: the one-letter frame read as cheap and repeated the same C on every row): Claude is unmarked, other agents are named in muted text, the collapsed summary counts per status group | Identity only matters as the exception; the default agent carrying a mark on every row was noise |
+| 2026-09-25 | Fleet gains a Ready to review section (finished, still-open fan-out tasks: title, owner, branch, change summary, PR, time since finished; Open diff / PR / Jump / Close) between Needs you and Running, and the owner's rollup adds `K to review`, both from one selector | After a fan-out every finished task had to be opened one by one to see what it produced. A section, not a tab, keeps Fleet one list; the sidebar link and the section read the same predicate, and nothing is drawn at zero |
 | 2026-09-25 | The sidebar becomes a glance board: Attention is the default order (needs you → finished → running → unconfirmed → idle, newest first, pins keep their slot, new workspaces hold the top, re-sorts wait for a 3 s settle or the pointer leaving); rows carry a --text-main "changed since you last looked" dot; the sidebar and Fleet read one attention classification | Owner call: with the roster in every row, the sidebar already was where the eye goes, and making it navigation only sent the user to Fleet for the one question the list could answer itself. Fleet keeps what a list of rows cannot hold — search, filters, bulk verbs, previews. Rows that jump while the pointer is on them destroy aim, so the order is applied only when nobody is reaching for a row |
 
 ### Desktop conversation view
@@ -431,7 +432,9 @@ regeneration, message editing and voice controls are hidden until supported.
   tasks is the active workspace. A task row carries no "Needs you" word (its
   wash and red ring stay; the rollup names the count) and shows its shortcut
   hint only on hover — the indent leaves the name no width to spare. The owner's rollup line reads `N tasks · M need
-  you` and draws nothing at zero; "need you" is red only while the group is
+  you` and draws nothing at zero; `· K to review` follows when K > 0 — a
+  muted link (steel on hover) that opens Fleet with its first Ready to review
+  row selected; "need you" is red only while the group is
   folded (unfolded, the task row is the evidence). Its ⋮ menu holds `Close
   finished tasks (N)`: finished means every agent pane in the task reports
   complete (idle never counts); the confirm lists the tasks by name, each is
@@ -518,6 +521,25 @@ identity across reordering. Raw terminal output belongs in an opt-in preview of
 the selected pane, never in every row. Use 13px row titles, 12px detail and
 11px metadata; at narrow widths the detail stacks under the title and the
 overlay width stays 720px.
+
+**Ready to review (2026-09-25).** Between Needs you and Running, a fourth
+section lists fan-out TASKS, not panes: one row per task whose record is open
+and not detached and whose every agent pane reports complete (the sidebar's
+close-finished rule; idle never counts). It is a section, not a tab: Fleet is
+one roving list, and a finished task belongs in the same glance as what needs
+you and what is still moving. The shared selector (`selectReviewQueue`) also
+feeds the sidebar's `N to review`, so the two counts cannot disagree. Row:
+green check + "Finished", task title, owner workspace · branch (mono), files
+changed and +/− lines from the task diff read (nothing drawn until it lands),
+`PR #N · state` when the metadata poll has one (or "PR linked" from the task
+record) and time since the agents finished. Row click / Enter / d = Open diff
+(the task diff surface); ⋮ also holds Open PR or Create PR (p), Jump to task
+(j) and Close task (Backspace). Create PR and Close confirm inline with Cancel
+first and focused; Close is the task close path and keeps a dirty or unpushed
+task with the reason. The section shows under All and Complete filters and in
+search (title, owner, branch); it is not drawn when empty. It is the second
+rendition of a finished task (the pane rows in Needs you are the first), so it
+gets no filter chip, tab count or footer badge.
 
 ### Channel task records (2026-09-22)
 
