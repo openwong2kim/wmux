@@ -3303,8 +3303,12 @@ function registerRpcHandlers(
         rows: managed.meta.rows ?? 24,
         scrollback: 0,
         initial: managed.ringBuffer.readAll(),
+        // The composer check tells a dimmed suggested prompt from typed input.
+        undimmed: true,
       });
-      return outcome.ok ? outcome.rows.map((r) => r.text) : null;
+      return outcome.ok
+        ? Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) })
+        : null;
     },
     agentProcessAlive: async (id, slug) => {
       const pid = agentProcessTracker.pidFor(id);

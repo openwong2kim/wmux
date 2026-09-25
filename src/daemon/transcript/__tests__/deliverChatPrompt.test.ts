@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
+import { claudeComposerEmpty, deliverChatPrompt, type ChatDeliveryDeps } from '../deliverChatPrompt';
 import type { ScheduledPromptAgentState } from '../../sessionPromptDelivery';
+import { generateTextSnapshot } from '../../HeadlessSnapshot';
 
 function fixture() {
   let approval = false;
@@ -123,5 +124,38 @@ describe('chat delivery into Claude mid-turn and after Stop', () => {
     expect(await deliverChatPrompt('conversation-1', 'look', f.deps, ['/tmp/a.png', '/tmp/b.png'])).toBe('error');
     // Typing after the first path stops the second paste, not only Enter.
     expect(f.write).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Claude\'s dimmed next-prompt suggestion', () => {
+  const RULE80 = '─'.repeat(80);
+  // Captured shape of Claude Code 2.1.282 after a turn: the suggestion is SGR 2
+  // (dim) inside the prompt row; typed text is drawn without it.
+  const screenBytes = (prompt: string) => Buffer.from(
+    `● two\r\n\r\n${RULE80}\r\n❯ ${prompt}\x1b[0m\r\n${RULE80}\r\n  ⏵⏵ auto mode on (shift+tab to cycle)`);
+  const render = async (bytes: Buffer) => {
+    const outcome = await generateTextSnapshot({ cols: 80, rows: 24, scrollback: 0, initial: bytes, undimmed: true });
+    if (!outcome.ok) throw new Error('snapshot failed');
+    return Object.assign(outcome.rows.map((r) => r.text), { undimmed: outcome.rows.map((r) => r.undimmed ?? r.text) });
+  };
+  it('reads as an empty composer, while the same words typed do not', async () => {
+    const suggested = await render(screenBytes('\x1b[2mReply with exactly the word: three\x1b[22m'));
+    expect(suggested.some((row) => row.includes('Reply with exactly the word: three'))).toBe(true);
+    expect(claudeComposerEmpty(suggested)).toBe(true);
+    const typed = await render(screenBytes('Reply with exactly the word: three'));
+    expect(claudeComposerEmpty(typed)).toBe(false);
+    // Without the undimmed copy the suggestion still reads as a draft: fail closed.
+    expect(claudeComposerEmpty([...suggested])).toBe(false);
+  });
+  it('lets an idle Claude with only a suggestion take the send', async () => {
+    const f = fixture(); f.state.status = 'idle';
+    const rows = await render(screenBytes('\x1b[2mReply with exactly the word: three\x1b[22m'));
+    f.deps.readScreen = async () => rows;
+    expect(await deliverChatPrompt('conversation-1', 'next', f.deps)).toBe('sent');
+    const draft = fixture(); draft.state.status = 'idle';
+    const typedRows = await render(screenBytes('half-typed in Terminal'));
+    draft.deps.readScreen = async () => typedRows;
+    expect(await deliverChatPrompt('conversation-1', 'next', draft.deps)).toBe('unconfirmed');
+    expect(draft.write).not.toHaveBeenCalled();
   });
 });

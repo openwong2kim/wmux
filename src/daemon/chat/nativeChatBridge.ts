@@ -8,7 +8,7 @@ import type { ChatSendResult, TranscriptPage, TranscriptStatus } from '../../sha
 import type { AgentLaunchOptions } from '../web/agentLaunch';
 import { buildAgentLaunch } from '../web/agentLaunch';
 import { screenBlocksChatSend } from '../transcript/chatScreenGate';
-import { deliverChatPrompt } from '../transcript/deliverChatPrompt';
+import { deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { terminalLaunchCommand } from '../transcript/terminalLaunch';
 import type { TerminalChatService } from '../transcript/TerminalChatService';
 import type { ChatSessionService } from './ChatSessionService';
@@ -57,7 +57,7 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   managed(): Pick<ChatSessionService, 'has' | 'status' | 'snapshot' | 'send' | 'conversationEpoch'> | null;
   /** Null while the approval registry is not wired: treated as "may be pending". */
   approvals(): { pendingFor(id: string): string | undefined } | null;
-  readScreen(id: string): Promise<readonly string[] | null>;
+  readScreen(id: string): Promise<ChatScreenRows | null>;
   agentProcessAlive(id: string, slug: string): Promise<boolean>;
   /** Writes to the pane PTY and notes the input; false when the pane is gone. */
   write(id: string, data: string): boolean;
