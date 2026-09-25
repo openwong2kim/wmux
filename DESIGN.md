@@ -530,13 +530,15 @@ one roving list, and a finished task belongs in the same glance as what needs
 you and what is still moving. The shared selector (`selectReviewQueue`) also
 feeds the sidebar's `N to review`, so the two counts cannot disagree. Row:
 green check + "Finished", task title, owner workspace · branch (mono), files
-changed and +/− lines from the task diff read (nothing drawn until it lands),
+changed and +/− lines from a counts-only read (nothing drawn until it lands;
+"Changes unavailable" if it fails — never a partial total),
 `PR #N · state` when the metadata poll has one (or "PR linked" from the task
 record) and time since the agents finished. Row click / Enter / d = Open diff
 (the task diff surface); ⋮ also holds Open PR or Create PR (p), Jump to task
 (j) and Close task (Backspace). Create PR and Close confirm inline with Cancel
 first and focused; Close is the task close path and keeps a dirty or unpushed
-task with the reason. The section shows under All and Complete filters and in
+task with the reason. One close or PR runs per task at a time; the row says
+"Closing…" / "Creating PR…" meanwhile. The section shows under All and Complete filters and in
 search (title, owner, branch); it is not drawn when empty. It is the second
 rendition of a finished task (the pane rows in Needs you are the first), so it
 gets no filter chip, tab count or footer badge.
