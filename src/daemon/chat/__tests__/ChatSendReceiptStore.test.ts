@@ -43,6 +43,15 @@ describe('ChatSendReceiptStore', () => {
     expect(second.view('device:a', 'pane-1', id(2))).toMatchObject({ state: 'submitted', result: 'sent' });
   });
 
+  it('keeps which limit a text-too-long hit across a restart', () => {
+    const dir = tempDir();
+    const first = new ChatSendReceiptStore(dir, { now: () => NOW });
+    first.insertPending('device:a', id(1), receipt());
+    first.complete('device:a', id(1), { result: 'error', effect: 'none', error: 'text-too-long', limit: 'bytes', maxSendBytes: 23000 });
+    expect(new ChatSendReceiptStore(dir, { now: () => NOW }).lookup('device:a', id(1)))
+      .toMatchObject({ outcome: { error: 'text-too-long', limit: 'bytes', maxSendBytes: 23000 } });
+  });
+
   it('keeps owners and panes apart', () => {
     const store = new ChatSendReceiptStore(tempDir(), { now: () => NOW });
     store.insertPending('device:a', id(1), receipt());

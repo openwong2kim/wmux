@@ -329,7 +329,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       case 'unconfirmed': return { result: 'unconfirmed', effect: 'uncertain', error: 'delivery-unconfirmed' };
       default:
         if (sent.reason === 'unauthorized') return { result: 'error', effect: 'none', error: 'authorization-expired' };
-        if (sent.reason === 'too-large') return { result: 'error', effect: 'none', error: 'text-too-long' };
+        if (sent.reason === 'too-large') return { result: 'error', effect: 'none', error: 'text-too-long', limit: 'bytes', maxSendBytes: OPENCODE_MAX_SEND_BYTES };
         return { result: 'error', effect: 'none', error: 'invalid-chat-request' };
     }
   };
@@ -337,7 +337,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   const sendWith = async (req: ChatSendRequest, dedup: boolean, managedRequestId = req.clientMessageId): Promise<ChatSendOutcome> => {
     const { clientMessageId, owner } = req;
     const idCheck = checkChatId(clientMessageId, now(), CHAT_MESSAGE_RETENTION_MS);
-    if (idCheck === 'invalid') return refuse(clientMessageId, 'invalid-chat-request', { detail: 'clientMessageId' });
+    if (idCheck === 'invalid') return refuse(clientMessageId, 'invalid-chat-request', { result: 'error', detail: 'clientMessageId' });
     // Before any receipt lookup, so an id stays refused after its receipt is pruned.
     if (idCheck === 'expired') return refuse(clientMessageId, 'message-id-expired');
     let store = dedup ? deps.receipts : null;
@@ -396,7 +396,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       outcome = { result: 'unconfirmed', effect: 'uncertain', error: 'delivery-unconfirmed' };
     }
     if (store && !store.complete(owner, clientMessageId, outcome)) deps.log('warn', `[chat] send receipt for ${req.id} not persisted`);
-    return { clientMessageId, replayed: false, ...outcome, ...(outcome.error === 'text-too-long' ? { limit: 'bytes', maxSendBytes: OPENCODE_MAX_SEND_BYTES } : {}) };
+    return { clientMessageId, replayed: false, ...outcome };
   };
 
   // ---------------------------------------------------------------------------

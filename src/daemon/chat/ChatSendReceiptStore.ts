@@ -24,6 +24,9 @@ export interface StoredChatOutcome {
   effect: ChatEffect;
   error?: ChatSendTag;
   blockedBy?: 'approval' | 'terminal';
+  /** Kept so a replayed `text-too-long` still says which limit it hit. */
+  limit?: 'units' | 'bytes';
+  maxSendBytes?: number;
   agentSessionId?: string;
   historyEpoch?: string;
 }
@@ -54,6 +57,8 @@ function validOutcome(value: unknown): value is StoredChatOutcome {
     (row.result === undefined || RESULTS.includes(String(row.result))) &&
     (row.error === undefined || TAGS.includes(String(row.error))) &&
     (row.blockedBy === undefined || row.blockedBy === 'approval' || row.blockedBy === 'terminal') &&
+    (row.limit === undefined || row.limit === 'units' || row.limit === 'bytes') &&
+    (row.maxSendBytes === undefined || Number.isSafeInteger(row.maxSendBytes) && Number(row.maxSendBytes) > 0) &&
     optionalString(row.agentSessionId, 256) && optionalString(row.historyEpoch, 64);
 }
 

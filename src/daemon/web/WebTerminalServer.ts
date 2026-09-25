@@ -2920,6 +2920,9 @@ export class WebTerminalServer {
     if (!managed) return this.json(res, 404, { error: 'session not found' });
     const agent = url.searchParams.get('agent');
     if (agent !== null) {
+      // Same pane rule as the other chat routes: the brain pane is nobody's
+      // chat, whatever the credential. The legacy list keeps its old rule.
+      if (!this.readableSession(id)) return this.json(res, 404, { error: 'session not found' });
       void this.handleChatSkills(res, id, agent).catch((err: unknown) => this.failRequest(res, err));
       return;
     }
