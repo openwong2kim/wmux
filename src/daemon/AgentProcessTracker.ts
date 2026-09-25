@@ -353,16 +353,42 @@ const GITSTATUS_VALUE_FLAGS = new Map<string, RegExp>([
 ]);
 const GITSTATUS_SWITCHES = new Set(['-e', '-U', '-W', '-D']);
 
+/** Homebrew's powerlevel10k package (Apple silicon, Intel): the only roots outside home. */
+const GITSTATUS_PACKAGE_DIRS = [
+  '/opt/homebrew/share/powerlevel10k/gitstatus/usrbin',
+  '/usr/local/share/powerlevel10k/gitstatus/usrbin',
+] as const;
+
 /**
- * Whether `image` is a gitstatusd install under the daemon user's home:
+ * The fixed package dirs, plus each one's resolved form when it exists:
+ * Homebrew links `share/powerlevel10k` into its Cellar, so the real image
+ * (lsof / `/proc/<pid>/exe`) names the versioned Cellar directory. Still an
+ * exact-directory list; nothing here comes from the pane.
+ */
+export function gitstatusPackageDirs(realpath: (dir: string) => string = fs.realpathSync): ReadonlySet<string> {
+  const dirs = new Set<string>(GITSTATUS_PACKAGE_DIRS);
+  for (const dir of GITSTATUS_PACKAGE_DIRS) {
+    try { dirs.add(realpath(dir)); } catch { /* not installed */ }
+  }
+  return dirs;
+}
+
+/**
+ * Whether `image` is a gitstatusd install: under the daemon user's home,
  * `gitstatusd-<os>-<arch>` in the gitstatus download cache
  * (`$GITSTATUS_CACHE_DIR`, `${XDG_CACHE_HOME:-~/.cache}/gitstatus`,
- * `~/.cache/gitstatus`), or `gitstatusd` in a plugin checkout's
- * `gitstatus/usrbin`. Absolute, normalized path; every root must sit under
- * home, so a pane env or a checkout in /tmp cannot widen it, and the
- * `$GITSTATUS_DAEMON` override is not trusted.
+ * `~/.cache/gitstatus`) or `gitstatusd` in a plugin checkout's
+ * `gitstatus/usrbin`; outside home, only `gitstatusd` whose directory is
+ * exactly one of `packageDirs` (the Homebrew powerlevel10k package), never a
+ * suffix match. Absolute, normalized path; a pane env or a checkout in /tmp
+ * cannot widen it, and the `$GITSTATUS_DAEMON` override is not trusted.
  */
-export function isHelperImage(image: string | undefined, env: NodeJS.ProcessEnv = {}, userHome = os.homedir()): boolean {
+export function isHelperImage(
+  image: string | undefined,
+  env: NodeJS.ProcessEnv = {},
+  userHome = os.homedir(),
+  packageDirs: ReadonlySet<string> = gitstatusPackageDirs(),
+): boolean {
   if (!image || !path.posix.isAbsolute(image) || path.posix.normalize(image) !== image) return false;
   const home = path.posix.normalize(userHome).replace(/\/+$/, '');
   const underHome = (value: string) => home.length > 1 && value.startsWith(home + '/');
@@ -372,7 +398,7 @@ export function isHelperImage(image: string | undefined, env: NodeJS.ProcessEnv 
     path.posix.join(home, '.cache', 'gitstatus')].filter((value): value is string => !!value && path.posix.isAbsolute(value))
     .map(value => path.posix.normalize(value).replace(/\/+$/, '')).filter(underHome);
   return /^gitstatusd-[a-z0-9_]+-[a-z0-9_]+$/.test(base) && cacheDirs.includes(dir) ||
-    base === 'gitstatusd' && dir.endsWith('/gitstatus/usrbin') && underHome(dir);
+    base === 'gitstatusd' && (packageDirs.has(dir) || dir.endsWith('/gitstatus/usrbin') && underHome(dir));
 }
 
 /**

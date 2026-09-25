@@ -1,13 +1,16 @@
 import { spawn } from 'child_process';
 import os from 'os';
 import { describe, expect, it } from 'vitest';
-import { AgentProcessTracker, isHelperImage, isVerifiedPassiveHelper, readExecutableImage, type ProcessTreeEntry } from '../AgentProcessTracker';
+import { AgentProcessTracker, gitstatusPackageDirs, isHelperImage, isVerifiedPassiveHelper, readExecutableImage, type ProcessTreeEntry } from '../AgentProcessTracker';
 
 const SHELL = 100;
 const HOME = '/Users/me';
 const ENV = {};
 const CACHE = `${HOME}/.cache/gitstatus/gitstatusd-darwin-arm64`;
 const ARGS = '-G v1.5.4 -s -1 -u -1 -c -1 -d -1 -m -1 -v FATAL -t 16';
+const BREW_ARM = '/opt/homebrew/share/powerlevel10k/gitstatus/usrbin/gitstatusd';
+/** The fixed Homebrew roots with nothing installed, independent of the test host. */
+const PACKAGES = gitstatusPackageDirs(() => { throw new Error('ENOENT'); });
 const shell: ProcessTreeEntry = { pid: SHELL, ppid: 1, name: '-zsh', cmdline: '-zsh' };
 const helper = (image = CACHE, args = ARGS, ppid = SHELL, pid = 200): ProcessTreeEntry => ({ pid, ppid, name: image, cmdline: `${image} ${args}` });
 /** By default the real image is what argv[0] claims; `exe` overrides it. */
@@ -50,8 +53,40 @@ describe('idleShellState', () => {
     expect(isVerifiedPassiveHelper(helper(`${HOME}/xdg/gitstatus/gitstatusd-linux-aarch64`), SHELL, [], { XDG_CACHE_HOME: `${HOME}/xdg` }, HOME)).toBe(true);
   });
 
+  it('accepts gitstatusd in the two fixed Homebrew package directories', () => {
+    for (const image of [BREW_ARM, '/usr/local/share/powerlevel10k/gitstatus/usrbin/gitstatusd']) {
+      expect(isHelperImage(image, {}, HOME, PACKAGES), image).toBe(true);
+      expect(isVerifiedPassiveHelper(helper(image), SHELL, [], ENV, HOME), image).toBe(true);
+    }
+  });
+
+  it('accepts the Cellar directory a Homebrew package root resolves to, and only that one', () => {
+    const cellar = '/opt/homebrew/Cellar/powerlevel10k/1.20.0/share/powerlevel10k/gitstatus/usrbin';
+    const dirs = gitstatusPackageDirs((dir) => {
+      if (dir.startsWith('/opt/homebrew/')) return cellar;
+      throw new Error('ENOENT');
+    });
+    expect(isHelperImage(`${cellar}/gitstatusd`, {}, HOME, dirs)).toBe(true);
+    expect(isHelperImage('/opt/homebrew/Cellar/powerlevel10k/9.9.9/share/powerlevel10k/gitstatus/usrbin/gitstatusd', {}, HOME, dirs)).toBe(false);
+    expect(isHelperImage(`${cellar}/gitstatusd`, {}, HOME, PACKAGES)).toBe(false);
+  });
+
+  it('refuses look-alikes of the Homebrew package directories', () => {
+    for (const image of [
+      '/tmp/opt/homebrew/share/powerlevel10k/gitstatus/usrbin/gitstatusd',
+      '/opt/homebrew/share/powerlevel10k/gitstatus/usrbin/../evil/gitstatusd',
+      '/opt/homebrew/share/powerlevel10k/gitstatus/usrbin//gitstatusd',
+      '/opt/homebrew/share/powerlevel10k/gitstatus/usrbin/sub/gitstatusd',
+      '/opt/homebrew/share/powerlevel10k/gitstatus/usrbin/gitstatusd-darwin-arm64',
+      '/opt/homebrew/share/powerlevel10k/gitstatus/usrbin/sh',
+      '/opt/homebrew/share/other/gitstatus/usrbin/gitstatusd',
+      'opt/homebrew/share/powerlevel10k/gitstatus/usrbin/gitstatusd',
+    ]) {
+      expect(isHelperImage(image, {}, HOME, PACKAGES), image).toBe(false);
+    }
+  });
+
   it('refuses install roots outside home, whatever the pane env says', () => {
-    expect(isHelperImage('/opt/homebrew/share/powerlevel10k/gitstatus/usrbin/gitstatusd', {}, HOME)).toBe(false);
     expect(isHelperImage('/tmp/p10k/gitstatus/usrbin/gitstatusd', {}, HOME)).toBe(false);
     expect(isHelperImage('/data/gs/gitstatusd-linux-x86_64', { GITSTATUS_CACHE_DIR: '/data/gs' }, HOME)).toBe(false);
     expect(isHelperImage('/xdg/gitstatus/gitstatusd-linux-aarch64', { XDG_CACHE_HOME: '/xdg' }, HOME)).toBe(false);
