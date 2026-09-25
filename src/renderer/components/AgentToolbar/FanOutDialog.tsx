@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../stores';
 import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjections';
-import { findLeafPanes } from '../../hooks/a2aAddressing';
+import { openTaskDiff } from '../../utils/openTaskDiff';
 import { generateId } from '../../../shared/types';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../../../shared/workTask';
 import { ORCH_ROLES } from '../../../shared/orchestratorRole';
@@ -525,20 +525,6 @@ type PushToast = (t: {
   message: string;
   action?: { label: string; onClick: () => void };
 }) => string;
-
-// F5 — 태스크 워크스페이스의 첫 leaf 페인에 diff 서피스를 연다. 워크스페이스가
-// 아직 없거나 leaf가 없으면(레이스) 조용히 무시. F1: owner(부모) ws id를 서피스에
-// 실어 close/PR/resolveTaskMeta가 owner 스코프 RPC를 올바른 신원으로 부르게 한다.
-function openTaskDiff(taskId: string, workspaceId: string, title: string, ownerWorkspaceId: string): void {
-  const st = useStore.getState();
-  const ws = st.workspaces.find((w) => w.id === workspaceId);
-  if (!ws) return;
-  const leaf = findLeafPanes(ws.rootPane)[0];
-  if (!leaf) return;
-  st.addDiffSurface(leaf.id, taskId, `diff: ${title}`, workspaceId, ownerWorkspaceId);
-  // 태스크 워크스페이스로 전환해 방금 연 diff가 바로 보이게.
-  st.setActiveWorkspace(workspaceId);
-}
 
 function reportResult(res: unknown, pushToast: PushToast, ownerWorkspaceId: string): void {
   const r = (res ?? {}) as FanOutResultLike;
