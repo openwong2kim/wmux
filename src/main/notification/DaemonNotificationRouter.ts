@@ -3,6 +3,7 @@ import type { DaemonClient } from '../DaemonClient';
 import type { AgentStatus } from '../../shared/types';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import { dispatchNotification } from './dispatchNotification';
+import { toastManager } from './ToastManager';
 import {
   clearPty as clearSuppression,
   recentlySettled,
@@ -1101,9 +1102,18 @@ export class DaemonNotificationRouter {
       try {
         const ev = payload.event as { source?: string; title?: string | null; body?: string } | null;
         if (!ev || typeof ev !== 'object') return;
-        if (ev.source !== 'osc9' && ev.source !== 'osc777' && ev.source !== 'osc99') return;
         if (typeof ev.body !== 'string' || ev.body.length === 0) return;
         const title = typeof ev.title === 'string' && ev.title.length > 0 ? ev.title : null;
+        // Daemon-originated security notice (a phone started an agent with
+        // approvals or the sandbox off). The daemon's OSC parser only yields
+        // osc9/777/99, so no pane output can forge this source. It skips the
+        // renderer policy on purpose: a watched pane, a muted workspace or
+        // category, window focus and the toast toggle must not hide it.
+        if (ev.source === 'security') {
+          toastManager.showDirect(title ?? 'wmux', ev.body, { ptyId: payload.sessionId }, { ignoreToastSetting: true });
+          return;
+        }
+        if (ev.source !== 'osc9' && ev.source !== 'osc777' && ev.source !== 'osc99') return;
         const win = this.getWindow();
         dispatchNotification(
           win,

@@ -4,11 +4,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ChatView from '../ChatView';
 
-const fixture = vi.hoisted(() => ({ reason: 'ok', session: 'draft-a', available: true, events: [] as unknown[], hasMore: false, loadEarlier: (() => undefined) as () => void }));
+const fixture = vi.hoisted(() => ({ reason: 'ok', session: 'draft-a', available: true, events: [] as unknown[], hasMore: false, loadEarlier: (() => undefined) as () => void, terminal: undefined as unknown }));
 vi.mock('../../../stores', () => ({ useStore: (select: (s: unknown) => unknown) => select({ surfaceAgentStatus: {} }) }));
 vi.mock('../../../hooks/useT', () => { const t = (key: string) => key; return { useT: () => t }; });
 vi.mock('../useTranscript', () => ({ useTranscript: () => ({
-  events: fixture.events, status: { available: fixture.available, reason: fixture.reason, agentSessionId: fixture.session },
+  events: fixture.events, status: { available: fixture.available, reason: fixture.reason, agentSessionId: fixture.session, ...(fixture.terminal ? { terminal: fixture.terminal } : {}) },
   loading: false, loadingEarlier: false, hasMore: fixture.hasMore, blocked: false, error: false,
   retry: vi.fn(), loadEarlier: fixture.loadEarlier,
 }) }));
@@ -19,7 +19,7 @@ beforeEach(() => {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('ResizeObserver', class { observe = vi.fn(); unobserve = vi.fn(); disconnect = vi.fn(); });
   Element.prototype.scrollTo = vi.fn();
-  fixture.reason = 'ok'; fixture.session = 'draft-a'; fixture.available = true; fixture.events = []; fixture.hasMore = false; fixture.loadEarlier = vi.fn();
+  fixture.reason = 'ok'; fixture.session = 'draft-a'; fixture.available = true; fixture.events = []; fixture.hasMore = false; fixture.loadEarlier = vi.fn(); fixture.terminal = undefined;
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
@@ -191,6 +191,43 @@ describe('assistant-ui composer connected to session drafts', () => {
     expect(notices).toHaveLength(1);
     expect(notices[0].querySelector('button')!.textContent).toBe('chat.openTerminal');
     await type('');
+  });
+  describe('send effect from the daemon', () => {
+    const terminal = { agent: 'claude', capabilities: { history: true, send: true, permissions: false, cancel: false, fileUndo: false } };
+    const submit = async (response: unknown, session: string) => {
+      const send = vi.fn<(args: unknown) => Promise<unknown>>(async () => response);
+      vi.stubGlobal('electronAPI', { chat: { send } });
+      fixture.session = session; fixture.terminal = terminal;
+      await render(); await type('held back');
+      await act(async () => { host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+      return send;
+    };
+    const sendButton = () => host.querySelector<HTMLButtonElement>('[aria-label="chat.send"]')!;
+    it('mints a time-prefixed request id for a terminal binding', async () => {
+      const send = await submit({ result: 'busy', effect: 'none' }, 'id-format');
+      expect(send.mock.calls[0][0]).toMatchObject({ requestId: expect.stringMatching(/^\d{13}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) });
+      await type('');
+    });
+    it('returns a proven no-write refusal to the draft without locking the composer', async () => {
+      await submit({ result: 'unconfirmed', effect: 'none' }, 'effect-none');
+      expect(input().value).toBe('held back');
+      expect(host.textContent).toContain('chat.send.refused');
+      expect(host.textContent).not.toContain('chat.send.unconfirmed');
+      expect(sendButton().disabled).toBe(false);
+      await type('');
+    });
+    it('locks on an uncertain effect whatever the result says', async () => {
+      await submit({ result: 'error', effect: 'uncertain' }, 'effect-uncertain');
+      expect(host.textContent).toContain('chat.send.error');
+      expect(sendButton().disabled).toBe(true);
+      await type('');
+    });
+    it('keeps the enum reading when an older daemon reports no effect', async () => {
+      await submit({ result: 'unconfirmed' }, 'effect-absent');
+      expect(host.textContent).toContain('chat.send.unconfirmed');
+      expect(sendButton().disabled).toBe(true);
+      await type('');
+    });
   });
   it('pages back on its own when the tail page holds a reply without its request', async () => {
     fixture.session = 'reply-only'; fixture.hasMore = true;

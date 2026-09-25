@@ -117,4 +117,17 @@ describe('private desktop transcript bridge', () => {
     await f.call('send', { ptyId: 'pty', agentSessionId: 's', text: 'hello' });
     expect(f.client.rpc).toHaveBeenCalledWith('daemon.transcript.send', { id: 'pty', agentSessionId: 's', text: 'hello' });
   });
+  it('forwards only time-prefixed request ids and passes the send effect through', async () => {
+    const f = fixture();
+    const requestId = '1758712345123-6f1d2c3b-4a59-4e87-9b10-2c3d4e5f6a7b';
+    for (const bad of ['6f1d2c3b-4a59-4e87-9b10-2c3d4e5f6a7b', '1758712345123.6f1d2c3b-4a59-4e87-9b10-2c3d4e5f6a7b',
+      '1758712345123-6F1D2C3B-4A59-4E87-9B10-2C3D4E5F6A7B', `${requestId}x`, 17, null]) {
+      expect(await f.call('send', { ptyId: 'pty', agentSessionId: 's', text: 'hello', requestId: bad })).toEqual({ result: 'error' });
+    }
+    expect(f.client.rpc).not.toHaveBeenCalled();
+    f.client.rpc.mockResolvedValueOnce({ result: 'unconfirmed', effect: 'none', replayed: false } as never);
+    expect(await f.call('send', { ptyId: 'pty', agentSessionId: 's', text: 'hello', requestId }))
+      .toEqual({ result: 'unconfirmed', effect: 'none', replayed: false });
+    expect(f.client.rpc).toHaveBeenCalledWith('daemon.transcript.send', { id: 'pty', agentSessionId: 's', text: 'hello', requestId });
+  });
 });

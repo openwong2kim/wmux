@@ -62,9 +62,13 @@ export class ToastManager {
    * policy (`osToast` action, emitted only when `!windowFocused`), relayed
    * over IPC.NOTIFICATION_OS_TOAST. The click handler / flashFrame / dock
    * bounce behavior is identical to the legacy show() path.
+   *
+   * `ignoreToastSetting` is for security notices only (a paired phone started
+   * an agent with approvals off): the host user must see those even with
+   * toasts turned off in Settings.
    */
-  showDirect(title: string, body: string, context?: ToastFocusContext): void {
-    if (!this.enabled) return;
+  showDirect(title: string, body: string, context?: ToastFocusContext, options?: { ignoreToastSetting?: boolean }): void {
+    if (!this.enabled && !options?.ignoreToastSetting) return;
 
     if (!Notification.isSupported()) return;
 

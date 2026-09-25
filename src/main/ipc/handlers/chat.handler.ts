@@ -9,6 +9,8 @@ import type { ChatBridgeApi, TranscriptStatus } from '../../../shared/transcript
 
 const unavailable: TranscriptStatus = { available: false, reason: 'unavailable' };
 const validId = (id: unknown): id is string => typeof id === 'string' && id.length > 0 && id.length < 256;
+/** Send idempotency key: the time prefix lets the daemon refuse a reused id after its receipt is pruned. */
+const CHAT_REQUEST_ID = /^\d{13}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** Transcript IPC belongs only to the application renderer, never a webview
  * or the public RPC router. Subscriptions end on reload and handler swaps. */
@@ -123,12 +125,15 @@ export function registerChatHandlers(
       (args.eventId === undefined || typeof args.eventId === 'string')
       ? rpc('daemon.transcript.codeBlock', { id: args.ptyId, srcOffset: args.srcOffset, n: args.n, eventId: args.eventId }, null) : null,
     [CHAT_IPC.openGates]: (e) => trusted(e) ? openGates() : null,
-    [CHAT_IPC.send]: (e, args) => trusted(e) && args && validId(args.ptyId) && validId(args.agentSessionId) &&
-      typeof args.text === 'string' && args.text.trim() && args.text.length <= 16_000
-      ? rpc<Awaited<ReturnType<ChatBridgeApi['send']>>>('daemon.transcript.send', {
+    [CHAT_IPC.send]: (e, args) => {
+      if (!trusted(e) || !args || !validId(args.ptyId) || !validId(args.agentSessionId) ||
+        typeof args.text !== 'string' || !args.text.trim() || args.text.length > 16_000) return { result: 'unavailable' };
+      if (args.requestId !== undefined && (typeof args.requestId !== 'string' || !CHAT_REQUEST_ID.test(args.requestId))) return { result: 'error' };
+      return rpc<Awaited<ReturnType<ChatBridgeApi['send']>>>('daemon.transcript.send', {
         id: args.ptyId, agentSessionId: args.agentSessionId, text: args.text,
-        ...(typeof args.requestId === 'string' ? { requestId: args.requestId } : {}),
-      }, { result: 'error' }) : { result: 'unavailable' },
+        ...(args.requestId === undefined ? {} : { requestId: args.requestId }),
+      }, { result: 'error' });
+    },
   };
   handlers[CHAT_IPC.settings] = async (e, args) => {
     if (!trusted(e) || !args || !validId(args.ptyId) || disposed || !client?.isConnected) return { ok: false, error: 'unavailable' };
