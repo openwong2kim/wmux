@@ -8,12 +8,12 @@ import { TerminalChatService } from '../TerminalChatService';
 
 interface Plugin { epoch: string; answer: (res: ServerResponse) => void; requests: Record<string, unknown>[] }
 
-async function fixture(run: (f: { service: TerminalChatService; plugin: Plugin }) => Promise<void>) {
+async function fixture(run: (f: { service: TerminalChatService; plugin: Plugin }) => Promise<void>, log?: string[]) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'wmux-tui-send-'));
   const plugin: Plugin = { epoch: 'a'.repeat(32) + ':1:ses_one', answer: res => res.end(JSON.stringify({ result: 'sent' })), requests: [] };
   const server = createServer((req, res) => {
     let body = ''; req.on('data', c => { body += c; }); req.on('end', () => {
-      const request = JSON.parse(body); plugin.requests.push(request);
+      const request = JSON.parse(body); plugin.requests.push(request); log?.push(`plugin:${request.action}`);
       if (request.action === 'read') {
         res.end(JSON.stringify({ available: true, sessionId: 'ses_one', epoch: plugin.epoch, phase: 'complete', events: [] }));
       } else plugin.answer(res);
@@ -23,7 +23,7 @@ async function fixture(run: (f: { service: TerminalChatService; plugin: Plugin }
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('No server');
   const file = path.join(directory, createHash('sha256').update('pane').digest('hex') + '.json');
   await fs.writeFile(file, JSON.stringify({ version: 1, agent: 'opencode', pid: 123, port: address.port, token: 'b'.repeat(64) }), { mode: 0o600 });
-  const service = new TerminalChatService({ directory, owner: async () => ({ pid: 123, incarnation: 'i' }), emit: vi.fn() });
+  const service = new TerminalChatService({ directory, owner: async () => { log?.push('owner'); return { pid: 123, incarnation: 'i' }; }, emit: vi.fn() });
   try { await run({ service, plugin }); }
   finally { service.dispose(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await fs.rm(directory, { recursive: true, force: true }); }
 }
@@ -52,6 +52,15 @@ describe('TerminalChatService.send (phone bridge)', () => {
     expect(await f.service.send('pane', 'ses_one', 'hi', ID, { authorized: async () => false })).toEqual({ result: 'error', reason: 'unauthorized' });
     expect(sends(f.plugin)).toEqual([]);
   }));
+
+  it('re-authorizes after the owner lookup, descriptor read and owner re-check, right before the request', async () => {
+    const log: string[] = [];
+    await fixture(async f => {
+      const authorized = async () => { log.push('auth'); return true; };
+      expect(await f.service.send('pane', 'ses_one', 'hi', ID, { authorized })).toEqual({ result: 'sent' });
+    }, log);
+    expect(log).toEqual(['owner', 'owner', 'plugin:read', 'owner', 'owner', 'owner', 'auth', 'plugin:send', 'owner']);
+  });
 
   it('maps receipts-full distinctly and tolerates an old plugin with a bare unavailable', async () => fixture(async f => {
     f.plugin.answer = res => res.end(JSON.stringify({ result: 'unavailable', reason: 'receipts-full' }));

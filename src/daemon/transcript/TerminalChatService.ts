@@ -60,10 +60,8 @@ export class TerminalChatService {
     // The plugin destroys an oversize body mid-read; that must never read as
     // "may have been delivered" (N16).
     if (Buffer.byteLength(JSON.stringify(request)) > OPENCODE_REQUEST_MAX_BYTES) return { result: 'error', reason: 'too-large' };
-    try {
-      if (opts.authorized && !await opts.authorized()) return { result: 'error', reason: 'unauthorized' };
-    } catch { return { result: 'error', reason: 'unauthorized' }; }
-    const answer = await this.exchange(id, request);
+    const answer = await this.exchange(id, request, opts.authorized);
+    if (!answer.ok && answer.unauthorized) return { result: 'error', reason: 'unauthorized' };
     if (!answer.ok) return answer.left ? { result: 'unconfirmed', reason: 'transport-lost' } : { result: 'unavailable' };
     const value = answer.body.result;
     const result = ['sent', 'busy', 'blocked', 'unconfirmed', 'session_changed', 'unavailable', 'error'].includes(String(value)) ? value as ChatSendResult : 'unconfirmed';
@@ -118,8 +116,10 @@ export class TerminalChatService {
     return answer.ok ? answer.body : null;
   }
 
-  /** `left` is true once the request may have reached the plugin. */
-  private async exchange(id: string, request: Record<string, unknown>): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; left: boolean }> {
+  /** `left` is true once the request may have reached the plugin. `authorized`
+   *  runs as the last await before the request leaves, after the owner checks. */
+  private async exchange(id: string, request: Record<string, unknown>, authorized?: () => Promise<boolean>):
+    Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; left: boolean; unauthorized?: true }> {
     let left = false;
     try {
       const owner = await this.deps.owner(id);
@@ -132,6 +132,11 @@ export class TerminalChatService {
           Number(record.port) < 1 || Number(record.port) > 65535 || typeof record.token !== 'string' || !/^[0-9a-f]{64}$/.test(record.token)) return { ok: false, left };
       const sameOwner = async () => JSON.stringify(await this.deps.owner(id)) === JSON.stringify(owner);
       if (!await sameOwner()) return { ok: false, left };
+      if (authorized) {
+        let ok = false;
+        try { ok = await authorized(); } catch { /* a failed check is a refusal */ }
+        if (!ok) return { ok: false, left, unauthorized: true };
+      }
       left = true;
       let response: Response;
       try {
