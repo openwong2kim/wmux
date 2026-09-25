@@ -29,13 +29,8 @@ export async function handlePhoneWorkspaces(command: string, payload: Record<str
       })),
     };
     const sidebar = parsePhoneSidebarSnapshot(sidebarRaw);
-    if (sidebar) {
-      reply.sidebar = sidebar;
-      // The daemon drops a reply over its per-request byte cap without
-      // answering, which would turn every list call into a timeout. Past the
-      // budget the optional part goes, never the list.
-      if (Buffer.byteLength(JSON.stringify(reply)) > PHONE_WORKSPACES_REPLY_BUDGET_BYTES) delete reply.sidebar;
-    }
+    const fitted = sidebar ? fitSidebarToBudget(reply, sidebar) : null;
+    if (fitted) reply.sidebar = fitted;
     return reply;
   }
   if (command !== 'workspaces.create') throw new Error('Unsupported workspace operation');
@@ -55,4 +50,32 @@ export async function handlePhoneWorkspaces(command: string, payload: Record<str
       ['workspace-request-closed','workspace-request-history-full'].includes(String(result.error))) return {error:result.error};
   if (!result || typeof result !== 'object' || !('id' in result) || typeof result.id !== 'string') throw new Error('Workspace creation unconfirmed');
   return result;
+}
+
+/**
+ * The daemon drops a reply over its per-request byte cap without answering,
+ * which would turn every list call into a timeout, so the sidebar must fit.
+ * It degrades in steps, cheapest loss first: tab titles go, then pane names
+ * (a pane row without either carries nothing, so the pane list empties), and
+ * only then the whole sidebar. The workspace list itself is never cut.
+ */
+export function fitSidebarToBudget(
+  base: { workspaces: unknown[] },
+  sidebar: PhoneSidebarSnapshot,
+  budget = PHONE_WORKSPACES_REPLY_BUDGET_BYTES,
+): PhoneSidebarSnapshot | null {
+  const fits = (candidate: PhoneSidebarSnapshot) => Buffer.byteLength(JSON.stringify({ ...base, sidebar: candidate })) <= budget;
+  if (fits(sidebar)) return sidebar;
+  const withoutTitles: PhoneSidebarSnapshot = {
+    ...sidebar,
+    panes: sidebar.panes.map((pane) => ({
+      ptyId: pane.ptyId,
+      workspaceId: pane.workspaceId,
+      ...(pane.paneName !== undefined ? { paneName: pane.paneName } : {}),
+    })),
+  };
+  if (fits(withoutTitles)) return withoutTitles;
+  const withoutPanes: PhoneSidebarSnapshot = { ...sidebar, panes: [] };
+  if (fits(withoutPanes)) return withoutPanes;
+  return null;
 }

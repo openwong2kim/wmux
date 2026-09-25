@@ -4,7 +4,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const send = vi.hoisted(() => vi.fn());
 vi.mock('../../pipe/handlers/_bridge', () => ({ sendToRenderer: send }));
-import { handlePhoneWorkspaces } from '../PhoneWorkspaces';
+import { fitSidebarToBudget, handlePhoneWorkspaces, PHONE_WORKSPACES_REPLY_BUDGET_BYTES } from '../PhoneWorkspaces';
+import type { PhoneSidebarSnapshot } from '../../../shared/phoneFleetSidebar';
 let directory: string;
 const requestId = '01234567-89ab-4cde-8123-456789abcdef';
 beforeEach(() => { send.mockReset(); directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-phone-workspace-')); });
@@ -64,7 +65,7 @@ describe('phone workspace bridge', () => {
     });
     expect(JSON.stringify(reply)).not.toMatch(/secret|private|SECRET|debug/);
   });
-  it('answers the list without the sidebar when the projection fails or would overflow the reply', async () => {
+  it('answers the list without the sidebar when the projection fails, and never cuts the list for size', async () => {
     const list = [{ id: 'ws-1', name: 'One', activePtyId: 's1' }];
     send.mockImplementation(async (_getWindow: unknown, method: string) => {
       if (method === 'workspace.list') return list;
@@ -73,7 +74,47 @@ describe('phone workspace bridge', () => {
     expect(await handlePhoneWorkspaces('workspaces.list', {}, () => null)).toEqual({ workspaces: [{ id: 'ws-1', name: 'One', sessionId: 's1' }] });
     const panes = Array.from({ length: 512 }, (_, i) => ({ ptyId: `pty-${i}-${'p'.repeat(100)}`, workspaceId: 'w'.repeat(120), surfaceTitle: 't'.repeat(100), paneName: 'n'.repeat(64) }));
     send.mockImplementation(async (_getWindow: unknown, method: string) => method === 'workspace.list' ? list : { activeWorkspaceId: null, workspaces: [], panes });
-    expect(await handlePhoneWorkspaces('workspaces.list', {}, () => null)).toEqual({ workspaces: [{ id: 'ws-1', name: 'One', sessionId: 's1' }] });
+    // Titles alone do not save it; the pane list goes, the list stays whole.
+    expect(await handlePhoneWorkspaces('workspaces.list', {}, () => null)).toEqual({
+      workspaces: [{ id: 'ws-1', name: 'One', sessionId: 's1' }],
+      sidebar: { activeWorkspaceId: null, workspaces: [], panes: [] },
+    });
+  });
+  it('degrades an oversized sidebar in steps: titles, then pane names, then everything', () => {
+    const base = { workspaces: [{ id: 'ws-1', name: 'One', sessionId: 's1' }] };
+    const sidebar: PhoneSidebarSnapshot = {
+      activeWorkspaceId: 'ws-1',
+      workspaces: [{ id: 'ws-1', order: 0, pinned: true, gitBranch: 'main' }],
+      panes: Array.from({ length: 20 }, (_, i) => ({ ptyId: `pty-${i}`, workspaceId: 'ws-1', surfaceTitle: 't'.repeat(100), paneName: `w1-${i}` })),
+    };
+    const size = (candidate: PhoneSidebarSnapshot | null) => Buffer.byteLength(JSON.stringify(candidate ? { ...base, sidebar: candidate } : base));
+    const full = size(sidebar);
+    expect(fitSidebarToBudget(base, sidebar, full)).toBe(sidebar);
+
+    const noTitles = fitSidebarToBudget(base, sidebar, full - 1)!;
+    expect(noTitles.panes).toHaveLength(20);
+    expect(noTitles.panes.every((p) => !('surfaceTitle' in p) && p.paneName !== undefined)).toBe(true);
+    expect(noTitles.workspaces).toEqual(sidebar.workspaces);
+
+    const noPanes = fitSidebarToBudget(base, sidebar, size(noTitles) - 1)!;
+    expect(noPanes.panes).toEqual([]);
+    expect(noPanes.workspaces).toEqual(sidebar.workspaces);
+    expect(noPanes.activeWorkspaceId).toBe('ws-1');
+
+    expect(fitSidebarToBudget(base, sidebar, size(noPanes) - 1)).toBeNull();
+  });
+  it('keeps the workspace fields when many panes overflow the real budget', async () => {
+    const list = [{ id: 'ws-1', name: 'One', activePtyId: 's1' }];
+    // Multi-byte titles push it over; without them the pane names fit.
+    const panes = Array.from({ length: 512 }, (_, i) => ({ ptyId: `pty-${i}`, workspaceId: 'ws-1', surfaceTitle: '✳'.repeat(100), paneName: `w1-${i}` }));
+    send.mockImplementation(async (_getWindow: unknown, method: string) => method === 'workspace.list' ? list : {
+      activeWorkspaceId: 'ws-1', workspaces: [{ id: 'ws-1', order: 0, pinned: true }], panes,
+    });
+    const reply = await handlePhoneWorkspaces('workspaces.list', {}, () => null) as { sidebar?: PhoneSidebarSnapshot };
+    expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThanOrEqual(PHONE_WORKSPACES_REPLY_BUDGET_BYTES);
+    expect(reply.sidebar?.workspaces).toEqual([{ id: 'ws-1', order: 0, pinned: true }]);
+    expect(reply.sidebar?.panes).toHaveLength(512);
+    expect(reply.sidebar?.panes.some((p) => 'surfaceTitle' in p)).toBe(false);
   });
   it('does not dispatch arbitrary operations', async () => {
     await expect(handlePhoneWorkspaces('workspace.close', {}, () => null)).rejects.toThrow('Unsupported');
