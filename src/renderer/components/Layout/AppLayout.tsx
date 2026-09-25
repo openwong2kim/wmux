@@ -50,6 +50,7 @@ import { useAgentActivityClock } from '../../hooks/useAgentActivityClock';
 import { useTerminalCopyShortcut } from '../../hooks/useTerminalCopyShortcut';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
+import AgentMentionPicker from '../Palette/AgentMentionPicker';
 import { useWorkspaceMirrorPush } from '../../hooks/useWorkspaceMirrorPush';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
@@ -1958,6 +1959,9 @@ export default function AppLayout() {
       {/* TASK-2: lazy overlays, render-gated on their own store flags and
           wrapped in <Suspense fallback={null}> inside <ErrorBoundary> so a
           failed chunk load surfaces instead of silently dropping the overlay. */}
+      {/* Always mounted: it opens on an event (⌘⇧2 / F2, sidebar) and renders
+          nothing until then. */}
+      <ErrorBoundary name="AgentMentionPicker"><AgentMentionPicker /></ErrorBoundary>
       {commandPaletteVisible && (
         <ErrorBoundary name="CommandPalette">
           <Suspense fallback={null}><CommandPalette /></Suspense>

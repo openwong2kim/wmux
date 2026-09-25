@@ -17,6 +17,24 @@ import { fleetIdleForMs, formatStaleMinutes, selectUnverifiablePaneMinutes } fro
 import { StatusMarkView } from './AgentMarks';
 import { selectSidebarUnseen } from '../../stores/selectors/sidebarSeen';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
+import { buildMentionReference, buildMentionTargets, focusedMentionSource } from '../../utils/agentMention';
+import { insertMention } from '../../utils/agentMentionInsert';
+
+/**
+ * The roster row's `@`: insert this agent's reference into the focused agent's
+ * input — the picker's Enter, without the picker. Says why when nothing was
+ * inserted: no agent pane has focus (the caller tells the user), or the row is
+ * not a target.
+ */
+function mentionRowInFocusedAgent(ptyId: string): 'inserted' | 'noSource' | 'notTarget' {
+  const state = useStore.getState();
+  const source = focusedMentionSource(state);
+  if (!source) return 'noSource';
+  const target = buildMentionTargets(state, source.ptyId).find((c) => c.kind === 'pane' && c.key === `pane:${ptyId}`);
+  if (!target) return 'notTarget';
+  insertMention(source, buildMentionReference(target));
+  return 'inserted';
+}
 
 /** How long the just-stashed row stays highlighted. Long enough to catch the
  *  eye after the pane vanishes from the layout, short enough not to linger. */
@@ -385,7 +403,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                 // ptyId collides when two mirror tabs attach to the SAME
                 // remote session (multi-attach is supported).
                 key={row.stashed ? row.paneId : row.remote ? row.surfaceId : row.ptyId}
-                className="min-w-0"
+                className="group/mention relative min-w-0"
               >
                 {startsStashedGroup && (
                   <div
@@ -534,6 +552,29 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     </span>
                   ) : null}
                 </button>
+                {/* Mention this agent in the focused one — shown on hover or
+                    keyboard focus, never on the focused pane's own row. A
+                    sibling of the row button (a button cannot hold one). */}
+                {!row.stashed && !row.remote && row.agentName && !row.isFocused && (
+                  <button
+                    type="button"
+                    draggable={false}
+                    data-roster-mention
+                    className={`absolute right-0.5 top-[2px] flex h-[18px] w-[18px] items-center justify-center rounded text-[11px] leading-none text-[var(--text-sub)] bg-[var(--bg-base)] opacity-0 hover:text-[var(--text-main)] group-hover/mention:opacity-100 focus-visible:opacity-100 ${FOCUS_RING}`}
+                    title={t('mention.button', { name: primary })}
+                    aria-label={t('mention.button', { name: primary })}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (mentionRowInFocusedAgent(row.ptyId) === 'noSource') {
+                        useStore.getState().pushToast({ message: t('mention.noSource'), level: 'info' });
+                      }
+                    }}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    @
+                  </button>
+                )}
                 {/* How long it has been off-screen. Free cost visibility: a
                     stashed agent burns tokens whether or not anyone remembers
                     it, and "3d ago" is the cheapest possible reminder. */}

@@ -56,6 +56,7 @@ export const SHORTCUT_ACTION_IDS = [
   'toggleSidebar', 'openSettings', 'toggleFleetView', 'toggleCompanyView',
   'clearMultiview', 'openBrowser', 'addBookmark', 'toggleMessageFeed',
   'zoomIn', 'zoomOut', 'zoomReset',
+  'mentionAgent',
 ] as const;
 
 export type ShortcutActionId = typeof SHORTCUT_ACTION_IDS[number];
@@ -70,6 +71,12 @@ export interface KeymapEntry {
    * and bookmark family). When false/absent, macOS substitutes ⌘.
    */
   literalCtrl?: boolean;
+  /**
+   * A different default on some platforms, already in concrete form. Used
+   * when the natural key on one OS is wrong on another: the mention picker is
+   * ⌘⇧2 on macOS (Shift+2 is `@`), but F2 on Windows / Linux.
+   */
+  platformCombo?: Partial<Record<NodeJS.Platform, string>>;
   /**
    * i18n key for the Settings → Shortcuts list, set on each action's primary
    * row. `null` on alias rows and on the prefix row, which Settings does not
@@ -176,6 +183,16 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   { action: 'zoomReset', combo: 'Ctrl+0', descriptionKey: 'settings.sc.zoomReset' },
   { action: 'zoomReset', combo: 'Ctrl+Numpad0', descriptionKey: null },
 
+  // Mention an agent: the picker that inserts another agent's address into the
+  // focused agent's input. ⌘⇧2 on macOS — Shift+2 is `@`, and the resolver's
+  // physical-code fallback matches Digit2 whatever the layout prints there.
+  // F2 elsewhere. Only claimed while an agent pane (or Chat view) has focus;
+  // in a plain shell the key reaches the terminal (mc / htop / vim use F2).
+  {
+    action: 'mentionAgent', combo: 'Ctrl+Shift+2', platformCombo: { win32: 'F2', linux: 'F2' },
+    descriptionKey: 'settings.sc.mentionAgent',
+  },
+
   // The default prefix trigger. Configured in Settings → Prefix mode.
   { action: 'prefix', combo: 'Ctrl+B', literalCtrl: true, descriptionKey: null },
 ];
@@ -210,7 +227,12 @@ export function defaultRowsFor(action: ShortcutActionId): KeymapEntry[] {
  * The storage form resolved to the literal modifiers `platform` presses:
  * on macOS a non-`literalCtrl` row's `Ctrl` is ⌘ (`Meta`).
  */
-export function concreteCombo(entry: Pick<KeymapEntry, 'combo' | 'literalCtrl'>, platform: NodeJS.Platform): string {
+export function concreteCombo(
+  entry: Pick<KeymapEntry, 'combo' | 'literalCtrl' | 'platformCombo'>,
+  platform: NodeJS.Platform,
+): string {
+  const own = entry.platformCombo?.[platform];
+  if (own) return own;
   if (platform !== 'darwin' || entry.literalCtrl || !entry.combo.startsWith('Ctrl+')) return entry.combo;
   return 'Meta+' + entry.combo.slice('Ctrl+'.length);
 }
@@ -521,9 +543,11 @@ export function displayCombo(combo: string, platform: NodeJS.Platform): string {
  */
 export function reservedAccelerators(platform: NodeJS.Platform): readonly string[] {
   const cmdOrCtrl = platform === 'darwin' ? 'Command' : 'Control';
-  return WMUX_KEYMAP.map((e) =>
-    e.combo.replace(/^Ctrl/, e.literalCtrl ? 'Control' : cmdOrCtrl),
-  );
+  return WMUX_KEYMAP.map((e) => {
+    const own = e.platformCombo?.[platform];
+    if (own) return own.replace(/^Ctrl/, 'Control').replace(/^Meta/, 'Command');
+    return e.combo.replace(/^Ctrl/, e.literalCtrl ? 'Control' : cmdOrCtrl);
+  });
 }
 
 /**

@@ -3,6 +3,7 @@ import { ChatModelSettings } from './ChatModelSettings';
 import { ComposerPrimitive } from '@assistant-ui/react';
 import { useT } from '../../hooks/useT';
 import type { ChatSkill, ChatSkillCatalog } from '../../../shared/transcript/chatSkills';
+import { registerChatInsertTarget, spliceAtCaret } from './chatAttachments';
 
 export interface SkillComposer { getState(): { text: string }; subscribe(callback: () => void): () => void; setText(text: string): void }
 export interface ChatSkillScope { ptyId: string; agent: string; composer: SkillComposer; onTerminal?: () => void; live?: boolean }
@@ -52,6 +53,22 @@ export function ChatComposerInput({ disabled, placeholder, maxLength, scope, com
       if (!composing.current) setText(composer.getState().text);
     });
   }, [composer]);
+  // The agent mention picker inserts here, at the caret the field kept when
+  // the picker took focus, then hands focus back.
+  const scopePtyId = scope?.ptyId;
+  useEffect(() => {
+    if (!scopePtyId) return;
+    return registerChatInsertTarget(scopePtyId, {
+      insert: (snippet) => {
+        const field = input.current;
+        const current = composer.getState().text;
+        const next = spliceAtCaret(current, field?.selectionStart ?? current.length, snippet);
+        composer.setText(next.text);
+        requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); setCaret(next.caret); });
+      },
+      focus: () => { input.current?.focus(); },
+    });
+  }, [scopePtyId, composer]);
   useEffect(() => {
     const readSkills = window.electronAPI?.chat?.skills;
     if (!open || !scope) return;

@@ -7,6 +7,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
 import { isSafeGeometry } from '../../shared/terminalGeometry';
 import { isPrefixTrigger, resolveShortcut } from '../../shared/keymap';
+import { focusedMentionSource } from '../utils/agentMention';
 import { currentShortcutBindings, defaultShortcutBindings, shortcutPressGuard } from '../utils/shortcutBindings';
 import { xtermWindowsBuildNumber } from '../../shared/conptyWindows';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -1953,6 +1954,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             && !useStore.getState().inspectModeActive) {
           return false; // let DOM bubble to useComposeShortcut
         }
+      } else if (shortcut === 'mentionAgent') {
+        // Same gate as useKeyboard: claimed only in an agent pane. In a shell
+        // the key is the terminal's (F2 → mc / htop / vim).
+        if (focusedMentionSource(useStore.getState())) return false;
       } else if (shortcut !== null) {
         return false; // let DOM bubble to useKeyboard
       }
