@@ -4737,6 +4737,8 @@ function registerRpcHandlers(
       ...(typeof p['worktreePath'] === 'string' ? { worktreePath: p['worktreePath'] } : {}),
       ...(typeof p['paneGroupId'] === 'string' ? { paneGroupId: p['paneGroupId'] } : {}),
       ...(typeof p['prUrl'] === 'string' ? { prUrl: p['prUrl'] } : {}),
+      // worktree:false fan-out folder (additive; write-once like the J1 fields).
+      ...(typeof p['outputDir'] === 'string' ? { outputDir: p['outputDir'] } : {}),
     });
   });
 

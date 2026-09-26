@@ -30,6 +30,7 @@ import {
   setFanoutRequireApproval,
   setFanoutWorkerPermissionMode,
 } from '../../worktask/fanoutWorkerPolicy';
+import { loadFanoutPresets, saveFanoutPresets } from '../../worktask/fanoutPresets';
 
 export function registerFanOutHandler(service: FanOutService): () => void {
   // The Fleet Approvals tab's "recent unattended fan-outs" list.
@@ -78,6 +79,20 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     IPC.FANOUT_REQUIRE_APPROVAL_SET,
     wrapHandler(IPC.FANOUT_REQUIRE_APPROVAL_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
       setFanoutRequireApproval(value),
+    ),
+  );
+
+  // Fan-out presets (Settings → Agents). Main owns them — see fanoutPresets.ts.
+  ipcMain.removeHandler(IPC.FANOUT_PRESETS_GET);
+  ipcMain.handle(
+    IPC.FANOUT_PRESETS_GET,
+    wrapHandler(IPC.FANOUT_PRESETS_GET, async () => loadFanoutPresets()),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_PRESETS_SET);
+  ipcMain.handle(
+    IPC.FANOUT_PRESETS_SET,
+    wrapHandler(IPC.FANOUT_PRESETS_SET, async (_event: Electron.IpcMainInvokeEvent, presets: unknown) =>
+      saveFanoutPresets(presets),
     ),
   );
 
@@ -143,6 +158,8 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_SET);
     ipcMain.removeHandler(IPC.FANOUT_REQUIRE_APPROVAL_GET);
     ipcMain.removeHandler(IPC.FANOUT_REQUIRE_APPROVAL_SET);
+    ipcMain.removeHandler(IPC.FANOUT_PRESETS_GET);
+    ipcMain.removeHandler(IPC.FANOUT_PRESETS_SET);
   };
 }
 

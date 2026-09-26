@@ -153,6 +153,7 @@ export default function WorktaskCleanupView() {
         title: m.title,
         ownerWorkspaceId: m.owner?.verifiedWorkspaceId,
         ...(m.worktreePath ? { worktreePath: m.worktreePath } : {}),
+        ...(m.outputDir ? { outputDir: m.outputDir } : {}),
       }));
     try {
       const res = await api.scan(activeWorkspaceId, knownOpen);

@@ -61,6 +61,12 @@ export interface WorkTask {
    * 무임승차). J0 additive-only 규약상 필드명은 불변, 의미만 확정한다.
    */
   paneGroupId?: string;
+  /**
+   * worktree:false fan-out (preset option): the task's own output folder under
+   * `<wmux data>/outputs/`. Such a task has no branch and no worktreePath.
+   * close/cleanup/scan never delete it. Write-once like the J1 fields.
+   */
+  outputDir?: string;
   // ── J2 ──
   prUrl?: string;
   /**
@@ -131,6 +137,8 @@ export interface WorkTaskUpdatePayload {
   worktreePath?: string;
   paneGroupId?: string;
   prUrl?: string;
+  /** Additive — see WorkTask.outputDir. */
+  outputDir?: string;
 }
 
 // ── 상수 캡 (§2 DoS 캡 — 채널 상수 재사용 관례) ─────────────────────────

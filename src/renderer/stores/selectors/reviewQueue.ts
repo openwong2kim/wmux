@@ -28,6 +28,8 @@ export interface ReviewQueueEntry {
   ownerName?: string;
   branch?: string;
   worktreePath?: string;
+  /** worktree:false fan-out: the task's output folder (no branch, no diff). */
+  outputDir?: string;
   /** PR for the task branch from the metadata poll (PrStatusCache), if any. */
   pr?: PrStatus;
   /** The PR the task's own "Create PR" recorded, when the poll has none yet. */
@@ -84,6 +86,7 @@ export function reviewQueueEntry(state: StoreState, workspaceId: string): Review
     ...(owner ? { ownerName: displayWorkspaceName(owner.name, false) } : {}),
     ...(mission.branch ? { branch: mission.branch } : {}),
     ...(mission.worktreePath ? { worktreePath: mission.worktreePath } : {}),
+    ...(mission.outputDir ? { outputDir: mission.outputDir } : {}),
     ...(pr ? { pr } : {}),
     ...(mission.prUrl ? { prUrl: mission.prUrl } : {}),
     ...(completedAt !== undefined ? { completedAt } : {}),

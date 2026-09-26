@@ -38,6 +38,7 @@ import { registerFanOutRpc, FANOUT_WIRE_AGENT_CMD, FANOUT_IDEMPOTENCY_KEY_MAX_BY
 import type { FanOutRequest, FanOutResult, FanOutService, FanOutStatus } from '../../../worktask/FanOutService';
 import type { RpcRouter } from '../../RpcRouter';
 import { FanOutGuards } from '../../../worktask/fanoutGuards';
+import type { FanoutPreset } from '../../../../shared/fanoutPreset';
 
 const CALLER_WS = 'ws-caller';
 // Resolved to NATIVE form. The handler runs the caller's cwd through
@@ -104,6 +105,8 @@ function setup(opts?: {
   guards?: FanOutGuards;
   /** Main's approval switch. Defaults to on, so the dialog tests stay dialog tests. */
   requireApproval?: boolean;
+  /** Operator presets. Defaults to none. */
+  presets?: FanoutPreset[];
 }): Harness {
   const commanderAnchorPtyId =
     opts?.commanderAnchorPtyId === undefined ? 'pty-1' : opts.commanderAnchorPtyId;
@@ -204,6 +207,7 @@ function setup(opts?: {
     guards,
     workerPermissionMode: () => 'auto',
     requireApproval: () => opts?.requireApproval ?? true,
+    presets: () => opts?.presets ?? [],
   });
   const handler = handlers.get('task.fanout.start');
   if (!handler) throw new Error('task.fanout.start was not registered');
@@ -1358,5 +1362,134 @@ describe('task.fanout.start — review follow-ups', () => {
     expect((await next.call(goodParams({ idempotencyKey: 'after', titles: ['1', '2', '3', '4', '5', '6', '7', '8'] }))).status).toBe(
       'accepted',
     );
+  });
+});
+
+// ── preset / agents: the caller picks a NAME, never a command ─────────────
+describe('task.fanout.start — preset and agents', () => {
+  const IMAGE: FanoutPreset = {
+    name: 'Image',
+    items: [{ agent: 'codex', model: 'gpt-5.5', unattended: true }, { agent: 'codex' }, { agent: 'grok' }],
+    worktree: false,
+  };
+  const CODE: FanoutPreset = { name: 'Pair', items: [{ agent: 'claude' }, { agent: 'codex' }], worktree: true };
+
+  it('still rejects a wire agentCmd (the CLI is chosen by name only)', async () => {
+    const h = setup({ presets: [IMAGE] });
+    const err = errorOf(await h.call(goodParams({ agentCmd: 'codex', preset: 'Image' })));
+    expect(err.code).toBe('INVALID_ARGUMENT');
+    expect(err.message).toMatch(/agentCmd/);
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unknown preset and lists the available names', async () => {
+    const h = setup({ presets: [IMAGE, CODE] });
+    const err = errorOf(await h.call(goodParams({ preset: 'Nope' })));
+    expect(err.code).toBe('INVALID_ARGUMENT');
+    expect(err.message).toMatch(/unknown preset "Nope"; available presets: Image, Pair/);
+  });
+
+  it('refuses a preset when none are configured, saying where to add one', async () => {
+    const h = setup({ presets: [] });
+    const err = errorOf(await h.call(goodParams({ preset: 'Image' })));
+    expect(err.message).toMatch(/available presets: \(none/);
+  });
+
+  it.each([
+    [{ roles: ['Builder', 'Reviewer'], preset: 'Image' }, /roles and preset/],
+    [{ roles: ['Builder'], agents: [{ agent: 'codex' }, { agent: 'codex' }] }, /roles and agents/],
+    [{ preset: 'Image', agents: [{ agent: 'codex' }, { agent: 'codex' }] }, /preset and agents/],
+  ])('refuses two selectors at once (%j)', async (extra, re) => {
+    const h = setup({ presets: [IMAGE] });
+    const err = errorOf(await h.call(goodParams(extra)));
+    expect(err.code).toBe('INVALID_ARGUMENT');
+    expect(err.message).toMatch(re);
+    await h.flush();
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it.each(['--dangerously-skip-permissions', 'a;b', 'x y', '-m', '$(id)'])('refuses agents[].model %j', async (model) => {
+    const h = setup();
+    const err = errorOf(await h.call(goodParams({ agents: [{ agent: 'codex', model }, { agent: 'codex' }] })));
+    expect(err.code).toBe('INVALID_ARGUMENT');
+    expect(err.message).toMatch(/agents\[0\]: model/);
+    expect(h.start).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ agent: 'bash' }, /unknown agent "bash"/],
+    [{ agent: 'codex --yolo' }, /unknown agent/],
+    [{ agent: 'gemini' }, /not available for fan-out/],
+    [{ agent: 'codex', args: '--x' }, /unknown field "args"/],
+    [{ agent: 'codex', unattended: true }, /unknown field "unattended"/],
+  ])('refuses agents[] entry %j', async (entry, re) => {
+    const h = setup();
+    const err = errorOf(await h.call(goodParams({ agents: [entry, { agent: 'claude' }] })));
+    expect(err.message).toMatch(re);
+  });
+
+  it('refuses agents[] whose length does not match the titles', async () => {
+    const h = setup();
+    const err = errorOf(await h.call(goodParams({ agents: [{ agent: 'codex' }] })));
+    expect(err.message).toMatch(/agents has 1 entries but there are 2 titles/);
+  });
+
+  it('refuses more titles than preset rows (no silent cycling)', async () => {
+    const h = setup({ presets: [CODE] });
+    const err = errorOf(await h.call(goodParams({ preset: 'Pair', titles: ['a', 'b', 'c'] })));
+    expect(err.message).toMatch(/has 2 agent row\(s\) but 3 titles/);
+  });
+
+  it('hands the service the caller agents index-aligned, never a command', async () => {
+    const h = setup();
+    const res = await h.call(goodParams({ agents: [{ agent: 'codex', model: 'gpt-5.5' }, { agent: 'grok' }] }));
+    expect(res).toMatchObject({ ok: true, status: 'accepted' });
+    await h.flush();
+    expect(h.request().agents).toEqual([{ agent: 'codex', model: 'gpt-5.5' }, { agent: 'grok' }]);
+    expect(h.request().agentCmd).toBe(FANOUT_WIRE_AGENT_CMD);
+    expect(h.request().worktree).toBeUndefined();
+    expect(h.preview()).toMatch(/\[agent: codex --model gpt-5\.5\]/);
+  });
+
+  it('matches the preset name case-insensitively and uses its rows in order', async () => {
+    const h = setup({ presets: [IMAGE] });
+    await h.call(goodParams({ preset: 'image', titles: ['one', 'two'] }));
+    await h.flush();
+    expect(h.request().agents).toEqual([{ agent: 'codex', model: 'gpt-5.5', unattended: true }, { agent: 'codex' }]);
+    expect(h.request().worktree).toBe(false);
+    expect(h.request().outputFolder).toBe('image');
+    // The approval preview names the real CLI and the unattended flags.
+    expect(h.preview()).toMatch(/\[agent: codex --model gpt-5\.5 -a never -s workspace-write\]/);
+    expect(h.preview()).toMatch(/no worktree/);
+  });
+
+  it('worktree:false needs no repository: a non-repo caller is accepted', async () => {
+    const outside = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wmux-fanout-norepo-'));
+    const h = setup({ presets: [IMAGE], cwd: outside });
+    const res = await h.call(goodParams({ preset: 'Image' }));
+    expect(res).toMatchObject({ ok: true, status: 'accepted', repoPath: fs.realpathSync(outside) });
+    await h.flush();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    expect(h.request().repoPath).toBe(fs.realpathSync(outside));
+  });
+
+  it('a worktree preset still requires the repository', async () => {
+    const h = setup({ presets: [CODE], cwd: nodePath.resolve('/not/a/repo') });
+    const err = errorOf(await h.call(goodParams({ preset: 'Pair' })));
+    expect(err.code).toBe('FAILED_PRECONDITION');
+    expect(err.message).toMatch(/not inside a git repository/);
+  });
+
+  it('the depth guard refuses fan-out from a worktree:false worker', async () => {
+    // A codex worker in an output folder is still a stamped task workspace —
+    // the lineage stamp is written by the same pty.create path.
+    const g = new FanOutGuards({ dir: fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wmux-fanout-d1-')), countLiveTasks: () => 0, ledgerTaskOwner: () => null });
+    g.markTask(CALLER_WS, 'ws-brain');
+    const h = setup({ guards: g, presets: [IMAGE] });
+    const err = errorOf(await h.call(goodParams({ preset: 'Image' })));
+    expect(err.code).toBe('NOT_AUTHORIZED');
+    expect(err.message).toMatch(/fan-out task of ws-brain/);
+    expect(h.start).not.toHaveBeenCalled();
   });
 });

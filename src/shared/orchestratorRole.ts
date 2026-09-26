@@ -106,6 +106,10 @@ interface ModelFlagGrammar {
 const MODEL_FLAG_BY_LAUNCHER: Readonly<Record<string, ModelFlagGrammar>> = {
   claude: { flag: (m) => `--model ${m}` },
   codex: { flag: (m) => `--model ${m}` },
+  // grok (1.0.x) is a fan-out-only launcher (see shared/fanoutPreset.ts), not a
+  // KNOWN_AGENT_STEMS entry, so a role binding never reaches it. Verified
+  // 2026-09-26: `grok --model grok-4.7-build-fast` runs, an unknown id is refused.
+  grok: { flag: (m) => `--model ${m}` },
   // opencode/gemini/aider deliberately absent — their `--model` CLI grammar is
   // NOT verified anywhere in the repo (integrations/ + agentResume both cover
   // only claude/codex). Binding a role to them is a no-op + note (D-5), never a
@@ -145,17 +149,19 @@ export function launcherSupportsModelFlag(stem: string): boolean {
 export function applyRoleAgent(
   command: string,
   binding: RoleBinding | undefined,
+  options?: Pick<ApplyRoleBindingOptions, 'extraAgents'>,
 ): { command: string; changed: boolean; note?: string } {
   const unchanged = { command, changed: false };
   const agent = binding?.agent?.trim();
   if (!agent) return unchanged;
-  if (!KNOWN_AGENT_STEMS.has(agent)) {
+  const known = (stem: string): boolean => KNOWN_AGENT_STEMS.has(stem) || options?.extraAgents?.has(stem) === true;
+  if (!known(agent)) {
     return { ...unchanged, note: `Role is bound to "${agent}", which wmux does not recognise as an agent CLI; launched unchanged.` };
   }
   const tokens = tokenize(command);
   if (tokens.length === 0) return unchanged;
   const stem = launcherStem(tokens[0].value);
-  if (!KNOWN_AGENT_STEMS.has(stem)) return unchanged;
+  if (!known(stem)) return unchanged;
   if (stem === agent) return unchanged;
   const flagged = tokens.slice(1).some((t) => !t.quoted && t.value.startsWith('-'));
   if (flagged) {
@@ -459,6 +465,13 @@ export interface ApplyRoleBindingOptions {
    * was built for.
    */
   spawnedProcess?: boolean;
+  /**
+   * Launcher stems to treat as agents on top of KNOWN_AGENT_STEMS. Fan-out
+   * passes its own closed list (FANOUT_EXTRA_AGENT_STEMS) so a CLI it verified
+   * can be launched through this rewrite without becoming an agent identity
+   * everywhere else (detection, resume, the role-binding dropdown).
+   */
+  extraAgents?: ReadonlySet<string>;
 }
 
 export function applyRoleBinding(
@@ -477,7 +490,7 @@ export function applyRoleBinding(
   const stem = launcherStem(tokens[0].value);
 
   // Gate 1 — only agent launches are ever rewritten (see the doc block).
-  if (!KNOWN_AGENT_STEMS.has(stem)) return unchanged;
+  if (!KNOWN_AGENT_STEMS.has(stem) && options?.extraAgents?.has(stem) !== true) return unchanged;
   // Gate 2 — and only when the line is an invocation, not prose. A spawned
   // process is one by construction (see ApplyRoleBindingOptions.spawnedProcess).
   if (!options?.spawnedProcess && !looksLikeLaunchInvocation(tokens)) return unchanged;

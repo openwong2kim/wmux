@@ -13,6 +13,13 @@ import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../s
 import { findStashedEntry, paneStashedError, stashedPaneLiveness } from '../../shared/paneStash';
 import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
 import {
+  FANOUT_EXTRA_AGENT_STEMS,
+  applyFanoutAgentFlags,
+  fanoutChoiceBinding,
+  validateFanoutAgentChoice,
+  type FanoutAgentChoice,
+} from '../../shared/fanoutPreset';
+import {
   applyWorkerPermissionFlags,
   isFanoutWorkerPermissionMode,
   reattachModelEnvMarker,
@@ -928,7 +935,27 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // unknown or unbound role is a silent no-op: the task still launches on the
     // default command rather than failing over a preference.
     const role = sanitizeOrchRole(params.role);
-    const roleBinding = role ? useStore.getState().orchestratorRoleBindings[role] : undefined;
+    // A preset row or a caller's `agents[k]` arrives as data, never as a
+    // command. It is re-validated HERE against the same closed table main used
+    // (a renderer that trusted main's word would launch whatever a torn or
+    // future caller put in the field) and then becomes a RoleBinding on the
+    // unchanged path below. Invalid = the task fails; it is never launched on
+    // the default agent instead of the one that was asked for.
+    let agentChoice: FanoutAgentChoice | undefined;
+    if (params.agentChoice !== undefined) {
+      const checked = validateFanoutAgentChoice(params.agentChoice, { allowUnattended: true });
+      const normalized = checked.ok ? normalizeRoleBinding(fanoutChoiceBinding(checked.choice)) : undefined;
+      if (!checked.ok || !normalized || normalized.agent !== checked.choice.agent || normalized.model !== checked.choice.model) {
+        return { error: `fanout.spawnWorkspace: invalid agent choice — ${checked.ok ? 'normalization changed it' : checked.error}` };
+      }
+      agentChoice = checked.choice;
+    }
+    const roleBinding = agentChoice
+      ? fanoutChoiceBinding(agentChoice)
+      : role
+        ? useStore.getState().orchestratorRoleBindings[role]
+        : undefined;
+    const extraAgents = agentChoice ? FANOUT_EXTRA_AGENT_STEMS : undefined;
     // Two steps, and BOTH are needed. applyRoleBinding (inside withRoleBinding
     // below) refuses to touch a command whose launcher differs from the
     // binding's agent — right for a line a human typed, wrong here, where wmux
@@ -945,7 +972,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // cannot see the bindings — an unbound role, or one bound to an agent with no
     // model, injects nothing).
     const { marker, command: bareCommand } = splitModelEnvMarker(initialCommand);
-    const swap = applyRoleAgent(bareCommand, roleBinding);
+    const swap = applyRoleAgent(bareCommand, roleBinding, extraAgents ? { extraAgents } : undefined);
     if (swap.note) {
       // A refusal (unknown agent, or flags that would not survive the swap) is
       // fail-soft — the task still launches, so the reason must be visible
@@ -984,7 +1011,13 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       },
       useStore.getState().defaultShell,
     );
-    const roleBound = withRoleBinding(seeded, roleBinding, role);
+    const roleBoundRaw = withRoleBinding(seeded, roleBinding, role, extraAgents);
+    // Per-CLI flags the role rewrite has no notion of: codex's one-session trust
+    // of the task folder, and a preset row's unattended flags (non-claude).
+    const roleBound =
+      agentChoice && roleBoundRaw.initialCommand
+        ? { ...roleBoundRaw, initialCommand: applyFanoutAgentFlags(roleBoundRaw.initialCommand, agentChoice, cwd) }
+        : roleBoundRaw;
     // Worker permission mode + allow-list, AFTER the role rewrite: only then is
     // the final launcher known (a binding may have swapped claude for codex,
     // which rejects these flags), and only then can a permission flag the

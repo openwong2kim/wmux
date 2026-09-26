@@ -41,6 +41,8 @@ interface ProjectionTask {
   worktreePath?: string;
   paneGroupId?: string;
   prUrl?: string;
+  /** worktree:false fan-out output folder (never removed by close/cleanup). */
+  outputDir?: string;
   /** Detach-close marker — when present, the task is closed but its worktree/branch/PTY are still alive as an independent task. */
   detachedAt?: number;
 }
@@ -169,6 +171,7 @@ export function registerWorktaskHandlers(
           title: t.title,
           ownerWorkspaceId: verifiedWorkspaceId,
           ...(t.worktreePath ? { worktreePath: t.worktreePath } : {}),
+          ...(t.outputDir ? { outputDir: t.outputDir } : {}),
           ...(detached ? { detached: true } : {}),
         });
       }
@@ -186,6 +189,7 @@ export function registerWorktaskHandlers(
           // 다른 부모의 태스크는 렌더러가 실어준 owner를 그대로 쓴다(없으면 요청 owner).
           ownerWorkspaceId: typeof kt.ownerWorkspaceId === 'string' ? kt.ownerWorkspaceId : verifiedWorkspaceId,
           ...(typeof kt.worktreePath === 'string' ? { worktreePath: kt.worktreePath } : {}),
+          ...(typeof kt.outputDir === 'string' && kt.outputDir ? { outputDir: kt.outputDir } : {}),
         });
       }
       const result = await scanService.scan([...byId.values()]);

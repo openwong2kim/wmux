@@ -98,6 +98,15 @@ import type { FanOutRequest, FanOutService } from '../../worktask/FanOutService'
 import { getFanOutGuards, promptDigest, type FanOutGuards } from '../../worktask/fanoutGuards';
 import { loadFanoutRequireApproval, loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
 import { workerLaunchFlags, type FanoutWorkerPermissionMode } from '../../../shared/workerLaunch';
+import { loadFanoutPresets } from '../../worktask/fanoutPresets';
+import {
+  fanoutAgentSpec,
+  fanoutPresetKey,
+  fanoutPresetOutputFolder,
+  validateFanoutAgentChoice,
+  type FanoutAgentChoice,
+  type FanoutPreset,
+} from '../../../shared/fanoutPreset';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -205,6 +214,7 @@ export function buildFanOutPreview(
   titles: string[],
   taskPrompts: string[],
   roles: string[] = [],
+  agents: string[] = [],
 ): string {
   const perTask = Math.max(
     FANOUT_PREVIEW_MIN_TASK_BYTES,
@@ -223,7 +233,10 @@ export function buildFanOutPreview(
       // consenting to run it on whatever the caller picked. Roles come from the
       // closed ORCH_ROLES vocabulary, so there is nothing to neutralize here.
       const role = typeof roles[k] === 'string' && roles[k].length > 0 ? ` [role: ${roles[k]}]` : '';
-      return `── task ${k + 1}/${titles.length}: ${title}${role}\n${body}`;
+      // A preset row / agents[k] is already concrete (CLI + model), so it is
+      // printed as what runs, not as a name that resolves elsewhere.
+      const agent = typeof agents[k] === 'string' && agents[k].length > 0 ? ` [agent: ${agents[k]}]` : '';
+      return `── task ${k + 1}/${titles.length}: ${title}${role}${agent}\n${body}`;
     })
     .join('\n\n');
 }
@@ -389,6 +402,7 @@ async function deriveCallerRepoRoot(
   getWindow: GetWindow,
   workspaceId: string,
   senderPtyId: string,
+  opts: { requireRepo: boolean } = { requireRepo: true },
 ): Promise<{ root: string } | { code: string; message: string }> {
   const cwd = await resolveSenderSurfaceCwd(getWindow, workspaceId, senderPtyId);
   if (!cwd) {
@@ -403,6 +417,17 @@ async function deriveCallerRepoRoot(
     return { code: 'FAILED_PRECONDITION', message: `the calling terminal has an unusable working directory` };
   }
   const root = await repoRootOf(resolved);
+  if (!root && !opts.requireRepo) {
+    // worktree:false needs no repository: the tasks write into their own
+    // folders under the wmux data dir. The anchor is still the caller's own
+    // directory (realpath'd), so the audit names where the request came from
+    // and the post-approval check still catches a terminal that moved.
+    try {
+      return { root: fs.realpathSync(resolved) };
+    } catch {
+      return { root: resolved };
+    }
+  }
   if (!root) {
     return {
       code: 'FAILED_PRECONDITION',
@@ -511,6 +536,71 @@ export interface FanOutRpcDeps {
   workerPermissionMode?: () => FanoutWorkerPermissionMode;
   /** Injected in tests; defaults to the main-side Settings store. */
   requireApproval?: () => boolean;
+  /** Injected in tests; defaults to the main-side preset store. */
+  presets?: () => FanoutPreset[];
+}
+
+/** One task's agent choice as the preview and the audit print it. */
+export function describeFanoutAgentChoice(c: FanoutAgentChoice): string {
+  const spec = fanoutAgentSpec(c.agent);
+  return [c.agent, c.model ? `--model ${c.model}` : '', c.unattended && spec?.unattendedFlags ? spec.unattendedFlags : '']
+    .filter((p) => p.length > 0)
+    .join(' ');
+}
+
+/**
+ * The per-task agent selection: `preset` (operator data), `agents` (caller,
+ * closed vocabulary), or neither. Each is a list aligned with the parsed titles.
+ */
+type AgentSelection =
+  | { kind: 'none' }
+  | { kind: 'preset'; preset: FanoutPreset; agents: FanoutAgentChoice[] }
+  | { kind: 'agents'; agents: FanoutAgentChoice[] };
+
+function resolveAgentSelection(
+  params: Record<string, unknown>,
+  titleCount: number,
+  presets: () => FanoutPreset[],
+): AgentSelection | { error: string } {
+  const has = (k: string): boolean => params[k] !== undefined && params[k] !== null;
+  const given = ['roles', 'preset', 'agents'].filter(has);
+  if (given.length > 1) {
+    return { error: `${given.join(' and ')} cannot be combined — pass one of roles, preset or agents` };
+  }
+  if (has('preset')) {
+    const name = typeof params['preset'] === 'string' ? params['preset'].trim() : '';
+    const list = presets();
+    const names = list.map((p) => p.name);
+    const available = names.length > 0 ? names.join(', ') : '(none — add one in Settings → Agents → Fan-out presets)';
+    if (!name) return { error: `preset must be a preset name; available presets: ${available}` };
+    const preset = list.find((p) => fanoutPresetKey(p.name) === fanoutPresetKey(name));
+    if (!preset) return { error: `unknown preset "${name.slice(0, 64)}"; available presets: ${available}` };
+    // Task k runs on row k. More tasks than rows is a caller that miscounted,
+    // and cycling the rows would put tasks on agents nobody chose for them.
+    if (titleCount > preset.items.length) {
+      return {
+        error: `preset "${preset.name}" has ${preset.items.length} agent row(s) but ${titleCount} titles were given — pass at most ${preset.items.length}`,
+      };
+    }
+    return { kind: 'preset', preset, agents: preset.items.slice(0, titleCount) };
+  }
+  if (has('agents')) {
+    const raw = params['agents'];
+    if (!Array.isArray(raw)) return { error: 'agents must be an array of { agent, model? }' };
+    if (raw.length !== titleCount) {
+      return { error: `agents has ${raw.length} entries but there are ${titleCount} titles — one agent per title` };
+    }
+    const agents: FanoutAgentChoice[] = [];
+    for (const [k, entry] of raw.entries()) {
+      // No `unattended` from the wire: an approval-free non-claude worker is
+      // an operator decision, made in a preset.
+      const v = validateFanoutAgentChoice(entry);
+      if (!v.ok) return { error: `agents[${k}]: ${v.error}` };
+      agents.push(v.choice);
+    }
+    return { kind: 'agents', agents };
+  }
+  return { kind: 'none' };
 }
 
 /**
@@ -736,7 +826,7 @@ export function registerFanOutRpc(
     if (params['agentCmd'] !== undefined) {
       return deny(
         'INVALID_ARGUMENT',
-        'task.fanout.start does not accept agentCmd — the pipe surface always uses the default agent command',
+        'task.fanout.start does not accept agentCmd — pick the CLI with `agents` ([{agent, model?}]) or an operator `preset`',
       );
     }
     if (params['memberId'] !== undefined) {
@@ -763,6 +853,13 @@ export function registerFanOutRpc(
     }
     const parsed = parseTasks(params, sharedPrompt);
     if ('error' in parsed) return deny('INVALID_ARGUMENT', parsed.error);
+    // Titles are counted AFTER parseTasks drops empty ones, so a preset row
+    // lines up with the task that actually spawns.
+    const selection = resolveAgentSelection(params, parsed.titles.length, deps.presets ?? (() => loadFanoutPresets()));
+    if ('error' in selection) return deny('INVALID_ARGUMENT', selection.error);
+    const agentChoices = selection.kind === 'none' ? [] : selection.agents;
+    const agentLabels = agentChoices.map(describeFanoutAgentChoice);
+    const worktree = !(selection.kind === 'preset' && selection.preset.worktree === false);
 
     // ── Global caps (live + rolling hour), reserved in this same tick ────
     // Over a cap is a refusal, never a queued prompt: with approval off by
@@ -783,7 +880,7 @@ export function registerFanOutRpc(
     const anchorPtyId = commanderWorkspaceId
       ? await resolveCommanderAnchorPtyId(getWindow, commanderWorkspaceId)
       : senderPtyId;
-    const preflight = await deriveCallerRepoRoot(getWindow, callerWorkspaceId, anchorPtyId);
+    const preflight = await deriveCallerRepoRoot(getWindow, callerWorkspaceId, anchorPtyId, { requireRepo: worktree });
     if (!('root' in preflight)) {
       // Nothing was started and nothing was asked, so the key must go back —
       // otherwise a transient renderer miss would brick it until eviction.
@@ -815,9 +912,17 @@ export function registerFanOutRpc(
       // different agent/model than its builders without the wire ever carrying
       // a command string.
       roles: parsed.roles,
+      // A preset row / agents[k] per task. Validated data from the closed
+      // table, never a command: the renderer re-validates it and turns it into
+      // a RoleBinding on the same rewrite path a role uses.
+      ...(agentChoices.length > 0 ? { agents: agentChoices } : {}),
+      ...(worktree
+        ? {}
+        : { worktree: false, outputFolder: fanoutPresetOutputFolder((selection as { preset: FanoutPreset }).preset) }),
       verifiedWorkspaceId: callerWorkspaceId,
       workerPermissionMode: workerMode,
     };
+    const presetName = selection.kind === 'preset' ? selection.preset.name : undefined;
 
     // ── R7: approval, then the detached run ──────────────────────────────
     // The key is already claimed (above), so a poll that arrives while the
@@ -850,7 +955,8 @@ export function registerFanOutRpc(
               // What a claude worker's line gets appended, so an approval covers
               // the permission mode and tool rules, not just the prompt.
               promptPreview:
-                buildFanOutPreview(sharedPrompt, parsed.titles, parsed.taskPrompts, parsed.roles) +
+                buildFanOutPreview(sharedPrompt, parsed.titles, parsed.taskPrompts, parsed.roles, agentLabels) +
+                (worktree ? '' : '\n\nno worktree: each task writes into its own folder under the wmux outputs directory') +
                 `\n\nclaude workers launch with: ${workerLaunchFlags(workerMode)}`,
               // The roles again, as data. The preview prints the role NAME, but
               // what a role resolves to — agent, model, extra args — lives in the
@@ -882,7 +988,7 @@ export function registerFanOutRpc(
         // sibling pane's if the surface reports no cwd of its own). Re-derive and
         // require the same root, or the approval was given for one repo and spent
         // on another.
-        const atApproval = await deriveCallerRepoRoot(getWindow, callerWorkspaceId, anchorPtyId);
+        const atApproval = await deriveCallerRepoRoot(getWindow, callerWorkspaceId, anchorPtyId, { requireRepo: worktree });
         if (!('root' in atApproval) || atApproval.root !== callerRepoRoot) {
           settle(key, { phase: 'denied', reason: 'repo-moved' });
           guards.release(key);
@@ -912,6 +1018,8 @@ export function registerFanOutRpc(
             ),
             approvedBy: verdict.outcome === 'auto' ? 'auto' : 'human',
             workerPermissionMode: workerMode,
+            ...(presetName ? { preset: presetName } : {}),
+            ...(agentLabels.length > 0 ? { agents: agentLabels } : {}),
           });
         } catch (err) {
           settle(key, { phase: 'denied', reason: 'audit-unavailable' });
@@ -944,6 +1052,9 @@ export function registerFanOutRpc(
               promptSha256: [],
               approvedBy: verdict.outcome === 'auto' ? 'auto' : 'human',
               workerPermissionMode: workerMode,
+              ...(presetName ? { preset: presetName } : {}),
+              ...(agentLabels.length > 0 ? { agents: agentLabels } : {}),
+              ...(result.outputBatchDir ? { outputBatchDir: result.outputBatchDir } : {}),
               launched: result.tasks.map((t) => ({
                 title: t.title,
                 ...(t.workspaceId ? { workspaceId: t.workspaceId } : {}),

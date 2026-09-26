@@ -677,6 +677,7 @@ export const pl = {
   'fleet.review.pr.merged': 'scalony',
   'fleet.review.pr.closed': 'zamknięty',
   'fleet.review.openDiff': 'Otwórz diff',
+  'fleet.review.openFolder': 'Otwórz folder',
   'fleet.review.createPr': 'Utwórz PR',
   'fleet.review.jump': 'Przejdź do zadania',
   'fleet.review.close': 'Zamknij zadanie',

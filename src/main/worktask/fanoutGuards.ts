@@ -89,6 +89,13 @@ export interface FanOutAuditRecord {
   approvedBy: 'auto' | 'human';
   /** The worker permission mode the tasks launch with (Settings → Agents). */
   workerPermissionMode: string;
+  /** The operator preset the caller named, when it named one (additive). */
+  preset?: string;
+  /** Per task: the agent CLI (+ model, + unattended) a preset or the caller's
+   *  `agents[]` chose, index-aligned with `titles` (additive). */
+  agents?: string[];
+  /** worktree:false — the batch folder the tasks write into (additive). */
+  outputBatchDir?: string;
   /** kind 'launched': the line each task's pane was actually started with. */
   launched?: { title: string; workspaceId?: string; command?: string; error?: string }[];
 }

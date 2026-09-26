@@ -64,11 +64,20 @@ describe('fanout_start: tool surface', () => {
     expect(fanoutStart).toBeDefined();
   });
 
-  it('exposes NO agent-command input', () => {
+  it('exposes NO agent-command input (the CLI is chosen by name only)', () => {
     const shape = shapes.get('fanout_start') ?? {};
     for (const key of Object.keys(shape)) {
-      expect(key).not.toMatch(/agent|cmd|command/i);
+      expect(key).not.toMatch(/cmd|command|args/i);
     }
+  });
+
+  it('agents[] entries carry an agent slug and a single-token model, nothing else', () => {
+    const agents = (shapes.get('fanout_start') ?? {})['agents'] as { safeParse: (v: unknown) => { success: boolean } };
+    expect(agents.safeParse([{ agent: 'codex', model: 'gpt-5.5' }]).success).toBe(true);
+    expect(agents.safeParse([{ agent: 'codex', args: '--yolo' }]).success).toBe(false);
+    expect(agents.safeParse([{ agent: 'codex', model: '--dangerously-skip-permissions' }]).success).toBe(false);
+    expect(agents.safeParse([{ agent: 'codex', model: 'x y' }]).success).toBe(false);
+    expect(agents.safeParse([{ agent: 'codex', unattended: true }]).success).toBe(false);
   });
 
   it('exposes no workspace, repository or member input (all server-derived)', () => {
@@ -78,9 +87,11 @@ describe('fanout_start: tool surface', () => {
     }
   });
 
-  it('exposes exactly the five inputs a caller may choose', () => {
+  it('exposes exactly the inputs a caller may choose', () => {
     expect(Object.keys(shapes.get('fanout_start') ?? {}).sort()).toEqual([
+      'agents',
       'idempotency_key',
+      'preset',
       'prompt',
       'roles',
       'task_prompts',
@@ -314,5 +325,21 @@ describe('fanout_start: accept warnings', () => {
 
     mockSendRpc.mockResolvedValue({ ok: true, status: 'accepted', warnings: ['', '  ', 7] });
     expect((await fanoutStart({ idempotency_key: 'kw4', titles: ['t'] })).content).toHaveLength(1);
+  });
+});
+
+describe('fanout_start: tools/list does not depend on the operator presets', () => {
+  // probe:mcp pins wireResultSha256 per profile. If the preset names were ever
+  // inlined into the schema, adding a preset in Settings would change every
+  // profile's hash (and leak operator data into every client's context).
+  it('the MCP side never reads the preset store', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const dir = path.join(__dirname, '..');
+    const files = fs.readdirSync(dir).filter((f: string) => f.endsWith('.ts'));
+    for (const f of files) {
+      const src = fs.readFileSync(path.join(dir, f), 'utf8');
+      expect(src, f).not.toMatch(/fanoutPresets['"]|loadFanoutPresets|FANOUT_PRESET_TEMPLATES/);
+    }
   });
 });

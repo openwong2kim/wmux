@@ -164,6 +164,8 @@ export async function createReviewTaskPr(entry: ReviewQueueEntry, t: Translate):
 
 /** Open the PR, or ask to create one when the task has none. */
 export function reviewPrVerb(entry: ReviewQueueEntry, onEdit: (entry: ReviewQueueEntry, kind: ReviewEditorKind) => void): void {
+  // An output-folder task has no branch, so there is no PR to open or create.
+  if (entry.outputDir && !entry.branch) return;
   const url = reviewPrUrl(entry);
   if (url) window.open(url, '_blank');
   else onEdit(entry, 'pr');
@@ -225,18 +227,21 @@ function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEd
     : prUrl ? t('fleet.review.prLinked') : undefined;
   const label = [entry.title, t('fleet.review.statusLabel'), owner, entry.branch,
     changeText && summary && summary.files > 0 ? `${changeText}, +${summary.additions} −${summary.deletions}` : changeText,
-    prText, busyText, t('fleet.review.openDiff')].filter(Boolean).join(', ');
+    prText, busyText, entry.outputDir && !entry.branch ? t('fleet.review.openFolder') : t('fleet.review.openDiff')].filter(Boolean).join(', ');
 
+  // worktree:false tasks have a folder, not a branch: "Open diff" opens the
+  // folder and there is no PR verb.
+  const outputOnly = !!entry.outputDir && !entry.branch;
   const items: PaneActionItem[] = [
-    { key: 'diff', label: t('fleet.review.openDiff'), shortcut: 'D', icon: <IconReview size={12} />, onSelect: () => onOpenDiff(entry) },
-    {
+    { key: 'diff', label: outputOnly ? t('fleet.review.openFolder') : t('fleet.review.openDiff'), shortcut: 'D', icon: <IconReview size={12} />, onSelect: () => onOpenDiff(entry) },
+    ...(outputOnly ? [] : [{
       key: 'pr',
       label: prUrl ? t('diff.openPr') : t('fleet.review.createPr'),
       shortcut: 'P',
       icon: <IconExternalLink size={12} />,
       disabled: busy !== undefined,
       onSelect: () => reviewPrVerb(entry, onEdit),
-    },
+    }]),
     { key: 'jump', label: t('fleet.review.jump'), shortcut: 'J', icon: <IconChevron size={12} />, onSelect: () => onJump(entry) },
     { key: 'close', label: t('fleet.review.close'), shortcut: '⌫', icon: <IconX size={12} />, separatorBefore: true, disabled: busy !== undefined, onSelect: () => onEdit(entry, 'close') },
   ];

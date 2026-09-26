@@ -435,6 +435,12 @@ export default function FleetView() {
   }, []);
 
   const openReviewDiff = useCallback((entry: ReviewQueueEntry) => {
+    // worktree:false task: nothing to diff — its result is the folder.
+    if (entry.outputDir && !entry.branch) {
+      void window.electronAPI.shell.openPath(entry.outputDir);
+      setVisible(false);
+      return;
+    }
     openTaskDiff(entry.taskId, entry.workspaceId, entry.title, entry.ownerWorkspaceId);
     setVisible(false);
   }, [setVisible]);

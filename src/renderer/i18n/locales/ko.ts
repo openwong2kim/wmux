@@ -381,6 +381,7 @@ export const ko = {
   'fleet.review.pr.merged': '머지됨',
   'fleet.review.pr.closed': '닫힘',
   'fleet.review.openDiff': 'diff 열기',
+  'fleet.review.openFolder': '폴더 열기',
   'fleet.review.createPr': 'PR 만들기',
   'fleet.review.jump': '태스크로 이동',
   'fleet.review.close': '태스크 닫기',

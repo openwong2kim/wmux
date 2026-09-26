@@ -129,6 +129,8 @@ export function withRoleBinding<T extends PtyCreateOptions>(
   options: T,
   binding: RoleBinding | undefined,
   role?: string,
+  /** Fan-out only: extra launcher stems to treat as agents (applyRoleBinding). */
+  extraAgents?: ReadonlySet<string>,
 ): T {
   if (!binding) return options;
   const next = { ...options };
@@ -141,6 +143,7 @@ export function withRoleBinding<T extends PtyCreateOptions>(
     // is a launch, and the submitted-line prose gate would wrongly reject it.
     const { command, changed } = applyRoleBinding(before, binding, {
       spawnedProcess: field === 'exec',
+      ...(extraAgents ? { extraAgents } : {}),
     });
     if (!changed) continue;
     next[field] = command;

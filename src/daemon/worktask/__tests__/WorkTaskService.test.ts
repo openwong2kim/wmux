@@ -914,3 +914,31 @@ describe('J3 §2 prUrl — 비단조·closed 단독 허용·형식 검증', () =
     expect(t?.prUrl).toBe(PR1);
   });
 });
+
+// ═══ worktree:false fan-out — outputDir instead of a worktree ═══════════════
+
+describe('task.mission.update — outputDir (worktree:false fan-out)', () => {
+  it('two open tasks each commit an outputDir with no worktreePath; write-once; survives replay', async () => {
+    const { port } = makeFakeChannelPort();
+    const svc = newWorkTaskService(newLog(), port);
+    await svc.boot();
+    const a = await svc.startMission({ title: 'a', verifiedWorkspaceId: 'ws-owner', memberId: 'lead' });
+    const b = await svc.startMission({ title: 'b', verifiedWorkspaceId: 'ws-owner', memberId: 'lead' });
+    if (!a.ok || !b.ok) throw new Error('start failed');
+    // No worktreePath on either, so the one-open-task-per-path invariant has
+    // nothing to refuse: both materialize.
+    expect((await svc.updateMission({ taskId: a.taskId, verifiedWorkspaceId: 'ws-owner', outputDir: '/o/1', paneGroupId: 'ws-1' })).ok).toBe(true);
+    expect((await svc.updateMission({ taskId: b.taskId, verifiedWorkspaceId: 'ws-owner', outputDir: '/o/2', paneGroupId: 'ws-2' })).ok).toBe(true);
+    expect(svc.getTask(a.taskId)).toMatchObject({ outputDir: '/o/1', paneGroupId: 'ws-1' });
+    expect(svc.getTask(a.taskId)?.worktreePath).toBeUndefined();
+    expect(svc.getTask(a.taskId)?.branch).toBeUndefined();
+    // Write-once, like the J1 fields.
+    expect((await svc.updateMission({ taskId: a.taskId, verifiedWorkspaceId: 'ws-owner', outputDir: '/o/x' })).ok).toBe(false);
+    // Same value again is an idempotent no-op.
+    expect((await svc.updateMission({ taskId: a.taskId, verifiedWorkspaceId: 'ws-owner', outputDir: '/o/1' })).ok).toBe(true);
+
+    const replayed = newWorkTaskService(newLog(), makeFakeChannelPort().port);
+    await replayed.boot();
+    expect(replayed.getTask(b.taskId)?.outputDir).toBe('/o/2');
+  });
+});

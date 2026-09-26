@@ -151,6 +151,8 @@ export interface UpdateMissionInput {
   paneGroupId?: string;
   /** J3 §2: 비단조 mutable(PR 재생성 갱신 허용) — closed 태스크에도 단독 갱신 가능. */
   prUrl?: string;
+  /** worktree:false fan-out output folder. Write-once, like the J1 fields. */
+  outputDir?: string;
 }
 
 export type WorkTaskErr = { ok: false; error: string };
@@ -301,6 +303,7 @@ export class WorkTaskService {
       if (u.branch !== undefined) task.branch = u.branch;
       if (u.worktreePath !== undefined) task.worktreePath = u.worktreePath;
       if (u.paneGroupId !== undefined) task.paneGroupId = u.paneGroupId;
+      if (u.outputDir !== undefined) task.outputDir = u.outputDir;
       if (u.prUrl !== undefined) task.prUrl = u.prUrl;
       return;
     }
@@ -561,7 +564,8 @@ export class WorkTaskService {
         const hasMaterialization =
           input.branch !== undefined ||
           input.worktreePath !== undefined ||
-          input.paneGroupId !== undefined;
+          input.paneGroupId !== undefined ||
+          input.outputDir !== undefined;
         if (hasMaterialization || input.prUrl === undefined) {
           return { ok: false, error: `task.mission.update: task is closed: ${input.taskId}` };
         }
@@ -589,7 +593,7 @@ export class WorkTaskService {
       // 단조성 게이트: 이미 물질화된 필드를 다른 값으로 덮으려 하면 거부.
       // 동일 값은 통과(멱등 재시도 — 아래 patch 조립에서 no-op 필드는 제거).
       const monotonicViolation = (
-        field: 'branch' | 'worktreePath' | 'paneGroupId',
+        field: 'branch' | 'worktreePath' | 'paneGroupId' | 'outputDir',
         next: string | undefined,
       ): string | null => {
         if (next === undefined) return null;
@@ -603,6 +607,7 @@ export class WorkTaskService {
         ['branch', input.branch],
         ['worktreePath', input.worktreePath],
         ['paneGroupId', input.paneGroupId],
+        ['outputDir', input.outputDir],
       ] as const) {
         const err = monotonicViolation(field, next);
         if (err) return { ok: false, error: err };
@@ -642,6 +647,10 @@ export class WorkTaskService {
       }
       if (input.paneGroupId !== undefined && task.paneGroupId === undefined) {
         patch.paneGroupId = input.paneGroupId;
+        changed = true;
+      }
+      if (input.outputDir !== undefined && task.outputDir === undefined) {
+        patch.outputDir = input.outputDir;
         changed = true;
       }
       // prUrl(J3 §2): 비단조 — 현재 값과 다르면 갱신(동일 값 재쓰기는 no-op).

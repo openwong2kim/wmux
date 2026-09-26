@@ -55,7 +55,7 @@ describe('useRpcBridge — fan-out task roles', () => {
     // inert twice over: no agent change AND no model flag. Panel review caught
     // exactly this.
     const block = fanoutSpawnBlock();
-    expect(block).toMatch(/applyRoleAgent\(bareCommand, roleBinding\)/);
+    expect(block).toMatch(/applyRoleAgent\(bareCommand, roleBinding[,)]/);
     // Match the CALLS, not the prose: the comment above the swap names
     // withRoleBinding first, so a plain indexOf compares against the comment.
     expect(block.search(/applyRoleAgent\(/)).toBeLessThan(block.search(/withRoleBinding\(seeded/));
@@ -163,7 +163,7 @@ describe('useRpcBridge — fan-out task roles', () => {
 
   it('appends the worker permission flags after the role rewrite and before the marker goes back on', () => {
     const block = fanoutSpawnBlock();
-    const bind = block.indexOf('withRoleBinding(seeded, roleBinding, role)');
+    const bind = block.indexOf('withRoleBinding(seeded, roleBinding, role');
     const flags = block.indexOf('applyWorkerPermissionFlags(roleBound.initialCommand, workerMode)');
     const marker = block.indexOf('reattachModelEnvMarker(marker, bound.initialCommand');
     expect(bind).toBeGreaterThan(-1);

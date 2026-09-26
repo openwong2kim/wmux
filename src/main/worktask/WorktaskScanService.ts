@@ -69,6 +69,13 @@ export interface ScanOpenTask {
   ownerWorkspaceId?: string;
   worktreePath?: string;
   /**
+   * worktree:false fan-out task: its output folder. Such a task never has a
+   * worktree, so it is fully materialized without one — not
+   * 'unmaterialized-open'. Its folder lives under outputs/, outside the scan
+   * root, so nothing here can ever list it for deletion.
+   */
+  outputDir?: string;
+  /**
    * A detached task (closed but its worktree/branch/PTY are still alive). When true,
    * that worktree is a "normally working, independent workspace" and is excluded
    * entirely from the cleanup list — classified neither as orphan-dir (deletion
@@ -127,6 +134,7 @@ export class WorktaskScanService {
         // to protect and nothing to reconcile (the independent workspace was
         // already deleted) — skip it silently.
         if (t.detached) continue;
+        if (t.outputDir) continue;
         entries.push({
           category: 'unmaterialized-open',
           taskId: t.taskId,

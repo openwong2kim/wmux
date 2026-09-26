@@ -680,6 +680,7 @@ export const en = {
   'fleet.review.pr.merged': 'merged',
   'fleet.review.pr.closed': 'closed',
   'fleet.review.openDiff': 'Open diff',
+  'fleet.review.openFolder': 'Open folder',
   'fleet.review.createPr': 'Create PR',
   'fleet.review.jump': 'Jump to task',
   'fleet.review.close': 'Close task',
