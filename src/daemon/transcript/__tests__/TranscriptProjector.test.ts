@@ -638,6 +638,42 @@ describe('TranscriptProjector.codeBlock — tool bodies', () => {
   });
 });
 
+describe('TranscriptProjector.searchPage — host search reads', () => {
+  it('answers the resolver reason for a pane it cannot read', () => {
+    expect(harness.projector.searchPage('pty-1')).toEqual({ ok: false, reason: 'no-hook' });
+  });
+
+  it('pages backward past the A3 budget, and each line end is a snapshot boundary', () => {
+    const file = path.join(harness.projects, 'search-pages.jsonl');
+    const lines: string[] = [];
+    for (let i = 0; i < 400; i++) {
+      lines.push(JSON.stringify({
+        type: 'assistant',
+        uuid: `page-${i}`,
+        message: { role: 'assistant', content: [{ type: 'text', text: `row ${i} ` + 'z'.repeat(4000) }] },
+      }));
+    }
+    fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+
+    const first = harness.projector.searchPage('pty-1');
+    if (!first.ok) throw new Error(first.reason);
+    // A full 256 KiB window, not the budget-shrunk one `snapshot` serves.
+    expect(Buffer.byteLength(JSON.stringify(first.page.events), 'utf8')).toBeGreaterThan(BUDGET_BYTES);
+    expect(first.lineEnds).toHaveLength(first.page.events.length);
+    expect(first.lineEnds[first.lineEnds.length - 1]).toBe(fs.statSync(file).size);
+
+    // The window ending at an event's line end ends with that event.
+    const i = 3;
+    const around = harness.projector.snapshot('pty-1', { before: first.lineEnds[i] })!;
+    expect(around.events[around.events.length - 1].id).toBe(first.page.events[i].id);
+
+    const older = harness.projector.searchPage('pty-1', first.page.cursor.headOffset);
+    if (!older.ok) throw new Error(older.reason);
+    expect(older.page.events[older.page.events.length - 1].id).toBe(`page-${Number(first.page.events[0].id.slice(5)) - 1}`);
+  });
+});
+
 describe('TranscriptProjector — #782 phone turn-view contract (stateless delta)', () => {
   /**
    * A valid entry whose normalized events exceed BUDGET_BYTES while the raw
