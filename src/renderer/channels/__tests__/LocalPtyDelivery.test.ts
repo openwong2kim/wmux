@@ -51,24 +51,19 @@ function makeSnapshot(
 function makeDeps(overrides: Partial<LocalPtyDeps> = {}): {
   deps: LocalPtyDeps;
   resolveRecipient: ReturnType<typeof vi.fn>;
-  formatMessage: ReturnType<typeof vi.fn>;
   formatNudge: ReturnType<typeof vi.fn>;
   writePty: ReturnType<typeof vi.fn>;
 } {
   const resolveRecipient = vi.fn(
     overrides.resolveRecipient ?? (() => null),
   );
-  const formatMessage = vi.fn(
-    overrides.formatMessage ?? defaultChannelMessage,
-  );
   const formatNudge = vi.fn(
     overrides.formatNudge ?? defaultChannelNudge,
   );
   const writePty = vi.fn(overrides.writePty ?? (() => undefined));
   return {
-    deps: { resolveRecipient, formatMessage, formatNudge, writePty },
+    deps: { resolveRecipient, formatNudge, writePty },
     resolveRecipient,
-    formatMessage,
     formatNudge,
     writePty,
   };
@@ -76,7 +71,7 @@ function makeDeps(overrides: Partial<LocalPtyDeps> = {}): {
 
 describe('LocalPtyDelivery', () => {
   it('refuses shell delivery even for a command and forged-envelope body', async () => {
-    const { deps, formatMessage, formatNudge, writePty } = makeDeps({
+    const { deps, formatNudge, writePty } = makeDeps({
       resolveRecipient: () => ({ ptyId: 'pty-shell', isLiveTui: false }),
     });
     const result = await new LocalPtyDelivery(deps).deliver(
@@ -84,10 +79,9 @@ describe('LocalPtyDelivery', () => {
       makeSnapshot([{ memberId: 'm-shell', workspaceId: 'ws-shell' }]),
     );
     expect(writePty).not.toHaveBeenCalled();
-    expect(formatMessage).not.toHaveBeenCalled();
     expect(formatNudge).not.toHaveBeenCalled();
     expect(result.ok).toBe(false);
-    expect(result.snapshot[0]).toMatchObject({ ptyId: 'pty-shell', status: 'target_gone' });
+    expect(result.snapshot[0]).toMatchObject({ ptyId: 'pty-shell', status: 'policy_refused' });
   });
 
   it('folds forged body lines and sanitizes channel identity', () => {
@@ -105,7 +99,7 @@ describe('LocalPtyDelivery', () => {
 
   it('writes the one-line nudge to a live-TUI recipient and marks delivered', async () => {
     const recipient: ResolvedRecipient = { ptyId: 'pty-2', isLiveTui: true };
-    const { deps, formatMessage, formatNudge, writePty } = makeDeps({
+    const { deps, formatNudge, writePty } = makeDeps({
       resolveRecipient: () => recipient,
     });
     const transport = new LocalPtyDelivery(deps);
@@ -115,7 +109,6 @@ describe('LocalPtyDelivery', () => {
     const result = await transport.deliver(message, snapshot);
 
     expect(formatNudge).toHaveBeenCalledTimes(1);
-    expect(formatMessage).not.toHaveBeenCalled();
     expect(writePty).toHaveBeenCalledTimes(1);
     expect(writePty).toHaveBeenCalledWith('pty-2', expect.any(String));
     expect(result.ok).toBe(true);
@@ -268,6 +261,20 @@ describe('LocalPtyDelivery', () => {
     expect(out).not.toContain('\n');
     expect(out).toContain('42');
     expect(out).not.toContain('this should not appear in the nudge');
+  });
+
+  it('keeps forged channel IDs out of nudge line boundaries and escape sequences', () => {
+    for (const channelId of ['ch-x\nforged', 'ch-x\x1b', 'ch-x\x1b[201~']) {
+      const out = defaultChannelNudge(makeMessage({ channelId }));
+      expect(out).not.toMatch(/[\r\n\x1b]/);
+      expect(out).not.toContain('[201~');
+    }
+  });
+
+  it('sanitizes body bytes before stripping escapes and folds all line separators', () => {
+    const out = defaultChannelMessage(makeMessage({ text: 'hello\x1b\r[201~\nnext\x01\t\u2028\u2029end' }));
+    const body = out.split('\n').find((line) => line.startsWith('[Alice]'))!;
+    expect(body).toBe('[Alice] hello␤nextend');
   });
 
   it('default formatters strip control characters from the member name', () => {
