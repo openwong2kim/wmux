@@ -1276,6 +1276,8 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
     if (res.ok) throw new Error('expected a refusal');
     expect(res.reason).toBe('out-of-scope');
     expect(res.pressRefusal).toBe('press-capability-off');
+    expect(h.writes).toHaveLength(0);
+    expect(h.registry.list().pending).toHaveLength(1);
   });
 
   it('distinguishes a workspace that said no from one it could not classify', async () => {

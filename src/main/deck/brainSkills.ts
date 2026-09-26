@@ -187,11 +187,15 @@ stale by the time you act on it.
    the file paths in it, the command it is about to run.
 2. Decide whether it falls inside what the operator has already approved for
    this task.
-3. Check the current wake contract. If it says \`approval-press=off\`, or
+3. Distinguish an approval prompt (permission to run a tool, command or change)
+   from an ordinary question. For an ordinary question you can answer within
+   the operator's approved task scope, respond with terminal_send; ask the
+   operator only when the answer requires a new decision or exceeds that scope.
+4. For an approval prompt, check the current wake contract. If it says \`approval-press=off\`, or
    approval autonomy is not explicitly enabled, raise \`deck_ask_decision\` and
    wait for the operator; do not try an approval tool or a raw key.
-4. When enabled, use \`approval_press\` for a pending approval record in a
-   delegated task. If it refuses or no record exists, raise a decision and wait;
+5. When enabled, use \`approval_press\` for a pending approval record in a
+   delegated task. If it refuses or no approval record exists, raise a decision and wait;
    never use terminal_send to bypass the approval gate.
 
 Never press on the strength of the event alone. Never press because a prompt of

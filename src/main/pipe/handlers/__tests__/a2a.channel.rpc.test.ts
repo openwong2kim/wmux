@@ -139,7 +139,7 @@ describe('workspace-bound commander channel identity', () => {
     const router = setupHandlerRouter(daemon);
     const token = mintCommanderToken(SENDER_WS);
     try {
-      for (const method of ['a2a.channel.create', 'a2a.channel.post'] as const) {
+      for (const method of ['a2a.channel.create', 'a2a.channel.post', 'task.mission.start', 'task.mission.close', 'task.mission.update', 'a2a.channel.unread', 'a2a.channel.getMessages', 'task.mission.list'] as const) {
         const response = await router.dispatch({
           id: method, method, commanderToken: token,
           params: { verifiedWorkspaceId: THIRD_WS,
@@ -155,7 +155,7 @@ describe('workspace-bound commander channel identity', () => {
       revokeCommanderToken(token);
       const stale = await router.dispatch({ id: 'stale', method: 'a2a.channel.post', commanderToken: token, params: {} });
       expect(stale.ok).toBe(false);
-      expect(calls).toHaveLength(2);
+      expect(calls).toHaveLength(8);
     } finally {
       revokeCommanderToken(token);
     }
