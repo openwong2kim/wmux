@@ -266,6 +266,8 @@ describe('buildApprovalPushPayload — terminal_prompt', () => {
   it('never offers a lock-screen affirmative', () => {
     const payload = buildApprovalPushPayload(record({ toolName: 'Bash', summary: 'ls' }));
     expect(payload.requiresInAppChoice).toBe(true);
+    // A client picks a category with no Deny/Reply for this kind.
+    expect(payload.approvalKind).toBe('terminal_prompt');
     expect(payload).not.toHaveProperty('firstOption');
     expect(payload).toMatchObject({ approvalId: 'ap-1', sessionId: 'sess-1' });
   });

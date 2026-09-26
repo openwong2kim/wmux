@@ -33,6 +33,9 @@ export function buildApprovalPushPayload(request: ApprovalRequest): PushPayload 
       sessionId: request.sessionId,
       requiresInAppChoice: true,
       risk: approvalHasElevatedRisk(request) ? PUSH_RISK_CRITICAL : PUSH_RISK_NORMAL,
+      // Lets a client pick a category with no Deny/Reply: neither can answer
+      // this dialog (Reply would type into it; Deny needs a choice key).
+      approvalKind: 'terminal_prompt',
     };
   }
   const choiceFields = lockScreenChoiceFields(request.choices);
