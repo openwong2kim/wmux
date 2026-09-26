@@ -8,6 +8,22 @@ import { sessionPullRequests } from './sessionPullRequests';
 import { SessionGitController, SessionGitError } from './sessionGit';
 import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
 import { listFolders, FolderBrowseError, homeIsBrowsable } from './phoneFolders';
+import {
+  createSearchCursorCodec,
+  joinWrappedRows,
+  MAX_CONCURRENT_SEARCHES,
+  parseSearchRequest,
+  runSearch,
+  ScrollbackTextCache,
+  SearchError,
+  searchForbidden,
+  type SearchPane,
+  type SearchRequest,
+  type SearchScope,
+  type SortKey,
+  type TurnPage,
+  type TurnSource,
+} from './hostSearch';
 import http from 'node:http';
 import type { AgentStatus } from '../../shared/types';
 import { isRemoteAgentStatus } from '../../shared/remoteHosts';
@@ -174,6 +190,8 @@ function decodeTurnCursor(
  *   GET  /api/config           allowInput + allowUpload flags, plus the phone
  *                              protocol handshake (see protocolVersion.ts)
  *   GET  /api/sessions         pane list
+ *   GET  /api/search?q=        search turns, pane metadata + run history and
+ *                              scrollback across this host (hostSearch.ts)
  *   POST /api/sessions         spawn a pane — 403 unless `--allow-input`
  *   DELETE /api/sessions/:id   close a pane — 403 unless `--allow-input`
  *   GET  /api/sessions/:id/diff  what this pane's repo has changed (read-only git)
@@ -614,6 +632,13 @@ interface WebTerminalServerDeps {
     commandRunning?: boolean;
     agentProcessAlive?: boolean;
   } | undefined;
+  /**
+   * A pane's ring as plain-text rows — the `daemon.readSessionText` parse, on
+   * the daemon's shared concurrency-1 snapshot queue — for the scrollback
+   * scope of `GET /api/search`. Optional: without it that scope answers
+   * `unavailable` for every pane and `/api/config` does not advertise it.
+   */
+  sessionText?: (sessionId: string) => Promise<ReadonlyArray<{ text: string; wrapped: boolean }> | null>;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
@@ -1111,6 +1136,10 @@ export class WebTerminalServer {
   private phoneGitRequests = 0;
   private readonly agentSettingsRequests = new Set<string>();
   private readonly pendingLiveness = new Map<string, AgentLivenessBody>();
+  /** `GET /api/search`: the cursor key lives and dies with this server. */
+  private readonly searchCursors = createSearchCursorCodec(crypto.randomBytes(32));
+  private readonly scrollbackText = new ScrollbackTextCache();
+  private searchesInFlight = 0;
   /** Last GOOD desktop sidebar snapshot and when it was taken. */
   private desktopSidebarCache: { at: number; value: PhoneSidebarSnapshot } | null = null;
   /** The one background refresh in flight, and when it started. */
@@ -2075,6 +2104,9 @@ export class WebTerminalServer {
         desktopAccounts: this.opts?.allowTranscript === true && desktopAvailable,
         gitControl: this.mayInput(principal),
         runHistory: this.opts?.allowTranscript === true && this.deps.runHistory !== undefined,
+        // `GET /api/search`, and which of its scopes can answer. OMITTED, not
+        // false, when none can — the shape a daemon predating the route serves.
+        ...this.searchConfig(),
         // Native chat (contract §4). OMITTED, not false, when the bridge is not
         // wired: that is the shape a daemon predating the routes serves, and a
         // phone reads both as "no native chat here".
@@ -2127,6 +2159,9 @@ export class WebTerminalServer {
       if (!Number.isSafeInteger(offset) || offset < 0 || offset > 1000) return this.json(res, 400, {error:'invalid-offset'});
       try { return this.json(res, 200, this.deps.runHistory().list(offset), {'Cache-Control':'no-store'}); }
       catch { return this.json(res, 503, {error:'history-unavailable'}); }
+    }
+    if (req.method === 'GET' && p === '/api/search') {
+      return this.handleSearch(res, url, principal);
     }
     if (req.method === 'GET' && p === '/api/workspaces') {
       return this.handleWorkspacesList(res);
@@ -2756,6 +2791,184 @@ export class WebTerminalServer {
         if (this.desktopSidebarInFlight === entry) this.desktopSidebarInFlight = null;
       });
     this.desktopSidebarInFlight = entry;
+  }
+
+  // --- host search -----------------------------------------------------------
+
+  /**
+   * The scopes `GET /api/search` can answer for any caller. Transcript scopes
+   * ride `--allow-transcript`, exactly as `/turns` and `/api/history` do.
+   * Scrollback is the `/api/stream` grant — every authenticated caller holds
+   * it — plus the daemon's text reader. A read, so input is never asked for.
+   */
+  private searchConfig(): { search?: true; searchScopes?: SearchScope[] } {
+    const scopes: SearchScope[] = [
+      ...(this.opts?.allowTranscript === true ? ['turns', 'sessions'] as const : []),
+      ...(this.deps.sessionText ? ['scrollback'] as const : []),
+    ];
+    return scopes.length > 0 ? { search: true, searchScopes: scopes } : {};
+  }
+
+  /**
+   * `GET /api/search?q=&scope=&limit=&cursor=` — see hostSearch.ts for the
+   * matching, the ordering and every bound. Each pane is read through the
+   * predicate its own route uses: turns and pane metadata through
+   * `readableSession` (as `/turns`: no brain pane for anyone), scrollback
+   * through `attachableSession` (as `/api/stream`). Both reach dead-session
+   * tombstones, which come back `alive: false`.
+   *
+   * Only the transcript grant can refuse the whole request, and only when
+   * every requested scope needs it; otherwise a gated scope reports its panes
+   * as `transcript-disabled` and the rest still answers.
+   */
+  private handleSearch(res: http.ServerResponse, url: URL, principal: WebPrincipal): void {
+    const noStore = { 'Cache-Control': 'no-store' };
+    let request: SearchRequest;
+    let after: SortKey | null;
+    try {
+      request = parseSearchRequest(url.searchParams);
+      after = request.cursor === null ? null : this.searchCursors.decode(request, request.cursor);
+    } catch (error) {
+      if (error instanceof SearchError) return this.json(res, error.status, { error: error.tag }, noStore);
+      throw error;
+    }
+    const allowTranscript = this.opts?.allowTranscript === true;
+    if (searchForbidden(request.scopes, allowTranscript)) return this.json(res, 403, { error: 'transcript-disabled' }, noStore);
+    if (this.searchesInFlight >= MAX_CONCURRENT_SEARCHES) {
+      return this.json(res, 429, { error: 'search-busy' }, { ...noStore, 'Retry-After': '1' });
+    }
+    this.searchesInFlight += 1;
+    // Before the answer, a close means the phone gave up: stop reading.
+    let gone = false;
+    res.on('close', () => { gone = true; });
+    const { readable, attachable } = this.searchPanes(principal);
+    const runHistory = this.deps.runHistory;
+    const sessionText = this.deps.sessionText;
+    void runSearch(request, after, {
+      panes: readable,
+      scrollbackPanes: attachable,
+      allowTranscript,
+      ...(runHistory ? { history: () => runHistory().list(0, 1000).entries } : {}),
+      turns: (id) => this.searchTurnSource(id),
+      ...(sessionText ? {
+        scrollback: {
+          cached: (id: string) => {
+            const managed = this.attachableSession(principal, id);
+            return managed ? this.scrollbackText.get(id, scrollbackKey(managed)) : undefined;
+          },
+          read: async (id: string) => {
+            const managed = this.attachableSession(principal, id);
+            if (!managed) return null;
+            // Keyed BEFORE the read: bytes that land meanwhile make the entry
+            // stale on the next search rather than silently current.
+            const key = scrollbackKey(managed);
+            const rows = await sessionText(id);
+            if (!rows) return null;
+            const lines = joinWrappedRows(rows);
+            if (this.deps.sessionManager.getSession(id) === managed) this.scrollbackText.set(id, key, lines);
+            return lines;
+          },
+        },
+      } : {}),
+      now: () => this.now(),
+      stopped: () => gone,
+    }, this.searchCursors)
+      .then((body) => { if (!gone) this.json(res, 200, body, noStore); })
+      .catch((err: unknown) => this.failRequest(res, err))
+      .finally(() => { this.searchesInFlight -= 1; });
+  }
+
+  /**
+   * Every pane the session manager still holds — live ones and dead-session
+   * tombstones — split by the two read predicates, most recently active first.
+   * `surfaceTitle` comes from the sidebar snapshot already cached, never a
+   * fresh desktop request: a search must not add a round trip to the desktop.
+   */
+  private searchPanes(principal: WebPrincipal): { readable: SearchPane[]; attachable: SearchPane[] } {
+    const sidebar = this.cachedDesktopSidebar();
+    const titles = new Map((sidebar?.panes ?? []).map((pane) => [pane.ptyId, pane.surfaceTitle]));
+    const readable: SearchPane[] = [];
+    const attachable: SearchPane[] = [];
+    const held = new Set<string>();
+    for (const managed of this.deps.sessionManager.listManagedSessions()) {
+      const meta = managed.meta;
+      held.add(meta.id);
+      const agent = meta.agent?.displayName ?? meta.lastDetectedAgent;
+      const surfaceTitle = titles.get(meta.id);
+      const recency = Date.parse(meta.lastActivity);
+      const pane: SearchPane = {
+        sessionId: meta.id,
+        ...workspaceIdOf(meta.env),
+        ...workspaceLabelOf(meta.env),
+        ...(agent ? { agent } : {}),
+        ...(meta.cwd ? { cwd: meta.cwd } : {}),
+        ...cwdLeafOf(meta.cwd),
+        ...(surfaceTitle ? { surfaceTitle } : {}),
+        alive: meta.state === 'attached' || meta.state === 'detached',
+        recency: Number.isFinite(recency) ? recency : 0,
+      };
+      if (this.readableSession(meta.id) === managed) readable.push(pane);
+      if (this.attachableSession(principal, meta.id) === managed) attachable.push(pane);
+    }
+    this.scrollbackText.retain(held);
+    const newestFirst = (a: SearchPane, b: SearchPane) => b.recency - a.recency || (a.sessionId < b.sessionId ? -1 : 1);
+    return { readable: readable.sort(newestFirst), attachable: attachable.sort(newestFirst) };
+  }
+
+  /** The sidebar snapshot already held, or null. Never starts a refresh. */
+  private cachedDesktopSidebar(): PhoneSidebarSnapshot | null {
+    const cached = this.desktopSidebarCache;
+    if (!cached || this.availableDesktop() === null) return null;
+    return this.now() - cached.at <= DESKTOP_SIDEBAR_MAX_STALE_MS ? cached.value : null;
+  }
+
+  /**
+   * Where the `turns` scope reads a pane's conversation: the reader `/turns`
+   * would pick. With the chat bridge wired, its resolution decides — an
+   * OpenCode or managed page it already holds is searched as is, a transcript
+   * file is paged backward through the projector. The page a hit opens on is
+   * named by `turnCursor`, in the cursor format `/turns` reads right now.
+   */
+  private async searchTurnSource(sessionId: string): Promise<TurnSource> {
+    const chat = this.deps.chat?.() ?? null;
+    let cursorFor: (head: number, fileSize: number) => string;
+    if (chat) {
+      const resolution = await chat.resolve(sessionId);
+      if (resolution.source === 'none') return { kind: 'skip', reason: resolution.status.reason || 'unavailable' };
+      if (resolution.source === 'tui') return { kind: 'page', events: resolution.page.events };
+      if (resolution.source === 'managed') {
+        const page = chat.managedSnapshot(sessionId);
+        return page ? { kind: 'page', events: page.events } : { kind: 'skip', reason: 'unreadable' };
+      }
+      const a = resolutionAgentSessionId(resolution) ?? '';
+      const e = resolutionEpoch(resolution) ?? '';
+      cursorFor = (head, fileSize) => encodeChatCursor({ v: 2, src: 'file', a, e, head, fileSize });
+    } else {
+      cursorFor = (head, fileSize) => encodeTurnCursor({ headOffset: head, tailOffset: head, fileSize });
+    }
+    const projector = this.deps.projector?.() ?? null;
+    if (!projector) return { kind: 'skip', reason: 'unavailable' };
+    // The first page is read here so an unresolvable pane is skipped with the
+    // resolver's own reason, not a generic one.
+    const first = projector.searchPage(sessionId);
+    if (!first.ok) return { kind: 'skip', reason: first.reason };
+    const fileSize = first.page.cursor.fileSize;
+    let pending: typeof first | null = first;
+    let before = fileSize;
+    return {
+      kind: 'file',
+      next: (): TurnPage | null => {
+        const read = pending ?? projector.searchPage(sessionId, before);
+        pending = null;
+        if (!read.ok) return null;
+        const { page, lineEnds } = read;
+        const bytes = Math.max(0, before - page.cursor.headOffset);
+        before = page.cursor.headOffset;
+        return { events: page.events, lineEnds, bytes, done: page.cursor.headOffset <= 0 };
+      },
+      // `dir=back` from here answers the window ending just past the hit's line.
+      cursorFor: (lineEnd) => cursorFor(lineEnd, fileSize),
+    };
   }
 
   // --- pane diff (read-only git) -------------------------------------------
@@ -6697,6 +6910,11 @@ function sidebarWorkspaceFields(
         }
       : {}),
   };
+}
+
+/** A pane's extracted scrollback is current while nothing was written and the geometry held. */
+function scrollbackKey(managed: ManagedSession): string {
+  return `${managed.meta.incarnationId ?? ''}\0${managed.ringBuffer.totalBytesWritten}\0${managed.meta.cols}x${managed.meta.rows}`;
 }
 
 /** The pane's workspace id from its spawn env, bounded like every id on the wire. */
