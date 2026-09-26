@@ -502,6 +502,26 @@ describe('registerCodexHooks — the hooks lane (#1107)', () => {
     expect(readCodexHooksStatus(home, moved).path).toBe(moved);
   });
 
+  it('installs beside trust state and preserves it through refresh and removal', () => {
+    const trust = "[hooks.state]\n[hooks.state.'C:\\Users\\user\\hooks.json:pre_tool_use:0:0']\nenabled = true\ntrusted_hash = \"sha256:trusted\"\n";
+    writeCodex(trust);
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('none');
+    expect(registerCodexHooks(home, BRIDGE, VERSION_OK).wrote).toBe(true);
+    expect(fs.readFileSync(codexTarget.configPath(home), 'utf8')).toContain(trust);
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('written');
+    expect(registerCodexHooks(home, BRIDGE, VERSION_OK).wrote).toBe(false);
+    expect(unregisterCodexHooks(home).removed).toBe(true);
+    expect(fs.readFileSync(codexTarget.configPath(home), 'utf8')).toBe(trust);
+  });
+
+  it('still refuses hook definitions alongside trust state', () => {
+    const config = '[hooks.state]\n[[hooks.Stop]]\ncommand = "user-own"\n';
+    writeCodex(config);
+    expect(registerCodexHooks(home, BRIDGE, VERSION_OK).skipped).toBe('foreign');
+    expect(readCodexHooksStatus(home, BRIDGE).state).toBe('foreign');
+    expect(fs.readFileSync(codexTarget.configPath(home), 'utf8')).toBe(config);
+  });
+
   it('SKIPS a foreign [[hooks]] table — never sits beside the user’s own hooks', () => {
     const p = writeCodex('[[hooks.Stop]]\nmatcher = "*"\ncommand = "user-own"\n');
     const r = registerCodexHooks(home, BRIDGE, VERSION_OK);
