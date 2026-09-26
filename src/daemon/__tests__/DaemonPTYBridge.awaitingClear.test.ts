@@ -143,16 +143,28 @@ describe('DaemonPTYBridge — shared answered path', () => {
   });
 });
 
-describe('DaemonPTYBridge — key input revision', () => {
-  it('advances on a keystroke, not on pointer or focus reports', () => {
+describe('DaemonPTYBridge — fence input revision', () => {
+  // SGR button codes: 0 = left press (M) / release (m), 35 = motion with no
+  // button (32 motion + 3 none), 32 = drag with the left button, 64 = wheel up.
+  it('pointer motion and focus reports do not advance it', () => {
     const bridge = new DaemonPTYBridge();
-    const before = bridge.getKeyInputRevision();
     bridge.noteInput('\x1b[<35;40;12M\x1b[<35;41;12M');
-    bridge.noteInput('\x1b[I');
-    expect(bridge.getKeyInputRevision()).toBe(before);
+    bridge.noteInput('\x1b[I\x1b[O');
+    expect(bridge.getKeyInputRevision()).toBe(0);
     expect(bridge.getInputRevision()).toBe(2);
-    bridge.noteInput('\x1b[<35;40;12Mx');
-    expect(bridge.getKeyInputRevision()).toBe(before + 1);
+    bridge.cleanup();
+  });
+
+  it.each([
+    ['a click (press)', '\x1b[<0;6;13M'],
+    ['a release', '\x1b[<0;6;13m'],
+    ['a drag with a button held', '\x1b[<32;6;13M'],
+    ['a wheel turn', '\x1b[<64;6;13M'],
+    ['a key glued to motion', '\x1b[<35;40;12Mx'],
+  ])('%s advances it', (_label, chunk) => {
+    const bridge = new DaemonPTYBridge();
+    bridge.noteInput(chunk);
+    expect(bridge.getKeyInputRevision()).toBe(1);
     bridge.cleanup();
   });
 });

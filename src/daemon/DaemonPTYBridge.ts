@@ -138,10 +138,11 @@ export class DaemonPTYBridge extends EventEmitter {
   /** Monotonic stdin write counter used to detect input racing a scheduled paste. */
   private inputRevision = 0;
   /**
-   * Like `inputRevision`, but advanced only by writes that carry a keystroke:
-   * a chunk made purely of SGR mouse and focus reports does not count. The
-   * remote terminal-prompt answer fences on it — the pointer moving over the
-   * pane is not someone answering the dialog.
+   * Like `inputRevision`, but advanced only by writes that could act on the
+   * screen: a key, a mouse click, a release, a wheel turn. A chunk made purely
+   * of pointer MOTION reports and focus in/out reports does not count. The
+   * remote terminal-prompt answer fences on it — the pointer drifting over the
+   * pane is not someone answering the dialog, but a click may be.
    */
   private keyInputRevision = 0;
   private emptyShellPrompt = false;
@@ -229,7 +230,7 @@ export class DaemonPTYBridge extends EventEmitter {
     if (data.length > 0) {
       this.lastInputAt = Date.now();
       this.inputRevision += 1;
-      if (data.replace(DaemonPTYBridge.NON_KEY_INPUT, '').length > 0) this.keyInputRevision += 1;
+      if (DaemonPTYBridge.stripPassiveInput(data).length > 0) this.keyInputRevision += 1;
       this.emptyShellPrompt = false;
       this.completedShellCommand = false;
     }
@@ -312,6 +313,25 @@ export class DaemonPTYBridge extends EventEmitter {
   /** SGR mouse reports and focus in/out reports: terminal input that is not a key. */
   // eslint-disable-next-line no-control-regex
   private static readonly NON_KEY_INPUT = /\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[[IO]/g;
+  // eslint-disable-next-line no-control-regex
+  private static readonly SGR_MOUSE = /\x1b\[<(\d+);\d+;\d+[Mm]/g;
+  // eslint-disable-next-line no-control-regex
+  private static readonly FOCUS_REPORT = /\x1b\[[IO]/g;
+
+  /**
+   * Remove only PASSIVE input: focus reports, and SGR mouse reports that are
+   * pure motion (motion flag 32 set, button bits 3 = none, no wheel flag 64).
+   * Presses, releases and wheel reports stay — they can select or dismiss.
+   */
+  private static stripPassiveInput(data: string): string {
+    return data
+      .replace(DaemonPTYBridge.FOCUS_REPORT, '')
+      .replace(DaemonPTYBridge.SGR_MOUSE, (seq, b: string) => {
+        const code = Number(b);
+        const pureMotion = (code & 32) !== 0 && (code & 3) === 3 && (code & 64) === 0;
+        return pureMotion ? '' : seq;
+      });
+  }
 
   /**
    * Apply an authoritative detector/hook lifecycle edge inside the daemon.
@@ -379,7 +399,7 @@ export class DaemonPTYBridge extends EventEmitter {
     return this.inputRevision;
   }
 
-  /** Stdin generation counting only writes that carry a keystroke (see the field). */
+  /** Stdin generation counting only writes that can act on the screen (see the field). */
   getKeyInputRevision(): number {
     return this.keyInputRevision;
   }
