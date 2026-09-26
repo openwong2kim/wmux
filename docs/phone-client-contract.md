@@ -1316,141 +1316,6 @@ it is wired at daemon HookIngest, not at the SSE subscriber. Closed panes retain
 their results. The client stores read IDs per host on-device and never presents
 read state as synchronized across devices.
 
-## Host search
-
-`GET /api/search?q=<text>&scope=<list>&limit=<n>&cursor=<c>` searches this
-host's panes. It is a read: no input grant is involved.
-
-### Advertising
-
-`/api/config` carries `search: true` and `searchScopes` when at least one scope
-can answer this caller, and omits both otherwise (as a daemon predating the
-route does). `turns` and `sessions` are listed when the server runs with
-`--allow-transcript`. `scrollback` is listed when the daemon can read pane
-text, which needs only an authenticated caller, the same as `/api/stream`.
-
-### Request
-
-- `q`: trimmed, then 2–200 UTF-16 code units, with no NUL. Otherwise
-  `400 invalid-query`. Matching is a case-insensitive literal substring, never a
-  pattern. Case folding is locale-independent and per character, and it never
-  changes a string's length.
-- `scope`: a comma list of `turns`, `sessions`, `scrollback`. Duplicates are
-  ignored. Default `turns,sessions`. Anything else, including an empty value,
-  is `400 invalid-scope`.
-- `limit`: 1–100, default 50. Otherwise `400 invalid-limit`.
-- `cursor`: the previous response's `nextCursor`. A cursor from another query
-  or scope set, an edited one, or one minted before a daemon restart is
-  `400 invalid-cursor`. Start the search again without it. Re-casing the query
-  keeps the cursor valid.
-
-Every response, error or not, is `Cache-Control: no-store`.
-
-### Response
-
-```json
-{ "results": [ { "kind": "turn", "sessionId": "…", "workspaceId": "…",
-                 "title": "wmux · Claude · repo", "surfaceTitle": "…", "alive": true,
-                 "snippet": "…", "matchRanges": [[12, 6]], "at": 1790000000000,
-                 "turnEventId": "…", "turnCursor": "…" } ],
-  "coverage": { "searchedSessions": 3,
-                "skippedSessions": [ { "sessionId": "…", "scope": "turns", "reason": "budget" } ] },
-  "truncated": false,
-  "nextCursor": null }
-```
-
-- `kind`: `turn` (a message in a conversation), `session` (pane metadata or a
-  run-history result), `scrollback` (a line of terminal text).
-- `title`: the daemon has no pane title, so it composes `workspace · agent ·
-  cwd leaf` and drops any missing part. When nothing is known, it is the
-  session id. For a run with no pane left, it is the run's workspace and agent.
-- `surfaceTitle`: the desktop tab title. Present only while the desktop is
-  attached and its sidebar snapshot is already cached. A search never asks the
-  desktop for it, so it can be missing on a search that follows a long idle.
-  Prefer it over `title` when present.
-- `alive`: `false` for a dead-session tombstone (the daemon keeps one for up
-  to 24 h after the shell exits). Show that pane read-only. The field is
-  omitted on a run-history hit whose pane is gone.
-- `snippet` and `matchRanges`: about 160 code units around the first match,
-  widened only for a longer query. Control characters are spaces, so a snippet
-  is one line. A snippet edge never splits a surrogate pair. `matchRanges` are
-  `[start, length]` pairs in UTF-16 code units relative to `snippet`, which
-  `NSString`/`NSRange` use directly. There are at most 16 pairs, and every
-  occurrence is wholly inside the snippet.
-- `at`: epoch ms. For a turn it is the message timestamp, and for a run-history
-  hit it is the run's time. Pane-metadata and scrollback hits have no `at`.
-- `turnEventId`: the TurnEvent `id` `/turns` serves for that message.
-- `turnCursor` (transcript-file turns only): open the hit with
-  `GET /api/sessions/<id>/turns?dir=back&cursor=<turnCursor>`. That page ends
-  with the hit's transcript line. It is in the format `/turns` accepts right
-  now (a chat cursor when native chat is wired), so page on from its reply as
-  usual. It is absent for OpenCode and managed conversations, which `/turns`
-  serves as one page. If the conversation changed since the search, `/turns`
-  answers its usual reset snapshot.
-
-### Ordering and paging
-
-Hits with `at` come first, newest first. Hits without `at` follow, by their
-pane's last activity, newest first. Ties break on session id, kind, and
-position (newest first). So a pane-metadata hit sorts after every timestamped
-hit. `nextCursor` is non-null when more hits exist past this page. It is
-stateless: the next call runs the search again and continues after the last
-hit returned. A turn appended meanwhile sorts before that hit and is not
-repeated. The order of hits without `at` follows pane activity at the time of
-each call, so one of them can repeat or be skipped across pages while that
-pane is busy.
-
-A cursor and `truncated: true` do not combine. Each page runs under the same
-bounds, so paging is complete only over an untruncated search. `nextCursor`
-is null when a truncated search found fewer hits than `limit`.
-
-### Scopes, gates, and which panes
-
-| scope | grant | panes | reads |
-|---|---|---|---|
-| `turns` | `--allow-transcript` | as `/turns`: every pane the daemon holds, dead tombstones included, orchestrator brain panes excluded for every caller | the reader `/turns` would pick: the Claude/Codex transcript through the resume binding and its path check, or the OpenCode/managed page the chat bridge already holds. Matched: user messages and the assistant's replies. Thinking blocks and tool calls and results are not searched. |
-| `sessions` | `--allow-transcript` | same as `turns` | the composed title, desktop tab title, agent, workspace name and cwd (one hit per pane, the first field that matches), and each run-history result's summary, workspace and agent (the entries `/api/history` serves) |
-| `scrollback` | an authenticated caller (as `/api/stream`) | as `/api/stream`: a paired device never gets a brain pane; the operator token does | the pane's terminal text through the daemon's headless parse of the ring (the last 5,000 rows), soft-wrapped rows joined into one line |
-
-Without `--allow-transcript`, a request whose every scope needs it is
-`403 {"error":"transcript-disabled"}`. When another scope is also asked for,
-the answer is 200, and every pane is listed in `skippedSessions` for each gated
-scope with reason `transcript-disabled`.
-
-### Bounds
-
-- At most 2 searches run at once, daemon-wide. A third is
-  `429 {"error":"search-busy"}` with `Retry-After: 1`.
-- One request runs for about 3 s of wall clock. Once that has passed, no new
-  pane is started.
-- `turns` reads each transcript newest first, up to its most recent 4 MiB
-  (16 of the projector's 256 KiB pages). One request reads at most 24 MiB
-  across all panes. The daemon yields between pages, so a search does not stall
-  other panes' streams.
-- `scrollback` extracts at most 6 panes' text per request, most recently active
-  first. Extraction shares the one-at-a-time snapshot queue that attach and
-  resync use. Text is cached per pane until the pane writes more bytes, or its
-  size or incarnation changes, for up to 8 panes. A cached pane does not count
-  against the 6. An extraction still queued at the deadline finishes in the
-  background and fills the cache for the next search.
-
-Hitting any of these bounds sets `truncated: true`. Every pane a bound left
-unsearched, or only partly searched, is listed with reason `budget`. Hits from
-the part that was read are still returned. `searchedSessions` counts the panes
-searched fully or in part in at least one scope.
-
-### Skip reasons
-
-| reason | meaning |
-|---|---|
-| `transcript-disabled` | the scope needs `--allow-transcript` |
-| `budget` | a time, byte or pane bound stopped the search here (see above) |
-| `unavailable` | this daemon cannot read that source (scrollback: the ring could not be parsed; turns: no transcript reader, or an OpenCode pane with no readable conversation) |
-| `unreadable` | the transcript file could not be read, or stopped being readable partway |
-| `no-hook`, `stale-session`, `no-transcript-path`, `unsupported-agent`, `unsafe-transcript-path` | the `/turns` resolver's own reason, passed through unchanged |
-
-Treat an unknown reason as "not searched".
-
 ### Desktop-backed account, command and workspace operations
 
 Optional config flags `desktopAccounts`, `quickCommands`, and `workspaceCreation`
@@ -1848,6 +1713,142 @@ foreground settings target. A loaded `systemError` thread can change settings fo
 its next turn; an `active` thread remains busy and `notLoaded` remains unavailable.
 Catalog pagination is bounded to four pages of 100 entries; incomplete or ambiguous
 catalogs are unavailable rather than silently truncated.
+
+## Host search
+
+`GET /api/search?q=<text>&scope=<list>&limit=<n>&cursor=<c>` searches this
+host's panes. It is a read: no input grant is involved.
+
+### Advertising
+
+`/api/config` carries `search: true` and `searchScopes` when at least one scope
+can answer this caller, and omits both otherwise (as a daemon predating the
+route does). `turns` and `sessions` are listed when the server runs with
+`--allow-transcript`. `scrollback` is listed when the daemon can read pane
+text, which needs only an authenticated caller, the same as `/api/stream`.
+
+### Request
+
+- `q`: trimmed, then 2–200 UTF-16 code units, with no NUL. Otherwise
+  `400 invalid-query`. Matching is a case-insensitive literal substring, never a
+  pattern. Case folding is locale-independent and per character, and it never
+  changes a string's length.
+- `scope`: a comma list of `turns`, `sessions`, `scrollback`. Duplicates are
+  ignored. Default `turns,sessions`. Anything else, including an empty value,
+  is `400 invalid-scope`.
+- `limit`: 1–100, default 50. Otherwise `400 invalid-limit`.
+- `cursor`: the previous response's `nextCursor`. A cursor from another query
+  or scope set, an edited one, or one minted before a daemon restart is
+  `400 invalid-cursor`. Start the search again without it. Re-casing the query
+  keeps the cursor valid.
+
+Every response, error or not, is `Cache-Control: no-store`.
+
+### Response
+
+```json
+{ "results": [ { "kind": "turn", "sessionId": "…", "workspaceId": "…",
+                 "title": "wmux · Claude · repo", "surfaceTitle": "…", "alive": true,
+                 "snippet": "…", "matchRanges": [[12, 6]], "at": 1790000000000,
+                 "turnEventId": "…", "turnCursor": "…" } ],
+  "coverage": { "searchedSessions": 3,
+                "skippedSessions": [ { "sessionId": "…", "scope": "turns", "reason": "budget" } ] },
+  "truncated": false,
+  "nextCursor": null }
+```
+
+- `kind`: `turn` (a message in a conversation), `session` (pane metadata or a
+  run-history result), `scrollback` (a line of terminal text).
+- `title`: the daemon has no pane title, so it composes `workspace · agent ·
+  cwd leaf` and drops any missing part. When nothing is known, it is the
+  session id. For a run with no pane left, it is the run's workspace and agent.
+- `surfaceTitle`: the desktop tab title. Present only while the desktop is
+  attached and its sidebar snapshot is already cached. A search never asks the
+  desktop for it, so it can be missing on a search that follows a long idle.
+  Prefer it over `title` when present.
+- `alive`: `false` for a pane that is neither attached nor detached: a
+  dead-session tombstone (the daemon keeps one for up to 24 h after the shell
+  exits) or a suspended pane. Show that pane read-only. The field is
+  omitted on a run-history hit whose pane is gone.
+- `snippet` and `matchRanges`: about 160 code units around the first match,
+  widened only for a longer query. Control characters are spaces, so a snippet
+  is one line. A snippet edge never splits a surrogate pair. `matchRanges` are
+  `[start, length]` pairs in UTF-16 code units relative to `snippet`, which
+  `NSString`/`NSRange` use directly. There are at most 16 pairs, and every
+  occurrence is wholly inside the snippet.
+- `at`: epoch ms. For a turn it is the message timestamp, and for a run-history
+  hit it is the run's time. Pane-metadata and scrollback hits have no `at`.
+- `turnEventId`: the TurnEvent `id` `/turns` serves for that message.
+- `turnCursor` (transcript-file turns only): open the hit with
+  `GET /api/sessions/<id>/turns?dir=back&cursor=<turnCursor>`. That page ends
+  with the hit's transcript line. It is in the format `/turns` accepts right
+  now (a chat cursor when native chat is wired), so page on from its reply as
+  usual. It is absent for OpenCode and managed conversations, which `/turns`
+  serves as one page. If the conversation changed since the search, `/turns`
+  answers its usual reset snapshot.
+
+### Ordering and paging
+
+Hits with `at` come first, newest first. Hits without `at` follow, by their
+pane's last activity, newest first. Ties break on session id, kind, and
+position (newest first). So a pane-metadata hit sorts after every timestamped
+hit. `nextCursor` is non-null when more hits exist past this page. It is
+stateless: the next call runs the search again and continues after the last
+hit returned. A turn appended meanwhile sorts before that hit and is not
+repeated. The order of hits without `at` follows pane activity at the time of
+each call, so one of them can repeat or be skipped across pages while that
+pane is busy.
+
+A cursor and `truncated: true` do not combine. Each page runs under the same
+bounds, so paging is complete only over an untruncated search. `nextCursor`
+is null when a truncated search found fewer hits than `limit`.
+
+### Scopes, gates, and which panes
+
+| scope | grant | panes | reads |
+|---|---|---|---|
+| `turns` | `--allow-transcript` | as `/turns`: every pane the daemon holds, dead tombstones included, orchestrator brain panes excluded for every caller | the reader `/turns` would pick: the Claude/Codex transcript through the resume binding and its path check, or the OpenCode/managed page the chat bridge already holds. Matched: user messages and the assistant's replies. Thinking blocks and tool calls and results are not searched. |
+| `sessions` | `--allow-transcript` | same as `turns` | the composed title, desktop tab title, agent, workspace name and cwd (one hit per pane, the first field that matches), and each run-history result's summary, workspace and agent (the entries `/api/history` serves) |
+| `scrollback` | an authenticated caller (as `/api/stream`) | as `/api/stream`: a paired device never gets a brain pane; the operator token does | the pane's terminal text through the daemon's headless parse of the ring (the last 5,000 rows), soft-wrapped rows joined into one line |
+
+Without `--allow-transcript`, a request whose every scope needs it is
+`403 {"error":"transcript-disabled"}`. When another scope is also asked for,
+the answer is 200, and every pane is listed in `skippedSessions` for each gated
+scope with reason `transcript-disabled`.
+
+### Bounds
+
+- At most 2 searches run at once, daemon-wide. A third is
+  `429 {"error":"search-busy"}` with `Retry-After: 1`.
+- One request runs for about 3 s of wall clock. Once that has passed, no new
+  pane is started.
+- `turns` reads each transcript newest first, up to its most recent 4 MiB
+  (16 of the projector's 256 KiB pages). One request reads at most 24 MiB
+  across all panes. The daemon yields between pages, so a search does not stall
+  other panes' streams.
+- `scrollback` extracts at most 6 panes' text per request, most recently active
+  first. Extraction shares the one-at-a-time snapshot queue that attach and
+  resync use. Text is cached per pane until the pane writes more bytes, or its
+  size or incarnation changes, for up to 8 panes. A cached pane does not count
+  against the 6. An extraction still queued at the deadline finishes in the
+  background and fills the cache for the next search.
+
+Hitting any of these bounds sets `truncated: true`. Every pane a bound left
+unsearched, or only partly searched, is listed with reason `budget`. Hits from
+the part that was read are still returned. `searchedSessions` counts the panes
+searched fully or in part in at least one scope.
+
+### Skip reasons
+
+| reason | meaning |
+|---|---|
+| `transcript-disabled` | the scope needs `--allow-transcript` |
+| `budget` | a time, byte or pane bound stopped the search here (see above) |
+| `unavailable` | this daemon cannot read that source (scrollback: the ring could not be parsed; turns: no transcript reader, or an OpenCode pane with no readable conversation) |
+| `unreadable` | the transcript file could not be read, or stopped being readable partway |
+| `no-hook`, `stale-session`, `no-transcript-path`, `unsupported-agent`, `unsafe-transcript-path` | the `/turns` resolver's own reason, passed through unchanged |
+
+Treat an unknown reason as "not searched".
 
 ## Native chat
 

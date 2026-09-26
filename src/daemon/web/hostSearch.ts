@@ -279,7 +279,7 @@ export interface SearchPane {
   cwdLeaf?: string;
   /** The desktop's own tab title, from the cached sidebar snapshot only. */
   surfaceTitle?: string;
-  /** False for a dead-session tombstone. */
+  /** False unless attached or detached: a dead-session tombstone, or a suspended pane. */
   alive: boolean;
   /** Epoch ms of last activity: orders panes, and hits without `at`. */
   recency: number;
