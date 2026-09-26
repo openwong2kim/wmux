@@ -4983,6 +4983,8 @@ function wireEvents(
     outputMark: (id) => sessionManager.getSession(id)?.ringBuffer.totalBytesWritten ?? null,
     render: (id) => renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot),
     clear: (id) => { sessionManager.getSession(id)?.bridge.clearAwaiting('screen-cleared'); },
+    holdsPrompt: (id) => approvalRegistry?.list().pending
+      .some((request) => request.sessionId === id && request.kind === 'terminal_prompt') === true,
     log: (level, message) => log(level, message),
   });
   const forgetAwaiting = (payload: { id: string }): void => awaitingVerifier.forget(payload.id);

@@ -64,6 +64,22 @@ export function screenShowsActiveDialog(rows: readonly string[]): boolean {
   return looksLikeApprovalPrompt(tail.slice(-ACTIVE_OPTION_TAIL_ROWS));
 }
 
+/**
+ * Is Claude Code's permission dialog anywhere on the grid: a parsed dialog with
+ * its selection cursor, or a cursor option row?
+ *
+ * Wider than `screenShowsActiveDialog` on purpose. That check wants the dialog
+ * to own the bottom of the screen, and a live dialog can fail it — a footer
+ * wrapped onto a second row at a narrow width, anything drawn under it. The
+ * verifier uses this one only while wmux holds a `terminal_prompt` record for
+ * the pane, so an approval it recorded is not released while it is visible.
+ */
+export function screenShowsPermissionDialog(rows: readonly string[]): boolean {
+  const parsed = parseTerminalPrompt(rows);
+  if (parsed && parsed.options.some((option) => option.selected)) return true;
+  return looksLikeApprovalPrompt(rows);
+}
+
 /** Non-blank rows at the bottom the structural check looks at. */
 const ACTIVE_DIALOG_TAIL_ROWS = 6;
 /** How close to the bottom a cursor option row must sit. */

@@ -33,9 +33,13 @@
 //     hold a pane "needs you".
 //   - Right before releasing, the output mark must still be the second frame's.
 //     New output since then restarts the verification.
+//   - While wmux holds a `terminal_prompt` record for the pane, the permission
+//     dialog anywhere on the grid (parsed with its cursor, or a cursor option
+//     row) also counts as "still up". Releasing clears that record, and a live
+//     dialog can miss the structural bottom-of-screen test.
 
 import { capSnapshot } from './web/snapshotWindow';
-import { screenShowsActiveDialog } from './transcript/chatScreenGate';
+import { screenShowsActiveDialog, screenShowsPermissionDialog } from './transcript/chatScreenGate';
 
 /** Wait before the confirming second read of a dialog-free frame. */
 export const AWAITING_VERIFY_SETTLE_MS = 750;
@@ -63,6 +67,8 @@ export interface AwaitingScreenVerifierDeps {
   render(sessionId: string): Promise<AwaitingFrame | null>;
   /** Release the pane (`bridge.clearAwaiting('screen-cleared')`). */
   clear(sessionId: string): void;
+  /** Does wmux hold a pending `terminal_prompt` record for this pane? */
+  holdsPrompt?(sessionId: string): boolean;
   schedule?: (fn: () => void, ms: number) => () => void;
   now?: () => number;
   log?: (level: 'debug' | 'info' | 'warn', message: string) => void;
@@ -215,7 +221,10 @@ export class AwaitingScreenVerifier {
     st.renderFailures = 0;
     st.lastMark = frame.mark;
     const readable = frame.rows.some((row) => row.trim().length > 0);
-    const dialog = readable && screenShowsActiveDialog(frame.rows);
+    const dialog = readable && (
+      screenShowsActiveDialog(frame.rows)
+      || (this.deps.holdsPrompt?.(sessionId) === true && screenShowsPermissionDialog(frame.rows))
+    );
 
     if (readable && !dialog) {
       st.streak += 1;

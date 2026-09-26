@@ -14,7 +14,7 @@ import {
 import { DaemonPTYBridge } from '../DaemonPTYBridge';
 import { RingBuffer } from '../RingBuffer';
 import { generateTextSnapshot } from '../HeadlessSnapshot';
-import { screenShowsAgentDialog } from '../transcript/chatScreenGate';
+import { screenShowsActiveDialog, screenShowsAgentDialog } from '../transcript/chatScreenGate';
 
 // ── Replay fixtures ──────────────────────────────────────────────────────────
 // Built from the text of a real Claude Code permission dialog raised by a user
@@ -336,6 +336,69 @@ function renderablePane(overrides: Partial<RenderablePane> = {}): RenderablePane
     ...overrides,
   };
 }
+
+// A permission dialog that is still up, on a pane narrow enough that its footer
+// wrapped onto a second row, with the cursor on the first of three options.
+// The structural "dialog owns the bottom" test does not see it: the last row is
+// the footer's tail, and the cursor row is not among the last four.
+const WRAPPED_FOOTER_DIALOG = [
+  '────────────────────────────────────────',
+  ' Bash command',
+  '',
+  '   rm -rf build/cache',
+  '   Remove the build cache',
+  '',
+  ' Do you want to proceed?',
+  ' ❯ 1. Yes',
+  "   2. Yes, and don't ask again for rm commands",
+  '   3. No, and tell Claude what to do differently',
+  '',
+  ' Esc to cancel · Tab to amend · ctrl+e to',
+  ' explain',
+];
+
+describe('AwaitingScreenVerifier with a terminal_prompt record held on the pane', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('the fixture is a dialog the structural check alone misses', () => {
+    expect(screenShowsActiveDialog(WRAPPED_FOOTER_DIALOG)).toBe(false);
+  });
+
+  it('does not release while the permission dialog stays on screen across the verifier window', async () => {
+    const pane: FakePane = { awaiting: true, eligible: true, mark: 0, rows: WRAPPED_FOOTER_DIALOG };
+    const { verifier, renders, cleared } = makeVerifier(pane, { holdsPrompt: () => true });
+    for (let i = 0; i < 10; i++) {
+      output(verifier, pane);
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(renders.length).toBeGreaterThan(1);
+    expect(cleared).toEqual([]);
+  });
+
+  it('releases once the dialog is gone from the screen', async () => {
+    const pane: FakePane = { awaiting: true, eligible: true, mark: 0, rows: WRAPPED_FOOTER_DIALOG };
+    const { verifier, cleared } = makeVerifier(pane, { holdsPrompt: () => true });
+    output(verifier, pane);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(cleared).toEqual([]);
+    output(verifier, pane, CLEAR_ROWS);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(cleared).toEqual(['p1']);
+  });
+
+  it('without a record, the structural rule alone decides (dialog text left above still releases)', async () => {
+    const pane: FakePane = {
+      awaiting: true, eligible: true, mark: 0,
+      rows: [...DIALOG_ROWS, '', '● Bash(ls)', '  ⎿  a b c', '', '✻ Working… (esc to interrupt)', '> ', '  ⏵⏵ bypass permissions on'],
+    };
+    const { verifier, cleared } = makeVerifier(pane, { holdsPrompt: () => false });
+    output(verifier, pane);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(cleared).toEqual(['p1']);
+  });
+});
 
 describe('renderPaneScreen', () => {
   it('renders at the PTY size when node-pty reports one, else at the recorded size', async () => {
