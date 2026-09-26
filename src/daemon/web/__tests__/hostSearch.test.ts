@@ -8,9 +8,12 @@ import {
   joinWrappedRows,
   parseSearchRequest,
   runSearch,
+  ScrollbackExtractions,
   ScrollbackTextCache,
+  SearchAdmission,
   searchForbidden,
   SEARCH_LIMITS,
+  snippetWindow,
   type SearchPane,
   type SearchRequest,
   type SearchSources,
@@ -23,7 +26,7 @@ const request = (query: string, extra: Partial<SearchRequest> = {}): SearchReque
   query, scopes: ['turns', 'sessions'], limit: 50, cursor: null, ...extra,
 });
 const pane = (sessionId: string, extra: Partial<SearchPane> = {}): SearchPane => ({
-  sessionId, alive: true, recency: 1000, ...extra,
+  sessionId, alive: true, recency: 1000, createdAt: 1000, ...extra,
 });
 const user = (id: string, text: string, ts?: number): TurnEvent => ({ kind: 'user_text', id, text, ...(ts !== undefined ? { ts } : {}) });
 const assistant = (id: string, text: string, ts?: number, thinking = false): TurnEvent =>
@@ -97,6 +100,23 @@ describe('case folding and snippets', () => {
     expect(buildSnippet('x' + long + 'y', 'x' + long + 'y', long, 1).matchRanges).toEqual([[expect.any(Number), 190]]);
   });
 
+  it('keeps only a snippet window of a long hit, with the same snippet and ranges as the full text', () => {
+    const text = '😀'.repeat(300) + 'Needle mid ' + 'x'.repeat(50) + ' needle' + '🎉'.repeat(300) + ' NEEDLE';
+    const folded = foldCase(text);
+    const needle = 'needle';
+    for (let at = folded.indexOf(needle); at !== -1; at = folded.indexOf(needle, at + 1)) {
+      const window = snippetWindow(text, folded, at, needle.length);
+      expect(window.text.length).toBeLessThan(400);
+      expect(buildSnippet(window.text, window.folded, needle, window.match)).toEqual(buildSnippet(text, folded, needle, at));
+    }
+    // Near either edge of the text, too.
+    for (const edge of ['needle' + 'y'.repeat(1000), 'y'.repeat(1000) + 'needle', 'y'.repeat(1000) + 'needle' + '😀'.repeat(81)]) {
+      const at = edge.indexOf('needle');
+      const window = snippetWindow(edge, edge, at, 6);
+      expect(buildSnippet(window.text, window.folded, 'needle', window.match)).toEqual(buildSnippet(edge, edge, 'needle', at));
+    }
+  });
+
   it('composes the title from what is known', () => {
     expect(composeTitle({ workspace: 'wmux', agent: 'Claude', cwdLeaf: 'repo' }, 'id')).toBe('wmux · Claude · repo');
     expect(composeTitle({ agent: 'Codex' }, 'id')).toBe('Codex');
@@ -124,9 +144,10 @@ describe('runSearch — turns', () => {
     expect(out.truncated).toBe(false);
   });
 
-  it('orders timed hits newest first across panes, then untimed ones by pane recency', async () => {
+  it('orders timed hits newest first across panes, then untimed ones by pane creation', async () => {
     const out = await runSearch(request('needle', { scopes: ['turns'] }), null, sources({
-      panes: [pane('old', { recency: 1 }), pane('new', { recency: 9 })],
+      // Activity does not order untimed hits: it moves whenever a pane prints.
+      panes: [pane('old', { recency: 9, createdAt: 1 }), pane('new', { recency: 1, createdAt: 9 })],
       turns: async (id) => ({ kind: 'page', events: id === 'old'
         ? [user('o1', 'needle', 50), user('o2', 'needle')]
         : [user('n1', 'needle', 40), user('n2', 'needle')] }),
@@ -345,5 +366,252 @@ describe('scrollback text cache', () => {
     expect(cache.get('a', 'k1')).toEqual(['a']);
     cache.retain(new Set(['c']));
     expect(cache.size).toBe(1);
+  });
+});
+
+describe('paging stays whole while panes change', () => {
+  const page = (req: SearchRequest, src: SearchSources) =>
+    runSearch(req, req.cursor === null ? null : codec.decode(req, req.cursor), src, codec);
+
+  it('neither repeats nor drops scrollback hits when a pane prints, its ring evicts, and another pane turns busy', async () => {
+    // Pane A holds a0..a9, pane B b0..b3. A was created after B.
+    const state = {
+      a: Array.from({ length: 10 }, (_, i) => `needle a${i}`),
+      b: Array.from({ length: 4 }, (_, i) => `needle b${i}`),
+      recencyA: 10,
+      recencyB: 5,
+    };
+    const src = () => sources({
+      scrollbackPanes: [
+        pane('A', { recency: state.recencyA, createdAt: 2 }),
+        pane('B', { recency: state.recencyB, createdAt: 1 }),
+      ],
+      scrollback: { cached: (id) => (id === 'A' ? state.a : state.b), read: async () => null },
+    });
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 6; i++) {
+      const out = await page(request('needle', { scopes: ['scrollback'], limit: 4, cursor }), src());
+      seen.push(...out.results.map((r) => r.snippet.replace('needle ', '')));
+      cursor = out.nextCursor;
+      if (i === 0) {
+        // Between pages: A's ring evicts its three oldest lines and A prints two
+        // more (newer than anything already shown), and B becomes the busiest pane.
+        state.a = [...state.a.slice(3), 'needle new1', 'needle new2'];
+        state.recencyB = 50;
+      }
+      if (cursor === null) break;
+    }
+    // a0..a2 left the ring before anyone asked for them; the new lines are newer than page one.
+    expect(seen).toEqual(['a9', 'a8', 'a7', 'a6', 'a5', 'a4', 'a3', 'b3', 'b2', 'b1', 'b0']);
+  });
+
+  it('ends a page before a scrollback pane it could not read, so the next page still shows it', async () => {
+    const cache = new Map<string, string[]>([['C', ['needle c0', 'needle c1', 'needle c2']]]);
+    const text: Record<string, string[]> = { A: ['needle a0'], B: ['needle b0', 'needle b1'] };
+    const src = () => sources({
+      scrollbackPanes: [
+        pane('A', { recency: 30, createdAt: 3 }),
+        pane('B', { recency: 20, createdAt: 2 }),
+        pane('C', { recency: 10, createdAt: 1 }),
+      ],
+      scrollback: {
+        cached: (id) => cache.get(id),
+        read: async (id) => { cache.set(id, text[id]); return text[id]; },
+      },
+      limits: { ...SEARCH_LIMITS, scrollbackPanes: 1 },
+    });
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 6; i++) {
+      const out = await page(request('needle', { scopes: ['scrollback'], limit: 2, cursor }), src());
+      seen.push(...out.results.map((r) => r.snippet.replace('needle ', '')));
+      cursor = out.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(seen).toEqual(['a0', 'b1', 'b0', 'c2', 'c1', 'c0']);
+  });
+
+  it('offers no cursor when the clock left a conversation unread, but keeps it past a per-session horizon', async () => {
+    let clock = 0;
+    const timed = await runSearch(request('match', { scopes: ['turns'], limit: 1 }), null, sources({
+      panes: [pane('a', { recency: 3 }), pane('b', { recency: 2 })],
+      turns: async () => ({ kind: 'file', next: () => {
+        clock += 5000;
+        return { events: [user('e1', 'match', 2), user('e2', 'match', 1)], lineEnds: [1, 2], bytes: 100, done: true };
+      } }),
+      now: () => clock,
+    }), codec);
+    expect(timed.truncated).toBe(true);
+    expect(timed.results).toHaveLength(1);
+    expect(timed.nextCursor).toBeNull();
+
+    const horizon = await runSearch(request('match', { scopes: ['turns'], limit: 1 }), null, sources({
+      panes: [pane('p1')],
+      turns: async () => fileSource([
+        { events: [user('e1', 'match', 2), user('e2', 'match', 1)], lineEnds: [300, 400], bytes: 100, done: false },
+        { events: [user('old', 'match', 0)], lineEnds: [200], bytes: 100, done: true },
+      ]),
+      limits: { ...SEARCH_LIMITS, sessionBytes: 100 },
+    }), codec);
+    expect(horizon.truncated).toBe(true);
+    expect(horizon.nextCursor).not.toBeNull();
+  });
+});
+
+describe('extraction slots and caller admission', () => {
+  it('shares one extraction per pane and refuses a third pane until one settles', async () => {
+    const slots = new ScrollbackExtractions(2);
+    let calls = 0;
+    const gates: Array<() => void> = [];
+    const extract = () => { calls += 1; return new Promise<string[] | null>((resolve) => gates.push(() => resolve(['x']))); };
+    const a = slots.run('a', extract);
+    expect(slots.run('a', extract)).toBe(a);
+    const b = slots.run('b', extract);
+    expect(slots.run('c', extract)).toBeUndefined();
+    await Promise.resolve();
+    expect(calls).toBe(2);
+    gates[0]();
+    await a;
+    // b is still queued, so it keeps its slot even if no search waits on it any more.
+    expect(slots.size).toBe(1);
+    const c = slots.run('c', extract);
+    expect(c).toBeDefined();
+    await Promise.resolve();
+    gates[1]();
+    gates[2]();
+    await Promise.all([b, c]);
+    expect(slots.size).toBe(0);
+  });
+
+  it('skips a pane as budget, without reading it, when every slot is taken', async () => {
+    const out = await runSearch(request('needle', { scopes: ['scrollback'] }), null, sources({
+      scrollbackPanes: [pane('p1')],
+      scrollback: { cached: () => undefined, read: async () => 'busy' },
+    }), codec);
+    expect(out.coverage.skippedSessions).toEqual([{ sessionId: 'p1', scope: 'scrollback', reason: 'budget' }]);
+    expect(out.truncated).toBe(true);
+    // Nothing was read, so the cursor names the start: retry from there.
+    expect(out.results).toEqual([]);
+    expect(out.nextCursor).not.toBeNull();
+  });
+
+  it('admits one search per caller within a refilling burst, and forgets idle callers', () => {
+    let now = 0;
+    const admission = new SearchAdmission(() => now, 2, 1000, 1);
+    expect(admission.admit('d')).toEqual({ ok: true });
+    expect(admission.admit('d')).toEqual({ ok: false, retryAfterSec: 1 });
+    expect(admission.admit('e')).toEqual({ ok: true });
+    admission.release('d');
+    expect(admission.admit('d')).toEqual({ ok: true });
+    admission.release('d');
+    expect(admission.admit('d')).toEqual({ ok: false, retryAfterSec: 1 });
+    now += 400;
+    expect(admission.admit('d')).toEqual({ ok: false, retryAfterSec: 1 });
+    now += 600;
+    expect(admission.admit('d')).toEqual({ ok: true });
+    admission.release('d');
+    admission.release('e');
+    now += 10_000;
+    admission.release('d');
+    expect(admission.size).toBe(0);
+  });
+});
+
+describe('review round 2: cursors that cannot be lost silently', () => {
+  const page = (req: SearchRequest, src: SearchSources) =>
+    runSearch(req, req.cursor === null ? null : codec.decode(req, req.cursor), src, codec);
+  const scrollbackOnly = (text: () => Record<string, string[]>, createdAt: Record<string, number>, busy = () => new Set<string>()) => sources({
+    scrollbackPanes: Object.keys(createdAt).map((id) => pane(id, { createdAt: createdAt[id] })),
+    scrollback: {
+      cached: (id) => (busy().has(id) ? undefined : text()[id]),
+      read: async () => 'busy',
+    },
+  });
+
+  it('places a cursor in repetitive output where the three lines around it repeat', async () => {
+    // Ten identical hits, each under the same two lines; only the chunk header differs.
+    let lines = Array.from({ length: 10 }, (_, k) => [`chunk ${k}`, 'x', 'x', 'needle']).flat();
+    const src = () => scrollbackOnly(() => ({ A: lines }), { A: 1 });
+    let shown = 0;
+    let cursor: string | null = null;
+    for (let i = 0; i < 10; i++) {
+      const out = await page(request('needle', { scopes: ['scrollback'], limit: 3, cursor }), src());
+      shown += out.results.length;
+      expect(out.coverage.skippedSessions).toEqual([]);
+      cursor = out.nextCursor;
+      // The ring evicts the oldest chunk, never shown yet.
+      if (i === 0) lines = lines.slice(4);
+      if (cursor === null) break;
+    }
+    expect(shown).toBe(9);
+  });
+
+  it('finds the cursor line alone when the lines above it were redrawn', async () => {
+    let lines = Array.from({ length: 6 }, (_, k) => [`fill ${k}`, `needle ${k}`]).flat();
+    const src = () => scrollbackOnly(() => ({ A: lines }), { A: 1 });
+    const first = await page(request('needle', { scopes: ['scrollback'], limit: 2 }), src());
+    expect(first.results.map((r) => r.snippet)).toEqual(['needle 5', 'needle 4']);
+    lines = lines.map((l) => (l === 'fill 4' || l === 'fill 3' ? 'redrawn' : l));
+    const second = await page(request('needle', { scopes: ['scrollback'], limit: 10, cursor: first.nextCursor }), src());
+    expect(second.results.map((r) => r.snippet)).toEqual(['needle 3', 'needle 2', 'needle 1', 'needle 0']);
+    expect(second.coverage.skippedSessions).toEqual([]);
+  });
+
+  it('reports cursor-lost, never a silent gap, when the cursor line cannot be placed', async () => {
+    let lines = ['needle a', 'needle b', 'needle c'];
+    const src = () => scrollbackOnly(() => ({ A: lines, B: ['needle z'] }), { A: 2, B: 1 });
+    const first = await page(request('needle', { scopes: ['scrollback'], limit: 1 }), src());
+    expect(first.results.map((r) => r.snippet)).toEqual(['needle c']);
+    lines = ['needle q', 'needle r'];
+    const second = await page(request('needle', { scopes: ['scrollback'], limit: 10, cursor: first.nextCursor }), src());
+    expect(second.coverage.skippedSessions).toEqual([{ sessionId: 'A', scope: 'scrollback', reason: 'cursor-lost' }]);
+    expect(second.truncated).toBe(true);
+    expect(second.results.map((r) => r.snippet)).toEqual(['needle z']);
+  });
+
+  it('hands back a cursor on an empty page cut by a busy pane, and the retry continues in place', async () => {
+    const busy = new Set(['A', 'B']);
+    const src = () => scrollbackOnly(() => ({ A: ['needle a0', 'needle a1', 'needle a2'], B: ['needle b0', 'needle b1'] }), { A: 2, B: 1 }, () => busy);
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let empties = 0;
+    for (let i = 0; i < 10; i++) {
+      const out = await page(request('needle', { scopes: ['scrollback'], limit: 2, cursor }), src());
+      seen.push(...out.results.map((r) => r.snippet.replace('needle ', '')));
+      if (out.results.length === 0) {
+        empties += 1;
+        expect(out.truncated).toBe(true);
+        expect(out.nextCursor).not.toBeNull();
+        // The extraction finishes in the background before the retry.
+        busy.delete(busy.has('A') ? 'A' : 'B');
+      }
+      cursor = out.nextCursor;
+      if (i === 1) busy.add('B');
+      if (cursor === null) break;
+    }
+    expect(empties).toBeGreaterThanOrEqual(2);
+    expect(seen).toEqual(['a2', 'a1', 'a0', 'b1', 'b0']);
+  });
+
+  it('keeps paging when the request-wide byte bound falls where the per-session window already stops', async () => {
+    const twoPages = (id: string): TurnSource => fileSource([
+      { events: [user(`${id}2`, 'match', 20), user(`${id}1`, 'match', 10)], lineEnds: [300, 400], bytes: 100, done: false },
+      { events: [user(`${id}0`, 'match', 5)], lineEnds: [200], bytes: 100, done: true },
+    ]);
+    const src = () => sources({
+      panes: [pane('a', { createdAt: 2 }), pane('b', { createdAt: 1 })],
+      turns: async (id) => twoPages(id),
+      limits: { ...SEARCH_LIMITS, sessionBytes: 100, totalBytes: 200 },
+    });
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 6; i++) {
+      const out = await page(request('match', { scopes: ['turns'], limit: 1, cursor }), src());
+      seen.push(...out.results.map((r) => r.turnEventId as string));
+      cursor = out.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(seen).toEqual(['a2', 'b2', 'a1', 'b1']);
   });
 });

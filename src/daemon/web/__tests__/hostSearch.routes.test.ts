@@ -21,7 +21,7 @@ const AGENT_SESSION = '920b9112-1111-4222-8333-444455556666';
 type Pane = {
   meta: {
     id: string; incarnationId: string; env: Record<string, string>; cwd: string; spawnCwd: string; state: string;
-    cols: number; rows: number; lastActivity: string; agent?: { role: string; teamId: string; displayName: string };
+    cols: number; rows: number; lastActivity: string; createdAt: string; agent?: { role: string; teamId: string; displayName: string };
   };
   ringBuffer: { readAll: () => Buffer; totalBytesWritten: number };
   bridge: EventEmitter;
@@ -32,7 +32,7 @@ function mkPane(id: string, over: Partial<Pane['meta']> = {}): Pane {
   return {
     meta: {
       id, incarnationId: `${id}-inc`, env: {}, cwd: '/tmp', spawnCwd: '/tmp', state: 'detached', cols: 80, rows: 24,
-      lastActivity: '2026-09-01T00:00:00.000Z', ...over,
+      lastActivity: '2026-09-01T00:00:00.000Z', createdAt: '2026-08-01T00:00:00.000Z', ...over,
     },
     ringBuffer: { readAll: () => Buffer.from(''), totalBytesWritten: 0 },
     bridge: new EventEmitter(),
@@ -47,6 +47,9 @@ describe('GET /api/search', () => {
   let bindings: Map<string, ResumeBinding>;
   let roster: Map<string, string>;
   let textReads: string[];
+  let textGate: Promise<void> | null;
+  let textFor: ((id: string) => string) | null;
+  let skewMs: number;
   let chatWired: boolean;
   let chatGate: Promise<void> | null;
   let chatResolves: number;
@@ -83,6 +86,9 @@ describe('GET /api/search', () => {
     bindings = new Map([['s1', { agent: 'claude', sessionId: AGENT_SESSION, cwd: '/repo', ts: 1, transcriptPath: transcript }]]);
     roster = new Map();
     textReads = [];
+    textGate = null;
+    textFor = null;
+    skewMs = 0;
     chatWired = false;
     chatGate = null;
     chatResolves = 0;
@@ -135,9 +141,12 @@ describe('GET /api/search', () => {
       chat: () => (chatWired ? chat : null),
       sessionText: async (id) => {
         textReads.push(id);
+        if (textGate) await textGate;
+        if (textFor) return [{ text: textFor(id), wrapped: false }];
         return [{ text: `needle in the ring of ${id}`, wrapped: false }];
       },
       log: () => { /* silent */ },
+      now: () => Date.now() + skewMs,
       assetsDir: os.tmpdir(),
     });
   });
@@ -258,17 +267,17 @@ describe('GET /api/search', () => {
     }
   });
 
-  it('runs two searches at once and answers a third 429 with Retry-After', async () => {
+  it('runs two searches at once daemon-wide and answers a third 429 with Retry-After', async () => {
     const info = await start();
-    const token = bearer(info.token as string);
     chatWired = true;
     let release!: () => void;
     chatGate = new Promise<void>((resolve) => { release = resolve; });
-    const first = search(token, 'q=needle&scope=turns');
-    const second = search(token, 'q=needle&scope=turns');
+    roster.set('phone2', 'secret2');
+    const first = search(bearer(info.token as string), 'q=needle&scope=turns');
+    const second = search(device(), 'q=needle&scope=turns');
     const deadline = Date.now() + 2000;
     while (chatResolves < 2 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
-    const busy = await fetch(`${base()}/api/search?q=needle&scope=turns`, { headers: token });
+    const busy = await fetch(`${base()}/api/search?q=needle&scope=turns`, { headers: bearer('phone2.secret2') });
     expect(busy.status).toBe(429);
     expect(busy.headers.get('retry-after')).toBe('1');
     expect(await busy.json()).toEqual({ error: 'search-busy' });
@@ -276,6 +285,87 @@ describe('GET /api/search', () => {
     expect((await first).res.status).toBe(200);
     expect((await second).res.status).toBe(200);
     chatGate = null;
-    expect((await search(token, 'q=needle&scope=turns')).res.status).toBe(200);
+    expect((await search(bearer('phone2.secret2'), 'q=needle&scope=turns')).res.status).toBe(200);
   });
+
+  it('runs one search per caller at a time and rate-limits a burst with a computed Retry-After', async () => {
+    const info = await start();
+    chatWired = true;
+    let release!: () => void;
+    chatGate = new Promise<void>((resolve) => { release = resolve; });
+    const phone = device();
+    const first = search(phone, 'q=needle&scope=turns');
+    const deadline = Date.now() + 2000;
+    while (chatResolves < 1 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+    const own = await fetch(`${base()}/api/search?q=needle&scope=turns`, { headers: phone });
+    expect(own.status).toBe(429);
+    expect(own.headers.get('retry-after')).toBe('1');
+    // Another caller still gets the second daemon-wide slot.
+    const other = search(bearer(info.token as string), 'q=needle&scope=turns');
+    release();
+    expect((await first).res.status).toBe(200);
+    expect((await other).res.status).toBe(200);
+    chatGate = null;
+
+    // The phone has spent one token (the refused request spent none); a burst
+    // runs out, and Retry-After says when the next token lands.
+    const statuses: number[] = [];
+    let retryAfter: string | null = null;
+    for (let i = 0; i < 6; i++) {
+      const res = await fetch(`${base()}/api/search?q=needle&scope=scrollback`, { headers: phone });
+      statuses.push(res.status);
+      if (res.status === 429) { retryAfter = res.headers.get('retry-after'); await res.json(); break; }
+      await res.json();
+    }
+    expect(statuses).toEqual([200, 200, 200, 429]);
+    // Two seconds a token, less whatever refilled while the test ran.
+    expect(['1', '2']).toContain(retryAfter);
+    skewMs += 2000;
+    expect((await search(phone, 'q=needle&scope=scrollback')).res.status).toBe(200);
+  });
+
+  it('never queues a second extraction of a pane, nor keeps queueing behind abandoned ones', async () => {
+    const info = await start();
+    // The snapshot queue is stuck: every extraction outlives its search's deadline.
+    let release!: () => void;
+    textGate = new Promise<void>((resolve) => { release = resolve; });
+    const operator = bearer(info.token as string);
+    const phone = device();
+    for (let round = 0; round < 2; round++) {
+      const [a, b] = await Promise.all([
+        search(operator, 'q=needle&scope=scrollback'),
+        search(phone, 'q=needle&scope=scrollback'),
+      ]);
+      expect(a.res.status).toBe(200);
+      expect(b.res.status).toBe(200);
+      expect(a.body.truncated).toBe(true);
+      skewMs += 4000; // refill both callers' buckets
+    }
+    // Four searches hit the deadline. Each pane was extracted at most once,
+    // not once per search, and never past the daemon-wide cap of two.
+    expect(textReads.length).toBeGreaterThan(0);
+    expect(new Set(textReads).size).toBe(textReads.length);
+    expect(textReads.length).toBeLessThanOrEqual(2);
+    release();
+  }, 20_000);
+
+
+  it('never serves a new incarnation text under the pane the extraction was queued for', async () => {
+    const info = await start();
+    textFor = (id) => `zebra from ${panes.get(id)?.meta.incarnationId}`;
+    // Newest pane, so its extraction is the first one queued.
+    panes.set('s1', mkPane('s1', { ...(panes.get('s1') as Pane).meta, createdAt: '2026-09-10T00:00:00.000Z' }));
+    let release!: () => void;
+    textGate = new Promise<void>((resolve) => { release = resolve; });
+    const pending = search(bearer(info.token as string), 'q=zebra&scope=scrollback');
+    const deadline = Date.now() + 2000;
+    while (!textReads.includes('s1') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+    // The pane is replaced under the same id while its extraction waits.
+    const old = panes.get('s1') as Pane;
+    panes.set('s1', mkPane('s1', { ...old.meta, incarnationId: 's1-reborn' }));
+    release();
+    const { body } = await pending;
+    expect((body.results as Array<{ snippet: string }>).map((r) => r.snippet).filter((t) => t.includes('s1-reborn'))).toEqual([]);
+  });
+
 });

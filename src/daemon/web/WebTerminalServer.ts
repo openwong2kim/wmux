@@ -14,13 +14,15 @@ import {
   MAX_CONCURRENT_SEARCHES,
   parseSearchRequest,
   runSearch,
+  ScrollbackExtractions,
   ScrollbackTextCache,
+  SearchAdmission,
   SearchError,
   searchForbidden,
   type SearchPane,
   type SearchRequest,
   type SearchScope,
-  type SortKey,
+  type SearchAfter,
   type TurnPage,
   type TurnSource,
 } from './hostSearch';
@@ -1191,6 +1193,8 @@ export class WebTerminalServer {
   /** `GET /api/search`: the cursor key lives and dies with this server. */
   private readonly searchCursors = createSearchCursorCodec(crypto.randomBytes(32));
   private readonly scrollbackText = new ScrollbackTextCache();
+  private readonly scrollbackExtractions = new ScrollbackExtractions();
+  private readonly searchAdmission = new SearchAdmission(() => this.now());
   private searchesInFlight = 0;
   /** Last GOOD desktop sidebar snapshot and when it was taken. */
   private desktopSidebarCache: { at: number; value: PhoneSidebarSnapshot } | null = null;
@@ -2902,7 +2906,7 @@ export class WebTerminalServer {
   private handleSearch(res: http.ServerResponse, url: URL, principal: WebPrincipal): void {
     const noStore = { 'Cache-Control': 'no-store' };
     let request: SearchRequest;
-    let after: SortKey | null;
+    let after: SearchAfter | null;
     try {
       request = parseSearchRequest(url.searchParams);
       after = request.cursor === null ? null : this.searchCursors.decode(request, request.cursor);
@@ -2915,9 +2919,16 @@ export class WebTerminalServer {
     if (this.searchesInFlight >= MAX_CONCURRENT_SEARCHES) {
       return this.json(res, 429, { error: 'search-busy' }, { ...noStore, 'Retry-After': '1' });
     }
-    // Take the slot only after the synchronous pane listing: a throw there
+    // Take the slots only after the synchronous pane listing: a throw there
     // must not leak a slot that only the promise's finally gives back.
     const { readable, attachable } = this.searchPanes(principal);
+    // One caller runs one search at a time within a small burst, so a single
+    // device cannot hold both daemon-wide slots.
+    const caller = principal.kind === 'operator' ? 'operator' : `device:${principal.deviceId}`;
+    const admitted = this.searchAdmission.admit(caller);
+    if (!admitted.ok) {
+      return this.json(res, 429, { error: 'search-busy' }, { ...noStore, 'Retry-After': String(admitted.retryAfterSec) });
+    }
     this.searchesInFlight += 1;
     // Before the answer, a close means the phone gave up: stop reading.
     let gone = false;
@@ -2939,14 +2950,22 @@ export class WebTerminalServer {
           read: async (id: string) => {
             const managed = this.attachableSession(principal, id);
             if (!managed) return null;
-            // Keyed BEFORE the read: bytes that land meanwhile make the entry
-            // stale on the next search rather than silently current.
-            const key = scrollbackKey(managed);
-            const rows = await sessionText(id);
-            if (!rows) return null;
-            const lines = joinWrappedRows(rows);
-            if (this.deps.sessionManager.getSession(id) === managed) this.scrollbackText.set(id, key, lines);
-            return lines;
+            // One extraction per pane at a time, and a daemon-wide cap that
+            // counts the ones a timed-out search left behind.
+            const job = this.scrollbackExtractions.run(id, async () => {
+              // Keyed BEFORE the read: bytes that land meanwhile make the entry
+              // stale on the next search rather than silently current.
+              const key = scrollbackKey(managed);
+              const rows = await sessionText(id);
+              // The queued job looks the pane up again when it runs: text from
+              // an incarnation that replaced this one under the same id is not
+              // this pane's, so it is neither cached nor returned.
+              if (!rows || this.deps.sessionManager.getSession(id) !== managed) return null;
+              const lines = joinWrappedRows(rows);
+              this.scrollbackText.set(id, key, lines);
+              return lines;
+            });
+            return job ?? 'busy';
           },
         },
       } : {}),
@@ -2955,7 +2974,10 @@ export class WebTerminalServer {
     }, this.searchCursors)
       .then((body) => { if (!gone) this.json(res, 200, body, noStore); })
       .catch((err: unknown) => this.failRequest(res, err))
-      .finally(() => { this.searchesInFlight -= 1; });
+      .finally(() => {
+        this.searchesInFlight -= 1;
+        this.searchAdmission.release(caller);
+      });
   }
 
   /**
@@ -2976,6 +2998,7 @@ export class WebTerminalServer {
       const agent = meta.agent?.displayName ?? meta.lastDetectedAgent;
       const surfaceTitle = titles.get(meta.id);
       const recency = Date.parse(meta.lastActivity);
+      const createdAt = Date.parse(meta.createdAt);
       const pane: SearchPane = {
         sessionId: meta.id,
         ...workspaceIdOf(meta.env),
@@ -2986,6 +3009,7 @@ export class WebTerminalServer {
         ...(surfaceTitle ? { surfaceTitle } : {}),
         alive: meta.state === 'attached' || meta.state === 'detached',
         recency: Number.isFinite(recency) ? recency : 0,
+        createdAt: Number.isFinite(createdAt) ? createdAt : 0,
       };
       if (this.readableSession(meta.id) === managed) readable.push(pane);
       if (this.attachableSession(principal, meta.id) === managed) attachable.push(pane);

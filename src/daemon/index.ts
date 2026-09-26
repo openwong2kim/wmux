@@ -44,7 +44,7 @@ import { stopWebServerDurably } from './web/webStop';
 import { decideWebStartPolicy } from './web/webStartPolicy';
 import { scheduleTokenFileReHarden } from '../shared/security';
 import type { WebTlsConfig } from '../shared/web';
-import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
+import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { AwaitingScreenVerifier, renderPaneScreen } from './AwaitingScreenVerifier';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
 import { readPendingToolUse } from './transcript/pendingToolUse';
@@ -304,6 +304,28 @@ let gateBroker: GateBroker | null = null;
 let gateRuntimeOff = false;
 
 /**
+ * A plain-text parse of a session's ring on the shared concurrency-1 snapshot
+ * queue. The ring is copied only when the job's turn comes, so a job waiting
+ * behind attach snapshots pins no ring copy; the session is looked up then
+ * too, so a pane closed meanwhile reads as gone.
+ */
+function queuedTextSnapshot(sessionManager: DaemonSessionManager, sessionId: string, scrollback: number): Promise<TextSnapshotOutcome | null> {
+  return enqueueSnapshotJob(async () => {
+    const managed = sessionManager.getSession(sessionId);
+    if (!managed) return null;
+    return generateTextSnapshotUnqueued({
+      // Dims backstop parity with the attach flush (?? 80 / ?? 24): a recovered
+      // session may not have real dims yet, and a 0-wide headless terminal would
+      // fail soft instead of reading.
+      cols: managed.meta.cols ?? 80,
+      rows: managed.meta.rows ?? 24,
+      scrollback,
+      initial: managed.ringBuffer.readAll(),
+    });
+  });
+}
+
+/**
  * The phone's scrollback search (`GET /api/search`) reads a pane through the
  * same headless parse `daemon.readSessionText` runs, on the same shared
  * concurrency-1 queue, keeping as many rows as that RPC does by default. The
@@ -312,15 +334,8 @@ let gateRuntimeOff = false;
  */
 function sessionTextReader(sessionManager: DaemonSessionManager) {
   return async (sessionId: string) => {
-    const managed = sessionManager.getSession(sessionId);
-    if (!managed) return null;
-    const outcome = await generateTextSnapshot({
-      cols: managed.meta.cols ?? 80,
-      rows: managed.meta.rows ?? 24,
-      scrollback: SCROLLBACK_ROWS,
-      initial: managed.ringBuffer.readAll(),
-    });
-    return outcome.ok ? outcome.rows : null;
+    const outcome = await queuedTextSnapshot(sessionManager, sessionId, SCROLLBACK_ROWS);
+    return outcome?.ok ? outcome.rows : null;
   };
 }
 
@@ -2420,15 +2435,8 @@ function registerRpcHandlers(
       throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
     }
     const scrollback = Math.min(typeof p.scrollback === 'number' ? p.scrollback : 5000, MAX_SCROLLBACK);
-    const outcome = await generateTextSnapshot({
-      // Dims backstop parity with the attach flush (?? 80 / ?? 24): a recovered
-      // session may not have real dims yet, and a 0-wide headless terminal would
-      // fail soft instead of reading.
-      cols: managed.meta.cols ?? 80,
-      rows: managed.meta.rows ?? 24,
-      scrollback,
-      initial: managed.ringBuffer.readAll(),
-    });
+    const outcome = await queuedTextSnapshot(sessionManager, p.id, scrollback);
+    if (!outcome) throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
     if (!outcome.ok) {
       log('info', `[readText] session=${p.id} unavailable reason=${outcome.reason}`);
       return { ok: true, mode: 'unavailable', reason: outcome.reason };
