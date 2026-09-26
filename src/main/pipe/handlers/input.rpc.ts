@@ -563,7 +563,7 @@ async function assertNotTypingAtAnApproval(
   // approval_press needs a commander token, so a pane agent cannot take the
   // path the message names. Say who can.
   throw new Error(
-    ctx?.commanderWorkspace
+    ctx?.commanderWorkspace || record.kind === 'terminal_prompt'
       ? message
       : `${message} approval_press needs an orchestrator (commander) session; ` +
           'without one, the human answers this prompt in the pane.',

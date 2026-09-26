@@ -55,8 +55,11 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   projector: { status(id: string): TranscriptStatus; snapshot(id: string, opts?: { before: number }): TranscriptPage | null };
   terminalChat(): Pick<TerminalChatService, 'read' | 'send' | 'subscribe' | 'unsubscribe'> | null;
   managed(): Pick<ChatSessionService, 'has' | 'status' | 'snapshot' | 'send' | 'conversationEpoch'> | null;
-  /** Null while the approval registry is not wired: treated as "may be pending". */
-  approvals(): { pendingFor(id: string): string | undefined } | null;
+  /**
+   * Null while the approval registry is not wired: treated as "may be pending".
+   * `pendingFor` names the pane's pending record and its kind.
+   */
+  approvals(): { pendingFor(id: string): { id: string; kind: string; answerable?: boolean } | undefined } | null;
   readScreen(id: string): Promise<ChatScreenRows | null>;
   agentProcessAlive(id: string, slug: string): Promise<boolean>;
   /** Writes to the pane PTY and notes the input; false when the pane is gone. */
@@ -99,6 +102,11 @@ export interface NativeChatBridge extends ChatBridge {
     Promise<{ result: ChatSendResult; effect?: ChatEffect; replayed: boolean; pending?: true; queued?: true }>;
   /** A file-binding send is between its first check and its last write (Stop must wait). */
   sendInFlight(id: string): boolean;
+  /**
+   * The write-time approval fence for a chat write (send or Stop): any pending
+   * record of any kind, or no registry at all. Kind-blind by design.
+   */
+  hasOpenApproval(id: string): boolean;
   /** `daemon.chat.skills`: the desktop keeps its live-cwd fallback. */
   desktopSkills(id: string, agent: unknown): Promise<ChatSkillCatalog>;
 }
@@ -215,17 +223,41 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       found.launch.reason === 'agent-running' || !!deps.managed()?.has(id);
   };
 
+  /**
+   * The write-time fence: true for ANY pending record, whatever its kind, and
+   * when the registry is not wired. Checked right before each chat write.
+   * Deliberately kind-blind — a `terminal_prompt` is the agent's own dialog on
+   * screen, and a paste + Enter into it would answer it.
+   */
+  const hasOpenApproval = (id: string): boolean => {
+    const approvals = deps.approvals();
+    return !approvals || !!approvals.pendingFor(id);
+  };
+
+  /**
+   * What the phone is TOLD blocked it. Only this maps kind: a `terminal_prompt`
+   * is answered in the pane, so it reads as `terminal`, like any other dialog
+   * on screen; the other kinds are answered through the approval.
+   */
   const blockedBy = (id: string): 'approval' | 'terminal' => {
     const approvals = deps.approvals();
-    return !approvals || approvals.pendingFor(id) ? 'approval' : 'terminal';
+    if (!approvals) return 'approval';
+    const pending = approvals.pendingFor(id);
+    return pending && pending.kind !== 'terminal_prompt' ? 'approval' : 'terminal';
   };
 
   const blocked = async (id: string, resolution: ChatResolution): Promise<ChatBlocked | undefined> => {
     const pane = deps.pane(id);
     // Producer-side gate: the orchestrator brain's pane never shows chat state.
     if (isBrainPty({ id, env: pane?.meta.env })) return undefined;
-    const approvalId = deps.approvals()?.pendingFor(id);
-    if (approvalId) return { by: 'approval', approvalId };
+    const pending = deps.approvals()?.pendingFor(id);
+    // A terminal_prompt reads as the terminal; the web layer lifts it to an
+    // approval only for a capable caller and an answerable record.
+    if (pending) {
+      return pending.kind === 'terminal_prompt'
+        ? { by: 'terminal', terminalPrompt: { approvalId: pending.id, answerable: pending.answerable === true } }
+        : { by: 'approval', approvalId: pending.id };
+    }
     if (resolution.source === 'managed') return undefined;
     if (resolution.status.agentStatus === 'awaiting_input' || deps.agentState(id).agentStatus === 'awaiting_input') return { by: 'terminal' };
     // The same screen gate the send runs, so a dialog that stays open shows on
@@ -276,7 +308,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     try {
       const result = await deliverChatPrompt(req.agentSessionId, req.text, {
         getTranscriptSessionId: () => deps.projector.status(id).agentSessionId,
-        hasOpenApproval: () => blockedBy(id) === 'approval',
+        hasOpenApproval: () => hasOpenApproval(id),
         readScreen: () => deps.readScreen(id),
         getAgentState: () => {
           const current = deps.chatAgentState(id);
@@ -560,6 +592,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         ...(outcome.pending ? { pending: true as const } : {}), ...(outcome.queued ? { queued: true as const } : {}) };
     },
     sendInFlight: (id) => sending.has(id),
+    hasOpenApproval,
     desktopSkills: (id, agent) => skillsWith(id, agent, 'cwd'),
   };
 }

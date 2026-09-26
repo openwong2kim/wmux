@@ -417,6 +417,11 @@ Check `/api/config` and hide the keyboard rather than letting a user type into a
 403. `fetch` resolves on 401 and 403 — a lone `.catch()` sees neither, which is a
 mistake the browser client made and shipped.
 
+It is **409 `{"error":"terminal-prompt-active","effect":"none"}`** while the pane
+shows the agent's own permission dialog (a pending `terminal_prompt` record),
+except for a lone Esc or a lone Ctrl-C — see
+[`terminal_prompt`](#terminal_prompt--the-agents-own-permission-dialog).
+
 Phone scrolling has two ownership modes. A terminal's normal buffer is local
 scrollback and must remain local (ordinary shells and Kiro use this path).
 Alternate-screen TUIs have no terminal scrollback. With `--allow-input`, a
@@ -809,7 +814,13 @@ POST /api/approvals/<id>     body: {decision: 'approve' | 'deny', choiceKey?: st
 
 Request fields: `id`, `sessionId`, `agent`, `kind`, `state`, `createdAt`, and
 optionally `workspaceId`, `question`, `options`, `choices`, `risk`, `screenTail`,
-`decision`, `resolvedBy`, `resolvedAt`, `selectedChoiceKey`.
+`decision`, `resolvedBy`, `resolvedAt`, `selectedChoiceKey`. A
+`kind: "terminal_prompt"` record has its own field set and rules — see
+[`terminal_prompt`](#terminal_prompt--the-agents-own-permission-dialog) below.
+
+`kind` is an open set: `awaiting_input` (an `AskUserQuestion`),
+`awaiting_permission` (a permission gate), `terminal_prompt` (the agent's own
+terminal dialog). Treat an unknown kind as a card you cannot answer.
 
 `question` and `options` are the agent's own text, sanitized and capped. Render
 them — a blind Approve button is not an informed answer.
@@ -857,9 +868,9 @@ Claude Code's `AskUserQuestion` prompt is natively supported: the daemon
 extracts the question, options, and structured choices from the hook payload and
 maps resolve decisions to precise TUI keystrokes.
 
-Claude Code's **permission prompts** (tool-approval gate, "Do you want to
-proceed?") have no hook — they are detector-only. Until Claude Code exposes an
-authoritative hook for permission prompts, the phone cannot answer them.
+Claude Code's own **permission dialog** ("Do you want to proceed?") is recorded
+as a `terminal_prompt` — see the next section for when it can be answered from
+the phone and when it cannot.
 
 **Codex CLI, Kiro CLI, and other TUI-only agents** have no hook integration and
 no authoritative keystroke mapping. They report `unsupported-agent` (501). Their
@@ -867,6 +878,168 @@ prompts are answered with the phone pane's terminal controls when `--allow-input
 is enabled, or at the desktop otherwise. Structured choice
 support for these agents will be added only after their respective projects
 expose authoritative approval hooks — the daemon does not guess keystrokes.
+
+### `terminal_prompt` — the agent's own permission dialog
+
+When a Claude Code pane (`claude` / `openclaude`) shows its own permission
+dialog — for example a `permissions.ask` rule hit in a `bypassPermissions`
+session — the daemon records `kind: "terminal_prompt"`. It appears when the
+PermissionRequest hook lands, or when the screen detector's awaiting-input
+reading survives its 1.5 s confirmation window, whichever comes first, and only
+when the pane has nothing else pending. The daemon reads the pane's screen and
+parses the dialog at that moment; when the hook landed before the dialog was
+drawn, it looks again and replaces the record with an answerable one (a new
+`id`, an `approval` event, no second push). The orchestrator brain's pane never gets one.
+
+**Capability.** Send `X-Wmux-Client-Caps: terminal-prompt-answer` (a
+comma-separated token list; unknown tokens are ignored) on `/api/approvals`,
+`POST /api/approvals/<id>`, `/turns` and `/api/events` if your client can answer
+this dialog. Without it you get the informational card only.
+
+What `/api/approvals` carries for this kind:
+
+| field | older client (no capability) | capable client |
+| --- | --- | --- |
+| `id`, `sessionId`, `agent`, `kind`, `state`, `createdAt`, `workspaceId?` | yes | yes |
+| `toolName` (when known), `summary` (the command, ≤200 chars, display only) | yes | yes |
+| `risk` (`critical` when the command or rule reads as destructive — `rm -rf`, `sudo`, …) | yes | yes |
+| `question`, `reason` | never | only when the record is answerable |
+| `choices`, `promptFingerprint` | never | only when the record is answerable, pending and not yet answered |
+| `pressedAt`, `decision`, `selectedChoiceKey`, `resolvedBy`, `resolvedAt` | when set | when set |
+
+Never `options` or `screenTail`. A record is **answerable** only when all of
+this holds when it is created:
+
+- the whole dialog was read: its top rule (a full-width rule row at column 0)
+  is on screen, no row or field was cut, and it offers a plain `Yes`;
+- it is bound to the tool call the agent actually made — the pane's own Claude
+  transcript has that call as its latest `tool_use` with no result yet (or the
+  PermissionRequest hook carried it), with the same tool and exactly the command
+  the dialog shows, and that command fits the 200-character summary.
+
+A dialog found only on the screen, with no pending call to bind to or a call
+whose command differs, is **informational for everyone**. `summary` and `risk`
+come from the call's own input.
+
+`choices` then holds only the plain `Yes` and a plain `No` (`No`, or `No, …`
+such as "No, and tell Claude what to do differently"). An option that writes a
+lasting rule — "Yes, and don't ask again for … commands", anything with
+"always" or "for this session" — is never a choice. A record that is not
+answerable carries none of the four fields for anyone; show it as "answer on
+the computer".
+
+`promptFingerprint` is a 32-hex hash of the whole dialog (title, question,
+reason, every command line, every option) and the tool call it is bound to,
+independent of where the cursor is. The same dialog for the next, identical
+call is a different record with a different fingerprint.
+
+**Answering** (capable clients only; `choiceKey` is authoritative, `decision`
+must agree with it):
+
+```http
+POST /api/approvals/<id>
+X-Wmux-Client-Caps: terminal-prompt-answer
+Content-Type: application/json
+
+{"decision":"approve","choiceKey":"1","promptFingerprint":"<hex>"}
+```
+
+`approve` goes with the plain `Yes` choice, `deny` with the `No` choice. It needs
+the device's input grant, like typing (403 `read-only: …` otherwise). The daemon
+then refuses unless all of these hold, and writes nothing when it refuses:
+
+- the record is at least 1.5 s old;
+- this record has not been answered already (one write per record, ever);
+- the call it is bound to is still the pane's pending one;
+- the pane's screen, re-read now, still shows the same dialog (same
+  fingerprint) as the ACTIVE one: exactly one option selected, the
+  `Esc to cancel…` footer directly under the options, nothing but blank rows
+  below it;
+- no key and no mouse click, release or wheel reached the pane since the record
+  appeared (pointer motion and focus reports do not count) — someone at the
+  terminal may be answering it;
+- no new PTY and no output between that read and the write. Output alone is
+  read again once, then it gives up.
+
+On success it writes exactly one byte — the digit, never Enter — and answers
+200 `{"state":"pending","pressedAt":<ms>,"durable":true}`. The record stays
+`pending` (with `pressedAt`) until the dialog is gone from the screen, then
+resolves. An SSE `approval` event with `phase: "press"` marks the write.
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 200 | `{state:"pending", pressedAt, durable}` | The key is in the pane |
+| 400 | `{error:"invalid-prompt-fingerprint"}` | `promptFingerprint` missing or not 32 hex |
+| 400 | `{error:"invalid-choice"}` | `choiceKey` missing, not one of `choices`, or `decision` disagrees with it |
+| 403 | `{error:"read-only: …"}` | No input grant |
+| 409 | `{error:"already-answered"}` | This record was answered from a phone already and is waiting for its dialog to close (`pressedAt` is set). Nothing typed |
+| 409 | `{error:"already-resolved", resolvedBy}` | The record already settled — its dialog was answered (anywhere) and has gone. Nothing typed |
+| 410 | `{error:"expired", state?}` | The record ended without an answer (turn ended, pane gone, replaced) |
+| 409 | `{error:"prompt-changed"}` | The screen is not the dialog you answered (changed, moved, not the active dialog, or a key or click reached the pane since your read). Nothing typed. When the dialog is still up, the record was superseded by a fresh one — re-read `/api/approvals` and confirm again |
+| 425 | `{error:"answer-too-soon"}` | Within 1.5 s of the record appearing. Ask again |
+| 501 | `{error:"answer-in-terminal"}` | Not answerable remotely: no capability header, or the record is not answerable (checked before the body, so a record without a fingerprint is 501, not 400). Answer on the computer |
+
+Without the capability header every answer is 501 `answer-in-terminal`: show
+"wmux cannot answer this agent remotely. Open the pane on the computer."
+
+**Typing cannot answer it.** While the pane has a pending `terminal_prompt`
+record (answerable or not, answered-and-waiting included), `POST /api/input` to
+that pane is refused with 409 `{"error":"terminal-prompt-active","effect":"none"}`
+and nothing is written — a digit, Enter, a paste, a notification "Reply", any
+key sequence. The dialog is answered only through `POST /api/approvals/<id>`
+above, or at the computer. The one exception is the cancel direction: a body
+that is exactly one Esc (`\x1b`) or exactly one Ctrl-C (`\x03`) is written as
+usual. Esc followed by anything else (an arrow key, Enter) is refused. The check
+runs when the request body completes, immediately before the write, so a dialog
+that appeared while the body was in flight still refuses it. With a durable
+input receipt the refusal journals nothing: a retry with the same
+`X-Wmux-Input-Request-ID` is checked again and writes only once the dialog is
+gone. Input flows again as soon as the record leaves `pending` (see *It goes
+away* below). A native chat send to the pane is refused the same way, under the
+chat route's own code: 409 `chat-blocked` with `blockedBy: "terminal"` (see
+*Sending* under *Native chat*).
+
+**A key or click in the pane refreshes the record.** Someone at the terminal
+moving the selection (↓, ↑, a click) means what your user confirmed may not be
+what is selected, so it is never pressed through. Instead, once the input has
+been quiet for about 0.6 s (and at most once every 2 s per record), the daemon
+re-reads the dialog and, if it is still up, replaces the record: you get
+
+```
+event: approval   {"approvalId":"<old>","phase":"supersede","state":"superseded","kind":"terminal_prompt",…}
+event: approval   {"approvalId":"<new>","phase":"create","state":"pending","kind":"terminal_prompt",…}
+```
+
+and `/api/approvals` lists the new record with a new `id` and a new
+`promptFingerprint` (it also encodes the input epoch), answerable 1.5 s after it
+appeared. There is no second push. An answer that races the refresh gets 409
+`prompt-changed` and triggers the same replacement. A dialog the input
+dismissed is not refreshed into an answerable record; one still visible but no
+longer bound to the pending call is replaced by an informational record.
+
+**Push.** One push per awaiting episode per pane — a record replaced within the
+episode (a late parse, a changed dialog) carries the push over rather than
+sending another or losing it. It is always in-app only (`requiresInAppChoice:
+true`, no lock-screen buttons, for any client) and carries
+`approvalKind: "terminal_prompt"`. The body names the tool and the command;
+`risk` is `critical` when the command or the permission rule reads as
+destructive (`rm -rf`, `sudo`, …). The outbound webhook (`notifySinks`) never
+carries the command.
+
+**The SSE `approval` event** for this kind carries `kind: "terminal_prompt"` and
+`risk` when set, and no content (no tool, summary, question or choices): re-read
+`/api/approvals`.
+
+**It goes away** when the dialog is answered (a key in the pane, from anyone),
+when the daemon sees the dialog gone from the screen, when the turn ends, the
+session restarts or the pane closes, and on a daemon restart. After the screen
+check releases a pane, the same dialog is not raised again from the screen
+detector for 30 s; a different dialog, or the PermissionRequest hook, still is.
+
+**Awaiting state.** A pane at `awaiting_input` is also released when the daemon
+sees its dialog gone from the screen on two reads in a row — an answer typed in
+Terminal in a shape the key check does not recognise no longer leaves the pane
+"needs you" for the rest of the turn.
 
 ### `risk` — a hint, not a gate
 
@@ -1646,6 +1819,8 @@ When config advertises `inputReceipts`, POST `/api/input?session=...` accepts
 when the PTY write returned and its receipt was persisted, or 409
 `{status:"uncertain",replayed:boolean}` when a write may have occurred but cannot
 be confirmed. Neither state proves the agent processed or executed the input.
+409 `{error:"terminal-prompt-active",effect:"none"}` means nothing was written
+and nothing was journaled; the same ID may be retried and is checked again.
 
 Receipts bind authenticated device/operator identity, pane incarnation and exact
 decoded input. Reusing an ID with different content, using an old incarnation,
@@ -1850,6 +2025,109 @@ searched fully or in part in at least one scope.
 
 Treat an unknown reason as "not searched".
 
+## Device management
+
+`/api/config` carries `deviceManagement: {scope: "all" | "self"}` when this
+daemon serves the three routes below. The key is **omitted** (not `false`) when
+it does not; an older daemon serves the same shape. `scope` is per caller:
+
+- `all` — the operator token, or a device that may type (its own grant **and**
+  the server's `--allow-input`, the same rule as `allowInput`).
+- `self` — a read-only device.
+
+All three routes sit behind the normal Bearer gate and accept no stream ticket.
+
+### `GET /api/devices`
+
+```json
+{
+  "devices": [
+    {
+      "deviceId": "…", "name": "iPhone", "pairedAt": 1700000000000,
+      "lastSeenAt": 1700000500000, "grants": {"input": true},
+      "revoked": false, "current": true
+    }
+  ],
+  "serverGrants": {"input": true, "upload": false, "transcript": true},
+  "scope": "all"
+}
+```
+
+Sent with `Cache-Control: no-store`. `grants.input` is the device's **own**
+stored grant; `serverGrants` are the server flags (`--allow-input`,
+`--allow-upload`, `--allow-transcript`). Whether a device can actually type is
+both of them together. `revokedAt` is present only on a revoked row. `current`
+marks the requesting device and is always `false` for the operator.
+
+Visibility:
+
+| Caller | Sees |
+|---|---|
+| operator token | every device, including revoked tombstones |
+| device with scope `all` | every **active** device (no tombstones) |
+| device with scope `self` | only its own row |
+
+A device that may type already has a shell on the host and could read the
+roster file from it, so showing it the roster reveals nothing new. The roster
+is for **seeing** which devices exist and when each was last seen, so the owner
+can revoke a lost one from the desktop (or with the operator token). A device
+can revoke only itself. A read-only device learns nothing about the others: no
+names, no `lastSeenAt`.
+
+No secret material, push token or Live Activity token is ever on this wire.
+
+### `POST /api/devices/:id/revoke`
+
+No body. Revocation is permanent; a revoked device re-pairs to come back.
+
+### `PATCH /api/devices/:id/grants`
+
+Body is exactly `{"input": false}`. This route only **lowers** a grant. Raising
+one is desktop-only for every caller, the operator token included, the same way
+pairing codes are: the operator token travels in URLs and QR codes. Lowering
+your own grant needs no input permission. When the grant actually changes (or
+an earlier change that failed to persist is being retried), the server also
+closes that device's live streams, so it re-handshakes and picks up the smaller
+grant. A PATCH to a grant that is already `false` and on disk changes nothing
+and closes nothing.
+
+### Who may act on which id
+
+The operator token may act on any id. A **device may act only on its own id**:
+any other id gets `403 {"error":"not-permitted"}` before the roster is
+consulted, byte-identical whether or not that id exists.
+
+### Responses
+
+| Status | Body | When |
+|---|---|---|
+| 200 | `{ok:true, closed:N}` | revoke persisted; `N` live streams were closed. Revoking an already revoked device answers `{ok:true, closed:0}` |
+| 200 | `{ok:false, reason:"persist-failed", closed:N}` | revoke could not be written to disk. The device is blocked in memory now, but may come back after a daemon restart |
+| 200 | `{ok:true, grants:{input:false}}` | grant lowered |
+| 200 | `{ok:false, reason:"persist-failed", grants:{input:false}}` | grant lowered in memory but not written to disk. Retrying the same PATCH re-attempts the write and keeps answering this until it lands |
+| 400 | `{error:"invalid-grants"}` | PATCH body missing `input`, `input` not a boolean, or any other field present |
+| 403 | `{error:"not-permitted"}` | a device naming an id that is not its own |
+| 403 | `{error:"grant-escalation-desktop-only"}` | PATCH with `input:true`, from anyone. Nothing is written |
+| 404 | `{error:"device-not-found"}` | operator naming an unknown id. The roster keeps only the newest revoked tombstones, so a pruned one is also 404 |
+| 409 | `{error:"device-revoked"}` | PATCH on a revoked device, including one revoked from the desktop while the request body was still arriving |
+| 500 | `{error:"device-revoke-failed"}` | the revoke raised an unexpected error. Retry; revoking is idempotent |
+| 503 | `{error:"device-management-unavailable"}` | this daemon's device store cannot manage devices (config omits `deviceManagement`) |
+
+### Revoking yourself
+
+A device may revoke itself with no input permission. The response is still
+delivered after the server closes that device's SSE streams and stream tickets;
+every later request answers `401 {reason:"revoked"}`.
+
+**After a self-revoke the phone discards its local credential whatever the
+response says**: `200 ok:true`, `200 ok:false persist-failed`, a network error
+or no response at all. On `persist-failed` the device is blocked on the running
+daemon but could be accepted again after a restart; a phone that has already
+thrown its credential away cannot use it either way.
+
+Every revoke and grant change is recorded in the daemon's device audit log with
+who made it: `desktop`, `operator-web` or `device-self`.
+
 ## Native chat
 
 The phone's Chat surface drives the **native conversation already running in the
@@ -1919,7 +2197,10 @@ transcript), then the Claude/Codex transcript file — and adds `chat` to every
   the phone (Stop is in Terminal). `queue:true` (live Claude) means a send
   during a running turn can be accepted and answered with `queued:true`.
 - **`blocked` is authoritative and computed at read time**: a pending approval
-  (`by:"approval"`), or `by:"terminal"` for a hook `awaiting_input`, an OpenCode
+  (`by:"approval"`), or `by:"terminal"` for a `terminal_prompt` record (as
+  `by:"approval"` with its `approvalId` only when you sent the
+  `terminal-prompt-answer` capability AND the record is answerable), a hook
+  `awaiting_input`, an OpenCode
   `awaiting_input` phase, or a dialog the send screen gate sees on the rendered
   screen (checked on every read of a Claude/Codex binding with `send`).
 - **`launch.reason`** is an open set: `ok`, `shell-busy`, `shell-not-empty`,
@@ -2227,7 +2508,9 @@ data: {"sessionId":"pty-7f3c","at":1758712399000}
 **Live-only**, like `transcript.nudge`: no `id:`, not in the backlog, never
 replayed, only for panes whose `/turns` you have read, never for the brain pane.
 `by` is `approval` (carries `approvalId`; dedupe with the `approval` event) or
-`terminal`; treat an unknown value as `terminal`. Only transitions emit: the
+`terminal`; treat an unknown value as `terminal`. A `terminal_prompt` reads as
+`approval` only on a stream opened with the `terminal-prompt-answer`
+capability header, and only while the record is answerable. Only transitions emit: the
 first `chat.blocked` value the server observes for a pane is recorded without
 an event (whoever read it just saw it in `/turns`). The server recomputes the
 value at most once a second per pane, when an approval opens or closes, the

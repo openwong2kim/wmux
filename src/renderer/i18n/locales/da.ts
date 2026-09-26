@@ -213,7 +213,7 @@ export const da = {
   'settings.sidebarPosition': 'Sidepanelposition',
   'settings.sidebarPositionDesc': 'Venstre eller højre for terminalområdet',
   'settings.sidebarAttentionFirst': 'Rækker der venter på dig øverst',
-  'settings.sidebarAttentionFirstDesc': 'Fastgør arbejdsområder, hvis agent venter på dig, øverst i sidepanelet. Slået fra som standard: rækker bliver, hvor du trak dem hen. Mens den er slået til, er træk-og-omarrangér sat på pause.',
+  'settings.sidebarAttentionFirstDesc': 'Flyt arbejdsområder, hvis agent venter på dig, til toppen af sidepanelet. Slået fra som standard: rækker bliver, hvor du trak dem hen. Mens den er slået til, er træk-og-omarrangér sat på pause.',
   'settings.sidebarShowPaneCoordinates': 'Vis rudekoordinater',
   'settings.sidebarShowPaneCoordinatesDesc': 'Vis den automatisk genererede koordinat i w1-2-stil i agentlisten for ruder, du ikke har navngivet. Slået til som standard. En rude, du har omdøbt, viser altid sit navn uanset hvad.',
   'settings.sidebarLeft': 'Venstre',

@@ -183,6 +183,27 @@ describe('AppLayout — update notices are pulled, not pushed', () => {
     expect(body).toMatch(/shouldShowInstallError\(data,\s*installRequestedAt,\s*Date\.now\(\),\s*INSTALL_ERROR_WINDOW_MS\)/);
   });
 
+  it('names a Windows-blocked installer with its own sentence, not the generic refusal (#1525)', () => {
+    // The generic copy says "run the installer from the releases page" — the
+    // same file Windows just refused to run.
+    const body = hookBody('useRefusedInstallNotice');
+    expect(body).toMatch(/isInstallBlockedByWindowsReason\(reason\)/);
+    expect(body).toMatch(/update\.refusedInstallBlocked/);
+    expect(en['update.refusedInstallBlocked']).toMatch(/Windows blocked/);
+  });
+
+  it('turns the Smart App Control hold into a warning with an explicit "Install anyway" (#1525)', () => {
+    const body = hookBody('usePendingInstallNotice');
+    expect(body).toMatch(/isSmartAppControlHold\(data\)/);
+    expect(body).toMatch(/update\.smartAppControlHold/);
+    expect(body).toMatch(/update\.installAnyway/);
+    // The action is the only thing that skips the check, and only per call.
+    expect(body).toMatch(/install\(\{\s*installAnyway:\s*true\s*\}\)/);
+    // Checked before the generic installFailed toast, so a hold never reads
+    // as "the update could not be installed".
+    expect(body.indexOf('isSmartAppControlHold(data)')).toBeLessThan(body.indexOf("'update.installFailed'"));
+  });
+
   it('hands the Install button back after a failure, without stomping a superseding release (#1055)', () => {
     const body = hookBody('usePendingInstallNotice');
     expect(body).toMatch(/shouldReannounceAfterError\(data\)/);

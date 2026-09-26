@@ -122,6 +122,22 @@ afterEach(() => {
 });
 
 describe('FleetView — Ready to review', () => {
+  it('keeps Fleet open for review-task Jump when enabled, but still closes for Open diff', async () => {
+    act(() => useStore.getState().setFleetKeepOpenAfterJump(true));
+    mount();
+    await settle();
+    const row = reviewRow('ws-t1')!;
+    act(() => row.focus());
+    key(row, 'j');
+    await settle();
+    expect(useStore.getState().activeWorkspaceId).toBe('ws-t1');
+    expect(useStore.getState().fleetViewVisible).toBe(true);
+    act(() => row.focus());
+    key(row, 'd');
+    expect(addDiffSurface).toHaveBeenCalled();
+    expect(useStore.getState().fleetViewVisible).toBe(false);
+  });
+
   it('lists the finished open task with owner, branch, change summary and elapsed time', async () => {
     mount();
     await settle();

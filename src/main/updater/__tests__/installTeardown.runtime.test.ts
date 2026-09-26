@@ -29,6 +29,10 @@ import {
   probeVolume,
   type WaiterPlan,
 } from '../installTeardown';
+import {
+  INSTALL_BLOCKED_BY_WINDOWS_PREFIX,
+  INSTALL_BLOCKED_BY_WINDOWS_REASON,
+} from '../../../shared/installAbortReasons';
 
 const onWindows = process.platform === 'win32';
 const PS = path.join(
@@ -322,6 +326,81 @@ describe.skipIf(!onWindows)('install waiter (real processes, real locks)', () =>
   it('enumerates nothing for a root no process runs from', () => {
     expect(collectInstallRootPids(root)).toEqual([]);
   }, 30_000);
+
+  it('#1525 — an ordinary launch failure keeps the generic reason and exit 4', () => {
+    // A missing installer makes the REAL Start-Process fail through the same
+    // Win32Exception path a Smart App Control block takes (code 2 instead of
+    // 4551) — so this proves the new classification leaves every non-policy
+    // failure exactly as it was.
+    writeWaiter({ ...plan([], 5_000), setupExePath: path.join(sandbox, 'missing-setup.exe') });
+    expect(runWaiter(60_000).status).toBe(4);
+    const marker = fs.readFileSync(abortMarker, 'utf-8');
+    expect(marker).toContain('install-aborted: the installer could not be started');
+    expect(marker).not.toContain(INSTALL_BLOCKED_BY_WINDOWS_PREFIX);
+  }, 120_000);
+});
+
+describe.skipIf(!onWindows)('#1525 — the waiter names an application-control block (real PowerShell)', () => {
+  // Smart App Control cannot be switched on for a test, so the classification
+  // block is lifted out of the REAL generated script and fed the exception
+  // shapes Windows PowerShell produces. The first case is the one observed on
+  // the reporter's machine: 5.1's Start-Process drops the Win32Exception and
+  // rethrows an InvalidOperationException whose message embeds the Win32 text.
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-1525-')); });
+  afterEach(() => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } });
+
+  function classify(throwStatement: string): string {
+    const s = buildWaiterScript({
+      pids: [], setupExePath: 'C:\\t\\Setup.exe', installRoot: 'C:\\t\\root',
+      abortMarkerPath: 'C:\\t\\abort.txt', readyMarkerPath: 'C:\\t\\ready.tmp',
+      lockBudgetMs: 1_000, forceKillEligiblePids: [], forceKillGraceMs: 1_000,
+    }) ?? '';
+    const from = s.indexOf('  $blockedByPolicy = $false');
+    const to = s.indexOf('  exit 4');
+    expect(from).toBeGreaterThan(-1);
+    expect(to).toBeGreaterThan(from);
+    const script = [
+      `$ErrorActionPreference = 'SilentlyContinue'`,
+      'function Write-InstallAbortMarker($reason) { [Console]::Out.Write($reason) }',
+      '$startErr = $null',
+      `try { ${throwStatement} } catch { $startErr = $_.Exception }`,
+      s.slice(from, to),
+    ].join('\n');
+    const file = path.join(dir, 'classify.ps1');
+    fs.writeFileSync(file, script, 'utf-8');
+    const res = spawnSync(
+      PS,
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file],
+      { encoding: 'utf-8', timeout: 60_000, windowsHide: true },
+    );
+    expect(res.status).toBe(0);
+    return res.stdout;
+  }
+
+  const startProcessStyle = (code: number) =>
+    "throw (New-Object System.InvalidOperationException -ArgumentList ('This command cannot be run due to the error: ' + " +
+    `(New-Object System.ComponentModel.Win32Exception ${code}).Message + '.'))`;
+
+  it('4551 (Smart App Control) embedded in the Start-Process message → blocked reason', () => {
+    expect(classify(startProcessStyle(4551))).toBe(INSTALL_BLOCKED_BY_WINDOWS_REASON);
+  }, 90_000);
+
+  it('1260 (AppLocker / group policy) embedded in the Start-Process message → blocked reason', () => {
+    expect(classify(startProcessStyle(1260))).toBe(INSTALL_BLOCKED_BY_WINDOWS_REASON);
+  }, 90_000);
+
+  it('a Win32Exception 4551 kept as InnerException is found by its NativeErrorCode alone', () => {
+    // Custom inner text, unrelated outer text: only the code can match.
+    const stmt =
+      "$inner = New-Object System.ComponentModel.Win32Exception -ArgumentList 4551, 'custom text'; " +
+      "throw (New-Object System.InvalidOperationException -ArgumentList 'wrapped', $inner)";
+    expect(classify(stmt)).toBe(INSTALL_BLOCKED_BY_WINDOWS_REASON);
+  }, 90_000);
+
+  it('any other launch failure (file not found) keeps the generic reason', () => {
+    expect(classify(startProcessStyle(2))).toBe('install-aborted: the installer could not be started');
+  }, 90_000);
 });
 
 describe.skipIf(!onWindows)('probeVolume', () => {

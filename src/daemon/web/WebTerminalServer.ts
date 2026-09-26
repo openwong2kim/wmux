@@ -35,6 +35,7 @@ import fs from 'node:fs';
 import { expandTilde } from '../../shared/expandTilde';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { Readable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import type { DaemonSessionManager, ManagedSession } from '../DaemonSessionManager';
 // Types only — the registry implementation, its persistence and its
@@ -42,6 +43,8 @@ import type { DaemonSessionManager, ManagedSession } from '../DaemonSessionManag
 // a CONSUMER: it lists, it resolves, it republishes lifecycle events. It never
 // constructs a request, and it never decides what bytes a decision means.
 import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
+import { TERMINAL_PROMPT_WEB_ANSWER } from '../approvals/types';
+import { decisionForChoiceLabel } from '../approvals/terminalPromptParse';
 // Type only — the projector's implementation (transcript parsing, watch state,
 // fs watching) stays out of this module. The web server is a STATELESS consumer
 // of its `delta()` for the phone turn view (#782); it must never `subscribe()`.
@@ -71,6 +74,8 @@ import type { RemotePaneSummary, RemoteResumeInfo } from '../../shared/remoteHos
 import { normalizeResumeCwd, type ResumeBinding } from '../../shared/agentResume';
 import { assistantPreview } from '../../shared/assistantPreview';
 import { capSnapshot } from './snapshotWindow';
+import { revokeDeviceAndDisconnect } from './deviceRevoke';
+import type { DeviceActor } from './deviceAudit';
 import {
   collectSessionDiff,
   createGitRunner,
@@ -83,9 +88,11 @@ import {
   PHONE_PROTOCOL_VERSION,
 } from './protocolVersion';
 import { startSseHeartbeat } from './sseHeartbeat';
+import { StreamResponseLimits } from './StreamResponseLimits';
 import {
   CHAT_LAUNCH_RETENTION_MS,
   checkChatId,
+  projectChatBlocked,
   type ChatBlocked,
   type ChatBridge,
   type ChatOwner,
@@ -187,6 +194,9 @@ function decodeTurnCursor(
  *                              device's own credential (refused over plaintext
  *                              off-machine transports — see mintRefusal)
  *   POST /api/live-activity-registration  push-to-start / activity tokens (merges)
+ *   GET  /api/devices          paired-device roster, scoped to the caller
+ *   POST /api/devices/:id/revoke   remove a device (a device: only itself)
+ *   PATCH /api/devices/:id/grants  lower a device's input grant (never raise)
  *   GET  /api/config           allowInput + allowUpload flags, plus the phone
  *                              protocol handshake (see protocolVersion.ts)
  *   GET  /api/sessions         pane list
@@ -206,7 +216,10 @@ function decodeTurnCursor(
  *   GET  /api/stream?session=  SSE pane bytes (`?token=`/`?ticket=` — EventSource)
  *   GET  /api/events           attention + approval channel; SSE (`?token=`
  *                              allowed) or JSON backlog (Bearer only)
- *   POST /api/input?session=   free-form bytes — 403 unless `--allow-input`
+ *   POST /api/input?session=   free-form bytes — 403 unless `--allow-input`;
+ *                              409 `terminal-prompt-active` while the pane
+ *                              shows a `terminal_prompt` dialog (lone Esc /
+ *                              Ctrl-C excepted)
  *   POST /api/upload           raw JPEG/PNG bytes → a path on disk — 403
  *                              unless `--allow-upload` (its own grant)
  *   GET  /api/approvals        pending + recently resolved approval requests
@@ -407,6 +420,43 @@ export interface WebDeviceResolver {
     deviceId: string,
     input: { hostID?: unknown; pushToStartToken?: unknown; activityToken?: unknown; apnsEnvironment?: unknown },
   ): { ok: boolean; reason?: string };
+  /**
+   * Device management from the phone (`/api/devices`). The three verbs are ONE
+   * capability: a resolver missing any of them gets 503 on all three routes
+   * and no `deviceManagement` key in `/api/config`, so a phone never shows a
+   * roster it cannot act on. Shapes mirror DeviceStore's, which is what the
+   * daemon injects here.
+   */
+  list?(): WebDeviceSummary[];
+  revoke?(deviceId: string, actor: DeviceActor): { ok: boolean; reason?: 'not-found' | 'persist-failed' };
+  setInput?(
+    deviceId: string,
+    allowInput: boolean,
+    actor: DeviceActor,
+  ): WebDeviceSetInputResult;
+}
+
+/**
+ * What `setInput` answers. `changed` is true only when the call changed the
+ * grant; `retried` when it re-attempted the write of an earlier change that
+ * had not reached disk.
+ */
+export interface WebDeviceSetInputResult {
+  ok: boolean;
+  reason?: 'not-found' | 'revoked' | 'persist-failed';
+  changed: boolean;
+  retried?: boolean;
+}
+
+/** One roster row as the resolver reports it. Carries no secret material. */
+export interface WebDeviceSummary {
+  deviceId: string;
+  name: string;
+  createdAt: number;
+  lastSeenAt: number;
+  /** The device's own resolved grant; the server flag is applied separately. */
+  allowInput: boolean;
+  revokedAt?: number;
 }
 
 /**
@@ -1009,6 +1059,8 @@ interface EventClient {
   res: http.ServerResponse;
   detach: () => void;
   principal: WebPrincipal;
+  /** What the client declared it understands (`X-Wmux-Client-Caps`). */
+  caps: ClientCaps;
 }
 
 /**
@@ -1265,6 +1317,8 @@ export class WebTerminalServer {
    * stream against THIS running server, so there is nothing to carry across a
    * restart — the client asks for another one, which costs it one request.
    */
+  private readonly streamResponses = new StreamResponseLimits();
+
   private readonly streamTickets = new Map<string, StreamTicket>();
 
   // Bound so on()/off() reference the SAME listener across start()/stop().
@@ -2045,6 +2099,18 @@ export class WebTerminalServer {
       return this.json(res, 401, { error: 'unauthorized', reason: auth.reason });
     }
     const principal = auth.principal;
+    // Admit before opening a file or registering any long-lived listeners.
+    const streamsResponse = isStream || (req.method === 'GET'
+      && /^\/api\/sessions\/[^/]+\/turns\/(file|image)$/.test(p));
+    if (streamsResponse && !this.streamResponses.acquire(this.watcherKey(principal), res, {
+      exemptCeiling: principal.kind === 'operator',
+      maxQueuedBytes: p === '/api/stream' ? 16 * 1024 * 1024 : undefined,
+      log: (reason) => this.deps.log('warn', `[web] stream closed: ${reason}`),
+    })) {
+      res.setHeader('Retry-After', '1');
+      return this.json(res, 429, { error: 'too-many-streams' });
+    }
+
     // #1316 — one stamp for the whole authenticated surface. Placed after the
     // gate and before the route table so no route can forget it, and so a
     // failed credential never counts as someone using the daemon.
@@ -2144,6 +2210,11 @@ export class WebTerminalServer {
         // that they are present now: each field is omitted while the desktop
         // is away. Omitted without a bridge, and by an older daemon.
         ...(this.deps.desktop ? { fleetSidebar: true } : {}),
+        // Whether `/api/devices` answers here, and how much of the roster this
+        // caller may see and act on (see handleDeviceList). OMITTED, not
+        // false, when the device store cannot list, revoke and set grants —
+        // the shape an older daemon serves.
+        ...(this.deviceManagement() ? { deviceManagement: { scope: this.deviceScope(principal) } } : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
         minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
         serverVersion: daemonServerVersion(),
@@ -2277,6 +2348,13 @@ export class WebTerminalServer {
     if (req.method === 'POST' && p === '/api/live-activity-registration') {
       return this.handleLiveActivityRegistration(req, res, principal);
     }
+    const deviceRoute = /^\/api\/devices(?:\/([^/]+)\/(revoke|grants))?$/.exec(p);
+    if (deviceRoute) {
+      const [, rawId = '', verb] = deviceRoute;
+      if (req.method === 'GET' && !verb) return this.handleDeviceList(res, principal);
+      if (req.method === 'POST' && verb === 'revoke') return this.handleDeviceRevoke(res, rawId, principal);
+      if (req.method === 'PATCH' && verb === 'grants') return this.handleDeviceGrants(req, res, rawId, principal);
+    }
     if (req.method === 'POST' && p === '/api/input') {
       return this.handleInput(req, res, url, principal);
     }
@@ -2291,7 +2369,7 @@ export class WebTerminalServer {
       return this.handleUpload(req, res, extension.toLowerCase());
     }
     if (req.method === 'GET' && p === '/api/approvals') {
-      return this.handleApprovalsList(res, principal);
+      return this.handleApprovalsList(res, principal, clientCaps(req));
     }
     if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
       return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length), principal, url);
@@ -3557,7 +3635,7 @@ export class WebTerminalServer {
     const blocked = await this.readChatBlocked(chat, sessionId, resolution);
     if (res.destroyed || res.writableEnded) return;
     this.noteChatBlocked(sessionId, resolution, blocked);
-    this.json(res, 200, { ...body, chat: buildChatObject(resolution, blocked) });
+    this.json(res, 200, { ...body, chat: buildChatObject(resolution, projectChatBlocked(blocked, clientCaps(req))) });
   }
 
   /** The `/turns` page for a resolved binding, read synchronously; undefined once answered (503). */
@@ -3682,21 +3760,34 @@ export class WebTerminalServer {
    */
   private noteChatBlocked(sessionId: string, resolution: ChatResolution, blocked: ChatBlocked | undefined): void {
     if (this.isBrainApproval(sessionId)) return;
-    const key = blocked ? JSON.stringify([blocked.by, blocked.approvalId ?? null]) : '';
+    // Two views of one state: a capable client may see a `terminal_prompt` as
+    // an approval, an older one sees the terminal. A transition in either view
+    // is an event; each watcher gets its own view.
+    const views = {
+      legacy: projectChatBlocked(blocked, { terminalPromptAnswer: false }),
+      capable: projectChatBlocked(blocked, { terminalPromptAnswer: true }),
+    };
+    const keyOf = (b: ChatBlocked | undefined): string => (b ? JSON.stringify([b.by, b.approvalId ?? null]) : '');
+    const key = blocked ? JSON.stringify([keyOf(views.legacy), keyOf(views.capable)]) : '';
     const previous = this.chatBlockedState.get(sessionId);
     this.chatBlockedState.set(sessionId, key);
     if (previous === undefined || previous === key) return;
     const agent = resolution.status.terminal?.agent;
-    const body = blocked
-      ? {
-          sessionId,
-          by: blocked.by,
-          ...(blocked.approvalId ? { approvalId: blocked.approvalId } : {}),
-          ...(agent ? { agent } : {}),
-          at: this.now(),
-        }
-      : { sessionId, at: this.now() };
-    this.deliverChatEvent(sessionId, blocked ? 'chat.blocked' : 'chat.unblocked', JSON.stringify(body));
+    const bodyOf = (view: ChatBlocked | undefined): { event: 'chat.blocked' | 'chat.unblocked'; body: string } => ({
+      event: view ? 'chat.blocked' : 'chat.unblocked',
+      body: JSON.stringify(view
+        ? {
+            sessionId,
+            by: view.by,
+            ...(view.approvalId ? { approvalId: view.approvalId } : {}),
+            ...(agent ? { agent } : {}),
+            at: this.now(),
+          }
+        : { sessionId, at: this.now() }),
+    });
+    const legacy = bodyOf(views.legacy);
+    const capable = bodyOf(views.capable);
+    this.deliverChatEvent(sessionId, (caps) => (caps.terminalPromptAnswer ? capable : legacy));
   }
 
   /**
@@ -3706,12 +3797,16 @@ export class WebTerminalServer {
    * phone replaying after a reconnect would clear a badge while a human is
    * still being waited on. `/turns` is the authoritative state.
    */
-  private deliverChatEvent(sessionId: string, event: 'chat.blocked' | 'chat.unblocked', body: string): void {
+  private deliverChatEvent(
+    sessionId: string,
+    viewFor: (caps: ClientCaps) => { event: 'chat.blocked' | 'chat.unblocked'; body: string },
+  ): void {
     const watchers = this.transcriptWatchers.get(sessionId);
     if (!watchers || watchers.size === 0) return;
     for (const client of this.eventClients) {
       if (!watchers.has(this.watcherKey(client.principal))) continue;
       try {
+        const { event, body } = viewFor(client.caps);
         writeSse(client.res, event, body);
       } catch {
         /* client stream broken — its own 'close' handler cleans up */
@@ -4433,7 +4528,12 @@ export class WebTerminalServer {
         ...this.securityHeaders(),
         'Content-Length': String(body.length),
       });
-      res.end(body);
+      // Respect response backpressure instead of ending with an 8 MB chunk.
+      const source = Readable.from((function* () {
+        for (let offset = 0; offset < body.length; offset += 64 * 1024) yield body.subarray(offset, offset + 64 * 1024);
+      })());
+      res.once('close', () => source.destroy());
+      source.pipe(res);
     } catch {
       // A read that fails after the handle opened (permissions, a device that
       // went away) is the same answer as a file that was never there. Unless
@@ -5173,6 +5273,29 @@ export class WebTerminalServer {
 
   // --- input (opt-in) -----------------------------------------------------
 
+  /**
+   * Whether raw input must be refused because the pane shows the agent's own
+   * permission dialog (a pending `terminal_prompt` record, answered or not).
+   *
+   * A digit and Enter typed here would answer that dialog while skipping every
+   * fence `POST /api/approvals/:id` applies (capability, fingerprint, the
+   * reflex delay, one write per record, the re-read before the write), and
+   * would let a phone that cannot show the dialog approve it. So the dialog is
+   * answered through the approvals route or at the desk, never through raw
+   * input. The one carve-out is the cancel direction: a lone Esc or a lone
+   * Ctrl-C only abandons what the pane is doing, the same two keys the MCP
+   * approval block exempts.
+   *
+   * Scoped to web principals by construction: the desktop types through the
+   * pipe, never through this server.
+   */
+  private terminalPromptBlocksInput(sessionId: string, body: string): boolean {
+    if (body === '\x1b' || body === '\x03') return false;
+    const approvals = this.deps.approvals;
+    if (!approvals) return false;
+    return approvals.list().pending.some((r) => r.kind === 'terminal_prompt' && r.sessionId === sessionId);
+  }
+
   private handleInput(
     req: http.IncomingMessage,
     res: http.ServerResponse,
@@ -5226,6 +5349,10 @@ export class WebTerminalServer {
         if (this.attachableSession(fresh.principal,sessionId) !== managed || managed.meta.incarnationId !== incarnation) {
           return this.json(res,409,{error:'pane-incarnation-changed'});
         }
+        // Decided in the same synchronous run as the write, never earlier: the
+        // dialog can appear while the body is on the wire.
+        const promptActive = () => this.terminalPromptBlocksInput(sessionId, body);
+        const refusePrompt = () => this.json(res,409,{error:'terminal-prompt-active',effect:'none'});
         const write = () => {
           managed.ptyProcess.write(body);
         // A phone can paste drafts containing newlines; bridge.noteInput keeps
@@ -5238,12 +5365,20 @@ export class WebTerminalServer {
           if (!this.deps.inputReceipts) return this.json(res,503,{error:'input-receipts-unavailable'});
           const owner = fresh.principal.kind === 'device' ? `device:${fresh.principal.deviceId}` : 'operator';
           let receipt;
+          // In the precondition, not in `write`: a refusal there journals
+          // nothing, so a retry with the same id is checked again rather than
+          // replayed as uncertain or written later without the check.
+          let promptRefused = false;
           try {
             receipt = this.deps.inputReceipts().execute(owner,requestID,JSON.stringify([sessionId,incarnation,afterInput ?? null]),body,write,
-              () => afterInput === undefined || afterInput === `${this.inputEpoch}:${managed.bridge.getInputRevision?.()}`);
-          } catch { return this.json(res,409,{error:'input-request-rejected'}); }
+              () => {
+                if (promptActive()) { promptRefused = true; return false; }
+                return afterInput === undefined || afterInput === `${this.inputEpoch}:${managed.bridge.getInputRevision?.()}`;
+              });
+          } catch { return promptRefused ? refusePrompt() : this.json(res,409,{error:'input-request-rejected'}); }
           return this.json(res,receipt.status === 'written' ? 200 : 409,receipt);
         }
+        if (promptActive()) return refusePrompt();
         write();
       } catch (err) {
         return this.json(res, 500, { error: `write failed: ${errMsg(err)}` });
@@ -5528,6 +5663,181 @@ export class WebTerminalServer {
   }
 
   /**
+   * The device store's management verbs, or null when any is missing. One
+   * capability, not three: see `WebDeviceResolver.list`.
+   */
+  private deviceManagement(): (WebDeviceResolver & Required<Pick<WebDeviceResolver, 'list' | 'revoke' | 'setInput'>>) | null {
+    const devices = this.deps.devices;
+    if (!devices?.list || !devices.revoke || !devices.setInput) return null;
+    return devices as WebDeviceResolver & Required<Pick<WebDeviceResolver, 'list' | 'revoke' | 'setInput'>>;
+  }
+
+  /**
+   * How much of the roster this caller sees: `all` for the operator and for a
+   * device that may type, `self` for a read-only device.
+   *
+   * A device that may type already has a shell on this machine and can read
+   * `devices.json` from it, so showing it the roster exposes nothing new. The
+   * roster is for SEEING which devices exist and when each was last seen, so
+   * the owner can revoke a lost one from the desktop (or with the operator
+   * token); a device can revoke only itself. A read-only device has no such
+   * reach, so it sees its own row and nothing about the others, not even their
+   * names.
+   */
+  private deviceScope(principal: WebPrincipal): 'all' | 'self' {
+    return principal.kind === 'operator' || this.mayInput(principal) ? 'all' : 'self';
+  }
+
+  /**
+   * `GET /api/devices` — the paired-device roster, filtered by `deviceScope`.
+   *
+   * The operator also sees revoked tombstones (the desk's history); a device
+   * with `all` scope sees only active devices, because a tombstone is nothing
+   * it can act on. Rows are built from an explicit field list, never a spread
+   * of the store's row, so nothing the store grows later (hashes, salts, push
+   * tokens) can ride along by accident.
+   */
+  private handleDeviceList(res: http.ServerResponse, principal: WebPrincipal): void {
+    const devices = this.deviceManagement();
+    if (!devices) return this.json(res, 503, { error: 'device-management-unavailable' });
+    const scope = this.deviceScope(principal);
+    let rows: WebDeviceSummary[];
+    try {
+      rows = devices.list();
+    } catch (err) {
+      this.deps.log('warn', `[web] device list failed: ${errMsg(err)}`);
+      return this.json(res, 500, { error: 'device-list-failed' });
+    }
+    const self = principal.kind === 'device' ? principal.deviceId : null;
+    const visible = rows.filter((d) => {
+      if (principal.kind === 'operator') return true;
+      if (scope === 'all') return d.revokedAt === undefined;
+      return d.deviceId === self;
+    });
+    return this.json(
+      res,
+      200,
+      {
+        devices: visible.map((d) => ({
+          deviceId: d.deviceId,
+          name: d.name,
+          pairedAt: d.createdAt,
+          lastSeenAt: d.lastSeenAt,
+          // The device's OWN stored grant. The server ceiling is reported once,
+          // in `serverGrants`, so the phone can say which of the two said no.
+          grants: { input: d.allowInput === true },
+          revoked: d.revokedAt !== undefined,
+          ...(d.revokedAt !== undefined ? { revokedAt: d.revokedAt } : {}),
+          current: d.deviceId === self,
+        })),
+        serverGrants: {
+          input: this.opts?.allowInput === true,
+          upload: this.opts?.allowUpload === true,
+          transcript: this.opts?.allowTranscript === true,
+        },
+        scope,
+      },
+      { 'Cache-Control': 'no-store' },
+    );
+  }
+
+  /**
+   * `POST /api/devices/:id/revoke` — remove a device.
+   *
+   * A device may revoke only ITSELF, and needs no input grant for it: giving
+   * up your own access is never an escalation. Any other id is refused before
+   * the roster is consulted, with one fixed body, so a device cannot learn
+   * which ids exist by probing. The operator may revoke anyone.
+   *
+   * Same ordering as the desktop RPC (persist, then cut the device's streams
+   * and tickets, then answer). On a self-revoke the response still arrives:
+   * this request is a plain HTTP exchange, not one of the SSE streams
+   * `disconnectDevice` ends.
+   */
+  private handleDeviceRevoke(res: http.ServerResponse, rawId: string, principal: WebPrincipal): void {
+    const devices = this.deviceManagement();
+    if (!devices) return this.json(res, 503, { error: 'device-management-unavailable' });
+    const deviceId = decodePathSegment(rawId) ?? '';
+    if (principal.kind === 'device' && deviceId !== principal.deviceId) {
+      return this.json(res, 403, { error: 'not-permitted' });
+    }
+    const actor: DeviceActor = principal.kind === 'operator' ? 'operator-web' : 'device-self';
+    let result: ReturnType<typeof revokeDeviceAndDisconnect>;
+    try {
+      result = revokeDeviceAndDisconnect(deviceId, devices, this, actor);
+    } catch (err) {
+      this.deps.log('warn', `[web] device revoke failed: ${errMsg(err)}`);
+      return this.json(res, 500, { error: 'device-revoke-failed' });
+    }
+    if (result.reason === 'not-found') return this.json(res, 404, { error: 'device-not-found' });
+    const closed = result.closed ?? 0;
+    return this.json(res, 200, result.ok ? { ok: true, closed } : { ok: false, reason: 'persist-failed', closed });
+  }
+
+  /**
+   * `PATCH /api/devices/:id/grants` — LOWER a device's input grant.
+   *
+   * Same caller rule as revoke (a device only on itself, refused before any
+   * lookup), and likewise no input grant needed to give one up.
+   *
+   * The answer comes from what `setInput` returns, never from the principal
+   * authenticated at the top: the body arrives over later macrotasks, and the
+   * desktop can revoke the device in between.
+   */
+  private handleDeviceGrants(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+    principal: WebPrincipal,
+  ): void {
+    const devices = this.deviceManagement();
+    if (!devices) return this.json(res, 503, { error: 'device-management-unavailable' });
+    const deviceId = decodePathSegment(rawId) ?? '';
+    if (principal.kind === 'device' && deviceId !== principal.deviceId) {
+      return this.json(res, 403, { error: 'not-permitted' });
+    }
+    const actor: DeviceActor = principal.kind === 'operator' ? 'operator-web' : 'device-self';
+    this.readJsonBody(req, res, (body) => {
+      const b = body as Record<string, unknown> | null;
+      if (
+        typeof body !== 'object' ||
+        body === null ||
+        Array.isArray(body) ||
+        Object.keys(body).length !== 1 ||
+        typeof b?.['input'] !== 'boolean'
+      ) {
+        return this.json(res, 400, { error: 'invalid-grants' });
+      }
+      // RAISING a grant is desktop-only, for the operator token too. Pairing
+      // codes are desktop-only for the same reason: the operator token travels
+      // in URLs and QR codes, a far wider leak surface than the daemon pipe the
+      // desktop uses. On a server started without --allow-input this is a real
+      // boundary; with it, it is policy — either way nothing is written.
+      if (b['input'] === true) return this.json(res, 403, { error: 'grant-escalation-desktop-only' });
+      let result: WebDeviceSetInputResult;
+      try {
+        result = devices.setInput(deviceId, false, actor);
+      } catch (err) {
+        this.deps.log('warn', `[web] device grant change failed: ${errMsg(err)}`);
+        return this.json(res, 500, { error: 'device-grant-failed' });
+      }
+      if (result.reason === 'not-found') return this.json(res, 404, { error: 'device-not-found' });
+      if (result.reason === 'revoked') return this.json(res, 409, { error: 'device-revoked' });
+      // Cut the device's streams only when its grant actually changed (whether
+      // or not the write landed — it is read-only in memory either way), or
+      // when this call retried a change that had not reached disk. A no-op
+      // PATCH must not be a way to cut a device's streams over and over
+      // without leaving an audit line.
+      if (result.changed || result.retried) this.disconnectDevice(deviceId);
+      return this.json(
+        res,
+        200,
+        result.ok ? { ok: true, grants: { input: false } } : { ok: false, reason: 'persist-failed', grants: { input: false } },
+      );
+    });
+  }
+
+  /**
    * `GET /api/approvals` — what a client needs the moment it connects: the
    * requests still waiting on a human, plus the recently settled tail.
    *
@@ -5535,7 +5845,7 @@ export class WebTerminalServer {
    * pending approval on two devices; the loser of that race gets a 409, and
    * without the settled record there is nothing to render but an error code.
    */
-  private handleApprovalsList(res: http.ServerResponse, principal: WebPrincipal): void {
+  private handleApprovalsList(res: http.ServerResponse, principal: WebPrincipal, caps: ClientCaps): void {
     const approvals = this.deps.approvals;
     if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
     let listed: { pending: ApprovalRequest[]; recentlyResolved: ApprovalRequest[] };
@@ -5562,8 +5872,8 @@ export class WebTerminalServer {
     const visible = (r: ApprovalRequest): boolean =>
       principal.kind === 'operator' || !this.isBrainApproval(r.sessionId);
     return this.json(res, 200, {
-      pending: listed.pending.filter(visible).map(approvalWire),
-      recentlyResolved: listed.recentlyResolved.filter(visible).map(approvalWire),
+      pending: listed.pending.filter(visible).map((r) => approvalWire(r, caps)),
+      recentlyResolved: listed.recentlyResolved.filter(visible).map((r) => approvalWire(r, caps)),
     });
   }
 
@@ -5640,11 +5950,29 @@ export class WebTerminalServer {
     if (record && principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
       return this.json(res, 404, { error: 'not-found' });
     }
-    if (record?.kind === 'awaiting_permission' && !this.mayInput(principal)) {
+    // The agent's own terminal dialog is answerable only by a client that
+    // declared it understands one. An older client (the shipped iOS app among
+    // them) maps 501 to "open the pane on the computer".
+    const caps = clientCaps(req);
+    // Not answerable remotely for THIS caller: no capability, or a record that
+    // was never bound and parsed whole (no fingerprint to answer against). Said
+    // before any body validation, so a capable client learns it is 501 rather
+    // than being told its (necessarily absent) fingerprint is malformed.
+    if (
+      record?.kind === 'terminal_prompt'
+      && (!caps.terminalPromptAnswer || !record.promptFingerprint || !record.choices?.length)
+    ) {
+      return this.json(res, 501, { error: 'answer-in-terminal' });
+    }
+    // A gate approval runs the tool; a terminal-prompt answer types a key into
+    // the pane. Both need the same grant as typing.
+    if ((record?.kind === 'awaiting_permission' || record?.kind === 'terminal_prompt') && !this.mayInput(principal)) {
       return this.refuseInput(
         res,
         principal,
-        'approving a tool permission runs the tool — it needs the same grant as typing',
+        record.kind === 'terminal_prompt'
+          ? 'answering a terminal prompt types into the pane — it needs the same grant as typing'
+          : 'approving a tool permission runs the tool — it needs the same grant as typing',
       );
     }
 
@@ -5662,14 +5990,33 @@ export class WebTerminalServer {
         && !Array.isArray(parsedBody)
         && Object.prototype.hasOwnProperty.call(parsedBody, 'choiceKey');
       const rawChoiceKey = hasChoiceKey ? parsedBody?.['choiceKey'] : undefined;
+      const terminalPrompt = record?.kind === 'terminal_prompt';
       if (hasChoiceKey && (
-        decision !== 'approve'
+        // A terminal prompt names its option with either decision; the check
+        // that the two agree is below.
+        (decision !== 'approve' && !terminalPrompt)
         || typeof rawChoiceKey !== 'string'
         || !/^\d{1,2}$/.test(rawChoiceKey)
       )) {
         return this.json(res, 400, { error: 'invalid-choice-key' });
       }
       const choiceKey = hasChoiceKey ? rawChoiceKey as string : undefined;
+      // A terminal prompt answer: `choiceKey` is authoritative, `decision` must
+      // agree with the option it names (approve ↔ plain Yes, deny ↔ plain No),
+      // and the dialog fingerprint the client was shown must ride along. The
+      // registry re-checks all of it inside its mutation link.
+      const rawFingerprint = parsedBody?.['promptFingerprint'];
+      let promptFingerprint: string | undefined;
+      if (terminalPrompt) {
+        if (typeof rawFingerprint !== 'string' || !/^[0-9a-f]{32}$/.test(rawFingerprint)) {
+          return this.json(res, 400, { error: 'invalid-prompt-fingerprint' });
+        }
+        promptFingerprint = rawFingerprint;
+        const option = record.choices?.find((c) => c.key === choiceKey);
+        if (!option || decisionForChoiceLabel(option.label) !== decision) {
+          return this.json(res, 400, { error: 'invalid-choice' });
+        }
+      }
       // The brain exclusion and the permission-gate check before the body saw
       // the credential as it was when the HEADERS arrived. A device revoked or
       // narrowed while the body was on the wire must not answer, so both are
@@ -5684,7 +6031,7 @@ export class WebTerminalServer {
       if (current && fresh.principal.kind === 'device' && this.isBrainApproval(current.sessionId)) {
         return this.json(res, 404, { error: 'not-found' });
       }
-      if (current?.kind === 'awaiting_permission' && !this.mayInput(fresh.principal)) {
+      if ((current?.kind === 'awaiting_permission' || current?.kind === 'terminal_prompt') && !this.mayInput(fresh.principal)) {
         return this.refuseInput(res, fresh.principal, 'Input permission changed');
       }
       // And once more from inside the registry's mutation link, which can queue
@@ -5694,7 +6041,9 @@ export class WebTerminalServer {
       const authorize = async (record: ApprovalRequest): Promise<'ok' | 'expired' | 'read-only'> => {
         const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
         if (!now.ok || !sameCaller(now.principal)) return 'expired';
-        if (record.kind === 'awaiting_permission' && !this.mayInput(now.principal)) return 'read-only';
+        if ((record.kind === 'awaiting_permission' || record.kind === 'terminal_prompt') && !this.mayInput(now.principal)) {
+          return 'read-only';
+        }
         return 'ok';
       };
       approvals
@@ -5703,6 +6052,9 @@ export class WebTerminalServer {
           decision,
           resolvedBy: describePrincipal(fresh.principal),
           ...(choiceKey !== undefined ? { choiceKey } : {}),
+          ...(promptFingerprint !== undefined ? { promptFingerprint } : {}),
+          // Set HERE, for a capable caller only — never read from the body.
+          ...(caps.terminalPromptAnswer ? { terminalPromptAnswer: TERMINAL_PROMPT_WEB_ANSWER } : {}),
           authorize,
         })
         .then((result) => {
@@ -5712,7 +6064,13 @@ export class WebTerminalServer {
             // What did not land is the record of it — after a restart the
             // history will not show this decision or who made it. The client
             // says so instead of the daemon knowing it privately.
-            return this.json(res, 200, { state: result.request.state, durable: result.durable });
+            return this.json(res, 200, {
+              state: result.request.state,
+              // A terminal prompt answer: the key is in the pane, and the record
+              // stays pending until the dialog is seen gone.
+              ...(typeof result.request.pressedAt === 'number' ? { pressedAt: result.request.pressedAt } : {}),
+              durable: result.durable,
+            });
           }
           switch (result.reason) {
             // Someone else got there first — hand back WHO, so the loser's UI
@@ -5735,6 +6093,21 @@ export class WebTerminalServer {
             // guess bytes. Not the caller's fault: 501, not 4xx.
             case 'unsupported-agent':
               return this.json(res, 501, { error: 'unsupported-agent' });
+            // A terminal prompt this caller may not answer (see the registry).
+            case 'answer-in-terminal':
+              return this.json(res, 501, { error: 'answer-in-terminal' });
+            // The one remote answer to this terminal prompt was already typed.
+            case 'already-answered':
+              return this.json(res, 409, { error: 'already-answered' });
+            // The dialog on screen is not the one the client answered. The
+            // record may have been superseded by a fresh parse (an SSE
+            // `approval` event follows); nothing was typed.
+            case 'prompt-changed':
+              return this.json(res, 409, { error: 'prompt-changed' });
+            case 'answer-too-soon':
+              return this.json(res, 425, { error: 'answer-too-soon' });
+            case 'invalid-choice':
+              return this.json(res, 400, { error: 'invalid-choice' });
             // The choiceKey does not belong to this request or the option is not
             // visible on screen. The request is still pending — the caller can
             // retry with a valid key or use the default approve/deny.
@@ -5879,8 +6252,11 @@ export class WebTerminalServer {
       ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
       // #783 — gate-card fields so the phone can render what tool and what input.
       ...(r.kind === 'awaiting_permission' ? { kind: r.kind } : {}),
-      ...(r.toolName ? { toolName: r.toolName } : {}),
+      ...(r.kind !== 'terminal_prompt' && r.toolName ? { toolName: r.toolName } : {}),
       ...(r.toolInputSummary ? { toolInputSummary: r.toolInputSummary } : {}),
+      // The agent's own terminal dialog: the kind and nothing else. The nudge
+      // carries no content; the capability-aware list is where the dialog is.
+      ...(r.kind === 'terminal_prompt' ? { kind: r.kind } : {}),
     });
   }
 
@@ -6379,7 +6755,7 @@ export class WebTerminalServer {
     }
 
     const detach = startSseHeartbeat(res);
-    const client: EventClient = { res, detach, principal };
+    const client: EventClient = { res, detach, principal, caps: clientCaps(req) };
     this.eventClients.add(client);
 
     req.on('close', () => {
@@ -7010,7 +7386,63 @@ function cwdLeafOf(cwd: string | undefined): { cwdLeaf?: string } {
  * anything security-relevant may key on — the keystroke map, not this list,
  * decides what a decision sends.
  */
-function approvalWire(r: ApprovalRequest): Record<string, unknown> {
+/**
+ * What a client declared it understands, from `X-Wmux-Client-Caps` — a
+ * comma-separated token list. Unknown tokens are ignored; no header means an
+ * older client.
+ */
+export interface ClientCaps {
+  /** Understands (and can answer) a `terminal_prompt` record's dialog. */
+  terminalPromptAnswer: boolean;
+}
+
+export const CLIENT_CAPS_HEADER = 'x-wmux-client-caps';
+export const CLIENT_CAP_TERMINAL_PROMPT_ANSWER = 'terminal-prompt-answer';
+
+export function clientCaps(req: http.IncomingMessage): ClientCaps {
+  const raw = req.headers[CLIENT_CAPS_HEADER];
+  const joined = Array.isArray(raw) ? raw.join(',') : raw ?? '';
+  const tokens = new Set(joined.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean));
+  return { terminalPromptAnswer: tokens.has(CLIENT_CAP_TERMINAL_PROMPT_ANSWER) };
+}
+
+function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAnswer: false }): Record<string, unknown> {
+  // The agent's own terminal dialog, projected per caller. An older client (no
+  // capability) gets the informational card only — kind, tool, summary — so it
+  // can never render controls for a dialog it cannot answer. A capable client
+  // gets the parsed dialog when the record is answerable.
+  if (r.kind === 'terminal_prompt') {
+    const parsed = caps.terminalPromptAnswer && !!r.promptFingerprint && !!r.choices?.length;
+    // Once the one answer is in (`pressedAt`), or the record is settled, the
+    // dialog stays readable but there is nothing left to press.
+    const answerable = parsed && r.pressedAt === undefined && r.state === 'pending';
+    return {
+      id: r.id,
+      sessionId: r.sessionId,
+      agent: r.agent,
+      kind: r.kind,
+      state: r.state,
+      createdAt: r.createdAt,
+      ...(r.workspaceId ? { workspaceId: r.workspaceId } : {}),
+      ...(r.toolName ? { toolName: r.toolName } : {}),
+      ...(r.summary ? { summary: r.summary } : {}),
+      // A hint for the client's own confirm step — computed at creation from the
+      // call's full command. Never a permission.
+      ...(r.risk ? { risk: r.risk } : {}),
+      ...(parsed
+        ? {
+            ...(r.question ? { question: r.question } : {}),
+            ...(r.reason ? { reason: r.reason } : {}),
+          }
+        : {}),
+      ...(answerable ? { choices: r.choices, promptFingerprint: r.promptFingerprint } : {}),
+      ...(typeof r.pressedAt === 'number' ? { pressedAt: r.pressedAt } : {}),
+      ...(r.decision ? { decision: r.decision } : {}),
+      ...(r.selectedChoiceKey ? { selectedChoiceKey: r.selectedChoiceKey } : {}),
+      ...(r.resolvedBy ? { resolvedBy: r.resolvedBy } : {}),
+      ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
+    };
+  }
   return {
     id: r.id,
     sessionId: r.sessionId,

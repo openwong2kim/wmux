@@ -1293,8 +1293,10 @@ const electronAPI = {
   updater: {
     checkForUpdates: () =>
       ipcRenderer.invoke(IPC.UPDATE_CHECK) as Promise<{ status: string }>,
-    installUpdate: () =>
-      ipcRenderer.invoke(IPC.UPDATE_INSTALL),
+    // #1525 — `installAnyway` is the Smart App Control warning's "Install
+    // anyway" action: it skips that one pre-quit check for this call only.
+    installUpdate: (opts?: { installAnyway?: boolean }) =>
+      ipcRenderer.invoke(IPC.UPDATE_INSTALL, opts),
     // #866 — collect (and clear) the reason a previous install was refused.
     // Pulled by an always-mounted renderer surface, because the push-on-boot
     // version landed in a window whose only listener was the Settings panel.
@@ -1318,8 +1320,8 @@ const electronAPI = {
       ipcRenderer.on(IPC.UPDATE_NOT_AVAILABLE, listener);
       return () => { ipcRenderer.removeListener(IPC.UPDATE_NOT_AVAILABLE, listener); };
     },
-    onUpdateError: (callback: (data: { status: string; message: string; source?: 'install'; code?: 'in-progress' }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { status: string; message: string; source?: 'install'; code?: 'in-progress' }) =>
+    onUpdateError: (callback: (data: { status: string; message: string; source?: 'install'; code?: 'in-progress' | 'smart-app-control' }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { status: string; message: string; source?: 'install'; code?: 'in-progress' | 'smart-app-control' }) =>
         callback(data);
       ipcRenderer.on(IPC.UPDATE_ERROR, listener);
       return () => { ipcRenderer.removeListener(IPC.UPDATE_ERROR, listener); };

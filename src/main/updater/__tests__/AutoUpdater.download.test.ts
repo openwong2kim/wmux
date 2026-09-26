@@ -183,6 +183,13 @@ async function loadWin32(
   };
   vi.doMock('../installTeardown', () => teardown);
 
+  // #1525 — the pre-quit Smart App Control check spawns reg.exe/PowerShell
+  // for real, and the machine running the suite may be enforcing SAC. Pinned
+  // to "not enforcing" so these flows never depend on the host's policy.
+  vi.doMock('../smartAppControl', () => ({
+    assessSmartAppControlBlock: vi.fn(async () => ({ likelyBlocked: false, sacState: 0, signatureStatus: null })),
+  }));
+
   // #502: UPDATE_INSTALL now calls app.quit() after a successful launch so
   // Squirrel never installs against a live instance — the mock must provide it.
   const quit = vi.fn();

@@ -92,6 +92,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright-core';
 import { accumulateBreakdown, classifyProcess, RAM_CATEGORIES } from './perf-process-classify.mjs';
 import { collectProcessTree, looksLikeDaemonRow } from './perf-process-tree.mjs';
+import { sampleRafDeltas, sampleFrameBudget } from './perf-frame-sample.mjs';
 import { summarizeSamples, compareImeEcho, judgeFrameStall } from './perf-scenarios.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1247,22 +1248,6 @@ async function listPanePtyIds(client) {
   return ids;
 }
 
-// Sample `frames` rAF deltas (ms) inside the renderer — the same cadence probe
-// measureInputLatency uses, but WITHOUT any keystroke: it measures the compositor
-// cadence while whatever workload is currently running streams. Returns raw
-// deltas so the caller can summarize + detect throttling.
-async function sampleRafDeltas(page, frames) {
-  return page.evaluate((n) => new Promise((resolve) => {
-    const deltas = []; let last = null; let i = 0;
-    const tick = (ts) => {
-      if (last !== null) deltas.push(ts - last);
-      last = ts;
-      if (++i < n) requestAnimationFrame(tick); else resolve(deltas);
-    };
-    requestAnimationFrame(tick);
-  }), frames);
-}
-
 // A deterministic, unbounded text flood for one PTY. The packaged bench target
 // is Windows (powershell default shell): an infinite loop that writes a fixed
 // 80-char line per iteration is a platform-consistent, decision-free workload.
@@ -1297,6 +1282,10 @@ async function measureFrameBudget(inst, paneCounts) {
   const page = inst.page;
   const client = await openMainClient(inst);
   const byN = {};
+  let baseline = null;
+  try {
+    baseline = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'bench', `baseline-${ARGS.mode}.json`), 'utf8'));
+  } catch { /* No blessed baseline: record one sample without confirmation. */ }
   try {
     const sorted = [...paneCounts].sort((a, b) => a - b);
     for (const n of sorted) {
@@ -1308,16 +1297,16 @@ async function measureFrameBudget(inst, paneCounts) {
       // Give the flood a beat to actually be streaming, then sample the cadence
       // while all panes are hot.
       await sleep(800);
-      const deltas = await sampleRafDeltas(page, 60);
+      const { stats, samples } = await sampleFrameBudget(page, n, baseline);
       await stopFlood(client, targets);
       await sleep(600); // let Ctrl+C drain before the next split
-      const stats = summarizeSamples(deltas);
       const throttled = (stats.p50 ?? 999) > 50;
       byN[`N${n}`] = {
         paneCount: mounted,
         flooded: targets.length,
         throttled,
         frameDeltaMs: stats,
+        frameDeltaSamples: samples,
       };
       console.log(`[frameBudget N${n}] panes=${mounted} flooded=${targets.length} frame p50=${stats.p50}ms p95=${stats.p95}ms${throttled ? ' (THROTTLED — untrustworthy)' : ''}`);
     }

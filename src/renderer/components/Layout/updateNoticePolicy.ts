@@ -51,7 +51,20 @@ export function shouldShowInstallError(
 
 /** After a shown install error, should the ready-to-install toast come back? */
 export function shouldReannounceAfterError(data: UpdateErrorData): boolean {
-  return data.code !== 'in-progress';
+  // #1525 — the Smart App Control hold brings its own toast with an "Install
+  // anyway" action; re-offering "Install now" beside it would put two buttons
+  // for the same installer on screen, one of which just hits the hold again.
+  return data.code !== 'in-progress' && data.code !== 'smart-app-control';
+}
+
+/**
+ * #1525 — main held the install because Windows Smart App Control would
+ * likely block the installer. Shown as a warning with an "Install anyway"
+ * action instead of the generic "could not be installed" error: nothing
+ * failed, wmux simply did not quit.
+ */
+export function isSmartAppControlHold(data: UpdateErrorData): boolean {
+  return data.code === 'smart-app-control';
 }
 
 /**

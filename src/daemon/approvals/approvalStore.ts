@@ -16,6 +16,7 @@
 import path from 'node:path';
 import { atomicReadJSONSync, atomicWriteJSON } from '../util/atomicWrite';
 import { sanitizeChoices, sanitizeOptions, sanitizeQuestion } from './askUserQuestion';
+import { boundRecordText, TERMINAL_PROMPT_SUMMARY_MAX, TERMINAL_PROMPT_TOOL_NAME_MAX } from './terminalPrompt';
 import type { ApprovalDecision, ApprovalRequest, ApprovalState } from './types';
 
 const STATE_FILE = 'approvals.json';
@@ -57,6 +58,12 @@ const STATES: ReadonlySet<string> = new Set<ApprovalState>([
 
 const DECISIONS: ReadonlySet<string> = new Set<ApprovalDecision>(['approve', 'deny']);
 
+const KINDS: ReadonlySet<string> = new Set<ApprovalRequest['kind']>([
+  'awaiting_input',
+  'awaiting_permission',
+  'terminal_prompt',
+]);
+
 /**
  * Coerce one raw entry. Unlike webStateStore's per-FIELD fallback, a record
  * missing any of its identity fields (id / sessionId / agent / createdAt /
@@ -82,7 +89,11 @@ function coerceRequest(raw: unknown): ApprovalRequest | null {
     id,
     sessionId,
     agent,
-    kind: 'awaiting_input',
+    // A closed set. Anything else (or nothing, from a file written before the
+    // field existed) reads as the original kind, as it always did.
+    kind: typeof o['kind'] === 'string' && KINDS.has(o['kind'])
+      ? (o['kind'] as ApprovalRequest['kind'])
+      : 'awaiting_input',
     createdAt,
     state,
   };
@@ -120,6 +131,17 @@ function coerceRequest(raw: unknown): ApprovalRequest | null {
   // through, so a hand-edited file cannot invent a risk level a client would
   // then have to interpret.
   if (o['risk'] === 'critical') out.risk = 'critical';
+  // Bounded and cleaned on the way in, like every other text field here.
+  const toolName = boundRecordText(o['toolName'], TERMINAL_PROMPT_TOOL_NAME_MAX);
+  if (toolName) out.toolName = toolName;
+  const summary = boundRecordText(o['summary'], TERMINAL_PROMPT_SUMMARY_MAX);
+  if (summary) out.summary = summary;
+  const reason = boundRecordText(o['reason'], TERMINAL_PROMPT_SUMMARY_MAX);
+  if (reason) out.reason = reason;
+  if (typeof o['promptFingerprint'] === 'string' && /^[0-9a-f]{32}$/.test(o['promptFingerprint'])) {
+    out.promptFingerprint = o['promptFingerprint'];
+  }
+  if (typeof o['pressedAt'] === 'number' && Number.isFinite(o['pressedAt'])) out.pressedAt = o['pressedAt'];
   return out;
 }
 

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TranscriptPage, TranscriptStatus } from '../../../shared/transcript/turnEvents';
 import { ChatSendReceiptStore } from '../ChatSendReceiptStore';
 import { createChatBridge, WEB_BRIDGE_CLIENT, type ChatAgentState, type ChatPane, type NativeChatBridgeDeps } from '../nativeChatBridge';
-import { OPENCODE_MAX_SEND_BYTES, fileHistoryEpoch, tuiHistoryEpoch } from '../chatBridge';
+import { OPENCODE_MAX_SEND_BYTES, fileHistoryEpoch, projectChatBlocked, tuiHistoryEpoch } from '../chatBridge';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
@@ -39,6 +39,8 @@ function fixture() {
     projector: { available: false, reason: 'no-hook' } as TranscriptStatus,
     native: null as { status: TranscriptStatus; page: TranscriptPage } | null,
     pendingApproval: undefined as string | undefined,
+    pendingKind: 'awaiting_input',
+    pendingAnswerable: false,
     screen: ['● done', '', '❯ ', '  ? for shortcuts'] as string[] | null,
     idle: { ok: true } as Awaited<ReturnType<NativeChatBridgeDeps<ChatPane>['idleShell']>>,
     installed: ['claude', 'codex'] as ('claude' | 'codex')[],
@@ -59,7 +61,8 @@ function fixture() {
     projector: { status: () => state.projector, snapshot: () => null },
     terminalChat: () => ({ read: async () => state.native, send: tuiSend as never, subscribe, unsubscribe }),
     managed: () => managed as never,
-    approvals: () => ({ pendingFor: () => state.pendingApproval }),
+    approvals: () => ({ pendingFor: () => state.pendingApproval === undefined ? undefined
+      : { id: state.pendingApproval, kind: state.pendingKind, answerable: state.pendingAnswerable } }),
     readScreen: async () => state.screen,
     agentProcessAlive: async () => { await aliveGate; return true; },
     write: (_id, data) => { written.push(data); state.agent.inputRevision++; return true; },
@@ -468,5 +471,80 @@ describe('skills, watch and trace', () => {
     expect(f.notify).toHaveBeenCalledWith('pane', expect.any(String), expect.stringContaining('Codex with approvals and sandbox off'));
     expect(f.log).toHaveBeenCalledTimes(2);
     expect(f.log.mock.calls[0][1]).toMatch(/^\[chat\] dangerous-launch \{/);
+  });
+});
+
+describe('a terminal_prompt record: reported as the terminal, fenced like any approval', () => {
+  it('reads as blocked by the terminal, with no approvalId to act on', async () => {
+    const f = fixture(); f.liveClaude();
+    f.state.pendingApproval = 'apr_t'; f.state.pendingKind = 'terminal_prompt';
+    const blocked = await f.bridge.blocked('pane', await f.bridge.resolve('pane'));
+    expect(blocked).toMatchObject({ by: 'terminal' });
+    expect(blocked).not.toHaveProperty('approvalId');
+    // What reaches the wire for either kind of caller, for a non-answerable record.
+    expect(projectChatBlocked(blocked, { terminalPromptAnswer: false })).toEqual({ by: 'terminal' });
+    expect(projectChatBlocked(blocked, { terminalPromptAnswer: true })).toEqual({ by: 'terminal' });
+    f.state.pendingKind = 'awaiting_permission';
+    expect(await f.bridge.blocked('pane', await f.bridge.resolve('pane'))).toEqual({ by: 'approval', approvalId: 'apr_t' });
+  });
+
+  it('an answerable record reads as an approval only for a capable caller', async () => {
+    const f = fixture(); f.liveClaude();
+    f.state.pendingApproval = 'apr_t'; f.state.pendingKind = 'terminal_prompt'; f.state.pendingAnswerable = true;
+    const blocked = await f.bridge.blocked('pane', await f.bridge.resolve('pane'));
+    expect(projectChatBlocked(blocked, { terminalPromptAnswer: true })).toEqual({ by: 'approval', approvalId: 'apr_t' });
+    expect(projectChatBlocked(blocked, { terminalPromptAnswer: false })).toEqual({ by: 'terminal' });
+    // The write fence does not care: still closed.
+    expect(f.bridge.hasOpenApproval('pane')).toBe(true);
+  });
+
+  it('a send is refused before the first write and reports the terminal', async () => {
+    const f = fixture(); f.liveClaude();
+    f.state.pendingApproval = 'apr_t'; f.state.pendingKind = 'terminal_prompt';
+    expect(await f.bridge.send(phoneSend())).toMatchObject({ error: 'chat-blocked', blockedBy: 'terminal', effect: 'none' });
+    expect(f.written).toEqual([]);
+  });
+
+  it('the pre-write recheck refuses a record that appears after the screen read', async () => {
+    const f = fixture(); f.liveClaude();
+    const read = f.deps.readScreen;
+    f.deps.readScreen = async (id) => {
+      const rows = await read(id);
+      f.state.pendingApproval = 'apr_t'; f.state.pendingKind = 'terminal_prompt';
+      return rows;
+    };
+    const outcome = await f.bridge.send(phoneSend());
+    expect(outcome).toMatchObject({ effect: 'none' });
+    expect(outcome).not.toMatchObject({ result: 'sent' });
+    expect(f.written).toEqual([]);
+  });
+
+  it('the fence is kind-blind: any pending record, or no registry, holds every chat write', () => {
+    const f = fixture();
+    expect(f.bridge.hasOpenApproval('pane')).toBe(false);
+    for (const kind of ['terminal_prompt', 'awaiting_input', 'awaiting_permission']) {
+      f.state.pendingApproval = 'apr'; f.state.pendingKind = kind;
+      expect(f.bridge.hasOpenApproval('pane'), kind).toBe(true);
+    }
+    f.state.pendingApproval = undefined;
+    f.deps.approvals = () => null;
+    expect(f.bridge.hasOpenApproval('pane')).toBe(true);
+  });
+
+  it('a chat Stop through interruptChatTurn is blocked by it', async () => {
+    const f = fixture(); f.liveClaude();
+    f.state.agent.agentStatus = 'running';
+    f.state.pendingApproval = 'apr_t'; f.state.pendingKind = 'terminal_prompt';
+    const { interruptChatTurn } = await import('../../transcript/interruptChatTurn');
+    const writes: string[] = [];
+    const result = await interruptChatTurn('conv', {
+      getTranscriptSessionId: () => 'conv',
+      hasOpenApproval: () => f.bridge.hasOpenApproval('pane'),
+      readScreen: async () => ['✻ Working… (esc to interrupt)'],
+      getAgentState: () => ({ slug: 'claude', status: 'running' }),
+      write: (data) => { writes.push(data); return true; },
+    });
+    expect(result).toBe('blocked');
+    expect(writes).toEqual([]);
   });
 });

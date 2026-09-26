@@ -35,7 +35,7 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getWmuxDir } from '../../daemon/config';
 import { getAccountStore } from '../account/accountStore';
-import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE } from '../../shared/commanderSurface';
+import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../../shared/commanderSurface';
 import { ENV_KEYS, BRAIN_PTY_ID_PREFIX } from '../../shared/constants';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { registerBrainPty, type BrainPtyHookBlock } from './brainPtyHookBus';
@@ -278,7 +278,7 @@ export function scrubBrainSpawnEnv(base: NodeJS.ProcessEnv): Record<string, stri
 
 /** The `mcp__wmux__*` allow-list, derived from the commander surface SSOT so it
  *  cannot drift from what the `--commander` MCP child actually registers. */
-export const BRAIN_PTY_ALLOWED_TOOLS: string[] = COMMANDER_TOOL_SURFACE.map((t) => `mcp__wmux__${t}`);
+export const BRAIN_PTY_ALLOWED_TOOLS: string[] = [...new Set([...COMMANDER_TOOL_SURFACE, ...COMMANDER_ONLY_TOOLS])].map((t) => `mcp__wmux__${t}`);
 
 /**
  * Everything this brain may not call.

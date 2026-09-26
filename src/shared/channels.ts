@@ -334,7 +334,7 @@ export interface ChannelRecipientStatus {
   workspaceId: string;
   ptyId?: string;
   /** `'pending'` | `'delivered'` | `'target_gone'`. */
-  status: 'pending' | 'delivered' | 'target_gone';
+  status: 'pending' | 'delivered' | 'target_gone' | 'policy_refused';
   /** Epoch ms of last attempt, if any. */
   lastAttemptAt?: number;
 }

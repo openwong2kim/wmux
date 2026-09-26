@@ -17,7 +17,27 @@ import type { ApprovalChoice, ApprovalRequest } from '../approvals/types';
 /** Shown when the agent gave us no question text to quote. */
 export const APPROVAL_PUSH_FALLBACK_BODY = 'A pane is waiting on an answer.';
 
+/** Shown for a `terminal_prompt` that carries neither a tool name nor a summary. */
+export const TERMINAL_PROMPT_PUSH_FALLBACK_BODY = 'Answer in Terminal: a pane is waiting on a prompt.';
+
 export function buildApprovalPushPayload(request: ApprovalRequest): PushPayload {
+  // The agent's own terminal dialog. Never a lock-screen Approve/Deny, for
+  // anyone: `requiresInAppChoice` keeps every client on the in-app-only
+  // category. A capable client answers in the app, behind its own confirm;
+  // an older one shows the card and sends the human to the computer.
+  if (request.kind === 'terminal_prompt') {
+    return {
+      title: 'Approval needed',
+      body: terminalPromptBody(request),
+      approvalId: request.id,
+      sessionId: request.sessionId,
+      requiresInAppChoice: true,
+      risk: approvalHasElevatedRisk(request) ? PUSH_RISK_CRITICAL : PUSH_RISK_NORMAL,
+      // Lets a client pick a category with no Deny/Reply: neither can answer
+      // this dialog (Reply would type into it; Deny needs a choice key).
+      approvalKind: 'terminal_prompt',
+    };
+  }
   const choiceFields = lockScreenChoiceFields(request.choices);
   return {
     title: 'Approval needed',
@@ -71,6 +91,20 @@ function bodyFor(request: ApprovalRequest, offersAffirmative: boolean): string {
   if (!offersAffirmative) return question;
   const labels = (request.choices ?? []).map((c) => c.label.trim()).filter((l) => l.length > 0);
   return labels.length > 0 ? `${question}\n${labels.join(' · ')}` : question;
+}
+
+/**
+ * One push goes to every paired device, capable or not, so the body only says
+ * where the answer CAN go: a record with choices can be answered in a capable
+ * app ("Permission needed"), one without only at the computer.
+ */
+function terminalPromptBody(request: ApprovalRequest): string {
+  const tool = request.toolName?.trim();
+  const summary = request.summary?.trim();
+  const lead = request.choices?.length ? 'Permission needed' : 'Answer in Terminal';
+  if (tool && summary) return `${lead}: ${tool} — ${summary}`;
+  if (tool || summary) return `${lead}: ${tool || summary}`;
+  return request.choices?.length ? `${lead}: a pane is waiting on a prompt.` : TERMINAL_PROMPT_PUSH_FALLBACK_BODY;
 }
 
 /**

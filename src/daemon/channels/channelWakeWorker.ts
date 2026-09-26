@@ -245,6 +245,32 @@ export function mayCarryBody(detectedAgent: string | undefined): boolean {
   return !!detectedAgent && BODY_PREVIEW_AGENTS.has(detectedAgent);
 }
 
+/**
+ * The agent slug a wake target may be judged by. `lastDetectedAgent` has no
+ * death edge — the agent exits, the pane keeps its shell, and the slug stays,
+ * so the worker typed a hint + body preview + Enter into zsh (an unbalanced
+ * `(` in the preview left a continuation prompt that swallowed the next nudge
+ * too). Same precedence as readDaemonAgentState (#1392/#1400):
+ *   1. a verified live process of that slug keeps it — a wrapper or nested
+ *      shell can emit a prompt marker while the agent still runs;
+ *   2. an agent process observed to DIE drops it — the foreground command may
+ *      now be vim, ssh or a REPL, where the nudge would land as input;
+ *   3. an OSC 133 prompt (`commandRunning === false`) drops it;
+ *   4. otherwise (no shell integration, no process attribution) keep the
+ *      sticky slug — dropping it would silence live agent panes.
+ * Every picker declines a pane with no slug; the pull path still delivers.
+ */
+export function wakeAgentSlug(
+  lastDetectedAgent: string | undefined,
+  commandRunning: boolean | undefined,
+  process?: { slug?: string; alive: boolean },
+): string | undefined {
+  if (!lastDetectedAgent) return undefined;
+  if (process?.alive === true && process.slug === lastDetectedAgent) return lastDetectedAgent;
+  if (process?.alive === false) return undefined;
+  return commandRunning === false ? undefined : lastDetectedAgent;
+}
+
 export class ChannelWakeWorker {
   private readonly deps: ChannelWakeWorkerDeps;
   private readonly tracker = new Map<string, NudgeTrackerEntry>();

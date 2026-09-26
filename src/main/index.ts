@@ -117,7 +117,7 @@ import { readDaemonPid } from './updater/installTeardown';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
-import { claimCdpPort, probeCdpEndpoint } from './browser-session/cdpPort';
+import { claimCdpPort, probeCdpEndpointWithRetry } from './browser-session/cdpPort';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
 import { ChromeProfileStore } from './browser-session/ChromeProfileStore';
@@ -406,21 +406,7 @@ if (cdpEnabled) {
     `[WinMux] CDP requested on port ${cdpPort}` +
       (claim.claimed ? '' : ' (port not claimed exclusively — every port in the range is held)'),
   );
-  // After ready, ask the port itself. A failure here is the diagnosis the
-  // original report had to reconstruct by hand with lsof.
-  void app.whenReady().then(async () => {
-    const probe = await probeCdpEndpoint(cdpPort);
-    if (probe.ok) {
-      console.log(`[WinMux] CDP listening on port ${cdpPort} (${probe.browser})`);
-    } else {
-      console.error(
-        `[WinMux] CDP is NOT listening on port ${cdpPort} (${probe.reason}). Chromium was ` +
-          'asked for this port and did not get it — most often another process, commonly a ' +
-          'second wmux instance, already holds it. Browser automation (MCP browser tools, ' +
-          'screenshots, DOM snapshots) will be unavailable until wmux is restarted.',
-      );
-    }
-  });
+
 } else {
   console.log('[WinMux] CDP disabled — browser automation will be unavailable (enable via ~/.wmux/config.json browser.cdp.enabled)');
 }
@@ -579,7 +565,8 @@ const mcpRegistrar = new McpRegistrar();
 // be) listening when the first shim spawns — the shim retries connect with
 // backoff, so start order is a latency nicety, not a correctness gate.
 const mcpBrokerSupervisor = new BrokerSupervisor();
-const webviewCdpManager = new WebviewCdpManager(cdpPort);
+const webviewCdpManager = new WebviewCdpManager(0);
+webviewCdpManager.setCdpFailureReason(cdpEnabled ? 'CDP ownership verification pending' : 'CDP disabled by configuration');
 
 // Daemon client — initialized on app ready, used if daemon is available
 let daemonClient: DaemonClient | null = null;
@@ -1519,6 +1506,52 @@ app.on('ready', async () => {
   markBoot('plugins-loaded');
 
   mainWindow = createWindow({ deferLoad: true });
+  if (cdpEnabled) {
+    const localContents = mainWindow.webContents;
+    let retryDelayMs = 2_000;
+    let reportedPending = false;
+    const verifyOwnership = async (): Promise<void> => {
+      if (localContents.isDestroyed()) return;
+      const localDebugger = localContents.debugger;
+      let attachedByUs = false;
+      const detached = (): void => { attachedByUs = false; };
+      localDebugger.on('detach', detached);
+      let retry = true;
+      try {
+        if (!localDebugger.isAttached()) {
+          localDebugger.attach('1.3');
+          attachedByUs = true;
+        }
+        const { targetInfo } = await localDebugger.sendCommand('Target.getTargetInfo');
+        const probe = await probeCdpEndpointWithRetry(cdpPort, targetInfo?.targetId ?? '');
+        if (probe.ok) {
+          await webviewCdpManager.setCdpPort(cdpPort);
+          console.log(`[WinMux] CDP listening on port ${cdpPort} (${probe.browser})`);
+          retry = false;
+        } else {
+          webviewCdpManager.setCdpFailureReason(`CDP ownership unverified: ${probe.reason}; retrying`);
+          if (!reportedPending) {
+            console.warn(`[WinMux] CDP port ${cdpPort} is unverified; remote automation remains unavailable while ownership verification retries.`);
+            reportedPending = true;
+          }
+        }
+      } catch (err) {
+        webviewCdpManager.setCdpFailureReason(`CDP verification pending: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        localDebugger.removeListener('detach', detached);
+        if (attachedByUs && localDebugger.isAttached()) {
+          try { localDebugger.detach(); } catch { /* Contents may close during verification. */ }
+        }
+      }
+      // A slow boot or timeout is pending, not a permanent policy disable.
+      if (retry && !localContents.isDestroyed()) {
+        const timer = setTimeout(() => { void verifyOwnership(); }, retryDelayMs);
+        retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
+        timer.unref();
+      }
+    };
+    void verifyOwnership();
+  }
   markBoot('window-created');
   console.log(`[Main] Window created (renderer load deferred): ${!!mainWindow}`);
   logLine('info', 'main', `window created (deferred): present=${!!mainWindow}`);

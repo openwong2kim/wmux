@@ -28,6 +28,11 @@ import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
  *                 resize-redraw guard window (alarm feeds must ignore it)
  *  - 'idle'     → { sessionId: string }                — onActiveToIdle
  *  - 'exit'     → { sessionId: string, exitCode, signal }
+ *  - 'answered' → { sessionId, reason: 'input' | 'screen-cleared' } — the
+ *                 dialog the pane was blocked on closed
+ *  - 'awaitingActivity' → { sessionId, cause: 'input' | 'output', ... } —
+ *                 stdin or output while the pane is blocked on a human
+ *  - 'fenceInput' → { sessionId } — a key, click, release or wheel reached stdin
  *  - 'resize'   → (no payload) — an applied geometry change; consumers read the
  *                 new size from the session's own meta.
  */
@@ -133,6 +138,14 @@ export class DaemonPTYBridge extends EventEmitter {
   private lastInputAt = 0;
   /** Monotonic stdin write counter used to detect input racing a scheduled paste. */
   private inputRevision = 0;
+  /**
+   * Like `inputRevision`, but advanced only by writes that could act on the
+   * screen: a key, a mouse click, a release, a wheel turn. A chunk made purely
+   * of pointer MOTION reports and focus in/out reports does not count. The
+   * remote terminal-prompt answer fences on it — the pointer drifting over the
+   * pane is not someone answering the dialog, but a click may be.
+   */
+  private keyInputRevision = 0;
   private emptyShellPrompt = false;
   private completedShellCommand = false;
   private shellCommandRunning = false;
@@ -218,6 +231,12 @@ export class DaemonPTYBridge extends EventEmitter {
     if (data.length > 0) {
       this.lastInputAt = Date.now();
       this.inputRevision += 1;
+      if (DaemonPTYBridge.stripPassiveInput(data).length > 0) {
+        this.keyInputRevision += 1;
+        // Sizes nothing, carries nothing: a remote terminal-prompt answer that
+        // a key or click has overtaken is refreshed off this.
+        if (this.sessionId) this.emit('fenceInput', { sessionId: this.sessionId });
+      }
       this.emptyShellPrompt = false;
       this.completedShellCommand = false;
     }
@@ -226,12 +245,57 @@ export class DaemonPTYBridge extends EventEmitter {
     // ESC as well as by Enter: Claude Code's permission dialog takes `1`/`2`/`3`
     // and ESC without a CR. Arrow keys (`ESC [ A`) move the selection and are
     // not an answer; a paste is never one.
+    //
+    // The input stream is unframed, so with mouse reporting on (`?1003h` /
+    // `?1006h`) the digit can arrive glued to SGR mouse reports, and a focus
+    // change adds `ESC [ I` / `ESC [ O`. Neither is a keystroke, so both are
+    // stripped before the lone-key test.
     const wasAwaiting = this.awaitingHuman;
+    const keyProbe = wasAwaiting ? data.replace(DaemonPTYBridge.NON_KEY_INPUT, '') : data;
     // eslint-disable-next-line no-control-regex
-    const answerKey = wasAwaiting && !this.inputInBracketedPaste && /^(?:[1-9]|\x1b)$/.test(data);
+    const answerKey = wasAwaiting && !this.inputInBracketedPaste && /^(?:[1-9]|\x1b)$/.test(keyProbe);
     const hasSubmitBoundary = this.scanSubmittedInput(data);
-    if (!forceSubmitted && !hasSubmitBoundary && !answerKey) return;
+    const answered = forceSubmitted || hasSubmitBoundary || answerKey;
+    // Input that reached a pane still blocked on a human. Carries sizes only,
+    // never the text: the daemon logs it (to see what an unrecognised answer
+    // looked like) and uses it to schedule a screen check.
+    if (wasAwaiting && data.length > 0 && this.sessionId) {
+      this.emit('awaitingActivity', {
+        sessionId: this.sessionId,
+        cause: 'input',
+        bytes: data.length,
+        nonKeyBytes: data.length - keyProbe.length,
+        answered,
+      });
+    }
+    if (!answered) return;
+    this.startAnsweredTurn(wasAwaiting, 'input');
+  }
 
+  /**
+   * The dialog this pane was blocked on is gone, although no answer key was
+   * seen (the screen verifier read the pane and found no dialog on it twice).
+   * Runs exactly the path a recognised answer key runs. Returns false, and
+   * does nothing, when the pane was not awaiting.
+   */
+  clearAwaiting(reason: 'screen-cleared'): boolean {
+    if (!this.awaitingHuman) return false;
+    this.startAnsweredTurn(true, reason);
+    return true;
+  }
+
+  /** Whether the pane is blocked on a human right now. */
+  isAwaitingHuman(): boolean {
+    return this.awaitingHuman;
+  }
+
+  /**
+   * A submitted input, or an answer to the dialog the pane was blocked on,
+   * starts the next turn. The one path both `noteInput` and `clearAwaiting`
+   * take, so an answer recognised from a key and one recognised from the
+   * screen leave the bridge in the same state.
+   */
+  private startAnsweredTurn(wasAwaiting: boolean, reason: 'input' | 'screen-cleared'): void {
     this.lastTurnStartedAt = Date.now();
 
     this.explicitTerminalStatus = false;
@@ -249,7 +313,30 @@ export class DaemonPTYBridge extends EventEmitter {
     // The dialog is closed. On a hook-governed pane bytes cannot relight the
     // status (main mutes the byte heuristic while the turn latch is held), so
     // the daemon broadcasts `running` and cancels a still-held awaiting window.
-    if (wasAwaiting && this.sessionId) this.emit('answered', { sessionId: this.sessionId });
+    if (wasAwaiting && this.sessionId) this.emit('answered', { sessionId: this.sessionId, reason });
+  }
+
+  /** SGR mouse reports and focus in/out reports: terminal input that is not a key. */
+  // eslint-disable-next-line no-control-regex
+  private static readonly NON_KEY_INPUT = /\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[[IO]/g;
+  // eslint-disable-next-line no-control-regex
+  private static readonly SGR_MOUSE = /\x1b\[<(\d+);\d+;\d+[Mm]/g;
+  // eslint-disable-next-line no-control-regex
+  private static readonly FOCUS_REPORT = /\x1b\[[IO]/g;
+
+  /**
+   * Remove only PASSIVE input: focus reports, and SGR mouse reports that are
+   * pure motion (motion flag 32 set, button bits 3 = none, no wheel flag 64).
+   * Presses, releases and wheel reports stay — they can select or dismiss.
+   */
+  private static stripPassiveInput(data: string): string {
+    return data
+      .replace(DaemonPTYBridge.FOCUS_REPORT, '')
+      .replace(DaemonPTYBridge.SGR_MOUSE, (seq, b: string) => {
+        const code = Number(b);
+        const pureMotion = (code & 32) !== 0 && (code & 3) === 3 && (code & 64) === 0;
+        return pureMotion ? '' : seq;
+      });
   }
 
   /**
@@ -316,6 +403,11 @@ export class DaemonPTYBridge extends EventEmitter {
 
   getInputRevision(): number {
     return this.inputRevision;
+  }
+
+  /** Stdin generation counting only writes that can act on the screen (see the field). */
+  getKeyInputRevision(): number {
+    return this.keyInputRevision;
   }
 
   /** Actual submitted input/hook work, excluding terminal redraw activity. */
@@ -592,6 +684,9 @@ export class DaemonPTYBridge extends EventEmitter {
         }
 
         this.emit('data', buf);
+        // Output on a pane blocked on a human may be the dialog closing (see
+        // `clearAwaiting`); the daemon re-reads the screen off this.
+        if (this.awaitingHuman) this.emit('awaitingActivity', { sessionId, cause: 'output' });
       } catch (err) {
         // Still forward raw data even if parsing failed
         this.emit('data', buf);
@@ -783,6 +878,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.inputInBracketedPaste = false;
     this.lastInputAt = 0;
     this.inputRevision = 0;
+    this.keyInputRevision = 0;
     this.shellCommandRunning = false;
     this.emptyShellPrompt = false;
     this.completedShellCommand = false;

@@ -299,10 +299,9 @@ export default function Sidebar() {
             memo(WorkspaceItem)가 실효한다. 항목 내용은 WorkspaceItem이 자기
             ws를 self-subscribe해 반영한다. */}
         {/* index must be the position in the UNFILTERED list — reorder and
-            the Ctrl+number labels are defined against it. That also settles
-            drops on a pinned row: `index` is the row's real position, so a
-            reorder onto it lands where the row actually lives, not where the
-            needs-you sort happens to be showing it. */}
+            the Ctrl+number labels are defined against it. The pinned group
+            leads that list and is shown as stored, so inside it the row's
+            real position and its place on screen agree. */}
         {/* #1481 — fan-out tasks nest under the workspace that fanned them
             out (SidebarTaskGroup: rollup, fold, close-finished). Detached
             tasks are ordinary rows; tasks whose owner is gone collect in the

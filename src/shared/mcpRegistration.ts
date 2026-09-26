@@ -521,6 +521,14 @@ function readLastFiredAt(): string | null {
   return newest;
 }
 
+/** Trust annotations are metadata, not user-owned hook definitions. */
+function hasForeignCodexHooks(parsed: Record<string, unknown>): boolean {
+  if (!Object.prototype.hasOwnProperty.call(parsed, 'hooks')) return false;
+  const hooks = parsed.hooks;
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return true;
+  return Object.keys(hooks).some((key) => key !== 'state');
+}
+
 /**
  * Write/refresh the wmux hooks block in Codex's config.toml and stamp the
  * install time. Idempotent; skip-if-foreign; version-gated (fail closed —
@@ -560,11 +568,11 @@ export function registerCodexHooks(
   if (block && 'unterminated' in block) {
     return { configPath, skipped: 'manual', wrote: false };
   }
-  // No marker of ours + ANY hooks table → the user (or another tool) owns
+  // No marker of ours + hook definitions → the user (or another tool) owns
   // hooks here. Appending ours would coexist structurally (array-of-tables),
   // but silently injecting wmux into a hand-managed hooks config is the
   // notify lane's decision 1 applied one level wider.
-  if (!block && Object.prototype.hasOwnProperty.call(parsed, 'hooks')) {
+  if (!block && hasForeignCodexHooks(parsed)) {
     return { configPath, skipped: 'foreign', wrote: false };
   }
   if (block && block.commandPath
@@ -654,7 +662,7 @@ export function readCodexHooksStatus(home: string, managedBridgeScript: string):
     return { configPath, configExists, state: 'malformed', path: null, lastFiredAt: null };
   }
   const block = findCodexHooksBlock(text);
-  if (!block && Object.prototype.hasOwnProperty.call(parsed, 'hooks')) {
+  if (!block && hasForeignCodexHooks(parsed)) {
     return { configPath, configExists, state: 'foreign', path: null, lastFiredAt: null };
   }
   if (!block) {

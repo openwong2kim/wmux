@@ -22,6 +22,7 @@ import {
 } from '../approvalKeystrokes';
 import { MAX_OPTIONS, MAX_OPTION_LABEL_CHARS, MAX_QUESTION_CHARS } from '../askUserQuestion';
 import type { ApprovalEvent } from '../types';
+import { GateBroker } from '../GateBroker';
 
 let tmpDir: string;
 
@@ -1247,6 +1248,47 @@ describe('decideApprovalPress — the four conditions', () => {
 describe('ApprovalRegistry — press scope is enforced at resolve', () => {
   const automatedApprove = { decision: 'approve' as const, resolvedBy: 'deck', resolver: 'automated' as const };
 
+  it.each([
+    { autonomyMode: 'off', approvalPress: false, reason: 'autonomy-off' },
+    { autonomyMode: 'assist', approvalPress: false, reason: 'press-capability-off' },
+  ])('refuses automated permission gates with $reason without allowing the hook', async (scope) => {
+    const broker = new GateBroker();
+    const h = makeRegistry({
+      pressScope: () => ({ isTaskWorkspace: true, ...scope }),
+      notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision),
+    });
+    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash' });
+    await settle();
+    let answered = false;
+    const verdict = broker.awaitVerdict(id, 'pty-a').then(value => { answered = true; return value; });
+    try {
+      expect(await h.registry.resolve({ id, ...automatedApprove })).toMatchObject({
+        ok: false, reason: 'out-of-scope', pressRefusal: scope.reason,
+      });
+      expect(answered).toBe(false);
+      expect(h.registry.list().pending.map(r => r.id)).toEqual([id]);
+      expect(h.events.map(e => e.type)).toEqual(['create']);
+      expect(h.writes).toEqual([]);
+    } finally { broker.cancelAll('test-teardown'); }
+    expect(await verdict).toMatchObject({ decision: 'defer' });
+  });
+
+  it('allows an automated permission gate when workspace autonomy permits it', async () => {
+    const broker = new GateBroker();
+    const h = makeRegistry({ notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision) });
+    h.setScreen(null); // Permission hooks wait in the broker, not on a TUI prompt.
+    const id = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash' });
+    await settle();
+    const verdict = broker.awaitVerdict(id, 'pty-a');
+    try {
+      expect(await h.registry.resolve({ id, ...automatedApprove })).toMatchObject({ ok: true });
+      expect(await verdict).toEqual({ decision: 'allow', reason: 'answered' });
+      expect(h.registry.list().pending).toEqual([]);
+      expect(h.writes).toEqual([]);
+    } finally { broker.cancelAll('test-teardown'); }
+  });
+
+
   it('refuses an out-of-scope AUTOMATED press WITHOUT expiring the request', async () => {
     const h = makeRegistry({ pressScope: () => ({ isTaskWorkspace: false, autonomyMode: 'assist', approvalPress: true }) });
     await awaitingInput(h.registry);
@@ -1276,6 +1318,8 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
     if (res.ok) throw new Error('expected a refusal');
     expect(res.reason).toBe('out-of-scope');
     expect(res.pressRefusal).toBe('press-capability-off');
+    expect(h.writes).toHaveLength(0);
+    expect(h.registry.list().pending).toHaveLength(1);
   });
 
   it('distinguishes a workspace that said no from one it could not classify', async () => {

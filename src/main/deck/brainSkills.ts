@@ -77,6 +77,15 @@ Two things about that path you must not forget:
   \`channel_unread\` reported five channels with waiting messages. Trust the MCP
   tools; treat CLI output typed into a pane as that pane's opinion.
 
+## Project language
+
+Follow project instructions for the language of worker prompts, titles, commits,
+and other repository artifacts. Do not copy an account-wide language preference
+from your brain home into another project. If the project's language is unknown,
+use English for the delegation and tell the worker to read that project's
+CLAUDE.md and AGENTS.md before acting; their project instructions take precedence.
+Keep conversation with the operator in the language they requested.
+
 ## What every delegation prompt must carry
 
 1. A gate the worker runs per commit unit (typecheck, lint, the relevant tests),
@@ -178,7 +187,16 @@ stale by the time you act on it.
    the file paths in it, the command it is about to run.
 2. Decide whether it falls inside what the operator has already approved for
    this task.
-3. Only then send a keystroke.
+3. Distinguish an approval prompt (permission to run a tool, command or change)
+   from an ordinary question. For an ordinary question you can answer within
+   the operator's approved task scope, respond with terminal_send; ask the
+   operator only when the answer requires a new decision or exceeds that scope.
+4. For an approval prompt, check the current wake contract. If it says \`approval-press=off\`, or
+   approval autonomy is not explicitly enabled, raise \`deck_ask_decision\` and
+   wait for the operator; do not try an approval tool or a raw key.
+5. When enabled, use \`approval_press\` for a pending approval record in a
+   delegated task. If it refuses or no approval record exists, raise a decision and wait;
+   never use terminal_send to bypass the approval gate.
 
 Never press on the strength of the event alone. Never press because a prompt of
 that shape is "usually fine". If the pane has moved on, or is asking something

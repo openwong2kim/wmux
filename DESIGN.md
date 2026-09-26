@@ -382,6 +382,7 @@ from the Dialogs & forms primitives plus `Settings/SettingsLayout.tsx`
 | 2026-09-25 | Sidebar agent monograms removed (owner: the one-letter frame read as cheap and repeated the same C on every row): Claude is unmarked, other agents are named in muted text, the collapsed summary counts per status group | Identity only matters as the exception; the default agent carrying a mark on every row was noise |
 | 2026-09-25 | Fleet gains a Ready to review section (finished, still-open fan-out tasks: title, owner, branch, change summary, PR, time since finished; Open diff / PR / Jump / Close) between Needs you and Running, and the owner's rollup adds `K to review`, both from one selector | After a fan-out every finished task had to be opened one by one to see what it produced. A section, not a tab, keeps Fleet one list; the sidebar link and the section read the same predicate, and nothing is drawn at zero |
 | 2026-09-25 | The sidebar becomes a glance board: Attention is the default order (needs you → finished → running → unconfirmed → idle, newest first, pins keep their slot, new workspaces hold the top, re-sorts wait for a 3 s settle or the pointer leaving); rows carry a --text-main "changed since you last looked" dot; the sidebar and Fleet read one attention classification | Owner call: with the roster in every row, the sidebar already was where the eye goes, and making it navigation only sent the user to Fleet for the one question the list could answer itself. Fleet keeps what a list of rows cannot hold — search, filters, bulk verbs, previews. Rows that jump while the pointer is on them destroy aim, so the order is applied only when nobody is reaching for a row |
+| 2026-09-26 | Pin means pinned to top (supersedes "a pin keeps its slot in the Attention order", 2026-09-25): offered in every sort order, the pinned group leads the list and the rail in its own order and never re-sorts; only the rows below it sort and settle. The group is the head of the stored order, so Ctrl+N, rail numbers and the phone's `order` follow it. Drag reorders inside the group in every order; in Manual a drop beside a pinned row pins, beside an unpinned row unpins. Saved pins load as pinned-to-top | Owner call: a pin that only held a slot did nothing in Manual and still let the row sit mid-list, so it answered "keep this where I put it" but not "keep this where I can see it". Keeping the group in the stored order instead of beside it means every surface already defined on that order — shortcuts, rail, phone — agrees without a second ordering. The slot rule is dropped rather than kept alongside: with the group at the top, a slot in the middle of a sorted list has no remaining use |
 | 2026-09-25 | Agent mention picker (⌘⇧2 / F2): the command-palette panel with a second footer row — a message field and one Send button that is the primary (warm) only while a message and a target are both there, otherwise secondary — and a one-line status slot under it that swaps the key hints for the send result (sent in `--text-main`, stored in `--text-sub`, refused in `--accent-red`). Rows are pane-level: status mark, agent name, muted tab title, workspace, mono coordinate; no agent logos. Sidebar roster rows get a hover/focus `@` that does the picker's Enter without the picker. Drag-and-drop stays | Addressing another agent by dragging a card pasted a whole markdown block and needed the mouse. A palette keeps one list and one grammar; the send result belongs next to the field that caused it, not in a toast that vanishes while the user reads it |
 
 ### Desktop conversation view
@@ -464,18 +465,31 @@ no empty reply row or reserved gap under the latest prompt.
   was not looked at) → running → unconfirmed → idle; within a class the most
   recent event first. Plain `waiting` with no question is idle here, as in
   Fleet, and draws no "Needs you" wash or label. A fan-out owner scores as its
-  most urgent nested task, so a task that needs you lifts its group. A pinned
-  workspace (row menu › Pin position, offered in Attention only; a muted pin
-  glyph) keeps its rank among the top-level workspaces above it in the stored
-  order — nested tasks take no slot. A workspace created in the last three
-  minutes holds the top. Rows never move under the pointer or keyboard focus:
-  a re-sort applies after the list has been quiet for 3 s (at most 10 s after
-  the first pending change), or at once when the pointer or focus leaves;
-  adds and removals land immediately. The non-manual orders are display-only:
+  most urgent nested task, so a task that needs you lifts its group. A
+  workspace created in the last three minutes holds the top of the unpinned
+  rows. Rows never move under the pointer or keyboard focus: a re-sort
+  applies after the list has been quiet for 3 s (at most 10 s after the first
+  pending change), or at once when the pointer or focus leaves; adds and
+  removals land immediately. The non-manual orders are display-only:
   drag-to-reorder pauses, and the `^N` shortcut hints are hidden because
-  Ctrl+N follows the stored order. Sessions that never chose an order move to
+  Ctrl+N follows the stored order — except in the pinned group, below.
+  Sessions that never chose an order move to
   Attention once, with a notice offering to keep the manual order; an explicit
   choice is kept.
+- **Pinned to top:** row menu › Pin to top / Unpin, in every order (not on a
+  nested task row). Nesting wins: a nested task cannot be pinned, and a pinned
+  workspace that becomes one leaves the group. Pinned workspaces lead the list and the rail in every
+  order, in the order the user gave them, and never re-sort; only the rows
+  below follow the chosen order. A pinned row carries a muted pin glyph
+  (`--text-muted`, never amber) and no group header or divider — the glyph
+  and the position are the signal. The group is the head of the stored order,
+  so `^N`, the rail numbers and the phone's `order` all read pinned-first, and
+  pinned rows show their `^N` hint in every order. Pin, unpin and reorders
+  inside the group apply at once (they are the user's own act, not a
+  re-sort). Drag reorders inside the group in every order; in Manual a drop
+  takes the target row's pin state, so dropping beside a pinned row pins and
+  beside an unpinned row unpins. Pinning lands the row at the end of the
+  group; unpinning at the top of the rest.
 - **Changed since you last looked:** a 6px `--text-main` dot (never amber —
   Fleet's rule) after the name, on the workspace row and on the agent row,
   when an agent tab's status or pending question changed (any number of
@@ -504,8 +518,12 @@ Fleet opens over the tools dock, at up to 720px wide, without adding a flex
 column or changing terminal dimensions. Mirror its anchoring when the sidebar
 moves right. Keep the covered tools dock mounted and inert so drafts survive
 and keyboard focus cannot enter covered controls. Fleet stays non-modal: visible
-workspace areas remain usable; close, Escape and selecting an agent retain their
-existing behavior. Fleet is an attention board (andon), not a map: one
+workspace areas remain usable. Selecting an agent closes Fleet by default. The
+header’s session-only “Keep open after jump” option retains Fleet and its filters
+for agent and review-task jumps while handing input focus to the destination.
+Closing later never restores the pre-jump pane. Close, Ctrl+Shift+A and Escape
+inside Fleet still dismiss it; Open diff and browser-help Jump always close it.
+Fleet is an attention board (andon), not a map: one
 single-column list in three sections — Needs you, Running, Idle — decided by one
 pure selector (`groupFleetPanes`) that other consumers reuse. Needs you holds
 input requests, errors, stopped supervision, unconfirmed (no report for 30m+)

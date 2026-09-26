@@ -53,6 +53,17 @@ describe('buildBrainSkills', () => {
     expect(delegate).toContain('cannot read an exit code');
   });
 
+  it('keeps approval autonomy and project language explicit in generated skills', () => {
+    const approve = skillNamed('approve');
+    expect(approve).toContain('approval-press=off');
+    expect(approve).toContain('approval_press');
+    expect(approve).toContain('never use terminal_send');
+    const delegate = skillNamed('delegate');
+    expect(delegate).toContain('project instructions');
+    expect(delegate).toContain('account-wide language preference');
+    expect(delegate).toContain('English');
+  });
+
   it('makes the approve skill say verify-then-press, not press-on-event', () => {
     const approve = skillNamed('approve');
     expect(approve).toContain('Never press on the strength of the event alone');

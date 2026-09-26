@@ -1,12 +1,13 @@
 // The sidebar's display order for every sort mode, shared by the full sidebar
 // and the compact rail so the two never disagree (glance board, 2026-09-25).
+// The pinned group leads in every mode and is shown as stored; only the rows
+// below it re-sort, under the settle rule (pinned to top, 2026-09-26).
 
 import { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectAllWorkspaceLastActivityMinute, selectWorkspaceAttentionScores } from '../../stores/selectors/fleet';
-import { orderByRecentActivity } from './attentionOrder';
-import { glanceOrder, NEW_WORKSPACE_HOLD_MS } from './glanceOrder';
+import { boardOrder, NEW_WORKSPACE_HOLD_MS } from './glanceOrder';
 import { useSettledOrder } from './useSettledOrder';
 
 // Frozen stand-ins while a mode is off, so the shallow subscriptions settle.
@@ -39,28 +40,20 @@ export function useGlanceBoardOrder<T extends { id: string }>(
     return () => clearTimeout(id);
   }, [mode, newAt, now]);
 
-  const desired = useMemo(() => {
-    if (mode === 'attention') {
-      const top: T[] = [];
-      const nested: T[] = [];
-      const effective: Record<string, number> = {};
-      for (const item of manual) {
-        const owner = nestedOwnerOf?.(item.id);
-        if (owner) nested.push(item);
-        else top.push(item);
-      }
-      for (const item of top) effective[item.id] = scores[item.id] ?? Number.MAX_SAFE_INTEGER;
-      for (const item of nested) {
-        const owner = nestedOwnerOf?.(item.id) as string;
-        if (effective[owner] === undefined) continue;
-        effective[owner] = Math.min(effective[owner], scores[item.id] ?? Number.MAX_SAFE_INTEGER);
-      }
-      const ordered = glanceOrder(top, (id) => effective[id] ?? Number.MAX_SAFE_INTEGER, new Set(pinnedIds), newAt, Math.max(now, Date.now()));
-      return [...ordered, ...nested];
-    }
-    if (mode === 'recent') return orderByRecentActivity(manual, (id) => activity[id] ?? 0);
-    return manual as T[];
-  }, [mode, manual, scores, activity, pinnedIds, newAt, now, nestedOwnerOf]);
+  const board = useMemo(() => boardOrder({
+    manual,
+    mode,
+    pinned: new Set(pinnedIds),
+    scoreOf: (id) => scores[id],
+    activityOf: (id) => activity[id],
+    newAt,
+    now: Math.max(now, Date.now()),
+    nestedOwnerOf,
+  }), [mode, manual, scores, activity, pinnedIds, newAt, now, nestedOwnerOf]);
 
-  return useSettledOrder(desired, mode !== 'manual');
+  // A row crossing the group boundary is a membership change of `rest`, which
+  // the settle rule lands at once (reconcileAppliedOrder).
+  const settled = useSettledOrder(board.rest, mode !== 'manual');
+  const ordered = useMemo(() => [...board.pinned, ...settled.ordered], [board.pinned, settled.ordered]);
+  return { ...settled, ordered };
 }

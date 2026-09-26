@@ -45,6 +45,10 @@ import { decideWebStartPolicy } from './web/webStartPolicy';
 import { scheduleTokenFileReHarden } from '../shared/security';
 import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
+import { AwaitingScreenVerifier, renderPaneScreen } from './AwaitingScreenVerifier';
+import { ApprovalPushRouter } from './push/approvalPushRouter';
+import { readPendingToolUse } from './transcript/pendingToolUse';
+import { isClaudeFamilyAgent } from './approvals/terminalPrompt';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
 import { LanLinkInbox } from './lanlink/inbox';
@@ -52,7 +56,7 @@ import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
-import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
+import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
 import { SnapshotStore, SNAPSHOT_DIRNAME } from './eventlog/SnapshotStore';
 import { manifestFileExists, pingFormatVersionField } from './eventlog/EventLogManifest';
@@ -355,6 +359,39 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       managed.ptyProcess.write(data);
       managed.bridge.noteInput(data, true);
       return true;
+    },
+    // terminal_prompt — the visible grid at the live geometry, and the pane's
+    // state (output bytes, key-carrying input, incarnation) at the instant the
+    // ring was read. renderPaneScreen reads the ring synchronously before its
+    // first await, so the revision and incarnation below are the same instant.
+    readPromptScreen: async (sessionId) => {
+      const managed = sessionManager.getSession(sessionId);
+      if (!managed) return null;
+      const keyInputRevision = managed.bridge.getKeyInputRevision();
+      const incarnation = managed.meta.incarnationId ?? null;
+      const cols = managed.ptyProcess.cols ?? managed.meta.cols;
+      const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot);
+      if (!frame) return null;
+      return {
+        rows: frame.rows,
+        mark: { bytes: frame.mark, keyInputRevision, incarnation },
+        ...(typeof cols === 'number' ? { cols } : {}),
+      };
+    },
+    // The pane's own Claude transcript (the projector's containment-checked
+    // path): its latest tool call still waiting for a result.
+    pendingToolUse: (sessionId) => {
+      const transcriptPath = transcriptProjector?.transcriptPath(sessionId) ?? null;
+      return transcriptPath ? readPendingToolUse(transcriptPath) : null;
+    },
+    promptScreenMark: (sessionId) => {
+      const managed = sessionManager.getSession(sessionId);
+      if (!managed) return null;
+      return {
+        bytes: managed.ringBuffer.totalBytesWritten,
+        keyInputRevision: managed.bridge.getKeyInputRevision(),
+        incarnation: managed.meta.incarnationId ?? null,
+      };
     },
     // #783 — wake the GateBroker waiter when a gate record is resolved by the
     // phone. The broker holds the bridge RPC open; this call closes it.
@@ -2928,7 +2965,7 @@ function registerRpcHandlers(
     // call silently revoke or hand out a typing grant.
     if (typeof params['allowInput'] !== 'boolean') return { ok: false, reason: 'not-found' };
     const allowInput = params['allowInput'];
-    const result = getDeviceStore().setInput(deviceId, allowInput);
+    const result = getDeviceStore().setInput(deviceId, allowInput, 'desktop');
     // Taking input away has a live half, exactly like revoke: a device holding
     // an open SSE stream keeps receiving pane bytes, and while the WRITE routes
     // re-check the roster per request (so typing stops immediately either way),
@@ -2949,7 +2986,7 @@ function registerRpcHandlers(
     // live streams — and cut them even when the write failed, because an
     // established SSE never re-authenticates). Extracted so the three branches
     // are unit-testable without a daemon; see its tests.
-    return revokeDeviceAndDisconnect(deviceId, getDeviceStore(), webServer);
+    return revokeDeviceAndDisconnect(deviceId, getDeviceStore(), webServer, 'desktop');
   });
 
   // X8 supervision control — renderer-only surface (main IPC → daemon).
@@ -3328,7 +3365,18 @@ function registerRpcHandlers(
     terminalChat: () => terminalChat,
     managed: () => chatSessions,
     approvals: () => approvalRegistry ? {
-      pendingFor: (id) => approvalRegistry?.list().pending.find((request) => request.sessionId === id)?.id,
+      pendingFor: (id) => {
+        const pending = approvalRegistry?.list().pending.find((request) => request.sessionId === id);
+        return pending
+          ? {
+            id: pending.id,
+            kind: pending.kind,
+            // Answerable = a whole parse AND not answered yet (a pressed record
+            // would only 409 already-answered).
+            answerable: !!pending.promptFingerprint && !!pending.choices?.length && pending.pressedAt === undefined,
+          }
+          : undefined;
+      },
     } : null,
     readScreen: async (id) => {
       const managed = sessionManager.getSession(id);
@@ -3515,11 +3563,13 @@ function registerRpcHandlers(
         // completion contradicted by the pane's tier-1/2 identity must not
         // broadcast (or drive phone liveness) when its window expires either.
         const screenSlug = agentDisplayToSlug(data.agent);
-        if (detectorSuppressedBy(canonicalIdentityFor(agentProcessTracker, sessionId, screenSlug), screenSlug)) return;
+        // `false` also tells HookIngest not to record a terminal_prompt for it.
+        if (detectorSuppressedBy(canonicalIdentityFor(agentProcessTracker, sessionId, screenSlug), screenSlug)) return false;
         sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status as AgentEventStatus);
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
         webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(sessionId, data, Date.now()));
+        return true;
       },
       // #919 (Codex #8) — every resolved hook signal proves the bridge is
       // alive on this pane RIGHT NOW, banner or not. Arming here means a quiet
@@ -3876,7 +3926,8 @@ function registerRpcHandlers(
     if (bridge.sendInFlight(id)) return { result: 'blocked' };
     const result = await interruptChatTurn(agentSessionId, {
       getTranscriptSessionId: () => projector.status(id).agentSessionId,
-      hasOpenApproval: () => !approvalRegistry || approvalRegistry.list().pending.some((r) => r.sessionId === id),
+      // The chat write fence: any pending record, whatever its kind.
+      hasOpenApproval: () => bridge.hasOpenApproval(id),
       readScreen: async () => {
         const managed = sessionManager.getSession(id);
         if (!managed) return null;
@@ -4909,6 +4960,27 @@ function wireEvents(
   agentProcessTracker: AgentProcessTracker,
   sessionDataListeners: Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>,
 ): void {
+  // Awaiting-state screen verifier: releases a Claude-family pane stuck at
+  // awaiting_input once its dialog is gone from the screen (two dialog-free
+  // reads in a row). Renders only for awaiting panes, one at a time per pane,
+  // on the shared snapshot queue. See AwaitingScreenVerifier.ts.
+  const paneAgentSlug = (id: string): string | undefined => {
+    const managed = sessionManager.getSession(id);
+    const screenAgent = managed?.bridge.getLastAgent() ?? null;
+    return (screenAgent ? agentDisplayToSlug(screenAgent) : undefined) ?? managed?.meta.lastDetectedAgent;
+  };
+  const awaitingVerifier = new AwaitingScreenVerifier({
+    isAwaiting: (id) => sessionManager.getSession(id)?.bridge.isAwaitingHuman() === true,
+    eligible: (id) => isClaudeFamilyAgent(paneAgentSlug(id)),
+    outputMark: (id) => sessionManager.getSession(id)?.ringBuffer.totalBytesWritten ?? null,
+    render: (id) => renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot),
+    clear: (id) => { sessionManager.getSession(id)?.bridge.clearAwaiting('screen-cleared'); },
+    log: (level, message) => log(level, message),
+  });
+  const forgetAwaiting = (payload: { id: string }): void => awaitingVerifier.forget(payload.id);
+  sessionManager.on('session:died', forgetAwaiting);
+  sessionManager.on('session:destroyed', forgetAwaiting);
+
   // Names an agent from process truth when neither a hook nor its banner did
   // (see commandStartAgentProbe.ts). Exec units have no shell and emit no
   // OSC 133, so only interactive panes reach it.
@@ -5221,6 +5293,9 @@ function wireEvents(
   });
 
   sessionManager.on('session:active', (payload: { sessionId: string; agentName?: string; likelyRepaint?: boolean }) => {
+    // An output burst on an awaiting pane may be its dialog closing. A no-op
+    // for every pane that is not awaiting.
+    awaitingVerifier.trigger(payload.sessionId, 'output');
     // CompletionAlarm byte-activity feed (brief rule 4 / D3): any PTY output
     // — the user typing the next prompt, a background build chattering —
     // rebuts an open completion window and arms the turn gate. The detected
@@ -5373,7 +5448,38 @@ function wireEvents(
   // hook-governed pane nothing else would, because main mutes the byte
   // heuristic while the hook's turn latch is held — and cancel a still-held
   // awaiting window, which would otherwise re-mark the pane when it confirms.
-  sessionManager.on('session:answered', (payload: { sessionId: string }) => {
+  // Input that reached a pane blocked on a human. Logged by size only — never
+  // the text — so a dogfood log shows whether an answer arrived in a shape the
+  // lone-key check did not recognise (glued to mouse reports, for instance).
+  sessionManager.on('session:awaitingActivity', (payload: {
+    sessionId: string; cause: 'input' | 'output'; bytes?: number; nonKeyBytes?: number; answered?: boolean;
+  }) => {
+    if (payload.cause === 'input') {
+      log('debug', `[awaiting] input on ${payload.sessionId} while awaiting: ${payload.bytes ?? 0} byte(s), ` +
+        `${payload.nonKeyBytes ?? 0} non-key, answered=${payload.answered === true}`);
+    }
+    if (payload.answered !== true) awaitingVerifier.trigger(payload.sessionId, payload.cause);
+  });
+
+  // A key or click reached a pane: a pending remote terminal-prompt answer it
+  // overtook is refreshed once the input settles, so the phone re-confirms the
+  // dialog as it is now instead of a stale record answering 409 forever.
+  sessionManager.on('session:fenceInput', (payload: { sessionId: string }) => {
+    approvalRegistry?.noteFenceInput(payload.sessionId);
+  });
+
+  sessionManager.on('session:answered', (payload: { sessionId: string; reason?: 'input' | 'screen-cleared' }) => {
+    awaitingVerifier.forget(payload.sessionId);
+    // The dialog is closed, so its terminal_prompt record is done too (a record
+    // a phone already answered resolves rather than expires). Before any early
+    // return below: a pane with no detected agent name would otherwise keep its
+    // card. A screen-cleared release also starts the registry's per-dialog
+    // creation cooldown for the pane.
+    approvalRegistry?.expireForSession(
+      payload.sessionId,
+      payload.reason === 'screen-cleared' ? 'screen-cleared' : 'answered-locally',
+      'terminal_prompt',
+    ).catch((err: unknown) => log('warn', `[approvals] answered sweep failed for ${payload.sessionId}: ${String(err)}`));
     const managed = sessionManager.getSession(payload.sessionId);
     const screenAgent = managed?.bridge.getLastAgent() ?? null;
     const slug = (screenAgent ? agentDisplayToSlug(screenAgent) : undefined) ?? managed?.meta.lastDetectedAgent;
@@ -6079,40 +6185,38 @@ async function main(): Promise<void> {
     daemonName: () => os.hostname() || undefined,
     log: (level, msg) => log(level, msg),
   });
+  // One push per awaiting episode: send or park on `create`, drop a parked one
+  // once its approval is moot, and carry it over when a record is replaced
+  // within the same episode (see ApprovalPushRouter).
+  const approvalPushRouter = new ApprovalPushRouter({
+    build: (r) => buildApprovalPushPayload(r),
+    collapseId: (r) => approvalPushCollapseId(r),
+    suppress: (payload) => shouldSuppressPush({
+      state: desktopPresence.snapshot(),
+      now: Date.now(),
+      config: presenceConfig(),
+      ...(payload.risk !== undefined ? { risk: payload.risk } : {}),
+    }),
+    send: (payload, opts) => pushSender.notify(payload, opts),
+    park: (id, payload, collapseId) => deferredPush.park(id, payload, collapseId),
+    forget: (id) => deferredPush.forget(id),
+    isParked: (id) => deferredPush.has(id),
+    log: (level, msg) => log(level, msg),
+  });
   approvalRegistry.onEvent((event) => {
     // Every transition moves at least one of the three numbers the lock screen
     // fires on, so this is subscribed to all of them, not just `create`.
     liveActivityPusher?.onApprovalsChanged();
-    // A resolve/expire/supersede is the thing the notification was asking for.
-    // If one is still parked, it is now moot — drop it rather than buzzing a
-    // phone about a question that has already been answered.
-    if (event.type !== 'create') {
-      deferredPush.forget(event.request.id);
-      return;
-    }
-    const r = event.request;
-    const payload = buildApprovalPushPayload(r);
     // The outbound sink is a separate channel from the phone, and presence says
     // nothing about it: an operator who put a URL in `notifySinks` asked for
-    // every approval, focused desktop or not. Only the APNs push below is held.
-    webhookSink?.notify(
-      buildApprovalNotifyPayload(r, { id: randomUUID(), now: Date.now() }),
-    );
-    if (
-      shouldSuppressPush({
-        state: desktopPresence.snapshot(),
-        now: Date.now(),
-        config: presenceConfig(),
-        ...(payload.risk !== undefined ? { risk: payload.risk } : {}),
-      })
-    ) {
-      // The approval id only — never the question, the choices, or anything
-      // else the payload carries.
-      log('info', `[push] held for ${r.id}: desktop is present`);
-      deferredPush.park(r.id, payload, approvalPushCollapseId(r));
-      return;
+    // every approval, focused desktop or not. A record that replaces another in
+    // the same episode is not a new approval to it.
+    if (event.type === 'create' && event.replaces === undefined) {
+      webhookSink?.notify(
+        buildApprovalNotifyPayload(event.request, { id: randomUUID(), now: Date.now() }),
+      );
     }
-    pushSender.notify(payload, { collapseId: approvalPushCollapseId(r) });
+    approvalPushRouter.onEvent(event);
   });
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   // Desktop presence, reported by the Electron main process on every
@@ -6541,7 +6645,16 @@ async function main(): Promise<void> {
     listLiveSessions: () =>
       sessionManager.listLiveSessions().map((meta) => ({
         id: meta.id,
-        ...(meta.lastDetectedAgent !== undefined ? { lastDetectedAgent: meta.lastDetectedAgent as string } : {}),
+        // A pane whose agent returned to the shell is a shell, whatever it
+        // last ran — see wakeAgentSlug for the marker/process precedence.
+        ...(() => {
+          const agent = wakeAgentSlug(
+            meta.lastDetectedAgent as string | undefined,
+            sessionManager.getSession(meta.id)?.promptLog.commandRunningIfKnown(),
+            agentProcessTracker.identityFor(meta.id),
+          );
+          return agent !== undefined ? { lastDetectedAgent: agent } : {};
+        })(),
         // Fail SAFE on a broken/missing timestamp (GLM review): a NaN getTime()
         // must not become 0, which reads as "quiet since the epoch" and makes
         // the pane permanently pass the quiet gate (perpetual nudge candidate).

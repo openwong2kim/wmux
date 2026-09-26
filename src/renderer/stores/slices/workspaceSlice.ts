@@ -19,7 +19,7 @@ import { retentionMigrationDone, markRetentionMigrationDone } from '../retention
 import { decUnread } from './notificationSlice';
 import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { stashedPaneLiveness } from '../../../shared/paneStash';
-import { clampSidebarWidth, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention } from '../../utils/sidebarLayout';
+import { clampSidebarWidth, movePinned, pinnedFirst, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention, unpinNestedTasks } from '../../utils/sidebarLayout';
 import {
   collectLeafIds,
   getLeafPanes,
@@ -263,7 +263,8 @@ export interface WorkspaceSlice {
    * normalizeWorkspaceColor rather than stored.
    */
   setWorkspaceColor: (id: string, color: WorkspaceColorId | undefined) => void;
-  reorderWorkspace: (fromIndex: number, toIndex: number) => void;
+  /** `pin` is the drop target's pin state; omitted keeps the row's own. */
+  reorderWorkspace: (fromIndex: number, toIndex: number, pin?: boolean) => void;
   loadSession: (data: SessionData) => void;
   /**
    * Fix 0 fallback action. Clears every ptyId-keyed piece of renderer state
@@ -549,7 +550,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       };
       state.nextWorkspaceOrdinal = wsOrdinal + 1;
       // Insert right after the source for intuitive placement, then activate.
-      state.workspaces.splice(idx + 1, 0, ws);
+      // A copy is not pinned, so it goes no higher than the top of the rest.
+      const pinnedCount = state.workspaces.filter((w: Workspace) => state.sidebarPinnedIds?.includes(w.id)).length;
+      state.workspaces.splice(Math.max(idx + 1, pinnedCount), 0, ws);
       // Glance board: a new workspace holds the top slot for a few minutes.
       if (state.sidebarNewAt) state.sidebarNewAt[ws.id] = Date.now();
       activateLocalWorkspace(state, ws.id);
@@ -835,12 +838,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
     }),
 
-    reorderWorkspace: (fromIndex, toIndex) => set((state: StoreState) => {
-      if (fromIndex === toIndex) return;
-      if (fromIndex < 0 || fromIndex >= state.workspaces.length) return;
-      if (toIndex < 0 || toIndex >= state.workspaces.length) return;
-      const [removed] = state.workspaces.splice(fromIndex, 1);
-      state.workspaces.splice(toIndex, 0, removed);
+    reorderWorkspace: (fromIndex, toIndex, pin) => set((state: StoreState) => {
+      // The pinned group stays a prefix of the stored order; a drop beside a
+      // pinned row pins, beside an unpinned one unpins (sidebarLayout.movePinned).
+      const r = movePinned(state.workspaces, state.sidebarPinnedIds ?? [], fromIndex, toIndex, pin);
+      if (!r) return;
+      state.workspaces = r.items;
+      if (state.sidebarPinnedIds) state.sidebarPinnedIds = r.pinnedIds;
+      // The rail has no nesting, so a drop there can try to pin a task.
+      unpinNestedTasks(state);
     }),
 
     loadSession: (data: SessionData) => set((state: StoreState) => {
@@ -1358,8 +1364,18 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       {
         const liveIds = new Set((data.workspaces ?? []).map((w) => w.id));
         state.sidebarPinnedIds = Array.isArray(data.sidebarPinnedIds)
-          ? data.sidebarPinnedIds.filter((id): id is string => typeof id === 'string' && liveIds.has(id))
+          ? [...new Set(data.sidebarPinnedIds.filter((id): id is string => typeof id === 'string' && liveIds.has(id)))]
           : [];
+        // Pinned to top (2026-09-26): a pin used to hold a row's manual slot
+        // in the Attention order. Sessions saved then keep their pins, and the
+        // pinned rows move up into the group in the order they had.
+        if (state.sidebarPinnedIds.length > 0) {
+          state.workspaces = pinnedFirst(state.workspaces, new Set(state.sidebarPinnedIds));
+          // A pin on a nested task (set under the old slot rule, whose menu
+          // did not check task rows) is dropped: here if nesting is already
+          // known, else when missions or lineage land (workTaskSlice).
+          unpinNestedTasks(state);
+        }
       }
       state.sidebarAttentionFirst = state.sidebarSortMode === 'attention';
       if (data.sidebarWidth !== undefined) state.sidebarWidth = clampSidebarWidth(data.sidebarWidth);

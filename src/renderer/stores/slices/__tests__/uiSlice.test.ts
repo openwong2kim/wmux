@@ -612,6 +612,15 @@ describe('UISlice — Fleet View overlay (S-C1)', () => {
     store = createTestStore();
   });
 
+  it('keeps the jump preference across toggles but defaults off in a fresh session', () => {
+    expect(store.getState().fleetKeepOpenAfterJump).toBe(false);
+    store.getState().setFleetKeepOpenAfterJump(true);
+    store.getState().toggleFleetView();
+    store.getState().toggleFleetView();
+    expect(store.getState().fleetKeepOpenAfterJump).toBe(true);
+    expect(createTestStore().getState().fleetKeepOpenAfterJump).toBe(false);
+  });
+
   it('fleetViewVisible defaults to false', () => {
     expect(store.getState().fleetViewVisible).toBe(false);
   });

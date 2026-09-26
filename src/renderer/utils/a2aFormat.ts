@@ -19,7 +19,7 @@ const ESC_OTHER_RE = /\x1b[@-_]/g;
 
 // Repeat until nothing changes: removing one sequence can join the bytes
 // around it into a new one (`\x1b\x1b@[201~` → `\x1b[201~`).
-function stripEscapes(input: string): string {
+export function stripEscapes(input: string): string {
   let out = input;
   for (;;) {
     const next = out.replace(ESC_CSI_RE, '').replace(ESC_OTHER_RE, '');

@@ -213,7 +213,7 @@ export const de = {
   'settings.sidebarPosition': 'Position der Seitenleiste',
   'settings.sidebarPositionDesc': 'Links oder rechts vom Terminalbereich',
   'settings.sidebarAttentionFirst': 'Zeilen, die auf dich warten, zuerst',
-  'settings.sidebarAttentionFirstDesc': 'Arbeitsbereiche, deren Agent auf dich wartet, oben in der Seitenleiste anheften. Standardmäßig aus: Zeilen bleiben dort, wohin du sie gezogen hast. Solange aktiv, ist das Umsortieren per Ziehen pausiert.',
+  'settings.sidebarAttentionFirstDesc': 'Arbeitsbereiche, deren Agent auf dich wartet, in der Seitenleiste nach oben verschieben. Standardmäßig aus: Zeilen bleiben dort, wohin du sie gezogen hast. Solange aktiv, ist das Umsortieren per Ziehen pausiert.',
   'settings.sidebarShowPaneCoordinates': 'Bereichskoordinaten anzeigen',
   'settings.sidebarShowPaneCoordinatesDesc': 'Zeigt in der Agentenliste die automatisch erzeugte Koordinate im Stil w1-2 für Bereiche ohne eigene Bezeichnung. Standardmäßig an. Ein umbenannter Bereich zeigt so oder so immer seine Bezeichnung.',
   'settings.sidebarLeft': 'Links',

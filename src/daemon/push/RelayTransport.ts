@@ -46,6 +46,18 @@ export interface RelayTransportDeps {
   noun?: string;
 }
 
+/** Plain HTTP is only permitted for local relay development. */
+function isSafeRelayUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || (url.protocol === 'http:'
+      && (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]'));
+  } catch {
+    return false;
+  }
+}
+
 export class RelayTransport {
   private readonly deps: RelayTransportDeps;
   private readonly now: () => number;
@@ -71,6 +83,9 @@ export class RelayTransport {
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.tag = deps.tag ?? '[push]';
     this.noun = deps.noun ?? 'notification';
+    if (deps.relayUrl && !isSafeRelayUrl(deps.relayUrl)) {
+      deps.log?.('warn', `${this.tag} relay disabled: URL must use HTTPS or HTTP loopback`);
+    }
   }
 
   /**
@@ -83,7 +98,7 @@ export class RelayTransport {
    */
   get enabled(): boolean {
     if (process.env.WMUX_PUSH === '0') return false;
-    return Boolean(this.deps.relayUrl && this.deps.relaySecret);
+    return Boolean(isSafeRelayUrl(this.deps.relayUrl) && this.deps.relaySecret);
   }
 
   /**
@@ -170,6 +185,8 @@ export class RelayTransport {
    * rate limit exists to stop.
    */
   async post(routePath: string, body: Record<string, unknown>): Promise<number | null> {
+    if (!isSafeRelayUrl(this.deps.relayUrl)) return null;
+    if (process.env.WMUX_PUSH === '0' || !this.deps.relaySecret) return null;
     const first = await this.postOnce(routePath, body);
     if (first !== null && first < 500) return first;
     await this.sleep(

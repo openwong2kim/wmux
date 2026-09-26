@@ -169,6 +169,9 @@ export const PRESS_REFUSAL_HINTS: Readonly<Record<string, string>> = {
   'prompt-gone': 'the prompt is no longer on screen — read the pane again before deciding',
   'scope-unavailable':
     'the daemon has no workspace facts to judge this pane by; the desktop app may have just started',
+  'answer-in-terminal':
+    "this is the agent's own terminal dialog: a human answers it, in the pane or from a paired phone. " +
+    'No automated press reaches it — raise it with deck_ask_decision if the operator is needed',
 };
 
 // ─── The deadlock guard ─────────────────────────────────────────────────────
@@ -344,6 +347,17 @@ export async function pendingApprovalOnPane(
  * one line.
  */
 export function approvalBlockMessage(op: string, ptyId: string, record: PendingApproval): string {
+  // The agent's own terminal dialog is a human's to answer; approval_press is
+  // refused on it too (`answer-in-terminal`), so do not point the caller there.
+  if (record.kind === 'terminal_prompt') {
+    const tool = safeRecordText(record.toolName ?? '', 40);
+    return (
+      `${op}: pane "${ptyId}" is showing the agent's own permission dialog` +
+      `${tool ? ` for tool "${tool}"` : ''} — refusing to type at it. A human answers this ` +
+      'in the pane (or from a paired phone); no tool presses it. Raise it with ' +
+      'deck_ask_decision if you need the operator.'
+    );
+  }
   const toolName = safeRecordText(record.toolName ?? '', 40);
   const question = safeRecordText(record.question ?? '');
   const what = toolName

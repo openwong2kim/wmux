@@ -34,7 +34,30 @@ export interface ChatLaunchPreview {
   maxPromptUnits: number;
 }
 
-export interface ChatBlocked { by: 'approval' | 'terminal'; approvalId?: string }
+export interface ChatBlocked {
+  by: 'approval' | 'terminal';
+  approvalId?: string;
+  /**
+   * INTERNAL, never serialized as is: the pane is blocked on a
+   * `terminal_prompt` record. It reads as `by:'terminal'` unless the caller
+   * declared the `terminal-prompt-answer` capability AND the record is
+   * answerable — see `projectChatBlocked`.
+   */
+  terminalPrompt?: { approvalId: string; answerable: boolean };
+}
+
+/** Per-caller view of `ChatBlocked` (the capability decides a `terminal_prompt`). */
+export function projectChatBlocked(
+  blocked: ChatBlocked | undefined,
+  caps: { terminalPromptAnswer: boolean },
+): ChatBlocked | undefined {
+  if (!blocked) return undefined;
+  const { terminalPrompt, ...rest } = blocked;
+  if (terminalPrompt?.answerable && caps.terminalPromptAnswer) {
+    return { by: 'approval', approvalId: terminalPrompt.approvalId };
+  }
+  return rest;
+}
 
 /**
  * One pane's chat binding, computed from fresh daemon state on every call.

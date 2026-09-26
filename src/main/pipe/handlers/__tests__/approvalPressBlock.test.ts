@@ -282,3 +282,34 @@ describe('the deadlock guard', () => {
     });
   });
 });
+
+describe('a terminal_prompt record (the agent\'s own dialog)', () => {
+  const PROMPT = { ...OWNED, kind: 'terminal_prompt', toolName: 'Bash' };
+
+  it('approval_press is refused and does NOT lift the terminal_send block', async () => {
+    w = wire({ pending: [PROMPT], reply: { ok: false, reason: 'answer-in-terminal' } });
+
+    const press = (await asBrain('approval.press', { ptyId: 'pty-w', decision: 'approve' })) as {
+      result?: { reason: string; note?: string; typedFallback?: string };
+    };
+    expect(press.result?.reason).toBe('answer-in-terminal');
+    expect(press.result?.note).toContain('human');
+    expect(press.result?.typedFallback).toBeUndefined();
+    expect(PRESS_DEADLOCK_REASONS.has('answer-in-terminal')).toBe(false);
+    expect((await asBrain('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(false);
+    expect(w.writes).toHaveLength(0);
+  });
+
+  it('the block says a human answers it in the pane, not "use approval_press"', async () => {
+    w = wire({ pending: [PROMPT] });
+    for (const caller of [asBrain, asPaneAgent]) {
+      const res = await caller('input.send', { ptyId: 'pty-w', text: '1' });
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain("agent's own permission dialog");
+      expect(res.error).toContain('A human answers this in the pane');
+      expect(res.error).toContain('"Bash"');
+      expect(res.error).not.toContain('approval_press');
+    }
+    expect(w.writes).toHaveLength(0);
+  });
+});

@@ -10,6 +10,9 @@ import {
   sortModeMigratedToAttention,
   ORPHAN_GROUP_KEY,
   pruneTaskGroupExpanded,
+  movePinned,
+  pinnedFirst,
+  togglePinned,
 } from '../sidebarLayout';
 import { createUISlice, type UISlice } from '../../stores/slices/uiSlice';
 
@@ -103,5 +106,39 @@ describe('sortModeMigratedToAttention', () => {
     expect(sortModeMigratedToAttention({ sidebarAttentionFirst: true })).toBe(false);
     expect(sortModeMigratedToAttention({ sidebarSortMode: 'attention' })).toBe(false);
     expect(sortModeMigratedToAttention({ sidebarSortMode: 'recent' })).toBe(false);
+  });
+});
+
+describe('pinned to top (2026-09-26)', () => {
+  const ws = (...ids: string[]) => ids.map((id) => ({ id }));
+  const ids = (list: { id: string }[]) => list.map((w) => w.id);
+
+  it('pinnedFirst keeps each side in its order', () => {
+    expect(ids(pinnedFirst(ws('a', 'p1', 'b', 'p2'), new Set(['p2', 'p1'])))).toEqual(['p1', 'p2', 'a', 'b']);
+  });
+
+  it('pinning moves the row to the end of the group; unpinning to the top of the rest', () => {
+    const pinned = togglePinned(ws('p1', 'a', 'b', 'c'), ['p1'], 'c');
+    expect(pinned && ids(pinned.items)).toEqual(['p1', 'c', 'a', 'b']);
+    expect(pinned?.pinnedIds).toEqual(['p1', 'c']);
+    const unpinned = togglePinned(pinned!.items, pinned!.pinnedIds, 'p1');
+    expect(unpinned && ids(unpinned.items)).toEqual(['c', 'p1', 'a', 'b']);
+    expect(unpinned?.pinnedIds).toEqual(['c']);
+    expect(togglePinned(ws('a'), [], 'missing')).toBeNull();
+  });
+
+  it('a drop takes the target row\'s pin state, so crossing the boundary pins or unpins', () => {
+    // Drag c (unpinned) above p2 (pinned) → pinned, between p1 and p2.
+    const pin = movePinned(ws('p1', 'p2', 'a', 'c'), ['p1', 'p2'], 3, 1, true);
+    expect(pin && ids(pin.items)).toEqual(['p1', 'c', 'p2', 'a']);
+    expect(pin?.pinnedIds).toEqual(['p1', 'p2', 'c']);
+    // Drag p2 (last pinned) just above a (first unpinned): same index, state flips.
+    const unpin = movePinned(ws('p1', 'p2', 'a'), ['p1', 'p2'], 1, 1, false);
+    expect(unpin && ids(unpin.items)).toEqual(['p1', 'p2', 'a']);
+    expect(unpin?.pinnedIds).toEqual(['p1']);
+    // No move and no state change is a no-op.
+    expect(movePinned(ws('p1', 'a'), ['p1'], 1, 1, false)).toBeNull();
+    // Out of range is refused.
+    expect(movePinned(ws('a'), [], 0, 3)).toBeNull();
   });
 });
