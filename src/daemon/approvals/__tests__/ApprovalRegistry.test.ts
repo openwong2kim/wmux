@@ -1273,6 +1273,33 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
     expect(await verdict).toMatchObject({ decision: 'defer' });
   });
 
+  // #1541 review: the screen press read scope BEFORE the last awaited
+  // reauthorize (up to 2 s). Autonomy turned off inside that window must still
+  // stop the keystroke, as it already does on the gate branch.
+  it('re-checks scope after the final reauthorize, so a policy flip mid-press writes nothing', async () => {
+    let scope = { isTaskWorkspace: true, autonomyMode: 'assist', approvalPress: true };
+    const h = makeRegistry({ pressScope: () => scope });
+    await awaitingInput(h.registry);
+    await settle();
+    let calls = 0;
+
+    const res = await h.registry.resolve({
+      id: 'req-1',
+      ...automatedApprove,
+      authorize: async () => {
+        calls += 1;
+        // The operator flips autonomy off while the final check is in flight.
+        if (calls === 2) scope = { isTaskWorkspace: true, autonomyMode: 'off', approvalPress: false };
+        return 'ok';
+      },
+    });
+
+    expect(calls).toBe(2);
+    expect(res).toMatchObject({ ok: false, reason: 'out-of-scope', pressRefusal: 'autonomy-off' });
+    expect(h.writes).toEqual([]);
+    expect(h.registry.list().pending.map((r) => r.id)).toEqual(['req-1']);
+  });
+
   it('allows an automated permission gate when workspace autonomy permits it', async () => {
     const broker = new GateBroker();
     const h = makeRegistry({ notifyGateResolved: (id, decision) => broker.notifyResolved(id, decision) });

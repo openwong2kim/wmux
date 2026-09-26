@@ -1017,6 +1017,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // Last check before the bytes: the screen re-read above can take seconds.
       const refusedWrite = await this.reauthorize(params, record);
       if (refusedWrite) return { result: refusedWrite };
+      // Policy again, after the last await: the operator may have turned
+      // autonomy or approval pressing off while reauthorize ran, and the scope
+      // read above predates that. Same rule the gate branch follows.
+      const lateRefusal = this.refuseOutOfScopePress(params, record, true);
+      if (lateRefusal) return { result: lateRefusal };
 
       // Determine the data to send: choiceKey overrides the default mapping.
       // When choiceKey is set, we send exactly that digit — no CR.
