@@ -1455,6 +1455,28 @@ Windows host only drive and UNC paths are checked; a `/…` or `~` path may be
 meant for a WSL default shell and is left to the spawn, as before. The check
 runs after the request is re-authorized.
 
+To choose that `cwd`, an input-authorized phone may browse folder names under
+the host user's home. `/api/config` advertises `folderBrowse: true` to such a
+device; a daemon predating the route omits the flag.
+
+`GET /api/folders?path=<absolute path | ~ | ~/…>[&hidden=1]` -> `200
+{path, parent, entries:[{name, path, git}], truncated}`, sent `Cache-Control:
+no-store`. Omitting `path` means home. `path` is the folder's real path and
+`parent` is `null` at home. Entries are directories only, never files, sorted by
+name, and at most 500; `truncated` says more existed. Dot folders are left out
+unless `hidden=1`. `git` says the folder has a `.git` entry. A symlinked entry is
+not offered, and a symlink that leads out of home is not followed.
+
+| Status | `error` | Meaning |
+|---|---|---|
+| 400 | `invalid-path` | Relative path or NUL byte |
+| 403 | `outside-home` | Outside home, refused before any lookup, so it does not say what exists elsewhere |
+| 404 | `folder-not-found` | Missing, not a directory, or unreadable |
+| 403 | `read-only: …` | The device may not type (same refusal as other input routes) |
+
+On a Windows host `~` means the user profile and only paths under it are
+listed; WSL paths are not browsed.
+
 `POST /api/sessions` optionally accepts
 `agentLaunch:{agent:"claude"|"codex",model?:id,effort?:level}`. The server validates
 against its current catalog and constructs only the known launcher and flags.

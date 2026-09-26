@@ -7,6 +7,7 @@ import type { InputReceiptStore } from './InputReceiptStore';
 import { sessionPullRequests } from './sessionPullRequests';
 import { SessionGitController, SessionGitError } from './sessionGit';
 import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
+import { listFolders, FolderBrowseError } from './phoneFolders';
 import http from 'node:http';
 import type { AgentStatus } from '../../shared/types';
 import { isRemoteAgentStatus } from '../../shared/remoteHosts';
@@ -2063,6 +2064,7 @@ export class WebTerminalServer {
         liveActivityHostScope: true,
         agentSettings: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.agentSettings !== undefined,
         agentLaunch: this.mayInput(principal) && this.deps.agentLaunchOptions !== undefined,
+        folderBrowse: this.mayInput(principal),
         browserScrolling: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
         workspaceBrowsers: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
         browserCreation: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
@@ -2195,6 +2197,17 @@ export class WebTerminalServer {
       const workspaceId = url.searchParams.get('workspaceId') ?? '';
       if (workspaceId) { const bad = this.rejectWorkspaceId(workspaceId,principal); if (bad) return this.json(res,400,bad); }
       void this.agentOptionsForWorkspace(workspaceId).then(agents => this.json(res,200,{agents},{'Cache-Control':'no-store'})).catch(() => this.json(res,503,{error:'agent-launch-unavailable'}));
+      return;
+    }
+    if (req.method === 'GET' && p === '/api/folders') {
+      // Folder names under home, for choosing where a new pane starts. The
+      // pane it feeds already needs input permission, so the picker does too.
+      if (!this.mayInput(principal)) return this.refuseInput(res,principal,'Folder browsing requires input permission');
+      void listFolders(url.searchParams.get('path') ?? undefined, { hidden: url.searchParams.get('hidden') === '1' })
+        .then(listing => this.json(res,200,listing,{'Cache-Control':'no-store'}))
+        .catch(error => error instanceof FolderBrowseError
+          ? this.json(res,error.status,{error:error.tag})
+          : this.json(res,404,{error:'folder-not-found'}));
       return;
     }
     if ((req.method === 'GET' || req.method === 'POST') && p.startsWith('/api/desktop-workspaces/') && p.endsWith('/browser')) {

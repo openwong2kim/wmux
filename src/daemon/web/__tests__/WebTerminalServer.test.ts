@@ -4172,6 +4172,25 @@ describe('WebTerminalServer', () => {
     expect(resolveCalls).toEqual([]);
   });
 
+  it('lists home folders only for a device that may type', async () => {
+    const readOnly = bearer((await startRO()).token as string);
+    expect((await fetch(`${base()}/api/folders`)).status).toBe(401);
+    const refused = await fetch(`${base()}/api/folders`, { headers: readOnly });
+    expect(refused.status).toBe(403);
+    expect((await refused.json()).error).toMatch(/^read-only/);
+    expect((await (await fetch(`${base()}/api/config`, { headers: readOnly })).json()).folderBrowse).toBe(false);
+    await server.stop();
+    const auth = bearer((await startRW()).token as string);
+    expect((await (await fetch(`${base()}/api/config`, { headers: auth })).json()).folderBrowse).toBe(true);
+    const res = await fetch(`${base()}/api/folders`, { headers: auth });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.json()).toMatchObject({ path: fs.realpathSync(os.homedir()), parent: null, truncated: expect.any(Boolean) });
+    const outside = await fetch(`${base()}/api/folders?path=${encodeURIComponent(path.parse(fs.realpathSync(os.homedir())).root)}`, { headers: auth });
+    expect(outside.status).toBe(403);
+    expect(await outside.json()).toEqual({ error: 'outside-home' });
+  });
+
   it('serves bounded workspace files only with authentication, transcript AND input consent', async () => {
     const info = await startRO();
     const headers = bearer(info.token as string);
