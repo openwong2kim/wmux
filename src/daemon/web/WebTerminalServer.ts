@@ -2957,9 +2957,12 @@ export class WebTerminalServer {
               // stale on the next search rather than silently current.
               const key = scrollbackKey(managed);
               const rows = await sessionText(id);
-              if (!rows) return null;
+              // The queued job looks the pane up again when it runs: text from
+              // an incarnation that replaced this one under the same id is not
+              // this pane's, so it is neither cached nor returned.
+              if (!rows || this.deps.sessionManager.getSession(id) !== managed) return null;
               const lines = joinWrappedRows(rows);
-              if (this.deps.sessionManager.getSession(id) === managed) this.scrollbackText.set(id, key, lines);
+              this.scrollbackText.set(id, key, lines);
               return lines;
             });
             return job ?? 'busy';

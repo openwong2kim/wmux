@@ -48,6 +48,7 @@ describe('GET /api/search', () => {
   let roster: Map<string, string>;
   let textReads: string[];
   let textGate: Promise<void> | null;
+  let textFor: ((id: string) => string) | null;
   let skewMs: number;
   let chatWired: boolean;
   let chatGate: Promise<void> | null;
@@ -86,6 +87,7 @@ describe('GET /api/search', () => {
     roster = new Map();
     textReads = [];
     textGate = null;
+    textFor = null;
     skewMs = 0;
     chatWired = false;
     chatGate = null;
@@ -140,6 +142,7 @@ describe('GET /api/search', () => {
       sessionText: async (id) => {
         textReads.push(id);
         if (textGate) await textGate;
+        if (textFor) return [{ text: textFor(id), wrapped: false }];
         return [{ text: `needle in the ring of ${id}`, wrapped: false }];
       },
       log: () => { /* silent */ },
@@ -338,13 +341,31 @@ describe('GET /api/search', () => {
       expect(a.body.truncated).toBe(true);
       skewMs += 4000; // refill both callers' buckets
     }
-    // Four searches hit the deadline. The busiest pane was extracted once, not
-    // once per search; with timer slack a search may start one more pane just
-    // before its deadline, but never past the daemon-wide cap of two.
-    expect(textReads[0]).toBe('s1');
+    // Four searches hit the deadline. Each pane was extracted at most once,
+    // not once per search, and never past the daemon-wide cap of two.
+    expect(textReads.length).toBeGreaterThan(0);
     expect(new Set(textReads).size).toBe(textReads.length);
     expect(textReads.length).toBeLessThanOrEqual(2);
     release();
   }, 20_000);
+
+
+  it('never serves a new incarnation text under the pane the extraction was queued for', async () => {
+    const info = await start();
+    textFor = (id) => `zebra from ${panes.get(id)?.meta.incarnationId}`;
+    // Newest pane, so its extraction is the first one queued.
+    panes.set('s1', mkPane('s1', { ...(panes.get('s1') as Pane).meta, createdAt: '2026-09-10T00:00:00.000Z' }));
+    let release!: () => void;
+    textGate = new Promise<void>((resolve) => { release = resolve; });
+    const pending = search(bearer(info.token as string), 'q=zebra&scope=scrollback');
+    const deadline = Date.now() + 2000;
+    while (!textReads.includes('s1') && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+    // The pane is replaced under the same id while its extraction waits.
+    const old = panes.get('s1') as Pane;
+    panes.set('s1', mkPane('s1', { ...old.meta, incarnationId: 's1-reborn' }));
+    release();
+    const { body } = await pending;
+    expect((body.results as Array<{ snippet: string }>).map((r) => r.snippet).filter((t) => t.includes('s1-reborn'))).toEqual([]);
+  });
 
 });

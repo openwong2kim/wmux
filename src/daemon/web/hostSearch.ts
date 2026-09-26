@@ -334,10 +334,48 @@ export interface SearchCursorCodec {
   decode(request: SearchRequest, raw: string): SearchAfter;
 }
 
-/** Fingerprint of scrollback line `i` and the two above it (fewer at the top). */
+/** Lines of context an anchor may take above its line to tell it apart from a repeat. */
+export const MAX_ANCHOR_LINES = 64;
+const lineHash = (text: string) => crypto.createHash('sha256').update(text).digest('base64url').slice(0, 12);
+
+/**
+ * Fingerprint of scrollback line `i` for a cursor: `<n>:<hash of the n lines
+ * ending at i>:<hash of line i>`. `n` grows from 1 until no other line of the
+ * pane ends the same n lines (up to MAX_ANCHOR_LINES), so repetitive output —
+ * blank lines, the same build line over and over — still names one place.
+ */
 export function scrollbackAnchor(lines: readonly string[], i: number): string {
-  return crypto.createHash('sha256').update(lines.slice(Math.max(0, i - 2), i + 1).join('\n')).digest('base64url').slice(0, 16);
+  const line = lines[i];
+  let others: number[] = [];
+  for (let j = 0; j < lines.length; j++) if (j !== i && lines[j] === line) others.push(j);
+  let n = 1;
+  while (others.length > 0 && n < MAX_ANCHOR_LINES && i - n >= 0) {
+    const above = lines[i - n];
+    others = others.filter((j) => j - n >= 0 && lines[j - n] === above);
+    n += 1;
+  }
+  return `${n}:${lineHash(lines.slice(i - n + 1, i + 1).join('\n'))}:${lineHash(line)}`;
 }
+
+/**
+ * Where a cursor's line is now. Exactly one place ending the anchor's lines is
+ * that place; with none (the lines above were redrawn), the one line alone
+ * decides if it occurs once. Anything else is 'lost': never a guess.
+ */
+export function placeAnchor(lines: readonly string[], anchor: string): number | 'lost' {
+  const [countText, windowHash, hitHash] = anchor.split(':');
+  const n = Number(countText);
+  if (!Number.isInteger(n) || n < 1 || !windowHash || !hitHash) return 'lost';
+  const same: number[] = [];
+  for (let i = 0; i < lines.length; i++) if (lineHash(lines[i]) === hitHash) same.push(i);
+  const exact = same.filter((i) => i - n + 1 >= 0 && lineHash(lines.slice(i - n + 1, i + 1).join('\n')) === windowHash);
+  if (exact.length === 1) return exact[0];
+  if (exact.length === 0 && same.length === 1) return same[0];
+  return 'lost';
+}
+
+/** A cursor that sorts before every hit: a retry of a first page that came back empty. */
+const START_KEY: SortKey = { at: Number.MAX_SAFE_INTEGER, order: 0, sessionId: '', kind: 'turn', pos: 0, id: '' };
 
 /**
  * Stateless cursor: the last returned hit's sort key, bound to the query and
@@ -381,18 +419,6 @@ export function createSearchCursorCodec(secret: Buffer): SearchCursorCodec {
 }
 
 // --- the search -------------------------------------------------------------
-
-/** The line the anchor names, the nearest one at or above `near` first; null when it is gone. */
-function findAnchor(lines: readonly string[], anchor: string, near: number): number | null {
-  let below: number | null = null;
-  for (let i = Math.min(near, lines.length - 1); i >= 0; i--) {
-    if (scrollbackAnchor(lines, i) === anchor) return i;
-  }
-  for (let i = Math.max(0, near + 1); i < lines.length; i++) {
-    if (scrollbackAnchor(lines, i) === anchor) { below = i; break; }
-  }
-  return below;
-}
 
 /** A pane as the search sees it. */
 export interface SearchPane {
@@ -591,8 +617,13 @@ export async function runSearch(
     }
     if (scope === 'turns') {
       let totalBytes = 0;
-      for (const pane of panes) {
-        if (outOfBudget() || totalBytes >= limits.totalBytes) { skip(pane.sessionId, scope, 'budget'); unpageable = true; continue; }
+      // Read in the order hits sort (by pane creation), not by activity: then
+      // the request-wide byte bound cuts at the same place on every page, like
+      // the per-session window, and does not stop paging.
+      const byOrder = [...panes].sort((a, b) => b.createdAt - a.createdAt || (a.sessionId < b.sessionId ? -1 : a.sessionId > b.sessionId ? 1 : 0));
+      for (const pane of byOrder) {
+        if (outOfBudget()) { skip(pane.sessionId, scope, 'budget'); unpageable = true; continue; }
+        if (totalBytes >= limits.totalBytes) { skip(pane.sessionId, scope, 'budget'); continue; }
         if (!sources.turns) { skip(pane.sessionId, scope, 'unavailable'); continue; }
         const resolved = await beforeDeadline(
           sources.turns(pane.sessionId).catch((): TurnSource => ({ kind: 'skip', reason: 'unreadable' })),
@@ -618,10 +649,10 @@ export async function runSearch(
         for (let first = true; ; first = false) {
           if (!first) {
             await yieldToLoop();
-            // The per-session window cuts a transcript at the same place on
-            // every page; the clock and the request-wide bytes do not.
-            if (outOfBudget() || totalBytes >= limits.totalBytes) { unpageable = true; break; }
-            if (read >= limits.sessionBytes) break;
+            // The byte bounds cut a transcript at the same place on every
+            // page; the clock does not.
+            if (read >= limits.sessionBytes || totalBytes >= limits.totalBytes) break;
+            if (outOfBudget()) { unpageable = true; break; }
           }
           let page: TurnPage | null;
           try { page = await source.next(); } catch { page = null; }
@@ -669,7 +700,10 @@ export async function runSearch(
         if (lines) cachedLines.set(pane.sessionId, lines);
       }
     }
-    const visitOrder = [...ahead.filter((p) => cachedLines.has(p.sessionId)), ...ahead.filter((p) => !cachedLines.has(p.sessionId))];
+    // Fresh reads go in the order hits sort, so the pane right after the cursor
+    // is extracted first and a page cut before an unread pane moves forward.
+    const inOrder = [...ahead].sort((a, b) => compareKeys(blockEdge(a, 0), blockEdge(b, 0)));
+    const visitOrder = [...inOrder.filter((p) => cachedLines.has(p.sessionId)), ...inOrder.filter((p) => !cachedLines.has(p.sessionId))];
     let fresh = 0;
     for (const pane of visitOrder) {
       if (sources.stopped?.() === true) { unread(pane); continue; }
@@ -687,13 +721,19 @@ export async function runSearch(
         lines = read.value;
       }
       const text = lines;
-      // Line numbers shift when the ring evicts old output. On the cursor's
-      // own pane, find the cursor's line again and renumber to match; when it
-      // has left the ring, so has everything older, and nothing is left here.
+      // Line numbers shift when the ring evicts old output or a resize
+      // rewraps it. On the cursor's own pane, find the cursor's line again and
+      // renumber to match. When it cannot be placed for certain (evicted,
+      // redrawn, or ambiguous), the rest of this pane is reported, not guessed.
       let shift = 0;
-      if (after?.key.kind === 'scrollback' && after.key.at === null && after.key.sessionId === pane.sessionId && after.anchor !== undefined) {
-        const found = findAnchor(text, after.anchor, after.key.pos);
-        if (found === null) { searched.add(pane.sessionId); continue; }
+      if (after?.key.kind === 'scrollback' && after.key.at === null && after.key.sessionId === pane.sessionId) {
+        const found = after.anchor === undefined ? 'lost' : placeAnchor(text, after.anchor);
+        if (found === 'lost') {
+          searched.add(pane.sessionId);
+          skip(pane.sessionId, scope, 'cursor-lost');
+          truncated = true;
+          continue;
+        }
         shift = after.key.pos - found;
       }
       searched.add(pane.sessionId);
@@ -710,11 +750,18 @@ export async function runSearch(
   const page = kept.slice(0, request.limit);
   const last = page[page.length - 1];
   const more = kept.length > request.limit || end !== null;
+  let nextCursor: string | null = null;
+  if (!unpageable && more) {
+    // A page cut to nothing by an unread pane hands back where it started,
+    // so the phone retries from the same place instead of from the top.
+    if (last) nextCursor = codec.encode(request, last.key, last.anchor?.());
+    else nextCursor = after ? codec.encode(request, after.key, after.anchor) : codec.encode(request, START_KEY);
+  }
   return {
     results: page.map(toResult),
     coverage: { searchedSessions: searched.size, skippedSessions: skipped },
     truncated,
-    nextCursor: more && last && !unpageable ? codec.encode(request, last.key, last.anchor?.()) : null,
+    nextCursor,
   };
 
   function toResult(hit: Candidate): SearchResult {

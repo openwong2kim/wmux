@@ -491,7 +491,9 @@ describe('extraction slots and caller admission', () => {
     }), codec);
     expect(out.coverage.skippedSessions).toEqual([{ sessionId: 'p1', scope: 'scrollback', reason: 'budget' }]);
     expect(out.truncated).toBe(true);
-    expect(out.nextCursor).toBeNull();
+    // Nothing was read, so the cursor names the start: retry from there.
+    expect(out.results).toEqual([]);
+    expect(out.nextCursor).not.toBeNull();
   });
 
   it('admits one search per caller within a refilling burst, and forgets idle callers', () => {
@@ -513,5 +515,103 @@ describe('extraction slots and caller admission', () => {
     now += 10_000;
     admission.release('d');
     expect(admission.size).toBe(0);
+  });
+});
+
+describe('review round 2: cursors that cannot be lost silently', () => {
+  const page = (req: SearchRequest, src: SearchSources) =>
+    runSearch(req, req.cursor === null ? null : codec.decode(req, req.cursor), src, codec);
+  const scrollbackOnly = (text: () => Record<string, string[]>, createdAt: Record<string, number>, busy = () => new Set<string>()) => sources({
+    scrollbackPanes: Object.keys(createdAt).map((id) => pane(id, { createdAt: createdAt[id] })),
+    scrollback: {
+      cached: (id) => (busy().has(id) ? undefined : text()[id]),
+      read: async () => 'busy',
+    },
+  });
+
+  it('places a cursor in repetitive output where the three lines around it repeat', async () => {
+    // Ten identical hits, each under the same two lines; only the chunk header differs.
+    let lines = Array.from({ length: 10 }, (_, k) => [`chunk ${k}`, 'x', 'x', 'needle']).flat();
+    const src = () => scrollbackOnly(() => ({ A: lines }), { A: 1 });
+    let shown = 0;
+    let cursor: string | null = null;
+    for (let i = 0; i < 10; i++) {
+      const out = await page(request('needle', { scopes: ['scrollback'], limit: 3, cursor }), src());
+      shown += out.results.length;
+      expect(out.coverage.skippedSessions).toEqual([]);
+      cursor = out.nextCursor;
+      // The ring evicts the oldest chunk, never shown yet.
+      if (i === 0) lines = lines.slice(4);
+      if (cursor === null) break;
+    }
+    expect(shown).toBe(9);
+  });
+
+  it('finds the cursor line alone when the lines above it were redrawn', async () => {
+    let lines = Array.from({ length: 6 }, (_, k) => [`fill ${k}`, `needle ${k}`]).flat();
+    const src = () => scrollbackOnly(() => ({ A: lines }), { A: 1 });
+    const first = await page(request('needle', { scopes: ['scrollback'], limit: 2 }), src());
+    expect(first.results.map((r) => r.snippet)).toEqual(['needle 5', 'needle 4']);
+    lines = lines.map((l) => (l === 'fill 4' || l === 'fill 3' ? 'redrawn' : l));
+    const second = await page(request('needle', { scopes: ['scrollback'], limit: 10, cursor: first.nextCursor }), src());
+    expect(second.results.map((r) => r.snippet)).toEqual(['needle 3', 'needle 2', 'needle 1', 'needle 0']);
+    expect(second.coverage.skippedSessions).toEqual([]);
+  });
+
+  it('reports cursor-lost, never a silent gap, when the cursor line cannot be placed', async () => {
+    let lines = ['needle a', 'needle b', 'needle c'];
+    const src = () => scrollbackOnly(() => ({ A: lines, B: ['needle z'] }), { A: 2, B: 1 });
+    const first = await page(request('needle', { scopes: ['scrollback'], limit: 1 }), src());
+    expect(first.results.map((r) => r.snippet)).toEqual(['needle c']);
+    lines = ['needle q', 'needle r'];
+    const second = await page(request('needle', { scopes: ['scrollback'], limit: 10, cursor: first.nextCursor }), src());
+    expect(second.coverage.skippedSessions).toEqual([{ sessionId: 'A', scope: 'scrollback', reason: 'cursor-lost' }]);
+    expect(second.truncated).toBe(true);
+    expect(second.results.map((r) => r.snippet)).toEqual(['needle z']);
+  });
+
+  it('hands back a cursor on an empty page cut by a busy pane, and the retry continues in place', async () => {
+    const busy = new Set(['A', 'B']);
+    const src = () => scrollbackOnly(() => ({ A: ['needle a0', 'needle a1', 'needle a2'], B: ['needle b0', 'needle b1'] }), { A: 2, B: 1 }, () => busy);
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    let empties = 0;
+    for (let i = 0; i < 10; i++) {
+      const out = await page(request('needle', { scopes: ['scrollback'], limit: 2, cursor }), src());
+      seen.push(...out.results.map((r) => r.snippet.replace('needle ', '')));
+      if (out.results.length === 0) {
+        empties += 1;
+        expect(out.truncated).toBe(true);
+        expect(out.nextCursor).not.toBeNull();
+        // The extraction finishes in the background before the retry.
+        busy.delete(busy.has('A') ? 'A' : 'B');
+      }
+      cursor = out.nextCursor;
+      if (i === 1) busy.add('B');
+      if (cursor === null) break;
+    }
+    expect(empties).toBeGreaterThanOrEqual(2);
+    expect(seen).toEqual(['a2', 'a1', 'a0', 'b1', 'b0']);
+  });
+
+  it('keeps paging when the request-wide byte bound falls where the per-session window already stops', async () => {
+    const twoPages = (id: string): TurnSource => fileSource([
+      { events: [user(`${id}2`, 'match', 20), user(`${id}1`, 'match', 10)], lineEnds: [300, 400], bytes: 100, done: false },
+      { events: [user(`${id}0`, 'match', 5)], lineEnds: [200], bytes: 100, done: true },
+    ]);
+    const src = () => sources({
+      panes: [pane('a', { createdAt: 2 }), pane('b', { createdAt: 1 })],
+      turns: async (id) => twoPages(id),
+      limits: { ...SEARCH_LIMITS, sessionBytes: 100, totalBytes: 200 },
+    });
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 6; i++) {
+      const out = await page(request('match', { scopes: ['turns'], limit: 1, cursor }), src());
+      seen.push(...out.results.map((r) => r.turnEventId as string));
+      cursor = out.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(seen).toEqual(['a2', 'b2', 'a1', 'b1']);
   });
 });

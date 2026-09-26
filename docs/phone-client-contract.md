@@ -1977,27 +1977,36 @@ hit returned. A turn appended meanwhile sorts before that hit and is not
 repeated. Scrollback printed meanwhile in the cursor's own pane, or in a pane
 already paged past, is newer than the cursor and is not shown. A pane the
 paging has not reached yet shows what it holds when the page reaches it. Old
-scrollback lines leaving the ring do not
-shift the paging: the cursor remembers the text around its line and finds it
-again. If that line has itself left the ring, so has everything older in that
-pane, and paging moves on to the next pane.
+scrollback lines leaving the ring, or a resize, do not shift the paging: the
+cursor remembers its line and as many lines above it as it takes to tell that
+place apart from any repeat, and finds it again. If it cannot find exactly one
+such place (the line left the ring, the screen was redrawn, or the output
+repeats too much), the rest of that pane is not searched on this page: the
+pane is listed in `skippedSessions` with reason `cursor-lost` and `truncated`
+is true. Paging goes on with the next pane. The daemon never guesses a place.
 
 A page can come back with `truncated: true` and a cursor. What that means
 depends on what the bounds left out:
 
-- A conversation cut at its per-session 4 MiB window is cut at the same place
-  on every page. That does not stop paging.
+- A conversation cut at its per-session 4 MiB window, or a pane the 24 MiB
+  request-wide bound left unread, is cut at the same place on every page:
+  conversations are read in the order their hits sort, by pane creation. That
+  does not stop paging.
 - A scrollback pane left unread (its extraction did not fit in this request)
   ends the page before that pane's hits, so the page can hold fewer than
   `limit` hits and still carry a cursor. The next page reads that pane, from
   the cache once the background extraction has finished.
-- A conversation the wall clock or the 24 MiB request-wide bound left unread,
-  or read only partly, has hits that could belong anywhere in the order. The
-  page's hits are correct, but `nextCursor` is null. To see more, search again
-  later or narrow the query.
+- A conversation the wall clock left unread, or read only partly, has hits
+  that could belong anywhere in the order. The page's hits are correct, but
+  `nextCursor` is null. To see more, search again later or narrow the query.
+- A cursor that lost its place in a pane (`cursor-lost`, above).
 
-A truncated page with no hits never carries a cursor. Search again from the
-start.
+A page can have no hits and still carry a cursor, when the first pane past the
+cursor could not be read yet. That cursor is the one you sent (or, on a first
+page, one that means "from the start"). Retry with it after a short wait
+(about a second); the pane's extraction finishes in the background meanwhile.
+So stop paging only when `nextCursor` is null, never because a page held fewer
+than `limit` hits.
 
 ### Scopes, gates, and which panes
 
@@ -2027,8 +2036,8 @@ scope with reason `transcript-disabled`.
   (16 of the projector's 256 KiB pages). One request reads at most 24 MiB
   across all panes. The daemon yields between pages, so a search does not stall
   other panes' streams.
-- `scrollback` extracts at most 6 panes' text per request, most recently active
-  first. Extraction shares the one-at-a-time snapshot queue that attach and
+- `scrollback` extracts at most 6 panes' text per request, in the order their
+  hits sort (so the pane right after the cursor first). Extraction shares the one-at-a-time snapshot queue that attach and
   resync use. Text is cached per pane until the pane writes more bytes, or its
   size or incarnation changes, for up to 8 panes. A cached pane does not count
   against the 6. An extraction still queued at the deadline finishes in the
@@ -2050,6 +2059,7 @@ searched fully or in part in at least one scope.
 |---|---|
 | `transcript-disabled` | the scope needs `--allow-transcript` |
 | `budget` | a time, byte or pane bound stopped the search here (see above) |
+| `cursor-lost` | scrollback only: the cursor's line could not be found again in this pane, so the rest of it was not searched on this page (see Ordering and paging) |
 | `unavailable` | this daemon cannot read that source (scrollback: the ring could not be parsed; turns: no transcript reader, or an OpenCode pane with no readable conversation) |
 | `unreadable` | the transcript file could not be read, or stopped being readable partway |
 | `no-hook`, `stale-session`, `no-transcript-path`, `unsupported-agent`, `unsafe-transcript-path` | the `/turns` resolver's own reason, passed through unchanged |
