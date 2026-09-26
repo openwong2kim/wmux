@@ -514,6 +514,18 @@ describe('registerCodexHooks — the hooks lane (#1107)', () => {
     expect(fs.readFileSync(codexTarget.configPath(home), 'utf8')).toBe(trust);
   });
 
+  it('preserves trust tables inside the markers when a moved bridge forces rewriting', () => {
+    const trust = '[hooks.state]\n[hooks.state."local-hook"]\nenabled = true\ntrusted_hash = "sha256:trusted"\n';
+    const p = writeCodex(upsertCodexHooksToml('model = "x"\n', BRIDGE)
+      .replace('# wmux-managed: codex-hooks-bridge end', `${trust}# wmux-managed: codex-hooks-bridge end`));
+    const moved = BRIDGE.replace('wmux-codex-hooks-bridge', 'moved-bridge');
+    expect(registerCodexHooks(home, moved, VERSION_OK).wrote).toBe(true);
+    expect(fs.readFileSync(p, 'utf8')).toContain(trust);
+    expect(readCodexHooksStatus(home, moved).path).toBe(moved);
+    expect(unregisterCodexHooks(home).removed).toBe(true);
+    expect(fs.readFileSync(p, 'utf8')).toContain(trust);
+  });
+
   it('still refuses hook definitions alongside trust state', () => {
     const config = '[hooks.state]\n[[hooks.Stop]]\ncommand = "user-own"\n';
     writeCodex(config);
