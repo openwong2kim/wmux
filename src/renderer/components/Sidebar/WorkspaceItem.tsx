@@ -570,7 +570,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDragStart = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!workspace || reorderOff) return;
+    // A row always drags its markdown out (dropping it on an agent's pane
+    // hands that agent this workspace to message). Only the reorder half
+    // depends on reorderOff: a sorted order used to cancel the whole drag,
+    // which silently killed the hand-off for every unpinned row.
+    if (!workspace) return;
     // Roster controls live inside this draggable card. Chromium chooses the
     // nearest draggable ancestor as the native source, so `draggable={false}`
     // on a nested button is not enough. Reject a drag whose pointer originated
@@ -592,8 +596,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     // dropEffect='move' for reorder, which is only valid against an
     // effectAllowed that includes 'move'. External chat composers
     // accept the 'copy' half of 'copyMove' just as well.
-    e.dataTransfer.effectAllowed = 'copyMove';
-    setDraggedWorkspaceIndex(index);
+    // A row that cannot reorder offers copy only and leaves no reorder
+    // source, so no sidebar row lights up as a drop target for it.
+    e.dataTransfer.effectAllowed = reorderOff ? 'copy' : 'copyMove';
+    if (!reorderOff) setDraggedWorkspaceIndex(index);
     setTerminalTextDropDragActive(true);
     // Apply the "being dragged" visual synchronously by mutating the
     // element's inline style. The previous setTimeout(setIsDragging) +
@@ -796,7 +802,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       )}
 
       <div
-        draggable={!reorderOff}
+        draggable={!!workspace}
         {...tokenAttrs('bgSurface', 'bg')}
         className={`group sidebar-row px-3 py-1.5 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive

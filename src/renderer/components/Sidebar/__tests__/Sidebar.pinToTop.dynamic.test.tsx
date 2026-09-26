@@ -170,3 +170,24 @@ describe('Pin to top — drag source', () => {
     expect(stored()).toEqual(['p', 'b', 'c']);
   });
 });
+
+// A row's drag also hands its markdown to an agent's pane (so the agent can
+// message that workspace). A sorted order must pause only the reorder half.
+describe('Workspace hand-off drag in a sorted order', () => {
+  it('an unpinned row in Attention still drags its markdown out, as copy only', () => {
+    document.elementFromPoint = () => null;
+    seed({ a: 'running', b: 'idle', c: 'idle' }, 'attention');
+    act(() => useStore.setState({ draggedWorkspaceId: null } as never));
+    act(() => root.render(<Sidebar />));
+    expect(row('b').getAttribute('draggable')).toBe('true');
+    const start = fireDrag(row('b'), 'dragstart') as Event & { dataTransfer: DataTransfer };
+    expect(start.dataTransfer.getData('text/plain')).toContain('- Workspace ID: b');
+    expect(start.dataTransfer.effectAllowed).toBe('copy');
+    expect(useStore.getState().terminalTextDropDragActive).toBe(true);
+    // No reorder source: sidebar rows are not drop targets for it.
+    expect(useStore.getState().draggedWorkspaceId).toBeNull();
+    fireDrag(row('a'), 'drop');
+    expect(stored()).toEqual(['a', 'b', 'c']);
+  });
+
+});

@@ -70,7 +70,10 @@ describe('drag reorder is paused while the ordering is on', () => {
     // WorkspaceItem folds the sort mode, pin and task rows into one flag.
     expect(itemSrc).toContain("const sortPaused = sortMode !== 'manual';");
     expect(itemSrc).toContain('const reorderOff = taskRow || (sortPaused && !pinned);');
-    expect(itemSrc).toContain('draggable={!reorderOff}');
+    // The row itself always drags (its markdown hand-off to an agent pane);
+    // reorderOff only withholds the reorder source.
+    expect(itemSrc).toContain('draggable={!!workspace}');
+    expect(itemSrc).toContain('if (!reorderOff) setDraggedWorkspaceIndex(index);');
     expect(miniSrc).toContain('const reorderOff = sidebarAttentionFirst && !isPinned;');
     expect(miniSrc).toContain('draggable={!reorderOff}');
     expect(miniSrc).toContain("const sidebarAttentionFirst = sidebarSortMode !== 'manual';");
