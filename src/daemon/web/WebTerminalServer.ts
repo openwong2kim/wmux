@@ -407,7 +407,19 @@ export interface WebDeviceResolver {
     deviceId: string,
     allowInput: boolean,
     actor: DeviceActor,
-  ): { ok: boolean; reason?: 'not-found' | 'revoked' | 'persist-failed' };
+  ): WebDeviceSetInputResult;
+}
+
+/**
+ * What `setInput` answers. `changed` is true only when the call changed the
+ * grant; `retried` when it re-attempted the write of an earlier change that
+ * had not reached disk.
+ */
+export interface WebDeviceSetInputResult {
+  ok: boolean;
+  reason?: 'not-found' | 'revoked' | 'persist-failed';
+  changed: boolean;
+  retried?: boolean;
 }
 
 /** One roster row as the resolver reports it. Carries no secret material. */
@@ -5369,10 +5381,12 @@ export class WebTerminalServer {
    * device that may type, `self` for a read-only device.
    *
    * A device that may type already has a shell on this machine and can read
-   * `devices.json` from it, so showing it the roster exposes nothing new — and
-   * it is what lets the phone in your hand remove the one you just lost. A
-   * read-only device has no such reach, so it sees its own row and nothing
-   * about the others, not even their names.
+   * `devices.json` from it, so showing it the roster exposes nothing new. The
+   * roster is for SEEING which devices exist and when each was last seen, so
+   * the owner can revoke a lost one from the desktop (or with the operator
+   * token); a device can revoke only itself. A read-only device has no such
+   * reach, so it sees its own row and nothing about the others, not even their
+   * names.
    */
   private deviceScope(principal: WebPrincipal): 'all' | 'self' {
     return principal.kind === 'operator' || this.mayInput(principal) ? 'all' : 'self';
@@ -5452,7 +5466,13 @@ export class WebTerminalServer {
       return this.json(res, 403, { error: 'not-permitted' });
     }
     const actor: DeviceActor = principal.kind === 'operator' ? 'operator-web' : 'device-self';
-    const result = revokeDeviceAndDisconnect(deviceId, devices, this, actor);
+    let result: ReturnType<typeof revokeDeviceAndDisconnect>;
+    try {
+      result = revokeDeviceAndDisconnect(deviceId, devices, this, actor);
+    } catch (err) {
+      this.deps.log('warn', `[web] device revoke failed: ${errMsg(err)}`);
+      return this.json(res, 500, { error: 'device-revoke-failed' });
+    }
     if (result.reason === 'not-found') return this.json(res, 404, { error: 'device-not-found' });
     const closed = result.closed ?? 0;
     return this.json(res, 200, result.ok ? { ok: true, closed } : { ok: false, reason: 'persist-failed', closed });
@@ -5498,7 +5518,7 @@ export class WebTerminalServer {
       // desktop uses. On a server started without --allow-input this is a real
       // boundary; with it, it is policy — either way nothing is written.
       if (b['input'] === true) return this.json(res, 403, { error: 'grant-escalation-desktop-only' });
-      let result: { ok: boolean; reason?: 'not-found' | 'revoked' | 'persist-failed' };
+      let result: WebDeviceSetInputResult;
       try {
         result = devices.setInput(deviceId, false, actor);
       } catch (err) {
@@ -5507,10 +5527,12 @@ export class WebTerminalServer {
       }
       if (result.reason === 'not-found') return this.json(res, 404, { error: 'device-not-found' });
       if (result.reason === 'revoked') return this.json(res, 409, { error: 'device-revoked' });
-      // Cut the device's streams whether or not the write landed, as the
-      // desktop RPC does: the device is read-only in memory either way, and a
-      // phone holding an open stream would keep showing a composer that 403s.
-      this.disconnectDevice(deviceId);
+      // Cut the device's streams only when its grant actually changed (whether
+      // or not the write landed — it is read-only in memory either way), or
+      // when this call retried a change that had not reached disk. A no-op
+      // PATCH must not be a way to cut a device's streams over and over
+      // without leaving an audit line.
+      if (result.changed || result.retried) this.disconnectDevice(deviceId);
       return this.json(
         res,
         200,

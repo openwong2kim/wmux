@@ -305,6 +305,19 @@ describe('device management routes', () => {
       expect((await fetch(`${base()}/api/config`, { headers: bearer(victim.token) })).status).toBe(401);
     });
 
+    it('answers 500 instead of dropping the connection when the revoke throws', async () => {
+      await start();
+      const target = await pair('Target', true);
+      vi.spyOn(store, 'revoke').mockImplementation(() => {
+        throw new Error('roster exploded');
+      });
+
+      const res = await revoke(operator(), target.deviceId);
+
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'device-revoke-failed' });
+    });
+
     it('lets the operator revoke anyone, 404s an unknown id, and is idempotent', async () => {
       await start();
       const target = await pair('Target', true);
@@ -364,6 +377,45 @@ describe('device management routes', () => {
       expect(audit().filter((e) => e.event === 'input-grant')).toEqual([
         expect.objectContaining({ deviceId: typer.deviceId, actor: 'device-self', allowInput: false }),
       ]);
+    });
+
+    it('does not cut the streams of a device whose grant is already off and on disk', async () => {
+      await start();
+      const viewer = await pair('Viewer', false);
+      const events = await openEvents(bearer(viewer.token));
+      expect(events.res.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 30));
+      const disconnect = vi.spyOn(server, 'disconnectDevice');
+
+      for (let i = 0; i < 3; i++) {
+        const res = await patchGrants(operator(), viewer.deviceId, { input: false });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ ok: true, grants: { input: false } });
+      }
+
+      expect(disconnect).not.toHaveBeenCalled();
+      expect(await closedWithin(events.reader!, 150)).toBe(false);
+      expect(audit().filter((e) => e.event === 'input-grant')).toEqual([]);
+      events.ac.abort();
+    });
+
+    it('retries an unpersisted change on the same PATCH until it lands', async () => {
+      await start();
+      const typer = await pair('Typer', true);
+      const persist = vi.spyOn(store as unknown as { persist: () => boolean }, 'persist').mockReturnValue(false);
+      const disconnect = vi.spyOn(server, 'disconnectDevice');
+
+      const first = await patchGrants(operator(), typer.deviceId, { input: false });
+      expect(await first.json()).toEqual({ ok: false, reason: 'persist-failed', grants: { input: false } });
+      const retry = await patchGrants(operator(), typer.deviceId, { input: false });
+      expect(await retry.json()).toEqual({ ok: false, reason: 'persist-failed', grants: { input: false } });
+      expect(persist).toHaveBeenCalledTimes(2);
+      expect(disconnect).toHaveBeenCalledTimes(2);
+
+      persist.mockRestore();
+      const landed = await patchGrants(operator(), typer.deviceId, { input: false });
+      expect(await landed.json()).toEqual({ ok: true, grants: { input: false } });
+      expect(new DeviceStore({ wmuxDir: dir }).list().find((d) => d.deviceId === typer.deviceId)?.allowInput).toBe(false);
     });
 
     it('lets a read-only device send input:false to itself', async () => {
