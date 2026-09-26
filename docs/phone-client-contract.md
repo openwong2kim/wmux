@@ -964,12 +964,30 @@ resolves. An SSE `approval` event with `phase: "press"` marks the write.
 | 409 | `{error:"already-answered"}` | This record was answered from a phone already and is waiting for its dialog to close (`pressedAt` is set). Nothing typed |
 | 409 | `{error:"already-resolved", resolvedBy}` | The record already settled — its dialog was answered (anywhere) and has gone. Nothing typed |
 | 410 | `{error:"expired", state?}` | The record ended without an answer (turn ended, pane gone, replaced) |
-| 409 | `{error:"prompt-changed"}` | The screen is not the dialog you answered (changed, moved, or not the active dialog). Nothing typed. When the dialog's content changed, the record was superseded by a fresh one — re-read `/api/approvals` |
+| 409 | `{error:"prompt-changed"}` | The screen is not the dialog you answered (changed, moved, not the active dialog, or a key or click reached the pane since your read). Nothing typed. When the dialog is still up, the record was superseded by a fresh one — re-read `/api/approvals` and confirm again |
 | 425 | `{error:"answer-too-soon"}` | Within 1.5 s of the record appearing. Ask again |
 | 501 | `{error:"answer-in-terminal"}` | Not answerable remotely: no capability header, or the record is not answerable (checked before the body, so a record without a fingerprint is 501, not 400). Answer on the computer |
 
 Without the capability header every answer is 501 `answer-in-terminal`: show
 "wmux cannot answer this agent remotely. Open the pane on the computer."
+
+**A key or click in the pane refreshes the record.** Someone at the terminal
+moving the selection (↓, ↑, a click) means what your user confirmed may not be
+what is selected, so it is never pressed through. Instead, once the input has
+been quiet for about 0.6 s (and at most once every 2 s per record), the daemon
+re-reads the dialog and, if it is still up, replaces the record: you get
+
+```
+event: approval   {"approvalId":"<old>","phase":"supersede","state":"superseded","kind":"terminal_prompt",…}
+event: approval   {"approvalId":"<new>","phase":"create","state":"pending","kind":"terminal_prompt",…}
+```
+
+and `/api/approvals` lists the new record with a new `id` and a new
+`promptFingerprint` (it also encodes the input epoch), answerable 1.5 s after it
+appeared. There is no second push. An answer that races the refresh gets 409
+`prompt-changed` and triggers the same replacement. A dialog the input
+dismissed is not refreshed into an answerable record; one still visible but no
+longer bound to the pending call is replaced by an informational record.
 
 **Push.** One push per awaiting episode per pane — a record replaced within the
 episode (a late parse, a changed dialog) carries the push over rather than

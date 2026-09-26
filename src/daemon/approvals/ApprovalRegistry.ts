@@ -124,6 +124,10 @@ export const TERMINAL_PROMPT_CREATE_READ_GAP_MS = 400;
  */
 export const TERMINAL_PROMPT_UPGRADE_READS = 2;
 export const TERMINAL_PROMPT_UPGRADE_GAP_MS = 1_500;
+/** Quiet time after a key/click before an overtaken record is refreshed. */
+export const TERMINAL_PROMPT_REFRESH_SETTLE_MS = 600;
+/** At most one refresh per record this often: key auto-repeat must not flood SSE. */
+export const TERMINAL_PROMPT_REFRESH_MIN_GAP_MS = 2_000;
 
 /** A screen read, parsed: the active dialog and the pane's state at the read. */
 interface DialogRead {
@@ -139,10 +143,18 @@ interface ToolCallBinding {
   input: Record<string, unknown>;
 }
 
-/** A dialog's fingerprint bound to one tool call instance. */
-function bindFingerprint(screen: string, toolUseId: string | undefined): string {
-  if (!toolUseId) return screen;
-  return crypto.createHash('sha256').update(`${screen}|${toolUseId}`).digest('hex').slice(0, screen.length);
+/**
+ * A dialog's fingerprint bound to one tool call instance AND to the pane's
+ * input epoch (the fence revision it was read at). A key or click since the
+ * phone's read therefore always shows up as a different fingerprint: the
+ * refreshed record the phone must re-confirm.
+ */
+function bindFingerprint(screen: string, toolUseId: string | undefined, keyRevision: number | undefined): string {
+  return crypto
+    .createHash('sha256')
+    .update(`${screen}|${toolUseId ?? ''}|${keyRevision ?? ''}`)
+    .digest('hex')
+    .slice(0, screen.length);
 }
 
 /** One line of log-safe text: control characters gone, capped. */
@@ -244,6 +256,8 @@ export interface ApprovalRegistryDeps {
   promptScreenMark?: (sessionId: string) => PromptScreenMark | null;
   /** Injected for tests: the wait between creation-time screen reads. */
   promptReadDelay?: (ms: number) => Promise<void>;
+  /** Injected for tests: the timer behind the refresh after a key/click. */
+  schedule?: (fn: () => void, ms: number) => () => void;
 }
 
 export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
@@ -274,6 +288,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * than raising a card for a dialog that is already gone.
    */
   private readonly sweepSeq = new Map<string, number>();
+  /** Per pane: the pending refresh after a key/click (see noteFenceInput). */
+  private readonly refreshTimers = new Map<string, () => void>();
 
   constructor(deps: ApprovalRegistryDeps) {
     this.deps = deps;
@@ -580,6 +596,57 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     }
   }
 
+  /**
+   * A key, click, release or wheel reached this pane. A pending answerable
+   * `terminal_prompt` it overtook is refreshed once the input settles, so the
+   * phone's list is current BEFORE anyone taps: a new record (new id, new
+   * fingerprint, the reflex guard restarted) replaces it, provided the same
+   * dialog is still up. At most one refresh per record every
+   * TERMINAL_PROMPT_REFRESH_MIN_GAP_MS, so key auto-repeat cannot flood SSE.
+   * Cheap for every other pane: one scan of the pending records.
+   */
+  noteFenceInput(sessionId: string): void {
+    if (!this.answerablePrompt(sessionId)) return;
+    this.scheduleRefresh(sessionId, TERMINAL_PROMPT_REFRESH_SETTLE_MS);
+  }
+
+  private answerablePrompt(sessionId: string): ApprovalRequest | undefined {
+    return this.requests.find((r) => r.state === 'pending' && r.sessionId === sessionId
+      && r.kind === 'terminal_prompt' && !!r.promptFingerprint && r.pressedAt === undefined);
+  }
+
+  private scheduleRefresh(sessionId: string, delayMs: number): void {
+    this.refreshTimers.get(sessionId)?.();
+    const schedule = this.deps.schedule ?? ((fn: () => void, ms: number) => {
+      const t = setTimeout(fn, ms);
+      t.unref?.();
+      return () => clearTimeout(t);
+    });
+    this.refreshTimers.set(sessionId, schedule(() => {
+      this.refreshTimers.delete(sessionId);
+      this.refreshTerminalPrompt(sessionId).catch((err: unknown) => {
+        this.deps.log?.('warn', `[approvals] terminal prompt refresh failed for ${sessionId}: ${String(err)}`);
+      });
+    }, delayMs));
+  }
+
+  private async refreshTerminalPrompt(sessionId: string): Promise<void> {
+    const record = this.answerablePrompt(sessionId);
+    if (!record) return;
+    const age = this.now() - record.createdAt;
+    if (age < TERMINAL_PROMPT_REFRESH_MIN_GAP_MS) {
+      this.scheduleRefresh(sessionId, TERMINAL_PROMPT_REFRESH_MIN_GAP_MS - age);
+      return;
+    }
+    const current = this.deps.promptScreenMark?.(sessionId) ?? null;
+    if (!current || current.keyInputRevision === record.keyRevisionAtCreate) return;
+    // Only a dialog still up is refreshed; one the input dismissed is left to
+    // the answered path and the screen check, as before.
+    const live = await this.readActiveDialog(sessionId);
+    if (!live) return;
+    await this.supersedeWithFresh(record, live);
+  }
+
   private hasPending(sessionId: string): boolean {
     return this.requests.some((r) => r.state === 'pending' && r.sessionId === sessionId);
   }
@@ -672,7 +739,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
             question: parsed.question,
             ...(parsed.reason ? { reason: parsed.reason } : {}),
             choices: answer!.choices,
-            promptFingerprint: bindFingerprint(parsed.fingerprint, binding?.id),
+            promptFingerprint: bindFingerprint(parsed.fingerprint, binding?.id, read.mark.keyInputRevision),
             ...(binding?.id ? { toolUseId: binding.id } : {}),
             keyRevisionAtCreate: read.mark.keyInputRevision,
           }
@@ -725,6 +792,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       });
     } else if (reason === 'pane-gone') {
       this.terminalPromptQuiet.delete(sessionId);
+      this.refreshTimers.get(sessionId)?.();
+      this.refreshTimers.delete(sessionId);
     }
     return this.mutate(() => this.expirePendingWhere(
       (r) => r.sessionId === sessionId && (kind === undefined || r.kind === kind),
@@ -1181,11 +1250,17 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         audit('prompt-changed');
         return { ok: false, reason: 'prompt-changed', request: superseded ?? copyRequest(record) };
       }
-      // A key or click since the record appeared: a human is at the terminal.
+      // A key or click since the record appeared: a human is at the terminal,
+      // and what the phone confirmed may no longer be what is selected. Never
+      // pressed through — but the record is refreshed from this read (a new id
+      // and fingerprint, the reflex guard restarted), so the phone re-reads and
+      // can confirm the dialog as it is now.
       if (record.keyRevisionAtCreate !== undefined && live.mark.keyInputRevision !== record.keyRevisionAtCreate) {
-        return refuse('prompt-changed');
+        const superseded = await this.supersedeWithFresh(record, live);
+        audit('prompt-changed');
+        return { ok: false, reason: 'prompt-changed', request: superseded ?? copyRequest(record) };
       }
-      if (bindFingerprint(live.parsed.fingerprint, record.toolUseId) !== record.promptFingerprint) {
+      if (bindFingerprint(live.parsed.fingerprint, record.toolUseId, record.keyRevisionAtCreate) !== record.promptFingerprint) {
         const superseded = await this.supersedeWithFresh(record, live);
         audit('prompt-changed');
         return { ok: false, reason: 'prompt-changed', request: superseded ?? copyRequest(record) };
@@ -1201,6 +1276,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         return refusedWrite;
       }
 
+      let keyMoved = false;
       const outcome = await this.mutate<'retry' | ApprovalResolveResult>(() => {
         // ── Synchronous from here to the write: nothing can move in between. ──
         if (record.state !== 'pending') {
@@ -1212,6 +1288,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         const now = this.deps.promptScreenMark?.(record.sessionId) ?? null;
         if (!now || now.incarnation !== live.mark.incarnation || now.keyInputRevision !== live.mark.keyInputRevision) {
           // Never retried: a human may just have answered in the pane.
+          keyMoved = !!now && now.incarnation === live.mark.incarnation;
           return { result: { ok: false, reason: 'prompt-changed', request: copyRequest(record) } };
         }
         if (now.bytes !== live.mark.bytes) return { result: 'retry' };
@@ -1241,6 +1318,14 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         };
       }, (result, durable) => (result !== 'retry' && result.ok ? { ...result, durable } : result));
       if (outcome === 'retry') continue;
+      if (keyMoved) {
+        // A key or click landed between the read and the write: refresh the
+        // record from a fresh read, as above, so the phone can re-confirm.
+        const again = await this.readActiveDialog(record.sessionId);
+        const superseded = again ? await this.supersedeWithFresh(record, again) : null;
+        audit('prompt-changed');
+        return { ok: false, reason: 'prompt-changed', request: superseded ?? copyRequest(record) };
+      }
       audit(outcome.ok ? 'pressed' : outcome.reason);
       return outcome;
     }

@@ -5405,6 +5405,13 @@ function wireEvents(
     if (payload.answered !== true) awaitingVerifier.trigger(payload.sessionId, payload.cause);
   });
 
+  // A key or click reached a pane: a pending remote terminal-prompt answer it
+  // overtook is refreshed once the input settles, so the phone re-confirms the
+  // dialog as it is now instead of a stale record answering 409 forever.
+  sessionManager.on('session:fenceInput', (payload: { sessionId: string }) => {
+    approvalRegistry?.noteFenceInput(payload.sessionId);
+  });
+
   sessionManager.on('session:answered', (payload: { sessionId: string; reason?: 'input' | 'screen-cleared' }) => {
     awaitingVerifier.forget(payload.sessionId);
     // The dialog is closed, so its terminal_prompt record is done too (a record

@@ -14,6 +14,7 @@ import {
 import { TERMINAL_PROMPT_WEB_ANSWER, type ApprovalEvent, type ApprovalRequest, type ApprovalResolveParams } from '../types';
 import type { PendingToolUse } from '../../transcript/pendingToolUse';
 import { buildApprovalPushPayload } from '../../push/approvalPushPayload';
+import { ApprovalPushRouter } from '../../push/approvalPushRouter';
 
 // A real Claude Code permission dialog (a `permissions.ask` rule hit in a
 // bypassPermissions session), as the bottom of the visible grid. Placeholders
@@ -287,17 +288,29 @@ describe('terminal_prompt answer', () => {
     expect(h.registry.list().pending.map((r) => r.id)).toEqual([record.id]);
   });
 
-  it.each([
-    ['a key or click', (h: Harness) => { h.pane.keyInputRevision += 1; }],
-    ['a new PTY incarnation', (h: Harness) => { h.pane.incarnation = `${h.pane.incarnation}+`; }],
-  ])('%s between the render and the write → prompt-changed at once, no second read', async (_label, bump) => {
+  it('a new PTY between the render and the write → prompt-changed at once, no second read', async () => {
     const h = makeRegistry();
     const record = await create(h);
     settle(h);
-    h.afterRender.fn = () => bump(h);
+    h.afterRender.fn = () => { h.pane.incarnation = `${h.pane.incarnation}+`; };
     expect(await answer(h, record)).toMatchObject({ ok: false, reason: 'prompt-changed' });
     expect(h.writes).toEqual([]);
     expect(h.renders).toBe(1);
+  });
+
+  it('a key or click between the render and the write → prompt-changed, nothing written, record refreshed', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    settle(h);
+    let once = true;
+    h.afterRender.fn = () => { if (once) { once = false; h.pane.keyInputRevision += 1; } };
+    expect(await answer(h, record)).toMatchObject({ ok: false, reason: 'prompt-changed' });
+    expect(h.writes).toEqual([]);
+    // One read for the answer, one fresh read for the refreshed record.
+    expect(h.renders).toBe(2);
+    const [fresh] = h.registry.list().pending;
+    expect(fresh?.id).not.toBe(record.id);
+    expect(fresh?.keyRevisionAtCreate).toBe(4);
   });
 
   it('a key or click since the record appeared → prompt-changed, nothing written', async () => {
@@ -568,5 +581,142 @@ describe('terminal_prompt creation races and cooldown', () => {
     } finally {
       process.off('unhandledRejection', onUnhandled);
     }
+  });
+});
+
+describe('a key or click in the pane refreshes the record instead of wedging it', () => {
+  /** A registry whose refresh timer is driven by hand. */
+  function withTimers() {
+    const timers: Array<{ fn: () => void; at: number; live: boolean }> = [];
+    const h = makeRegistry({
+      schedule: (fn, ms) => {
+        const t = { fn, at: h.clock.now + ms, live: true };
+        timers.push(t);
+        return () => { t.live = false; };
+      },
+    });
+    /** Advance the clock, firing due timers in order. */
+    const advance = async (ms: number) => {
+      const end = h.clock.now + ms;
+      for (;;) {
+        const due = timers.filter((t) => t.live && t.at <= end).sort((a, b) => a.at - b.at)[0];
+        if (!due) break;
+        due.live = false;
+        h.clock.now = Math.max(h.clock.now, due.at);
+        due.fn();
+        // Let the refresh's screen read and its persisted mutation land.
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      h.clock.now = end;
+    };
+    return { h, advance };
+  }
+  const key = (h: Harness) => {
+    h.pane.keyInputRevision += 1;
+    h.registry.noteFenceInput('pty-a');
+  };
+  const supersedes = (h: Harness) => h.events.filter((e) => e.type === 'supersede').length;
+
+  it('↓ then a phone answer: 409, a fresh record, and the fresh one answers with exactly one digit', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    settle(h);
+    h.pane.keyInputRevision += 1; // ↓ in the pane
+    expect(await answer(h, record)).toMatchObject({ ok: false, reason: 'prompt-changed' });
+    expect(h.writes).toEqual([]);
+    const [fresh] = h.registry.list().pending;
+    expect(fresh?.id).not.toBe(record.id);
+    expect(fresh?.promptFingerprint).toMatch(/^[0-9a-f]{32}$/);
+    expect(fresh?.promptFingerprint).not.toBe(record.promptFingerprint);
+    expect(h.events.slice(-2).map((e) => [e.type, e.replaces])).toEqual([['supersede', undefined], ['create', record.id]]);
+    // The phone re-reads, re-confirms after the guard, and the key goes in.
+    expect(await answer(h, fresh!)).toMatchObject({ ok: false, reason: 'answer-too-soon' });
+    settle(h);
+    expect(await answer(h, fresh!)).toMatchObject({ ok: true });
+    expect(h.writes).toEqual(['1']);
+  });
+
+  it('↓ then ↑ is refreshed before anyone taps, and the fresh record is answerable', async () => {
+    const { h, advance } = withTimers();
+    const record = await create(h);
+    key(h); // ↓
+    key(h); // ↑
+    await advance(3_000);
+    const [fresh] = h.registry.list().pending;
+    expect(fresh?.id).not.toBe(record.id);
+    expect(fresh?.choices).toEqual([{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }]);
+    expect(fresh?.keyRevisionAtCreate).toBe(5);
+    expect(supersedes(h)).toBe(1);
+    settle(h);
+    expect(await answer(h, fresh!)).toMatchObject({ ok: true });
+    expect(h.writes).toEqual(['1']);
+  });
+
+  it('key auto-repeat produces a bounded number of refreshes', async () => {
+    const { h, advance } = withTimers();
+    await create(h);
+    // Ten seconds of auto-repeat at 30 ms, then quiet.
+    for (let t = 0; t < 10_000; t += 30) {
+      key(h);
+      await advance(30);
+    }
+    await advance(5_000);
+    expect(supersedes(h)).toBeGreaterThanOrEqual(1);
+    expect(supersedes(h)).toBeLessThanOrEqual(Math.ceil(15_000 / 2_000));
+  });
+
+  it('input that dismisses the dialog refreshes nothing into an answerable record', async () => {
+    const { h, advance } = withTimers();
+    const record = await create(h);
+    h.pane.rows = ['● Bash(rm -rf build/cache)', '  ⎿  Interrupted by user', '', '> ', '  ⏵⏵ bypass permissions on'];
+    key(h); // ESC
+    await advance(5_000);
+    expect(supersedes(h)).toBe(0);
+    expect(h.registry.list().pending.map((r) => r.id)).toEqual([record.id]);
+    // …and a phone answer to it is refused without a write or a new record.
+    settle(h);
+    expect(await answer(h, record)).toMatchObject({ ok: false, reason: 'prompt-changed' });
+    expect(h.writes).toEqual([]);
+    expect(h.registry.list().pending.map((r) => r.id)).toEqual([record.id]);
+  });
+
+  it('a dialog still up but no longer bound refreshes into an informational record only', async () => {
+    const { h, advance } = withTimers();
+    await create(h);
+    h.pane.pending = null;
+    key(h);
+    await advance(3_000);
+    const [fresh] = h.registry.list().pending;
+    expect(fresh).not.toHaveProperty('choices');
+    expect(fresh).not.toHaveProperty('promptFingerprint');
+  });
+
+  it('a refresh sends no second push', async () => {
+    const { h, advance } = withTimers();
+    const sent: string[] = [];
+    const router = new ApprovalPushRouter({
+      build: (r) => ({ title: 't', body: r.id, approvalId: r.id }),
+      collapseId: (r) => `ap-${r.sessionId}`,
+      suppress: () => false,
+      send: (payload) => { sent.push(payload.approvalId as string); },
+      park: () => undefined,
+      forget: () => undefined,
+      isParked: () => false,
+    });
+    h.registry.onEvent((e) => router.onEvent(e));
+    await create(h);
+    key(h);
+    await advance(3_000);
+    key(h);
+    await advance(3_000);
+    expect(supersedes(h)).toBe(2);
+    expect(sent).toHaveLength(1);
+  });
+
+  it('input on a pane with no answerable record schedules nothing', () => {
+    const scheduled: number[] = [];
+    const h = makeRegistry({ schedule: (_fn, ms) => { scheduled.push(ms); return () => undefined; } });
+    h.registry.noteFenceInput('pty-a');
+    expect(scheduled).toEqual([]);
   });
 });

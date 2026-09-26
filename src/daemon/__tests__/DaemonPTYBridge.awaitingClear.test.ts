@@ -168,3 +168,18 @@ describe('DaemonPTYBridge — fence input revision', () => {
     bridge.cleanup();
   });
 });
+
+describe('DaemonPTYBridge — fenceInput event', () => {
+  it('fires for a key or click, never for motion or focus', () => {
+    const h = makeHarness();
+    const seen: string[] = [];
+    h.bridge.on('fenceInput', (e: { sessionId: string }) => seen.push(e.sessionId));
+    h.bridge.noteInput('\x1b[<35;40;12M');
+    h.bridge.noteInput('\x1b[I');
+    expect(seen).toEqual([]);
+    h.bridge.noteInput('\x1b[B');
+    h.bridge.noteInput('\x1b[<0;6;13M');
+    expect(seen).toEqual(['sess-1', 'sess-1']);
+    h.bridge.cleanup();
+  });
+});

@@ -32,6 +32,7 @@ import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
  *                 dialog the pane was blocked on closed
  *  - 'awaitingActivity' → { sessionId, cause: 'input' | 'output', ... } —
  *                 stdin or output while the pane is blocked on a human
+ *  - 'fenceInput' → { sessionId } — a key, click, release or wheel reached stdin
  *  - 'resize'   → (no payload) — an applied geometry change; consumers read the
  *                 new size from the session's own meta.
  */
@@ -230,7 +231,12 @@ export class DaemonPTYBridge extends EventEmitter {
     if (data.length > 0) {
       this.lastInputAt = Date.now();
       this.inputRevision += 1;
-      if (DaemonPTYBridge.stripPassiveInput(data).length > 0) this.keyInputRevision += 1;
+      if (DaemonPTYBridge.stripPassiveInput(data).length > 0) {
+        this.keyInputRevision += 1;
+        // Sizes nothing, carries nothing: a remote terminal-prompt answer that
+        // a key or click has overtaken is refreshed off this.
+        if (this.sessionId) this.emit('fenceInput', { sessionId: this.sessionId });
+      }
       this.emptyShellPrompt = false;
       this.completedShellCommand = false;
     }
