@@ -390,6 +390,17 @@ export class DeviceStore {
    * roster is always written whole.
    */
   private readonly unpersistedGrants = new Set<string>();
+  /**
+   * Grant changes whose `input-grant` audit line already says `persist-failed`.
+   * When a later write lands, `persist()` appends a `grant-persisted` line for
+   * each, so the trail does not record a change that is now on disk as failed
+   * forever. A newer change to the same device supersedes its entry, since that
+   * change writes its own `input-grant` line with its own outcome.
+   */
+  private readonly failedGrantAudits = new Map<
+    string,
+    { name: string; actor: DeviceActor; allowInput: boolean }
+  >();
 
   // Observability for the tests: proof that the cache elides derivations, and
   // that a wrong secret is never short-circuited before one.
@@ -589,12 +600,19 @@ export class DeviceStore {
       const legacy = record.allowInput === undefined;
       if (legacy) record.allowInput = allowInput;
       if ((retried || legacy) && !this.persist()) {
+        // Remember the failure, or the next same-value PATCH (no longer legacy,
+        // not marked retried) would answer `ok` without ever writing.
+        this.unpersistedGrants.add(deviceId);
         return { ok: false, reason: 'persist-failed', changed: false, ...(retried ? { retried } : {}) };
       }
       return { ok: true, changed: false, ...(retried ? { retried } : {}) };
     }
 
     record.allowInput = allowInput;
+    // This change writes its own audit line below, whatever the disk does, so
+    // an older failed change to the same device must not be flushed as the
+    // outcome of this write.
+    this.failedGrantAudits.delete(deviceId);
     const persisted = this.persist();
     this.audit.append({
       event: 'input-grant',
@@ -606,6 +624,7 @@ export class DeviceStore {
     });
     if (!persisted) {
       this.unpersistedGrants.add(deviceId);
+      this.failedGrantAudits.set(deviceId, { name: record.name, actor, allowInput });
       this.log(
         'error',
         `[web] input grant for ${deviceId} could not be persisted; it is ${allowInput ? 'granted' : 'blocked'} in memory only`,
@@ -1113,6 +1132,16 @@ export class DeviceStore {
     this.pendingRevocationAudits.clear();
   }
 
+  private flushFailedGrantAudits(): void {
+    for (const [deviceId, { name, actor, allowInput }] of this.failedGrantAudits) {
+      const record = this.devices.get(deviceId);
+      // A device revoked (or pruned) since has no grant left on disk to report.
+      if (!record || record.revokedAt !== undefined) continue;
+      this.audit.append({ event: 'grant-persisted', deviceId, name, actor, allowInput });
+    }
+    this.failedGrantAudits.clear();
+  }
+
   private persist(): boolean {
     const state: DevicePersistedState = { version: 1, devices: [...this.devices.values()] };
     const payload = JSON.stringify(state, null, 2);
@@ -1122,12 +1151,14 @@ export class DeviceStore {
         fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
         secureWriteTokenFile(this.filePath, payload);
         this.flushPendingRevocationAudits();
+        this.flushFailedGrantAudits();
         this.unpersistedGrants.clear();
         return true;
       }
       fs.writeFileSync(tmp, payload, { encoding: 'utf-8', mode: 0o600 });
       fs.renameSync(tmp, this.filePath);
       this.flushPendingRevocationAudits();
+      this.flushFailedGrantAudits();
       // The roster is written whole, so every in-memory grant is on disk now.
       this.unpersistedGrants.clear();
       this.scheduleHarden();

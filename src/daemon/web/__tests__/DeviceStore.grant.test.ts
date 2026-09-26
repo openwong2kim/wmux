@@ -233,4 +233,63 @@ describe('DeviceStore — a grant change that did not reach disk', () => {
     // Settled: the next same-value call is a plain no-op.
     expect(s.setInput(d.deviceId, false)).toEqual({ ok: true, changed: false });
   });
+
+  // Pinning a legacy record's grant is a write too. If it fails, the field is
+  // already set in memory, so without a record of the failure the next call is
+  // neither legacy nor a retry and would answer ok with nothing on disk.
+  it('keeps retrying a failed legacy pin instead of answering ok from memory', async () => {
+    const s = store();
+    const d = await s.mint({ name: 'legacy', allowInput: true });
+    const file = path.join(dir, 'devices.json');
+    stripGrantFromDisk(file);
+
+    const reloaded = store();
+    const persist = vi.spyOn(reloaded as unknown as { persist: () => boolean }, 'persist').mockReturnValue(false);
+    expect(reloaded.setInput(d.deviceId, true)).toEqual({ ok: false, reason: 'persist-failed', changed: false });
+    expect(reloaded.setInput(d.deviceId, true)).toEqual({
+      ok: false, reason: 'persist-failed', changed: false, retried: true,
+    });
+    expect(persist).toHaveBeenCalledTimes(2);
+    expect(readDevices(file).find((r) => r['deviceId'] === d.deviceId)?.['allowInput']).toBeUndefined();
+
+    persist.mockRestore();
+    expect(reloaded.setInput(d.deviceId, true)).toEqual({ ok: true, changed: false, retried: true });
+    expect(readDevices(file).find((r) => r['deviceId'] === d.deviceId)?.['allowInput']).toBe(true);
+  });
+
+  // The failed change was audited with reason persist-failed. Once it lands,
+  // the trail must say so, or it records an on-disk grant as failed forever.
+  it('audits the grant as persisted once a later write lands', async () => {
+    const audit = () => new DeviceAuditLog(dir).read();
+    const s = store();
+    const d = await s.mint({ name: 'iPhone', allowInput: true });
+    const persist = vi.spyOn(s as unknown as { persist: () => boolean }, 'persist').mockReturnValue(false);
+    expect(s.setInput(d.deviceId, false, 'device-self').ok).toBe(false);
+    expect(audit().filter((e) => e.event === 'grant-persisted')).toEqual([]);
+
+    persist.mockRestore();
+    expect(s.setInput(d.deviceId, false, 'operator-web')).toEqual({ ok: true, changed: false, retried: true });
+
+    expect(audit().filter((e) => e.event === 'input-grant' || e.event === 'grant-persisted')).toEqual([
+      expect.objectContaining({ event: 'input-grant', deviceId: d.deviceId, allowInput: false, reason: 'persist-failed' }),
+      expect.objectContaining({ event: 'grant-persisted', deviceId: d.deviceId, name: 'iPhone', actor: 'device-self', allowInput: false }),
+    ]);
+    // Flushed once: a later write does not repeat it.
+    s.setInput(d.deviceId, true);
+    expect(audit().filter((e) => e.event === 'grant-persisted')).toHaveLength(1);
+  });
+
+  // A newer change writes its own input-grant line, so the older failure must
+  // not be reported as what reached disk.
+  it('does not report a superseded failed grant as persisted', async () => {
+    const audit = () => new DeviceAuditLog(dir).read();
+    const s = store();
+    const d = await s.mint({ name: 'iPhone', allowInput: true });
+    const persist = vi.spyOn(s as unknown as { persist: () => boolean }, 'persist').mockReturnValue(false);
+    expect(s.setInput(d.deviceId, false).ok).toBe(false);
+
+    persist.mockRestore();
+    expect(s.setInput(d.deviceId, true)).toEqual({ ok: true, changed: true });
+    expect(audit().filter((e) => e.event === 'grant-persisted')).toEqual([]);
+  });
 });

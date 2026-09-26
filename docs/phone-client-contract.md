@@ -1975,6 +1975,8 @@ consulted, byte-identical whether or not that id exists.
 | 404 | `{error:"device-not-found"}` | operator naming an unknown id. The roster keeps only the newest revoked tombstones, so a pruned one is also 404 |
 | 409 | `{error:"device-revoked"}` | PATCH on a revoked device, including one revoked from the desktop while the request body was still arriving |
 | 500 | `{error:"device-revoke-failed"}` | the revoke raised an unexpected error. Retry; revoking is idempotent |
+| 500 | `{error:"device-grant-failed"}` | the PATCH raised an unexpected error. Retry; lowering a grant is idempotent |
+| 500 | `{error:"device-list-failed"}` | `GET /api/devices` could not read the roster. Retry |
 | 503 | `{error:"device-management-unavailable"}` | this daemon's device store cannot manage devices (config omits `deviceManagement`) |
 
 ### Revoking yourself
@@ -1990,7 +1992,8 @@ daemon but could be accepted again after a restart; a phone that has already
 thrown its credential away cannot use it either way.
 
 Every revoke and grant change is recorded in the daemon's device audit log with
-who made it: `desktop`, `operator-web` or `device-self`.
+who made it: `desktop`, `operator-web` or `device-self`. A grant change first logged as
+`persist-failed` gets a `grant-persisted` line once a later write puts it on disk.
 
 ## Native chat
 
