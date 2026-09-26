@@ -242,10 +242,16 @@ function runRecorderLegacyOnce(token) {
   check('rejection carries pendingApproval.promptId (the approval handshake)',
     isPending && typeof rej?.pendingApproval?.promptId === 'string' && rej.pendingApproval.promptId.length > 0,
     `promptId=${rej?.pendingApproval?.promptId ?? 'n/a'}`);
-  // Control: the SAME workspace.list with NO clientName (legacy) is grandfathered.
+  // Control: the SAME workspace.list with NO clientName. This used to assert the
+  // grandfather ALLOWED it; #1111 closes that lane (first release on or after
+  // 2026-09-30), so the control now asserts the refusal instead — it still
+  // proves the enforcer distinguishes the envelope-less caller, just the other
+  // way round.
   const legacyWs = await rpcRaw('workspace.list', {}, token, undefined, undefined);
-  check('legacy (no clientName) workspace.list is allowed (grandfather control)', legacyWs.ok === true,
-    `ok=${legacyWs.ok}`);
+  const legacyRej = legacyWs.rejection;
+  check('envelope-less workspace.list is REFUSED (grandfather lane closed, #1111)',
+    legacyWs.ok === false && legacyRej?.reason === 'identity-status' && legacyRej?.status === 'legacy',
+    `ok=${legacyWs.ok} reason=${legacyRej?.reason} status=${legacyRej?.status}`);
 
   // ── Summary ─────────────────────────────────────────────────────────────────
   const failed = checks.filter((c) => !c.ok);
