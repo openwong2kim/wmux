@@ -21,6 +21,7 @@ const SOURCES = [
   'AccountsSection.tsx',
   'ClaudeIntegrationSection.tsx',
   'IntegrationSetupSection.tsx',
+  'FanoutPresetsSection.tsx',
 ];
 
 function anchoredIds(): Set<string> {

@@ -58,6 +58,7 @@ import { notifyBriefingConfigChanged } from '../Deck/deckBriefingConfigBus';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
 import { IntegrationSetupSectionContainer, MCP_STATUS_CHANGED_EVENT } from './IntegrationSetupSection';
 import { AccountsSection } from './AccountsSection';
+import { FanoutPresetsSection } from './FanoutPresetsSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
 import { Icon, IconX, IconCheck, IconChevron, IconExternalLink, IconBrowser, IconUsers, IconRobot, IconRemoteDevices, IconPlus, IconWarning } from '../icons';
@@ -2466,6 +2467,9 @@ function TabRoles() {
 
       {/* Fan-out workers */}
       <FanoutWorkersSection />
+
+      {/* Fan-out presets */}
+      <FanoutPresetsSection />
     </div>
   );
 }

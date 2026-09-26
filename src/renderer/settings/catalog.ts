@@ -140,6 +140,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'a2a', tab: 'roles', labelKey: 'settings.a2aAutoApproveExecute', descKey: 'settings.a2aAutoApproveExecuteDesc', synonyms: 'a2a execute approve' },
   { id: 'fanoutapproval', tab: 'roles', labelKey: 'settings.fanoutRequireApproval', descKey: 'settings.fanoutRequireApprovalDesc', synonyms: 'fanout fan-out approval approve prompt unattended ask' },
   { id: 'fanoutworkers', tab: 'roles', labelKey: 'settings.fanoutWorkerPermissionMode', descKey: 'settings.fanoutWorkerPermissionModeDesc', synonyms: 'fanout fan-out worker permission auto bypass sandbox' },
+  { id: 'fanoutpresets', tab: 'roles', labelKey: 'settings.fanoutPresets', descKey: 'settings.fanoutPresetsDesc', synonyms: 'fanout fan-out preset image video agents codex grok output folder worktree' },
   { id: 'fanoutallowtools', tab: 'roles', labelKey: 'settings.fanoutAllowWorkerTools', descKey: 'settings.fanoutAllowWorkerToolsDesc', synonyms: 'fanout worker allow tools permissions settings.json' },
 
   { id: 'browserbackend', tab: 'browser', labelKey: 'settings.browserBackend', descKey: 'settings.browserBackendDesc', synonyms: 'browser chrome chromium external builtin' },
