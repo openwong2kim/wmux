@@ -234,6 +234,32 @@ describe('runSearch — sessions and scrollback', () => {
     expect(out.truncated).toBe(true);
   });
 
+  it('covers more panes than the cache holds once warm, instead of evicting the pane it reads next', async () => {
+    // Wired as handleSearch wires it: one shared cache, filled after each read.
+    // Scanning in recency order and reading as it went, each fresh read evicted
+    // the least recently used entry, which was the next pane in the scan; a
+    // static nine-pane host then came back truncated on every other search.
+    const cache = new ScrollbackTextCache(8);
+    const panes = Array.from({ length: 9 }, (_, i) => pane(`p${i}`, { recency: 100 - i }));
+    const reads: string[] = [];
+    const reader = {
+      cached: (id: string) => cache.get(id, 'k'),
+      read: async (id: string) => { reads.push(id); const lines = [`needle in ${id}`]; cache.set(id, 'k', lines); return lines; },
+    };
+    const search = () => runSearch(request('needle', { scopes: ['scrollback'] }), null, sources({ scrollbackPanes: panes, scrollback: reader }), codec);
+    const first = await search();
+    expect(first.results).toHaveLength(6);
+    expect(first.truncated).toBe(true);
+    for (let round = 0; round < 4; round++) {
+      reads.length = 0;
+      const again = await search();
+      expect(again.results).toHaveLength(9);
+      expect(again.coverage.skippedSessions).toEqual([]);
+      expect(again.truncated).toBe(false);
+      expect(reads.length).toBeLessThanOrEqual(SEARCH_LIMITS.scrollbackPanes);
+    }
+  });
+
   it('skips a pane whose ring cannot be read as unavailable', async () => {
     const out = await runSearch(request('abc', { scopes: ['scrollback'] }), null, sources({
       scrollbackPanes: [pane('p1')],

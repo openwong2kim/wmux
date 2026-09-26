@@ -499,12 +499,25 @@ export async function runSearch(
       }
       continue;
     }
-    // scrollback
+    // scrollback — cached panes first, then fresh reads in recency order. A
+    // fresh read fills the LRU cache and evicts its oldest entry; reading in
+    // plain recency order made that the very pane the scan was about to reach,
+    // so a host with a few more panes than the cache holds came back truncated
+    // on every other search while nothing changed. Hits are sorted afterwards,
+    // so the order panes are visited in does not reach the response.
+    const cachedLines = new Map<string, string[]>();
+    if (sources.scrollback) {
+      for (const pane of panes) {
+        const lines = sources.scrollback.cached(pane.sessionId);
+        if (lines) cachedLines.set(pane.sessionId, lines);
+      }
+    }
+    const visitOrder = [...panes.filter((p) => cachedLines.has(p.sessionId)), ...panes.filter((p) => !cachedLines.has(p.sessionId))];
     let fresh = 0;
-    for (const pane of panes) {
+    for (const pane of visitOrder) {
       if (sources.stopped?.() === true) { skip(pane.sessionId, scope, 'budget'); continue; }
       if (!sources.scrollback) { skip(pane.sessionId, scope, 'unavailable'); continue; }
-      let lines = sources.scrollback.cached(pane.sessionId);
+      let lines = cachedLines.get(pane.sessionId) ?? sources.scrollback.cached(pane.sessionId);
       if (!lines) {
         if (outOfBudget() || fresh >= limits.scrollbackPanes) { skip(pane.sessionId, scope, 'budget'); continue; }
         fresh += 1;

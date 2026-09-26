@@ -300,20 +300,6 @@ let gateBroker: GateBroker | null = null;
 let gateRuntimeOff = false;
 
 /**
- * Build the registry. Split out of main() only so the two dependencies that
- * need a live sessionManager can be closures over it.
- *
- * `readScreenTail` runs the SAME headless-terminal parse `daemon.readSessionText`
- * uses, with `scrollback: 0` so it returns the VISIBLE grid and nothing else.
- * The raw ring is PTY bytes and a TUI redraws in place, so ANSI-stripping the
- * ring would describe a screen that never existed — the parse is the only
- * honest answer to "what is on screen right now", and this is the check that
- * stands between a phone tap and a keystroke in someone's terminal. It is
- * human-frequency (one per approval) and shares the concurrency-1 snapshot
- * queue, so the cost is bounded; a parse that fails or times out returns null,
- * which the registry treats as no evidence and refuses.
- */
-/**
  * The phone's scrollback search (`GET /api/search`) reads a pane through the
  * same headless parse `daemon.readSessionText` runs, on the same shared
  * concurrency-1 queue, keeping as many rows as that RPC does by default. The
@@ -334,6 +320,20 @@ function sessionTextReader(sessionManager: DaemonSessionManager) {
   };
 }
 
+/**
+ * Build the registry. Split out of main() only so the two dependencies that
+ * need a live sessionManager can be closures over it.
+ *
+ * `readScreenTail` runs the SAME headless-terminal parse `daemon.readSessionText`
+ * uses, with `scrollback: 0` so it returns the VISIBLE grid and nothing else.
+ * The raw ring is PTY bytes and a TUI redraws in place, so ANSI-stripping the
+ * ring would describe a screen that never existed — the parse is the only
+ * honest answer to "what is on screen right now", and this is the check that
+ * stands between a phone tap and a keystroke in someone's terminal. It is
+ * human-frequency (one per approval) and shares the concurrency-1 snapshot
+ * queue, so the cost is bounded; a parse that fails or times out returns null,
+ * which the registry treats as no evidence and refuses.
+ */
 function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalRegistry {
   return new ApprovalRegistry({
     wmuxDir,
