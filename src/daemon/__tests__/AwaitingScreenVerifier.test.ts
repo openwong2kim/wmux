@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { IPty } from 'node-pty';
 import {
+  AWAITING_VERIFY_RENDER_RETRIES,
   AwaitingScreenVerifier,
   renderPaneScreen,
   type AwaitingFrame,
@@ -238,6 +239,75 @@ describe('AwaitingScreenVerifier', () => {
     output(verifier, pane);
     await vi.advanceTimersByTimeAsync(300);
     expect(renders.length).toBeGreaterThan(steady);
+  });
+
+  it('new output after the second dialog-free frame restarts verification instead of releasing', async () => {
+    const pane: FakePane = { awaiting: true, eligible: true, mark: 0, rows: CLEAR_ROWS };
+    let renders = 0;
+    const { verifier, cleared } = makeVerifier(pane, {
+      render: async () => {
+        renders += 1;
+        const frame = { rows: pane.rows!, mark: pane.mark };
+        // Output lands right after the second read, before the release.
+        if (renders === 2) pane.mark += 1;
+        return frame;
+      },
+    });
+    output(verifier, pane);
+    await vi.advanceTimersByTimeAsync(900);
+    expect(renders).toBe(2);
+    expect(cleared).toEqual([]);
+    // Verification restarts on its own and needs two fresh reads.
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(renders).toBe(4);
+    expect(cleared).toEqual(['p1']);
+  });
+
+  it('a failed render records nothing and is retried a bounded number of times', async () => {
+    const pane: FakePane = { awaiting: true, eligible: true, mark: 0, rows: null };
+    const { verifier, renders, cleared } = makeVerifier(pane);
+    output(verifier, pane);
+    await vi.advanceTimersByTimeAsync(60_000);
+    // First read plus the bounded retries, with no new output in between.
+    expect(renders).toHaveLength(1 + AWAITING_VERIFY_RENDER_RETRIES);
+    // Once the grid reads again, the retries' same bytes are verified normally.
+    pane.rows = CLEAR_ROWS;
+    output(verifier, pane);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(cleared).toEqual(['p1']);
+  });
+
+  it('dialog text left in the output above does not hold the pane', async () => {
+    const pane: FakePane = {
+      awaiting: true, eligible: true, mark: 0,
+      rows: [...DIALOG_ROWS, '', '● Bash(ls)', '  ⎿  a b c', '', '✻ Working… (esc to interrupt)', '> ', '  ⏵⏵ bypass permissions on'],
+    };
+    const { verifier, cleared } = makeVerifier(pane);
+    output(verifier, pane);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(cleared).toEqual(['p1']);
+  });
+
+  it('a render that throws is not an unhandled rejection, and the pane stays awaiting', async () => {
+    const pane: FakePane = { awaiting: true, eligible: true, mark: 0, rows: CLEAR_ROWS };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const { verifier, cleared } = makeVerifier(pane, {
+        render: async () => { throw new Error('parse exploded'); },
+        outputMark: () => { if (pane.mark > 30) throw new Error('ring gone'); return pane.mark; },
+      });
+      for (let i = 0; i < 5; i++) {
+        output(verifier, pane);
+        await vi.advanceTimersByTimeAsync(2_000);
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      expect(cleared).toEqual([]);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   it('does not re-render when no output arrived since the last verified frame', async () => {

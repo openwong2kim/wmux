@@ -26,9 +26,16 @@
 //     therefore costs at most one render every few seconds on the shared
 //     snapshot queue.
 //   - Anything unreadable (render failed, wrong geometry, blank grid) keeps the
-//     pane awaiting.
+//     pane awaiting. A failed render is retried a bounded number of times; it
+//     never counts as a verified frame.
+//   - "Dialog still up" is structural (screenShowsActiveDialog): the dialog must
+//     own the bottom of the screen, so its text left in the output above cannot
+//     hold a pane "needs you".
+//   - Right before releasing, the output mark must still be the second frame's.
+//     New output since then restarts the verification.
 
-import { screenShowsAgentDialog } from './transcript/chatScreenGate';
+import { capSnapshot } from './web/snapshotWindow';
+import { screenShowsActiveDialog } from './transcript/chatScreenGate';
 
 /** Wait before the confirming second read of a dialog-free frame. */
 export const AWAITING_VERIFY_SETTLE_MS = 750;
@@ -36,6 +43,8 @@ export const AWAITING_VERIFY_SETTLE_MS = 750;
 export const AWAITING_VERIFY_MIN_GAP_MS = 250;
 /** Longest gap the dialog-still-there backoff reaches. */
 export const AWAITING_VERIFY_MAX_GAP_MS = 5_000;
+/** Consecutive failed renders retried before the verifier waits for new output. */
+export const AWAITING_VERIFY_RENDER_RETRIES = 3;
 
 export interface AwaitingFrame {
   rows: readonly string[];
@@ -76,6 +85,8 @@ interface PaneState {
   cancel: (() => void) | null;
   /** The scheduled run is the settle confirmation: it may re-read the same frame. */
   settleDue: boolean;
+  /** Consecutive renders that failed (null / threw). */
+  renderFailures: number;
 }
 
 export class AwaitingScreenVerifier {
@@ -111,7 +122,7 @@ export class AwaitingScreenVerifier {
     if (!st) {
       st = {
         inFlight: false, queued: false, streak: 0, lastMark: null,
-        lastRunAt: -Infinity, gapMs: this.minGapMs, cancel: null, settleDue: false,
+        lastRunAt: -Infinity, gapMs: this.minGapMs, cancel: null, settleDue: false, renderFailures: 0,
       };
       this.states.set(sessionId, st);
     }
@@ -150,7 +161,11 @@ export class AwaitingScreenVerifier {
   private scheduleRun(sessionId: string, st: PaneState, delayMs: number): void {
     st.cancel = this.schedule(() => {
       st.cancel = null;
-      void this.run(sessionId, st);
+      this.run(sessionId, st).catch((err: unknown) => {
+        // Never an unhandled rejection in the daemon; the pane stays awaiting.
+        st.inFlight = false;
+        this.deps.log?.('warn', `[awaiting] ${sessionId}: verification failed: ${String(err)}`);
+      });
     }, delayMs);
   }
 
@@ -185,13 +200,33 @@ export class AwaitingScreenVerifier {
       return;
     }
 
-    st.lastMark = frame?.mark ?? markBefore;
-    const readable = !!frame && frame.rows.some((row) => row.trim().length > 0);
-    const dialog = readable && screenShowsAgentDialog(frame!.rows);
+    if (!frame) {
+      // A failed render proves nothing and records nothing: the same bytes get
+      // another look, a bounded number of times.
+      st.streak = 0;
+      st.renderFailures += 1;
+      if (st.renderFailures <= AWAITING_VERIFY_RENDER_RETRIES && !st.cancel) {
+        st.settleDue = true;
+        st.gapMs = Math.min(st.gapMs * 2, this.maxGapMs);
+        this.scheduleRun(sessionId, st, st.gapMs);
+      }
+      return;
+    }
+    st.renderFailures = 0;
+    st.lastMark = frame.mark;
+    const readable = frame.rows.some((row) => row.trim().length > 0);
+    const dialog = readable && screenShowsActiveDialog(frame.rows);
 
     if (readable && !dialog) {
       st.streak += 1;
       if (st.streak >= 2) {
+        // Nothing may have been drawn since the frame just verified.
+        if (this.deps.outputMark(sessionId) !== frame.mark) {
+          st.streak = 0;
+          st.gapMs = this.minGapMs;
+          if (!st.cancel) this.scheduleRun(sessionId, st, this.minGapMs);
+          return;
+        }
         this.forget(sessionId);
         this.deps.log?.('info', `[awaiting] ${sessionId}: dialog gone from the screen, releasing awaiting`);
         this.deps.clear(sessionId);
@@ -215,12 +250,15 @@ export class AwaitingScreenVerifier {
   }
 }
 
+/** Bytes of the ring's tail a verification (or a prompt read) replays. */
+export const AWAITING_RENDER_WINDOW_BYTES = 256 * 1024;
+
 /** The slice of a daemon pane `renderPaneScreen` reads. `ManagedSession` satisfies it. */
 export interface RenderablePane {
   meta: { cols?: number; rows?: number };
   ptyProcess: { cols?: number; rows?: number };
   ringBuffer: { readonly totalBytesWritten: number; readAll(): Buffer };
-  bridge: { readonly isMuted: boolean };
+  bridge: { readonly isMuted: boolean; readonly outputModes?: { preamble(windowStart: number): string } | null };
 }
 
 type TextSnapshot = (req: { cols: number; rows: number; scrollback: number; initial: Buffer }) =>
@@ -253,9 +291,13 @@ export async function renderPaneScreen(
   if (!pane || pane.bridge.isMuted) return null;
   const geometry = liveGeometry(pane);
   if (!geometry) return null;
-  // The mark is taken at the same instant the ring is read.
+  // The mark is taken at the same instant the ring is read. Only a bounded
+  // tail is replayed (the window a phone's stream paints from), prefixed by the
+  // terminal-mode preamble so an alt screen entered before the window still is.
   const mark = pane.ringBuffer.totalBytesWritten;
-  const initial = pane.ringBuffer.readAll();
+  const tail = capSnapshot(pane.ringBuffer.readAll(), { maxBytes: AWAITING_RENDER_WINDOW_BYTES });
+  const preamble = pane.bridge.outputModes?.preamble(mark - tail.bytes.length) ?? '';
+  const initial = preamble ? Buffer.concat([Buffer.from(preamble, 'utf8'), tail.bytes]) : tail.bytes;
   const outcome = await snapshot({ ...geometry, scrollback: 0, initial });
   if (!outcome.ok) return null;
   if (getPane() !== pane) return null;

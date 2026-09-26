@@ -1,4 +1,5 @@
 import { looksLikeApprovalPrompt } from '../approvals/approvalKeystrokes';
+import { parseTerminalPrompt } from '../approvals/terminalPromptParse';
 
 /**
  * Footer hint of a Claude Code dialog that owns the keyboard: `/model`, the
@@ -42,3 +43,28 @@ export function screenShowsAgentDialog(rows: readonly string[]): boolean {
   return looksLikeApprovalPrompt(rows)
     || rows.some((row) => DIALOG_FOOTER_ROW.test(row) || PROCEED_QUESTION_ROW.test(row));
 }
+
+/**
+ * Is a dialog still UP — owning the bottom of the screen — rather than merely
+ * mentioned somewhere on it? The awaiting-state verifier decides on this, so a
+ * dialog's text left in the output above (or any other row that happens to
+ * look like one) cannot keep a pane "needs you" after the dialog closed.
+ *
+ * Up when Claude's permission dialog parses as ACTIVE (one cursor, the footer
+ * right under the options, nothing below it), or, for the other select
+ * dialogs (AskUserQuestion, `/model`), when the last non-blank row is an
+ * `Esc to …` footer or a cursor option row sits among the last few non-blank
+ * rows.
+ */
+export function screenShowsActiveDialog(rows: readonly string[]): boolean {
+  if (parseTerminalPrompt(rows)?.active) return true;
+  const tail = rows.filter((row) => row.trim().length > 0).slice(-ACTIVE_DIALOG_TAIL_ROWS);
+  const last = tail[tail.length - 1];
+  if (last !== undefined && DIALOG_FOOTER_ROW.test(last)) return true;
+  return looksLikeApprovalPrompt(tail.slice(-ACTIVE_OPTION_TAIL_ROWS));
+}
+
+/** Non-blank rows at the bottom the structural check looks at. */
+const ACTIVE_DIALOG_TAIL_ROWS = 6;
+/** How close to the bottom a cursor option row must sit. */
+const ACTIVE_OPTION_TAIL_ROWS = 4;
