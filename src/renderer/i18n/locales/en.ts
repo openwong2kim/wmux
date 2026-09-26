@@ -162,6 +162,8 @@ export const en = {
   'sidebar.navigation': 'Navigation',
   'sidebar.remote': 'Remote',
   'sidebar.search': 'Search & commands',
+  'sidebar.fleetNeedsYou': 'needs you {count}',
+  'sidebar.fleetRunning': 'running {count}',
   'sidebar.agents': 'Agents',
   'sidebar.notifications': 'Notifications',
   'sidebar.workspaces': 'Workspaces',

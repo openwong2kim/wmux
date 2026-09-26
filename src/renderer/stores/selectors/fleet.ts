@@ -1259,6 +1259,25 @@ export function selectFleetBoard(
   return { panes, groups };
 }
 
+const sectionCountsCache = new WeakMap<object, { needsYou: number; running: number }>();
+
+/**
+ * How many rows the Fleet board has in Needs you and Running — the sidebar's
+ * Fleet shortcut shows these. Counted off `selectFleetBoard` itself (the entry
+ * the overlay and fleet.triage use), so the shortcut and the board cannot
+ * disagree. Needs you includes finished and unconfirmed rows, as on the board.
+ * `now` only feeds elapsed time, never a section, so the count is clock-free.
+ * One pass per store state, like the sidebar's attention scores.
+ */
+export function selectFleetSectionCounts(state: FleetBoardState): { needsYou: number; running: number } {
+  const cached = sectionCountsCache.get(state);
+  if (cached) return cached;
+  const { groups } = selectFleetBoard(state, { now: 0, sortMode: 'workspace' });
+  const out = { needsYou: groups.needsYou.length, running: groups.running.length };
+  sectionCountsCache.set(state, out);
+  return out;
+}
+
 /**
  * #1481 — workspace id → newest activity/output stamp across ALL its terminal
  * surfaces (stashed included), floored to the minute, for the sidebar's

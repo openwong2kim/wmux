@@ -1591,6 +1591,8 @@ export const zh = {
   'deck.fleetNeedsInput': '需要你的输入',
   'strip.running': '{count} 个运行中',
   'strip.needsYou': '{count} 个需要你处理',
+  'sidebar.fleetNeedsYou': '需要你 {count}',
+  'sidebar.fleetRunning': '运行中 {count}',
   'strip.needsYouTooltip': '跳转到需要你的面板',
   'deck.commander': '编排器',
   'deck.commanderThinking': '编排器工作中…',

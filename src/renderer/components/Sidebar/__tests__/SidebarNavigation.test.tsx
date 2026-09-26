@@ -5,6 +5,8 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { useStore } from '../../../stores';
 import SidebarNavigation from '../SidebarNavigation';
 import MiniSidebar from '../MiniSidebar';
+import { selectFleetBoard } from '../../../stores/selectors/fleet';
+import { seedFleetTriageStore } from '../../../utils/__tests__/fleetTriageFixture';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -89,4 +91,58 @@ describe('Sidebar global navigation', () => {
     expect(useStore.getState().agentToolbarEnabled).toBe(true);
   });
 
+});
+
+describe('Fleet shortcut counts', () => {
+  function counts() {
+    return Object.fromEntries([...container.querySelectorAll<HTMLElement>('[data-fleet-nav-count]')]
+      .map((el) => [el.dataset.fleetNavCount, el.textContent]));
+  }
+  function seed(extra: Parameters<typeof seedFleetTriageStore>[1] = {}) {
+    act(() => seedFleetTriageStore(Date.now(), { locale: 'en', ...extra }));
+  }
+
+  it('shows the Fleet board\'s own Needs you and Running section sizes', () => {
+    seed();
+    act(() => root.render(<SidebarNavigation />));
+    const { groups } = selectFleetBoard(useStore.getState(), { now: Date.now(), sortMode: 'attention' });
+    // Fixture: two agents asking, one remote error; one running.
+    expect(groups.needsYou).toHaveLength(3);
+    expect(groups.running).toHaveLength(1);
+    expect(counts()).toEqual({ needsYou: 'needs you 3', running: 'running 1' });
+    expect(button('fleet').getAttribute('aria-label')).toBe('Fleet, 3 need you, 1 running');
+    expect(container.querySelector('.wmux-nav-count')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('hides a zero count and draws nothing when both are zero', () => {
+    seed({ surfaceAgentStatus: {}, surfacePendingQuestion: {}, remoteWorkspaces: [] });
+    act(() => root.render(<SidebarNavigation />));
+    expect(counts()).toEqual({ running: 'running 1' });
+    expect(button('fleet').getAttribute('aria-label')).toBe('Fleet, 1 running');
+
+    act(() => useStore.setState({ surfaceAgent: {}, surfaceTurnOpenAt: {} }));
+    const { groups } = selectFleetBoard(useStore.getState(), { now: Date.now(), sortMode: 'attention' });
+    expect(groups.needsYou.length + groups.running.length).toBe(0);
+    expect(container.querySelector('.wmux-nav-count')).toBeNull();
+    expect(button('fleet').getAttribute('aria-label')).toBe('Fleet');
+  });
+
+  it('follows the store live as a pane starts needing you', () => {
+    seed({ surfaceAgentStatus: {}, surfacePendingQuestion: {}, remoteWorkspaces: [] });
+    act(() => root.render(<SidebarNavigation />));
+    act(() => useStore.setState({ surfaceAgentStatus: { 'pty-5': 'error' } }));
+    expect(counts()).toEqual({ needsYou: 'needs you 1', running: 'running 1' });
+  });
+
+  it('keeps only the needs-you dot on the compact rail, with the numbers in its name', () => {
+    seed();
+    act(() => root.render(<SidebarNavigation compact />));
+    expect(counts()).toEqual({ needsYou: '' });
+    expect(button('fleet').getAttribute('aria-label')).toBe('Fleet, 3 need you, 1 running');
+    expect(button('fleet').title).toBe(button('fleet').getAttribute('aria-label'));
+
+    act(() => useStore.setState({ surfaceAgentStatus: {}, surfacePendingQuestion: {}, remoteWorkspaces: [] }));
+    expect(counts()).toEqual({});
+    expect(button('fleet').getAttribute('aria-label')).toBe('Fleet, 1 running');
+  });
 });

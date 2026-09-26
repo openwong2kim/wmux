@@ -157,6 +157,8 @@ export const ko = {
   'sidebar.navigation': '탐색',
   'sidebar.remote': '리모트',
   'sidebar.search': '검색 및 명령',
+  'sidebar.fleetNeedsYou': '확인 필요 {count}',
+  'sidebar.fleetRunning': '실행 중 {count}',
   'sidebar.agents': '에이전트',
   'sidebar.notifications': '알림',
   'sidebar.workspaces': '워크스페이스',

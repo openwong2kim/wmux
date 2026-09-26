@@ -150,6 +150,8 @@ export const pl = {
   'sidebar.navigation': 'Nawigacja',
   'sidebar.remote': 'Zdalny dostęp',
   'sidebar.search': 'Szukaj i polecenia',
+  'sidebar.fleetNeedsYou': 'potrzebuje Cię {count}',
+  'sidebar.fleetRunning': 'pracuje {count}',
   'sidebar.agents': 'Agenci',
   'sidebar.notifications': 'Powiadomienia',
   'fleet.overview': '{count} łącznie · {running} aktywnych',
