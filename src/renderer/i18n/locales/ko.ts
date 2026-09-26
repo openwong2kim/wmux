@@ -874,7 +874,7 @@ export const ko = {
   'settings.sidebarPosition': '사이드바 위치',
   'settings.sidebarPositionDesc': '터미널 영역의 좌측 또는 우측',
   'settings.sidebarAttentionFirst': '응답 필요 행을 위로',
-  'settings.sidebarAttentionFirstDesc': '에이전트가 응답을 기다리는 워크스페이스를 사이드바 맨 위에 고정합니다. 기본은 꺼짐: 행은 드래그한 자리에 그대로 있습니다. 켜져 있는 동안 드래그 정렬은 멈춥니다.',
+  'settings.sidebarAttentionFirstDesc': '에이전트가 응답을 기다리는 워크스페이스를 사이드바 맨 위로 올립니다. 기본은 꺼짐: 행은 드래그한 자리에 그대로 있습니다. 켜져 있는 동안 드래그 정렬은 멈춥니다.',
   'settings.sidebarSort': '워크스페이스 순서',
   'settings.sidebarSortDesc': '사이드바가 워크스페이스를 나열하는 방식입니다. 주의(기본)는 응답이 필요한 것을 먼저, 이어서 끝남·실행 중·확인 불가·유휴 순으로 두고, 잠깐 멈춘 뒤나 포인터가 목록을 벗어났을 때만 다시 정렬됩니다. 수동은 드래그한 순서를 유지합니다. 어느 순서에서든 상단에 고정한 워크스페이스는 정한 순서대로 맨 위에 옵니다. 드래그 정렬은 수동에서, 그리고 고정한 행끼리는 어느 순서에서든 됩니다.',
   'settings.sidebarSortManual': '수동',

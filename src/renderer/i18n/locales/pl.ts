@@ -1334,7 +1334,7 @@ export const pl = {
   'settings.sidebarPosition': 'Pozycja paska bocznego',
   'settings.sidebarPositionDesc': 'Po lewej lub po prawej stronie obszaru terminala',
   'settings.sidebarAttentionFirst': 'Wiersze czekające na Ciebie u góry',
-  'settings.sidebarAttentionFirstDesc': 'Przypnij na górze paska bocznego przestrzenie robocze, których agent czeka na Ciebie. Domyślnie wyłączone: wiersze zostają tam, gdzie je przeciągniesz. Gdy jest włączone, zmiana kolejności przeciąganiem jest wstrzymana.',
+  'settings.sidebarAttentionFirstDesc': 'Przenoś na górę paska bocznego przestrzenie robocze, których agent czeka na Ciebie. Domyślnie wyłączone: wiersze zostają tam, gdzie je przeciągniesz. Gdy jest włączone, zmiana kolejności przeciąganiem jest wstrzymana.',
   'settings.sidebarSort': 'Kolejność przestrzeni roboczych',
   'settings.sidebarSortDesc': 'Jak pasek boczny układa przestrzenie robocze. Uwaga (domyślnie) stawia najpierw to, co czeka na Ciebie, potem zakończone, działające, niepotwierdzone i bezczynne, a lista przestawia się dopiero po krótkiej przerwie albo gdy wskaźnik ją opuści. Ręczna zachowuje kolejność z przeciągania. W każdym trybie przestrzenie przypięte na górze zostają pierwsze, w nadanej przez Ciebie kolejności. Zmiana kolejności przeciąganiem działa w trybie Ręczna, a wśród przypiętych w każdym trybie.',
   'settings.sidebarSortManual': 'Ręczna',

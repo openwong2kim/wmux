@@ -1349,7 +1349,7 @@ export const en = {
   'settings.sidebarPosition': 'Sidebar position',
   'settings.sidebarPositionDesc': 'Left or right of the terminal area',
   'settings.sidebarAttentionFirst': 'Needs-you rows first',
-  'settings.sidebarAttentionFirstDesc': 'Pin workspaces whose agent is waiting on you to the top of the sidebar. Off by default: rows stay where you dragged them. While on, drag-to-reorder is paused.',
+  'settings.sidebarAttentionFirstDesc': 'Move workspaces whose agent is waiting on you to the top of the sidebar. Off by default: rows stay where you dragged them. While on, drag-to-reorder is paused.',
   'settings.sidebarSort': 'Workspace order',
   'settings.sidebarSortDesc': 'How the sidebar lists workspaces. Attention (the default) puts what needs you first, then finished, running, unconfirmed and idle, and re-sorts only after a short pause or when the pointer leaves the list. Manual keeps the order you dragged. In every order, workspaces pinned to the top stay first in the order you gave them. Drag-to-reorder works in Manual, and among pinned rows in any order.',
   'settings.sidebarSortManual': 'Manual',
