@@ -803,7 +803,13 @@ POST /api/approvals/<id>     body: {decision: 'approve' | 'deny', choiceKey?: st
 
 Request fields: `id`, `sessionId`, `agent`, `kind`, `state`, `createdAt`, and
 optionally `workspaceId`, `question`, `options`, `choices`, `risk`, `screenTail`,
-`decision`, `resolvedBy`, `resolvedAt`, `selectedChoiceKey`.
+`decision`, `resolvedBy`, `resolvedAt`, `selectedChoiceKey`. A
+`kind: "terminal_prompt"` record has its own field set and rules — see
+[`terminal_prompt`](#terminal_prompt--the-agents-own-permission-dialog) below.
+
+`kind` is an open set: `awaiting_input` (an `AskUserQuestion`),
+`awaiting_permission` (a permission gate), `terminal_prompt` (the agent's own
+terminal dialog). Treat an unknown kind as a card you cannot answer.
 
 `question` and `options` are the agent's own text, sanitized and capped. Render
 them — a blind Approve button is not an informed answer.
@@ -851,9 +857,9 @@ Claude Code's `AskUserQuestion` prompt is natively supported: the daemon
 extracts the question, options, and structured choices from the hook payload and
 maps resolve decisions to precise TUI keystrokes.
 
-Claude Code's **permission prompts** (tool-approval gate, "Do you want to
-proceed?") have no hook — they are detector-only. Until Claude Code exposes an
-authoritative hook for permission prompts, the phone cannot answer them.
+Claude Code's own **permission dialog** ("Do you want to proceed?") is recorded
+as a `terminal_prompt` — see the next section for when it can be answered from
+the phone and when it cannot.
 
 **Codex CLI, Kiro CLI, and other TUI-only agents** have no hook integration and
 no authoritative keystroke mapping. They report `unsupported-agent` (501). Their
@@ -861,6 +867,106 @@ prompts are answered with the phone pane's terminal controls when `--allow-input
 is enabled, or at the desktop otherwise. Structured choice
 support for these agents will be added only after their respective projects
 expose authoritative approval hooks — the daemon does not guess keystrokes.
+
+### `terminal_prompt` — the agent's own permission dialog
+
+When a Claude Code pane (`claude` / `openclaude`) shows its own permission
+dialog — for example a `permissions.ask` rule hit in a `bypassPermissions`
+session — the daemon records `kind: "terminal_prompt"`. It appears when the
+PermissionRequest hook lands, or when the screen detector's awaiting-input
+reading survives its 1.5 s confirmation window, whichever comes first, and only
+when the pane has nothing else pending. The daemon reads the pane's screen and
+parses the dialog at that moment; when the hook landed before the dialog was
+drawn, it looks again and replaces the record with an answerable one (a new
+`id`, an `approval` event, no second push). The orchestrator brain's pane never gets one.
+
+**Capability.** Send `X-Wmux-Client-Caps: terminal-prompt-answer` (a
+comma-separated token list; unknown tokens are ignored) on `/api/approvals`,
+`POST /api/approvals/<id>`, `/turns` and `/api/events` if your client can answer
+this dialog. Without it you get the informational card only.
+
+What `/api/approvals` carries for this kind:
+
+| field | older client (no capability) | capable client |
+| --- | --- | --- |
+| `id`, `sessionId`, `agent`, `kind`, `state`, `createdAt`, `workspaceId?` | yes | yes |
+| `toolName` (when known), `summary` (the command, ≤200 chars, display only) | yes | yes |
+| `question`, `reason` | never | only when the record is answerable |
+| `choices`, `promptFingerprint` | never | only when the record is answerable, pending and not yet answered |
+| `pressedAt`, `decision`, `selectedChoiceKey`, `resolvedBy`, `resolvedAt` | when set | when set |
+
+Never `options` or `screenTail`. A record is **answerable** only when the whole
+dialog was read (its top rule on screen, no row or field cut, the command fits
+the 200-character summary) and it offers a plain `Yes`. `choices` then holds
+only the plain `Yes` and plain `No` options. Any other option — "Yes, and don't
+ask again for … commands", which writes a permanent allow rule — is never a
+choice. A record that is not answerable carries none of the four fields for
+anyone; show it as "answer on the computer".
+
+`promptFingerprint` is a 32-hex hash of the whole dialog (title, question,
+reason, every command line, every option), independent of where the cursor is.
+
+**Answering** (capable clients only; `choiceKey` is authoritative, `decision`
+must agree with it):
+
+```http
+POST /api/approvals/<id>
+X-Wmux-Client-Caps: terminal-prompt-answer
+Content-Type: application/json
+
+{"decision":"approve","choiceKey":"1","promptFingerprint":"<hex>"}
+```
+
+`approve` goes with the plain `Yes` choice, `deny` with the plain `No`. It needs
+the device's input grant, like typing (403 `read-only: …` otherwise). The daemon
+then refuses unless all of these hold, and writes nothing when it refuses:
+
+- the record is at least 1.5 s old;
+- this record has not been answered already (one write per record, ever);
+- the pane's screen, re-read now, still shows the same dialog (same
+  fingerprint) as the ACTIVE one: exactly one option selected, the
+  `Esc to cancel…` footer directly under the options, nothing but blank rows
+  below it;
+- no output, no keystroke and no new PTY between that read and the write
+  (pointer reports excluded). It re-reads once if the pane moved, then gives up.
+
+On success it writes exactly one byte — the digit, never Enter — and answers
+200 `{"state":"pending","pressedAt":<ms>,"durable":true}`. The record stays
+`pending` (with `pressedAt`) until the dialog is gone from the screen, then
+resolves. An SSE `approval` event with `phase: "press"` marks the write.
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 200 | `{state:"pending", pressedAt, durable}` | The key is in the pane |
+| 400 | `{error:"invalid-prompt-fingerprint"}` | `promptFingerprint` missing or not 32 hex |
+| 400 | `{error:"invalid-choice"}` | `choiceKey` missing, not one of `choices`, or `decision` disagrees with it |
+| 403 | `{error:"read-only: …"}` | No input grant |
+| 409 | `{error:"already-answered"}` | This record was answered already. Nothing typed |
+| 409 | `{error:"prompt-changed"}` | The screen is not the dialog you answered (changed, moved, or not the active dialog). Nothing typed. When the dialog's content changed, the record was superseded by a fresh one — re-read `/api/approvals` |
+| 425 | `{error:"answer-too-soon"}` | Within 1.5 s of the record appearing. Ask again |
+| 501 | `{error:"answer-in-terminal"}` | Not answerable remotely: no capability header, or the record is not answerable. Answer on the computer |
+
+Without the capability header every answer is 501 `answer-in-terminal`: show
+"wmux cannot answer this agent remotely. Open the pane on the computer."
+
+**Push.** One push per awaiting episode per pane. It is always in-app only
+(`requiresInAppChoice: true`, no lock-screen buttons, for any client). The body
+names the tool and the command; `risk` is `critical` when the command or the
+permission rule reads as destructive (`rm -rf`, `sudo`, …). The outbound
+webhook (`notifySinks`) never carries the command.
+
+**The SSE `approval` event** for this kind carries `kind: "terminal_prompt"` and
+no content (no tool, summary, question or choices): re-read `/api/approvals`.
+
+**It goes away** when the dialog is answered (a key in the pane, from anyone),
+when the daemon sees the dialog gone from the screen, when the turn ends, the
+session restarts or the pane closes, and on a daemon restart. After the screen
+check releases a pane, no new `terminal_prompt` is raised for it for 30 s.
+
+**Awaiting state.** A pane at `awaiting_input` is also released when the daemon
+sees its dialog gone from the screen on two reads in a row — an answer typed in
+Terminal in a shape the key check does not recognise no longer leaves the pane
+"needs you" for the rest of the turn.
 
 ### `risk` — a hint, not a gate
 
@@ -1742,7 +1848,10 @@ transcript), then the Claude/Codex transcript file — and adds `chat` to every
   the phone (Stop is in Terminal). `queue:true` (live Claude) means a send
   during a running turn can be accepted and answered with `queued:true`.
 - **`blocked` is authoritative and computed at read time**: a pending approval
-  (`by:"approval"`), or `by:"terminal"` for a hook `awaiting_input`, an OpenCode
+  (`by:"approval"`), or `by:"terminal"` for a `terminal_prompt` record (as
+  `by:"approval"` with its `approvalId` only when you sent the
+  `terminal-prompt-answer` capability AND the record is answerable), a hook
+  `awaiting_input`, an OpenCode
   `awaiting_input` phase, or a dialog the send screen gate sees on the rendered
   screen (checked on every read of a Claude/Codex binding with `send`).
 - **`launch.reason`** is an open set: `ok`, `shell-busy`, `shell-not-empty`,
@@ -2050,7 +2159,9 @@ data: {"sessionId":"pty-7f3c","at":1758712399000}
 **Live-only**, like `transcript.nudge`: no `id:`, not in the backlog, never
 replayed, only for panes whose `/turns` you have read, never for the brain pane.
 `by` is `approval` (carries `approvalId`; dedupe with the `approval` event) or
-`terminal`; treat an unknown value as `terminal`. Only transitions emit: the
+`terminal`; treat an unknown value as `terminal`. A `terminal_prompt` reads as
+`approval` only on a stream opened with the `terminal-prompt-answer`
+capability header, and only while the record is answerable. Only transitions emit: the
 first `chat.blocked` value the server observes for a pane is recorded without
 an event (whoever read it just saw it in `/turns`). The server recomputes the
 value at most once a second per pane, when an approval opens or closes, the
