@@ -504,8 +504,12 @@ Fleet opens over the tools dock, at up to 720px wide, without adding a flex
 column or changing terminal dimensions. Mirror its anchoring when the sidebar
 moves right. Keep the covered tools dock mounted and inert so drafts survive
 and keyboard focus cannot enter covered controls. Fleet stays non-modal: visible
-workspace areas remain usable; close, Escape and selecting an agent retain their
-existing behavior. Fleet is an attention board (andon), not a map: one
+workspace areas remain usable. Selecting an agent closes Fleet by default. The
+header’s session-only “Keep open after jump” option retains Fleet and its filters
+for agent and review-task jumps while handing input focus to the destination.
+Closing later never restores the pre-jump pane. Close, Ctrl+Shift+A and Escape
+inside Fleet still dismiss it; Open diff and browser-help Jump always close it.
+Fleet is an attention board (andon), not a map: one
 single-column list in three sections — Needs you, Running, Idle — decided by one
 pure selector (`groupFleetPanes`) that other consumers reuse. Needs you holds
 input requests, errors, stopped supervision, unconfirmed (no report for 30m+)

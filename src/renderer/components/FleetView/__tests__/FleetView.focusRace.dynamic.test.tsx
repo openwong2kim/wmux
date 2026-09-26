@@ -17,6 +17,7 @@
 // 고정한다. 겸사겸사 닫힘 시 포커스 복원(INFO 4번)도 검증한다.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { terminalRegistry } from '../../../hooks/useTerminal';
 import * as terminalTail from '../../../utils/terminalTail';
 import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -356,6 +357,19 @@ describe('FleetView — remote rows and browser help stay wired', () => {
     expect(row.getAttribute('aria-label')).toContain('office-mac');
   });
 
+  it('browser-help Jump still closes Fleet with keep-open enabled', async () => {
+    act(() => useStore.setState({
+      fleetActiveTab: 'approvals', fleetViewVisible: true, fleetKeepOpenAfterJump: true,
+      browserHelpRequests: { r1: { requestId: 'r1', workspaceId: 'ws-1', surfaceId: 's1', prompt: 'Sign in', deadlineAt: Date.now() + 60_000 } },
+      browserHelpOrder: ['r1'],
+    }));
+    mount();
+    await flushRaf();
+    click('[data-inbox-row] button[title]');
+    expect(useStore.getState().fleetViewVisible).toBe(false);
+    expect(useStore.getState().activeWorkspaceId).toBe('ws-1');
+  });
+
   it('renders a browser help request on the approvals tab', async () => {
     act(() => useStore.setState({
       fleetActiveTab: 'approvals',
@@ -366,5 +380,97 @@ describe('FleetView — remote rows and browser help stay wired', () => {
     await flushRaf();
     expect(container.textContent).toContain('Browser needs you');
     expect(container.textContent).toContain('Sign in, then press Done.');
+  });
+});
+
+describe('FleetView — keep open after jump (#1542)', () => {
+  it('closes on jump by default', async () => {
+    seedFleet();
+    act(() => useStore.getState().setFleetViewVisible(true));
+    mount();
+    await flushRaf();
+    click('[data-pty-id="pty-2"]');
+    expect(useStore.getState().activeWorkspaceId).toBe('ws-2');
+    expect(useStore.getState().fleetViewVisible).toBe(false);
+  });
+
+  it('retains filters and search, focuses even an already-active target, and never restores the old pane', async () => {
+    seedFleet();
+    const opener = document.createElement('textarea');
+    const destination = document.createElement('textarea');
+    document.body.append(opener, destination);
+    opener.focus();
+    const terminal = { focus: () => destination.focus() };
+    vi.spyOn(terminalRegistry, 'get').mockImplementation((id) =>
+      id === 'pty-2' ? terminal as ReturnType<typeof terminalRegistry.get> : undefined);
+    act(() => {
+      useStore.getState().setActiveWorkspace('ws-2');
+      useStore.getState().setFleetViewVisible(true);
+    });
+    mount();
+    await flushRaf();
+    click('input[type=checkbox]');
+    click('[data-filter=complete]');
+    search('launch');
+    click('[data-pty-id="pty-2"]');
+    await flushRaf();
+    expect(useStore.getState().fleetViewVisible).toBe(true);
+    expect(document.activeElement).toBe(destination);
+    expect(container.querySelector<HTMLInputElement>('input[type=search]')?.value).toBe('launch');
+    expect(container.querySelector('[data-filter=complete]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(rows()).toHaveLength(1);
+    key(destination, 'Escape');
+    expect(useStore.getState().fleetViewVisible).toBe(true);
+    click('.wmux-fleet-close');
+    expect(useStore.getState().fleetViewVisible).toBe(false);
+    unmount();
+    expect(document.activeElement).toBe(destination);
+    mount();
+    await flushRaf();
+    expect(container.querySelector<HTMLInputElement>('input[type=checkbox]')?.checked).toBe(true);
+  });
+
+  it('hands focus to successive workspace targets without live updates reclaiming it', async () => {
+    seedFleet();
+    const first = document.createElement('textarea');
+    const second = document.createElement('textarea');
+    document.body.append(first, second);
+    vi.spyOn(terminalRegistry, 'get').mockImplementation((id) => ({
+      focus: () => (id === 'pty-2' ? first : second).focus(),
+    }) as ReturnType<typeof terminalRegistry.get>);
+    act(() => {
+      useStore.getState().setFleetKeepOpenAfterJump(true);
+      useStore.getState().setFleetViewVisible(true);
+    });
+    mount();
+    await flushRaf();
+    click('[data-pty-id="pty-2"]');
+    await flushRaf();
+    expect(document.activeElement).toBe(first);
+    click('[data-pty-id="pty-3"]');
+    await flushRaf();
+    expect(useStore.getState().activeWorkspaceId).toBe('ws-3');
+    expect(document.activeElement).toBe(second);
+    act(() => useStore.setState({ surfacePendingQuestion: {}, surfaceAgentStatus: { 'pty-2': 'error' } }));
+    await flushRaf();
+    expect(document.activeElement).toBe(second);
+    unmount();
+    expect(document.activeElement).toBe(second);
+  });
+
+  it('still closes with Escape inside Fleet or the global toggle', async () => {
+    seedFleet();
+    act(() => {
+      useStore.getState().setFleetKeepOpenAfterJump(true);
+      useStore.getState().setFleetViewVisible(true);
+    });
+    mount();
+    await flushRaf();
+    key(rows()[0], 'Escape');
+    expect(useStore.getState().fleetViewVisible).toBe(false);
+    act(() => useStore.getState().toggleFleetView());
+    act(() => useStore.getState().toggleFleetView());
+    expect(useStore.getState().fleetViewVisible).toBe(false);
+    expect(useStore.getState().fleetKeepOpenAfterJump).toBe(true);
   });
 });

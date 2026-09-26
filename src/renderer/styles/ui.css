@@ -536,6 +536,8 @@
 .wmux-fleet-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; flex-shrink: 0; }
 .wmux-fleet-header > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
 .wmux-fleet-summary { margin-top: 3px; font-size: 12px; color: var(--text-sub); }
+.wmux-fleet-keep-open { display: flex; align-items: center; gap: 6px; width: 100%; font-size: 12px; color: var(--text-sub); cursor: pointer; }
+.wmux-fleet-keep-open input { accent-color: var(--accent-blue); }
 .wmux-fleet-close { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 5px; color: var(--text-sub); }
 .wmux-fleet-close:hover { background: var(--bg-surface); color: var(--text-main); }
 .wmux-fleet-tabs { display: flex; gap: 20px; padding: 0 20px; border-bottom: 1px solid var(--border-soft); flex-shrink: 0; }

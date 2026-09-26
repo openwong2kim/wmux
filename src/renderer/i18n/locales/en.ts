@@ -692,6 +692,7 @@ export const en = {
   'fleet.review.changesUnavailable': 'Changes unavailable',
   'fleet.message.placeholder': 'Message this agent…',
   'fleet.label.placeholder': 'Pane label',
+  'fleet.keepOpenAfterJump': 'Keep open after jump',
   'fleet.title': 'Fleet',
   'fleet.tab.fleet': 'Fleet',
   'fleet.tab.approvals': 'Approvals',

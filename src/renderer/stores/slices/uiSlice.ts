@@ -200,6 +200,10 @@ export interface UISlice {
   fleetSortMode: FleetSortMode;
   setFleetSortMode: (mode: FleetSortMode) => void;
 
+  // Session-only; close/reopen retains this, app restart does not.
+  fleetKeepOpenAfterJump: boolean;
+  setFleetKeepOpenAfterJump: (keepOpen: boolean) => void;
+
   // Fleet attention board — whether the Idle section shows its rows or stays
   // collapsed to one summary row. Session-only: not in buildSessionData.
   fleetIdleExpanded: boolean;
@@ -1047,6 +1051,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setFleetActiveTab: (tab) => set((state) => {
     state.fleetActiveTab = tab;
+  }),
+
+  // Session-only; deliberately absent from session persistence.
+  fleetKeepOpenAfterJump: false,
+  setFleetKeepOpenAfterJump: (keepOpen) => set((state) => {
+    state.fleetKeepOpenAfterJump = keepOpen;
   }),
 
   fleetSortMode: 'attention',

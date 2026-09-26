@@ -393,6 +393,7 @@ export const ko = {
   'fleet.review.changesUnavailable': '변경 내역을 읽지 못함',
   'fleet.message.placeholder': '이 에이전트에게 메시지…',
   'fleet.label.placeholder': '페인 라벨',
+  'fleet.keepOpenAfterJump': '이동 후에도 열어두기',
   'fleet.title': 'Fleet',
   'fleet.tab.fleet': 'Fleet',
   'fleet.tab.approvals': '승인',
