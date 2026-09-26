@@ -382,6 +382,7 @@ and the `agent.liveness` frames, never this.
 `cwd`, which follows OSC 7 and the prompt and can name a deleted worktree or a
 remote path, it existed when the shell started. Prefer it when choosing a
 directory to open a new pane in. Absent for a session record that predates it.
+A WSL pane's `spawnCwd` is a Linux path inside its distro.
 
 `cwdLeaf` is the last segment of `cwd`, absent when there is no readable one —
 an empty cwd, a root (`/` and `C:\` alike), or whitespace.
@@ -1449,7 +1450,10 @@ model; effort values must appear in that installed CLI's help.
 `POST /api/sessions {cwd}` refuses a `cwd` that, after `~` expansion, is not
 an absolute path to an existing directory: `400 {error:"cwd-not-found",
 effect:"none"}`, and no pane is created. Before this the create answered 201 and
-the pane exited at once. A client can offer "open in home" (omit `cwd`).
+the pane exited at once. A client can offer "open in home" (omit `cwd`). On a
+Windows host only drive and UNC paths are checked; a `/…` or `~` path may be
+meant for a WSL default shell and is left to the spawn, as before. The check
+runs after the request is re-authorized.
 
 `POST /api/sessions` optionally accepts
 `agentLaunch:{agent:"claude"|"codex",model?:id,effort?:level}`. The server validates

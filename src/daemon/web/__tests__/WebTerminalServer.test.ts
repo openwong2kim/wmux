@@ -4719,6 +4719,14 @@ describe('WebTerminalServer', () => {
     expect(lifecycleCalls).toHaveLength(before);
   });
 
+  it('checks the cwd only after re-authorizing, so a revoked device learns nothing about the disk', async () => {
+    await startRW();
+    const phone = await pairDevice('Create phone', true);
+    const body = JSON.stringify({ cwd: path.join(EXISTING_DIR, 'wmux-no-such-dir-' + crypto.randomUUID()) });
+    expect(await withdrawMidBody(`${base()}/api/sessions`, phone, body.slice(0, 6), body.slice(6), (r) => { r.revoked = true; }))
+      .toBe(401);
+  });
+
   it('accepts a ~ cwd that exists, expanded like the spawn does', async () => {
     const token = (await startRW()).token as string;
     expect((await postSession(token, { cwd: '~' })).status).toBe(201);

@@ -4605,11 +4605,6 @@ export class WebTerminalServer {
       const b = (body ?? {}) as { workspaceId?: unknown; cwd?: unknown; agentLaunch?: unknown };
       const workspaceId = typeof b.workspaceId === 'string' ? b.workspaceId.trim() : '';
       const cwd = typeof b.cwd === 'string' ? b.cwd.trim() : '';
-      // A cwd the shell cannot enter does not fail the spawn: the child exits
-      // at once and the caller got a 201 for a dead pane. Refuse it up front
-      // (the phone offers "open in home" instead). Same `~` expansion as the
-      // spawn; a relative path has no anchor a phone could mean.
-      if (cwd && !await isDirectory(expandTilde(cwd))) return this.json(res, 400, { error: 'cwd-not-found', effect: 'none' });
       if (workspaceId) {
         const bad = this.rejectWorkspaceId(workspaceId, principal);
         if (bad) return this.json(res, 400, bad);
@@ -4633,6 +4628,11 @@ export class WebTerminalServer {
       const fresh = await this.authenticate(req,url,false).catch(() => ({ok:false as const}));
       if (!fresh.ok) return this.json(res,401,{error:'authorization-expired'});
       if (!this.mayInput(fresh.principal)) return this.refuseInput(res,fresh.principal,'Input permission changed');
+      // A cwd the shell cannot enter does not fail the spawn: the child exits
+      // at once and the caller got a 201 for a dead pane. Refuse it up front
+      // (the phone offers "open in home" instead). After the re-check above,
+      // so a caller that just lost its grant learns nothing about the disk.
+      if (cwd && await cwdUnusable(cwd)) return this.json(res, 400, { error: 'cwd-not-found', effect: 'none' });
       lifecycle
         // The same question again at the spawn itself: `create` has its own
         // awaits after this point, and this check is the last one before a PTY.
@@ -6703,10 +6703,26 @@ function spawnCwdOf(spawnCwd: string | undefined): { spawnCwd?: string } {
   return typeof spawnCwd === 'string' && spawnCwd ? { spawnCwd } : {};
 }
 
-/** Whether an absolute path names an existing directory. Never throws. */
-async function isDirectory(dir: string): Promise<boolean> {
-  if (!path.isAbsolute(dir)) return false;
-  try { return (await fs.promises.stat(dir)).isDirectory(); } catch { return false; }
+/**
+ * Whether a requested pane cwd is certainly unusable. Same `~` expansion as
+ * the spawn; a relative path has no anchor a phone could mean. On Windows only
+ * a drive or UNC path is checked here: a `/…` or `~` path may be meant for a
+ * WSL default shell, which the spawn resolves inside the distro, so those keep
+ * the spawn's own handling. Never throws.
+ */
+async function cwdUnusable(requested: string): Promise<boolean> {
+  if (process.platform === 'win32') {
+    if (requested.startsWith('/') || requested.startsWith('~')) return false;
+    if (!path.win32.isAbsolute(requested) || !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(requested)) return true;
+  }
+  const dir = expandTilde(requested);
+  if (!path.isAbsolute(dir)) return true;
+  try {
+    if (!(await fs.promises.stat(dir)).isDirectory()) return true;
+    // A shell must be able to enter it, not only see it.
+    if (process.platform !== 'win32') await fs.promises.access(dir, fs.constants.X_OK);
+    return false;
+  } catch { return true; }
 }
 
 /**
