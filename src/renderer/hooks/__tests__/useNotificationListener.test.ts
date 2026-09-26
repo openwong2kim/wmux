@@ -878,4 +878,16 @@ describe('OS toast source line', () => {
     // In-app surfaces keep the original payload — they already sit by the pane.
     expect(h.spies.addNotification).toHaveBeenCalledWith(expect.objectContaining({ body: 'Task finished' }));
   });
+
+  it('names only the workspace when no ptyId identifies the sending tab (CLI/MCP notify)', () => {
+    const h = makeHarness();
+    h.state.activeWorkspaceId = 'ws-other';
+    h.state.workspaces[0].name = 'Ziomek';
+    const leaf = h.state.workspaces[0].rootPane;
+    if (leaf.type === 'leaf') leaf.surfaces[0].title = 'P4GURU';
+    createNotificationHandler(h.deps)(null, { type: 'agent', title: 'Build', body: 'done', workspaceId: 'ws-a' });
+    expect(h.spies.showOsToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Build', body: 'Ziomek\ndone' }),
+    );
+  });
 });

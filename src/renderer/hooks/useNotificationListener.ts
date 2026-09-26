@@ -489,7 +489,10 @@ export function createNotificationHandler(deps: NotificationHandlerDeps) {
             body: osToastBody(
               action.payload.title,
               action.payload.body,
-              describeNotificationSource(ws, target.surfaceId),
+              // Only a ptyId names the sending tab. Without one (CLI or MCP
+              // notify), target.surfaceId is just the workspace's active tab,
+              // which may be a different pane than the sender.
+              describeNotificationSource(ws, ptyId ? target.surfaceId : undefined),
             ),
             ptyId: ptyId ?? null,
             workspaceId: target.workspaceId,
