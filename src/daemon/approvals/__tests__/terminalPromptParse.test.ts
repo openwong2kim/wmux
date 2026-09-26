@@ -1,0 +1,126 @@
+// The Claude Code permission-dialog parser and its cursor-free fingerprint.
+import { describe, it, expect } from 'vitest';
+import { parseTerminalPrompt, PROMPT_MAX_COMMAND_LINES } from '../terminalPromptParse';
+import { generateTextSnapshot } from '../../HeadlessSnapshot';
+
+// The text of a real dialog raised by a user `permissions.ask` rule in a
+// bypassPermissions session. Paths are placeholders.
+const DIALOG = [
+  '● Bash(rm -rf build/cache)',
+  '',
+  '────────────────────────────────────────────────────────────',
+  ' Bash command',
+  '',
+  '   rm -rf build/cache',
+  '   Remove the build cache',
+  '',
+  ' Permission rule Bash(rm -rf *) requires confirmation for this command.',
+  '',
+  ' Do you want to proceed?',
+  ' ❯ 1. Yes',
+  '   2. No',
+  '',
+  ' Esc to cancel · Tab to amend',
+];
+
+const cursorOn = (rows: string[], key: string): string[] =>
+  rows.map((row) => {
+    const m = /^ (?:❯| ) (\d)\. (.*)$/.exec(row);
+    if (!m) return row;
+    return m[1] === key ? ` ❯ ${m[1]}. ${m[2]}` : `   ${m[1]}. ${m[2]}`;
+  });
+
+describe('parseTerminalPrompt', () => {
+  it('reads the title, command lines, reason, question and options', () => {
+    expect(parseTerminalPrompt(DIALOG)).toMatchObject({
+      title: 'Bash command',
+      commandLines: ['rm -rf build/cache', 'Remove the build cache'],
+      reason: 'Permission rule Bash(rm -rf *) requires confirmation for this command.',
+      question: 'Do you want to proceed?',
+      options: [
+        { key: '1', label: 'Yes', selected: true },
+        { key: '2', label: 'No', selected: false },
+      ],
+    });
+  });
+
+  it('takes any number of options and leaves footer actions out', () => {
+    const rows = [
+      ...DIALOG.slice(0, 11),
+      ' ❯ 1. Yes',
+      '   2. Yes, and don\'t ask again for rm commands in this project',
+      '   3. No, and tell Claude what to do differently (esc)',
+      '',
+      ' Esc to cancel · Tab to amend',
+    ];
+    const parsed = parseTerminalPrompt(rows);
+    expect(parsed?.options.map((o) => o.key)).toEqual(['1', '2', '3']);
+    expect(parsed?.options.map((o) => o.label).join(' ')).not.toMatch(/Tab to amend|Esc to cancel/);
+  });
+
+  it('the fingerprint ignores where the cursor is', () => {
+    const a = parseTerminalPrompt(cursorOn(DIALOG, '1'));
+    const b = parseTerminalPrompt(cursorOn(DIALOG, '2'));
+    expect(a?.options[1]?.selected).toBe(false);
+    expect(b?.options[1]?.selected).toBe(true);
+    expect(a?.fingerprint).toBe(b?.fingerprint);
+    expect(a?.fingerprint).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('the fingerprint changes with the command, the reason or the options', () => {
+    const base = parseTerminalPrompt(DIALOG)!.fingerprint;
+    const swap = (from: string, to: string) =>
+      parseTerminalPrompt(DIALOG.map((row) => row.replace(from, to)))!.fingerprint;
+    expect(swap('rm -rf build/cache', 'rm -rf build/other')).not.toBe(base);
+    expect(swap('Permission rule', 'Policy rule')).not.toBe(base);
+    expect(swap('2. No', '2. Never')).not.toBe(base);
+  });
+
+  it('reads a boxed dialog the same way', () => {
+    const boxed = DIALOG.slice(2).map((row) => (row.startsWith('──') ? `╭${row}╮` : `│${row.padEnd(76)}│`));
+    const plain = parseTerminalPrompt(DIALOG);
+    const parsed = parseTerminalPrompt(boxed);
+    expect(parsed?.commandLines).toEqual(plain?.commandLines);
+    expect(parsed?.reason).toBe(plain?.reason);
+    expect(parsed?.fingerprint).toBe(plain?.fingerprint);
+  });
+
+  it('joins a reason the TUI wrapped over two rows', () => {
+    const rows = [...DIALOG];
+    rows.splice(8, 1, ' Permission rule Bash(rm -rf *) requires confirmation for', ' this command.');
+    expect(parseTerminalPrompt(rows)?.reason)
+      .toBe('Permission rule Bash(rm -rf *) requires confirmation for this command.');
+  });
+
+  it('joins soft-wrapped snapshot rows before parsing', () => {
+    const rows = DIALOG.map((text) => ({ text, wrapped: false }));
+    rows.splice(5, 1, { text: '   rm -rf build/ca', wrapped: false }, { text: 'che', wrapped: true });
+    expect(parseTerminalPrompt(rows)?.commandLines[0]).toBe('rm -rf build/cache');
+    expect(parseTerminalPrompt(rows)?.fingerprint).toBe(parseTerminalPrompt(DIALOG)?.fingerprint);
+  });
+
+  it.each([
+    ['no question row', DIALOG.filter((r) => !r.includes('proceed'))],
+    ['no option rows', DIALOG.filter((r) => !/\d\. /.test(r))],
+    ['options out of order', DIALOG.map((r) => r.replace('2. No', '3. No'))],
+    ['two cursors', DIALOG.map((r) => r.replace('   2. No', ' ❯ 2. No'))],
+    ['an empty grid', []],
+  ])('refuses %s', (_label, rows) => {
+    expect(parseTerminalPrompt(rows)).toBeNull();
+  });
+
+  it('caps the command block', () => {
+    const rows = [...DIALOG];
+    rows.splice(6, 0, ...Array.from({ length: 40 }, (_, i) => `   line ${i}`));
+    expect(parseTerminalPrompt(rows)?.commandLines).toHaveLength(PROMPT_MAX_COMMAND_LINES);
+  });
+
+  it('parses the dialog off a real headless render of its bytes', async () => {
+    const bytes = `\x1b[H\x1b[2J${DIALOG.join('\r\n')}`;
+    const outcome = await generateTextSnapshot({ cols: 100, rows: 30, scrollback: 0, initial: Buffer.from(bytes) });
+    if (!outcome.ok) throw new Error('snapshot failed');
+    const parsed = parseTerminalPrompt(outcome.rows);
+    expect(parsed?.fingerprint).toBe(parseTerminalPrompt(DIALOG)?.fingerprint);
+    expect(parsed?.options).toHaveLength(2);
+  });
+});
