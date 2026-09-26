@@ -4342,6 +4342,99 @@ describe('WebTerminalServer', () => {
         expect(body).not.toContain(content);
       }
     });
+
+    describe('raw input while the dialog is up', () => {
+      const typeInto = (token: string, body: string, headers: Record<string, string> = {}) =>
+        fetch(`${base()}/api/input?session=s1`, { method: 'POST', headers: { ...bearer(token), ...headers }, body });
+
+      it('refuses a typed answer, whether or not the record is answerable', async () => {
+        const info = await startRW();
+        const phone = await pairDevice('Reply from a notification', true);
+        for (const record of [tp(), tp({ choices: undefined, promptFingerprint: undefined })]) {
+          approvalRecords.splice(0, approvalRecords.length, record);
+          for (const token of [phone.token, info.token as string]) {
+            for (const body of ['1\r', '1', '\r', '\x1b\r', '\x1b[B', '\x1b[200~1\r\x1b[201~']) {
+              const res = await typeInto(token, body);
+              expect(res.status, JSON.stringify(body)).toBe(409);
+              expect(await res.json()).toEqual({ error: 'terminal-prompt-active', effect: 'none' });
+            }
+          }
+        }
+        expect(write).not.toHaveBeenCalled();
+      });
+
+      it('lets a lone Esc or a lone Ctrl-C through', async () => {
+        const info = await startRW();
+        approvalRecords.push(tp());
+        expect((await typeInto(info.token as string, '\x1b')).status).toBe(204);
+        expect((await typeInto(info.token as string, '\x03')).status).toBe(204);
+        expect(write.mock.calls).toEqual([['\x1b'], ['\x03']]);
+      });
+
+      it('only a terminal_prompt on THIS pane blocks it', async () => {
+        const info = await startRW();
+        approvalRecords.push(tp({ sessionId: 's2' }), mkApproval({ id: 'ap-gate', kind: 'awaiting_permission' }));
+        expect((await typeInto(info.token as string, '1\r')).status).toBe(204);
+        expect(write).toHaveBeenCalledWith('1\r');
+      });
+
+      it('flows again once the dialog is resolved', async () => {
+        const info = await startRW();
+        approvalRecords.push(tp());
+        expect((await typeInto(info.token as string, 'ls\r')).status).toBe(409);
+        approvalRecords[0].state = 'resolved';
+        expect((await typeInto(info.token as string, 'ls\r')).status).toBe(204);
+        expect(write).toHaveBeenCalledTimes(1);
+      });
+
+      it('a receipted input journals nothing when refused, and its retry is checked again', async () => {
+        const info = await startRW();
+        approvalRecords.push(tp());
+        const headers = {
+          'X-Wmux-Input-Request-ID': `${Date.now()}.${crypto.randomUUID()}`,
+          'X-Wmux-Pane-Incarnation': 'incarnation-1',
+        };
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const refused = await typeInto(info.token as string, '1\r', headers);
+          expect(refused.status).toBe(409);
+          expect(await refused.json()).toEqual({ error: 'terminal-prompt-active', effect: 'none' });
+        }
+        expect(write).not.toHaveBeenCalled();
+        approvalRecords[0].state = 'expired';
+        const written = await typeInto(info.token as string, '1\r', headers);
+        expect(written.status).toBe(200);
+        expect(await written.json()).toEqual({ status: 'written', replayed: false });
+        expect(write).toHaveBeenCalledTimes(1);
+      });
+
+      it('is decided when the body completes, not when the headers arrive', async () => {
+        await startRW();
+        const phone = await pairDevice('Slow typist', true);
+        let observed!: () => void;
+        const entered = new Promise<void>((resolve) => { observed = resolve; });
+        const original = sessionManager.getSession.bind(sessionManager);
+        const spy = vi.spyOn(sessionManager, 'getSession').mockImplementation((id) => {
+          const result = original(id);
+          if (id === 's1') observed();
+          return result;
+        });
+        let request: ReturnType<typeof httpReq>;
+        const response = new Promise<number | undefined>((resolve, reject) => {
+          request = httpReq(`${base()}/api/input?session=s1`, { method: 'POST', headers: bearer(phone.token) }, (res) => {
+            res.resume(); res.on('end', () => resolve(res.statusCode));
+          });
+          request.on('error', reject);
+          request.write('1');
+        });
+        try {
+          await entered;
+          approvalRecords.push(tp());
+          request!.end('\r');
+          expect(await response).toBe(409);
+          expect(write).not.toHaveBeenCalled();
+        } finally { spy.mockRestore(); request!.destroy(); }
+      });
+    });
   });
 
   it('answers 500 rather than hanging when the registry list throws after the body arrives', async () => {

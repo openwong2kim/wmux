@@ -189,7 +189,10 @@ function decodeTurnCursor(
  *   GET  /api/stream?session=  SSE pane bytes (`?token=`/`?ticket=` — EventSource)
  *   GET  /api/events           attention + approval channel; SSE (`?token=`
  *                              allowed) or JSON backlog (Bearer only)
- *   POST /api/input?session=   free-form bytes — 403 unless `--allow-input`
+ *   POST /api/input?session=   free-form bytes — 403 unless `--allow-input`;
+ *                              409 `terminal-prompt-active` while the pane
+ *                              shows a `terminal_prompt` dialog (lone Esc /
+ *                              Ctrl-C excepted)
  *   POST /api/upload           raw JPEG/PNG bytes → a path on disk — 403
  *                              unless `--allow-upload` (its own grant)
  *   GET  /api/approvals        pending + recently resolved approval requests
@@ -4953,6 +4956,29 @@ export class WebTerminalServer {
 
   // --- input (opt-in) -----------------------------------------------------
 
+  /**
+   * Whether raw input must be refused because the pane shows the agent's own
+   * permission dialog (a pending `terminal_prompt` record, answered or not).
+   *
+   * A digit and Enter typed here would answer that dialog while skipping every
+   * fence `POST /api/approvals/:id` applies (capability, fingerprint, the
+   * reflex delay, one write per record, the re-read before the write), and
+   * would let a phone that cannot show the dialog approve it. So the dialog is
+   * answered through the approvals route or at the desk, never through raw
+   * input. The one carve-out is the cancel direction: a lone Esc or a lone
+   * Ctrl-C only abandons what the pane is doing, the same two keys the MCP
+   * approval block exempts.
+   *
+   * Scoped to web principals by construction: the desktop types through the
+   * pipe, never through this server.
+   */
+  private terminalPromptBlocksInput(sessionId: string, body: string): boolean {
+    if (body === '\x1b' || body === '\x03') return false;
+    const approvals = this.deps.approvals;
+    if (!approvals) return false;
+    return approvals.list().pending.some((r) => r.kind === 'terminal_prompt' && r.sessionId === sessionId);
+  }
+
   private handleInput(
     req: http.IncomingMessage,
     res: http.ServerResponse,
@@ -5006,6 +5032,10 @@ export class WebTerminalServer {
         if (this.attachableSession(fresh.principal,sessionId) !== managed || managed.meta.incarnationId !== incarnation) {
           return this.json(res,409,{error:'pane-incarnation-changed'});
         }
+        // Decided in the same synchronous run as the write, never earlier: the
+        // dialog can appear while the body is on the wire.
+        const promptActive = () => this.terminalPromptBlocksInput(sessionId, body);
+        const refusePrompt = () => this.json(res,409,{error:'terminal-prompt-active',effect:'none'});
         const write = () => {
           managed.ptyProcess.write(body);
         // A phone can paste drafts containing newlines; bridge.noteInput keeps
@@ -5018,12 +5048,20 @@ export class WebTerminalServer {
           if (!this.deps.inputReceipts) return this.json(res,503,{error:'input-receipts-unavailable'});
           const owner = fresh.principal.kind === 'device' ? `device:${fresh.principal.deviceId}` : 'operator';
           let receipt;
+          // In the precondition, not in `write`: a refusal there journals
+          // nothing, so a retry with the same id is checked again rather than
+          // replayed as uncertain or written later without the check.
+          let promptRefused = false;
           try {
             receipt = this.deps.inputReceipts().execute(owner,requestID,JSON.stringify([sessionId,incarnation,afterInput ?? null]),body,write,
-              () => afterInput === undefined || afterInput === `${this.inputEpoch}:${managed.bridge.getInputRevision?.()}`);
-          } catch { return this.json(res,409,{error:'input-request-rejected'}); }
+              () => {
+                if (promptActive()) { promptRefused = true; return false; }
+                return afterInput === undefined || afterInput === `${this.inputEpoch}:${managed.bridge.getInputRevision?.()}`;
+              });
+          } catch { return promptRefused ? refusePrompt() : this.json(res,409,{error:'input-request-rejected'}); }
           return this.json(res,receipt.status === 'written' ? 200 : 409,receipt);
         }
+        if (promptActive()) return refusePrompt();
         write();
       } catch (err) {
         return this.json(res, 500, { error: `write failed: ${errMsg(err)}` });

@@ -411,6 +411,11 @@ Check `/api/config` and hide the keyboard rather than letting a user type into a
 403. `fetch` resolves on 401 and 403 — a lone `.catch()` sees neither, which is a
 mistake the browser client made and shipped.
 
+It is **409 `{"error":"terminal-prompt-active","effect":"none"}`** while the pane
+shows the agent's own permission dialog (a pending `terminal_prompt` record),
+except for a lone Esc or a lone Ctrl-C — see
+[`terminal_prompt`](#terminal_prompt--the-agents-own-permission-dialog).
+
 Phone scrolling has two ownership modes. A terminal's normal buffer is local
 scrollback and must remain local (ordinary shells and Kiro use this path).
 Alternate-screen TUIs have no terminal scrollback. With `--allow-input`, a
@@ -970,6 +975,23 @@ resolves. An SSE `approval` event with `phase: "press"` marks the write.
 
 Without the capability header every answer is 501 `answer-in-terminal`: show
 "wmux cannot answer this agent remotely. Open the pane on the computer."
+
+**Typing cannot answer it.** While the pane has a pending `terminal_prompt`
+record (answerable or not, answered-and-waiting included), `POST /api/input` to
+that pane is refused with 409 `{"error":"terminal-prompt-active","effect":"none"}`
+and nothing is written — a digit, Enter, a paste, a notification "Reply", any
+key sequence. The dialog is answered only through `POST /api/approvals/<id>`
+above, or at the computer. The one exception is the cancel direction: a body
+that is exactly one Esc (`\x1b`) or exactly one Ctrl-C (`\x03`) is written as
+usual. Esc followed by anything else (an arrow key, Enter) is refused. The check
+runs when the request body completes, immediately before the write, so a dialog
+that appeared while the body was in flight still refuses it. With a durable
+input receipt the refusal journals nothing: a retry with the same
+`X-Wmux-Input-Request-ID` is checked again and writes only once the dialog is
+gone. Input flows again as soon as the record leaves `pending` (see *It goes
+away* below). A native chat send to the pane is refused the same way, under the
+chat route's own code: 409 `chat-blocked` with `blockedBy: "terminal"` (see
+*Sending* under *Native chat*).
 
 **A key or click in the pane refreshes the record.** Someone at the terminal
 moving the selection (↓, ↑, a click) means what your user confirmed may not be
@@ -1756,6 +1778,8 @@ When config advertises `inputReceipts`, POST `/api/input?session=...` accepts
 when the PTY write returned and its receipt was persisted, or 409
 `{status:"uncertain",replayed:boolean}` when a write may have occurred but cannot
 be confirmed. Neither state proves the agent processed or executed the input.
+409 `{error:"terminal-prompt-active",effect:"none"}` means nothing was written
+and nothing was journaled; the same ID may be retried and is checked again.
 
 Receipts bind authenticated device/operator identity, pane incarnation and exact
 decoded input. Reusing an ID with different content, using an old incarnation,
