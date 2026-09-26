@@ -43,6 +43,8 @@ import type { RpcContext } from '../../../shared/rpc';
 import type { DaemonClient } from '../../DaemonClient';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
 import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
+import { looksLikeApprovalPrompt } from '../../../daemon/approvals/approvalKeystrokes';
+import { parseTerminalPrompt } from '../../../daemon/approvals/terminalPromptParse';
 
 /** The daemon's approval list, narrowed to what target resolution needs. */
 export interface PendingApproval {
@@ -174,26 +176,21 @@ export const PRESS_REFUSAL_HINTS: Readonly<Record<string, string>> = {
     'No automated press reaches it — raise it with deck_ask_decision if the operator is needed',
 };
 
-// ─── Policy refusals escalate, and hold the pane against raw input ──────────
+// ─── Policy refusals escalate; raw input follows live state ────────────────
 //
 // `terminal_send` / `terminal_send_key` are blocked on a pane holding an
 // approval record, because typing at an approval prompt is the thing
 // `approval_press` replaces. When the OPERATOR'S POLICY refuses the press
 // (autonomy off, approval pressing off), the answer is the operator's to give:
-// the caller escalates with `deck_ask_decision`, and raw input stays blocked.
+// the caller escalates with `deck_ask_decision`. A refusal unlocks nothing.
 //
-// An earlier version lifted the block on a policy refusal for ten minutes so
-// the caller was "not deadlocked". A refusal must not widen what the caller
-// may do: once the permission gate defers, Claude Code draws its own dialog,
-// and raw keys would answer it.
-//
-// The record alone is not enough to keep that door shut. A gate record expires
-// when the gate defers, and the dialog's own record can be released by the
-// screen verifier while the dialog is still drawn (seen live). So a policy
-// refusal also HOLDS the pane: for a bounded time, every non-operator caller's
-// raw input to it is refused with or without a record. ctrl+c and escape stay
-// open — they stop a worker, they answer nothing. A later press that policy
-// allows clears the hold.
+// A record is not the only sign of an approval. A gate record expires when the
+// gate defers to the agent's own dialog, and that dialog can be on screen with
+// no record at all. So the raw-input guard also asks, at the moment of the
+// write, whether the pane's workspace policy lets an automated caller answer
+// approvals, and — only when it does not — whether an approval dialog is on
+// the pane's screen right now. That is live state, not an event: when the
+// human answers the dialog it leaves the screen and typing works again at once.
 
 /** Policy refusals — the operator has decided, and only the operator can change it. */
 export const PRESS_POLICY_REFUSALS: ReadonlySet<string> = new Set([
@@ -201,65 +198,44 @@ export const PRESS_POLICY_REFUSALS: ReadonlySet<string> = new Set([
   'press-capability-off',
 ]);
 
+/** Whether a workspace's live policy lets an automated caller answer approvals. */
+export type AnswerPolicy =
+  | { allowed: true }
+  | { allowed: false; reason: 'autonomy-off' | 'press-capability-off' | 'workspace-unknown' };
+
 /**
- * How long a hold lasts: longer than a gate's deadline plus the dialog the
- * agent draws after it, short enough that a reused pane is not refused
- * indefinitely.
+ * The policy for a pane's workspace, from its stored (effective) autonomy
+ * entry. No workspace, or no entry, reads as not allowed: the product default
+ * is autonomy off, and a missing fact must never read as permission.
  */
-export const PRESS_BLOCK_HOLD_MS = 10 * 60_000;
-
-/** Hard ceiling on the map; past it the oldest holds go. */
-export const PRESS_BLOCK_HOLD_MAX = 256;
-
-const pressBlockHolds = new Map<string, { until: number; reason: string }>();
-
-/** Record that a press on this pane was refused by policy. */
-export function holdPressBlock(ptyId: string, reason: string, now = Date.now()): void {
-  if (!ptyId) return;
-  // Sweep on write: the map is module state in an app that runs for days.
-  for (const [pty, entry] of pressBlockHolds) {
-    if (entry.until <= now) pressBlockHolds.delete(pty);
-  }
-  pressBlockHolds.delete(ptyId);
-  while (pressBlockHolds.size >= PRESS_BLOCK_HOLD_MAX) {
-    const oldest = pressBlockHolds.keys().next();
-    if (oldest.done) break;
-    pressBlockHolds.delete(oldest.value);
-  }
-  pressBlockHolds.set(ptyId, { until: now + PRESS_BLOCK_HOLD_MS, reason });
+export function answerPolicyFor(
+  workspaceId: string | null,
+  entry: { mode?: string; approvalPress?: boolean } | undefined,
+): AnswerPolicy {
+  if (!workspaceId) return { allowed: false, reason: 'workspace-unknown' };
+  if (!entry?.mode || entry.mode === 'off') return { allowed: false, reason: 'autonomy-off' };
+  if (entry.approvalPress !== true) return { allowed: false, reason: 'press-capability-off' };
+  return { allowed: true };
 }
 
-/** The live hold for a pane, or null. Expired entries are dropped on read. */
-export function pressBlockHold(ptyId: string, now = Date.now()): { reason: string } | null {
-  const entry = pressBlockHolds.get(ptyId);
-  if (!entry) return null;
-  if (entry.until <= now) {
-    pressBlockHolds.delete(ptyId);
-    return null;
-  }
-  return { reason: entry.reason };
+/**
+ * Is an approval dialog on this screen right now? Either shape counts: an
+ * option row under a selection cursor (a select, or the permission dialog's
+ * "❯ 1. Yes"), or a whole permission dialog the parser recognises. Only the
+ * tail is looked at — the live dialog is at the bottom of the grid.
+ */
+export function approvalOnScreen(screenText: string): boolean {
+  const rows = screenText.split('\n').slice(-60);
+  if (rows.length === 0) return false;
+  return looksLikeApprovalPrompt(rows) || parseTerminalPrompt(rows) !== null;
 }
 
-/** A press policy allowed: the operator's policy no longer refuses this pane. */
-export function releasePressBlockHold(ptyId: string): void {
-  pressBlockHolds.delete(ptyId);
-}
-
-/** Test-only: the hold map is module state shared by two handlers. */
-export function clearPressBlockHolds(): void {
-  pressBlockHolds.clear();
-}
-
-/** Test-only: how many holds are live right now. */
-export function pressBlockHoldCount(): number {
-  return pressBlockHolds.size;
-}
-
-/** The refusal a held pane's raw input gets. */
-export function pressHoldMessage(op: string, ptyId: string, reason: string): string {
+/** The refusal raw input gets when an approval is on screen and policy is off. */
+export function approvalGateMessage(op: string, ptyId: string, reason: string): string {
   return (
-    `${op}: a press at pane "${ptyId}" was refused by the operator's policy (${reason}) — ` +
-    'raw input to it stays blocked. Raise it with deck_ask_decision and wait; ' +
+    `${op}: pane "${ptyId}" is showing an approval prompt, and this workspace's policy ` +
+    `(${reason}) does not let an automated caller answer it — refusing raw input. ` +
+    'A human answers it in the pane; raise it with deck_ask_decision. ' +
     'ctrl+c and escape still stop the worker.'
   );
 }
@@ -482,7 +458,6 @@ export function registerApprovalsRpc(
       | undefined;
 
     if (result?.ok) {
-      releasePressBlockHold(targetPtyId);
       return {
         ok: true,
         approvalId,
@@ -499,9 +474,8 @@ export function registerApprovalsRpc(
     // the hints on the bucket meant they never fired in production.
     const reason = result?.pressRefusal ?? result?.reason ?? 'not-found';
 
-    // A policy refusal is the operator's call: the pane is held against raw
-    // input, and the caller is pointed at the escalation path.
-    if (PRESS_POLICY_REFUSALS.has(reason)) holdPressBlock(targetPtyId, reason);
+    // A policy refusal is the operator's call: nothing is unlocked, and the
+    // caller is pointed at the escalation path.
     return {
       ok: false,
       reason,

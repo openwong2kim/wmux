@@ -10,9 +10,12 @@ import { isGateHeldOn } from '../../deck/stopGateState';
 import {
   approvalBlockMessage,
   pendingApprovalOnPane,
-  pressBlockHold,
-  pressHoldMessage,
+  answerPolicyFor,
+  approvalGateMessage,
+  approvalOnScreen,
+  type AnswerPolicy,
 } from './approvals.rpc';
+import { readWorkspaceAutonomyEntry } from '../../workspace/workspaceFactsFeed';
 import {
   assertCallerMayAccessPty,
   resolvePtyOwnerWorkspace,
@@ -528,9 +531,11 @@ function assertNotKillingAGateHeldPane(
  * RECORD exists — wmux holds one only for a prompt a hook reported, so a worker
  * without wmux hooks is unaffected and keeps its typed path.
  *
- * A press the operator's policy refused does NOT open this block; it HOLDS the
- * pane, record or not, and the caller escalates with deck_ask_decision. See
- * `approvals.rpc.ts`.
+ * With NO record, the guard still refuses when the pane's workspace policy does
+ * not let an automated caller answer approvals AND an approval dialog is on the
+ * pane's screen right now — the agent's own dialog after a gate deferred can
+ * have no record. Both are read live, so a refused press unlocks nothing and a
+ * dialog the human answered stops blocking at once. See `approvals.rpc.ts`.
  */
 /**
  * Keys the block does NOT cover: the two ways to make an agent stop.
@@ -547,29 +552,46 @@ function assertNotKillingAGateHeldPane(
  */
 const APPROVAL_BLOCK_EXEMPT_KEYS: ReadonlySet<string> = new Set(['ctrl+c', 'escape']);
 
+/** The live facts the raw-input guard reads. Injected in tests. */
+export interface ApprovalInputGate {
+  getDaemonClient?: () => DaemonClient | null;
+  /** The pane's workspace policy right now. */
+  answerPolicy: (ptyId: string) => Promise<AnswerPolicy>;
+  /** The pane's visible screen as text, or null when it cannot be read. */
+  readScreenText: (ptyId: string) => Promise<string | null>;
+}
+
 async function assertNotTypingAtAnApproval(
-  getDaemonClient: (() => DaemonClient | null) | undefined,
+  gate: ApprovalInputGate,
   ctx: RpcContext | undefined,
   ptyId: string,
   op: string,
 ): Promise<void> {
   if (ctx?.operator) return;
-  // Checked before the record: the record can be gone while the agent's own
-  // dialog is still drawn (see approvals.rpc.ts), and a hold is main state, so
-  // it holds even when the daemon cannot be asked.
-  const hold = pressBlockHold(ptyId);
-  if (hold) throw new Error(pressHoldMessage(op, ptyId, hold.reason));
-  const record = await pendingApprovalOnPane(getDaemonClient, ptyId);
-  if (!record) return;
-  const message = approvalBlockMessage(op, ptyId, record);
-  // approval_press needs a commander token, so a pane agent cannot take the
-  // path the message names. Say who can.
-  throw new Error(
-    ctx?.commanderWorkspace || record.kind === 'terminal_prompt'
-      ? message
-      : `${message} approval_press needs an orchestrator (commander) session; ` +
-          'without one, the human answers this prompt in the pane.',
+  const record = await pendingApprovalOnPane(gate.getDaemonClient, ptyId);
+  if (record) {
+    const message = approvalBlockMessage(op, ptyId, record);
+    // approval_press needs a commander token, so a pane agent cannot take the
+    // path the message names. Say who can.
+    throw new Error(
+      ctx?.commanderWorkspace || record.kind === 'terminal_prompt'
+        ? message
+        : `${message} approval_press needs an orchestrator (commander) session; ` +
+            'without one, the human answers this prompt in the pane.',
+    );
+  }
+  // No record. When policy lets an automated caller answer approvals, keep the
+  // record-only behaviour; otherwise look at what is on screen right now.
+  const policy = await gate.answerPolicy(ptyId);
+  if (policy.allowed) return;
+  const screen = await gate.readScreenText(ptyId);
+  // An unreadable screen is not evidence of a dialog. Refusing on it would stop
+  // every ordinary send whenever the renderer is slow to answer.
+  if (screen === null || !approvalOnScreen(screen)) return;
+  console.warn(
+    `[approval-gate] refused ${op} on pane ${ptyId}: approval on screen, policy ${policy.reason}`,
   );
+  throw new Error(approvalGateMessage(op, ptyId, policy.reason));
 }
 
 /**
@@ -604,6 +626,10 @@ export function taskPaneTextRefusal(text: string, raw: boolean): string | null {
 export interface InputRpcDeps {
   /** Injected in tests; defaults to the main-hosted task ledger. */
   getLedger?: () => TaskLedger;
+  /** Injected in tests; defaults to the pane's workspace autonomy entry. */
+  answerPolicy?: (ptyId: string) => Promise<AnswerPolicy>;
+  /** Injected in tests; defaults to the renderer's screen read. */
+  readScreenText?: (ptyId: string) => Promise<string | null>;
 }
 
 export function registerInputRpc(
@@ -623,6 +649,32 @@ export function registerInputRpc(
   deps: InputRpcDeps = {},
 ): void {
   const ledgerOf = deps.getLedger ?? getTaskLedger;
+  const approvalGate: ApprovalInputGate = {
+    getDaemonClient,
+    answerPolicy:
+      deps.answerPolicy ??
+      (async (ptyId) => {
+        let workspaceId: string | null = null;
+        try {
+          workspaceId = await resolvePtyOwnerWorkspace(getWindow, ptyId);
+        } catch {
+          workspaceId = null;
+        }
+        return answerPolicyFor(workspaceId, workspaceId ? readWorkspaceAutonomyEntry(workspaceId) : undefined);
+      }),
+    readScreenText:
+      deps.readScreenText ??
+      (async (ptyId) => {
+        try {
+          const read = (await sendToRenderer(getWindow, 'input.readScreen', { ptyId })) as
+            | { text?: unknown }
+            | undefined;
+          return typeof read?.text === 'string' ? read.text : null;
+        } catch {
+          return null;
+        }
+      }),
+  };
 
   /**
    * Fan-out T5 — the owner lane's inputs, from main-verified identity only: the
@@ -712,7 +764,7 @@ export function registerInputRpc(
       'input.send',
     );
 
-    await assertNotTypingAtAnApproval(getDaemonClient, ctx, ptyId, 'input.send');
+    await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.send');
 
     let safeText = params['raw'] === true ? text : sanitizePtyText(text);
 
@@ -911,7 +963,7 @@ export function registerInputRpc(
     // and escape do not pick anything, they stop the agent, and the block must
     // not take away the way to stop a runaway worker.
     if (!APPROVAL_BLOCK_EXEMPT_KEYS.has(key)) {
-      await assertNotTypingAtAnApproval(getDaemonClient, ctx, ptyId, 'input.sendKey');
+      await assertNotTypingAtAnApproval(approvalGate, ctx, ptyId, 'input.sendKey');
     }
 
     noteInterruptInput?.(ptyId, sequence);

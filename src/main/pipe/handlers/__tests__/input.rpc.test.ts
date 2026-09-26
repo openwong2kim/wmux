@@ -393,12 +393,12 @@ describe('input.send / input.sendKey — omitted-target self-loop guard (P0)', (
     });
     expect(res.ok).toBe(true);
     expect(writeMock).toHaveBeenCalledWith('pty-self', expect.any(String));
-    // No active-pane resolution happened (explicit ptyId bypassed it).
-    expect(sendToRendererMock).not.toHaveBeenCalledWith(
-      expect.anything(),
-      'input.readScreen',
-      expect.anything(),
+    // No active-pane resolution happened (explicit ptyId bypassed it). The
+    // approval guard may read THIS pane's screen by id; that is not resolution.
+    const resolutionReads = sendToRendererMock.mock.calls.filter(
+      (c: unknown[]) => c[1] === 'input.readScreen' && !(c[2] as { ptyId?: string } | undefined)?.ptyId,
     );
+    expect(resolutionReads).toHaveLength(0);
   });
 
   it('resolves the active pane scoped to the caller workspace for an external caller (no senderPtyId)', async () => {

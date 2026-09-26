@@ -8,15 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RpcRouter } from '../../RpcRouter';
 import { registerInputRpc } from '../input.rpc';
-import {
-  clearPressBlockHolds,
-  holdPressBlock,
-  pressBlockHold,
-  pressBlockHoldCount,
-  registerApprovalsRpc,
-  PRESS_BLOCK_HOLD_MS,
-  PRESS_POLICY_REFUSALS,
-} from '../approvals.rpc';
+import { registerApprovalsRpc, PRESS_POLICY_REFUSALS, type AnswerPolicy } from '../approvals.rpc';
 import { mintCommanderToken, revokeCommanderToken } from '../../../deck/commanderTrust';
 import type { BrowserWindow } from 'electron';
 import type { PTYManager } from '../../../pty/PTYManager';
@@ -40,9 +32,33 @@ const LEDGER = {
       : [],
 } as unknown as TaskLedger;
 
+/**
+ * The live facts the raw-input guard reads: the pane's workspace policy and
+ * what is on its screen. Tests mutate these between calls.
+ */
+const live: { policy: AnswerPolicy; screen: string | null } = {
+  policy: { allowed: false, reason: 'autonomy-off' },
+  screen: '',
+};
+
+/** Claude Code's own permission dialog, as the renderer's screen read shows it. */
+const DIALOG_SCREEN = [
+  '⏺ Creating empty probe file',
+  '──────────────────────',
+  ' Bash command',
+  '',
+  '   touch probe.txt',
+  '',
+  ' Do you want to proceed?',
+  ' ❯ 1. Yes',
+  '   2. No',
+  '',
+  ' Esc to cancel · Tab to amend',
+].join('\n');
+
 /** A daemon holding `pending` approval records, whose resolve answers `reply`. */
 function wire(options: {
-  pending?: Array<{ id: string; sessionId: string; workspaceId?: string; toolName?: string; question?: string }>;
+  pending?: Array<{ id: string; sessionId: string; workspaceId?: string; toolName?: string; question?: string; kind?: string }>;
   reply?: unknown;
 } = {}): Wiring {
   const writes: Array<{ ptyId: string; data: string }> = [];
@@ -59,7 +75,15 @@ function wire(options: {
   };
   const router = new RpcRouter();
   // No local pty, so writes fall through to the daemon client above.
-  registerInputRpc(router, { get: () => undefined } as unknown as PTYManager, () => fakeWindow, () => dc as never);
+  registerInputRpc(
+    router,
+    { get: () => undefined } as unknown as PTYManager,
+    () => fakeWindow,
+    () => dc as never,
+    undefined,
+    undefined,
+    { answerPolicy: async () => live.policy, readScreenText: async () => live.screen },
+  );
   registerApprovalsRpc(router, () => dc as never, { getLedger: () => LEDGER });
   return { router, token: mintCommanderToken('ws-brain'), writes };
 }
@@ -70,12 +94,12 @@ const OWNED = { id: 'ap-1', sessionId: 'pty-w', workspaceId: 'ws-task' };
 let w: Wiring;
 
 beforeEach(() => {
-  clearPressBlockHolds();
+  live.policy = { allowed: false, reason: 'autonomy-off' };
+  live.screen = '';
   w = wire();
 });
 afterEach(() => {
   revokeCommanderToken(w.token);
-  clearPressBlockHolds();
 });
 
 /** The refusal shape, narrowed — `dispatch` returns a union on `ok`. */
@@ -193,15 +217,11 @@ describe('terminal_send at a pane holding an approval', () => {
 });
 
 describe('a press the operator\'s POLICY refused', () => {
-  // Follow-up to #1541: a policy refusal used to lift the block for ten
-  // minutes and answer with a `typedFallback` inviting the caller to type. It
-  // now escalates and holds the pane instead.
   it.each(['autonomy-off', 'press-capability-off'])(
-    'on %s: escalates, offers no typed path, and keeps every selecting key blocked',
+    'on %s: escalates, offers no typed path, and unlocks nothing',
     async (pressRefusal) => {
-      const pending: Array<Record<string, unknown>> = [{ ...OWNED, kind: 'awaiting_permission', toolName: 'Bash' }];
       w = wire({
-        pending: pending as never,
+        pending: [{ ...OWNED, toolName: 'Bash' }],
         // The shape the daemon really answers with: one bucketed wire reason
         // plus the concrete condition.
         reply: { ok: false, reason: 'out-of-scope', pressRefusal },
@@ -216,74 +236,10 @@ describe('a press the operator\'s POLICY refused', () => {
       expect(press.result?.note).toContain('deck_ask_decision');
       expect(press.result?.typedFallback).toBeUndefined();
       expect(PRESS_POLICY_REFUSALS.has(pressRefusal)).toBe(true);
-
-      // Still blocked on the gate record…
       expect((await asBrain('input.send', { ptyId: 'pty-w', text: '1', submit: true })).ok).toBe(false);
-      // …and after the gate defers: its record expires and Claude Code's own
-      // dialog is recorded as a terminal_prompt. No digit, Enter or arrow lands.
-      pending.splice(0, pending.length, { ...OWNED, id: 'ap-2', kind: 'terminal_prompt', toolName: 'Bash' });
-      expect((await asBrain('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(false);
-      for (const key of ['enter', 'down', 'up', 'left', 'right', 'tab']) {
-        const res = await asBrain('input.sendKey', { ptyId: 'pty-w', key });
-        expect(res.ok).toBe(false);
-        expect(res.error).toContain(`refused by the operator's policy (${pressRefusal})`);
-      }
       expect(w.writes).toHaveLength(0);
-
-      // …and with NO record at all: the dialog's record can be released by the
-      // screen verifier while the dialog is still drawn (seen live). The hold
-      // the refusal set keeps raw input refused for every non-operator caller.
-      pending.splice(0, pending.length);
-      for (const call of [
-        () => asBrain('input.send', { ptyId: 'pty-w', text: '1', submit: true }),
-        () => asBrain('input.sendKey', { ptyId: 'pty-w', key: 'enter' }),
-        () => asPaneAgent('input.send', { ptyId: 'pty-w', text: '1' }),
-      ]) {
-        const res = await call();
-        expect(res.ok).toBe(false);
-        expect(res.error).toContain(`refused by the operator's policy (${pressRefusal})`);
-        expect(res.error).toContain('deck_ask_decision');
-      }
-      expect(w.writes).toHaveLength(0);
-      // Stopping the worker is still allowed — it answers nothing — and the
-      // human operator is never held.
-      expect((await asBrain('input.sendKey', { ptyId: 'pty-w', key: 'ctrl+c' })).ok).toBe(true);
-      expect((await asHuman('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(true);
     },
   );
-
-  it('a press policy later allows releases the hold', async () => {
-    holdPressBlock('pty-w', 'autonomy-off');
-    w = wire({ pending: [OWNED], reply: { ok: true, durable: true } });
-
-    const press = await asBrain('approval.press', { ptyId: 'pty-w', decision: 'approve' });
-
-    expect(press.ok).toBe(true);
-    expect(pressBlockHold('pty-w')).toBeNull();
-  });
-
-  it('holds only on a policy refusal — a transient one leaves no hold behind', async () => {
-    w = wire({ pending: [OWNED], reply: { ok: false, reason: 'prompt-gone' } });
-    await asBrain('approval.press', { ptyId: 'pty-w', decision: 'approve' });
-    expect(pressBlockHold('pty-w')).toBeNull();
-  });
-
-  it('expires, so a reused pane is not refused forever', () => {
-    const t0 = 1_000_000;
-    holdPressBlock('pty-w', 'autonomy-off', t0);
-    expect(pressBlockHold('pty-w', t0 + 1)).toMatchObject({ reason: 'autonomy-off' });
-    expect(pressBlockHold('pty-w', t0 + PRESS_BLOCK_HOLD_MS)).toBeNull();
-  });
-
-  it('sweeps every expired entry on write, not only the one being read', () => {
-    const t0 = 1_000_000;
-    for (let i = 0; i < 20; i++) holdPressBlock(`pty-dead-${i}`, 'autonomy-off', t0);
-    expect(pressBlockHoldCount()).toBe(20);
-
-    holdPressBlock('pty-live', 'autonomy-off', t0 + PRESS_BLOCK_HOLD_MS + 1);
-
-    expect(pressBlockHoldCount()).toBe(1);
-  });
 
   it.each(['prompt-gone', 'not-a-task-workspace', 'workspace-unknown', 'scope-unavailable', 'detector-only'])(
     'on %s: no escalate marker, no typed path, block stays',
@@ -305,6 +261,90 @@ describe('a press the operator\'s POLICY refused', () => {
     const res = await asBrain('input.send', { ptyId: 'pty-w', text: '1' });
     expect(res.error).toContain('deck_ask_decision');
     expect(res.error).not.toContain('you may type again');
+  });
+});
+
+// Follow-up to #1541: raw input follows LIVE state — the pane's workspace
+// policy and what is on its screen — not a refused-press event.
+describe('no record, an approval dialog on screen', () => {
+  it.each([
+    { allowed: false, reason: 'autonomy-off' },
+    { allowed: false, reason: 'press-capability-off' },
+    { allowed: false, reason: 'workspace-unknown' },
+  ] as AnswerPolicy[])('policy $reason: the brain never pressed, and raw keys are still refused', async (policy) => {
+    // The gate record expired and the dialog's own record is gone, but Claude
+    // Code's dialog is still drawn. The brain skipped approval_press entirely.
+    live.policy = policy;
+    live.screen = DIALOG_SCREEN;
+    const reason = (policy as { reason: string }).reason;
+
+    for (const call of [
+      () => asBrain('input.send', { ptyId: 'pty-w', text: '1', submit: true }),
+      () => asBrain('input.sendKey', { ptyId: 'pty-w', key: 'enter' }),
+      () => asBrain('input.sendKey', { ptyId: 'pty-w', key: 'down' }),
+      () => asPaneAgent('input.send', { ptyId: 'pty-w', text: '1' }),
+    ]) {
+      const res = await call();
+      expect(res.ok).toBe(false);
+      expect(res.error).toContain(`policy (${reason})`);
+      expect(res.error).toContain('deck_ask_decision');
+    }
+    expect(w.writes).toHaveLength(0);
+    // Stop keys and the human are never refused.
+    expect((await asBrain('input.sendKey', { ptyId: 'pty-w', key: 'escape' })).ok).toBe(true);
+    expect((await asHuman('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(true);
+  });
+
+  it('once the human answers and the dialog leaves the screen, the next plain send goes through at once', async () => {
+    live.screen = DIALOG_SCREEN;
+    expect((await asBrain('input.send', { ptyId: 'pty-w', text: 'next step' })).ok).toBe(false);
+
+    await asHuman('input.send', { ptyId: 'pty-w', text: '1' });
+    live.screen = '⏺ Done.\n\n──────────\n❯ ';
+
+    const res = await asBrain('input.send', { ptyId: 'pty-w', text: 'next step', submit: true });
+    expect(res.ok).toBe(true);
+  });
+
+  it('a refused press unlocks nothing: the dialog still refuses raw keys after it', async () => {
+    live.screen = DIALOG_SCREEN;
+    w = wire({
+      pending: [{ ...OWNED, kind: 'awaiting_permission', toolName: 'Bash' }],
+      reply: { ok: false, reason: 'out-of-scope', pressRefusal: 'autonomy-off' },
+    });
+    await asBrain('approval.press', { ptyId: 'pty-w', decision: 'approve' });
+    // The gate defers: its record expires. Nothing the refusal did opens typing.
+    w = wire({ pending: [] });
+    expect((await asBrain('input.sendKey', { ptyId: 'pty-w', key: 'enter' })).ok).toBe(false);
+  });
+
+  it('a press that returns ok (defer included) unlocks nothing either', async () => {
+    live.screen = DIALOG_SCREEN;
+    w = wire({ pending: [OWNED], reply: { ok: true, durable: true } });
+    await asBrain('approval.press', { ptyId: 'pty-w', decision: 'approve' });
+    w = wire({ pending: [] });
+    expect((await asBrain('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(false);
+  });
+
+  it('when policy allows answering, the record-only behaviour is unchanged', async () => {
+    live.policy = { allowed: true };
+    live.screen = DIALOG_SCREEN;
+    expect((await asBrain('input.send', { ptyId: 'pty-w', text: 'go on' })).ok).toBe(true);
+    // …and a pending record still refuses raw keys; approval_press is the path.
+    w = wire({ pending: [OWNED] });
+    expect((await asBrain('input.sendKey', { ptyId: 'pty-w', key: 'enter' })).ok).toBe(false);
+    expect((await asBrain('approval.press', { ptyId: 'pty-w', decision: 'approve' })).ok).toBe(true);
+  });
+
+  it('a plain question with no dialog on screen is answered with terminal_send', async () => {
+    live.screen = '⏺ Should I also update the README? Let me know.\n\n──────────\n❯ ';
+    const res = await asBrain('input.send', { ptyId: 'pty-w', text: 'yes, update it', submit: true });
+    expect(res.ok).toBe(true);
+  });
+
+  it('an unreadable screen is not evidence of a dialog', async () => {
+    live.screen = null;
+    expect((await asBrain('input.send', { ptyId: 'pty-w', text: 'hello' })).ok).toBe(true);
   });
 });
 
