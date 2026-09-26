@@ -56,6 +56,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { spawn, execFileSync, type ChildProcess } from 'child_process';
+import { INSTALL_BLOCKED_BY_WINDOWS_REASON } from '../../shared/installAbortReasons';
 
 /**
  * Marker the waiter writes when it refuses to launch, relative to userData.
@@ -865,9 +866,36 @@ export function buildWaiterScript(plan: WaiterPlan, launchStampPath?: string): s
     // with no update and no explanation on the next boot.
     `$started = $true`,
     `$setupProc = $null`,
-    `try { $setupProc = Start-Process -FilePath $setup -PassThru -ErrorAction Stop } catch { $started = $false }`,
+    `$startErr = $null`,
+    `try { $setupProc = Start-Process -FilePath $setup -PassThru -ErrorAction Stop } catch { $started = $false; $startErr = $_.Exception }`,
     `if (-not $started) {`,
-    `  Write-InstallAbortMarker 'install-aborted: the installer could not be started'`,
+    // #1525 — name the one failure the user cannot retry their way out of
+    // right now: Windows refusing to run the installer at all. 4551 is
+    // ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION (Smart App Control / App
+    // Control for Business), 1260 is ERROR_ACCESS_DISABLED_BY_POLICY
+    // (AppLocker / Software Restriction Policies). Windows PowerShell 5.1's
+    // Start-Process does NOT keep the Win32Exception as an InnerException —
+    // it rethrows a bare InvalidOperationException whose message embeds the
+    // Win32 text (verified on 5.1.26100). So the chain is walked for a real
+    // Win32Exception (newer hosts), AND each message is compared against
+    // FormatMessage's own text for those codes, which is localized exactly
+    // like the text Start-Process embedded. Detection only: every other
+    // failure keeps the old reason, and both paths exit 4.
+    `  $blockedByPolicy = $false`,
+    `  try {`,
+    `    $policyCodes = @(4551, 1260)`,
+    `    $policyTexts = @('An Application Control policy has blocked this file', 'This program is blocked by group policy')`,
+    `    foreach ($code in $policyCodes) { $t = (New-Object System.ComponentModel.Win32Exception $code).Message; if ($t) { $policyTexts += $t } }`,
+    `    $e = $startErr`,
+    `    while ($e) {`,
+    `      if (($e -is [System.ComponentModel.Win32Exception]) -and ($policyCodes -contains $e.NativeErrorCode)) { $blockedByPolicy = $true }`,
+    `      $msg = [string]$e.Message`,
+    `      foreach ($t in $policyTexts) { if ($msg -and $msg.Contains($t)) { $blockedByPolicy = $true } }`,
+    `      $e = $e.InnerException`,
+    `    }`,
+    `  } catch { }`,
+    `  if ($blockedByPolicy) { Write-InstallAbortMarker ${psQuote(INSTALL_BLOCKED_BY_WINDOWS_REASON)} }`,
+    `  else { Write-InstallAbortMarker 'install-aborted: the installer could not be started' }`,
     `  exit 4`,
     `}`,
     // #1046 -- post-exit verification. A Squirrel install can throw partway

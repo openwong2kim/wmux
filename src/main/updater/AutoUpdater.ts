@@ -45,6 +45,7 @@ import {
   waitForWaiterHeartbeat,
 } from './installTeardown';
 import { findInstallIntegrityGap } from './installIntegrity';
+import { assessSmartAppControlBlock } from './smartAppControl';
 
 const REPO = 'openwong2kim/wmux';
 // update.electronjs.org keys releases by platform-arch. Only the two arches we
@@ -894,10 +895,15 @@ export class AutoUpdater {
       return { status: 'checking' };
     });
 
-    ipcMain.handle(IPC.UPDATE_INSTALL, async () => {
+    ipcMain.handle(IPC.UPDATE_INSTALL, async (_event, opts?: unknown) => {
       // Explicit "Restart to install" button (surfaces after a background poll
       // downloaded an update). Shares performInstall with the one-shot path.
-      await this.performInstall();
+      // #1525 — `{ installAnyway: true }` is the "Install anyway" action on
+      // the Smart App Control warning: it skips that one check, for this one
+      // call. Nothing else about the install changes.
+      const installAnyway =
+        typeof opts === 'object' && opts !== null && (opts as { installAnyway?: unknown }).installAnyway === true;
+      await this.performInstall({ skipSmartAppControlCheck: installAnyway });
     });
   }
 
@@ -908,7 +914,9 @@ export class AutoUpdater {
    * swap the bundle atomically on quit. Shared by the explicit "Restart to
    * install" button (UPDATE_INSTALL) and the one-shot user-triggered check.
    */
-  private async performInstall(): Promise<void> {
+  private async performInstall(
+    { skipSmartAppControlCheck = false }: { skipSmartAppControlCheck?: boolean } = {},
+  ): Promise<void> {
     if (!isUpdaterSupported) {
       // No in-app installer on this platform — never download/launch an
       // installer built for another OS. The install paths below are
@@ -1010,6 +1018,26 @@ export class AutoUpdater {
         status: 'error',
         source: 'install',
         message: 'In-app install is only available in an installed build. Download the latest release manually.',
+      });
+      return;
+    }
+
+    // #1525 — Smart App Control can refuse to run the installer, and that
+    // refusal only surfaces in the waiter, AFTER wmux has quit and taken every
+    // pane with it. Ask first, while nothing has been torn down yet: if SAC is
+    // enforcing and the installer is not validly signed, stay open and say so.
+    // The user can still go ahead ("Install anyway" → skipSmartAppControlCheck).
+    if (skipSmartAppControlCheck) {
+      console.log('[AutoUpdater] Smart App Control check skipped — the user chose to install anyway');
+    } else if (await this.smartAppControlWillLikelyBlock(tempPath)) {
+      this.isInstalling = false;
+      this.sendToRenderer(IPC.UPDATE_ERROR, {
+        status: 'error',
+        source: 'install',
+        code: 'smart-app-control',
+        message:
+          "Windows Smart App Control will likely block this update's installer, so wmux stayed open and nothing was changed. " +
+          'Try again in a day or two, or choose Install anyway on the update notice.',
       });
       return;
     }
@@ -1177,6 +1205,31 @@ export class AutoUpdater {
     console.log('[AutoUpdater] quitting for install — the daemon goes down with us so the installer runs against a dead tree');
     app.quit();
     this.armInstallQuitWatchdog(abortMarkerPath);
+  }
+
+  /**
+   * #1525 — true only when Smart App Control is enforcing AND the installer's
+   * Authenticode status is not Valid. Fails OPEN: a probe that errors or times
+   * out logs one line and answers false, so the install proceeds exactly as it
+   * did before this check existed.
+   */
+  private async smartAppControlWillLikelyBlock(installerPath: string): Promise<boolean> {
+    try {
+      const verdict = await assessSmartAppControlBlock(installerPath);
+      if (verdict.likelyBlocked) {
+        console.warn(
+          `[AutoUpdater] Smart App Control is enforcing (state ${verdict.sacState}) and the installer signature is ` +
+          `${verdict.signatureStatus} — holding the install instead of quitting into a blocked installer`,
+        );
+      }
+      return verdict.likelyBlocked;
+    } catch (err) {
+      console.warn(
+        '[AutoUpdater] Smart App Control check failed — proceeding with the install:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return false;
+    }
   }
 
   /**

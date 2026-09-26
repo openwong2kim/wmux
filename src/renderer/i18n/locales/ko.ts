@@ -1309,6 +1309,11 @@ export const ko = {
   'update.readyToInstall':
     'wmux {version} 설치 준비가 끝났습니다. 현재 {current}을(를) 사용 중입니다. 설치하면 모든 판이 닫힙니다.',
   'update.installNow': '지금 설치',
+  'update.refusedInstallBlocked':
+    '지난 업데이트가 설치되지 않았습니다. Windows가 설치 프로그램을 차단했습니다(스마트 앱 컨트롤 또는 애플리케이션 제어 정책). 현재 버전은 그대로입니다. 하루이틀 뒤에 다시 시도하거나, Windows가 허용하면 릴리스 페이지에서 설치하세요.',
+  'update.smartAppControlHold':
+    'Windows 스마트 앱 컨트롤이 이 업데이트의 설치 프로그램을 차단할 가능성이 높아 wmux를 종료하지 않았고 아무것도 바뀌지 않았습니다. 하루이틀 뒤에 다시 시도하세요. 그래도 설치하면 모든 판이 닫히며, Windows가 설치 프로그램을 차단해도 wmux를 다시 열면 현재 버전이 그대로 남아 있습니다.',
+  'update.installAnyway': '그래도 설치',
   'channels.alreadyMemberToast': '{workspace}은(는) 이미 #{channel}에 있습니다',
   'channels.joinFailedToast': '{workspace} 추가에 실패했습니다',
   'channels.leftToast': '#{channel}에서 나갔습니다',

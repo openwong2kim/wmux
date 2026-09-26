@@ -1496,6 +1496,11 @@ export const zh = {
   'update.refusedInstall': '上次更新未安装；当前版本保持不变。请重试，或关闭 wmux 后从 releases 页面运行安装程序。（{detail}）',
   'update.readyToInstall': 'wmux {version} 已可安装。当前运行的是 {current}。安装会关闭所有窗格。',
   'update.installNow': '立即安装',
+  'update.refusedInstallBlocked':
+    '上次更新未安装：Windows 阻止了其安装程序（智能应用控制或应用程序控制策略）。当前版本保持不变。请在一两天后重试，或在 Windows 允许后从 releases 页面安装。',
+  'update.smartAppControlHold':
+    'Windows 智能应用控制很可能会阻止此更新的安装程序，因此 wmux 保持打开，未做任何更改。请在一两天后重试。仍然安装会关闭所有窗格；如果 Windows 阻止了安装程序，重新打开 wmux 即可，当前版本仍会保留。',
+  'update.installAnyway': '仍然安装',
   'channels.alreadyMemberToast': '{workspace} 已在 #{channel} 中',
   'channels.joinFailedToast': '无法将 {workspace} 加入频道',
   'channels.leftToast': '已退出 #{channel}',

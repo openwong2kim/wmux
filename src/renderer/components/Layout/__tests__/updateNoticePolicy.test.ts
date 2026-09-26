@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   shouldShowInstallError,
   shouldReannounceAfterError,
+  isSmartAppControlHold,
   truncateReason,
 } from '../updateNoticePolicy';
 
@@ -51,6 +52,21 @@ describe('shouldReannounceAfterError', () => {
     // The in-flight attempt's own outcome will re-announce; re-offering here
     // just invites a third click into the same refusal.
     expect(shouldReannounceAfterError(err({ source: 'install', code: 'in-progress' }))).toBe(false);
+  });
+
+  it('does not re-offer "Install now" beside the Smart App Control hold (#1525)', () => {
+    // The hold's own toast carries "Install anyway"; a second button for the
+    // same installer would just walk back into the hold.
+    expect(shouldReannounceAfterError(err({ source: 'install', code: 'smart-app-control' }))).toBe(false);
+  });
+});
+
+describe('isSmartAppControlHold (#1525)', () => {
+  it('recognizes only the hold code', () => {
+    expect(isSmartAppControlHold(err({ source: 'install', code: 'smart-app-control' }))).toBe(true);
+    expect(isSmartAppControlHold(err({ source: 'install', code: 'in-progress' }))).toBe(false);
+    expect(isSmartAppControlHold(err({ source: 'install' }))).toBe(false);
+    expect(isSmartAppControlHold(err())).toBe(false);
   });
 });
 

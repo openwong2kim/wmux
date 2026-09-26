@@ -1886,6 +1886,11 @@ export const en = {
   'update.readyToInstall':
     'wmux {version} is ready to install. You are running {current}. Installing closes every pane.',
   'update.installNow': 'Install now',
+  'update.refusedInstallBlocked':
+    'The last update did not install: Windows blocked its installer (Smart App Control or an application control policy). Your current version is unchanged. Try again in a day or two, or install from the releases page once Windows allows it.',
+  'update.smartAppControlHold':
+    "Windows Smart App Control will likely block this update's installer, so wmux stayed open and nothing changed. Try again in a day or two. Install anyway closes every pane; if Windows blocks the installer, reopen wmux and your current version will still be there.",
+  'update.installAnyway': 'Install anyway',
   'channels.alreadyMemberToast': '{workspace} is already in #{channel}',
   'channels.joinFailedToast': "Couldn't add {workspace} to the channel",
   'channels.leftToast': 'Left #{channel}',

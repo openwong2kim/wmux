@@ -186,6 +186,20 @@ async function loadForPlatform(
   };
   vi.doMock('../installIntegrity', () => integrity);
 
+  // #1525 — the pre-quit Smart App Control check spawns reg.exe and
+  // PowerShell for real, and the machine running this suite may itself have
+  // SAC enforcing (the maintainer's does). Default: not enforcing, so every
+  // install test written before the check existed walks the same path; the
+  // dedicated tests below override it.
+  const sac = {
+    assessSmartAppControlBlock: vi.fn(async (_installerPath: string) => ({
+      likelyBlocked: false,
+      sacState: 0 as number | null,
+      signatureStatus: null as string | null,
+    })),
+  };
+  vi.doMock('../smartAppControl', () => sac);
+
   vi.doMock('electron', () => ({
     autoUpdater: nativeUpdater,
     app: { getVersion: () => FAKE_VERSION, getPath: () => tempPathDir, quit: appQuit, isPackaged },
@@ -200,7 +214,7 @@ async function loadForPlatform(
   }));
 
   const mod = await import('../AutoUpdater');
-  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, ipcListeners, request, appQuit, shellOpenPath, nativeUpdater, teardown, integrity, tempPathDir };
+  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, ipcListeners, request, appQuit, shellOpenPath, nativeUpdater, teardown, integrity, sac, tempPathDir };
 }
 
 describe('AutoUpdater platform gating', () => {
@@ -433,6 +447,105 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
     expect(plan.setupExePath).toContain('.Setup.exe');
     // #502 + #866: quit so Squirrel never runs against a live instance, and ask
     // for the full shutdown so the daemon goes down with us.
+    expect(loaded.appQuit).toHaveBeenCalledTimes(1);
+  });
+
+  it('win32 (#1525): Smart App Control enforcing + an untrusted installer holds the install BEFORE anything is torn down', async () => {
+    const loaded = await loadForPlatform('win32', downloadRoutes);
+    const hooks = quitHooks();
+    const { updater, installHandler, sent } = await downloadUpdateFor(loaded, hooks);
+    loaded.sac.assessSmartAppControlBlock.mockResolvedValueOnce({
+      likelyBlocked: true, sacState: 1, signatureStatus: 'UnknownError',
+    });
+
+    await installHandler();
+
+    // Asked about the verified installer itself.
+    const probed = loaded.sac.assessSmartAppControlBlock.mock.calls[0]![0];
+    expect(probed).toContain(`wmux-update-${UPDATE_VERSION}-`);
+    // Reported as the hold, tagged so the always-mounted toast surface shows
+    // it and offers "Install anyway".
+    const err = sent.find((m) => m.channel === IPC.UPDATE_ERROR);
+    expect(err).toBeDefined();
+    expect(err!.data.source).toBe('install');
+    expect(err!.data.code).toBe('smart-app-control');
+    expect(String(err!.data.message)).toContain('Smart App Control');
+    // wmux stays open and NOTHING irreversible ran: no waiter, no daemon
+    // shutdown latch, no force-kill, no quit.
+    expect(loaded.appQuit).not.toHaveBeenCalled();
+    expect(loaded.teardown.spawnInstallWaiter).not.toHaveBeenCalled();
+    expect(loaded.teardown.collectInstallRootProcesses).not.toHaveBeenCalled();
+    expect(loaded.teardown.terminatePids).not.toHaveBeenCalled();
+    expect(hooks.onInstallRequiresFullShutdown).not.toHaveBeenCalled();
+    expect(loaded.shellOpenPath).not.toHaveBeenCalled();
+    // Unlatched, so "Install anyway" (or a later retry) is not answered with
+    // "an update install is already in progress".
+    expect((updater as unknown as { isInstalling: boolean }).isInstalling).toBe(false);
+  });
+
+  it('win32 (#1525): "Install anyway" skips only the Smart App Control check, for that one call', async () => {
+    const loaded = await loadForPlatform('win32', downloadRoutes);
+    const { installHandler, sent } = await downloadUpdateFor(loaded);
+    loaded.sac.assessSmartAppControlBlock.mockResolvedValue({
+      likelyBlocked: true, sacState: 1, signatureStatus: 'UnknownError',
+    });
+
+    // A plain press is held...
+    await installHandler();
+    expect(sent.filter((m) => m.data.code === 'smart-app-control')).toHaveLength(1);
+    expect(loaded.appQuit).not.toHaveBeenCalled();
+
+    // ...the notice's action goes ahead with the normal flow, unprobed.
+    await installHandler(undefined, { installAnyway: true });
+    expect(loaded.sac.assessSmartAppControlBlock).toHaveBeenCalledTimes(1);
+    expect(loaded.teardown.spawnInstallWaiter).toHaveBeenCalledTimes(1);
+    expect(loaded.appQuit).toHaveBeenCalledTimes(1);
+  });
+
+  it('win32 (#1525): the bypass is only honoured as an explicit installAnyway:true', async () => {
+    const loaded = await loadForPlatform('win32', downloadRoutes);
+    const { installHandler, sent } = await downloadUpdateFor(loaded);
+    loaded.sac.assessSmartAppControlBlock.mockResolvedValue({
+      likelyBlocked: true, sacState: 1, signatureStatus: 'NotSigned',
+    });
+
+    await installHandler(undefined, { installAnyway: 'yes' });
+    await installHandler(undefined, 'installAnyway');
+
+    expect(sent.filter((m) => m.data.code === 'smart-app-control')).toHaveLength(2);
+    expect(loaded.appQuit).not.toHaveBeenCalled();
+  });
+
+  it('win32 (#1525): a clear verdict (evaluation mode, off, or a Valid signature) installs as before', async () => {
+    const loaded = await loadForPlatform('win32', downloadRoutes);
+    const { installHandler, sent } = await downloadUpdateFor(loaded);
+    loaded.sac.assessSmartAppControlBlock.mockResolvedValueOnce({
+      likelyBlocked: false, sacState: 2, signatureStatus: null,
+    });
+
+    await installHandler();
+
+    expect(loaded.sac.assessSmartAppControlBlock).toHaveBeenCalledTimes(1);
+    expect(sent.some((m) => m.channel === IPC.UPDATE_ERROR)).toBe(false);
+    expect(loaded.teardown.spawnInstallWaiter).toHaveBeenCalledTimes(1);
+    expect(loaded.appQuit).toHaveBeenCalledTimes(1);
+  });
+
+  it('win32 (#1525): a Smart App Control probe that fails or times out fails OPEN', async () => {
+    const loaded = await loadForPlatform('win32', downloadRoutes);
+    const { installHandler, sent } = await downloadUpdateFor(loaded);
+    loaded.sac.assessSmartAppControlBlock.mockRejectedValueOnce(new Error('powershell timed out'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await installHandler();
+      // One log line says why the check was skipped.
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('Smart App Control check failed'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(sent.some((m) => m.channel === IPC.UPDATE_ERROR)).toBe(false);
+    expect(loaded.teardown.spawnInstallWaiter).toHaveBeenCalledTimes(1);
     expect(loaded.appQuit).toHaveBeenCalledTimes(1);
   });
 

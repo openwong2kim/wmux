@@ -11,7 +11,8 @@ import { WorkspaceCenter } from './WorkspaceCenter';
 import { EmptyLeafFunnel } from './EmptyLeafFunnel';
 import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { selectInboxOwnsApprovals } from '../../stores/selectors/approvalInbox';
-import { shouldShowInstallError, shouldReannounceAfterError, truncateReason } from './updateNoticePolicy';
+import { shouldShowInstallError, shouldReannounceAfterError, isSmartAppControlHold, truncateReason } from './updateNoticePolicy';
+import { isInstallBlockedByWindowsReason } from '../../../shared/installAbortReasons';
 import { hooksLaunchCheck, shouldShowAutoUpdatePrompt, shouldShowCheatSheet, shouldStartOnboarding } from './firstBootSequence';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
@@ -479,7 +480,12 @@ function useRefusedInstallNotice(
         useStore.getState().pushToast({
           level: 'error',
           persist: true,
-          message: t('update.refusedInstall', { detail: truncateReason(reason) }),
+          // #1525 — Windows refusing to run the installer gets its own
+          // sentence: the generic one's "run the installer from the releases
+          // page" is the same file Windows just blocked.
+          message: isInstallBlockedByWindowsReason(reason)
+            ? t('update.refusedInstallBlocked')
+            : t('update.refusedInstall', { detail: truncateReason(reason) }),
         });
       })
       .catch((err) => {
@@ -546,6 +552,9 @@ function usePendingInstallNotice(
     // Set while an install the USER asked for is in flight — see the error
     // subscription below for why an unfiltered UPDATE_ERROR is not usable.
     let installRequestedAt = 0;
+    // #1525 — the Smart App Control warning on screen, so a second hold (the
+    // user pressed Install again) replaces it instead of stacking a copy.
+    let sacToastId: string | null = null;
 
     const announce = (version: string, currentVersion: string): void => {
       if (cancelled || announcedVersion === version) return;
@@ -632,6 +641,25 @@ function usePendingInstallNotice(
       // Only meaningful for UNTAGGED errors now (tagged ones always show);
       // resetting disarms the click window until the next request.
       installRequestedAt = 0;
+      // #1525 — not a failure: main kept wmux open because Smart App Control
+      // would likely block the installer. Warn, and let the user go ahead.
+      if (isSmartAppControlHold(data)) {
+        if (sacToastId) useStore.getState().dismissToast(sacToastId);
+        sacToastId = useStore.getState().pushToast({
+          level: 'warn',
+          persist: true,
+          message: t('update.smartAppControlHold'),
+          action: {
+            label: t('update.installAnyway'),
+            onClick: () => {
+              installRequestedAt = Date.now();
+              sacToastId = null; // the action dismisses this toast itself
+              void install({ installAnyway: true });
+            },
+          },
+        });
+        return;
+      }
       useStore.getState().pushToast({
         level: 'error',
         persist: true,

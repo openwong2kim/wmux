@@ -1873,6 +1873,11 @@ export const pl = {
     'Ostatnia aktualizacja się nie zainstalowała; obecna wersja pozostaje bez zmian. Spróbuj ponownie albo zamknij wmux i uruchom instalator ze strony wydań. ({detail})',
   'update.readyToInstall': 'wmux {version} jest gotowy do instalacji. Używasz {current}. Instalacja zamyka każdy panel.',
   'update.installNow': 'Zainstaluj teraz',
+  'update.refusedInstallBlocked':
+    'Ostatnia aktualizacja się nie zainstalowała: Windows zablokował jej instalator (Smart App Control lub zasady kontroli aplikacji). Obecna wersja pozostaje bez zmian. Spróbuj ponownie za dzień lub dwa albo zainstaluj ze strony wydań, gdy Windows na to pozwoli.',
+  'update.smartAppControlHold':
+    'Windows Smart App Control prawdopodobnie zablokuje instalator tej aktualizacji, więc wmux pozostał otwarty i nic się nie zmieniło. Spróbuj ponownie za dzień lub dwa. Instalacja mimo to zamyka wszystkie panele; jeśli Windows zablokuje instalator, otwórz wmux ponownie, a obecna wersja nadal tam będzie.',
+  'update.installAnyway': 'Zainstaluj mimo to',
   'channels.alreadyMemberToast': '{workspace} już jest w #{channel}',
   'channels.joinFailedToast': 'Nie udało się dodać {workspace} do kanału',
   'channels.leftToast': 'Opuszczono #{channel}',

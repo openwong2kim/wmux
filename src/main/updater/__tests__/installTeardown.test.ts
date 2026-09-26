@@ -31,6 +31,10 @@ import {
   INSTALL_ABORT_MARKER,
   type WaiterPlan,
 } from '../installTeardown';
+import {
+  INSTALL_BLOCKED_BY_WINDOWS_REASON,
+  isInstallBlockedByWindowsReason,
+} from '../../../shared/installAbortReasons';
 
 const PLAN: WaiterPlan = {
   pids: [111, 222],
@@ -76,6 +80,40 @@ describe('buildWaiterScript — ordering is the whole contract', () => {
     expect(abortIdx).toBeGreaterThan(-1);
     expect(abortIdx).toBeLessThan(start);
     expect(s).toContain('exit 2');
+  });
+
+  it('#1525 — names a Windows application-control block instead of the generic launch failure', () => {
+    const s = buildWaiterScript(PLAN) ?? '';
+    const start = s.indexOf('Start-Process -FilePath $setup -PassThru');
+    const branch = s.indexOf('$blockedByPolicy = $false');
+    const exit4 = s.indexOf('exit 4');
+    expect(start).toBeGreaterThan(-1);
+    // The launch error is kept, then classified, before the one exit 4.
+    expect(s).toContain('catch { $started = $false; $startErr = $_.Exception }');
+    expect(branch).toBeGreaterThan(start);
+    expect(exit4).toBeGreaterThan(branch);
+    const block = s.slice(branch, exit4);
+    // 4551 = Smart App Control / App Control for Business, 1260 = AppLocker /
+    // Software Restriction Policies — both a real Win32Exception in the chain
+    // and the Win32 text Windows PowerShell 5.1 embeds in its message.
+    expect(block).toContain('$policyCodes = @(4551, 1260)');
+    expect(block).toContain('[System.ComponentModel.Win32Exception]');
+    expect(block).toContain('NativeErrorCode');
+    expect(block).toContain('InnerException');
+    expect(block).toContain('New-Object System.ComponentModel.Win32Exception $code');
+    // The distinct reason goes through the shared writer (target-version stamp
+    // included), and every other failure keeps the old reason.
+    expect(block).toContain(`if ($blockedByPolicy) { Write-InstallAbortMarker '${INSTALL_BLOCKED_BY_WINDOWS_REASON}' }`);
+    expect(block).toContain("else { Write-InstallAbortMarker 'install-aborted: the installer could not be started' }");
+    // Only one exit for a failed launch, still 4.
+    expect(s.match(/exit 4/g)).toHaveLength(1);
+  });
+
+  it('#1525 — the blocked reason is a single, apostrophe-free line the renderer recognizes', () => {
+    expect(INSTALL_BLOCKED_BY_WINDOWS_REASON).not.toMatch(/['\r\n]/);
+    expect(INSTALL_BLOCKED_BY_WINDOWS_REASON.startsWith('install-aborted: ')).toBe(true);
+    expect(isInstallBlockedByWindowsReason(INSTALL_BLOCKED_BY_WINDOWS_REASON)).toBe(true);
+    expect(isInstallBlockedByWindowsReason('install-aborted: the installer could not be started')).toBe(false);
   });
 
   it('captures handles by pid up front rather than polling pids', () => {
@@ -467,9 +505,10 @@ describe('buildWaiterScript — #1341 target-version stamp', () => {
     expect(s).toContain('function Write-InstallAbortMarker($reason) {');
     expect(s).not.toMatch(/Set-Content -LiteralPath \$marker -Value 'install-aborted/);
     const writes = (s.match(/Write-InstallAbortMarker /g) ?? []).length;
-    // interrupted sentinel + stuck handle + locked root + cannot-start +
-    // incomplete-install = 5 marker writes, all stamped.
-    expect(writes).toBe(5);
+    // interrupted sentinel + stuck handle + locked root + blocked-by-policy
+    // (#1525) + cannot-start + incomplete-install = 6 marker writes, all
+    // stamped.
+    expect(writes).toBe(6);
   });
 
   it('omits the stamp when the caller cannot name the target, instead of failing the build', () => {
