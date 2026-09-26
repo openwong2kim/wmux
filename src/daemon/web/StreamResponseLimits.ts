@@ -1,11 +1,11 @@
 import type { ServerResponse } from 'node:http';
 
-/** Enough for the attention stream, pane viewers and parallel media downloads. */
+/** Device budgets are shared across pane viewers, events and media transfers. */
 export const MAX_STREAMS_PER_PRINCIPAL = 8;
 export const STREAM_IDLE_MS = 60_000;
 export const MAX_QUEUED_BYTES = 1024 * 1024;
 
-/** Shared admission and backpressure lifetime for media and SSE responses. */
+/** Admission and output-progress limits; healthy long-lived SSE has no age cap. */
 export class StreamResponseLimits {
   private readonly active = new Map<string, number>();
 
@@ -15,36 +15,38 @@ export class StreamResponseLimits {
   ) {}
 
   acquire(principalKey: string, res: ServerResponse, options: {
-    exemptCeiling?: boolean; sse?: boolean; maxQueuedBytes?: number;
-    noDrainMs?: number; log?: (reason: string) => void;
+    exemptCeiling?: boolean; maxQueuedBytes?: number;
+    log?: (reason: string) => void;
   } = {}): boolean {
     if (res.destroyed || res.writableEnded) return false;
     const count = this.active.get(principalKey) ?? 0;
     if (!options.exemptCeiling && count >= this.maxPerPrincipal) return false;
     this.active.set(principalKey, count + 1);
 
-    let released = false;
-    let blockedTimer: ReturnType<typeof setTimeout> | undefined;
     const originalWrite = res.write;
     const originalEnd = res.end;
     const originalWriteHead = res.writeHead;
-    let started = false;
-    let progressTimer: ReturnType<typeof setTimeout> | undefined;
     const cap = options.maxQueuedBytes ?? MAX_QUEUED_BYTES;
-    const expire = (reason = 'idle response'): void => { options.log?.(reason); res.destroy(); };
-    const timeout = (): void => expire();
-    const progress = (): void => {
+    let released = false;
+    let started = false;
+    let pendingWrites = 0;
+    let progressTimer: ReturnType<typeof setTimeout> | undefined;
+    const expire = (reason: string): void => { options.log?.(reason); res.destroy(); };
+    const timeout = (): void => expire('idle response');
+    const clearProgress = (): void => {
       if (progressTimer) clearTimeout(progressTimer);
-      if (options.sse && !released) {
-        progressTimer = setTimeout(() => expire('SSE no drain progress; rotate connection'), options.noDrainMs ?? 300_000);
-        progressTimer.unref();
-      }
+      progressTimer = undefined;
+    };
+    const armProgress = (): void => {
+      clearProgress();
+      progressTimer = setTimeout(() => expire('response write made no progress'), this.idleMs);
+      progressTimer.unref();
     };
     const start = (): void => {
       if (started) return;
       started = true;
       res.setTimeout(this.idleMs, timeout);
-      progress();
+      res.socket?.setKeepAlive(true, this.idleMs);
     };
     const fits = (chunk: unknown): boolean => {
       const bytes = typeof chunk === 'string' ? Buffer.byteLength(chunk) : (chunk instanceof Uint8Array ? chunk.byteLength : 0);
@@ -52,23 +54,30 @@ export class StreamResponseLimits {
       expire('response queue limit exceeded');
       return false;
     };
-    const clearBlocked = (): void => {
-      if (blockedTimer) clearTimeout(blockedTimer);
-      blockedTimer = undefined;
+    // write(true) only means the high-water mark was not reached. Watch its
+    // completion callback too: a small stalled heartbeat need never emit drain.
+    // Completion means handed to the OS, not consumed by the client. TCP handles
+    // peer liveness; the device ceiling bounds idle SSE's server-side resources.
+    const trackWrite = (): (() => void) => {
+      if (++pendingWrites === 1) armProgress();
+      let completed = false;
+      return () => {
+        if (completed || released) return;
+        completed = true;
+        pendingWrites--;
+        if (pendingWrites) armProgress();
+        else clearProgress();
+      };
     };
-    // A socket timeout alone can be postponed by repeated SSE writes into its
-    // queue. Once backpressured, only drain counts as progress; more writes do
-    // not restart this deadline. Bound the queue as well as its lifetime.
-    const thisLimitsIdleMs = this.idleMs;
     res.write = function (this: ServerResponse, ...args: Parameters<ServerResponse['write']>): boolean {
       start();
       if (!fits(args[0])) return false;
-      const ready = originalWrite.apply(this, args);
-      if (!ready && !blockedTimer && !released) {
-        blockedTimer = setTimeout(() => expire('blocked response'), thisLimitsIdleMs);
-        blockedTimer.unref();
-      }
-      return ready;
+      const done = trackWrite();
+      const callback = typeof args[args.length - 1] === 'function' ? args.pop() as (error?: Error | null) => void : undefined;
+      while (args.length && args[args.length - 1] === undefined) args.pop();
+      args.push((error?: Error | null) => { done(); callback?.(error); });
+      try { return originalWrite.apply(this, args); }
+      catch (error) { done(); throw error; }
     } as ServerResponse['write'];
     res.writeHead = function (this: ServerResponse, ...args: Parameters<ServerResponse['writeHead']>) {
       start();
@@ -77,21 +86,21 @@ export class StreamResponseLimits {
     res.end = function (this: ServerResponse, ...args: Parameters<ServerResponse['end']>) {
       start();
       if (!fits(args[0])) return this;
-      return originalEnd.apply(this, args);
+      const done = trackWrite();
+      const callback = typeof args[args.length - 1] === 'function' ? args.pop() as () => void : undefined;
+      while (args.length && args[args.length - 1] === undefined) args.pop();
+      args.push(() => { done(); callback?.(); });
+      try { return originalEnd.apply(this, args); }
+      catch (error) { done(); throw error; }
     } as ServerResponse['end'];
-    res.on('drain', clearBlocked);
-    res.on('drain', progress);
 
     const release = (): void => {
       if (released) return;
       released = true;
-      clearBlocked();
+      clearProgress();
       res.write = originalWrite;
       res.end = originalEnd;
       res.writeHead = originalWriteHead;
-      if (progressTimer) clearTimeout(progressTimer);
-      res.off('drain', progress);
-      res.off('drain', clearBlocked);
       res.off('timeout', timeout);
       if (!res.destroyed) res.setTimeout(0);
       res.off('finish', release);

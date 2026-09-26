@@ -2024,7 +2024,7 @@ export class WebTerminalServer {
     const streamsResponse = isStream || (req.method === 'GET'
       && /^\/api\/sessions\/[^/]+\/turns\/(file|image)$/.test(p));
     if (streamsResponse && !this.streamResponses.acquire(this.watcherKey(principal), res, {
-      exemptCeiling: principal.kind === 'operator', sse: isStream,
+      exemptCeiling: principal.kind === 'operator',
       maxQueuedBytes: p === '/api/stream' ? 16 * 1024 * 1024 : undefined,
       log: (reason) => this.deps.log('warn', `[web] stream closed: ${reason}`),
     })) {

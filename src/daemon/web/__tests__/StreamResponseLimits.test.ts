@@ -6,7 +6,7 @@ import { MAX_QUEUED_BYTES, StreamResponseLimits } from '../StreamResponseLimits'
 function response() {
   const res = Object.assign(new EventEmitter(), {
     destroyed: false, writableEnded: false, writableLength: 0,
-    write: vi.fn(function (this: { writableLength: number }, chunk: Uint8Array | string) {
+    write: vi.fn(function (this: { writableLength: number }, chunk: Uint8Array | string, _callback?: () => void) {
       this.writableLength += Buffer.byteLength(chunk);
       return false;
     }),
@@ -32,16 +32,33 @@ it('bounds writers ignoring backpressure and final chunks, before enqueueing exc
   expect(final.destroyed).toBe(true);
 });
 
-it('starts deadlines with the response and bounds half-open SSE even when every heartbeat returns true', () => {
+it('starts on output and expires a small stalled write even when write returns true', () => {
   vi.useFakeTimers();
   const res = response();
-  res.write.mockImplementation(() => true);
+  res.write.mockImplementation(() => true); // accepted, but completion never arrives
   const limits = new StreamResponseLimits(60);
-  limits.acquire('device', res as unknown as ServerResponse, { sse: true, noDrainMs: 200 });
-  vi.advanceTimersByTime(1000); // slow handler before headers: no deadline yet
+  limits.acquire('device', res as unknown as ServerResponse);
+  vi.advanceTimersByTime(1000);
   expect(res.setTimeout).not.toHaveBeenCalled();
   expect(res.destroyed).toBe(false);
   res.writeHead(200);
-  for (let i = 0; i < 4; i++) { res.write(': ping\n\n'); vi.advanceTimersByTime(50); }
+  for (let i = 0; i < 3; i++) { res.write(': ping\n\n'); vi.advanceTimersByTime(20); }
   expect(res.destroyed).toBe(true);
+});
+
+it('keeps healthy SSE alive for ten minutes without requiring drain events', () => {
+  vi.useFakeTimers();
+  const res = response();
+  res.write.mockImplementation((_chunk, callback) => { callback?.(); return true; });
+  new StreamResponseLimits().acquire('device', res as unknown as ServerResponse);
+  res.writeHead(200);
+  const callback = vi.fn();
+  for (let i = 0; i < 24; i++) {
+    res.write(': ping\n\n', callback);
+    vi.advanceTimersByTime(25_000);
+  }
+  expect(callback).toHaveBeenCalledTimes(24);
+  expect(res.destroyed).toBe(false);
+  res.destroy();
+  expect(vi.getTimerCount()).toBe(0);
 });
