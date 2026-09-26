@@ -167,8 +167,11 @@ export default function MiniSidebar() {
           const handleDragOver = (e: React.DragEvent<HTMLButtonElement>) => {
             // Not a rail drag (external text, a full-sidebar row): no drop
             // target and no indicator, rather than a promise the drop breaks.
+            // A row closed mid-drag may never get its dragend, so also check
+            // the source still exists.
             const fromId = dragIdRef.current;
             if (reorderOff || fromId === null || !dropAllowed(fromId)) return;
+            if (!useStore.getState().workspaces.some((w) => w.id === fromId)) return;
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
             const rect = e.currentTarget.getBoundingClientRect();

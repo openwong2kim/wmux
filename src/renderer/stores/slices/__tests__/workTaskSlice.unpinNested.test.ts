@@ -70,12 +70,14 @@ describe('a nested fan-out task never stays pinned', () => {
   });
 
   it('refuses a pin on a nested task, from the menu or a rail drop', () => {
+    useStore.setState({ workspaces: [ws('c'), ws('a'), ws('x'), ws('b')] });
     useStore.getState().noteFanoutSpawn('b', 'a');
+    // The menu refuses outright: the row does not move either.
     useStore.getState().toggleSidebarPin('b');
     expect(useStore.getState().sidebarPinnedIds).toEqual(['c', 'a']);
-    expect(ids()).toEqual(['c', 'a', 'b']);
+    expect(ids()).toEqual(['c', 'a', 'x', 'b']);
     // Manual rail drop of `b` beside a pinned row asks to pin it.
-    useStore.getState().reorderWorkspace(2, 0, true);
+    useStore.getState().reorderWorkspace(3, 0, true);
     expect(useStore.getState().sidebarPinnedIds).toEqual(['c', 'a']);
     expect(ids().slice(0, 2)).toEqual(['c', 'a']);
   });
