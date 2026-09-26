@@ -3295,7 +3295,10 @@ function registerRpcHandlers(
     terminalChat: () => terminalChat,
     managed: () => chatSessions,
     approvals: () => approvalRegistry ? {
-      pendingFor: (id) => approvalRegistry?.list().pending.find((request) => request.sessionId === id)?.id,
+      pendingFor: (id) => {
+        const pending = approvalRegistry?.list().pending.find((request) => request.sessionId === id);
+        return pending ? { id: pending.id, kind: pending.kind } : undefined;
+      },
     } : null,
     readScreen: async (id) => {
       const managed = sessionManager.getSession(id);
@@ -3843,7 +3846,8 @@ function registerRpcHandlers(
     if (bridge.sendInFlight(id)) return { result: 'blocked' };
     const result = await interruptChatTurn(agentSessionId, {
       getTranscriptSessionId: () => projector.status(id).agentSessionId,
-      hasOpenApproval: () => !approvalRegistry || approvalRegistry.list().pending.some((r) => r.sessionId === id),
+      // The chat write fence: any pending record, whatever its kind.
+      hasOpenApproval: () => bridge.hasOpenApproval(id),
       readScreen: async () => {
         const managed = sessionManager.getSession(id);
         if (!managed) return null;
