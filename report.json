@@ -1,0 +1,34 @@
+{
+  "environment": "macOS, live Electron 41 development build, isolated -fleet1542 profile; real PTYs, seeded agent/review/help state",
+  "checks": [
+    "Default agent Jump closes Fleet and focuses the target",
+    "Opt-in same-pane Jump retains search/filter and routes actual keyboard input to Alpha",
+    "Cross-workspace Jump routes actual input only to Beta while Fleet stays open",
+    "Escape in the terminal does not dismiss Fleet",
+    "Keyboard Enter Jump keeps Fleet open and transfers focus",
+    "Closing after kept-open jumps never restores the original pane",
+    "Preference survives close/reopen within the session",
+    "Escape inside Fleet dismisses it",
+    "Cmd+Shift+A (macOS Fleet shortcut) opens and closes Fleet with keep-open enabled",
+    "Typing leaves pane labels unchanged",
+    "Row-menu Jump keeps Fleet open and hands focus to the destination",
+    "Review-task keyboard Jump keeps Fleet open and focuses its real PTY (seeded review record)",
+    "Open diff closes Fleet even when keep-open is on (navigation only; seeded task)",
+    "Browser-help Jump closes Fleet and selects its browser surface (seeded help request)",
+    "Unique fresh rapid keyboard input survives live status reordering without changing pane labels (both real PTYs)",
+    "Full Electron process restart with the same isolated profile resets keep-open to off"
+  ],
+  "screenshots": [
+    "keep-open-live.png",
+    "restart-default-off.png"
+  ],
+  "success": true,
+  "sourceCommit": "bf7b542fce68b80fa6d6702e97e9bccae8fda925",
+  "completedAt": "2026-09-26T12:13:27.950Z",
+  "notes": [
+    "Agent navigation used real daemon-backed PTYs with controlled echo processes; no model inference was invoked.",
+    "Review and browser-help records were seeded UI fixtures. Open diff was checked for navigation/overlay dismissal, not task-backend diff correctness.",
+    "macOS shortcut is Cmd+Shift+A; Ctrl+Shift+A remains the Windows/Linux mapping.",
+    "App restart was a full Electron process stop/start with the same isolated profile."
+  ]
+}
