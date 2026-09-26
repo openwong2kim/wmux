@@ -573,8 +573,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     // A row always drags its markdown out (dropping it on an agent's pane
     // hands that agent this workspace to message). Only the reorder half
     // depends on reorderOff: a sorted order used to cancel the whole drag,
-    // which silently killed the hand-off for every unpinned row.
-    if (!workspace) return;
+    // which silently killed the hand-off for every unpinned row. While
+    // renaming, a text drag in the input bubbles up here: let it stay a text
+    // drag instead of overwriting it with the workspace markdown.
+    if (!workspace || editing) return;
     // Roster controls live inside this draggable card. Chromium chooses the
     // nearest draggable ancestor as the native source, so `draggable={false}`
     // on a nested button is not enough. Reject a drag whose pointer originated

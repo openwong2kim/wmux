@@ -190,4 +190,16 @@ describe('Workspace hand-off drag in a sorted order', () => {
     expect(stored()).toEqual(['a', 'b', 'c']);
   });
 
+  it('a text drag inside the rename input stays a text drag', () => {
+    document.elementFromPoint = () => null;
+    seed({ a: 'running', b: 'idle' }, 'attention');
+    act(() => useStore.setState({ draggedWorkspaceId: null, terminalTextDropDragActive: false } as never));
+    act(() => root.render(<Sidebar />));
+    act(() => { row('b').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); });
+    const input = container.querySelector('.sidebar-row input') as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    const start = fireDrag(input!, 'dragstart', 'b') as Event & { dataTransfer: DataTransfer };
+    expect(start.dataTransfer.getData('text/plain')).toBe('b');
+    expect(useStore.getState().terminalTextDropDragActive).toBe(false);
+  });
 });
