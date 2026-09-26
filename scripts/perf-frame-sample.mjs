@@ -34,8 +34,8 @@ export async function sampleFrameBudget(page, n, baseline, log = console.log) {
     ? compareResults(result(stats), baseline, [gate])[0].status
     : 'NEW';
   if (verdict(first) !== 'FAIL') return { stats: first, samples };
-  const second = await take();
-  // Only an explicit passing confirmation clears the first failure. Missing,
-  // throttled or otherwise untrustworthy retry measurements keep it red.
-  return { stats: verdict(second) === 'PASS' ? second : first, samples };
+  await take();
+  // Preserve the first measurement for history and baseline comparison. The
+  // comparator judges the confirmation against the baseline it was given.
+  return { stats: first, samples };
 }

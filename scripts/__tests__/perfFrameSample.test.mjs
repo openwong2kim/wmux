@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sampleFrameBudget } from '../perf-frame-sample.mjs';
-import { summarizeSamples } from '../perf-scenarios.mjs';
 import { compareResults, GATES } from '../perf-compare.mjs';
 
 const gate = GATES.find((g) => g.key === 'frameBudgetP95Ms_N8');
-function verdict(p95) {
-  const result = (value) => ({ scenarios: { frameBudget: { N8: { frameDeltaMs: { p95: value } } } } });
-  return compareResults(result(p95), result(15.7), [gate])[0].status;
+function verdict(measured, against = baseline) {
+  const current = { scenarios: { frameBudget: { N8: {
+    frameDeltaMs: measured.stats, frameDeltaSamples: measured.samples,
+  } } } };
+  return compareResults(current, against, [gate])[0];
 }
 function pageWithCadence(deltaAt) {
   let frame = 0;
@@ -28,7 +29,9 @@ describe('frame-budget failure confirmation', () => {
     const measured = await sampleFrameBudget(pageWithCadence((frame) => frame < 60 ? badSample(frame) : 15.7), 8, baseline, log);
     expect(measured.samples).toHaveLength(2);
     expect(measured.samples[0]).toMatchObject({ p50: 46.9, p95: 62.6, count: 59 });
-    expect(verdict(measured.stats.p95)).toBe('PASS');
+    expect(measured.stats).toBe(measured.samples[0]);
+    expect(verdict(measured)).toMatchObject({ status: 'PASS', current: 62.6, improved: false });
+    expect(verdict(measured).note).toContain('confirmation');
     expect(log).toHaveBeenCalledTimes(2);
     expect(log.mock.calls[0][0]).toContain('p95=62.6ms');
     expect(log.mock.calls[1][0]).toContain('p95=15.7ms');
@@ -38,6 +41,16 @@ describe('frame-budget failure confirmation', () => {
     const measured = await sampleFrameBudget(pageWithCadence(badSample), 8, baseline, vi.fn());
     expect(measured.samples).toHaveLength(2);
     expect(measured.samples.every((sample) => sample.p50 === 46.9 && sample.p95 === 62.6 && sample.count === 59)).toBe(true);
-    expect(verdict(measured.stats.p95)).toBe('FAIL');
+    expect(verdict(measured).status).toBe('FAIL');
   });
+  it('judges the confirmation against the supplied baseline and refuses incomplete samples', async () => {
+    const measured = await sampleFrameBudget(pageWithCadence((frame) => frame < 60 ? badSample(frame) : 31.3), 8, baseline, vi.fn());
+    expect(measured.stats.p95).toBe(62.6);
+    expect(verdict(measured).status).toBe('PASS');
+    const strict = { scenarios: { frameBudget: { N8: { frameDeltaMs: { p95: 10 } } } } };
+    expect(verdict(measured, strict).status).toBe('FAIL');
+    measured.samples[1].count = 2;
+    expect(verdict(measured).status).toBe('FAIL');
+  });
+
 });
