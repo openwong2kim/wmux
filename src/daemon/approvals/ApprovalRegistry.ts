@@ -483,6 +483,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         // await added above cannot silently reopen the window.
         const refusedGate = await this.reauthorize(params, record);
         if (refusedGate) return { result: refusedGate };
+        // A pending gate is held by the hook, not displayed on a terminal.
+        // Read current autonomy AFTER the last awaited authority check so a
+        // policy change during that check cannot release the blocked tool.
+        const pressRefusal = this.refuseOutOfScopePress(params, record, true);
+        if (pressRefusal) return { result: pressRefusal };
         record.state = 'resolved';
         record.decision = params.decision;
         record.resolvedBy = sanitizeResolvedBy(params.resolvedBy);
@@ -556,87 +561,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
 
       const rows = await this.safeReadScreen(record.sessionId);
 
-      // ── Press scope ───────────────────────────────────────────────────────
-      // "Can these bytes be pressed" and "may this pane be pressed at all" are
-      // different questions. `decideApprovalPress` answers the second — for an
-      // AUTOMATED approve only.
-      //
-      // A human answering from the phone or the web is looking at the prompt;
-      // gating them behind a workspace classification would just be a broken
-      // button, and a refused DENY (from anyone) would keep a pane blocked in
-      // the name of safety. Both bypass, inside the decision, so the reasoning
-      // lives in one place. `resolver` therefore defaults to 'human': every
-      // caller that exists today is a person tapping, and an automated presser
-      // has to say so — at which point it faces the full check.
-      //
-      // For that automated caller the check FAILS CLOSED: a pane whose
-      // workspace we cannot classify, or whose autonomy setting we cannot read,
-      // is refused rather than assumed delegated. Those facts live in main;
-      // `pressScope` is the seam that supplies them, and its ABSENCE reports
-      // `scope-unavailable` — distinct from a workspace that answered "no", so
-      // the missing integration wiring is visible instead of looking like
-      // policy.
-      // Three distinct ways to have no scope, and an operator fixes each one
-      // differently: no feed wired at all, a feed that has never published, and
-      // a RECORD with no workspace to ask about (a hook envelope that carried
-      // none). Collapsing them sent people to look at the integration wiring
-      // for a problem in the hook payload.
-      type NoScopeCause = 'unwired' | 'unpublished' | 'record-has-no-workspace';
-      const noScopeCause: NoScopeCause | null = !this.deps.pressScope
-        ? 'unwired'
-        : !record.workspaceId
-          ? 'record-has-no-workspace'
-          : null;
-      const published =
-        noScopeCause === null && this.deps.pressScope
-          ? this.deps.pressScope(record.workspaceId as string)
-          : null;
-      // Wired AND answering. A wired feed that has never been published is as
-      // unavailable as no feed at all — see the ApprovalRegistryDeps note.
-      const scopeAvailable = published !== null;
-      const scope = published ?? {};
-      const pressDecision = decideApprovalPress({
-        resolver: params.resolver ?? 'human',
-        decision: params.decision,
-        scopeAvailable,
-        ...scope,
-        // Only hook-sourced requests are ever created (see the header), so the
-        // record's own existence is the origin evidence.
-        origin: 'hook',
-        stillOnScreen: !!rows && rows.length > 0 && looksLikeApprovalPrompt(rows),
-      });
-      if (!pressDecision.press && pressDecision.reason !== 'prompt-gone') {
-        // NOT an expiry: the request is live and a human at the desktop can
-        // still answer it. We simply may not press on their behalf.
-        const SCOPE_CAUSE_DETAIL: Record<NoScopeCause, string> = {
-          unwired: 'ApprovalRegistryDeps.pressScope is not wired',
-          unpublished: 'the main process has not published its workspace fact table yet',
-          'record-has-no-workspace': 'this request carries no workspaceId, so there is nothing to classify',
-        };
-        const cause = noScopeCause ?? (scopeAvailable ? null : 'unpublished');
-        this.deps.log?.(
-          pressDecision.reason === 'scope-unavailable' ? 'warn' : 'info',
-          pressDecision.reason === 'scope-unavailable'
-            ? `[approvals] refused ${record.id} on ${record.sessionId}: automated press has no ` +
-              `workspace scope source (${SCOPE_CAUSE_DETAIL[cause ?? 'unwired']}) — ` +
-              'a human can still answer this request'
-            : `[approvals] refused ${record.id} on ${record.sessionId}: out of press scope (${pressDecision.reason})`,
-        );
-        return {
-          result: {
-            ok: false,
-            reason: 'out-of-scope',
-            // The condition that actually refused. 'out-of-scope' is one
-            // bucket in the closed wire vocabulary the web layer maps to
-            // status codes; a relay that has to turn the refusal into a hint —
-            // or decide whether the operator's policy said no, as opposed to
-            // the daemon not knowing — cannot act on a bucket. See
-            // ApprovalResolveResult.pressRefusal.
-            pressRefusal: pressDecision.reason,
-            request: copyRequest(record),
-          } as ApprovalResolveResult,
-        };
-      }
+      const pressRefusal = this.refuseOutOfScopePress(params, record,
+        !!rows && rows.length > 0 && looksLikeApprovalPrompt(rows));
+      if (pressRefusal) return { result: pressRefusal };
 
       if (!rows || rows.length === 0 || !looksLikeApprovalPrompt(rows)) {
         // Refusal expires the request: whatever the pane is showing now, it is
@@ -801,6 +728,95 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       );
     }
     return events;
+  }
+
+  /** Shared policy for both screen presses and permission-hook verdicts. */
+  private refuseOutOfScopePress(
+    params: ApprovalResolveParams,
+    record: ApprovalRequest,
+    stillOnScreen: boolean,
+  ): ApprovalResolveResult | null {
+    // ── Press scope ───────────────────────────────────────────────────────
+    // "Can these bytes be pressed" and "may this pane be pressed at all" are
+    // different questions. `decideApprovalPress` answers the second — for an
+    // AUTOMATED approve only.
+    //
+    // A human answering from the phone or the web is looking at the prompt;
+    // gating them behind a workspace classification would just be a broken
+    // button, and a refused DENY (from anyone) would keep a pane blocked in
+    // the name of safety. Both bypass, inside the decision, so the reasoning
+    // lives in one place. `resolver` therefore defaults to 'human': every
+    // caller that exists today is a person tapping, and an automated presser
+    // has to say so — at which point it faces the full check.
+    //
+    // For that automated caller the check FAILS CLOSED: a pane whose
+    // workspace we cannot classify, or whose autonomy setting we cannot read,
+    // is refused rather than assumed delegated. Those facts live in main;
+    // `pressScope` is the seam that supplies them, and its ABSENCE reports
+    // `scope-unavailable` — distinct from a workspace that answered "no", so
+    // the missing integration wiring is visible instead of looking like
+    // policy.
+    // Three distinct ways to have no scope, and an operator fixes each one
+    // differently: no feed wired at all, a feed that has never published, and
+    // a RECORD with no workspace to ask about (a hook envelope that carried
+    // none). Collapsing them sent people to look at the integration wiring
+    // for a problem in the hook payload.
+    type NoScopeCause = 'unwired' | 'unpublished' | 'record-has-no-workspace';
+    const noScopeCause: NoScopeCause | null = !this.deps.pressScope
+      ? 'unwired'
+      : !record.workspaceId
+        ? 'record-has-no-workspace'
+        : null;
+    const published =
+      noScopeCause === null && this.deps.pressScope
+        ? this.deps.pressScope(record.workspaceId as string)
+        : null;
+    // Wired AND answering. A wired feed that has never been published is as
+    // unavailable as no feed at all — see the ApprovalRegistryDeps note.
+    const scopeAvailable = published !== null;
+    const scope = published ?? {};
+    const pressDecision = decideApprovalPress({
+      resolver: params.resolver ?? 'human',
+      decision: params.decision,
+      scopeAvailable,
+      ...scope,
+      // Only hook-sourced requests are ever created (see the header), so the
+      // record's own existence is the origin evidence.
+      origin: 'hook',
+      stillOnScreen,
+    });
+    if (!pressDecision.press && pressDecision.reason !== 'prompt-gone') {
+      // NOT an expiry: the request is live and a human at the desktop can
+      // still answer it. We simply may not press on their behalf.
+      const SCOPE_CAUSE_DETAIL: Record<NoScopeCause, string> = {
+        unwired: 'ApprovalRegistryDeps.pressScope is not wired',
+        unpublished: 'the main process has not published its workspace fact table yet',
+        'record-has-no-workspace': 'this request carries no workspaceId, so there is nothing to classify',
+      };
+      const cause = noScopeCause ?? (scopeAvailable ? null : 'unpublished');
+      this.deps.log?.(
+        pressDecision.reason === 'scope-unavailable' ? 'warn' : 'info',
+        pressDecision.reason === 'scope-unavailable'
+          ? `[approvals] refused ${record.id} on ${record.sessionId}: automated press has no ` +
+            `workspace scope source (${SCOPE_CAUSE_DETAIL[cause ?? 'unwired']}) — ` +
+            'a human can still answer this request'
+          : `[approvals] refused ${record.id} on ${record.sessionId}: out of press scope (${pressDecision.reason})`,
+      );
+      return {
+        ok: false,
+        reason: 'out-of-scope',
+        // The condition that actually refused. 'out-of-scope' is one
+        // bucket in the closed wire vocabulary the web layer maps to
+        // status codes; a relay that has to turn the refusal into a hint —
+        // or decide whether the operator's policy said no, as opposed to
+        // the daemon not knowing — cannot act on a bucket. See
+        // ApprovalResolveResult.pressRefusal.
+        pressRefusal: pressDecision.reason,
+        request: copyRequest(record),
+      } as ApprovalResolveResult;
+    }
+
+    return null;
   }
 
   /**
