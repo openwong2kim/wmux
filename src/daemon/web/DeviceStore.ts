@@ -2,7 +2,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { scheduleTokenFileReHarden, secureWriteTokenFile } from '../../shared/security';
-import { DeviceAuditLog } from './deviceAudit';
+import { DeviceAuditLog, type DeviceActor } from './deviceAudit';
+
+export type { DeviceActor } from './deviceAudit';
 
 /**
  * M3 — the per-device credential roster for `wmux web` (`devices.json`).
@@ -72,6 +74,8 @@ export type DeviceBatchRevocationCause =
 interface PendingRevocationAudit {
   name?: string;
   reason?: DeviceBatchRevocationCause;
+  /** Who asked, for a single-device revoke. A batch cause names itself. */
+  actor?: DeviceActor;
 }
 
 /**
@@ -476,8 +480,12 @@ export class DeviceStore {
    * working NOW, and the honest report is that the change may not survive a
    * restart. Reverting it would leave a device the operator just tried to kill
    * still serving traffic in the process that is running.
+   *
+   * `actor` lands in the audit line. It defaults to `desktop` because that was
+   * the only caller before the phone could manage devices; every web path
+   * passes its own.
    */
-  revoke(deviceId: string): DeviceRevokeResult {
+  revoke(deviceId: string, actor: DeviceActor = 'desktop'): DeviceRevokeResult {
     const record = this.devices.get(deviceId);
     if (!record) return { ok: false, reason: 'not-found' };
     if (record.revokedAt !== undefined) {
@@ -495,7 +503,7 @@ export class DeviceStore {
     // Drop the cached verification FIRST: nothing may be able to authenticate
     // as this device between here and the notification, whatever the disk does.
     this.forgetVerified(deviceId);
-    this.pendingRevocationAudits.set(deviceId, { name: record.name });
+    this.pendingRevocationAudits.set(deviceId, { name: record.name, actor });
     this.pruneRevoked();
 
     if (!this.persist()) {
@@ -524,8 +532,17 @@ export class DeviceStore {
    *
    * No cache invalidation: `verified` caches the SECRET derivation, which this
    * does not touch, and the grant is read from the record on every request.
+   *
+   * Audited only when the grant actually changes, and written even when the
+   * persist fails: the change took effect in memory either way, and that is
+   * the moment someone asking "who took this phone's keyboard away?" cares
+   * about. `actor` defaults to `desktop` for the same reason as on `revoke`.
    */
-  setInput(deviceId: string, allowInput: boolean): { ok: boolean; reason?: 'not-found' | 'revoked' | 'persist-failed' } {
+  setInput(
+    deviceId: string,
+    allowInput: boolean,
+    actor: DeviceActor = 'desktop',
+  ): { ok: boolean; reason?: 'not-found' | 'revoked' | 'persist-failed' } {
     const record = this.devices.get(deviceId);
     if (!record) return { ok: false, reason: 'not-found' };
     // A tombstone has no capabilities to adjust. Silently "granting" input to a
@@ -543,7 +560,16 @@ export class DeviceStore {
     }
 
     record.allowInput = allowInput;
-    if (!this.persist()) {
+    const persisted = this.persist();
+    this.audit.append({
+      event: 'input-grant',
+      deviceId,
+      name: record.name,
+      actor,
+      allowInput,
+      ...(persisted ? {} : { reason: 'persist-failed' }),
+    });
+    if (!persisted) {
       this.log(
         'error',
         `[web] input grant for ${deviceId} could not be persisted; it is ${allowInput ? 'granted' : 'blocked'} in memory only`,

@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DeviceStore } from '../DeviceStore';
+import { DeviceAuditLog } from '../deviceAudit';
 
 let dir: string;
 const log = (): void => { /* silent */ };
@@ -131,5 +132,55 @@ describe('DeviceStore — input grants', () => {
 
   it('refuses an unknown device', () => {
     expect(store().setInput('nope', true)).toEqual({ ok: false, reason: 'not-found' });
+  });
+});
+
+describe('DeviceStore — who changed the roster', () => {
+  const audit = () => new DeviceAuditLog(dir).read();
+
+  it('audits a grant change with its actor and the grant it set', async () => {
+    const s = store();
+    const d = await s.mint({ name: 'iPhone', allowInput: true });
+
+    expect(s.setInput(d.deviceId, false, 'device-self')).toEqual({ ok: true });
+
+    const grants = audit().filter((e) => e.event === 'input-grant');
+    expect(grants).toEqual([
+      expect.objectContaining({ deviceId: d.deviceId, name: 'iPhone', actor: 'device-self', allowInput: false }),
+    ]);
+  });
+
+  // The desktop RPC calls the store with 'desktop'; callers that predate the
+  // parameter land there too, so the desk is never an unattributed change.
+  it('files the desktop as the actor by default, on both verbs', async () => {
+    const s = store();
+    const a = await s.mint({ name: 'A', allowInput: false });
+    const b = await s.mint({ name: 'B', allowInput: false });
+
+    s.setInput(a.deviceId, true);
+    s.revoke(b.deviceId);
+
+    expect(audit().find((e) => e.event === 'input-grant')).toMatchObject({ deviceId: a.deviceId, actor: 'desktop' });
+    expect(audit().find((e) => e.event === 'revoke')).toMatchObject({ deviceId: b.deviceId, actor: 'desktop' });
+  });
+
+  it('writes the web actor on a revoke', async () => {
+    const s = store();
+    const d = await s.mint({ name: 'Lost phone' });
+
+    expect(s.revoke(d.deviceId, 'operator-web')).toEqual({ ok: true });
+
+    expect(audit().filter((e) => e.event === 'revoke')).toEqual([
+      expect.objectContaining({ deviceId: d.deviceId, name: 'Lost phone', actor: 'operator-web' }),
+    ]);
+  });
+
+  it('does not audit a grant that did not change', async () => {
+    const s = store();
+    const d = await s.mint({ name: 'iPhone', allowInput: false });
+
+    expect(s.setInput(d.deviceId, false, 'operator-web')).toEqual({ ok: true });
+
+    expect(audit().filter((e) => e.event === 'input-grant')).toEqual([]);
   });
 });

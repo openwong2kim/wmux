@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { revokeDeviceAndDisconnect } from '../deviceRevoke';
 import type { DeviceRevokeResult } from '../DeviceStore';
+import type { DeviceActor } from '../deviceAudit';
 
 // Pure — no disk, no daemon. This covers the seam the store's own tests cannot
 // reach: the store proves a revoked device is blocked for NEW requests, but the
@@ -11,12 +12,15 @@ import type { DeviceRevokeResult } from '../DeviceStore';
 function harness(revokeResult: DeviceRevokeResult) {
   const calls: string[] = [];
   const disconnected: string[] = [];
+  const actors: DeviceActor[] = [];
   return {
     calls,
     disconnected,
+    actors,
     roster: {
-      revoke(deviceId: string): DeviceRevokeResult {
+      revoke(deviceId: string, actor: DeviceActor): DeviceRevokeResult {
         calls.push(`revoke:${deviceId}`);
+        actors.push(actor);
         return revokeResult;
       },
     },
@@ -34,7 +38,7 @@ describe('daemon.web.deviceRevoke wiring', () => {
   it('persists BEFORE tearing down, and reports what it closed', () => {
     const h = harness({ ok: true });
 
-    const result = revokeDeviceAndDisconnect('dev-1', h.roster, h.streams);
+    const result = revokeDeviceAndDisconnect('dev-1', h.roster, h.streams, 'desktop');
 
     expect(result).toEqual({ ok: true, closed: 2 });
     // Contract §5: the write completes first. If these ever invert, an operator
@@ -45,7 +49,7 @@ describe('daemon.web.deviceRevoke wiring', () => {
   it('still cuts live streams when the roster write FAILED', () => {
     const h = harness({ ok: false, reason: 'persist-failed' });
 
-    const result = revokeDeviceAndDisconnect('dev-1', h.roster, h.streams);
+    const result = revokeDeviceAndDisconnect('dev-1', h.roster, h.streams, 'desktop');
 
     // The store blocked the device in memory regardless of the disk, and an
     // established SSE stream never re-authenticates — so leaving it up would
@@ -58,7 +62,7 @@ describe('daemon.web.deviceRevoke wiring', () => {
   it('does not disconnect anything for a device that was never paired', () => {
     const h = harness({ ok: false, reason: 'not-found' });
 
-    const result = revokeDeviceAndDisconnect('ghost', h.roster, h.streams);
+    const result = revokeDeviceAndDisconnect('ghost', h.roster, h.streams, 'desktop');
 
     expect(result).toEqual({ ok: false, reason: 'not-found' });
     // Nothing was blocked in memory and nothing exists to tear down.
@@ -69,17 +73,27 @@ describe('daemon.web.deviceRevoke wiring', () => {
   it('refuses an empty id without touching the roster at all', () => {
     const h = harness({ ok: true });
 
-    expect(revokeDeviceAndDisconnect('', h.roster, h.streams)).toEqual({
+    expect(revokeDeviceAndDisconnect('', h.roster, h.streams, 'desktop')).toEqual({
       ok: false,
       reason: 'not-found',
     });
     expect(h.calls).toEqual([]);
   });
 
+  it('hands the actor to the roster, so the audit line names who revoked', () => {
+    const desk = harness({ ok: true });
+    revokeDeviceAndDisconnect('dev-1', desk.roster, desk.streams, 'desktop');
+    expect(desk.actors).toEqual(['desktop']);
+
+    const phone = harness({ ok: true });
+    revokeDeviceAndDisconnect('dev-1', phone.roster, phone.streams, 'device-self');
+    expect(phone.actors).toEqual(['device-self']);
+  });
+
   it('disconnects exactly once, for exactly the named device', () => {
     const h = harness({ ok: true });
 
-    revokeDeviceAndDisconnect('dev-1', h.roster, h.streams);
+    revokeDeviceAndDisconnect('dev-1', h.roster, h.streams, 'desktop');
 
     // Other devices' streams and the operator's own are never in scope here.
     expect(h.disconnected).toEqual(['dev-1']);
@@ -101,6 +115,7 @@ describe('daemon.web.deviceRevoke wiring', () => {
           return 0;
         },
       },
+      'desktop',
     );
 
     // A revoke with nothing to cut is still a successful revoke.
@@ -121,6 +136,7 @@ describe('daemon.web.deviceRevoke wiring', () => {
             throw new Error('socket teardown exploded');
           },
         },
+        'desktop',
       ),
     ).toThrow(/socket teardown exploded/);
   });

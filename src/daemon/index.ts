@@ -2902,7 +2902,7 @@ function registerRpcHandlers(
     // call silently revoke or hand out a typing grant.
     if (typeof params['allowInput'] !== 'boolean') return { ok: false, reason: 'not-found' };
     const allowInput = params['allowInput'];
-    const result = getDeviceStore().setInput(deviceId, allowInput);
+    const result = getDeviceStore().setInput(deviceId, allowInput, 'desktop');
     // Taking input away has a live half, exactly like revoke: a device holding
     // an open SSE stream keeps receiving pane bytes, and while the WRITE routes
     // re-check the roster per request (so typing stops immediately either way),
@@ -2923,7 +2923,7 @@ function registerRpcHandlers(
     // live streams — and cut them even when the write failed, because an
     // established SSE never re-authenticates). Extracted so the three branches
     // are unit-testable without a daemon; see its tests.
-    return revokeDeviceAndDisconnect(deviceId, getDeviceStore(), webServer);
+    return revokeDeviceAndDisconnect(deviceId, getDeviceStore(), webServer, 'desktop');
   });
 
   // X8 supervision control — renderer-only surface (main IPC → daemon).
