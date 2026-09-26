@@ -1757,9 +1757,11 @@ Visibility:
 | device with scope `self` | only its own row |
 
 A device that may type already has a shell on the host and could read the
-roster file from it, so showing it the roster reveals nothing new, and it is
-what lets one phone remove another that was lost. A read-only device learns
-nothing about the others: no names, no `lastSeenAt`.
+roster file from it, so showing it the roster reveals nothing new. The roster
+is for **seeing** which devices exist and when each was last seen, so the owner
+can revoke a lost one from the desktop (or with the operator token). A device
+can revoke only itself. A read-only device learns nothing about the others: no
+names, no `lastSeenAt`.
 
 No secret material, push token or Live Activity token is ever on this wire.
 
@@ -1772,8 +1774,11 @@ No body. Revocation is permanent; a revoked device re-pairs to come back.
 Body is exactly `{"input": false}`. This route only **lowers** a grant. Raising
 one is desktop-only for every caller, the operator token included, the same way
 pairing codes are: the operator token travels in URLs and QR codes. Lowering
-your own grant needs no input permission. Success also closes that device's
-live streams, so it re-handshakes and picks up the smaller grant.
+your own grant needs no input permission. When the grant actually changes (or
+an earlier change that failed to persist is being retried), the server also
+closes that device's live streams, so it re-handshakes and picks up the smaller
+grant. A PATCH to a grant that is already `false` and on disk changes nothing
+and closes nothing.
 
 ### Who may act on which id
 
@@ -1788,12 +1793,13 @@ consulted, byte-identical whether or not that id exists.
 | 200 | `{ok:true, closed:N}` | revoke persisted; `N` live streams were closed. Revoking an already revoked device answers `{ok:true, closed:0}` |
 | 200 | `{ok:false, reason:"persist-failed", closed:N}` | revoke could not be written to disk. The device is blocked in memory now, but may come back after a daemon restart |
 | 200 | `{ok:true, grants:{input:false}}` | grant lowered |
-| 200 | `{ok:false, reason:"persist-failed", grants:{input:false}}` | grant lowered in memory but not written to disk |
+| 200 | `{ok:false, reason:"persist-failed", grants:{input:false}}` | grant lowered in memory but not written to disk. Retrying the same PATCH re-attempts the write and keeps answering this until it lands |
 | 400 | `{error:"invalid-grants"}` | PATCH body missing `input`, `input` not a boolean, or any other field present |
 | 403 | `{error:"not-permitted"}` | a device naming an id that is not its own |
 | 403 | `{error:"grant-escalation-desktop-only"}` | PATCH with `input:true`, from anyone. Nothing is written |
 | 404 | `{error:"device-not-found"}` | operator naming an unknown id. The roster keeps only the newest revoked tombstones, so a pruned one is also 404 |
 | 409 | `{error:"device-revoked"}` | PATCH on a revoked device, including one revoked from the desktop while the request body was still arriving |
+| 500 | `{error:"device-revoke-failed"}` | the revoke raised an unexpected error. Retry; revoking is idempotent |
 | 503 | `{error:"device-management-unavailable"}` | this daemon's device store cannot manage devices (config omits `deviceManagement`) |
 
 ### Revoking yourself
