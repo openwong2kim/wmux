@@ -37,7 +37,7 @@ export interface ResolvedRecipient {
   /**
    * True when the recipient's resolved PTY is hosting a live TUI agent
    * (running / waiting / awaiting_input). Live recipients get a
-   * one-line nudge; non-live recipients get the full message body.
+   * one-line nudge; non-live recipients receive no PTY input.
    * Mirrors the `isLiveTuiAgent` semantics from `useRpcBridge.ts:233-236`.
    */
   isLiveTui: boolean;
@@ -95,7 +95,7 @@ export interface LocalPtyDeps {
  * output has NO trailing newline — single line, period.
  */
 export const defaultChannelNudge: FormatChannelNudge = (message) => {
-  const shortChannel = (message.channelId || '').replace(/^ch-/, '').slice(0, 8);
+  const shortChannel = sanitizeA2aName(message.channelId || '').replace(/^ch-/, '').slice(0, 8);
   const shortMember = sanitizeA2aName(message.memberName || '').slice(0, 32);
   return `[wmux-channel #${shortChannel} from ${shortMember} — see channel history (seq ${message.seq})]`;
 };
@@ -109,13 +109,11 @@ export const defaultChannelNudge: FormatChannelNudge = (message) => {
  *
  * Name is sanitized via `sanitizeA2aName` (strips ESC + NUL, collapses
  * CR/LF/TAB to spaces — the name appears on a single line). The body
- * text is sanitized inline: ESC stripped, CR removed, NUL removed.
- * LF is preserved so multi-line messages render as multi-line pasted
- * data — the bracketed-paste wrapper in the production `writePty`
- * keeps the LFs from being executed as keystrokes.
+ * text strips escapes and NUL, drops CR, and folds LF into ␤ so a
+ * sender cannot forge additional envelope headers or delimiters.
  */
 export const defaultChannelMessage: FormatChannelMessage = (message) => {
-  const shortChannel = (message.channelId || '').replace(/^ch-/, '').slice(0, 32);
+  const shortChannel = sanitizeA2aName(message.channelId || '').replace(/^ch-/, '').slice(0, 32);
   const safeName = sanitizeA2aName(message.memberName || '');
   const safeText = (message.text || '')
     // eslint-disable-next-line no-control-regex
@@ -126,7 +124,8 @@ export const defaultChannelMessage: FormatChannelMessage = (message) => {
     .replace(/\x1b/g, '')                      // lone ESC (defensive — no opener)
     // eslint-disable-next-line no-control-regex
     .replace(/\x00/g, '')                      // NUL
-    .replace(/\r/g, '');                       // CR (LF preserved)
+    .replace(/\r/g, '')
+    .replace(/\n/g, '␤');                     // no sender-controlled lines
   return [
     '',
     `━━━ WMUX CHANNEL #${shortChannel} ━━━`,
@@ -145,7 +144,7 @@ export const defaultChannelMessage: FormatChannelMessage = (message) => {
  *   - `resolveRecipient` returns `{ ptyId, isLiveTui: true }` → write the
  *     nudge (one line, no body).
  *   - `resolveRecipient` returns `{ ptyId, isLiveTui: false }` → write the
- *     full message envelope.
+ *     no input, marked target_gone (the post remains in history).
  *
  * The transport never throws. A `writePty` that throws is caught per
  * recipient and the recipient is marked `target_gone` so a single bad
@@ -179,9 +178,17 @@ export class LocalPtyDelivery implements ChannelDelivery {
           };
         }
         resolvedPtyId = resolved.ptyId;
-        const body = resolved.isLiveTui
-          ? this.deps.formatNudge(message)
-          : this.deps.formatMessage(message);
+        if (!resolved.isLiveTui) {
+          // Submitting even a folded message to a shell can execute it.
+          // Keep the post in history; only confirmed live TUIs receive input.
+          return {
+            ...entry,
+            ptyId: resolved.ptyId,
+            status: 'target_gone' as const,
+            lastAttemptAt: now,
+          };
+        }
+        const body = this.deps.formatNudge(message);
         this.deps.writePty(resolved.ptyId, body);
         return {
           ...entry,
