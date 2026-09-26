@@ -183,6 +183,9 @@ export interface HookSignalResponse {
   /** Reason hint when ok=false. Logged by the bridge to ~/.wmux/bridge.log. */
   reason?:
     | 'no-workspace-match'
+    | 'no-live-thread-owner'
+    | 'daemon-unavailable'
+    | 'unsupported-notify-protocol'
     | 'auth-rejected'
     | 'rate-limited'
     | 'invalid-envelope'
@@ -234,10 +237,8 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
   return true;
 }
 
-/** Legacy notifications run in a shared task host, whose pane env is stale.
- * The old bridge's turn-id also identifies official notifications during upgrade.
- */
+/** Explicitly marked notifications require provenance or completed-turn routing. */
 export function isSessionRoutedNotify(signal: AgentSignal): boolean {
   return signal.agent === 'codex' && signal.kind === 'agent.stop'
-    && (signal.payload.source === 'codex.notify' || typeof signal.payload['turn-id'] === 'string');
+    && signal.payload?.source === 'codex.notify';
 }

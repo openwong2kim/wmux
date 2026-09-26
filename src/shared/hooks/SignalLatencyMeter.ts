@@ -51,6 +51,7 @@ export interface LatencyEntry {
 
 /** Aggregate query result. All numeric fields are null when buffer empty. */
 export interface LatencyStats {
+  routingRefusals?: { 'no-live-thread-owner': number };
   /** Total entries observed since process start (NOT buffer size). */
   total: number;
   /** Current buffer fill count (≤ MAX_BUFFER). */
@@ -96,6 +97,7 @@ export class SignalLatencyMeter {
   /** Workspace cwd-match outcomes since process start. Never decremented. */
   private matchedCount = 0;
   private missedCount = 0;
+  private noLiveThreadOwnerCount = 0;
   /** onStatsChange subscribers. Single-fire; no buffering. */
   private readonly listeners = new Set<(stats: LatencyStats) => void>();
 
@@ -134,6 +136,11 @@ export class SignalLatencyMeter {
    * stays a separate dimension (Codex P1#2). Callers should invoke this
    * once per recordSignal call, after attempting the lookup.
    */
+  recordRoutingRefusal(reason: 'no-live-thread-owner'): void {
+    if (reason === 'no-live-thread-owner') this.noLiveThreadOwnerCount++;
+    this.emit();
+  }
+
   recordWorkspaceMatch(matched: boolean): void {
     if (matched) {
       this.matchedCount += 1;
@@ -201,6 +208,7 @@ export class SignalLatencyMeter {
         lastSignalAt: null,
         perAgent: {},
         workspaceMatchRate,
+        ...(this.noLiveThreadOwnerCount ? { routingRefusals: { 'no-live-thread-owner': this.noLiveThreadOwnerCount } } : {}),
       };
     }
 
@@ -228,6 +236,7 @@ export class SignalLatencyMeter {
       lastSignalAt: lastSignalAt === -Infinity ? null : lastSignalAt,
       perAgent,
       workspaceMatchRate,
+      ...(this.noLiveThreadOwnerCount ? { routingRefusals: { 'no-live-thread-owner': this.noLiveThreadOwnerCount } } : {}),
     };
   }
 

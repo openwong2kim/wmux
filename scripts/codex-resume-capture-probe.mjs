@@ -60,7 +60,7 @@ function runNotify(home, payloadObj, extraEnv = {}) {
 }
 
 // Start a mock pipe server that captures the first hooks.signal RPC.
-function startMockPipe() {
+function startMockPipe(legacy = false) {
   let captured = null;
   const server = createServer((sock) => {
     let buf = '';
@@ -71,6 +71,11 @@ function startMockPipe() {
       try {
         const req = JSON.parse(buf.slice(0, nl));
         captured = req;
+        if (legacy && req.method === 'hooks.notify.v1') {
+          sock.write(JSON.stringify({ id: req.id, ok: false, error: 'Unknown method: hooks.notify.v1' }) + '\n');
+          return;
+        }
+
         sock.write(JSON.stringify({ id: req.id, ok: true, result: { ok: true } }) + '\n');
       } catch {
         sock.write(JSON.stringify({ ok: false }) + '\n');
@@ -110,14 +115,16 @@ async function main() {
   ok('exits 0', exit1 === 0, `exit=${exit1}`);
   ok('RPC reached the pipe', !!req, 'no RPC captured');
   if (req) {
-    ok('method is hooks.signal', req.method === 'hooks.signal', req.method);
+    ok('method is hooks.notify.v1', req.method === 'hooks.notify.v1', req.method);
     ok('auth token forwarded', req.token === TOKEN);
     const p = req.params || {};
     ok('agent = codex', p.agent === 'codex', p.agent);
     ok('kind = agent.stop', p.kind === 'agent.stop', p.kind);
     ok('agentSessionId = session_id', p.agentSessionId === payload.session_id, p.agentSessionId);
     ok('cwd carried', p.cwd === payload.cwd, p.cwd);
-    ok('stale pane env omitted', !p.ptyId && !p.workspaceId && !p.surfaceId);
+    ok('pane env retained for provenance', p.ptyId === 'pty-probe-1' && p.workspaceId === 'ws-probe');
+    ok('parent provenance provided', Number.isSafeInteger(p.payload?.parentPid) && p.payload.parentPid > 0);
+    ok('legacy payload distinguished', p.payload?.notifyFormat === 'legacy');
     ok('thread routing marker', p.payload?.source === 'codex.notify');
     ok('transcript_path in payload (D5)', p.payload && p.payload.transcript_path === payload.transcript_path);
     ok('ts is a finite number', typeof p.ts === 'number' && Number.isFinite(p.ts));
@@ -143,6 +150,17 @@ async function main() {
   ok('no-session-id → nothing spooled',
     !existsSync(join(home3, '.wmux', 'resume-spool', 'pty-probe-1.json')));
   rmSync(home3, { recursive: true, force: true });
+
+  const home4 = makeHome();
+  const old = await startMockPipe(true);
+  const official = { type: 'agent-turn-complete', 'thread-id': 'thread-b', 'turn-id': 'turn-b', cwd: '/same-directory' };
+  await runNotify(home4, official);
+  const compatibility = old.get();
+  ok('old server receives original method', compatibility?.method === 'hooks.signal');
+  ok('old server receives full pane identity', compatibility?.params?.ptyId === 'pty-probe-1' && compatibility.params.workspaceId === 'ws-probe');
+  ok('old server receives original payload', JSON.stringify(compatibility?.params?.payload) === JSON.stringify({ 'turn-id': 'turn-b' }));
+  old.server.close();
+  rmSync(home4, { recursive: true, force: true });
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);

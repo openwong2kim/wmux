@@ -9,10 +9,10 @@
 // `{ type, thread-id, turn-id, cwd, input-messages, last-assistant-message }`;
 // older Codex builds may use
 // `{ session_id, transcript_path, cwd, hook_event_name, model, ... }`.
-// A shared app-server supplies the spawning pane's stale environment. Never
-// treat it as pane identity: the desktop resolves the payload thread against
-// its live pane-owned relay selections. The inherited suffix only chooses an
-// endpoint; an endpoint without a unique live thread owner refuses the signal.
+// A shared app-server may supply stale pane environment. The versioned
+// receiver verifies the notify parent's ancestry before trusting it; otherwise
+// it requires an exact recent completed thread/turn on a pane-owned relay.
+// Legacy payloads retain compatibility unless process evidence proves foreign.
 //
 // This script:
 //   1. Parses the LAST argv as the Codex notify JSON payload.
@@ -21,12 +21,14 @@
 //      (agent:'codex', kind:'agent.stop'); prompt and assistant content is never
 //      logged or forwarded.
 //   4. Sends the envelope to the first wmux endpoint that owns the request: the
-//      DAEMON control pipe (`daemon.hooks.signal`, suffix-scoped daemon token —
+//      DAEMON control pipe (`daemon.hooks.notify.v1`, suffix-scoped daemon token —
 //      the always-on process, so this still lands with the GUI closed), else the
-//      MAIN pipe (`hooks.signal`, suffix-scoped main token). Main relays to the
-//      daemon: only it owns live thread mappings. The verified owner receives
-//      resume capture; main never falls back to cwd-based routing.
-//      WMUX_HOOKS_TO_MAIN=1 forces main-only.
+//      MAIN pipe (`hooks.notify.v1`, suffix-scoped main token). Main relays to the
+//      daemon: only it owns process and completed-turn evidence. An explicitly
+//      unsupported protocol falls back to the original env-bearing envelope.
+//      WMUX_HOOKS_TO_MAIN=1 contacts main only; current main still requires
+//      the daemon for provenance verification. Unsupported versions receive
+//      the original env-bearing envelope, never a stripped cwd-only signal.
 //   5. Never spool: without a live mapping no pane identity is trustworthy.
 //   6. Exits 0 ALWAYS, under a hard timeout, so a wmux problem never stalls Codex.
 //
@@ -49,7 +51,8 @@ const AGENT_TURN_COMPLETE = 'agent-turn-complete';
 //   0.2.0 — daemon-first targeting (daemon.hooks.signal → hooks.signal).
 //   0.3.0 — official payload routing + suffix-isolated endpoint/state paths.
 //   0.4.0 — live thread ownership; no inherited pane identity or resume spool.
-const BRIDGE_VERSION = '0.4.0';
+//   0.5.0 — parent provenance, completed-turn ownership and version negotiation.
+const BRIDGE_VERSION = '0.5.0';
 const CONNECT_RETRY_BACKOFFS_MS = [100, 250];
 const TRANSIENT_CONNECT_CODES = new Set([
   'EPERM', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EBUSY', 'EAGAIN',
@@ -261,7 +264,7 @@ function shouldTryNextTarget(result) {
 
 // Walk targets in order under one shared deadline; returns the last result and
 // the endpoint that produced it (logged so the log shows who served it).
-async function sendToTargets(targets, buildRequest) {
+async function sendToTargets(targets, buildRequest, compatibilityEnvelope) {
   const deadline = Date.now() + HOOK_TIMEOUT_MS;
   let result = { ok: false, error: 'no-target' };
   let target = null;
@@ -269,6 +272,17 @@ async function sendToTargets(targets, buildRequest) {
     if (Date.now() >= deadline) break;
     target = candidate;
     result = await sendRpcWithRetry(candidate.pipe, buildRequest(candidate), deadline);
+    // Only an explicit unsupported-method reply authorizes compatibility mode.
+    // Never retry a timeout or an ambiguous receipt with a different envelope.
+    const unsupported = result?.ok === false && typeof result.error === 'string'
+      && result.error.includes(`Unknown method: ${buildRequest(candidate).method}`)
+      || result?.ok === true && result.result?.reason === 'unsupported-notify-protocol';
+    if (unsupported) {
+      result = await sendRpcWithRetry(candidate.pipe, {
+        ...buildRequest(candidate), method: candidate.method, params: compatibilityEnvelope,
+      }, deadline);
+    }
+
     if (!shouldTryNextTarget(result)) break;
   }
   return { result, target };
@@ -337,9 +351,15 @@ async function main() {
     kind: 'agent.stop',
     agent: 'codex',
     agentSessionId: sessionId,
+    ...(nonEmptyStr(process.env.WMUX_PTY_ID) ? { ptyId: process.env.WMUX_PTY_ID } : {}),
+    ...(nonEmptyStr(process.env.WMUX_WORKSPACE_ID) ? { workspaceId: process.env.WMUX_WORKSPACE_ID } : {}),
+    ...(nonEmptyStr(process.env.WMUX_SURFACE_ID) ? { surfaceId: process.env.WMUX_SURFACE_ID } : {}),
     cwd,
     payload: {
       source: 'codex.notify',
+      parentPid: process.ppid,
+      parentPlatform: process.platform,
+      notifyFormat: hasOfficialType ? 'official' : 'legacy',
       ...(turnId ? { 'turn-id': turnId } : {}),
       ...(transcriptPath ? { transcript_path: transcriptPath } : {}),
     },
@@ -348,13 +368,15 @@ async function main() {
 
   // One id across the walk so a fallback is correlatable in the logs; each
   // target carries its own method + token (see resolveTargets).
+  const { source, parentPid, parentPlatform, notifyFormat, ...legacyPayload } = envelope.payload;
+  const compatibilityEnvelope = { ...envelope, payload: legacyPayload };
   const requestId = `codex-notify-${randomUUID()}`;
   const { result: rpcResult, target } = await sendToTargets(targets, (t) => ({
     id: requestId,
-    method: t.method,
+    method: t.method.replace(/signal$/, 'notify.v1'),
     params: envelope,
     token: t.token,
-  }));
+  }), compatibilityEnvelope);
   const outerOk = rpcResult && rpcResult.ok === true;
   const innerOk = outerOk && rpcResult.result && rpcResult.result.ok === true;
 

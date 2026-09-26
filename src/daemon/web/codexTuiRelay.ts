@@ -135,6 +135,6 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     // `retired` lets the owner tell "this relay is live and nothing is selected"
     // from "this relay is gone" — after close() the tracker reports no selection
     // either way, and only the former may erase a durable recovery hint.
-    return {url:`unix://${socketPath}`,current:()=>tracker.current(),retired:()=>retired,close};
+    return {url:`unix://${socketPath}`,completedTurns:()=>tracker.completedTurns(),current:()=>tracker.current(),retired:()=>retired,close};
   } catch(error) {await close();throw error;}
 }

@@ -1,3 +1,4 @@
+import { notifyProvenance, applyNotifyProvenance, readNotifyParents } from './hooks/notifyProvenance';
 import { loadChatSkills } from './transcript/chatSkills';
 import { TerminalChatService } from './transcript/TerminalChatService';
 import type { ChatBridge, ChatLaunchRequest } from './chat/chatBridge';
@@ -3427,10 +3428,7 @@ function registerRpcHandlers(
 
   if (!hookIngest) {
     hookIngest = new HookIngest({
-      listLiveSessions: () => sessionManager.listLiveSessions().map(session => ({
-        ...session,
-        codexThreadId: codexPaneRelays.selection(session.id, sessionManager.getSession(session.id))?.threadId,
-      })),
+      listLiveSessions: () => sessionManager.listLiveSessions(),
       emitAgentEvent: (sessionId, data) => {
         const historySession = sessionManager.getSession(sessionId);
         if (historySession) recordHistory(store => store.ingest(sessionId, historySession.meta.env, data));
@@ -3515,6 +3513,30 @@ function registerRpcHandlers(
   // phone answers. Normal signals go through `ingest.handle` and return
   // immediately; `agent.awaiting_permission` goes through `handlePermissionGate`
   // and then awaits the GateBroker, which resolves on phone answer or self-defers.
+  pipeServer.onRpc('daemon.hooks.notify.v1', async (params) => {
+    if (!isAgentSignal(params) || params.agent !== 'codex' || params.kind !== 'agent.stop' ||
+        params.payload?.source !== 'codex.notify') return { ok: false, reason: 'invalid-envelope' };
+    let parents: Map<number, number> | undefined;
+    if (params.payload.parentPlatform === process.platform) {
+      parents = await readNotifyParents();
+    }
+    // Take one owner snapshot after the asynchronous process read. No second
+    // getSession lookup can mix an old pane with a replacement incarnation.
+    const owners = sessionManager.listManagedSessions().filter(owner =>
+      owner.meta.state === 'attached' || owner.meta.state === 'detached');
+    const snapshot = owners.map(owner => ({ ...owner.meta,
+      codexCompletedTurns: codexPaneRelays.completedTurns(owner.meta.id, owner) }));
+    const claimed = snapshot.find(p => p.id === params.ptyId);
+    const provenance = notifyProvenance(params.payload.parentPid, claimed?.pid, parents);
+    let signal = applyNotifyProvenance(params, provenance);
+    if (provenance === 'owned' && claimed) {
+      const { workspaceId: _workspace, surfaceId: _surface, ...metadata } = signal;
+      const workspaceId = claimed.env?.[ENV_KEYS.WORKSPACE_ID];
+      signal = { ...metadata, ptyId: claimed.id, ...(workspaceId ? { workspaceId } : {}) };
+    }
+    return ingest.handle(signal, snapshot);
+  });
+
   pipeServer.onRpc('daemon.hooks.signal', async (params) => {
     if (
       params && typeof params === 'object' &&

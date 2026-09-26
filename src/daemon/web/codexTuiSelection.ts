@@ -30,6 +30,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  */
 export class CodexTuiSelectionTracker {
   private generation = 0;
+  private readonly completions = new Map<string, { threadId: string; turnId: string; at: number }>();
   private retired = false;
   private selected?: CodexTuiSelection;
   private pending?: {id:string | number; generation:number; deadline:number; threadId?:string};
@@ -47,6 +48,13 @@ export class CodexTuiSelectionTracker {
     this.dropExpiredPending();
     if (this.retired || this.pending) return undefined;
     return this.selected ? {...this.selected} : undefined;
+  }
+
+  completedTurns(): Array<{ threadId: string; turnId: string }> {
+    for (const [key, turn] of this.completions) {
+      if (this.now() - turn.at > 15_000) this.completions.delete(key);
+    }
+    return this.retired ? [] : [...this.completions.values()].map(({ threadId, turnId }) => ({ threadId, turnId }));
   }
 
   fromTui(value:unknown):void {
@@ -83,6 +91,18 @@ export class CodexTuiSelectionTracker {
     const message = record(value);
     if (!message) return;
     if (typeof message.method === 'string') {
+      if (message.method === 'turn/completed') {
+        const params = record(message.params);
+        const threadId = params?.threadId;
+        const turnId = record(params?.turn)?.id;
+        if (typeof threadId === 'string' && threadId === this.selected?.threadId &&
+            typeof turnId === 'string' && turnId.length > 0 && turnId.length <= 128) {
+          this.completedTurns();
+          this.completions.set(JSON.stringify([threadId, turnId]), { threadId, turnId, at: this.now() });
+          while (this.completions.size > 64) this.completions.delete(this.completions.keys().next().value!);
+        }
+      }
+
       // Notifications and server requests cannot impersonate a correlated reply.
       if (['thread/closed','thread/archived','thread/deleted'].includes(message.method)) {
         const threadId = record(message.params)?.threadId;

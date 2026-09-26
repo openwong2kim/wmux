@@ -113,13 +113,27 @@ beforeEach(() => {
 });
 
 describe('hooks.signal — daemon relay', () => {
+  it('never acknowledges an undefined notify relay reply as success', async () => {
+    const daemon = fakeDaemon({ connected: true, rpc: async () => undefined });
+    const stub = stubHookRouter();
+    const result = await dispatchSignal(daemon.client, stub.router, {
+      agent: 'codex', payload: { source: 'codex.notify' },
+    });
+    expect(result.result).toEqual({ ok: false, reason: 'daemon-unavailable' });
+    expect(stub.recordHook).not.toHaveBeenCalled();
+  });
+  it('refuses a payload-less envelope without throwing', async () => {
+    const result = await dispatchSignal(null, stubHookRouter().router, { payload: undefined as never });
+    expect(result.result).toEqual({ ok: false, reason: 'invalid-envelope' });
+  });
+
   it('refuses shared-server notifications locally when no live thread mapping is available', async () => {
     const stub = stubHookRouter();
     const response = await dispatchSignal(null, stub.router, {
       agent: 'codex', agentSessionId: 'thread-b', ptyId: 'pty-1',
       payload: { source: 'codex.notify' },
     });
-    expect(response.result).toEqual({ ok: false, reason: 'no-workspace-match' });
+    expect(response.result).toEqual({ ok: false, reason: 'daemon-unavailable' });
     expect(stub.touchAuthority).not.toHaveBeenCalled();
     expect(stub.recordHook).not.toHaveBeenCalled();
   });
