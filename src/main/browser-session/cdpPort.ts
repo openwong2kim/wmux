@@ -39,16 +39,11 @@ export const CDP_PORT_MIN = 18800;
 /** How many ports the range holds (18800–18899). */
 export const CDP_PORT_COUNT = 100;
 
-/**
- * Where claim files live.
- *
- * The system temp directory, NOT `~/.wmux{suffix}` — the whole point is to be
- * visible to an instance running under a DIFFERENT data suffix, which is the
- * configuration the collision was found in. A per-instance directory would
- * leave the two instances unable to see each other, which is the bug.
- */
-function claimDir(): string {
-  return os.tmpdir();
+/** Shared across Dock/shell launches and data suffixes, independent of TMPDIR. */
+export function claimDir(home = os.homedir()): string {
+  const dir = path.join(home, '.cache', 'wmux-cdp');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
 }
 
 function claimPath(dir: string, port: number): string {
@@ -106,7 +101,10 @@ export interface CdpPortClaim {
  * handler runs.
  */
 export function claimCdpPort(deps: ClaimCdpPortDeps = {}): CdpPortClaim {
-  const dir = deps.dir ?? claimDir();
+  let dir: string;
+  try { dir = deps.dir ?? claimDir(); } catch {
+    return { port: CDP_PORT_MIN + ((deps.firstOffset ?? crypto.randomInt(CDP_PORT_COUNT)) % CDP_PORT_COUNT), claimed: false };
+  }
   const pid = deps.pid ?? process.pid;
   const isAlive = deps.isAlive ?? defaultIsAlive;
   const start = deps.firstOffset ?? crypto.randomInt(CDP_PORT_COUNT);
@@ -176,7 +174,7 @@ function writeClaim(file: string, pid: number): boolean {
 /** What the CDP endpoint said when asked whether it exists. */
 export type CdpProbeResult =
   | { ok: true; browser: string }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; foreign?: boolean };
 
 /** Verify the endpoint contains a target identified through Electron's local debugger. */
 export async function probeCdpEndpoint(
@@ -200,7 +198,7 @@ export async function probeCdpEndpoint(
     if (!targetsRes.ok) return { ok: false, reason: `target list HTTP ${targetsRes.status}` };
     const targets: unknown = await targetsRes.json();
     if (!Array.isArray(targets) || !targets.some((target) => target?.id === expectedTargetId)) {
-      return { ok: false, reason: 'endpoint does not belong to this instance' };
+      return { ok: false, reason: 'local target is not yet present in the endpoint', foreign: Array.isArray(targets) && targets.length > 0 };
     }
     return { ok: true, browser };
   } catch (err) {
@@ -208,4 +206,20 @@ export async function probeCdpEndpoint(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Retry target-list lag; only repeated foreign lists establish a collision. */
+export async function probeCdpEndpointWithRetry(
+  port: number, expectedTargetId: string,
+  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<CdpProbeResult> {
+  let result: CdpProbeResult = { ok: false, reason: 'verification pending' };
+  let foreignCount = 0;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(100 * 3 ** (attempt - 1));
+    result = await probeCdpEndpoint(port, expectedTargetId, deps);
+    if (result.ok) return result;
+    foreignCount = result.foreign ? foreignCount + 1 : 0;
+  }
+  return { ...result, foreign: foreignCount === 3 };
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +7,8 @@ import {
   CDP_PORT_MIN,
   claimCdpPort,
   probeCdpEndpoint,
+  probeCdpEndpointWithRetry,
+  claimDir,
 } from '../cdpPort';
 
 // #1331 — the port used to be a bare draw handed to --remote-debugging-port and
@@ -26,6 +28,22 @@ describe('claimCdpPort', () => {
 
   const alive = () => true;
   const dead = () => false;
+
+  it('uses the same claims across launches with different TMPDIR values', () => {
+    const previous = process.env.TMPDIR;
+    try {
+      process.env.TMPDIR = path.join(dir, 'dock-temp');
+      const dockDir = claimDir(dir);
+      const first = claimCdpPort({ dir: dockDir, pid: 1, isAlive: alive, firstOffset: 4 });
+      process.env.TMPDIR = path.join(dir, 'shell-temp');
+      expect(claimDir(dir)).toBe(dockDir);
+      const second = claimCdpPort({ dir: claimDir(dir), pid: 2, isAlive: alive, firstOffset: 4 });
+      expect(second.port).not.toBe(first.port);
+    } finally {
+      if (previous === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previous;
+    }
+  });
 
   it('claims the drawn port and records the pid', () => {
     const claim = claimCdpPort({ dir, pid: 4242, isAlive: alive, firstOffset: 7 });
@@ -93,7 +111,7 @@ describe('probeCdpEndpoint', () => {
       url.endsWith('/json/list') ? [{ id: 'other-instance-target' }] : { Browser: 'Chrome/140.0.0.0' },
     })) as unknown as typeof fetch;
     await expect(probeCdpEndpoint(18842, 'own-target', { fetchImpl })).resolves.toEqual({
-      ok: false, reason: 'endpoint does not belong to this instance',
+      ok: false, reason: 'local target is not yet present in the endpoint', foreign: true,
     });
   });
 
@@ -114,4 +132,25 @@ describe('probeCdpEndpoint', () => {
       reason: 'HTTP 404',
     });
   });
+});
+
+it('retries list lag and distinguishes repeated foreign lists from transient failures', async () => {
+  for (const scenario of ['lag', 'foreign', 'timeout']) {
+    let lists = 0;
+    const sleep = vi.fn(async () => undefined);
+    const fetchImpl = (async (url: string) => {
+      if (scenario === 'timeout') throw new Error('timeout');
+      return { ok: true, json: async () => url.endsWith('/json/list')
+        ? (scenario === 'foreign' ? [{ id: 'foreign' }] : (++lists === 1 ? [] : [{ id: 'own' }]))
+        : { Browser: 'Chromium' } };
+    }) as unknown as typeof fetch;
+    const result = await probeCdpEndpointWithRetry(18842, 'own', { fetchImpl, sleep });
+    if (scenario === 'lag') {
+      expect(result.ok).toBe(true);
+      expect(sleep).toHaveBeenCalledTimes(1);
+    } else {
+      expect(result).toMatchObject({ ok: false, foreign: scenario === 'foreign' });
+      expect(sleep.mock.calls).toHaveLength(2);
+    }
+  }
 });

@@ -38,16 +38,19 @@ describe('WebviewCdpManager', () => {
     manager = new WebviewCdpManager(18800);
   });
 
-  it('does not discover or register targets until startup verifies the port', async () => {
+  it('keeps local registration while pending and discovers remote targets after verification', async () => {
     manager = new WebviewCdpManager(0);
+    manager.setCdpFailureReason('ownership verification pending');
     await manager.register('surface-1', 42);
     expect(manager.getCdpPort()).toBe(0);
-    expect(manager.listTargets()).toEqual([]);
-    expect(mockDebugger.attach).not.toHaveBeenCalled();
+    expect(manager.getCdpFailureReason()).toContain('pending');
+    expect(manager.getTarget('surface-1')?.wsUrl).toBe('');
+    expect(mockDebugger.attach).toHaveBeenCalled();
+    expect(mockWebContents.setBackgroundThrottling).toHaveBeenCalledWith(false);
     expect(global.fetch).not.toHaveBeenCalled();
-    manager.setCdpPort(18800);
-    await manager.register('surface-1', 42);
+    await manager.setCdpPort(18800);
     expect(manager.getTarget('surface-1')?.targetId).toBe('target-abc');
+    expect(manager.getCdpFailureReason()).toBe('');
   });
 
   it('register attaches debugger and stores session', async () => {

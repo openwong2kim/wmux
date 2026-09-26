@@ -148,7 +148,6 @@ export class WebviewCdpManager {
   }
 
   async register(surfaceId: string, webContentsId: number, workspaceId?: string): Promise<void> {
-    if (this.cdpPort <= 0) return; // Disabled until startup proves endpoint ownership.
     // Same-guest re-registration (codex P2, PR #528): BrowserPanel re-calls
     // register() on every dom-ready, so a hidden navigation/reload would
     // otherwise round-trip through unregister() — zeroing lease counts and
@@ -202,9 +201,9 @@ export class WebviewCdpManager {
     }
 
     let targetId = `wc-${webContentsId}`;
-    let wsUrl = `ws://127.0.0.1:${this.cdpPort}/devtools/page/${targetId}`;
+    let wsUrl = this.cdpPort > 0 ? `ws://127.0.0.1:${this.cdpPort}/devtools/page/${targetId}` : '';
 
-    try {
+    if (this.cdpPort > 0) try {
       const resp = await fetch(`http://127.0.0.1:${this.cdpPort}/json`);
       const targets: Array<{ id: string; webSocketDebuggerUrl: string; url: string; title: string }> =
         await resp.json();
@@ -768,8 +767,17 @@ export class WebviewCdpManager {
   }
 
   /** Enable the endpoint only after startup verifies this instance's target. */
-  setCdpPort(port: number): void {
+  private cdpFailureReason = 'CDP is disabled or ownership verification is pending';
+
+  setCdpFailureReason(reason: string): void { this.cdpFailureReason = reason; }
+  getCdpFailureReason(): string { return this.cdpFailureReason; }
+
+  async setCdpPort(port: number): Promise<void> {
     this.cdpPort = port;
+    this.cdpFailureReason = '';
+    for (const info of [...this.sessions.values()]) {
+      await this.register(info.surfaceId, info.webContentsId, info.workspaceId);
+    }
   }
 
   getCdpPort(): number {

@@ -117,7 +117,7 @@ import { readDaemonPid } from './updater/installTeardown';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
-import { claimCdpPort, probeCdpEndpoint } from './browser-session/cdpPort';
+import { claimCdpPort, probeCdpEndpointWithRetry } from './browser-session/cdpPort';
 import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
 import { ChromeLauncherRegistry } from './browser-session/ChromeLauncher';
 import { ChromeProfileStore } from './browser-session/ChromeProfileStore';
@@ -566,6 +566,7 @@ const mcpRegistrar = new McpRegistrar();
 // backoff, so start order is a latency nicety, not a correctness gate.
 const mcpBrokerSupervisor = new BrokerSupervisor();
 const webviewCdpManager = new WebviewCdpManager(0);
+webviewCdpManager.setCdpFailureReason(cdpEnabled ? 'CDP ownership verification pending' : 'CDP disabled by configuration');
 
 // Daemon client — initialized on app ready, used if daemon is available
 let daemonClient: DaemonClient | null = null;
@@ -1506,23 +1507,47 @@ app.on('ready', async () => {
 
   mainWindow = createWindow({ deferLoad: true });
   if (cdpEnabled) {
-    const localDebugger = mainWindow.webContents.debugger;
-    const alreadyAttached = localDebugger.isAttached();
-    try {
-      if (!alreadyAttached) localDebugger.attach('1.3');
-      const { targetInfo } = await localDebugger.sendCommand('Target.getTargetInfo');
-      const probe = await probeCdpEndpoint(cdpPort, targetInfo?.targetId ?? '');
-      if (probe.ok) {
-        webviewCdpManager.setCdpPort(cdpPort);
-        console.log(`[WinMux] CDP listening on port ${cdpPort} (${probe.browser})`);
-      } else {
-        console.error(`[WinMux] CDP ownership verification failed on port ${cdpPort}: ${probe.reason}. Browser automation is disabled; restart with a free port.`);
+    const localContents = mainWindow.webContents;
+    const verifyOwnership = async (): Promise<void> => {
+      if (localContents.isDestroyed()) return;
+      const localDebugger = localContents.debugger;
+      let attachedByUs = false;
+      const detached = (): void => { attachedByUs = false; };
+      localDebugger.on('detach', detached);
+      let retry = true;
+      try {
+        if (!localDebugger.isAttached()) {
+          localDebugger.attach('1.3');
+          attachedByUs = true;
+        }
+        const { targetInfo } = await localDebugger.sendCommand('Target.getTargetInfo');
+        const probe = await probeCdpEndpointWithRetry(cdpPort, targetInfo?.targetId ?? '');
+        if (probe.ok) {
+          await webviewCdpManager.setCdpPort(cdpPort);
+          console.log(`[WinMux] CDP listening on port ${cdpPort} (${probe.browser})`);
+          retry = false;
+        } else {
+          webviewCdpManager.setCdpFailureReason(probe.foreign ? 'CDP port belongs to another instance; restart with a free port' : `CDP verification pending: ${probe.reason}`);
+          if (probe.foreign) {
+            console.error(`[WinMux] CDP ownership verification failed on port ${cdpPort}: foreign targets confirmed. Remote browser automation is disabled.`);
+            retry = false;
+          }
+        }
+      } catch (err) {
+        webviewCdpManager.setCdpFailureReason(`CDP verification pending: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        localDebugger.removeListener('detach', detached);
+        if (attachedByUs && localDebugger.isAttached()) {
+          try { localDebugger.detach(); } catch { /* Contents may close during verification. */ }
+        }
       }
-    } catch (err) {
-      console.error('[WinMux] CDP ownership verification failed; browser automation is disabled:', err);
-    } finally {
-      if (!alreadyAttached && localDebugger.isAttached()) localDebugger.detach();
-    }
+      // A slow boot or timeout is pending, not a permanent policy disable.
+      if (retry && !localContents.isDestroyed()) {
+        const timer = setTimeout(() => { void verifyOwnership(); }, 2_000);
+        timer.unref();
+      }
+    };
+    void verifyOwnership();
   }
   markBoot('window-created');
   console.log(`[Main] Window created (renderer load deferred): ${!!mainWindow}`);
