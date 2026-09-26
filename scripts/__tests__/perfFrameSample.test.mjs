@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { sampleRafDeltas } from '../perf-frame-sample.mjs';
+import { sampleFrameBudget } from '../perf-frame-sample.mjs';
 import { summarizeSamples } from '../perf-scenarios.mjs';
 import { compareResults, GATES } from '../perf-compare.mjs';
 
@@ -19,19 +19,25 @@ function pageWithCadence(deltaAt) {
 }
 afterEach(() => vi.unstubAllGlobals());
 
-describe('frame-budget measurement window', () => {
-  it('keeps a brief three-frame hiccup from determining p95', async () => {
-    const cadence = (frame) => frame >= 20 && frame < 23 ? 62.6 : 15.7;
-    const short = summarizeSamples(await sampleRafDeltas(pageWithCadence(cadence), 60));
-    expect(verdict(short.p95)).toBe('FAIL');
-    const measured = summarizeSamples(await sampleRafDeltas(pageWithCadence(cadence)));
-    expect(verdict(measured.p95)).toBe('PASS');
-    expect(measured.max).toBe(62.6); // The hiccup remains visible in the result.
+const baseline = { scenarios: { frameBudget: { N8: { frameDeltaMs: { p95: 15.7 } } } } };
+// N8 distribution from #1480: most frames take 46.9ms; the tail takes 62.6ms.
+const badSample = (frame) => frame % 60 < 54 ? 46.9 : 62.6;
+describe('frame-budget failure confirmation', () => {
+  it('passes one bad N8 sample followed by a good sample and logs both', async () => {
+    const log = vi.fn();
+    const measured = await sampleFrameBudget(pageWithCadence((frame) => frame < 60 ? badSample(frame) : 15.7), 8, baseline, log);
+    expect(measured.samples).toHaveLength(2);
+    expect(measured.samples[0]).toMatchObject({ p50: 46.9, p95: 62.6, count: 59 });
+    expect(verdict(measured.stats.p95)).toBe('PASS');
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(log.mock.calls[0][0]).toContain('p95=62.6ms');
+    expect(log.mock.calls[1][0]).toContain('p95=15.7ms');
   });
 
-  it('still fails sustained missed-frame cadence', async () => {
-    const measured = summarizeSamples(await sampleRafDeltas(pageWithCadence(() => 62.6)));
-    expect(measured.p95).toBe(62.6);
-    expect(verdict(measured.p95)).toBe('FAIL');
+  it('fails two bad N8 samples without lengthening or smoothing either window', async () => {
+    const measured = await sampleFrameBudget(pageWithCadence(badSample), 8, baseline, vi.fn());
+    expect(measured.samples).toHaveLength(2);
+    expect(measured.samples.every((sample) => sample.p50 === 46.9 && sample.p95 === 62.6 && sample.count === 59)).toBe(true);
+    expect(verdict(measured.stats.p95)).toBe('FAIL');
   });
 });
