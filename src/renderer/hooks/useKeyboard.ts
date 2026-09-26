@@ -718,14 +718,15 @@ export function useKeyboard() {
       // A ⌘ chord on macOS is no terminal's: it is consumed with a toast
       // instead of dying silently (see mentionKeyClaim).
       const mentionClaim = action === 'mentionAgent'
-        ? mentionKeyClaim(store.getState(), e, window.electronAPI.platform)
+        ? mentionKeyClaim(store.getState(), e, window.electronAPI?.platform)
         : undefined;
       if (action && run && mentionClaim !== null) {
         e.preventDefault();
         if (STOP_PROPAGATION_ACTIONS.has(action)) e.stopImmediatePropagation();
         shortcutPressGuard.noteActed(e);
         if (mentionClaim === 'noSource') {
-          store.getState().pushToast({ message: t('mention.noSource'), level: 'info' });
+          // Once per press: a held chord auto-repeats, and one toast is enough.
+          if (!e.repeat) store.getState().pushToast({ message: t('mention.noSource'), level: 'info' });
         } else {
           run();
         }

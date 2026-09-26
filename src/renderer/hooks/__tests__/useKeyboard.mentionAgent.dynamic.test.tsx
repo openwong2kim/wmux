@@ -194,6 +194,34 @@ describe('⌘⇧2 on macOS', () => {
     expect(noSourceToasts()).toBe(1);
   });
 
+  it('held down, it shows the toast once, not once per auto-repeat', () => {
+    seed(false);
+    mount('darwin');
+    const sidebarButton = document.createElement('button');
+    document.body.appendChild(sidebarButton);
+    press({ key: '@', code: 'Digit2', metaKey: true, shiftKey: true }, sidebarButton);
+    const held = press({ key: '@', code: 'Digit2', metaKey: true, shiftKey: true, repeat: true }, sidebarButton);
+    press({ key: '@', code: 'Digit2', metaKey: true, shiftKey: true, repeat: true }, sidebarButton);
+    sidebarButton.remove();
+    expect(held.event.defaultPrevented).toBe(true);
+    expect(noSourceToasts()).toBe(1);
+  });
+
+  it('from a pane other than the agent leaf (a floating pane), consumes the key with the toast', () => {
+    seed(true);
+    mount('darwin');
+    const floating = document.createElement('div');
+    floating.setAttribute('data-terminal-pty', 'pty-floating');
+    const textarea = document.createElement('textarea');
+    floating.appendChild(textarea);
+    document.body.appendChild(floating);
+    const { event } = press({ key: '@', code: 'Digit2', metaKey: true, shiftKey: true }, textarea);
+    floating.remove();
+    expect(opened).toBe(0);
+    expect(event.defaultPrevented).toBe(true);
+    expect(noSourceToasts()).toBe(1);
+  });
+
   it('rebound to a key without ⌘ (F2), leaves it to the shell like Windows / Linux', () => {
     seed(false, { mentionAgent: 'F2' });
     mount('darwin');
