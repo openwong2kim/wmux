@@ -16,6 +16,35 @@ The notify program is what shipped first. The hooks bridge is the
 replacement: it reports everything the notify program does plus turn start,
 session start, and approval pauses.
 
+## Shared task host notification attribution
+
+The notify bridge sends the payload's thread ID without inherited pane identity.
+The desktop daemon accepts it only when exactly one live pane-owned TUI relay
+currently selects that thread. It rewrites the envelope to that pane before
+updating status, hook authority or resume bindings. Missing, closed or ambiguous
+owners are refused; neither cwd nor persisted hook bindings establish ownership.
+Failed notifications are never spooled under the shared server's pane ID.
+
+This is a mitigation, not universal notification recovery. Relay coverage is
+currently limited to supported managed launches. Manually launched TUIs without
+a relay retain terminal detection, but lose notify-based completion/resume
+capture. The inherited instance suffix can also be stale: a notification sent to
+an instance without a matching live thread is refused rather than broadcast
+across instances. If multiple instances select the same thread, the payload
+cannot identify which TUI initiated the turn. Main-only
+fallback cannot resolve these notifications. Native lifecycle hooks are separate
+and are not changed by this mitigation.
+
+In upstream 0.157.0, [the hook registry](https://github.com/openai/codex/blob/rust-v0.157.0/codex-rs/hooks/src/registry.rs)
+captures `std::env::vars_os()` in the server and
+[legacy notify](https://github.com/openai/codex/blob/rust-v0.157.0/codex-rs/hooks/src/legacy_notify.rs)
+replays that snapshot. The payload includes
+thread ID and cwd, but no originating TUI/pane identity; the client name identifies
+a client type, not a connection. Per-tool shell environment configuration cannot
+correct this hook snapshot. Complete coverage needs pane-owned launch/connection
+instrumentation, or upstream per-origin notification routing, including a policy
+for multiple TUIs attached to the same thread.
+
 ## Why the hooks bridge exists
 
 wmux decides "is this Codex pane done?" partly by scraping the terminal.

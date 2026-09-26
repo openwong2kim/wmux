@@ -9,8 +9,10 @@
 // `{ type, thread-id, turn-id, cwd, input-messages, last-assistant-message }`;
 // older Codex builds may use
 // `{ session_id, transcript_path, cwd, hook_event_name, model, ... }`.
-// The spawned process inherits the pane env, so WMUX_PTY_ID pins the capture to
-// the exact pane and WMUX_DATA_SUFFIX pins every endpoint/file to that instance.
+// A shared app-server supplies the spawning pane's stale environment. Never
+// treat it as pane identity: the desktop resolves the payload thread against
+// its live pane-owned relay selections. The inherited suffix only chooses an
+// endpoint; an endpoint without a unique live thread owner refuses the signal.
 //
 // This script:
 //   1. Parses the LAST argv as the Codex notify JSON payload.
@@ -21,11 +23,11 @@
 //   4. Sends the envelope to the first wmux endpoint that owns the request: the
 //      DAEMON control pipe (`daemon.hooks.signal`, suffix-scoped daemon token —
 //      the always-on process, so this still lands with the GUI closed), else the
-//      MAIN pipe (`hooks.signal`, suffix-scoped main token). Either side builds
-//      the resume binding from signal.agent + agentSessionId + cwd + optional
-//      transcript_path; both paths are fully agent-agnostic.
+//      MAIN pipe (`hooks.signal`, suffix-scoped main token). Main relays to the
+//      daemon: only it owns live thread mappings. The verified owner receives
+//      resume capture; main never falls back to cwd-based routing.
 //      WMUX_HOOKS_TO_MAIN=1 forces main-only.
-//   5. On failure, spools a suffix-scoped resume-binding record for daemon boot.
+//   5. Never spool: without a live mapping no pane identity is trustworthy.
 //   6. Exits 0 ALWAYS, under a hard timeout, so a wmux problem never stalls Codex.
 //
 // SELF-CONTAINED: JS-only, Node built-ins only — no imports from src/ or
@@ -35,7 +37,7 @@
 // bridge is leaner than the Claude one: Codex supplies an official thread id (or
 // legacy session_id) directly and has no permission-mode / usage to extract.
 
-import { readFileSync, existsSync, mkdirSync, appendFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
@@ -46,7 +48,8 @@ const AGENT_TURN_COMPLETE = 'agent-turn-complete';
 // Stamped on every codex-notify.log line; bump on behavior changes.
 //   0.2.0 — daemon-first targeting (daemon.hooks.signal → hooks.signal).
 //   0.3.0 — official payload routing + suffix-isolated endpoint/state paths.
-const BRIDGE_VERSION = '0.3.0';
+//   0.4.0 — live thread ownership; no inherited pane identity or resume spool.
+const BRIDGE_VERSION = '0.4.0';
 const CONNECT_RETRY_BACKOFFS_MS = [100, 250];
 const TRANSIENT_CONNECT_CODES = new Set([
   'EPERM', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EBUSY', 'EAGAIN',
@@ -93,7 +96,8 @@ function getPipeName() {
 // The daemon is the always-on process and owns hook ingest, so it is tried
 // first; the main pipe stays as the fallback for an older wmux or a daemon that
 // is down. WMUX_DATA_SUFFIX is propagated into pane environments, so daemon and
-// main discovery stays inside the pane's selected instance namespace.
+// main discovery stays inside the inherited instance namespace. This may be
+// stale: the receiving daemon must verify the thread instead of trusting it.
 function getDaemonAuthTokenPath() {
   return join(getWmuxHomeDir(), 'daemon-auth-token');
 }
@@ -167,44 +171,6 @@ function logEvent(outcome, extra) {
   try {
     appendFileSync(getLogPath(), line + '\n', { encoding: 'utf8' });
   } catch { /* no writable home → swallow */ }
-}
-
-// ----- Resume-binding spool (daemon drains on next boot) -------------------
-//
-// Same record shape + ptyId key + atomic temp→rename + don't-replace-newer rule
-// the daemon ingest expects (mirrors integrations/claude/bin/wmux-bridge.mjs).
-// The spool lives in the same suffix-scoped data directory the daemon drains.
-function getResumeSpoolDir() {
-  const dir = join(getWmuxHomeDir(), 'resume-spool');
-  try {
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
-  } catch { /* writeFileSync below throws + is swallowed */ }
-  return dir;
-}
-
-function spoolResumeBinding(record) {
-  try {
-    if (!record || !record.ptyId || !record.sessionId) return;
-    const safe = String(record.ptyId).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
-    if (!safe) return;
-    const dir = getResumeSpoolDir();
-    const file = join(dir, `${safe}.json`);
-    const tmp = join(dir, `${safe}.${process.pid}.${randomUUID()}.json.tmp`);
-    writeFileSync(tmp, JSON.stringify(record), { encoding: 'utf8', mode: 0o600 });
-    try {
-      if (existsSync(file)) {
-        const existing = JSON.parse(readFileSync(file, 'utf8'));
-        if (typeof existing?.ts === 'number' && existing.ts > record.ts) {
-          try { unlinkSync(tmp); } catch { /* ignore */ }
-          return;
-        }
-      }
-    } catch { /* replace a corrupt/unreadable existing spool */ }
-    renameSync(tmp, file);
-    logEvent('resume-spooled', { ptyId: record.ptyId, sessionId: record.sessionId });
-  } catch (err) {
-    logEvent('resume-spool-error', { error: String(err) });
-  }
 }
 
 // ----- RPC over named pipe (mirrors the Claude bridge) ---------------------
@@ -355,16 +321,10 @@ async function main() {
   const cwd = nonEmptyStr(payload.cwd) ?? process.cwd();
   const transcriptPath = nonEmptyStr(payload.transcript_path);
 
-  const envPtyId = nonEmptyStr(process.env.WMUX_PTY_ID);
-  const envWorkspaceId = nonEmptyStr(process.env.WMUX_WORKSPACE_ID);
-  const envSurfaceId = nonEmptyStr(process.env.WMUX_SURFACE_ID);
-
   // Endpoints to try, daemon first (see resolveTargets).
   const targets = resolveTargets();
   if (targets.length === 0) {
     logEvent('no-auth-token', { paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
-    // Still spool so a later daemon boot reconciles the capture.
-    if (envPtyId) spoolResumeBinding({ ptyId: envPtyId, agent: 'codex', sessionId, cwd, transcriptPath, ts: Date.now() });
     return;
   }
 
@@ -377,11 +337,9 @@ async function main() {
     kind: 'agent.stop',
     agent: 'codex',
     agentSessionId: sessionId,
-    ...(envWorkspaceId ? { workspaceId: envWorkspaceId } : {}),
-    ...(envSurfaceId ? { surfaceId: envSurfaceId } : {}),
-    ...(envPtyId ? { ptyId: envPtyId } : {}),
     cwd,
     payload: {
+      source: 'codex.notify',
       ...(turnId ? { 'turn-id': turnId } : {}),
       ...(transcriptPath ? { transcript_path: transcriptPath } : {}),
     },
@@ -409,11 +367,6 @@ async function main() {
       error: rpcResult?.error,
       detail: rpcResult?.detail,
     });
-    // Anything but a durable success would lose the capture. Spool it (needs
-    // the exact per-pane key) so the daemon reconciles it on its next boot.
-    if (envPtyId) {
-      spoolResumeBinding({ ptyId: envPtyId, agent: 'codex', sessionId, cwd, transcriptPath, ts: envelope.ts });
-    }
   }
 }
 

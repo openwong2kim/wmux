@@ -50,6 +50,7 @@ import { SignalLatencyMeter, type LatencyStats } from '../../shared/hooks/Signal
 import { HookFloodMeter, describeHookFlood, type HookFloodSummary } from '../../shared/hooks/HookFloodMeter';
 import {
   isAgentSignal,
+  isSessionRoutedNotify,
   agentSlugToDisplay,
   type AgentSignal,
   type AgentSignalKind,
@@ -81,6 +82,8 @@ const VALID_PERMISSION_MODES: ReadonlySet<string> = new Set([
  * Structurally satisfied by `DaemonSessionManager.listLiveSessions()` entries.
  */
 export interface HookIngestSession {
+  /** Current thread from the pane-owned live relay; never a persisted hook binding. */
+  codexThreadId?: string;
   id: string;
   cwd: string;
   env?: Record<string, string>;
@@ -322,6 +325,12 @@ export function resolveSessionIdForSignal(
   signal: AgentSignal,
   sessions: HookIngestSession[],
 ): string | null {
+  if (isSessionRoutedNotify(signal)) {
+    if (!signal.agentSessionId) return null;
+    const owners = sessions.filter(s => s.codexThreadId === signal.agentSessionId);
+    return owners.length === 1 ? owners[0].id : null;
+  }
+
   if (signal.ptyId) {
     const exact = sessions.find((s) => s.id === signal.ptyId);
     if (exact) {
@@ -707,7 +716,7 @@ export class HookIngest {
     if (!isAgentSignal(params)) {
       return { ok: false, reason: 'invalid-envelope' };
     }
-    const signal: AgentSignal = params;
+    let signal: AgentSignal = params;
 
     // Health observability runs BEFORE resolution so a hook fired from a cwd
     // no live pane owns still counts toward "the plugin is alive". The
@@ -741,6 +750,14 @@ export class HookIngest {
       // The agent is running outside any live wmux pane. Expected for
       // standalone use; the per-pane event is dropped, health still recorded.
       return { ok: false, reason: 'no-workspace-match' };
+    }
+
+    if (isSessionRoutedNotify(signal)) {
+      // Downstream authority, events and resume capture must all see the verified
+      // owner, not the shared server's inherited pane/workspace/surface identity.
+      const { ptyId: _pty, workspaceId: _workspace, surfaceId: _surface, ...metadata } = signal;
+      signal = { ...metadata, ptyId: sessionId,
+        workspaceId: sessions.find(s => s.id === sessionId)?.env?.[ENV_KEYS.WORKSPACE_ID] };
     }
 
     // Hook authority: EVERY resolved signal marks the pane hook-governed for

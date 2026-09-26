@@ -64,6 +64,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   isAgentSignal,
+  isSessionRoutedNotify,
   type AgentSignal,
   type HookSignalResponse,
 } from '../../../../integrations/shared/signal-types';
@@ -528,6 +529,18 @@ export function registerHooksRpc(
       return { ok: false, reason: 'invalid-envelope' };
     }
     const signal: AgentSignal = params;
+    if (isSessionRoutedNotify(signal)) {
+      // Only the daemon owns live TUI/thread mappings. Never fall back to pane
+      // environment, renderer focus, cwd, or the brain lane for these signals.
+      meter.recordSignal(signal.agent, signal.ts);
+      const relay = await relayHookSignalToDaemon(getDaemonClient?.() ?? null, signal);
+      if (relay.mayProcessLocally) meter.recordWorkspaceMatch(false);
+      else if (relay.canonical && relay.response?.ok) meter.recordWorkspaceMatch(true);
+      else if (relay.canonical && relay.response?.reason === 'no-workspace-match') meter.recordWorkspaceMatch(false);
+      return relay.mayProcessLocally
+        ? { ok: false, reason: 'no-workspace-match' }
+        : relay.response ?? { ok: true };
+    }
 
     // 1b. Brain-pty lane. The `claude-pty` orchestrator brain runs the
     //     interactive Claude Code TUI in its own daemon session and uses this

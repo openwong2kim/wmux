@@ -1167,3 +1167,32 @@ describe('resolveSessionIdForSignal', () => {
     expect(resolveSessionIdForSignal(makeSignal({ cwd: '/repo' }), tied)).toBe('pty-new');
   });
 });
+
+
+describe('shared-server notification attribution', () => {
+  it('routes a thread to its live owner, never the inherited pane or cwd', () => {
+    const panes = [session({ id: 'starter', codexThreadId: 'thread-a' }),
+      session({ id: 'origin', codexThreadId: 'thread-b' })];
+    const fixture = makeDeps(panes);
+    const ingest = new HookIngest(fixture.deps);
+    const signal = makeSignal({ agent: 'codex', agentSessionId: 'thread-b', ptyId: 'starter',
+      workspaceId: 'stale-workspace', surfaceId: 'stale-surface', payload: { source: 'codex.notify' } });
+    expect(ingest.handle(signal).ok).toBe(true);
+    expect(fixture.bindings.map(b => b.ptyId)).toEqual(['origin']);
+    expect(fixture.emitted).not.toHaveLength(0);
+    expect(ingest.router.isGovernedFor('starter', 'codex', 10000)).toBe(false);
+    expect(ingest.router.isGovernedFor('origin', 'codex', 10000)).toBe(true);
+    expect(fixture.emitted.every(e => e.sessionId === 'origin' && e.data.signal.ptyId === 'origin'
+      && e.data.signal.workspaceId === 'ws-1' && !e.data.signal.surfaceId)).toBe(true);
+
+    for (const id of [undefined, 'unknown', 'thread-a']) {
+      panes[1].codexThreadId = 'thread-a'; // Duplicate selection is ambiguous.
+      const before = fixture.bindings.length;
+      expect(ingest.handle({ ...signal, agentSessionId: id }).ok).toBe(false);
+      expect(fixture.bindings).toHaveLength(before);
+    }
+    panes.length = 0; // Closed pane / another instance cannot receive the signal.
+    expect(ingest.handle(signal).ok).toBe(false);
+    ingest.dispose();
+  });
+});

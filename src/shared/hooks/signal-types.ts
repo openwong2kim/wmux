@@ -233,3 +233,11 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
   if (v['ptyId'] !== undefined && (typeof v['ptyId'] !== 'string' || v['ptyId'].length === 0)) return false;
   return true;
 }
+
+/** Legacy notifications run in a shared task host, whose pane env is stale.
+ * The old bridge's turn-id also identifies official notifications during upgrade.
+ */
+export function isSessionRoutedNotify(signal: AgentSignal): boolean {
+  return signal.agent === 'codex' && signal.kind === 'agent.stop'
+    && (signal.payload.source === 'codex.notify' || typeof signal.payload['turn-id'] === 'string');
+}

@@ -113,6 +113,17 @@ beforeEach(() => {
 });
 
 describe('hooks.signal — daemon relay', () => {
+  it('refuses shared-server notifications locally when no live thread mapping is available', async () => {
+    const stub = stubHookRouter();
+    const response = await dispatchSignal(null, stub.router, {
+      agent: 'codex', agentSessionId: 'thread-b', ptyId: 'pty-1',
+      payload: { source: 'codex.notify' },
+    });
+    expect(response.result).toEqual({ ok: false, reason: 'no-workspace-match' });
+    expect(stub.touchAuthority).not.toHaveBeenCalled();
+    expect(stub.recordHook).not.toHaveBeenCalled();
+  });
+
   it('forwards the envelope to daemon.hooks.signal and returns its response verbatim', async () => {
     const { router: hookRouter, recordHook } = stubHookRouter();
     const daemon = fakeDaemon({ connected: true, rpc: async () => ({ ok: true }) });

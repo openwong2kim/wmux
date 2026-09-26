@@ -3427,7 +3427,10 @@ function registerRpcHandlers(
 
   if (!hookIngest) {
     hookIngest = new HookIngest({
-      listLiveSessions: () => sessionManager.listLiveSessions(),
+      listLiveSessions: () => sessionManager.listLiveSessions().map(session => ({
+        ...session,
+        codexThreadId: codexPaneRelays.selection(session.id, sessionManager.getSession(session.id))?.threadId,
+      })),
       emitAgentEvent: (sessionId, data) => {
         const historySession = sessionManager.getSession(sessionId);
         if (historySession) recordHistory(store => store.ingest(sessionId, historySession.meta.env, data));
