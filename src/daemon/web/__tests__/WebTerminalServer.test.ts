@@ -4185,8 +4185,8 @@ describe('WebTerminalServer', () => {
     const res = await fetch(`${base()}/api/folders`, { headers: auth });
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('no-store');
-    expect(await res.json()).toMatchObject({ path: fs.realpathSync(os.homedir()), parent: null, truncated: expect.any(Boolean) });
-    const outside = await fetch(`${base()}/api/folders?path=${encodeURIComponent(path.parse(fs.realpathSync(os.homedir())).root)}`, { headers: auth });
+    expect(await res.json()).toMatchObject({ path: fs.realpathSync.native(os.homedir()), parent: null, truncated: expect.any(Boolean) });
+    const outside = await fetch(`${base()}/api/folders?path=${encodeURIComponent(path.parse(fs.realpathSync.native(os.homedir())).root)}`, { headers: auth });
     expect(outside.status).toBe(403);
     expect(await outside.json()).toEqual({ error: 'outside-home' });
   });
