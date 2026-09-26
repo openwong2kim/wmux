@@ -1,4 +1,4 @@
-// The terminal_send block and its deadlock guard (orchestrator wave 2).
+// The terminal_send block, and why a policy-refused press never lifts it.
 //
 // Dispatched through the REAL RpcRouter with a REAL commander token, because
 // the whole behaviour hangs on `ctx.commanderWorkspace` — a unit test that
@@ -9,13 +9,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RpcRouter } from '../../RpcRouter';
 import { registerInputRpc } from '../input.rpc';
 import {
-  clearPressBlockLifts,
-  liftPressBlock,
-  pressBlockLift,
-  pressBlockLiftCount,
+  clearPressBlockHolds,
+  holdPressBlock,
+  pressBlockHold,
+  pressBlockHoldCount,
   registerApprovalsRpc,
-  PRESS_BLOCK_LIFT_MS,
-  PRESS_DEADLOCK_REASONS,
+  PRESS_BLOCK_HOLD_MS,
+  PRESS_POLICY_REFUSALS,
 } from '../approvals.rpc';
 import { mintCommanderToken, revokeCommanderToken } from '../../../deck/commanderTrust';
 import type { BrowserWindow } from 'electron';
@@ -70,12 +70,12 @@ const OWNED = { id: 'ap-1', sessionId: 'pty-w', workspaceId: 'ws-task' };
 let w: Wiring;
 
 beforeEach(() => {
-  clearPressBlockLifts();
+  clearPressBlockHolds();
   w = wire();
 });
 afterEach(() => {
   revokeCommanderToken(w.token);
-  clearPressBlockLifts();
+  clearPressBlockHolds();
 });
 
 /** The refusal shape, narrowed — `dispatch` returns a union on `ok`. */
@@ -192,94 +192,158 @@ describe('terminal_send at a pane holding an approval', () => {
   });
 });
 
-describe('the deadlock guard', () => {
-  it('lifts the block for a pane whose press POLICY refused, and says so', async () => {
-    w = wire({
-      pending: [OWNED],
-      // The shape the daemon really answers with: one bucketed wire reason plus
-      // the concrete condition.
-      reply: { ok: false, reason: 'out-of-scope', pressRefusal: 'press-capability-off' },
-    });
+describe('a press the operator\'s POLICY refused', () => {
+  // Follow-up to #1541: a policy refusal used to lift the block for ten
+  // minutes and answer with a `typedFallback` inviting the caller to type. It
+  // now escalates and holds the pane instead.
+  it.each(['autonomy-off', 'press-capability-off'])(
+    'on %s: escalates, offers no typed path, and keeps every selecting key blocked',
+    async (pressRefusal) => {
+      const pending: Array<Record<string, unknown>> = [{ ...OWNED, kind: 'awaiting_permission', toolName: 'Bash' }];
+      w = wire({
+        pending: pending as never,
+        // The shape the daemon really answers with: one bucketed wire reason
+        // plus the concrete condition.
+        reply: { ok: false, reason: 'out-of-scope', pressRefusal },
+      });
 
-    // Blocked first: without a refused press there is no lift.
-    expect((await asBrain('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(false);
+      const press = (await asBrain('approval.press', { ptyId: 'pty-w', decision: 'approve' })) as {
+        ok: boolean;
+        result?: { reason: string; note?: string; escalate?: string; typedFallback?: string };
+      };
+      expect(press.ok).toBe(true);
+      expect(press.result).toMatchObject({ reason: pressRefusal, escalate: 'deck_ask_decision' });
+      expect(press.result?.note).toContain('deck_ask_decision');
+      expect(press.result?.typedFallback).toBeUndefined();
+      expect(PRESS_POLICY_REFUSALS.has(pressRefusal)).toBe(true);
 
-    const press = (await asBrain('approval.press', { ptyId: 'pty-w', decision: 'approve' })) as {
-      ok: boolean;
-      result?: { reason: string; typedFallback?: string };
-    };
+      // Still blocked on the gate record…
+      expect((await asBrain('input.send', { ptyId: 'pty-w', text: '1', submit: true })).ok).toBe(false);
+      // …and after the gate defers: its record expires and Claude Code's own
+      // dialog is recorded as a terminal_prompt. No digit, Enter or arrow lands.
+      pending.splice(0, pending.length, { ...OWNED, id: 'ap-2', kind: 'terminal_prompt', toolName: 'Bash' });
+      expect((await asBrain('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(false);
+      for (const key of ['enter', 'down', 'up', 'left', 'right', 'tab']) {
+        const res = await asBrain('input.sendKey', { ptyId: 'pty-w', key });
+        expect(res.ok).toBe(false);
+        expect(res.error).toContain(`refused by the operator's policy (${pressRefusal})`);
+      }
+      expect(w.writes).toHaveLength(0);
+
+      // …and with NO record at all: the dialog's record can be released by the
+      // screen verifier while the dialog is still drawn (seen live). The hold
+      // the refusal set keeps raw input refused for every non-operator caller.
+      pending.splice(0, pending.length);
+      for (const call of [
+        () => asBrain('input.send', { ptyId: 'pty-w', text: '1', submit: true }),
+        () => asBrain('input.sendKey', { ptyId: 'pty-w', key: 'enter' }),
+        () => asPaneAgent('input.send', { ptyId: 'pty-w', text: '1' }),
+      ]) {
+        const res = await call();
+        expect(res.ok).toBe(false);
+        expect(res.error).toContain(`refused by the operator's policy (${pressRefusal})`);
+        expect(res.error).toContain('deck_ask_decision');
+      }
+      expect(w.writes).toHaveLength(0);
+      // Stopping the worker is still allowed — it answers nothing — and the
+      // human operator is never held.
+      expect((await asBrain('input.sendKey', { ptyId: 'pty-w', key: 'ctrl+c' })).ok).toBe(true);
+      expect((await asHuman('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(true);
+    },
+  );
+
+  it('a press policy later allows releases the hold', async () => {
+    holdPressBlock('pty-w', 'autonomy-off');
+    w = wire({ pending: [OWNED], reply: { ok: true, durable: true } });
+
+    const press = await asBrain('approval.press', { ptyId: 'pty-w', decision: 'approve' });
+
     expect(press.ok).toBe(true);
-    expect(press.result).toMatchObject({ reason: 'press-capability-off' });
-    expect(press.result?.typedFallback).toContain('lifted');
-
-    // …and now the typed path is open, so the brain is not stuck with no move.
-    const after = await asBrain('input.send', { ptyId: 'pty-w', text: '1' });
-    expect(after.ok).toBe(true);
-    expect(w.writes).toEqual([{ ptyId: 'pty-w', data: '1' }]);
+    expect(pressBlockHold('pty-w')).toBeNull();
   });
 
-  // The lift is the refused brain's way out, not an open door: before this, a
-  // pane agent was never blocked, so a per-pane lift covered only the brain.
-  it('lifts only for the brain whose press was refused', async () => {
-    w = wire({
-      pending: [OWNED],
-      reply: { ok: false, reason: 'out-of-scope', pressRefusal: 'press-capability-off' },
-    });
-    await asBrain('approval.press', { ptyId: 'pty-w', decision: 'approve' });
-
-    expect((await asPaneAgent('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(false);
-    expect((await asBrain('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(true);
-    expect(w.writes).toEqual([{ ptyId: 'pty-w', data: '1' }]);
-  });
-
-  it('does NOT lift on a transient refusal — a vanished prompt is what the block is for', async () => {
+  it('holds only on a policy refusal — a transient one leaves no hold behind', async () => {
     w = wire({ pending: [OWNED], reply: { ok: false, reason: 'prompt-gone' } });
-
     await asBrain('approval.press', { ptyId: 'pty-w', decision: 'approve' });
-
-    expect(PRESS_DEADLOCK_REASONS.has('prompt-gone')).toBe(false);
-    expect((await asBrain('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(false);
+    expect(pressBlockHold('pty-w')).toBeNull();
   });
 
-  // The set used to include these four. Each one describes a pane the brain has
-  // LESS business typing into, not more: a human's pane, a pane the daemon
-  // cannot classify, a daemon with no fact table yet (the first seconds after a
-  // restart), and a prompt no hook ever reported.
-  it.each(['not-a-task-workspace', 'workspace-unknown', 'scope-unavailable', 'detector-only'])(
-    'does NOT lift on %s — "refused" is not a licence to type',
+  it('expires, so a reused pane is not refused forever', () => {
+    const t0 = 1_000_000;
+    holdPressBlock('pty-w', 'autonomy-off', t0);
+    expect(pressBlockHold('pty-w', t0 + 1)).toMatchObject({ reason: 'autonomy-off' });
+    expect(pressBlockHold('pty-w', t0 + PRESS_BLOCK_HOLD_MS)).toBeNull();
+  });
+
+  it('sweeps every expired entry on write, not only the one being read', () => {
+    const t0 = 1_000_000;
+    for (let i = 0; i < 20; i++) holdPressBlock(`pty-dead-${i}`, 'autonomy-off', t0);
+    expect(pressBlockHoldCount()).toBe(20);
+
+    holdPressBlock('pty-live', 'autonomy-off', t0 + PRESS_BLOCK_HOLD_MS + 1);
+
+    expect(pressBlockHoldCount()).toBe(1);
+  });
+
+  it.each(['prompt-gone', 'not-a-task-workspace', 'workspace-unknown', 'scope-unavailable', 'detector-only'])(
+    'on %s: no escalate marker, no typed path, block stays',
     async (pressRefusal) => {
       w = wire({ pending: [OWNED], reply: { ok: false, reason: 'out-of-scope', pressRefusal } });
 
       const press = (await asBrain('approval.press', { ptyId: 'pty-w', decision: 'approve' })) as {
-        result?: { reason: string; typedFallback?: string };
+        result?: { reason: string; escalate?: string; typedFallback?: string };
       };
       expect(press.result?.reason).toBe(pressRefusal);
+      expect(press.result?.escalate).toBeUndefined();
       expect(press.result?.typedFallback).toBeUndefined();
       expect((await asBrain('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(false);
     },
   );
 
-  it('expires, so a pane is protected again on the next task', () => {
-    const t0 = 1_000_000;
-    liftPressBlock('pty-w', 'autonomy-off', t0);
-    expect(pressBlockLift('pty-w', t0 + 1)).toMatchObject({ reason: 'autonomy-off' });
-    expect(pressBlockLift('pty-w', t0 + PRESS_BLOCK_LIFT_MS)).toBeNull();
+  it('the block message points at deck_ask_decision, not at typing again', async () => {
+    w = wire({ pending: [OWNED] });
+    const res = await asBrain('input.send', { ptyId: 'pty-w', text: '1' });
+    expect(res.error).toContain('deck_ask_decision');
+    expect(res.error).not.toContain('you may type again');
+  });
+});
+
+// Finding 2 of the #1541 review: an AskUserQuestion is answered with
+// approval_press + choiceKey (an automated press, so autonomy governs it), not
+// by typing — the record blocks raw input exactly like a permission gate.
+describe('an ordinary AskUserQuestion (awaiting_input record)', () => {
+  const QUESTION = { ...OWNED, kind: 'awaiting_input', question: 'Which test runner?' };
+
+  it('still blocks terminal_send and selecting keys for the brain', async () => {
+    w = wire({ pending: [QUESTION] });
+    expect((await asBrain('input.send', { ptyId: 'pty-w', text: '2' })).ok).toBe(false);
+    expect((await asBrain('input.sendKey', { ptyId: 'pty-w', key: 'enter' })).ok).toBe(false);
+    expect(w.writes).toHaveLength(0);
   });
 
-  // A read only ever dropped the entry it was asked about, so a pane pressed
-  // once and then closed kept its lift for the life of the process — and this
-  // map is module state in an app that runs for days.
-  it('sweeps every expired entry on write, not only the one being read', () => {
-    const t0 = 1_000_000;
-    for (let i = 0; i < 20; i++) liftPressBlock(`pty-dead-${i}`, 'autonomy-off', t0);
-    expect(pressBlockLiftCount()).toBe(20);
-
-    liftPressBlock('pty-live', 'autonomy-off', t0 + PRESS_BLOCK_LIFT_MS + 1);
-
-    expect(pressBlockLiftCount()).toBe(1);
-    expect(pressBlockLift('pty-live', t0 + PRESS_BLOCK_LIFT_MS + 2)).toMatchObject({
-      reason: 'autonomy-off',
-    });
+  it('is answered through approval_press with the chosen option', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    w = wire({ pending: [QUESTION] });
+    const dc = {
+      isConnected: true,
+      rpc: async (method: string, params: Record<string, unknown>) => {
+        if (method === 'daemon.approvals.list') return { pending: [QUESTION] };
+        seen.push(params);
+        return { ok: true, durable: true };
+      },
+    };
+    const router = new RpcRouter();
+    registerApprovalsRpc(router, () => dc as never, { getLedger: () => LEDGER });
+    const res = (await router.dispatch({
+      id: '1',
+      method: 'approval.press',
+      params: { ptyId: 'pty-w', decision: 'approve', choiceKey: '2' },
+      commanderToken: w.token,
+    } as never)) as Answer;
+    expect(res.ok).toBe(true);
+    expect(seen).toEqual([
+      expect.objectContaining({ id: 'ap-1', decision: 'approve', choiceKey: '2', resolver: 'automated' }),
+    ]);
   });
 });
 
@@ -295,7 +359,7 @@ describe('a terminal_prompt record (the agent\'s own dialog)', () => {
     expect(press.result?.reason).toBe('answer-in-terminal');
     expect(press.result?.note).toContain('human');
     expect(press.result?.typedFallback).toBeUndefined();
-    expect(PRESS_DEADLOCK_REASONS.has('answer-in-terminal')).toBe(false);
+    expect(PRESS_POLICY_REFUSALS.has('answer-in-terminal')).toBe(false);
     expect((await asBrain('input.send', { ptyId: 'pty-w', text: '1' })).ok).toBe(false);
     expect(w.writes).toHaveLength(0);
   });

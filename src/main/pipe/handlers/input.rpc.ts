@@ -10,7 +10,8 @@ import { isGateHeldOn } from '../../deck/stopGateState';
 import {
   approvalBlockMessage,
   pendingApprovalOnPane,
-  pressBlockLift,
+  pressBlockHold,
+  pressHoldMessage,
 } from './approvals.rpc';
 import {
   assertCallerMayAccessPty,
@@ -527,8 +528,8 @@ function assertNotKillingAGateHeldPane(
  * RECORD exists — wmux holds one only for a prompt a hook reported, so a worker
  * without wmux hooks is unaffected and keeps its typed path.
  *
- * The lift is the deadlock guard: once a press on this pane has been refused by
- * policy, typing is the only path left and the block gets out of the way. See
+ * A press the operator's policy refused does NOT open this block; it HOLDS the
+ * pane, record or not, and the caller escalates with deck_ask_decision. See
  * `approvals.rpc.ts`.
  */
 /**
@@ -553,10 +554,11 @@ async function assertNotTypingAtAnApproval(
   op: string,
 ): Promise<void> {
   if (ctx?.operator) return;
-  // The lift belongs to the brain whose press the operator's policy refused;
-  // any other caller stays blocked on this pane.
-  const lift = pressBlockLift(ptyId);
-  if (lift && ctx?.commanderWorkspace && lift.byWorkspace === ctx.commanderWorkspace) return;
+  // Checked before the record: the record can be gone while the agent's own
+  // dialog is still drawn (see approvals.rpc.ts), and a hold is main state, so
+  // it holds even when the daemon cannot be asked.
+  const hold = pressBlockHold(ptyId);
+  if (hold) throw new Error(pressHoldMessage(op, ptyId, hold.reason));
   const record = await pendingApprovalOnPane(getDaemonClient, ptyId);
   if (!record) return;
   const message = approvalBlockMessage(op, ptyId, record);

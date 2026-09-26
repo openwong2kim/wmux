@@ -24,9 +24,9 @@
 //
 // The consequence is deliberate and documented for the dogfood: an owner in
 // `assist` gets workers whose approvals a brain may NOT press. The brain is not
-// stuck there — `approval.press` answers with the refusal reason, the typed
-// fallback is re-opened for that pane, and `deck_ask_decision` raises it to the
-// human. An owner who wants unattended presses runs in `danger`, which is the
+// stuck there — `approval.press` answers with the refusal reason and
+// `deck_ask_decision` raises it to the human; typing at the prompt stays
+// blocked. An owner who wants unattended presses runs in `danger`, which is the
 // mode that already means "nothing prompts".
 //
 // An owner in `off` writes NOTHING: `off` is also what an absent entry means, so

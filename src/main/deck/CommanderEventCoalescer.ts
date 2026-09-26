@@ -1417,7 +1417,8 @@ function awaitingVerdict(
     '(status=awaiting_input, regex-detected — VERIFY THEN PRESS: terminal_read this pane first; ' +
     `if a real approval prompt is on screen, you MAY press it with ${pressCall(target)}; ` +
     'if not, notify only. A press answered `detector-only` means wmux holds no hook record for ' +
-    "this prompt — that refusal lifts the pane's typing block, so answer it by hand then." +
+    'this prompt, so no tool presses it — raise it with deck_ask_decision; never answer it ' +
+    'with terminal_send or terminal_send_key.' +
     `${then})`
   );
 }

@@ -57,11 +57,29 @@ describe('buildBrainSkills', () => {
     const approve = skillNamed('approve');
     expect(approve).toContain('approval-press=off');
     expect(approve).toContain('approval_press');
-    expect(approve).toContain('never use terminal_send');
+    // #1541 review: the no-bypass rule names BOTH raw-input tools and holds in
+    // every condition, including after a refused press or a deferred gate.
+    expect(approve).toContain('with terminal_send\nor terminal_send_key');
+    expect(approve).toContain('any other raw key');
+    expect(approve).toContain('in any condition');
+    expect(approve).toContain('not after `approval_press` refuses');
+    expect(approve).toContain('not after the gate times out');
+    expect(approve).not.toMatch(/may terminal_send|answer it by hand/);
     const delegate = skillNamed('delegate');
     expect(delegate).toContain('project instructions');
     expect(delegate).toContain('account-wide language preference');
     expect(delegate).toContain('English');
+  });
+
+  // #1541 review finding 2: a structured question holds an approval record,
+  // which blocks raw input, so the skill must route it through approval_press
+  // (+ choiceKey) — typing is only for a plain question with no record.
+  it('answers a structured question with approval_press + choiceKey, a plain one with terminal_send', () => {
+    const approve = skillNamed('approve');
+    expect(approve).toContain('structured question');
+    expect(approve).toContain('`choiceKey`');
+    expect(approve).toMatch(/plain question[\s\S]*no pending approval record/);
+    expect(approve).toMatch(/plain question you can answer[\s\S]*reply with terminal_send/);
   });
 
   it('makes the approve skill say verify-then-press, not press-on-event', () => {

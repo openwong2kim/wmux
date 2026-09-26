@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  clearPressBlockLifts,
+  clearPressBlockHolds,
   parsePressParams,
   pickPendingForPty,
   pickPressTarget,
@@ -70,7 +70,7 @@ const press = (p: Record<string, unknown>, ctx: RpcContext | undefined = BRAIN):
 const OWNED: PendingRow = { id: 'ap-1', sessionId: 'pty-w', workspaceId: 'ws-task', createdAt: 5 };
 
 beforeEach(() => {
-  clearPressBlockLifts();
+  clearPressBlockHolds();
   wire({});
 });
 
