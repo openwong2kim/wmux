@@ -1993,7 +1993,9 @@ thrown its credential away cannot use it either way.
 
 Every revoke and grant change is recorded in the daemon's device audit log with
 who made it: `desktop`, `operator-web` or `device-self`. A grant change first logged as
-`persist-failed` gets a `grant-persisted` line once a later write puts it on disk.
+`persist-failed` gets a `grant-persisted` line once a later write puts it on disk. That
+pending note lives in memory only: a daemon restart before the next successful write
+drops both the note and the unwritten grant, and the roster on disk stays authoritative.
 
 ## Native chat
 

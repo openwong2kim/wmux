@@ -399,7 +399,7 @@ export class DeviceStore {
    */
   private readonly failedGrantAudits = new Map<
     string,
-    { name: string; actor: DeviceActor; allowInput: boolean }
+    { actor: DeviceActor; allowInput: boolean }
   >();
 
   // Observability for the tests: proof that the cache elides derivations, and
@@ -624,7 +624,7 @@ export class DeviceStore {
     });
     if (!persisted) {
       this.unpersistedGrants.add(deviceId);
-      this.failedGrantAudits.set(deviceId, { name: record.name, actor, allowInput });
+      this.failedGrantAudits.set(deviceId, { actor, allowInput });
       this.log(
         'error',
         `[web] input grant for ${deviceId} could not be persisted; it is ${allowInput ? 'granted' : 'blocked'} in memory only`,
@@ -1133,11 +1133,12 @@ export class DeviceStore {
   }
 
   private flushFailedGrantAudits(): void {
-    for (const [deviceId, { name, actor, allowInput }] of this.failedGrantAudits) {
+    for (const [deviceId, { actor, allowInput }] of this.failedGrantAudits) {
       const record = this.devices.get(deviceId);
       // A device revoked (or pruned) since has no grant left on disk to report.
       if (!record || record.revokedAt !== undefined) continue;
-      this.audit.append({ event: 'grant-persisted', deviceId, name, actor, allowInput });
+      // The name as written now: a rename may have landed with this very write.
+      this.audit.append({ event: 'grant-persisted', deviceId, name: record.name, actor, allowInput });
     }
     this.failedGrantAudits.clear();
   }
