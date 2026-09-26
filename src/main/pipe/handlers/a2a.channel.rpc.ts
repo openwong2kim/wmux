@@ -112,11 +112,15 @@ export function registerA2aChannelRpc(
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
 
-    const ws = await resolveCallerWorkspace(getWindow, params);
+    // The router validated this token and bound it to one workspace. A brain
+    // has no worker PTY; its binding outranks any caller-supplied pane hint.
+    const ws = ctx?.commanderWorkspace ?? await resolveCallerWorkspace(getWindow, params);
     const base = (params && typeof params === 'object' ? { ...(params as Record<string, unknown>) } : {}) as Record<
       string,
       unknown
     >;
+
+    if (ctx?.commanderWorkspace) delete base.senderPtyId;
 
     // R2 review C1: principalId is a renderer-only field — if a pipe/MCP caller
     // asserts a principal coordinate on a member row, it could redirect the
@@ -324,14 +328,14 @@ export function registerA2aChannelRpc(
   // the same daemon handler, which additionally stamps headless callers
   // (channelCallerIdentity.ts). The cursor this advances (lastReadSeq) is the
   // durable-inbox consume signal: the wake worker stops re-nudging on ack.
-  router.register('a2a.channel.ack', (p) => forward('a2a.channel.ack', p, true));
+  router.register('a2a.channel.ack', (p, ctx) => forward('a2a.channel.ack', p, true, ctx));
 
   // Mutating — capability 'a2a.channel.send' (verifiable caller required)
-  router.register('a2a.channel.create', (p) => forward('a2a.channel.create', p, true));
-  router.register('a2a.channel.join', (p) => forward('a2a.channel.join', p, true));
-  router.register('a2a.channel.leave', (p) => forward('a2a.channel.leave', p, true));
-  router.register('a2a.channel.post', (p) => forward('a2a.channel.post', p, true));
-  router.register('a2a.channel.invite', (p) => forward('a2a.channel.invite', p, true));
+  router.register('a2a.channel.create', (p, ctx) => forward('a2a.channel.create', p, true, ctx));
+  router.register('a2a.channel.join', (p, ctx) => forward('a2a.channel.join', p, true, ctx));
+  router.register('a2a.channel.leave', (p, ctx) => forward('a2a.channel.leave', p, true, ctx));
+  router.register('a2a.channel.post', (p, ctx) => forward('a2a.channel.post', p, true, ctx));
+  router.register('a2a.channel.invite', (p, ctx) => forward('a2a.channel.invite', p, true, ctx));
 
   // Mission RPCs (J0 §3) — same forwarder, same D5 stamp discipline: mutating
   // start/close require a resolvable senderPtyId (fail-closed) and get a
