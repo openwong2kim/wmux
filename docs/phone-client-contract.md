@@ -891,20 +891,36 @@ What `/api/approvals` carries for this kind:
 | --- | --- | --- |
 | `id`, `sessionId`, `agent`, `kind`, `state`, `createdAt`, `workspaceId?` | yes | yes |
 | `toolName` (when known), `summary` (the command, ≤200 chars, display only) | yes | yes |
+| `risk` (`critical` when the command or rule reads as destructive — `rm -rf`, `sudo`, …) | yes | yes |
 | `question`, `reason` | never | only when the record is answerable |
 | `choices`, `promptFingerprint` | never | only when the record is answerable, pending and not yet answered |
 | `pressedAt`, `decision`, `selectedChoiceKey`, `resolvedBy`, `resolvedAt` | when set | when set |
 
-Never `options` or `screenTail`. A record is **answerable** only when the whole
-dialog was read (its top rule on screen, no row or field cut, the command fits
-the 200-character summary) and it offers a plain `Yes`. `choices` then holds
-only the plain `Yes` and plain `No` options. Any other option — "Yes, and don't
-ask again for … commands", which writes a permanent allow rule — is never a
-choice. A record that is not answerable carries none of the four fields for
-anyone; show it as "answer on the computer".
+Never `options` or `screenTail`. A record is **answerable** only when all of
+this holds when it is created:
+
+- the whole dialog was read: its top rule (a full-width rule row at column 0)
+  is on screen, no row or field was cut, and it offers a plain `Yes`;
+- it is bound to the tool call the agent actually made — the pane's own Claude
+  transcript has that call as its latest `tool_use` with no result yet (or the
+  PermissionRequest hook carried it), with the same tool and exactly the command
+  the dialog shows, and that command fits the 200-character summary.
+
+A dialog found only on the screen, with no pending call to bind to or a call
+whose command differs, is **informational for everyone**. `summary` and `risk`
+come from the call's own input.
+
+`choices` then holds only the plain `Yes` and a plain `No` (`No`, or `No, …`
+such as "No, and tell Claude what to do differently"). An option that writes a
+lasting rule — "Yes, and don't ask again for … commands", anything with
+"always" or "for this session" — is never a choice. A record that is not
+answerable carries none of the four fields for anyone; show it as "answer on
+the computer".
 
 `promptFingerprint` is a 32-hex hash of the whole dialog (title, question,
-reason, every command line, every option), independent of where the cursor is.
+reason, every command line, every option) and the tool call it is bound to,
+independent of where the cursor is. The same dialog for the next, identical
+call is a different record with a different fingerprint.
 
 **Answering** (capable clients only; `choiceKey` is authoritative, `decision`
 must agree with it):
@@ -917,18 +933,22 @@ Content-Type: application/json
 {"decision":"approve","choiceKey":"1","promptFingerprint":"<hex>"}
 ```
 
-`approve` goes with the plain `Yes` choice, `deny` with the plain `No`. It needs
+`approve` goes with the plain `Yes` choice, `deny` with the `No` choice. It needs
 the device's input grant, like typing (403 `read-only: …` otherwise). The daemon
 then refuses unless all of these hold, and writes nothing when it refuses:
 
 - the record is at least 1.5 s old;
 - this record has not been answered already (one write per record, ever);
+- the call it is bound to is still the pane's pending one;
 - the pane's screen, re-read now, still shows the same dialog (same
   fingerprint) as the ACTIVE one: exactly one option selected, the
   `Esc to cancel…` footer directly under the options, nothing but blank rows
   below it;
-- no output, no keystroke and no new PTY between that read and the write
-  (pointer reports excluded). It re-reads once if the pane moved, then gives up.
+- no key and no mouse click, release or wheel reached the pane since the record
+  appeared (pointer motion and focus reports do not count) — someone at the
+  terminal may be answering it;
+- no new PTY and no output between that read and the write. Output alone is
+  read again once, then it gives up.
 
 On success it writes exactly one byte — the digit, never Enter — and answers
 200 `{"state":"pending","pressedAt":<ms>,"durable":true}`. The record stays
@@ -941,27 +961,34 @@ resolves. An SSE `approval` event with `phase: "press"` marks the write.
 | 400 | `{error:"invalid-prompt-fingerprint"}` | `promptFingerprint` missing or not 32 hex |
 | 400 | `{error:"invalid-choice"}` | `choiceKey` missing, not one of `choices`, or `decision` disagrees with it |
 | 403 | `{error:"read-only: …"}` | No input grant |
-| 409 | `{error:"already-answered"}` | This record was answered already. Nothing typed |
+| 409 | `{error:"already-answered"}` | This record was answered from a phone already and is waiting for its dialog to close (`pressedAt` is set). Nothing typed |
+| 409 | `{error:"already-resolved", resolvedBy}` | The record already settled — its dialog was answered (anywhere) and has gone. Nothing typed |
+| 410 | `{error:"expired", state?}` | The record ended without an answer (turn ended, pane gone, replaced) |
 | 409 | `{error:"prompt-changed"}` | The screen is not the dialog you answered (changed, moved, or not the active dialog). Nothing typed. When the dialog's content changed, the record was superseded by a fresh one — re-read `/api/approvals` |
 | 425 | `{error:"answer-too-soon"}` | Within 1.5 s of the record appearing. Ask again |
-| 501 | `{error:"answer-in-terminal"}` | Not answerable remotely: no capability header, or the record is not answerable. Answer on the computer |
+| 501 | `{error:"answer-in-terminal"}` | Not answerable remotely: no capability header, or the record is not answerable (checked before the body, so a record without a fingerprint is 501, not 400). Answer on the computer |
 
 Without the capability header every answer is 501 `answer-in-terminal`: show
 "wmux cannot answer this agent remotely. Open the pane on the computer."
 
-**Push.** One push per awaiting episode per pane. It is always in-app only
-(`requiresInAppChoice: true`, no lock-screen buttons, for any client). The body
-names the tool and the command; `risk` is `critical` when the command or the
-permission rule reads as destructive (`rm -rf`, `sudo`, …). The outbound
-webhook (`notifySinks`) never carries the command.
+**Push.** One push per awaiting episode per pane — a record replaced within the
+episode (a late parse, a changed dialog) carries the push over rather than
+sending another or losing it. It is always in-app only (`requiresInAppChoice:
+true`, no lock-screen buttons, for any client) and carries
+`approvalKind: "terminal_prompt"`. The body names the tool and the command;
+`risk` is `critical` when the command or the permission rule reads as
+destructive (`rm -rf`, `sudo`, …). The outbound webhook (`notifySinks`) never
+carries the command.
 
 **The SSE `approval` event** for this kind carries `kind: "terminal_prompt"` and
-no content (no tool, summary, question or choices): re-read `/api/approvals`.
+`risk` when set, and no content (no tool, summary, question or choices): re-read
+`/api/approvals`.
 
 **It goes away** when the dialog is answered (a key in the pane, from anyone),
 when the daemon sees the dialog gone from the screen, when the turn ends, the
 session restarts or the pane closes, and on a daemon restart. After the screen
-check releases a pane, no new `terminal_prompt` is raised for it for 30 s.
+check releases a pane, the same dialog is not raised again from the screen
+detector for 30 s; a different dialog, or the PermissionRequest hook, still is.
 
 **Awaiting state.** A pane at `awaiting_input` is also released when the daemon
 sees its dialog gone from the screen on two reads in a row — an answer typed in
