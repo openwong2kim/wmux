@@ -2837,11 +2837,13 @@ export class WebTerminalServer {
     if (this.searchesInFlight >= MAX_CONCURRENT_SEARCHES) {
       return this.json(res, 429, { error: 'search-busy' }, { ...noStore, 'Retry-After': '1' });
     }
+    // Take the slot only after the synchronous pane listing: a throw there
+    // must not leak a slot that only the promise's finally gives back.
+    const { readable, attachable } = this.searchPanes(principal);
     this.searchesInFlight += 1;
     // Before the answer, a close means the phone gave up: stop reading.
     let gone = false;
     res.on('close', () => { gone = true; });
-    const { readable, attachable } = this.searchPanes(principal);
     const runHistory = this.deps.runHistory;
     const sessionText = this.deps.sessionText;
     void runSearch(request, after, {
