@@ -6515,11 +6515,13 @@ async function main(): Promise<void> {
     listLiveSessions: () =>
       sessionManager.listLiveSessions().map((meta) => ({
         id: meta.id,
-        // A pane back at its OSC 133 prompt is a shell, whatever it last ran.
+        // A pane whose agent returned to the shell is a shell, whatever it
+        // last ran — see wakeAgentSlug for the marker/process precedence.
         ...(() => {
           const agent = wakeAgentSlug(
             meta.lastDetectedAgent as string | undefined,
             sessionManager.getSession(meta.id)?.promptLog.commandRunningIfKnown(),
+            agentProcessTracker.identityFor(meta.id),
           );
           return agent !== undefined ? { lastDetectedAgent: agent } : {};
         })(),

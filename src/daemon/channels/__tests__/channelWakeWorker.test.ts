@@ -507,6 +507,15 @@ describe('wakeAgentSlug — a pane back at its prompt is a shell', () => {
     expect(wakeAgentSlug('codex', undefined)).toBe('codex');
     expect(wakeAgentSlug(undefined, true)).toBeUndefined();
   });
+
+  it('lets process truth outrank the marker both ways', () => {
+    // A wrapper/nested shell drew a prompt while the agent it launched runs.
+    expect(wakeAgentSlug('claude', false, { slug: 'claude', alive: true })).toBe('claude');
+    // The agent died and something else (vim, ssh) now owns the foreground.
+    expect(wakeAgentSlug('claude', true, { slug: 'claude', alive: false })).toBeUndefined();
+    // A live process of another slug proves nothing about the sticky one.
+    expect(wakeAgentSlug('claude', false, { slug: 'codex', alive: true })).toBeUndefined();
+  });
 });
 
 describe('pickTargetWithPrincipal — R2 registry direct targeting', () => {
