@@ -4,8 +4,6 @@ import path from 'node:path';
 import { scheduleTokenFileReHarden, secureWriteTokenFile } from '../../shared/security';
 import { DeviceAuditLog, type DeviceActor } from './deviceAudit';
 
-export type { DeviceActor } from './deviceAudit';
-
 /**
  * M3 — the per-device credential roster for `wmux web` (`devices.json`).
  *
