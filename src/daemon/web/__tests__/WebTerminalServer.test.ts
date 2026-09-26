@@ -11,6 +11,8 @@ import { InputReceiptStore } from '../InputReceiptStore';
 import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, SessionAuthorizationExpiredError, type WebDeviceResolver } from '../WebTerminalServer';
+import { StreamResponseLimits } from '../StreamResponseLimits';
+import * as heartbeat from '../sseHeartbeat';
 import type { TranscriptProjector } from '../../transcript/TranscriptProjector';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import type { TranscriptStatus } from '../../../shared/transcript/turnEvents';
@@ -2917,6 +2919,49 @@ describe('WebTerminalServer', () => {
     // …and the daemon-side control surface is untouched by M3.
     expect(server.status().token).toBe(token);
     expect(server.refreshPairCode().pairCode).toMatch(pairCodePattern);
+  });
+
+  it('shares the stream ceiling across SSE and media, releases slots, and keeps quiet SSE alive', async () => {
+    const limits = new StreamResponseLimits(300, 2);
+    const acquire = StreamResponseLimits.prototype.acquire;
+    const admission = vi.spyOn(StreamResponseLimits.prototype, 'acquire')
+      .mockImplementation((key, response) => acquire.call(limits, key, response));
+    const startHeartbeat = heartbeat.startSseHeartbeat;
+    const pings = vi.spyOn(heartbeat, 'startSseHeartbeat')
+      .mockImplementation((response) => startHeartbeat(response, 25));
+    const abort = new AbortController();
+    try {
+      const info = await startWithTranscript();
+      const token = info.token as string;
+      const headers = bearer(token);
+      const pane = await fetch(`${base()}/api/stream?session=s1`, { headers, signal: abort.signal });
+      const events = await fetch(`${base()}/api/events`, {
+        headers: { ...headers, Accept: 'text/event-stream' }, signal: abort.signal,
+      });
+      expect(pane.status).toBe(200);
+      expect(events.status).toBe(200);
+      const media = await fetch(`${base()}/api/sessions/s1/turns/file?path=/missing`, { headers });
+      expect(media.status).toBe(429);
+      expect(await media.json()).toMatchObject({ error: 'too-many-streams' });
+      // Reading heartbeat comments keeps a quiet stream healthy past its idle limit.
+      const reader = events.body!.getReader();
+      const until = Date.now() + 400;
+      while (Date.now() < until) expect((await reader.read()).done).toBe(false);
+      const phone = await pairDevice('Other principal');
+      const other = await fetch(`${base()}/api/stream?session=s1`, {
+        headers: bearer(phone.token), signal: abort.signal,
+      });
+      expect(other.status).toBe(200);
+      await pane.body!.cancel();
+      await vi.waitFor(async () => {
+        const freed = await fetch(`${base()}/api/sessions/s1/turns/file?path=/missing`, { headers });
+        expect(freed.status).toBe(404);
+      });
+    } finally {
+      abort.abort();
+      pings.mockRestore();
+      admission.mockRestore();
+    }
   });
 
   it('★ 401s a revoked device with reason `revoked` AND kills its live streams at once', async () => {
@@ -6742,6 +6787,36 @@ describe('WebTerminalServer', () => {
         expect(got.equals(bytes.subarray(0, bytes.length - 1))).toBe(true);
       } finally {
         openSpy.mockRestore();
+      }
+    });
+
+    it("releases a stalled reader's file handle without a client disconnect", async () => {
+      const limits = new StreamResponseLimits(200);
+      const acquire = StreamResponseLimits.prototype.acquire;
+      const admission = vi.spyOn(StreamResponseLimits.prototype, 'acquire')
+        .mockImplementation((key, response) => acquire.call(limits, key, response));
+      const dir = tmpTree();
+      const file = sparse(dir, 'stalled.mp4', bmff('isom'), 32 * 1024 * 1024);
+      managed.meta.spawnCwd = dir;
+      const info = await startWithTranscript();
+      let closed = false;
+      const openSpy = interceptOpen(file, async (handle) => {
+        const close = handle.close.bind(handle);
+        handle.close = async () => { closed = true; return close(); };
+        return handle;
+      });
+      const ac = new AbortController();
+      try {
+        const response = await fetch(fileUrl('s1', file), {
+          headers: bearer(info.token as string), signal: ac.signal,
+        });
+        expect(response.status).toBe(200);
+        // Do not read or cancel: the server must end the stalled transfer itself.
+        await vi.waitFor(() => expect(closed).toBe(true), { timeout: 2000 });
+      } finally {
+        ac.abort();
+        openSpy.mockRestore();
+        admission.mockRestore();
       }
     });
 

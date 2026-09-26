@@ -67,6 +67,7 @@ import {
   PHONE_PROTOCOL_VERSION,
 } from './protocolVersion';
 import { startSseHeartbeat } from './sseHeartbeat';
+import { StreamResponseLimits } from './StreamResponseLimits';
 import {
   CHAT_LAUNCH_RETENTION_MS,
   checkChatId,
@@ -1236,6 +1237,8 @@ export class WebTerminalServer {
    * stream against THIS running server, so there is nothing to carry across a
    * restart — the client asks for another one, which costs it one request.
    */
+  private readonly streamResponses = new StreamResponseLimits();
+
   private readonly streamTickets = new Map<string, StreamTicket>();
 
   // Bound so on()/off() reference the SAME listener across start()/stop().
@@ -2016,6 +2019,14 @@ export class WebTerminalServer {
       return this.json(res, 401, { error: 'unauthorized', reason: auth.reason });
     }
     const principal = auth.principal;
+    // Admit before opening a file or registering any long-lived listeners.
+    const streamsResponse = isStream || (req.method === 'GET'
+      && /^\/api\/sessions\/[^/]+\/turns\/(file|image)$/.test(p));
+    if (streamsResponse && !this.streamResponses.acquire(this.watcherKey(principal), res)) {
+      res.setHeader('Retry-After', '1');
+      return this.json(res, 429, { error: 'too-many-streams' });
+    }
+
     // #1316 — one stamp for the whole authenticated surface. Placed after the
     // gate and before the route table so no route can forget it, and so a
     // failed credential never counts as someone using the daemon.
