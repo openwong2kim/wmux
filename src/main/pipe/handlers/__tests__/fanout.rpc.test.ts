@@ -513,7 +513,9 @@ describe('the caller is answered without waiting for the fan-out', () => {
 // fell through as a NEW request, and the caller got a second approval prompt
 // and a full re-execution of tasks that had already spawned. Terminal states
 // now live in a body-free tombstone map with a much larger cap.
-describe('an evicted key can never restart a fan-out that already spawned', () => {
+// 1100 sequential fan-outs per test: well past the 5 s default on slow CI
+// runners, so the budget is raised for this block only.
+describe('an evicted key can never restart a fan-out that already spawned', { timeout: 30_000 }, () => {
   /** Push `n` unrelated fan-outs through, each of which terminates. */
   async function flood(h: Harness, n: number): Promise<void> {
     for (let k = 0; k < n; k += 1) {
