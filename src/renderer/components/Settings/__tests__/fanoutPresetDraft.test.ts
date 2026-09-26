@@ -17,6 +17,11 @@ describe('fan-out preset draft helpers', () => {
       items: [{ agent: 'claude' }, { agent: 'codex', model: 'gpt-5.5' }, { agent: 'grok' }],
       worktree: true,
     })).toBe('claude · codex --model gpt-5.5 · grok');
+    expect(summarizeFanoutPresetAgents({
+      name: 'Y',
+      items: [{ agent: 'grok', unattended: true }],
+      worktree: false,
+    })).toBe('grok --permission-mode bypassPermissions');
 
     let draft = emptyFanoutPresetDraft();
     expect(draft.worktree).toBe(true);

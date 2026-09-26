@@ -114,7 +114,14 @@ export function applyDraft(
 
 /** One line per preset: "claude · codex --model gpt-5.5 · grok". */
 export function summarizeFanoutPresetAgents(preset: FanoutPreset): string {
-  return preset.items.map((it) => (it.model ? `${it.agent} --model ${it.model}` : it.agent)).join(' · ');
+  // The unattended flags are part of what runs, so the row says so rather than
+  // hiding an approval-free CLI behind its bare name.
+  return preset.items
+    .map((it) => {
+      const flags = it.unattended ? fanoutAgentSpec(it.agent)?.unattendedFlags ?? '' : '';
+      return [it.agent, it.model ? `--model ${it.model}` : '', flags].filter((p) => p.length > 0).join(' ');
+    })
+    .join(' · ');
 }
 
 export function hasFanoutPresetNamed(presets: readonly FanoutPreset[], name: string): boolean {

@@ -365,6 +365,9 @@ function AgentRow({
   return (
     <div className="flex flex-col gap-1" data-testid="fanout-preset-agent-row">
       <div className="flex items-center gap-2">
+        {/* Fixed width: the Select fills its container, and unwrapped it
+            squeezed the model input to a sliver. */}
+        <div className="w-[168px] shrink-0">
         <Select
           aria-label={t('settings.fanoutPresetsAgentLabel', { index: n })}
           value={row.agent}
@@ -379,6 +382,7 @@ function AgentRow({
             </option>
           ))}
         </Select>
+        </div>
         <Input
           className="settings-input min-w-0 flex-1 font-mono"
           aria-label={t('settings.fanoutPresetsModelLabel', { index: n })}
