@@ -15,6 +15,7 @@ import https from 'node:https';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import fs from 'node:fs';
+import { expandTilde } from '../../shared/expandTilde';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { finished } from 'node:stream/promises';
@@ -2295,6 +2296,13 @@ export class WebTerminalServer {
     id: string;
     incarnationId?: string;
     cwd: string;
+    /**
+     * The directory the daemon actually spawned the pane in. `cwd` follows
+     * OSC 7 and the prompt, so it can name a deleted worktree or a remote
+     * path; this one existed when the shell started. Absent for a session
+     * record written before the field existed.
+     */
+    spawnCwd?: string;
     cols: number;
     rows: number;
     state: string;
@@ -2390,6 +2398,7 @@ export class WebTerminalServer {
         id: s.id,
         incarnationId: this.deps.sessionManager.getSession(s.id)?.meta.incarnationId,
         cwd: s.cwd,
+        ...spawnCwdOf(this.deps.sessionManager.getSession(s.id)?.meta.spawnCwd),
         cols: s.cols,
         rows: s.rows,
         state: s.state,
@@ -4596,6 +4605,11 @@ export class WebTerminalServer {
       const b = (body ?? {}) as { workspaceId?: unknown; cwd?: unknown; agentLaunch?: unknown };
       const workspaceId = typeof b.workspaceId === 'string' ? b.workspaceId.trim() : '';
       const cwd = typeof b.cwd === 'string' ? b.cwd.trim() : '';
+      // A cwd the shell cannot enter does not fail the spawn: the child exits
+      // at once and the caller got a 201 for a dead pane. Refuse it up front
+      // (the phone offers "open in home" instead). Same `~` expansion as the
+      // spawn; a relative path has no anchor a phone could mean.
+      if (cwd && !await isDirectory(expandTilde(cwd))) return this.json(res, 400, { error: 'cwd-not-found', effect: 'none' });
       if (workspaceId) {
         const bad = this.rejectWorkspaceId(workspaceId, principal);
         if (bad) return this.json(res, 400, bad);
@@ -6682,6 +6696,17 @@ function workspaceLabelOf(env: Record<string, string> | undefined): { workspace?
   const value = env?.[ENV_KEYS.WORKSPACE_NAME];
   const workspace = typeof value === 'string' ? value.trim() : '';
   return workspace ? { workspace } : {};
+}
+
+/** `spawnCwd` for a session row: present only when it is a usable path. */
+function spawnCwdOf(spawnCwd: string | undefined): { spawnCwd?: string } {
+  return typeof spawnCwd === 'string' && spawnCwd ? { spawnCwd } : {};
+}
+
+/** Whether an absolute path names an existing directory. Never throws. */
+async function isDirectory(dir: string): Promise<boolean> {
+  if (!path.isAbsolute(dir)) return false;
+  try { return (await fs.promises.stat(dir)).isDirectory(); } catch { return false; }
 }
 
 /**

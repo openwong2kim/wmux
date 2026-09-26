@@ -19,6 +19,9 @@ import { MIN_PHONE_PROTOCOL_VERSION, PHONE_PROTOCOL_VERSION } from '../protocolV
 import { OutputModeTracker } from '../../util/outputModeTracker';
 import { capSnapshot } from '../snapshotWindow';
 
+/** A directory that exists on every CI platform: `POST /api/sessions` refuses a cwd that doesn't. */
+const EXISTING_DIR = fs.realpathSync(os.tmpdir());
+
 /** Drop the fixed `-c key=value` hardening prefix, leaving the command itself. */
 const gitBody = (args: readonly string[]): string[] => args.slice(GIT_HARDENING_CONFIG.length);
 /** The git subcommand — `rev-parse`, `diff`, `status`. */
@@ -4077,7 +4080,7 @@ describe('WebTerminalServer', () => {
   it('re-authorizes pane creation after the request body completes', async () => {
     await startRW();
     const phone = await pairDevice('Create phone', true);
-    const body = JSON.stringify({ cwd: '/home' });
+    const body = JSON.stringify({ cwd: EXISTING_DIR });
     const before = lifecycleCalls.length;
     expect(await withdrawMidBody(`${base()}/api/sessions`, phone, body.slice(0, 6), body.slice(6), (r) => { r.revoked = true; }))
       .toBe(401);
@@ -4095,7 +4098,7 @@ describe('WebTerminalServer', () => {
     const pending = fetch(`${base()}/api/sessions`, {
       method: 'POST',
       headers: { ...bearer(phone.token), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cwd: '/home' }),
+      body: JSON.stringify({ cwd: EXISTING_DIR }),
     });
     await vi.waitFor(() => expect(lifecycleCalls.at(-1)).toMatchObject({ op: 'create' }));
     deviceRoster.get(phone.deviceId)!.revoked = true;
@@ -4549,14 +4552,14 @@ describe('WebTerminalServer', () => {
   it('★ spawns a pane and describes it with the SAME projection /api/sessions uses', async () => {
     const info = await startRW();
     const token = info.token as string;
-    const res = await postSession(token, { workspaceId: 'ws-1', cwd: '/repo' });
+    const res = await postSession(token, { workspaceId: 'ws-1', cwd: EXISTING_DIR });
     expect(res.status).toBe(201);
     const row = await res.json();
     expect(row).toMatchObject({
-      id: 'web-1', cwd: '/repo', cols: 120, rows: 30,
+      id: 'web-1', cwd: EXISTING_DIR, cols: 120, rows: 30,
       state: 'detached', agent: null, workspace: 'Workspace 1', shell: 'zsh',
     });
-    expect(lifecycleCalls).toEqual([{ op: 'create', arg: { workspaceId: 'ws-1', cwd: '/repo' } }]);
+    expect(lifecycleCalls).toEqual([{ op: 'create', arg: { workspaceId: 'ws-1', cwd: EXISTING_DIR } }]);
 
     // Byte-identical to the row the list route serves for the same pane.
     const listed = (
@@ -4701,10 +4704,39 @@ describe('WebTerminalServer', () => {
     expect(await res.json()).toMatchObject({ error: 'destroy-failed' });
   });
 
+  // A cwd the shell cannot enter used to answer 201 for a pane whose child
+  // exited at once. The phone now learns why and can offer "open in home".
+  it('refuses a cwd that is missing, a file or relative, and spawns nothing', async () => {
+    const token = (await startRW()).token as string;
+    const file = path.join(fs.mkdtempSync(path.join(EXISTING_DIR, 'wmux-cwd-')), 'not-a-dir');
+    fs.writeFileSync(file, 'x');
+    const before = lifecycleCalls.length;
+    for (const cwd of [path.join(EXISTING_DIR, 'wmux-no-such-dir-' + crypto.randomUUID()), file, 'relative/dir']) {
+      const res = await postSession(token, { cwd });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'cwd-not-found', effect: 'none' });
+    }
+    expect(lifecycleCalls).toHaveLength(before);
+  });
+
+  it('accepts a ~ cwd that exists, expanded like the spawn does', async () => {
+    const token = (await startRW()).token as string;
+    expect((await postSession(token, { cwd: '~' })).status).toBe(201);
+    expect(lifecycleCalls.at(-1)).toMatchObject({ op: 'create', arg: { cwd: '~' } });
+  });
+
+  it('lists the directory the daemon spawned each pane in as spawnCwd', async () => {
+    const token = (await startRW()).token as string;
+    const res = await fetch(`${base()}/api/sessions`, { headers: { Authorization: `Bearer ${token}` } });
+    const s1 = (await res.json()).sessions.find((row: { id: string }) => row.id === 's1');
+    // `cwd` is what the pane last claimed; `spawnCwd` is where it really started.
+    expect(s1).toMatchObject({ cwd: '/x', spawnCwd: '/x' });
+  });
+
   it('★ works from a paired device, not just the operator token', async () => {
     await startRW();
     const device = await pairDevice('Phone');
-    const created = await postSession(device.token, { cwd: '/repo' });
+    const created = await postSession(device.token, { cwd: EXISTING_DIR });
     expect(created.status).toBe(201);
     expect((await deleteSession('s1', device.token)).status).toBe(204);
     expect(lifecycleCalls.map((c) => c.op)).toEqual(['create', 'destroy']);
