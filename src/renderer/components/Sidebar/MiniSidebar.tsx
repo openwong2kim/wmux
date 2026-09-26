@@ -36,6 +36,9 @@ export default function MiniSidebar() {
   // any non-manual mode (the drop is judged in display order).
   const sidebarSortMode = useStore((s) => s.sidebarSortMode);
   const sidebarAttentionFirst = sidebarSortMode !== 'manual';
+  // Pinned to top: the pinned group shows as stored in every order, so its
+  // rows stay draggable among themselves while the rest is sorted.
+  const pinnedIds = useStore((s) => s.sidebarPinnedIds);
   // Same glance-board order and settle rule as the full sidebar.
   const { ordered: orderedWorkspaces, onPointerEnter: onRailPointerEnter, onPointerLeave: onRailPointerLeave, onFocusCapture: onRailFocus, onBlurCapture: onRailBlur } =
     useGlanceBoardOrder(workspaces);
@@ -75,6 +78,8 @@ export default function MiniSidebar() {
 
   // Drag state per render — refs avoid re-render on every dragover tick.
   const dragStartTimeRef = useRef<number>(0);
+  // Stored index of the row being dragged; dataTransfer is unreadable on dragover.
+  const dragFromRef = useRef<number | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ index: number; side: 'above' | 'below' } | null>(null);
 
@@ -110,6 +115,11 @@ export default function MiniSidebar() {
           const isActive = ws.id === activeWorkspaceId;
           const isMultiview = multiviewIds.includes(ws.id);
           const isDragging = draggingIndex === i;
+          const isPinned = pinnedIds.includes(ws.id);
+          const reorderOff = sidebarAttentionFirst && !isPinned;
+          // A sorted rail only takes pinned-to-pinned drops.
+          const dropAllowed = (fromIndex: number) =>
+            !sidebarAttentionFirst || (isPinned && pinnedIds.includes(workspaces[fromIndex]?.id ?? ''));
           const unreadCount = notifications.filter((n) => !n.read && n.workspaceId === ws.id).length;
           const agentStatus = agentStatusById[ws.id] ?? 'idle';
           const agentIcon = agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
@@ -137,20 +147,22 @@ export default function MiniSidebar() {
           };
 
           const handleDragStart = (e: React.DragEvent<HTMLButtonElement>) => {
-            if (sidebarAttentionFirst) return;
+            if (reorderOff) return;
             dragStartTimeRef.current = Date.now();
             e.dataTransfer.setData('text/plain', String(railIndex));
+            dragFromRef.current = railIndex;
             e.dataTransfer.effectAllowed = 'move';
             setDraggingIndex(i);
           };
 
           const handleDragEnd = () => {
+            dragFromRef.current = null;
             setDraggingIndex(null);
             setDropIndicator(null);
           };
 
           const handleDragOver = (e: React.DragEvent<HTMLButtonElement>) => {
-            if (sidebarAttentionFirst) return;
+            if (reorderOff || (dragFromRef.current !== null && !dropAllowed(dragFromRef.current))) return;
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
             const rect = e.currentTarget.getBoundingClientRect();
@@ -165,17 +177,17 @@ export default function MiniSidebar() {
           };
 
           const handleDrop = (e: React.DragEvent<HTMLButtonElement>) => {
-            if (sidebarAttentionFirst) return;
+            if (reorderOff) return;
             e.preventDefault();
             setDropIndicator(null);
             const fromIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
-            if (isNaN(fromIndex) || fromIndex === railIndex) return;
+            if (isNaN(fromIndex) || fromIndex === railIndex || !dropAllowed(fromIndex)) return;
             const rect = e.currentTarget.getBoundingClientRect();
             const midY = rect.top + rect.height / 2;
             const toIndex = e.clientY < midY
               ? (fromIndex < railIndex ? railIndex - 1 : railIndex)
               : (fromIndex > railIndex ? railIndex + 1 : railIndex);
-            reorderWorkspace(fromIndex, toIndex);
+            reorderWorkspace(fromIndex, toIndex, isPinned);
           };
 
           const showIndicator = dropIndicator?.index === i;
@@ -198,7 +210,8 @@ export default function MiniSidebar() {
               <button
                 // Paused while needs-you-first ordering is on: the rail's drop
                 // is judged in display order but reorders the array position.
-                draggable={!sidebarAttentionFirst}
+                // Pinned rows are exempt — the group is shown as stored.
+                draggable={!reorderOff}
                 className={`relative w-8 h-8 rounded-md flex items-center justify-center text-[10px] font-bold font-mono select-none transition-colors ${
                   isActive
                     ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'

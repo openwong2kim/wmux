@@ -45,7 +45,8 @@ interface WorkspaceItemProps {
   onArchive: (id: string) => void;
   onCopyInfo: (id: string) => void;
   onDuplicate: (id: string) => void;
-  onReorder: (fromIndex: number, toIndex: number) => void;
+  /** `pin` is this (target) row's pin state: a drop beside it takes it on. */
+  onReorder: (fromIndex: number, toIndex: number, pin?: boolean) => void;
   /**
    * #1481 — this row is a fan-out task rendered under its owner (or in the
    * closed-owner group): shown without the `wtask: ` prefix, marked with the
@@ -315,9 +316,13 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // stored order are untouched.
   // #1481 — any non-manual order ('attention' or 'recent') is display-only in
   // the same way, so reorder pauses for both; task rows never reorder.
+  // Pinned to top (2026-09-26): the pinned group shows in stored order in
+  // every mode, so inside it display and array positions agree and a pinned
+  // row can reorder among the other pinned rows even while the rest is sorted.
   const sortMode = useStore((s) => s.sidebarSortMode);
   const sortPaused = sortMode !== 'manual';
-  const reorderOff = sortPaused || taskRow;
+  const pinned = useStore((s) => s.sidebarPinnedIds.includes(workspaceId));
+  const reorderOff = taskRow || (sortPaused && !pinned);
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
   const metadata = workspace?.metadata;
@@ -345,7 +350,6 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // Glance board (2026-09-25): something here changed since it was last in
   // view, and it wants a look. Fleet's changed-dot rule: --text-main, never amber.
   const unseen = useStore((s) => !!selectSidebarUnseenWorkspaces(s)[workspaceId]);
-  const pinned = useStore((s) => s.sidebarPinnedIds.includes(workspaceId));
   const toggleSidebarPin = useStore((s) => s.toggleSidebarPin);
   // Name first. At rest the row shows the workspace name and the signals that
   // change on their own (status dot, unread, idle, "needs you"); the project
@@ -610,6 +614,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     setDraggedWorkspaceIndex(null);
   };
 
+  const draggedRowPinned = (fromIndex: number) => {
+    const st = useStore.getState();
+    const id = st.workspaces[fromIndex]?.id;
+    return id !== undefined && st.sidebarPinnedIds.includes(id);
+  };
+
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     if (reorderOff) return;
     e.preventDefault();
@@ -623,6 +633,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     // every subsequent drop target into believing this was a reorder
     // and external text composers rejected it with 🚫.
     if (reorderFrom === index) return;
+    if (sortPaused && !draggedRowPinned(reorderFrom)) return;
     e.dataTransfer.dropEffect = 'move';
     const rect = e.currentTarget.getBoundingClientRect();
     const midY = rect.top + rect.height / 2;
@@ -646,6 +657,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     // foreign markdown drops never reshuffle the list.
     const fromIndex = useStore.getState().draggedWorkspaceIndex;
     if (fromIndex === null || fromIndex === index) return;
+    // A sorted order only accepts pinned-to-pinned drops.
+    if (sortPaused && !draggedRowPinned(fromIndex)) return;
 
     // 드롭 위치를 아이템 중간 기준으로 결정
     // 위 절반 → 현재 index 앞으로, 아래 절반 → 현재 index 뒤로
@@ -654,7 +667,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     const toIndex = e.clientY < midY
       ? (fromIndex < index ? index - 1 : index)
       : (fromIndex > index ? index + 1 : index);
-    onReorder(fromIndex, toIndex);
+    onReorder(fromIndex, toIndex, pinned);
   };
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -854,7 +867,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     data-sidebar-unseen
                   />
                 )}
-                {pinned && sortMode === 'attention' && (
+                {pinned && !taskRow && (
                   <span className="flex-none text-[var(--text-muted)]" role="img" aria-label={t('sidebar.pinned')} title={t('sidebar.pinned')} data-sidebar-pinned>
                     <IconPin size={10} />
                   </span>
@@ -985,8 +998,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             of sequence with the rows around it, so it shows none. */}
         {/* Ctrl+N follows the stored (manual) order, which only Manual shows
             on screen; in the other orders a hint would name a shortcut out of
-            sequence with the rows around it, so none is drawn. */}
-        {!taskRow && !sortPaused && (
+            sequence with the rows around it, so none is drawn — except on a
+            pinned row: the pinned group leads the stored order and is shown
+            as stored, so its numbers match the screen. */}
+        {!taskRow && (!sortPaused || pinned) && (
           <span className={`text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5 ${restHidden}`}>
             {index < 9 ? `^${index + 1}` : ''}
           </span>
@@ -1105,11 +1120,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           >
             {t('workspace.archive')}
           </button>
-          {/* Glance board: a pinned row keeps its manual place in the
-              Attention order instead of moving with its status. */}
-          {/* Pinning only does something in the Attention order, so it is only
-              offered there (a pinned row still shows its glyph elsewhere). */}
-          {sortMode === 'attention' && (
+          {/* Pinned to top (2026-09-26): offered in every order. A task row
+              renders under its owner, so it has no top to pin to. */}
+          {!taskRow && (
             <button
               className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
               style={{ color: 'var(--text-main)' }}

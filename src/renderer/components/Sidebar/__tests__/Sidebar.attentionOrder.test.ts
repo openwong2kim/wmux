@@ -61,14 +61,18 @@ describe('MiniSidebar — ordering wiring', () => {
 
 describe('drag reorder is paused while the ordering is on', () => {
   // A drop is judged against the DISPLAY order while the index it reorders is
-  // the array position, so with rows pinned the indicator and the result
+  // the array position, so in a sorted order the indicator and the result
   // disagree. Both surfaces gate `draggable` on the setting rather than each
-  // shipping its own translation between the two orders.
+  // shipping its own translation between the two orders. The one exception is
+  // the pinned group (2026-09-26): it shows as stored, so there the two orders
+  // agree and pinned rows stay draggable among themselves.
   it('gates draggable on the setting, on both surfaces', () => {
-    // WorkspaceItem folds the sort mode and task rows into one flag (#1481).
+    // WorkspaceItem folds the sort mode, pin and task rows into one flag.
     expect(itemSrc).toContain("const sortPaused = sortMode !== 'manual';");
+    expect(itemSrc).toContain('const reorderOff = taskRow || (sortPaused && !pinned);');
     expect(itemSrc).toContain('draggable={!reorderOff}');
-    expect(miniSrc).toContain('draggable={!sidebarAttentionFirst}');
+    expect(miniSrc).toContain('const reorderOff = sidebarAttentionFirst && !isPinned;');
+    expect(miniSrc).toContain('draggable={!reorderOff}');
     expect(miniSrc).toContain("const sidebarAttentionFirst = sidebarSortMode !== 'manual';");
   });
 });

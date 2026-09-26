@@ -642,6 +642,50 @@ describe('loadSession — sidebar attention-first ordering', () => {
   });
 });
 
+// Pinned to top (2026-09-26): a session saved when a pin meant "hold my manual
+// slot in Attention" loads with every live pin kept, as the pinned group.
+describe('loadSession — pinned to top migration', () => {
+  function sessionWithPins(order: string[], pinned: unknown): SessionData {
+    const workspaces = order.map((id) => ({
+      id,
+      name: id,
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    })) as Workspace[];
+    return {
+      workspaces,
+      activeWorkspaceId: order[0],
+      sidebarVisible: true,
+      sidebarPinnedIds: pinned,
+    } as unknown as SessionData;
+  }
+  const order = (store: ReturnType<typeof createTestStore>) => store.getState().workspaces.map((w) => w.id);
+  const pins = (store: ReturnType<typeof createTestStore>) => (store.getState() as unknown as { sidebarPinnedIds: string[] }).sidebarPinnedIds;
+
+  it('keeps every live pin and moves the pinned rows up, in the order they had', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithPins(['a', 'p1', 'b', 'p2', 'c'], ['p2', 'p1']));
+    expect(order(store)).toEqual(['p1', 'p2', 'a', 'b', 'c']);
+    expect(new Set(pins(store))).toEqual(new Set(['p1', 'p2']));
+  });
+
+  it('drops pins of workspaces that no longer exist and tolerates a torn value', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithPins(['a', 'b'], ['gone', 'b', 7, 'b']));
+    expect(order(store)).toEqual(['b', 'a']);
+    expect(pins(store)).toEqual(['b']);
+    store.getState().loadSession(sessionWithPins(['a', 'b'], 'not-an-array'));
+    expect(order(store)).toEqual(['a', 'b']);
+    expect(pins(store)).toEqual([]);
+  });
+
+  it('leaves the stored order alone when nothing is pinned', () => {
+    const store = createTestStore();
+    store.getState().loadSession(sessionWithPins(['c', 'a', 'b'], []));
+    expect(order(store)).toEqual(['c', 'a', 'b']);
+  });
+});
+
 describe('loadSession — Anthropic usage meter (#896)', () => {
   function sessionWith(enabled: unknown = undefined): SessionData {
     const ws: Workspace = {

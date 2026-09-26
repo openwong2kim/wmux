@@ -13,7 +13,7 @@ import { markRetentionMigrationDone } from '../retentionMigration';
 import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
 import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
 import { sanitizeShortcutOverrides, type ShortcutActionId, type ShortcutOverrides } from '../../../shared/keymap';
-import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth, type SidebarSortMode } from '../../utils/sidebarLayout';
+import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth, togglePinned, type SidebarSortMode } from '../../utils/sidebarLayout';
 
 /**
  * #517: read main's authoritative browser backend synchronously at store-module
@@ -500,7 +500,8 @@ export interface UISlice {
    *  shows a one-time notice with Undo and clears the flag. */
   sidebarSortMigrated: boolean;
   clearSidebarSortMigrated: () => void;
-  /** Workspaces that keep their manual position in the Attention order. */
+  /** Workspaces pinned to the top of the sidebar. Always a prefix of
+   *  `workspaces` (sidebarLayout.pinnedFirst), so the stored order is pinned-first. */
   sidebarPinnedIds: string[];
   toggleSidebarPin: (workspaceId: string) => void;
   /** Session-only: when a workspace was created, for the new-workspace hold. */
@@ -1508,9 +1509,10 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   sidebarPinnedIds: [],
   toggleSidebarPin: (workspaceId) => set((state) => {
     if (!workspaceId) return;
-    const i = state.sidebarPinnedIds.indexOf(workspaceId);
-    if (i >= 0) state.sidebarPinnedIds.splice(i, 1);
-    else state.sidebarPinnedIds.push(workspaceId);
+    const r = togglePinned(state.workspaces, state.sidebarPinnedIds, workspaceId);
+    if (!r) return;
+    state.workspaces = r.items;
+    state.sidebarPinnedIds = r.pinnedIds;
   }),
   sidebarNewAt: {},
   sidebarSeen: {},
