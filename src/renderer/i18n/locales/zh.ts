@@ -420,7 +420,7 @@ export const zh = {
   'settings.uiScaleDesc': '缩放整个界面 — 在高 DPI 显示器上很有用。无需重启。',
   'settings.sidebarPosition': '侧边栏位置',
   'settings.sidebarPositionDesc': '终端区域的左侧或右侧',
-  'settings.sidebarAttentionFirst': '需要你的行置顶',
+  'settings.sidebarAttentionFirst': '需要你的行排在最前',
   'settings.sidebarAttentionFirstDesc': '将代理正在等待你响应的工作区移到侧边栏顶部。默认关闭：行保持在你拖放的位置。 开启期间，拖动排序会暂停。',
   'settings.sidebarSort': '工作区顺序',
   'settings.sidebarSortDesc': '侧边栏如何排列工作区。关注（默认）先放需要你的，再是已完成、运行中、未确认和空闲，只在短暂停顿后或指针离开列表时才重新排序。手动保持你拖放的顺序。在任何排序下，置顶的工作区都按你定的顺序排在最前。拖动排序在手动模式下可用，置顶行之间在任何模式下都可拖动。',
