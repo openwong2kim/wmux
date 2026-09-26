@@ -71,10 +71,19 @@
 .wmux-nav-button[aria-pressed="true"] .wmux-nav-icon { color: var(--text-main); }
 /* Fleet shortcut's trailing counts: plain meta text, no chip. Only the
  * needs-you count is warm (the attention signal); running stays muted. */
+.wmux-sidebar-nav { container: wmux-nav / inline-size; }
+/* The label keeps its width; the counts take what is left. A part that does
+ * not fit wraps onto a clipped second line, Running first (it comes last). */
+.wmux-nav-button[data-sidebar-nav="fleet"] .wmux-nav-label { flex: 1 0 auto; }
 .wmux-nav-count {
   display: flex;
-  flex-shrink: 0;
-  gap: 4px;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  column-gap: 4px;
+  min-width: 0;
+  height: 20px;
+  overflow: hidden;
   color: var(--text-muted);
   font-size: 11px;
   font-weight: 400;
@@ -82,6 +91,13 @@
   white-space: nowrap;
 }
 .wmux-nav-count-needs { color: var(--accent); font-weight: 500; }
+.wmux-nav-count-running { display: flex; column-gap: 4px; }
+.wmux-nav-count-short { display: none; }
+/* Narrow sidebar (the 220px minimum): the needs-you number alone. */
+@container wmux-nav (max-width: 239px) {
+  .wmux-nav-count-full, .wmux-nav-count-running { display: none; }
+  .wmux-nav-count-short { display: inline; }
+}
 .wmux-sidebar-section {
   display: flex;
   align-items: center;

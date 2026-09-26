@@ -1224,29 +1224,11 @@ export function selectFleetBoard(
   state: FleetBoardState,
   opts: { now: number; sortMode: FleetSortMode },
 ): FleetBoard {
-  const unverifiable = state.unverifiablePaneMinutes ?? selectUnverifiablePaneMinutes(state);
-  const surfaceAgent = state.surfaceAgent ?? {};
-  // Use the same turn/liveness inputs as the sidebar and Deck roster. Missing
-  // these optional inputs silently classified active hook-driven turns as idle.
-  const panes = selectFleetPanes({
-    workspaces: state.workspaces,
-    surfaceAgentStatus: state.surfaceAgentStatus,
-    surfaceActivity: state.surfaceActivity,
-    paneLabel: state.paneLabel,
-    supervisionByPtyId: state.supervisionByPtyId,
-    surfaceAgent: state.surfaceAgent,
-    surfacePendingQuestion: state.surfacePendingQuestion,
-    surfaceActivityAt: state.surfaceActivityAt,
-    surfaceTurnOpenAt: state.surfaceTurnOpenAt,
-    commandRunningByPtyId: state.commandRunningByPtyId,
-    agentAliveByPtyId: state.agentAliveByPtyId,
-    hookRunningByPtyId: state.hookRunningByPtyId ?? selectHookRunningByPtyId(state),
-    remoteWorkspaces: state.remoteWorkspaces,
-  }).map((pane) => ({
-    ...pane,
-    agentName: surfaceAgent[pane.ptyId]?.name || pane.agentName,
-    unverifiable: !!unverifiable[pane.ptyId],
-  }));
+  const panes = fleetBoardPanes(
+    state,
+    state.hookRunningByPtyId ?? selectHookRunningByPtyId(state),
+    state.unverifiablePaneMinutes ?? selectUnverifiablePaneMinutes(state),
+  );
   const groups = groupFleetPanes(panes, {
     now: opts.now,
     surfaceActivityAt: state.surfaceActivityAt,
@@ -1259,23 +1241,89 @@ export function selectFleetBoard(
   return { panes, groups };
 }
 
-const sectionCountsCache = new WeakMap<object, { needsYou: number; running: number }>();
+/** The board's rows before grouping — shared by the board and its counts so
+ *  both read the same panes with the same liveness inputs. */
+function fleetBoardPanes(
+  state: FleetBoardState,
+  hookRunningByPtyId: Record<string, boolean>,
+  unverifiable: Record<string, number>,
+): FleetPane[] {
+  const surfaceAgent = state.surfaceAgent ?? {};
+  // Use the same turn/liveness inputs as the sidebar and Deck roster. Missing
+  // these optional inputs silently classified active hook-driven turns as idle.
+  return selectFleetPanes({
+    workspaces: state.workspaces,
+    surfaceAgentStatus: state.surfaceAgentStatus,
+    surfaceActivity: state.surfaceActivity,
+    paneLabel: state.paneLabel,
+    supervisionByPtyId: state.supervisionByPtyId,
+    surfaceAgent: state.surfaceAgent,
+    surfacePendingQuestion: state.surfacePendingQuestion,
+    surfaceActivityAt: state.surfaceActivityAt,
+    surfaceTurnOpenAt: state.surfaceTurnOpenAt,
+    commandRunningByPtyId: state.commandRunningByPtyId,
+    agentAliveByPtyId: state.agentAliveByPtyId,
+    hookRunningByPtyId,
+    remoteWorkspaces: state.remoteWorkspaces,
+  }).map((pane) => ({
+    ...pane,
+    agentName: surfaceAgent[pane.ptyId]?.name || pane.agentName,
+    unverifiable: !!unverifiable[pane.ptyId],
+  }));
+}
+
+export interface FleetSectionCounts {
+  needsYou: number;
+  running: number;
+}
+
+function sameKeys(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const ak = Object.keys(a);
+  if (ak.length !== Object.keys(b).length) return false;
+  return ak.every((k) => Object.is(a[k], b[k]));
+}
+
+// One slot: the live store is the only caller that cares about the hit rate.
+let sectionCountsMemo: { inputs: unknown[]; hook: Record<string, boolean>; unverifiable: Record<string, number>; out: FleetSectionCounts } | undefined;
 
 /**
  * How many rows the Fleet board has in Needs you and Running — the sidebar's
- * Fleet shortcut shows these. Counted off `selectFleetBoard` itself (the entry
- * the overlay and fleet.triage use), so the shortcut and the board cannot
- * disagree. Needs you includes finished and unconfirmed rows, as on the board.
- * `now` only feeds elapsed time, never a section, so the count is clock-free.
- * One pass per store state, like the sidebar's attention scores.
+ * Fleet shortcut shows these. Same panes as the board (fleetBoardPanes) and the
+ * same per-row section rule as `fleetRow`, but counted only: no detail text,
+ * no grouping, no sort. Needs you includes finished and unconfirmed rows, as
+ * on the board.
+ *
+ * The sidebar is always mounted and the store changes on every output chunk,
+ * so the pass is memoized on the inputs that can move a section — not on the
+ * root state. Output stamps and last messages never move one; the decay clock
+ * reaches a section only through the two derived maps, compared shallowly.
  */
-export function selectFleetSectionCounts(state: FleetBoardState): { needsYou: number; running: number } {
-  const cached = sectionCountsCache.get(state);
-  if (cached) return cached;
-  const { groups } = selectFleetBoard(state, { now: 0, sortMode: 'workspace' });
-  const out = { needsYou: groups.needsYou.length, running: groups.running.length };
-  sectionCountsCache.set(state, out);
-  return out;
+export function selectFleetSectionCounts(state: FleetBoardState): FleetSectionCounts {
+  const hook = state.hookRunningByPtyId ?? selectHookRunningByPtyId(state);
+  const unverifiable = state.unverifiablePaneMinutes ?? selectUnverifiablePaneMinutes(state);
+  const inputs = [
+    state.workspaces, state.surfaceAgentStatus, state.surfaceActivity, state.paneLabel,
+    state.supervisionByPtyId, state.surfaceAgent, state.surfacePendingQuestion, state.surfaceActivityAt,
+    state.surfaceTurnOpenAt, state.commandRunningByPtyId, state.agentAliveByPtyId, state.remoteWorkspaces,
+  ];
+  const memo = sectionCountsMemo;
+  if (memo && inputs.every((value, i) => Object.is(value, memo.inputs[i]))
+      && sameKeys(hook, memo.hook) && sameKeys(unverifiable, memo.unverifiable)) {
+    return memo.out;
+  }
+  const out: FleetSectionCounts = { needsYou: 0, running: 0 };
+  for (const pane of fleetBoardPanes(state, hook, unverifiable)) {
+    const target = fleetTargetPtyId(pane);
+    const question = target ? state.surfacePendingQuestion?.[target]?.trim() || undefined : undefined;
+    const section = sectionOfAttentionClass(fleetAttentionClass(pane, question));
+    if (section === 'needsYou') out.needsYou++;
+    else if (section === 'running') out.running++;
+  }
+  // Keep the previous object when nothing changed, so a shallow subscriber
+  // never re-renders on an equal count.
+  const kept = memo && memo.out.needsYou === out.needsYou && memo.out.running === out.running ? memo.out : out;
+  sectionCountsMemo = { inputs, hook, unverifiable, out: kept };
+  return kept;
 }
 
 /**
