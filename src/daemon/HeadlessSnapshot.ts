@@ -143,6 +143,15 @@ export function generateTextSnapshot(req: SnapshotRequest): Promise<TextSnapshot
   return enqueueSnapshotJob(() => generateTextInner(req));
 }
 
+/**
+ * `generateTextSnapshot` for a caller that already holds the snapshot slot
+ * (inside `enqueueSnapshotJob`), so it can read the ring only once its turn
+ * comes: a ring copy taken before queueing stays pinned for the whole wait.
+ */
+export function generateTextSnapshotUnqueued(req: SnapshotRequest): Promise<TextSnapshotOutcome> {
+  return generateTextInner(req);
+}
+
 /** Per-row structural JSON overhead for `,{"text":,"wrapped":false}`. */
 const TEXT_ROW_JSON_OVERHEAD = 26;
 

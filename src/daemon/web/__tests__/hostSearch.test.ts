@@ -8,7 +8,9 @@ import {
   joinWrappedRows,
   parseSearchRequest,
   runSearch,
+  ScrollbackExtractions,
   ScrollbackTextCache,
+  SearchAdmission,
   searchForbidden,
   SEARCH_LIMITS,
   type SearchPane,
@@ -23,7 +25,7 @@ const request = (query: string, extra: Partial<SearchRequest> = {}): SearchReque
   query, scopes: ['turns', 'sessions'], limit: 50, cursor: null, ...extra,
 });
 const pane = (sessionId: string, extra: Partial<SearchPane> = {}): SearchPane => ({
-  sessionId, alive: true, recency: 1000, ...extra,
+  sessionId, alive: true, recency: 1000, createdAt: 1000, ...extra,
 });
 const user = (id: string, text: string, ts?: number): TurnEvent => ({ kind: 'user_text', id, text, ...(ts !== undefined ? { ts } : {}) });
 const assistant = (id: string, text: string, ts?: number, thinking = false): TurnEvent =>
@@ -124,9 +126,10 @@ describe('runSearch — turns', () => {
     expect(out.truncated).toBe(false);
   });
 
-  it('orders timed hits newest first across panes, then untimed ones by pane recency', async () => {
+  it('orders timed hits newest first across panes, then untimed ones by pane creation', async () => {
     const out = await runSearch(request('needle', { scopes: ['turns'] }), null, sources({
-      panes: [pane('old', { recency: 1 }), pane('new', { recency: 9 })],
+      // Activity does not order untimed hits: it moves whenever a pane prints.
+      panes: [pane('old', { recency: 9, createdAt: 1 }), pane('new', { recency: 1, createdAt: 9 })],
       turns: async (id) => ({ kind: 'page', events: id === 'old'
         ? [user('o1', 'needle', 50), user('o2', 'needle')]
         : [user('n1', 'needle', 40), user('n2', 'needle')] }),
@@ -345,5 +348,152 @@ describe('scrollback text cache', () => {
     expect(cache.get('a', 'k1')).toEqual(['a']);
     cache.retain(new Set(['c']));
     expect(cache.size).toBe(1);
+  });
+});
+
+describe('paging stays whole while panes change', () => {
+  const page = (req: SearchRequest, src: SearchSources) =>
+    runSearch(req, req.cursor === null ? null : codec.decode(req, req.cursor), src, codec);
+
+  it('neither repeats nor drops scrollback hits when a pane prints, its ring evicts, and another pane turns busy', async () => {
+    // Pane A holds a0..a9, pane B b0..b3. A was created after B.
+    const state = {
+      a: Array.from({ length: 10 }, (_, i) => `needle a${i}`),
+      b: Array.from({ length: 4 }, (_, i) => `needle b${i}`),
+      recencyA: 10,
+      recencyB: 5,
+    };
+    const src = () => sources({
+      scrollbackPanes: [
+        pane('A', { recency: state.recencyA, createdAt: 2 }),
+        pane('B', { recency: state.recencyB, createdAt: 1 }),
+      ],
+      scrollback: { cached: (id) => (id === 'A' ? state.a : state.b), read: async () => null },
+    });
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 6; i++) {
+      const out = await page(request('needle', { scopes: ['scrollback'], limit: 4, cursor }), src());
+      seen.push(...out.results.map((r) => r.snippet.replace('needle ', '')));
+      cursor = out.nextCursor;
+      if (i === 0) {
+        // Between pages: A's ring evicts its three oldest lines and A prints two
+        // more (newer than anything already shown), and B becomes the busiest pane.
+        state.a = [...state.a.slice(3), 'needle new1', 'needle new2'];
+        state.recencyB = 50;
+      }
+      if (cursor === null) break;
+    }
+    // a0..a2 left the ring before anyone asked for them; the new lines are newer than page one.
+    expect(seen).toEqual(['a9', 'a8', 'a7', 'a6', 'a5', 'a4', 'a3', 'b3', 'b2', 'b1', 'b0']);
+  });
+
+  it('ends a page before a scrollback pane it could not read, so the next page still shows it', async () => {
+    const cache = new Map<string, string[]>([['C', ['needle c0', 'needle c1', 'needle c2']]]);
+    const text: Record<string, string[]> = { A: ['needle a0'], B: ['needle b0', 'needle b1'] };
+    const src = () => sources({
+      scrollbackPanes: [
+        pane('A', { recency: 30, createdAt: 3 }),
+        pane('B', { recency: 20, createdAt: 2 }),
+        pane('C', { recency: 10, createdAt: 1 }),
+      ],
+      scrollback: {
+        cached: (id) => cache.get(id),
+        read: async (id) => { cache.set(id, text[id]); return text[id]; },
+      },
+      limits: { ...SEARCH_LIMITS, scrollbackPanes: 1 },
+    });
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 6; i++) {
+      const out = await page(request('needle', { scopes: ['scrollback'], limit: 2, cursor }), src());
+      seen.push(...out.results.map((r) => r.snippet.replace('needle ', '')));
+      cursor = out.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(seen).toEqual(['a0', 'b1', 'b0', 'c2', 'c1', 'c0']);
+  });
+
+  it('offers no cursor when the clock left a conversation unread, but keeps it past a per-session horizon', async () => {
+    let clock = 0;
+    const timed = await runSearch(request('match', { scopes: ['turns'], limit: 1 }), null, sources({
+      panes: [pane('a', { recency: 3 }), pane('b', { recency: 2 })],
+      turns: async () => ({ kind: 'file', next: () => {
+        clock += 5000;
+        return { events: [user('e1', 'match', 2), user('e2', 'match', 1)], lineEnds: [1, 2], bytes: 100, done: true };
+      } }),
+      now: () => clock,
+    }), codec);
+    expect(timed.truncated).toBe(true);
+    expect(timed.results).toHaveLength(1);
+    expect(timed.nextCursor).toBeNull();
+
+    const horizon = await runSearch(request('match', { scopes: ['turns'], limit: 1 }), null, sources({
+      panes: [pane('p1')],
+      turns: async () => fileSource([
+        { events: [user('e1', 'match', 2), user('e2', 'match', 1)], lineEnds: [300, 400], bytes: 100, done: false },
+        { events: [user('old', 'match', 0)], lineEnds: [200], bytes: 100, done: true },
+      ]),
+      limits: { ...SEARCH_LIMITS, sessionBytes: 100 },
+    }), codec);
+    expect(horizon.truncated).toBe(true);
+    expect(horizon.nextCursor).not.toBeNull();
+  });
+});
+
+describe('extraction slots and caller admission', () => {
+  it('shares one extraction per pane and refuses a third pane until one settles', async () => {
+    const slots = new ScrollbackExtractions(2);
+    let calls = 0;
+    const gates: Array<() => void> = [];
+    const extract = () => { calls += 1; return new Promise<string[] | null>((resolve) => gates.push(() => resolve(['x']))); };
+    const a = slots.run('a', extract);
+    expect(slots.run('a', extract)).toBe(a);
+    const b = slots.run('b', extract);
+    expect(slots.run('c', extract)).toBeUndefined();
+    await Promise.resolve();
+    expect(calls).toBe(2);
+    gates[0]();
+    await a;
+    // b is still queued, so it keeps its slot even if no search waits on it any more.
+    expect(slots.size).toBe(1);
+    const c = slots.run('c', extract);
+    expect(c).toBeDefined();
+    await Promise.resolve();
+    gates[1]();
+    gates[2]();
+    await Promise.all([b, c]);
+    expect(slots.size).toBe(0);
+  });
+
+  it('skips a pane as budget, without reading it, when every slot is taken', async () => {
+    const out = await runSearch(request('needle', { scopes: ['scrollback'] }), null, sources({
+      scrollbackPanes: [pane('p1')],
+      scrollback: { cached: () => undefined, read: async () => 'busy' },
+    }), codec);
+    expect(out.coverage.skippedSessions).toEqual([{ sessionId: 'p1', scope: 'scrollback', reason: 'budget' }]);
+    expect(out.truncated).toBe(true);
+    expect(out.nextCursor).toBeNull();
+  });
+
+  it('admits one search per caller within a refilling burst, and forgets idle callers', () => {
+    let now = 0;
+    const admission = new SearchAdmission(() => now, 2, 1000, 1);
+    expect(admission.admit('d')).toEqual({ ok: true });
+    expect(admission.admit('d')).toEqual({ ok: false, retryAfterSec: 1 });
+    expect(admission.admit('e')).toEqual({ ok: true });
+    admission.release('d');
+    expect(admission.admit('d')).toEqual({ ok: true });
+    admission.release('d');
+    expect(admission.admit('d')).toEqual({ ok: false, retryAfterSec: 1 });
+    now += 400;
+    expect(admission.admit('d')).toEqual({ ok: false, retryAfterSec: 1 });
+    now += 600;
+    expect(admission.admit('d')).toEqual({ ok: true });
+    admission.release('d');
+    admission.release('e');
+    now += 10_000;
+    admission.release('d');
+    expect(admission.size).toBe(0);
   });
 });

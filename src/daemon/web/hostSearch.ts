@@ -33,10 +33,23 @@ const MAX_MATCH_RANGES = 16;
 const MAX_CURSOR_CHARS = 1024;
 /** Search requests the daemon runs at once; a phone must not be able to saturate it. */
 export const MAX_CONCURRENT_SEARCHES = 2;
+/** Search requests ONE caller runs at once, so one device cannot hold both daemon-wide slots. */
+export const MAX_SEARCHES_PER_CALLER = 1;
+/** Searches one caller may start back to back before it has to wait for a token. */
+export const SEARCH_BURST = 4;
+/** One token comes back every this many ms: a sustained 30 searches a minute per caller. */
+export const SEARCH_REFILL_MS = 2000;
 /** Scrollback rows one extraction keeps: the `daemon.readSessionText` default. */
 export const SCROLLBACK_ROWS = 5000;
 /** Panes whose extracted scrollback text stays cached (up to SCROLLBACK_ROWS logical lines each). */
 export const SCROLLBACK_CACHE_PANES = 8;
+/**
+ * Scrollback extractions queued or running at once, daemon-wide, INCLUDING
+ * ones whose search already hit its deadline and moved on. They wait on the
+ * concurrency-1 snapshot queue that desk attach and resync use, so this caps
+ * how long an attach can sit behind searches.
+ */
+export const MAX_SCROLLBACK_EXTRACTIONS = 2;
 
 export interface SearchLimits {
   /** The newest bytes of ONE transcript a search reads. */
@@ -198,14 +211,92 @@ export class ScrollbackTextCache {
   get size(): number { return this.entries.size; }
 }
 
+/**
+ * The scrollback extractions in flight. A pane already being extracted is not
+ * queued again: a later search, or a later page, waits on the same promise.
+ * An extraction outlives the search that started it (it cannot be pulled off
+ * the snapshot queue), so it keeps its slot until it settles; with every slot
+ * taken, `run` answers undefined and the pane is skipped rather than queued.
+ */
+export class ScrollbackExtractions {
+  private readonly inFlight = new Map<string, Promise<string[] | null>>();
+  constructor(private readonly max = MAX_SCROLLBACK_EXTRACTIONS) {}
+  run(sessionId: string, extract: () => Promise<string[] | null>): Promise<string[] | null> | undefined {
+    const running = this.inFlight.get(sessionId);
+    if (running) return running;
+    if (this.inFlight.size >= this.max) return undefined;
+    const job: Promise<string[] | null> = Promise.resolve()
+      .then(extract)
+      .catch(() => null)
+      .finally(() => { if (this.inFlight.get(sessionId) === job) this.inFlight.delete(sessionId); });
+    this.inFlight.set(sessionId, job);
+    return job;
+  }
+  get size(): number { return this.inFlight.size; }
+}
+
+/**
+ * Per-caller admission: at most MAX_SEARCHES_PER_CALLER at once, and a token
+ * bucket of SEARCH_BURST refilled one token per SEARCH_REFILL_MS. `admit`
+ * answers the seconds to wait (Retry-After) when refused; a refusal spends no
+ * token. A caller whose bucket is full and who has nothing running is
+ * forgotten, so the map holds only callers active in the last few seconds.
+ */
+export class SearchAdmission {
+  private readonly callers = new Map<string, { tokens: number; at: number; running: number }>();
+  constructor(
+    private readonly now: () => number,
+    private readonly burst = SEARCH_BURST,
+    private readonly refillMs = SEARCH_REFILL_MS,
+    private readonly perCaller = MAX_SEARCHES_PER_CALLER,
+  ) {}
+  admit(caller: string): { ok: true } | { ok: false; retryAfterSec: number } {
+    const now = this.now();
+    const state = this.callers.get(caller) ?? { tokens: this.burst, at: now, running: 0 };
+    state.tokens = Math.min(this.burst, state.tokens + Math.max(0, now - state.at) / this.refillMs);
+    state.at = now;
+    this.callers.set(caller, state);
+    if (state.running >= this.perCaller) return { ok: false, retryAfterSec: 1 };
+    if (state.tokens < 1) return { ok: false, retryAfterSec: Math.max(1, Math.ceil(((1 - state.tokens) * this.refillMs) / 1000)) };
+    state.tokens -= 1;
+    state.running += 1;
+    return { ok: true };
+  }
+  /** The admitted search finished. */
+  release(caller: string): void {
+    const state = this.callers.get(caller);
+    if (!state) return;
+    state.running = Math.max(0, state.running - 1);
+    this.sweep();
+  }
+  private sweep(): void {
+    const now = this.now();
+    for (const [caller, state] of this.callers) {
+      if (state.running === 0 && state.tokens + (now - state.at) / this.refillMs >= this.burst) this.callers.delete(caller);
+    }
+  }
+  get size(): number { return this.callers.size; }
+}
+
 // --- ordering and the cursor ------------------------------------------------
 
 /**
  * Total order of hits: `at` newest first (hits without one after every hit
- * with one), then session recency, then a tie-break that is stable across
- * calls. `pos` is the hit's place in its source, newest first.
+ * with one), then the pane's creation time (newest first), then a tie-break
+ * that is stable across calls. `pos` is the hit's place in its source, newest
+ * first. Every part is fixed for the life of a hit, so a cursor means the same
+ * place on the next call: ordering by pane activity instead moved every
+ * untimed hit of a pane that printed between two pages.
  */
-export interface SortKey { at: number | null; recency: number; sessionId: string; kind: SearchKind; pos: number; id: string }
+export interface SortKey { at: number | null; order: number; sessionId: string; kind: SearchKind; pos: number; id: string }
+
+/**
+ * Where a cursor continues: after `key`. For a scrollback hit, `anchor`
+ * fingerprints the hit's line and the two above it. Line numbers shift when the
+ * ring evicts old output, so the next page finds the anchor again and
+ * renumbers that pane's lines to match before it continues.
+ */
+export interface SearchAfter { key: SortKey; anchor?: string }
 
 const KIND_RANK: Record<SearchKind, number> = { turn: 0, session: 1, scrollback: 2 };
 
@@ -215,7 +306,7 @@ export function compareKeys(a: SortKey, b: SortKey): number {
     if (b.at === null) return -1;
     return b.at - a.at;
   }
-  if (a.recency !== b.recency) return b.recency - a.recency;
+  if (a.order !== b.order) return b.order - a.order;
   if (a.sessionId !== b.sessionId) return a.sessionId < b.sessionId ? -1 : 1;
   if (a.kind !== b.kind) return KIND_RANK[a.kind] - KIND_RANK[b.kind];
   if (a.pos !== b.pos) return b.pos - a.pos;
@@ -223,9 +314,14 @@ export function compareKeys(a: SortKey, b: SortKey): number {
 }
 
 export interface SearchCursorCodec {
-  encode(request: SearchRequest, key: SortKey): string;
-  /** The key to continue after, or SearchError 400 `invalid-cursor`. */
-  decode(request: SearchRequest, raw: string): SortKey;
+  encode(request: SearchRequest, key: SortKey, anchor?: string): string;
+  /** Where to continue, or SearchError 400 `invalid-cursor`. */
+  decode(request: SearchRequest, raw: string): SearchAfter;
+}
+
+/** Fingerprint of scrollback line `i` and the two above it (fewer at the top). */
+export function scrollbackAnchor(lines: readonly string[], i: number): string {
+  return crypto.createHash('sha256').update(lines.slice(Math.max(0, i - 2), i + 1).join('\n')).digest('base64url').slice(0, 16);
 }
 
 /**
@@ -240,9 +336,9 @@ export function createSearchCursorCodec(secret: Buffer): SearchCursorCodec {
   const mac = (payload: string) => crypto.createHmac('sha256', secret).update(payload).digest();
   const invalid = () => new SearchError(400, 'invalid-cursor');
   return {
-    encode(request, key) {
+    encode(request, key, anchor) {
       const payload = Buffer.from(JSON.stringify({
-        v: 1, f: fingerprint(request), k: [key.at, key.recency, key.sessionId, key.kind, key.pos, key.id],
+        v: 2, f: fingerprint(request), k: [key.at, key.order, key.sessionId, key.kind, key.pos, key.id], a: anchor ?? null,
       })).toString('base64url');
       return `${payload}.${mac(payload).toString('base64url')}`;
     },
@@ -255,19 +351,33 @@ export function createSearchCursorCodec(secret: Buffer): SearchCursorCodec {
       if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) throw invalid();
       let o: unknown;
       try { o = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')); } catch { throw invalid(); }
-      const r = o as { v?: unknown; f?: unknown; k?: unknown };
-      if (!r || r.v !== 1 || r.f !== fingerprint(request) || !Array.isArray(r.k) || r.k.length !== 6) throw invalid();
-      const [at, recency, sessionId, kind, pos, id] = r.k as unknown[];
-      if ((at !== null && typeof at !== 'number') || typeof recency !== 'number' || typeof sessionId !== 'string' ||
-          typeof kind !== 'string' || !Object.hasOwn(KIND_RANK, kind) || typeof pos !== 'number' || typeof id !== 'string') {
+      const r = o as { v?: unknown; f?: unknown; k?: unknown; a?: unknown };
+      if (!r || r.v !== 2 || r.f !== fingerprint(request) || !Array.isArray(r.k) || r.k.length !== 6) throw invalid();
+      const [at, order, sessionId, kind, pos, id] = r.k as unknown[];
+      if ((at !== null && typeof at !== 'number') || typeof order !== 'number' || typeof sessionId !== 'string' ||
+          typeof kind !== 'string' || !Object.hasOwn(KIND_RANK, kind) || typeof pos !== 'number' || typeof id !== 'string' ||
+          (r.a !== null && typeof r.a !== 'string')) {
         throw invalid();
       }
-      return { at, recency, sessionId, kind: kind as SearchKind, pos, id };
+      const key: SortKey = { at, order, sessionId, kind: kind as SearchKind, pos, id };
+      return typeof r.a === 'string' ? { key, anchor: r.a } : { key };
     },
   };
 }
 
 // --- the search -------------------------------------------------------------
+
+/** The line the anchor names, the nearest one at or above `near` first; null when it is gone. */
+function findAnchor(lines: readonly string[], anchor: string, near: number): number | null {
+  let below: number | null = null;
+  for (let i = Math.min(near, lines.length - 1); i >= 0; i--) {
+    if (scrollbackAnchor(lines, i) === anchor) return i;
+  }
+  for (let i = Math.max(0, near + 1); i < lines.length; i++) {
+    if (scrollbackAnchor(lines, i) === anchor) { below = i; break; }
+  }
+  return below;
+}
 
 /** A pane as the search sees it. */
 export interface SearchPane {
@@ -281,8 +391,10 @@ export interface SearchPane {
   surfaceTitle?: string;
   /** False unless attached or detached: a dead-session tombstone, or a suspended pane. */
   alive: boolean;
-  /** Epoch ms of last activity: orders panes, and hits without `at`. */
+  /** Epoch ms of last activity: which panes a bounded scan reaches first. */
   recency: number;
+  /** Epoch ms the pane was created: orders hits without `at`. Never changes. */
+  createdAt: number;
 }
 
 export interface HistoryEntry { id: string; sessionId: string; workspace: string; agent: string; at: number; summary: string }
@@ -300,8 +412,11 @@ export type TurnSource =
 export interface ScrollbackReader {
   /** Lines still current in the cache — free. */
   cached(sessionId: string): string[] | undefined;
-  /** Extract now, on the shared snapshot queue; null when the ring cannot be read. */
-  read(sessionId: string): Promise<string[] | null>;
+  /**
+   * Extract now, on the shared snapshot queue; null when the ring cannot be
+   * read, `busy` when every daemon-wide extraction slot is taken.
+   */
+  read(sessionId: string): Promise<string[] | null | 'busy'>;
 }
 
 export interface SearchSources {
@@ -351,6 +466,8 @@ interface Candidate {
   history?: HistoryEntry;
   turnEventId?: string;
   turnCursor?: () => string | undefined;
+  /** Scrollback only: the anchor a cursor after this hit carries. */
+  anchor?: () => string;
 }
 
 /** Keeps only the best `keep` candidates past the cursor, so a common word costs no snippet per hit. */
@@ -393,7 +510,7 @@ async function beforeDeadline<T>(work: Promise<T>, ms: number): Promise<{ value:
 
 export async function runSearch(
   request: SearchRequest,
-  after: SortKey | null,
+  after: SearchAfter | null,
   sources: SearchSources,
   codec: SearchCursorCodec,
 ): Promise<SearchResponse> {
@@ -402,10 +519,18 @@ export async function runSearch(
   const remaining = () => deadline - sources.now();
   const outOfBudget = () => remaining() <= 0 || sources.stopped?.() === true;
   const needle = foldCase(request.query);
-  const hits = new TopHits(request.limit + 1, after);
+  const hits = new TopHits(request.limit + 1, after?.key ?? null);
   const searched = new Set<string>();
   const skipped: SkippedSession[] = [];
   let truncated = false;
+  /**
+   * A conversation the clock or the request-wide byte bound left unread: its
+   * hits could sit anywhere in the `at` order, including before this page's
+   * last hit, so no cursor can promise the next page continues exactly.
+   */
+  let unpageable = false;
+  /** The first place in the order a scrollback pane left unread would occupy; the page ends before it. */
+  let pageEnd: SortKey | null = null;
   const skip = (sessionId: string, scope: SearchScope, reason: string) => {
     skipped.push({ sessionId, scope, reason });
     if (reason === 'budget') truncated = true;
@@ -434,7 +559,7 @@ export async function runSearch(
         ];
         // One hit per pane: the first field that matches speaks for it.
         for (const [field, value] of fields) {
-          if (value && consider(displayText(value), { at: null, recency: pane.recency, sessionId: pane.sessionId, kind: 'session', pos: 0, id: `pane:${field}` }, { pane })) break;
+          if (value && consider(displayText(value), { at: null, order: pane.createdAt, sessionId: pane.sessionId, kind: 'session', pos: 0, id: `pane:${field}` }, { pane })) break;
         }
       }
       let entries: HistoryEntry[] = [];
@@ -443,7 +568,7 @@ export async function runSearch(
       for (const entry of entries) {
         const pane = byId.get(entry.sessionId);
         for (const value of [entry.summary, entry.workspace, entry.agent]) {
-          if (consider(displayText(value), { at: entry.at, recency: pane?.recency ?? entry.at, sessionId: entry.sessionId, kind: 'session', pos: 0, id: `run:${entry.id}` },
+          if (consider(displayText(value), { at: entry.at, order: pane?.createdAt ?? entry.at, sessionId: entry.sessionId, kind: 'session', pos: 0, id: `run:${entry.id}` },
             { history: entry, ...(pane ? { pane } : {}) })) break;
         }
       }
@@ -452,19 +577,19 @@ export async function runSearch(
     if (scope === 'turns') {
       let totalBytes = 0;
       for (const pane of panes) {
-        if (outOfBudget() || totalBytes >= limits.totalBytes) { skip(pane.sessionId, scope, 'budget'); continue; }
+        if (outOfBudget() || totalBytes >= limits.totalBytes) { skip(pane.sessionId, scope, 'budget'); unpageable = true; continue; }
         if (!sources.turns) { skip(pane.sessionId, scope, 'unavailable'); continue; }
         const resolved = await beforeDeadline(
           sources.turns(pane.sessionId).catch((): TurnSource => ({ kind: 'skip', reason: 'unreadable' })),
           remaining(),
         );
-        if (!resolved) { skip(pane.sessionId, scope, 'budget'); continue; }
+        if (!resolved) { skip(pane.sessionId, scope, 'budget'); unpageable = true; continue; }
         const source = resolved.value;
         if (source.kind === 'skip') { skip(pane.sessionId, scope, source.reason); continue; }
         const offerTurn = (event: TurnEvent, pos: number, cursor?: () => string | undefined) => {
           const text = turnText(event);
           if (text === null) return;
-          consider(text, { at: typeof event.ts === 'number' ? event.ts : null, recency: pane.recency, sessionId: pane.sessionId, kind: 'turn', pos, id: event.id },
+          consider(text, { at: typeof event.ts === 'number' ? event.ts : null, order: pane.createdAt, sessionId: pane.sessionId, kind: 'turn', pos, id: event.id },
             { pane, turnEventId: event.id, ...(cursor ? { turnCursor: cursor } : {}) });
         };
         if (source.kind === 'page') {
@@ -478,7 +603,10 @@ export async function runSearch(
         for (let first = true; ; first = false) {
           if (!first) {
             await yieldToLoop();
-            if (outOfBudget() || read >= limits.sessionBytes || totalBytes >= limits.totalBytes) break;
+            // The per-session window cuts a transcript at the same place on
+            // every page; the clock and the request-wide bytes do not.
+            if (outOfBudget() || totalBytes >= limits.totalBytes) { unpageable = true; break; }
+            if (read >= limits.sessionBytes) break;
           }
           let page: TurnPage | null;
           try { page = await source.next(); } catch { page = null; }
@@ -505,45 +633,73 @@ export async function runSearch(
     // so a host with a few more panes than the cache holds came back truncated
     // on every other search while nothing changed. Hits are sorted afterwards,
     // so the order panes are visited in does not reach the response.
+    //
+    // Every hit of a pane's scrollback sorts in one block (no `at`, the pane's
+    // creation time, its id). A pane whose block lies wholly before the cursor
+    // was served by an earlier page and is not read again.
+    const blockEdge = (pane: SearchPane, pos: number): SortKey =>
+      ({ at: null, order: pane.createdAt, sessionId: pane.sessionId, kind: 'scrollback', pos, id: '' });
+    const behindCursor = (pane: SearchPane) => after !== null && compareKeys(blockEdge(pane, -Infinity), after.key) <= 0;
+    /** An unread pane ends the page before its block, so the next page reads it instead of stepping past it. */
+    const unread = (pane: SearchPane) => {
+      skip(pane.sessionId, scope, 'budget');
+      const start = blockEdge(pane, Infinity);
+      if (pageEnd === null || compareKeys(start, pageEnd) < 0) pageEnd = start;
+    };
+    const ahead = panes.filter((p) => !behindCursor(p));
     const cachedLines = new Map<string, string[]>();
     if (sources.scrollback) {
-      for (const pane of panes) {
+      for (const pane of ahead) {
         const lines = sources.scrollback.cached(pane.sessionId);
         if (lines) cachedLines.set(pane.sessionId, lines);
       }
     }
-    const visitOrder = [...panes.filter((p) => cachedLines.has(p.sessionId)), ...panes.filter((p) => !cachedLines.has(p.sessionId))];
+    const visitOrder = [...ahead.filter((p) => cachedLines.has(p.sessionId)), ...ahead.filter((p) => !cachedLines.has(p.sessionId))];
     let fresh = 0;
     for (const pane of visitOrder) {
-      if (sources.stopped?.() === true) { skip(pane.sessionId, scope, 'budget'); continue; }
+      if (sources.stopped?.() === true) { unread(pane); continue; }
       if (!sources.scrollback) { skip(pane.sessionId, scope, 'unavailable'); continue; }
       let lines = cachedLines.get(pane.sessionId) ?? sources.scrollback.cached(pane.sessionId);
       if (!lines) {
-        if (outOfBudget() || fresh >= limits.scrollbackPanes) { skip(pane.sessionId, scope, 'budget'); continue; }
+        if (outOfBudget() || fresh >= limits.scrollbackPanes) { unread(pane); continue; }
         fresh += 1;
         // A late extraction is not cancelled — it cannot be, it is queued
-        // behind attach snapshots — but it still fills the cache for the
-        // next search, and this one moves on.
+        // behind attach snapshots — but it keeps its daemon-wide slot, still
+        // fills the cache for the next search, and this one moves on.
         const read = await beforeDeadline(sources.scrollback.read(pane.sessionId).catch(() => null), remaining());
-        if (!read) { skip(pane.sessionId, scope, 'budget'); continue; }
+        if (!read || read.value === 'busy') { unread(pane); continue; }
         if (!read.value) { skip(pane.sessionId, scope, 'unavailable'); continue; }
         lines = read.value;
       }
+      const text = lines;
+      // Line numbers shift when the ring evicts old output. On the cursor's
+      // own pane, find the cursor's line again and renumber to match; when it
+      // has left the ring, so has everything older, and nothing is left here.
+      let shift = 0;
+      if (after?.key.kind === 'scrollback' && after.key.at === null && after.key.sessionId === pane.sessionId && after.anchor !== undefined) {
+        const found = findAnchor(text, after.anchor, after.key.pos);
+        if (found === null) { searched.add(pane.sessionId); continue; }
+        shift = after.key.pos - found;
+      }
       searched.add(pane.sessionId);
-      lines.forEach((line, i) => {
-        consider(displayText(line), { at: null, recency: pane.recency, sessionId: pane.sessionId, kind: 'scrollback', pos: i, id: String(i) }, { pane });
+      text.forEach((line, i) => {
+        const pos = i + shift;
+        consider(displayText(line), { at: null, order: pane.createdAt, sessionId: pane.sessionId, kind: 'scrollback', pos, id: String(pos) },
+          { pane, anchor: () => scrollbackAnchor(text, i) });
       });
     }
   }
 
-  const kept = hits.take();
+  const end: SortKey | null = pageEnd;
+  const kept = end === null ? hits.take() : hits.take().filter((hit) => compareKeys(hit.key, end) < 0);
   const page = kept.slice(0, request.limit);
   const last = page[page.length - 1];
+  const more = kept.length > request.limit || end !== null;
   return {
     results: page.map(toResult),
     coverage: { searchedSessions: searched.size, skippedSessions: skipped },
     truncated,
-    nextCursor: kept.length > request.limit && last ? codec.encode(request, last.key) : null,
+    nextCursor: more && last && !unpageable ? codec.encode(request, last.key, last.anchor?.()) : null,
   };
 
   function toResult(hit: Candidate): SearchResult {

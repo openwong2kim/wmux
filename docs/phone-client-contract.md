@@ -1915,7 +1915,8 @@ text, which needs only an authenticated caller, the same as `/api/stream`.
 - `cursor`: the previous response's `nextCursor`. A cursor from another query
   or scope set, an edited one, or one minted before a daemon restart is
   `400 invalid-cursor`. Start the search again without it. Re-casing the query
-  keeps the cursor valid.
+  keeps the cursor valid. A cursor minted by a daemon before this cursor format
+  (version 2) is `400 invalid-cursor` too.
 
 Every response, error or not, is `Cache-Control: no-store`.
 
@@ -1964,19 +1965,37 @@ Every response, error or not, is `Cache-Control: no-store`.
 
 ### Ordering and paging
 
-Hits with `at` come first, newest first. Hits without `at` follow, by their
-pane's last activity, newest first. Ties break on session id, kind, and
-position (newest first). So a pane-metadata hit sorts after every timestamped
-hit. `nextCursor` is non-null when more hits exist past this page. It is
+Hits with `at` come first, newest first. Hits without `at` follow, grouped by
+pane, newest pane (by when it was created) first. Ties break on session id,
+kind, and position (newest first). So a pane-metadata hit sorts after every
+timestamped hit. Every part of this order is fixed for the life of a hit:
+output in a pane does not move its hits.
+
+`nextCursor` is non-null when more hits may exist past this page. It is
 stateless: the next call runs the search again and continues after the last
 hit returned. A turn appended meanwhile sorts before that hit and is not
-repeated. The order of hits without `at` follows pane activity at the time of
-each call, so one of them can repeat or be skipped across pages while that
-pane is busy.
+repeated. Scrollback that a pane printed meanwhile is newer than the cursor and
+is not shown on later pages either. Old scrollback lines leaving the ring do not
+shift the paging: the cursor remembers the text around its line and finds it
+again. If that line has itself left the ring, so has everything older in that
+pane, and paging moves on to the next pane.
 
-A cursor and `truncated: true` do not combine. Each page runs under the same
-bounds, so paging is complete only over an untruncated search. `nextCursor`
-is null when a truncated search found fewer hits than `limit`.
+A page can come back with `truncated: true` and a cursor. What that means
+depends on what the bounds left out:
+
+- A conversation cut at its per-session 4 MiB window is cut at the same place
+  on every page. That does not stop paging.
+- A scrollback pane left unread (its extraction did not fit in this request)
+  ends the page before that pane's hits, so the page can hold fewer than
+  `limit` hits and still carry a cursor. The next page reads that pane, from
+  the cache once the background extraction has finished.
+- A conversation the wall clock or the 24 MiB request-wide bound left unread,
+  or read only partly, has hits that could belong anywhere in the order. The
+  page's hits are correct, but `nextCursor` is null. To see more, search again
+  later or narrow the query.
+
+A truncated page with no hits never carries a cursor. Search again from the
+start.
 
 ### Scopes, gates, and which panes
 
@@ -1993,8 +2012,13 @@ scope with reason `transcript-disabled`.
 
 ### Bounds
 
-- At most 2 searches run at once, daemon-wide. A third is
-  `429 {"error":"search-busy"}` with `Retry-After: 1`.
+- At most 2 searches run at once, daemon-wide, and at most 1 per caller (the
+  operator token is one caller, each paired device another). Past either, the
+  answer is `429 {"error":"search-busy"}` with `Retry-After: 1`.
+- Each caller may start 4 searches back to back, then one more every 2 s.
+  Past that, the answer is `429 {"error":"search-busy"}` with `Retry-After` set
+  to the whole seconds until the next search is allowed. A refused request does
+  not count.
 - One request runs for about 3 s of wall clock. Once that has passed, no new
   pane is started.
 - `turns` reads each transcript newest first, up to its most recent 4 MiB
@@ -2006,7 +2030,12 @@ scope with reason `transcript-disabled`.
   resync use. Text is cached per pane until the pane writes more bytes, or its
   size or incarnation changes, for up to 8 panes. A cached pane does not count
   against the 6. An extraction still queued at the deadline finishes in the
-  background and fills the cache for the next search.
+  background and fills the cache for the next search. A pane is never queued
+  for extraction twice: a search that reaches a pane already being extracted
+  waits for that extraction. At most 2 extractions are queued or running
+  daemon-wide, counting the ones left from searches that already answered. A
+  pane that would need a third is skipped as `budget` without being queued, so
+  searches cannot build up a backlog in front of attach and resync.
 
 Hitting any of these bounds sets `truncated: true`. Every pane a bound left
 unsearched, or only partly searched, is listed with reason `budget`. Hits from
