@@ -101,7 +101,7 @@ describe('FanOutService — worktree:false', () => {
     expect(path.basename(b.outputDir!)).toBe('2-codex-20000000');
     // Both under one batch, under the preset's folder, under the outputs root.
     expect(path.dirname(a.outputDir!)).toBe(res.outputBatchDir);
-    expect(path.dirname(res.outputBatchDir!)).toBe(path.join(root, 'outputs', 'image'));
+    expect(path.dirname(res.outputBatchDir!)).toBe(path.join(fs.realpathSync(root), 'outputs', 'image'));
     expect(fs.statSync(a.outputDir!).isDirectory()).toBe(true);
 
     // The pane runs IN the folder, with the agent choice as data.

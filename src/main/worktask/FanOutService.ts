@@ -573,10 +573,14 @@ export class FanOutService {
     const folder = typeof req.outputFolder === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(req.outputFolder)
       ? req.outputFolder
       : 'fanout';
-    const batchDir = path.join(this.outputsRoot, folder, outputBatchName());
+    let batchDir = path.join(this.outputsRoot, folder, outputBatchName());
     try {
       fs.mkdirSync(path.join(this.outputsRoot, folder), { recursive: true });
       fs.mkdirSync(batchDir); // non-recursive: an existing batch is a collision, not a merge
+      // Realpath'd: this is the pane's cwd, and a CLI that keys per-folder
+      // trust on its realpath'd cwd (codex) must see the same string wmux
+      // trusted for it — /tmp vs /private/tmp on macOS is enough to miss.
+      batchDir = fs.realpathSync(batchDir);
     } catch (err) {
       return { ok: false, error: `fanout: could not create the output folder ${batchDir}: ${(err as Error).message}`, tasks: [] };
     }
