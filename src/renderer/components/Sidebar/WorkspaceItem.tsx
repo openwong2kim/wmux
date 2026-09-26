@@ -638,9 +638,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     if (reorderOff) return;
-    e.preventDefault();
+    // A drag with no reorder source (a copy-only hand-off, or text from
+    // outside) is not for this row: leave the drop unclaimed.
     const reorderFrom = dragSourceIndex();
     if (reorderFrom === -1) return;
+    e.preventDefault();
     // Codex P1: do NOT force dropEffect='move' on the source row itself.
     // While the pointer is still over the row that started the drag,
     // the operation must stay 'copy' (the effectAllowed='copyMove'
@@ -802,7 +804,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       )}
 
       <div
-        draggable={!!workspace}
+        // Not while renaming: a text drag inside the input must stay a text drag.
+        draggable={!!workspace && !editing}
         {...tokenAttrs('bgSurface', 'bg')}
         className={`group sidebar-row px-3 py-1.5 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive
