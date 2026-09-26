@@ -689,6 +689,7 @@ export const pl = {
   'fleet.review.changesUnavailable': 'Zmiany niedostępne',
   'fleet.message.placeholder': 'Wiadomość do tego agenta…',
   'fleet.label.placeholder': 'Etykieta panelu',
+  'fleet.keepOpenAfterJump': 'Pozostaw otwarte po przejściu',
   'fleet.title': 'Flota',
   'fleet.tab.fleet': 'Flota',
   'fleet.tab.approvals': 'Zatwierdzenia',

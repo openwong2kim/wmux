@@ -965,6 +965,7 @@ export const zh = {
   'fleet.close.cancel': '取消',
   'fleet.message.placeholder': '给此智能体发消息…',
   'fleet.label.placeholder': '窗格标签',
+  'fleet.keepOpenAfterJump': '跳转后保持打开',
   'fleet.title': '舰队',
   'fleet.tab.fleet': '舰队',
   'fleet.tab.approvals': '审批',
