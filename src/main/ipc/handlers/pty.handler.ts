@@ -42,6 +42,7 @@ import {
 } from '../../../shared/wmuxProjectConfig';
 import type { DaemonSupervisionPolicy } from '../../../shared/rpc';
 import type { ResumeBinding } from '../../../shared/agentResume';
+import type { AgentSlug } from '../../../shared/events';
 import { createDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { isWslShell, type WslTarget } from '../../../shared/wsl';
 import { resolvePtyCreateCwdForShell, type PtyCwdSource } from '../../pty/resolvePtyCwd';
@@ -1002,6 +1003,9 @@ export function registerPTYHandlers(
         // chip waits for), undefined = never attributed. Only present alongside
         // resumeBinding.
         agentProcessAlive?: boolean;
+        // The slug of the pane's live, process-attributed agent. Absent when
+        // none is attributed or it died.
+        liveAgent?: AgentSlug;
       }>;
       // Map to same shape as local PTYManager.getActiveInstances(), plus an
       // additive `supervision` summary for the renderer's supervision slice
@@ -1060,6 +1064,9 @@ export function registerPTYHandlers(
           ...(s.commandRunning !== undefined ? { commandRunning: s.commandRunning } : {}),
           // Process-truth agent liveness — the resume chip's edge-trigger gate.
           ...(s.agentProcessAlive !== undefined ? { agentProcessAlive: s.agentProcessAlive } : {}),
+          // Process-truth identity — seeds the pane's agent row when no hook
+          // or banner named it.
+          ...(s.liveAgent ? { liveAgent: s.liveAgent } : {}),
           // #1101 — origin identity for the orphaned-session list. workspaceId
           // is the spawn-time env stamp (present for every pane-origin session;
           // absent for phone-created ones, which then adopt into the active

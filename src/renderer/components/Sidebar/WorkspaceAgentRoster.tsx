@@ -17,6 +17,25 @@ import { fleetIdleForMs, formatStaleMinutes, selectUnverifiablePaneMinutes } fro
 import { StatusMarkView } from './AgentMarks';
 import { selectSidebarUnseen } from '../../stores/selectors/sidebarSeen';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
+import { buildMentionReference, buildMentionTargets, focusedMentionSource } from '../../utils/agentMention';
+import { insertMention, toastMentionInsert } from '../../utils/agentMentionInsert';
+
+/**
+ * The roster row's `@`: insert this agent's reference into the focused agent's
+ * input — the picker's Enter, without the picker. Says why when nothing was
+ * inserted: no agent pane has focus (the caller tells the user), or the row is
+ * not a target.
+ */
+function mentionRowInFocusedAgent(ptyId: string): 'inserted' | 'noSource' | 'notTarget' {
+  const state = useStore.getState();
+  const source = focusedMentionSource(state);
+  if (!source) return 'noSource';
+  const target = buildMentionTargets(state, source.ptyId).find((c) => c.kind === 'pane' && c.key === `pane:${ptyId}`);
+  if (!target) return 'notTarget';
+  const result = insertMention(source, buildMentionReference(target));
+  toastMentionInsert(result);
+  return 'inserted';
+}
 
 /** How long the just-stashed row stays highlighted. Long enough to catch the
  *  eye after the pane vanishes from the layout, short enough not to linger. */
@@ -399,10 +418,11 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     <span className="truncate">{t('roster.stashedCount', { count: roster.stashedCount })}</span>
                   </div>
                 )}
+                <div className="group/mention flex min-w-0 items-center">
                 <button
                   type="button"
                   draggable={false}
-                  className={`group/roster-row flex w-full min-w-0 items-center gap-1.5 rounded px-1 py-[3px] text-left transition-colors ${FOCUS_RING} ${
+                  className={`group/roster-row flex min-w-0 flex-1 min-w-0 items-center gap-1.5 rounded px-1 py-[3px] text-left transition-colors ${FOCUS_RING} ${
                     row.isFocused
                       ? 'bg-[var(--bg-overlay)]'
                       : 'hover:bg-[rgba(var(--bg-surface-rgb),0.65)]'
@@ -534,6 +554,35 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     </span>
                   ) : null}
                 </button>
+                {/* Mention this agent in the focused one — shown on hover or
+                    keyboard focus, never on the focused pane's own row. A
+                    sibling of the row button (a button cannot hold one). */}
+                {!row.stashed && !row.remote && row.agentName && !row.isFocused && (
+                  <button
+                    type="button"
+                    draggable={false}
+                    data-roster-mention
+                    // A 24x24 target (height refunded like the row recipe), revealed:
+                    // zero width at rest so it never covers the elapsed slot; on
+                    // row hover or keyboard focus it takes its own 24px and the
+                    // row gives it the room. The shared recipe's min-width would
+                    // keep it 24px wide at rest, so the classes are spelled out.
+                    className={`inline-flex h-6 w-0 min-w-0 flex-none items-center justify-center self-center -my-1.5 overflow-hidden rounded-[5px] text-[11px] leading-none text-[var(--text-sub)] hover:bg-[var(--surface-fill-hover)] hover:text-[var(--text-main)] group-hover/mention:w-6 focus-visible:w-6 ${FOCUS_RING}`}
+                    title={t('mention.button', { name: primary })}
+                    aria-label={t('mention.button', { name: primary })}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (mentionRowInFocusedAgent(row.ptyId) === 'noSource') {
+                        useStore.getState().pushToast({ message: t('mention.noSource'), level: 'info' });
+                      }
+                    }}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    @
+                  </button>
+                )}
+                </div>
                 {/* How long it has been off-screen. Free cost visibility: a
                     stashed agent burns tokens whether or not anyone remembers
                     it, and "3d ago" is the cheapest possible reminder. */}

@@ -70,3 +70,38 @@ export function planAgentCandidateSeed(
     (id) => id.length > 0 && !surfaceAgent[id]?.name && !seedAttempted.has(id),
   );
 }
+
+/**
+ * Which panes can be named from the daemon's PROCESS truth (`pty.list`
+ * `liveAgent`) right now? A resumed agent with no session-start hook (Codex)
+ * whose banner the detector missed has no other name source until its first
+ * turn ends, and the resolveAgent seed above is one-shot per pane and runs
+ * before the user relaunches anything.
+ *
+ * Runs after the known-gone wipe and never contradicts it: a pane whose agent
+ * process was seen dying, or whose shell is back at its prompt, is skipped.
+ * A pane already named for the SAME agent keeps its entry — live detection and
+ * hooks carry status this seed does not know. A pane named for a different
+ * agent is renamed: the live process outranks a stale label (the #919 tier
+ * rule), which is what a quick exit-and-relaunch leaves behind.
+ *
+ * Status: `running` while OSC 133 says the agent owns the terminal — the same
+ * synthetic value identity-only hydration uses, which the roster shows as idle
+ * until activity or a hook proves a turn — and `idle` otherwise.
+ */
+export function planLiveAgentSeed(
+  sessions: ReadonlyArray<{ id: string; liveAgent?: string }>,
+  surfaceAgent: Readonly<Record<string, { name: string; slug?: string } | undefined>>,
+  agentAlive: Readonly<Record<string, boolean>>,
+  commandRunning: Readonly<Record<string, boolean>>,
+): Array<{ ptyId: string; slug: AgentSlug; status: 'running' | 'idle' }> {
+  const seeds: Array<{ ptyId: string; slug: AgentSlug; status: 'running' | 'idle' }> = [];
+  for (const { id, liveAgent } of sessions) {
+    if (!id || !isAgentSlug(liveAgent)) continue;
+    const existing = surfaceAgent[id];
+    if (existing?.name && (existing.slug ?? agentDisplayToSlug(existing.name)) === liveAgent) continue;
+    if (agentAlive[id] === false || commandRunning[id] === false) continue;
+    seeds.push({ ptyId: id, slug: liveAgent, status: commandRunning[id] === true ? 'running' : 'idle' });
+  }
+  return seeds;
+}

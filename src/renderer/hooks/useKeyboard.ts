@@ -15,6 +15,8 @@ import {
   destroyWorkspaceRemoteSessions,
 } from '../utils/remoteSessionTeardown';
 import { disposePanePtys } from '../utils/paneTeardown';
+import { mentionSourceForKey } from '../utils/agentMention';
+import { OPEN_MENTION_PICKER_EVENT } from '../utils/agentMentionInsert';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
 let bookmarkToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -502,6 +504,7 @@ export function useKeyboard() {
           store.getState().setTerminalFontSize(FONT_SIZE_DEFAULT);
         }
       },
+      mentionAgent: () => { document.dispatchEvent(new CustomEvent(OPEN_MENTION_PICKER_EVENT)); },
     };
 
     /** Clear the prefix timeout if running */
@@ -708,7 +711,12 @@ export function useKeyboard() {
       // macro on the combo still fires. (#1152, #1455)
       const action = resolveShortcut(e, currentShortcutBindings());
       const run = action ? builtinActions[action] : undefined;
-      if (action && run) {
+      // The mention picker claims its key only while an agent pane (or Chat
+      // view) has focus — whatever key it is bound to — and only when the key
+      // came from that pane. In a plain shell, a floating pane or a brain
+      // embed, F2 belongs to mc / htop / vim, so it goes on to the terminal.
+      const declined = action === 'mentionAgent' && !mentionSourceForKey(store.getState(), e.target);
+      if (action && run && !declined) {
         e.preventDefault();
         if (STOP_PROPAGATION_ACTIONS.has(action)) e.stopImmediatePropagation();
         shortcutPressGuard.noteActed(e);

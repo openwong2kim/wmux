@@ -15,7 +15,7 @@ import {
   findWorkspaceSurfaceByPtyId,
   findWorkspaceSurfaceById,
 } from '../utils/paneTraversal';
-import { getWorkspacePtyIds } from '../../shared/paneUtils';
+import { getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
 import { unionSurfacePorts } from '../stores/slices/workspacePorts';
 import { FrameCoalescer } from '../utils/frameCoalescer';
 import { normalizeWorktreePath } from '../../shared/workTask';
@@ -81,6 +81,43 @@ export function resolveNotificationTarget(
   const leaf = findActiveLeaf(ws.rootPane, ws.activePaneId);
   const surfaceId = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId)?.id;
   return { workspaceId: ws.id, surfaceId, paneId: leaf?.id };
+}
+
+// ─── OS toast location line ────────────────────────────────────────────────
+
+/** Longest pane title the OS toast repeats before eliding. */
+const OS_TOAST_TITLE_MAX = 60;
+
+/**
+ * Where a notification came from, as the operator sees it: `workspace › tab`.
+ * The in-app toast and panel sit next to the pane they name, but the native
+ * OS toast is read away from wmux, and with several agents running
+ * "Codex CLI: Task finished" doesn't say WHICH one finished. Falls back to
+ * whichever half exists; empty when neither does.
+ */
+export function describeNotificationSource(
+  ws: Pick<Workspace, 'name' | 'rootPane' | 'stashedPanes'> | undefined,
+  surfaceId: string | undefined,
+): string {
+  if (!ws) return '';
+  const surface = surfaceId
+    ? getWorkspaceLeafPanes(ws).flatMap((leaf) => leaf.surfaces).find((s) => s.id === surfaceId)
+    : undefined;
+  let tab = surface?.title?.trim() ?? '';
+  if (tab.length > OS_TOAST_TITLE_MAX) tab = `${tab.slice(0, OS_TOAST_TITLE_MAX - 1)}…`;
+  return [ws.name?.trim(), tab].filter(Boolean).join(' › ');
+}
+
+/**
+ * OS toast body with the source on the first line. The body is dropped when
+ * the title already ends with it — hook completions arrive as
+ * title "Codex CLI: Task finished" + body "Task finished", which renders the
+ * same words twice and nothing about the pane.
+ */
+export function osToastBody(title: string, body: string, source: string): string {
+  if (!source) return body;
+  const redundant = !body.trim() || title.trimEnd().endsWith(body.trim());
+  return redundant ? source : `${source}\n${body}`;
 }
 
 // ─── Toast click → pane jump (X2) ──────────────────────────────────────────
@@ -449,7 +486,14 @@ export function createNotificationHandler(deps: NotificationHandlerDeps) {
         case 'osToast':
           deps.showOsToast({
             title: action.payload.title,
-            body: action.payload.body,
+            body: osToastBody(
+              action.payload.title,
+              action.payload.body,
+              // Only a ptyId names the sending tab. Without one (CLI or MCP
+              // notify), target.surfaceId is just the workspace's active tab,
+              // which may be a different pane than the sender.
+              describeNotificationSource(ws, ptyId ? target.surfaceId : undefined),
+            ),
             ptyId: ptyId ?? null,
             workspaceId: target.workspaceId,
             // Codex review catches (rounds 1+2): main's ToastManager must

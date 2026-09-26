@@ -18,6 +18,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createNotificationHandler,
   resolveNotificationTarget,
+  describeNotificationSource,
+  osToastBody,
   focusNotificationTarget,
   focusPaneByPtyId,
   activatePaneTarget,
@@ -25,7 +27,7 @@ import {
   type FocusTargetState,
 } from '../useNotificationListener';
 import { createThrottler } from '../../utils/createThrottler';
-import type { Workspace, Pane, Surface } from '../../../shared/types';
+import type { Workspace, Pane, Surface, StashedPane } from '../../../shared/types';
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -240,7 +242,8 @@ describe('createNotificationHandler (R4-R10)', () => {
     expect(harness.spies.showOsToast).toHaveBeenCalledTimes(1);
     expect(harness.spies.showOsToast).toHaveBeenCalledWith({
       title: 't',
-      body: 'b',
+      // Source line first: the OS toast is read away from wmux.
+      body: 'ws-a › sf-1\nb',
       ptyId: 'pty-1',
       workspaceId: 'ws-a',
       // Windows flash is ALWAYS false here — main's ToastManager must never
@@ -388,7 +391,7 @@ describe('createNotificationHandler (R4-R10)', () => {
     // Out-of-app surface: the relayed native toast with click context.
     expect(harness.spies.showOsToast).toHaveBeenCalledTimes(1);
     expect(harness.spies.showOsToast).toHaveBeenCalledWith({
-      title: 't', body: 'b', ptyId: 'pty-1', workspaceId: 'ws-a',
+      title: 't', body: 'ws-a › sf-1\nb', ptyId: 'pty-1', workspaceId: 'ws-a',
       windowsFlashEnabled: false, dockBounceEnabled: true,
     });
   });
@@ -818,5 +821,73 @@ describe('focusPaneByPtyId (Fleet View jump)', () => {
     activatePaneTarget(h.getState, { workspaceId: 'ws-a', paneId: 'pane-a', surfaceId: 'sf-a' });
     expect(h.spies.setActiveWorkspace).toHaveBeenCalledWith('ws-a');
     expect(h.state.activeRemoteKey).toBeNull();
+  });
+});
+
+describe('OS toast source line', () => {
+  it('names workspace › tab for a pane notification', () => {
+    const ws = makeWorkspace({ id: 'ws-a', panes: [{ id: 'pane-a', surfaces: [{ id: 'sf-1', ptyId: 'pty-1' }] }] });
+    ws.name = 'Ziomek';
+    if (ws.rootPane.type === 'leaf') ws.rootPane.surfaces[0].title = 'P4GURU';
+    expect(describeNotificationSource(ws, 'sf-1')).toBe('Ziomek › P4GURU');
+  });
+
+  it("finds a stashed pane's tab too", () => {
+    const ws = makeWorkspace({ id: 'ws-a', panes: [{ id: 'pane-a', surfaces: [{ id: 'sf-1', ptyId: 'pty-1' }] }] });
+    ws.stashedPanes = [{ pane: makeLeaf('pane-s', [{ id: 'sf-s', ptyId: 'pty-s' }]) } as StashedPane];
+    expect(describeNotificationSource(ws, 'sf-s')).toBe('ws-a › sf-s');
+  });
+
+  it('falls back to the workspace alone, and to nothing without one', () => {
+    const ws = makeWorkspace({ id: 'ws-a', panes: [{ id: 'pane-a', surfaces: [{ id: 'sf-1', ptyId: 'pty-1' }] }] });
+    expect(describeNotificationSource(ws, undefined)).toBe('ws-a');
+    expect(describeNotificationSource(ws, 'gone')).toBe('ws-a');
+    expect(describeNotificationSource(undefined, 'sf-1')).toBe('');
+  });
+
+  it('elides a long tab title', () => {
+    const ws = makeWorkspace({ id: 'w', panes: [{ id: 'p', surfaces: [{ id: 's', ptyId: 'x' }] }] });
+    if (ws.rootPane.type === 'leaf') ws.rootPane.surfaces[0].title = 'a'.repeat(80);
+    const out = describeNotificationSource(ws, 's');
+    expect(out).toBe(`w › ${'a'.repeat(59)}…`);
+  });
+
+  it('drops a body the title already ends with (hook completions)', () => {
+    expect(osToastBody('Codex CLI: Task finished', 'Task finished', 'Ziomek › P4GURU')).toBe('Ziomek › P4GURU');
+    expect(osToastBody('Codex CLI: Task finished', '', 'Ziomek › P4GURU')).toBe('Ziomek › P4GURU');
+  });
+
+  it('keeps an informative body under the source line', () => {
+    expect(osToastBody('Claude Code: Awaiting input', 'Which branch?', 'HQ › CSO')).toBe('HQ › CSO\nWhich branch?');
+  });
+
+  it('leaves the body untouched when there is no source', () => {
+    expect(osToastBody('t', 'b', '')).toBe('b');
+  });
+
+  it('hook completion end to end: the relayed OS toast names the pane', () => {
+    const h = makeHarness();
+    h.state.activeWorkspaceId = 'ws-other';
+    h.state.workspaces[0].name = 'Ziomek';
+    const leaf = h.state.workspaces[0].rootPane;
+    if (leaf.type === 'leaf') leaf.surfaces[0].title = 'P4GURU';
+    createNotificationHandler(h.deps)('pty-1', { type: 'agent', title: 'Codex CLI: Task finished', body: 'Task finished' });
+    expect(h.spies.showOsToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Codex CLI: Task finished', body: 'Ziomek › P4GURU' }),
+    );
+    // In-app surfaces keep the original payload — they already sit by the pane.
+    expect(h.spies.addNotification).toHaveBeenCalledWith(expect.objectContaining({ body: 'Task finished' }));
+  });
+
+  it('names only the workspace when no ptyId identifies the sending tab (CLI/MCP notify)', () => {
+    const h = makeHarness();
+    h.state.activeWorkspaceId = 'ws-other';
+    h.state.workspaces[0].name = 'Ziomek';
+    const leaf = h.state.workspaces[0].rootPane;
+    if (leaf.type === 'leaf') leaf.surfaces[0].title = 'P4GURU';
+    createNotificationHandler(h.deps)(null, { type: 'agent', title: 'Build', body: 'done', workspaceId: 'ws-a' });
+    expect(h.spies.showOsToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Build', body: 'Ziomek\ndone' }),
+    );
   });
 });

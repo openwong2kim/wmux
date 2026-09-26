@@ -185,7 +185,7 @@ const electronAPI = {
       // rebind a stale ptyId to the surviving session after a reboot.
       // `workspaceId`/`agentName` (#1101): origin identity for the orphaned
       // session list.
-      ipcRenderer.invoke(IPC.PTY_LIST, opts) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; state?: string; cwd?: string; spawnCwd?: string; workspaceId?: string; agentName?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: AgentSlug; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }[]>,
+      ipcRenderer.invoke(IPC.PTY_LIST, opts) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; state?: string; cwd?: string; spawnCwd?: string; workspaceId?: string; agentName?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: AgentSlug; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean; liveAgent?: AgentSlug }[]>,
     // TASK-6 — per-pane agent RAM for the Fleet View cockpit. Given the ptyIds
     // currently shown as cards, returns { [ptyId]: { rss (bytes), image? } } by
     // walking each pane shell's descendant process tree from ONE CIM snapshot.

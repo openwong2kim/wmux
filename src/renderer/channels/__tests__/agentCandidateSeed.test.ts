@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   planAgentCandidateSeed,
+  planLiveAgentSeed,
   asAgentSlug,
   markSeedAttempted,
   __resetSeedAttemptedForTests,
@@ -53,5 +54,63 @@ describe('asAgentSlug', () => {
   it('returns undefined for unknown values (future agents seed name-only)', () => {
     expect(asAgentSlug('some-new-agent')).toBeUndefined();
     expect(asAgentSlug('')).toBeUndefined();
+  });
+});
+
+describe('planLiveAgentSeed', () => {
+  it('names a recovered Codex pane from process truth before any turn', () => {
+    const seeds = planLiveAgentSeed(
+      [
+        { id: 'daemon-codex', liveAgent: 'codex' },
+        { id: 'daemon-shell' },
+      ],
+      {},
+      {},
+      { 'daemon-codex': true },
+    );
+    // OSC 133 says the agent owns the terminal: the synthetic 'running' that
+    // identity-only hydration uses, never a known-wrong 'idle'.
+    expect(seeds).toEqual([{ ptyId: 'daemon-codex', slug: 'codex', status: 'running' }]);
+  });
+
+  it('seeds idle when the shell reports no OSC 133 state', () => {
+    expect(planLiveAgentSeed([{ id: 'p1', liveAgent: 'codex' }], {}, {}, {}))
+      .toEqual([{ ptyId: 'p1', slug: 'codex', status: 'idle' }]);
+  });
+
+  it('never resurrects an agent known to be gone', () => {
+    const sessions = [
+      { id: 'died', liveAgent: 'codex' },
+      { id: 'at-prompt', liveAgent: 'gemini' },
+    ];
+    expect(planLiveAgentSeed(sessions, {}, { died: false }, { 'at-prompt': false })).toEqual([]);
+  });
+
+  it('keeps an entry that already names the same agent', () => {
+    const seeds = planLiveAgentSeed(
+      [
+        { id: 'p1', liveAgent: 'codex' },
+        { id: 'p2', liveAgent: 'claude' },
+      ],
+      { p1: { name: 'Codex CLI', slug: 'codex' }, p2: { name: 'Claude Code' } },
+      {},
+      {},
+    );
+    expect(seeds).toEqual([]);
+  });
+
+  it('renames a pane whose live process is a different agent', () => {
+    // Claude exited and Codex started before the label was cleared.
+    const seeds = planLiveAgentSeed(
+      [{ id: 'p1', liveAgent: 'codex' }],
+      { p1: { name: 'Claude Code', slug: 'claude' } },
+      {},
+      { p1: true },
+    );
+    expect(seeds).toEqual([{ ptyId: 'p1', slug: 'codex', status: 'running' }]);
+  });
+
+  it('ignores a value that is not an agent slug', () => {
+    expect(planLiveAgentSeed([{ id: 'p1', liveAgent: 'Codex CLI' }], {}, {}, {})).toEqual([]);
   });
 });

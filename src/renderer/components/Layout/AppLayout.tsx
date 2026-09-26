@@ -50,6 +50,7 @@ import { useAgentActivityClock } from '../../hooks/useAgentActivityClock';
 import { useTerminalCopyShortcut } from '../../hooks/useTerminalCopyShortcut';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
+import AgentMentionPicker from '../Palette/AgentMentionPicker';
 import { useWorkspaceMirrorPush } from '../../hooks/useWorkspaceMirrorPush';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
@@ -76,7 +77,8 @@ import { probeProjectConfig, maybeAutoApplyProjectLayout, workspaceProbeCwd } fr
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
-import { planAgentCandidateSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
+import { planAgentCandidateSeed, planLiveAgentSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
+import { agentSlugToDisplay } from '../../../shared/agentIdentity';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import ComposeHost from '../AgentToolbar/ComposeHost';
 import ToolbarHost, { AGENT_TOOLBAR_HEIGHT } from '../AgentToolbar/ToolbarHost';
@@ -104,6 +106,19 @@ function clearSurfaceAgentsKnownGone(
   }
   for (const [id, running] of Object.entries(commandRunning)) {
     if (running === false) store.clearSurfaceAgent(id);
+  }
+}
+
+/** Name panes from the daemon's process truth — see planLiveAgentSeed. */
+function seedSurfaceAgentsFromProcess(
+  sessions: ReadonlyArray<{ id: string; liveAgent?: string }>,
+  agentAlive: Record<string, boolean>,
+  commandRunning: Record<string, boolean>,
+): void {
+  const store = useStore.getState();
+  for (const { ptyId, slug, status } of planLiveAgentSeed(sessions, store.surfaceAgent, agentAlive, commandRunning)) {
+    store.setSurfaceAgent(ptyId, agentSlugToDisplay(slug), status, slug);
+    void useStore.getState().principalRegisterPane(ptyId);
   }
 }
 
@@ -1657,6 +1672,7 @@ export default function AppLayout() {
         // auto-name, image-paste `auto`, and the principal registry stop
         // treating the leftover shell as Claude.
         clearSurfaceAgentsKnownGone(agentAliveSnapshot, commandRunningSnapshot);
+        seedSurfaceAgentsFromProcess(sessions, agentAliveSnapshot, commandRunningSnapshot);
         // 4d (channels): seed agent identity for panes the user has NOT
         // visited yet, so recovered agents show up as invite/mention
         // candidates right after boot instead of only after a visit.
@@ -1733,6 +1749,9 @@ export default function AppLayout() {
         useStore.getState().hydrateCommandRunning(cmdSnapshot);
         useStore.getState().hydrateAgentAlive(agentAliveSnapshot);
         clearSurfaceAgentsKnownGone(agentAliveSnapshot, cmdSnapshot);
+        // An agent relaunched after boot (the Resume pill) is attributed by
+        // the daemon seconds later; this tick is what brings its row back.
+        seedSurfaceAgentsFromProcess(sessions, agentAliveSnapshot, cmdSnapshot);
       }).catch(() => { /* transient list failure — the next tick self-heals */ });
     };
     const id = window.setInterval(refreshBindings, 15_000);
@@ -1958,6 +1977,9 @@ export default function AppLayout() {
       {/* TASK-2: lazy overlays, render-gated on their own store flags and
           wrapped in <Suspense fallback={null}> inside <ErrorBoundary> so a
           failed chunk load surfaces instead of silently dropping the overlay. */}
+      {/* Always mounted: it opens on an event (⌘⇧2 / F2, sidebar) and renders
+          nothing until then. */}
+      <ErrorBoundary name="AgentMentionPicker"><AgentMentionPicker /></ErrorBoundary>
       {commandPaletteVisible && (
         <ErrorBoundary name="CommandPalette">
           <Suspense fallback={null}><CommandPalette /></Suspense>

@@ -15,6 +15,7 @@ import https from 'node:https';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import fs from 'node:fs';
+import { expandTilde } from '../../shared/expandTilde';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { finished } from 'node:stream/promises';
@@ -2303,6 +2304,13 @@ export class WebTerminalServer {
     id: string;
     incarnationId?: string;
     cwd: string;
+    /**
+     * The directory the daemon actually spawned the pane in. `cwd` follows
+     * OSC 7 and the prompt, so it can name a deleted worktree or a remote
+     * path; this one existed when the shell started. Absent for a session
+     * record written before the field existed.
+     */
+    spawnCwd?: string;
     cols: number;
     rows: number;
     state: string;
@@ -2398,6 +2406,7 @@ export class WebTerminalServer {
         id: s.id,
         incarnationId: this.deps.sessionManager.getSession(s.id)?.meta.incarnationId,
         cwd: s.cwd,
+        ...spawnCwdOf(this.deps.sessionManager.getSession(s.id)?.meta.spawnCwd),
         cols: s.cols,
         rows: s.rows,
         state: s.state,
@@ -4644,6 +4653,11 @@ export class WebTerminalServer {
       const fresh = await this.authenticate(req,url,false).catch(() => ({ok:false as const}));
       if (!fresh.ok) return this.json(res,401,{error:'authorization-expired'});
       if (!this.mayInput(fresh.principal)) return this.refuseInput(res,fresh.principal,'Input permission changed');
+      // A cwd the shell cannot enter does not fail the spawn: the child exits
+      // at once and the caller got a 201 for a dead pane. Refuse it up front
+      // (the phone offers "open in home" instead). After the re-check above,
+      // so a caller that just lost its grant learns nothing about the disk.
+      if (cwd && await cwdUnusable(cwd)) return this.json(res, 400, { error: 'cwd-not-found', effect: 'none' });
       lifecycle
         // The same question again at the spawn itself: `create` has its own
         // awaits after this point, and this check is the last one before a PTY.
@@ -6808,6 +6822,33 @@ function workspaceLabelOf(env: Record<string, string> | undefined): { workspace?
   const value = env?.[ENV_KEYS.WORKSPACE_NAME];
   const workspace = typeof value === 'string' ? value.trim() : '';
   return workspace ? { workspace } : {};
+}
+
+/** `spawnCwd` for a session row: present only when it is a usable path. */
+function spawnCwdOf(spawnCwd: string | undefined): { spawnCwd?: string } {
+  return typeof spawnCwd === 'string' && spawnCwd ? { spawnCwd } : {};
+}
+
+/**
+ * Whether a requested pane cwd is certainly unusable. Same `~` expansion as
+ * the spawn; a relative path has no anchor a phone could mean. On Windows only
+ * a drive or UNC path is checked here: a `/…` or `~` path may be meant for a
+ * WSL default shell, which the spawn resolves inside the distro, so those keep
+ * the spawn's own handling. Never throws.
+ */
+async function cwdUnusable(requested: string): Promise<boolean> {
+  if (process.platform === 'win32') {
+    if (requested.startsWith('/') || requested.startsWith('~')) return false;
+    if (!path.win32.isAbsolute(requested) || !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(requested)) return true;
+  }
+  const dir = expandTilde(requested);
+  if (!path.isAbsolute(dir)) return true;
+  try {
+    if (!(await fs.promises.stat(dir)).isDirectory()) return true;
+    // A shell must be able to enter it, not only see it.
+    if (process.platform !== 'win32') await fs.promises.access(dir, fs.constants.X_OK);
+    return false;
+  } catch { return true; }
 }
 
 /**

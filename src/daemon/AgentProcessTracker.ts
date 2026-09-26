@@ -115,6 +115,14 @@ const ARM_BACKOFF_MS = 30_000;
  *  winning add no new information. */
 const REARM_COOLDOWN_MS = 10_000;
 
+/** How long an armIfAgent probe that found no named agent keeps the next one
+ *  away. A guess-driven probe fires on every foreground command that outlives
+ *  its settle window, so without this a run of long commands (or pwsh on
+ *  Windows, where each listing spawns PowerShell) would enumerate per Enter.
+ *  Shorter than the retry gap in commandStartAgentProbe.ts, so a command's
+ *  own retry still runs. */
+export const AGENT_MISS_BACKOFF_MS = 4_000;
+
 /** `claude.exe` → `claude`; `C:\...\node.EXE` → `node`; `pwsh` → `pwsh`. */
 function imageStem(name: string): string {
   const base = name.split(/[\\/]/).pop() ?? '';
@@ -504,6 +512,8 @@ export class AgentProcessTracker {
   /** In-flight probe per session — coalesces the hook-storm case (a claude
    *  turn can fire several hooks back-to-back) into one enumeration. */
   private readonly inFlight = new Set<string>();
+  /** The in-flight probe came from armIfAgent (commits named agents only). */
+  private readonly slugOnlyInFlight = new Set<string>();
   /** Bumped by disarm(); a probe that resolves after its session was
    *  disarmed must not resurrect state for a destroyed pane. */
   private readonly generation = new Map<string, number>();
@@ -516,6 +526,10 @@ export class AgentProcessTracker {
   private readonly lastRearmAt = new Map<string, number>();
   /** rearm() called while a probe was in flight → replay once it lands. */
   private readonly forceQueued = new Set<string>();
+  /** armIfAgent() called while a probe was in flight → replay once it lands. */
+  private readonly slugQueued = new Set<string>();
+  /** armIfAgent's own backoff: until when the next agent-only probe waits. */
+  private readonly slugProbeBlockedUntil = new Map<string, number>();
   /** Shared snapshot promise — concurrent probes across sessions ride one
    *  enumeration instead of spawning one each. */
   private snapshotInFlight: Promise<ProcessTreeEntry[]> | null = null;
@@ -607,15 +621,75 @@ export class AgentProcessTracker {
     this.probe(sessionId, shellPid);
   }
 
-  private probe(sessionId: string, shellPid: number): void {
-    if (this.inFlight.has(sessionId)) return;
+  /**
+   * Probe for a NAMED agent with no evidence that one is running — the
+   * banner- and hook-independent trigger (a foreground command outlived its
+   * settle window — see commandStartAgentProbe.ts). An agent with no session-start
+   * hook (Codex) is otherwise named only by its banner, and a missed banner
+   * left the pane anonymous until its first turn ended.
+   *
+   * Commits ONLY a pick that resolves to an agent slug. A plain long-running
+   * command (`npm run dev`, `vim`) leaves no state behind, so it can mint
+   * neither an alive flag nor a later `agent.processExit` edge. A miss backs
+   * off only this trigger (AGENT_MISS_BACKOFF_MS; an enumeration failure,
+   * ARM_BACKOFF_MS): a guess that found no agent must not delay the arm() of
+   * an agent launched seconds later.
+   *
+   * It probes even while the tracked agent reads alive. A new command-start
+   * means the shell got the terminal back, so the tracked agent has usually
+   * exited and the ProcessMonitor has not polled it yet (up to one cadence).
+   * If the tracked pid is gone from the table, its death edge is recorded
+   * then and there, and the new agent is named instead of the dead one.
+   */
+  armIfAgent(sessionId: string, shellPid: number): void {
+    this.shellPids.set(sessionId, shellPid);
+    const blockedUntil = this.slugProbeBlockedUntil.get(sessionId);
+    if (blockedUntil !== undefined && Date.now() < blockedUntil) return;
+    if (this.inFlight.has(sessionId)) {
+      this.slugQueued.add(sessionId);
+      return;
+    }
+    this.probe(sessionId, shellPid, true);
+  }
+
+  private probe(sessionId: string, shellPid: number, requireSlug = false): void {
+    if (this.inFlight.has(sessionId)) {
+      // A hook or banner arm arriving while an armIfAgent probe runs must not
+      // be swallowed: that probe discards a slugless pick, which this arm
+      // would have kept for liveness. Replay it once the probe lands.
+      if (!requireSlug && this.slugOnlyInFlight.has(sessionId)) this.forceQueued.add(sessionId);
+      return;
+    }
     this.inFlight.add(sessionId);
+    if (requireSlug) this.slugOnlyInFlight.add(sessionId);
     const gen = this.generation.get(sessionId) ?? 0;
     void (async () => {
       try {
         const entries = await this.snapshot();
         if ((this.generation.get(sessionId) ?? 0) !== gen) return; // disarmed meanwhile
         const pick = selectAgentProcess(entries, shellPid);
+        if (requireSlug) {
+          const cur = this.states.get(sessionId);
+          if (cur?.alive) {
+            // Still running: the same agent, or one left in the background.
+            // Nothing new to name. (The walk covers every descendant of the
+            // shell, not only the foreground job, so `codex &` followed by a
+            // long command can name the pane after the background agent.
+            // Narrowing to the terminal's foreground process group needs a
+            // pgid column no Windows listing has.)
+            if (entries.some((e) => e.pid === cur.pid)) return;
+            // Gone before the monitor noticed: record its death edge now, and
+            // drop its watch so the monitor cannot report the same death again.
+            this.watcher.unwatch(AgentProcessTracker.watchKey(sessionId));
+            cur.alive = false;
+            this.emitState(sessionId, { ...(cur.slug ? { slug: cur.slug } : {}), alive: false });
+          }
+          // No named agent → leave the session as it is.
+          if (!pick?.slug) {
+            this.slugProbeBlockedUntil.set(sessionId, Date.now() + AGENT_MISS_BACKOFF_MS);
+            return;
+          }
+        }
         // No attributable descendant (agent already gone, or an exotic launch
         // we can't see) → stay undecided so the renderer keeps its heuristic.
         if (!pick) {
@@ -642,16 +716,22 @@ export class AgentProcessTracker {
         this.emitState(sessionId, { ...(pick.slug ? { slug: pick.slug } : {}), alive: true });
       } catch {
         // Enumeration failed (timeout, spawn error) — undecided, never a lie.
-        this.lastFailedAt.set(sessionId, Date.now());
+        if (requireSlug) this.slugProbeBlockedUntil.set(sessionId, Date.now() + ARM_BACKOFF_MS);
+        else this.lastFailedAt.set(sessionId, Date.now());
       } finally {
         this.inFlight.delete(sessionId);
+        this.slugOnlyInFlight.delete(sessionId);
         // Replay a queued forced rearm DIRECTLY — routing it through rearm()
         // again would hit the cooldown already paid when the rearm queued it
         // (lastRearmAt was set seconds ago, so rearm() no-opped and the forced
         // probe was lost). forceQueued is a single bit: no self-retrigger.
+        const pid = this.shellPids.get(sessionId);
         if (this.forceQueued.delete(sessionId)) {
-          const pid = this.shellPids.get(sessionId);
+          this.slugQueued.delete(sessionId); // the plain probe covers it
           if (pid !== undefined) this.probe(sessionId, pid);
+        } else if (this.slugQueued.delete(sessionId) && pid !== undefined) {
+          // Through armIfAgent, so its backoff still applies.
+          this.armIfAgent(sessionId, pid);
         }
       }
     })();
@@ -718,6 +798,8 @@ export class AgentProcessTracker {
     this.lastFailedAt.delete(sessionId);
     this.lastRearmAt.delete(sessionId);
     this.forceQueued.delete(sessionId);
+    this.slugQueued.delete(sessionId);
+    this.slugProbeBlockedUntil.delete(sessionId);
   }
 
   private snapshot(): Promise<ProcessTreeEntry[]> {

@@ -1,8 +1,10 @@
-import { useEffect, useId, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
+import { useContext, useEffect, useId, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
 import { ChatModelSettings } from './ChatModelSettings';
 import { ComposerPrimitive } from '@assistant-ui/react';
 import { useT } from '../../hooks/useT';
 import type { ChatSkill, ChatSkillCatalog } from '../../../shared/transcript/chatSkills';
+import { registerChatInsertTarget, spliceAtCaret } from './chatAttachments';
+import { ChatPtyContext } from './ChatMessage';
 
 export interface SkillComposer { getState(): { text: string }; subscribe(callback: () => void): () => void; setText(text: string): void }
 export interface ChatSkillScope { ptyId: string; agent: string; composer: SkillComposer; onTerminal?: () => void; live?: boolean }
@@ -52,6 +54,30 @@ export function ChatComposerInput({ disabled, placeholder, maxLength, scope, com
       if (!composing.current) setText(composer.getState().text);
     });
   }, [composer]);
+  // The agent mention picker inserts here, at the caret the field kept when
+  // the picker took focus, then hands focus back. Keyed on the pane from
+  // context, not the skill scope: a managed session has no scope and still
+  // has a composer the user is looking at.
+  const panePtyId = useContext(ChatPtyContext) || scope?.ptyId;
+  const maxLengthRef = useRef(maxLength);
+  maxLengthRef.current = maxLength;
+  useEffect(() => {
+    if (!panePtyId) return;
+    return registerChatInsertTarget(panePtyId, {
+      insert: (snippet) => {
+        const field = input.current;
+        const current = composer.getState().text;
+        const next = spliceAtCaret(current, field?.selectionStart ?? current.length, snippet);
+        // setText skips the textarea's maxLength; a reference cut short is a
+        // wrong id, so a mention that does not fit is refused, not truncated.
+        if (next.text.length > maxLengthRef.current) return false;
+        composer.setText(next.text);
+        requestAnimationFrame(() => { input.current?.focus(); input.current?.setSelectionRange(next.caret, next.caret); setCaret(next.caret); });
+        return true;
+      },
+      focus: () => { input.current?.focus(); },
+    });
+  }, [panePtyId, composer]);
   useEffect(() => {
     const readSkills = window.electronAPI?.chat?.skills;
     if (!open || !scope) return;
