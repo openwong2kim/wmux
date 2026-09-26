@@ -109,7 +109,8 @@ describe('FanOutService — worktree:false', () => {
     expect(renderer.spawned[0].agentChoice).toEqual({ agent: 'codex' });
     expect(renderer.spawned[0].fanoutTaskOf).toBe('ws-owner');
     // Main still sends the default launcher; the renderer swaps it.
-    expect(renderer.spawned[0].initialCommand).toMatch(/claude "\$\(cat '/);
+    // (POSIX `$(cat '…')`, win32 `$(Get-Content …)` — the same launch shape.)
+    expect(renderer.spawned[0].initialCommand).toMatch(/claude "\$\((cat|Get-Content) /);
     // claude's first-run env keys on the REAL CLI — codex gets none.
     expect(renderer.spawned[0].env?.CLAUDE_CODE_SANDBOXED).toBeUndefined();
 
