@@ -256,8 +256,12 @@ export interface ApprovalRegistryDeps {
   promptScreenMark?: (sessionId: string) => PromptScreenMark | null;
   /** Injected for tests: the wait between creation-time screen reads. */
   promptReadDelay?: (ms: number) => Promise<void>;
-  /** Injected for tests: the timer behind the refresh after a key/click. */
-  schedule?: (fn: () => void, ms: number) => () => void;
+  /**
+   * Injected for tests: the timer behind the refresh after a key/click. `fn`
+   * settles once that refresh has fully landed (read, persist, events), so a
+   * fake timer can await it instead of guessing how long the disk write takes.
+   */
+  schedule?: (fn: () => Promise<void>, ms: number) => () => void;
 }
 
 export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
@@ -617,14 +621,14 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
 
   private scheduleRefresh(sessionId: string, delayMs: number): void {
     this.refreshTimers.get(sessionId)?.();
-    const schedule = this.deps.schedule ?? ((fn: () => void, ms: number) => {
-      const t = setTimeout(fn, ms);
+    const schedule = this.deps.schedule ?? ((fn: () => Promise<void>, ms: number) => {
+      const t = setTimeout(() => { void fn(); }, ms);
       t.unref?.();
       return () => clearTimeout(t);
     });
     this.refreshTimers.set(sessionId, schedule(() => {
       this.refreshTimers.delete(sessionId);
-      this.refreshTerminalPrompt(sessionId).catch((err: unknown) => {
+      return this.refreshTerminalPrompt(sessionId).catch((err: unknown) => {
         this.deps.log?.('warn', `[approvals] terminal prompt refresh failed for ${sessionId}: ${String(err)}`);
       });
     }, delayMs));

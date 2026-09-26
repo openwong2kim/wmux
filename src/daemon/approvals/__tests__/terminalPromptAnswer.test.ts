@@ -587,7 +587,7 @@ describe('terminal_prompt creation races and cooldown', () => {
 describe('a key or click in the pane refreshes the record instead of wedging it', () => {
   /** A registry whose refresh timer is driven by hand. */
   function withTimers() {
-    const timers: Array<{ fn: () => void; at: number; live: boolean }> = [];
+    const timers: Array<{ fn: () => Promise<void>; at: number; live: boolean }> = [];
     const h = makeRegistry({
       schedule: (fn, ms) => {
         const t = { fn, at: h.clock.now + ms, live: true };
@@ -603,9 +603,9 @@ describe('a key or click in the pane refreshes the record instead of wedging it'
         if (!due) break;
         due.live = false;
         h.clock.now = Math.max(h.clock.now, due.at);
-        due.fn();
-        // Let the refresh's screen read and its persisted mutation land.
-        await new Promise((r) => setTimeout(r, 25));
+        // Await the refresh itself (screen read, approvals.json write, events):
+        // a fixed wall-clock wait lost to a slow disk write on CI runners.
+        await due.fn();
       }
       h.clock.now = end;
     };
