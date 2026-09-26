@@ -1167,3 +1167,41 @@ describe('resolveSessionIdForSignal', () => {
     expect(resolveSessionIdForSignal(makeSignal({ cwd: '/repo' }), tied)).toBe('pty-new');
   });
 });
+
+
+describe('shared-server notification attribution', () => {
+  const notification = () => makeSignal({ agent: 'codex', agentSessionId: 'thread-b', ptyId: 'starter',
+    workspaceId: 'stale-workspace', surfaceId: 'stale-surface',
+    payload: { source: 'codex.notify', 'turn-id': 'turn-b' } });
+  it('routes a completed turn to its recorded owner instead of the inherited pane', () => {
+    const fixture = makeDeps([session({ id: 'starter' }), session({ id: 'origin',
+      codexCompletedTurns: [{ threadId: 'thread-b', turnId: 'turn-b' }] })]);
+    const ingest = new HookIngest(fixture.deps);
+    expect(ingest.handle(notification()).ok).toBe(true);
+    expect(fixture.bindings.map(b => b.ptyId)).toEqual(['origin']);
+    expect(fixture.emitted).not.toHaveLength(0);
+    expect(ingest.router.isGovernedFor('starter', 'codex', 10000)).toBe(false);
+    expect(fixture.emitted[0].data.signal).toMatchObject({ ptyId: 'origin', workspaceId: 'ws-1' });
+    expect(fixture.emitted[0].data.signal).not.toHaveProperty('surfaceId');
+    ingest.dispose();
+  });
+  it.each(['missing-thread', 'missing-turn', 'unknown', 'duplicate', 'closed'])('refuses %s without fallback', scenario => {
+    const turn = { threadId: 'thread-b', turnId: 'turn-b' };
+    const panes = scenario === 'closed' ? [] : [session({ id: 'starter', codexCompletedTurns: scenario === 'duplicate' ? [turn] : [] }),
+      session({ id: 'origin', codexCompletedTurns: scenario === 'unknown' ? [] : [turn] })];
+    const fixture = makeDeps(panes);
+    const ingest = new HookIngest(fixture.deps);
+    const signal = notification();
+    if (scenario === 'missing-thread') delete signal.agentSessionId;
+    if (scenario === 'missing-turn') delete signal.payload['turn-id'];
+    expect(ingest.handle(signal)).toEqual({ ok: false, reason: 'no-live-thread-owner' });
+    expect(fixture.bindings).toEqual([]);
+    expect(fixture.emitted).toEqual([]);
+    expect(ingest.getLatencyMeter().getStats().routingRefusals).toEqual({ 'no-live-thread-owner': 1 });
+    ingest.dispose();
+  });
+  it('does not classify a turn-id-only native hook as notify', () => {
+    expect(resolveSessionIdForSignal(makeSignal({ agent: 'codex', ptyId: 'starter', payload: { 'turn-id': 'turn' } }),
+      [session({ id: 'starter' })])).toBe('starter');
+  });
+});

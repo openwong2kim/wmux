@@ -183,6 +183,9 @@ export interface HookSignalResponse {
   /** Reason hint when ok=false. Logged by the bridge to ~/.wmux/bridge.log. */
   reason?:
     | 'no-workspace-match'
+    | 'no-live-thread-owner'
+    | 'daemon-unavailable'
+    | 'unsupported-notify-protocol'
     | 'auth-rejected'
     | 'rate-limited'
     | 'invalid-envelope'
@@ -232,4 +235,10 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
   if (v['surfaceId'] !== undefined && (typeof v['surfaceId'] !== 'string' || v['surfaceId'].length === 0)) return false;
   if (v['ptyId'] !== undefined && (typeof v['ptyId'] !== 'string' || v['ptyId'].length === 0)) return false;
   return true;
+}
+
+/** Explicitly marked notifications require provenance or completed-turn routing. */
+export function isSessionRoutedNotify(signal: AgentSignal): boolean {
+  return signal.agent === 'codex' && signal.kind === 'agent.stop'
+    && signal.payload?.source === 'codex.notify';
 }

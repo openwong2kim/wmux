@@ -73,6 +73,11 @@ export class CodexPaneRelays {
     return selected ? {live:true,selection:selected} : {live:true};
   }
 
+  completedTurns(id:string, owner:ManagedSession) {
+    if (!this.liveSelection(id, owner).live) return [];
+    return this.entries.get(id)?.relay?.completedTurns() ?? [];
+  }
+
   retire(id:string):Promise<void> {
     const entry = this.entries.get(id);
     return entry ? this.retireEntry(entry) : Promise.resolve();

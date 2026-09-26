@@ -4,21 +4,19 @@
 //
 // Runs the REAL notify script against a MOCK wmux main pipe and asserts:
 //   P1: a well-formed Codex notify payload → a valid AgentSignal envelope
-//       (agent:'codex', kind:'agent.stop', agentSessionId=session_id, ptyId from
-//       env, cwd, payload.transcript_path) reaches the pipe with the auth token.
-//   P2: when the pipe is DOWN, the script spools a resume-binding record keyed by
-//       ptyId (so the daemon reconciles it on next boot) and still exits 0.
+//       (agent:'codex', kind:'agent.stop', agentSessionId=session_id, no pane
+//       identity from env, cwd, payload.transcript_path) reaches the pipe with the auth token.
+//   P2: when the pipe is DOWN, no unverified resume binding is spooled.
 //   P3: a payload with no session_id captures nothing (quiet drop, exit 0).
 //
 // Isolated: overrides USERPROFILE/HOME to a temp dir (auth token + spool land
-// there), so it never touches the user's real ~/.wmux. The pipe name is
-// username-derived (not HOME-derived), so the mock listens on the real name —
-// safe because wmux must be DOWN for the probe to bind it.
+// there), so it never touches the user's real ~/.wmux. The mock listens on a
+// process-unique pipe override, so a running desktop instance is untouched.
 //
-// Usage: node scripts/codex-resume-capture-probe.mjs   (wmux must not be running)
+// Usage: node scripts/codex-resume-capture-probe.mjs
 
-import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
-import { tmpdir, userInfo } from 'node:os';
+import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
@@ -62,7 +60,7 @@ function runNotify(home, payloadObj, extraEnv = {}) {
 }
 
 // Start a mock pipe server that captures the first hooks.signal RPC.
-function startMockPipe() {
+function startMockPipe(legacy = false) {
   let captured = null;
   const server = createServer((sock) => {
     let buf = '';
@@ -73,6 +71,11 @@ function startMockPipe() {
       try {
         const req = JSON.parse(buf.slice(0, nl));
         captured = req;
+        if (legacy && req.method === 'hooks.notify.v1') {
+          sock.write(JSON.stringify({ id: req.id, ok: false, error: 'Unknown method: hooks.notify.v1' }) + '\n');
+          return;
+        }
+
         sock.write(JSON.stringify({ id: req.id, ok: true, result: { ok: true } }) + '\n');
       } catch {
         sock.write(JSON.stringify({ ok: false }) + '\n');
@@ -104,7 +107,6 @@ async function main() {
     transcript_path: 'C:\\Users\\u\\.codex\\sessions\\2026\\07\\03\\rollout-019f2516.jsonl',
     cwd: 'D:\\wmux',
     hook_event_name: 'agent-turn-complete',
-    model: 'gpt-5.5',
     'last-assistant-message': 'done',
   };
   const exit1 = await runNotify(home1, payload);
@@ -113,36 +115,31 @@ async function main() {
   ok('exits 0', exit1 === 0, `exit=${exit1}`);
   ok('RPC reached the pipe', !!req, 'no RPC captured');
   if (req) {
-    ok('method is hooks.signal', req.method === 'hooks.signal', req.method);
+    ok('method is hooks.notify.v1', req.method === 'hooks.notify.v1', req.method);
     ok('auth token forwarded', req.token === TOKEN);
     const p = req.params || {};
     ok('agent = codex', p.agent === 'codex', p.agent);
     ok('kind = agent.stop', p.kind === 'agent.stop', p.kind);
     ok('agentSessionId = session_id', p.agentSessionId === payload.session_id, p.agentSessionId);
     ok('cwd carried', p.cwd === payload.cwd, p.cwd);
-    ok('ptyId from env', p.ptyId === 'pty-probe-1', p.ptyId);
-    ok('workspaceId from env', p.workspaceId === 'ws-probe', p.workspaceId);
+    ok('pane env retained for provenance', p.ptyId === 'pty-probe-1' && p.workspaceId === 'ws-probe');
+    ok('parent provenance provided', Number.isSafeInteger(p.payload?.parentPid) && p.payload.parentPid > 0);
+    ok('legacy payload distinguished', p.payload?.notifyFormat === 'legacy');
+    ok('thread routing marker', p.payload?.source === 'codex.notify');
     ok('transcript_path in payload (D5)', p.payload && p.payload.transcript_path === payload.transcript_path);
     ok('ts is a finite number', typeof p.ts === 'number' && Number.isFinite(p.ts));
   }
   mock.server.close();
   rmSync(home1, { recursive: true, force: true });
 
-  // ── P2: pipe DOWN → spool a resume-binding record keyed by ptyId ────────────
+  // ── P2: pipe DOWN → never spool an unverified resume binding ────────────
   await wait(100);
   const home2 = makeHome();
   const exit2 = await runNotify(home2, payload); // no server listening now
   await wait(150);
   ok('exits 0 with pipe down', exit2 === 0, `exit=${exit2}`);
   const spoolFile = join(home2, '.wmux', 'resume-spool', 'pty-probe-1.json');
-  ok('spooled a record on RPC failure', existsSync(spoolFile), spoolFile);
-  if (existsSync(spoolFile)) {
-    const rec = JSON.parse(readFileSync(spoolFile, 'utf8'));
-    ok('spool record: agent=codex, sessionId, cwd, transcriptPath',
-      rec.agent === 'codex' && rec.sessionId === payload.session_id
-      && rec.cwd === payload.cwd && rec.transcriptPath === payload.transcript_path,
-      JSON.stringify(rec));
-  }
+  ok('no unverified record on RPC failure', !existsSync(spoolFile), spoolFile);
   rmSync(home2, { recursive: true, force: true });
 
   // ── P3: no session_id → quiet drop, no spool, exit 0 ────────────────────────
@@ -153,6 +150,17 @@ async function main() {
   ok('no-session-id → nothing spooled',
     !existsSync(join(home3, '.wmux', 'resume-spool', 'pty-probe-1.json')));
   rmSync(home3, { recursive: true, force: true });
+
+  const home4 = makeHome();
+  const old = await startMockPipe(true);
+  const official = { type: 'agent-turn-complete', 'thread-id': 'thread-b', 'turn-id': 'turn-b', cwd: '/same-directory' };
+  await runNotify(home4, official);
+  const compatibility = old.get();
+  ok('old server receives original method', compatibility?.method === 'hooks.signal');
+  ok('old server receives full pane identity', compatibility?.params?.ptyId === 'pty-probe-1' && compatibility.params.workspaceId === 'ws-probe');
+  ok('old server receives original payload', JSON.stringify(compatibility?.params?.payload) === JSON.stringify({ 'turn-id': 'turn-b' }));
+  old.server.close();
+  rmSync(home4, { recursive: true, force: true });
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);

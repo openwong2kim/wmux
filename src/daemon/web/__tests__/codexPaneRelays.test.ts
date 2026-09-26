@@ -4,7 +4,7 @@ import {CodexPaneRelays} from '../codexPaneRelays';
 const owner=(id='pane')=>({meta:{id,state:'attached'}} as ManagedSession);
 function relay() {
   const state = {retired:false,selected:true};
-  return {url:'unix:///private/socket',state,
+  return {url:'unix:///private/socket',state,completedTurns:()=>[],
     current:()=>state.selected ? {threadId:'thread',cwd:'/repo',generation:1} : undefined,
     retired:()=>state.retired,close:vi.fn(async()=> { /* noop */ })};
 }

@@ -74,3 +74,18 @@ it('recovers after a request whose reply never arrives',()=>{
   tracker.fromServer(response(1));
   expect(tracker.current()).toEqual({threadId:a,cwd:'/repo',generation:2});
 });
+
+it('keeps completed turn ownership across selection changes, bounded by TTL and relay lifetime', () => {
+  let now = 0;
+  const tracker = new CodexTuiSelectionTracker(() => now);
+  tracker.fromTui({ id: 1, method: 'thread/start' }); tracker.fromServer(response(1));
+  tracker.fromServer({ method: 'turn/completed', params: { threadId: a, turn: { id: 'turn-a' } } });
+  tracker.fromTui({ id: 2, method: 'thread/start' }); tracker.fromServer(response(2, b));
+  expect(tracker.current()?.threadId).toBe(b);
+  expect(tracker.completedTurns()).toEqual([{ threadId: a, turnId: 'turn-a' }]);
+  now = 15_001;
+  expect(tracker.completedTurns()).toEqual([]);
+  tracker.fromServer({ method: 'turn/completed', params: { threadId: b, turn: { id: 'turn-b' } } });
+  tracker.close();
+  expect(tracker.completedTurns()).toEqual([]);
+});

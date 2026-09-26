@@ -16,6 +16,44 @@ The notify program is what shipped first. The hooks bridge is the
 replacement: it reports everything the notify program does plus turn start,
 session start, and approval pauses.
 
+## Shared task host notification attribution
+
+The notify bridge sends its parent PID, platform, thread/turn IDs and original
+pane identity through `daemon.hooks.notify.v1` (or `hooks.notify.v1` on main).
+The daemon trusts the claimed pane only when a fresh process-parent snapshot
+places that parent inside its live shell tree. Direct desktop launches therefore
+do not require a managed relay. Native Windows uses the existing in-process
+snapshot; legacy session_id-only clients retain their original pane/cwd routing
+when ancestry is unavailable, including cross-platform cases, unless evidence
+proves the parent foreign.
+
+Otherwise, exactly one live pane-owned relay must have observed that thread/turn
+complete within 15 seconds. The record survives `/new` and resume selection
+changes but not pane retirement. No cwd or persisted resume binding can replace
+this evidence. Unmatched shared-host notifications return `no-live-thread-owner`
+with a separate health counter. No unverified notify resume binding is spooled.
+
+Only an explicit unsupported-method response permits compatibility fallback:
+the old endpoint receives the original env-bearing envelope, never stripped
+pane IDs. This retains older behavior and its attribution limitations until the
+receiver is upgraded. Timeouts and missing replies do not mean success.
+`WMUX_HOOKS_TO_MAIN=1` chooses the main endpoint; current main still needs the
+daemon for verification.
+
+This is a mitigation, not a complete fix for #1523. The recommended native
+hooks bridge is unchanged and can still inherit a shared host's stale identity
+for Stop/UserPromptSubmit. Shared-host notifications without relay evidence,
+cross-instance origin recovery, and multiple instances attached to one thread
+remain unresolved. Direct ancestry proves process ownership, not per-client
+ownership inside a foreground shared host that remains in a pane's tree.
+
+In upstream 0.157.0, [the hook registry](https://github.com/openai/codex/blob/rust-v0.157.0/codex-rs/hooks/src/registry.rs)
+captures the server process environment and
+[legacy notify](https://github.com/openai/codex/blob/rust-v0.157.0/codex-rs/hooks/src/legacy_notify.rs)
+replays it. The payload's client name identifies a client type, not a connection.
+Full coverage needs per-origin instrumentation or an upstream contract for both
+bridges, including multiple TUIs attached to the same thread.
+
 ## Why the hooks bridge exists
 
 wmux decides "is this Codex pane done?" partly by scraping the terminal.

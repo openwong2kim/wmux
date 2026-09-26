@@ -51,6 +51,7 @@ import { SignalLatencyMeter, type LatencyStats } from '../../shared/hooks/Signal
 import { HookFloodMeter, describeHookFlood, type HookFloodSummary } from '../../shared/hooks/HookFloodMeter';
 import {
   isAgentSignal,
+  isSessionRoutedNotify,
   agentSlugToDisplay,
   type AgentSignal,
   type AgentSignalKind,
@@ -83,6 +84,8 @@ const VALID_PERMISSION_MODES: ReadonlySet<string> = new Set([
  * Structurally satisfied by `DaemonSessionManager.listLiveSessions()` entries.
  */
 export interface HookIngestSession {
+  /** Recent completed turns from the pane-owned live relay, already TTL-filtered. */
+  codexCompletedTurns?: ReadonlyArray<{ threadId: string; turnId: string }>;
   id: string;
   cwd: string;
   env?: Record<string, string>;
@@ -328,6 +331,14 @@ export function resolveSessionIdForSignal(
   signal: AgentSignal,
   sessions: HookIngestSession[],
 ): string | null {
+  if (isSessionRoutedNotify(signal)) {
+    const turnId = signal.payload?.['turn-id'];
+    if (!signal.agentSessionId || typeof turnId !== 'string') return null;
+    const owners = sessions.filter(s => s.codexCompletedTurns?.some(turn =>
+      turn.threadId === signal.agentSessionId && turn.turnId === turnId));
+    return owners.length === 1 ? owners[0].id : null;
+  }
+
   if (signal.ptyId) {
     const exact = sessions.find((s) => s.id === signal.ptyId);
     if (exact) {
@@ -711,11 +722,11 @@ export class HookIngest {
    * response code, not an error, because the bridge runs inside the agent's
    * process on a hard 2s budget and treats a rejection as a fatal hook.
    */
-  handle(params: unknown): HookSignalResponse {
+  handle(params: unknown, snapshot?: HookIngestSession[]): HookSignalResponse {
     if (!isAgentSignal(params)) {
       return { ok: false, reason: 'invalid-envelope' };
     }
-    const signal: AgentSignal = params;
+    let signal: AgentSignal = params;
 
     // Health observability runs BEFORE resolution so a hook fired from a cwd
     // no live pane owns still counts toward "the plugin is alive". The
@@ -731,7 +742,7 @@ export class HookIngest {
     // group under the wrong heading on a phone.
     let sessions: HookIngestSession[] = [];
     try {
-      sessions = this.deps.listLiveSessions();
+      sessions = snapshot ?? this.deps.listLiveSessions();
       sessionId = resolveSessionIdForSignal(signal, sessions);
     } catch (err) {
       this.deps.log?.('warn', `[hooks] session resolution failed: ${String(err)}`);
@@ -748,7 +759,18 @@ export class HookIngest {
     if (!sessionId) {
       // The agent is running outside any live wmux pane. Expected for
       // standalone use; the per-pane event is dropped, health still recorded.
-      return { ok: false, reason: 'no-workspace-match' };
+      const reason = isSessionRoutedNotify(signal) ? 'no-live-thread-owner' : 'no-workspace-match';
+      if (reason === 'no-live-thread-owner') this.meter.recordRoutingRefusal(reason);
+      this.deps.log?.('info', `[hooks] routing-refused reason=${reason}`);
+      return { ok: false, reason };
+    }
+
+    if (isSessionRoutedNotify(signal)) {
+      // Downstream authority, events and resume capture must all see the verified
+      // owner, not the shared server's inherited pane/workspace/surface identity.
+      const { ptyId: _pty, workspaceId: _workspace, surfaceId: _surface, ...metadata } = signal;
+      const workspaceId = sessions.find(s => s.id === sessionId)?.env?.[ENV_KEYS.WORKSPACE_ID];
+      signal = { ...metadata, ptyId: sessionId, ...(workspaceId ? { workspaceId } : {}) };
     }
 
     // Hook authority: EVERY resolved signal marks the pane hook-governed for

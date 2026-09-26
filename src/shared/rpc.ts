@@ -485,6 +485,7 @@ export type RpcMethod =
   | 'company.provisionAll'
   | 'company.provisionCeo'
   | 'hooks.signal'
+  | 'hooks.notify.v1'
   | 'a2a.channel.list'
   | 'a2a.channel.get'
   | 'a2a.channel.getMessages'
@@ -706,6 +707,7 @@ export const ALL_RPC_METHODS = [
   'company.provisionAll',
   'company.provisionCeo',
   'hooks.signal',
+  'hooks.notify.v1',
   'a2a.channel.list',
   'a2a.channel.get',
   'a2a.channel.getMessages',
