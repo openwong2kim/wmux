@@ -49,7 +49,11 @@ function expectMultiline(payload: string): void {
 beforeEach(() => {
   vi.useFakeTimers();
   write = vi.fn();
-  (window as unknown as { electronAPI: unknown }).electronAPI = { pty: { write } };
+  // No approval in front of any pane: the A2A delivery gate lets every write through.
+  (window as unknown as { electronAPI: unknown }).electronAPI = {
+    pty: { write },
+    rpc: { a2aDeliveryGate: async () => null },
+  };
   const s = useStore.getState();
   s.clearSurfaceAgent(PTY);
   s.hydrateAgentAlive({});
@@ -62,28 +66,28 @@ afterEach(() => {
 });
 
 describe('deliverPtyNotification (send / reply / task update)', () => {
-  it('plain shell pane: folds with ␤', () => {
-    expect(deliverPtyNotification(TARGET, 'Sender', BODY)).toBe(PTY);
+  it('plain shell pane: folds with ␤', async () => {
+    expect(await deliverPtyNotification(TARGET, 'Sender', BODY)).toEqual({ ptyId: PTY });
     expectFolded(pasted());
   });
 
-  it('agent entry with status complete and empty liveness maps: folds (stale entry is not trusted)', () => {
+  it('agent entry with status complete and empty liveness maps: folds (stale entry is not trusted)', async () => {
     useStore.getState().setSurfaceAgent(PTY, 'Claude Code', 'complete', 'claude');
-    deliverPtyNotification(TARGET, 'Sender', BODY);
+    await deliverPtyNotification(TARGET, 'Sender', BODY);
     expectFolded(pasted());
   });
 
-  it('agent whose process is confirmed alive: real newlines, every body line prefixed', () => {
+  it('agent whose process is confirmed alive: real newlines, every body line prefixed', async () => {
     useStore.getState().setSurfaceAgent(PTY, 'Claude Code', 'waiting', 'claude');
     useStore.getState().hydrateAgentAlive({ [PTY]: true });
-    deliverPtyNotification(TARGET, 'Sender', BODY);
+    await deliverPtyNotification(TARGET, 'Sender', BODY);
     expectMultiline(pasted());
   });
 
-  it('agent confirmed by OSC 133 (foreground command running): real newlines', () => {
+  it('agent confirmed by OSC 133 (foreground command running): real newlines', async () => {
     useStore.getState().setSurfaceAgent(PTY, 'Codex CLI', 'running', 'codex');
     useStore.getState().hydrateCommandRunning({ [PTY]: true });
-    deliverPtyNotification(TARGET, 'Sender', BODY);
+    await deliverPtyNotification(TARGET, 'Sender', BODY);
     expectMultiline(pasted());
   });
 });

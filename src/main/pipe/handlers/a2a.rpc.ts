@@ -1,5 +1,6 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
+import type { RpcContext } from '../../../shared/rpc';
 import { sendToRenderer } from './_bridge';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import type { ClaudeWorker } from '../../a2a/ClaudeWorker';
@@ -34,6 +35,23 @@ type DaemonTaskGate =
 // 소유자)가 판정하도록 데몬이 의도적으로 미루는 신호다 — 거부가 아니라 폴백.
 const A2A_DAEMON_SOFT_ERRORS = ['task log unavailable', 'task not found', 'pane-authz deferred'];
 
+
+/**
+ * Params for a renderer delivery method, with `operatorOrigin` stamped from
+ * the router context and never taken from the wire. The renderer writes A2A
+ * deliveries into panes and, unless this is set, first asks main whether an
+ * approval is in front of the target (IPC.A2A_DELIVERY_GATE). Only the human
+ * operator's in-process surface is exempt, exactly as for `input.send`.
+ */
+function withOperatorOrigin(
+  params: Record<string, unknown>,
+  ctx: RpcContext | undefined,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...params };
+  delete out.operatorOrigin;
+  if (ctx?.operator) out.operatorOrigin = true;
+  return out;
+}
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
@@ -292,7 +310,8 @@ export function registerA2aRpc(
   // A2A protocol — whoami/discover/broadcast/skills는 렌더러 소유 그대로.
   router.register('a2a.whoami', (params) => sendToRenderer(getWindow, 'a2a.whoami', params));
   router.register('a2a.discover', (params) => sendToRenderer(getWindow, 'a2a.discover', params));
-  router.register('a2a.broadcast', (params) => sendToRenderer(getWindow, 'a2a.broadcast', params));
+  router.register('a2a.broadcast', (params, ctx) =>
+    sendToRenderer(getWindow, 'a2a.broadcast', withOperatorOrigin(params, ctx)));
   router.register('meta.setSkills', (params) => sendToRenderer(getWindow, 'meta.setSkills', params));
 
   // task.query — 데몬 정본 + 렌더러 캐시 병합(envelope PR4).
@@ -368,7 +387,8 @@ export function registerA2aRpc(
   // 데몬 ok → 렌더러에 daemonCommitted 마커 + committedTask로 verbatim 캐시 적용 +
   // 메시지 배달/이벤트 방출(렌더러 UI 반응성 로직 보존). 데몬 reject → 렌더러
   // 미접촉 반환(재판정 금지). 데몬 unavailable → 현행 렌더러-검증 경로 폴백.
-  router.register('a2a.task.update', async (params) => {
+  router.register('a2a.task.update', async (rawParams, ctx) => {
+    const params = withOperatorOrigin(rawParams, ctx);
     // 메시지 선검증(shared validateMessage — 렌더러와 동일 계약): 데몬 커밋 후
     // 렌더러가 메시지를 거부해 캐시-데몬이 갈라지는 창을 닫는다.
     if (typeof params.message === 'string') {
@@ -419,7 +439,7 @@ export function registerA2aRpc(
     // its confinement: the relaxation is keyed on the binding naming the
     // caller's own workspace, so a brain that could still name a different
     // `workspaceId` on the wire would carry its privilege into someone else's.
-    const sendParams: Record<string, unknown> = { ...params };
+    const sendParams: Record<string, unknown> = withOperatorOrigin(params, ctx);
     delete sendParams.commanderWorkspaceId;
     if (ctx?.commanderWorkspace) {
       sendParams.commanderWorkspaceId = ctx.commanderWorkspace;

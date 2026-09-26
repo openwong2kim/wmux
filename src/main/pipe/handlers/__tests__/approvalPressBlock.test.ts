@@ -22,6 +22,8 @@ interface Wiring {
   router: RpcRouter;
   token: string;
   writes: Array<{ ptyId: string; data: string }>;
+  /** The A2A delivery gate the renderer asks before each paste + Enter. */
+  a2aRefusal: (ptyId: string) => Promise<string | null>;
 }
 
 /** ws-task is a task workspace ws-brain delegated, so its presses are its own. */
@@ -75,7 +77,7 @@ function wire(options: {
   };
   const router = new RpcRouter();
   // No local pty, so writes fall through to the daemon client above.
-  registerInputRpc(
+  const input = registerInputRpc(
     router,
     { get: () => undefined } as unknown as PTYManager,
     () => fakeWindow,
@@ -85,7 +87,7 @@ function wire(options: {
     { answerPolicy: async () => live.policy, readScreenText: async () => live.screen },
   );
   registerApprovalsRpc(router, () => dc as never, { getLedger: () => LEDGER });
-  return { router, token: mintCommanderToken('ws-brain'), writes };
+  return { router, token: mintCommanderToken('ws-brain'), writes, a2aRefusal: input.a2aDeliveryRefusal };
 }
 
 /** The pane the brain owns: a record in a task workspace it delegated. */
@@ -415,5 +417,26 @@ describe('a terminal_prompt record (the agent\'s own dialog)', () => {
       expect(res.error).not.toContain('approval_press');
     }
     expect(w.writes).toHaveLength(0);
+  });
+});
+
+// A2A deliveries are pasted + submitted by the renderer, outside input.send.
+// The gate main answers for them is the same guard, for a non-operator caller.
+describe('the A2A delivery gate', () => {
+  it('refuses while a record is pending on the pane', async () => {
+    w = wire({ pending: [OWNED] });
+    expect(await w.a2aRefusal('pty-w')).toMatch(/approval/i);
+  });
+
+  it('refuses a dialog on screen when policy does not let automation answer', async () => {
+    live.screen = DIALOG_SCREEN;
+    expect(await w.a2aRefusal('pty-w')).toContain('autonomy-off');
+  });
+
+  it('lets the write through once the dialog has left the screen', async () => {
+    live.screen = DIALOG_SCREEN;
+    expect(await w.a2aRefusal('pty-w')).not.toBeNull();
+    live.screen = '⏺ Done.\n\n──────────\n❯ ';
+    expect(await w.a2aRefusal('pty-w')).toBeNull();
   });
 });

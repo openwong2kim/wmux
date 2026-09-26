@@ -837,13 +837,22 @@ localCompletionAlarm = new CompletionAlarm({
 registerWorkspaceRpc(rpcRouter, () => mainWindow);
 registerSurfaceRpc(rpcRouter, () => mainWindow);
 registerPaneRpc(rpcRouter, () => mainWindow, {}, () => daemonClient);
-registerInputRpc(
+const inputRpc = registerInputRpc(
   rpcRouter,
   ptyManager,
   () => mainWindow,
   () => daemonClient,
   makeRoleBindingResolver(() => mainWindow),
   (ptyId, data) => ptyBridge.noteInterruptInput(ptyId, data),
+);
+// A2A deliveries are written by the renderer; before each one it asks here
+// whether an approval is in front of the target pane (same guard as
+// `input.send`). Registered once, beside the router, so crash-recovery handler
+// reloads do not double-register it.
+ipcMain.handle(IPC.A2A_DELIVERY_GATE, async (_e, ptyId: unknown) =>
+  typeof ptyId === 'string' && ptyId
+    ? inputRpc.a2aDeliveryRefusal(ptyId)
+    : 'a2a delivery: missing target pty',
 );
 registerApprovalsRpc(rpcRouter, () => daemonClient);
 registerDeckRpc(rpcRouter, () => mainWindow);

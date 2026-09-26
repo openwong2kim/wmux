@@ -595,6 +595,27 @@ async function assertNotTypingAtAnApproval(
 }
 
 /**
+ * Why an agent-to-agent delivery may not write to `ptyId` right now, or null.
+ *
+ * A2A deliveries (send, reply, status update, broadcast) are pasted and
+ * submitted with Enter by the renderer, not through `input.send`, so they
+ * never met the raw-input guard above. An Enter into a pane that shows an
+ * approval selects the highlighted option, which is exactly what that guard
+ * refuses for `terminal_send`. This runs the same guard — same record, same
+ * workspace policy, same live screen — for a caller that is never the
+ * operator; the renderer skips it only for a delivery main stamped as
+ * operator-originated.
+ */
+export async function a2aDeliveryRefusal(gate: ApprovalInputGate, ptyId: string): Promise<string | null> {
+  try {
+    await assertNotTypingAtAnApproval(gate, undefined, ptyId, 'a2a delivery');
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+/**
  * Fan-out T5 — the label on anything read from a delegated worker's pane. The
  * worker's screen is text its agent (or anything it ran) printed, so it lands
  * in the owner's context as data, never as instructions.
@@ -647,7 +668,7 @@ export function registerInputRpc(
    */
   noteInterruptInput?: (ptyId: string, data: string) => void,
   deps: InputRpcDeps = {},
-): void {
+): { a2aDeliveryRefusal: (ptyId: string) => Promise<string | null> } {
   const ledgerOf = deps.getLedger ?? getTaskLedger;
   const approvalGate: ApprovalInputGate = {
     getDaemonClient,
@@ -1104,4 +1125,6 @@ export function registerInputRpc(
     const result = await dc.readPromptEvents(ptyId, opts);
     return { ptyId, ...result, ...untrustedLabel(access) };
   });
+
+  return { a2aDeliveryRefusal: (ptyId) => a2aDeliveryRefusal(approvalGate, ptyId) };
 }

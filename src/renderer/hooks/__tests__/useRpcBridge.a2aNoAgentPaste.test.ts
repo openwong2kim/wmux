@@ -56,7 +56,11 @@ const NO_AGENT = { stored: true, notified: false, reason: 'no_agent_pane' };
 beforeEach(() => {
   vi.useFakeTimers();
   write = vi.fn();
-  (window as unknown as { electronAPI: unknown }).electronAPI = { pty: { write } };
+  // No approval in front of any pane: the A2A delivery gate lets every write through.
+  (window as unknown as { electronAPI: unknown }).electronAPI = {
+    pty: { write },
+    rpc: { a2aDeliveryGate: async () => null },
+  };
   const s = useStore.getState();
   s.clearSurfaceAgent(PTY);
   s.hydrateAgentAlive({});

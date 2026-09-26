@@ -478,6 +478,10 @@ const electronAPI = {
     // channelLocal.handler.ts.
     mutateChannelLocal: (method: string, params: Record<string, unknown>) =>
       ipcRenderer.invoke(IPC.CHANNEL_MUTATE_LOCAL, method, params),
+    // Why an A2A delivery may not write to `ptyId` right now (an approval is
+    // in front of it), or null. Renderer-only; see IPC.A2A_DELIVERY_GATE.
+    a2aDeliveryGate: (ptyId: string) =>
+      ipcRenderer.invoke(IPC.A2A_DELIVERY_GATE, ptyId) as Promise<string | null>,
   },
   // J1 fan-out — 프롬프트 1개 → N 격리 태스크. 렌더러 다이얼로그가 요청을 조립해
   // main의 FanOutService로 보낸다(renderer-trusted 신원, 파이프 미노출).

@@ -277,6 +277,64 @@ function submitToPty(ptyId: string, text: string): void {
   submitBracketedPasteToPty(ptyId, text, { agent: ptyAgent(ptyId).name });
 }
 
+// ---------------------------------------------------------------------------
+// Approval gate for A2A deliveries. Every A2A write is a paste plus Enter, and
+// an Enter into a pane that shows an approval selects its highlighted option.
+// `terminal_send` refuses that for any caller but the operator
+// (input.rpc.ts `assertNotTypingAtAnApproval`); these writes are made here, not
+// through `input.send`, so main runs the same guard on request before each
+// one. Only a delivery main stamped `operatorOrigin` (the human's own surface)
+// skips it.
+// ---------------------------------------------------------------------------
+
+/** Whether an A2A delivery skips the approval gate: main-stamped operator origin only. */
+function a2aOperatorOrigin(params: RpcParams): boolean {
+  return params.operatorOrigin === true;
+}
+
+/** Why an A2A delivery may not write to `ptyId` right now, or null. */
+async function a2aApprovalRefusal(ptyId: string): Promise<string | null> {
+  const gate = window.electronAPI.rpc.a2aDeliveryGate as
+    | ((id: string) => Promise<string | null>)
+    | undefined;
+  // Fail closed: a delivery that cannot be checked is not written.
+  if (typeof gate !== 'function') return 'a2a delivery: approval gate unavailable';
+  try {
+    const refusal = await gate(ptyId);
+    return typeof refusal === 'string' && refusal ? refusal : null;
+  } catch (err) {
+    return `a2a delivery: approval gate failed (${err instanceof Error ? err.message : String(err)})`;
+  }
+}
+
+/**
+ * The outcome of one A2A pane write: the pty written to, or null with the
+ * approval refusal when the gate withheld it (null alone: no pty to write to).
+ */
+export interface A2aPtyWrite {
+  ptyId: string | null;
+  refused?: string;
+}
+
+/** Gate, then submit. The single A2A write path in this file. */
+async function gatedSubmitToPty(ptyId: string, text: string, operator: boolean): Promise<A2aPtyWrite> {
+  if (!operator) {
+    const refused = await a2aApprovalRefusal(ptyId);
+    if (refused) return { ptyId: null, refused };
+  }
+  submitToPty(ptyId, text);
+  return { ptyId };
+}
+
+/** Sender-facing hint for a delivery the approval gate withheld. */
+const APPROVAL_PENDING_HINT =
+  'The target pane is waiting on an approval, so nothing was written to it: an Enter there would answer ' +
+  'the prompt. The task is stored; the receiver can find it with a2a_task_query. Send again once the ' +
+  'approval has been answered.';
+const BROADCAST_APPROVAL_PENDING_HINT =
+  'Some agent panes were waiting on an approval, so nothing was written to them (see `withheld`): an ' +
+  'Enter there would answer the prompt. Broadcast again once those approvals have been answered.';
+
 // Whether an A2A envelope bound for `ptyId` may keep its body's real newlines:
 // only when the pane runs a detected, still-live agent TUI. A shell (or an
 // unknown pane) keeps the `␤` fold. Read at write time for the same reason as
@@ -468,7 +526,8 @@ export function useRpcBridge(): void {
 // active terminal. Extracted to avoid duplication across send/reply/update.
 // ---------------------------------------------------------------------------
 
-// Returns the ptyId actually written to, or null. A workspace whose active pane
+// Resolves to the ptyId actually written to, or null (with `refused` when the
+// approval gate withheld the write). A workspace whose active pane
 // has no terminal (browser surface, empty) resolves no pty and this is a no-op
 // — callers that report a `delivery` outcome MUST use the return value instead
 // of assuming success (review 2-MODEL finding: the unconditional
@@ -477,22 +536,26 @@ export function useRpcBridge(): void {
 // #1337: the ptyId, not a bare boolean, because the receipt has to describe the
 // pane that received the bytes — see `ptyAgent`.
 // Exported for tests only (a2aFormat.delivery.test.ts).
-export function deliverPtyNotification(
+export async function deliverPtyNotification(
   targetWs: { rootPane: Pane; activePaneId: string; name: string; stashedPanes?: Workspace['stashedPanes'] },
   senderName: string,
   message: string,
   explicitPtyId?: string,
-): string | null {
+  operator = false,
+): Promise<A2aPtyWrite> {
   // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
   // live terminal" fallback still prefers something on screen (#977); a stashed
   // pane only catches the message when nothing visible can take it, which beats
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
   if (ptyId) {
-    submitToPty(ptyId, formatA2aMessage(senderName, targetWs.name, message, undefined, a2aFormatOptionsFor(ptyId)));
-    return ptyId;
+    return gatedSubmitToPty(
+      ptyId,
+      formatA2aMessage(senderName, targetWs.name, message, undefined, a2aFormatOptionsFor(ptyId)),
+      operator,
+    );
   }
-  return null;
+  return { ptyId: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -504,22 +567,20 @@ export function deliverPtyNotification(
 // it cannot corrupt a multi-line readline state.
 // ---------------------------------------------------------------------------
 
-// Returns the ptyId actually written to, or null — see deliverPtyNotification.
-function deliverPtyNudge(
+// Resolves like deliverPtyNotification — see there.
+async function deliverPtyNudge(
   targetWs: { rootPane: Pane; activePaneId: string; stashedPanes?: Workspace['stashedPanes'] },
   nudge: string,
   explicitPtyId?: string,
-): string | null {
+  operator = false,
+): Promise<A2aPtyWrite> {
   // getWorkspaceLeafPanes puts VISIBLE leaves first, so the "first leaf with a
   // live terminal" fallback still prefers something on screen (#977); a stashed
   // pane only catches the message when nothing visible can take it, which beats
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
-  if (ptyId) {
-    submitToPty(ptyId, nudge);
-    return ptyId;
-  }
-  return null;
+  if (ptyId) return gatedSubmitToPty(ptyId, nudge, operator);
+  return { ptyId: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -2375,6 +2436,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
   }
 
   if (method === 'a2a.task.send') {
+    const operator = a2aOperatorOrigin(params);
     const taskId = typeof params.taskId === 'string' ? params.taskId : '';
     const executeRequested = params.execute === true;
     const rawMessage = typeof params.message === 'string' ? params.message : '';
@@ -2593,7 +2655,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             // resolve a pty at write time and are a no-op when none exists (e.g.
             // the cross-ws active pane is a browser surface). Assuming success
             // here would recreate the exact false receipt this change removes.
-            let wrotePty: string | null;
+            let write: A2aPtyWrite = { ptyId: null };
             let mode: 'nudge' | 'notification' | 'no-agent-pane' = 'nudge';
             // Same gate as the create path (a2aTargetHasAgent): a target
             // evidenced only at workspace level still gets its nudge, and a
@@ -2601,22 +2663,24 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             const replyNoAgentTarget = !a2aTargetHasAgent(targetWs, replyPty);
             if (decision.sameWs) {
               // Same-ws sibling: pointer-only nudge (no full-body injection).
-              wrotePty = deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), replyPty);
+              write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), replyPty, operator);
             } else if (replyNoAgentTarget) {
               // Nothing written — see NO_AGENT_PANE_HINT.
-              wrotePty = null;
               mode = 'no-agent-pane';
             } else {
               const liveMeta = deliveryLiveMeta(store.surfaceAgent, replyPty, targetWs.metadata);
               if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
-                wrotePty = deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), replyPty);
+                write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), replyPty, operator);
               } else {
-                wrotePty = deliverPtyNotification(targetWs, senderName, message, replyPty);
+                write = await deliverPtyNotification(targetWs, senderName, message, replyPty, operator);
                 mode = 'notification';
               }
             }
+            const wrotePty = write.ptyId;
             delivery = mode === 'no-agent-pane'
               ? { stored: true, notified: false, mode, reason: 'no_agent_pane', hint: NO_AGENT_PANE_HINT }
+              : write.refused
+              ? { stored: true, notified: false, mode, reason: 'approval_pending', hint: APPROVAL_PENDING_HINT, detail: write.refused }
               : wrotePty
               ? { stored: true, notified: true, mode, ...submitReceiptFields(ptyAgent(wrotePty)) }
               : {
@@ -2857,22 +2921,24 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // pane. #1489: silent:false no longer overrides it — it was the
       // "paste it loudly anyway" switch, and into a shell that runs the body.
       const noAgentTarget = !a2aTargetHasAgent(target, explicitPty);
-      let wrotePty: string | null;
+      let write: A2aPtyWrite = { ptyId: null };
       let mode: 'nudge' | 'notification' | 'no-agent-pane' = 'nudge';
       if (noAgentTarget) {
         // Nothing is written: a body pasted into a shell prompt is the #1336
         // hazard whether or not we press Enter. The task is stored and teed
         // onto the EventBus below, so the receiver can still poll it.
-        wrotePty = null;
         mode = 'no-agent-pane';
       } else if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
-        wrotePty = deliverPtyNudge(target, buildA2aNudge(newTaskId, fromName), explicitPty);
+        write = await deliverPtyNudge(target, buildA2aNudge(newTaskId, fromName), explicitPty, operator);
       } else {
-        wrotePty = deliverPtyNotification(target, fromName, message, explicitPty);
+        write = await deliverPtyNotification(target, fromName, message, explicitPty, operator);
         mode = 'notification';
       }
+      const wrotePty = write.ptyId;
       delivery = mode === 'no-agent-pane'
         ? { stored: true, notified: false, mode, reason: 'no_agent_pane', hint: NO_AGENT_PANE_HINT }
+        : write.refused
+        ? { stored: true, notified: false, mode, reason: 'approval_pending', hint: APPROVAL_PENDING_HINT, detail: write.refused }
         : wrotePty
         ? { stored: true, notified: true, mode, ...submitReceiptFields(ptyAgent(wrotePty)) }
         : {
@@ -2940,6 +3006,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
   }
 
   if (method === 'a2a.task.update') {
+    const operator = a2aOperatorOrigin(params);
+    // The pane write this update made, if any: a refusal is reported back.
+    let updateWrite: A2aPtyWrite = { ptyId: null };
     const taskId = typeof params.taskId === 'string' ? params.taskId : '';
     const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
     if (!taskId) return { error: 'a2a.task.update: missing "taskId"' };
@@ -3079,7 +3148,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         const sameWsUnverified = sameWsTask && !callerPtyIdUpdate;
         if (!pinnedAddressLost && !sameWsNoAnchor && !selfLoop && !sameWsUnverified) {
           if (sameWsTask) {
-            deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), explicitPty);
+            updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), explicitPty, operator);
           } else {
             // #1336 — the same unaddressed rule as send/reply. Without it the
             // status-update message on a pin-less task still pasted its body
@@ -3103,9 +3172,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             if (!a2aTargetHasAgent(targetWs, updatePty)) {
               // Write nothing; the receiver follows the EventBus pointer.
             } else if (isLiveTuiAgent(liveMeta)) {
-              deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), updatePty);
+              updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), updatePty, operator);
             } else {
-              deliverPtyNotification(targetWs, callerName, message, updatePty);
+              updateWrite = await deliverPtyNotification(targetWs, callerName, message, updatePty, operator);
             }
           }
         }
@@ -3131,8 +3200,27 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     if (transitioned && nextState) {
       const updatedTask = store.getTask(taskId);
       if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated', nextState);
+    } else if (updateWrite.refused) {
+      // The message is stored but its push was withheld: tee the pointer so a
+      // receiver polling wmux_events_poll still learns the thread moved (the
+      // reply branch does the same for every not-notified outcome).
+      const updatedTask = store.getTask(taskId);
+      if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated');
     }
 
+    if (updateWrite.refused) {
+      return {
+        ok: true,
+        taskId,
+        delivery: {
+          stored: true,
+          notified: false,
+          reason: 'approval_pending',
+          hint: APPROVAL_PENDING_HINT,
+          detail: updateWrite.refused,
+        },
+      };
+    }
     return { ok: true, taskId };
   }
 
@@ -3190,6 +3278,8 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // one-pane-per-workspace volume), and the counts say what really happened.
     let sent = 0;
     let skipped = 0;
+    const withheld: Array<{ workspace: string; reason: string }> = [];
+    const operator = a2aOperatorOrigin(params);
     for (const ws of store.workspaces) {
       if (ws.id === workspaceId) continue;
       const pick = resolveUnaddressedDelivery(findLeafPanes(ws.rootPane), store.surfaceAgent, {
@@ -3210,14 +3300,22 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         skipped++;
         continue;
       }
-      for (const ptyId of ptyIds) {
-        submitToPty(ptyId, formatA2aBroadcast(fromName, message, undefined, a2aFormatOptionsFor(ptyId)));
-      }
-      sent++;
+      // Each pane is gated on its own: an approval in front of one agent pane
+      // withholds only that write.
+      const writes = await Promise.all(ptyIds.map((ptyId) => gatedSubmitToPty(
+        ptyId,
+        formatA2aBroadcast(fromName, message, undefined, a2aFormatOptionsFor(ptyId)),
+        operator,
+      )));
+      for (const w of writes) if (w.refused) withheld.push({ workspace: ws.name, reason: w.refused });
+      if (writes.some((w) => w.ptyId)) sent++;
     }
     // `skipped` counts workspaces with no detected agent pane — previously
     // these were counted as delivered while their shells got the paste.
-    return { ok: true, sent, skipped };
+    // `withheld` names each agent pane write the approval gate refused.
+    return withheld.length > 0
+      ? { ok: true, sent, skipped, withheld, hint: BROADCAST_APPROVAL_PENDING_HINT }
+      : { ok: true, sent, skipped };
   }
 
   if (method === 'meta.setSkills') {

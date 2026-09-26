@@ -45,7 +45,11 @@ describe('useRpcBridge — A2A submit receipt wiring', () => {
     // Exactly one raw call in this file: the one inside submitToPty itself.
     expect(rawCalls(bridge)).toHaveLength(1);
     // ...and a2a.broadcast is one of the callers (it used to be missed).
-    expect(bridge).toMatch(/submitToPty\(ptyId, formatA2aBroadcast\(fromName, message, undefined, a2aFormatOptionsFor\(ptyId\)\)\)/);
+    expect(bridge).toMatch(/gatedSubmitToPty\(\s*ptyId,\s*formatA2aBroadcast\(fromName, message, undefined, a2aFormatOptionsFor\(ptyId\)\)/);
+    // Every A2A write passes the approval gate: the only submitToPty call is
+    // the one inside gatedSubmitToPty.
+    const submitCalls = bridge.split('\n').filter((l) => /(?<![A-Za-z])submitToPty\(/.test(l) && !/function submitToPty/.test(l));
+    expect(submitCalls).toHaveLength(1);
   });
 
   it('computes the receipt from the pty that was actually written to', () => {
@@ -53,8 +57,8 @@ describe('useRpcBridge — A2A submit receipt wiring', () => {
     const receipts = bridge.match(/submitReceiptFields\(ptyAgent\(wrotePty\)\)/g) ?? [];
     expect(receipts).toHaveLength(2);
     // The old boolean return would silently re-enable a caller-supplied agent.
-    expect(bridge).toMatch(/function deliverPtyNudge\([\s\S]*?\): string \| null/);
-    expect(bridge).toMatch(/function deliverPtyNotification\([\s\S]*?\): string \| null/);
+    expect(bridge).toMatch(/function deliverPtyNudge\([\s\S]*?\): Promise<A2aPtyWrite>/);
+    expect(bridge).toMatch(/function deliverPtyNotification\([\s\S]*?\): Promise<A2aPtyWrite>/);
   });
 
   it('channel @-mention nudges name the receiving agent', () => {
