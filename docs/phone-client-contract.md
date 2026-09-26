@@ -1463,16 +1463,21 @@ device; a daemon predating the route omits the flag.
 {path, parent, entries:[{name, path, git}], truncated}`, sent `Cache-Control:
 no-store`. Omitting `path` means home. `path` is the folder's real path and
 `parent` is `null` at home. Entries are directories only, never files, sorted by
-name, and at most 500; `truncated` says more existed. Dot folders are left out
-unless `hidden=1`. `git` says the folder has a `.git` entry. A symlinked entry is
-not offered, and a symlink that leads out of home is not followed.
+name, and at most 500; `truncated` says more existed, or that the read stopped
+early (a folder with more than 20,000 entries of any kind, or a read error
+partway). Dot folders are left out unless `hidden=1`. `git` says the folder has
+a `.git` entry. A symlinked entry is not offered, and a symlink that leads out
+of home is not followed. Subfolders are listed without being opened, so an entry
+can still answer `permission-denied` when asked for.
 
 | Status | `error` | Meaning |
 |---|---|---|
 | 400 | `invalid-path` | Relative path or NUL byte |
-| 403 | `outside-home` | Outside home, refused before any lookup, so it does not say what exists elsewhere |
-| 404 | `folder-not-found` | Missing, not a directory, or unreadable |
+| 403 | `outside-home` | A path spelled outside home (refused before any lookup), a symlink segment that resolves outside it or dangles (the same answer whatever lies beyond), or a host whose home is a filesystem root |
+| 403 | `permission-denied` | The OS refused the read: on macOS usually privacy protection for Desktop, Documents, Downloads or a removable volume, granted under System Settings › Privacy & Security › Files and Folders (or Full Disk Access) |
+| 404 | `folder-not-found` | Missing or not a directory |
 | 403 | `read-only: …` | The device may not type (same refusal as other input routes) |
+| 500 | `folder-list-failed` | Anything else; not a statement about the folder |
 
 On a Windows host `~` means the user profile and only paths under it are
 listed; WSL paths are not browsed.

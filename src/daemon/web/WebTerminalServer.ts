@@ -7,7 +7,7 @@ import type { InputReceiptStore } from './InputReceiptStore';
 import { sessionPullRequests } from './sessionPullRequests';
 import { SessionGitController, SessionGitError } from './sessionGit';
 import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
-import { listFolders, FolderBrowseError } from './phoneFolders';
+import { listFolders, FolderBrowseError, homeIsBrowsable } from './phoneFolders';
 import http from 'node:http';
 import type { AgentStatus } from '../../shared/types';
 import { isRemoteAgentStatus } from '../../shared/remoteHosts';
@@ -2064,7 +2064,7 @@ export class WebTerminalServer {
         liveActivityHostScope: true,
         agentSettings: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.agentSettings !== undefined,
         agentLaunch: this.mayInput(principal) && this.deps.agentLaunchOptions !== undefined,
-        folderBrowse: this.mayInput(principal),
+        folderBrowse: this.mayInput(principal) && homeIsBrowsable(),
         browserScrolling: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
         workspaceBrowsers: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
         browserCreation: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
@@ -2207,7 +2207,7 @@ export class WebTerminalServer {
         .then(listing => this.json(res,200,listing,{'Cache-Control':'no-store'}))
         .catch(error => error instanceof FolderBrowseError
           ? this.json(res,error.status,{error:error.tag})
-          : this.json(res,404,{error:'folder-not-found'}));
+          : this.json(res,500,{error:'folder-list-failed'}));
       return;
     }
     if ((req.method === 'GET' || req.method === 'POST') && p.startsWith('/api/desktop-workspaces/') && p.endsWith('/browser')) {
