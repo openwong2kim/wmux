@@ -169,6 +169,21 @@ export function buildSnippet(text: string, folded: string, needle: string, at: n
   return { snippet: text.slice(start, end), matchRanges };
 }
 
+/**
+ * The part of a matching text a candidate needs to keep: `buildSnippet` never
+ * looks further than one snippet width (plus a surrogate unit) either side of
+ * the match, so a long assistant message waiting in the top-hits heap costs a
+ * few hundred units, not its whole text twice. `buildSnippet` over the window
+ * returns exactly what it returns over the full text.
+ */
+export function snippetWindow(text: string, folded: string, match: number, needleUnits: number): { text: string; folded: string; match: number } {
+  const reach = Math.max(SNIPPET_UNITS, needleUnits) + 2;
+  const start = Math.max(0, match - reach);
+  const end = Math.min(text.length, match + needleUnits + reach);
+  if (start === 0 && end === text.length) return { text, folded, match };
+  return { text: text.slice(start, end), folded: folded.slice(start, end), match: match - start };
+}
+
 /** The title the daemon can compose: "workspace · agent · cwd leaf", missing parts dropped. */
 export function composeTitle(parts: { workspace?: string; agent?: string; cwdLeaf?: string }, fallback: string): string {
   const title = [parts.workspace, parts.agent, parts.cwdLeaf].map((p) => p?.trim()).filter(Boolean).join(' · ');
@@ -539,7 +554,7 @@ export async function runSearch(
   const consider = (text: string, key: SortKey, extra: Omit<Candidate, 'key' | 'text' | 'folded' | 'match'>): boolean => {
     const folded = foldCase(text);
     const match = folded.indexOf(needle);
-    if (match !== -1) hits.offer({ key, text, folded, match, ...extra });
+    if (match !== -1) hits.offer({ key, ...snippetWindow(text, folded, match, needle.length), ...extra });
     return match !== -1;
   };
 

@@ -13,6 +13,7 @@ import {
   SearchAdmission,
   searchForbidden,
   SEARCH_LIMITS,
+  snippetWindow,
   type SearchPane,
   type SearchRequest,
   type SearchSources,
@@ -97,6 +98,23 @@ describe('case folding and snippets', () => {
     expect(buildSnippet('abc def', 'abc def', 'def', 4)).toEqual({ snippet: 'abc def', matchRanges: [[4, 3]] });
     const long = 'q'.repeat(190);
     expect(buildSnippet('x' + long + 'y', 'x' + long + 'y', long, 1).matchRanges).toEqual([[expect.any(Number), 190]]);
+  });
+
+  it('keeps only a snippet window of a long hit, with the same snippet and ranges as the full text', () => {
+    const text = '😀'.repeat(300) + 'Needle mid ' + 'x'.repeat(50) + ' needle' + '🎉'.repeat(300) + ' NEEDLE';
+    const folded = foldCase(text);
+    const needle = 'needle';
+    for (let at = folded.indexOf(needle); at !== -1; at = folded.indexOf(needle, at + 1)) {
+      const window = snippetWindow(text, folded, at, needle.length);
+      expect(window.text.length).toBeLessThan(400);
+      expect(buildSnippet(window.text, window.folded, needle, window.match)).toEqual(buildSnippet(text, folded, needle, at));
+    }
+    // Near either edge of the text, too.
+    for (const edge of ['needle' + 'y'.repeat(1000), 'y'.repeat(1000) + 'needle', 'y'.repeat(1000) + 'needle' + '😀'.repeat(81)]) {
+      const at = edge.indexOf('needle');
+      const window = snippetWindow(edge, edge, at, 6);
+      expect(buildSnippet(window.text, window.folded, 'needle', window.match)).toEqual(buildSnippet(edge, edge, 'needle', at));
+    }
   });
 
   it('composes the title from what is known', () => {
