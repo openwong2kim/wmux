@@ -83,6 +83,9 @@ export class RelayTransport {
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.tag = deps.tag ?? '[push]';
     this.noun = deps.noun ?? 'notification';
+    if (deps.relayUrl && !isSafeRelayUrl(deps.relayUrl)) {
+      deps.log?.('warn', `${this.tag} relay disabled: URL must use HTTPS or HTTP loopback`);
+    }
   }
 
   /**
@@ -182,7 +185,8 @@ export class RelayTransport {
    * rate limit exists to stop.
    */
   async post(routePath: string, body: Record<string, unknown>): Promise<number | null> {
-    if (!this.enabled) return null;
+    if (!isSafeRelayUrl(this.deps.relayUrl)) return null;
+    if (process.env.WMUX_PUSH === '0' || !this.deps.relaySecret) return null;
     const first = await this.postOnce(routePath, body);
     if (first !== null && first < 500) return first;
     await this.sleep(
