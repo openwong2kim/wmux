@@ -1508,6 +1508,8 @@ app.on('ready', async () => {
   mainWindow = createWindow({ deferLoad: true });
   if (cdpEnabled) {
     const localContents = mainWindow.webContents;
+    let retryDelayMs = 2_000;
+    let reportedPending = false;
     const verifyOwnership = async (): Promise<void> => {
       if (localContents.isDestroyed()) return;
       const localDebugger = localContents.debugger;
@@ -1527,10 +1529,10 @@ app.on('ready', async () => {
           console.log(`[WinMux] CDP listening on port ${cdpPort} (${probe.browser})`);
           retry = false;
         } else {
-          webviewCdpManager.setCdpFailureReason(probe.foreign ? 'CDP port belongs to another instance; restart with a free port' : `CDP verification pending: ${probe.reason}`);
-          if (probe.foreign) {
-            console.error(`[WinMux] CDP ownership verification failed on port ${cdpPort}: foreign targets confirmed. Remote browser automation is disabled.`);
-            retry = false;
+          webviewCdpManager.setCdpFailureReason(`CDP ownership unverified: ${probe.reason}; retrying`);
+          if (!reportedPending) {
+            console.warn(`[WinMux] CDP port ${cdpPort} is unverified; remote automation remains unavailable while ownership verification retries.`);
+            reportedPending = true;
           }
         }
       } catch (err) {
@@ -1543,7 +1545,8 @@ app.on('ready', async () => {
       }
       // A slow boot or timeout is pending, not a permanent policy disable.
       if (retry && !localContents.isDestroyed()) {
-        const timer = setTimeout(() => { void verifyOwnership(); }, 2_000);
+        const timer = setTimeout(() => { void verifyOwnership(); }, retryDelayMs);
+        retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
         timer.unref();
       }
     };

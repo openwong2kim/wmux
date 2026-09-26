@@ -64,7 +64,7 @@ function defaultIsAlive(pid: number): boolean {
 }
 
 export interface ClaimCdpPortDeps {
-  /** Directory for claim files. Defaults to the system temp directory. */
+  /** Directory for claim files. Defaults to the user-stable cache directory. */
   dir?: string;
   /** This process's id, written into the claim. */
   pid?: number;
@@ -174,7 +174,7 @@ function writeClaim(file: string, pid: number): boolean {
 /** What the CDP endpoint said when asked whether it exists. */
 export type CdpProbeResult =
   | { ok: true; browser: string }
-  | { ok: false; reason: string; foreign?: boolean };
+  | { ok: false; reason: string };
 
 /** Verify the endpoint contains a target identified through Electron's local debugger. */
 export async function probeCdpEndpoint(
@@ -198,7 +198,7 @@ export async function probeCdpEndpoint(
     if (!targetsRes.ok) return { ok: false, reason: `target list HTTP ${targetsRes.status}` };
     const targets: unknown = await targetsRes.json();
     if (!Array.isArray(targets) || !targets.some((target) => target?.id === expectedTargetId)) {
-      return { ok: false, reason: 'local target is not yet present in the endpoint', foreign: Array.isArray(targets) && targets.length > 0 };
+      return { ok: false, reason: 'local target is not yet present in the endpoint' };
     }
     return { ok: true, browser };
   } catch (err) {
@@ -208,18 +208,16 @@ export async function probeCdpEndpoint(
   }
 }
 
-/** Retry target-list lag; only repeated foreign lists establish a collision. */
+/** Retry target-list lag. Absence is not proof of foreign ownership. */
 export async function probeCdpEndpointWithRetry(
   port: number, expectedTargetId: string,
   deps: { fetchImpl?: typeof fetch; timeoutMs?: number; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<CdpProbeResult> {
   let result: CdpProbeResult = { ok: false, reason: 'verification pending' };
-  let foreignCount = 0;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt) await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(100 * 3 ** (attempt - 1));
     result = await probeCdpEndpoint(port, expectedTargetId, deps);
     if (result.ok) return result;
-    foreignCount = result.foreign ? foreignCount + 1 : 0;
   }
-  return { ...result, foreign: foreignCount === 3 };
+  return result;
 }

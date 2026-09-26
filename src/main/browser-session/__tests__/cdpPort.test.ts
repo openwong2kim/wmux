@@ -111,7 +111,7 @@ describe('probeCdpEndpoint', () => {
       url.endsWith('/json/list') ? [{ id: 'other-instance-target' }] : { Browser: 'Chrome/140.0.0.0' },
     })) as unknown as typeof fetch;
     await expect(probeCdpEndpoint(18842, 'own-target', { fetchImpl })).resolves.toEqual({
-      ok: false, reason: 'local target is not yet present in the endpoint', foreign: true,
+      ok: false, reason: 'local target is not yet present in the endpoint',
     });
   });
 
@@ -134,7 +134,7 @@ describe('probeCdpEndpoint', () => {
   });
 });
 
-it('retries list lag and distinguishes repeated foreign lists from transient failures', async () => {
+it('retries list lag without treating absent targets as proof of foreign ownership', async () => {
   for (const scenario of ['lag', 'foreign', 'timeout']) {
     let lists = 0;
     const sleep = vi.fn(async () => undefined);
@@ -149,8 +149,21 @@ it('retries list lag and distinguishes repeated foreign lists from transient fai
       expect(result.ok).toBe(true);
       expect(sleep).toHaveBeenCalledTimes(1);
     } else {
-      expect(result).toMatchObject({ ok: false, foreign: scenario === 'foreign' });
+      expect(result).toMatchObject({ ok: false });
+      expect(result).not.toHaveProperty('foreign');
       expect(sleep.mock.calls).toHaveLength(2);
     }
   }
+});
+
+it('recovers after more than three nonempty lists omit the local target', async () => {
+  let lists = 0;
+  const fetchImpl = (async (url: string) => ({ ok: true, json: async () => url.endsWith('/json/list')
+    ? [{ id: ++lists <= 3 ? 'another-local-window' : 'own' }]
+    : { Browser: 'Chromium' } })) as unknown as typeof fetch;
+  const deps = { fetchImpl, sleep: async () => undefined };
+  const first = await probeCdpEndpointWithRetry(18842, 'own', deps);
+  expect(first).toMatchObject({ ok: false });
+  expect(first).not.toHaveProperty('foreign');
+  expect((await probeCdpEndpointWithRetry(18842, 'own', deps)).ok).toBe(true);
 });
