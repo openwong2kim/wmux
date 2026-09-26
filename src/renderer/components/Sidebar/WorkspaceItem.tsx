@@ -614,6 +614,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     setDraggedWorkspaceIndex(null);
   };
 
+  // The drag source and this row, resolved by id at the moment of use: a
+  // workspace closed mid-drag shifts every stored index after it. -1 when the
+  // drag is not an internal reorder or the source is gone.
+  const dragSourceIndex = () => {
+    const st = useStore.getState();
+    const id = st.draggedWorkspaceId;
+    return id === null ? -1 : st.workspaces.findIndex((w) => w.id === id);
+  };
+  const ownIndex = () => useStore.getState().workspaces.findIndex((w) => w.id === workspaceId);
+
   const draggedRowPinned = (fromIndex: number) => {
     const st = useStore.getState();
     const id = st.workspaces[fromIndex]?.id;
@@ -623,8 +633,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     if (reorderOff) return;
     e.preventDefault();
-    const reorderFrom = useStore.getState().draggedWorkspaceIndex;
-    if (reorderFrom === null) return;
+    const reorderFrom = dragSourceIndex();
+    if (reorderFrom === -1) return;
     // Codex P1: do NOT force dropEffect='move' on the source row itself.
     // While the pointer is still over the row that started the drag,
     // the operation must stay 'copy' (the effectAllowed='copyMove'
@@ -632,7 +642,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     // onto sees a clean copy text drag. Forcing 'move' here poisoned
     // every subsequent drop target into believing this was a reorder
     // and external text composers rejected it with 🚫.
-    if (reorderFrom === index) return;
+    if (reorderFrom === ownIndex()) return;
     if (sortPaused && !draggedRowPinned(reorderFrom)) return;
     e.dataTransfer.dropEffect = 'move';
     const rect = e.currentTarget.getBoundingClientRect();
@@ -651,12 +661,14 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     if (reorderOff) return;
     e.preventDefault();
     setDropIndicator(null);
-    // Reorder source comes from the store, not dataTransfer. A null
-    // value means the drop originated from outside the sidebar (or the
-    // user dragged a workspace out and back in) — silently ignore so
-    // foreign markdown drops never reshuffle the list.
-    const fromIndex = useStore.getState().draggedWorkspaceIndex;
-    if (fromIndex === null || fromIndex === index) return;
+    // Reorder source comes from the store, not dataTransfer. No source
+    // means the drop originated from outside the sidebar (or the user
+    // dragged a workspace out and back in) — silently ignore so foreign
+    // markdown drops never reshuffle the list. Both ends are resolved by
+    // id, so a workspace closed mid-drag cannot redirect the move.
+    const fromIndex = dragSourceIndex();
+    const index = ownIndex();
+    if (fromIndex === -1 || index === -1 || fromIndex === index) return;
     // A sorted order only accepts pinned-to-pinned drops.
     if (sortPaused && !draggedRowPinned(fromIndex)) return;
 

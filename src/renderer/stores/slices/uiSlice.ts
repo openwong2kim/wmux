@@ -706,6 +706,9 @@ export interface UISlice {
   // silently reject the actual markdown text drop. Keeping reorder state
   // out-of-band lets dataTransfer carry pure text/plain markdown.
   draggedWorkspaceIndex: number | null;
+  /** The dragged workspace's id, captured with the index at dragstart. Drops
+   *  resolve the source by id: closing a workspace mid-drag shifts indexes. */
+  draggedWorkspaceId: string | null;
   setDraggedWorkspaceIndex: (index: number | null) => void;
 
   // ─── Terminal text-drop trust boundary ────────────────────────────────
@@ -1766,8 +1769,10 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   },
 
   draggedWorkspaceIndex: null as number | null,
+  draggedWorkspaceId: null as string | null,
   setDraggedWorkspaceIndex: (index) => set((state) => {
     state.draggedWorkspaceIndex = index;
+    state.draggedWorkspaceId = index === null ? null : state.workspaces[index]?.id ?? null;
   }),
 
   terminalTextDropDragActive: false,

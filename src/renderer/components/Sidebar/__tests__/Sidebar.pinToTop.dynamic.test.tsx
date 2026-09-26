@@ -119,3 +119,54 @@ describe('Pin to top — order', () => {
     expect(useStore.getState().activeWorkspaceId).toBe('c');
   });
 });
+
+// A drop pins or unpins in Manual, so its source must be the row the user
+// actually dragged: never dataTransfer text from outside, never a stale index.
+function fireDrag(el: Element, type: string, text = ''): Event {
+  const data: Record<string, string> = { 'text/plain': text };
+  const e = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(e, 'dataTransfer', {
+    value: { getData: (k: string) => data[k] ?? '', setData: (k: string, v: string) => { data[k] = v; }, dropEffect: 'none', effectAllowed: 'all' },
+  });
+  // Below the row's midpoint (jsdom rects are all zero).
+  Object.defineProperty(e, 'clientY', { value: 1 });
+  act(() => { el.dispatchEvent(e); });
+  return e;
+}
+const railButton = (id: string) =>
+  [...container.querySelectorAll('button[title]')].find((b) => b.getAttribute('title')?.startsWith(`${id} (`)) as HTMLElement;
+const stored = () => useStore.getState().workspaces.map((w) => w.id);
+
+describe('Pin to top — drag source', () => {
+  it('the rail ignores text dragged in from outside (no drop target, no pin)', () => {
+    seed({ a: 'idle', b: 'idle', c: 'idle' }, 'manual', ['a']);
+    act(() => root.render(<MiniSidebar />));
+    // "2 errors" used to parse as stored index 2 and pin `c` beside `a`.
+    expect(fireDrag(railButton('a'), 'dragover', '2 errors').defaultPrevented).toBe(false);
+    fireDrag(railButton('a'), 'drop', '2 errors');
+    expect(stored()).toEqual(['a', 'b', 'c']);
+    expect(useStore.getState().sidebarPinnedIds).toEqual(['a']);
+  });
+
+  it('a rail drag onto a pinned row still pins, resolved by id', () => {
+    seed({ a: 'idle', b: 'idle', c: 'idle' }, 'manual', ['a']);
+    act(() => root.render(<MiniSidebar />));
+    fireDrag(railButton('c'), 'dragstart');
+    expect(fireDrag(railButton('a'), 'dragover').defaultPrevented).toBe(true);
+    fireDrag(railButton('a'), 'drop');
+    expect(stored()).toEqual(['a', 'c', 'b']);
+    expect(useStore.getState().sidebarPinnedIds).toEqual(['a', 'c']);
+  });
+
+  it('the full sidebar moves the dragged row even if another closed mid-drag', () => {
+    document.elementFromPoint = () => null;
+    seed({ p: 'idle', a: 'idle', b: 'idle', c: 'idle' }, 'manual', ['p']);
+    act(() => root.render(<Sidebar />));
+    fireDrag(row('b'), 'dragstart');
+    // `a` closes mid-drag: `b`'s dragstart index now names `c`.
+    act(() => useStore.setState({ workspaces: useStore.getState().workspaces.filter((w) => w.id !== 'a') }));
+    fireDrag(row('p'), 'drop');
+    expect(useStore.getState().sidebarPinnedIds).toEqual(['p', 'b']);
+    expect(stored()).toEqual(['p', 'b', 'c']);
+  });
+});

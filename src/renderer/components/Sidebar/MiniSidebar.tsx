@@ -79,8 +79,10 @@ export default function MiniSidebar() {
 
   // Drag state per render — refs avoid re-render on every dragover tick.
   const dragStartTimeRef = useRef<number>(0);
-  // Stored index of the row being dragged; dataTransfer is unreadable on dragover.
-  const dragFromRef = useRef<number | null>(null);
+  // Id of the rail row being dragged; null when no rail drag is in flight.
+  // Only such a drag may drop here: dataTransfer text is anything dragged in
+  // from outside, and an id (not an index) survives a close mid-drag.
+  const dragIdRef = useRef<string | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ index: number; side: 'above' | 'below' } | null>(null);
 
@@ -119,8 +121,8 @@ export default function MiniSidebar() {
           const isPinned = pinnedIds.includes(ws.id);
           const reorderOff = sidebarAttentionFirst && !isPinned;
           // A sorted rail only takes pinned-to-pinned drops.
-          const dropAllowed = (fromIndex: number) =>
-            !sidebarAttentionFirst || (isPinned && pinnedIds.includes(workspaces[fromIndex]?.id ?? ''));
+          const dropAllowed = (fromId: string) =>
+            !sidebarAttentionFirst || (isPinned && pinnedIds.includes(fromId));
           const unreadCount = notifications.filter((n) => !n.read && n.workspaceId === ws.id).length;
           const agentStatus = agentStatusById[ws.id] ?? 'idle';
           const agentIcon = agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
@@ -151,19 +153,22 @@ export default function MiniSidebar() {
             if (reorderOff) return;
             dragStartTimeRef.current = Date.now();
             e.dataTransfer.setData('text/plain', String(railIndex));
-            dragFromRef.current = railIndex;
+            dragIdRef.current = ws.id;
             e.dataTransfer.effectAllowed = 'move';
             setDraggingIndex(i);
           };
 
           const handleDragEnd = () => {
-            dragFromRef.current = null;
+            dragIdRef.current = null;
             setDraggingIndex(null);
             setDropIndicator(null);
           };
 
           const handleDragOver = (e: React.DragEvent<HTMLButtonElement>) => {
-            if (reorderOff || (dragFromRef.current !== null && !dropAllowed(dragFromRef.current))) return;
+            // Not a rail drag (external text, a full-sidebar row): no drop
+            // target and no indicator, rather than a promise the drop breaks.
+            const fromId = dragIdRef.current;
+            if (reorderOff || fromId === null || !dropAllowed(fromId)) return;
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
             const rect = e.currentTarget.getBoundingClientRect();
@@ -178,11 +183,15 @@ export default function MiniSidebar() {
           };
 
           const handleDrop = (e: React.DragEvent<HTMLButtonElement>) => {
-            if (reorderOff) return;
+            const fromId = dragIdRef.current;
+            if (reorderOff || fromId === null) return;
             e.preventDefault();
             setDropIndicator(null);
-            const fromIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
-            if (isNaN(fromIndex) || fromIndex === railIndex || !dropAllowed(fromIndex)) return;
+            // Resolve both ends now, by id: a close mid-drag shifts indexes.
+            const all = useStore.getState().workspaces;
+            const fromIndex = all.findIndex((w) => w.id === fromId);
+            const railIndex = all.findIndex((w) => w.id === ws.id);
+            if (fromIndex === -1 || railIndex === -1 || fromIndex === railIndex || !dropAllowed(fromId)) return;
             const rect = e.currentTarget.getBoundingClientRect();
             const midY = rect.top + rect.height / 2;
             const toIndex = e.clientY < midY
