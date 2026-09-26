@@ -7,7 +7,7 @@ import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
 import { isSafeGeometry } from '../../shared/terminalGeometry';
 import { isPrefixTrigger, resolveShortcut } from '../../shared/keymap';
-import { mentionSourceForKey } from '../utils/agentMention';
+import { mentionKeyClaim } from '../utils/agentMention';
 import { currentShortcutBindings, defaultShortcutBindings, shortcutPressGuard } from '../utils/shortcutBindings';
 import { xtermWindowsBuildNumber } from '../../shared/conptyWindows';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -1957,8 +1957,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       } else if (shortcut === 'mentionAgent') {
         // Same gate as useKeyboard: claimed only in the active agent pane's own
         // terminal. In a shell — or a floating pane / brain embed while a leaf
-        // agent is active — the key is this terminal's (F2 → mc / htop / vim).
-        if (mentionSourceForKey(useStore.getState(), e.target)) return false;
+        // agent is active — the key is this terminal's (F2 → mc / htop / vim),
+        // unless it is a ⌘ chord on macOS, which bubbles for the toast.
+        if (mentionKeyClaim(useStore.getState(), e, window.electronAPI?.platform) !== null) return false;
       } else if (shortcut !== null) {
         return false; // let DOM bubble to useKeyboard
       }

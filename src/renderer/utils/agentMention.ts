@@ -68,6 +68,31 @@ export function mentionSourceForKey(state: SourceState, target: EventTarget | nu
   return owner && owner !== source.ptyId ? null : source;
 }
 
+/**
+ * What a keydown that resolved to the mention shortcut does — the one gate
+ * both useKeyboard (window capture) and useTerminal (xterm's key handler) ask.
+ *
+ * - `'open'`: a mention source owns the key; the picker opens.
+ * - `'noSource'`: no source, but the key is a ⌘ chord on macOS. No shell or
+ *   TUI reads ⌘ (it never reaches the PTY), so declining it would only make
+ *   the shortcut look dead: the key is consumed and a toast says why.
+ * - `null`: the key belongs to the terminal (F2 → mc / htop / vim, a
+ *   literal-Ctrl chord a TUI can read), whatever platform — including a Mac
+ *   user who rebound the shortcut to a key without ⌘.
+ *
+ * The ⌘ test reads the event, not the binding: resolveShortcut matches
+ * modifiers exactly, so `metaKey` on a matched press means the effective
+ * combo has Meta in it.
+ */
+export function mentionKeyClaim(
+  state: SourceState,
+  e: Pick<KeyboardEvent, 'target' | 'metaKey'>,
+  platform: string | undefined,
+): 'open' | 'noSource' | null {
+  if (mentionSourceForKey(state, e.target)) return 'open';
+  return platform === 'darwin' && e.metaKey ? 'noSource' : null;
+}
+
 export interface MentionPaneTarget {
   kind: 'pane';
   key: string;
