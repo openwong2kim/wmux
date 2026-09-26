@@ -562,7 +562,10 @@ function resolveAgentSelection(
   titleCount: number,
   presets: () => FanoutPreset[],
 ): AgentSelection | { error: string } {
-  const has = (k: string): boolean => params[k] !== undefined && params[k] !== null;
+  // An empty array is "not given": a caller that always sends `roles: []`
+  // alongside a preset has asked for nothing that conflicts with it.
+  const has = (k: string): boolean =>
+    params[k] !== undefined && params[k] !== null && !(Array.isArray(params[k]) && (params[k] as unknown[]).length === 0);
   const given = ['roles', 'preset', 'agents'].filter(has);
   if (given.length > 1) {
     return { error: `${given.join(' and ')} cannot be combined — pass one of roles, preset or agents` };
@@ -957,7 +960,10 @@ export function registerFanOutRpc(
               promptPreview:
                 buildFanOutPreview(sharedPrompt, parsed.titles, parsed.taskPrompts, parsed.roles, agentLabels) +
                 (worktree ? '' : '\n\nno worktree: each task writes into its own folder under the wmux outputs directory') +
-                `\n\nclaude workers launch with: ${workerLaunchFlags(workerMode)}`,
+                // Only when a task can actually run claude: the flags are claude-only.
+                (agentChoices.length === 0 || agentChoices.some((c) => c.agent === 'claude')
+                  ? `\n\nclaude workers launch with: ${workerLaunchFlags(workerMode)}`
+                  : ''),
               // The roles again, as data. The preview prints the role NAME, but
               // what a role resolves to — agent, model, extra args — lives in the
               // renderer's bindings, and approving "[role: Reviewer]" without

@@ -1429,6 +1429,19 @@ describe('task.fanout.start — preset and agents', () => {
     expect(err.message).toMatch(re);
   });
 
+  it('treats an empty roles array as not given', async () => {
+    const h = setup({ presets: [IMAGE] });
+    const res = await h.call(goodParams({ preset: 'Image', roles: [] }));
+    expect(res).toMatchObject({ ok: true, status: 'accepted' });
+  });
+
+  it('drops the claude flag line from the preview when no task runs claude', async () => {
+    const h = setup();
+    await h.call(goodParams({ agents: [{ agent: 'codex' }, { agent: 'grok' }] }));
+    await h.flush();
+    expect(h.preview()).not.toMatch(/claude workers launch with/);
+  });
+
   it('refuses agents[] whose length does not match the titles', async () => {
     const h = setup();
     const err = errorOf(await h.call(goodParams({ agents: [{ agent: 'codex' }] })));
