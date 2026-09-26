@@ -66,9 +66,16 @@ describe('HookIngest — terminal_prompt records', () => {
     it('records the dialog with its tool and input summary, and no answerable card', () => {
       const f = makeIngest();
       f.ingest.handle(makeSignal({ payload: PERMISSION_REQUEST }));
-      expect(f.terminalPrompts).toEqual([
-        { sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', toolName: 'Bash', summary: 'rm -rf build/cache' },
-      ]);
+      expect(f.terminalPrompts).toEqual([{
+        sessionId: 'pty-a',
+        agent: 'claude',
+        workspaceId: 'ws-1',
+        toolName: 'Bash',
+        summary: 'rm -rf build/cache',
+        // The hook's own tool input: a binding when the transcript has none.
+        toolInput: { command: 'rm -rf build/cache', description: 'Remove the build cache' },
+        source: 'hook',
+      }]);
       expect(f.awaitingInput).toEqual([]);
     });
 
@@ -106,6 +113,35 @@ describe('HookIngest — terminal_prompt records', () => {
     });
   });
 
+  it('a sink whose record creation rejects never leaves an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+    vi.useRealTimers();
+    try {
+      const logs: string[] = [];
+      const ingest = new HookIngest({
+        listLiveSessions: () => [{ id: 'pty-a', cwd: '/repo', env: {} }],
+        emitAgentEvent: () => undefined,
+        applyResumeBinding: () => undefined,
+        approvals: {
+          noteHookAwaitingInput: () => undefined,
+          noteGateAwaiting: () => 'gate-id',
+          noteTerminalPrompt: async () => { throw new Error('registry exploded'); },
+          expireForSession: () => undefined,
+        },
+        log: (_level, message) => { logs.push(message); },
+      });
+      ingest.handle(makeSignal({ payload: PERMISSION_REQUEST }));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(unhandled).toEqual([]);
+      expect(logs.some((l) => l.includes('terminal prompt record failed'))).toBe(true);
+      ingest.dispose();
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   describe('from confirmed detector attention', () => {
     it('records a question-less dialog once the window confirms', () => {
       const f = makeIngest();
@@ -113,7 +149,7 @@ describe('HookIngest — terminal_prompt records', () => {
       expect(f.terminalPrompts).toEqual([]);
       vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
       expect(f.detectorEmitted).toHaveLength(1);
-      expect(f.terminalPrompts).toEqual([{ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1' }]);
+      expect(f.terminalPrompts).toEqual([{ sessionId: 'pty-a', agent: 'claude', workspaceId: 'ws-1', source: 'detector' }]);
     });
 
     it('records nothing when the answer lands inside the window', () => {

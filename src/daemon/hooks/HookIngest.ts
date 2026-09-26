@@ -61,7 +61,7 @@ import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 // Pure regex/lookup module (no electron), already imported by src/daemon/index.ts.
 import { agentDisplayToSlug, agentStatusToSignalKind, type AgentEventStatus } from '../../main/pty/AgentDetector';
 import type { ResumeBinding, PermissionMode } from '../../shared/agentResume';
-import type { ApprovalHookSink } from '../approvals/types';
+import type { ApprovalHookSink, TerminalPromptNote } from '../approvals/types';
 import { extractAskUserQuestion } from '../approvals/askUserQuestion';
 import { boundRecordText, isClaudeFamilyAgent, TERMINAL_PROMPT_TOOL_NAME_MAX } from '../approvals/terminalPrompt';
 import { checkNativeTranscriptPath } from '../transcript/providers';
@@ -1020,12 +1020,20 @@ export class HookIngest {
     if (isClaudeFamilyAgent(signal.agent) && signal.payload?.hook_event_name === 'PermissionRequest') {
       const toolName = boundRecordText(signal.payload?.tool_name, TERMINAL_PROMPT_TOOL_NAME_MAX);
       const summary = summarizeToolInput(signal.payload);
-      approvals.noteTerminalPrompt?.({
+      const rawInput = signal.payload?.tool_input;
+      const toolInput = rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)
+        ? rawInput as Record<string, unknown>
+        : undefined;
+      const toolUseId = typeof signal.payload?.tool_use_id === 'string' ? signal.payload.tool_use_id : undefined;
+      this.recordTerminalPrompt({
         sessionId,
         agent: signal.agent,
         ...(workspaceId ? { workspaceId } : {}),
         ...(toolName ? { toolName } : {}),
         ...(summary ? { summary } : {}),
+        ...(toolInput ? { toolInput } : {}),
+        ...(toolUseId ? { toolUseId } : {}),
+        source: 'hook',
       });
       return;
     }
@@ -1177,14 +1185,23 @@ export class HookIngest {
     if (!session) return;
     if (isBrainPty({ id: sessionId, env: session.env })) return;
     const workspaceId = session.env?.[ENV_KEYS.WORKSPACE_ID];
+    this.recordTerminalPrompt({
+      sessionId,
+      agent: slug,
+      ...(workspaceId ? { workspaceId } : {}),
+      source: 'detector',
+    });
+  }
+
+  /** Hand a `terminal_prompt` to the registry; its async work never escapes unhandled. */
+  private recordTerminalPrompt(note: TerminalPromptNote): void {
+    const fail = (err: unknown): void => {
+      this.deps.log?.('warn', `[hooks] terminal prompt record failed for ${note.sessionId}: ${String(err)}`);
+    };
     try {
-      approvals.noteTerminalPrompt({
-        sessionId,
-        agent: slug,
-        ...(workspaceId ? { workspaceId } : {}),
-      });
+      Promise.resolve(this.deps.approvals?.noteTerminalPrompt?.(note)).catch(fail);
     } catch (err) {
-      this.deps.log?.('warn', `[hooks] terminal prompt record failed for ${sessionId}: ${String(err)}`);
+      fail(err);
     }
   }
 

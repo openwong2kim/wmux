@@ -45,6 +45,8 @@ import { scheduleTokenFileReHarden } from '../shared/security';
 import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { AwaitingScreenVerifier, renderPaneScreen } from './AwaitingScreenVerifier';
+import { ApprovalPushRouter } from './push/approvalPushRouter';
+import { readPendingToolUse } from './transcript/pendingToolUse';
 import { isClaudeFamilyAgent } from './approvals/terminalPrompt';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
@@ -344,9 +346,20 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       if (!managed) return null;
       const keyInputRevision = managed.bridge.getKeyInputRevision();
       const incarnation = managed.meta.incarnationId ?? null;
+      const cols = managed.ptyProcess.cols ?? managed.meta.cols;
       const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot);
       if (!frame) return null;
-      return { rows: frame.rows, mark: { bytes: frame.mark, keyInputRevision, incarnation } };
+      return {
+        rows: frame.rows,
+        mark: { bytes: frame.mark, keyInputRevision, incarnation },
+        ...(typeof cols === 'number' ? { cols } : {}),
+      };
+    },
+    // The pane's own Claude transcript (the projector's containment-checked
+    // path): its latest tool call still waiting for a result.
+    pendingToolUse: (sessionId) => {
+      const transcriptPath = transcriptProjector?.transcriptPath(sessionId) ?? null;
+      return transcriptPath ? readPendingToolUse(transcriptPath) : null;
     },
     promptScreenMark: (sessionId) => {
       const managed = sessionManager.getSession(sessionId);
@@ -5394,15 +5407,16 @@ function wireEvents(
 
   sessionManager.on('session:answered', (payload: { sessionId: string; reason?: 'input' | 'screen-cleared' }) => {
     awaitingVerifier.forget(payload.sessionId);
-    // The dialog is closed, so its informational terminal_prompt record is done
-    // too. Before any early return below: a pane with no detected agent name
-    // would otherwise keep its card. A screen-cleared release also starts the
-    // registry's creation cooldown for the pane.
-    void approvalRegistry?.expireForSession(
+    // The dialog is closed, so its terminal_prompt record is done too (a record
+    // a phone already answered resolves rather than expires). Before any early
+    // return below: a pane with no detected agent name would otherwise keep its
+    // card. A screen-cleared release also starts the registry's per-dialog
+    // creation cooldown for the pane.
+    approvalRegistry?.expireForSession(
       payload.sessionId,
       payload.reason === 'screen-cleared' ? 'screen-cleared' : 'answered-locally',
       'terminal_prompt',
-    );
+    ).catch((err: unknown) => log('warn', `[approvals] answered sweep failed for ${payload.sessionId}: ${String(err)}`));
     const managed = sessionManager.getSession(payload.sessionId);
     const screenAgent = managed?.bridge.getLastAgent() ?? null;
     const slug = (screenAgent ? agentDisplayToSlug(screenAgent) : undefined) ?? managed?.meta.lastDetectedAgent;
@@ -6107,43 +6121,38 @@ async function main(): Promise<void> {
     daemonName: () => os.hostname() || undefined,
     log: (level, msg) => log(level, msg),
   });
+  // One push per awaiting episode: send or park on `create`, drop a parked one
+  // once its approval is moot, and carry it over when a record is replaced
+  // within the same episode (see ApprovalPushRouter).
+  const approvalPushRouter = new ApprovalPushRouter({
+    build: (r) => buildApprovalPushPayload(r),
+    collapseId: (r) => approvalPushCollapseId(r),
+    suppress: (payload) => shouldSuppressPush({
+      state: desktopPresence.snapshot(),
+      now: Date.now(),
+      config: presenceConfig(),
+      ...(payload.risk !== undefined ? { risk: payload.risk } : {}),
+    }),
+    send: (payload, opts) => pushSender.notify(payload, opts),
+    park: (id, payload, collapseId) => deferredPush.park(id, payload, collapseId),
+    forget: (id) => deferredPush.forget(id),
+    isParked: (id) => deferredPush.has(id),
+    log: (level, msg) => log(level, msg),
+  });
   approvalRegistry.onEvent((event) => {
     // Every transition moves at least one of the three numbers the lock screen
     // fires on, so this is subscribed to all of them, not just `create`.
     liveActivityPusher?.onApprovalsChanged();
-    // A resolve/expire/supersede is the thing the notification was asking for.
-    // If one is still parked, it is now moot — drop it rather than buzzing a
-    // phone about a question that has already been answered.
-    if (event.type !== 'create') {
-      deferredPush.forget(event.request.id);
-      return;
-    }
-    // A terminal_prompt re-parsed after its dialog changed is the same awaiting
-    // episode: the phone refreshes off SSE, and nobody is buzzed twice.
-    if (event.replaces) return;
-    const r = event.request;
-    const payload = buildApprovalPushPayload(r);
     // The outbound sink is a separate channel from the phone, and presence says
     // nothing about it: an operator who put a URL in `notifySinks` asked for
-    // every approval, focused desktop or not. Only the APNs push below is held.
-    webhookSink?.notify(
-      buildApprovalNotifyPayload(r, { id: randomUUID(), now: Date.now() }),
-    );
-    if (
-      shouldSuppressPush({
-        state: desktopPresence.snapshot(),
-        now: Date.now(),
-        config: presenceConfig(),
-        ...(payload.risk !== undefined ? { risk: payload.risk } : {}),
-      })
-    ) {
-      // The approval id only — never the question, the choices, or anything
-      // else the payload carries.
-      log('info', `[push] held for ${r.id}: desktop is present`);
-      deferredPush.park(r.id, payload, approvalPushCollapseId(r));
-      return;
+    // every approval, focused desktop or not. A record that replaces another in
+    // the same episode is not a new approval to it.
+    if (event.type === 'create' && event.replaces === undefined) {
+      webhookSink?.notify(
+        buildApprovalNotifyPayload(event.request, { id: randomUUID(), now: Date.now() }),
+      );
     }
-    pushSender.notify(payload, { collapseId: approvalPushCollapseId(r) });
+    approvalPushRouter.onEvent(event);
   });
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   // Desktop presence, reported by the Electron main process on every

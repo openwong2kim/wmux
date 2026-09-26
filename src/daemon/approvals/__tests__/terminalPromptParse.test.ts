@@ -1,6 +1,12 @@
 // The Claude Code permission-dialog parser and its cursor-free fingerprint.
 import { describe, it, expect } from 'vitest';
-import { parseTerminalPrompt, PROMPT_MAX_COMMAND_LINES, terminalPromptAnswerability } from '../terminalPromptParse';
+import {
+  decisionForChoiceLabel,
+  dialogMatchesToolCall,
+  parseTerminalPrompt,
+  PROMPT_MAX_COMMAND_LINES,
+  terminalPromptAnswerability,
+} from '../terminalPromptParse';
 import { generateTextSnapshot } from '../../HeadlessSnapshot';
 
 // The text of a real dialog raised by a user `permissions.ask` rule in a
@@ -182,5 +188,42 @@ describe('parseTerminalPrompt', () => {
     const parsed = parseTerminalPrompt(outcome.rows);
     expect(parsed?.fingerprint).toBe(parseTerminalPrompt(DIALOG)?.fingerprint);
     expect(parsed?.options).toHaveLength(2);
+  });
+});
+
+describe('the top rule, the No label, and binding to a call', () => {
+  it('only a column-0 rule row is the frame; an indented dash row is body', () => {
+    const rows = [...DIALOG];
+    rows.splice(6, 0, '   --------------------------------------------------------');
+    const parsed = parseTerminalPrompt(rows)!;
+    expect(parsed.topRuleFound).toBe(true);
+    expect(parsed.title).toBe('Bash command');
+    expect(parsed.commandLines).toContain('--------------------------------------------------------');
+  });
+
+  it('with the grid width known, the rule must span it', () => {
+    expect(parseTerminalPrompt(DIALOG, { cols: 60 })!.topRuleFound).toBe(true);
+    expect(parseTerminalPrompt(DIALOG, { cols: 120 })!.topRuleFound).toBe(false);
+  });
+
+  it.each([
+    ['No', 'deny'],
+    ['No, and tell Claude what to do differently (esc)', 'deny'],
+    ['Yes', 'approve'],
+    ['Yes, allow once', null],
+    ["Yes, and don't ask again for rm commands", null],
+    ['No, always deny', null],
+    ['Yes, for this session', null],
+    ['Nope', null],
+  ] as const)('"%s" → %s', (label, decision) => {
+    expect(decisionForChoiceLabel(label)).toBe(decision);
+  });
+
+  it('binds to the call whose command (and description) the dialog shows, nothing else', () => {
+    const parsed = parseTerminalPrompt(DIALOG)!;
+    expect(dialogMatchesToolCall(parsed, { name: 'Bash', command: 'rm -rf build/cache', description: 'Remove the build cache' })).toBe(true);
+    expect(dialogMatchesToolCall(parsed, { name: 'Bash', command: 'rm -rf build/cache' })).toBe(false);
+    expect(dialogMatchesToolCall(parsed, { name: 'Bash', command: 'rm -rf build', description: 'cache Remove the build cache' })).toBe(false);
+    expect(dialogMatchesToolCall(parsed, { name: 'Write', command: 'rm -rf build/cache', description: 'Remove the build cache' })).toBe(false);
   });
 });

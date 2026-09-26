@@ -25,6 +25,7 @@ import type { DaemonSessionManager, ManagedSession } from '../DaemonSessionManag
 // constructs a request, and it never decides what bytes a decision means.
 import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
 import { TERMINAL_PROMPT_WEB_ANSWER } from '../approvals/types';
+import { decisionForChoiceLabel } from '../approvals/terminalPromptParse';
 // Type only — the projector's implementation (transcript parsing, watch state,
 // fs watching) stays out of this module. The web server is a STATELESS consumer
 // of its `delta()` for the phone turn view (#782); it must never `subscribe()`.
@@ -5423,7 +5424,14 @@ export class WebTerminalServer {
     // declared it understands one. An older client (the shipped iOS app among
     // them) maps 501 to "open the pane on the computer".
     const caps = clientCaps(req);
-    if (record?.kind === 'terminal_prompt' && !caps.terminalPromptAnswer) {
+    // Not answerable remotely for THIS caller: no capability, or a record that
+    // was never bound and parsed whole (no fingerprint to answer against). Said
+    // before any body validation, so a capable client learns it is 501 rather
+    // than being told its (necessarily absent) fingerprint is malformed.
+    if (
+      record?.kind === 'terminal_prompt'
+      && (!caps.terminalPromptAnswer || !record.promptFingerprint || !record.choices?.length)
+    ) {
       return this.json(res, 501, { error: 'answer-in-terminal' });
     }
     // A gate approval runs the tool; a terminal-prompt answer types a key into
@@ -5475,9 +5483,9 @@ export class WebTerminalServer {
         }
         promptFingerprint = rawFingerprint;
         const option = record.choices?.find((c) => c.key === choiceKey);
-        const agrees = option !== undefined
-          && (decision === 'approve' ? /^yes$/i.test(option.label) : /^no$/i.test(option.label));
-        if (!agrees) return this.json(res, 400, { error: 'invalid-choice' });
+        if (!option || decisionForChoiceLabel(option.label) !== decision) {
+          return this.json(res, 400, { error: 'invalid-choice' });
+        }
       }
       // The brain exclusion and the permission-gate check before the body saw
       // the credential as it was when the HEADERS arrived. A device revoked or
@@ -6856,6 +6864,9 @@ function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAns
       ...(r.workspaceId ? { workspaceId: r.workspaceId } : {}),
       ...(r.toolName ? { toolName: r.toolName } : {}),
       ...(r.summary ? { summary: r.summary } : {}),
+      // A hint for the client's own confirm step — computed at creation from the
+      // call's full command. Never a permission.
+      ...(r.risk ? { risk: r.risk } : {}),
       ...(parsed
         ? {
             ...(r.question ? { question: r.question } : {}),

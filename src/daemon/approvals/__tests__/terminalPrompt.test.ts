@@ -51,6 +51,7 @@ const PROMPT = {
   workspaceId: 'ws-1',
   toolName: 'Bash',
   summary: 'rm -rf build/cache',
+  source: 'detector' as const,
 };
 
 const pendingOf = (h: Harness): ApprovalRequest[] => h.registry.list().pending;
@@ -81,6 +82,8 @@ describe('ApprovalRegistry — terminal_prompt creation', () => {
       kind: 'terminal_prompt',
       toolName: 'Bash',
       summary: 'rm -rf build/cache',
+      risk: 'critical',
+      dialogKey: '-|-',
       createdAt: 1_000,
       state: 'pending',
     });
@@ -89,7 +92,7 @@ describe('ApprovalRegistry — terminal_prompt creation', () => {
 
   it('records a question-less dialog (the detector path) with no tool at all', async () => {
     const h = makeRegistry();
-    await h.registry.noteTerminalPrompt({ sessionId: 'pty-a', agent: 'openclaude' });
+    await h.registry.noteTerminalPrompt({ sessionId: 'pty-a', agent: 'openclaude', source: 'detector' });
     expect(pendingOf(h)).toMatchObject([{ kind: 'terminal_prompt', agent: 'openclaude' }]);
     expect(pendingOf(h)[0]).not.toHaveProperty('toolName');
     expect(pendingOf(h)[0]).not.toHaveProperty('summary');
@@ -161,7 +164,7 @@ describe('ApprovalRegistry — terminal_prompt creation', () => {
     const h = makeRegistry();
     // Detector finds the dialog, the screen check clears it, again and again.
     for (let i = 0; i < 5; i++) {
-      await h.registry.noteTerminalPrompt({ sessionId: 'pty-a', agent: 'claude' });
+      await h.registry.noteTerminalPrompt({ sessionId: 'pty-a', agent: 'claude', source: 'detector' });
       await h.registry.expireForSession('pty-a', 'screen-cleared', 'terminal_prompt');
       h.clock.now += 2_000;
     }

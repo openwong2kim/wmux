@@ -37,21 +37,25 @@ export function approvalHasElevatedRisk(request: ApprovalRequest): boolean {
   if (request.kind === 'awaiting_permission') {
     return hasElevatedRisk(request.toolName, request.toolInputSummary);
   }
-  // The agent's own terminal dialog: the same shape as a gate, with the input
-  // summary under `summary` and the permission-rule line under `reason` (which
-  // names the rule, e.g. `Bash(rm -rf *)`, even when the summary is absent).
-  //
-  // Privilege escalation counts here too: a phone can answer this dialog, and
-  // `sudo` behind a one-word Yes is exactly the prompt that deserves the
-  // louder treatment. Kept local rather than added to the shared list, which
-  // also drives the PTY output scanner.
+  // The agent's own terminal dialog: the record's creation-time verdict (it
+  // saw the call's full command), or the tool, summary and permission-rule line.
   if (request.kind === 'terminal_prompt') {
-    return hasElevatedRisk(request.toolName, request.summary, request.reason)
-      || [request.summary, request.reason].some((text) => !!text && SUDO.test(text));
+    return request.risk === 'critical' || terminalPromptTextRisk(request.toolName, request.summary, request.reason);
   }
   return hasElevatedRisk(
     request.question,
     ...(request.options ?? []),
     ...(request.choices ?? []).map((c) => c.label),
   );
+}
+
+/**
+ * The danger verdict for a `terminal_prompt`'s text: the shared patterns at
+ * either tier, plus privilege escalation. A phone can answer this dialog, and
+ * `sudo` behind a one-word Yes is exactly the prompt that deserves the louder
+ * treatment. Kept local rather than added to the shared list, which also drives
+ * the PTY output scanner.
+ */
+export function terminalPromptTextRisk(...texts: Array<string | undefined>): boolean {
+  return hasElevatedRisk(...texts) || texts.some((text) => !!text && SUDO.test(text));
 }

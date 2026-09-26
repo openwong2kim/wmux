@@ -313,6 +313,11 @@ export class DeferredPushQueue {
     this.arm();
   }
 
+  /** Is this approval's push still held (not yet released or forgotten)? */
+  has(approvalId: string): boolean {
+    return this.parked.has(approvalId);
+  }
+
   /** The approval was answered, expired, or superseded — the push is moot. */
   forget(approvalId: string): void {
     this.parked.delete(approvalId);

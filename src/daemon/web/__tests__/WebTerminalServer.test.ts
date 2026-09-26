@@ -4170,10 +4170,15 @@ describe('WebTerminalServer', () => {
       kind: 'terminal_prompt',
       toolName: 'Bash',
       summary: 'rm -rf build/cache · Remove the build cache',
+      risk: 'critical',
       question: 'Do you want to proceed?',
       reason: 'Permission rule Bash(rm -rf *) requires confirmation for this command.',
       choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }],
       promptFingerprint: FP,
+      // Daemon-internal: must never reach the web wire.
+      toolUseId: 'toolu_01',
+      dialogKey: 'k',
+      keyRevisionAtCreate: 3,
       ...over,
     });
     const postTp = (token: string, body: unknown, headers: Record<string, string> = CAPS, id = 'ap-tp') =>
@@ -4191,6 +4196,7 @@ describe('WebTerminalServer', () => {
       expect(legacy.pending[0]).toEqual({
         id: 'ap-tp', sessionId: 's1', agent: 'claude', kind: 'terminal_prompt', state: 'pending',
         createdAt: 1_700_000_000_000, toolName: 'Bash', summary: 'rm -rf build/cache · Remove the build cache',
+        risk: 'critical',
       });
       const capable = await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(info.token as string), ...CAPS } })).json();
       expect(capable.pending[0]).toMatchObject({
@@ -4203,7 +4209,11 @@ describe('WebTerminalServer', () => {
       expect(capable.pending[1]).not.toHaveProperty('question');
       expect(capable.pending[1]).not.toHaveProperty('choices');
       expect(capable.pending[1]).not.toHaveProperty('promptFingerprint');
-      expect(JSON.stringify([legacy, capable])).not.toContain('screenTail');
+      expect(capable.pending[0]).toMatchObject({ risk: 'critical' });
+      const wire = JSON.stringify([legacy, capable]);
+      for (const internal of ['screenTail', 'toolUseId', 'toolu_01', 'dialogKey', 'keyRevisionAtCreate']) {
+        expect(wire).not.toContain(internal);
+      }
     });
 
     it('once answered, the dialog stays readable but offers nothing to press', async () => {
@@ -4213,6 +4223,23 @@ describe('WebTerminalServer', () => {
       expect(capable.pending[0]).toMatchObject({ question: 'Do you want to proceed?', pressedAt: 1_700_000_005_000, selectedChoiceKey: '1' });
       expect(capable.pending[0]).not.toHaveProperty('choices');
       expect(capable.pending[0]).not.toHaveProperty('promptFingerprint');
+    });
+
+    it('a capable client answering a record that is not answerable gets 501 before any body check', async () => {
+      const info = await startRW();
+      approvalRecords.push(tp({ question: undefined, reason: undefined, choices: undefined, promptFingerprint: undefined }));
+      // No fingerprint in the body at all: still 501, not 400.
+      const res = await postTp(info.token as string, { decision: 'approve', choiceKey: '1' });
+      expect(res.status).toBe(501);
+      expect(await res.json()).toEqual({ error: 'answer-in-terminal' });
+      expect(resolveCalls).toEqual([]);
+    });
+
+    it('"No, …" is the deny option', async () => {
+      const info = await startRW();
+      approvalRecords.push(tp({ choices: [{ key: '1', label: 'Yes' }, { key: '3', label: 'No, and tell Claude what to do differently (esc)' }] }));
+      expect((await postTp(info.token as string, { decision: 'deny', choiceKey: '3', promptFingerprint: FP })).status).toBe(200);
+      expect((await postTp(info.token as string, { decision: 'approve', choiceKey: '3', promptFingerprint: FP })).status).toBe(400);
     });
 
     it('an older client is answered 501 answer-in-terminal, and nothing reaches the registry', async () => {
@@ -4310,7 +4337,8 @@ describe('WebTerminalServer', () => {
       expect(body).toContain('event: approval');
       expect(body).toContain('"kind":"terminal_prompt"');
       expect(body).toContain('ap-tp');
-      for (const content of ['rm -rf build/cache', 'Do you want to proceed', 'Permission rule', FP, '"toolName"', '"choices"']) {
+      expect(body).toContain('"risk":"critical"');
+      for (const content of ['rm -rf build/cache', 'Do you want to proceed', 'Permission rule', FP, '"toolName"', '"choices"', 'toolu_01']) {
         expect(body).not.toContain(content);
       }
     });

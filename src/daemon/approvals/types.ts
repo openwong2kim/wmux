@@ -186,6 +186,18 @@ export interface ApprovalRequest {
    * refused as `already-answered` meanwhile.
    */
   pressedAt?: number;
+  /**
+   * DAEMON-INTERNAL `terminal_prompt` fields — never on the web wire
+   * (`approvalWire` is an allowlist), not persisted meaningfully.
+   *   - `toolUseId`: the transcript `tool_use` this dialog is bound to.
+   *   - `dialogKey`: which dialog this is (screen hash + tool_use id), for the
+   *     per-dialog creation cooldown.
+   *   - `keyRevisionAtCreate`: the pane's fence input revision when the dialog
+   *     was read; any key or click since means a human is at the terminal.
+   */
+  toolUseId?: string;
+  dialogKey?: string;
+  keyRevisionAtCreate?: number;
   /** Who answered — free-form caller-supplied label ('web', an operator name). */
   resolvedBy?: string;
   resolvedAt?: number;
@@ -337,6 +349,21 @@ export type ApprovalExpiryReason =
   // Also starts the `terminal_prompt` creation cooldown for that pane.
   | 'screen-cleared';
 
+/** What HookIngest knows when it asks for a `terminal_prompt` record. */
+export interface TerminalPromptNote {
+  sessionId: string;
+  agent: string;
+  workspaceId?: string;
+  toolName?: string;
+  summary?: string;
+  /** The PermissionRequest hook's `tool_input` — a binding when the transcript has none. */
+  toolInput?: Record<string, unknown>;
+  /** The hook's `tool_use_id`, when it carried one. */
+  toolUseId?: string;
+  /** `hook` (PermissionRequest) or `detector` (confirmed screen attention). */
+  source: 'hook' | 'detector';
+}
+
 /**
  * The half of the registry HookIngest drives. Separate from the read/resolve
  * API on purpose: the ingest path may only CREATE and EXPIRE, and both calls
@@ -376,13 +403,7 @@ export interface ApprovalHookSink {
    * cooldown that follows a `screen-cleared` expiry. It never supersedes
    * anything. Optional so a sink that predates the kind still type-checks.
    */
-  noteTerminalPrompt?(input: {
-    sessionId: string;
-    agent: string;
-    workspaceId?: string;
-    toolName?: string;
-    summary?: string;
-  }): void;
+  noteTerminalPrompt?(input: TerminalPromptNote): void | Promise<void>;
   /** `kind` narrows the sweep to one record kind; omitted ⇒ every kind. */
   expireForSession(
     sessionId: string,
