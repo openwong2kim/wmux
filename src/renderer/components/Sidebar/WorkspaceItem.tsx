@@ -667,16 +667,17 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     if (reorderOff) return;
-    e.preventDefault();
     setDropIndicator(null);
     // Reorder source comes from the store, not dataTransfer. No source
-    // means the drop originated from outside the sidebar (or the user
-    // dragged a workspace out and back in) — silently ignore so foreign
-    // markdown drops never reshuffle the list. Both ends are resolved by
-    // id, so a workspace closed mid-drag cannot redirect the move.
+    // means the drop originated from outside the sidebar (or a copy-only
+    // hand-off) — leave it unclaimed so foreign markdown never reshuffles
+    // the list. Both ends are resolved by id, so a workspace closed
+    // mid-drag cannot redirect the move.
     const fromIndex = dragSourceIndex();
     const index = ownIndex();
-    if (fromIndex === -1 || index === -1 || fromIndex === index) return;
+    if (fromIndex === -1 || index === -1) return;
+    e.preventDefault();
+    if (fromIndex === index) return;
     // A sorted order only accepts pinned-to-pinned drops.
     if (sortPaused && !draggedRowPinned(fromIndex)) return;
 
