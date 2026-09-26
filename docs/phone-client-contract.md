@@ -1974,8 +1974,10 @@ output in a pane does not move its hits.
 `nextCursor` is non-null when more hits may exist past this page. It is
 stateless: the next call runs the search again and continues after the last
 hit returned. A turn appended meanwhile sorts before that hit and is not
-repeated. Scrollback that a pane printed meanwhile is newer than the cursor and
-is not shown on later pages either. Old scrollback lines leaving the ring do not
+repeated. Scrollback printed meanwhile in the cursor's own pane, or in a pane
+already paged past, is newer than the cursor and is not shown. A pane the
+paging has not reached yet shows what it holds when the page reaches it. Old
+scrollback lines leaving the ring do not
 shift the paging: the cursor remembers the text around its line and finds it
 again. If that line has itself left the ring, so has everything older in that
 pane, and paging moves on to the next pane.

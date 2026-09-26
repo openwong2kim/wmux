@@ -304,8 +304,8 @@ describe('GET /api/search', () => {
     expect((await other).res.status).toBe(200);
     chatGate = null;
 
-    // The phone has spent two of its tokens (the refused request spent none);
-    // a burst runs out, and Retry-After says when the next token lands.
+    // The phone has spent one token (the refused request spent none); a burst
+    // runs out, and Retry-After says when the next token lands.
     const statuses: number[] = [];
     let retryAfter: string | null = null;
     for (let i = 0; i < 6; i++) {
@@ -315,7 +315,8 @@ describe('GET /api/search', () => {
       await res.json();
     }
     expect(statuses).toEqual([200, 200, 200, 429]);
-    expect(retryAfter).toBe('2');
+    // Two seconds a token, less whatever refilled while the test ran.
+    expect(['1', '2']).toContain(retryAfter);
     skewMs += 2000;
     expect((await search(phone, 'q=needle&scope=scrollback')).res.status).toBe(200);
   });
