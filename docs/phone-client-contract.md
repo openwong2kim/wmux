@@ -1714,6 +1714,103 @@ its next turn; an `active` thread remains busy and `notLoaded` remains unavailab
 Catalog pagination is bounded to four pages of 100 entries; incomplete or ambiguous
 catalogs are unavailable rather than silently truncated.
 
+## Device management
+
+`/api/config` carries `deviceManagement: {scope: "all" | "self"}` when this
+daemon serves the three routes below. The key is **omitted** (not `false`) when
+it does not; an older daemon serves the same shape. `scope` is per caller:
+
+- `all` — the operator token, or a device that may type (its own grant **and**
+  the server's `--allow-input`, the same rule as `allowInput`).
+- `self` — a read-only device.
+
+All three routes sit behind the normal Bearer gate and accept no stream ticket.
+
+### `GET /api/devices`
+
+```json
+{
+  "devices": [
+    {
+      "deviceId": "…", "name": "iPhone", "pairedAt": 1700000000000,
+      "lastSeenAt": 1700000500000, "grants": {"input": true},
+      "revoked": false, "current": true
+    }
+  ],
+  "serverGrants": {"input": true, "upload": false, "transcript": true},
+  "scope": "all"
+}
+```
+
+Sent with `Cache-Control: no-store`. `grants.input` is the device's **own**
+stored grant; `serverGrants` are the server flags (`--allow-input`,
+`--allow-upload`, `--allow-transcript`). Whether a device can actually type is
+both of them together. `revokedAt` is present only on a revoked row. `current`
+marks the requesting device and is always `false` for the operator.
+
+Visibility:
+
+| Caller | Sees |
+|---|---|
+| operator token | every device, including revoked tombstones |
+| device with scope `all` | every **active** device (no tombstones) |
+| device with scope `self` | only its own row |
+
+A device that may type already has a shell on the host and could read the
+roster file from it, so showing it the roster reveals nothing new, and it is
+what lets one phone remove another that was lost. A read-only device learns
+nothing about the others: no names, no `lastSeenAt`.
+
+No secret material, push token or Live Activity token is ever on this wire.
+
+### `POST /api/devices/:id/revoke`
+
+No body. Revocation is permanent; a revoked device re-pairs to come back.
+
+### `PATCH /api/devices/:id/grants`
+
+Body is exactly `{"input": false}`. This route only **lowers** a grant. Raising
+one is desktop-only for every caller, the operator token included, the same way
+pairing codes are: the operator token travels in URLs and QR codes. Lowering
+your own grant needs no input permission. Success also closes that device's
+live streams, so it re-handshakes and picks up the smaller grant.
+
+### Who may act on which id
+
+The operator token may act on any id. A **device may act only on its own id**:
+any other id gets `403 {"error":"not-permitted"}` before the roster is
+consulted, byte-identical whether or not that id exists.
+
+### Responses
+
+| Status | Body | When |
+|---|---|---|
+| 200 | `{ok:true, closed:N}` | revoke persisted; `N` live streams were closed. Revoking an already revoked device answers `{ok:true, closed:0}` |
+| 200 | `{ok:false, reason:"persist-failed", closed:N}` | revoke could not be written to disk. The device is blocked in memory now, but may come back after a daemon restart |
+| 200 | `{ok:true, grants:{input:false}}` | grant lowered |
+| 200 | `{ok:false, reason:"persist-failed", grants:{input:false}}` | grant lowered in memory but not written to disk |
+| 400 | `{error:"invalid-grants"}` | PATCH body missing `input`, `input` not a boolean, or any other field present |
+| 403 | `{error:"not-permitted"}` | a device naming an id that is not its own |
+| 403 | `{error:"grant-escalation-desktop-only"}` | PATCH with `input:true`, from anyone. Nothing is written |
+| 404 | `{error:"device-not-found"}` | operator naming an unknown id. The roster keeps only the newest revoked tombstones, so a pruned one is also 404 |
+| 409 | `{error:"device-revoked"}` | PATCH on a revoked device, including one revoked from the desktop while the request body was still arriving |
+| 503 | `{error:"device-management-unavailable"}` | this daemon's device store cannot manage devices (config omits `deviceManagement`) |
+
+### Revoking yourself
+
+A device may revoke itself with no input permission. The response is still
+delivered after the server closes that device's SSE streams and stream tickets;
+every later request answers `401 {reason:"revoked"}`.
+
+**After a self-revoke the phone discards its local credential whatever the
+response says**: `200 ok:true`, `200 ok:false persist-failed`, a network error
+or no response at all. On `persist-failed` the device is blocked on the running
+daemon but could be accepted again after a restart; a phone that has already
+thrown its credential away cannot use it either way.
+
+Every revoke and grant change is recorded in the daemon's device audit log with
+who made it: `desktop`, `operator-web` or `device-self`.
+
 ## Native chat
 
 The phone's Chat surface drives the **native conversation already running in the
