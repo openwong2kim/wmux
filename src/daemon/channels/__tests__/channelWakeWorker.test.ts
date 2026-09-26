@@ -16,6 +16,7 @@ import {
   BODY_PREVIEW_MAX_LEN,
   bodyPreview,
   mayCarryBody,
+  wakeAgentSlug,
   type WakeUnreadEntry,
   type WakeSessionView,
   type WakeNudgeOutcome,
@@ -487,6 +488,24 @@ describe('pickTarget — never guess', () => {
     // A different agent slug than the member id still gets the fallback: it is
     // a real agent pane, just not slug-matched.
     expect(pickTarget([session({ id: 'a', lastDetectedAgent: 'opencode' })], 'ws-b', 'reviewer')?.id).toBe('a');
+  });
+});
+
+describe('wakeAgentSlug — a pane back at its prompt is a shell', () => {
+  it('drops the sticky slug once OSC 133 says the foreground command returned, so no picker targets the shell', () => {
+    // The slug outlives the agent: Claude exits, zsh stays, and the nudge
+    // (hint + body preview + Enter) was typed into the shell.
+    const agent = wakeAgentSlug('claude', false);
+    expect(agent).toBeUndefined();
+    const shell = session({ id: 'pty-x', lastDetectedAgent: agent });
+    expect(pickTarget([shell], 'ws-b', 'claude')).toBeNull();
+    expect(pickTargetWithPrincipal([shell], 'ws-b', 'w1', 'pane:ws-b/p1', () => 'pty-x')).toBeNull();
+  });
+
+  it('keeps the slug while a command runs or when the shell has no OSC 133 integration', () => {
+    expect(wakeAgentSlug('claude', true)).toBe('claude');
+    expect(wakeAgentSlug('codex', undefined)).toBe('codex');
+    expect(wakeAgentSlug(undefined, true)).toBeUndefined();
   });
 });
 

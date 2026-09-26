@@ -245,6 +245,23 @@ export function mayCarryBody(detectedAgent: string | undefined): boolean {
   return !!detectedAgent && BODY_PREVIEW_AGENTS.has(detectedAgent);
 }
 
+/**
+ * The agent slug a wake target may be judged by. `lastDetectedAgent` has no
+ * death edge — the agent exits, the pane keeps its shell, and the slug stays.
+ * An OSC 133 prompt (`commandRunning === false`) proves the foreground command
+ * returned, so the pane is a bare shell again: report no agent, and every
+ * target picker then declines it instead of typing a hint + Enter into zsh
+ * (an unbalanced `(` in the body preview left the shell in a continuation
+ * prompt that swallowed the next nudge too). Unknown (no shell integration)
+ * keeps the sticky slug — dropping it would silence live agent panes.
+ */
+export function wakeAgentSlug(
+  lastDetectedAgent: string | undefined,
+  commandRunning: boolean | undefined,
+): string | undefined {
+  return commandRunning === false ? undefined : lastDetectedAgent;
+}
+
 export class ChannelWakeWorker {
   private readonly deps: ChannelWakeWorkerDeps;
   private readonly tracker = new Map<string, NudgeTrackerEntry>();
