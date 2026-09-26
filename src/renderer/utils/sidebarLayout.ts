@@ -4,6 +4,9 @@
 // (drag handle), the titlebar (its left segment is width-matched to the
 // sidebar — DESIGN.md Window Chrome) and the tests.
 
+import type { WorkTask } from '../../shared/workTask';
+import { resolveTaskLink } from './fanoutProvenance';
+
 /** Default expanded sidebar width. Double-clicking the edge handle returns here. */
 export const SIDEBAR_DEFAULT_WIDTH = 264;
 /** Narrowest drag stop: below this a workspace name no longer survives the row chrome. */
@@ -157,4 +160,43 @@ export function togglePinned<T extends { id: string }>(
   return pinned.has(id)
     ? movePinned(items, pinnedIds, from, count - 1, false)
     : movePinned(items, pinnedIds, from, count, true);
+}
+
+/** The store maps that decide fan-out nesting (workTaskSlice). */
+export interface FanoutNesting {
+  missionByPaneGroup?: Readonly<Record<string, WorkTask>>;
+  fanoutLineage?: Readonly<Record<string, string>>;
+  fanoutSpawnOwner?: Readonly<Record<string, string>>;
+}
+
+/**
+ * Whether a workspace renders nested under a fan-out owner (or in the
+ * "From closed workspace" group) rather than as a top-level row — the same
+ * rule the sidebar's nesting uses: any task link that is not detached.
+ */
+export function isNestedTask(
+  state: FanoutNesting,
+  id: string,
+): boolean {
+  const link = resolveTaskLink(state.missionByPaneGroup?.[id], state.fanoutLineage?.[id], state.fanoutSpawnOwner?.[id]);
+  return !!link && !link.detached;
+}
+
+/**
+ * Nesting wins over a pin: a nested task has no top-level slot, so it cannot
+ * sit in the pinned group. Unpins every pinned workspace that is a nested
+ * task and moves it to the top of the rest, keeping the pinned prefix. Nesting
+ * is runtime state (missions, lineage, spawn stamps arrive after load), so the
+ * store runs this wherever that state or the pins change. Mutates `state`
+ * only when something was unpinned.
+ */
+export function unpinNestedTasks<W extends { id: string }>(
+  state: FanoutNesting & { workspaces: W[]; sidebarPinnedIds?: string[] },
+): void {
+  const pinnedIds = state.sidebarPinnedIds;
+  if (!pinnedIds || pinnedIds.length === 0) return;
+  const kept = pinnedIds.filter((id) => !isNestedTask(state, id));
+  if (kept.length === pinnedIds.length) return;
+  state.sidebarPinnedIds = kept;
+  state.workspaces = pinnedFirst(state.workspaces, new Set(kept));
 }

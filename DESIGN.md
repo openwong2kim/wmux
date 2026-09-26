@@ -477,7 +477,8 @@ no empty reply row or reserved gap under the latest prompt.
   Attention once, with a notice offering to keep the manual order; an explicit
   choice is kept.
 - **Pinned to top:** row menu › Pin to top / Unpin, in every order (not on a
-  nested task row). Pinned workspaces lead the list and the rail in every
+  nested task row). Nesting wins: a nested task cannot be pinned, and a pinned
+  workspace that becomes one leaves the group. Pinned workspaces lead the list and the rail in every
   order, in the order the user gave them, and never re-sort; only the rows
   below follow the chosen order. A pinned row carries a muted pin glyph
   (`--text-muted`, never amber) and no group header or divider — the glyph

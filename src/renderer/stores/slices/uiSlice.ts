@@ -13,7 +13,7 @@ import { markRetentionMigrationDone } from '../retentionMigration';
 import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
 import { CHROME_PRESET_VALUES } from '../../../shared/chromePresets';
 import { sanitizeShortcutOverrides, type ShortcutActionId, type ShortcutOverrides } from '../../../shared/keymap';
-import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth, togglePinned, type SidebarSortMode } from '../../utils/sidebarLayout';
+import { SIDEBAR_DEFAULT_WIDTH, clampSidebarWidth, togglePinned, unpinNestedTasks, type SidebarSortMode } from '../../utils/sidebarLayout';
 
 /**
  * #517: read main's authoritative browser backend synchronously at store-module
@@ -1513,6 +1513,8 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (!r) return;
     state.workspaces = r.items;
     state.sidebarPinnedIds = r.pinnedIds;
+    // A nested task cannot be pinned (it has no top-level slot).
+    unpinNestedTasks(state);
   }),
   sidebarNewAt: {},
   sidebarSeen: {},

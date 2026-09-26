@@ -19,7 +19,7 @@ import { retentionMigrationDone, markRetentionMigrationDone } from '../retention
 import { decUnread } from './notificationSlice';
 import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { stashedPaneLiveness } from '../../../shared/paneStash';
-import { clampSidebarWidth, movePinned, pinnedFirst, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention } from '../../utils/sidebarLayout';
+import { clampSidebarWidth, movePinned, pinnedFirst, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention, unpinNestedTasks } from '../../utils/sidebarLayout';
 import {
   collectLeafIds,
   getLeafPanes,
@@ -845,6 +845,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (!r) return;
       state.workspaces = r.items;
       if (state.sidebarPinnedIds) state.sidebarPinnedIds = r.pinnedIds;
+      // The rail has no nesting, so a drop there can try to pin a task.
+      unpinNestedTasks(state);
     }),
 
     loadSession: (data: SessionData) => set((state: StoreState) => {
@@ -1369,6 +1371,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // pinned rows move up into the group in the order they had.
         if (state.sidebarPinnedIds.length > 0) {
           state.workspaces = pinnedFirst(state.workspaces, new Set(state.sidebarPinnedIds));
+          // A pin on a nested task (set under the old slot rule, whose menu
+          // did not check task rows) is dropped: here if nesting is already
+          // known, else when missions or lineage land (workTaskSlice).
+          unpinNestedTasks(state);
         }
       }
       state.sidebarAttentionFirst = state.sidebarSortMode === 'attention';

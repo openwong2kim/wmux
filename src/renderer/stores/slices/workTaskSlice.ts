@@ -22,6 +22,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { WorkTask } from '../../../shared/workTask';
 import { unwrapRpc } from '../../utils/unwrapRpc';
+import { unpinNestedTasks } from '../../utils/sidebarLayout';
 import { provenanceFromAudit, sameProvenance, type FanoutAuditLike, type FanoutProvenance } from '../../utils/fanoutProvenance';
 
 /** The mission bridge useRpcBridge installs (reads + the close used for workspace-lifetime binding). */
@@ -211,6 +212,7 @@ export const createWorkTaskSlice: StateCreator<
     set((state: StoreState) => {
       if (!workspaceId || !ownerWorkspaceId) return;
       state.fanoutSpawnOwner[workspaceId] = ownerWorkspaceId;
+      unpinNestedTasks(state);
     }),
 
   refreshFanoutProvenance: async (opts = { audit: true }) => {
@@ -260,6 +262,8 @@ export const createWorkTaskSlice: StateCreator<
           delete state.fanoutSpawnOwner[id];
         }
       }
+      // Lineage can nest a workspace that was pinned before it resolved.
+      unpinNestedTasks(state);
     });
   },
 
@@ -296,6 +300,7 @@ export const createWorkTaskSlice: StateCreator<
       if (sameMissionList(state.missionsByWorkspace[parentWorkspaceId], tasks)) return;
       state.missionsByWorkspace[parentWorkspaceId] = tasks;
       state.missionByPaneGroup = rebuildPaneGroupIndex(state.missionsByWorkspace);
+      unpinNestedTasks(state);
     }),
 
   clearMissionsFor: (parentWorkspaceId) =>
