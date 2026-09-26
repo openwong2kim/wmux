@@ -55,6 +55,8 @@ import type { RemotePaneSummary, RemoteResumeInfo } from '../../shared/remoteHos
 import { normalizeResumeCwd, type ResumeBinding } from '../../shared/agentResume';
 import { assistantPreview } from '../../shared/assistantPreview';
 import { capSnapshot } from './snapshotWindow';
+import { revokeDeviceAndDisconnect } from './deviceRevoke';
+import type { DeviceActor } from './deviceAudit';
 import {
   collectSessionDiff,
   createGitRunner,
@@ -171,6 +173,9 @@ function decodeTurnCursor(
  *                              device's own credential (refused over plaintext
  *                              off-machine transports — see mintRefusal)
  *   POST /api/live-activity-registration  push-to-start / activity tokens (merges)
+ *   GET  /api/devices          paired-device roster, scoped to the caller
+ *   POST /api/devices/:id/revoke   remove a device (a device: only itself)
+ *   PATCH /api/devices/:id/grants  lower a device's input grant (never raise)
  *   GET  /api/config           allowInput + allowUpload flags, plus the phone
  *                              protocol handshake (see protocolVersion.ts)
  *   GET  /api/sessions         pane list
@@ -389,6 +394,31 @@ export interface WebDeviceResolver {
     deviceId: string,
     input: { hostID?: unknown; pushToStartToken?: unknown; activityToken?: unknown; apnsEnvironment?: unknown },
   ): { ok: boolean; reason?: string };
+  /**
+   * Device management from the phone (`/api/devices`). The three verbs are ONE
+   * capability: a resolver missing any of them gets 503 on all three routes
+   * and no `deviceManagement` key in `/api/config`, so a phone never shows a
+   * roster it cannot act on. Shapes mirror DeviceStore's, which is what the
+   * daemon injects here.
+   */
+  list?(): WebDeviceSummary[];
+  revoke?(deviceId: string, actor: DeviceActor): { ok: boolean; reason?: 'not-found' | 'persist-failed' };
+  setInput?(
+    deviceId: string,
+    allowInput: boolean,
+    actor: DeviceActor,
+  ): { ok: boolean; reason?: 'not-found' | 'revoked' | 'persist-failed' };
+}
+
+/** One roster row as the resolver reports it. Carries no secret material. */
+export interface WebDeviceSummary {
+  deviceId: string;
+  name: string;
+  createdAt: number;
+  lastSeenAt: number;
+  /** The device's own resolved grant; the server flag is applied separately. */
+  allowInput: boolean;
+  revokedAt?: number;
 }
 
 /**
@@ -2112,6 +2142,11 @@ export class WebTerminalServer {
         // that they are present now: each field is omitted while the desktop
         // is away. Omitted without a bridge, and by an older daemon.
         ...(this.deps.desktop ? { fleetSidebar: true } : {}),
+        // Whether `/api/devices` answers here, and how much of the roster this
+        // caller may see and act on (see handleDeviceList). OMITTED, not
+        // false, when the device store cannot list, revoke and set grants —
+        // the shape an older daemon serves.
+        ...(this.deviceManagement() ? { deviceManagement: { scope: this.deviceScope(principal) } } : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
         minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
         serverVersion: daemonServerVersion(),
@@ -2241,6 +2276,13 @@ export class WebTerminalServer {
     }
     if (req.method === 'POST' && p === '/api/live-activity-registration') {
       return this.handleLiveActivityRegistration(req, res, principal);
+    }
+    const deviceRoute = /^\/api\/devices(?:\/([^/]+)\/(revoke|grants))?$/.exec(p);
+    if (deviceRoute) {
+      const [, rawId = '', verb] = deviceRoute;
+      if (req.method === 'GET' && !verb) return this.handleDeviceList(res, principal);
+      if (req.method === 'POST' && verb === 'revoke') return this.handleDeviceRevoke(res, rawId, principal);
+      if (req.method === 'PATCH' && verb === 'grants') return this.handleDeviceGrants(req, res, rawId, principal);
     }
     if (req.method === 'POST' && p === '/api/input') {
       return this.handleInput(req, res, url, principal);
@@ -5309,6 +5351,171 @@ export class WebTerminalServer {
       return this.json(res, status, {
         error: result.reason ?? 'live-activity-registration-failed',
       });
+    });
+  }
+
+  /**
+   * The device store's management verbs, or null when any is missing. One
+   * capability, not three: see `WebDeviceResolver.list`.
+   */
+  private deviceManagement(): (WebDeviceResolver & Required<Pick<WebDeviceResolver, 'list' | 'revoke' | 'setInput'>>) | null {
+    const devices = this.deps.devices;
+    if (!devices?.list || !devices.revoke || !devices.setInput) return null;
+    return devices as WebDeviceResolver & Required<Pick<WebDeviceResolver, 'list' | 'revoke' | 'setInput'>>;
+  }
+
+  /**
+   * How much of the roster this caller sees: `all` for the operator and for a
+   * device that may type, `self` for a read-only device.
+   *
+   * A device that may type already has a shell on this machine and can read
+   * `devices.json` from it, so showing it the roster exposes nothing new — and
+   * it is what lets the phone in your hand remove the one you just lost. A
+   * read-only device has no such reach, so it sees its own row and nothing
+   * about the others, not even their names.
+   */
+  private deviceScope(principal: WebPrincipal): 'all' | 'self' {
+    return principal.kind === 'operator' || this.mayInput(principal) ? 'all' : 'self';
+  }
+
+  /**
+   * `GET /api/devices` — the paired-device roster, filtered by `deviceScope`.
+   *
+   * The operator also sees revoked tombstones (the desk's history); a device
+   * with `all` scope sees only active devices, because a tombstone is nothing
+   * it can act on. Rows are built from an explicit field list, never a spread
+   * of the store's row, so nothing the store grows later (hashes, salts, push
+   * tokens) can ride along by accident.
+   */
+  private handleDeviceList(res: http.ServerResponse, principal: WebPrincipal): void {
+    const devices = this.deviceManagement();
+    if (!devices) return this.json(res, 503, { error: 'device-management-unavailable' });
+    const scope = this.deviceScope(principal);
+    let rows: WebDeviceSummary[];
+    try {
+      rows = devices.list();
+    } catch (err) {
+      this.deps.log('warn', `[web] device list failed: ${errMsg(err)}`);
+      return this.json(res, 500, { error: 'device-list-failed' });
+    }
+    const self = principal.kind === 'device' ? principal.deviceId : null;
+    const visible = rows.filter((d) => {
+      if (principal.kind === 'operator') return true;
+      if (scope === 'all') return d.revokedAt === undefined;
+      return d.deviceId === self;
+    });
+    return this.json(
+      res,
+      200,
+      {
+        devices: visible.map((d) => ({
+          deviceId: d.deviceId,
+          name: d.name,
+          pairedAt: d.createdAt,
+          lastSeenAt: d.lastSeenAt,
+          // The device's OWN stored grant. The server ceiling is reported once,
+          // in `serverGrants`, so the phone can say which of the two said no.
+          grants: { input: d.allowInput === true },
+          revoked: d.revokedAt !== undefined,
+          ...(d.revokedAt !== undefined ? { revokedAt: d.revokedAt } : {}),
+          current: d.deviceId === self,
+        })),
+        serverGrants: {
+          input: this.opts?.allowInput === true,
+          upload: this.opts?.allowUpload === true,
+          transcript: this.opts?.allowTranscript === true,
+        },
+        scope,
+      },
+      { 'Cache-Control': 'no-store' },
+    );
+  }
+
+  /**
+   * `POST /api/devices/:id/revoke` — remove a device.
+   *
+   * A device may revoke only ITSELF, and needs no input grant for it: giving
+   * up your own access is never an escalation. Any other id is refused before
+   * the roster is consulted, with one fixed body, so a device cannot learn
+   * which ids exist by probing. The operator may revoke anyone.
+   *
+   * Same ordering as the desktop RPC (persist, then cut the device's streams
+   * and tickets, then answer). On a self-revoke the response still arrives:
+   * this request is a plain HTTP exchange, not one of the SSE streams
+   * `disconnectDevice` ends.
+   */
+  private handleDeviceRevoke(res: http.ServerResponse, rawId: string, principal: WebPrincipal): void {
+    const devices = this.deviceManagement();
+    if (!devices) return this.json(res, 503, { error: 'device-management-unavailable' });
+    const deviceId = decodePathSegment(rawId) ?? '';
+    if (principal.kind === 'device' && deviceId !== principal.deviceId) {
+      return this.json(res, 403, { error: 'not-permitted' });
+    }
+    const actor: DeviceActor = principal.kind === 'operator' ? 'operator-web' : 'device-self';
+    const result = revokeDeviceAndDisconnect(deviceId, devices, this, actor);
+    if (result.reason === 'not-found') return this.json(res, 404, { error: 'device-not-found' });
+    const closed = result.closed ?? 0;
+    return this.json(res, 200, result.ok ? { ok: true, closed } : { ok: false, reason: 'persist-failed', closed });
+  }
+
+  /**
+   * `PATCH /api/devices/:id/grants` — LOWER a device's input grant.
+   *
+   * Same caller rule as revoke (a device only on itself, refused before any
+   * lookup), and likewise no input grant needed to give one up.
+   *
+   * The answer comes from what `setInput` returns, never from the principal
+   * authenticated at the top: the body arrives over later macrotasks, and the
+   * desktop can revoke the device in between.
+   */
+  private handleDeviceGrants(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+    principal: WebPrincipal,
+  ): void {
+    const devices = this.deviceManagement();
+    if (!devices) return this.json(res, 503, { error: 'device-management-unavailable' });
+    const deviceId = decodePathSegment(rawId) ?? '';
+    if (principal.kind === 'device' && deviceId !== principal.deviceId) {
+      return this.json(res, 403, { error: 'not-permitted' });
+    }
+    const actor: DeviceActor = principal.kind === 'operator' ? 'operator-web' : 'device-self';
+    this.readJsonBody(req, res, (body) => {
+      const b = body as Record<string, unknown> | null;
+      if (
+        typeof body !== 'object' ||
+        body === null ||
+        Array.isArray(body) ||
+        Object.keys(body).length !== 1 ||
+        typeof b?.['input'] !== 'boolean'
+      ) {
+        return this.json(res, 400, { error: 'invalid-grants' });
+      }
+      // RAISING a grant is desktop-only, for the operator token too. Pairing
+      // codes are desktop-only for the same reason: the operator token travels
+      // in URLs and QR codes, a far wider leak surface than the daemon pipe the
+      // desktop uses. On a server started without --allow-input this is a real
+      // boundary; with it, it is policy — either way nothing is written.
+      if (b['input'] === true) return this.json(res, 403, { error: 'grant-escalation-desktop-only' });
+      let result: { ok: boolean; reason?: 'not-found' | 'revoked' | 'persist-failed' };
+      try {
+        result = devices.setInput(deviceId, false, actor);
+      } catch (err) {
+        this.deps.log('warn', `[web] device grant change failed: ${errMsg(err)}`);
+        return this.json(res, 500, { error: 'device-grant-failed' });
+      }
+      if (result.reason === 'not-found') return this.json(res, 404, { error: 'device-not-found' });
+      if (result.reason === 'revoked') return this.json(res, 409, { error: 'device-revoked' });
+      // Cut the device's streams whether or not the write landed, as the
+      // desktop RPC does: the device is read-only in memory either way, and a
+      // phone holding an open stream would keep showing a composer that 403s.
+      this.disconnectDevice(deviceId);
+      return this.json(
+        res,
+        200,
+        result.ok ? { ok: true, grants: { input: false } } : { ok: false, reason: 'persist-failed', grants: { input: false } },
+      );
     });
   }
 
