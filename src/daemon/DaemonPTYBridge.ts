@@ -137,6 +137,13 @@ export class DaemonPTYBridge extends EventEmitter {
   private lastInputAt = 0;
   /** Monotonic stdin write counter used to detect input racing a scheduled paste. */
   private inputRevision = 0;
+  /**
+   * Like `inputRevision`, but advanced only by writes that carry a keystroke:
+   * a chunk made purely of SGR mouse and focus reports does not count. The
+   * remote terminal-prompt answer fences on it — the pointer moving over the
+   * pane is not someone answering the dialog.
+   */
+  private keyInputRevision = 0;
   private emptyShellPrompt = false;
   private completedShellCommand = false;
   private shellCommandRunning = false;
@@ -222,6 +229,7 @@ export class DaemonPTYBridge extends EventEmitter {
     if (data.length > 0) {
       this.lastInputAt = Date.now();
       this.inputRevision += 1;
+      if (data.replace(DaemonPTYBridge.NON_KEY_INPUT, '').length > 0) this.keyInputRevision += 1;
       this.emptyShellPrompt = false;
       this.completedShellCommand = false;
     }
@@ -369,6 +377,11 @@ export class DaemonPTYBridge extends EventEmitter {
 
   getInputRevision(): number {
     return this.inputRevision;
+  }
+
+  /** Stdin generation counting only writes that carry a keystroke (see the field). */
+  getKeyInputRevision(): number {
+    return this.keyInputRevision;
   }
 
   /** Actual submitted input/hook work, excluding terminal redraw activity. */
@@ -839,6 +852,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.inputInBracketedPaste = false;
     this.lastInputAt = 0;
     this.inputRevision = 0;
+    this.keyInputRevision = 0;
     this.shellCommandRunning = false;
     this.emptyShellPrompt = false;
     this.completedShellCommand = false;

@@ -31,6 +31,18 @@
 //     creates nothing — that is the CommanderEventCoalescer bar (a regex match
 //     is a suspicion, and this surface writes bytes), enforced here rather than
 //     described in a prompt.
+//
+//     ONE EXCEPTION: `kind:'terminal_prompt'`, the agent's own terminal dialog
+//     (Claude Code's "Do you want to proceed?"). It is created from the
+//     PermissionRequest hook AND from a confirmed detector attention, and it
+//     does not need the hook bar, because its ANSWER never trusts its origin:
+//     a remote answer is honoured only from a capable web client, only as a
+//     plain Yes/No option, and only after the live screen is re-read, re-parsed
+//     and found to be the same active dialog (fingerprint), with the pane
+//     unchanged between that read and the one-byte write (see
+//     resolveTerminalPrompt). A record whose parse was not whole carries no
+//     choices and can never be answered; `resolve` refuses it with
+//     `answer-in-terminal` and writes nothing.
 //  2. ONE MUTATION CHAIN. Every state change funnels through `this.chain`, so a
 //     read-modify-write can never interleave with another one across the awaits
 //     in resolve() (the screen re-read is seconds long). This is the
@@ -44,6 +56,13 @@
 
 import crypto from 'node:crypto';
 import { hasCriticalRisk } from '../../shared/criticalPatterns';
+import {
+  boundRecordText,
+  isClaudeFamilyAgent,
+  TERMINAL_PROMPT_COOLDOWN_MS,
+  TERMINAL_PROMPT_SUMMARY_MAX,
+} from './terminalPrompt';
+import { parseTerminalPrompt, terminalPromptAnswerability, type ParsedTerminalPrompt } from './terminalPromptParse';
 import {
   decideApprovalPress,
   keystrokesForAgent,
@@ -67,9 +86,50 @@ import type {
   ApprovalListResult,
   ApprovalRegistryApi,
   ApprovalRequest,
+  ApprovalResolveFailure,
   ApprovalResolveParams,
   ApprovalResolveResult,
 } from './types';
+import { TERMINAL_PROMPT_WEB_ANSWER } from './types';
+
+/** The pane's state at one instant: output bytes, key-carrying input, the PTY incarnation. */
+export interface PromptScreenMark {
+  bytes: number;
+  keyInputRevision: number;
+  incarnation: string | null;
+}
+
+/** No remote answer to a `terminal_prompt` this soon after it appeared (reflex / script guard). */
+export const TERMINAL_PROMPT_MIN_ANSWER_AGE_MS = 1_500;
+/** Renders an answer may take when the pane keeps moving under it. */
+export const TERMINAL_PROMPT_ANSWER_ATTEMPTS = 2;
+/** Creation-time screen reads (the hook can land before the dialog is drawn), and the gap between them. */
+export const TERMINAL_PROMPT_CREATE_READS = 3;
+export const TERMINAL_PROMPT_CREATE_READ_GAP_MS = 400;
+/**
+ * A record created without a whole parse gets this many later looks, this far
+ * apart: the PermissionRequest hook can land well before the dialog is drawn,
+ * and a first read that missed it must not leave the whole episode
+ * unanswerable.
+ */
+export const TERMINAL_PROMPT_UPGRADE_READS = 2;
+export const TERMINAL_PROMPT_UPGRADE_GAP_MS = 1_500;
+
+const sameMark = (a: PromptScreenMark, b: PromptScreenMark): boolean =>
+  a.bytes === b.bytes && a.keyInputRevision === b.keyInputRevision && a.incarnation === b.incarnation;
+
+/** "Bash command" → "Bash". */
+function toolFromTitle(title: string | undefined): string | undefined {
+  const m = title ? /^(\w[\w-]*) command$/i.exec(title) : null;
+  return m ? m[1] : undefined;
+}
+
+/** One line of log-safe text: control characters gone, capped. */
+function logText(raw: string | undefined, max = 160): string {
+  // eslint-disable-next-line no-control-regex -- stripping them is the point
+  const flat = (raw ?? '').replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
 
 /**
  * Copy a record for handing OUT (list results, event payloads). A spread alone
@@ -144,6 +204,17 @@ export interface ApprovalRegistryDeps {
    * defer immediately so the bridge falls back to the local permission flow.
    */
   notifyGateDropped?: (gateId: string) => void;
+  /**
+   * `terminal_prompt` — the pane's visible grid, with the pane's state
+   * captured at the SAME instant the grid was read. Null when the pane is gone
+   * or the grid cannot be read at its live geometry. Absent ⇒ records are
+   * created without a parse and can never be answered.
+   */
+  readPromptScreen?: (sessionId: string) => Promise<{ rows: readonly string[]; mark: PromptScreenMark } | null>;
+  /** `terminal_prompt` — the pane's state right now, read synchronously just before the write. */
+  promptScreenMark?: (sessionId: string) => PromptScreenMark | null;
+  /** Injected for tests: the wait between creation-time screen reads. */
+  promptReadDelay?: (ms: number) => Promise<void>;
 }
 
 export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
@@ -158,6 +229,19 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * across a rejection so one failure can never wedge every later mutation.
    */
   private chain: Promise<unknown> = Promise.resolve();
+  /**
+   * Per pane: until when no `terminal_prompt` may be created, stamped by a
+   * `screen-cleared` expiry. In memory only — a restarted daemon has new PTYs.
+   */
+  private readonly terminalPromptQuietUntil = new Map<string, number>();
+  /** Panes with a `terminal_prompt` creation (screen read) in flight. */
+  private readonly terminalPromptReads = new Set<string>();
+  /**
+   * Per pane, bumped by every `expireForSession`. A creation whose screen read
+   * straddled a sweep (the dialog was answered, the turn ended) is dropped
+   * rather than raising a card for a dialog that is already gone.
+   */
+  private readonly sweepSeq = new Map<string, number>();
 
   constructor(deps: ApprovalRegistryDeps) {
     this.deps = deps;
@@ -182,7 +266,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       loaded.requests.map((r) => {
         if (r.state !== 'pending') return r;
         invalidated++;
-        return { ...r, state: 'expired' as const, resolvedAt: this.now() };
+        // A terminal_prompt whose answer was already written counts as
+        // resolved: the key reached the old PTY.
+        return { ...r, state: r.pressedAt !== undefined ? 'resolved' as const : 'expired' as const, resolvedAt: this.now() };
       }),
     );
     if (invalidated > 0) {
@@ -370,6 +456,160 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   }
 
   /**
+   * The agent's own terminal dialog is on this pane (Claude Code's permission
+   * prompt — a PermissionRequest hook, or detector attention that survived its
+   * confirmation window). Reads the screen, parses the dialog, and records it
+   * as `kind:'terminal_prompt'`. The parse decides what the record may do: a
+   * whole dialog with a plain Yes gets `question`, `reason`, `choices` and a
+   * `promptFingerprint` (answerable by a capable client); anything else is the
+   * informational, never-answerable record.
+   *
+   * Created only when nothing is pending on the pane. A hook record (an
+   * AskUserQuestion, a gate) is more specific and may supersede this one; this
+   * one never supersedes anything, so one awaiting episode is one record and
+   * one push. Also refused inside the cooldown after a `screen-cleared` expiry
+   * (a dialog the detector keeps finding and the screen check keeps clearing
+   * cannot loop cards), for any agent outside the Claude family, and when the
+   * pane was swept (answered, turn ended, gone) while the screen was read.
+   *
+   * Fire-and-forget like `noteHookAwaitingInput`; the promise is for tests.
+   */
+  async noteTerminalPrompt(input: {
+    sessionId: string;
+    agent: string;
+    workspaceId?: string;
+    toolName?: string;
+    summary?: string;
+  }): Promise<void> {
+    const snapshot = { ...input };
+    const { sessionId } = snapshot;
+    if (!isClaudeFamilyAgent(snapshot.agent)) return;
+    if (this.terminalPromptReads.has(sessionId) || !this.mayCreateTerminalPrompt(sessionId)) return;
+    this.terminalPromptReads.add(sessionId);
+    const seq = this.sweepSeq.get(sessionId) ?? 0;
+    try {
+      const parsed = await this.readDialogForCreation(sessionId);
+      let createdId: string | null = null;
+      await this.mutate(() => {
+        if (!this.mayCreateTerminalPrompt(sessionId)) return [];
+        if ((this.sweepSeq.get(sessionId) ?? 0) !== seq) return [];
+        const created = this.buildTerminalPrompt(snapshot, parsed);
+        this.requests.push(created);
+        createdId = created.id;
+        return [{ type: 'create', request: copyRequest(created) }];
+      });
+      const id: string | null = createdId;
+      if (id !== null && this.deps.readPromptScreen && !this.requests.find((r) => r.id === id)?.promptFingerprint) {
+        void this.upgradeTerminalPromptLater(snapshot, id);
+      }
+    } finally {
+      this.terminalPromptReads.delete(sessionId);
+    }
+  }
+
+  /**
+   * Look again at a pane whose record was created without a whole parse. When
+   * the dialog is now readable and answerable, the record is replaced by one
+   * that carries it — `create` with `replaces`, so no second push. Stops as
+   * soon as the record is no longer that same unanswered, unparsed record.
+   */
+  private async upgradeTerminalPromptLater(
+    snapshot: { sessionId: string; agent: string; workspaceId?: string; toolName?: string; summary?: string },
+    id: string,
+  ): Promise<void> {
+    const delay = this.deps.promptReadDelay
+      ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms).unref?.(); }));
+    const stillStale = (): ApprovalRequest | undefined => this.requests.find(
+      (r) => r.id === id && r.state === 'pending' && !r.promptFingerprint && r.pressedAt === undefined,
+    );
+    for (let attempt = 0; attempt < TERMINAL_PROMPT_UPGRADE_READS; attempt++) {
+      await delay(TERMINAL_PROMPT_UPGRADE_GAP_MS);
+      if (!stillStale()) return;
+      const live = await this.readActiveDialog(snapshot.sessionId);
+      if (!live || !terminalPromptAnswerability(live.parsed, TERMINAL_PROMPT_SUMMARY_MAX).answerable) continue;
+      await this.mutate(() => {
+        const stale = stillStale();
+        if (!stale) return [];
+        const fresh = this.buildTerminalPrompt(snapshot, live.parsed);
+        stale.state = 'superseded';
+        stale.resolvedAt = this.now();
+        this.requests.push(fresh);
+        return [
+          { type: 'supersede', request: copyRequest(stale) },
+          { type: 'create', request: copyRequest(fresh), replaces: stale.id },
+        ];
+      });
+      return;
+    }
+  }
+
+  private mayCreateTerminalPrompt(sessionId: string): boolean {
+    if (this.requests.some((r) => r.state === 'pending' && r.sessionId === sessionId)) return false;
+    const quietUntil = this.terminalPromptQuietUntil.get(sessionId);
+    return quietUntil === undefined || this.now() >= quietUntil;
+  }
+
+  /**
+   * The ACTIVE dialog on the pane's screen, or null. Read a few times: the
+   * PermissionRequest hook can land before the dialog is drawn.
+   */
+  private async readDialogForCreation(sessionId: string): Promise<ParsedTerminalPrompt | null> {
+    if (!this.deps.readPromptScreen) return null;
+    const delay = this.deps.promptReadDelay
+      ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms).unref?.(); }));
+    for (let attempt = 1; attempt <= TERMINAL_PROMPT_CREATE_READS; attempt++) {
+      const parsed = await this.readActiveDialog(sessionId);
+      if (parsed) return parsed.parsed;
+      if (attempt < TERMINAL_PROMPT_CREATE_READS) await delay(TERMINAL_PROMPT_CREATE_READ_GAP_MS);
+    }
+    return null;
+  }
+
+  private async readActiveDialog(
+    sessionId: string,
+  ): Promise<{ parsed: ParsedTerminalPrompt; mark: PromptScreenMark } | null> {
+    let screen: { rows: readonly string[]; mark: PromptScreenMark } | null = null;
+    try {
+      screen = (await this.deps.readPromptScreen?.(sessionId)) ?? null;
+    } catch (err) {
+      this.deps.log?.('warn', `[approvals] prompt screen read failed for ${sessionId}: ${String(err)}`);
+    }
+    if (!screen) return null;
+    const parsed = parseTerminalPrompt(screen.rows);
+    return parsed && parsed.active ? { parsed, mark: screen.mark } : null;
+  }
+
+  /** A fresh `terminal_prompt` record from a (possibly absent) parse. */
+  private buildTerminalPrompt(
+    snapshot: { sessionId: string; agent: string; workspaceId?: string; toolName?: string; summary?: string },
+    parsed: ParsedTerminalPrompt | null,
+  ): ApprovalRequest {
+    const toolName = snapshot.toolName ?? toolFromTitle(parsed?.title);
+    const summary = (parsed ? boundRecordText(parsed.commandText, TERMINAL_PROMPT_SUMMARY_MAX) : undefined)
+      ?? snapshot.summary;
+    const answer = parsed ? terminalPromptAnswerability(parsed, TERMINAL_PROMPT_SUMMARY_MAX) : null;
+    return {
+      id: this.newId(),
+      sessionId: snapshot.sessionId,
+      ...(snapshot.workspaceId ? { workspaceId: snapshot.workspaceId } : {}),
+      agent: snapshot.agent,
+      kind: 'terminal_prompt',
+      ...(toolName ? { toolName } : {}),
+      ...(summary ? { summary } : {}),
+      ...(parsed && answer?.answerable
+        ? {
+            question: parsed.question,
+            ...(parsed.reason ? { reason: parsed.reason } : {}),
+            choices: answer.choices,
+            promptFingerprint: parsed.fingerprint,
+          }
+        : {}),
+      createdAt: this.now(),
+      state: 'pending',
+    };
+  }
+
+  /**
    * The turn this pane was blocked on is over (hook `agent.stop`), the pane
    * started a fresh session (`agent.session_start`), or the pane is gone. Any
    * pending request on it is answered-or-abandoned either way — nobody is
@@ -394,6 +634,16 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     reason: ApprovalExpiryReason,
     kind?: ApprovalRequest['kind'],
   ): Promise<void> {
+    // Stamped at call time, whether or not a record is expired: the cooldown is
+    // about the pane's awaiting episode, and a flapping dialog may not have
+    // minted a record yet when the screen check clears it.
+    this.sweepSeq.set(sessionId, (this.sweepSeq.get(sessionId) ?? 0) + 1);
+    if (reason === 'screen-cleared') {
+      this.terminalPromptQuietUntil.set(sessionId, this.now() + TERMINAL_PROMPT_COOLDOWN_MS);
+    } else if (reason === 'pane-gone') {
+      this.terminalPromptQuietUntil.delete(sessionId);
+      this.sweepSeq.delete(sessionId);
+    }
     return this.mutate(() => this.expirePendingWhere(
       (r) => r.sessionId === sessionId && (kind === undefined || r.kind === kind),
       reason,
@@ -456,6 +706,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           } as ApprovalResolveResult,
         };
       }
+
+      // The agent's own terminal dialog: its own rules, end to end.
+      if (record.kind === 'terminal_prompt') return this.resolveTerminalPrompt(params, record);
 
       // The caller's authority, re-checked inside the chain before ANY
       // mutation — including the prompt-gone expiry below.
@@ -741,6 +994,149 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     (result, durable) => (result.ok ? { ...result, durable } : result));
   }
 
+  /**
+   * Answer the agent's own terminal dialog from a phone. Runs inside the
+   * mutation link, like every resolve. Fails closed at every step; the only
+   * success writes ONE byte — the chosen option's digit, never Enter — and
+   * only once per record.
+   *
+   *   1. one answer per record: a `pressedAt` already set → `already-answered`
+   *   2. who: a human through the web route from a capable client (the route's
+   *      Symbol marker — JSON callers such as the pipe RPC or MCP
+   *      `approval_press` cannot carry it) → else `answer-in-terminal`; so is a
+   *      record whose parse was not whole (no choices, no fingerprint)
+   *   3. what: `choiceKey` one of the stored plain Yes/No choices, `decision`
+   *      matching it, a fingerprint echoed → else `invalid-choice`; the echoed
+   *      fingerprint equal to the record's → else `prompt-changed`
+   *   4. when: not within TERMINAL_PROMPT_MIN_ANSWER_AGE_MS of creation
+   *   5. the screen: re-read with the pane's state captured at that instant,
+   *      re-parsed; the dialog must be ACTIVE and hash to the same
+   *      fingerprint. Changed content supersedes the record with a fresh parse
+   *      (the phone re-reads it off SSE) and answers `prompt-changed`.
+   *   6. the write: after the last await, in the same synchronous block as the
+   *      write, the pane's state must be what it was at the read — no output,
+   *      no key input (pointer reports excluded), same incarnation. Otherwise
+   *      read again, up to TERMINAL_PROMPT_ANSWER_ATTEMPTS, then
+   *      `prompt-changed`.
+   *
+   * Every outcome is audited in one log line: who, which record and pane,
+   * which choice, the fingerprint's first 8 characters and the reason line —
+   * never the command.
+   */
+  private async resolveTerminalPrompt(
+    params: ApprovalResolveParams,
+    record: ApprovalRequest,
+  ): Promise<{ events?: ApprovalEvent[]; result: ApprovalResolveResult }> {
+    const choice = record.choices?.find((c) => c.key === params.choiceKey);
+    const audit = (outcome: string): void => {
+      this.deps.log?.(
+        'info',
+        `[approvals] terminal-prompt answer outcome=${outcome} record=${record.id} session=${record.sessionId} ` +
+          `by="${logText(sanitizeResolvedBy(params.resolvedBy))}" ` +
+          `choice=${params.choiceKey !== undefined ? logText(params.choiceKey, 4) : '-'}` +
+          `${choice ? `:${logText(choice.label, 20)}` : ''} ` +
+          `fp=${(record.promptFingerprint ?? '').slice(0, 8) || '-'} reason="${logText(record.reason)}"`,
+      );
+    };
+    const refuse = (reason: ApprovalResolveFailure): { result: ApprovalResolveResult } => {
+      audit(reason);
+      return { result: { ok: false, reason, request: copyRequest(record) } };
+    };
+
+    if (record.pressedAt !== undefined) return refuse('already-answered');
+    if (
+      (params.resolver ?? 'human') !== 'human'
+      || params.terminalPromptAnswer !== TERMINAL_PROMPT_WEB_ANSWER
+      || !record.promptFingerprint
+      || !record.choices?.length
+    ) {
+      return refuse('answer-in-terminal');
+    }
+    if (!choice || !params.promptFingerprint) return refuse('invalid-choice');
+    const expected = /^yes$/i.test(choice.label) ? 'approve' : 'deny';
+    if (params.decision !== expected) return refuse('invalid-choice');
+    if (params.promptFingerprint !== record.promptFingerprint) return refuse('prompt-changed');
+    if (this.now() - record.createdAt < TERMINAL_PROMPT_MIN_ANSWER_AGE_MS) return refuse('answer-too-soon');
+
+    const refusedEarly = await this.reauthorize(params, record);
+    if (refusedEarly) {
+      audit(refusedEarly.ok ? 'ok' : refusedEarly.reason);
+      return { result: refusedEarly };
+    }
+
+    for (let attempt = 1; attempt <= TERMINAL_PROMPT_ANSWER_ATTEMPTS; attempt++) {
+      const live = await this.readActiveDialog(record.sessionId);
+      if (!live) return refuse('prompt-changed');
+      if (live.parsed.fingerprint !== record.promptFingerprint) {
+        // A different dialog is up now. Replace the record with one for it, so
+        // the phone re-reads and can answer what is actually on screen.
+        const fresh = this.buildTerminalPrompt(
+          {
+            sessionId: record.sessionId,
+            agent: record.agent,
+            ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
+            ...(record.toolName ? { toolName: record.toolName } : {}),
+          },
+          live.parsed,
+        );
+        record.state = 'superseded';
+        record.resolvedAt = this.now();
+        this.requests.push(fresh);
+        audit('prompt-changed');
+        return {
+          events: [
+            { type: 'supersede', request: copyRequest(record) },
+            { type: 'create', request: copyRequest(fresh), replaces: record.id },
+          ],
+          result: { ok: false, reason: 'prompt-changed', request: copyRequest(record) },
+        };
+      }
+      const stillAnswerable = terminalPromptAnswerability(live.parsed, TERMINAL_PROMPT_SUMMARY_MAX);
+      if (!stillAnswerable.choices.some((c) => c.key === choice.key && c.label === choice.label)) {
+        return refuse('prompt-changed');
+      }
+
+      const refusedWrite = await this.reauthorize(params, record);
+      if (refusedWrite) {
+        audit(refusedWrite.ok ? 'ok' : refusedWrite.reason);
+        return { result: refusedWrite };
+      }
+
+      // ── Synchronous from here to the write: nothing can move in between. ──
+      const now = this.deps.promptScreenMark?.(record.sessionId) ?? null;
+      if (!now || !sameMark(now, live.mark)) {
+        if (attempt < TERMINAL_PROMPT_ANSWER_ATTEMPTS) continue;
+        return refuse('prompt-changed');
+      }
+      // The CAS: one write per record, ever.
+      record.pressedAt = this.now();
+      let delivered = false;
+      try {
+        delivered = this.deps.writeToSession(record.sessionId, choice.key);
+      } catch (err) {
+        this.deps.log?.('warn', `[approvals] write failed for ${record.sessionId}: ${String(err)}`);
+      }
+      if (!delivered) {
+        record.state = 'expired';
+        record.resolvedAt = this.now();
+        audit('prompt-gone');
+        return {
+          events: [{ type: 'expire', request: copyRequest(record) }],
+          result: { ok: false, reason: 'prompt-gone', request: copyRequest(record) },
+        };
+      }
+      record.decision = expected;
+      record.selectedChoiceKey = choice.key;
+      record.resolvedBy = sanitizeResolvedBy(params.resolvedBy);
+      audit('pressed');
+      return {
+        events: [{ type: 'press', request: copyRequest(record) }],
+        result: { ok: true, request: copyRequest(record), durable: true },
+      };
+    }
+    return refuse('prompt-changed');
+  }
+
   // ── Internals ────────────────────────────────────────────────────────────
 
   /**
@@ -786,6 +1182,14 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     const events: ApprovalEvent[] = [];
     for (const r of this.requests) {
       if (r.state !== 'pending' || !match(r)) continue;
+      // A terminal_prompt whose remote answer was written RESOLVES when its
+      // dialog is gone (the answered path, the screen check, the turn's end).
+      if (r.pressedAt !== undefined) {
+        r.state = 'resolved';
+        r.resolvedAt = this.now();
+        events.push({ type: 'resolve', request: copyRequest(r) });
+        continue;
+      }
       r.state = 'expired';
       r.resolvedAt = this.now();
       // #783 — cancel the broker waiter so the bridge defers immediately.

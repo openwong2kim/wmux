@@ -16,6 +16,8 @@
 import { hasElevatedRisk } from '../../shared/criticalPatterns';
 import type { ApprovalRequest } from '../approvals/types';
 
+const SUDO = /(?:^|[\s;&|(`])sudo\b/;
+
 /**
  * Does anything the agent wrote name a destructive action, at either tier?
  *
@@ -34,6 +36,18 @@ export function approvalHasElevatedRisk(request: ApprovalRequest): boolean {
   if (request.risk === 'critical') return true;
   if (request.kind === 'awaiting_permission') {
     return hasElevatedRisk(request.toolName, request.toolInputSummary);
+  }
+  // The agent's own terminal dialog: the same shape as a gate, with the input
+  // summary under `summary` and the permission-rule line under `reason` (which
+  // names the rule, e.g. `Bash(rm -rf *)`, even when the summary is absent).
+  //
+  // Privilege escalation counts here too: a phone can answer this dialog, and
+  // `sudo` behind a one-word Yes is exactly the prompt that deserves the
+  // louder treatment. Kept local rather than added to the shared list, which
+  // also drives the PTY output scanner.
+  if (request.kind === 'terminal_prompt') {
+    return hasElevatedRisk(request.toolName, request.summary, request.reason)
+      || [request.summary, request.reason].some((text) => !!text && SUDO.test(text));
   }
   return hasElevatedRisk(
     request.question,

@@ -335,6 +335,28 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       managed.bridge.noteInput(data, true);
       return true;
     },
+    // terminal_prompt — the visible grid at the live geometry, and the pane's
+    // state (output bytes, key-carrying input, incarnation) at the instant the
+    // ring was read. renderPaneScreen reads the ring synchronously before its
+    // first await, so the revision and incarnation below are the same instant.
+    readPromptScreen: async (sessionId) => {
+      const managed = sessionManager.getSession(sessionId);
+      if (!managed) return null;
+      const keyInputRevision = managed.bridge.getKeyInputRevision();
+      const incarnation = managed.meta.incarnationId ?? null;
+      const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot);
+      if (!frame) return null;
+      return { rows: frame.rows, mark: { bytes: frame.mark, keyInputRevision, incarnation } };
+    },
+    promptScreenMark: (sessionId) => {
+      const managed = sessionManager.getSession(sessionId);
+      if (!managed) return null;
+      return {
+        bytes: managed.ringBuffer.totalBytesWritten,
+        keyInputRevision: managed.bridge.getKeyInputRevision(),
+        incarnation: managed.meta.incarnationId ?? null,
+      };
+    },
     // #783 — wake the GateBroker waiter when a gate record is resolved by the
     // phone. The broker holds the bridge RPC open; this call closes it.
     notifyGateResolved: (gateId, decision) => {
@@ -3297,7 +3319,15 @@ function registerRpcHandlers(
     approvals: () => approvalRegistry ? {
       pendingFor: (id) => {
         const pending = approvalRegistry?.list().pending.find((request) => request.sessionId === id);
-        return pending ? { id: pending.id, kind: pending.kind } : undefined;
+        return pending
+          ? {
+            id: pending.id,
+            kind: pending.kind,
+            // Answerable = a whole parse AND not answered yet (a pressed record
+            // would only 409 already-answered).
+            answerable: !!pending.promptFingerprint && !!pending.choices?.length && pending.pressedAt === undefined,
+          }
+          : undefined;
       },
     } : null,
     readScreen: async (id) => {
@@ -3485,11 +3515,13 @@ function registerRpcHandlers(
         // completion contradicted by the pane's tier-1/2 identity must not
         // broadcast (or drive phone liveness) when its window expires either.
         const screenSlug = agentDisplayToSlug(data.agent);
-        if (detectorSuppressedBy(canonicalIdentityFor(agentProcessTracker, sessionId, screenSlug), screenSlug)) return;
+        // `false` also tells HookIngest not to record a terminal_prompt for it.
+        if (detectorSuppressedBy(canonicalIdentityFor(agentProcessTracker, sessionId, screenSlug), screenSlug)) return false;
         sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status as AgentEventStatus);
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
         webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(sessionId, data, Date.now()));
+        return true;
       },
       // #919 (Codex #8) — every resolved hook signal proves the bridge is
       // alive on this pane RIGHT NOW, banner or not. Arming here means a quiet
@@ -5362,6 +5394,15 @@ function wireEvents(
 
   sessionManager.on('session:answered', (payload: { sessionId: string; reason?: 'input' | 'screen-cleared' }) => {
     awaitingVerifier.forget(payload.sessionId);
+    // The dialog is closed, so its informational terminal_prompt record is done
+    // too. Before any early return below: a pane with no detected agent name
+    // would otherwise keep its card. A screen-cleared release also starts the
+    // registry's creation cooldown for the pane.
+    void approvalRegistry?.expireForSession(
+      payload.sessionId,
+      payload.reason === 'screen-cleared' ? 'screen-cleared' : 'answered-locally',
+      'terminal_prompt',
+    );
     const managed = sessionManager.getSession(payload.sessionId);
     const screenAgent = managed?.bridge.getLastAgent() ?? null;
     const slug = (screenAgent ? agentDisplayToSlug(screenAgent) : undefined) ?? managed?.meta.lastDetectedAgent;
@@ -6077,6 +6118,9 @@ async function main(): Promise<void> {
       deferredPush.forget(event.request.id);
       return;
     }
+    // A terminal_prompt re-parsed after its dialog changed is the same awaiting
+    // episode: the phone refreshes off SSE, and nobody is buzzed twice.
+    if (event.replaces) return;
     const r = event.request;
     const payload = buildApprovalPushPayload(r);
     // The outbound sink is a separate channel from the phone, and presence says

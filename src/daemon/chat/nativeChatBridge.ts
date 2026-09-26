@@ -59,7 +59,7 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
    * Null while the approval registry is not wired: treated as "may be pending".
    * `pendingFor` names the pane's pending record and its kind.
    */
-  approvals(): { pendingFor(id: string): { id: string; kind: string } | undefined } | null;
+  approvals(): { pendingFor(id: string): { id: string; kind: string; answerable?: boolean } | undefined } | null;
   readScreen(id: string): Promise<ChatScreenRows | null>;
   agentProcessAlive(id: string, slug: string): Promise<boolean>;
   /** Writes to the pane PTY and notes the input; false when the pane is gone. */
@@ -251,8 +251,13 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     // Producer-side gate: the orchestrator brain's pane never shows chat state.
     if (isBrainPty({ id, env: pane?.meta.env })) return undefined;
     const pending = deps.approvals()?.pendingFor(id);
-    // An `approvalId` only for a record the phone can act on.
-    if (pending) return pending.kind === 'terminal_prompt' ? { by: 'terminal' } : { by: 'approval', approvalId: pending.id };
+    // A terminal_prompt reads as the terminal; the web layer lifts it to an
+    // approval only for a capable caller and an answerable record.
+    if (pending) {
+      return pending.kind === 'terminal_prompt'
+        ? { by: 'terminal', terminalPrompt: { approvalId: pending.id, answerable: pending.answerable === true } }
+        : { by: 'approval', approvalId: pending.id };
+    }
     if (resolution.source === 'managed') return undefined;
     if (resolution.status.agentStatus === 'awaiting_input' || deps.agentState(id).agentStatus === 'awaiting_input') return { by: 'terminal' };
     // The same screen gate the send runs, so a dialog that stays open shows on

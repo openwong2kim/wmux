@@ -1,6 +1,6 @@
 // The Claude Code permission-dialog parser and its cursor-free fingerprint.
 import { describe, it, expect } from 'vitest';
-import { parseTerminalPrompt, PROMPT_MAX_COMMAND_LINES } from '../terminalPromptParse';
+import { parseTerminalPrompt, PROMPT_MAX_COMMAND_LINES, terminalPromptAnswerability } from '../terminalPromptParse';
 import { generateTextSnapshot } from '../../HeadlessSnapshot';
 
 // The text of a real dialog raised by a user `permissions.ask` rule in a
@@ -113,6 +113,66 @@ describe('parseTerminalPrompt', () => {
     const rows = [...DIALOG];
     rows.splice(6, 0, ...Array.from({ length: 40 }, (_, i) => `   line ${i}`));
     expect(parseTerminalPrompt(rows)?.commandLines).toHaveLength(PROMPT_MAX_COMMAND_LINES);
+  });
+
+  it('two dialogs alike for their first 200 characters but not after hash apart', () => {
+    const long = (tail: string) => DIALOG.map((row) =>
+      row === '   rm -rf build/cache' ? `   rm -rf ${'x'.repeat(220)}${tail}` : row);
+    const a = parseTerminalPrompt(long('/alpha'))!;
+    const b = parseTerminalPrompt(long('/beta'))!;
+    expect(a.commandLines[0]).toBe(b.commandLines[0]);
+    expect(a.fingerprint).not.toBe(b.fingerprint);
+    // …and a cut field makes the dialog unanswerable.
+    expect(a.truncated).toBe(true);
+    expect(terminalPromptAnswerability(a, 200).answerable).toBe(false);
+  });
+
+  it('the fingerprint survives the TUI breaking a command over different rows', () => {
+    const one = [...DIALOG];
+    one.splice(5, 1, '   rm -rf build/cache other/dir');
+    const two = [...DIALOG];
+    two.splice(5, 1, '   rm -rf build/cache', '   other/dir');
+    expect(parseTerminalPrompt(one)!.fingerprint).toBe(parseTerminalPrompt(two)!.fingerprint);
+  });
+
+  it('is active only at the bottom of the screen with one cursor and the footer under it', () => {
+    expect(parseTerminalPrompt(DIALOG)!.active).toBe(true);
+    // Printed into the scrollback by `cat`, with a shell prompt below it.
+    expect(parseTerminalPrompt([...DIALOG, '$ '])!.active).toBe(false);
+    // No cursor on any option.
+    expect(parseTerminalPrompt(DIALOG.map((r) => r.replace(' ❯ 1. Yes', '   1. Yes')))!.active).toBe(false);
+    // No footer.
+    expect(parseTerminalPrompt(DIALOG.filter((r) => !r.includes('Esc to cancel')))!.active).toBe(false);
+  });
+
+  it('a dialog taller than the viewport (top rule off screen) is not answerable', () => {
+    const cut = DIALOG.slice(3);
+    const parsed = parseTerminalPrompt(cut)!;
+    expect(parsed.topRuleFound).toBe(false);
+    expect(terminalPromptAnswerability(parsed, 200)).toEqual({ answerable: false, choices: [] });
+  });
+
+  it('only the plain Yes and No are answerable choices; "don\'t ask again" never is', () => {
+    const rows = [
+      ...DIALOG.slice(0, 11),
+      ' ❯ 1. Yes',
+      '   2. Yes, and don\'t ask again for rm commands in this project',
+      '   3. No',
+      '',
+      ' Esc to cancel · Tab to amend',
+    ];
+    expect(terminalPromptAnswerability(parseTerminalPrompt(rows)!, 200)).toEqual({
+      answerable: true,
+      choices: [{ key: '1', label: 'Yes' }, { key: '3', label: 'No' }],
+    });
+    const noPlainYes = rows.map((r) => r.replace(' ❯ 1. Yes', ' ❯ 1. Yes, allow once'));
+    expect(terminalPromptAnswerability(parseTerminalPrompt(noPlainYes)!, 200).answerable).toBe(false);
+  });
+
+  it('a command longer than the summary can carry is not answerable', () => {
+    const rows = DIALOG.map((r) => (r === '   Remove the build cache' ? `   ${'word '.repeat(45)}` : r));
+    expect(terminalPromptAnswerability(parseTerminalPrompt(rows)!, 200).answerable).toBe(false);
+    expect(terminalPromptAnswerability(parseTerminalPrompt(DIALOG)!, 200).answerable).toBe(true);
   });
 
   it('parses the dialog off a real headless render of its bytes', async () => {

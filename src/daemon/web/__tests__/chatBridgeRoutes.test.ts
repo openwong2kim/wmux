@@ -488,6 +488,17 @@ describe('native chat routes (contract v0.3.1)', () => {
       const { body } = await turns(bearer(info.token as string));
       expect(body.chat.blocked).toEqual({ by: 'approval', approvalId: 'ap-1' });
     });
+
+    it('a terminal_prompt is an approval only for a capable caller and an answerable record', async () => {
+      const info = await start();
+      const h = bearer(info.token as string);
+      const capable = { ...h, 'X-Wmux-Client-Caps': 'something-else, terminal-prompt-answer' };
+      chatBox.blocked = { by: 'terminal', terminalPrompt: { approvalId: 'ap-tp', answerable: true } };
+      expect((await turns(capable)).body.chat.blocked).toEqual({ by: 'approval', approvalId: 'ap-tp' });
+      expect((await turns(h)).body.chat.blocked).toEqual({ by: 'terminal' });
+      chatBox.blocked = { by: 'terminal', terminalPrompt: { approvalId: 'ap-tp', answerable: false } };
+      expect((await turns(capable)).body.chat.blocked).toEqual({ by: 'terminal' });
+    });
   });
 
   // -------------------------------------------------------------------- send
@@ -1068,6 +1079,25 @@ describe('native chat routes (contract v0.3.1)', () => {
         expect(JSON.stringify(backlog)).not.toContain('chat.');
         expect(other.box.wire).not.toContain('chat.');
       } finally { events.close(); other.close(); }
+    });
+
+    it('each watcher gets the view its declared capability allows', async () => {
+      const info = await start();
+      const h = bearer(info.token as string);
+      const capable = { ...h, 'X-Wmux-Client-Caps': 'terminal-prompt-answer' };
+      const legacyEvents = await openEvents(h);
+      const capableEvents = await openEvents(capable);
+      try {
+        await turns(h);
+        chatBox.blocked = { by: 'terminal', terminalPrompt: { approvalId: 'ap-tp', answerable: true } };
+        await turns(h);
+        await until(() => legacyEvents.box.wire.includes('event: chat.blocked') && capableEvents.box.wire.includes('event: chat.blocked'));
+        const dataOf = (wire: string) => JSON.parse(wire.slice(wire.indexOf('event: chat.blocked')).split('\n')[1].slice('data: '.length));
+        expect(dataOf(legacyEvents.box.wire)).toMatchObject({ by: 'terminal' });
+        expect(dataOf(legacyEvents.box.wire)).not.toHaveProperty('approvalId');
+        expect(dataOf(capableEvents.box.wire)).toMatchObject({ by: 'approval', approvalId: 'ap-tp' });
+        expect(legacyEvents.box.wire + capableEvents.box.wire).not.toContain('terminalPrompt');
+      } finally { legacyEvents.close(); capableEvents.close(); }
     });
 
     it('an approval for a watched pane triggers a coalesced recompute', async () => {

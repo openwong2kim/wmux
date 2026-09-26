@@ -142,3 +142,17 @@ describe('DaemonPTYBridge — shared answered path', () => {
     expect(JSON.stringify(h.activity)).not.toContain('q');
   });
 });
+
+describe('DaemonPTYBridge — key input revision', () => {
+  it('advances on a keystroke, not on pointer or focus reports', () => {
+    const bridge = new DaemonPTYBridge();
+    const before = bridge.getKeyInputRevision();
+    bridge.noteInput('\x1b[<35;40;12M\x1b[<35;41;12M');
+    bridge.noteInput('\x1b[I');
+    expect(bridge.getKeyInputRevision()).toBe(before);
+    expect(bridge.getInputRevision()).toBe(2);
+    bridge.noteInput('\x1b[<35;40;12Mx');
+    expect(bridge.getKeyInputRevision()).toBe(before + 1);
+    bridge.cleanup();
+  });
+});

@@ -136,6 +136,12 @@ function coerceRequest(raw: unknown): ApprovalRequest | null {
   if (toolName) out.toolName = toolName;
   const summary = boundRecordText(o['summary'], TERMINAL_PROMPT_SUMMARY_MAX);
   if (summary) out.summary = summary;
+  const reason = boundRecordText(o['reason'], TERMINAL_PROMPT_SUMMARY_MAX);
+  if (reason) out.reason = reason;
+  if (typeof o['promptFingerprint'] === 'string' && /^[0-9a-f]{32}$/.test(o['promptFingerprint'])) {
+    out.promptFingerprint = o['promptFingerprint'];
+  }
+  if (typeof o['pressedAt'] === 'number' && Number.isFinite(o['pressedAt'])) out.pressedAt = o['pressedAt'];
   return out;
 }
 

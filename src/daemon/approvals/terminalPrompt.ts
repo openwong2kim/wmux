@@ -3,9 +3,10 @@
 // AskUserQuestion select wmux can answer.
 //
 // Two consumers read these: the approval registry, which records such a
-// dialog as an informational `terminal_prompt` (never answerable remotely),
-// and the daemon's awaiting-state screen verifier, which releases a pane once
-// the dialog has gone from its screen.
+// dialog as a `terminal_prompt` (answerable from a capable phone only under the
+// fences in ApprovalRegistry.resolveTerminalPrompt), and the daemon's
+// awaiting-state screen verifier, which releases a pane once the dialog has
+// gone from its screen.
 
 /**
  * The agents whose dialog shape the screen predicates and the
