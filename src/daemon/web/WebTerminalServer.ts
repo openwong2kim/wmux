@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import { expandTilde } from '../../shared/expandTilde';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { Readable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import type { DaemonSessionManager, ManagedSession } from '../DaemonSessionManager';
 // Types only — the registry implementation, its persistence and its
@@ -2022,7 +2023,11 @@ export class WebTerminalServer {
     // Admit before opening a file or registering any long-lived listeners.
     const streamsResponse = isStream || (req.method === 'GET'
       && /^\/api\/sessions\/[^/]+\/turns\/(file|image)$/.test(p));
-    if (streamsResponse && !this.streamResponses.acquire(this.watcherKey(principal), res)) {
+    if (streamsResponse && !this.streamResponses.acquire(this.watcherKey(principal), res, {
+      exemptCeiling: principal.kind === 'operator', sse: isStream,
+      maxQueuedBytes: p === '/api/stream' ? 16 * 1024 * 1024 : undefined,
+      log: (reason) => this.deps.log('warn', `[web] stream closed: ${reason}`),
+    })) {
       res.setHeader('Retry-After', '1');
       return this.json(res, 429, { error: 'too-many-streams' });
     }
@@ -4229,7 +4234,12 @@ export class WebTerminalServer {
         ...this.securityHeaders(),
         'Content-Length': String(body.length),
       });
-      res.end(body);
+      // Respect response backpressure instead of ending with an 8 MB chunk.
+      const source = Readable.from((function* () {
+        for (let offset = 0; offset < body.length; offset += 64 * 1024) yield body.subarray(offset, offset + 64 * 1024);
+      })());
+      res.once('close', () => source.destroy());
+      source.pipe(res);
     } catch {
       // A read that fails after the handle opened (permissions, a device that
       // went away) is the same answer as a file that was never there. Unless

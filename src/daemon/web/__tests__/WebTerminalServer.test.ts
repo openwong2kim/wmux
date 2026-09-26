@@ -2921,19 +2921,32 @@ describe('WebTerminalServer', () => {
     expect(server.refreshPairCode().pairCode).toMatch(pairCodePattern);
   });
 
+  it('admits more than eight operator remote pane streams plus host events', async () => {
+    const info = await startWithTranscript();
+    const abort = new AbortController();
+    try {
+      const panes = await Promise.all(Array.from({ length: 10 }, () => fetch(`${base()}/api/stream?session=s1`, {
+        headers: bearer(info.token as string), signal: abort.signal,
+      })));
+      expect(panes.every((response) => response.status === 200)).toBe(true);
+      const events = await fetch(`${base()}/api/events`, { headers: { ...bearer(info.token as string), Accept: 'text/event-stream' }, signal: abort.signal });
+      expect(events.status).toBe(200);
+    } finally { abort.abort(); }
+  });
+
   it('shares the stream ceiling across SSE and media, releases slots, and keeps quiet SSE alive', async () => {
     const limits = new StreamResponseLimits(300, 2);
     const acquire = StreamResponseLimits.prototype.acquire;
     const admission = vi.spyOn(StreamResponseLimits.prototype, 'acquire')
-      .mockImplementation((key, response) => acquire.call(limits, key, response));
+      .mockImplementation((key, response, options) => acquire.call(limits, key, response, options));
     const startHeartbeat = heartbeat.startSseHeartbeat;
     const pings = vi.spyOn(heartbeat, 'startSseHeartbeat')
       .mockImplementation((response) => startHeartbeat(response, 25));
     const abort = new AbortController();
     try {
       const info = await startWithTranscript();
-      const token = info.token as string;
-      const headers = bearer(token);
+      const device = await pairDevice('Limited viewer');
+      const headers = bearer(device.token);
       const pane = await fetch(`${base()}/api/stream?session=s1`, { headers, signal: abort.signal });
       const events = await fetch(`${base()}/api/events`, {
         headers: { ...headers, Accept: 'text/event-stream' }, signal: abort.signal,
@@ -6794,7 +6807,7 @@ describe('WebTerminalServer', () => {
       const limits = new StreamResponseLimits(200);
       const acquire = StreamResponseLimits.prototype.acquire;
       const admission = vi.spyOn(StreamResponseLimits.prototype, 'acquire')
-        .mockImplementation((key, response) => acquire.call(limits, key, response));
+        .mockImplementation((key, response, options) => acquire.call(limits, key, response, options));
       const dir = tmpTree();
       const file = sparse(dir, 'stalled.mp4', bmff('isom'), 32 * 1024 * 1024);
       managed.meta.spawnCwd = dir;
