@@ -213,7 +213,7 @@ export const ms = {
   'settings.sidebarPosition': 'Kedudukan bar sisi',
   'settings.sidebarPositionDesc': 'Kiri atau kanan kawasan terminal',
   'settings.sidebarAttentionFirst': 'Baris yang menunggu anda di atas',
-  'settings.sidebarAttentionFirstDesc': 'Sematkan ruang kerja yang ejennya sedang menunggu anda di bahagian atas bar sisi. Dimatikan secara lalai: baris kekal di tempat anda menyeretnya. Semasa dihidupkan, penyusunan semula secara seret dijeda.',
+  'settings.sidebarAttentionFirstDesc': 'Alihkan ruang kerja yang ejennya sedang menunggu anda ke bahagian atas bar sisi. Dimatikan secara lalai: baris kekal di tempat anda menyeretnya. Semasa dihidupkan, penyusunan semula secara seret dijeda.',
   'settings.sidebarShowPaneCoordinates': 'Tunjukkan koordinat anak tetingkap',
   'settings.sidebarShowPaneCoordinatesDesc': 'Tunjukkan koordinat gaya w1-2 yang dijana automatik dalam senarai ejen bagi anak tetingkap yang belum anda beri nama. Dihidupkan secara lalai. Anak tetingkap yang anda namakan semula sentiasa menunjukkan namanya, walau apa pun tetapan ini.',
   'settings.sidebarLeft': 'Kiri',

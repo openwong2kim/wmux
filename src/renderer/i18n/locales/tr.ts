@@ -213,7 +213,7 @@ export const tr = {
   'settings.sidebarPosition': 'Kenar çubuğu konumu',
   'settings.sidebarPositionDesc': 'Terminal alanının solu veya sağı',
   'settings.sidebarAttentionFirst': 'Seni bekleyen satırlar üstte',
-  'settings.sidebarAttentionFirstDesc': 'Aracısı seni bekleyen çalışma alanlarını kenar çubuğunun en üstüne sabitle. Varsayılan olarak kapalı: satırlar sürüklediğin yerde kalır. Açıkken sürükleyerek sıralama duraklatılır.',
+  'settings.sidebarAttentionFirstDesc': 'Aracısı seni bekleyen çalışma alanlarını kenar çubuğunun en üstüne taşı. Varsayılan olarak kapalı: satırlar sürüklediğin yerde kalır. Açıkken sürükleyerek sıralama duraklatılır.',
   'settings.sidebarShowPaneCoordinates': 'Bölme koordinatlarını göster',
   'settings.sidebarShowPaneCoordinatesDesc': 'Ad vermediğiniz bölmeler için aracı listesinde otomatik oluşturulan w1-2 biçimindeki koordinatı gösterir. Varsayılan olarak açık. Yeniden adlandırdığınız bir bölme her durumda kendi adını gösterir.',
   'settings.sidebarLeft': 'Sol',
