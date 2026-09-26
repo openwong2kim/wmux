@@ -70,8 +70,10 @@ export interface PhoneSidebarTaskSummary {
 
 export interface PhoneSidebarWorkspace {
   id: string;
-  /** Position in the desktop's manual (unsorted, unfiltered) workspace list. */
+  /** Position in the desktop's manual (unsorted, unfiltered) workspace list.
+   *  Pinned rows lead that list, so they carry the lowest values. */
   order: number;
+  /** Pinned to the top of the desktop sidebar. */
   pinned: boolean;
   color?: WorkspaceColorId;
   gitBranch?: string;

@@ -33,7 +33,8 @@ export default function MiniSidebar() {
   // Needs-you-first ordering (attentionOrder.ts) — display only, same setting
   // and same roll-up as the full sidebar so the two surfaces never disagree.
   // #1481 — the same three-way order as the full sidebar; reorder pauses for
-  // any non-manual mode (the drop is judged in display order).
+  // any non-manual mode (the drop is judged in display order), except among
+  // pinned rows.
   const sidebarSortMode = useStore((s) => s.sidebarSortMode);
   const sidebarAttentionFirst = sidebarSortMode !== 'manual';
   // Pinned to top: the pinned group shows as stored in every order, so its
