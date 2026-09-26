@@ -1,3 +1,136 @@
+## [3.62.0] — 2026-09-27
+
+### Added
+
+- **Phone Chat drives the agent already running in a pane.** A paired phone can now read and send to the native Claude, Codex or OpenCode conversation in a terminal pane, and start Claude or Codex in an empty shell with a first message. Sends are idempotent and say whether anything reached the terminal, so an uncertain delivery is never resent. A message sent while Claude is still working is queued behind its turn, as in the desktop Chat view, and says so. Launch modes that turn approvals or the sandbox off stay unavailable unless the host runs `wmux web --allow-dangerous-launch`, and each such launch shows a notice on the computer. (#1520)
+
+- **Stop a running reply from Chat view.** While a turn runs, a Stop button
+  (or Esc in an empty composer) interrupts Claude or Codex the way their own
+  terminal does, and says Stopping…, then Stopped — or that the agent kept
+  running. Before, Esc in Chat view did nothing and gave no sign of it. (#1522)
+
+- **Send to Claude while it works.** A message sent mid-reply is queued by
+  Claude, as in the terminal, and shows as Queued until it runs. Before, the
+  composer refused to send until the reply finished. (#1522)
+
+- **Mention another agent from the keyboard.** ⌘⇧2 on macOS, F2 on Windows and
+  Linux, opens a picker of the other agent panes across your workspaces. Enter
+  puts a one-line reference — the workspace and pane ids an agent needs for
+  `send_message` — at the cursor of the focused agent, or into its Chat view
+  composer. ⌘Enter / Ctrl+Enter with a message sends it straight to that pane
+  and says on the spot whether it was delivered or refused; the receiving agent
+  sees it marked as sent by the user, not by the agent it came through. Sidebar agent rows
+  get an `@` button that does the same insert. Before, you dragged a workspace
+  card or tab into the terminal and got a whole markdown block. The key is only
+  taken while an agent pane has focus, so F2 still reaches mc, htop and vim in a
+  shell; rebind or switch it off in Settings → Shortcuts. (#1526)
+
+- **The phone's Fleet view can show what the desktop sidebar shows.** Session and workspace lists from the daemon now carry the tab title and pane label, each workspace's git branch, ahead/behind and worktree state, pin, sidebar order and color, and the link from a fan-out task to the workspace that owns it with a task count. These fields ride along while the desktop app is running. Without it the phone gets the same lists as before, plus each session's workspace id.
+
+- Phone: browse folder names under your home folder to pick where a new pane starts, instead of typing the path (`GET /api/folders`, advertised as `folderBrowse`).
+
+- **Fan-out can run each task on a different agent CLI, and presets make that one word.** An orchestrator can now call `fanout_start` with `agents: [{ agent, model? }]` (one per title) or `preset: "<name>"` to run the same prompt on Claude Code, Codex and Grok side by side. Presets live in Settings → Roles & fan-out → Fan-out presets: agent and model rows, a per-CLI unattended switch, and a worktree switch. Image and Video presets ship ready to use. Only CLIs verified end to end can be chosen; the agent is always a name from a fixed list, never a command. (#1535)
+
+- **A preset can skip the git worktree.** For work you compare by eye, such as generated images or video, each task now gets its own folder under the wmux data folder instead of a branch, and no repository is needed. Closing or cleaning up the task never deletes that folder, and in Fleet its row opens the folder instead of a diff. (#1535)
+
+- Phone: see which devices are paired and when each was last seen, revoke your own phone, and turn off its input permission from the phone. Revoking another device stays on the desktop (or the operator token), and turning permission on stays on the desktop (`GET /api/devices`, advertised as `deviceManagement`).
+
+- Phone: search across the host from the phone — agent conversations (Claude and Codex), pane names and run history, and pane scrollback — with results that jump to the matching turn and say which panes could not be searched (`GET /api/search`, advertised as `search`).
+
+- **Keep Fleet open after jumping.** An optional session-only checkbox preserves search and filters while handing input focus to the selected agent. Closing Fleet later does not return focus to the original pane. (#1548)
+
+- **Pin workspaces to the top of the sidebar.** The workspace menu offers Pin to top / Unpin in every sort order. Pinned workspaces stay first in the sidebar and the collapsed rail, in the order you drag them into; only the rows below follow Attention or Recent. Ctrl/⌘+number and the phone Fleet follow the same pinned-first order, and existing pins carry over as pinned-to-top. (#1549)
+
+- **The sidebar's Fleet shortcut shows live counts.** It reads `needs you 2 · running 3` beside Fleet, hiding any count that is zero; the compact rail shows a single dot while something needs you. The numbers are Fleet's own Needs you and Running sections, so the two always agree, and screen readers hear them in the button's name. (#1555)
+
+### Changed
+
+- **OS notifications say where they came from.** The native OS toast now
+  starts with `workspace › tab`, so "Task finished" from one of several
+  agents says which one finished. A notification without a sending pane
+  (CLI or MCP `notify`) names the workspace alone. (#1530, thanks @p-poppe)
+
+- Revoking a device and changing its input permission are now audit-logged with who did it (desktop, operator or the device itself).
+
+### Fixed
+
+- **A relaunched Codex gets its sidebar row back right away after an update.**
+  After an app update restarted your panes, a Codex you resumed from the Resume
+  pill had no row in the sidebar until it finished its first turn, while Claude
+  panes came back immediately. wmux now recognises the agent from the process
+  running in the pane, so Codex and other agents without a start-up hook show up
+  within seconds of launch. An agent that has exited is not brought back. (#1521)
+
+- **Images dropped on Chat view are visible.** A dropped or pasted image
+  appears as a chip in the composer (remove it with × or Backspace) and in the
+  sent message; a file that cannot be attached says why. Before, the drop went
+  into the hidden terminal and nothing on screen showed it. (#1522)
+
+- **No empty reply block or blank gap while the agent works.** The thread
+  shows one working line instead of an empty assistant row followed by a
+  screen-high gap. (#1522)
+
+- **The Terminal/Chat switch is readable on a pane bound to a role.** On an
+  agent pane whose role enforces a model, the small model badge was drawn on
+  top of the switch's second button, so the control read "Terminal" followed
+  by the model name with the Chat label showing only as a sliver behind it.
+  A supervised pane did the same thing with its ⟳ badge and no role binding
+  involved. Both badges now take their own place in the pane header beside
+  the switch instead of floating over it, so the two labels stay legible
+  whatever language the app is in. A long model id is truncated to fit rather
+  than growing, and a pane carrying these extra labels now folds its action
+  buttons into the ⋮ menu a little sooner — before, they could be pushed off
+  the end of a narrow header.
+
+- **A pane stuck on a terminal permission prompt now reaches your phone.** When a `permissions.ask` rule (such as `Bash(rm -rf *)`) made Claude Code stop and ask, even in bypass mode, the phone showed nothing and the pane could wait for hours. The phone now gets a card for it. An up-to-date phone can answer Yes or No after a hold-to-confirm; the daemon types one key, and only if the exact same prompt is still on screen. Older phones get a card telling you to answer in the terminal.
+
+- **"Needs you" no longer sticks after you answer in the terminal.** A pane that had been answered in the terminal kept showing as waiting until its turn ended. It now clears as soon as the prompt is gone from the screen.
+
+- **Agents can no longer answer these prompts for you.** An orchestrating agent (MCP `terminal_send` or `approval_press`) cannot type into or press a Claude Code permission prompt that wmux has raised on your phone; a person must answer it, in the terminal or on the phone.
+
+- **Typing from the phone can no longer answer a terminal permission prompt.** While a pane shows one, the phone's keyboard and a notification "Reply" are refused, so a stray "1" cannot approve it without the checks and the hold-to-confirm; answer through the prompt's card or at the computer. Esc and Ctrl-C still go through, so you can always cancel.
+
+- **Opening a pane from your phone in a folder that no longer exists now says so.** A pane asked to open in a deleted worktree or a remote path used to be created and then vanish at once. The phone now gets a clear "folder not found" answer and can open the pane in your home folder instead.
+
+- **An update that Windows Smart App Control will block no longer closes wmux first.**
+  On Windows 11 with Smart App Control enforcing, the update installer could be
+  refused only after wmux had already quit, taking every pane with it, and the
+  next boot said only that "the installer could not be started". wmux now checks
+  before quitting. When Smart App Control is enforcing and the installer is not
+  validly signed, wmux stays open and shows a warning with an **Install anyway**
+  option. If Windows still blocks the installer (Smart App Control, AppLocker or
+  a group policy), the next boot says so plainly instead of reporting a generic
+  failure. The underlying fix is production code signing for release installers,
+  which is still pending. (#1533)
+
+- **Hook setup preserves trust metadata.** Existing hook trust state no longer prevents installing the managed hooks bridge; user-defined hooks remain protected. (#1536)
+
+- **Push relay secrets require secure transport.** Remote relay URLs must use HTTPS; HTTP remains available for loopback development. Unsafe URLs are refused before any request is sent, with one warning that does not expose the URL or secret. (#1538)
+
+- **Frame-budget checks confirm failures.** A failing 60-frame sample is measured once more under the same streaming workload. The check fails if both samples breach the existing budget; both samples remain in logs and results, and the original measurement remains the history value. (#1539)
+
+- **Stalled web streams release their resources.** Device SSE and media transfers share a concurrency ceiling; operator remote panes are exempt. Response deadlines begin with output and track write completion, including small writes and final chunks. Healthy SSE remains connected without an age cap. Images respect backpressure, and pane streams allow larger bursts with logged closure reasons. (#1540)
+
+- **Orchestrator tools honor verified identity and approval policy.** PTY brains allow the complete commander tool surface, including registry-based approval actions. Channel and mission calls use the validated workspace binding. The server enforces approval autonomy for both terminal questions and pending tool-permission hooks: automated approvals with autonomy off or approval pressing disabled are refused and leave the request pending for a human. Generated skills distinguish ordinary questions from approval prompts. Project-language guidance remains prompt-level. (#1541)
+
+- **Separate instances share CDP port claims across launch environments.** Claims use a user-stable cache directory rather than TMPDIR. Ownership verification retries slow startup and keeps local browser capture/throttling available while remote CDP is pending. Remote automation stays unavailable until ownership is proved; delayed or incomplete target lists remain retryable, and successful verification refreshes registered browser targets. (#1543)
+
+- **Channel nudges no longer type into a bare shell.** After an agent exited, its pane still counted as that agent, so an unread-channel nudge was typed into the shell and committed with Enter. A pane back at its shell prompt, or whose agent process has ended, is no longer a nudge target; the message waits for the next read instead. (#1550)
+
+- **Clearer legacy sort setting in every language.** The description of the older "needs you first" setting no longer says "pin", so it is not confused with the new Pin to top feature. (#1551)
+
+- Phone device management: retrying an input-permission change that could not be saved now keeps retrying until it reaches disk. Before, it could report success early on devices paired before per-device permissions. The device audit log also records when a change that first failed to save is saved later.
+
+- **An approval refused by policy no longer re-opens raw typing.** When the orchestrator's `approval_press` was refused because a worker's autonomy or approval pressing was off, typing into that pane used to be allowed again for ten minutes. A refusal now unlocks nothing and points the orchestrator to `deck_ask_decision`. While a worker's workspace does not allow automated approvals, keystrokes the orchestrator or another agent sends to a pane showing an approval prompt are refused, whether or not wmux holds a record for it. Once the prompt is answered, sending to the pane works again right away. Ctrl+C and Escape still stop the worker, and you can always type into it yourself. Structured questions from a worker are now answered through `approval_press` with the chosen option, so workspace autonomy applies to them too. (#1553)
+
+- **Dragging a workspace onto an agent pane works again in every sort order.** Since the needs-you-first order became the default, only pinned rows could be dragged, so handing a workspace to an agent by drag-and-drop silently stopped working. (#1554)
+
+- Phone: host search no longer lets abandoned scrollback reads pile up in front of desktop attach and resync. Each caller runs one search at a time within a small burst (`429` with `Retry-After` past it), and paging through results no longer drops or repeats hits while panes are printing.
+
+### Security
+
+- Harden the unused channel full-message transport seam: refuse shell input and remove forged envelope boundaries and control sequences. There is no user-visible change; production delivery does not use this transport. (#1537)
+
 ## [3.61.0] — 2026-09-25
 
 ### Added
