@@ -74,6 +74,24 @@ interface PendingRevocationAudit {
   reason?: DeviceBatchRevocationCause;
   /** Who asked, for a single-device revoke. A batch cause names itself. */
   actor?: DeviceActor;
+  /**
+   * The audit line was already written when the first write failed, so the
+   * flush after a later successful write must not add a second one.
+   */
+  audited?: boolean;
+}
+
+/** Outcome of `setInput`. Fail-closed like revoke: `ok` means the grant is ON DISK. */
+export interface DeviceSetInputResult {
+  ok: boolean;
+  reason?: 'not-found' | 'revoked' | 'persist-failed';
+  /** True only when this call changed the grant the device holds in memory. */
+  changed: boolean;
+  /**
+   * True when the grant already held this value in memory but an earlier
+   * write of it failed, so this call re-attempted that write.
+   */
+  retried?: boolean;
 }
 
 /**
@@ -365,6 +383,13 @@ export class DeviceStore {
    * losing the original batch cause from the audit trail.
    */
   private readonly pendingRevocationAudits = new Map<string, PendingRevocationAudit>();
+  /**
+   * Devices whose grant changed in memory but has not reached disk yet. A
+   * same-value retry must re-attempt the write rather than answer `ok` for a
+   * grant a restart would revive. Cleared by any successful write, since the
+   * roster is always written whole.
+   */
+  private readonly unpersistedGrants = new Set<string>();
 
   // Observability for the tests: proof that the cache elides derivations, and
   // that a wrong secret is never short-circuited before one.
@@ -506,6 +531,13 @@ export class DeviceStore {
 
     if (!this.persist()) {
       this.log('error', `[web] revoke of ${deviceId} could not be persisted; it is blocked in memory only`);
+      // Audit NOW, as setInput does: the device is blocked in memory, and a
+      // daemon that dies before the next successful write would otherwise lose
+      // who revoked it. The pending entry is marked so that write does not add
+      // a second line.
+      this.audit.append({ event: 'revoke', deviceId, name: record.name, actor, reason: 'persist-failed' });
+      const pending = this.pendingRevocationAudits.get(deviceId);
+      if (pending) pending.audited = true;
       return { ok: false, reason: 'persist-failed' };
     }
     this.log('info', `[web] revoked device "${record.name}" (${deviceId})`);
@@ -540,21 +572,26 @@ export class DeviceStore {
     deviceId: string,
     allowInput: boolean,
     actor: DeviceActor = 'desktop',
-  ): { ok: boolean; reason?: 'not-found' | 'revoked' | 'persist-failed' } {
+  ): DeviceSetInputResult {
     const record = this.devices.get(deviceId);
-    if (!record) return { ok: false, reason: 'not-found' };
+    if (!record) return { ok: false, reason: 'not-found', changed: false };
     // A tombstone has no capabilities to adjust. Silently "granting" input to a
     // revoked device would put a row on screen claiming a power it cannot use.
-    if (record.revokedAt !== undefined) return { ok: false, reason: 'revoked' };
+    if (record.revokedAt !== undefined) return { ok: false, reason: 'revoked', changed: false };
 
     if (recordAllowsInput(record) === allowInput) {
-      // Already there. Still force the field to exist, so a legacy record stops
-      // depending on the grandfather rule the moment the operator touches it.
-      if (record.allowInput === undefined) {
-        record.allowInput = allowInput;
-        if (!this.persist()) return { ok: false, reason: 'persist-failed' };
+      // Already there in memory — but only `ok` once it is also on disk. An
+      // earlier change that failed to persist is retried here; answering `ok`
+      // from memory alone would let a restart revive the old grant.
+      const retried = this.unpersistedGrants.has(deviceId);
+      // Still force the field to exist, so a legacy record stops depending on
+      // the grandfather rule the moment the operator touches it.
+      const legacy = record.allowInput === undefined;
+      if (legacy) record.allowInput = allowInput;
+      if ((retried || legacy) && !this.persist()) {
+        return { ok: false, reason: 'persist-failed', changed: false, ...(retried ? { retried } : {}) };
       }
-      return { ok: true };
+      return { ok: true, changed: false, ...(retried ? { retried } : {}) };
     }
 
     record.allowInput = allowInput;
@@ -568,14 +605,15 @@ export class DeviceStore {
       ...(persisted ? {} : { reason: 'persist-failed' }),
     });
     if (!persisted) {
+      this.unpersistedGrants.add(deviceId);
       this.log(
         'error',
         `[web] input grant for ${deviceId} could not be persisted; it is ${allowInput ? 'granted' : 'blocked'} in memory only`,
       );
-      return { ok: false, reason: 'persist-failed' };
+      return { ok: false, reason: 'persist-failed', changed: true };
     }
     this.log('info', `[web] device "${record.name}" (${deviceId}) input ${allowInput ? 'ALLOWED' : 'set read-only'}`);
-    return { ok: true };
+    return { ok: true, changed: true };
   }
 
   /**
@@ -1069,8 +1107,8 @@ export class DeviceStore {
   }
 
   private flushPendingRevocationAudits(): void {
-    for (const [deviceId, entry] of this.pendingRevocationAudits) {
-      this.audit.append({ event: 'revoke', deviceId, ...entry });
+    for (const [deviceId, { audited, ...entry }] of this.pendingRevocationAudits) {
+      if (!audited) this.audit.append({ event: 'revoke', deviceId, ...entry });
     }
     this.pendingRevocationAudits.clear();
   }
@@ -1084,11 +1122,14 @@ export class DeviceStore {
         fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
         secureWriteTokenFile(this.filePath, payload);
         this.flushPendingRevocationAudits();
+        this.unpersistedGrants.clear();
         return true;
       }
       fs.writeFileSync(tmp, payload, { encoding: 'utf-8', mode: 0o600 });
       fs.renameSync(tmp, this.filePath);
       this.flushPendingRevocationAudits();
+      // The roster is written whole, so every in-memory grant is on disk now.
+      this.unpersistedGrants.clear();
       this.scheduleHarden();
       return true;
     } catch (err) {
