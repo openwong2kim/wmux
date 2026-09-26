@@ -37,10 +37,14 @@ describe('fan-out preset draft helpers', () => {
     const draft = { ...emptyFanoutPresetDraft(), name: 'Mixed' };
 
     const badModel = applyDraft(presets, { ...draft, items: [{ agent: 'codex', model: '--yolo', unattended: false }] }, null);
-    expect(badModel.ok).toBe(false);
+    // A translatable code + the row it is in, not an English sentence.
+    expect(badModel).toMatchObject({ ok: false, issue: { code: 'model-invalid', params: { row: '1', model: '--yolo' } } });
 
     const dup = applyDraft(presets, { ...draft, name: 'image' }, null);
-    expect(dup).toMatchObject({ ok: false, duplicate: true });
+    expect(dup).toMatchObject({ ok: false, issue: { code: 'duplicate-name', params: { name: 'image' } } });
+
+    const reserved = applyDraft(presets, { ...draft, name: 'NUL' }, null);
+    expect(reserved).toMatchObject({ ok: false, issue: { code: 'name-reserved' } });
 
     // Renaming the edited preset to its own name (case change) is not a duplicate.
     const edited = applyDraft(presets, { ...draftFromPreset(presets[0]), name: 'IMAGE', outputFolder: 'imgs' }, 0);

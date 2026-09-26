@@ -416,6 +416,35 @@ export class FanOutGuards {
     }
   }
 
+  /**
+   * Give back `count` tasks of a started fan-out's hourly stamp: they never got
+   * a workspace, so nothing was launched for them. The stamp is shrunk (or
+   * dropped at zero) on disk too, so a restart does not bring the charge back.
+   */
+  refundStart(key: string, count: number): void {
+    if (!(count > 0)) return;
+    const hourly = this.loadHourly();
+    let left = count;
+    const next: HourlyStamp[] = [];
+    // Newest first: the stamp commitStart just appended for this key.
+    for (const s of [...hourly].reverse()) {
+      if (left > 0 && s.id === key) {
+        const take = Math.min(left, s.count);
+        left -= take;
+        if (s.count - take > 0) next.unshift({ ...s, count: s.count - take });
+        continue;
+      }
+      next.unshift(s);
+    }
+    if (left === count) return;
+    try {
+      this.saveHourly(next);
+    } catch (err) {
+      this.hourly = next;
+      console.warn(`[fanout] could not persist the hourly cap refund: ${String(err)}`);
+    }
+  }
+
   /** One task of a started fan-out finished its spawn (either way). From here
    *  its stamped workspace, if it got one, is what counts it. */
   taskSettled(key: string): void {

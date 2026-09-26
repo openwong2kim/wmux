@@ -15,6 +15,7 @@ import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrc
 import {
   FANOUT_EXTRA_AGENT_STEMS,
   applyFanoutAgentFlags,
+  commandLauncherStem,
   fanoutChoiceBinding,
   validateFanoutAgentChoice,
   type FanoutAgentChoice,
@@ -973,6 +974,14 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // model, injects nothing).
     const { marker, command: bareCommand } = splitModelEnvMarker(initialCommand);
     const swap = applyRoleAgent(bareCommand, roleBinding, extraAgents ? { extraAgents } : undefined);
+    // A preset row / agents[k] is a promise about WHICH CLI runs. A refused
+    // swap would launch the default claude line instead, so the task fails —
+    // before any workspace exists — rather than run on an agent nobody chose.
+    if (agentChoice && !swap.changed && commandLauncherStem(swap.command) !== agentChoice.agent) {
+      return {
+        error: `fanout.spawnWorkspace: could not launch ${agentChoice.agent} for this task${swap.note ? ` — ${swap.note}` : ''}`,
+      };
+    }
     if (swap.note) {
       // A refusal (unknown agent, or flags that would not survive the swap) is
       // fail-soft — the task still launches, so the reason must be visible
@@ -1016,7 +1025,15 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // of the task folder, and a preset row's unattended flags (non-claude).
     const roleBound =
       agentChoice && roleBoundRaw.initialCommand
-        ? { ...roleBoundRaw, initialCommand: applyFanoutAgentFlags(roleBoundRaw.initialCommand, agentChoice, cwd) }
+        ? {
+            ...roleBoundRaw,
+            initialCommand: applyFanoutAgentFlags(
+              roleBoundRaw.initialCommand,
+              agentChoice,
+              cwd,
+              window.electronAPI?.platform ?? 'darwin',
+            ),
+          }
         : roleBoundRaw;
     // Worker permission mode + allow-list, AFTER the role rewrite: only then is
     // the final launcher known (a binding may have swapped claude for codex,

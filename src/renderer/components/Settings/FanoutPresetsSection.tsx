@@ -15,7 +15,9 @@ import {
   fanoutAgentSpec,
   fanoutPresetFolderSlug,
   fanoutPresetOutputFolder,
+  type FanoutIssue,
   type FanoutPreset,
+  type FanoutPresetDropped,
 } from '../../../shared/fanoutPreset';
 import { ROLE_BINDING_MODEL_MAX } from '../../../shared/orchestratorRole';
 import { FANOUT_MAX_TASKS } from '../../../shared/workTask';
@@ -46,10 +48,19 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** A validator issue in the UI language (the English `error` is wire-only). */
+function issueText(t: Translate, issue: FanoutIssue): string {
+  const text = t(`settings.fanoutPresetsIssue.${issue.code}`, issue.params);
+  return issue.params.row ? t('settings.fanoutPresetsIssueRow', { row: issue.params.row, issue: text }) : text;
+}
+
 export function FanoutPresetsSection(): React.ReactElement {
   const t = useT();
   const [presets, setPresets] = useState<FanoutPreset[] | null>(null);
   const [loadError, setLoadError] = useState('');
+  // Entries main could not keep. The save replaces the whole file, so they are
+  // shown until the operator saves (after which the backup holds them).
+  const [dropped, setDropped] = useState<{ items: FanoutPresetDropped[]; unreadable: boolean }>({ items: [], unreadable: false });
   // index null = a new preset appended at the end.
   const [editing, setEditing] = useState<{ index: number | null; draft: FanoutPresetDraft } | null>(null);
   const [error, setError] = useState('');
@@ -58,8 +69,10 @@ export function FanoutPresetsSection(): React.ReactElement {
   useEffect(() => {
     let cancelled = false;
     window.electronAPI?.fanout?.getPresets?.()
-      .then((list) => {
-        if (!cancelled && Array.isArray(list)) setPresets(list);
+      .then((report) => {
+        if (cancelled || !report || !Array.isArray(report.presets)) return;
+        setPresets(report.presets);
+        setDropped({ items: Array.isArray(report.dropped) ? report.dropped : [], unreadable: report.unreadable === true });
       })
       .catch((err: unknown) => {
         if (!cancelled) setLoadError(t('settings.fanoutPresetsLoadError', { error: errorText(err) }));
@@ -74,10 +87,11 @@ export function FanoutPresetsSection(): React.ReactElement {
     try {
       const out = await window.electronAPI.fanout.setPresets(next);
       if (!out.ok) {
-        setError(t('settings.fanoutPresetsSaveError', { error: out.error }));
+        setError(t('settings.fanoutPresetsSaveError', { error: issueText(t, out) }));
         return false;
       }
       setPresets(out.presets);
+      setDropped({ items: [], unreadable: false });
       setError('');
       return true;
     } catch (err) {
@@ -97,9 +111,7 @@ export function FanoutPresetsSection(): React.ReactElement {
     if (!editing || !presets) return;
     const r = applyDraft(presets, editing.draft, editing.index);
     if (!r.ok) {
-      setError(r.duplicate
-        ? t('settings.fanoutPresetsDuplicate', { name: r.error })
-        : t('settings.fanoutPresetsInvalid', { error: r.error }));
+      setError(t('settings.fanoutPresetsInvalid', { error: issueText(t, r.issue) }));
       return;
     }
     if (await persist(r.next)) setEditing(null);
@@ -135,6 +147,19 @@ export function FanoutPresetsSection(): React.ReactElement {
       data-testid="fanout-presets-section"
     >
       {loadError && <SettingNote tone="danger" role="alert">{loadError}</SettingNote>}
+      {dropped.unreadable && (
+        <SettingNote tone="warning" data-testid="fanout-presets-unreadable">{t('settings.fanoutPresetsUnreadable')}</SettingNote>
+      )}
+      {dropped.items.length > 0 && (
+        <SettingNote tone="warning" data-testid="fanout-presets-dropped">
+          {t('settings.fanoutPresetsDropped', { count: String(dropped.items.length) })}
+          {dropped.items.map((d, k) => (
+            <span key={k} className="block">
+              {t('settings.fanoutPresetsDroppedItem', { name: d.name ?? '?', issue: issueText(t, d.issue) })}
+            </span>
+          ))}
+        </SettingNote>
+      )}
       {!presets && !loadError && <SettingNote>{t('settings.fanoutPresetsLoading')}</SettingNote>}
       {presets && presets.length === 0 && editing?.index !== null && (
         <SettingNote>{t('settings.fanoutPresetsEmpty')}</SettingNote>
@@ -378,7 +403,10 @@ function AgentRow({
             <option key={a.stem} value={a.stem} disabled={!a.selectable}>
               {a.selectable
                 ? a.label
-                : t('settings.fanoutPresetsAgentUnavailable', { label: a.label, reason: a.disabledReason ?? '' })}
+                : t('settings.fanoutPresetsAgentUnavailable', {
+                    label: a.label,
+                    reason: t(`settings.fanoutPresetsDisabled.${a.disabledCode ?? 'unverified'}`),
+                  })}
             </option>
           ))}
         </Select>

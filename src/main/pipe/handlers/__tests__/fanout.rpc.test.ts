@@ -1429,6 +1429,27 @@ describe('task.fanout.start — preset and agents', () => {
     expect(err.message).toMatch(re);
   });
 
+  it('refuses an empty title alongside agents, instead of shifting later tasks onto the wrong agent', async () => {
+    const h = setup();
+    const err = errorOf(await h.call(goodParams({ titles: ['', 'a'], agents: [{ agent: 'codex' }] })));
+    expect(err.code).toBe('INVALID_ARGUMENT');
+    expect(err.message).toMatch(/every title must be a non-empty string/);
+    const h2 = setup({ presets: [IMAGE] });
+    expect(errorOf(await h2.call(goodParams({ titles: ['a', '  '], preset: 'Image' }))).message).toMatch(/non-empty/);
+  });
+
+  it('gives back the hourly quota for tasks that never got a workspace', async () => {
+    const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wmux-fanout-refund-'));
+    const g = new FanOutGuards({ dir, countLiveTasks: () => 0, ledgerTaskOwner: () => null });
+    const h = setup({ guards: g, presets: [IMAGE], requireApproval: false });
+    // The harness service returns { ok: true, tasks: [] }: nothing spawned.
+    await h.call(goodParams({ preset: 'Image' }));
+    await h.flush();
+    await h.flush();
+    const caps = JSON.parse(fs.readFileSync(nodePath.join(dir, 'fanout-caps.json'), 'utf8')) as { starts: unknown[] };
+    expect(caps.starts).toEqual([]);
+  });
+
   it('treats an empty roles array as not given', async () => {
     const h = setup({ presets: [IMAGE] });
     const res = await h.call(goodParams({ preset: 'Image', roles: [] }));
@@ -1462,7 +1483,7 @@ describe('task.fanout.start — preset and agents', () => {
     expect(h.request().agents).toEqual([{ agent: 'codex', model: 'gpt-5.5' }, { agent: 'grok' }]);
     expect(h.request().agentCmd).toBe(FANOUT_WIRE_AGENT_CMD);
     expect(h.request().worktree).toBeUndefined();
-    expect(h.preview()).toMatch(/\[agent: codex --model gpt-5\.5\]/);
+    expect(h.preview()).toMatch(/\[agent: codex -c projects\.<task folder>\.trust_level=trusted --model gpt-5\.5\]/);
   });
 
   it('matches the preset name case-insensitively and uses its rows in order', async () => {
@@ -1473,7 +1494,9 @@ describe('task.fanout.start — preset and agents', () => {
     expect(h.request().worktree).toBe(false);
     expect(h.request().outputFolder).toBe('image');
     // The approval preview names the real CLI and the unattended flags.
-    expect(h.preview()).toMatch(/\[agent: codex --model gpt-5\.5 -a never -s workspace-write\]/);
+    expect(h.preview()).toMatch(
+      /\[agent: codex -c projects\.<task folder>\.trust_level=trusted --model gpt-5\.5 -a never -s workspace-write\]/,
+    );
     expect(h.preview()).toMatch(/no worktree/);
   });
 

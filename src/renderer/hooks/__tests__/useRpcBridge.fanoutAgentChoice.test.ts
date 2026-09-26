@@ -40,7 +40,7 @@ function launch(choice: FanOutChoiceInput, mode: 'auto' | 'manual' = 'auto'): st
   const { marker, command: bare } = splitModelEnvMarker(main);
   const swap = applyRoleAgent(bare, binding, { extraAgents: FANOUT_EXTRA_AGENT_STEMS });
   const bound = withRoleBinding({ initialCommand: swap.command }, binding, undefined, FANOUT_EXTRA_AGENT_STEMS);
-  const flagged = applyFanoutAgentFlags(bound.initialCommand as string, checked.choice, CWD);
+  const flagged = applyFanoutAgentFlags(bound.initialCommand as string, checked.choice, CWD, 'darwin');
   const permitted = applyWorkerPermissionFlags(flagged, mode);
   return reattachModelEnvMarker(marker, permitted, '/bin/zsh').command;
 }
@@ -120,11 +120,22 @@ describe('useRpcBridge — fanout.spawnWorkspace wiring for agent choices', () =
       /splitModelEnvMarker\(initialCommand\)/,
       /applyRoleAgent\(bareCommand, roleBinding, extraAgents/,
       /withRoleBinding\(seeded, roleBinding, role, extraAgents\)/,
-      /applyFanoutAgentFlags\(roleBoundRaw\.initialCommand, agentChoice, cwd\)/,
+      /applyFanoutAgentFlags\(\s*roleBoundRaw\.initialCommand,\s*agentChoice,\s*cwd,/,
       /applyWorkerPermissionFlags\(roleBound\.initialCommand, workerMode\)/,
       /reattachModelEnvMarker\(marker, bound\.initialCommand, seeded\.shell\)/,
     ].map(at);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  it('fails the task (no workspace yet) when the agent swap is refused, instead of launching the default claude', () => {
+    expect(at(/if \(agentChoice && !swap\.changed && commandLauncherStem\(swap\.command\) !== agentChoice\.agent\)/)).toBeLessThan(
+      at(/store\.addWorkspace\(name\)/),
+    );
+    expect(block).toMatch(/could not launch \$\{agentChoice\.agent\} for this task/);
+  });
+
+  it('builds the codex trust override for the pane platform', () => {
+    expect(block).toMatch(/window\.electronAPI\?\.platform/);
   });
 
   it('keeps the lineage stamp on the same pty.create call (depth-1 and caps still apply)', () => {

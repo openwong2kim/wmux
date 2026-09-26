@@ -231,3 +231,20 @@ describe('stampFanoutTaskPane (the pty.create half)', () => {
     expect(() => stampFanoutTaskPane({ workspaceId: 'ws-x', fanoutTaskOf: 'ws-owner' }, broken)).toThrow(/disk full/);
   });
 });
+
+describe('FanOutGuards.refundStart', () => {
+  it('gives back the hour for tasks that never got a workspace, on disk too', () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-guards-refund-'));
+    const g = new FanOutGuards({ dir: d, countLiveTasks: () => 0, ledgerTaskOwner: () => null });
+    expect(g.reserve('k', 3).ok).toBe(true);
+    g.commitStart('k');
+    g.refundStart('k', 2);
+    const caps = () => JSON.parse(fs.readFileSync(path.join(d, 'fanout-caps.json'), 'utf8')).starts as { id: string; count: number }[];
+    expect(caps()).toEqual([expect.objectContaining({ id: 'k', count: 1 })]);
+    g.refundStart('k', 5);
+    expect(caps()).toEqual([]);
+    // A fresh store (restart) sees the refund.
+    const again = new FanOutGuards({ dir: d, countLiveTasks: () => 0, ledgerTaskOwner: () => null });
+    expect(again.reserve('k2', 8).ok).toBe(true);
+  });
+});

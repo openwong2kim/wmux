@@ -10,6 +10,7 @@ import {
   fanoutAgentSpec,
   fanoutPresetKey,
   normalizeFanoutPreset,
+  type FanoutIssue,
   type FanoutPreset,
 } from '../../../shared/fanoutPreset';
 import { FANOUT_MAX_TASKS } from '../../../shared/workTask';
@@ -99,12 +100,13 @@ export function applyDraft(
   presets: readonly FanoutPreset[],
   draft: FanoutPresetDraft,
   editIndex: number | null,
-): { ok: true; next: FanoutPreset[] } | { ok: false; error: string; duplicate?: boolean } {
+): { ok: true; next: FanoutPreset[] } | { ok: false; issue: FanoutIssue } {
   const r = normalizeFanoutPreset(draftToPayload(draft));
-  if (!r.ok) return { ok: false, error: r.error };
+  if (!r.ok) return { ok: false, issue: { code: r.code, params: r.params, error: r.error } };
   const key = fanoutPresetKey(r.preset.name);
   if (presets.some((p, k) => k !== editIndex && fanoutPresetKey(p.name) === key)) {
-    return { ok: false, error: r.preset.name, duplicate: true };
+    const name = r.preset.name;
+    return { ok: false, issue: { code: 'duplicate-name', params: { name }, error: `two presets are named "${name}"` } };
   }
   const next = editIndex === null
     ? [...presets, r.preset]

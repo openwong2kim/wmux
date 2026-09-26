@@ -30,7 +30,7 @@ import {
   setFanoutRequireApproval,
   setFanoutWorkerPermissionMode,
 } from '../../worktask/fanoutWorkerPolicy';
-import { loadFanoutPresets, saveFanoutPresets } from '../../worktask/fanoutPresets';
+import { loadFanoutPresetsReport, saveFanoutPresets } from '../../worktask/fanoutPresets';
 
 export function registerFanOutHandler(service: FanOutService): () => void {
   // The Fleet Approvals tab's "recent unattended fan-outs" list.
@@ -86,7 +86,7 @@ export function registerFanOutHandler(service: FanOutService): () => void {
   ipcMain.removeHandler(IPC.FANOUT_PRESETS_GET);
   ipcMain.handle(
     IPC.FANOUT_PRESETS_GET,
-    wrapHandler(IPC.FANOUT_PRESETS_GET, async () => loadFanoutPresets()),
+    wrapHandler(IPC.FANOUT_PRESETS_GET, async () => loadFanoutPresetsReport()),
   );
   ipcMain.removeHandler(IPC.FANOUT_PRESETS_SET);
   ipcMain.handle(

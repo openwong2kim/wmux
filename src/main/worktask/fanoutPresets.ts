@@ -19,23 +19,40 @@ import {
   FANOUT_PRESET_TEMPLATES,
   fanoutPresetKey,
   normalizeFanoutPreset,
-  normalizeFanoutPresets,
+  normalizeFanoutPresetsReport,
+  type FanoutIssue,
   type FanoutPreset,
+  type FanoutPresetDropped,
 } from '../../shared/fanoutPreset';
 
 export function getFanoutPresetsPath(dir: string = getWmuxDir()): string {
   return path.join(dir, 'fanout-presets.json');
 }
 
-export function loadFanoutPresets(dir?: string): FanoutPreset[] {
+/**
+ * The presets in force plus what could not be kept. `dropped` is shown in
+ * Settings: the save below replaces the whole list, so an entry the loader
+ * skipped in silence (hand-edited, or a CLI that is no longer selectable)
+ * would be deleted on the operator's next save without them ever seeing it.
+ * `unreadable` = the file exists but is not JSON.
+ */
+export function loadFanoutPresetsReport(
+  dir?: string,
+): { presets: FanoutPreset[]; dropped: FanoutPresetDropped[]; unreadable?: true } {
   const p = getFanoutPresetsPath(dir);
-  if (!fs.existsSync(p)) return FANOUT_PRESET_TEMPLATES.map((t) => ({ ...t, items: t.items.map((i) => ({ ...i })) }));
+  if (!fs.existsSync(p)) {
+    return { presets: FANOUT_PRESET_TEMPLATES.map((t) => ({ ...t, items: t.items.map((i) => ({ ...i })) })), dropped: [] };
+  }
   try {
     const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as { presets?: unknown };
-    return normalizeFanoutPresets(raw?.presets);
+    return normalizeFanoutPresetsReport(raw?.presets);
   } catch {
-    return [];
+    return { presets: [], dropped: [], unreadable: true };
   }
+}
+
+export function loadFanoutPresets(dir?: string): FanoutPreset[] {
+  return loadFanoutPresetsReport(dir).presets;
 }
 
 /** Case-insensitive lookup by name. */
@@ -52,19 +69,35 @@ export function findFanoutPreset(name: string, dir?: string): FanoutPreset | und
 export async function saveFanoutPresets(
   input: unknown,
   dir?: string,
-): Promise<{ ok: true; presets: FanoutPreset[] } | { ok: false; error: string }> {
-  if (!Array.isArray(input)) return { ok: false, error: 'presets must be an array' };
-  if (input.length > FANOUT_PRESETS_MAX) return { ok: false, error: `at most ${FANOUT_PRESETS_MAX} presets` };
+): Promise<{ ok: true; presets: FanoutPreset[] } | ({ ok: false } & FanoutIssue)> {
+  if (!Array.isArray(input)) return { ok: false, code: 'presets-not-array', params: {}, error: 'presets must be an array' };
+  if (input.length > FANOUT_PRESETS_MAX) {
+    const cap = String(FANOUT_PRESETS_MAX);
+    return { ok: false, code: 'presets-over-cap', params: { cap }, error: `at most ${cap} presets` };
+  }
   const out: FanoutPreset[] = [];
   const seen = new Set<string>();
   for (const raw of input) {
     const r = normalizeFanoutPreset(raw);
-    if (!r.ok) return { ok: false, error: r.error };
+    if (!r.ok) return { ok: false, code: r.code, params: r.params, error: r.error };
     const key = fanoutPresetKey(r.preset.name);
-    if (seen.has(key)) return { ok: false, error: `two presets are named "${r.preset.name}"` };
+    if (seen.has(key)) {
+      const name = r.preset.name;
+      return { ok: false, code: 'duplicate-name', params: { name }, error: `two presets are named "${name}"` };
+    }
     seen.add(key);
     out.push(r.preset);
   }
-  await atomicWriteJSON(getFanoutPresetsPath(dir), { presets: out });
+  const p = getFanoutPresetsPath(dir);
+  // One backup of what is being replaced: the loader may have dropped entries
+  // this save no longer carries, and they stay recoverable from here.
+  if (fs.existsSync(p)) {
+    try {
+      fs.copyFileSync(p, `${p}.bak`);
+    } catch {
+      // best-effort — the new list is still written
+    }
+  }
+  await atomicWriteJSON(p, { presets: out });
   return { ok: true, presets: out };
 }

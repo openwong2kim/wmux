@@ -100,7 +100,7 @@ import { loadFanoutRequireApproval, loadFanoutWorkerPermissionMode } from '../..
 import { workerLaunchFlags, type FanoutWorkerPermissionMode } from '../../../shared/workerLaunch';
 import { loadFanoutPresets } from '../../worktask/fanoutPresets';
 import {
-  fanoutAgentSpec,
+  describeFanoutAgentChoice,
   fanoutPresetKey,
   fanoutPresetOutputFolder,
   validateFanoutAgentChoice,
@@ -540,13 +540,6 @@ export interface FanOutRpcDeps {
   presets?: () => FanoutPreset[];
 }
 
-/** One task's agent choice as the preview and the audit print it. */
-export function describeFanoutAgentChoice(c: FanoutAgentChoice): string {
-  const spec = fanoutAgentSpec(c.agent);
-  return [c.agent, c.model ? `--model ${c.model}` : '', c.unattended && spec?.unattendedFlags ? spec.unattendedFlags : '']
-    .filter((p) => p.length > 0)
-    .join(' ');
-}
 
 /**
  * The per-task agent selection: `preset` (operator data), `agents` (caller,
@@ -574,7 +567,7 @@ function resolveAgentSelection(
     const name = typeof params['preset'] === 'string' ? params['preset'].trim() : '';
     const list = presets();
     const names = list.map((p) => p.name);
-    const available = names.length > 0 ? names.join(', ') : '(none — add one in Settings → Agents → Fan-out presets)';
+    const available = names.length > 0 ? names.join(', ') : '(none — add one in Settings → Roles & fan-out → Fan-out presets)';
     if (!name) return { error: `preset must be a preset name; available presets: ${available}` };
     const preset = list.find((p) => fanoutPresetKey(p.name) === fanoutPresetKey(name));
     if (!preset) return { error: `unknown preset "${name.slice(0, 64)}"; available presets: ${available}` };
@@ -854,6 +847,20 @@ export function registerFanOutRpc(
     if (Buffer.byteLength(sharedPrompt, 'utf8') > FANOUT_PROMPT_MAX_BYTES) {
       return deny('INVALID_ARGUMENT', `prompt exceeds ${FANOUT_PROMPT_MAX_BYTES} bytes`);
     }
+    // With preset/agents every title must be non-empty: parseTasks drops empty
+    // titles, and agents[k] / preset row k are aligned with the titles AS SENT,
+    // so a dropped title would silently shift every later task onto its
+    // neighbour's agent. Refused rather than guessed.
+    if (
+      (params['preset'] !== undefined || params['agents'] !== undefined) &&
+      Array.isArray(params['titles']) &&
+      (params['titles'] as unknown[]).some((t) => typeof t !== 'string' || t.trim().length === 0)
+    ) {
+      return deny(
+        'INVALID_ARGUMENT',
+        'with preset or agents every title must be a non-empty string — task k runs on agent k, so an empty title would shift the others',
+      );
+    }
     const parsed = parseTasks(params, sharedPrompt);
     if ('error' in parsed) return deny('INVALID_ARGUMENT', parsed.error);
     // Titles are counted AFTER parseTasks drops empty ones, so a preset row
@@ -1041,6 +1048,12 @@ export function registerFanOutRpc(
         guards.commitStart(key);
         try {
           const result = await service.start(req);
+          // Tasks that never got a workspace (the output folder could not be
+          // created, a worktree preflight failed) launched nothing, so they
+          // must not keep counting against the rolling hour.
+          const unspawned =
+            result.tasks.length === 0 ? parsed.titles.length : result.tasks.filter((t) => !t.workspaceId).length;
+          if (unspawned > 0) guards.refundStart(key, unspawned);
           // The second half of the record: the line each task was ACTUALLY
           // launched with (after the role rewrite and the worker flags).
           try {

@@ -177,3 +177,30 @@ describe('FanOutService — worktree:false', () => {
     expect(fs.existsSync(path.join(outputDir, 'result.png'))).toBe(true);
   });
 });
+
+describe('FanOutService — worktree:false folder failure', () => {
+  it('fails with no task started when the outputs root cannot be created', async () => {
+    const blocker = path.join(root, 'blocked');
+    fs.writeFileSync(blocker, 'a file where the outputs root should be');
+    const renderer = rendererFake();
+    const svc = new FanOutService({
+      daemon: daemonFake().port,
+      renderer: renderer.port,
+      worktrees: noGit(),
+      autonomy: async () => undefined,
+      outputsRoot: path.join(blocker, 'outputs'),
+    });
+    const res = await svc.start({
+      idempotencyKey: 'k-fail',
+      prompt: 'x',
+      titles: ['a', 'b'],
+      repoPath: '',
+      agentCmd: 'claude',
+      verifiedWorkspaceId: 'ws-owner',
+      worktree: false,
+    });
+    expect(res.ok).toBe(false);
+    expect(res.tasks).toEqual([]);
+    expect(renderer.spawned).toHaveLength(0);
+  });
+});
