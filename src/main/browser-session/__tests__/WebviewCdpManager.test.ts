@@ -38,6 +38,18 @@ describe('WebviewCdpManager', () => {
     manager = new WebviewCdpManager(18800);
   });
 
+  it('does not discover or register targets until startup verifies the port', async () => {
+    manager = new WebviewCdpManager(0);
+    await manager.register('surface-1', 42);
+    expect(manager.getCdpPort()).toBe(0);
+    expect(manager.listTargets()).toEqual([]);
+    expect(mockDebugger.attach).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+    manager.setCdpPort(18800);
+    await manager.register('surface-1', 42);
+    expect(manager.getTarget('surface-1')?.targetId).toBe('target-abc');
+  });
+
   it('register attaches debugger and stores session', async () => {
     await manager.register('surface-1', 42);
     expect(mockDebugger.attach).toHaveBeenCalledWith('1.3');

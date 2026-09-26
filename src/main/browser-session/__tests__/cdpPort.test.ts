@@ -78,12 +78,22 @@ describe('claimCdpPort', () => {
 describe('probeCdpEndpoint', () => {
   it('reports the browser when the endpoint answers', async () => {
     const fetchImpl = (async (url: string) => {
+      if (url.endsWith('/json/list')) return { ok: true, json: async () => [{ id: 'own-target' }] };
       expect(url).toBe('http://127.0.0.1:18842/json/version');
       return { ok: true, json: async () => ({ Browser: 'Chrome/140.0.0.0' }) };
     }) as unknown as typeof fetch;
-    await expect(probeCdpEndpoint(18842, { fetchImpl })).resolves.toEqual({
+    await expect(probeCdpEndpoint(18842, 'own-target', { fetchImpl })).resolves.toEqual({
       ok: true,
       browser: 'Chrome/140.0.0.0',
+    });
+  });
+
+  it('rejects a healthy foreign endpoint even when its browser version matches', async () => {
+    const fetchImpl = (async (url: string) => ({ ok: true, json: async () =>
+      url.endsWith('/json/list') ? [{ id: 'other-instance-target' }] : { Browser: 'Chrome/140.0.0.0' },
+    })) as unknown as typeof fetch;
+    await expect(probeCdpEndpoint(18842, 'own-target', { fetchImpl })).resolves.toEqual({
+      ok: false, reason: 'endpoint does not belong to this instance',
     });
   });
 
@@ -92,14 +102,14 @@ describe('probeCdpEndpoint', () => {
     const fetchImpl = (async () => {
       throw new Error('connect ECONNREFUSED 127.0.0.1:18842');
     }) as unknown as typeof fetch;
-    const result = await probeCdpEndpoint(18842, { fetchImpl });
+    const result = await probeCdpEndpoint(18842, 'own-target', { fetchImpl });
     expect(result.ok).toBe(false);
     expect(result).toMatchObject({ reason: expect.stringContaining('ECONNREFUSED') });
   });
 
   it('treats a non-200 answer as not listening', async () => {
     const fetchImpl = (async () => ({ ok: false, status: 404 })) as unknown as typeof fetch;
-    await expect(probeCdpEndpoint(18842, { fetchImpl })).resolves.toEqual({
+    await expect(probeCdpEndpoint(18842, 'own-target', { fetchImpl })).resolves.toEqual({
       ok: false,
       reason: 'HTTP 404',
     });

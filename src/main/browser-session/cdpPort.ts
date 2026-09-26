@@ -20,7 +20,7 @@ import crypto from 'node:crypto';
 //                 the reported collision, and it is the one we can prevent
 //                 rather than merely report.
 //   probeCdpEndpoint  asks the port itself, after Chromium has had its chance
-//                 to bind, whether anything is actually listening. This catches
+//                 to bind, whether this instance owns the endpoint. This catches
 //                 everything the claim cannot see — a non-wmux process on the
 //                 port, a Chromium that refused it for its own reasons — and it
 //                 is what the "enabled" log line is allowed to depend on.
@@ -178,26 +178,10 @@ export type CdpProbeResult =
   | { ok: true; browser: string }
   | { ok: false; reason: string };
 
-/**
- * Ask the CDP port whether anything is actually listening on it.
- *
- * `/json/version` is the cheapest endpoint that proves a real DevTools
- * HTTP server rather than any socket that happens to accept a connection —
- * WebviewCdpManager already talks to `/json` on this same port, so this is the
- * same surface the feature depends on, not a proxy for it.
- *
- * Known residual, found while dogfooding this: the probe asks whether ANYTHING
- * is listening, not whether it is OURS. If another wmux held the port and we
- * failed to bind, its CDP would answer 200 and we would report "listening"
- * about a browser that is not ours. The claim above is what covers that case —
- * a live wmux's port is never drawn — so the two together are only defeated by
- * a claim file deleted out from under a running instance. Distinguishing the
- * two CDP servers from the outside needs socket-to-pid ownership (netstat /
- * GetExtendedTcpTable per boot), which is a great deal of machinery for a case
- * the claim already prevents.
- */
+/** Verify the endpoint contains a target identified through Electron's local debugger. */
 export async function probeCdpEndpoint(
   port: number,
+  expectedTargetId: string,
   deps: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
 ): Promise<CdpProbeResult> {
   const fetchImpl = deps.fetchImpl ?? fetch;
@@ -211,6 +195,13 @@ export async function probeCdpEndpoint(
     if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
     const body = (await res.json()) as { Browser?: unknown };
     const browser = typeof body?.Browser === 'string' ? body.Browser : 'unknown';
+    if (!expectedTargetId) return { ok: false, reason: 'local target identity unavailable' };
+    const targetsRes = await fetchImpl(`http://127.0.0.1:${port}/json/list`, { signal: controller.signal });
+    if (!targetsRes.ok) return { ok: false, reason: `target list HTTP ${targetsRes.status}` };
+    const targets: unknown = await targetsRes.json();
+    if (!Array.isArray(targets) || !targets.some((target) => target?.id === expectedTargetId)) {
+      return { ok: false, reason: 'endpoint does not belong to this instance' };
+    }
     return { ok: true, browser };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };

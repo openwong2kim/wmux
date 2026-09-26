@@ -406,21 +406,7 @@ if (cdpEnabled) {
     `[WinMux] CDP requested on port ${cdpPort}` +
       (claim.claimed ? '' : ' (port not claimed exclusively — every port in the range is held)'),
   );
-  // After ready, ask the port itself. A failure here is the diagnosis the
-  // original report had to reconstruct by hand with lsof.
-  void app.whenReady().then(async () => {
-    const probe = await probeCdpEndpoint(cdpPort);
-    if (probe.ok) {
-      console.log(`[WinMux] CDP listening on port ${cdpPort} (${probe.browser})`);
-    } else {
-      console.error(
-        `[WinMux] CDP is NOT listening on port ${cdpPort} (${probe.reason}). Chromium was ` +
-          'asked for this port and did not get it — most often another process, commonly a ' +
-          'second wmux instance, already holds it. Browser automation (MCP browser tools, ' +
-          'screenshots, DOM snapshots) will be unavailable until wmux is restarted.',
-      );
-    }
-  });
+
 } else {
   console.log('[WinMux] CDP disabled — browser automation will be unavailable (enable via ~/.wmux/config.json browser.cdp.enabled)');
 }
@@ -579,7 +565,7 @@ const mcpRegistrar = new McpRegistrar();
 // be) listening when the first shim spawns — the shim retries connect with
 // backoff, so start order is a latency nicety, not a correctness gate.
 const mcpBrokerSupervisor = new BrokerSupervisor();
-const webviewCdpManager = new WebviewCdpManager(cdpPort);
+const webviewCdpManager = new WebviewCdpManager(0);
 
 // Daemon client — initialized on app ready, used if daemon is available
 let daemonClient: DaemonClient | null = null;
@@ -1519,6 +1505,25 @@ app.on('ready', async () => {
   markBoot('plugins-loaded');
 
   mainWindow = createWindow({ deferLoad: true });
+  if (cdpEnabled) {
+    const localDebugger = mainWindow.webContents.debugger;
+    const alreadyAttached = localDebugger.isAttached();
+    try {
+      if (!alreadyAttached) localDebugger.attach('1.3');
+      const { targetInfo } = await localDebugger.sendCommand('Target.getTargetInfo');
+      const probe = await probeCdpEndpoint(cdpPort, targetInfo?.targetId ?? '');
+      if (probe.ok) {
+        webviewCdpManager.setCdpPort(cdpPort);
+        console.log(`[WinMux] CDP listening on port ${cdpPort} (${probe.browser})`);
+      } else {
+        console.error(`[WinMux] CDP ownership verification failed on port ${cdpPort}: ${probe.reason}. Browser automation is disabled; restart with a free port.`);
+      }
+    } catch (err) {
+      console.error('[WinMux] CDP ownership verification failed; browser automation is disabled:', err);
+    } finally {
+      if (!alreadyAttached && localDebugger.isAttached()) localDebugger.detach();
+    }
+  }
   markBoot('window-created');
   console.log(`[Main] Window created (renderer load deferred): ${!!mainWindow}`);
   logLine('info', 'main', `window created (deferred): present=${!!mainWindow}`);

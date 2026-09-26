@@ -148,6 +148,7 @@ export class WebviewCdpManager {
   }
 
   async register(surfaceId: string, webContentsId: number, workspaceId?: string): Promise<void> {
+    if (this.cdpPort <= 0) return; // Disabled until startup proves endpoint ownership.
     // Same-guest re-registration (codex P2, PR #528): BrowserPanel re-calls
     // register() on every dom-ready, so a hidden navigation/reload would
     // otherwise round-trip through unregister() — zeroing lease counts and
@@ -764,6 +765,11 @@ export class WebviewCdpManager {
       }
       this.waiters.get(surfaceId)!.push(wrappedResolve);
     });
+  }
+
+  /** Enable the endpoint only after startup verifies this instance's target. */
+  setCdpPort(port: number): void {
+    this.cdpPort = port;
   }
 
   getCdpPort(): number {
