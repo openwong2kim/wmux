@@ -140,7 +140,12 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
           reconnect on its own, so say so above the (now frozen) panes. The
           modal is mounted by AppLayout, not here — pairing again removes the
           host and with it this view. */}
-      {workspace.authRejected && (
+      {workspace.insecureTransport && (
+        <div className="px-3 py-2 flex-shrink-0">
+          <RemoteRepairNotice insecure hostLabel={workspace.hostLabel || t('remote.hostFallback')} />
+        </div>
+      )}
+      {workspace.authRejected && !workspace.insecureTransport && (
         <div className="px-3 py-2 flex-shrink-0">
           <RemoteRepairNotice
             hostLabel={workspace.hostLabel || t('remote.hostFallback')}

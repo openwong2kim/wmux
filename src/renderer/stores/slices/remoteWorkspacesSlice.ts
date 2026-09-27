@@ -40,6 +40,10 @@ export interface AttachedRemoteWorkspace {
    *  own — the row says so and offers to pair again. Cleared by the next
    *  successful fetch. */
   authRejected?: boolean;
+  /** The host is on plain http to another machine, so its token is never
+   *  sent: nothing on this row can load until it is paired again over HTTPS.
+   *  Shown like `authRejected` (it will not heal on its own). */
+  insecureTransport?: boolean;
   /**
    * #1329 — this row exists ONLY to drive the per-host poll for a
    * remote-terminal SURFACE (the "New remote pane" / "Split right|down —
@@ -182,6 +186,9 @@ export interface RemoteWorkspacesSlice {
   /** Flags (or clears) every row on `hostId` as refused by the host — see
    *  `AttachedRemoteWorkspace.authRejected`. */
   setRemoteHostAuthRejected: (hostId: string, rejected: boolean) => void;
+  /** Flags (or clears) every row on `hostId` as needing HTTPS — see
+   *  `AttachedRemoteWorkspace.insecureTransport`. */
+  setRemoteHostInsecure: (hostId: string, insecure: boolean) => void;
   /** The host whose stale credential the user asked to replace from outside
    *  the attach modal (a remote workspace's "Pair again"). AppLayout mounts
    *  the modal for it: re-pairing removes the host, which unmounts every view
@@ -405,6 +412,13 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
     for (const entry of state.remoteWorkspaces) {
       if (entry.hostId !== hostId || (entry.authRejected === true) === rejected) continue;
       entry.authRejected = rejected;
+    }
+  }),
+
+  setRemoteHostInsecure: (hostId, insecure) => set((state: StoreState) => {
+    for (const entry of state.remoteWorkspaces) {
+      if (entry.hostId !== hostId || (entry.insecureTransport === true) === insecure) continue;
+      entry.insecureTransport = insecure;
     }
   }),
 

@@ -1193,6 +1193,31 @@ describe('useRemoteAttachmentsLifecycle — main-driven poll cadence (#1391)', (
     unmount();
   });
 
+  it('a host that needs HTTPS is flagged on every row (not silent) and not retried', async () => {
+    vi.useFakeTimers();
+    installElectronApi({
+      mainTick: true,
+      listImpl: async () => ({ ok: false, error: 'listWorkspaces refused: this host needs HTTPS', reason: 'insecure-transport' }),
+    });
+    mount();
+    seedAttached([{ sessionId: 'a' }]);
+    await settle();
+    await act(async () => { tickCb?.(); await Promise.resolve(); });
+    await settle();
+    const rows = useStore.getState().remoteWorkspaces;
+    expect(rows.every((w) => w.insecureTransport)).toBe(true);
+    expect(rows.some((w) => w.authRejected)).toBe(false);
+    api.workspacesList.mockClear();
+    for (let i = 0; i < 6; i++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      await act(async () => { window.dispatchEvent(new Event('focus')); tickCb?.(); await Promise.resolve(); });
+      await settle();
+    }
+    expect(api.workspacesList).not.toHaveBeenCalled();
+    act(() => { useStore.getState().setRemoteHostInsecure('h1', false); });
+    unmount();
+  });
+
   it('a host that answers again clears the flag on every row, even one it no longer lists', async () => {
     vi.useFakeTimers();
     installElectronApi({ mainTick: true, workspaces: [] });

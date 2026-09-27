@@ -142,6 +142,8 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
   /** The stream ended because the host rejected this computer's credential —
    *  says "pair again" instead of the generic connection-lost line. */
   const [authRejected, setAuthRejected] = useState(false);
+  /** The host is on plain http to another machine: its token is never sent. */
+  const [insecure, setInsecure] = useState(false);
   // Read via ref inside the attach-lifecycle effect below so a readOnly
   // flip (allowInput probe resolving after mount) doesn't tear down and
   // re-subscribe the whole attach — only paneWrite needs the live value.
@@ -154,7 +156,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
   const remoteKeyboardRef = useRef(INITIAL_REMOTE_KEYBOARD_STATE);
   // A host that rejected the credential takes no input either: swallow it
   // locally instead of POSTing writes the host will refuse.
-  readOnlyRef.current = readOnly || authRejected;
+  readOnlyRef.current = readOnly || authRejected || insecure;
   const hostIdRef = useRef(hostId);
   hostIdRef.current = hostId;
   const hostLabelRef = useRef(hostLabel);
@@ -1009,6 +1011,10 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
         readOnlyRef.current = true; // before the re-render: the next key is already swallowed
         setAuthRejected(true);
         if (hostIdRef.current) useStore.getState().setRemoteHostAuthRejected(hostIdRef.current, true);
+      } else if (e.reason === 'insecure-transport') {
+        readOnlyRef.current = true;
+        setInsecure(true);
+        if (hostIdRef.current) useStore.getState().setRemoteHostInsecure(hostIdRef.current, true);
       } else {
         setDisconnected(true);
       }
@@ -1071,13 +1077,15 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
           {t('remote.disconnected')}
         </div>
       )}
-      {authRejected && (
+      {(authRejected || insecure) && (
         <div
           role="alert"
           className="absolute bottom-0 left-0 right-0 px-2 py-1 text-[10px] font-mono"
           style={{ color: 'var(--accent-red)', background: 'var(--bg-overlay-scrim, rgba(0, 0, 0, 0.55))' }}
         >
-          {t('remote.authRejected', { host: hostLabel || t('remote.hostFallback') })}
+          {insecure
+            ? t('remote.insecureHost', { host: hostLabel || t('remote.hostFallback') })
+            : t('remote.authRejected', { host: hostLabel || t('remote.hostFallback') })}
         </div>
       )}
     </div>

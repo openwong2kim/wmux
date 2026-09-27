@@ -140,6 +140,16 @@ describe('RemoteWorkspaceItem', () => {
     expect(container.textContent).toContain('Pair again needed');
   });
 
+  it('says a host needs HTTPS in the accessible name and on the visible host line', () => {
+    const { container } = render(
+      <RemoteWorkspaceItem workspace={{ ...WS, insecureTransport: true, stale: true }} isActive={false} onSelect={vi.fn()} onDetach={vi.fn()} />,
+    );
+    const row = container.querySelector('[role="button"]') as HTMLElement;
+    expect(row.getAttribute('aria-label')).toContain('needs HTTPS — re-pair over HTTPS');
+    expect(container.textContent).toContain('needs HTTPS');
+    expect(container.textContent).not.toContain('Pair again needed');
+  });
+
   // Remote rows share the local list, so each one says "another machine" by
   // a server glyph on the host line, and a stale mirror is dimmed.
   it('marks the host line with a server glyph and dims only a stale row', () => {

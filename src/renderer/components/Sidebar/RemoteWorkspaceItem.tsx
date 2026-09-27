@@ -62,7 +62,12 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
 
   const displayName = remoteWorkspaceDisplayName(workspace);
   const hostName = workspace.hostLabel || t('remote.hostFallback');
-  const rejectedText = workspace.authRejected ? t('remote.authRejected', { host: hostName }) : null;
+  // Needs HTTPS wins over a rejected credential: the token is not even sent.
+  const rejectedText = workspace.insecureTransport
+    ? t('remote.insecureHost', { host: hostName })
+    : workspace.authRejected
+      ? t('remote.authRejected', { host: hostName })
+      : null;
   const tagHex = workspaceColorHex(normalizeWorkspaceColor(workspace.color));
   // The row sorts by this class (Sidebar), so it must also say it: a mirror
   // lifted to the top with no visible reason reads as a sorting bug.
@@ -138,7 +143,7 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
                 why on hover. */}
             <div
               className="flex items-center gap-1 text-[10px] font-mono min-w-0"
-              style={{ color: workspace.stale ? 'var(--text-muted)' : 'var(--accent)' }}
+              style={{ color: workspace.stale || workspace.insecureTransport ? 'var(--text-muted)' : 'var(--accent)' }}
               title={rejectedText ?? (workspace.stale ? t('remote.disconnected') : undefined)}
             >
               {/* "On another machine" at a glance, now that remote rows share
@@ -148,7 +153,7 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
                 {hostName}
                 {/* Not only a tooltip: a host that refused this computer will not
                     come back on its own, so the row says so where it is read. */}
-                {rejectedText && ` · ${t('remote.needsPairing')}`}
+                {rejectedText && ` · ${workspace.insecureTransport ? t('remote.needsHttps') : t('remote.needsPairing')}`}
               </span>
             </div>
           </div>

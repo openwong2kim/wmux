@@ -1101,10 +1101,10 @@ export function attentionScore(rank: number, atMinute: number): number {
  * stamps, so a remote row sorts after local rows of the same class.
  */
 export function remoteWorkspaceAttentionClass(
-  rw: Pick<AttachedRemoteWorkspace, 'panes' | 'stale' | 'authRejected'>,
+  rw: Pick<AttachedRemoteWorkspace, 'panes' | 'stale' | 'authRejected' | 'insecureTransport'>,
 ): FleetAttentionClass {
   let best: FleetAttentionClass = 'idle';
-  if (!rw.stale && !rw.authRejected) {
+  if (!rw.stale && !rw.authRejected && !rw.insecureTransport) {
     for (const p of rw.panes) {
       if (!p.agentName) continue;
       const c = fleetAttentionClass({ agentStatus: p.agentStatus ?? 'idle', unverifiable: false });
@@ -1116,7 +1116,7 @@ export function remoteWorkspaceAttentionClass(
 
 /** The class above as a score, so the row sorts by what it shows. */
 export function remoteWorkspaceAttentionScore(
-  rw: Pick<AttachedRemoteWorkspace, 'panes' | 'stale' | 'authRejected'>,
+  rw: Pick<AttachedRemoteWorkspace, 'panes' | 'stale' | 'authRejected' | 'insecureTransport'>,
 ): number {
   return attentionScore(ATTENTION_CLASS_RANK[remoteWorkspaceAttentionClass(rw)], 0);
 }

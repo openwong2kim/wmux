@@ -292,6 +292,7 @@ export function classifyResizeRefusal(reason: string): ResizeRefusal {
   if (
     reason === 'bad-geometry' ||
     reason === 'auth-rejected' ||
+    reason === 'insecure-transport' ||
     reason === 'unknown attach' ||
     reason === 'unknown host' ||
     reason === 'cols and rows must be numbers'
