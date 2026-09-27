@@ -658,16 +658,6 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // Pane.tsx ("the user has seen this"), which says nothing about whether
     // the turn is still running.
     if (status && TURN_CLOSING_STATUSES.has(status)) {
-      // #1463 — a latched turn that ENDS (Stop / StopFailure) also withdraws
-      // the activity stamp, as a settle does: the turn's own end beats a
-      // decaying guess. Left behind, the stamp repainted the pane 'running'
-      // for up to 120 s once the user had seen the result — in Fleet, which
-      // promotes on it, but not in the sidebar roster, which does not.
-      // 'idle' keeps its own rule (only a SETTLED idle drops the stamp), and
-      // an unlatched pane is the byte heuristic's, which this does not touch.
-      if (status !== 'idle' && state.surfaceTurnOpenAt[ptyId] !== undefined) {
-        delete state.surfaceActivityAt[ptyId];
-      }
       delete state.surfaceTurnOpenAt[ptyId];
     }
   }),

@@ -197,6 +197,7 @@ export function selectWorkspaceAgentRoster(
         activityAt,
         turnOpenAt: state.surfaceTurnOpenAt?.[ptyId],
         agentClockMs: state.agentClockMs,
+        turnEndAt: state.surfaceTurnEndAt?.[ptyId],
       });
 
       // Identity-only boot hydration currently seeds `running` without an
@@ -290,6 +291,7 @@ export function selectWorkspaceAgentRoster(
       activityAt,
       turnOpenAt: ptyId ? state.surfaceTurnOpenAt?.[ptyId] : undefined,
       agentClockMs: state.agentClockMs,
+      turnEndAt: ptyId ? state.surfaceTurnEndAt?.[ptyId] : undefined,
     });
 
     // An exited pane has no status to report — the session is gone, and painting

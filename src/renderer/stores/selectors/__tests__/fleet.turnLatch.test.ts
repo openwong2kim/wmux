@@ -84,6 +84,7 @@ beforeEach(() => {
     surfaceAgentStatus: {},
     surfaceActivityAt: {},
     surfaceTurnOpenAt: {},
+    surfaceTurnEndAt: {},
     surfaceAgent: { [PTY]: { name: 'Claude Code', status: 'running' } },
     surfacePendingQuestion: {},
     commandRunningByPtyId: {},
@@ -157,6 +158,12 @@ describe('hook turn latch — the pane stays running while the turn is open', ()
     expect(pane().agentStatus).not.toBe('running');
     const row = selectWorkspaceAgentRoster(useStore.getState(), 'ws').rows.find((r) => r.ptyId === PTY);
     expect(row?.status).not.toBe('running');
+    // The stamp itself survives for the idle clocks; only its running claim ends.
+    expect(useStore.getState().surfaceActivityAt[PTY]).toBe(NOW + 30_000);
+    // New work after the end is evidence again.
+    advance(1_000);
+    applyMetadata({ agentStatus: 'running' });
+    expect(pane().agentStatus).toBe('running');
   });
 
   it('#1463 — a mid-turn question keeps the turn open through the answer', () => {

@@ -141,6 +141,10 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    *  `surfaceActivityAt`, which is evidence and decays at HOOK_RUNNING_TTL_MS.
    *  Optional so existing fixtures stay terse. */
   surfaceTurnOpenAt?: StoreState['surfaceTurnOpenAt'];
+  /** #1463 — ptyId → when its last turn ended as `complete`. Activity evidence
+   *  older than this belongs to the finished turn (see isHookRunning).
+   *  Optional so existing fixtures stay terse. */
+  surfaceTurnEndAt?: StoreState['surfaceTurnEndAt'];
   /**
    * PRECOMPUTED hook-'running' verdicts, ptyId → true. Supplied instead of
    * `agentClockMs` by a consumer that must not re-run on every clock tick: the
@@ -234,9 +238,16 @@ export function isHookRunning(args: {
   turnOpenAt: number | undefined;
   /** The reactive decay clock (`state.agentClockMs`). */
   agentClockMs: number | undefined;
+  /** `surfaceTurnEndAt[ptyId]` — when the last turn ended as `complete`. */
+  turnEndAt?: number;
 }): boolean {
-  const { activityAt, turnOpenAt, agentClockMs } = args;
+  const { activityAt, turnOpenAt, agentClockMs, turnEndAt } = args;
   if (turnOpenAt !== undefined && turnOpenAt > 0) return true;
+  // #1463 — evidence from BEFORE the turn's own end is about the finished
+  // turn. Counting it repainted a seen, finished pane 'running' for the rest
+  // of the TTL in Fleet while the roster showed it finished. Any new running
+  // edge drops `turnEndAt` (setSurfaceAgentStatus), so fresh work still counts.
+  if (turnEndAt !== undefined && activityAt !== undefined && activityAt <= turnEndAt) return false;
   return (
     activityAt !== undefined
     && activityAt > 0
@@ -447,6 +458,7 @@ export function selectHookRunningByPtyId(state: FleetSelectorState): Record<stri
       activityAt: activity[ptyId],
       turnOpenAt: turnOpen[ptyId],
       agentClockMs: state.agentClockMs,
+      turnEndAt: state.surfaceTurnEndAt?.[ptyId],
     })) {
       // Only TRUE entries are kept: a shallow compare over a map that also
       // carried `false` would change identity for every pane that ever ran.
@@ -589,7 +601,12 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       const turnOpen = turnOpenAt !== undefined && turnOpenAt > 0;
       const hookRunning = state.hookRunningByPtyId
         ? (!!ptyId && state.hookRunningByPtyId[ptyId] === true)
-        : isHookRunning({ activityAt, turnOpenAt, agentClockMs: state.agentClockMs });
+        : isHookRunning({
+          activityAt,
+          turnOpenAt,
+          agentClockMs: state.agentClockMs,
+          turnEndAt: ptyId ? state.surfaceTurnEndAt?.[ptyId] : undefined,
+        });
       // #1168 — a stashed pane whose every terminal surface has lost its pty is
       // a session the daemon has confirmed gone. The roster reports that as
       // `error` / needs-you and offers recovery; this pass had no liveness
