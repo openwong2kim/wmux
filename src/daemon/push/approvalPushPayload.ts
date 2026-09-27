@@ -178,9 +178,11 @@ export const APPROVAL_RETRACTION_KIND = 'approval_retraction';
 export function buildApprovalRetractionPayload(request: ApprovalRequest): PushPayload {
   return {
     title: 'Approval resolved',
+    // `expired` covers an answer typed at the computer too (`answered-locally`),
+    // so neither body claims where it was answered.
     body: request.state === 'expired'
-      ? 'The prompt closed — nothing to do.'
-      : 'Answered at the computer — nothing to do.',
+      ? 'No longer waiting — nothing to do.'
+      : 'Answered — nothing to do.',
     sessionId: request.sessionId,
     kind: APPROVAL_RETRACTION_KIND,
     retractsApprovalId: request.id,

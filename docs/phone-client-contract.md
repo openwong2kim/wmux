@@ -1360,16 +1360,17 @@ on. Its sealed plaintext:
 ```json
 {
   "title": "Approval resolved",
-  "body": "Answered at the computer — nothing to do.",
+  "body": "No longer waiting — nothing to do.",
   "sessionId": "<pane session id>",
   "kind": "approval_retraction",
   "retractsApprovalId": "<the approvalId the original push carried>",
-  "resolution": "resolved"
+  "resolution": "expired"
 }
 ```
 
-`resolution` is `"resolved"` or `"expired"` (the body then reads "The prompt
-closed — nothing to do."). There is **never an `approvalId`** on a retraction:
+`resolution` is `"expired"` (the dialog was answered in the pane, cleared, or
+the turn ended — an answer typed at the computer lands here) or `"resolved"`
+(the body then reads "Answered — nothing to do."). There is **never an `approvalId`** on a retraction:
 an extension that sees one attaches the approval category, its buttons and the
 deep link, which would put Approve back on the lock screen for a record that no
 longer exists. No retraction is sent when the push never left (the record ended
