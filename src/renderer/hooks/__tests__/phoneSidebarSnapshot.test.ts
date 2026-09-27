@@ -5,6 +5,7 @@ import { parsePhoneSidebarSnapshot, PHONE_SIDEBAR_LIMITS } from '../../../shared
 import type { StoreState } from '../../stores';
 import type { Workspace, Pane, Surface, AgentStatus } from '../../../shared/types';
 import type { WorkTask } from '../../../shared/workTask';
+import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
 
 const NOW = 5_000_000;
 
@@ -43,6 +44,7 @@ function state(opts: {
   pinned?: string[];
   paneLabel?: Record<string, string>;
   activeWorkspaceId?: string;
+  origin?: Record<string, FanoutOrigin>;
 }): StoreState {
   const surfaceAgent: Record<string, { name: string; status: AgentStatus }> = {};
   const surfaceAgentStatus: Record<string, AgentStatus> = {};
@@ -57,6 +59,7 @@ function state(opts: {
     fanoutLineage: opts.lineage ?? {},
     fanoutSpawnOwner: opts.spawnOwner ?? {},
     fanoutProvenance: opts.provenance ?? {},
+    fanoutOrigin: opts.origin ?? {},
     sidebarPinnedIds: opts.pinned ?? [],
     surfaceAgent,
     surfaceAgentStatus,
@@ -167,6 +170,66 @@ describe('buildPhoneSidebarSnapshot — workspace rows', () => {
   });
 });
 
+describe('buildPhoneSidebarSnapshot — tasks under the requesting pane (#1581 split)', () => {
+  const paneOrigin = (paneId: string, surfaceId: string): FanoutOrigin => ({ kind: 'pane', paneId, surfaceId, label: 'secret label' });
+
+  it('files each nested task like splitTasksByPane: live pane, stashed pane, closed pane, unknown origin', () => {
+    const owner = workspace('owner', [
+      leaf('pa', [surface('sa', 'pty-a')]),
+      leaf('pb', [surface('sb', 'pty-b')]),
+    ], { stashedPanes: [{ pane: leaf('pst', [surface('sst', 'pty-st')]), stashedAt: 1 }] } as Partial<Workspace>);
+    const tasks = ['t1', 't2', 't3', 't4', 't5', 't6'].map((id) => workspace(id, [leaf(`p-${id}`, [surface(`s-${id}`, `pty-${id}`)])]));
+    const missions = Object.fromEntries(['t1', 't2', 't3', 't4', 't5'].map((id) => [id, mission(`task-${id}`, 'owner')]));
+    missions.t6 = mission('task-t6', 'owner', { detachedAt: 5 });
+    const snap = buildPhoneSidebarSnapshot(state({
+      workspaces: [owner, ...tasks],
+      missions,
+      origin: {
+        t1: paneOrigin('pa', 'sa'),
+        t2: paneOrigin('pb', 'sb'),
+        t3: paneOrigin('pst', 'sst'),
+        t4: paneOrigin('gone-pane', 'gone-surface'),
+        // t5: no origin at all (orchestrator / GUI / older stamp)
+        t6: paneOrigin('pa', 'sa'),
+      },
+    }));
+    const byId = new Map(snap.workspaces.map((w) => [w.id, w]));
+    expect(byId.get('t1')!.task).toMatchObject({ nested: true, paneGroup: 'pane', requesterPaneId: 'pa' });
+    expect(byId.get('t2')!.task).toMatchObject({ nested: true, paneGroup: 'pane', requesterPaneId: 'pb' });
+    expect(byId.get('t3')!.task).toMatchObject({ nested: true, paneGroup: 'pane', requesterPaneId: 'pst' });
+    for (const id of ['t4', 't5']) {
+      expect(byId.get(id)!.task).toMatchObject({ nested: true, paneGroup: 'closedPane' });
+      expect(byId.get(id)!.task).not.toHaveProperty('requesterPaneId');
+    }
+    // Detached: not nested, no placement at all.
+    expect(byId.get('t6')!.task).toMatchObject({ nested: false });
+    expect(byId.get('t6')!.task).not.toHaveProperty('paneGroup');
+    expect(byId.get('t6')!.task).not.toHaveProperty('requesterPaneId');
+    // The origin's label never leaves; the placement survives the allowlist.
+    expect(JSON.stringify(snap)).not.toContain('secret label');
+    expect(parsePhoneSidebarSnapshot(JSON.parse(JSON.stringify(snap)))).toEqual(snap);
+  });
+
+  it('follows the requesting surface when it moves to another pane, and gives an orphan no placement', () => {
+    const tasks = [workspace('t1', [leaf('p-t1', [surface('s-t1', 'pty-t1')])]), workspace('t2', [leaf('p-t2', [surface('s-t2', 'pty-t2')])])];
+    const missions = { t1: mission('task-1', 'owner'), t2: mission('task-2', 'closed-owner') };
+    const origin = { t1: paneOrigin('pa', 'sa'), t2: paneOrigin('pa', 'sa') };
+    const before = buildPhoneSidebarSnapshot(state({
+      workspaces: [workspace('owner', [leaf('pa', [surface('sa', 'pty-a')]), leaf('pb', [surface('sb', 'pty-b')])]), ...tasks],
+      missions, origin,
+    }));
+    expect(before.workspaces.find((w) => w.id === 't1')!.task).toMatchObject({ paneGroup: 'pane', requesterPaneId: 'pa' });
+    const after = buildPhoneSidebarSnapshot(state({
+      workspaces: [workspace('owner', [leaf('pb', [surface('sb', 'pty-b'), surface('sa', 'pty-a')])]), ...tasks],
+      missions, origin,
+    }));
+    expect(after.workspaces.find((w) => w.id === 't1')!.task).toMatchObject({ paneGroup: 'pane', requesterPaneId: 'pb' });
+    // Owner gone: "From closed workspace", no pane placement.
+    expect(after.workspaces.find((w) => w.id === 't2')!.task).toEqual(expect.objectContaining({ nested: false }));
+    expect(after.workspaces.find((w) => w.id === 't2')!.task).not.toHaveProperty('paneGroup');
+  });
+});
+
 describe('buildPhoneSidebarSnapshot — pane rows', () => {
   it('names panes like the roster: label, else the coordinate; agent titles drop a bare shell name', () => {
     const ws = workspace('a', [
@@ -180,9 +243,9 @@ describe('buildPhoneSidebarSnapshot — pane rows', () => {
       paneLabel: { p3: 'builds' },
     }));
     expect(snap.panes).toEqual([
-      { ptyId: 'pty-1', workspaceId: 'a', surfaceTitle: '✳ app review', paneName: 'w123-5' },
-      { ptyId: 'pty-2', workspaceId: 'a', paneName: 'w123-6' },
-      { ptyId: 'pty-3', workspaceId: 'a', surfaceTitle: 'zsh', paneName: 'builds' },
+      { ptyId: 'pty-1', workspaceId: 'a', paneId: 'p1', surfaceTitle: '✳ app review', paneName: 'w123-5' },
+      { ptyId: 'pty-2', workspaceId: 'a', paneId: 'p2', paneName: 'w123-6' },
+      { ptyId: 'pty-3', workspaceId: 'a', paneId: 'p3', surfaceTitle: 'zsh', paneName: 'builds' },
     ]);
   });
 
@@ -198,7 +261,7 @@ describe('buildPhoneSidebarSnapshot — pane rows', () => {
       stashedPanes: [{ pane: leaf('p9', [surface('s9', 'pty-stashed', { title: 'parked' })], 9), stashedAt: 1 }],
     } as Partial<Workspace>);
     const snap = buildPhoneSidebarSnapshot(state({ workspaces: [ws] }));
-    expect(snap.panes).toEqual([{ ptyId: 'pty-stashed', workspaceId: 'a', surfaceTitle: 'parked', paneName: 'w2-9' }]);
+    expect(snap.panes).toEqual([{ ptyId: 'pty-stashed', workspaceId: 'a', paneId: 'p9', surfaceTitle: 'parked', paneName: 'w2-9' }]);
     expect(JSON.stringify(snap)).not.toContain('brain-');
   });
 

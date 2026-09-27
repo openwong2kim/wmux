@@ -8408,6 +8408,79 @@ describe('WebTerminalServer', () => {
       }
     });
 
+    it('files tasks under the requesting pane only when this reply lists it, and drops it all when stale', async () => {
+      const task = (id: string, extra: Record<string, unknown>) => ({ id, order: 9, pinned: false, task: { ownerWorkspaceId: OWNER, detached: false, nested: true, ...extra } });
+      const snapshot = {
+        activeWorkspaceId: OWNER,
+        workspaces: [
+          { id: PLAIN, order: 0, pinned: false },
+          { id: OWNER, order: 1, pinned: false },
+          task('t-live', { paneGroup: 'pane', requesterPaneId: 'pane-a' }),
+          task('t-closed', { paneGroup: 'closedPane' }),
+          // Requester alive on the desktop, but a pane of browser tabs: no session here.
+          task('t-browser', { paneGroup: 'pane', requesterPaneId: 'pane-browser' }),
+          // Names a pane this reply lists — under another workspace.
+          task('t-foreign', { paneGroup: 'pane', requesterPaneId: 'pane-plain' }),
+          task('t-detached', { detached: true, nested: false }),
+          { id: 't-orphan', order: 9, pinned: false, task: { ownerWorkspaceId: 'ws-gone', detached: false, nested: false } },
+        ],
+        panes: [
+          { ptyId: 'd-plain', workspaceId: PLAIN, paneId: 'pane-plain', paneName: 'w1-1' },
+          { ptyId: 'd-a', workspaceId: OWNER, paneId: 'pane-a', paneName: 'w2-1' },
+          { ptyId: 'd-b', workspaceId: OWNER, paneId: 'pane-b', paneName: 'w2-2' },
+          ...['t-live', 't-closed', 't-browser', 't-foreign', 't-detached', 't-orphan'].map((id) => ({ ptyId: `d-${id}`, workspaceId: id, paneId: `pane-${id}` })),
+        ],
+      };
+      const sessions = [['d-plain', PLAIN], ['d-a', OWNER], ['d-b', OWNER], ...['t-live', 't-closed', 't-browser', 't-foreign', 't-detached', 't-orphan'].map((id) => [`d-${id}`, id])]
+        .map(([id, ws]) => ({
+          id, cwd: '/repo', cols: 80, rows: 24, state: 'attached',
+          agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+          env: { WMUX_WORKSPACE_ID: ws, WMUX_WORKSPACE_NAME: ws }, cmd: '/bin/zsh',
+        }));
+      const fixture = live.splice(0, live.length, ...sessions);
+      try {
+        const desktop = manualDesktop();
+        const info = await startRO();
+        const token = info.token as string;
+        desktop.stub.autoReply = { workspaces: [], sidebar: snapshot };
+        const body = await getJson(token, '/api/workspaces');
+        desktop.stub.autoReply = undefined;
+        const rows = new Map((body.workspaces as Row[]).map((w) => [w.id as string, w]));
+        expect(rows.get('t-live')).toMatchObject({ nested: true, nestedUnder: 'pane', requesterPaneId: 'pane-a' });
+        expect(rows.get('t-closed')).toMatchObject({ nested: true, nestedUnder: 'closedPane' });
+        for (const id of ['t-browser', 't-foreign']) expect(rows.get(id)).toMatchObject({ nested: true });
+        for (const id of ['t-closed', 't-browser', 't-foreign', 't-detached', 't-orphan', OWNER, PLAIN]) {
+          expect(rows.get(id)).not.toHaveProperty('requesterPaneId');
+        }
+        for (const id of ['t-browser', 't-foreign', 't-detached', 't-orphan', OWNER, PLAIN]) expect(rows.get(id)).not.toHaveProperty('nestedUnder');
+        expect(rows.get('t-detached')).toMatchObject({ detached: true, nested: false });
+        expect(rows.get('t-orphan')).toMatchObject({ ownerWorkspaceId: 'ws-gone', nested: false });
+        // The requester is one of this reply's panes, under the owner.
+        expect(rows.get(OWNER)!.panes).toEqual([
+          expect.objectContaining({ sessionId: 'd-a', paneId: 'pane-a' }),
+          expect.objectContaining({ sessionId: 'd-b', paneId: 'pane-b' }),
+        ]);
+        const listed = (await getJson(token, '/api/sessions')).sessions as Row[];
+        expect(listed.find((r) => r.id === 'd-a')).toMatchObject({ paneId: 'pane-a', paneName: 'w2-1', workspaceId: OWNER });
+        expect(listed.find((r) => r.id === 'd-b')).toMatchObject({ paneId: 'pane-b' });
+        expect(JSON.stringify(body)).not.toContain('pane-browser');
+        // Stale past the bound: every desktop field goes, the new ones with them.
+        clockOffsetMs += 1500;
+        await getJson(token, '/api/workspaces');
+        desktop.fail(1, 'desktop-busy');
+        await flush();
+        clockOffsetMs += 9500;
+        const stale = await getJson(token, '/api/workspaces');
+        for (const w of stale.workspaces as Row[]) {
+          for (const key of ['order', 'nested', 'nestedUnder', 'requesterPaneId']) expect(w).not.toHaveProperty(key);
+          for (const pane of w.panes as Row[]) expect(pane).not.toHaveProperty('paneId');
+        }
+        for (const r of (await getJson(token, '/api/sessions')).sessions as Row[]) expect(r).not.toHaveProperty('paneId');
+      } finally {
+        live.splice(0, live.length, ...fixture);
+      }
+    });
+
     it('answers at once without the fields when a quiet spell meets a hung desktop', async () => {
       const desktop = manualDesktop();
       const info = await startRO();

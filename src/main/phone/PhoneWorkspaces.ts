@@ -74,9 +74,10 @@ export async function handlePhoneWorkspaces(command: string, payload: Record<str
 /**
  * The daemon drops a reply over its per-request byte cap without answering,
  * which would turn every list call into a timeout, so the sidebar must fit.
- * It degrades in steps, cheapest loss first: tab titles go, then pane names
- * (a pane row without either carries nothing, so the pane list empties), and
- * only then the whole sidebar. The workspace list itself is never cut.
+ * It degrades in steps, cheapest loss first: tab titles go, then the pane
+ * rows (names and the pane ids tasks are filed under — a task whose requesting
+ * pane is no longer listed goes out without it), and only then the whole
+ * sidebar. The workspace list itself is never cut.
  */
 export function fitSidebarToBudget(
   base: { workspaces: unknown[] },
@@ -92,12 +93,22 @@ export function fitSidebarToBudget(
     panes: sidebar.panes.map((pane) => ({
       ptyId: pane.ptyId,
       workspaceId: pane.workspaceId,
+      ...(pane.paneId !== undefined ? { paneId: pane.paneId } : {}),
       ...(pane.paneName !== undefined ? { paneName: pane.paneName } : {}),
     })),
   };
   if (fits(withoutTitles)) return withoutTitles;
   onDrop('budget.panes');
-  const withoutPanes: PhoneSidebarSnapshot = { ...sidebar, panes: [] };
+  const withoutPanes: PhoneSidebarSnapshot = {
+    ...sidebar,
+    panes: [],
+    // No pane rows left to name: a task keeps only its workspace-level nesting.
+    workspaces: sidebar.workspaces.map((row) => {
+      if (row.task?.requesterPaneId === undefined) return row;
+      const { paneGroup: _paneGroup, requesterPaneId: _requesterPaneId, ...task } = row.task;
+      return { ...row, task };
+    }),
+  };
   if (fits(withoutPanes)) return withoutPanes;
   onDrop('budget.sidebar');
   return null;

@@ -84,8 +84,12 @@ describe('phone workspace bridge', () => {
     const base = { workspaces: [{ id: 'ws-1', name: 'One', sessionId: 's1' }] };
     const sidebar: PhoneSidebarSnapshot = {
       activeWorkspaceId: 'ws-1',
-      workspaces: [{ id: 'ws-1', order: 0, pinned: true, gitBranch: 'main' }],
-      panes: Array.from({ length: 20 }, (_, i) => ({ ptyId: `pty-${i}`, workspaceId: 'ws-1', surfaceTitle: 't'.repeat(100), paneName: `w1-${i}` })),
+      workspaces: [
+        { id: 'ws-1', order: 0, pinned: true, gitBranch: 'main' },
+        { id: 'ws-t1', order: 1, pinned: false, task: { ownerWorkspaceId: 'ws-1', detached: false, nested: true, paneGroup: 'pane', requesterPaneId: 'pane-3' } },
+        { id: 'ws-t2', order: 2, pinned: false, task: { ownerWorkspaceId: 'ws-1', detached: false, nested: true, paneGroup: 'closedPane' } },
+      ],
+      panes: Array.from({ length: 20 }, (_, i) => ({ ptyId: `pty-${i}`, workspaceId: 'ws-1', paneId: `pane-${i}`, surfaceTitle: 't'.repeat(100), paneName: `w1-${i}` })),
     };
     const size = (candidate: PhoneSidebarSnapshot | null) => Buffer.byteLength(JSON.stringify(candidate ? { ...base, sidebar: candidate } : base));
     const full = size(sidebar);
@@ -94,11 +98,18 @@ describe('phone workspace bridge', () => {
     const noTitles = fitSidebarToBudget(base, sidebar, full - 1)!;
     expect(noTitles.panes).toHaveLength(20);
     expect(noTitles.panes.every((p) => !('surfaceTitle' in p) && p.paneName !== undefined)).toBe(true);
+    // The pane ids tasks are filed under stay with the pane rows.
+    expect(noTitles.panes.map((p) => p.paneId)).toEqual(sidebar.panes.map((p) => p.paneId));
     expect(noTitles.workspaces).toEqual(sidebar.workspaces);
 
     const noPanes = fitSidebarToBudget(base, sidebar, size(noTitles) - 1)!;
     expect(noPanes.panes).toEqual([]);
-    expect(noPanes.workspaces).toEqual(sidebar.workspaces);
+    // With no pane rows left, a task names no pane; the closed-pane verdict stands.
+    expect(noPanes.workspaces).toEqual([
+      sidebar.workspaces[0],
+      { id: 'ws-t1', order: 1, pinned: false, task: { ownerWorkspaceId: 'ws-1', detached: false, nested: true } },
+      sidebar.workspaces[2],
+    ]);
     expect(noPanes.activeWorkspaceId).toBe('ws-1');
 
     expect(fitSidebarToBudget(base, sidebar, size(noPanes) - 1)).toBeNull();

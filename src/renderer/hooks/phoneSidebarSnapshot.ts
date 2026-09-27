@@ -16,6 +16,8 @@
 //   - nested:       `buildSidebarTree` membership (drawn under its owner)
 //   - task state:   SidebarTaskGroup's rollup bits, per nested task; the
 //                   daemon folds them into the owner's summary
+//   - pane group:   `splitTasksByPane` over the owner's leaves, the split
+//                   the sidebar files each nested task under (#1581)
 //   - panes:        the roster's pane display name and surface title rules
 //
 // Store-free (state in, plain object out) so it is unit-testable directly.
@@ -33,7 +35,7 @@ import {
 import type { StoreState } from '../stores';
 import { resolveTaskLink } from '../utils/fanoutProvenance';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
-import { buildSidebarTree, paneRowsFinished, taskRollup } from '../components/Sidebar/sidebarTree';
+import { buildSidebarTree, paneRowsFinished, splitTasksByPane, taskRollup } from '../components/Sidebar/sidebarTree';
 import { selectWorkspaceAgentStatus } from '../stores/selectors/fleet';
 import { selectWorkspaceAgentRoster, agentSurfaceTitle } from '../stores/selectors/workspaceAgentRoster';
 import { isTaskReadyForReview } from '../stores/selectors/reviewQueue';
@@ -57,12 +59,32 @@ export function buildPhoneSidebarSnapshot(state: StoreState, onDrop: SidebarDrop
   // Order does not change membership, so the manual order stands in for the
   // sidebar's display sort here.
   let nestedTaskIds = new Set<string>();
+  let ownersWithTasks: { id: string; taskIds: string[] }[] = [];
   try {
     const tree = buildSidebarTree(workspaces, linkOf, liveIds);
     nestedTaskIds = new Set(tree.top.flatMap((node) => node.taskIds));
+    ownersWithTasks = tree.top.filter((node) => node.taskIds.length > 0);
   } catch {
     // No nesting this round; every other field still goes out.
     onDrop('task.tree');
+  }
+  // Which of its owner's panes each nested task sits under. The pure split,
+  // not the memoized `selectOwnerPaneTaskSplit`: that cache is shared with the
+  // sidebar and keyed on its display order, which this manual-order walk
+  // would otherwise replace on every phone poll.
+  const paneGroupOf = new Map<string, { paneGroup: 'pane'; requesterPaneId: string } | { paneGroup: 'closedPane' }>();
+  for (const owner of ownersWithTasks) {
+    try {
+      const ws = workspaces.find((w) => w.id === owner.id);
+      if (!ws) continue;
+      const panes = getWorkspaceLeafPanes(ws).map((leaf) => ({ paneId: leaf.id, surfaceIds: leaf.surfaces.map((surface) => surface.id) }));
+      const split = splitTasksByPane(owner.taskIds, (id) => state.fanoutOrigin?.[id], panes);
+      for (const [paneId, ids] of split.byPane) for (const id of ids) paneGroupOf.set(id, { paneGroup: 'pane', requesterPaneId: paneId });
+      for (const id of split.closedPane) paneGroupOf.set(id, { paneGroup: 'closedPane' });
+    } catch {
+      // This owner's tasks go out nested without a pane group.
+      onDrop('task.split');
+    }
   }
   const pinned = new Set(state.sidebarPinnedIds ?? []);
 
@@ -121,6 +143,8 @@ export function buildPhoneSidebarSnapshot(state: StoreState, onDrop: SidebarDrop
           toReview: (one?.toReview ?? 0) > 0,
           finished: paneRowsFinished(selectWorkspaceAgentRoster(state, id).rows),
         };
+        const group = paneGroupOf.get(id);
+        if (group) Object.assign(row.task, group);
       }
     }
   }
@@ -158,6 +182,7 @@ export function buildPhoneSidebarSnapshot(state: StoreState, onDrop: SidebarDrop
           paneRows.push({
             ptyId,
             workspaceId: ws.id,
+            paneId: leaf.id,
             ...(surfaceTitle ? { surfaceTitle } : {}),
             ...(paneName ? { paneName } : {}),
           });

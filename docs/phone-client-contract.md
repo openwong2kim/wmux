@@ -1982,6 +1982,11 @@ orchestrator brain's pane and workspace stay excluded exactly as before.
   coordinate, even when the desktop hides coordinates in its own sidebar. At
   most 64 characters.
 - `workspaceId` — see above; daemon-side, always present when known.
+- `paneId` — the desktop pane that holds this session's tab. Sessions with the
+  same `paneId` are tabs of one pane; group them to draw the desktop's pane
+  rows. It is an opaque grouping key recomputed on every poll: it changes when
+  a tab moves to another pane or panes are split or merged, so cache by
+  `sessionId`, never by `paneId`. A session without it is a group of its own.
 
 `POST /api/sessions` answers a daemon-only row: it carries `workspaceId` but
 not the desktop fields.
@@ -2014,12 +2019,41 @@ not the desktop fields.
   closed workspace"), for a task whose owner is itself a nested task (nesting
   is one level deep), and for a task whose owner has no live pane and so is not
   listed here.
+- `nestedUnder`, `requesterPaneId` — present only on a `nested` task, with the
+  desktop's own per-pane split (the sidebar draws workspace › requesting pane ›
+  tasks):
+  - `nestedUnder: "pane"` with `requesterPaneId` — the desktop draws the task
+    under the owner's pane that asked for it. `requesterPaneId` is a desktop
+    pane id that one of this reply's sessions under `ownerWorkspaceId`
+    carries: this row's `panes[]` entries and `GET /api/sessions` rows carry
+    the same `paneId`. Draw the task row indented under the pane group with
+    that `paneId`.
+  - `nestedUnder: "closedPane"` (no `requesterPaneId`) — the requesting pane is
+    gone, or no pane asked (the task came from the orchestrator or the
+    desktop's own UI). Draw it in a trailing "From closed pane" group under
+    the owner, after the owner's pane groups.
+  - Both absent on a `nested` task — draw it under the owner at workspace
+    level, as `nested` alone says. This happens when the requesting pane is
+    alive but has no session the phone lists (a pane of browser tabs only),
+    when the desktop is too old to say, and when the pane rows were cut to fit
+    the reply.
+
+  If no session you hold carries `requesterPaneId` (the two routes are
+  polled separately and can disagree for a poll), fall back the same way.
+  A task that needs you (the per-session status you already track for its
+  sessions, e.g. its `panes[].agentStatus`) should light the pane group it
+  sits under, the way it counts in the owner's `taskSummary.needYou`, so a
+  folded pane group still shows it.
 - `taskSummary` — on an owner row with at least one `nested` task only:
   `{tasks, needYou, toReview, finished}`, the sidebar's rollup line computed
   over exactly the rows of this reply that are `nested` under it. `needYou`
   counts tasks waiting on the user, `toReview` counts open tasks whose every
   agent pane reported complete (Fleet's "Ready to review"), and `finished`
   counts tasks whose every agent pane reported complete.
+
+Each `panes[]` entry of `GET /api/workspaces` also carries `paneId` (same
+value and rules as on `GET /api/sessions`) when the desktop places that
+session in a pane of that workspace.
 
 Top level of `GET /api/workspaces`: `activeWorkspaceId` — the workspace the
 desktop is showing, present only when it is one of the listed rows.

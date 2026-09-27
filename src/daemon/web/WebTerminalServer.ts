@@ -29,7 +29,7 @@ import {
 import http from 'node:http';
 import type { AgentStatus } from '../../shared/types';
 import { isRemoteAgentStatus } from '../../shared/remoteHosts';
-import { createSidebarDropLog, parsePhoneSidebarSnapshot, phoneTaskNesting, type PhoneSidebarSnapshot, type PhoneSidebarTaskSummary, type PhoneSidebarWorkspace } from '../../shared/phoneFleetSidebar';
+import { createSidebarDropLog, parsePhoneSidebarSnapshot, phoneTaskNesting, type PhoneSidebarSnapshot, type PhoneSidebarTaskSummary, type PhoneSidebarWorkspace, type PhoneTaskNestedUnder } from '../../shared/phoneFleetSidebar';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -2857,10 +2857,27 @@ export class WebTerminalServer {
     // Merged onto the daemon's own rows only: a workspace still exists here iff
     // a live, non-brain pane runs in it, and the desktop cannot add one.
     const fields = new Map(sidebar.workspaces.map((w) => [w.id, w]));
-    const nesting = phoneTaskNesting(sidebar.workspaces, new Set(byId.keys()));
+    // Desktop pane ids of the sessions this reply lists, each under the
+    // workspace both sides agree it runs in: the only panes a task may be
+    // filed under.
+    const sidebarPanes = new Map(sidebar.panes.map((p) => [p.ptyId, p]));
+    const listedPanes = new Map<string, string>();
+    for (const w of workspaces) {
+      for (const pane of w.panes) {
+        const label = sidebarPanes.get(pane.sessionId);
+        if (label?.paneId !== undefined && label.workspaceId === w.id) listedPanes.set(label.paneId, w.id);
+      }
+    }
+    const nesting = phoneTaskNesting(sidebar.workspaces, new Set(byId.keys()), listedPanes);
     const merged = workspaces.map((w) => {
       const extra = fields.get(w.id);
-      return extra ? { ...w, ...sidebarWorkspaceFields(extra, nesting.nested.get(w.id), nesting.summaries.get(w.id)) } : w;
+      const panes = w.panes.map((pane) => {
+        const label = sidebarPanes.get(pane.sessionId);
+        return label?.paneId !== undefined && label.workspaceId === w.id ? { ...pane, paneId: label.paneId } : pane;
+      });
+      return extra
+        ? { ...w, panes, ...sidebarWorkspaceFields(extra, nesting.nested.get(w.id), nesting.summaries.get(w.id), nesting.placement.get(w.id)) }
+        : { ...w, panes };
     });
     // Only an id this reply lists, so the active workspace cannot name one the
     // phone is not allowed to see (a brain-only workspace, for one).
@@ -2888,6 +2905,7 @@ export class WebTerminalServer {
         if (!pane) return s;
         return {
           ...s,
+          ...(pane.paneId !== undefined ? { paneId: pane.paneId } : {}),
           ...(pane.surfaceTitle !== undefined ? { surfaceTitle: pane.surfaceTitle } : {}),
           ...(pane.paneName !== undefined ? { paneName: pane.paneName } : {}),
         };
@@ -7643,13 +7661,15 @@ function sameCaller(original: WebPrincipal, now: WebPrincipal): boolean {
  * A sidebar workspace row as `/api/workspaces` carries it: the task link is
  * flattened onto the row (`ownerWorkspaceId`, `detached`, `createdAt`,
  * `nested`), present only on a fan-out task workspace; `taskSummary` only on
- * an owner row with nested tasks. `nested` and the summary are the phone-list
- * view from `phoneTaskNesting`; the per-task state bits stay internal.
+ * an owner row with nested tasks. `nested`, the summary and the pane placement
+ * (`nestedUnder`, `requesterPaneId`) are the phone-list view from
+ * `phoneTaskNesting`; the per-task state bits stay internal.
  */
 function sidebarWorkspaceFields(
   row: PhoneSidebarWorkspace,
   nested: boolean | undefined,
   taskSummary: PhoneSidebarTaskSummary | undefined,
+  placement: { nestedUnder: PhoneTaskNestedUnder; requesterPaneId?: string } | undefined,
 ): Record<string, unknown> {
   const { task } = row;
   return {
@@ -7666,6 +7686,12 @@ function sidebarWorkspaceFields(
           detached: task.detached,
           ...(task.createdAt !== undefined ? { createdAt: task.createdAt } : {}),
           nested: nested === true,
+          ...(nested === true && placement
+            ? {
+                nestedUnder: placement.nestedUnder,
+                ...(placement.requesterPaneId !== undefined ? { requesterPaneId: placement.requesterPaneId } : {}),
+              }
+            : {}),
         }
       : {}),
   };
