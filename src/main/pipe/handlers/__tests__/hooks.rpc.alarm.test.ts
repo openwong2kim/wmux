@@ -55,6 +55,7 @@ function stubHookRouter() {
     recordHook,
     recordDetector: vi.fn(),
     touchAuthority: vi.fn(),
+    notePromptSubmit: vi.fn(),
     isGovernedFor: vi.fn().mockReturnValue(false),
     governsDetectorStatus: vi.fn().mockReturnValue(false),
     getLatencyMeter: () => ({
@@ -175,7 +176,8 @@ describe('hooks.signal — local verdict gate (CompletionAlarm)', () => {
     const r = rig();
 
     // The ONLY cue before the stop — no activity, no tool_started.
-    await r.dispatch({ kind: 'agent.user_prompt_submit', agent: 'codex' });
+    await expect(r.dispatch({ kind: 'agent.user_prompt_submit', agent: 'codex' }))
+      .resolves.toMatchObject({ ok: true });
     // It is not an emit kind: no toast, no ledger write, no lifecycle tee.
     expect(sendNotificationMock).not.toHaveBeenCalled();
     expect(r.recordHook).not.toHaveBeenCalled();
