@@ -4,6 +4,7 @@ import { useStore } from '../stores';
 import { resolveStartupCwd, shellDisplayName, withDefaultShell, withRoleBinding, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
+import { surfaceForegroundProgram } from '../utils/surfaceProgram';
 import { originFromCaller } from '../utils/fanoutProvenance';
 import { sanitizeFanoutOrigin } from '../../shared/fanoutOrigin';
 import { validateMessage } from '../../shared/types';
@@ -1257,6 +1258,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
           ptyId: s.ptyId,
           title: s.title,
           shell: s.shell,
+          foregroundProgram: surfaceForegroundProgram(s, store.surfaceAgent),
           cwd: s.cwd || liveCwd,
           gitBranch: liveGitBranch,
           surfaceType: s.surfaceType || 'terminal',
@@ -1531,10 +1533,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // X1 cwd-staleness fix (same as surface.list): per-surface cwd is
       // authoritative; workspace metadata cwd is only the fallback.
       const firstSurface = l.surfaces.find((s) => s.surfaceType !== 'browser');
+      const activeSurface = l.surfaces.find((s) => s.id === l.activeSurfaceId);
       const isStashed = stashedIds.has(l.id);
       return {
         id: l.id,
         surfaceCount: l.surfaces.length,
+        foregroundProgram: surfaceForegroundProgram(activeSurface, store.surfaceAgent),
         active: !isStashed && l.id === ws.activePaneId,
         // Explicit boolean on every row — see surface.list.
         stashed: isStashed,

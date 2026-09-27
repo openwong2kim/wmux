@@ -670,7 +670,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     // stashed in zustand (cleared in dragend) — see uiSlice
     // setDraggedWorkspaceIndex. Mirrors what SurfaceTabs does for pane
     // export, where there is no internal-drop sibling at all.
-    const md = buildWorkspaceMarkdown(workspace);
+    const md = buildWorkspaceMarkdown(workspace, useStore.getState().surfaceAgent);
     e.dataTransfer.setData('text/plain', md);
     // copyMove (not copy): the sibling onDragOver below sets
     // dropEffect='move' for reorder, which is only valid against an

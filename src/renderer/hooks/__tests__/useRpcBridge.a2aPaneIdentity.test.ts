@@ -22,6 +22,7 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     expect(block).toMatch(/store\.surfaceAgent\[s\.ptyId\]/);
     expect(block).toMatch(/agentName:/);
     expect(block).toMatch(/agentStatus:/);
+    expect(block).toContain('foregroundProgram: surfaceForegroundProgram(s, store.surfaceAgent)');
   });
 
   it('pane.list exposes per-leaf agents derived from surfaceAgent', () => {
@@ -30,6 +31,8 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     const mapBody = region("method === 'pane\\.list'", 'pane\\.focus');
     expect(mapBody).toMatch(/agents:\s*l\.surfaces\.flatMap/);
     expect(mapBody).toMatch(/store\.surfaceAgent\[s\.ptyId\]/);
+    expect(mapBody).toContain('const activeSurface = l.surfaces.find((s) => s.id === l.activeSurfaceId)');
+    expect(mapBody).toContain('foregroundProgram: surfaceForegroundProgram(activeSurface, store.surfaceAgent)');
     void block;
   });
 

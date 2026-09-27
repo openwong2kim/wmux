@@ -681,7 +681,7 @@ export default function SurfaceTabs({
     // an in-memory File cannot cross the process boundary, so the drop
     // silently failed. text/plain alone behaves like a paste and is
     // accepted by every chat client we have tested.
-    const md = buildPaneMarkdown(workspace, paneId);
+    const md = buildPaneMarkdown(workspace, paneId, useStore.getState().surfaceAgent);
     e.dataTransfer.setData('text/plain', md);
     e.dataTransfer.effectAllowed = 'copy';
     setTerminalTextDropDragActive(true);
