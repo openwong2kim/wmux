@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { generateTextSnapshot, capTextRowsToFrameBudget } from '../HeadlessSnapshot';
 import { searchInBuffer, type SearchableBuffer } from '../../renderer/utils/searchEngine';
 import { terminalReadCoverage } from '../../shared/terminalReadCoverage';
+import { RingBuffer } from '../RingBuffer';
+import { OutputModeTracker } from '../util/outputModeTracker';
+import { readSessionTextReplay } from '../sessionTextReplay';
 
 // ── Cold-park text snapshot (TASK-9) ────────────────────────────────
 //
@@ -141,5 +144,58 @@ describe('capTextRowsToFrameBudget (readSessionText frame budget)', () => {
     // The honest JSON size of what we return must fit — this is the assertion
     // that fails with a raw text.length estimate.
     expect(JSON.stringify(out.rows).length).toBeLessThanOrEqual(CAP);
+  });
+});
+
+
+describe('session text replay mode restoration', () => {
+  it('reports alternate-screen coverage after the ring evicts the entry sequence', async () => {
+    const ring = new RingBuffer(128);
+    const modes = new OutputModeTracker();
+    const feed = (text: string) => {
+      ring.write(Buffer.from(text));
+      modes.feed(text, ring.totalBytesWritten);
+    };
+    feed('\x1b[?1049h');
+    feed('old frame\r\n'.repeat(30));
+    feed('\x1b[H\x1b[Jcurrent viewport\r\nprompt');
+    expect(ring.readAll().includes(Buffer.from('\x1b[?1049h'))).toBe(false);
+    expect(modes.altScreen).toBe(true);
+    const outcome = await generateTextSnapshot({
+      cols: 80, rows: 6, scrollback: 100,
+      initial: readSessionTextReplay(ring, modes),
+    });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.bufferType).toBe('alternate');
+    expect(outcome.rows.map((row) => row.text)).toEqual(['current viewport', 'prompt']);
+    expect(terminalReadCoverage(outcome.bufferType)).toMatchObject({ alternateScreen: true, historyIncomplete: true });
+    expect(terminalReadCoverage(outcome.bufferType).hint).toContain('if the application supports one');
+  });
+
+  it('preserves shell history when the entry is retained and stops warning after exit', async () => {
+    const ring = new RingBuffer(4096);
+    const modes = new OutputModeTracker();
+    const feed = (text: string) => {
+      ring.write(Buffer.from(text));
+      modes.feed(text, ring.totalBytesWritten);
+    };
+    feed('shell history\r\n\x1b[?1049hcurrent viewport');
+    // Reasserting alternate mode before a retained entry would paint this
+    // shell history into the wrong buffer and discard it on exit.
+    const initial = readSessionTextReplay(ring, modes);
+    expect(initial).toEqual(ring.readAll());
+    const exited = await generateTextSnapshot({
+      cols: 80, rows: 6,
+      initial: Buffer.concat([initial, Buffer.from('\x1b[?1049l')]),
+    });
+    expect(exited.ok).toBe(true);
+    if (!exited.ok) return;
+    expect(exited.rows.map((row) => row.text)).toEqual(['shell history']);
+    expect(terminalReadCoverage(exited.bufferType)).toEqual({});
+
+    feed('\x1b[?1049l');
+    expect(modes.altScreen).toBe(false);
+    expect(readSessionTextReplay(ring, modes)).toEqual(ring.readAll());
   });
 });
