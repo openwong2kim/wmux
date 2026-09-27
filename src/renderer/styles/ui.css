@@ -601,6 +601,9 @@
 .wmux-fleet-dot[data-shape="cross"] { background: transparent; font-size: 14px; }
 .wmux-fleet-identity, .wmux-fleet-progress { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .wmux-fleet-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 18px; font-weight: 600; color: var(--text-main); }
+/* A fan-out task's requester, on a line of its own so the pane coordinate it
+ * leads with is never squeezed out by the meta line. */
+.wmux-fleet-requester { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 14px; color: var(--text-muted); }
 .wmux-fleet-context { display: flex; align-items: center; gap: 6px; overflow: hidden; font-size: 11px; line-height: 14px; color: var(--text-sub); }
 .wmux-fleet-context > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmux-fleet-context > span + span::before { content: '·'; margin-right: 6px; color: var(--text-muted); }

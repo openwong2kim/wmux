@@ -161,7 +161,7 @@ describe('FleetView — Ready to review', () => {
     mount();
     await settle();
     const text = () => reviewRow('ws-t1')!.querySelector('[data-fleet-review-requester]')?.textContent;
-    expect(text()).toBe('by owner project › w0-0');
+    expect(text()).toBe('by w0-0 · owner project');
     act(() => { useStore.setState({ fanoutOrigin: { 'ws-t1': { kind: 'gui' } } }); });
     expect(text()).toBe('Started by you');
     expect(reviewRow('ws-t1')!.textContent).toContain('owner project');
@@ -175,7 +175,12 @@ describe('FleetView — Ready to review', () => {
     await settle();
     // ws-t2 is running: an ordinary Fleet card, not a review row.
     const card = container.querySelector('[data-fleet-card][data-workspace-id="ws-t2"]')!;
-    expect(card.querySelector('[data-fleet-requester]')?.textContent).toBe('by owner project › w0-0');
+    expect(card.querySelector('[data-fleet-requester]')?.textContent).toBe('by w0-0 · owner project');
+    // Its own line, not a segment of the meta line that would squeeze it.
+    expect(card.querySelector('[data-fleet-requester]')?.closest('.wmux-fleet-context')).toBeNull();
+    // A closed requester stamped in the old name-first order still leads with the coordinate.
+    act(() => { useStore.setState({ fanoutOrigin: { 'ws-t2': { kind: 'pane', paneId: 'gone', surfaceId: 's-gone', label: 'Claude Code · w1-1' } } }); });
+    expect(card.querySelector('[data-fleet-requester]')?.textContent).toBe('by w1-1 · Claude Code · closed · owner project');
     // A workspace that is not a fan-out task carries none.
     expect(container.querySelector('[data-fleet-card][data-workspace-id="ws-o"] [data-fleet-requester]')).toBeNull();
   });

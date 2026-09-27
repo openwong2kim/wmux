@@ -141,6 +141,9 @@ describe('requester origin (who asked for a task)', () => {
     const gone = resolveTaskRequester({ workspaces: [], fanoutOrigin: { t1: origin } }, 't1');
     expect(gone).toEqual({ kind: 'pane', live: false, label: 'w115-74 · Compare' });
     expect(requesterLine(gone, t)).toBe('by w115-74 · Compare · closed');
+    // Older snapshots were joined name-first; the coordinate still leads.
+    expect(resolveTaskRequester({ workspaces: [], fanoutOrigin: { t1: { ...origin, label: 'Claude Code · w1-1' } } }, 't1'))
+      .toEqual({ kind: 'pane', live: false, label: 'w1-1 · Claude Code' });
   });
 
   it('a recorded surface that left its pane is closed — the pane\'s other (active) tab is not the requester', () => {

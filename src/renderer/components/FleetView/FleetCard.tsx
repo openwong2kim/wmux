@@ -212,7 +212,6 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
         <span className="wmux-fleet-context" title={card.cwd || card.workspaceName}>
           {displayName !== card.workspaceName && <span>{card.workspaceName}</span>}
           {agentName && agentName !== displayName && <span>{agentName}</span>}
-          {requester && <span data-fleet-requester title={requester.text}>{requester.text}</span>}
           {card.stashed && <span>{t('fleet.stashed')}</span>}
           {resource && resource.rss > 0 && (
             <span data-fleet-resource data-rss-bytes={resource.rss} title={`${agentLabel(resource.image)}: ${formatRss(resource.rss)}`}>
@@ -226,6 +225,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
             </span>
           )}
         </span>
+        {requester && <span className="wmux-fleet-requester" data-fleet-requester title={requester.text}>{requester.text}</span>}
       </span>
       <span className="wmux-fleet-progress">
         <span className={`wmux-fleet-detail${showActivity ? ' is-activity' : ''}`}

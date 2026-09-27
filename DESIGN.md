@@ -469,8 +469,10 @@ no empty reply row or reserved gap under the latest prompt.
   Orchestrator`; or `Requester unknown` — never a guess (an audit-log pty id
   is not matched against today's layout). The requesting agent's roster row
   carries a muted `N requested` link, counted per agent tab and per owner,
-  that opens the owner's task group. Fleet names the requester (`by
-  <workspace> › <pane>`) on a task's row in every section.
+  that opens the owner's task group. Fleet names the requester on a task's
+  row in every section, on an 11px muted line of its own under the meta
+  line: `by <coordinate · pane name> · <workspace>`, workspace last so it
+  truncates first. A closed requester keeps the same coordinate-first order.
   Inside a task workspace the titlebar's workspace name is followed by a muted
   `↰ <owner>` link (steel on hover) that jumps to the owner.
 - **Order:** Attention (default), Manual, or Recent activity — Settings ›

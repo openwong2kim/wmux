@@ -243,6 +243,14 @@ export function formatRequesterPaneLabel(parts: { label?: string; agent?: string
   return name && name !== parts.coord ? `${parts.coord} · ${name}` : parts.coord;
 }
 
+/** Snapshots stamped before the coordinate led read `<name> · w<ws>-<pane>`;
+ *  shown coordinate-first like every other requester label. */
+const TRAILING_COORD = /^(.+) · (w\d+-\d+)$/;
+export function coordinateFirst(label: string): string {
+  const m = TRAILING_COORD.exec(label);
+  return m ? `${m[2]} · ${m[1]}` : label;
+}
+
 interface PaneHit {
   workspaceId: string;
   paneId: string;
@@ -317,7 +325,7 @@ export function resolveTaskRequester(state: RequesterState, taskWorkspaceId: str
     if (origin.kind !== 'pane') return { kind: origin.kind };
     const hit = findOriginSurface(state, origin);
     if (hit) return { kind: 'pane', live: true, ...hit };
-    return { kind: 'pane', live: false, ...(origin.label ? { label: origin.label } : {}) };
+    return { kind: 'pane', live: false, ...(origin.label ? { label: coordinateFirst(origin.label) } : {}) };
   }
   // Audit-only (tasks stamped before origins existed): the caller KIND is
   // reliable, a ptyId matched against today's layout is not.
@@ -421,9 +429,11 @@ export function requestedCountFor(
 }
 
 /**
- * Fleet: the requester as `by <workspace> › <pane>` when a pane is named
- * (`includesOwner` — the owner is part of it), else the plain requester line.
- * Undefined for a workspace that is not a fan-out task.
+ * Fleet: the requester as `by <coordinate · name> · <workspace>` — the part
+ * that tells panes apart leads and the workspace comes last, so a narrow row
+ * truncates the workspace first (`includesOwner`: the workspace is part of
+ * it). Otherwise the plain requester line. Undefined for a workspace that is
+ * not a fan-out task.
  */
 export function fleetRequesterText(
   state: RequesterState & CountState,
@@ -442,7 +452,7 @@ export function fleetRequesterText(
     const wsName = state.workspaces.find((w) => w.id === wsId)?.name;
     const name = requesterName(requester, t) ?? '';
     return {
-      text: t('sidebar.requester.by', { name: wsName ? `${displayWorkspaceName(wsName, false)} › ${name}` : name }),
+      text: t('sidebar.requester.by', { name: wsName ? `${name} · ${displayWorkspaceName(wsName, false)}` : name }),
       includesOwner: !!wsName,
     };
   }

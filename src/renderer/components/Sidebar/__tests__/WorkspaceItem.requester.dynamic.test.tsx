@@ -109,6 +109,9 @@ describe('task row requester line', () => {
     await render({ kind: 'pane', paneId: 'p-gone', surfaceId: 's-gone', label: 'w115-9 · Planner' });
     expect(line()?.textContent).toBe('by w115-9 · Planner· closed');
     expect(container.querySelector('[data-task-requester-jump]')).toBeNull();
+    // A snapshot stamped name-first (older builds) is shown coordinate-first too.
+    await render({ kind: 'pane', paneId: 'p-gone', surfaceId: 's-gone', label: 'Claude Code · w1-1' });
+    expect(line()?.textContent).toBe('by w1-1 · Claude Code· closed');
   });
 
   it('says a GUI start, the orchestrator, or that the requester is unknown', async () => {

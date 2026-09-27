@@ -279,12 +279,14 @@ function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEd
           <span className="wmux-fleet-name" title={entry.title}>{entry.title}</span>
           <span
             className="wmux-fleet-context"
-            title={[requester.includesOwner ? undefined : owner, requester.text, entry.branch].filter(Boolean).join(' · ')}
+            title={[requester.includesOwner ? undefined : owner, entry.branch].filter(Boolean).join(' · ')}
           >
             {!requester.includesOwner && <span>{owner}</span>}
-            {requester.text && <span data-fleet-review-requester>{requester.text}</span>}
             {entry.branch && <span className="font-mono" data-fleet-review-branch>{entry.branch}</span>}
           </span>
+          {requester.text && (
+            <span className="wmux-fleet-requester" data-fleet-review-requester title={requester.text}>{requester.text}</span>
+          )}
         </span>
         <span className="wmux-fleet-progress">
           {/* Nothing is drawn until the read lands (no placeholder gauge). */}
