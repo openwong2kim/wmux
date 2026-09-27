@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateTextSnapshot, capTextRowsToFrameBudget } from '../HeadlessSnapshot';
 import { searchInBuffer, type SearchableBuffer } from '../../renderer/utils/searchEngine';
+import { terminalReadCoverage } from '../../shared/terminalReadCoverage';
 
 // ── Cold-park text snapshot (TASK-9) ────────────────────────────────
 //
@@ -69,6 +70,29 @@ describe('generateTextSnapshot (cold-park fallback)', () => {
     expect(outcome.rows.length).toBeGreaterThan(0);
     expect(outcome.rows[outcome.rows.length - 1].text).not.toBe('');
     expect(outcome.rows.map((r) => r.text)).toContain('only line');
+  });
+
+  it('reports viewport-only alternate redraws while preserving normal scrollback', async () => {
+    const answer = Array.from({ length: 40 }, (_, i) => `answer line ${i}`).join('\r\n');
+    const normal = await generateTextSnapshot({ cols: 80, rows: 6, scrollback: 100, initial: Buffer.from(answer) });
+    expect(normal.ok).toBe(true);
+    if (!normal.ok) return;
+    expect(normal.bufferType).toBe('normal');
+    expect(normal.rows.map((row) => row.text)).toEqual(answer.split('\r\n'));
+    expect(terminalReadCoverage(normal.bufferType)).toEqual({});
+
+    // Alternate-screen entry and synchronized cursor redraws match the CLI
+    // startup capture. A long answer and its replacement cannot form backlog.
+    const alternate = await generateTextSnapshot({
+      cols: 80, rows: 6, scrollback: 100,
+      initial: Buffer.from(`\x1b[?1049h${answer}\x1b[?2026h\x1b[H\x1b[Jcurrent viewport\r\nprompt\x1b[?2026l`),
+    });
+    expect(alternate.ok).toBe(true);
+    if (!alternate.ok) return;
+    expect(alternate.rows.map((row) => row.text)).toEqual(['current viewport', 'prompt']);
+    expect(alternate.bufferType).toBe('alternate');
+    expect(terminalReadCoverage(alternate.bufferType)).toMatchObject({ alternateScreen: true, historyIncomplete: true });
+    expect(terminalReadCoverage(alternate.bufferType).hint).toContain('full_scrollback cannot recover it');
   });
 
   it('fails soft on an exceeded time budget', async () => {

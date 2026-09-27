@@ -42,6 +42,7 @@ import {
 } from '../utils/browserTabs';
 import { terminalRegistry, hydrateTerminalForRead } from './useTerminal';
 import { readPtyBufferLines, readPtyBufferTail, DEFAULT_READ_TAIL_LINES } from '../utils/terminalTail';
+import { terminalReadCoverage } from '../../shared/terminalReadCoverage';
 import {
   searchInBuffer,
   normalizeSearchTailLines,
@@ -113,7 +114,7 @@ function describeFanOutRoles(lines: string[]): string {
 }
 
 interface DaemonTextRow { text: string; wrapped: boolean }
-interface ParkedPaneRead { rows: DaemonTextRow[]; truncated: boolean }
+interface ParkedPaneRead { rows: DaemonTextRow[]; bufferType?: 'normal' | 'alternate'; truncated: boolean }
 
 /** Fetch a parked pane's grid from the daemon as plain-text rows, or null.
  *  `truncated` is true when the daemon dropped oldest rows to fit the RPC frame
@@ -123,7 +124,7 @@ async function fetchParkedPaneRows(ptyId: string, scrollback?: number): Promise<
   if (!api || typeof api.readText !== 'function') return null; // stale preload
   try {
     const res = await api.readText(ptyId, scrollback !== undefined ? { scrollback } : undefined);
-    return res?.success ? { rows: res.rows, truncated: res.truncated === true } : null;
+    return res?.success ? { rows: res.rows, bufferType: res.bufferType, truncated: res.truncated === true } : null;
   } catch {
     return null;
   }
@@ -2176,11 +2177,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         // oldest rows to fit the RPC frame, surface truncated so the caller
         // doesn't read partial history as complete (callRpc serializes the whole
         // result object, so the field reaches the agent).
-        return { ptyId, text: texts.join('\n'), ...(read.truncated && { truncated: true }) };
+        return { ptyId, text: texts.join('\n'), ...terminalReadCoverage(read.bufferType), ...(read.truncated && { truncated: true }) };
       }
       // Bounded tail read: only the last capP rows were requested, so older
       // history missing is by design, not a truncation to report.
-      return { ptyId, text: texts.slice(-capP).join('\n') };
+      return { ptyId, text: texts.slice(-capP).join('\n'), ...terminalReadCoverage(read.bufferType) };
     }
 
     // Phase 3 hydrate-before-read — see pane.search above. Agents reading a
@@ -2199,11 +2200,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     //   - neither              → the last DEFAULT rows, read in O(DEFAULT).
     // The bounded reader never walks past its window, so a 10k-row backlog costs
     // the same as a fresh pane.
+    const coverage = terminalReadCoverage(terminal.buffer.active.type);
     const fullScrollback = raw.full_scrollback === true;
     if (fullScrollback) {
       // Explicit opt-in to the exact, unbounded read (walk 0..baseY+cursorY).
       const lines = readPtyBufferLines(ptyId);
-      return { ptyId, text: lines.join('\n') };
+      return { ptyId, text: lines.join('\n'), ...coverage };
     }
     const rawTail = raw.tail_lines;
     const cap =
@@ -2211,7 +2213,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         ? Math.floor(rawTail)
         : DEFAULT_READ_TAIL_LINES;
     const lines = readPtyBufferTail(ptyId, cap);
-    return { ptyId, text: lines.join('\n') };
+    return { ptyId, text: lines.join('\n'), ...coverage };
   }
 
   if (method === 'input.getActivePtyId') {

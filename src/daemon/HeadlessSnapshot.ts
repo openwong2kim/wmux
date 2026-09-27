@@ -122,7 +122,7 @@ export interface TextSnapshotRow {
 }
 
 export type TextSnapshotOutcome =
-  | { ok: true; rows: TextSnapshotRow[]; bytesIn: number; durationMs: number }
+  | { ok: true; rows: TextSnapshotRow[]; bufferType: 'normal' | 'alternate'; bytesIn: number; durationMs: number }
   | { ok: false; reason: SnapshotFallbackReason; detail?: string };
 
 /**
@@ -274,7 +274,7 @@ async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutc
     // never returns — including them would make readScreen tail_lines come back
     // as blank lines.
     while (rows.length > 0 && rows[rows.length - 1].text === '') rows.pop();
-    return { ok: true, rows, bytesIn, durationMs: Date.now() - started };
+    return { ok: true, rows, bufferType: buffer.type, bytesIn, durationMs: Date.now() - started };
   } catch (err) {
     return { ok: false, reason: 'error', detail: err instanceof Error ? err.message : String(err) };
   } finally {
