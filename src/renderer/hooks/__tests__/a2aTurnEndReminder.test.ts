@@ -37,6 +37,8 @@ beforeEach(() => {
   gatedSubmit = vi.fn(async () => ({ ok: true }));
   (window as unknown as { electronAPI: unknown }).electronAPI = { rpc: { gatedSubmit } };
   useStore.setState({ workspaces: [WS], a2aTasks: {} });
+  useStore.getState().setSurfaceAgent(PTY, 'Claude Code', 'waiting', 'claude');
+  useStore.getState().hydrateAgentAlive({ [PTY]: true });
 });
 
 describe('turn-end A2A reminder', () => {
@@ -60,6 +62,13 @@ describe('turn-end A2A reminder', () => {
 
   it('writes nothing when nothing is waiting', async () => {
     useStore.setState({ a2aTasks: { c: task('c', 'completed', 'pane-r') } });
+    await remindPendingA2aTasks(PTY);
+    expect(gatedSubmit).not.toHaveBeenCalled();
+  });
+
+  it('never writes to a pane without a detected agent (#1489)', async () => {
+    useStore.setState({ a2aTasks: { a: task('a', 'submitted', 'pane-r') } });
+    useStore.getState().clearSurfaceAgent(PTY);
     await remindPendingA2aTasks(PTY);
     expect(gatedSubmit).not.toHaveBeenCalled();
   });

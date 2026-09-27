@@ -48,6 +48,10 @@ export function buildTurnEndReminder(count: number): string {
 /** Called on an agent.stop for `ptyId`. */
 export async function remindPendingA2aTasks(ptyId: string): Promise<void> {
   const state = useStore.getState();
+  // #1489: only a pane with a detected, live agent is ever written to. A stop
+  // signal alone is not proof: the line would run as a command in a shell.
+  const agent = state.surfaceAgent[ptyId];
+  if (!agent || state.agentAliveByPtyId[ptyId] === false) return;
   const pending = pendingTasksForPty(ptyId, state.workspaces, state.a2aTasks);
   if (pending.length === 0) return;
   const keys = pending.map(episodeKey);
@@ -55,7 +59,7 @@ export async function remindPendingA2aTasks(ptyId: string): Promise<void> {
   // write the same reminder twice.
   for (const k of keys) reminded.add(k);
   const result = await gatedSubmitToPty(ptyId, buildTurnEndReminder(pending.length), {
-    agent: state.surfaceAgent[ptyId]?.name ?? null,
+    agent: agent.name ?? null,
   });
   if (!result.ok) for (const k of keys) reminded.delete(k);
 }
