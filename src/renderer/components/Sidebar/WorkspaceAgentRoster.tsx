@@ -242,8 +242,12 @@ function WorkspaceRosterSummary({
   if (agentCount === 0 && stashedCount === 0 && paneTaskCount === 0) return null;
 
   const showTasks = !open && paneTaskCount > 0;
+  // A workspace whose only rows are panes holding tasks (their agents ended)
+  // has no agent or stash count to lead with: "Stashed 0" would be false.
   const ariaLabel = [
-    rosterSummaryAriaLabel(roster, open, t),
+    agentCount === 0 && stashedCount === 0
+      ? (open ? t('workspace.hideAgents') : t('workspace.showAgents'))
+      : rosterSummaryAriaLabel(roster, open, t),
     showTasks ? (paneTaskCount === 1 ? t('sidebar.tasks.countOne') : t('sidebar.tasks.count', { count: paneTaskCount })) : undefined,
     showTasks && paneTaskNeedYou > 0 ? t('strip.needsYou', { count: paneTaskNeedYou }) : undefined,
   ].filter(Boolean).join(', ');

@@ -295,6 +295,17 @@ describe('fan-out tasks under the pane — review fixes', () => {
     expect(namesIn(group('pane:w1:p2'))).toEqual(['beta']);
   });
 
+  it('a roster holding only agent-less panes with tasks says no false agent or stash count', () => {
+    seed({ active: 'bee' });
+    act(() => useStore.setState({
+      surfaceAgent: Object.fromEntries(Object.entries(useStore.getState().surfaceAgent).filter(([k]) => k !== 'pty-1' && k !== 'pty-2')),
+    } as never));
+    act(() => root.render(<Sidebar />));
+    const label = chip().getAttribute('aria-label') ?? '';
+    expect(label).not.toMatch(/Stashed 0|Agents 0/);
+    expect(label).toContain('3 tasks');
+  });
+
   it('nested task rows use their own hover group, so hovering the owner reveals none of their chrome', () => {
     seed();
     act(() => root.render(<Sidebar />));
