@@ -45,6 +45,7 @@ import {
   normalizeCompletionEvidenceWire,
   validateCompletionEvidence,
 } from '../../shared/completionEvidence';
+import { isVerifiedTaskSender } from '../../shared/a2aReopen';
 import type {
   A2aTaskCancelPayload,
   A2aTaskCreatePayload,
@@ -127,6 +128,13 @@ export interface TransitionInput {
    * 렌더러 검증 경로로 폴백한다(오늘의 판정 지점 보존, 서버측 이관은 PR5/§7).
    */
   callerHasPaneIdentity?: boolean;
+  /**
+   * The caller must prove its pane to move a pane-pinned task (external
+   * callers). Without it, a caller that simply omits senderPtyId fell back to
+   * workspace authz and could move another pane's task. Trusted in-process
+   * lanes and the headless ClaudeWorker do not set it.
+   */
+  requirePaneIdentity?: boolean;
   /** 사람용 상태 메시지(있을 때만). */
   message?: Message;
   /** §6.M 완료증거(raw). 서비스가 재정규화(sanitize)해 저장 — 게이트 없음. */
@@ -327,6 +335,9 @@ export class A2aTaskService {
       if (input.callerHasPaneIdentity && !input.callerAddr && task.metadata.to.paneId) {
         return { ok: false, error: 'a2a.task.update: pane-authz deferred to renderer (pane-pinned task)' };
       }
+      if (input.requirePaneIdentity && !input.callerAddr && task.metadata.to.paneId) {
+        return { ok: false, error: 'a2a.task.update: this task is pinned to a pane; only that pane can update it (no verified pane identity)' };
+      }
       // §4 멱등: 앞서 커밋된 동일 키면 append 없이 원본 결과. 위치는 authz·soft-defer
       // **뒤**(리뷰 codex 델타: 히트가 authz를 앞지르면 키를 아는 비참여자가 커밋 스냅샷을
       // 재생 조회 — authz 우회), validateTransition **앞**(종단 재시도가 invalid
@@ -467,12 +478,14 @@ export class A2aTaskService {
    * is a plain `task.transition` payload (plus a `reopened` marker), so a log
    * replayed by an older daemon still lands on `submitted`.
    */
-  reopenTask(input: { taskId: string; callerWorkspaceId: string }): Promise<ReopenOk | OpErr> {
+  reopenTask(input: { taskId: string; callerWorkspaceId: string; callerPaneId?: string }): Promise<ReopenOk | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
       if (!task) return { ok: false, error: `a2a.task.reopen: task not found: ${input.taskId}` };
-      if (task.metadata.from.workspaceId !== input.callerWorkspaceId) {
-        return { ok: false, error: `a2a.task.reopen: caller ${input.callerWorkspaceId} is not the sender` };
+      // Only a provable sender: in a same-workspace task that means the `from`
+      // pane itself (main resolves callerPaneId from the caller's pane tree).
+      if (!isVerifiedTaskSender(task.metadata, input.callerWorkspaceId, input.callerPaneId)) {
+        return { ok: false, error: 'a2a.task.reopen: caller is not the verified sender of this task' };
       }
       if (!(TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
         return { ok: true, reopened: false, task };

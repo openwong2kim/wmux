@@ -209,7 +209,7 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     // P2: pane-granular status authz threads the caller's pane into the store.
     // §6.M P1 PR-D′: 완료증거가 6번째 인자로 배선되면서 statusMessage(5번째)는 undefined
     // 로 자리만 채운다(브릿지는 message 를 별도 append 하므로 여기엔 안 넘긴다).
-    expect(block).toMatch(/updateTaskStatus\(taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence\)/);
+    expect(block).toMatch(/updateTaskStatus\(\s*taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence,/);
   });
 });
 

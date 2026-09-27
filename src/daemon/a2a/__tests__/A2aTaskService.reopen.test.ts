@@ -113,3 +113,67 @@ describe('A2aTaskService.reopenTask', () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe('A2aTaskService.reopenTask — only a verified sender (same workspace)', () => {
+  async function sameWsCompleted(svc: A2aTaskService): Promise<string> {
+    await svc.createTask({
+      id: 'task-s',
+      title: 'T',
+      from: { workspaceId: 'ws-1', name: 'W', paneId: 'pane-from' },
+      to: { workspaceId: 'ws-1', name: 'W', paneId: 'pane-to' },
+    });
+    await svc.transition({ taskId: 'task-s', to: 'working', callerWorkspaceId: 'ws-1', callerAddr: { paneId: 'pane-to' } });
+    await svc.transition({ taskId: 'task-s', to: 'completed', callerWorkspaceId: 'ws-1', callerAddr: { paneId: 'pane-to' }, evidence: EVIDENCE });
+    return 'task-s';
+  }
+
+  it('refuses a caller with no resolved pane (headless worker, missing identity)', async () => {
+    const svc = newService(newLog());
+    const id = await sameWsCompleted(svc);
+    const r = await svc.reopenTask({ taskId: id, callerWorkspaceId: 'ws-1' });
+    expect(r.ok).toBe(false);
+    expect(svc.getTask(id)?.status.state).toBe('completed');
+  });
+
+  it('refuses the receiver pane and a third pane', async () => {
+    const svc = newService(newLog());
+    const id = await sameWsCompleted(svc);
+    expect((await svc.reopenTask({ taskId: id, callerWorkspaceId: 'ws-1', callerPaneId: 'pane-to' })).ok).toBe(false);
+    expect((await svc.reopenTask({ taskId: id, callerWorkspaceId: 'ws-1', callerPaneId: 'pane-third' })).ok).toBe(false);
+    expect(svc.getTask(id)?.status.state).toBe('completed');
+  });
+
+  it('accepts the from pane', async () => {
+    const svc = newService(newLog());
+    const id = await sameWsCompleted(svc);
+    const r = await svc.reopenTask({ taskId: id, callerWorkspaceId: 'ws-1', callerPaneId: 'pane-from' });
+    expect(r).toMatchObject({ ok: true, reopened: true });
+  });
+});
+
+describe('A2aTaskService — pane identity required for pinned tasks', () => {
+  async function pinned(svc: A2aTaskService): Promise<string> {
+    await svc.createTask({
+      id: 'task-pin',
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'S' },
+      to: { workspaceId: 'ws-receiver', name: 'R', paneId: 'pane-r' },
+    });
+    return 'task-pin';
+  }
+
+  it('refuses an external caller that omitted its pane', async () => {
+    const svc = newService(newLog());
+    const id = await pinned(svc);
+    const r = await svc.transition({ taskId: id, to: 'working', callerWorkspaceId: 'ws-receiver', requirePaneIdentity: true });
+    expect(r.ok).toBe(false);
+    expect(svc.getTask(id)?.status.state).toBe('submitted');
+  });
+
+  it('still lets the headless worker (no requirement) move it', async () => {
+    const svc = newService(newLog());
+    const id = await pinned(svc);
+    const r = await svc.transition({ taskId: id, to: 'working', callerWorkspaceId: 'ws-receiver' });
+    expect(r.ok).toBe(true);
+  });
+});

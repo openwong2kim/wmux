@@ -2,7 +2,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PaneLeaf, Surface, Task, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
-import { remindPendingA2aTasks, resetTurnEndRemindersForTest } from '../a2aTurnEndReminder';
+import {
+  noteAgentTurnEnd,
+  remindedSizeForTest,
+  resetTurnEndRemindersForTest,
+  sweepTurnEndReminders,
+} from '../a2aTurnEndReminder';
 
 const PTY = 'pty-remind';
 
@@ -32,17 +37,27 @@ function task(id: string, state: Task['status']['state'], paneId: string | undef
 
 let gatedSubmit: ReturnType<typeof vi.fn>;
 
+function idleAgent(status: 'waiting' | 'running' | 'awaiting_input' = 'waiting'): void {
+  useStore.getState().setSurfaceAgent(PTY, 'Claude Code', status, 'claude');
+  useStore.getState().hydrateAgentAlive({ [PTY]: true });
+  useStore.getState().hydrateCommandRunning({ [PTY]: true });
+}
+
+async function turnEnd(): Promise<void> {
+  noteAgentTurnEnd(PTY);
+  await sweepTurnEndReminders();
+}
+
 beforeEach(() => {
   resetTurnEndRemindersForTest();
   gatedSubmit = vi.fn(async () => ({ ok: true }));
   (window as unknown as { electronAPI: unknown }).electronAPI = { rpc: { gatedSubmit } };
   useStore.setState({ workspaces: [WS], a2aTasks: {} });
-  useStore.getState().setSurfaceAgent(PTY, 'Claude Code', 'waiting', 'claude');
-  useStore.getState().hydrateAgentAlive({ [PTY]: true });
+  idleAgent();
 });
 
 describe('turn-end A2A reminder', () => {
-  it('reminds once, with the count of submitted tasks pinned to the pane', async () => {
+  it('reminds once, counting every submitted task pinned to the pane', async () => {
     useStore.setState({
       a2aTasks: {
         a: task('a', 'submitted', 'pane-r'),
@@ -51,44 +66,82 @@ describe('turn-end A2A reminder', () => {
         d: task('d', 'submitted', 'pane-other'),
       },
     });
-
-    await remindPendingA2aTasks(PTY);
-    await remindPendingA2aTasks(PTY);
-
+    await turnEnd();
+    await turnEnd();
     expect(gatedSubmit).toHaveBeenCalledTimes(1);
     expect(gatedSubmit.mock.calls[0][0]).toBe(PTY);
     expect(gatedSubmit.mock.calls[0][1]).toBe('[wmux] 2 A2A tasks still waiting for you — a2a_task_query');
   });
 
+  it('a new task later counts the one already reminded too', async () => {
+    useStore.setState({ a2aTasks: { a: task('a', 'submitted', 'pane-r') } });
+    await turnEnd();
+    useStore.setState({ a2aTasks: { a: task('a', 'submitted', 'pane-r'), b: task('b', 'submitted', 'pane-r') } });
+    await turnEnd();
+    expect(gatedSubmit).toHaveBeenCalledTimes(2);
+    expect(gatedSubmit.mock.calls[1][1]).toBe('[wmux] 2 A2A tasks still waiting for you — a2a_task_query');
+  });
+
   it('writes nothing when nothing is waiting', async () => {
     useStore.setState({ a2aTasks: { c: task('c', 'completed', 'pane-r') } });
-    await remindPendingA2aTasks(PTY);
+    await turnEnd();
     expect(gatedSubmit).not.toHaveBeenCalled();
   });
 
-  it('never writes to a pane without a detected agent (#1489)', async () => {
+  it('never writes to a pane back at a shell prompt (#1489)', async () => {
     useStore.setState({ a2aTasks: { a: task('a', 'submitted', 'pane-r') } });
-    useStore.getState().clearSurfaceAgent(PTY);
-    await remindPendingA2aTasks(PTY);
+    useStore.getState().hydrateCommandRunning({ [PTY]: false });
+    await turnEnd();
     expect(gatedSubmit).not.toHaveBeenCalled();
+  });
+
+  it('never writes without a detected agent, or without proof it is alive', async () => {
+    useStore.setState({ a2aTasks: { a: task('a', 'submitted', 'pane-r') } });
+    useStore.getState().hydrateAgentAlive({});
+    await turnEnd();
+    useStore.getState().clearSurfaceAgent(PTY);
+    await turnEnd();
+    expect(gatedSubmit).not.toHaveBeenCalled();
+  });
+
+  it('waits while the agent is busy, then writes once it is idle', async () => {
+    useStore.setState({ a2aTasks: { a: task('a', 'submitted', 'pane-r') } });
+    idleAgent('running');
+    await turnEnd();
+    idleAgent('awaiting_input');
+    await sweepTurnEndReminders();
+    expect(gatedSubmit).not.toHaveBeenCalled();
+    idleAgent('waiting');
+    await sweepTurnEndReminders();
+    expect(gatedSubmit).toHaveBeenCalledTimes(1);
+    // The stop was consumed: later sweeps write nothing more.
+    await sweepTurnEndReminders();
+    expect(gatedSubmit).toHaveBeenCalledTimes(1);
   });
 
   it('a write the gate withheld is retried at the next turn end', async () => {
     useStore.setState({ a2aTasks: { a: task('a', 'submitted', 'pane-r') } });
     gatedSubmit.mockResolvedValueOnce({ ok: false, reason: 'approval_pending' });
-
-    await remindPendingA2aTasks(PTY);
-    await remindPendingA2aTasks(PTY);
-
+    await turnEnd();
+    await turnEnd();
     expect(gatedSubmit).toHaveBeenCalledTimes(2);
   });
 
   it('a reopened task is reminded again', async () => {
     useStore.setState({ a2aTasks: { a: task('a', 'submitted', 'pane-r') } });
-    await remindPendingA2aTasks(PTY);
+    await turnEnd();
     useStore.setState({ a2aTasks: { a: task('a', 'submitted', 'pane-r', '2026-09-27T01:00:00.000Z') } });
-    await remindPendingA2aTasks(PTY);
+    await turnEnd();
     expect(gatedSubmit).toHaveBeenCalledTimes(2);
     expect(gatedSubmit.mock.calls[1][1]).toBe('[wmux] 1 A2A task still waiting for you — a2a_task_query');
+  });
+
+  it('forgets reminded tasks once they are gone or picked up', async () => {
+    useStore.setState({ a2aTasks: { a: task('a', 'submitted', 'pane-r'), b: task('b', 'submitted', 'pane-r') } });
+    await turnEnd();
+    expect(remindedSizeForTest()).toBe(2);
+    useStore.setState({ a2aTasks: { b: task('b', 'working', 'pane-r') } });
+    await sweepTurnEndReminders();
+    expect(remindedSizeForTest()).toBe(0);
   });
 });

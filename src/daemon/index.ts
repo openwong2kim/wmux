@@ -4669,6 +4669,7 @@ function registerRpcHandlers(
       // the durable log, so the task stayed `submitted` here). A claimed pane
       // can only narrow the workspace-level authz, never widen it.
       ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerAddr: { paneId: p.callerPaneId } } : {}),
+      ...(p.requirePaneIdentity === true ? { requirePaneIdentity: true } : {}),
       // evidence는 서비스가 normalizeCompletionEvidenceWire로 재검증(sanitize)한 뒤
       // 완료증거 게이트(PR-B)로 판정한다 — completed/failed는 구조화 증거 강제(거부는
       // completion_evidence_* 사유코드로 호출자에 포워딩).
@@ -4696,7 +4697,11 @@ function registerRpcHandlers(
     const taskId = typeof p.taskId === 'string' ? p.taskId : '';
     const workspaceId = typeof p.workspaceId === 'string' ? p.workspaceId : '';
     if (!taskId || !workspaceId) return { ok: false, error: 'a2a.task.reopen: taskId and workspaceId are required' };
-    return a2aTaskService.reopenTask({ taskId, callerWorkspaceId: workspaceId });
+    return a2aTaskService.reopenTask({
+      taskId,
+      callerWorkspaceId: workspaceId,
+      ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerPaneId: p.callerPaneId } : {}),
+    });
   });
 
   pipeServer.onRpc('a2a.task.query', async (rawParams) => {

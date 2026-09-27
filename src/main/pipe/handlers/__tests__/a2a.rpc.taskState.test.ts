@@ -120,7 +120,7 @@ describe('a2a.task.update — a pane-identified caller commits to the daemon', (
     expect(rendererUpdateCalls()).toHaveLength(0);
   });
 
-  it('a ptyId outside the caller workspace is treated as absent (workspace authz), like the renderer does', async () => {
+  it('a ptyId outside the caller workspace is treated as absent, like the renderer does', async () => {
     const calls: DaemonCall[] = [];
     rendererWithPanes([{ id: 'pane-b', surfacePtyIds: ['pty-b'] }]);
     const router = setup(pinnedTaskDaemon(calls));
@@ -134,7 +134,8 @@ describe('a2a.task.update — a pane-identified caller commits to the daemon', (
     const update = calls.find((c) => c.method === 'a2a.task.update');
     expect(update?.params).not.toHaveProperty('senderPtyId');
     expect(update?.params).not.toHaveProperty('callerPaneId');
-    expect(rendererUpdateCalls()[0].daemonCommitted).toBe(true);
+    // An external caller must then prove its pane for a pinned task.
+    expect(update?.params.requirePaneIdentity).toBe(true);
   });
 
   it('keeps the old deferral when the pane tree cannot be read', async () => {
@@ -157,14 +158,29 @@ describe('a2a.task.update — a pane-identified caller commits to the daemon', (
   });
 });
 
-describe('reopen mirror — a sender message on an ended task reaches the daemon', () => {
+/** Renderer fake: answers preflights with `reopen`, records real calls. */
+function rendererForReopen(reopen: boolean, panes: unknown = [{ id: 'pane-from', surfacePtyIds: ['pty-from'] }]) {
+  sendToRendererMock.mockImplementation(async (_w: unknown, method: string, params: Record<string, unknown>) => {
+    if (method === 'pane.list') return panes;
+    if (params?.reopenPreflight === true) return { ok: true, preflight: { reopen } };
+    return { ok: true, taskId: 't9' };
+  });
+}
+
+function realCalls(method: string): Array<Record<string, unknown>> {
+  return sendToRendererMock.mock.calls
+    .filter((c) => c[1] === method && (c[2] as Record<string, unknown>).reopenPreflight !== true)
+    .map((c) => c[2] as Record<string, unknown>);
+}
+
+describe('reopen — committed in the daemon first', () => {
   beforeEach(() => sendToRendererMock.mockReset());
 
-  const reopenedTask = { id: 't9', status: { state: 'submitted', timestamp: 'x' }, metadata: { updatedAt: 'x' } };
+  const reopenedTask = { id: 't9', status: { state: 'submitted', timestamp: 'T-reopen' }, metadata: { updatedAt: 'T-reopen' } };
 
-  it('a reply that reopened the task is mirrored and the internal field is stripped', async () => {
+  it('a reply that reopens: daemon commit, then the renderer gets the daemon snapshot', async () => {
     const calls: DaemonCall[] = [];
-    sendToRendererMock.mockResolvedValue({ ok: true, taskId: 't9', reopenedTask });
+    rendererForReopen(true);
     const router = setup(async (method, params) => {
       calls.push({ method, params });
       return { ok: true, reopened: true, task: reopenedTask };
@@ -173,41 +189,111 @@ describe('reopen mirror — a sender message on an ended task reaches the daemon
     const res = await router.dispatch({
       id: 's1',
       method: 'a2a.task.send',
+      params: { workspaceId: 'ws-a', taskId: 't9', message: 'one more', senderPtyId: 'pty-from' },
+    });
+
+    expect(res.ok).toBe(true);
+    expect(calls).toEqual([{ method: 'a2a.task.reopen', params: { taskId: 't9', workspaceId: 'ws-a', callerPaneId: 'pane-from' } }]);
+    const real = realCalls('a2a.task.send');
+    expect(real).toHaveLength(1);
+    expect(real[0].daemonReopenedTask).toEqual(reopenedTask);
+  });
+
+  it('a failed daemon reopen stores nothing and reports the error', async () => {
+    rendererForReopen(true);
+    const router = setup(async () => ({ ok: false, error: 'a2a.task.reopen: daemon log append failed (uncommitted)' }));
+
+    const res = await router.dispatch({
+      id: 's2',
+      method: 'a2a.task.send',
       params: { workspaceId: 'ws-a', taskId: 't9', message: 'one more' },
     });
 
-    expect(calls).toEqual([{ method: 'a2a.task.reopen', params: { taskId: 't9', workspaceId: 'ws-a' } }]);
-    expect((res as { result: Record<string, unknown> }).result).not.toHaveProperty('reopenedTask');
+    expect(((res as { result: { error?: string } }).result).error).toMatch(/could not reopen/);
+    expect(realCalls('a2a.task.send')).toHaveLength(0);
   });
 
-  it('a message-only update that reopened the task is mirrored too', async () => {
-    const calls: DaemonCall[] = [];
-    sendToRendererMock.mockResolvedValue({ ok: true, taskId: 't9', reopenedTask });
-    const router = setup(async (method, params) => {
-      calls.push({ method, params });
-      return { ok: true, reopened: true, task: reopenedTask };
-    });
-
+  it('a daemon that refuses the caller as sender stores nothing', async () => {
+    rendererForReopen(true);
+    const router = setup(async () => ({ ok: false, error: 'a2a.task.reopen: caller is not the verified sender of this task' }));
     const res = await router.dispatch({
-      id: 'u9',
+      id: 's3',
       method: 'a2a.task.update',
       params: { workspaceId: 'ws-a', taskId: 't9', message: 'follow-up' },
     });
-
-    expect(calls.map((c) => c.method)).toEqual(['a2a.task.reopen']);
-    expect((res as { result: Record<string, unknown> }).result).not.toHaveProperty('reopenedTask');
+    expect(((res as { result: { error?: string } }).result).error).toMatch(/not the verified sender/);
+    expect(realCalls('a2a.task.update')).toHaveLength(0);
   });
 
-  it('a reply that did not reopen touches nothing in the daemon', async () => {
+  it('a task the daemon does not hold reopens in the cache alone', async () => {
+    rendererForReopen(true);
+    const router = setup(async () => ({ ok: false, error: 'a2a.task.reopen: task not found: t9' }));
+    await router.dispatch({ id: 's4', method: 'a2a.task.update', params: { workspaceId: 'ws-a', taskId: 't9', message: 'x' } });
+    const real = realCalls('a2a.task.update');
+    expect(real).toHaveLength(1);
+    expect(real[0].localReopen).toBe(true);
+  });
+
+  it('no reopen wanted: the daemon is not touched', async () => {
     const calls: DaemonCall[] = [];
-    sendToRendererMock.mockResolvedValue({ ok: true, taskId: 't9' });
+    rendererForReopen(false);
     const router = setup(async (method, params) => {
       calls.push({ method, params });
       return { ok: true };
     });
-
-    await router.dispatch({ id: 's2', method: 'a2a.task.send', params: { workspaceId: 'ws-a', taskId: 't9', message: 'x' } });
-
+    await router.dispatch({ id: 's5', method: 'a2a.task.send', params: { workspaceId: 'ws-a', taskId: 't9', message: 'x' } });
     expect(calls).toEqual([]);
+    expect(realCalls('a2a.task.send')[0]).not.toHaveProperty('daemonReopenedTask');
+  });
+
+  it('internal fields supplied on the wire are dropped', async () => {
+    rendererForReopen(false);
+    const router = setup(async () => ({ ok: true }));
+    await router.dispatch({
+      id: 's6',
+      method: 'a2a.task.send',
+      params: {
+        workspaceId: 'ws-a', taskId: 't9', message: 'x',
+        daemonReopenedTask: reopenedTask, localReopen: true, daemonCommitted: true, committedTask: reopenedTask,
+      },
+    });
+    const real = realCalls('a2a.task.send')[0];
+    for (const k of ['daemonReopenedTask', 'localReopen', 'daemonCommitted', 'committedTask']) {
+      expect(real).not.toHaveProperty(k);
+    }
+  });
+});
+
+describe('a2a.task.update — pane-pinned tasks need a verified pane from external callers', () => {
+  beforeEach(() => sendToRendererMock.mockReset());
+
+  it('an external caller without senderPtyId asks the daemon to require a pane', async () => {
+    const calls: DaemonCall[] = [];
+    rendererWithPanes([{ id: 'pane-b', surfacePtyIds: ['pty-b'] }]);
+    const router = setup(async (method, params) => {
+      calls.push({ method, params });
+      return { ok: false, error: 'a2a.task.update: this task is pinned to a pane; only that pane can update it (no verified pane identity)' };
+    });
+    const res = await router.dispatch({
+      id: 'r1', method: 'a2a.task.update', params: { taskId: 't1', workspaceId: 'ws-b', status: 'working' },
+    });
+    expect(calls[0].params.requirePaneIdentity).toBe(true);
+    expect(((res as { result: { error?: string } }).result).error).toMatch(/pinned to a pane/);
+    expect(rendererUpdateCalls()).toHaveLength(0);
+  });
+
+  it('the operator lane is trusted as before', async () => {
+    const calls: DaemonCall[] = [];
+    rendererWithPanes([]);
+    const router = setup(async (method, params) => {
+      calls.push({ method, params });
+      return { ok: true, task: { id: 't1', status: { state: 'working', timestamp: 'x' }, metadata: { updatedAt: 'x' } } };
+    });
+    await router.dispatch(
+      { id: 'r2', method: 'a2a.task.update', params: { taskId: 't1', workspaceId: 'ws-b', status: 'working' } },
+      { operator: true },
+    );
+    expect(calls[0].params).not.toHaveProperty('requirePaneIdentity');
+    expect(rendererUpdateCalls()[0].requirePaneIdentity).toBe(false);
   });
 });
