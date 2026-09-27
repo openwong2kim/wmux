@@ -6,6 +6,10 @@ import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { imagePathForPane } from '../../../shared/imagePaste';
 import { getPtyShell } from '../../pty/ptyShellRegistry';
+import { EphemeralClipboard } from '../../clipboard/ephemeralClipboard';
+
+let ephemeral: EphemeralClipboard | null = null;
+let quitHookInstalled = false;
 
 // Paste temp files must outlive the next paste: consumers (e.g. Claude Code)
 // read the pasted file path later, so deleting the previous file on each paste
@@ -183,6 +187,31 @@ export function registerClipboardHandlers(): void {
       throw new Error(`CLIPBOARD_WRITE_FAILED: ${msg}`);
     }
   }));
+
+  // A pairing link copied from the Remote popover: main owns its lifetime so a
+  // renderer remount cannot orphan it, and quitting the app clears it.
+  ephemeral ??= new EphemeralClipboard({ readText: () => clipboard.readText(), writeText: (t) => clipboard.writeText(t) });
+  if (!quitHookInstalled && typeof app?.on === 'function') {
+    quitHookInstalled = true;
+    app.on('before-quit', () => ephemeral?.clear());
+  }
+  ipcMain.removeHandler(IPC.CLIPBOARD_WRITE_EPHEMERAL);
+  ipcMain.handle(IPC.CLIPBOARD_WRITE_EPHEMERAL, wrapHandler(IPC.CLIPBOARD_WRITE_EPHEMERAL,
+    (_event: Electron.IpcMainInvokeEvent, text: unknown, ttlMs: unknown) => {
+      if (typeof text !== 'string' || text.length === 0 || text.length > 4096) throw new Error('CLIPBOARD_INVALID_TYPE');
+      const ttl = typeof ttlMs === 'number' && Number.isFinite(ttlMs) ? ttlMs : 0;
+      try {
+        ephemeral?.write(text, ttl);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`CLIPBOARD_WRITE_FAILED: ${msg}`);
+      }
+    }));
+  ipcMain.removeHandler(IPC.CLIPBOARD_KEEP_EPHEMERAL);
+  ipcMain.handle(IPC.CLIPBOARD_KEEP_EPHEMERAL, wrapHandler(IPC.CLIPBOARD_KEEP_EPHEMERAL,
+    (_event: Electron.IpcMainInvokeEvent, stillValid: unknown) => {
+      ephemeral?.keepOnly(typeof stillValid === 'string' ? stillValid : '');
+    }));
 
   ipcMain.handle(IPC.CLIPBOARD_READ, wrapHandler(IPC.CLIPBOARD_READ, async (_event: Electron.IpcMainInvokeEvent) => {
     // 플랫폼 + 포맷 게이트: darwin이고 클립보드에 파일/폴더(text/uri-list)가 있을

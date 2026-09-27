@@ -10,6 +10,7 @@ import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import WebToggle from '../WebToggle';
 import type { WebTerminalInfo } from '../../../../shared/web';
+import { EphemeralClipboard } from '../../../../main/clipboard/ephemeralClipboard';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -21,6 +22,11 @@ const pairStart = vi.fn();
 const pairCancel = vi.fn();
 const writeText = vi.fn(async (text: string) => { clipboard = text; });
 const readText = vi.fn(async () => clipboard);
+// The real main-process owner of the copied link, wired to the fake board —
+// so these tests exercise the same clear rules the app runs.
+let ephemeral: EphemeralClipboard;
+const writeEphemeral = vi.fn(async (text: string, ttl: number) => ephemeral.write(text, ttl));
+const keepEphemeral = vi.fn(async (stillValid: string) => ephemeral.keepOnly(stillValid));
 
 const tailnet: WebTerminalInfo = {
   running: true,
@@ -50,6 +56,9 @@ beforeEach(() => {
   pairCancel.mockReset();
   writeText.mockClear();
   readText.mockClear();
+  writeEphemeral.mockClear();
+  keepEphemeral.mockClear();
+  ephemeral = new EphemeralClipboard({ readText: () => clipboard, writeText: (t) => { clipboard = t; } });
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     web: {
       status: vi.fn(async () => status),
@@ -58,7 +67,7 @@ beforeEach(() => {
       deviceList: vi.fn(async () => ({ devices: [] })),
     },
   };
-  (window as unknown as { clipboardAPI: unknown }).clipboardAPI = { writeText, readText };
+  (window as unknown as { clipboardAPI: unknown }).clipboardAPI = { writeText, readText, writeEphemeral, keepEphemeral };
 });
 
 afterEach(() => {
@@ -122,8 +131,30 @@ describe('WebToggle — Connect another computer', () => {
     status = tailnet;
     await act(async () => { vi.advanceTimersByTime(10_000); });
     await flush();
-    expect(readText).toHaveBeenCalled();
+    expect(keepEphemeral).toHaveBeenLastCalledWith('');
     expect(clipboard).toBe('');
+  });
+
+  it('survives a remount (Sidebar ↔ MiniSidebar): the link is still cleared at expiry', async () => {
+    status = { ...computerPending, pairExpiresAt: Date.now() + 5_000 };
+    await mountAndOpen();
+    await act(async () => buttonNamed('Copy link').click());
+    await flush();
+    expect(writeEphemeral).toHaveBeenCalledWith(LINK, expect.any(Number));
+    // The component goes away; main still owns the link and its expiry.
+    act(() => root.unmount());
+    root = createRoot(container);
+    expect(clipboard).toBe(LINK);
+    await act(async () => { vi.advanceTimersByTime(6_000); });
+    expect(clipboard).toBe('');
+  });
+
+  it('a fresh mount does not wipe a still-valid copied link before its first status read', async () => {
+    ephemeral.write(LINK, 600_000);
+    status = computerPending;
+    await mountAndOpen();
+    expect(keepEphemeral).not.toHaveBeenCalledWith('');
+    expect(clipboard).toBe(LINK);
   });
 
   it('leaves the clipboard alone when the operator copied something else since', async () => {
@@ -136,7 +167,6 @@ describe('WebToggle — Connect another computer', () => {
     await act(async () => { vi.advanceTimersByTime(10_000); });
     await flush();
     expect(clipboard).toBe('something the operator copied later');
-    expect(writeText).toHaveBeenCalledTimes(1);
   });
 
   it('clears the copied link at expiry even while the popover is closed', async () => {

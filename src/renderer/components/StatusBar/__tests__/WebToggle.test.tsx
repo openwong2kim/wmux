@@ -231,7 +231,7 @@ describe('WebPopoverBody — on state', () => {
       info: { ...runningInfo, error: 'listener close failed' },
     });
     expect(html).toContain('listener close failed');
-    expect(html).toContain('text-[var(--accent-red)]');
+    expect(html).toContain('<p class="ui-row-error">listener close failed</p>');
     expect(html).toContain('web.stop');
   });
 

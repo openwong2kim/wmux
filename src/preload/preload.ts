@@ -1649,6 +1649,12 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
    *  pane needs /mnt/...). Omit it and the host path is returned verbatim. */
   readImage: (ptyId?: string) => ipcRenderer.invoke(IPC.CLIPBOARD_READ_IMAGE, ptyId) as Promise<string | null>,
   hasImage: () => ipcRenderer.invoke(IPC.CLIPBOARD_HAS_IMAGE) as Promise<boolean>,
+  /** Write text main takes back off after `ttlMs` or on quit, if still there. */
+  writeEphemeral: (text: string, ttlMs: number) =>
+    ipcRenderer.invoke(IPC.CLIPBOARD_WRITE_EPHEMERAL, text, ttlMs) as Promise<void>,
+  /** Clear the ephemeral text now unless it is `stillValid` (`''` = nothing is). */
+  keepEphemeral: (stillValid: string) =>
+    ipcRenderer.invoke(IPC.CLIPBOARD_KEEP_EPHEMERAL, stillValid) as Promise<void>,
 });
 
 export type ElectronAPI = typeof electronAPI;

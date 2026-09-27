@@ -361,6 +361,10 @@ export const IPC = {
   CLIPBOARD_READ: 'clipboard:read',
   CLIPBOARD_READ_IMAGE: 'clipboard:read-image',
   CLIPBOARD_HAS_IMAGE: 'clipboard:has-image',
+  /** Write text that main takes back off the clipboard at its expiry or on quit. */
+  CLIPBOARD_WRITE_EPHEMERAL: 'clipboard:write-ephemeral',
+  /** Clear the ephemeral text unless it equals the still-valid value passed. */
+  CLIPBOARD_KEEP_EPHEMERAL: 'clipboard:keep-ephemeral',
   SYSTEM_BUILTIN_DISPLAY: 'system:builtin-display',
   // Fired by main's powerMonitor 'resume' so the renderer can rebuild GPU
   // state that sleep may have invalidated (shared glyph atlas — see

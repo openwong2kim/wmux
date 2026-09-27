@@ -168,8 +168,10 @@ export function pendingPairFlow(info: WebTerminalInfo): PairFlow | null {
  * The link the "Connect another computer" card shows and copies, or '' when
  * the live code is not the computer card's or there is no secure origin.
  */
-export function webComputerLink(info: WebTerminalInfo): string {
+export function webComputerLink(info: WebTerminalInfo, now: number = Date.now()): string {
   if (pendingPairFlow(info) !== 'computer' || !info.pairCode) return '';
+  // Past its expiry the code redeems nothing: no dead link at 0:00.
+  if (typeof info.pairExpiresAt === 'number' && now > info.pairExpiresAt) return '';
   const origin = webComputerPairOrigin(info);
   return origin ? buildDesktopPairLink(origin, info.pairCode) : '';
 }
@@ -693,7 +695,7 @@ export function WebPopoverBody({
                 name, so what lands here is the server refusing for its own
                 reason, which the operator cannot guess. */}
             {info.pairStartError && pairErrorFlow !== 'computer' ? (
-              <p className="ui-note text-[var(--accent-red)]">{info.pairStartError}</p>
+              <p className="ui-row-error">{info.pairStartError}</p>
             ) : null}
           </>
         )}
@@ -775,7 +777,7 @@ export function WebPopoverBody({
               {t('web.createComputerLink')}
             </Button>
             {info.pairStartError && pairErrorFlow === 'computer' ? (
-              <p className="ui-note text-[var(--accent-red)]">{info.pairStartError}</p>
+              <p className="ui-row-error">{info.pairStartError}</p>
             ) : null}
           </>
         )}
@@ -796,7 +798,7 @@ export function WebPopoverBody({
 
       <PopoverSection>
         {exposed ? <p className="ui-note">{t('web.exposeWarning')}</p> : null}
-        {info.error ? <p className="ui-note text-[var(--accent-red)]">{info.error}</p> : null}
+        {info.error ? <p className="ui-row-error">{info.error}</p> : null}
         <div className="flex items-center justify-between gap-2">
           {devicesLink}
           <Button size="md" onClick={onStop} disabled={busy}>
@@ -972,32 +974,20 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   }, [open, computerPending, now, info.pairExpiresAt, refresh]);
 
   /**
-   * The computer link last put on the clipboard, and the timer that takes it
-   * off again. The clipboard is cleared only if it STILL holds exactly that
-   * link: anything the operator copied since is theirs and is left alone.
+   * The copied computer link lives in MAIN (`writeEphemeral`), which clears
+   * it at expiry and on quit, so a remount of this component (Sidebar ↔
+   * MiniSidebar) cannot orphan it. Here the popover only reports which link
+   * still pairs anything, so a consumed, cancelled or re-minted one comes off
+   * the clipboard at once. Main clears only if the clipboard still holds
+   * exactly that link. Reported only once a real status has arrived: the
+   * placeholder before the first read must not read as "nothing is pending".
    */
-  const copiedLink = useRef<{ link: string; timer: ReturnType<typeof setTimeout> | null } | null>(null);
-  const clearCopiedLink = useCallback(async () => {
-    const held = copiedLink.current;
-    if (!held) return;
-    copiedLink.current = null;
-    if (held.timer) clearTimeout(held.timer);
-    try {
-      const current = await window.clipboardAPI?.readText();
-      if (current === held.link) await window.clipboardAPI?.writeText('');
-    } catch {
-      /* clipboard busy — the link expires on its own anyway */
-    }
-  }, []);
-  useEffect(() => () => {
-    if (copiedLink.current?.timer) clearTimeout(copiedLink.current.timer);
-  }, []);
-  // Consumed, cancelled or re-minted: the copied link no longer pairs anything.
-  const liveComputerLink = webComputerLink(info);
+  const initialInfo = useRef(info);
+  const liveComputerLink = webComputerLink(info, now);
   useEffect(() => {
-    const held = copiedLink.current;
-    if (held && held.link !== liveComputerLink) void clearCopiedLink();
-  }, [liveComputerLink, clearCopiedLink]);
+    if (info === initialInfo.current) return;
+    void window.clipboardAPI?.keepEphemeral?.(liveComputerLink)?.catch(() => undefined);
+  }, [info, liveComputerLink]);
 
   // Outside-click + ESC close (mirrors PresetPicker).
   useEffect(() => {
@@ -1155,12 +1145,17 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   );
   const handleCopyComputerLink = useCallback(async () => {
     const link = webComputerLink(info);
-    if (!link) return;
-    await copyValue('computerLink', link);
-    if (copiedLink.current?.timer) clearTimeout(copiedLink.current.timer);
+    const api = window.clipboardAPI;
+    if (!link || !api?.writeEphemeral) return;
     const ttl = Math.max(0, (info.pairExpiresAt ?? Date.now()) - Date.now());
-    copiedLink.current = { link, timer: setTimeout(() => void clearCopiedLink(), ttl) };
-  }, [copyValue, info, clearCopiedLink]);
+    try {
+      await api.writeEphemeral(link, ttl);
+      setCopied('computerLink');
+      setTimeout(() => setCopied((c) => (c === 'computerLink' ? null : c)), 1500);
+    } catch {
+      /* clipboard lock — the link stays select-all for a manual copy */
+    }
+  }, [info]);
 
   /**
    * "New code" now goes through pairStart too, carrying the name the operator

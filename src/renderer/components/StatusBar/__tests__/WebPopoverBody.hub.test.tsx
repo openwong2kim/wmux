@@ -95,6 +95,23 @@ describe('computer pairing link', () => {
     expect(webComputerLink(tls)).toBe('https://192.168.1.5:7681/pair#wmux-desktop-code=QWXZ7K9M');
   });
 
+  it('offers no link once the code has expired, rather than a dead link at 0:00', () => {
+    const computer = {
+      ...tailnet,
+      pairCode: 'QWXZ7K9M',
+      pairExpiresAt: 1_000,
+      pendingDeviceName: 'Computer',
+      pendingPairFlow: 'computer' as const,
+    };
+    expect(webComputerLink(computer, 999)).toContain('QWXZ7K9M');
+    expect(webComputerLink(computer, 1_001)).toBe('');
+  });
+
+  it('draws a refused start in the design error colour, not muted text', () => {
+    const html = renderBody({ info: { ...tailnet, pairStartError: 'refused' }, pairErrorFlow: 'computer' });
+    expect(html).toContain('<p class="ui-row-error">refused</p>');
+  });
+
   it('reads a daemon that predates flows as the phone card', () => {
     expect(pendingPairFlow({ running: true, pairCode: 'X', pendingDeviceName: 'n' })).toBe('phone');
     expect(pendingPairFlow({ running: true, pairCode: 'X' })).toBeNull();

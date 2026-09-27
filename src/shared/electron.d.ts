@@ -340,6 +340,10 @@ declare global {
       readText: () => Promise<string>;
       readImage: (ptyId?: string) => Promise<string | null>;
       hasImage: () => Promise<boolean>;
+      /** Write text main takes back off after `ttlMs` or on quit, if still there. */
+      writeEphemeral?: (text: string, ttlMs: number) => Promise<void>;
+      /** Clear the ephemeral text now unless it is `stillValid` (`''` = nothing is). */
+      keepEphemeral?: (stillValid: string) => Promise<void>;
     };
   }
 }
