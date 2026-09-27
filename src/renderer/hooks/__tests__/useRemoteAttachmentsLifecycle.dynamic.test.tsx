@@ -1167,6 +1167,32 @@ describe('useRemoteAttachmentsLifecycle — main-driven poll cadence (#1391)', (
     expect(api.workspacesList).not.toHaveBeenCalled();
   });
 
+  // A host that rejected our credential keeps rejecting it until the user pairs
+  // again: flag the rows, and let neither the heartbeat nor a return to the
+  // window ask again until the slowest rung comes round.
+  it('a host that rejects the credential is flagged and not retried on focus', async () => {
+    vi.useFakeTimers();
+    installElectronApi({
+      mainTick: true,
+      listImpl: async () => ({ ok: false, error: 'rejected', reason: 'auth-rejected' }),
+    });
+    mount();
+    seedAttached([{ sessionId: 'a' }]);
+    await settle();
+    await act(async () => { tickCb?.(); await Promise.resolve(); });
+    await settle();
+    expect(useStore.getState().remoteWorkspaces.every((w) => w.authRejected)).toBe(true);
+    api.workspacesList.mockClear();
+
+    for (let i = 0; i < 6; i++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      await act(async () => { window.dispatchEvent(new Event('focus')); tickCb?.(); await Promise.resolve(); });
+      await settle();
+    }
+    expect(api.workspacesList).not.toHaveBeenCalled();
+    unmount();
+  });
+
   // A tick is a HEARTBEAT: it carries no information, so one that lands during
   // a round must be dropped, not queued. One round against a sleeping host can
   // take 20s (config probe timeout + workspaces timeout) while ticks keep

@@ -119,6 +119,9 @@ type HostResult =
 interface BackoffEntry {
   failures: number;
   nextAttemptAt: number;
+  /** The host rejected our credential. Returning to the window does not lift
+   *  this deadline: the answer cannot change until the user pairs again. */
+  authRejected?: boolean;
 }
 
 type RemoteApi = NonNullable<NonNullable<typeof window.electronAPI>['remote']>;
@@ -172,7 +175,11 @@ function noteHostResult(backoff: Map<string, BackoffEntry>, hostId: string, resu
   const delay = result.authRejected
     ? BACKOFF_MAX_MS
     : Math.min(REMOTE_POLL_INTERVAL_MS * 2 ** (failures - 1), BACKOFF_MAX_MS);
-  backoff.set(hostId, { failures, nextAttemptAt: Date.now() + delay });
+  backoff.set(hostId, {
+    failures,
+    nextAttemptAt: Date.now() + delay,
+    ...(result.authRejected ? { authRejected: true } : {}),
+  });
 }
 
 /**
@@ -328,7 +335,9 @@ export function useRemoteAttachmentsLifecycle(): void {
     if (inFlight.current) return;
     if (Date.now() - lastForegroundRefreshAt.current < FOREGROUND_REFRESH_MIN_GAP_MS) return;
     lastForegroundRefreshAt.current = Date.now();
-    for (const entry of backoff.current.values()) entry.nextAttemptAt = 0;
+    for (const entry of backoff.current.values()) {
+      if (!entry.authRejected) entry.nextAttemptAt = 0;
+    }
     void refresh();
   }, [refresh]);
 
