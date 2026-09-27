@@ -215,10 +215,11 @@ export default function Sidebar() {
   }, [toggleMultiviewWorkspace]);
 
   const handleCopySessionInfo = useCallback(async (wsId: string) => {
-    const ws = useStore.getState().workspaces.find((w) => w.id === wsId);
+    const state = useStore.getState();
+    const ws = state.workspaces.find((w) => w.id === wsId);
     if (!ws) return;
 
-    await window.clipboardAPI.writeText(buildWorkspaceMarkdown(ws, useStore.getState().surfaceAgent));
+    await window.clipboardAPI.writeText(buildWorkspaceMarkdown(ws, state.surfaceAgent, state));
 
     // 정본 토스트(toastSlice)로 피드백 — 기존 수동 DOM 토스트는 store 우회였다.
     pushToast({ level: 'info', message: t('workspace.copied') });

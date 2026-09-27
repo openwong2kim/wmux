@@ -98,14 +98,22 @@ describe('sessionInfoMarkdown', () => {
     }
     // Clearing live detection after the agent exits restores the launch shell.
     expect(buildPaneMarkdown(ws, leaf.id, {})).toContain('1. [ACTIVE] Terminal — Zsh');
+    const staleAgent = { 'pty-1': { name: 'Codex CLI' } };
+    for (const liveness of [
+      { agentAliveByPtyId: { 'pty-1': false } },
+      { commandRunningByPtyId: { 'pty-1': false } },
+    ]) {
+      expect(buildPaneMarkdown(ws, leaf.id, staleAgent, liveness)).toContain('1. [ACTIVE] Terminal — Zsh');
+      expect(buildWorkspaceMarkdown(ws, staleAgent, liveness)).not.toContain('Codex CLI');
+    }
   });
 
   it('resolves metadata from the addressed terminal only, without changing its shell or title', () => {
     const terminal = { ...makeTerminalSurface('srf-1', 'pty-1'), shell: 'Zsh' };
     const agents = { 'pty-1': { name: 'Codex CLI' } };
     expect(surfaceForegroundProgram(terminal, agents)).toBe('Codex CLI');
-    expect(surfaceForegroundProgram({ ...terminal, ptyId: 'pty-shell' }, agents)).toBe('Zsh');
-    expect(surfaceForegroundProgram(terminal, {})).toBe('Zsh');
+    expect(surfaceForegroundProgram({ ...terminal, ptyId: 'pty-shell' }, agents)).toBeNull();
+    expect(surfaceForegroundProgram(terminal, {})).toBeNull();
     expect(surfaceForegroundProgram({ ...terminal, surfaceType: 'browser' }, agents)).toBeNull();
     expect(surfaceForegroundProgram(undefined, agents)).toBeNull();
     expect(terminal).toMatchObject({ title: 'Terminal', shell: 'Zsh' });
