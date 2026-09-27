@@ -2551,6 +2551,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       const role = paneRole ?? (task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent');
       const msg: Message = { kind: 'message', messageId: generateId('msg'), role, parts };
       store.addTaskMessage(taskId, msg);
+      // A sender writing to a task that already ended is new work for the
+      // receiver: reopen it so it shows up as `submitted` in their inbox.
+      const reopened = role === 'user' && store.reopenTask(taskId);
 
       // Deliver the reply to the OTHER party, pinned symmetrically: a reply FROM
       // the sender (role 'user') targets the receiver's `to` anchor; a reply FROM
@@ -2710,11 +2713,13 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // silent, target workspace gone, and a failed pty write. Delivered
       // replies deliberately do NOT emit (the nudge already signals; emitting
       // per delivered message is the flood the create-path comment forbids).
-      if (delivery.notified !== true) {
+      // A reopen is a state change, so it always tees the pointer.
+      if (delivery.notified !== true || reopened) {
         const updatedTask = store.getTask(taskId);
         if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated');
       }
-      return { ok: true, taskId, silent, delivery };
+      // `reopenedTask` is internal: main mirrors it into the daemon and strips it.
+      return { ok: true, taskId, silent, delivery, ...(reopened ? { reopenedTask: store.getTask(taskId) } : {}) };
     }
 
     // ── New task branch ──
@@ -3018,6 +3023,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     const operator = a2aOperatorOrigin(params);
     // The pane write this update made, if any: a refusal is reported back.
     let updateWrite: A2aPtyWrite = { ptyId: null };
+    let updateReopened = false;
     const taskId = typeof params.taskId === 'string' ? params.taskId : '';
     const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
     if (!taskId) return { error: 'a2a.task.update: missing "taskId"' };
@@ -3125,6 +3131,10 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       const parts: Part[] = [{ kind: 'text', text: message }];
       const msg: Message = { kind: 'message', messageId: generateId('msg'), role, parts };
       store.addTaskMessage(taskId, msg);
+      // Same rule as the reply branch: a sender message reopens an ended task.
+      // A status in the same call is the receiver's (only it may transition),
+      // so this never races a transition applied above.
+      updateReopened = role === 'user' && store.reopenTask(taskId);
 
       // Deliver the update to the OTHER party, symmetric pin (mirrors the reply
       // branch): reply-from-sender → `to` anchor, reply-from-receiver → `from`
@@ -3209,18 +3219,21 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     if (transitioned && nextState) {
       const updatedTask = store.getTask(taskId);
       if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated', nextState);
-    } else if (updateWrite.refused) {
+    } else if (updateWrite.refused || updateReopened) {
       // The message is stored but its push was withheld: tee the pointer so a
       // receiver polling wmux_events_poll still learns the thread moved (the
-      // reply branch does the same for every not-notified outcome).
+      // reply branch does the same for every not-notified outcome). A reopen
+      // is a state change and tees the pointer too.
       const updatedTask = store.getTask(taskId);
       if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated');
     }
 
+    // `reopenedTask` is internal: main mirrors it into the daemon and strips it.
+    const reopenedTask = updateReopened ? { reopenedTask: store.getTask(taskId) } : {};
     if (updateWrite.refused) {
-      return { ok: true, taskId, delivery: refusedDelivery('update', updateWrite.refused) };
+      return { ok: true, taskId, delivery: refusedDelivery('update', updateWrite.refused), ...reopenedTask };
     }
-    return { ok: true, taskId };
+    return { ok: true, taskId, ...reopenedTask };
   }
 
   if (method === 'a2a.task.cancel') {

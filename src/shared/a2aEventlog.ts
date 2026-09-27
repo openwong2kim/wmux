@@ -61,6 +61,13 @@ export interface A2aTaskTransitionPayload {
    * 전진 불가하므로 정당). 일반 transition API로는 이 값이 실리지 않는다.
    */
   forced?: 'workspace_removed';
+  /**
+   * Reopen marker. `'sender_message'` = the sender wrote to a task that had
+   * already ended, so it went back to `submitted` for the receiver
+   * (`reopenTask`). Like `forced`, this bypasses VALID_TRANSITIONS on purpose;
+   * the regular transition API never carries it.
+   */
+  reopened?: 'sender_message';
 }
 
 /** 취소(canceled) — sender/receiver 모두 가능(권한은 서비스가 판정). */

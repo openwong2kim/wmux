@@ -149,6 +149,7 @@ export type OpErr = { ok: false; error: string };
 export type TransitionOk = { ok: true; verifiedItemCount?: number; task: Task };
 export type CancelOk = { ok: true; task: Task };
 export type CreateOk = { ok: true; taskId: string; task: Task };
+export type ReopenOk = { ok: true; reopened: boolean; task: Task };
 
 export interface QueryFilters {
   status?: TaskState;
@@ -450,6 +451,47 @@ export class A2aTaskService {
       const result: CancelOk = { ok: true, task };
       this.idempotencyRecord(input.taskId, input.idempotencyKey, 'cancel', result);
       return result;
+    });
+  }
+
+  /**
+   * Reopen an ended task because its sender wrote to it again. A message on a
+   * completed/failed/canceled task is new work for the receiver, so the task
+   * goes back to `submitted` and shows up in the receiver's inbox like a new
+   * one. Only the sender may do this. A task that has not ended is left as it
+   * is (a `working` task stays `working`), and that is not an error.
+   *
+   * VALID_TRANSITIONS has no edge out of a terminal state, so this entry point
+   * bypasses it on purpose, the same posture as failTasksForWorkspaceRemoved;
+   * the regular transition API still refuses terminal -> submitted. The commit
+   * is a plain `task.transition` payload (plus a `reopened` marker), so a log
+   * replayed by an older daemon still lands on `submitted`.
+   */
+  reopenTask(input: { taskId: string; callerWorkspaceId: string }): Promise<ReopenOk | OpErr> {
+    return this.withTaskLock(input.taskId, async () => {
+      const task = this.tasks.get(input.taskId);
+      if (!task) return { ok: false, error: `a2a.task.reopen: task not found: ${input.taskId}` };
+      if (task.metadata.from.workspaceId !== input.callerWorkspaceId) {
+        return { ok: false, error: `a2a.task.reopen: caller ${input.callerWorkspaceId} is not the sender` };
+      }
+      if (!(TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
+        return { ok: true, reopened: false, task };
+      }
+      const payload: A2aTaskTransitionPayload = {
+        kind: 'task.transition',
+        taskId: input.taskId,
+        to: 'submitted',
+        timestamp: this.isoNow(),
+        reopened: 'sender_message',
+      };
+      const committed = await this.log.append(
+        this.envelope(payload, input.callerWorkspaceId, this.derivePrincipalId(task, 'from', input.callerWorkspaceId)),
+      );
+      if (!committed) {
+        return { ok: false, error: 'a2a.task.reopen: daemon log append failed (uncommitted)' };
+      }
+      this.applyPayload(payload);
+      return { ok: true, reopened: true, task };
     });
   }
 

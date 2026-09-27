@@ -82,6 +82,41 @@ async function daemonTaskRpc(
   }
 }
 
+type CallerPane =
+  | { kind: 'resolved'; paneId: string }
+  /** No senderPtyId, or one that is not a terminal in the caller's own workspace. */
+  | { kind: 'absent' }
+  /** The pane tree could not be read: keep the daemon's deferral to the renderer. */
+  | { kind: 'unknown' };
+
+/**
+ * Map the caller's senderPtyId to its pane inside the caller's OWN workspace,
+ * the same resolution the renderer's update path makes (stashed panes count, a
+ * ptyId the workspace does not own is treated as absent).
+ */
+async function resolveCallerPane(
+  getWindow: () => BrowserWindow | null,
+  workspaceId: unknown,
+  senderPtyId: unknown,
+): Promise<CallerPane> {
+  if (typeof senderPtyId !== 'string' || !senderPtyId || typeof workspaceId !== 'string' || !workspaceId) {
+    return { kind: 'absent' };
+  }
+  let panes: unknown;
+  try {
+    panes = await sendToRenderer(getWindow, 'pane.list', { workspaceId, includeStashed: true });
+  } catch {
+    return { kind: 'unknown' };
+  }
+  if (!Array.isArray(panes)) return { kind: 'unknown' };
+  for (const pane of panes) {
+    if (!isRecord(pane) || typeof pane.id !== 'string') continue;
+    const ptys = Array.isArray(pane.surfacePtyIds) ? pane.surfacePtyIds : [];
+    if (ptys.includes(senderPtyId)) return { kind: 'resolved', paneId: pane.id };
+  }
+  return { kind: 'absent' };
+}
+
 /** Validate an RPC-supplied caller pid. Anything non-positive / non-integer is
  *  ignored (older MCP build, or junk) → the handler keeps its legacy behavior. */
 function normalizeCallerPid(raw: unknown): number | null {
@@ -307,6 +342,29 @@ export function registerA2aRpc(
     return { mappings, entries, resolved };
   });
 
+  /**
+   * The renderer reopened an ended task because its sender wrote to it again
+   * (it returns the snapshot as `reopenedTask`). Mirror the reopen into the
+   * daemon's durable copy, then strip the internal field from the caller's
+   * response. Renderer first, daemon second, like the create mirror below: a
+   * failed mirror leaves the durable copy ended until the next reopen, and is
+   * logged rather than failing a message that was already stored and delivered.
+   */
+  async function mirrorReopen(result: unknown, workspaceId: unknown): Promise<unknown> {
+    if (!isRecord(result) || !('reopenedTask' in result)) return result;
+    const reopened = result.reopenedTask;
+    delete result.reopenedTask;
+    if (!isRecord(reopened) || typeof reopened.id !== 'string') return result;
+    const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.reopen', { taskId: reopened.id, workspaceId });
+    if (gate.kind !== 'ok') {
+      console.warn(
+        `[a2a.rpc] daemon reopen failed for task ${reopened.id}:`,
+        gate.kind === 'reject' ? gate.error : 'daemon unavailable',
+      );
+    }
+    return result;
+  }
+
   // A2A protocol — whoami/discover/broadcast/skills는 렌더러 소유 그대로.
   router.register('a2a.whoami', (params) => sendToRenderer(getWindow, 'a2a.whoami', params));
   router.register('a2a.discover', (params) => sendToRenderer(getWindow, 'a2a.discover', params));
@@ -397,13 +455,20 @@ export function registerA2aRpc(
       }
     }
     if (typeof params.status === 'string') {
+      const callerPane = await resolveCallerPane(getWindow, params.workspaceId, params.senderPtyId);
       const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.update', {
         taskId: params.taskId,
         workspaceId: params.workspaceId,
         status: params.status,
-        // S-C2: 페인 신원 주장 여부를 데몬에 전달 — 페인 핀 태스크는 soft-defer로
-        // 렌더러 페인 게이트에 판정을 되돌린다(ptyId→pane 해석은 렌더러 소유).
-        ...(typeof params.senderPtyId === 'string' ? { senderPtyId: params.senderPtyId } : {}),
+        // S-C2: the daemon cannot map a ptyId to a pane, so main resolves it here
+        // and the daemon runs the pane gate itself. Without this, every update
+        // from an MCP agent on a pane-pinned task was deferred to the renderer
+        // cache only, and the durable copy stayed `submitted`.
+        ...(callerPane.kind === 'resolved'
+          ? { senderPtyId: params.senderPtyId, callerPaneId: callerPane.paneId }
+          : callerPane.kind === 'unknown' && typeof params.senderPtyId === 'string'
+            ? { senderPtyId: params.senderPtyId }
+            : {}),
         ...(params.evidence !== undefined ? { evidence: params.evidence } : {}),
         // §4 멱등(리뷰 codex): 파이프 호출자의 키를 데몬까지 전달한다 — 없으면 커밋 후
         // 응답 유실 재시도가 캐시 미스 → invalid transition(completed->completed)으로 변질.
@@ -411,15 +476,18 @@ export function registerA2aRpc(
       });
       if (gate.kind === 'reject') return { error: gate.error };
       if (gate.kind === 'ok') {
-        return sendToRenderer(getWindow, 'a2a.task.update', {
-          ...params,
-          daemonCommitted: true,
-          committedTask: gate.result.task,
-        });
+        return mirrorReopen(
+          await sendToRenderer(getWindow, 'a2a.task.update', {
+            ...params,
+            daemonCommitted: true,
+            committedTask: gate.result.task,
+          }),
+          params.workspaceId,
+        );
       }
       // unavailable → 폴백(아래 공통 경로)
     }
-    return sendToRenderer(getWindow, 'a2a.task.update', params);
+    return mirrorReopen(await sendToRenderer(getWindow, 'a2a.task.update', params), params.workspaceId);
   });
 
   // task.send: renderer validates, approval-gates execute:true, then stores +
@@ -454,6 +522,9 @@ export function registerA2aRpc(
     const result = awaitsApproval
       ? await sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: EXECUTE_SEND_MAIN_TIMEOUT_MS })
       : await sendToRenderer(getWindow, 'a2a.task.send', sendParams);
+
+    // A reply that reopened an ended task: mirror the reopen into the daemon.
+    if (params.taskId) await mirrorReopen(result, sendParams.workspaceId);
 
     // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).
     // 실패는 soft-degrade: 이후 전이가 'task not found'로 렌더러 폴백을 탄다.

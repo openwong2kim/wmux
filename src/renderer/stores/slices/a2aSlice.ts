@@ -134,6 +134,12 @@ export interface A2aSlice {
    * 난다. 정본은 데몬 로그, 이 스토어는 캐시다(30분 GC는 캐시 GC로 의미 재정의).
    */
   applyDaemonTaskUpdate: (committed: Task) => void;
+  /**
+   * Send an ended task (completed/failed/canceled) back to `submitted` because
+   * its sender wrote to it again. Returns whether it reopened; a task that has
+   * not ended is left as it is.
+   */
+  reopenTask: (taskId: string) => boolean;
   addTaskArtifact: (taskId: string, artifact: Artifact) => void;
   cancelTask: (taskId: string, callerWorkspaceId: string) => { ok: boolean; error?: string };
   queryTasks: (
@@ -336,6 +342,20 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
       state.a2aTasks[committed.id] = committed;
     }
   }),
+
+  reopenTask: (taskId) => {
+    const task = get().a2aTasks[taskId];
+    if (!task || !(TERMINAL_STATES as readonly string[]).includes(task.status.state)) return false;
+    set((state: StoreState) => {
+      const t = state.a2aTasks[taskId];
+      if (t) {
+        const now = isoNow();
+        t.status = { state: 'submitted', timestamp: now };
+        t.metadata.updatedAt = now;
+      }
+    });
+    return true;
+  },
 
   addTaskArtifact: (taskId, artifact) => set((state: StoreState) => {
     const task = state.a2aTasks[taskId];

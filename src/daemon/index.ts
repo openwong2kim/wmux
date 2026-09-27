@@ -4664,6 +4664,11 @@ function registerRpcHandlers(
       // S-C2: 페인 신원 주장 여부 — 페인 핀 태스크면 서비스가 soft-defer해 main이
       // 렌더러 페인 게이트(오늘의 판정 지점)로 폴백한다(ptyId→pane 해석은 렌더러 소유).
       callerHasPaneIdentity: typeof p.senderPtyId === 'string' && p.senderPtyId.trim() !== '',
+      // Main resolves the caller's pane from its pane tree; with it the service
+      // runs the pane gate here instead of deferring (a deferral never reached
+      // the durable log, so the task stayed `submitted` here). A claimed pane
+      // can only narrow the workspace-level authz, never widen it.
+      ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerAddr: { paneId: p.callerPaneId } } : {}),
       // evidence는 서비스가 normalizeCompletionEvidenceWire로 재검증(sanitize)한 뒤
       // 완료증거 게이트(PR-B)로 판정한다 — completed/failed는 구조화 증거 강제(거부는
       // completion_evidence_* 사유코드로 호출자에 포워딩).
@@ -4683,6 +4688,15 @@ function registerRpcHandlers(
       callerWorkspaceId: workspaceId,
       ...(typeof p.idempotencyKey === 'string' ? { idempotencyKey: p.idempotencyKey } : {}),
     });
+  });
+
+  pipeServer.onRpc('a2a.task.reopen', async (rawParams) => {
+    if (!a2aTaskService) return { ok: false, error: 'a2a.task.reopen: task log unavailable' };
+    const p = rawParams as Record<string, unknown>;
+    const taskId = typeof p.taskId === 'string' ? p.taskId : '';
+    const workspaceId = typeof p.workspaceId === 'string' ? p.workspaceId : '';
+    if (!taskId || !workspaceId) return { ok: false, error: 'a2a.task.reopen: taskId and workspaceId are required' };
+    return a2aTaskService.reopenTask({ taskId, callerWorkspaceId: workspaceId });
   });
 
   pipeServer.onRpc('a2a.task.query', async (rawParams) => {

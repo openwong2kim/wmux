@@ -69,6 +69,7 @@ import { panePrincipalId } from '../../shared/principals';
 import { publishA2aTask } from '../events/publisher';
 import { flushMentions, type FlushOpts } from './channelMentionFlush';
 import { gatedSubmitToPty } from '../utils/ptyMessageDelivery';
+import { remindPendingA2aTasks } from './a2aTurnEndReminder';
 import {
   createPasteGateState,
   isMentionPasteBusy,
@@ -669,6 +670,9 @@ export function useChannelsEventSubscription(): void {
               // pane — flush all local queues; only the pty's owner matches.
               if (ev.kind === 'agent.stop') {
                 runFlushAll({ onlyPtyId: ev.ptyId });
+                // Only a real turn boundary: an osc133 stop is a shell command
+                // ending, possibly under a still-running agent.
+                if (ev.source !== 'osc133') void remindPendingA2aTasks(ev.ptyId);
               }
             } else if (event.type === 'channel.catalog') {
               // A1: a channel's catalog/membership changed (create/archive/join/
