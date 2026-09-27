@@ -1,3 +1,18 @@
+## [3.62.1] — 2026-09-27
+
+### Fixed
+
+- **⌘⇧2 no longer does nothing outside an agent pane on macOS.** Pressing the
+  mention-an-agent shortcut in a plain shell pane, or with the sidebar focused
+  while a shell is active, used to be silently ignored — no picker, no hint.
+  It now shows "Focus an agent pane to mention another agent". F2 on Windows
+  and Linux, and any Mac binding without ⌘, still pass through to the shell
+  (mc, htop, vim) as before. (#1559)
+
+### Security
+
+- **Agent-to-agent and channel deliveries respect pending approvals.** A2A messages, company messages, channel mention deliveries and channel wake nudges no longer submit into a pane that is showing an approval the workspace policy does not let an agent answer. They now go through the same input check as `terminal_send`, re-checked right before the Enter. A held delivery is not lost: it stays queryable and tells the sender why (`approval_pending` or `gate_unavailable`). A terminal approval also stays tracked while its dialog is still on screen. (#1560, GHSA-hvqg-29w6-q3g8, GHSA-xxqv-cx7h-8vgf)
+
 ## [3.62.0] — 2026-09-27
 
 ### Added
