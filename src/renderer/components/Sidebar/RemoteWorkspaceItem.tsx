@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
-import type { AttachedRemoteWorkspace } from '../../stores/slices/remoteWorkspacesSlice';
+import { remoteWorkspaceDisplayName, type AttachedRemoteWorkspace } from '../../stores/slices/remoteWorkspacesSlice';
 import {
   WORKSPACE_COLOR_IDS,
   normalizeWorkspaceColor,
@@ -9,6 +9,7 @@ import {
   workspaceColorLabelKey,
 } from '../../../shared/workspaceColors';
 import { FOCUS_RING } from '../focusRing';
+import { IconServer } from '../icons';
 
 interface RemoteWorkspaceItemProps {
   workspace: AttachedRemoteWorkspace;
@@ -58,7 +59,7 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
     setEditing(false);
   };
 
-  const displayName = workspace.label || workspace.name || workspace.workspaceId.slice(0, 8);
+  const displayName = remoteWorkspaceDisplayName(workspace);
   const hostName = workspace.hostLabel || t('remote.hostFallback');
   const rejectedText = workspace.authRejected ? t('remote.authRejected', { host: hostName }) : null;
   const tagHex = workspaceColorHex(normalizeWorkspaceColor(workspace.color));
@@ -96,7 +97,9 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
           setMenuPos({ x: e.clientX, y: e.clientY });
         }}
       >
-        <div className="flex min-w-0 items-center gap-2">
+        {/* A stale mirror is dimmed (the convention for "not live"); only the
+            content, so a selected stale row keeps its selection legible. */}
+        <div className={`flex min-w-0 items-center gap-2 ${workspace.stale ? 'opacity-60' : ''}`} data-remote-stale={workspace.stale ? '' : undefined}>
           {/* #1086 — the color tag rides the same dot grammar as local rows:
               identity, filled, one dot. Untagged rows keep the status dot. */}
           <div
@@ -130,14 +133,19 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
                 the user detaches) but drops the live accent colour and says
                 why on hover. */}
             <div
-              className="text-[10px] font-mono truncate"
+              className="flex items-center gap-1 text-[10px] font-mono min-w-0"
               style={{ color: workspace.stale ? 'var(--text-muted)' : 'var(--accent)' }}
               title={rejectedText ?? (workspace.stale ? t('remote.disconnected') : undefined)}
             >
-              {hostName}
-              {/* Not only a tooltip: a host that refused this computer will not
-                  come back on its own, so the row says so where it is read. */}
-              {rejectedText && ` · ${t('remote.needsPairing')}`}
+              {/* "On another machine" at a glance, now that remote rows share
+                  the local list. Muted, so it spends no amber. */}
+              <span className="flex-shrink-0" style={{ color: 'var(--text-muted)' }} data-remote-host-glyph><IconServer size={10} /></span>
+              <span className="truncate">
+                {hostName}
+                {/* Not only a tooltip: a host that refused this computer will not
+                    come back on its own, so the row says so where it is read. */}
+                {rejectedText && ` · ${t('remote.needsPairing')}`}
+              </span>
             </div>
           </div>
         </div>

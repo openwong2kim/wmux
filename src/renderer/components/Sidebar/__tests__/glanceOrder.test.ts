@@ -3,7 +3,8 @@
 import { describe, expect, it } from 'vitest';
 import { boardOrder, glanceOrder, reconcileAppliedOrder, NEW_WORKSPACE_HOLD_MS } from '../glanceOrder';
 import { movePinned } from '../../../utils/sidebarLayout';
-import { ATTENTION_CLASS_RANK as R, attentionScore } from '../../../stores/selectors/fleet';
+import { ATTENTION_CLASS_RANK as R, attentionScore, remoteWorkspaceAttentionScore } from '../../../stores/selectors/fleet';
+import type { RemotePaneSummary } from '../../../../shared/remoteHosts';
 
 const ws = (...ids: string[]) => ids.map((id) => ({ id }));
 const ids = (list: { id: string }[]) => list.map((w) => w.id);
@@ -82,6 +83,55 @@ describe('boardOrder — pinned group first', () => {
     const out = boardOrder({ ...base, manual: [...manual, { id: 'task' }], pinned: new Set([...pinned, 'task']), mode: 'attention', nestedOwnerOf: (id) => (id === 'task' ? 'run' : undefined) });
     expect(ids(out.pinned)).toEqual(['pinIdle', 'pinNeed']);
     expect(ids(out.rest)).toContain('task');
+  });
+});
+
+describe('boardOrder — attached remote rows join the list', () => {
+  const agent = (agentStatus: RemotePaneSummary['agentStatus']): RemotePaneSummary => ({ sessionId: 's', agentName: 'Claude Code', agentStatus });
+  const remoteScores: Record<string, number> = {
+    'remote:ask': remoteWorkspaceAttentionScore({ panes: [agent('idle'), agent('awaiting_input')] }),
+    'remote:staleAsk': remoteWorkspaceAttentionScore({ panes: [agent('awaiting_input')], stale: true }),
+    'remote:refused': remoteWorkspaceAttentionScore({ panes: [agent('error')], stale: true, authRejected: true }),
+  };
+  const scores: Record<string, number> = {
+    pin: attentionScore(R.idle, 0),
+    idle: attentionScore(R.idle, 0),
+    run: attentionScore(R.running, 100),
+  };
+  const remote = ws('remote:ask', 'remote:staleAsk', 'remote:refused');
+  const base = {
+    manual: ws('pin', 'idle', 'run'),
+    pinned: new Set(['pin']),
+    scoreOf: (id: string) => scores[id],
+    activityOf: (id: string) => ({ idle: 1, run: 5 } as Record<string, number>)[id],
+    newAt: {},
+    now: 0,
+    remote,
+    remoteScoreOf: (id: string) => remoteScores[id],
+  };
+
+  it('scores a remote workspace by its most urgent agent pane, on the local scale', () => {
+    expect(remoteScores['remote:ask']).toBe(attentionScore(R.needsYou, 0));
+    // A pane with no agent name is not an agent, whatever status it carries.
+    expect(remoteWorkspaceAttentionScore({ panes: [{ sessionId: 's', agentStatus: 'awaiting_input' }] })).toBe(attentionScore(R.idle, 0));
+  });
+
+  it('interleaves by attention: a remote that needs you sorts above idle local rows; a stale one falls to idle', () => {
+    const out = boardOrder({ ...base, mode: 'attention' });
+    expect(ids(out.pinned)).toEqual(['pin']);
+    expect(ids(out.rest)).toEqual(['remote:ask', 'run', 'idle', 'remote:staleAsk', 'remote:refused']);
+  });
+
+  it('puts remote rows after every local row, in attach order, in manual and recent', () => {
+    expect(ids(boardOrder({ ...base, mode: 'manual' }).rest)).toEqual(['idle', 'run', 'remote:ask', 'remote:staleAsk', 'remote:refused']);
+    expect(ids(boardOrder({ ...base, mode: 'recent' }).rest)).toEqual(['run', 'idle', 'remote:ask', 'remote:staleAsk', 'remote:refused']);
+  });
+
+  it('holds the on-screen order when a remote row becomes urgent (settle rule)', () => {
+    const before = ids(boardOrder({ ...base, remote: ws('remote:quiet'), remoteScoreOf: () => attentionScore(R.idle, 0), mode: 'attention' }).rest);
+    expect(before).toEqual(['run', 'idle', 'remote:quiet']);
+    const after = ids(boardOrder({ ...base, remote: ws('remote:quiet'), remoteScoreOf: () => attentionScore(R.needsYou, 0), mode: 'attention' }).rest);
+    expect(reconcileAppliedOrder(before, after)).toEqual({ order: before, pending: true });
   });
 });
 

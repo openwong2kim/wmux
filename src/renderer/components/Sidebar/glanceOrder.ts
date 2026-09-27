@@ -75,6 +75,12 @@ export function glanceOrder<T extends { id: string }>(
  * In Attention, nested fan-out tasks take no top-level slot (they render under
  * their owner) and go last; an owner scores as its most urgent task, so a task
  * that needs you lifts its whole group.
+ *
+ * `remote` rows (attached mirrors from other hosts, ids namespaced so they
+ * cannot collide with a local id) join `rest`, so the settle rule covers them
+ * too. They are never pinned. In Attention they interleave with the local
+ * top-level rows by `remoteScoreOf`; in Manual and Recent there is no stored
+ * order or activity for them, so they follow every local row in attach order.
  */
 export function boardOrder<T extends { id: string }>(opts: {
   manual: readonly T[];
@@ -85,11 +91,13 @@ export function boardOrder<T extends { id: string }>(opts: {
   newAt: Readonly<Record<string, number>>;
   now: number;
   nestedOwnerOf?: (id: string) => string | undefined;
+  remote?: readonly T[];
+  remoteScoreOf?: (id: string) => number | undefined;
 }): { pinned: T[]; rest: T[] } {
-  const { manual, mode, scoreOf, activityOf, newAt, now, nestedOwnerOf } = opts;
+  const { manual, mode, scoreOf, activityOf, newAt, now, nestedOwnerOf, remote = [], remoteScoreOf } = opts;
   const split = splitPinnedGroup(manual, opts.pinned, nestedOwnerOf);
-  if (mode === 'recent') return { pinned: split.pinned, rest: orderByRecentActivity(split.rest, (id) => activityOf(id) ?? 0) };
-  if (mode !== 'attention') return split;
+  if (mode === 'recent') return { pinned: split.pinned, rest: [...orderByRecentActivity(split.rest, (id) => activityOf(id) ?? 0), ...remote] };
+  if (mode !== 'attention') return { pinned: split.pinned, rest: [...split.rest, ...remote] };
   const top: T[] = [];
   const nested: T[] = [];
   const effective: Record<string, number> = {};
@@ -98,6 +106,10 @@ export function boardOrder<T extends { id: string }>(opts: {
     else top.push(item);
   }
   for (const item of top) effective[item.id] = scoreOf(item.id) ?? Number.MAX_SAFE_INTEGER;
+  for (const item of remote) {
+    effective[item.id] = remoteScoreOf?.(item.id) ?? Number.MAX_SAFE_INTEGER;
+    top.push(item);
+  }
   for (const item of nested) {
     const owner = nestedOwnerOf?.(item.id) as string;
     if (effective[owner] === undefined) continue;

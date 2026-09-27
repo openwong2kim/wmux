@@ -15,7 +15,8 @@ import MissionsSection from './MissionsSection';
 import type { Workspace } from '../../../shared/types';
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
-import { selectAttachedRemoteWorkspaces } from '../../stores/slices/remoteWorkspacesSlice';
+import { selectAttachedRemoteWorkspaces, remoteWorkspaceDisplayName, type AttachedRemoteWorkspace } from '../../stores/slices/remoteWorkspacesSlice';
+import { remoteWorkspaceAttentionScore } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
@@ -28,6 +29,9 @@ import CompanyPanel from './CompanyPanel';
 import SidebarNavigation from './SidebarNavigation';
 import PresetPicker from './PresetPicker';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
+
+/** Namespaces a remote row's id in the shared glance order. */
+const REMOTE_ROW_PREFIX = 'remote:';
 
 
 // 워크스페이스가 소유한 모든 PTY를 dispose
@@ -94,13 +98,46 @@ export default function Sidebar() {
     if (!link.ownerId || link.ownerId === id || !liveIds.has(link.ownerId)) return ORPHAN_GROUP_KEY;
     return link.ownerId;
   }, [workspaces, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
+  // #1329 — rows that only exist to poll a remote-terminal PANE's host are not
+  // attachments and must not render here: the user never asked for a mirror,
+  // and a row they cannot detach (nothing persists it) would be a ghost.
+  // useShallow, not a bare subscription: those invisible rows are rewritten on
+  // every poll round, and this list must not re-render the sidebar for them.
+  const remoteWorkspaces = useStore(useShallow(selectAttachedRemoteWorkspaces));
+  // Attached mirrors share the one glance list (they are never part of
+  // `workspaces[]` — see remoteWorkspacesSlice — so they keep their own row
+  // type). Row ids are namespaced so they cannot collide with a local id.
+  const remoteByRowId = useMemo(() => {
+    // Same query rule as the local rows above; a remote row also matches on
+    // its host, which it shows under its name.
+    const q = wsSearch.trim() ? wsSearch.toLowerCase() : '';
+    const fallbackHost = t('remote.hostFallback');
+    const byRowId = new Map<string, AttachedRemoteWorkspace>();
+    for (const rw of remoteWorkspaces) {
+      const name = remoteWorkspaceDisplayName(rw);
+      const host = rw.hostLabel || fallbackHost;
+      if (q && !name.toLowerCase().includes(q) && !host.toLowerCase().includes(q)) continue;
+      byRowId.set(`${REMOTE_ROW_PREFIX}${rw.key}`, rw);
+    }
+    return byRowId;
+  }, [remoteWorkspaces, wsSearch, t]);
+  const remoteRows = useMemo(
+    () => [...remoteByRowId].map(([id, rw]) => ({ id, name: remoteWorkspaceDisplayName(rw) })),
+    [remoteByRowId],
+  );
+  const remoteScores = useMemo(
+    () => Object.fromEntries([...remoteByRowId].map(([id, rw]) => [id, remoteWorkspaceAttentionScore(rw)])),
+    [remoteByRowId],
+  );
   const {
     ordered: orderedWorkspaces,
     onPointerEnter: onListPointerEnter,
     onPointerLeave: onListPointerLeave,
     onFocusCapture: onListFocus,
     onBlurCapture: onListBlur,
-  } = useGlanceBoardOrder(filteredWorkspaces, nestedOwnerOf);
+  } = useGlanceBoardOrder(filteredWorkspaces, nestedOwnerOf, remoteRows, remoteScores);
+  // Remote row ids are no workspace: linkOf finds none, so each one is a plain
+  // top-level node in its sorted slot.
   const tree = useMemo(() => {
     const byId = new Map(workspaces.map((w) => [w.id, w]));
     return buildSidebarTree(
@@ -113,12 +150,6 @@ export default function Sidebar() {
     );
   }, [orderedWorkspaces, workspaces, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  // #1329 — rows that only exist to poll a remote-terminal PANE's host are not
-  // attachments and must not render here: the user never asked for a mirror,
-  // and a row they cannot detach (nothing persists it) would be a ghost.
-  // useShallow, not a bare subscription: those invisible rows are rewritten on
-  // every poll round, and this list must not re-render the sidebar for them.
-  const remoteWorkspaces = useStore(useShallow(selectAttachedRemoteWorkspaces));
   const activeRemoteKey = useStore((s) => s.activeRemoteKey);
   const setActiveRemoteKey = useStore((s) => s.setActiveRemoteKey);
   const detachRemoteWorkspace = useStore((s) => s.detachRemoteWorkspace);
@@ -307,6 +338,18 @@ export default function Sidebar() {
             tasks are ordinary rows; tasks whose owner is gone collect in the
             "From closed workspace" group below. */}
         {tree.top.map((node) => {
+          const rw = remoteByRowId.get(node.id);
+          if (rw) {
+            return (
+              <RemoteWorkspaceItem
+                key={node.id}
+                workspace={rw}
+                isActive={rw.key === activeRemoteKey}
+                onSelect={setActiveRemoteKey}
+                onDetach={detachRemoteWorkspace}
+              />
+            );
+          }
           const ws = workspaceById.get(node.id);
           if (!ws) return null;
           // A task whose owner is only hidden by the search filter still
@@ -356,24 +399,6 @@ export default function Sidebar() {
             renderTask={renderTask}
             onCloseWorkspace={handleClose}
           />
-        )}
-
-        {/* Remote section — attached mirrors from other wmux hosts, rendered
-            under the local workspace rows. A remote workspace is never part
-            of `workspaces[]` (see remoteWorkspacesSlice), so it gets its own
-            row type here instead of joining the map above. */}
-        {remoteWorkspaces.length > 0 && (
-          <div className="pt-2 mt-1 border-t space-y-0.5" style={{ borderColor: 'var(--border-soft)' }}>
-            {remoteWorkspaces.map((rw) => (
-              <RemoteWorkspaceItem
-                key={rw.key}
-                workspace={rw}
-                isActive={rw.key === activeRemoteKey}
-                onSelect={setActiveRemoteKey}
-                onDetach={detachRemoteWorkspace}
-              />
-            ))}
-          </div>
         )}
 
         {/* #1011 — put-away workspaces: configuration snapshots, one click

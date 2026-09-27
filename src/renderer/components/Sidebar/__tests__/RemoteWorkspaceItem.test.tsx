@@ -139,4 +139,15 @@ describe('RemoteWorkspaceItem', () => {
     expect(row.getAttribute('aria-label')).toContain('the remote host no longer accepts this computer');
     expect(container.textContent).toContain('Pair again needed');
   });
+
+  // Remote rows share the local list, so each one says "another machine" by
+  // a server glyph on the host line, and a stale mirror is dimmed.
+  it('marks the host line with a server glyph and dims only a stale row', () => {
+    const live = render(<RemoteWorkspaceItem workspace={WS} isActive={false} onSelect={vi.fn()} onDetach={vi.fn()} />);
+    expect(live.container.querySelector('[data-remote-host-glyph] svg')).not.toBeNull();
+    expect(live.container.textContent).toContain('mac-mini');
+    expect(live.container.querySelector('[data-remote-stale]')).toBeNull();
+    const stale = render(<RemoteWorkspaceItem workspace={{ ...WS, stale: true }} isActive={false} onSelect={vi.fn()} onDetach={vi.fn()} />);
+    expect(stale.container.querySelector('[data-remote-stale]')?.className).toContain('opacity-60');
+  });
 });

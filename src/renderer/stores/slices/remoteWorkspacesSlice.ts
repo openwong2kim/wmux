@@ -247,6 +247,12 @@ export function selectAttachedRemoteWorkspaces(state: {
     : state.remoteWorkspaces;
 }
 
+/** The name a remote workspace's sidebar row shows: the local alias, else the
+ *  host's name, else a workspace id prefix. Shared by the row and the search. */
+export function remoteWorkspaceDisplayName(rw: Pick<AttachedRemoteWorkspace, 'label' | 'name' | 'workspaceId'>): string {
+  return rw.label || rw.name || rw.workspaceId.slice(0, 8);
+}
+
 export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/immer', never]], [], RemoteWorkspacesSlice> = (set) => ({
   remoteWorkspaces: [],
   activeRemoteKey: null,

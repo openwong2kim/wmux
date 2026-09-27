@@ -18,10 +18,15 @@ const NONE: Record<string, number> = {};
  *   under (non-detached, owner open), else undefined. Nested tasks take no
  *   top-level slot — they render under their owner — and an owner scores as
  *   its most urgent task, so a task that needs you lifts its whole group.
+ * @param remote For the full sidebar: attached remote workspace rows (ids
+ *   namespaced apart from local ids) and their Attention scores. They merge
+ *   into the unpinned rows — see boardOrder. Memoize both.
  */
 export function useGlanceBoardOrder<T extends { id: string }>(
   manual: readonly T[],
   nestedOwnerOf?: (id: string) => string | undefined,
+  remote?: readonly T[],
+  remoteScores?: Readonly<Record<string, number>>,
 ) {
   const mode = useStore((s) => s.sidebarSortMode);
   const scores = useStore(useShallow((s) => (s.sidebarSortMode === 'attention' ? selectWorkspaceAttentionScores(s) : NONE)));
@@ -49,7 +54,9 @@ export function useGlanceBoardOrder<T extends { id: string }>(
     newAt,
     now: Math.max(now, Date.now()),
     nestedOwnerOf,
-  }), [mode, manual, scores, activity, pinnedIds, newAt, now, nestedOwnerOf]);
+    remote,
+    remoteScoreOf: (id) => remoteScores?.[id],
+  }), [mode, manual, scores, activity, pinnedIds, newAt, now, nestedOwnerOf, remote, remoteScores]);
 
   // A row crossing the group boundary is a membership change of `rest`, which
   // the settle rule lands at once (reconcileAppliedOrder).
