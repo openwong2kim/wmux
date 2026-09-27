@@ -80,4 +80,45 @@ describe('roster "requested" badge', () => {
     expect(rowPress).not.toHaveBeenCalled();
     expect(useStore.getState().sidebarTaskGroupExpanded['ws-owner']).toBe(true);
   });
+
+  it('scrolls the owner\'s task group into view on the next frame, in a DOM without `CSS`', async () => {
+    // jsdom defines no `CSS`; a CSS.escape'd selector threw here from the
+    // animation frame, after the test had already passed (CI unhandled error).
+    expect(typeof (globalThis as { CSS?: unknown }).CSS).toBe('undefined');
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => { frames.push(cb); return frames.length; });
+    try {
+      useStore.setState({
+        workspaces: [owner, task('t1')],
+        activeWorkspaceId: 'ws-owner',
+        surfaceAgent: { 'pty-62': { name: 'Claude Code', status: 'idle' } },
+        fanoutOrigin: { t1: { kind: 'pane', paneId: 'p62', surfaceId: 's62' } },
+        fanoutProvenance: {},
+        fanoutLineage: { t1: 'ws-owner' },
+        fanoutSpawnOwner: {},
+        missionByPaneGroup: {},
+        sidebarTaskGroupExpanded: { 'ws-owner': false },
+      });
+      const other = document.createElement('div');
+      other.setAttribute('data-task-group', 'ws-other');
+      const group = document.createElement('div');
+      group.setAttribute('data-task-group', 'ws-owner');
+      const scrolled: string[] = [];
+      other.scrollIntoView = () => { scrolled.push('ws-other'); };
+      group.scrollIntoView = () => { scrolled.push('ws-owner'); };
+      // Outside the React root, which owns (and would clear) its container.
+      document.body.append(other, group);
+      await act(async () => {
+        root.render(createElement(WorkspaceAgentRoster, { workspaceId: 'ws-owner', pulsingPaneId: null }));
+      });
+      const badge = container.querySelector('[data-roster-requested]') as HTMLButtonElement;
+      await act(async () => { badge.click(); });
+      expect(frames).toHaveLength(1);
+      frames[0](0);
+      expect(scrolled).toEqual(['ws-owner']);
+    } finally {
+      raf.mockRestore();
+      document.querySelectorAll('[data-task-group]').forEach((el) => el.remove());
+    }
+  });
 });

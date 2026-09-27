@@ -25,7 +25,10 @@ import { requestedCountFor, selectRequestedCounts } from '../../utils/fanoutProv
 function revealTaskGroup(ownerWorkspaceId: string): void {
   useStore.getState().setSidebarTaskGroupExpanded(ownerWorkspaceId, true);
   requestAnimationFrame(() => {
-    const group = document.querySelector(`[data-task-group="${CSS.escape(ownerWorkspaceId)}"]`);
+    // Matched on the attribute value rather than a CSS.escape'd selector:
+    // `CSS` is not defined in every DOM this runs in (jsdom has none).
+    const group = Array.from(document.querySelectorAll<HTMLElement>('[data-task-group]'))
+      .find((el) => el.dataset.taskGroup === ownerWorkspaceId);
     group?.scrollIntoView?.({ block: 'nearest' });
   });
 }
