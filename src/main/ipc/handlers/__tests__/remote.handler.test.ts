@@ -1532,3 +1532,20 @@ describe('remote.handler — credentials only over HTTPS, and no rebinding', () 
     expect(fetchImpl.mock.calls.map((c) => String((c as unknown[])[0]))).toEqual(['http://127.0.0.1:7681/api/config']);
   });
 });
+
+describe('remote.handler — a plain-http host to another machine never gets its token', () => {
+  const lanHost: RemoteHost = { id: 'lan', label: 'lan', origin: 'http://192.168.1.5:7681', token: 'T0K3N', addedAt: 0 };
+
+  it('workspacesList and workspaceCreate fail closed with insecure-transport and no fetch at all', async () => {
+    const fetchImpl = vi.fn();
+    registerRemoteHandlers({ store: fakeStore([lanHost]) as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const list = (await getHandler(IPC.REMOTE_WORKSPACES_LIST)({}, 'lan')) as { ok: boolean; reason?: string; error?: string };
+    expect(list).toMatchObject({ ok: false, reason: 'insecure-transport' });
+    expect(list.error).toContain('needs HTTPS');
+    const created = (await getHandler(IPC.REMOTE_WORKSPACE_CREATE)({}, 'lan', 'ws-1')) as { ok: boolean; reason?: string };
+    expect(created).toMatchObject({ ok: false, reason: 'insecure-transport' });
+    const closed = (await getHandler(IPC.REMOTE_SESSION_CLOSE)({}, 'lan', 'web-1')) as { ok: boolean; reason?: string };
+    expect(closed).toMatchObject({ ok: false, reason: 'insecure-transport' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});

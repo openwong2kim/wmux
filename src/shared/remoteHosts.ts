@@ -239,7 +239,7 @@ export type PairFailureReason =
  *  devices, or this device was revoked). Retrying cannot help — the only way
  *  back is to pair again. A 403 is never this: the host's 403s are feature
  *  gates (`--allow-input`, transcript access), not a rejected credential. */
-export type RemoteErrorReason = 'auth-rejected';
+export type RemoteErrorReason = 'auth-rejected' | 'insecure-transport';
 
 /**
  * A paired host as the Remote hub shows it (status = dot + text):

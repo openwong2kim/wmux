@@ -30,6 +30,7 @@ import type {
   RemoteWorkspacesResponse,
 } from '../../shared/remoteHosts';
 import { isRemoteAgentStatus, parseRemoteResumeInfo } from '../../shared/remoteHosts';
+import { isCredentialSafeOriginString } from '../../shared/remotePairInput';
 
 export interface RemoteMetaEvent {
   attachId: string;
@@ -89,6 +90,25 @@ export class RemoteAuthRejectedError extends Error {
 
 export function isRemoteAuthRejected(err: unknown): err is RemoteAuthRejectedError {
   return err instanceof RemoteAuthRejectedError;
+}
+
+/**
+ * The host was registered over plain http to ANOTHER machine (before pairing
+ * required HTTPS). Its bearer token would cross the network in the clear, so
+ * no request carrying it is sent — fail closed, before any I/O. Never
+ * auto-upgraded to https: that is a different origin, and the credential was
+ * issued for this one. The way back is to pair again over HTTPS.
+ */
+export class RemoteInsecureTransportError extends Error {
+  readonly reason = 'insecure-transport' as const;
+  constructor(operation: string) {
+    super(`${operation} refused: this host needs HTTPS — re-pair over HTTPS`);
+    this.name = 'RemoteInsecureTransportError';
+  }
+}
+
+export function isRemoteInsecureTransport(err: unknown): err is RemoteInsecureTransportError {
+  return err instanceof RemoteInsecureTransportError;
 }
 
 /** The `error` values the host's web server puts on a credential 401. */
@@ -271,9 +291,23 @@ export class RemoteHostClient implements RemotePaneEvents {
   /** Set once the host refuses this credential; see `rejected`. */
   private authRejected = false;
 
+  /** Credentials may not be sent to this origin (see RemoteInsecureTransportError). */
+  private readonly insecure: boolean;
+
   constructor(host: RemoteHost, fetchImpl: typeof fetch = fetch) {
     this.host = host;
     this.fetchImpl = fetchImpl;
+    this.insecure = !isCredentialSafeOriginString(host.origin);
+  }
+
+  /** Whether every token-carrying call to this host is refused. */
+  isInsecure(): boolean {
+    return this.insecure;
+  }
+
+  /** Throws before any I/O when the token may not be sent to this host. */
+  private assertSecure(operation: string): void {
+    if (this.insecure) throw new RemoteInsecureTransportError(operation);
   }
 
   onMeta(cb: (e: RemoteMetaEvent) => void): void {
@@ -309,6 +343,7 @@ export class RemoteHostClient implements RemotePaneEvents {
    * it the same way `REMOTE_PANE_ATTACH` attaches to any other remote pane.
    */
   async createWorkspace(workspaceId: string, cwd?: string): Promise<{ sessionId: string }> {
+    this.assertSecure('createWorkspace');
     const res = await this.fetchImpl(`${this.host.origin}/api/sessions`, {
       method: 'POST',
       headers: { ...this.authHeaders(), 'Content-Type': 'application/json' },
@@ -351,6 +386,7 @@ export class RemoteHostClient implements RemotePaneEvents {
    * typing is.
    */
   async closeSession(sessionId: string): Promise<void> {
+    this.assertSecure('closeSession');
     const res = await this.fetchImpl(
       `${this.host.origin}/api/sessions/${encodeURIComponent(sessionId)}`,
       {
@@ -390,6 +426,7 @@ export class RemoteHostClient implements RemotePaneEvents {
     cols: number,
     rows: number,
   ): Promise<{ ok: true; cols: number; rows: number } | { ok: false; reason: string }> {
+    if (this.insecure) return { ok: false, reason: 'insecure-transport' };
     let res: Response;
     try {
       res = await this.fetchImpl(
@@ -427,6 +464,7 @@ export class RemoteHostClient implements RemotePaneEvents {
   }
 
   async listWorkspaces(): Promise<RemoteWorkspacesResponse> {
+    this.assertSecure('listWorkspaces');
     const res = await this.fetchImpl(`${this.host.origin}/api/workspaces`, {
       headers: this.authHeaders(),
       // Bearer-credentialed request: never silently follow a redirect —
@@ -527,6 +565,7 @@ export class RemoteHostClient implements RemotePaneEvents {
     // The host has refused this credential: nothing typed can reach it until
     // the host is paired again (which builds a fresh client).
     if (this.authRejected) return Promise.reject(new RemoteAuthRejectedError('write'));
+    if (this.insecure) return Promise.reject(new RemoteInsecureTransportError('write'));
     const attachment = this.attachments.get(attachId);
     const sessionId = attachment ? attachment.sessionId : attachId;
     let queue = this.writeQueues.get(sessionId);
@@ -625,6 +664,17 @@ export class RemoteHostClient implements RemotePaneEvents {
   private async runStream(attachment: Attachment): Promise<void> {
     const generation = attachment.generation;
     const superseded = (): boolean => attachment.detached || attachment.generation !== generation;
+    if (this.insecure) {
+      // No stream, no reconnect loop: report it once and leave the attachment
+      // idle until it is detached or the host is paired again over HTTPS.
+      // Deferred a tick so a caller that subscribes right after attach()
+      // still hears it.
+      await Promise.resolve();
+      if (superseded()) return;
+      const err = new RemoteInsecureTransportError('stream');
+      for (const cb of this.errorCbs) cb({ attachId: attachment.attachId, message: err.message, reason: err.reason });
+      return;
+    }
     let res: Response;
     try {
       res = await this.fetchImpl(

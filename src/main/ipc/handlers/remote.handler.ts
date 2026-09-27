@@ -19,7 +19,7 @@ import { app, ipcMain } from 'electron';
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
-import { RemoteHostClient, isRemoteAuthRejected } from '../../remote/RemoteHostClient';
+import { RemoteHostClient, isRemoteAuthRejected, isRemoteInsecureTransport } from '../../remote/RemoteHostClient';
 import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
 import type { RemoteAttachmentsStore } from '../../remote/RemoteAttachmentsStore';
 import { RemoteAttentionSubscriber } from '../../remote/RemoteAttentionSubscriber';
@@ -30,7 +30,7 @@ import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey, REMOTE_POLL
 import { normalizeWorkspaceColor } from '../../../shared/workspaceColors';
 import { DEVICE_KIND_HEADER } from '../../../shared/web';
 import { HostStatusProber, combineHostStatus } from '../../remote/hostStatus';
-import { credentialOriginProblem } from '../../../shared/remotePairInput';
+import { credentialOriginProblem, isCredentialSafeOriginString } from '../../../shared/remotePairInput';
 import type {
   PairFailureReason,
   RemoteAttachmentDescriptor,
@@ -95,7 +95,8 @@ interface AttachRecord {
  *  reason so the renderer can offer "pair again" instead of a raw message. */
 function failure(err: unknown): { ok: false; error: string; reason?: RemoteErrorReason } {
   const error = err instanceof Error ? err.message : String(err);
-  return isRemoteAuthRejected(err) ? { ok: false, error, reason: err.reason } : { ok: false, error };
+  if (isRemoteAuthRejected(err) || isRemoteInsecureTransport(err)) return { ok: false, error, reason: err.reason };
+  return { ok: false, error };
 }
 
 function assertString(v: unknown, field: string): string {
@@ -112,6 +113,8 @@ async function probeConfig(
   token: string,
   fetchImpl: typeof fetch,
 ): Promise<ProbeResult> {
+  // Never send the token to another machine over plain http.
+  if (!isCredentialSafeOriginString(origin)) return { kind: 'unreachable' };
   let res: Response;
   try {
     res = await fetchImpl(`${origin}/api/config`, {

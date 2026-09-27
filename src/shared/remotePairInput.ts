@@ -46,6 +46,15 @@ export function isCredentialSafeOrigin(url: URL): boolean {
   return url.protocol === 'http:' && webHostIsLoopback(url.hostname);
 }
 
+/** `isCredentialSafeOrigin` for a stored origin string; false when unparseable. */
+export function isCredentialSafeOriginString(origin: string): boolean {
+  try {
+    return isCredentialSafeOrigin(new URL(origin));
+  } catch {
+    return false;
+  }
+}
+
 /** Why an origin must not receive a credential, or null when it may. */
 export function credentialOriginProblem(url: URL): 'insecure' | 'userinfo' | null {
   if (url.username || url.password) return 'userinfo';
