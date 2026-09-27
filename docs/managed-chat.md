@@ -127,6 +127,24 @@ is not running, the explicit launch action calls the official idempotent
 only the native runtime, not another conversation, and never restarts an existing
 server or enables remote control. Failure stops before typing into the shell.
 
+### Codex typed in a pane shell
+
+A `codex` typed in a bash or zsh pane (by a person, or by a fan-out worker's
+launch line) goes through a small shell function from the pane's shell
+integration. Interactive forms (no subcommand, a prompt, `resume`, `fork`) get
+`--no-daemon`, so the thread runs in that process with that pane's identity and
+never starts the shared account server with it. `codex exec` and `codex review`
+already run in-process and are passed through unchanged, so their hooks still
+reach the pane. Every other subcommand runs with all `WMUX_*` variables removed.
+A line that already picks a server (`--remote`, `--no-daemon`) and a user-defined
+`codex` function are left alone. `WMUX_CODEX_WRAP=0` turns the function off, and
+`WMUX_SHELL_INTEGRATION=0` turns it off with the rest of the integration.
+
+The function is not reached by scripts, `bash -c`/`zsh -c` lines, `env codex`,
+`exec codex`, a full path to the binary, fish or PowerShell, or shells opened
+before the integration update; those still start the shared server with whatever
+environment they have.
+
 Validation probe: `scripts/terminal-chat-launch-live-e2e.mjs` starts from an empty
 selected test pane and verifies the initial native answer, one user turn, and
 Terminal/Chat round-trip without a managed conversation. Native Codex transport
