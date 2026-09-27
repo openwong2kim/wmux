@@ -460,6 +460,13 @@ no empty reply row or reserved gap under the latest prompt.
   reorder sources or targets and carry no Ctrl+N hint.
 - **Provenance:** a task row carries a muted fan-out glyph whose tooltip reads
   `Fanned out by <owner> · <you (GUI) | orchestrator | calling pane> · <time>`.
+  Under the name, a muted 11px line says who asked at rest: `Requested by
+  <pane label · coordinate>` (steel on hover, click jumps to that pane),
+  the launch-time name with `· closed` once the pane is gone (not a link),
+  `Started by you`, `Requested by Orchestrator`, or `Requester unknown` —
+  never a guess. The agent doing the task is named at the line's right. The
+  requesting pane's roster row carries a muted `N requested` link that opens
+  the owner's task group.
   Inside a task workspace the titlebar's workspace name is followed by a muted
   `↰ <owner>` link (steel on hover) that jumps to the owner.
 - **Order:** Attention (default), Manual, or Recent activity — Settings ›
