@@ -2,8 +2,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { sendRequest } from '../client';
 import { printResult, ensureOk } from '../utils';
-import { resolveSelfContext, getParentPidDefault } from '../identity';
-import { ENV_KEYS } from '../../shared/constants';
+import { resolvePaneIdentity, getParentPidDefault, senderPtyIdFor } from '../identity';
 import type { RpcResponse } from '../../shared/rpc';
 
 function getFallbackVersion(): string {
@@ -28,35 +27,34 @@ interface IdentifyResult {
  * senderPtyId is refused outright. `set-status` / `set-progress` never attached
  * one, which made both commands fail unconditionally (#800).
  *
- * Same resolution ladder `wmux channel` uses, plus an explicit override:
+ * Resolution:
  *   1. `--pane <ptyId>` — name the pane whose workspace to write;
- *   2. verified PID-map walk via the main pipe (resolveSelfContext, X4);
- *   3. env WMUX_PTY_ID — stamped into the pane env at spawn; survives a walk
- *      miss (descendant processes several hops up the tree).
- * Returns '' when none resolve — the caller is not in a wmux pane.
+ *   2. verified walk via the main pipe (resolvePaneIdentity, X4).
+ * These are writes, so the pane env (WMUX_PTY_ID) is not used on its own: when
+ * main says the caller is not under a pane, or cannot check, the command exits
+ * with the reason (senderPtyIdFor). Returns '' when there is no pane env at
+ * all — the caller is not in a wmux pane.
  *
- * Only rung 2 is verified. `--pane` and the env hint are same-user forgeable:
- * the daemon derives the workspace from the ptyId it is handed, but nothing
- * proves the calling process owns that pane. That is the accepted #113 ceiling
- * and exactly what `wmux send --pane` already allows, so this adds no new
- * authority — but it is why the verified walk is tried before the env hint
- * rather than the other way round, even though the hint is cheaper.
+ * `--pane` is same-user forgeable: the daemon derives the workspace from the
+ * ptyId it is handed. That is the accepted #113 ceiling and exactly what
+ * `wmux send --pane` already allows; an explicit flag is a deliberate choice,
+ * unlike an inherited environment.
  */
 async function resolveMetaSenderPtyId(explicitPane: string): Promise<string> {
   if (explicitPane) return explicitPane;
-  try {
-    const ctx = await resolveSelfContext({
-      sendRequest,
-      env: process.env,
-      ppid: process.ppid,
-      getParentPid: getParentPidDefault,
-    });
-    if (ctx.ptyId) return ctx.ptyId;
-  } catch {
-    // main pipe unavailable — fall through to the env hint
+  const identity = await resolvePaneIdentity({
+    sendRequest,
+    env: process.env,
+    ppid: process.ppid,
+    getParentPid: getParentPidDefault,
+  });
+  // meta.* are writes: the pane env is never enough on its own.
+  const r = senderPtyIdFor(identity, process.env, { write: true });
+  if ('error' in r) {
+    console.error(`Error: ${r.error}`);
+    process.exit(1);
   }
-  const envPty = process.env[ENV_KEYS.PTY_ID];
-  return typeof envPty === 'string' && envPty.trim().length > 0 ? envPty.trim() : '';
+  return r.ptyId;
 }
 
 /**

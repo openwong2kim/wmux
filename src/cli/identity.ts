@@ -25,9 +25,21 @@
  *    workspaceId; main asserts ownership server-side).
  *  - miss / transient / outside → `{}` — commands keep today's active-pane
  *    behavior, which is never worse than the pre-X4 CLI.
+ *
+ * The CLI sends its own pid (`callerPid`) so main walks the real process
+ * ancestry. Commands that ACT AS a pane (channel, meta) take their pane from
+ * `senderPtyIdFor`, which refuses rather than trust the pane env when main
+ * says the caller is not under that pane.
  */
 
 import type { RpcMethod, RpcResponse } from '../shared/rpc';
+import { ENV_KEYS } from '../shared/constants';
+import {
+  isPaneAncestryStatus,
+  PANE_IDENTITY_MISS_MESSAGE,
+  PANE_IDENTITY_UNAVAILABLE_MESSAGE,
+  PANE_IDENTITY_UNVERIFIED_WRITE_MESSAGE,
+} from '../shared/paneIdentity';
 
 export interface SelfContext {
   /** Verified ptyId of the pane whose shell spawned this CLI process. */
@@ -49,6 +61,8 @@ export interface IdentityDeps {
   env: Record<string, string | undefined>;
   /** Our parent PID (injectable for tests). */
   ppid: number;
+  /** Our own PID, sent as callerPid so main walks our ancestry (defaults to process.pid). */
+  pid?: number;
   /** PPID lookup for one hop up the tree. Spawns a process — used sparingly. */
   getParentPid: (pid: number) => Promise<number | null>;
   /** Max hops above process.ppid when the env hint says we're inside wmux. */
@@ -85,22 +99,53 @@ export function parseIdentityEntries(result: unknown): IdentityEntry[] {
 }
 
 /**
- * Resolve the CLI's own pane identity. Never throws — identity is an
- * enhancement, not a gate; on any failure the caller proceeds with
- * active-pane semantics.
+ * How the caller's pane was (or was not) established:
+ *   - 'hit'         verified: the caller runs under that pane's shell;
+ *   - 'miss'        main read the process table and no pane shell is above us;
+ *   - 'unavailable' main could not read the process table (after its retry);
+ *   - 'unverified'  main is unreachable, or predates the check, and our own
+ *                   walk found nothing.
  */
-export async function resolveSelfContext(deps: IdentityDeps): Promise<SelfContext> {
+export type PaneIdentityStatus = 'hit' | 'miss' | 'unavailable' | 'unverified';
+
+export interface PaneIdentity extends SelfContext {
+  status: PaneIdentityStatus;
+}
+
+/**
+ * Resolve the CLI's own pane identity. Never throws. Only a 'hit' carries a
+ * pane; what a non-hit caller may do is decided by `senderPtyIdFor`.
+ */
+export async function resolvePaneIdentity(deps: IdentityDeps): Promise<PaneIdentity> {
   const insideWmuxHint = Boolean(deps.env['WMUX_WORKSPACE_ID']);
 
   let entries: IdentityEntry[];
+  let serverStatus: PaneIdentityStatus | undefined;
   try {
-    const response = await deps.sendRequest('a2a.resolve.identity' as RpcMethod, {});
-    if (!response.ok) return {};
+    const response = await deps.sendRequest('a2a.resolve.identity' as RpcMethod, {
+      callerPid: deps.pid ?? process.pid,
+    });
+    if (!response.ok) return { status: 'unverified' };
+    const result = (response.result ?? {}) as { resolvedStatus?: unknown; resolved?: unknown };
+    const resolved = result.resolved as { workspaceId?: unknown; ptyId?: unknown } | null | undefined;
+    if (
+      resolved && typeof resolved.workspaceId === 'string' && resolved.workspaceId &&
+      typeof resolved.ptyId === 'string' && resolved.ptyId
+    ) {
+      return { status: 'hit', workspaceId: resolved.workspaceId, ptyId: resolved.ptyId };
+    }
+    if (isPaneAncestryStatus(result.resolvedStatus)) {
+      // main walked our real ancestry and found no pane: authoritative. Env
+      // and our own walk would only rediscover a pane we do not run under.
+      if (result.resolvedStatus === 'miss') return { status: 'miss' };
+      serverStatus = 'unavailable';
+    }
     entries = parseIdentityEntries(response.result);
   } catch {
-    return {};
+    return { status: 'unverified' };
   }
-  if (entries.length === 0) return {};
+  const fallback: PaneIdentity = { status: serverStatus ?? 'unverified' };
+  if (entries.length === 0) return fallback;
 
   const byPid = new Map<number, IdentityEntry>();
   for (const entry of entries) {
@@ -111,11 +156,11 @@ export async function resolveSelfContext(deps: IdentityDeps): Promise<SelfContex
   // Depth 0 — our direct parent. Free (no spawn); covers `wmux …` typed
   // straight into a pane shell.
   const direct = byPid.get(deps.ppid);
-  if (direct) return toContext(direct);
+  if (direct) return toIdentity(direct);
 
   // Deeper walk costs one spawn per hop — only worth it when the env hint
   // says a wmux pane is somewhere above us (nested shells, scripts).
-  if (!insideWmuxHint) return {};
+  if (!insideWmuxHint) return fallback;
 
   const maxDepth = deps.maxDepth ?? DEFAULT_MAX_DEPTH;
   let currentPid = deps.ppid;
@@ -124,15 +169,72 @@ export async function resolveSelfContext(deps: IdentityDeps): Promise<SelfContex
     if (!parentPid || parentPid === currentPid || parentPid <= 1) break;
     currentPid = parentPid;
     const hit = byPid.get(currentPid);
-    if (hit) return toContext(hit);
+    if (hit) return toIdentity(hit);
   }
-  return {};
+  return fallback;
 }
 
-function toContext(entry: IdentityEntry): SelfContext {
-  const ctx: SelfContext = { workspaceId: entry.workspaceId };
-  if (entry.ptyId) ctx.ptyId = entry.ptyId;
+function toIdentity(entry: IdentityEntry): PaneIdentity {
+  const id: PaneIdentity = { status: 'hit', workspaceId: entry.workspaceId };
+  if (entry.ptyId) id.ptyId = entry.ptyId;
+  return id;
+}
+
+/**
+ * Pane-level context for commands that target "my own pane" (send, notify,
+ * browser). A non-hit is `{}`: those commands keep active-pane semantics and
+ * never act AS a pane.
+ */
+export async function resolveSelfContext(deps: IdentityDeps): Promise<SelfContext> {
+  const id = await resolvePaneIdentity(deps);
+  if (id.status !== 'hit') return {};
+  const ctx: SelfContext = {};
+  if (id.workspaceId) ctx.workspaceId = id.workspaceId;
+  if (id.ptyId) ctx.ptyId = id.ptyId;
   return ctx;
+}
+
+/**
+ * The senderPtyId a command may present as its own, or why it may not.
+ *
+ * Only a verified hit names a pane. The pane env (WMUX_PTY_ID) is used only
+ * when main could not answer at all (unreachable, or older than this CLI),
+ * and then only for reads. When the env names a pane but main says we are not
+ * under it ('miss') or could not check ('unavailable'), refuse: acting on the
+ * env there is exactly how a command inherits another pane's identity. With no
+ * pane env at all we are simply outside wmux — '' lets the caller print its
+ * usual "not inside a wmux pane" error.
+ */
+export function senderPtyIdFor(
+  identity: PaneIdentity,
+  env: Record<string, string | undefined>,
+  opts: { write: boolean },
+): { ptyId: string } | { error: string } {
+  if (identity.status === 'hit' && identity.ptyId) return { ptyId: identity.ptyId };
+  const envPty = (env[ENV_KEYS.PTY_ID] ?? '').trim();
+  if (!envPty) return { ptyId: '' };
+  if (identity.status === 'miss') return { error: PANE_IDENTITY_MISS_MESSAGE };
+  if (identity.status === 'unavailable') return { error: PANE_IDENTITY_UNAVAILABLE_MESSAGE };
+  // 'unverified', or a workspace-only hit from a main too old to name the pane.
+  return opts.write ? { error: PANE_IDENTITY_UNVERIFIED_WRITE_MESSAGE } : { ptyId: envPty };
+}
+
+/**
+ * Default channel member id ($WMUX_MEMBER_ID, the pane's ptyId stamped at
+ * spawn). When the env visibly belongs to ANOTHER pane than the verified one
+ * (its WMUX_PTY_ID differs), the env member is that other pane's, so the
+ * verified pane's own ptyId is used instead.
+ */
+export function defaultMemberIdFor(
+  identity: PaneIdentity,
+  env: Record<string, string | undefined>,
+): string | undefined {
+  const envMember = env[ENV_KEYS.MEMBER_ID];
+  const envPty = (env[ENV_KEYS.PTY_ID] ?? '').trim();
+  if (identity.status === 'hit' && identity.ptyId && envMember && envPty && envPty !== identity.ptyId) {
+    return identity.ptyId;
+  }
+  return envMember && envMember.length > 0 ? envMember : undefined;
 }
 
 /**

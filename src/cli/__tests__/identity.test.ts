@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { resolveSelfContext, parseIdentityEntries, type IdentityDeps } from '../identity';
+import {
+  defaultMemberIdFor,
+  parseIdentityEntries,
+  resolvePaneIdentity,
+  resolveSelfContext,
+  senderPtyIdFor,
+  type IdentityDeps,
+} from '../identity';
 import type { RpcResponse } from '../../shared/rpc';
 
 function okResponse(result: unknown): RpcResponse {
@@ -130,5 +137,85 @@ describe('resolveSelfContext', () => {
         makeDeps({ sendRequest: vi.fn(async () => okResponse({ mappings: {}, entries: [] })) }),
       ),
     ).toEqual({});
+  });
+});
+
+describe('resolvePaneIdentity — main-verified ancestry (resolvedStatus)', () => {
+  it('sends its own pid as callerPid and takes main\'s resolved pane', async () => {
+    const sendRequest = vi.fn(async () =>
+      okResponse({ mappings: {}, entries: [], resolved: { workspaceId: 'ws-b', ptyId: 'pty-b' }, resolvedStatus: 'hit' }));
+    const id = await resolvePaneIdentity(makeDeps({ sendRequest, pid: 4242 }));
+    expect(sendRequest).toHaveBeenCalledWith('a2a.resolve.identity', { callerPid: 4242 });
+    expect(id).toEqual({ status: 'hit', workspaceId: 'ws-b', ptyId: 'pty-b' });
+  });
+
+  it('treats a miss as authoritative: no client walk, even with pane env present', async () => {
+    const getParentPid = vi.fn(async () => 2000);
+    const id = await resolvePaneIdentity(makeDeps({
+      env: { WMUX_WORKSPACE_ID: 'ws-a', WMUX_PTY_ID: 'pty-a' },
+      sendRequest: vi.fn(async () => okResponse({
+        mappings: { '2000': 'ws-a' }, entries: [{ pid: '2000', ptyId: 'pty-a', workspaceId: 'ws-a' }],
+        resolved: null, resolvedStatus: 'miss',
+      })),
+      getParentPid,
+    }));
+    expect(id).toEqual({ status: 'miss' });
+    expect(getParentPid).not.toHaveBeenCalled();
+  });
+
+  it('on unavailable still tries its own walk, and reports unavailable when that misses', async () => {
+    const entries = [{ pid: '2000', ptyId: 'pty-a', workspaceId: 'ws-a' }];
+    const hit = await resolvePaneIdentity(makeDeps({
+      ppid: 2000,
+      sendRequest: vi.fn(async () => okResponse({ mappings: { '2000': 'ws-a' }, entries, resolved: null, resolvedStatus: 'unavailable' })),
+    }));
+    expect(hit).toEqual({ status: 'hit', workspaceId: 'ws-a', ptyId: 'pty-a' });
+    const miss = await resolvePaneIdentity(makeDeps({
+      ppid: 9,
+      sendRequest: vi.fn(async () => okResponse({ mappings: { '2000': 'ws-a' }, entries, resolved: null, resolvedStatus: 'unavailable' })),
+    }));
+    expect(miss).toEqual({ status: 'unavailable' });
+  });
+
+  it('an older main (no resolvedStatus) or an unreachable one is unverified', async () => {
+    expect(await resolvePaneIdentity(makeDeps({
+      sendRequest: vi.fn(async () => okResponse({ mappings: {}, entries: [], resolved: null })),
+    }))).toEqual({ status: 'unverified' });
+    expect(await resolvePaneIdentity(makeDeps({
+      sendRequest: vi.fn(async () => { throw new Error('down'); }),
+    }))).toEqual({ status: 'unverified' });
+  });
+});
+
+describe('senderPtyIdFor', () => {
+  const env = { WMUX_PTY_ID: 'pty-a' };
+
+  it('a hit always names the verified pane, whatever the env says', () => {
+    expect(senderPtyIdFor({ status: 'hit', ptyId: 'pty-b', workspaceId: 'ws-b' }, env, { write: true })).toEqual({ ptyId: 'pty-b' });
+  });
+
+  it('miss / unavailable with pane env refuse reads and writes alike', () => {
+    for (const write of [true, false]) {
+      expect(senderPtyIdFor({ status: 'miss' }, env, { write })).toHaveProperty('error', expect.stringContaining('codex --no-daemon'));
+      expect(senderPtyIdFor({ status: 'unavailable' }, env, { write })).toHaveProperty('error', expect.stringContaining('retry'));
+    }
+  });
+
+  it('unverified keeps the env pane for reads only', () => {
+    expect(senderPtyIdFor({ status: 'unverified' }, env, { write: false })).toEqual({ ptyId: 'pty-a' });
+    expect(senderPtyIdFor({ status: 'unverified' }, env, { write: true })).toHaveProperty('error');
+  });
+
+  it('with no pane env at all it is simply outside wmux', () => {
+    expect(senderPtyIdFor({ status: 'miss' }, {}, { write: true })).toEqual({ ptyId: '' });
+  });
+});
+
+describe('defaultMemberIdFor', () => {
+  it('drops an env member that belongs to another pane than the verified one', () => {
+    const hitB = { status: 'hit' as const, ptyId: 'pty-b', workspaceId: 'ws-b' };
+    expect(defaultMemberIdFor(hitB, { WMUX_PTY_ID: 'pty-a', WMUX_MEMBER_ID: 'pty-a' })).toBe('pty-b');
+    expect(defaultMemberIdFor(hitB, { WMUX_PTY_ID: 'pty-b', WMUX_MEMBER_ID: 'pty-b' })).toBe('pty-b');
+    expect(defaultMemberIdFor(hitB, {})).toBeUndefined();
   });
 });

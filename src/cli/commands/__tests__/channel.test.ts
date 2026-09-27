@@ -20,17 +20,18 @@ vi.mock('../../client', () => ({
   sendRequest: vi.fn(),
   sendDaemonRequest: vi.fn(),
 }));
-vi.mock('../../identity', () => ({
-  resolveSelfContext: vi.fn(),
+vi.mock('../../identity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../identity')>()),
+  resolvePaneIdentity: vi.fn(),
   getParentPidDefault: vi.fn(),
 }));
 
 import { sendDaemonRequest } from '../../client';
-import { resolveSelfContext } from '../../identity';
+import { resolvePaneIdentity } from '../../identity';
 import { handleChannel } from '../channel';
 
 const daemonRpc = sendDaemonRequest as unknown as ReturnType<typeof vi.fn>;
-const selfContext = resolveSelfContext as unknown as ReturnType<typeof vi.fn>;
+const selfContext = resolvePaneIdentity as unknown as ReturnType<typeof vi.fn>;
 
 const ORIGINAL_ENV_PTY = process.env.WMUX_PTY_ID;
 const ORIGINAL_ENV_MEMBER = process.env.WMUX_MEMBER_ID;
@@ -52,7 +53,7 @@ beforeEach(() => {
   if (ORIGINAL_ENV_MEMBER !== undefined) process.env.WMUX_MEMBER_ID = undefined as unknown as string;
   delete process.env.WMUX_PTY_ID;
   delete process.env.WMUX_MEMBER_ID;
-  selfContext.mockResolvedValue({ ptyId: 'pty-self', workspaceId: 'ws-self' });
+  selfContext.mockResolvedValue({ status: 'hit', ptyId: 'pty-self', workspaceId: 'ws-self' });
   vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
     throw new ExitCalled(code);
   }) as never);
@@ -74,7 +75,7 @@ describe('wmux channel — transport + identity', () => {
   });
 
   it('falls back to env WMUX_PTY_ID when the verified walk misses (headless)', async () => {
-    selfContext.mockResolvedValue({});
+    selfContext.mockResolvedValue({ status: 'unverified' });
     process.env.WMUX_PTY_ID = 'pty-env';
     daemonRpc.mockResolvedValue(okEnvelope({ ok: true, entries: [] }));
     await handleChannel('unread', [], false);
@@ -303,7 +304,7 @@ describe('wmux channel — transport + identity', () => {
 
 describe('wmux channel — failure surfaces', () => {
   it('a mutation with no resolvable pane identity fails closed BEFORE any RPC', async () => {
-    selfContext.mockResolvedValue({});
+    selfContext.mockResolvedValue({ status: 'unverified' });
     await expect(handleChannel('post', ['ch-1', 'hi'], false)).rejects.toThrow(ExitCalled);
     expect(daemonRpc).not.toHaveBeenCalled();
     expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')).toContain('not inside a wmux pane');
@@ -319,7 +320,7 @@ describe('wmux channel — failure surfaces', () => {
   });
 
   it('a reads-path call still works with NO pane identity (visibility falls to the daemon gate)', async () => {
-    selfContext.mockResolvedValue({});
+    selfContext.mockResolvedValue({ status: 'unverified' });
     daemonRpc.mockResolvedValue(
       okEnvelope({ ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } }),
     );
@@ -353,6 +354,55 @@ describe('wmux channel — failure surfaces', () => {
     expect(out).toContain('3 unread');
     expect(out).toContain('1 mention you');
     expect(out).toContain('WARNING: 4 message(s) trimmed');
+  });
+});
+
+describe('wmux channel — commands running outside their pane\'s process tree', () => {
+  it('miss + pane env: post is refused before any RPC, with the relaunch hint', async () => {
+    selfContext.mockResolvedValue({ status: 'miss' });
+    process.env.WMUX_PTY_ID = 'pty-a';
+    process.env.WMUX_MEMBER_ID = 'pty-a';
+    await expect(handleChannel('post', ['ch-1', 'hi'], false)).rejects.toThrow(ExitCalled);
+    expect(daemonRpc).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')).toContain('codex --no-daemon');
+  });
+
+  it('miss + pane env: reads are refused too (they would read as the other pane)', async () => {
+    selfContext.mockResolvedValue({ status: 'miss' });
+    process.env.WMUX_PTY_ID = 'pty-a';
+    await expect(handleChannel('unread', [], false)).rejects.toThrow(ExitCalled);
+    expect(daemonRpc).not.toHaveBeenCalled();
+  });
+
+  it('unavailable + pane env: refused with a retryable error', async () => {
+    selfContext.mockResolvedValue({ status: 'unavailable' });
+    process.env.WMUX_PTY_ID = 'pty-a';
+    await expect(handleChannel('post', ['ch-1', 'hi'], false)).rejects.toThrow(ExitCalled);
+    expect(daemonRpc).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')).toContain('retry');
+  });
+
+  it('unverified (main unreachable): writes refuse, reads keep the env pane', async () => {
+    selfContext.mockResolvedValue({ status: 'unverified' });
+    process.env.WMUX_PTY_ID = 'pty-env';
+    await expect(handleChannel('post', ['ch-1', 'hi'], false)).rejects.toThrow(ExitCalled);
+    expect(daemonRpc).not.toHaveBeenCalled();
+    daemonRpc.mockResolvedValue(okEnvelope({ ok: true, entries: [] }));
+    await handleChannel('unread', [], false);
+    expect(daemonRpc).toHaveBeenCalledWith('a2a.channel.unread', { senderPtyId: 'pty-env' });
+  });
+
+  it('a verified pane never posts under another pane\'s env member id', async () => {
+    selfContext.mockResolvedValue({ status: 'hit', ptyId: 'pty-b', workspaceId: 'ws-b' });
+    process.env.WMUX_PTY_ID = 'pty-a';
+    process.env.WMUX_MEMBER_ID = 'pty-a';
+    daemonRpc.mockResolvedValue(okEnvelope({ ok: true, channels: [], entries: [], message: { seq: 1 } }));
+    await handleChannel('post', ['ch-1', 'hi'], false);
+    const post = daemonRpc.mock.calls.find((c: unknown[]) => c[0] === 'a2a.channel.post')?.[1] as {
+      sender: { memberId: string }; senderPtyId: string;
+    };
+    expect(post.senderPtyId).toBe('pty-b');
+    expect(post.sender.memberId).toBe('pty-b');
   });
 });
 

@@ -19,17 +19,18 @@ vi.mock('../../client', () => ({
   sendRequest: vi.fn(),
   sendDaemonRequest: vi.fn(),
 }));
-vi.mock('../../identity', () => ({
-  resolveSelfContext: vi.fn(),
+vi.mock('../../identity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../identity')>()),
+  resolvePaneIdentity: vi.fn(),
   getParentPidDefault: vi.fn(),
 }));
 
 import { sendRequest } from '../../client';
-import { resolveSelfContext } from '../../identity';
+import { resolvePaneIdentity } from '../../identity';
 import { handleSystem } from '../system';
 
 const rpc = sendRequest as unknown as ReturnType<typeof vi.fn>;
-const selfContext = resolveSelfContext as unknown as ReturnType<typeof vi.fn>;
+const selfContext = resolvePaneIdentity as unknown as ReturnType<typeof vi.fn>;
 
 class ExitCalled extends Error {
   constructor(public readonly code: number | undefined) {
@@ -42,7 +43,7 @@ let errSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   vi.clearAllMocks();
   delete process.env.WMUX_PTY_ID;
-  selfContext.mockResolvedValue({ ptyId: 'pty-self', workspaceId: 'ws-self' });
+  selfContext.mockResolvedValue({ status: 'hit', ptyId: 'pty-self', workspaceId: 'ws-self' });
   rpc.mockResolvedValue({ ok: true, result: { ok: true } });
   vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
     throw new ExitCalled(code);
@@ -91,24 +92,20 @@ describe('set-status / set-progress carry a senderPtyId (#800)', () => {
     });
   });
 
-  it('falls back to WMUX_PTY_ID when the walk misses', async () => {
-    selfContext.mockResolvedValue({});
+  it('refuses to write as the env pane when main cannot verify it (unreachable / older main)', async () => {
+    selfContext.mockResolvedValue({ status: 'unverified' });
     process.env.WMUX_PTY_ID = 'pty-env';
-    await handleSystem('set-progress', ['7'], false);
-    expect(rpc).toHaveBeenCalledWith('meta.setProgress', {
-      value: 7,
-      senderPtyId: 'pty-env',
-    });
+    await expect(handleSystem('set-progress', ['7'], false)).rejects.toThrow(ExitCalled);
+    expect(rpc).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.flat().join(' ')).toMatch(/writes are refused/);
   });
 
-  it('survives a walk that throws (main pipe down) via the env hint', async () => {
-    selfContext.mockRejectedValue(new Error('pipe closed'));
+  it('refuses the env pane when main says the caller is outside every pane (setsid / tmux / shared server)', async () => {
+    selfContext.mockResolvedValue({ status: 'miss' });
     process.env.WMUX_PTY_ID = 'pty-env';
-    await handleSystem('set-status', ['headless'], false);
-    expect(rpc).toHaveBeenCalledWith('meta.setStatus', {
-      text: 'headless',
-      senderPtyId: 'pty-env',
-    });
+    await expect(handleSystem('set-status', ['x'], false)).rejects.toThrow(ExitCalled);
+    expect(rpc).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.flat().join(' ')).toMatch(/codex --no-daemon/);
   });
 
   it('accepts the --pane=<v> form instead of publishing it as the status', async () => {
@@ -170,7 +167,7 @@ describe('set-status / set-progress carry a senderPtyId (#800)', () => {
   });
 
   it('fails closed BEFORE any RPC when no identity resolves', async () => {
-    selfContext.mockResolvedValue({});
+    selfContext.mockResolvedValue({ status: 'unverified' });
     await expect(handleSystem('set-status', ['nope'], false)).rejects.toThrow(ExitCalled);
     expect(rpc).not.toHaveBeenCalled();
     expect(errSpy.mock.calls.flat().join(' ')).toMatch(/--pane <ptyId>/);

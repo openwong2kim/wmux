@@ -1,7 +1,7 @@
 import { sendRequest } from '../client';
 import { printResult, ensureOk, parseFlag } from '../utils';
 import type { RpcResponse } from '../../shared/rpc';
-import { ENV_KEYS } from '../../shared/constants';
+import { getParentPidDefault, resolveSelfContext } from '../identity';
 
 interface WorkspaceInfo {
   id: string;
@@ -59,8 +59,18 @@ export async function handleWorkspace(
       // The pane hint lets main stamp the new workspace as a fan-out task when
       // this shell is one (depth-1 lineage inheritance). Only a hint — main
       // uses it for nothing that could widen what the caller may do.
-      const senderPtyId = process.env[ENV_KEYS.PTY_ID]?.trim();
-      response = await sendRequest('workspace.new', { name, ...(senderPtyId ? { senderPtyId } : {}) });
+      // The hint is taken from the verified walk only: an inherited pane env
+      // could stamp another pane's task lineage onto the new workspace.
+      const { ptyId: senderPtyId } = await resolveSelfContext({
+        sendRequest,
+        env: process.env,
+        ppid: process.ppid,
+        getParentPid: getParentPidDefault,
+      });
+      response = await sendRequest('workspace.new', {
+        name,
+        ...(senderPtyId ? { senderPtyId, callerPid: process.pid } : {}),
+      });
       if (jsonMode) {
         printResult(response);
       } else {

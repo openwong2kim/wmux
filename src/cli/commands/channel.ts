@@ -13,19 +13,26 @@
 // `verifiedWorkspaceId` server-side from its OWN session record
 // (channelCallerIdentity.ts) — the CLI never claims a workspace.
 //
-// senderPtyId resolution ladder:
-//   1. verified PID-map walk via the MAIN pipe (resolveSelfContext, X4) —
-//      strongest, but needs the GUI alive;
-//   2. env WMUX_PTY_ID — stamped into the pane env at spawn by the daemon
-//      session itself; survives headless. Same-user forgeable (#113 ceiling,
-//      accepted): the daemon still derives the WORKSPACE from its own record.
-// Outside a wmux pane both fail → mutations fail closed (NOT_AUTHORIZED).
+// senderPtyId resolution (identity.ts senderPtyIdFor):
+//   1. verified walk via the MAIN pipe (resolvePaneIdentity, which sends our
+//      pid so main walks our real ancestry) — the only source for writes;
+//   2. env WMUX_PTY_ID — only when main cannot answer at all (unreachable or
+//      older than this CLI), and only for reads. When main says we are NOT
+//      under a pane, or cannot check, the env is refused: a command running
+//      under a shared background server (or tmux / setsid) inherits another
+//      pane's env and would otherwise act as that pane.
+// Outside a wmux pane there is no identity → mutations fail closed.
 
 import { sendRequest, sendDaemonRequest } from '../client';
 import { parseFlag } from '../utils';
-import { resolveSelfContext, getParentPidDefault } from '../identity';
+import {
+  defaultMemberIdFor,
+  getParentPidDefault,
+  resolvePaneIdentity,
+  senderPtyIdFor,
+  type PaneIdentity,
+} from '../identity';
 import type { RpcMethod, RpcResponse } from '../../shared/rpc';
-import { ENV_KEYS } from '../../shared/constants';
 
 export const CHANNEL_HELP = `
 wmux channel — durable agent messaging (Channels v2)
@@ -68,21 +75,32 @@ interface ChannelCallOpts {
   mutating: boolean;
 }
 
-/** senderPtyId ladder: verified walk (main pipe) → pane env → ''. */
-async function resolveSenderPtyId(): Promise<string> {
-  try {
-    const ctx = await resolveSelfContext({
-      sendRequest,
-      env: process.env,
-      ppid: process.ppid,
-      getParentPid: getParentPidDefault,
-    });
-    if (ctx.ptyId) return ctx.ptyId;
-  } catch {
-    // main pipe down (headless) — fall through to the env hint
+// One identity resolution per command: a subcommand makes several RPCs and
+// each would otherwise repeat the main round-trip and process-table read.
+let identityOnce: Promise<PaneIdentity> | null = null;
+function channelIdentity(): Promise<PaneIdentity> {
+  identityOnce ??= resolvePaneIdentity({
+    sendRequest,
+    env: process.env,
+    ppid: process.ppid,
+    getParentPid: getParentPidDefault,
+  });
+  return identityOnce;
+}
+
+/** This caller's senderPtyId ('' outside a pane); exits when it may not act as one. */
+async function resolveSenderPtyId(mutating: boolean): Promise<string> {
+  const r = senderPtyIdFor(await channelIdentity(), process.env, { write: mutating });
+  if ('error' in r) {
+    console.error(`Error: ${r.error}`);
+    process.exit(1);
   }
-  const envPty = process.env[ENV_KEYS.PTY_ID];
-  return typeof envPty === 'string' && envPty.trim().length > 0 ? envPty.trim() : '';
+  return r.ptyId;
+}
+
+/** Member id default: $WMUX_MEMBER_ID only when it belongs to the verified pane. */
+async function defaultMemberId(): Promise<string | undefined> {
+  return defaultMemberIdFor(await channelIdentity(), process.env);
 }
 
 function exitNoPaneIdentity(): never {
@@ -95,7 +113,7 @@ function exitNoPaneIdentity(): never {
 
 /** Mutations fail closed BEFORE any RPC (including helper lookups). */
 async function requirePaneIdentityOrExit(): Promise<void> {
-  if (!(await resolveSenderPtyId())) exitNoPaneIdentity();
+  if (!(await resolveSenderPtyId(true))) exitNoPaneIdentity();
 }
 
 /**
@@ -108,7 +126,7 @@ async function callChannel(
   params: Record<string, unknown>,
   opts: ChannelCallOpts,
 ): Promise<Record<string, unknown>> {
-  const senderPtyId = await resolveSenderPtyId();
+  const senderPtyId = await resolveSenderPtyId(opts.mutating);
   if (!senderPtyId && opts.mutating) exitNoPaneIdentity();
   let response: RpcResponse;
   try {
@@ -158,8 +176,8 @@ async function resolveChannelId(ref: string): Promise<string> {
   process.exit(1);
 }
 
-function memberIdFrom(args: string[]): string {
-  return parseFlag(args, '--member') ?? process.env['WMUX_MEMBER_ID'] ?? 'agent';
+async function memberIdFrom(args: string[]): Promise<string> {
+  return parseFlag(args, '--member') ?? (await defaultMemberId()) ?? 'agent';
 }
 
 /**
@@ -170,8 +188,8 @@ function memberIdFrom(args: string[]): string {
  * carry $WMUX_MEMBER_ID (the pane's ptyId, stamped at spawn); outside a
  * wmux pane the caller must say who they are.
  */
-function requiredMemberIdFrom(args: string[]): string {
-  const id = parseFlag(args, '--member') ?? process.env['WMUX_MEMBER_ID'];
+async function requiredMemberIdFrom(args: string[]): Promise<string> {
+  const id = parseFlag(args, '--member') ?? (await defaultMemberId());
   if (id !== undefined && id.length > 0) return id;
   console.error(
     'Error: no member id. Pass --member <id> (or run inside a wmux pane, where $WMUX_MEMBER_ID is stamped at spawn). Refusing the old "agent" default — shared ids made agents indistinguishable in the roster.',
@@ -190,7 +208,7 @@ function requiredMemberIdFrom(args: string[]): string {
  * choice is an error; zero rows returns undefined (let the daemon speak).
  */
 async function resolveOwnMemberId(channelId: string, args: string[]): Promise<string | undefined> {
-  const explicit = parseFlag(args, '--member') ?? process.env['WMUX_MEMBER_ID'];
+  const explicit = parseFlag(args, '--member') ?? (await defaultMemberId());
   if (explicit !== undefined && explicit.length > 0) return explicit;
   const result = await callChannel('a2a.channel.unread' as RpcMethod, {}, { mutating: false });
   const entries = (result['entries'] as Array<{ channelId: string; memberId: string }> | undefined) ?? [];
@@ -213,7 +231,8 @@ async function quietOwnMemberRows(
   channelId: string,
 ): Promise<Array<{ memberId: string; lastReadSeq: number }>> {
   try {
-    const senderPtyId = await resolveSenderPtyId();
+    const r = senderPtyIdFor(await channelIdentity(), process.env, { write: false });
+    const senderPtyId = 'ptyId' in r ? r.ptyId : '';
     const response = await sendDaemonRequest('a2a.channel.unread' as RpcMethod, {
       ...(senderPtyId ? { senderPtyId } : {}),
     });
@@ -259,6 +278,7 @@ const fmtMsg = (m: { seq?: number; memberName?: string; memberId?: string; text?
   `[seq ${m.seq}] ${m.memberName ?? m.memberId ?? '?'}: ${m.text ?? ''}`;
 
 export async function handleChannel(sub: string | undefined, args: string[], jsonMode: boolean): Promise<void> {
+  identityOnce = null;
   // A bare `--` ends option parsing: everything after it is verbatim
   // positional payload — post bodies often contain flag-like tokens
   // (`wmux channel post dev -- try --limit 5`), and the pair-aware stripper
@@ -411,7 +431,7 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
       // misattribute the message in the roster AND defeat the self-unread
       // exemption (your own post would nudge you). Zero rows falls back to
       // the legacy default and lets the daemon's NOT_A_MEMBER speak.
-      const memberId = (await resolveOwnMemberId(channelId, args)) ?? memberIdFrom(args);
+      const memberId = (await resolveOwnMemberId(channelId, args)) ?? (await memberIdFrom(args));
       const memberName = parseFlag(args, '--name') ?? memberId;
       const result = await callChannel(
         'a2a.channel.post' as RpcMethod,
@@ -494,7 +514,7 @@ export async function handleChannel(sub: string | undefined, args: string[], jso
         process.exit(1);
       }
       const channelId = await resolveChannelId(ref);
-      const memberId = requiredMemberIdFrom(args);
+      const memberId = await requiredMemberIdFrom(args);
       const memberName = parseFlag(args, '--name') ?? memberId;
       const result = await callChannel(
         'a2a.channel.join' as RpcMethod,
