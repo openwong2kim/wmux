@@ -453,7 +453,7 @@ no empty reply row or reserved gap under the latest prompt.
   origin's surface id (else its pane id), never the pty id. Folding the
   roster folds its pane groups, so the roster holds open while one of its
   tasks is the active workspace, re-opens when one of them starts needing
-  you, and its collapsed summary adds a muted `⑂ N`. Pane rows keep layout
+  you (and does not fold when its owner moves to the background then), and its collapsed summary adds a muted `⑂ N`. Pane rows keep layout
   order; a task that needs you lifts its owner in the Attention order. A group is open
   while its owner is active or one of its tasks needs you, otherwise folded; a
   user toggle is remembered, and a group always opens while one of its own

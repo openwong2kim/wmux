@@ -413,8 +413,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // Newly selected workspaces reveal their agents automatically; workspaces
   // that move to the background collapse back to the count. The user can still
   // explicitly toggle either state until selection changes again.
+  // A row whose nested task needs you stays open when it moves to the
+  // background: folding it there would hide the one row asking for you.
+  const paneTaskNeedsYouRef = useRef(paneTaskNeedsYou);
+  paneTaskNeedsYouRef.current = paneTaskNeedsYou;
   useEffect(() => {
-    setRosterOpen(isActive);
+    setRosterOpen(isActive || paneTaskNeedsYouRef.current);
   }, [isActive]);
 
   // #977 — a pane that was just stashed disappeared from the layout. If the

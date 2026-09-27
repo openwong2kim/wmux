@@ -192,6 +192,16 @@ describe('fan-out tasks under the requesting pane', () => {
     expect(group('pane:w1:s1')!.querySelector('[data-pane-task-toggle]')!.getAttribute('data-pane-task-needs-you')).toBeNull();
   });
 
+  it('keeps the roster open when its owner moves to the background while a task needs you', () => {
+    seed({ status: { t3: 'awaiting_input' } });
+    act(() => root.render(<Sidebar />));
+    expect(namesIn(group('pane:w1:s2'))).toEqual(['beta']);
+    act(() => { useStore.getState().setActiveWorkspace('bee'); });
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(group('pane:w1:s2')).not.toBeNull();
+    expect(namesIn(group('pane:w1:s2'))).toEqual(['beta']);
+  });
+
   it('a nested task row selects the task, never the owner row it sits in', () => {
     seed();
     act(() => root.render(<Sidebar />));

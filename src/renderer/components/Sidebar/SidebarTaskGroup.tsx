@@ -369,7 +369,8 @@ function SidebarTaskGroup({ groupKey, foldKey, taskIds, ownerActive, label, owne
       <div className="mx-2 flex h-6 items-center gap-1 pl-[22px] pr-1 text-[11px] text-[var(--text-muted)]" data-task-rollup>
         <button
           type="button"
-          className={`flex min-w-0 ${toReview > 0 ? 'flex-initial' : 'flex-1'} items-center gap-1.5 self-stretch rounded px-1 text-left hover:text-[var(--text-sub)] ${FOCUS_RING}`}
+          // A labelled group keeps its name whole; the review link truncates.
+          className={`flex min-w-0 ${label && toReview > 0 ? 'flex-none' : toReview > 0 ? 'flex-initial' : 'flex-1'} items-center gap-1.5 self-stretch rounded px-1 text-left hover:text-[var(--text-sub)] ${FOCUS_RING}`}
           aria-expanded={expanded}
           aria-controls={expanded ? listId : undefined}
           aria-label={toggleLabel}
@@ -380,8 +381,10 @@ function SidebarTaskGroup({ groupKey, foldKey, taskIds, ownerActive, label, owne
             <IconChevron size={8} />
           </span>
           <span className="flex-none" aria-hidden="true"><IconFanOut size={10} /></span>
+          {/* The group's name keeps its width; the counts truncate first. */}
+          {label && <span className="flex-none whitespace-nowrap">{`${label} ·`}</span>}
           <span className="min-w-0 truncate">
-            {label ? `${label} · ` : ''}{rollupText}
+            {rollupText}
             {anyNeedsYou && (
               <>
                 {' · '}
@@ -400,7 +403,7 @@ function SidebarTaskGroup({ groupKey, foldKey, taskIds, ownerActive, label, owne
             <span className="flex-none" aria-hidden="true">·</span>
             <button
               type="button"
-              className={`flex-none self-stretch truncate rounded px-1 hover:text-[var(--accent-blue)] ${FOCUS_RING}`}
+              className={`min-w-0 flex-initial self-stretch truncate rounded px-1 hover:text-[var(--accent-blue)] ${FOCUS_RING}`}
               aria-label={t('sidebar.tasks.toReviewLabel', { count: toReview })}
               title={t('sidebar.tasks.toReviewLabel', { count: toReview })}
               onClick={openReview}
@@ -520,7 +523,10 @@ function PaneTaskGroupInner({ ownerId, surfaceId, paneName, taskIds, ownerActive
           label={t('sidebar.tasks.paneGroupLabel', { pane: paneName })}
           taskIds={taskIds}
           renderTask={renderTask}
-          className="ml-[9px] mt-0.5 space-y-1 border-l border-[var(--border-soft)]"
+          // The nested rows sit three indents deep inside the owner row: they
+          // drop their own side margins and run to the owner row's right edge
+          // so the task name keeps the width it needs.
+          className="-mr-2 ml-[9px] mt-0.5 space-y-1 border-l border-[var(--border-soft)] [&>div>div]:ml-1 [&>div>div]:mr-0"
         />
       )}
     </div>
