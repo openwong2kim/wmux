@@ -22,7 +22,7 @@ import {
   looksLikeChoiceOnScreen,
 } from '../approvalKeystrokes';
 import { MAX_OPTIONS, MAX_OPTION_LABEL_CHARS, MAX_QUESTION_CHARS } from '../askUserQuestion';
-import type { ApprovalEvent } from '../types';
+import type { ApprovalEvent, ApprovalResolveResult } from '../types';
 import { GateBroker } from '../GateBroker';
 
 let tmpDir: string;
@@ -377,6 +377,13 @@ describe('ApprovalRegistry — no proof of the own dialog, no bytes', () => {
     expect(await busy.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' }))
       .toMatchObject({ ok: false, reason: 'prompt-changed' });
     expect(busy.writes).toEqual([]);
+  });
+
+  it('an answer-in-terminal refusal cannot be built without naming its cause', () => {
+    // Checked by tsc over this file: `answerRefusal` is required on the variant.
+    // @ts-expect-error — no answerRefusal
+    const missing: ApprovalResolveResult = { ok: false, reason: 'answer-in-terminal' };
+    expect(missing.ok).toBe(false);
   });
 
   it('a registry with no marked screen read cannot prove anything, so it never presses', async () => {

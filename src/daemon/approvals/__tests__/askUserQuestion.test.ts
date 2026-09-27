@@ -102,9 +102,16 @@ describe('extractAskUserQuestion — normal extraction', () => {
     expect(extractAskUserQuestion({ tool_input: { question: 'Which?', multiSelect: true, options: ['A'] } }).questionShape)
       .toBe('multi-select');
     expect(extractAskUserQuestion(canonical())).not.toHaveProperty('questionShape');
-    // A truthy non-boolean is not a multi-select: the closed shape is exact.
-    expect(extractAskUserQuestion({ tool_input: { questions: [{ question: 'Q', multiSelect: 'yes', options: ['A'] }] } }))
-      .not.toHaveProperty('questionShape');
+    // A non-boolean multiSelect fails closed to multi-select; only absent,
+    // null or a literal false reads as single-select.
+    for (const multiSelect of ['yes', 'false', 1, {}]) {
+      expect(extractAskUserQuestion({ tool_input: { questions: [{ question: 'Q', multiSelect, options: ['A'] }] } }).questionShape)
+        .toBe('multi-select');
+    }
+    for (const multiSelect of [false, null, undefined]) {
+      expect(extractAskUserQuestion({ tool_input: { questions: [{ question: 'Q', multiSelect, options: ['A'] }] } }))
+        .not.toHaveProperty('questionShape');
+    }
   });
 
   it('keeps a question with no options, and options with no question', () => {

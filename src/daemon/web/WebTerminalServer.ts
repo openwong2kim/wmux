@@ -6133,7 +6133,7 @@ export class WebTerminalServer {
             case 'answer-in-terminal':
               return this.json(res, 501, {
                 error: 'answer-in-terminal',
-                reason: result.answerRefusal ?? 'no-capability',
+                reason: result.answerRefusal,
               });
             // A multi-select or multi-question AskUserQuestion: one key cannot
             // answer it, so nothing was typed. Same `error` a v1 client already

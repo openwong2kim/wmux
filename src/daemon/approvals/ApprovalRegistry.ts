@@ -1223,9 +1223,13 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           `fp=${(record.promptFingerprint ?? '').slice(0, 8) || '-'}`,
       );
     };
-    const refuse = (reason: ApprovalResolveFailure): ApprovalResolveResult => {
+    const refuse = (reason: Exclude<ApprovalResolveFailure, 'answer-in-terminal'>): ApprovalResolveResult => {
       audit(reason);
       return { ok: false, reason, request: copyRequest(record) };
+    };
+    const answerInTerminal = (answerRefusal: AnswerRefusalReason): ApprovalResolveResult => {
+      audit('answer-in-terminal');
+      return { ok: false, reason: 'answer-in-terminal', answerRefusal, request: copyRequest(record) };
     };
 
     if (record.state !== 'pending') {
@@ -1243,10 +1247,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       (params.resolver ?? 'human') !== 'human'
       || params.terminalPromptAnswer !== TERMINAL_PROMPT_WEB_ANSWER
     ) {
-      return { ...refuse('answer-in-terminal'), answerRefusal: 'no-capability' } as ApprovalResolveResult;
+      return answerInTerminal('no-capability');
     }
     if (!record.promptFingerprint || !record.choices?.length) {
-      return { ...refuse('answer-in-terminal'), answerRefusal: 'unsupported-shape' } as ApprovalResolveResult;
+      return answerInTerminal('unsupported-shape');
     }
     if (!choice || !params.promptFingerprint) return refuse('invalid-choice');
     const expected = decisionForChoiceLabel(choice.label);

@@ -4347,7 +4347,6 @@ describe('WebTerminalServer', () => {
     });
 
     it.each([
-      ['answer-in-terminal', 501],
       ['already-answered', 409],
       ['prompt-changed', 409],
       ['answer-too-soon', 425],
@@ -4358,9 +4357,7 @@ describe('WebTerminalServer', () => {
       approvalBox.result = { ok: false, reason, request: tp() };
       const res = await postTp(info.token as string, answerBody);
       expect(res.status).toBe(status);
-      // A 501 names its cause; a registry refusal without one reads as the
-      // caller-side cause.
-      expect(await res.json()).toEqual(status === 501 ? { error: reason, reason: 'no-capability' } : { error: reason });
+      expect(await res.json()).toEqual({ error: reason });
     });
 
     it('a registry answer-in-terminal carries its cause as the 501 reason', async () => {

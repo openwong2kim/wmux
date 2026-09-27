@@ -296,8 +296,9 @@ export type ApprovalResolveFailure =
  * the computer". Closed set, documented in docs/phone-client-contract.md.
  *   no-capability      the caller cannot answer this kind remotely (no
  *                      capability header, or an automated resolver)
- *   unsupported-shape  the dialog was not bound and parsed whole
- *   screen-unreadable  reserved — no 501 path emits it yet
+ *   unsupported-shape  the dialog was not bound and parsed whole, or a
+ *                      question record has nothing to identify it by
+ *   screen-unreadable  the pane cannot be read together with its state
  *   secret-input       reserved — no 501 path emits it yet
  *   needs-v2           answerable only by the stepwise v2 answer path
  *   unsupported-agent  no keystroke map for this agent
@@ -333,7 +334,7 @@ export type ApprovalResolveResult =
     }
   | {
       ok: false;
-      reason: ApprovalResolveFailure;
+      reason: Exclude<ApprovalResolveFailure, 'answer-in-terminal'>;
       /**
        * Present ONLY with `reason: 'out-of-scope'` — the concrete condition
        * `decideApprovalPress` refused on (`press-capability-off`,
@@ -347,16 +348,23 @@ export type ApprovalResolveResult =
        * that ignores this field behaves exactly as before.
        */
       pressRefusal?: ApprovalPressRefusal;
-      /**
-       * Present ONLY with `reason: 'answer-in-terminal'` — which of its two
-       * causes refused (`no-capability` or `unsupported-shape`). The web layer
-       * sends it as the 501's `reason`. Additive, like `pressRefusal`.
-       */
-      answerRefusal?: AnswerRefusalReason;
       /** Present on 'already-resolved' — the 409 UX names who got there first. */
       resolvedBy?: string;
       /** Absent only for 'not-found'. */
       request?: ApprovalRequest;
+    }
+  | {
+      ok: false;
+      reason: 'answer-in-terminal';
+      /**
+       * REQUIRED: why the phone cannot answer. The web layer sends it as the
+       * 501's `reason`; a refusal that cannot name its cause does not compile.
+       */
+      answerRefusal: AnswerRefusalReason;
+      request?: ApprovalRequest;
+      /** Never set on this variant; declared so callers can read it off any refusal. */
+      pressRefusal?: undefined;
+      resolvedBy?: undefined;
     };
 
 /** `press`: a remote answer to a `terminal_prompt` was written; still pending. */

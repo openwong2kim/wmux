@@ -109,7 +109,12 @@ export function extractAskUserQuestion(payload: unknown): ExtractedQuestion {
   // Judged on the WHOLE payload, not only the question surfaced below: a
   // second question is exactly what the single press cannot reach.
   if (questions && questions.length > 1) out.questionShape = 'multi-question';
-  else if (source['multiSelect'] === true) out.questionShape = 'multi-select';
+  // Fail closed: anything but an absent or literal-false multiSelect (a string
+  // "true", a 1, a future object) is treated as multi-select, which refuses a
+  // one-key approve rather than pressing a digit that might only toggle.
+  else if (source['multiSelect'] !== undefined && source['multiSelect'] !== null && source['multiSelect'] !== false) {
+    out.questionShape = 'multi-select';
+  }
   const question = clean(readString(source, 'question'), MAX_QUESTION_CHARS);
   if (question) out.question = question;
 

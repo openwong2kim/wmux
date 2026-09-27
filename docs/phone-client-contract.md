@@ -1092,10 +1092,12 @@ there before writing.
 | 200 | `{state, durable}` | Answered. `durable: false` means the keystroke landed but the record did not survive — the answer is real, the history will not show it. Do **not** retry |
 | 400 | `{error: 'invalid-choice-key'}` | A supplied choice key is malformed or was attached to `deny`. Nothing is sent |
 | 409 | `{error: 'already-resolved', resolvedBy}` | Another surface won. `resolvedBy` names it (`operator`, or `device <name> (<id>)`) |
-| 410 | `{error: 'expired' \| 'prompt-gone', state?}` | The request outlived its usefulness, or the prompt left the screen. Stop showing it |
+| 409 | `{error: 'prompt-changed'}` | The question is on screen but its options do not all read back, or the pane took a key, a click or a new PTY between the daemon's screen read and its write (or kept drawing through two reads). Nothing typed; still pending — ask again |
+| 410 | `{error: 'expired' \| 'prompt-gone', state?}` | The request outlived its usefulness, or its question left the screen (including a different dialog in its place). Stop showing it |
 | 422 | `{error: 'invalid-choice-key'}` | The `choiceKey` does not belong to this request's choices, or the option is not visible on screen. The request is still pending — retry with a valid key or omit `choiceKey` |
 | 501 | `{error: 'unsupported-agent', reason: 'unsupported-agent'}` | No keystroke map for this agent. Still answerable at the desktop — do not expire it locally |
 | 501 | `{error: 'answer-in-terminal', reason: 'needs-v2'}` | A multi-select or multi-question `AskUserQuestion`: one key cannot answer it, so nothing was typed. Still pending — answer it at the desktop, or deny |
+| 501 | `{error: 'answer-in-terminal', reason: 'unsupported-shape' \| 'screen-unreadable'}` | The request carries no question text or no choices, so its dialog cannot be identified on screen (`unsupported-shape`), or the daemon cannot read the pane together with its state (`screen-unreadable`). Nothing typed; still pending — answer it at the desktop |
 | 404 | `{error: 'not-found'}` | No such request |
 
 #### The 501 `reason`
@@ -1107,15 +1109,24 @@ ignores `reason` behaves exactly as before; one that reads it can say why.
 | `reason` | Emitted when |
 | --- | --- |
 | `no-capability` | The caller cannot answer this kind remotely: no `terminal-prompt-answer` capability header, or an automated resolver |
-| `unsupported-shape` | The dialog was not bound and parsed whole (no fingerprint or choices) |
+| `unsupported-shape` | The dialog was not bound and parsed whole (no fingerprint or choices), or an `AskUserQuestion` request carries no question text or choices to identify it by |
 | `needs-v2` | The prompt needs more than one keystroke (multi-select, several questions) |
 | `unsupported-agent` | No keystroke map for this agent |
-| `screen-unreadable` | Reserved — no route emits it yet |
+| `screen-unreadable` | The daemon cannot read the pane together with its state, so it cannot prove where a key would land |
 | `secret-input` | Reserved — no route emits it yet |
 
 Treat an unknown `reason` like a missing one: the set may grow.
 
-Only the Claude Code family (`claude`, `openclaude`) is mapped today. Approve sends `1` (the first offered option),
+Only the Claude Code family (`claude`, `openclaude`) is mapped today.
+
+**Every key is proven first — approve, `choiceKey` and deny alike.** Before
+writing, the daemon reads the pane and requires the request's OWN dialog: the
+question row, each option row in key order, and Claude's `Type something` row
+below them. It reads the pane's state (output, key input, PTY) at that moment
+and checks it again, synchronously, right before the write. A request whose
+question has gone (Esc sends no hook, so a card can outlive its question) is
+never pressed into whatever dialog came next: it answers 410 and expires.
+Anything short of the proof answers 409 or 501 and types nothing. Approve sends `1` (the first offered option),
 deny sends ESC. Neither is followed by a carriage return: on a select, the digit
 both moves and confirms, and a stray CR would press whatever the TUI renders
 next.
