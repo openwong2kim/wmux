@@ -5,6 +5,7 @@ import path from 'node:path';
 import WebSocket,{WebSocketServer,type RawData} from 'ws';
 import {CodexTuiSelectionTracker} from './codexTuiSelection';
 import {connectCodexSettings} from './codexSettingsTransport';
+import {needsThreadIdentity,rewriteThreadFrame} from './codexThreadIdentity';
 
 export class CodexRelayUnavailableError extends Error {
   constructor() {super('Codex account server is not ready');}
@@ -14,10 +15,25 @@ export class CodexRelayUnavailableError extends Error {
 // Keep transport bounds separate from the much smaller Chat display budget.
 const MAX_FRAME = 16 * 1024 * 1024;
 const MAX_BUFFER = 32 * 1024 * 1024;
+/** How long a thread request waits for the pane to be committed to this relay. */
+const IDENTITY_WAIT_MS = 3000;
+const IDENTITY_POLL_MS = 50;
+
+/**
+ * Pane identity injection (codexThreadIdentity.ts). `identity` returns the
+ * pane's identity from the daemon's session record, or undefined while the
+ * relay has no owner. A thread request that cannot carry identity is answered
+ * with an error and never forwarded.
+ */
+export interface CodexRelayThreadIdentity {
+  identity: () => Record<string,string> | undefined;
+  mcp: () => boolean;
+  refused?: (reason:string) => void;
+}
 
 /** A single-use endpoint for a daemon-owned TUI. It never starts/stops Codex's
  * account server; the pane lifecycle owns and must close this relay. */
-export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMethod?:(method:string)=>void; onStateChange?:()=>void}) {
+export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMethod?:(method:string)=>void; onStateChange?:()=>void; threadIdentity?:CodexRelayThreadIdentity}) {
   const codeHome = options.codeHome ?? path.join(os.homedir(),'.codex');
   if (!path.isAbsolute(codeHome) || codeHome.includes('\0') || codeHome.includes(':')) throw new Error('Invalid Codex account scope');
   const upstreamPath = path.join(codeHome,'app-server-control','app-server-control.sock');
@@ -92,8 +108,13 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       for(const bytes of queued)send(upstream,bytes);
       queued.length = 0;queuedBytes = 0;
     });
-    client.on('message',(raw,binary)=>{
-      const frame = decode(raw,binary);if(!frame)return;
+    const forward = (bytes:Buffer) => {
+      if(upstream.readyState === WebSocket.OPEN)send(upstream,bytes);
+      else if(queued.length < 64 && queuedBytes + bytes.length <= MAX_BUFFER) {
+        queued.push(bytes);queuedBytes += bytes.length;
+      } else retire();
+    };
+    const handleClient = (frame:{bytes:Buffer;message:unknown}) => {
       const before = JSON.stringify(tracker.current());
       tracker.fromTui(frame.message);
       if (before !== JSON.stringify(tracker.current())) {
@@ -102,10 +123,37 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       if (frame.message && typeof frame.message === 'object' && 'method' in frame.message && typeof frame.message.method === 'string') {
         try {options.onRequestMethod?.(frame.message.method);} catch {retire();return;}
       }
-      if(upstream.readyState === WebSocket.OPEN)send(upstream,frame.bytes);
-      else if(queued.length < 64 && queuedBytes + frame.bytes.length <= MAX_BUFFER) {
-        queued.push(frame.bytes);queuedBytes += frame.bytes.length;
-      } else retire();
+      forward(frame.bytes);
+    };
+    const refuse = (message:unknown, reason:string) => {
+      const id = (message as {id?:unknown}).id;
+      try {options.threadIdentity?.refused?.(reason);} catch {/* A notice cannot change the refusal. */}
+      if (typeof id === 'string' || typeof id === 'number') {
+        send(client,Buffer.from(JSON.stringify({id,error:{code:-32603,message:`wmux: ${reason}; the thread was not started`}})));
+      }
+    };
+    const withIdentity = async (frame:{bytes:Buffer;message:unknown}):Promise<void> => {
+      const inject = options.threadIdentity;
+      if (!inject || !needsThreadIdentity(frame.message)) { handleClient(frame);return; }
+      let identity = inject.identity();
+      for (let waited = 0; !identity && waited < IDENTITY_WAIT_MS && !retired; waited += IDENTITY_POLL_MS) {
+        await new Promise(resolve=>setTimeout(resolve,IDENTITY_POLL_MS));
+        identity = inject.identity();
+      }
+      if (retired) return;
+      const result = rewriteThreadFrame(frame.message,identity,{mcp:inject.mcp()});
+      if (result.kind === 'refuse') { refuse(frame.message,result.reason);return; }
+      if (result.kind === 'pass') { handleClient(frame);return; }
+      const bytes = Buffer.from(JSON.stringify(result.message));
+      if (bytes.length > MAX_FRAME) { refuse(frame.message,'thread request too large');return; }
+      handleClient({bytes,message:result.message});
+    };
+    // Client frames are handled strictly in order: a thread request that waits
+    // for the pane's identity holds back everything the TUI sends after it.
+    let clientChain:Promise<void> = Promise.resolve();
+    client.on('message',(raw,binary)=>{
+      const frame = decode(raw,binary);if(!frame)return;
+      clientChain = clientChain.then(()=>withIdentity(frame)).catch(()=>retire());
     });
     upstream.on('message',(raw,binary)=>{
       const frame = decode(raw,binary);if(!frame)return;

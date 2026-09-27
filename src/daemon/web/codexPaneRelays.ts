@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import type {ManagedSession} from '../DaemonSessionManager';
 import {createCodexTuiRelay} from './codexTuiRelay';
 import type {CodexRelayObservation} from './codexTuiSelection';
+import {createWmuxMcpProbe,threadIdentityEnv} from './codexThreadIdentity';
 
 type Relay = Awaited<ReturnType<typeof createCodexTuiRelay>>;
 interface Entry {id:string; relayId:string; relay?:Relay; owner?:ManagedSession; retired:boolean}
@@ -18,7 +19,9 @@ export class CodexPaneRelays {
     private readonly stateChanged:(id:string,owner:ManagedSession)=>void = ()=> { /* noop */ },
     /** Before every relay (and so every wmux Codex launch): make sure the shared
      * account server runs, started with no WMUX_* variable. Must not throw. */
-    private readonly ensureRuntime:(id:string,codeHome?:string)=>Promise<void> = async()=> { /* noop */ }) {}
+    private readonly ensureRuntime:(id:string,codeHome?:string)=>Promise<void> = async()=> { /* noop */ },
+    /** A Codex thread request in pane `id` was refused because it could not carry pane identity. */
+    private readonly identityRefused:(id:string,reason:string)=>void = ()=> { /* noop */ }) {}
 
   async prepare(id:string, codeHome?:string) {
     if (this.stopped || this.entries.has(id) || this.entries.size >= 256 || this.creating.size >= 256) throw new Error('Codex pane relay unavailable');
@@ -29,6 +32,12 @@ export class CodexPaneRelays {
     try {
       creation = this.create({codeHome,onStateChange:()=>{
         if (!entry.retired && this.entries.get(id) === entry && entry.owner) this.stateChanged(id,entry.owner);
+      },threadIdentity:{
+        // Only the committed owner's own session record; never a client value.
+        identity:()=>!entry.retired && this.entries.get(id) === entry && entry.owner && entry.owner.meta.id === id
+          ? threadIdentityEnv({id,env:entry.owner.meta.env}) : undefined,
+        mcp:createWmuxMcpProbe(codeHome),
+        refused:(reason)=>this.identityRefused(id,reason),
       }});
       this.creating.add(creation);
       const relay = await creation;

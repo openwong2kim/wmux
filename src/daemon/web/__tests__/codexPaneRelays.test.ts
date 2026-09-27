@@ -1,6 +1,7 @@
 import {describe,it,expect,vi} from 'vitest';
 import type {ManagedSession} from '../../DaemonSessionManager';
 import {CodexPaneRelays} from '../codexPaneRelays';
+import type {createCodexTuiRelay} from '../codexTuiRelay';
 const owner=(id='pane')=>({meta:{id,state:'attached'}} as ManagedSession);
 function relay() {
   const state = {retired:false,selected:true};
@@ -124,5 +125,23 @@ describe('Codex pane relay runtime start',()=>{
     await registry.prepare('pane','/h/.codex');
     expect(order).toEqual(['runtime:pane:/h/.codex','create']);
     await registry.shutdown();
+  });
+});
+describe('Codex pane relay thread identity',()=>{
+  it('serves identity only from the committed owner\'s session record, and none after retirement',async()=>{
+    let options:Parameters<typeof createCodexTuiRelay>[0] | undefined;
+    const connection=relay();
+    const refused=vi.fn();
+    const registry=new CodexPaneRelays((async(o:Parameters<typeof createCodexTuiRelay>[0])=>{options=o;return connection;}) as unknown as typeof createCodexTuiRelay,undefined,undefined,undefined,refused);
+    const lease=await registry.prepare('pane');
+    const identity=options!.threadIdentity!;
+    expect(identity.identity()).toBeUndefined();
+    const pane={meta:{id:'pane',state:'attached',env:{WMUX_WORKSPACE_ID:'ws-1',WMUX_PTY_ID:'forged'}}} as unknown as ManagedSession;
+    lease.commit(pane);
+    expect(identity.identity()).toMatchObject({WMUX_PTY_ID:'pane',WMUX_WORKSPACE_ID:'ws-1',WMUX_MEMBER_ID:'pane'});
+    identity.refused?.('malformed');
+    expect(refused).toHaveBeenCalledWith('pane','malformed');
+    await registry.retire('pane');
+    expect(identity.identity()).toBeUndefined();
   });
 });

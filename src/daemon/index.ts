@@ -217,6 +217,7 @@ let deviceStore: DeviceStore | null = null;
 let sessionLifecycle: WebSessionLifecycle | null = null;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
 // Late-bound: the pipe server that carries notices exists only after boot.
+let notifyCodexIdentityRefused: ((id:string,reason:string)=>void) | undefined;
 let broadcastCodexNotice: ((paneId:string|undefined,title:string,body:string)=>void) | undefined;
 // Every wmux Codex launch goes through a pane relay; before each, the shared
 // account server is started with no WMUX_* variable (never stopped/restarted).
@@ -228,7 +229,11 @@ const codexSharedRuntime = createCodexSharedRuntime({
 });
 const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Codex relay cleanup failed'),
   (id,owner)=>persistCodexRelayState?.(id,owner),
-  async (id,codeHome)=>{ await codexSharedRuntime.ensureStarted(id,{...process.env,...(codeHome ? {CODEX_HOME:codeHome} : {})}); });
+  async (id,codeHome)=>{ await codexSharedRuntime.ensureStarted(id,{...process.env,...(codeHome ? {CODEX_HOME:codeHome} : {})}); },
+  (id,reason)=>{
+    log('warn',`[codex-relay] refused a thread request in ${id}: ${reason}`);
+    notifyCodexIdentityRefused?.(id,reason);
+  });
 
 /**
  * #919 — canonical pane-agent identity for one pane, right now. Folds the
@@ -3475,6 +3480,10 @@ function registerRpcHandlers(
   chatBridge = bridge;
   broadcastCodexNotice = (paneId, title, body) => pipeServer.broadcast({ type: 'notification.event',
     ...(paneId ? { sessionId: paneId } : {}), data: { source: 'security', title, body, ts: Date.now() } });
+  notifyCodexIdentityRefused = (paneId, reason) => pipeServer.broadcast({ type: 'notification.event', sessionId: paneId,
+    data: { source: 'security', title: 'Codex thread not started',
+      body: `wmux could not attach this pane's identity to the Codex thread (${reason}), so it was not started. Try again.`,
+      ts: Date.now() } });
 
   pipeServer.onRpc('daemon.chat.skills', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'skills') || typeof params.id !== 'string') return { skills: [], state: 'unavailable' };
