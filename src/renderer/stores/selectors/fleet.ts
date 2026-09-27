@@ -141,7 +141,7 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    *  `surfaceActivityAt`, which is evidence and decays at HOOK_RUNNING_TTL_MS.
    *  Optional so existing fixtures stay terse. */
   surfaceTurnOpenAt?: StoreState['surfaceTurnOpenAt'];
-  /** #1463 — ptyId → when its last turn ended as `complete`. Activity evidence
+  /** #1463 — ptyId → when its last turn ended (complete/waiting/error). Activity evidence
    *  older than this belongs to the finished turn (see isHookRunning).
    *  Optional so existing fixtures stay terse. */
   surfaceTurnEndAt?: StoreState['surfaceTurnEndAt'];
@@ -238,7 +238,7 @@ export function isHookRunning(args: {
   turnOpenAt: number | undefined;
   /** The reactive decay clock (`state.agentClockMs`). */
   agentClockMs: number | undefined;
-  /** `surfaceTurnEndAt[ptyId]` — when the last turn ended as `complete`. */
+  /** `surfaceTurnEndAt[ptyId]` — when the last turn ended (complete/waiting/error). */
   turnEndAt?: number;
 }): boolean {
   const { activityAt, turnOpenAt, agentClockMs, turnEndAt } = args;

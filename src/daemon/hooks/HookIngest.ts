@@ -254,10 +254,12 @@ export interface HookIngestDeps {
    * PostToolUse). The daemon releases the pane's awaiting state through the
    * same path a recognised answer key takes, so the status leaves "Needs you"
    * now. Without it, an answer the key check cannot see (a mouse click on an
-   * option) waited for the screen verifier or the turn end. Only the daemon
-   * supplies it; a failure is non-fatal.
+   * option) waited for the screen verifier or the turn end. `answeredAt` is
+   * the hook's fire time. Called only for an EXACT-routed signal: a cwd guess
+   * could release a sibling pane's question. Only the daemon supplies it; a
+   * failure is non-fatal.
    */
-  onInputAnswered?: (sessionId: string) => void;
+  onInputAnswered?: (sessionId: string, answeredAt: number) => void;
 }
 
 /**
@@ -787,7 +789,7 @@ export class HookIngest {
     if (signal.kind === 'agent.input_answered') {
       this.deps.approvals?.expireForSession(sessionId, 'answered-locally', 'awaiting_input');
       try {
-        this.deps.onInputAnswered?.(sessionId);
+        if (signal.ptyId === sessionId) this.deps.onInputAnswered?.(sessionId, signal.ts);
       } catch (err) {
         this.deps.log?.('warn', `[hooks] input-answered callback failed for ${sessionId}: ${String(err)}`);
       }

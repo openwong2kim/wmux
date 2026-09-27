@@ -283,15 +283,15 @@ export interface PaneSlice {
   // decays at HOOK_RUNNING_TTL_MS because it is EVIDENCE ("a tool fired 40s
   // ago"), and evidence goes stale. This is a CLAIM ("the agent's own hook says
   // a turn is open"), and a claim stands until it is withdrawn — by the turn's
-  // end (any complete/waiting/error/idle broadcast, incl. the
+  // end (any complete/awaiting_input/waiting/error/idle broadcast, incl. the
   // process-death edge and main's 30-min expiry) or by the pane's disposal. It
   // exists because a hook-governed pane no longer emits byte-driven 'running'
   // at all: a quiet turn (long bash, web search, silent reasoning) would
   // otherwise cross the 120 s TTL and read as idle mid-turn, which is the
   // exact bug the hook was installed to fix.
   surfaceTurnOpenAt: Record<string, number>;
-  // When each pty's turn last ended as `complete` (stamped on the transition
-  // into complete, not on repeats). Fleet's Ready to review ages and orders
+  // When each pty's turn last ended — complete, waiting or error (stamped on
+  // the first turn-ending status, not on repeats). Fleet's Ready to review ages and orders
   // finished tasks by it; output stamps move with every TUI redraw.
   surfaceTurnEndAt: Record<string, number>;
   markSurfaceTurnOpen: (ptyId: string) => void;
@@ -348,16 +348,21 @@ const ATTENTION_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
 // Everything an agent can report EXCEPT 'running' — including 'idle', which is
 // what the process-death edge and main's turn-expiry timer broadcast for a pane
 // whose agent died without ever sending a Stop.
-// #1463 — NOT 'awaiting_input': a question asked mid-turn pauses the turn, it
-// does not end it (main's own latch stays up through it too). Closing it here
-// left the answered pane on the 120 s activity stamp alone, so a quiet stretch
-// after the answer read as idle mid-turn. The attention status still wins in
-// every derivation while the question is open.
 const TURN_CLOSING_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
   'complete',
   'waiting',
+  'awaiting_input',
   'error',
   'idle',
+]);
+
+// The statuses that stamp `surfaceTurnEndAt`: a turn that ended, whatever it
+// ended on. Not 'awaiting_input' (a question pauses a turn) and not 'idle'
+// (byte silence proves nothing; a settled idle drops the activity stamp itself).
+const TURN_END_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
+  'complete',
+  'waiting',
+  'error',
 ]);
 
 /** Normalized leaf rectangle in a 0–100 coordinate space (both axes). */
@@ -638,10 +643,12 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // Store only attention-worthy statuses; everything else (running, idle,
     // null) clears the entry so the blink stops as soon as the agent
     // resumes, goes idle, or the PTY exits.
-    // Turn-end stamp: set on the first `complete` after a turn opened, kept
-    // through repeats and through the focus clear (null), withdrawn when the
-    // agent runs again.
-    if (status === 'complete' && state.surfaceTurnEndAt[ptyId] === undefined) {
+    // Turn-end stamp: set on the first turn-ending status after a turn opened,
+    // kept through repeats and through the focus clear (null), withdrawn when
+    // the agent runs again. #1463 — `waiting` and `error` end a turn as surely
+    // as `complete`, and `isHookRunning` reads activity older than this stamp
+    // as the finished turn's.
+    if (TURN_END_STATUSES.has(status as AgentStatus) && state.surfaceTurnEndAt[ptyId] === undefined) {
       state.surfaceTurnEndAt[ptyId] = Date.now();
     } else if (status === 'running') {
       delete state.surfaceTurnEndAt[ptyId];

@@ -3592,7 +3592,13 @@ function registerRpcHandlers(
         // Hook Stop/awaiting-input is authoritative inside the same daemon that
         // owns byte activity. Settle the bridge before broadcasting so a later
         // idle repaint cannot race the renderer back to stale running.
-        sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status, true);
+        // #1463 — an AskUserQuestion is marked as one (by its hook fire time),
+        // so only its own answer signal can release it.
+        const questionAt = data.signal.kind === 'agent.awaiting_input'
+          && data.signal.payload?.['tool_name'] === 'AskUserQuestion'
+          ? data.signal.ts
+          : undefined;
+        sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status, true, questionAt);
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
         // Phone liveness header. The desktop reads pane state off this same
@@ -3667,9 +3673,10 @@ function registerRpcHandlers(
       },
       // #1463 — the agent's own "question answered" signal takes the same
       // release path an answer key does (the `answered` → `session:answered`
-      // running broadcast). A no-op when the pane is not awaiting.
-      onInputAnswered: (sessionId) => {
-        sessionManager.getSession(sessionId)?.bridge.clearAwaiting('input');
+      // running broadcast). A no-op unless the pane is blocked on a question
+      // asked no later than the answer.
+      onInputAnswered: (sessionId, answeredAt) => {
+        sessionManager.getSession(sessionId)?.bridge.clearAnsweredQuestion(answeredAt);
       },
     });
   }

@@ -166,15 +166,21 @@ describe('hook turn latch — the pane stays running while the turn is open', ()
     expect(pane().agentStatus).toBe('running');
   });
 
-  it('#1463 — a mid-turn question keeps the turn open through the answer', () => {
+  it('#1463 — a turn that ended on error is not repainted running either', () => {
+    applyMetadata({ agentStatus: 'running', hookKind: 'agent.user_prompt_submit' });
+    advance(30_000);
+    applyMetadata({ agentStatus: 'running' });
+    applyMetadata({ agentStatus: 'error' });
+    useStore.getState().setSurfaceAgentStatus(PTY, null);
+    expect(pane().agentStatus).not.toBe('running');
+  });
+
+  it('a question closes the latch, so a settle main withholds cannot strand it', () => {
+    // main does not broadcast idle over an unread awaiting_input (the F5 rule),
+    // so the renderer must not be holding a latch only that idle would close.
     applyMetadata({ agentStatus: 'running', hookKind: 'agent.user_prompt_submit' });
     applyMetadata({ agentStatus: 'awaiting_input' });
-    expect(pane().agentStatus).toBe('awaiting_input');
-    // The answer (the daemon's `answered` broadcast), then a quiet stretch
-    // longer than the activity TTL: the turn is still the agent's.
-    applyMetadata({ agentStatus: 'running' });
-    advance(HOOK_RUNNING_TTL_MS + 60_000);
-    expect(pane().agentStatus).toBe('running');
+    expect(useStore.getState().surfaceTurnOpenAt[PTY]).toBeUndefined();
   });
 
   it('an idle broadcast (process death, or main’s turn expiry) closes it too', () => {

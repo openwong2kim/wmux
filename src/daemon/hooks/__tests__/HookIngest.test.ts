@@ -346,12 +346,21 @@ describe('HookIngest', () => {
       // The key check cannot see every answer (a mouse click on an option), so
       // the agent's own "answered" signal is the release path of last resort.
       // A permission gate answer is not a question answer and stays out.
-      const answered: string[] = [];
-      const withHook = new HookIngest({ ...fixture.deps, onInputAnswered: (id: string) => { answered.push(id); } });
+      const answered: Array<[string, number]> = [];
+      const withHook = new HookIngest({
+        ...fixture.deps,
+        onInputAnswered: (id: string, at: number) => { answered.push([id, at]); },
+      });
       withHook.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.permission_answered' }));
       expect(answered).toEqual([]);
-      withHook.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.input_answered' }));
-      expect(answered).toEqual(['pty-a']);
+      // Routed only by cwd/workspace: a guess, which could be a sibling pane's
+      // agent answering its own question — never released on that.
+      withHook.handle(makeSignal({ kind: 'agent.input_answered', workspaceId: 'ws-1' }));
+      // It DID resolve to pty-a (the card sweep ran) — only the release is withheld.
+      expect(fixture.approvalsCalls.at(-1)).toEqual({ sessionId: 'pty-a', reason: 'answered-locally', kind: 'awaiting_input' });
+      expect(answered).toEqual([]);
+      withHook.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.input_answered', ts: 2_000 }));
+      expect(answered).toEqual([['pty-a', 2_000]]);
       // The status still travels on the daemon's `answered` broadcast, never here.
       expect(fixture.emitted).toHaveLength(0);
     });

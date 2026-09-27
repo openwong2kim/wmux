@@ -189,6 +189,12 @@ export class DaemonPTYBridge extends EventEmitter {
    * `waiting` would otherwise overwrite the `awaiting_input` that must stay.
    */
   private awaitingHuman = false;
+  /** #1463 — the hook fire time (`AgentSignal.ts`) of the AskUserQuestion that
+   *  put this pane in `awaitingHuman`; null when anything else did (a
+   *  permission dialog, a detector match). Only such a question may be
+   *  released by the agent's own "answered" signal — see
+   *  `clearAnsweredQuestion`. */
+  private awaitingQuestionAt: number | null = null;
 
   /** Track bracketed-paste input so newlines inside a pasted draft are not
    * mistaken for Enter. The closing marker and the later CR are separate writes
@@ -274,14 +280,27 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /**
    * The dialog this pane was blocked on is gone, although no answer key was
-   * seen (the screen verifier read the pane and found no dialog on it twice,
-   * or — `input` — the agent's own hook reported the question answered).
+   * seen (the screen verifier read the pane and found no dialog on it twice).
    * Runs exactly the path a recognised answer key runs. Returns false, and
    * does nothing, when the pane was not awaiting.
    */
-  clearAwaiting(reason: 'input' | 'screen-cleared'): boolean {
+  clearAwaiting(reason: 'screen-cleared'): boolean {
     if (!this.awaitingHuman) return false;
     this.startAnsweredTurn(true, reason);
+    return true;
+  }
+
+  /**
+   * #1463 — the agent's own hook reported an AskUserQuestion answered (fired
+   * at `answeredAt`, the hook's `AgentSignal.ts`). Releases the pane through
+   * the answer-key path, but only when what it is blocked on is a question
+   * asked no later than that: a late or duplicate answer must not release a
+   * NEWER question, nor a permission dialog that went up in between.
+   */
+  clearAnsweredQuestion(answeredAt: number): boolean {
+    if (!this.awaitingHuman || this.awaitingQuestionAt === null) return false;
+    if (answeredAt < this.awaitingQuestionAt) return false;
+    this.startAnsweredTurn(true, 'input');
     return true;
   }
 
@@ -345,7 +364,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * Terminal states settle the turn and block later byte-only redraws;
    * explicit running activity opens the gate again for autonomous work.
    */
-  noteAgentStatus(status: AgentEventStatus, authoritative = false): void {
+  noteAgentStatus(status: AgentEventStatus, authoritative = false, questionAt?: number): void {
     if (status === 'running') {
       if (authoritative) this.lastTurnStartedAt = Date.now();
       this.explicitTerminalStatus = false;
@@ -374,8 +393,10 @@ export class DaemonPTYBridge extends EventEmitter {
     // An authoritative turn end (the Stop / StopFailure hook) closes any dialog
     // the turn was blocked on. The detector's own `waiting` / `complete` cannot:
     // the idle footer under an approval box matches those patterns too.
-    if (status === 'awaiting_input') this.awaitingHuman = true;
-    else if (authoritative) this.awaitingHuman = false;
+    if (status === 'awaiting_input') {
+      this.awaitingHuman = true;
+      this.awaitingQuestionAt = questionAt ?? null;
+    } else if (authoritative) this.awaitingHuman = false;
     this.settledAtMs = Date.now();
     this.submittedTurnPending = false;
     if (this.resizeGuardTimer) {
