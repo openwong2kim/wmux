@@ -4,7 +4,7 @@ import { useT } from '../../hooks/useT';
 import { sanitizeTitle } from '../../../main/pty/titleDetect';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
 import { computeMirrorFontSize, computeMirrorGeometry, mirrorFitKey, MAX_FIT_PASSES } from './mirrorFit';
-import { decideMirrorKeyWithRepeat } from './mirrorInput';
+import { decideMirrorKeyWithRepeat, shouldHonorMirrorClipboardWrite } from './mirrorInput';
 import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE } from './keyboardProtocol';
 import { useStore } from '../../stores';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
@@ -15,6 +15,7 @@ import { XTERM_THEMES, extractXtermColors, type BuiltinThemeId, type ThemeId } f
 import { resolveMinimumContrastRatio } from '../../tailwindPalette';
 import { createOsc8LinkHandler, isLoopbackHref } from '../../terminal/osc8LinkHandler';
 import { installAltClickTrackingGuard } from '../../utils/altClickUnderMouseTracking';
+import { createOsc52Handler } from '../../utils/osc52Clipboard';
 
 export interface RemoteMirrorTerminalProps {
   /** null while the pane attach is still in flight. */
@@ -505,6 +506,48 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
       autoCopy.onSelection(term.getSelection());
     });
 
+    // OSC 52 clipboard-write bridge, gated. With mouse tracking on (Claude Code
+    // fullscreen, vim, tmux) a drag never becomes an xterm selection: the remote
+    // app draws its own highlight and, on mouse-up, asks the terminal to copy by
+    // emitting OSC 52. A local pane bridges that (useTerminal.ts); a mirror did
+    // not, so xterm dropped the request and nothing — not auto-copy, not ⌘C,
+    // not Ctrl+Shift+C, which all need an xterm selection — reached the local
+    // clipboard. These bytes come from another machine, though, so a write is
+    // honoured only right after a gesture in THIS mirror (see
+    // shouldHonorMirrorClipboardWrite). `repaintDepthRef` is the mirror's
+    // replay mute: an attach/reconnect snapshot is stored output, and a write
+    // inside it is an old copy, not a new one.
+    let lastGestureAt: number | null = null;
+    let pointerArmed = false;
+    const markGesture = (): void => { lastGestureAt = Date.now(); };
+    const onPointerDown = (): void => { pointerArmed = true; markGesture(); };
+    // Window-level: a drag that ends outside the mirror still ends the gesture.
+    const onPointerUp = (): void => {
+      if (!pointerArmed) return;
+      pointerArmed = false;
+      markGesture();
+    };
+    container.addEventListener('mousedown', onPointerDown, true);
+    window.addEventListener('mouseup', onPointerUp, true);
+    container.addEventListener('keydown', markGesture, true);
+    const osc52Disposable = term.parser.registerOscHandler(52, createOsc52Handler({
+      isReplaying: () => !shouldHonorMirrorClipboardWrite({
+        now: Date.now(),
+        lastGestureAt,
+        replaying: repaintDepthRef.current > 0,
+        readOnly: readOnlyRef.current === true,
+        visible: typeof container.checkVisibility === 'function' ? container.checkVisibility() : container.isConnected,
+      }),
+      writeClipboard: (text) => {
+        // One gesture, one write: a host cannot follow the user's copy with a
+        // second, different payload inside the same window.
+        lastGestureAt = null;
+        // Fire-and-forget, as on a local pane: the app already showed its own
+        // "copied" feedback and has no channel for a rejection.
+        void window.clipboardAPI.writeText(text).catch(() => { /* size cap / lock — nothing to report */ });
+      },
+    }));
+
     // #1086/#1091 — xterm's own parser already extracts the OSC 0/2 payload
     // (icon title / window title); sanitize it exactly like PTYBridge does
     // for a local pane before handing it to the surface-title callback.
@@ -572,6 +615,10 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
     return () => {
       if (isMac) container.removeEventListener('paste', blockNativePaste, true);
       detachAltClickGuard();
+      container.removeEventListener('mousedown', onPointerDown, true);
+      window.removeEventListener('mouseup', onPointerUp, true);
+      container.removeEventListener('keydown', markGesture, true);
+      osc52Disposable.dispose();
       selectionDisposable.dispose();
       titleDisposable.dispose();
       // Cancels a debounced write that would otherwise fire against a disposed

@@ -162,3 +162,46 @@ export function decideMirrorKeyWithRepeat(
   }
   return decision;
 }
+
+/**
+ * How long after the user's last mouse-up / key press inside a mirror an OSC 52
+ * clipboard write from the remote app is still taken as the answer to it.
+ *
+ * Wide enough for the round trip a copy-on-select takes (mouse-up is forwarded
+ * to the remote app, the app emits OSC 52, the bytes come back over the attach
+ * stream — a tailnet hop each way), short enough that a host cannot park a
+ * write and fire it later.
+ */
+export const MIRROR_OSC52_GESTURE_WINDOW_MS = 2000;
+
+export interface MirrorClipboardWriteState {
+  now: number;
+  /** When the user last released the mouse or pressed a key in THIS mirror. */
+  lastGestureAt: number | null;
+  /** xterm is parsing an attach/reconnect snapshot — stored output, not a request. */
+  replaying: boolean;
+  /** The host was started without `--allow-input`: the remote app never saw the gesture. */
+  readOnly: boolean;
+  /** The mirror is on screen. */
+  visible: boolean;
+}
+
+/**
+ * Whether an OSC 52 clipboard WRITE arriving from the remote pane may reach
+ * the local clipboard.
+ *
+ * A local pane honours OSC 52 unconditionally, because the process asking is
+ * one the user started on this machine. A mirror's bytes come from another
+ * machine, so the write is honoured only as the direct consequence of
+ * something the user just did in this mirror — the drag a TUI (Claude Code,
+ * vim, tmux) turns into a copy. With no such gesture, a paired host could
+ * otherwise overwrite this machine's clipboard whenever it liked.
+ *
+ * Reads/queries are refused separately, by `decodeOsc52Write`, in every case.
+ */
+export function shouldHonorMirrorClipboardWrite(s: MirrorClipboardWriteState): boolean {
+  if (s.replaying || s.readOnly || !s.visible) return false;
+  if (s.lastGestureAt === null) return false;
+  const age = s.now - s.lastGestureAt;
+  return age >= 0 && age <= MIRROR_OSC52_GESTURE_WINDOW_MS;
+}
