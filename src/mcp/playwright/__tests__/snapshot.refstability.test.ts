@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { generateSnapshot, resolveRef, StaleRefError } from '../snapshot';
+import { generateSnapshot, resolveRef, StaleRefError, swappedTextEntryNote } from '../snapshot';
 import { formatSnapshotResult } from '../snapshotDiff';
 
 // Ref stability (dogfood, 2026-08-30). Refs used to be a running count over the
@@ -252,6 +252,34 @@ describe('resolveRef refuses a stale ref instead of substituting an element', ()
     (page as unknown as FakePage).liveCounts.set('button ', 4);
 
     expect(await resolveRef(page, '0', { strictCount: true })).toBe('button #0');
+  });
+
+  it('follows a search field the page swapped for a same-named combobox (#1466)', async () => {
+    // Wikipedia: focusing `searchbox "Search Wikipedia"` mounts the typeahead,
+    // which replaces it with `combobox "Search Wikipedia"`. A click on the ref
+    // followed by a fill on the same ref used to come back ref_not_found.
+    const page = makePage(tree([{ backendId: 88, role: 'searchbox', name: 'Search Wikipedia' }]));
+    await generateSnapshot(page, { format: 'ai' });
+    const live = (page as unknown as FakePage).liveCounts;
+    live.set('searchbox Search Wikipedia', 0);
+    live.set('textbox Search Wikipedia', 0);
+    live.set('combobox Search Wikipedia', 1);
+
+    const notes: string[] = [];
+    expect(await resolveRef(page, '0', { notes })).toBe('combobox Search Wikipedia#0');
+    expect(notes).toEqual([swappedTextEntryNote(0, 'searchbox', 'combobox', 'Search Wikipedia')]);
+  });
+
+  it('refuses the swap when more than one text field carries the name', async () => {
+    const page = makePage(tree([{ backendId: 89, role: 'searchbox', name: 'Search' }]));
+    await generateSnapshot(page, { format: 'ai' });
+    const live = (page as unknown as FakePage).liveCounts;
+    live.set('searchbox Search', 0);
+    live.set('textbox Search', 1);
+    live.set('combobox Search', 1);
+
+    expect(await resolveRef(page, '0')).toBeNull();
+    expect((page as unknown as FakePage).handles).toEqual([]);
   });
 
   it('still resolves the right instance while the page is unchanged', async () => {

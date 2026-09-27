@@ -818,7 +818,7 @@ async function resolveTypeTarget(
     requireSingleMatch(addr.selector, await page.locator(addr.selector).count());
     return page.locator(addr.selector).first() as unknown as TypeTarget;
   }
-  const el = await resolveRef(page, addr.ref as string);
+  const el = await resolveRef(page, addr.ref as string, notes && { notes });
   if (!el) throw refMissing(addr.ref as string, page);
   return el as unknown as TypeTarget;
 }
@@ -1580,6 +1580,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
         // put there (panel review conf10 — the two tools have to give the same
         // guarantee or the guarantee is worthless).
         const isPassword: boolean[] = [];
+        const refNotes: string[] = [];
 
         for (let i = 0; i < fields.length; i++) {
           const field = fields[i];
@@ -1590,7 +1591,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           try {
             requireOneTarget(addr, 'browser_fill', ['ref', 'smartRef']);
             if (page) {
-              const el = await resolveTypeTarget(page, addr);
+              const el = await resolveTypeTarget(page, addr, refNotes);
               isPassword[i] = await isPasswordElement(el);
               await effect.dispatch(() => el.fill(field.value));
             } else {
@@ -1624,7 +1625,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           }
         }
 
-        let resultText = `Filled ${filled}/${fields.length} field(s).`;
+        let resultText = `Filled ${filled}/${fields.length} field(s).${refNotes.map((n) => `\n${n}`).join('')}`;
         if (errors.length > 0) {
           resultText += '\nErrors:\n' + errors.join('\n');
         }
