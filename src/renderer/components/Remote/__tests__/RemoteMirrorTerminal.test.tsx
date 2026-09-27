@@ -752,6 +752,19 @@ describe('RemoteMirrorTerminal', () => {
     unmount();
   });
 
+  it('an attach refused for needs-HTTPS shows the notice and swallows input, even with an attachId present', () => {
+    const { container, unmount } = render(
+      <RemoteMirrorTerminal attachId="a1" error="attach refused" insecureTransport hostLabel="lan-mac" />,
+    );
+    const term = termInstances[0];
+    act(() => { term.onDataHandler?.('ls\n'); });
+    expect(paneWrite).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe('lan-mac needs HTTPS — re-pair over HTTPS');
+    // The generic error overlay does not cover the specific notice.
+    expect(container.textContent).not.toContain('attach refused');
+    unmount();
+  });
+
   it('after the host rejects the credential, keystrokes are swallowed and the host is flagged', () => {
     act(() => {
       useStore.setState({

@@ -280,7 +280,7 @@ declare global {
          *  (e.g. React StrictMode's double-effect) returns the SAME attachId
          *  rather than opening a second SSE stream on the remote. */
         paneAttach: (hostId: string, sessionId: string) => Promise<
-          { ok: true; attachId: string } | { ok: false; error: string }
+          { ok: true; attachId: string } | { ok: false; error: string; reason?: RemoteErrorReason }
         >;
         paneDetach: (attachId: string) => Promise<void>;
         paneWrite: (attachId: string, data: string) => void;

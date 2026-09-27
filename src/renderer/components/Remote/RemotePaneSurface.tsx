@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import RemoteMirrorTerminal from './RemoteMirrorTerminal';
 import RemoteResumeChip from './RemoteResumeChip';
+import { useStore } from '../../stores';
 
 export interface RemotePaneSurfaceProps {
   hostId: string;
@@ -31,6 +32,8 @@ export interface RemotePaneSurfaceProps {
 export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell, cwd, isActive = true, onTitleChange }: RemotePaneSurfaceProps) {
   const [attachId, setAttachId] = useState<string | null>(null);
   const [error, setError] = useState<string | undefined>(undefined);
+  /** The attach was refused: this host needs HTTPS (its token is withheld). */
+  const [insecure, setInsecure] = useState(false);
   const [allowInput, setAllowInput] = useState<boolean | undefined>(undefined);
   const [hostLabel, setHostLabel] = useState<string | undefined>(undefined);
   const teardown = useRef<Promise<void>>(Promise.resolve());
@@ -54,6 +57,7 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
     if (!remote) return;
     setAttachId(null);
     setError(undefined);
+    setInsecure(false);
     let openedId: string | null = null;
 
     const attaching = teardown.current
@@ -64,6 +68,12 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
           if (!cancelled) setAttachId(res.attachId);
         } else if (!cancelled) {
           setError(res.error);
+          // Needs HTTPS is a standing state, not a transient failure: say so
+          // on this pane and on the host's rows, and keep input shut.
+          if (res.reason === 'insecure-transport') {
+            setInsecure(true);
+            useStore.getState().setRemoteHostInsecure(hostId, true);
+          }
         }
       })
       .catch((err: unknown) => {
@@ -101,11 +111,12 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
           // but a chip is an OFFER. Until the probe has answered `true`, this
           // desktop does not know the host takes input, and an offer whose
           // click is silently dropped is worse than no offer.
-          readOnly={allowInput !== true}
+          readOnly={allowInput !== true || insecure}
         />
         <RemoteMirrorTerminal
           attachId={attachId}
           error={error}
+          insecureTransport={insecure}
           readOnly={allowInput === false}
           hostLabel={hostLabel}
           hostId={hostId}

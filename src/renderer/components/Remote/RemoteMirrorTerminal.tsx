@@ -28,6 +28,9 @@ export interface RemoteMirrorTerminalProps {
   attachId: string | null;
   /** Set when the attach itself failed (e.g. a rejected paneAttach). */
   error?: string;
+  /** The attach was refused because the host is on plain http to another
+   *  machine: show the needs-HTTPS line and take no input. */
+  insecureTransport?: boolean;
   /** True when the remote host was started without --allow-input — writes
    *  must be swallowed locally rather than silently dropped server-side. */
   readOnly?: boolean;
@@ -126,7 +129,7 @@ const MIN_REMOTE_RESIZE_ROWS = 8;
  * when it does not — the fallback is not a regression, it is what made this
  * safe to ship without a protocol bump.
  */
-export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitleChange, hostLabel, hostId }: RemoteMirrorTerminalProps) {
+export default function RemoteMirrorTerminal({ attachId, error, insecureTransport = false, readOnly, onTitleChange, hostLabel, hostId }: RemoteMirrorTerminalProps) {
   const t = useT();
   // Ref, same reason as readOnlyRef below: the title subscription is wired
   // once inside the mount-only effect, and a parent re-render passing a new
@@ -156,7 +159,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
   const remoteKeyboardRef = useRef(INITIAL_REMOTE_KEYBOARD_STATE);
   // A host that rejected the credential takes no input either: swallow it
   // locally instead of POSTing writes the host will refuse.
-  readOnlyRef.current = readOnly || authRejected || insecure;
+  readOnlyRef.current = readOnly || authRejected || insecure || insecureTransport;
   const hostIdRef = useRef(hostId);
   hostIdRef.current = hostId;
   const hostLabelRef = useRef(hostLabel);
@@ -1053,7 +1056,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
     // the single frame between a remote resize and the fit that answers it.
     <div ref={boxRef} className="relative w-full h-full min-h-0 min-w-0 overflow-hidden">
       <div ref={containerRef} className="absolute inset-0 overflow-hidden" />
-      {error && (
+      {error && !insecureTransport && (
         <div
           className="absolute inset-0 flex items-center justify-center text-[11px] font-mono px-2 text-center"
           style={{ color: 'var(--accent-red)', background: 'var(--bg-base)' }}
@@ -1077,13 +1080,13 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
           {t('remote.disconnected')}
         </div>
       )}
-      {(authRejected || insecure) && (
+      {(authRejected || insecure || insecureTransport) && (
         <div
           role="alert"
           className="absolute bottom-0 left-0 right-0 px-2 py-1 text-[10px] font-mono"
           style={{ color: 'var(--accent-red)', background: 'var(--bg-overlay-scrim, rgba(0, 0, 0, 0.55))' }}
         >
-          {insecure
+          {insecure || insecureTransport
             ? t('remote.insecureHost', { host: hostLabel || t('remote.hostFallback') })
             : t('remote.authRejected', { host: hostLabel || t('remote.hostFallback') })}
         </div>

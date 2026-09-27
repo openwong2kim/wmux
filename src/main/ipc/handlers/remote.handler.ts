@@ -19,7 +19,12 @@ import { app, ipcMain } from 'electron';
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
-import { RemoteHostClient, isRemoteAuthRejected, isRemoteInsecureTransport } from '../../remote/RemoteHostClient';
+import {
+  RemoteHostClient,
+  RemoteInsecureTransportError,
+  isRemoteAuthRejected,
+  isRemoteInsecureTransport,
+} from '../../remote/RemoteHostClient';
 import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
 import type { RemoteAttachmentsStore } from '../../remote/RemoteAttachmentsStore';
 import { RemoteAttentionSubscriber } from '../../remote/RemoteAttentionSubscriber';
@@ -61,6 +66,8 @@ type ProbeResult =
   | { kind: 'ok'; allowInput: boolean }
   | { kind: 'unauthorized' }
   | { kind: 'unreachable' }
+  /** Plain http to another machine: never probed, the token would go in the clear. */
+  | { kind: 'needs-https' }
   | { kind: 'incompatible' };
 
 export interface RegisterRemoteHandlersDeps {
@@ -114,7 +121,7 @@ async function probeConfig(
   fetchImpl: typeof fetch,
 ): Promise<ProbeResult> {
   // Never send the token to another machine over plain http.
-  if (!isCredentialSafeOriginString(origin)) return { kind: 'unreachable' };
+  if (!isCredentialSafeOriginString(origin)) return { kind: 'needs-https' };
   let res: Response;
   try {
     res = await fetchImpl(`${origin}/api/config`, {
@@ -146,12 +153,16 @@ async function probeConfig(
 /** Add-time error string for a probe failure — three distinct messages so a
  *  rejected token and an unreachable host aren't both misreported as "too
  *  old". */
+const NEEDS_HTTPS_MESSAGE = 'that host needs HTTPS — a token is never sent to another computer over plain http';
+
 function probeFailureMessage(probe: Exclude<ProbeResult, { kind: 'ok' }>): string {
   switch (probe.kind) {
     case 'unauthorized':
       return 'token rejected — re-run wmux web on the remote and paste the new URL';
     case 'unreachable':
       return 'could not reach that host';
+    case 'needs-https':
+      return NEEDS_HTTPS_MESSAGE;
     case 'incompatible':
       return "that machine's wmux is too old for remote attach";
   }
@@ -554,7 +565,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       const problem = credentialOriginProblem(new URL(url.trim()));
       if (problem === 'userinfo') return { ok: false, error: 'invalid wmux web URL' };
       if (problem === 'insecure') {
-        return { ok: false, error: 'that host needs HTTPS — a token is never sent to another computer over plain http' };
+        return { ok: false, error: NEEDS_HTTPS_MESSAGE };
       }
       if (store.list().some((h) => h.origin === parsed.origin)) {
         return { ok: false, error: 'already registered' };
@@ -641,6 +652,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       // request — treated the same as 'incompatible' rather than inventing
       // a reason that would wrongly imply the CODE was wrong.
       const probe = await probeConfig(origin, exchange.token, fetchImpl);
+      if (probe.kind === 'needs-https') return { ok: false, reason: 'insecure-transport' };
       if (probe.kind !== 'ok') {
         return { ok: false, reason: 'incompatible' };
       }
@@ -852,7 +864,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       event: IpcMainInvokeEvent,
       hostId: unknown,
       sessionId: unknown,
-    ): Promise<{ ok: true; attachId: string } | { ok: false; error: string }> => {
+    ): Promise<{ ok: true; attachId: string } | { ok: false; error: string; reason?: RemoteErrorReason }> => {
       const id = assertString(hostId, 'hostId');
       const session = assertString(sessionId, 'sessionId');
       const sender = event.sender;
@@ -876,6 +888,11 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
 
       const client = getOrCreateClient(id);
       if (!client) return { ok: false, error: 'unknown host' };
+      // Answered HERE, synchronously with the attach request, not as a stream
+      // error a tick later: the mirror subscribes to stream errors only after
+      // this returns, so an event fired in between would be lost and a
+      // restored pane would sit blank with its input open.
+      if (client.isInsecure()) return failure(new RemoteInsecureTransportError('attach'));
 
       installSenderCleanup(sender);
       const attachId = client.attach(session);

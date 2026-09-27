@@ -115,6 +115,7 @@ function fakeClient(host: RemoteHost) {
     closeSession: vi.fn(async (): Promise<void> => undefined),
     resizeSession: vi.fn(async (): Promise<{ ok: true; cols: number; rows: number }> => ({ ok: true, cols: 100, rows: 30 })),
     isAuthRejected: vi.fn(() => false),
+    isInsecure: vi.fn(() => false),
     liveAttachmentCount: vi.fn(() => 0),
     onMeta: vi.fn((cb: (e: RemoteMetaEvent) => void) => { metaCbs.push(cb); }),
     onResize: vi.fn((cb: (e: RemoteResizeEvent) => void) => { resizeCbs.push(cb); }),
@@ -1546,6 +1547,36 @@ describe('remote.handler — a plain-http host to another machine never gets its
     expect(created).toMatchObject({ ok: false, reason: 'insecure-transport' });
     const closed = (await getHandler(IPC.REMOTE_SESSION_CLOSE)({}, 'lan', 'web-1')) as { ok: boolean; reason?: string };
     expect(closed).toMatchObject({ ok: false, reason: 'insecure-transport' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('remote.handler — paneAttach refuses a needs-HTTPS host up front', () => {
+  it('answers insecure-transport from the attach itself, opens nothing, and fetches nothing', async () => {
+    const lanHost: RemoteHost = { id: 'lan', label: 'lan', origin: 'http://127.0.0.1.nip.io:7681', token: 'T0K3N', addedAt: 0 };
+    const fetchImpl = vi.fn();
+    registerRemoteHandlers({ store: fakeStore([lanHost]) as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const sender = { id: 1, isDestroyed: () => false, send: vi.fn(), on: vi.fn(), once: vi.fn(), removeListener: vi.fn() };
+    const res = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'lan', 's1');
+    expect(res).toMatchObject({ ok: false, reason: 'insecure-transport' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(sender.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('remote.handler — hostsAdd names needs-HTTPS, never "could not reach"', () => {
+  it.each([
+    'http://192.168.1.5:7681/?token=abc',
+    'http://127.0.0.1.nip.io:7681/?token=abc',
+    'http://127.evil.example/?token=abc',
+  ])('%s', async (url) => {
+    const fetchImpl = vi.fn();
+    registerRemoteHandlers({ store: fakeStore() as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const res = (await getHandler(IPC.REMOTE_HOSTS_ADD)({}, url)) as { ok: boolean; error?: string };
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('needs HTTPS');
+    expect(res.error).not.toContain('could not reach');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

@@ -36,6 +36,7 @@ function PaneCell({ hostId, hostLabel, pane, readOnly, attachEpoch }: {
 }) {
   const [attachId, setAttachId] = useState<string | null>(null);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [insecure, setInsecure] = useState(false);
   /** The previous run's detach. Main keys attach idempotency on
    *  (sender, host, session), so the old and the new attach are the SAME
    *  record: if the re-attach reached main first it would be handed the dying
@@ -49,6 +50,7 @@ function PaneCell({ hostId, hostLabel, pane, readOnly, attachEpoch }: {
     if (!remote) return;
     setAttachId(null);
     setError(undefined);
+    setInsecure(false);
     let openedId: string | null = null;
 
     const attaching = teardown.current
@@ -59,6 +61,12 @@ function PaneCell({ hostId, hostLabel, pane, readOnly, attachEpoch }: {
           if (!cancelled) setAttachId(res.attachId);
         } else if (!cancelled) {
           setError(res.error);
+          // Needs HTTPS is a standing state, not a transient failure: say so
+          // on this pane and on the host's rows, and keep input shut.
+          if (res.reason === 'insecure-transport') {
+            setInsecure(true);
+            useStore.getState().setRemoteHostInsecure(hostId, true);
+          }
         }
       })
       .catch((err: unknown) => {
@@ -89,7 +97,14 @@ function PaneCell({ hostId, hostLabel, pane, readOnly, attachEpoch }: {
         {pane.cwd ? ` — ${pane.cwd}` : ''}
       </div>
       <div className="flex-1 min-h-0">
-        <RemoteMirrorTerminal attachId={attachId} error={error} readOnly={readOnly} hostLabel={hostLabel} hostId={hostId} />
+        <RemoteMirrorTerminal
+          attachId={attachId}
+          error={error}
+          insecureTransport={insecure}
+          readOnly={readOnly}
+          hostLabel={hostLabel}
+          hostId={hostId}
+        />
       </div>
     </div>
   );
