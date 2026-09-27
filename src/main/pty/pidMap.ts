@@ -63,3 +63,25 @@ export function removePidMapByPtyId(ptyId: string): void {
     }
   } catch { /* best-effort */ }
 }
+
+/**
+ * Shell pids the pid-map records for `ptyId`. Used only when the daemon's
+ * session list is unreachable; more than one entry is ambiguous (a stale file
+ * beside the live one), so callers treat that as unknown.
+ */
+export function pidsForPtyId(ptyId: string): number[] {
+  const out: number[] = [];
+  if (!ptyId) return out;
+  try {
+    const dir = getPidMapDir();
+    if (!fs.existsSync(dir)) return out;
+    for (const file of fs.readdirSync(dir)) {
+      try {
+        if (fs.readFileSync(path.join(dir, file), 'utf8').trim() !== ptyId) continue;
+        const pid = Number(file);
+        if (Number.isInteger(pid) && pid > 0) out.push(pid);
+      } catch { /* unreadable / racing-unlink — skip */ }
+    }
+  } catch { /* best-effort */ }
+  return out;
+}

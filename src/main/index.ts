@@ -73,6 +73,8 @@ import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
 import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
 import { registerA2aChannelRpc } from './pipe/handlers/a2a.channel.rpc';
+import { CallerTableResolver, createPaneAncestryGate, daemonLiveShellPid, identitySnapshot } from './pty/callerAncestry';
+import { pidsForPtyId } from './pty/pidMap';
 import { registerCompanyRpc } from './pipe/handlers/company.rpc';
 import { registerEventsRpc } from './pipe/handlers/events.rpc';
 import { PluginHostLoader } from './plugins/PluginHostLoader';
@@ -941,7 +943,24 @@ ipcMain.handle(
 
 /** Set once the ApprovalQueue exists (below). Read lazily by browser.rpc. */
 let liveBorrowRequester: BorrowApprovalRequester | null = null;
-registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
+// One process-table reader for identity: a2a.resolve.identity and the router's
+// pane-ancestry gate share its cache and in-flight reads.
+const callerTables = new CallerTableResolver(identitySnapshot);
+registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, {
+  getDaemonClient: () => daemonClient,
+  tableResolver: callerTables,
+});
+rpcRouter.setPaneAncestryGate(createPaneAncestryGate({
+  resolver: callerTables,
+  liveShellPid: async (ptyId) => {
+    const dc = daemonClient;
+    if (dc) return daemonLiveShellPid(() => dc.rpc('daemon.listSessions', {}))(ptyId);
+    // No daemon: the pid-map is the only record. One entry is the shell; none
+    // means no live pane; several are ambiguous.
+    const pids = pidsForPtyId(ptyId);
+    return pids.length === 1 ? pids[0] : pids.length === 0 ? null : undefined;
+  },
+}));
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerCompanyRpc(rpcRouter, () => mainWindow);
 registerEventsRpc(rpcRouter, () => mainWindow, (clientName) => getPluginTrustStore().get(clientName));

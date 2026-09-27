@@ -19,6 +19,12 @@ import {
 } from './hostedWorkspaceBinding';
 import type { HostedScopeAuditInput } from '../audit/shadowRejectionLog';
 import { lookupWorkspaceClaim } from '../workspace/workspaceClaimTrust';
+import type { PaneAncestryGate } from '../pty/callerAncestry';
+import {
+  normalizeCallerPid,
+  PANE_IDENTITY_MISS_MESSAGE,
+  PANE_IDENTITY_UNAVAILABLE_MESSAGE,
+} from '../../shared/paneIdentity';
 
 // Handlers receive a per-request context as an optional second argument.
 // Existing handlers `(params) => ...` keep compiling because the extra
@@ -146,6 +152,8 @@ export class RpcRouter {
   // Sufficient to satisfy spec §2.2 ("recorded as legacy") without producing
   // hot-path disk writes on every legacy RPC.
   private legacyContactPersisted = false;
+  /** Checks a request's claimed pane against its caller's process ancestry. Unset = no check. */
+  private paneAncestryGate: PaneAncestryGate | undefined;
 
   register(method: RpcMethod, handler: RpcHandler): void {
     this.handlers.set(method, handler);
@@ -226,6 +234,56 @@ export class RpcRouter {
    */
   setApprovalQueue(queue: ApprovalQueue | undefined): void {
     this.approvalQueue = queue;
+  }
+
+  /**
+   * Wire the pane-ancestry gate. A request that names both the pane it acts
+   * as (`senderPtyId`) and its own process (`callerPid`) runs only when that
+   * pane's live shell is the caller or one of its ancestors. A request without
+   * `callerPid` keeps today's behavior.
+   */
+  setPaneAncestryGate(gate: PaneAncestryGate | undefined): void {
+    this.paneAncestryGate = gate;
+  }
+
+  /**
+   * Returns a refusal message, or null to proceed. `callerPid` is consumed
+   * here (removed from `params`) except by `a2a.resolve.identity`, whose own
+   * argument it is.
+   */
+  private async checkPaneAncestry(
+    method: RpcMethod,
+    params: Record<string, unknown>,
+    ctx: RpcContext,
+  ): Promise<{ params: Record<string, unknown>; refusal: string | null }> {
+    if (method === 'a2a.resolve.identity' || !('callerPid' in params)) return { params, refusal: null };
+    const { callerPid: rawPid, ...rest } = params;
+    const callerPid = normalizeCallerPid(rawPid);
+    // Every pane the request claims to act as: `senderPtyId`, and `callerPtyId`
+    // (the fan-out owner lane) when it names a different pane.
+    const claimed = new Set<string>();
+    for (const key of ['senderPtyId', 'callerPtyId'] as const) {
+      const v = rest[key];
+      if (typeof v === 'string' && v.trim()) claimed.add(v.trim());
+    }
+    // A commander brain acts by its token binding and owns no pane.
+    if (!this.paneAncestryGate || callerPid === null || claimed.size === 0 || ctx.commanderWorkspace) {
+      return { params: rest, refusal: null };
+    }
+    let status: Awaited<ReturnType<PaneAncestryGate['check']>> = 'hit';
+    for (const ptyId of claimed) {
+      try {
+        status = await this.paneAncestryGate.check(callerPid, ptyId);
+      } catch {
+        status = 'unavailable';
+      }
+      if (status !== 'hit') break;
+    }
+    if (status === 'hit') return { params: rest, refusal: null };
+    return {
+      params: rest,
+      refusal: `NOT_AUTHORIZED: ${method}: ${status === 'miss' ? PANE_IDENTITY_MISS_MESSAGE : PANE_IDENTITY_UNAVAILABLE_MESSAGE}`,
+    };
   }
 
   /**
@@ -581,6 +639,16 @@ export class RpcRouter {
         error: errorMessage,
         rejection,
       };
+    }
+
+    // Only a request carrying callerPid pays for (and awaits) the check, so
+    // every other dispatch reaches its handler in the same tick as before.
+    if (request.method !== 'a2a.resolve.identity' && 'callerPid' in effectiveParams) {
+      const ancestry = await this.checkPaneAncestry(request.method, effectiveParams, ctx);
+      if (ancestry.refusal) {
+        return { id: request.id, ok: false, error: ancestry.refusal };
+      }
+      effectiveParams = ancestry.params;
     }
 
     try {

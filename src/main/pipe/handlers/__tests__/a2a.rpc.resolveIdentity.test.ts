@@ -209,6 +209,7 @@ type ResolveResult = {
   mappings: Record<string, string>;
   entries: Array<{ pid: string; ptyId: string; workspaceId: string }>;
   resolved: { workspaceId: string; ptyId: string } | null;
+  resolvedStatus?: 'hit' | 'miss' | 'unavailable';
 };
 
 // Inject a fake process snapshot so the walk + prune run without spawning the
@@ -252,6 +253,7 @@ describe('a2a.resolve.identity — server-side walk (callerPid)', () => {
     const result = await dispatchResolve(setupRouterWithSnapshot(ppidByPid), { callerPid: 39876 });
 
     expect(result.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+    expect(result.resolvedStatus).toBe('hit');
     // entries still surfaced verbatim (legacy client-walk fallback stays intact)
     expect(result.entries).toEqual([{ pid: '49076', ptyId: 'daemon-shell', workspaceId: 'ws-live' }]);
   });
@@ -265,6 +267,7 @@ describe('a2a.resolve.identity — server-side walk (callerPid)', () => {
     const result = await dispatchResolve(setupRouterWithSnapshot(ppidByPid), { callerPid: 11111 });
 
     expect(result.resolved).toBeNull();
+    expect(result.resolvedStatus).toBe('miss');
     expect(result.entries).toEqual([{ pid: '49076', ptyId: 'daemon-shell', workspaceId: 'ws-live' }]);
   });
 
@@ -277,6 +280,7 @@ describe('a2a.resolve.identity — server-side walk (callerPid)', () => {
     const result = await dispatchResolve(setupRouter(), {});
 
     expect(result.resolved).toBeNull();
+    expect(result).not.toHaveProperty('resolvedStatus'); // absent field = no callerPid sent
     expect(result.mappings).toEqual({ '70': 'ws-X' });
   });
 
@@ -300,22 +304,60 @@ describe('a2a.resolve.identity — server-side walk (callerPid)', () => {
     expect(result.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
   });
 
-  it('does NOT retry a failed snapshot before fallback (graceful degradation, single attempt)', async () => {
-    // A failed snapshot must not trigger a second ~8s attempt: stacked timeouts
-    // would blow past the client RPC deadline and lose even the legacy mappings.
+  it('retries a failed snapshot once and resolves from the retry (win32)', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    try {
+      fs.writeFileSync(path.join(dirRef.current, '49076'), 'daemon-shell');
+      sendToRendererMock.mockResolvedValue({ workspaceId: 'ws-live' });
+      let calls = 0;
+      const table = new Map<number, number>([[39876, 25020], [25020, 49076], [49076, 57454]]);
+      const router = new RpcRouter();
+      registerA2aRpc(router, () => fakeWindow, makeWorker(), {
+        snapshot: async () => {
+          if (calls++ === 0) throw new Error('native snapshot unavailable');
+          return { ppidByPid: table, listeners: [] };
+        },
+      });
+
+      const result = await dispatchResolve(router, { callerPid: 39876 });
+
+      expect(calls).toBe(2);
+      expect(result.resolved).toEqual({ workspaceId: 'ws-live', ptyId: 'daemon-shell' });
+      expect(result.resolvedStatus).toBe('hit');
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
+  it('reports unavailable (not miss) when the snapshot and its retry both fail (win32)', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    try {
+      fs.writeFileSync(path.join(dirRef.current, '49076'), 'daemon-shell');
+      sendToRendererMock.mockResolvedValue({ workspaceId: 'ws-live' });
+      let calls = 0;
+      const router = new RpcRouter();
+      registerA2aRpc(router, () => fakeWindow, makeWorker(), {
+        snapshot: async () => { calls++; throw new Error('native snapshot unavailable'); },
+      });
+
+      const result = await dispatchResolve(router, { callerPid: 39876 });
+
+      expect(calls).toBe(2);                                   // one retry, no more
+      expect(result.resolved).toBeNull();
+      expect(result.resolvedStatus).toBe('unavailable');
+      expect(result.mappings).toEqual({ '49076': 'ws-live' }); // legacy map still returned
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
+  it('treats an empty process table as a failed read, not a miss', async () => {
     fs.writeFileSync(path.join(dirRef.current, '49076'), 'daemon-shell');
     sendToRendererMock.mockResolvedValue({ workspaceId: 'ws-live' });
-    let calls = 0;
-    const router = new RpcRouter();
-    registerA2aRpc(router, () => fakeWindow, makeWorker(), {
-      snapshot: async () => { calls++; throw new Error('powershell unavailable'); },
-    });
-
-    const result = await dispatchResolve(router, { callerPid: 39876 });
-
-    expect(calls).toBe(1);                                   // failed snapshot → NO retry
-    expect(result.resolved).toBeNull();                      // no server walk
-    expect(result.mappings).toEqual({ '49076': 'ws-live' }); // legacy fallback preserved
+    const result = await dispatchResolve(setupRouterWithSnapshot(new Map()), { callerPid: 39876 });
+    expect(result.resolvedStatus).toBe('unavailable');
   });
 
   it('skips the snapshot wait when there are no live anchors (empty-map → no stall)', async () => {
@@ -336,6 +378,7 @@ describe('a2a.resolve.identity — server-side walk (callerPid)', () => {
     expect(result.resolved).toBeNull();
     expect(result.entries).toEqual([]);
     expect(result.mappings).toEqual({});
+    expect(result.resolvedStatus).toBe('unavailable'); // nothing to walk to ≠ outside a pane
     releaseSnap(); // release the floated snapshot so nothing dangles
     await hung;
   });

@@ -332,3 +332,23 @@ export function tryNativeSnapshot(): NativeSnapshot | null {
     return null;
   }
 }
+
+/**
+ * Process table only (pid → ppid), for caller-identity checks. Kept apart from
+ * tryNativeSnapshot so a failing TCP-table read cannot take identity down with
+ * it: identity needs nothing but the process table. Null when the native path
+ * is unavailable or the call failed.
+ */
+export function tryNativeProcessTable(): NativeProcRow[] | null {
+  if (loadFailed) return null;
+  const b = loadBindings();
+  if (!b) {
+    loadFailed = true;
+    return null;
+  }
+  try {
+    return readProcessTable(b);
+  } catch {
+    return null;
+  }
+}
