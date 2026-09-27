@@ -114,10 +114,12 @@ jobs:
       - name: Install dependencies (cross-platform)
         run: npm ci
 
-      # No type check here: tsc's result does not depend on the OS, so running
-      # it on three runners added no signal, and on macos-14 (7 GB RAM) the
+      # No type check here. Type errors do not depend on the OS, and the one
+      # disk-dependent case, an import whose casing differs from the file, is
+      # checked by scripts/typecheck.mjs against the disk itself. Running it on
+      # three runners added no signal, and on macos-14 (7 GB RAM) the old
       # single-program check ran out of the default V8 heap. ci.yml's validate
-      # job type-checks once with `npm run typecheck` (scripts/typecheck.mjs).
+      # job type-checks once with `npm run typecheck`.
 
       # ADVISORY ONLY — this step is expected to fail and never gates the job.
       # The repo-wide lint carries a pre-existing baseline of 238 errors /
