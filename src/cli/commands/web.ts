@@ -10,6 +10,9 @@ import {
 import type { RpcResponse } from '../../shared/rpc';
 import type { WebTlsConfig } from '../../shared/web';
 import { isPermissionGateInstalled } from './setupHooks';
+import { planWebStart, type PreviousWebShape } from '../webStartPlan';
+import { getWmuxDir } from '../../daemon/config';
+import { loadWebState } from '../../daemon/web/webStateStore';
 
 const DEFAULT_PORT = 7681;
 const LOOPBACK_HOST = '127.0.0.1';
@@ -133,43 +136,6 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
     return;
   }
 
-  const portRaw = parseFlag(args, '--port');
-  const port = portRaw !== undefined ? Number(portRaw) : DEFAULT_PORT;
-  if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
-    console.error('Error: --port must be an integer between 1 and 65535');
-    process.exit(1);
-  }
-
-  // Host precedence: explicit --host wins; else --expose binds all interfaces;
-  // else loopback-only (safe default — nothing off-machine can reach it).
-  // `--tailscale` narrows this further — see decideTailscaleBinding.
-  const explicitHost = parseFlag(args, '--host');
-  const allowInput = hasFlag(args, '--allow-input');
-  // Its own flag, not a rider on --allow-input: writing files into the
-  // operator's home directory is a heavier grant than typing into a pane.
-  const allowUpload = hasFlag(args, '--allow-upload');
-  // Its own flag too: the transcript carries the WHOLE session (thinking
-  // blocks, full tool inputs, file contents the agent read), far wider reading
-  // than a mirror, and the device credential never expires — off until asked.
-  const allowTranscript = hasFlag(args, '--allow-transcript');
-  // The ceiling for chat launches with approvals (Claude) or approvals and the
-  // sandbox (Codex) off. Only ever sent when set, so the daemon's fail-closed
-  // default is what every other invocation gets.
-  const allowDangerousLaunch = hasFlag(args, '--allow-dangerous-launch');
-  // Extra Host-header names the server should accept (comma-separated). A
-  // reverse proxy in front of the loopback bind forwards the browser's Host
-  // verbatim — `tailscale serve` sends the MagicDNS name, which the default
-  // allowlist (loopback + bound addresses) would reject with 403.
-  const allowedHosts = (parseFlag(args, '--allow-host') ?? '')
-    .split(',')
-    .map((h) => h.trim())
-    .filter(Boolean);
-  // #596: the token survives a restart, so same-transport option changes no
-  // longer lock out a paired phone. `--new-token` is the explicit manual
-  // revocation path; crossing the encrypted/plaintext boundary also rotates
-  // every credential automatically.
-  const newToken = hasFlag(args, '--new-token');
-
   let tls: WebTlsConfig | undefined;
   try {
     tls = resolveWebTlsConfig(args);
@@ -179,35 +145,70 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
     return;
   }
 
+  // Every option NOT given on this command line keeps its previous value — the
+  // running server's, or the persisted record's when the daemon holds one it
+  // could not bring back. Re-running `wmux web --allow-input` used to restart
+  // a tailnet server loopback-only and without its transcript grant, cutting
+  // every paired phone off. Turning something off is explicit now:
+  // `--no-allow-<x>`, `--loopback`, `--no-tls`, or `--stop`.
+  let plan: ReturnType<typeof planWebStart>;
+  try {
+    plan = planWebStart(args, tls, await loadPreviousWebShape(), DEFAULT_PORT);
+  } catch (error) {
+    console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+    return;
+  }
+  const { port, grants } = plan;
+  if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
+    console.error('Error: --port must be an integer between 1 and 65535');
+    process.exit(1);
+  }
+  if (plan.kept.length > 0) {
+    console.log(
+      `Keeping previous settings not given on this command line: ${plan.kept.join(', ')}. ` +
+        'Turn one off with --no-allow-<x>, --loopback or --no-tls, or use --stop.',
+    );
+  }
+  for (const line of plan.narrowed) console.warn(`WARNING: this restart narrows access: ${line}.`);
+
+  // #596: the token survives a restart, so same-transport option changes no
+  // longer lock out a paired phone. `--new-token` is the explicit manual
+  // revocation path; crossing the encrypted/plaintext boundary also rotates
+  // every credential automatically.
+  const newToken = hasFlag(args, '--new-token');
+
   // `--tailscale`: the HTTPS front door is registered BEFORE the server starts
   // (so the Host allowlist carries the MagicDNS name from the first boot) and
   // rolled back if the start fails. Both live in startWebTransport.
-  const tailscale = hasFlag(args, '--tailscale');
+  const tailscale = plan.tailscale;
   const start = await startWebTransport({
     port,
     tailscale,
-    ...(explicitHost !== undefined ? { explicitHost } : {}),
-    expose: hasFlag(args, '--expose'),
-    allowedHosts,
+    ...(plan.explicitHost !== undefined ? { explicitHost: plan.explicitHost } : {}),
+    expose: plan.expose,
+    allowedHosts: plan.allowedHosts,
     startServer: async ({ host, allowedHosts: hosts }) => {
       const res = await sendDaemonStringRequest('daemon.web.start', {
         port,
         host,
-        allowInput,
-        allowUpload,
-        allowTranscript,
-        ...(allowDangerousLaunch ? { allowDangerousLaunch: true } : {}),
+        allowInput: grants.allowInput,
+        allowUpload: grants.allowUpload,
+        allowTranscript: grants.allowTranscript,
+        // The ceiling for chat launches with approvals (Claude) or approvals
+        // and the sandbox (Codex) off. Only ever sent when on, so the daemon's
+        // fail-closed default is what every other invocation gets.
+        ...(grants.allowDangerousLaunch ? { allowDangerousLaunch: true } : {}),
         allowedHosts: hosts,
         newToken,
-        // Explicit false distinguishes "the operator chose HTTP" from an
-        // option-only GUI reconfiguration, which preserves a live TLS listener.
-        tls: tls ?? false,
+        // Explicit false distinguishes "the operator chose HTTP" from a re-run
+        // that did not decide, which keeps a live TLS listener (and every
+        // paired device) instead of silently crossing the HTTPS boundary.
+        ...(plan.tls !== undefined ? { tls: plan.tls } : {}),
         // Forwarded so the daemon persists which transport this is. Without it
         // a `--tailscale` server comes back from a restart reporting plain
         // transport, and the GUI checkbox reads unchecked over a tailnet server
         // — the operator's next Stop → Start then drops them onto loopback.
-        // The GUI path already did this; the CLI path is where a phone gets
-        // paired most often, so it mattered more here.
         tailscale,
       });
       return { failed: getResultError(res) !== undefined, value: res };
@@ -221,6 +222,47 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
   }
   for (const warning of start.warnings) console.warn(warning);
   return report(start.value, jsonMode, 'start', start.tailnet);
+}
+
+/**
+ * What this re-run starts from: the running server, else the persisted record
+ * the daemon keeps for a server it should be running (a boot restore that
+ * failed). Undefined for a fresh start or after `--stop`, which clears the
+ * record — so the old fail-closed defaults apply exactly there.
+ */
+async function loadPreviousWebShape(): Promise<PreviousWebShape | undefined> {
+  try {
+    const res = await sendDaemonStringRequest('daemon.web.status', {});
+    if (res.ok && isRecord(res.result) && res.result['running'] === true) {
+      const r = res.result as unknown as WebInfo & { tailscale?: boolean };
+      return {
+        port: typeof r.port === 'number' ? r.port : DEFAULT_PORT,
+        host: typeof r.host === 'string' && r.host ? r.host : LOOPBACK_HOST,
+        tailscale: r.tailscale === true,
+        allowedHosts: Array.isArray(r.allowedHosts) ? r.allowedHosts.filter((h) => typeof h === 'string') : [],
+        tls: r.tls === true,
+        allowInput: r.allowInput === true,
+        allowUpload: r.allowUpload === true,
+        allowTranscript: r.allowTranscript === true,
+        allowDangerousLaunch: r.allowDangerousLaunch === true,
+      };
+    }
+  } catch {
+    // Fall through to the record: a daemon that is still booting restores it.
+  }
+  const state = loadWebState(getWmuxDir());
+  if (!state.enabled) return undefined;
+  return {
+    port: state.port,
+    host: state.host,
+    tailscale: state.tailscale,
+    allowedHosts: [...state.allowedHosts],
+    tls: state.tls !== undefined,
+    allowInput: state.allowInput,
+    allowUpload: state.allowUpload,
+    allowTranscript: state.allowTranscript === true,
+    allowDangerousLaunch: state.allowDangerousLaunch === true,
+  };
 }
 
 /** The port a running web server reports, or undefined when it is not running. */

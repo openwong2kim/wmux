@@ -9,6 +9,11 @@ vi.mock('../client', () => ({
   sendDaemonStringRequest: sendDaemonStringRequestMock,
 }));
 
+// A fresh start reads the persisted record; never the developer's real one.
+vi.mock('../../daemon/web/webStateStore', () => ({
+  loadWebState: () => ({ enabled: false }),
+}));
+
 import { handleWeb, resolveWebTlsConfig } from '../commands/web';
 
 let lines: string[];
@@ -119,6 +124,9 @@ describe('wmux web native TLS flags (#764)', () => {
   });
 
   it('sends an explicit TLS-off value when the operator chooses plain HTTP', async () => {
+    // Nothing running and nothing persisted: a fresh start, whose transport is
+    // this command line's decision.
+    sendDaemonStringRequestMock.mockResolvedValueOnce({ id: 'status', ok: true, result: { running: false } });
     sendDaemonStringRequestMock.mockResolvedValue({
       id: 'http-start',
       ok: true,

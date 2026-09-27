@@ -604,6 +604,13 @@ after the colon may be reworded, the `transcript-disabled:` tag may not. A daemo
 predating this route has no `allowTranscript` key at all; read a missing key as
 `false` and fall back to the mirror without probing the route.
 
+Operators turn the grant on with `wmux web --allow-transcript` or, on the
+desktop, the **Conversation access** toggle in the Remote popover. Both apply
+to a running server in place (same port, token and paired devices), and a
+later restart from either keeps it on unless it is turned off explicitly
+(`--no-allow-transcript`, the toggle, or `wmux web --stop`). When telling a
+user how to enable the Chat view, point at that toggle.
+
 **Paging.** No `cursor` means "give me the latest": a snapshot of the tail.
 `dir=back` with a cursor pages further into the past from that cursor's head —
 that is your infinite scroll upward. `dir=forward` (the default) with a cursor
@@ -1291,7 +1298,9 @@ their home directory, so one never implies the other. Gate the button on
 `allowUpload` from `/api/config`, and match the 403 by **prefix** — the text
 after the colon is prose and may be reworded, the `uploads-disabled:` tag is
 not. A daemon predating this route has no `allowUpload` key at all; read a
-missing key as `false` and hide the button.
+missing key as `false` and hide the button. On the desktop the grant is the
+**Photo & file upload** toggle in the Remote popover; it persists the same way
+as Conversation access.
 
 **The bytes decide the format, not your header.** JPEG (`FF D8 FF`) and PNG
 (the 8-byte signature) only; anything else is 415, including an empty body.
