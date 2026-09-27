@@ -10,6 +10,7 @@
 // Type-only, and the one import this module has: `approvalKeystrokes` is
 // itself dependency-free, so the narrow-interface property above survives.
 import type { ApprovalPressRefusal } from './approvalKeystrokes';
+import type { QuestionShape } from './askUserQuestion';
 
 /** What the resolver asked for. Approve = affirmative, deny = reject. */
 export type ApprovalDecision = 'approve' | 'deny';
@@ -106,6 +107,14 @@ export interface ApprovalRequest {
    * deterministic key. Absent (not empty) when no choices could be extracted.
    */
   choices?: ApprovalChoice[];
+  /**
+   * `awaiting_input` only: present when the AskUserQuestion is NOT one
+   * single-select question (see askUserQuestion.ts `QuestionShape`). One
+   * keystroke cannot answer such a prompt, so an approve refuses with
+   * `needs-v2` instead of pressing a digit that only toggles a checkbox or
+   * advances a tab. Daemon-internal: not on the web wire (`approvalWire`).
+   */
+  questionShape?: QuestionShape;
   /**
    * A HINT that the question names a destructive action — set at creation when
    * `question`/`options` match the daemon's existing critical-action patterns
@@ -274,7 +283,32 @@ export type ApprovalResolveFailure =
   // A `terminal_prompt` answer whose `decision` does not match the option its
   // `choiceKey` names (approve ↔ plain Yes, deny ↔ plain No), or whose
   // `choiceKey` / `promptFingerprint` is missing.
-  | 'invalid-choice';
+  | 'invalid-choice'
+  // An approve on an `awaiting_input` record whose `questionShape` one key
+  // cannot answer (multi-select, or several questions). NOT an expiry: the
+  // record stays pending, deny (Esc) still works, and a human answers the rest
+  // in the pane. The web layer maps it to 501 with `reason: 'needs-v2'`.
+  | 'needs-v2';
+
+/**
+ * The one-line `reason` a 501 carries on the web wire, next to its unchanged
+ * `error`: WHY the phone cannot answer, so a client can say more than "open
+ * the computer". Closed set, documented in docs/phone-client-contract.md.
+ *   no-capability      the caller cannot answer this kind remotely (no
+ *                      capability header, or an automated resolver)
+ *   unsupported-shape  the dialog was not bound and parsed whole
+ *   screen-unreadable  reserved — no 501 path emits it yet
+ *   secret-input       reserved — no 501 path emits it yet
+ *   needs-v2           answerable only by the stepwise v2 answer path
+ *   unsupported-agent  no keystroke map for this agent
+ */
+export type AnswerRefusalReason =
+  | 'no-capability'
+  | 'unsupported-shape'
+  | 'screen-unreadable'
+  | 'secret-input'
+  | 'needs-v2'
+  | 'unsupported-agent';
 
 export type ApprovalResolveResult =
   | {
@@ -313,6 +347,12 @@ export type ApprovalResolveResult =
        * that ignores this field behaves exactly as before.
        */
       pressRefusal?: ApprovalPressRefusal;
+      /**
+       * Present ONLY with `reason: 'answer-in-terminal'` — which of its two
+       * causes refused (`no-capability` or `unsupported-shape`). The web layer
+       * sends it as the 501's `reason`. Additive, like `pressRefusal`.
+       */
+      answerRefusal?: AnswerRefusalReason;
       /** Present on 'already-resolved' — the 409 UX names who got there first. */
       resolvedBy?: string;
       /** Absent only for 'not-found'. */
@@ -380,6 +420,7 @@ export interface ApprovalHookSink {
     options?: string[];
     /** Structured choices with key+label, extracted alongside options. */
     choices?: ApprovalChoice[];
+    questionShape?: QuestionShape;
   }): void;
   /**
    * #783 — create a pending permission-gate record. Returns the new record's id

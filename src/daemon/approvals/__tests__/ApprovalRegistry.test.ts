@@ -10,6 +10,7 @@ import {
 } from '../ApprovalRegistry';
 import {
   getApprovalStatePath,
+  loadApprovalState,
   RESOLVED_HISTORY_CAP,
   SCREEN_TAIL_ROWS,
   SCREEN_TAIL_ROW_CHARS,
@@ -209,6 +210,64 @@ describe('ApprovalRegistry — lifecycle', () => {
     // Refusing to press is not the same as killing the request: a human at the
     // desktop can still answer it.
     expect(h.registry.list().pending).toHaveLength(1);
+  });
+
+  it('openclaude answers through the same map as claude', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'openclaude');
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' });
+
+    expect(res.ok).toBe(true);
+    expect(h.writes).toEqual([{ sessionId: 'pty-a', data: '1' }]);
+  });
+});
+
+describe('ApprovalRegistry — questions one key cannot answer (needs-v2)', () => {
+  // The record a multi-question AskUserQuestion produced on a live 2.1.283
+  // pane: only questions[0] is surfaced, so it LOOKS like a plain select.
+  const multiQuestion = {
+    question: 'Which size?',
+    options: ['Small', 'Large'],
+    choices: [{ key: '1', label: 'Small' }, { key: '2', label: 'Large' }],
+    questionShape: 'multi-question' as const,
+  };
+
+  it.each([
+    ['multi-question, default approve', multiQuestion, undefined],
+    ['multi-question, approve with a choiceKey', multiQuestion, '2'],
+    ['multi-select, approve with a choiceKey', { ...multiQuestion, questionShape: 'multi-select' as const }, '1'],
+  ])('%s → needs-v2, nothing typed, still pending', async (_label, extras, choiceKey) => {
+    const h = makeRegistry();
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', ...extras });
+    await settle();
+
+    const res = await h.registry.resolve({
+      id: 'req-1', decision: 'approve', resolvedBy: 'phone', ...(choiceKey ? { choiceKey } : {}),
+    });
+
+    expect(res).toMatchObject({ ok: false, reason: 'needs-v2' });
+    expect(h.writes).toEqual([]);
+    expect(h.registry.list().pending).toHaveLength(1);
+  });
+
+  it('deny still cancels it with Esc — Esc cancels the whole tool whatever its shape', async () => {
+    const h = makeRegistry();
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', ...multiQuestion });
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', decision: 'deny', resolvedBy: 'phone' });
+
+    expect(res.ok).toBe(true);
+    expect(h.writes).toEqual([{ sessionId: 'pty-a', data: '\x1b' }]);
+  });
+
+  it('the shape survives a reload from approvals.json', async () => {
+    const h = makeRegistry();
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', ...multiQuestion });
+    await settle();
+    expect(loadApprovalState(tmpDir).requests[0].questionShape).toBe('multi-question');
   });
 });
 
@@ -699,8 +758,12 @@ describe('keystroke map v1', () => {
     expect(keys?.deny).not.toContain('\r');
   });
 
+  it('openclaude (a Claude Code fork, same select) shares the claude map', () => {
+    expect(keystrokesForAgent('openclaude')).toEqual({ approve: '1', deny: '\x1b' });
+  });
+
   it('every other agent is unmapped rather than guessed at', () => {
-    for (const slug of ['codex', 'gemini', 'opencode', 'openclaude', 'aider', '']) {
+    for (const slug of ['codex', 'gemini', 'opencode', 'aider', '']) {
       expect(keystrokesForAgent(slug)).toBeNull();
     }
   });

@@ -70,13 +70,18 @@ export interface ApprovalKeystrokes {
 }
 
 /**
- * Keystroke map v1 — Claude Code ONLY. Every other slug is `unsupported-agent`
- * rather than a guess: pressing the wrong byte into a TUI is not a recoverable
- * error, and a codex/gemini/opencode pane has neither the same prompt shape nor
- * the same hook wiring.
+ * Keystroke map v1 — the Claude Code family ONLY. openclaude is a fork of
+ * Claude Code that draws the same AskUserQuestion select, so it shares the map
+ * (the same set `isClaudeFamilyAgent` names). Every other slug is
+ * `unsupported-agent` rather than a guess: pressing the wrong byte into a TUI
+ * is not a recoverable error, and a codex/gemini/opencode pane has neither the
+ * same prompt shape nor the same hook wiring. Measured key semantics per TUI:
+ * `__tests__/fixtures/terminal-prompts/KEYS.md`.
  */
+const CLAUDE_KEYSTROKES: ApprovalKeystrokes = { approve: '1', deny: '\x1b' };
 const KEYSTROKES_BY_AGENT: Readonly<Record<string, ApprovalKeystrokes>> = {
-  claude: { approve: '1', deny: '\x1b' },
+  claude: CLAUDE_KEYSTROKES,
+  openclaude: CLAUDE_KEYSTROKES,
 };
 
 export function keystrokesForAgent(agentSlug: string): ApprovalKeystrokes | null {

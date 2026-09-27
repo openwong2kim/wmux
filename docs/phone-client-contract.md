@@ -871,9 +871,19 @@ request stays pending — no default option is pressed.
 
 ### Agent support — Claude native, others terminal-only
 
-Claude Code's `AskUserQuestion` prompt is natively supported: the daemon
-extracts the question, options, and structured choices from the hook payload and
-maps resolve decisions to precise TUI keystrokes.
+Claude Code's `AskUserQuestion` prompt is natively supported (for `claude` and
+its fork `openclaude`, which draws the same select): the daemon extracts the
+question, options, and structured choices from the hook payload and maps resolve
+decisions to precise TUI keystrokes.
+
+One keystroke answers exactly one shape: a **single single-select question**.
+When the question is multi-select, or the tool call carries more than one
+question, an approve — with or without `choiceKey` — is refused with 501
+`{error:"answer-in-terminal", reason:"needs-v2"}` and nothing is typed (measured
+on Claude Code 2.1.283: a digit only toggles one checkbox of a multi-select, and
+on the first of several questions it answers that one and moves to the next
+tab, so the tool is still waiting). The record stays pending; deny (Esc) still
+cancels the whole question.
 
 Claude Code's own **permission dialog** ("Do you want to proceed?") is recorded
 as a `terminal_prompt` — see the next section for when it can be answered from
@@ -984,7 +994,7 @@ resolves. An SSE `approval` event with `phase: "press"` marks the write.
 | 410 | `{error:"expired", state?}` | The record ended without an answer (turn ended, pane gone, replaced) |
 | 409 | `{error:"prompt-changed"}` | The screen is not the dialog you answered (changed, moved, not the active dialog, or a key or click reached the pane since your read). Nothing typed. When the dialog is still up, the record was superseded by a fresh one — re-read `/api/approvals` and confirm again |
 | 425 | `{error:"answer-too-soon"}` | Within 1.5 s of the record appearing. Ask again |
-| 501 | `{error:"answer-in-terminal"}` | Not answerable remotely: no capability header, or the record is not answerable (checked before the body, so a record without a fingerprint is 501, not 400). Answer on the computer |
+| 501 | `{error:"answer-in-terminal", reason}` | Not answerable remotely: no capability header (`reason:"no-capability"`), or the record is not answerable (`reason:"unsupported-shape"`; checked before the body, so a record without a fingerprint is 501, not 400). Answer on the computer |
 
 Without the capability header every answer is 501 `answer-in-terminal`: show
 "wmux cannot answer this agent remotely. Open the pane on the computer."
@@ -1084,10 +1094,28 @@ there before writing.
 | 409 | `{error: 'already-resolved', resolvedBy}` | Another surface won. `resolvedBy` names it (`operator`, or `device <name> (<id>)`) |
 | 410 | `{error: 'expired' \| 'prompt-gone', state?}` | The request outlived its usefulness, or the prompt left the screen. Stop showing it |
 | 422 | `{error: 'invalid-choice-key'}` | The `choiceKey` does not belong to this request's choices, or the option is not visible on screen. The request is still pending — retry with a valid key or omit `choiceKey` |
-| 501 | `{error: 'unsupported-agent'}` | No keystroke map for this agent. Still answerable at the desktop — do not expire it locally |
+| 501 | `{error: 'unsupported-agent', reason: 'unsupported-agent'}` | No keystroke map for this agent. Still answerable at the desktop — do not expire it locally |
+| 501 | `{error: 'answer-in-terminal', reason: 'needs-v2'}` | A multi-select or multi-question `AskUserQuestion`: one key cannot answer it, so nothing was typed. Still pending — answer it at the desktop, or deny |
 | 404 | `{error: 'not-found'}` | No such request |
 
-Only Claude Code is mapped today. Approve sends `1` (the first offered option),
+#### The 501 `reason`
+
+Every 501 from `POST /api/approvals/:id` carries a one-line `reason` next to
+its `error`. Status codes and `error` values are unchanged, so a client that
+ignores `reason` behaves exactly as before; one that reads it can say why.
+
+| `reason` | Emitted when |
+| --- | --- |
+| `no-capability` | The caller cannot answer this kind remotely: no `terminal-prompt-answer` capability header, or an automated resolver |
+| `unsupported-shape` | The dialog was not bound and parsed whole (no fingerprint or choices) |
+| `needs-v2` | The prompt needs more than one keystroke (multi-select, several questions) |
+| `unsupported-agent` | No keystroke map for this agent |
+| `screen-unreadable` | Reserved — no route emits it yet |
+| `secret-input` | Reserved — no route emits it yet |
+
+Treat an unknown `reason` like a missing one: the set may grow.
+
+Only the Claude Code family (`claude`, `openclaude`) is mapped today. Approve sends `1` (the first offered option),
 deny sends ESC. Neither is followed by a carriage return: on a select, the digit
 both moves and confirms, and a stray CR would press whatever the TUI renders
 next.

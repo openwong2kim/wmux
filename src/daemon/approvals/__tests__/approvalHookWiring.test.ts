@@ -92,6 +92,24 @@ describe('hook → approval registry wiring', () => {
     });
   });
 
+  it('carries the question shape when one key cannot answer it', () => {
+    const { ingest, approvals } = makeIngest();
+
+    ingest.handle(makeSignal({
+      payload: {
+        tool_name: 'AskUserQuestion',
+        tool_input: {
+          questions: [
+            { question: 'Which size?', multiSelect: false, options: [{ label: 'Small' }, { label: 'Large' }] },
+            { question: 'Which toppings?', multiSelect: true, options: [{ label: 'Cheese' }] },
+          ],
+        },
+      },
+    }));
+
+    expect(approvals.created[0]).toMatchObject({ question: 'Which size?', questionShape: 'multi-question' });
+  });
+
   it('A4: a payload with no usable tool_input still creates the request', () => {
     const { ingest, approvals } = makeIngest();
 

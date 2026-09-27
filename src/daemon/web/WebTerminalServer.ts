@@ -5995,7 +5995,10 @@ export class WebTerminalServer {
       record?.kind === 'terminal_prompt'
       && (!caps.terminalPromptAnswer || !record.promptFingerprint || !record.choices?.length)
     ) {
-      return this.json(res, 501, { error: 'answer-in-terminal' });
+      return this.json(res, 501, {
+        error: 'answer-in-terminal',
+        reason: caps.terminalPromptAnswer ? 'unsupported-shape' : 'no-capability',
+      });
     }
     // A gate approval runs the tool; a terminal-prompt answer types a key into
     // the pane. Both need the same grant as typing.
@@ -6125,10 +6128,18 @@ export class WebTerminalServer {
             // The daemon has no keystroke map for this agent, so it refuses to
             // guess bytes. Not the caller's fault: 501, not 4xx.
             case 'unsupported-agent':
-              return this.json(res, 501, { error: 'unsupported-agent' });
+              return this.json(res, 501, { error: 'unsupported-agent', reason: 'unsupported-agent' });
             // A terminal prompt this caller may not answer (see the registry).
             case 'answer-in-terminal':
-              return this.json(res, 501, { error: 'answer-in-terminal' });
+              return this.json(res, 501, {
+                error: 'answer-in-terminal',
+                reason: result.answerRefusal ?? 'no-capability',
+              });
+            // A multi-select or multi-question AskUserQuestion: one key cannot
+            // answer it, so nothing was typed. Same `error` a v1 client already
+            // maps to "answer on the computer"; `reason` says why.
+            case 'needs-v2':
+              return this.json(res, 501, { error: 'answer-in-terminal', reason: 'needs-v2' });
             // The one remote answer to this terminal prompt was already typed.
             case 'already-answered':
               return this.json(res, 409, { error: 'already-answered' });

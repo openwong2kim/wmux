@@ -15,7 +15,7 @@
 
 import path from 'node:path';
 import { atomicReadJSONSync, atomicWriteJSON } from '../util/atomicWrite';
-import { sanitizeChoices, sanitizeOptions, sanitizeQuestion } from './askUserQuestion';
+import { sanitizeChoices, sanitizeOptions, sanitizeQuestion, sanitizeQuestionShape } from './askUserQuestion';
 import { boundRecordText, TERMINAL_PROMPT_SUMMARY_MAX, TERMINAL_PROMPT_TOOL_NAME_MAX } from './terminalPrompt';
 import type { ApprovalDecision, ApprovalRequest, ApprovalState } from './types';
 
@@ -123,6 +123,8 @@ function coerceRequest(raw: unknown): ApprovalRequest | null {
   if (options) out.options = options;
   const choices = sanitizeChoices(o['choices']);
   if (choices) out.choices = choices;
+  const questionShape = sanitizeQuestionShape(o['questionShape']);
+  if (questionShape) out.questionShape = questionShape;
   // selectedChoiceKey: a 1-2 digit string, validated against the choices set.
   if (typeof o['selectedChoiceKey'] === 'string' && /^\d{1,2}$/.test(o['selectedChoiceKey'])) {
     out.selectedChoiceKey = o['selectedChoiceKey'];

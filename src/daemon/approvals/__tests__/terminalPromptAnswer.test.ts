@@ -177,7 +177,8 @@ describe('terminal_prompt creation from the screen', () => {
     expect(record).not.toHaveProperty('choices');
     expect(record).not.toHaveProperty('promptFingerprint');
     settle(h);
-    expect(await answer(h, record, { promptFingerprint: 'f'.repeat(32) })).toMatchObject({ ok: false, reason: 'answer-in-terminal' });
+    expect(await answer(h, record, { promptFingerprint: 'f'.repeat(32) }))
+      .toMatchObject({ ok: false, reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape' });
     expect(h.writes).toEqual([]);
   });
 
@@ -250,18 +251,18 @@ describe('terminal_prompt answer', () => {
   });
 
   it.each([
-    ['an automated resolver', { resolver: 'automated' as const }, 'answer-in-terminal'],
-    ['no web capability marker', { terminalPromptAnswer: undefined }, 'answer-in-terminal'],
+    ['an automated resolver', { resolver: 'automated' as const }, 'answer-in-terminal', 'no-capability'],
+    ['no web capability marker', { terminalPromptAnswer: undefined }, 'answer-in-terminal', 'no-capability'],
     ['no choiceKey', { choiceKey: undefined }, 'invalid-choice'],
     ['a choiceKey not among the choices', { choiceKey: '7' }, 'invalid-choice'],
     ['a decision that disagrees with the option', { decision: 'deny' as const, choiceKey: '1' }, 'invalid-choice'],
     ['no fingerprint', { promptFingerprint: undefined }, 'invalid-choice'],
     ['a stale fingerprint', { promptFingerprint: '0'.repeat(32) }, 'prompt-changed'],
-  ])('refuses %s in the registry, writing nothing', async (_label, over, reason) => {
+  ])('refuses %s in the registry, writing nothing', async (_label, over, reason, answerRefusal?: string) => {
     const h = makeRegistry();
     const record = await create(h);
     settle(h);
-    expect(await answer(h, record, over)).toMatchObject({ ok: false, reason });
+    expect(await answer(h, record, over)).toMatchObject({ ok: false, reason, ...(answerRefusal ? { answerRefusal } : {}) });
     expect(h.writes).toEqual([]);
     expect(h.registry.list().pending).toHaveLength(1);
   });

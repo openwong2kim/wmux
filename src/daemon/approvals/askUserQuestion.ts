@@ -49,11 +49,24 @@ export const MAX_INSPECTED_OPTIONS = 64;
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARS_RE = /[\x00-\x1f\x7f-\x9f]/g;
 
+/**
+ * Why one keystroke cannot answer this AskUserQuestion. Absent for the only
+ * shape a single press answers whole: ONE single-select question.
+ *
+ * Measured on Claude Code 2.1.283 (fixtures/terminal-prompts/KEYS.md): on a
+ * multi-select question a digit only TOGGLES that row's checkbox, and on the
+ * first of several questions a digit selects and moves to the next tab. Either
+ * way the tool is still waiting after the press, so reporting it answered
+ * would be wrong.
+ */
+export type QuestionShape = 'multi-select' | 'multi-question';
+
 export interface ExtractedQuestion {
   question?: string;
   options?: string[];
   /** Structured choices preserving the original 1-based index as key. */
   choices?: Array<{ key: string; label: string }>;
+  questionShape?: QuestionShape;
 }
 
 /**
@@ -93,6 +106,10 @@ export function extractAskUserQuestion(payload: unknown): ExtractedQuestion {
   >;
 
   const out: ExtractedQuestion = {};
+  // Judged on the WHOLE payload, not only the question surfaced below: a
+  // second question is exactly what the single press cannot reach.
+  if (questions && questions.length > 1) out.questionShape = 'multi-question';
+  else if (source['multiSelect'] === true) out.questionShape = 'multi-select';
   const question = clean(readString(source, 'question'), MAX_QUESTION_CHARS);
   if (question) out.question = question;
 
@@ -230,4 +247,9 @@ export function sanitizeChoices(
     }
   }
   return out.length > 0 ? out : undefined;
+}
+
+/** Re-apply the closed set to a `questionShape` read back from disk. */
+export function sanitizeQuestionShape(value: unknown): QuestionShape | undefined {
+  return value === 'multi-select' || value === 'multi-question' ? value : undefined;
 }

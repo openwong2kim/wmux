@@ -1049,6 +1049,7 @@ export class HookIngest {
       ...(asked.question ? { question: asked.question } : {}),
       ...(asked.options ? { options: asked.options } : {}),
       ...(asked.choices ? { choices: asked.choices } : {}),
+      ...(asked.questionShape ? { questionShape: asked.questionShape } : {}),
     });
   }
 

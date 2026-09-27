@@ -174,6 +174,9 @@ export const PRESS_REFUSAL_HINTS: Readonly<Record<string, string>> = {
   'answer-in-terminal':
     "this is the agent's own terminal dialog: a human answers it, in the pane or from a paired phone. " +
     'No automated press reaches it — raise it with deck_ask_decision if the operator is needed',
+  'needs-v2':
+    'this question is multi-select or has several questions, and one key press cannot answer it — ' +
+    'deny cancels it; otherwise a human answers it in the pane, so raise it with deck_ask_decision',
 };
 
 // ─── Policy refusals escalate; raw input follows live state ────────────────

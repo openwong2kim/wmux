@@ -2097,7 +2097,10 @@ describe('WebTerminalServer', () => {
       // A well-formed key that is not valid for this live request stays pending.
       { result: { ok: false, reason: 'invalid-choice-key' }, status: 422, body: { error: 'invalid-choice-key' } },
       // No keystroke map for this agent — the daemon refuses to guess bytes.
-      { result: { ok: false, reason: 'unsupported-agent' }, status: 501, body: { error: 'unsupported-agent' } },
+      { result: { ok: false, reason: 'unsupported-agent' }, status: 501, body: { error: 'unsupported-agent', reason: 'unsupported-agent' } },
+      // A multi-select / multi-question AskUserQuestion: one key cannot answer
+      // it. The error a v1 client already understands, plus why.
+      { result: { ok: false, reason: 'needs-v2' }, status: 501, body: { error: 'answer-in-terminal', reason: 'needs-v2' } },
       { result: { ok: false, reason: 'not-found' }, status: 404, body: { error: 'not-found' } },
     ];
 
@@ -4292,7 +4295,7 @@ describe('WebTerminalServer', () => {
       // No fingerprint in the body at all: still 501, not 400.
       const res = await postTp(info.token as string, { decision: 'approve', choiceKey: '1' });
       expect(res.status).toBe(501);
-      expect(await res.json()).toEqual({ error: 'answer-in-terminal' });
+      expect(await res.json()).toEqual({ error: 'answer-in-terminal', reason: 'unsupported-shape' });
       expect(resolveCalls).toEqual([]);
     });
 
@@ -4308,7 +4311,7 @@ describe('WebTerminalServer', () => {
       approvalRecords.push(tp());
       const res = await postTp(info.token as string, answerBody, {});
       expect(res.status).toBe(501);
-      expect(await res.json()).toEqual({ error: 'answer-in-terminal' });
+      expect(await res.json()).toEqual({ error: 'answer-in-terminal', reason: 'no-capability' });
       expect(resolveCalls).toEqual([]);
     });
 
@@ -4355,7 +4358,18 @@ describe('WebTerminalServer', () => {
       approvalBox.result = { ok: false, reason, request: tp() };
       const res = await postTp(info.token as string, answerBody);
       expect(res.status).toBe(status);
-      expect(await res.json()).toEqual({ error: reason });
+      // A 501 names its cause; a registry refusal without one reads as the
+      // caller-side cause.
+      expect(await res.json()).toEqual(status === 501 ? { error: reason, reason: 'no-capability' } : { error: reason });
+    });
+
+    it('a registry answer-in-terminal carries its cause as the 501 reason', async () => {
+      const info = await startRW();
+      approvalRecords.push(tp());
+      approvalBox.result = { ok: false, reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape', request: tp() };
+      const res = await postTp(info.token as string, answerBody);
+      expect(res.status).toBe(501);
+      expect(await res.json()).toEqual({ error: 'answer-in-terminal', reason: 'unsupported-shape' });
     });
 
     it('a read-only caller is refused before the body (site 1)', async () => {

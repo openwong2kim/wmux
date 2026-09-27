@@ -12,6 +12,7 @@ import {
   sanitizeChoices,
   sanitizeOptions,
   sanitizeQuestion,
+  sanitizeQuestionShape,
   MAX_OPTIONS,
   MAX_OPTION_LABEL_CHARS,
   MAX_QUESTION_CHARS,
@@ -89,6 +90,21 @@ describe('extractAskUserQuestion — normal extraction', () => {
     expect(out.question).toBe('First?');
     expect(out.options).toEqual(['A']);
     expect(out.choices).toEqual([{ key: '1', label: 'A' }]);
+    // ...and says there is more than one keystroke can answer.
+    expect(out.questionShape).toBe('multi-question');
+  });
+
+  it('marks a multi-select question, and only that — one single-select question has no shape', () => {
+    const multi = extractAskUserQuestion({
+      tool_input: { questions: [{ question: 'Which toppings?', multiSelect: true, options: [{ label: 'Cheese' }, { label: 'Basil' }] }] },
+    });
+    expect(multi.questionShape).toBe('multi-select');
+    expect(extractAskUserQuestion({ tool_input: { question: 'Which?', multiSelect: true, options: ['A'] } }).questionShape)
+      .toBe('multi-select');
+    expect(extractAskUserQuestion(canonical())).not.toHaveProperty('questionShape');
+    // A truthy non-boolean is not a multi-select: the closed shape is exact.
+    expect(extractAskUserQuestion({ tool_input: { questions: [{ question: 'Q', multiSelect: 'yes', options: ['A'] }] } }))
+      .not.toHaveProperty('questionShape');
   });
 
   it('keeps a question with no options, and options with no question', () => {
@@ -205,6 +221,13 @@ describe('extractAskUserQuestion — malformed payloads yield absence, never a t
 });
 
 describe('read-back sanitisers (a hand-edited approvals.json)', () => {
+  it('keeps only the closed questionShape set', () => {
+    expect(sanitizeQuestionShape('multi-select')).toBe('multi-select');
+    expect(sanitizeQuestionShape('multi-question')).toBe('multi-question');
+    expect(sanitizeQuestionShape('single')).toBeUndefined();
+    expect(sanitizeQuestionShape(1)).toBeUndefined();
+  });
+
   it('re-truncates an oversized stored question', () => {
     expect(sanitizeQuestion('q'.repeat(9_999))).toHaveLength(MAX_QUESTION_CHARS);
   });

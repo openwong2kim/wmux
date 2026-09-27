@@ -101,6 +101,7 @@ import type {
   TerminalPromptNote,
 } from './types';
 import { TERMINAL_PROMPT_WEB_ANSWER } from './types';
+import type { QuestionShape } from './askUserQuestion';
 
 /** The pane's state at one instant: output bytes, key-carrying input, the PTY incarnation. */
 export interface PromptScreenMark {
@@ -387,6 +388,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     question?: string;
     options?: string[];
     choices?: Array<{ key: string; label: string }>;
+    questionShape?: QuestionShape;
   }): Promise<void> {
     // Snapshot BEFORE queuing. `mutate` runs the body after the chain drains,
     // which can be seconds later (a resolve ahead of it is holding the chain
@@ -401,6 +403,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       question: input.question,
       options: input.options ? [...input.options] : undefined,
       choices: input.choices ? input.choices.map((c) => ({ ...c })) : undefined,
+      questionShape: input.questionShape,
     };
     return this.mutate(() => {
       const superseded = this.requests.find(
@@ -427,6 +430,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         ...(snapshot.question ? { question: snapshot.question } : {}),
         ...(snapshot.options && snapshot.options.length > 0 ? { options: [...snapshot.options] } : {}),
         ...(snapshot.choices && snapshot.choices.length > 0 ? { choices: snapshot.choices.map((c) => ({ ...c })) } : {}),
+        ...(snapshot.questionShape ? { questionShape: snapshot.questionShape } : {}),
         // Danger HINT for UI step-up, computed once at creation from the same
         // pattern list the PTY critical-action scanner uses. A miss or a false
         // positive changes nothing about whether this request can be answered.
@@ -927,6 +931,22 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         };
       }
 
+      // One key cannot answer a multi-select or multi-question AskUserQuestion
+      // (measured: a digit toggles one checkbox, or answers the first question
+      // and moves to the next tab). Refuse an approve — with or without a
+      // choiceKey — BEFORE the screen read and without expiring: the record is
+      // still live, a human can answer it in the pane, and deny (Esc) still
+      // cancels the whole tool, so it stays allowed.
+      if (params.decision === 'approve' && record.questionShape) {
+        return {
+          result: {
+            ok: false,
+            reason: 'needs-v2',
+            request: copyRequest(record),
+          } as ApprovalResolveResult,
+        };
+      }
+
       // ── choiceKey validation ──────────────────────────────────────────────
       // When present, the caller is selecting a specific option rather than the
       // default first-option mapping. Validate that the key belongs to this
@@ -1148,10 +1168,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     if (
       (params.resolver ?? 'human') !== 'human'
       || params.terminalPromptAnswer !== TERMINAL_PROMPT_WEB_ANSWER
-      || !record.promptFingerprint
-      || !record.choices?.length
     ) {
-      return refuse('answer-in-terminal');
+      return { ...refuse('answer-in-terminal'), answerRefusal: 'no-capability' } as ApprovalResolveResult;
+    }
+    if (!record.promptFingerprint || !record.choices?.length) {
+      return { ...refuse('answer-in-terminal'), answerRefusal: 'unsupported-shape' } as ApprovalResolveResult;
     }
     if (!choice || !params.promptFingerprint) return refuse('invalid-choice');
     const expected = decisionForChoiceLabel(choice.label);
