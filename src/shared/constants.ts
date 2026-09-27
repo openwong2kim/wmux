@@ -133,10 +133,11 @@ export const IPC = {
   // workspace, sound by the Electron process boundary) and forwards to the
   // daemon, whose authz gates run against it. See channelLocal.handler.ts.
   CHANNEL_MUTATE_LOCAL: 'channels:mutate-local',
-  // Renderer → main: may an agent-to-agent delivery write to this pty now?
-  // Runs the raw-input approval guard `input.send` applies (input.rpc.ts
-  // `a2aDeliveryRefusal`). Renderer-only ipcMain.handle, not on the pipe.
-  A2A_DELIVERY_GATE: 'a2a:delivery-gate',
+  // Renderer → main: paste a message into a pty and submit it, gated by the
+  // raw-input approval guard `input.send` applies, re-checked before the Enter
+  // (input.rpc.ts `gatedPasteSubmit`). Used for every non-operator delivery
+  // (A2A, company, channel mention nudges). Renderer-only, not on the pipe.
+  GATED_SUBMIT: 'pty:gated-submit',
   // J1 fan-out — renderer(다이얼로그) → main: 프롬프트 1개 → N 격리 태스크 스폰.
   // main의 FanOutService가 데몬 RPC(mission.start/update/invite)와 렌더러 spawn을
   // 조립한다. 렌더러 신뢰 신원(verifiedWorkspaceId)은 channelLocal과 동일 trust

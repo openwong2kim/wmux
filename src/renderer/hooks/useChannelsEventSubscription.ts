@@ -68,7 +68,7 @@ import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { panePrincipalId } from '../../shared/principals';
 import { publishA2aTask } from '../events/publisher';
 import { flushMentions, type FlushOpts } from './channelMentionFlush';
-import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
+import { gatedSubmitToPty } from '../utils/ptyMessageDelivery';
 import {
   createPasteGateState,
   isMentionPasteBusy,
@@ -310,7 +310,7 @@ export function useChannelsEventSubscription(): void {
           if (s.ptyId && st.surfaceAgent[s.ptyId]) agentPtys.add(s.ptyId);
         }
       }
-      flushMentions(wsId, selfLeaves, {
+      void flushMentions(wsId, selfLeaves, {
         getUndeliveredChannelMentionTasks: st.getUndeliveredChannelMentionTasks,
         agentPtys,
         // surfaceAgent (NOT surfaceAgentStatus) is the busy source: surfaceAgentStatus
@@ -342,10 +342,17 @@ export function useChannelsEventSubscription(): void {
         // paste-burst TUI (Codex) swallows an Enter written too soon after the
         // paste and strands the mention in its composer. Same slug the busy
         // gate above already reads, so this pane is named or it is nobody.
-        deliverNudge: (ptyId, text) =>
-          submitBracketedPasteToPty(ptyId, text, {
+        //
+        // A mention nudge is submitted on another agent's behalf, so it goes
+        // through main's approval gate: an Enter into a pane showing an
+        // approval would answer it. A refusal throws, leaving the mention
+        // unmarked for the next Stop.
+        deliverNudge: async (ptyId, text) => {
+          const result = await gatedSubmitToPty(ptyId, text, {
             agent: useStore.getState().surfaceAgent[ptyId]?.slug,
-          }),
+          });
+          if (!result.ok) throw new Error(`mention nudge not submitted (${result.reason}): ${result.detail}`);
+        },
         markDelivered: st.markChannelMentionDelivered,
         // 2f: rate cap unchanged; the first capped observation per window also
         // raises a one-shot user-visible toast (the cap itself only console-

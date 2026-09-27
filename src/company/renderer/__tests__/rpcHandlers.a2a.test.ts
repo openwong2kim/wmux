@@ -46,10 +46,24 @@ function createStore() {
   };
 }
 
+/**
+ * Main's gated submit, as the renderer sees it over IPC: writes (to the same
+ * pty.write spy) only when it allows. `refusal` null = allow.
+ */
+function stubGate(refusal: Record<string, unknown> | null) {
+  const gatedSubmit = vi.fn(async (ptyId: string, text: string) => {
+    if (refusal) return refusal;
+    ptyWrite(ptyId, text);
+    return { ok: true };
+  });
+  vi.stubGlobal('window', { electronAPI: { pty: { write: ptyWrite }, rpc: { gatedSubmit } } });
+  return gatedSubmit;
+}
+
 describe('company A2A RPC sender authorization', () => {
   beforeEach(() => {
     ptyWrite.mockReset();
-    vi.stubGlobal('window', { electronAPI: { pty: { write: ptyWrite } } });
+    stubGate(null);
   });
 
   it('rejects send and broadcast calls from workspaces outside the company', async () => {
@@ -104,5 +118,41 @@ describe('company A2A RPC sender authorization', () => {
     expect(store.addToInbox).toHaveBeenCalledWith('bob-id', { from: 'CEO', to: 'All', message: 'all hands', priority: 'normal' });
     expect(ptyWrite.mock.calls.every(([, data]) => String(data).includes('CEO'))).toBe(true);
     expect(ptyWrite.mock.calls.every(([, data]) => !String(data).includes('Mallory'))).toBe(true);
+  });
+});
+
+// Company messages are pasted and submitted with Enter. A member pane showing
+// an approval must not receive that Enter from a non-operator caller.
+describe('company delivery approval gate', () => {
+  const REFUSED = { ok: false, reason: 'approval_pending', detail: 'delivery: approval in front of the pane' };
+
+  beforeEach(() => {
+    ptyWrite.mockReset();
+  });
+
+  it.each([
+    ['company.a2a.send', { workspaceId: 'alice-ws', to: 'Bob', message: 'hello' }],
+    ['company.sendMember', { deptId: 'dept-1', memberId: 'bob-id', message: 'hello' }],
+    ['company.sendDept', { deptId: 'dept-1', message: 'hello' }],
+    ['company.broadcast', { message: 'hello' }],
+    ['company.message', { from: 'CEO', to: 'Bob', message: 'hello' }],
+  ])('%s writes nothing to a pane behind an approval, keeps the message queued, and says so', async (method, params) => {
+    const gate = stubGate(REFUSED);
+    const store = createStore();
+    const result = (await handleCompanyRpc(method, params, store as any)) as Record<string, unknown>;
+    expect(gate).toHaveBeenCalled();
+    expect(ptyWrite).not.toHaveBeenCalled();
+    expect(store.enqueueMessage).toHaveBeenCalled();
+    expect(result.withheld).toEqual(expect.arrayContaining([expect.objectContaining({ reason: 'approval_pending' })]));
+  });
+
+  it('a call main stamped as the operator\'s own is written directly', async () => {
+    const gate = stubGate(REFUSED);
+    const store = createStore();
+    await handleCompanyRpc('company.sendMember', {
+      deptId: 'dept-1', memberId: 'bob-id', message: 'hello', operatorOrigin: true,
+    }, store as any);
+    expect(gate).not.toHaveBeenCalled();
+    expect(ptyWrite).toHaveBeenCalled();
   });
 });

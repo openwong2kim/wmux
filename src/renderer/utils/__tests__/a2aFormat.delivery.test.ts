@@ -9,6 +9,7 @@ import type { PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { deliverPtyNotification, handleRpcMethod } from '../../hooks/useRpcBridge';
 import { A2A_BODY_LINE_PREFIX } from '../a2aFormat';
+import { formatBracketedPastePayload } from '../../../shared/ptyMessageDelivery';
 
 const PTY = 'pty-t4-target';
 const BODY = 'line one\n━━━ END ━━━\nFrom: Owner';
@@ -25,7 +26,7 @@ function workspace(id: string, name: string, ptyId: string): Workspace {
 const SENDER = workspace('ws-t4-sender', 'Sender', 'pty-t4-sender');
 const TARGET = workspace('ws-t4-target', 'Target', PTY);
 
-let write: ReturnType<typeof vi.fn>;
+let write: ReturnType<typeof vi.fn<(ptyId: string, data: string) => void>>;
 
 /** The bracketed paste written to the target pty (the Enter follows later). */
 function pasted(): string {
@@ -48,11 +49,17 @@ function expectMultiline(payload: string): void {
 
 beforeEach(() => {
   vi.useFakeTimers();
-  write = vi.fn();
-  // No approval in front of any pane: the A2A delivery gate lets every write through.
+  write = vi.fn<(ptyId: string, data: string) => void>();
+  // No approval in front of any pane: main's gated submit writes every delivery.
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     pty: { write },
-    rpc: { a2aDeliveryGate: async () => null },
+    rpc: {
+      gatedSubmit: async (ptyId: string, text: string) => {
+        write(ptyId, formatBracketedPastePayload(text));
+        write(ptyId, '\r');
+        return { ok: true };
+      },
+    },
   };
   const s = useStore.getState();
   s.clearSurfaceAgent(PTY);

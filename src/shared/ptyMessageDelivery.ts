@@ -191,3 +191,18 @@ export function resolveAgentSlug(agent?: string | null): AgentSlug | undefined {
   if (!agent) return undefined;
   return agentDisplayToSlug(agent) ?? (isAgentSlug(agent) ? agent : undefined);
 }
+
+/**
+ * Outcome of a gated paste-and-submit (main's `gatedPasteSubmit`, reached from
+ * the renderer over IPC.GATED_SUBMIT). `approval_pending`: an approval is in
+ * front of the pane, send again once it is answered. `gate_unavailable`: the
+ * gate could not decide (screen unreadable, IPC failure), retry shortly.
+ * `pasted`: the text reached the composer but the Enter was withheld.
+ */
+export interface GatedSubmitRefusal {
+  ok: false;
+  reason: 'approval_pending' | 'gate_unavailable' | 'write_failed';
+  detail: string;
+  pasted?: boolean;
+}
+export type GatedSubmitResult = { ok: true } | GatedSubmitRefusal;

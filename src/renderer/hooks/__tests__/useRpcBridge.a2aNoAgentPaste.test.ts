@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { handleRpcMethod } from '../useRpcBridge';
+import { formatBracketedPastePayload } from '../../../shared/ptyMessageDelivery';
 
 const PTY = 'pty-1489-target';
 const TARGET_PANE = 'pane-ws-1489-target';
@@ -27,7 +28,7 @@ function workspace(id: string, name: string, ptyId: string): Workspace {
 const SENDER = workspace('ws-1489-sender', 'Sender', 'pty-1489-sender');
 const TARGET = workspace('ws-1489-target', 'Target', PTY);
 
-let write: ReturnType<typeof vi.fn>;
+let write: ReturnType<typeof vi.fn<(ptyId: string, data: string) => void>>;
 
 /** Everything written to the target pty, the delayed Enter included. */
 function writesToTarget(): string[] {
@@ -55,11 +56,17 @@ const NO_AGENT = { stored: true, notified: false, reason: 'no_agent_pane' };
 
 beforeEach(() => {
   vi.useFakeTimers();
-  write = vi.fn();
-  // No approval in front of any pane: the A2A delivery gate lets every write through.
+  write = vi.fn<(ptyId: string, data: string) => void>();
+  // No approval in front of any pane: main's gated submit writes every delivery.
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     pty: { write },
-    rpc: { a2aDeliveryGate: async () => null },
+    rpc: {
+      gatedSubmit: async (ptyId: string, text: string) => {
+        write(ptyId, formatBracketedPastePayload(text));
+        write(ptyId, '\r');
+        return { ok: true };
+      },
+    },
   };
   const s = useStore.getState();
   s.clearSurfaceAgent(PTY);

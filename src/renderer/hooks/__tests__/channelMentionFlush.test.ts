@@ -51,7 +51,7 @@ function makeDeps(tasks: Task[]) {
     // Mirror the store selector: drop tasks already marked delivered.
     getUndeliveredChannelMentionTasks: () => tasks.filter((t) => !marked.includes(t.id)),
     isBusy: (ptyId) => busy.has(ptyId),
-    deliverNudge: (ptyId, text) => {
+    deliverNudge: async (ptyId, text) => {
       if (throwOn && ptyId === throwOn) throw new Error('write failed');
       delivered.push({ ptyId, text });
     },
@@ -67,7 +67,7 @@ function makeDeps(tasks: Task[]) {
 }
 
 describe('isChannelMentionTask', () => {
-  it('matches the chmention- prefix only', () => {
+  it('matches the chmention- prefix only', async () => {
     expect(isChannelMentionTask('chmention-ch-1-5')).toBe(true);
     expect(isChannelMentionTask('chmention-ch-1-5-pane-A')).toBe(true);
     expect(isChannelMentionTask('task-abc')).toBe(false);
@@ -76,7 +76,7 @@ describe('isChannelMentionTask', () => {
 });
 
 describe('buildChannelMentionNudge', () => {
-  it('single mention → channel-only label + query instruction on one line (B7: no sender text)', () => {
+  it('single mention → channel-only label + query instruction on one line (B7: no sender text)', async () => {
     const n = buildChannelMentionNudge([
       { id: 'chmention-ch-1-5', metadata: { title: '#general — mention from Alice' } },
     ]);
@@ -92,7 +92,7 @@ describe('buildChannelMentionNudge', () => {
     expect(n).not.toMatch(/[\r\n]/);
   });
 
-  it('B7: does not interpolate sender-controlled memberName into the auto-submitted nudge', () => {
+  it('B7: does not interpolate sender-controlled memberName into the auto-submitted nudge', async () => {
     const n = buildChannelMentionNudge([
       {
         id: 'chmention-ch-1-7',
@@ -108,7 +108,7 @@ describe('buildChannelMentionNudge', () => {
     );
   });
 
-  it('multiple mentions → count + query instruction (no task ids — a2a_task_query takes none)', () => {
+  it('multiple mentions → count + query instruction (no task ids — a2a_task_query takes none)', async () => {
     const n = buildChannelMentionNudge([
       { id: 'chmention-ch-1-5', metadata: { title: 'a' } },
       { id: 'chmention-ch-1-6', metadata: { title: 'b' } },
@@ -118,7 +118,7 @@ describe('buildChannelMentionNudge', () => {
     );
   });
 
-  it('RCA: the nudge never forces a reply and explicitly forbids greeting/ack replies (loop fix)', () => {
+  it('RCA: the nudge never forces a reply and explicitly forbids greeting/ack replies (loop fix)', async () => {
     const n = buildChannelMentionNudge([
       { id: 'chmention-ch-1-5', metadata: { title: '#general — mention from Alice' } },
     ]);
@@ -127,7 +127,7 @@ describe('buildChannelMentionNudge', () => {
     expect(n).toContain('ONLY if it needs an answer');
   });
 
-  it('falls back to a safe #channel label for a malformed/control-laden title (B7 guard)', () => {
+  it('falls back to a safe #channel label for a malformed/control-laden title (B7 guard)', async () => {
     // A title without the `#channel — mention from …` shape (here: raw control
     // chars, no delimiter) must NOT paste its raw contents into the auto-submitted
     // nudge — the label is re-validated to #[a-z0-9-] and falls back otherwise.
@@ -146,27 +146,27 @@ describe('resolveTaskTargetPty', () => {
     leaf('pane-B', [surface('surf-B', 'pty-B')]),
   ];
 
-  it('pinned paneId (no ptyId snapshot) → that pane terminal pty', () => {
+  it('pinned paneId (no ptyId snapshot) → that pane terminal pty', async () => {
     const t = makeTask('t', { workspaceId: 'ws', name: 'x', paneId: 'pane-B', surfaceId: 'surf-B' });
     expect(resolveTaskTargetPty(t, leaves)).toBe('pty-B');
   });
 
-  it('pinned paneId with matching ptyId snapshot → that pane terminal pty', () => {
+  it('pinned paneId with matching ptyId snapshot → that pane terminal pty', async () => {
     const t = makeTask('t', { workspaceId: 'ws', name: 'x', paneId: 'pane-B', surfaceId: 'surf-B', ptyId: 'pty-B' });
     expect(resolveTaskTargetPty(t, leaves)).toBe('pty-B');
   });
 
-  it('pinned paneId but ptyId snapshot mismatch (pane restarted) → null', () => {
+  it('pinned paneId but ptyId snapshot mismatch (pane restarted) → null', async () => {
     const t = makeTask('t', { workspaceId: 'ws', name: 'x', paneId: 'pane-B', surfaceId: 'surf-B', ptyId: 'pty-OLD' });
     expect(resolveTaskTargetPty(t, leaves)).toBeNull();
   });
 
-  it('ws-level (no paneId) → null — NOT auto-delivered (avoids wrong-pane)', () => {
+  it('ws-level (no paneId) → null — NOT auto-delivered (avoids wrong-pane)', async () => {
     const t = makeTask('t', { workspaceId: 'ws', name: 'x' });
     expect(resolveTaskTargetPty(t, leaves)).toBeNull();
   });
 
-  it('stale/gone paneId → null (leave queued, never wrong pane)', () => {
+  it('stale/gone paneId → null (leave queued, never wrong pane)', async () => {
     const t = makeTask('t', { workspaceId: 'ws', name: 'x', paneId: 'pane-GONE' });
     expect(resolveTaskTargetPty(t, leaves)).toBeNull();
   });
@@ -178,84 +178,105 @@ describe('flushMentions', () => {
     leaf('pane-B', [surface('surf-B', 'pty-B')]),
   ];
 
-  it('Stop path delivers only the stopped pane\'s mentions and marks them', () => {
+  it('Stop path delivers only the stopped pane\'s mentions and marks them', async () => {
     const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
     const tB = makeTask('chmention-ch-1-2-pane-B', { workspaceId: 'ws', name: 'x', paneId: 'pane-B', surfaceId: 'surf-B' });
     const { deps, delivered, marked } = makeDeps([tA, tB]);
-    const out = flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
+    const out = await flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
     expect(out).toEqual(['chmention-ch-1-1-pane-A']);
     expect(delivered.map((d) => d.ptyId)).toEqual(['pty-A']);
     expect(marked).toEqual(['chmention-ch-1-1-pane-A']);
   });
 
-  it('A5: suppresses the nudge for a rate-limited pane (task stays queued, unmarked)', () => {
+  it('A5: suppresses the nudge for a rate-limited pane (task stays queued, unmarked)', async () => {
     const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
     const { deps, delivered, marked, rateLimited } = makeDeps([tA]);
     rateLimited.add('pty-A'); // pane already nudged too often → break the loop
-    const out = flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
+    const out = await flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
     expect(out).toEqual([]); // nothing delivered
     expect(delivered).toEqual([]);
     expect(marked).toEqual([]); // left queued — agent can still pull, auto-resumes later
   });
 
-  it('A5: records a nudge toward the cap on a successful delivery', () => {
+  it('A5: records a nudge toward the cap on a successful delivery', async () => {
     const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
     const { deps, delivered, nudged } = makeDeps([tA]);
-    flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
+    await flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
     expect(delivered.map((d) => d.ptyId)).toEqual(['pty-A']);
     expect(nudged).toEqual(['pty-A']);
   });
 
-  it('skips a BUSY pane even on the Stop path (a stop stale by poll time = new turn)', () => {
+  it('skips a BUSY pane even on the Stop path (a stop stale by poll time = new turn)', async () => {
     const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
     const { deps, delivered, marked, busy } = makeDeps([tA]);
     busy.add('pty-A'); // agent already started a new turn by the time we poll the stop
-    flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
+    await flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
     expect(delivered).toHaveLength(0);
     expect(marked).toHaveLength(0); // stays queued for the next real idle boundary
   });
 
-  it('arrival path delivers to idle panes and skips busy ones', () => {
+  it('arrival path delivers to idle panes and skips busy ones', async () => {
     const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
     const tB = makeTask('chmention-ch-1-2-pane-B', { workspaceId: 'ws', name: 'x', paneId: 'pane-B', surfaceId: 'surf-B' });
     const { deps, delivered, marked, busy } = makeDeps([tA, tB]);
     busy.add('pty-B'); // pane B busy → wait for its Stop
-    flushMentions('ws', leaves, deps, {});
+    await flushMentions('ws', leaves, deps, {});
     expect(delivered.map((d) => d.ptyId)).toEqual(['pty-A']);
     expect(marked).toEqual(['chmention-ch-1-1-pane-A']);
   });
 
-  it('collapses multiple mentions to one pane into a single nudge', () => {
+  it('collapses multiple mentions to one pane into a single nudge', async () => {
     const t1 = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
     const t2 = makeTask('chmention-ch-1-2-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
     const { deps, delivered, marked } = makeDeps([t1, t2]);
-    flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
+    await flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
     expect(delivered).toHaveLength(1);
     expect(delivered[0].text).toContain('2 channel mentions');
     expect(marked).toEqual(['chmention-ch-1-1-pane-A', 'chmention-ch-1-2-pane-A']);
   });
 
-  it('does NOT auto-deliver ws-level mentions (no paneId → queued, dock badge only)', () => {
+  it('does NOT auto-deliver ws-level mentions (no paneId → queued, dock badge only)', async () => {
     const wsTask = makeTask('chmention-ch-1-9', { workspaceId: 'ws', name: 'x' });
     const { deps, delivered, marked } = makeDeps([wsTask]);
-    flushMentions('ws', leaves, deps, {});
+    await flushMentions('ws', leaves, deps, {});
     expect(delivered).toHaveLength(0);
     expect(marked).toHaveLength(0);
   });
 
-  it('does not mark when the paste throws (retried on next Stop)', () => {
+  it('does not mark when the paste throws (retried on next Stop)', async () => {
     const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
     const { deps, marked, setThrowOn } = makeDeps([tA]);
     setThrowOn('pty-A');
-    const out = flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
+    const out = await flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' });
     expect(out).toEqual([]);
     expect(marked).toEqual([]);
   });
 
-  it('skips human / dead targets with no deliverable pty', () => {
+  it('a nudge the approval gate refuses (async reject) stays unmarked for the next Stop', async () => {
+    const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
+    const { deps, marked } = makeDeps([tA]);
+    deps.deliverNudge = async () => {
+      throw new Error('mention nudge not submitted (approval_pending)');
+    };
+    expect(await flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' })).toEqual([]);
+    expect(marked).toEqual([]);
+  });
+
+  it('two flushes racing on the same mention paste it once', async () => {
+    const tA = makeTask('chmention-ch-1-1-pane-A', { workspaceId: 'ws', name: 'x', paneId: 'pane-A', surfaceId: 'surf-A' });
+    const { deps, delivered } = makeDeps([tA]);
+    const [a, b] = await Promise.all([
+      flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' }),
+      flushMentions('ws', leaves, deps, { onlyPtyId: 'pty-A' }),
+    ]);
+    expect(delivered).toHaveLength(1);
+    expect([...a, ...b]).toEqual(['chmention-ch-1-1-pane-A']);
+  });
+
+  it('skips human / dead targets with no deliverable pty', async () => {
     const human = makeTask('chmention-ch-1-1', { workspaceId: 'ws', name: 'x', paneId: 'pane-GONE' });
     const { deps, delivered, marked } = makeDeps([human]);
-    flushMentions('ws', leaves, deps, {});
+    await flushMentions('ws', leaves, deps, {});
     expect(delivered).toHaveLength(0);
     expect(marked).toHaveLength(0);
   });
@@ -282,31 +303,31 @@ describe('buildChannelMentionNudge — 2a-1 ack hint (close the consume loop)', 
     };
   }
 
-  it('single mention → exact ack command with channel name, seq, and quoted member id', () => {
+  it('single mention → exact ack command with channel name, seq, and quoted member id', async () => {
     const n = buildChannelMentionNudge([nudgeTask(7, 'w26-1(claude)')]);
     expect(n).toContain('mention in #general');
     expect(n).toContain("wmux channel ack general 7 --member 'w26-1(claude)'");
   });
 
-  it('multiple mentions in one channel → ack up to the max seq', () => {
+  it('multiple mentions in one channel → ack up to the max seq', async () => {
     const n = buildChannelMentionNudge([nudgeTask(7, 'w26-1(claude)'), nudgeTask(9, 'w26-1(claude)')]);
     expect(n).toContain('2 channel mentions');
     expect(n).toContain('wmux channel ack general 9');
   });
 
-  it('missing seq metadata → falls back to the unread hint (no fabricated ack)', () => {
+  it('missing seq metadata → falls back to the unread hint (no fabricated ack)', async () => {
     const n = buildChannelMentionNudge([nudgeTask(null)]);
     expect(n).toContain('then ack: wmux channel unread');
     expect(n).not.toContain('wmux channel ack');
   });
 
-  it('malformed title (B7 fallback) → no ack command is fabricated', () => {
+  it('malformed title (B7 fallback) → no ack command is fabricated', async () => {
     const n = buildChannelMentionNudge([nudgeTask(7, 'w26-1(claude)', 'no delimiter here')]);
     expect(n).toContain('then ack: wmux channel unread');
     expect(n).not.toContain('wmux channel ack');
   });
 
-  it('member id with quote-unsafe chars → --member flag omitted, ack still present', () => {
+  it('member id with quote-unsafe chars → --member flag omitted, ack still present', async () => {
     const n = buildChannelMentionNudge([nudgeTask(7, "we'ird id")]);
     expect(n).toContain('wmux channel ack general 7');
     expect(n).not.toContain('--member');
@@ -333,26 +354,26 @@ describe('resolveTaskTargetPty — 2b DEGRADED-only ws-level single-agent delive
   // MCP member_id omitted): must stay badge-only (adversarial review F1).
   const byConstruction = makeTask('chmention-ch-1-9', { workspaceId: 'ws-me', name: 'Me' });
 
-  it('ws-level BY CONSTRUCTION never auto-delivers, even with one live agent (F1)', () => {
+  it('ws-level BY CONSTRUCTION never auto-delivers, even with one live agent (F1)', async () => {
     const leaves = [leaf('p1', [surface('s1', 'pty-1')])];
     expect(resolveTaskTargetPty(byConstruction, leaves, new Set(['pty-1']))).toBeNull();
   });
 
-  it('degraded + no agentPtys wired → stays queued (back-compat)', () => {
+  it('degraded + no agentPtys wired → stays queued (back-compat)', async () => {
     expect(resolveTaskTargetPty(degradedTask('t'), [leaf('p1', [surface('s1', 'pty-1')])])).toBeNull();
   });
 
-  it('degraded + exactly one live agent pane → delivers to it', () => {
+  it('degraded + exactly one live agent pane → delivers to it', async () => {
     const leaves = [leaf('p1', [surface('s1', 'pty-1')]), leaf('p2', [surface('s2', 'pty-2')])];
     expect(resolveTaskTargetPty(degradedTask('t'), leaves, new Set(['pty-2']))).toBe('pty-2');
   });
 
-  it('degraded + two live agent panes → ambiguity, stays queued (never guess)', () => {
+  it('degraded + two live agent panes → ambiguity, stays queued (never guess)', async () => {
     const leaves = [leaf('p1', [surface('s1', 'pty-1')]), leaf('p2', [surface('s2', 'pty-2')])];
     expect(resolveTaskTargetPty(degradedTask('t'), leaves, new Set(['pty-1', 'pty-2']))).toBeNull();
   });
 
-  it('degraded + agent pty not present in live leaves → not a candidate', () => {
+  it('degraded + agent pty not present in live leaves → not a candidate', async () => {
     expect(
       resolveTaskTargetPty(degradedTask('t'), [leaf('p1', [surface('s1', 'pty-1')])], new Set(['pty-9'])),
     ).toBeNull();
@@ -360,7 +381,7 @@ describe('resolveTaskTargetPty — 2b DEGRADED-only ws-level single-agent delive
 });
 
 describe('flushMentions — onNudgeDelivered hook (2a-2/2d)', () => {
-  it('fires after a successful paste; a hook throw never unmarks the delivery', () => {
+  it('fires after a successful paste; a hook throw never unmarks the delivery', async () => {
     const t = makeTask('chmention-ch-1-5-pane-A', {
       workspaceId: 'ws-me',
       name: 'Me',
@@ -374,7 +395,7 @@ describe('flushMentions — onNudgeDelivered hook (2a-2/2d)', () => {
       hookCalls.push({ ptyId, ids: tasks.map((x) => x.id) });
       throw new Error('hook boom');
     };
-    const out = flushMentions('ws-me', [leaf('pane-A', [surface('s1', 'pty-1')])], deps, {});
+    const out = await flushMentions('ws-me', [leaf('pane-A', [surface('s1', 'pty-1')])], deps, {});
     expect(out).toEqual([t.id]);
     expect(marked).toEqual([t.id]);
     expect(delivered).toHaveLength(1);
@@ -404,7 +425,7 @@ describe('buildChannelMentionNudge — ack-hint fallbacks (ship reviews)', () =>
     };
   }
 
-  it('tasks spanning two channels fall back to the unread hint (no fabricated ack)', () => {
+  it('tasks spanning two channels fall back to the unread hint (no fabricated ack)', async () => {
     const n = buildChannelMentionNudge([
       nt(7, 'm1', '#general — mention from A'),
       nt(8, 'm1', '#ops — mention from B'),
@@ -413,7 +434,7 @@ describe('buildChannelMentionNudge — ack-hint fallbacks (ship reviews)', () =>
     expect(n).toContain('wmux channel unread');
   });
 
-  it('two distinct mentioned members → ack present but --member omitted', () => {
+  it('two distinct mentioned members → ack present but --member omitted', async () => {
     const n = buildChannelMentionNudge([
       nt(7, 'w1-1(claude)', '#general — mention from A'),
       nt(9, 'w2-1(codex)', '#general — mention from A'),
@@ -422,7 +443,7 @@ describe('buildChannelMentionNudge — ack-hint fallbacks (ship reviews)', () =>
     expect(n).not.toContain('--member');
   });
 
-  it('un-pinned (degraded) group → ack present but --member omitted (F4: never ack another member cursor)', () => {
+  it('un-pinned (degraded) group → ack present but --member omitted (F4: never ack another member cursor)', async () => {
     const n = buildChannelMentionNudge([nt(7, 'w1-1(claude)', '#general — mention from A', false)]);
     expect(n).toContain('wmux channel ack general 7');
     expect(n).not.toContain('--member');

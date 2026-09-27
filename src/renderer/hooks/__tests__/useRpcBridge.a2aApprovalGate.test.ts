@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 //
-// A2A deliveries are pasted and submitted with Enter by the renderer. An Enter
-// into a pane that shows an approval selects its highlighted option, so every
-// A2A write first asks main (the same guard `input.send` applies) and writes
-// nothing when main refuses. These drive the real handler and read the bytes
-// that reach `pty.write`.
+// A2A deliveries are pasted and submitted with Enter. An Enter into a pane that
+// shows an approval selects its highlighted option, so every non-operator A2A
+// write is handed to main's gated submit (the guard `input.send` applies,
+// re-checked before the Enter); the renderer never writes it itself. These
+// drive the real handler with a stand-in for main and read what reaches the
+// pty.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
@@ -12,7 +13,7 @@ import { handleRpcMethod } from '../useRpcBridge';
 
 const PTY = 'pty-gate-target';
 const BODY = 'please continue';
-const REFUSAL = 'input.send: pane has an approval in front of it';
+const REFUSED = { ok: false, reason: 'approval_pending', detail: 'delivery: pane has an approval in front of it' };
 
 function leaf(id: string, ptyId: string): PaneLeaf {
   const surface = { id: `surf-${id}`, ptyId, title: id, shell: '', cwd: '', surfaceType: 'terminal' } as Surface;
@@ -26,8 +27,9 @@ function workspace(id: string, name: string, ptyId: string): Workspace {
 const SENDER = workspace('ws-gate-sender', 'Sender', 'pty-gate-sender');
 const TARGET = workspace('ws-gate-target', 'Target', PTY);
 
-let write: ReturnType<typeof vi.fn>;
+let write: ReturnType<typeof vi.fn<(ptyId: string, data: string) => void>>;
 let gate: ReturnType<typeof vi.fn>;
+let gateRefusal: Record<string, unknown> | null;
 
 /** Everything written to the target pty, the delayed Enter included. */
 function writesToTarget(): string[] {
@@ -48,11 +50,18 @@ async function send(params: Record<string, unknown>): Promise<Result> {
 
 beforeEach(() => {
   vi.useFakeTimers();
-  write = vi.fn();
-  gate = vi.fn(async () => REFUSAL);
+  write = vi.fn<(ptyId: string, data: string) => void>();
+  // Main's gated submit: writes (paste + Enter) only when it allows.
+  gate = vi.fn(async (ptyId: string, text: string) => {
+    if (gateRefusal) return gateRefusal;
+    write(ptyId, text);
+    write(ptyId, '\r');
+    return { ok: true };
+  });
+  gateRefusal = REFUSED;
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     pty: { write },
-    rpc: { a2aDeliveryGate: gate },
+    rpc: { gatedSubmit: gate },
   };
   const s = useStore.getState();
   // A detected agent that is not live: the loud full-body paste path.
@@ -71,7 +80,7 @@ describe('A2A delivery approval gate', () => {
   it('a new task to a pane behind an approval writes nothing, stays stored, and says why', async () => {
     const result = await send({ silent: false });
     expect(writesToTarget()).toEqual([]);
-    expect(gate).toHaveBeenCalledWith(PTY);
+    expect(gate).toHaveBeenCalledWith(PTY, expect.stringContaining(BODY), 'Claude Code');
     expect(result.ok).toBe(true);
     expect(result.delivery).toMatchObject({ stored: true, notified: false, reason: 'approval_pending' });
     expect(useStore.getState().getTask(result.taskId!)).toBeDefined();
@@ -110,17 +119,24 @@ describe('A2A delivery approval gate', () => {
   });
 
   it('once the gate clears, the same send is delivered', async () => {
-    gate.mockResolvedValue(null);
+    gateRefusal = null;
     const result = await send({ silent: false });
     expect(result.delivery).toMatchObject({ notified: true });
     expect(writesToTarget().join('')).toContain(BODY);
   });
 
-  it('a gate that cannot answer refuses (fail closed)', async () => {
+  it('a gate that cannot answer refuses as gate_unavailable, with its own hint', async () => {
     gate.mockRejectedValue(new Error('ipc down'));
     const result = await send({ silent: false });
     expect(writesToTarget()).toEqual([]);
-    expect(result.delivery).toMatchObject({ reason: 'approval_pending' });
+    expect(result.delivery).toMatchObject({ notified: false, reason: 'gate_unavailable' });
+    expect(String(result.delivery?.hint)).toMatch(/Retry/);
+  });
+
+  it('an Enter withheld after the paste is reported as pasted, not submitted', async () => {
+    gateRefusal = { ...REFUSED, pasted: true };
+    const result = await send({ silent: false });
+    expect(result.delivery).toMatchObject({ notified: false, reason: 'approval_pending', pastedNotSubmitted: true });
   });
 
   it('a delivery main stamped as operator-originated is not gated', async () => {

@@ -214,13 +214,13 @@ export interface FlushMentionDeps {
    *  is NOT busy — it must receive immediately, else a quiet agent never sees
    *  the mention until its next user-driven turn. */
   isBusy: (ptyId: string) => boolean;
-  /** Paste the one-line nudge into the pty (submitBracketedPasteToPty). The
-   *  initial bracketed-paste write is SYNCHRONOUS — a throw there leaves the
-   *  task UNMARKED so the next Stop retries. The trailing CR submit (~100ms
-   *  later) is async and not awaited; if only THAT fails, the text is pasted but
-   *  unsubmitted (a partial, not a silent loss). This synchronous-throw contract
-   *  is what keeps mark-after-deliver correct (GLM review). */
-  deliverNudge: (ptyId: string, text: string) => void;
+  /** Paste the one-line nudge into the pty and submit it. Wired to main's
+   *  gated submit (the approval guard `input.send` applies, re-checked before
+   *  the Enter). Resolves once the nudge is submitted; REJECTS when it was not
+   *  (an approval is in front of the pane, the gate could not check, the write
+   *  failed) — the tasks then stay UNMARKED and the next Stop retries. This
+   *  reject-on-not-submitted contract is what keeps mark-after-deliver correct. */
+  deliverNudge: (ptyId: string, text: string) => Promise<void>;
   /** Mark a task delivered so it is never pasted twice (idempotency). Called
    *  ONLY after a successful deliverNudge. */
   markDelivered: (taskId: string) => void;
@@ -262,13 +262,17 @@ export interface FlushOpts {
  * paste throw leaves that pane's tasks unmarked (retried on the next Stop);
  * other panes are unaffected. Returns the task ids actually delivered (test aid).
  */
-export function flushMentions(
+// Tasks whose nudge is being submitted right now. Delivery awaits main's gate,
+// so a second flush (a Stop landing mid-delivery) must not paste them again.
+const mentionsInFlight = new Set<string>();
+
+export async function flushMentions(
   workspaceId: string,
   selfLeaves: PaneLeaf[],
   deps: FlushMentionDeps,
   opts: FlushOpts,
-): string[] {
-  const tasks = deps.getUndeliveredChannelMentionTasks(workspaceId);
+): Promise<string[]> {
+  const tasks = deps.getUndeliveredChannelMentionTasks(workspaceId).filter((t) => !mentionsInFlight.has(t.id));
   // Group by resolved target pty so multiple mentions to one pane = one paste.
   const byPty = new Map<string, Task[]>();
   for (const task of tasks) {
@@ -302,8 +306,9 @@ export function flushMentions(
       continue;
     }
     const nudge = buildChannelMentionNudge(group);
+    for (const t of group) mentionsInFlight.add(t.id);
     try {
-      deps.deliverNudge(ptyId, nudge);
+      await deps.deliverNudge(ptyId, nudge);
       deps.recordNudge?.(ptyId); // count this nudge toward the per-pane cap (A5)
       // Mark ONLY after a successful paste — a throw above retries next Stop.
       for (const t of group) {
@@ -323,6 +328,8 @@ export function flushMentions(
       // answered" with no breadcrumb (Claude+GLM review). The task stays
       // unmarked, so the next Stop retries it.
       console.warn(`[channelMentionFlush] nudge delivery failed for pty ${ptyId}:`, err);
+    } finally {
+      for (const t of group) mentionsInFlight.delete(t.id);
     }
   }
   return delivered;

@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RpcRouter } from '../../RpcRouter';
 import { registerInputRpc } from '../input.rpc';
+import type { GatedSubmitResult } from '../../../../shared/ptyMessageDelivery';
 import { registerApprovalsRpc, PRESS_POLICY_REFUSALS, type AnswerPolicy } from '../approvals.rpc';
 import { mintCommanderToken, revokeCommanderToken } from '../../../deck/commanderTrust';
 import type { BrowserWindow } from 'electron';
@@ -22,8 +23,8 @@ interface Wiring {
   router: RpcRouter;
   token: string;
   writes: Array<{ ptyId: string; data: string }>;
-  /** The A2A delivery gate the renderer asks before each paste + Enter. */
-  a2aRefusal: (ptyId: string) => Promise<string | null>;
+  /** Main's gated paste + submit for non-operator deliveries. */
+  gatedSubmit: (ptyId: string, text: string, agent?: string | null) => Promise<GatedSubmitResult>;
 }
 
 /** ws-task is a task workspace ws-brain delegated, so its presses are its own. */
@@ -38,7 +39,7 @@ const LEDGER = {
  * The live facts the raw-input guard reads: the pane's workspace policy and
  * what is on its screen. Tests mutate these between calls.
  */
-const live: { policy: AnswerPolicy; screen: string | null } = {
+const live: { policy: AnswerPolicy; screen: string | null; betweenPasteAndEnter?: () => void } = {
   policy: { allowed: false, reason: 'autonomy-off' },
   screen: '',
 };
@@ -84,10 +85,15 @@ function wire(options: {
     () => dc as never,
     undefined,
     undefined,
-    { answerPolicy: async () => live.policy, readScreenText: async () => live.screen },
+    {
+      answerPolicy: async () => live.policy,
+      readScreenText: async () => live.screen,
+      // The gap between paste and Enter: tests may redraw the screen in it.
+      sleep: async () => { live.betweenPasteAndEnter?.(); },
+    },
   );
   registerApprovalsRpc(router, () => dc as never, { getLedger: () => LEDGER });
-  return { router, token: mintCommanderToken('ws-brain'), writes, a2aRefusal: input.a2aDeliveryRefusal };
+  return { router, token: mintCommanderToken('ws-brain'), writes, gatedSubmit: input.gatedSubmit };
 }
 
 /** The pane the brain owns: a record in a task workspace it delegated. */
@@ -98,6 +104,7 @@ let w: Wiring;
 beforeEach(() => {
   live.policy = { allowed: false, reason: 'autonomy-off' };
   live.screen = '';
+  live.betweenPasteAndEnter = undefined;
   w = wire();
 });
 afterEach(() => {
@@ -420,23 +427,51 @@ describe('a terminal_prompt record (the agent\'s own dialog)', () => {
   });
 });
 
-// A2A deliveries are pasted + submitted by the renderer, outside input.send.
-// The gate main answers for them is the same guard, for a non-operator caller.
-describe('the A2A delivery gate', () => {
-  it('refuses while a record is pending on the pane', async () => {
+// Non-operator deliveries (A2A, company, channel nudges) are pasted and
+// submitted by main's gated submit: the input.send guard, before the paste and
+// again before the Enter.
+describe('the gated submit for non-operator deliveries', () => {
+  const FREE = '⏺ Done.\n\n──────────\n❯ ';
+
+  it('writes nothing while a record is pending on the pane', async () => {
     w = wire({ pending: [OWNED] });
-    expect(await w.a2aRefusal('pty-w')).toMatch(/approval/i);
+    live.screen = FREE;
+    expect(await w.gatedSubmit('pty-w', 'hello')).toMatchObject({ ok: false, reason: 'approval_pending' });
+    expect(w.writes).toHaveLength(0);
   });
 
-  it('refuses a dialog on screen when policy does not let automation answer', async () => {
+  it('writes nothing while a dialog is on screen and policy does not let automation answer', async () => {
     live.screen = DIALOG_SCREEN;
-    expect(await w.a2aRefusal('pty-w')).toContain('autonomy-off');
+    const res = await w.gatedSubmit('pty-w', 'hello');
+    expect(res).toMatchObject({ ok: false, reason: 'approval_pending' });
+    expect(w.writes).toHaveLength(0);
   });
 
-  it('lets the write through once the dialog has left the screen', async () => {
-    live.screen = DIALOG_SCREEN;
-    expect(await w.a2aRefusal('pty-w')).not.toBeNull();
-    live.screen = '⏺ Done.\n\n──────────\n❯ ';
-    expect(await w.a2aRefusal('pty-w')).toBeNull();
+  it('pastes and submits once the dialog has left the screen', async () => {
+    live.screen = FREE;
+    expect(await w.gatedSubmit('pty-w', 'hello')).toEqual({ ok: true });
+    expect(w.writes.map((x) => x.data)).toEqual(['\x1b[200~hello\x1b[201~', '\r']);
+  });
+
+  it('withholds the Enter when a dialog is drawn between the paste and the Enter', async () => {
+    live.screen = FREE;
+    live.betweenPasteAndEnter = () => { live.screen = DIALOG_SCREEN; };
+    const res = await w.gatedSubmit('pty-w', 'hello');
+    expect(res).toMatchObject({ ok: false, reason: 'approval_pending', pasted: true });
+    expect(w.writes.map((x) => x.data)).not.toContain('\r');
+  });
+
+  it('an unreadable screen under an autonomy-off policy is gate_unavailable, not a blind Enter', async () => {
+    live.screen = null;
+    expect(await w.gatedSubmit('pty-w', 'hello')).toMatchObject({ ok: false, reason: 'gate_unavailable' });
+    expect(w.writes).toHaveLength(0);
+    // input.send keeps its old rule: an unreadable screen is not a dialog.
+    expect((await asBrain('input.send', { ptyId: 'pty-w', text: 'hello' })).ok).toBe(true);
+  });
+
+  it('when policy lets automation answer, an unreadable screen does not block it', async () => {
+    live.policy = { allowed: true };
+    live.screen = null;
+    expect(await w.gatedSubmit('pty-w', 'hello')).toEqual({ ok: true });
   });
 });

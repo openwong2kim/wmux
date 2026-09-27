@@ -45,7 +45,8 @@ import {
   SEARCH_TAIL_MAX,
   type SearchableBuffer,
 } from '../utils/searchEngine';
-import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
+import { gatedSubmitToPty, submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
+import type { GatedSubmitRefusal } from '../../shared/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
 import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
@@ -281,10 +282,10 @@ function submitToPty(ptyId: string, text: string): void {
 // Approval gate for A2A deliveries. Every A2A write is a paste plus Enter, and
 // an Enter into a pane that shows an approval selects its highlighted option.
 // `terminal_send` refuses that for any caller but the operator
-// (input.rpc.ts `assertNotTypingAtAnApproval`); these writes are made here, not
-// through `input.send`, so main runs the same guard on request before each
-// one. Only a delivery main stamped `operatorOrigin` (the human's own surface)
-// skips it.
+// (input.rpc.ts `assertNotTypingAtAnApproval`). A non-operator delivery is
+// therefore handed to main, which pastes and submits it behind the same guard
+// and checks again right before the Enter. Only a delivery main stamped
+// `operatorOrigin` at the router (the human's own surface) is written here.
 // ---------------------------------------------------------------------------
 
 /** Whether an A2A delivery skips the approval gate: main-stamped operator origin only. */
@@ -292,48 +293,56 @@ function a2aOperatorOrigin(params: RpcParams): boolean {
   return params.operatorOrigin === true;
 }
 
-/** Why an A2A delivery may not write to `ptyId` right now, or null. */
-async function a2aApprovalRefusal(ptyId: string): Promise<string | null> {
-  const gate = window.electronAPI.rpc.a2aDeliveryGate as
-    | ((id: string) => Promise<string | null>)
-    | undefined;
-  // Fail closed: a delivery that cannot be checked is not written.
-  if (typeof gate !== 'function') return 'a2a delivery: approval gate unavailable';
-  try {
-    const refusal = await gate(ptyId);
-    return typeof refusal === 'string' && refusal ? refusal : null;
-  } catch (err) {
-    return `a2a delivery: approval gate failed (${err instanceof Error ? err.message : String(err)})`;
-  }
-}
-
 /**
- * The outcome of one A2A pane write: the pty written to, or null with the
- * approval refusal when the gate withheld it (null alone: no pty to write to).
+ * The outcome of one A2A pane write: the pty written to, or null — with the
+ * gate's refusal when it withheld the write (null alone: no pty to write to).
  */
 export interface A2aPtyWrite {
   ptyId: string | null;
-  refused?: string;
+  refused?: GatedSubmitRefusal;
 }
 
-/** Gate, then submit. The single A2A write path in this file. */
-async function gatedSubmitToPty(ptyId: string, text: string, operator: boolean): Promise<A2aPtyWrite> {
-  if (!operator) {
-    const refused = await a2aApprovalRefusal(ptyId);
-    if (refused) return { ptyId: null, refused };
+/** The single A2A write path in this file. */
+async function deliverA2aText(ptyId: string, text: string, operator: boolean): Promise<A2aPtyWrite> {
+  if (operator) {
+    submitToPty(ptyId, text);
+    return { ptyId };
   }
-  submitToPty(ptyId, text);
-  return { ptyId };
+  const result = await gatedSubmitToPty(ptyId, text, { agent: ptyAgent(ptyId).name });
+  return result.ok ? { ptyId } : { ptyId: null, refused: result };
 }
 
-/** Sender-facing hint for a delivery the approval gate withheld. */
-const APPROVAL_PENDING_HINT =
-  'The target pane is waiting on an approval, so nothing was written to it: an Enter there would answer ' +
-  'the prompt. The task is stored; the receiver can find it with a2a_task_query. Send again once the ' +
-  'approval has been answered.';
-const BROADCAST_APPROVAL_PENDING_HINT =
-  'Some agent panes were waiting on an approval, so nothing was written to them (see `withheld`): an ' +
-  'Enter there would answer the prompt. Broadcast again once those approvals have been answered.';
+/** Sender-facing hints for a delivery the gate withheld, by reason. */
+const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
+  approval_pending:
+    'The target pane is waiting on an approval, so the message was not submitted there: an Enter would ' +
+    'answer the prompt. The task is stored; the receiver can find it with a2a_task_query. Send again once ' +
+    'the approval has been answered.',
+  gate_unavailable:
+    'wmux could not check the target pane for an approval (its screen or the gate was unavailable), so ' +
+    'the message was not submitted. The task is stored; the receiver can find it with a2a_task_query. ' +
+    'Retry in a few seconds.',
+  write_failed:
+    'The write to the target pane failed (it may have just closed). The task is stored; the receiver can ' +
+    'find it with a2a_task_query.',
+};
+
+/** The `delivery` receipt for a refused write. */
+function refusedDelivery(mode: string, refused: GatedSubmitRefusal): Record<string, unknown> {
+  return {
+    stored: true,
+    notified: false,
+    mode,
+    reason: refused.reason,
+    hint: DELIVERY_REFUSED_HINTS[refused.reason],
+    detail: refused.detail,
+    ...(refused.pasted ? { pastedNotSubmitted: true } : {}),
+  };
+}
+
+const BROADCAST_WITHHELD_HINT =
+  'Some agent panes were not written to (see `withheld`): an approval was in front of them, or the gate ' +
+  'could not check them. Broadcast again once those approvals have been answered.';
 
 // Whether an A2A envelope bound for `ptyId` may keep its body's real newlines:
 // only when the pane runs a detected, still-live agent TUI. A shell (or an
@@ -549,7 +558,7 @@ export async function deliverPtyNotification(
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
   if (ptyId) {
-    return gatedSubmitToPty(
+    return deliverA2aText(
       ptyId,
       formatA2aMessage(senderName, targetWs.name, message, undefined, a2aFormatOptionsFor(ptyId)),
       operator,
@@ -579,7 +588,7 @@ async function deliverPtyNudge(
   // pane only catches the message when nothing visible can take it, which beats
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
-  if (ptyId) return gatedSubmitToPty(ptyId, nudge, operator);
+  if (ptyId) return deliverA2aText(ptyId, nudge, operator);
   return { ptyId: null };
 }
 
@@ -2680,7 +2689,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             delivery = mode === 'no-agent-pane'
               ? { stored: true, notified: false, mode, reason: 'no_agent_pane', hint: NO_AGENT_PANE_HINT }
               : write.refused
-              ? { stored: true, notified: false, mode, reason: 'approval_pending', hint: APPROVAL_PENDING_HINT, detail: write.refused }
+              ? refusedDelivery(mode, write.refused)
               : wrotePty
               ? { stored: true, notified: true, mode, ...submitReceiptFields(ptyAgent(wrotePty)) }
               : {
@@ -2938,7 +2947,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       delivery = mode === 'no-agent-pane'
         ? { stored: true, notified: false, mode, reason: 'no_agent_pane', hint: NO_AGENT_PANE_HINT }
         : write.refused
-        ? { stored: true, notified: false, mode, reason: 'approval_pending', hint: APPROVAL_PENDING_HINT, detail: write.refused }
+        ? refusedDelivery(mode, write.refused)
         : wrotePty
         ? { stored: true, notified: true, mode, ...submitReceiptFields(ptyAgent(wrotePty)) }
         : {
@@ -3209,17 +3218,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     }
 
     if (updateWrite.refused) {
-      return {
-        ok: true,
-        taskId,
-        delivery: {
-          stored: true,
-          notified: false,
-          reason: 'approval_pending',
-          hint: APPROVAL_PENDING_HINT,
-          detail: updateWrite.refused,
-        },
-      };
+      return { ok: true, taskId, delivery: refusedDelivery('update', updateWrite.refused) };
     }
     return { ok: true, taskId };
   }
@@ -3278,7 +3277,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // one-pane-per-workspace volume), and the counts say what really happened.
     let sent = 0;
     let skipped = 0;
-    const withheld: Array<{ workspace: string; reason: string }> = [];
+    const withheld: Array<{ workspace: string; reason: string; detail: string }> = [];
     const operator = a2aOperatorOrigin(params);
     for (const ws of store.workspaces) {
       if (ws.id === workspaceId) continue;
@@ -3302,19 +3301,21 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       }
       // Each pane is gated on its own: an approval in front of one agent pane
       // withholds only that write.
-      const writes = await Promise.all(ptyIds.map((ptyId) => gatedSubmitToPty(
+      const writes = await Promise.all(ptyIds.map((ptyId) => deliverA2aText(
         ptyId,
         formatA2aBroadcast(fromName, message, undefined, a2aFormatOptionsFor(ptyId)),
         operator,
       )));
-      for (const w of writes) if (w.refused) withheld.push({ workspace: ws.name, reason: w.refused });
+      for (const w of writes) {
+        if (w.refused) withheld.push({ workspace: ws.name, reason: w.refused.reason, detail: w.refused.detail });
+      }
       if (writes.some((w) => w.ptyId)) sent++;
     }
     // `skipped` counts workspaces with no detected agent pane — previously
     // these were counted as delivered while their shells got the paste.
     // `withheld` names each agent pane write the approval gate refused.
     return withheld.length > 0
-      ? { ok: true, sent, skipped, withheld, hint: BROADCAST_APPROVAL_PENDING_HINT }
+      ? { ok: true, sent, skipped, withheld, hint: BROADCAST_WITHHELD_HINT }
       : { ok: true, sent, skipped };
   }
 

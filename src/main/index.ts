@@ -845,14 +845,14 @@ const inputRpc = registerInputRpc(
   makeRoleBindingResolver(() => mainWindow),
   (ptyId, data) => ptyBridge.noteInterruptInput(ptyId, data),
 );
-// A2A deliveries are written by the renderer; before each one it asks here
-// whether an approval is in front of the target pane (same guard as
-// `input.send`). Registered once, beside the router, so crash-recovery handler
-// reloads do not double-register it.
-ipcMain.handle(IPC.A2A_DELIVERY_GATE, async (_e, ptyId: unknown) =>
-  typeof ptyId === 'string' && ptyId
-    ? inputRpc.a2aDeliveryRefusal(ptyId)
-    : 'a2a delivery: missing target pty',
+// Non-operator deliveries (A2A, company, channel mention nudges) are pasted
+// and submitted here, behind the same approval guard as `input.send`, checked
+// again right before the Enter. Registered once, beside the router, so
+// crash-recovery handler reloads do not double-register it.
+ipcMain.handle(IPC.GATED_SUBMIT, async (_e, ptyId: unknown, text: unknown, agent: unknown) =>
+  typeof ptyId === 'string' && ptyId && typeof text === 'string'
+    ? inputRpc.gatedSubmit(ptyId, text, typeof agent === 'string' ? agent : null)
+    : { ok: false, reason: 'write_failed', detail: 'delivery: missing target pty or text' },
 );
 registerApprovalsRpc(rpcRouter, () => daemonClient);
 registerDeckRpc(rpcRouter, () => mainWindow);

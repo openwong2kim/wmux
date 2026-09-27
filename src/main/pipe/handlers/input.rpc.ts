@@ -5,6 +5,13 @@ import type { PTYManager } from '../../pty/PTYManager';
 import type { DaemonClient } from '../../DaemonClient';
 import { sendToRenderer } from './_bridge';
 import { sanitizePtyText } from '../../../shared/types';
+import {
+  formatBracketedPastePayload,
+  isMultilinePtyPayload,
+  submitProfileForAgent,
+  type GatedSubmitRefusal,
+  type GatedSubmitResult,
+} from '../../../shared/ptyMessageDelivery';
 import { applyRoleBinding, type RoleBinding } from '../../../shared/orchestratorRole';
 import { isGateHeldOn } from '../../deck/stopGateState';
 import {
@@ -561,11 +568,15 @@ export interface ApprovalInputGate {
   readScreenText: (ptyId: string) => Promise<string | null>;
 }
 
+/** The gate could not decide (screen unreadable while policy is off). */
+class ApprovalGateUnavailable extends Error {}
+
 async function assertNotTypingAtAnApproval(
   gate: ApprovalInputGate,
   ctx: RpcContext | undefined,
   ptyId: string,
   op: string,
+  opts: { refuseUnreadable?: boolean } = {},
 ): Promise<void> {
   if (ctx?.operator) return;
   const record = await pendingApprovalOnPane(gate.getDaemonClient, ptyId);
@@ -586,8 +597,19 @@ async function assertNotTypingAtAnApproval(
   if (policy.allowed) return;
   const screen = await gate.readScreenText(ptyId);
   // An unreadable screen is not evidence of a dialog. Refusing on it would stop
-  // every ordinary send whenever the renderer is slow to answer.
-  if (screen === null || !approvalOnScreen(screen)) return;
+  // every ordinary send whenever the renderer is slow to answer — except for a
+  // delivery that presses Enter on the caller's behalf (`refuseUnreadable`),
+  // which cannot tell a free composer from a dialog without the screen.
+  if (screen === null) {
+    if (opts.refuseUnreadable) {
+      throw new ApprovalGateUnavailable(
+        `${op}: the screen of pane "${ptyId}" could not be read, and this workspace's policy ` +
+          `(${policy.reason}) does not let an automated caller answer approvals — not submitting blind.`,
+      );
+    }
+    return;
+  }
+  if (!approvalOnScreen(screen)) return;
   console.warn(
     `[approval-gate] refused ${op} on pane ${ptyId}: approval on screen, policy ${policy.reason}`,
   );
@@ -595,24 +617,62 @@ async function assertNotTypingAtAnApproval(
 }
 
 /**
- * Why an agent-to-agent delivery may not write to `ptyId` right now, or null.
+ * The gate for a message pasted into a pane and submitted with Enter on a
+ * non-operator's behalf: agent-to-agent tasks, company messages, channel
+ * mention nudges. Those used to be written by the renderer outside
+ * `input.send`, so they never met the raw-input guard above, and an Enter into
+ * a pane showing an approval selects its highlighted option.
  *
- * A2A deliveries (send, reply, status update, broadcast) are pasted and
- * submitted with Enter by the renderer, not through `input.send`, so they
- * never met the raw-input guard above. An Enter into a pane that shows an
- * approval selects the highlighted option, which is exactly what that guard
- * refuses for `terminal_send`. This runs the same guard — same record, same
- * workspace policy, same live screen — for a caller that is never the
- * operator; the renderer skips it only for a delivery main stamped as
- * operator-originated.
+ * Same guard as `input.send` (pending record, workspace policy, live screen),
+ * stricter on one point: an unreadable screen under a policy that does not let
+ * automation answer is refused as `gate_unavailable` rather than waved through.
  */
-export async function a2aDeliveryRefusal(gate: ApprovalInputGate, ptyId: string): Promise<string | null> {
+export async function deliveryGateCheck(
+  gate: ApprovalInputGate,
+  ptyId: string,
+): Promise<GatedSubmitRefusal | null> {
   try {
-    await assertNotTypingAtAnApproval(gate, undefined, ptyId, 'a2a delivery');
+    await assertNotTypingAtAnApproval(gate, undefined, ptyId, 'delivery', { refuseUnreadable: true });
     return null;
   } catch (err) {
-    return err instanceof Error ? err.message : String(err);
+    const detail = err instanceof Error ? err.message : String(err);
+    return err instanceof ApprovalGateUnavailable || !(err instanceof Error)
+      ? { ok: false, reason: 'gate_unavailable', detail }
+      : { ok: false, reason: 'approval_pending', detail };
   }
+}
+
+/**
+ * Paste `text` into `ptyId` and submit it, gated as one operation in main. The
+ * gate runs before the paste AND again right before the Enter, because the
+ * Enter follows the paste after an agent-specific delay and a dialog drawn in
+ * that gap would take it. A refusal at the second check leaves the text in the
+ * composer unsubmitted (`pasted: true`) rather than answering the dialog.
+ */
+export async function gatedPasteSubmit(
+  gate: ApprovalInputGate,
+  write: (ptyId: string, data: string) => void,
+  ptyId: string,
+  text: string,
+  agent: string | null | undefined,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<GatedSubmitResult> {
+  const before = await deliveryGateCheck(gate, ptyId);
+  if (before) return before;
+  try {
+    write(ptyId, formatBracketedPastePayload(text));
+  } catch (err) {
+    return { ok: false, reason: 'write_failed', detail: err instanceof Error ? err.message : String(err) };
+  }
+  await sleep(submitProfileForAgent(agent).submitDelayMs);
+  const atEnter = await deliveryGateCheck(gate, ptyId);
+  if (atEnter) return { ...atEnter, pasted: true };
+  try {
+    write(ptyId, isMultilinePtyPayload(text) ? '\r\r' : '\r');
+  } catch (err) {
+    return { ok: false, reason: 'write_failed', detail: err instanceof Error ? err.message : String(err), pasted: true };
+  }
+  return { ok: true };
 }
 
 /**
@@ -651,6 +711,8 @@ export interface InputRpcDeps {
   answerPolicy?: (ptyId: string) => Promise<AnswerPolicy>;
   /** Injected in tests; defaults to the renderer's screen read. */
   readScreenText?: (ptyId: string) => Promise<string | null>;
+  /** Injected in tests; the gated submit's wait between paste and Enter. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export function registerInputRpc(
@@ -668,7 +730,7 @@ export function registerInputRpc(
    */
   noteInterruptInput?: (ptyId: string, data: string) => void,
   deps: InputRpcDeps = {},
-): { a2aDeliveryRefusal: (ptyId: string) => Promise<string | null> } {
+): { gatedSubmit: (ptyId: string, text: string, agent?: string | null) => Promise<GatedSubmitResult> } {
   const ledgerOf = deps.getLedger ?? getTaskLedger;
   const approvalGate: ApprovalInputGate = {
     getDaemonClient,
@@ -1126,5 +1188,19 @@ export function registerInputRpc(
     return { ptyId, ...result, ...untrustedLabel(access) };
   });
 
-  return { a2aDeliveryRefusal: (ptyId) => a2aDeliveryRefusal(approvalGate, ptyId) };
+  // The gated submit writes through the same routing input.send uses.
+  const writeToPty = (ptyId: string, data: string): void => {
+    noteInterruptInput?.(ptyId, data);
+    if (ptyManager.get(ptyId)) {
+      ptyManager.write(ptyId, data);
+      return;
+    }
+    const dc = getDaemonClient?.();
+    if (!dc?.isConnected) throw new Error(`delivery: PTY not found — id="${ptyId}"`);
+    dc.writeToSession(ptyId, data);
+  };
+  return {
+    gatedSubmit: (ptyId, text, agent) =>
+      gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep),
+  };
 }
