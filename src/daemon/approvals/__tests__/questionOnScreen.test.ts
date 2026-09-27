@@ -30,8 +30,17 @@ const PERMISSION = [
 ];
 
 describe('questionOnScreen', () => {
-  it('matches a measured single-select question and its multi-question first tab', () => {
+  it('matches a measured single-select question and a multi-question first tab', () => {
+    expect(questionOnScreen(fixture('claude-ask-single-01-initial'), {
+      question: 'Which color should the button be?',
+      choices: [{ key: '1', label: 'Red' }, { key: '2', label: 'Green' }, { key: '3', label: 'Blue' }],
+    })).toBe('match');
     expect(questionOnScreen(fixture('claude-ask-multi-01-q1'), SIZE)).toBe('match');
+    // After the answer the question is gone from the measured screen.
+    expect(questionOnScreen(fixture('claude-ask-single-03-after-digit3'), {
+      question: 'Which color should the button be?',
+      choices: [{ key: '1', label: 'Red' }, { key: '2', label: 'Green' }, { key: '3', label: 'Blue' }],
+    })).toBe('absent');
   });
 
   it('reads multi-select rows past their checkbox', () => {

@@ -169,6 +169,8 @@ export const PRESS_REFUSAL_HINTS: Readonly<Record<string, string>> = {
   'detector-only':
     'this prompt was only guessed at from the screen, not reported by a hook, so it will not be pressed',
   'prompt-gone': 'the prompt is no longer on screen — read the pane again before deciding',
+  'prompt-changed':
+    'the pane changed between the screen check and the press (a key, new output, or options that no longer read back) — nothing was typed; read the pane again',
   'scope-unavailable':
     'the daemon has no workspace facts to judge this pane by; the desktop app may have just started',
   'answer-in-terminal':
