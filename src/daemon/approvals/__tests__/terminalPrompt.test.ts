@@ -123,16 +123,25 @@ describe('ApprovalRegistry — terminal_prompt creation', () => {
     expect(creates(t)).toHaveLength(1);
   });
 
-  it('a hook-reported dialog for another tool supersedes a stale AskUserQuestion record', async () => {
+  // The Esc'd question, and the screen once it is gone vs while it is still up.
+  const VEG = {
+    sessionId: 'pty-a', agent: 'claude', question: 'Pick a veg?',
+    choices: [{ key: '1', label: 'Kale' }, { key: '2', label: 'Leek' }],
+  };
+  const PERMISSION_ROWS = [' Do you want to proceed?', ' ❯ 1. Yes', '   2. No'];
+  const VEG_ROWS = ['Pick a veg?', '❯ 1. Kale', '  2. Leek', '  3. Type something.'];
+
+  it.each([
+    ['a hook-reported dialog', { source: 'hook' as const }],
+    ['a detector-confirmed dialog', { source: 'detector' as const, toolName: undefined }],
+  ])('%s for another tool supersedes an AskUserQuestion record whose question is gone', async (_label, over) => {
     // Measured on 2.1.283: Esc on a question sends no PostToolUse and no Stop,
     // so its record outlived it, and the next Bash dialog got no record at all.
-    const h = makeRegistry();
-    await h.registry.noteHookAwaitingInput({
-      sessionId: 'pty-a', agent: 'claude', question: 'Pick a veg?', choices: [{ key: '1', label: 'Kale' }],
-    });
+    const h = makeRegistry({ readScreenTail: async () => PERMISSION_ROWS });
+    await h.registry.noteHookAwaitingInput(VEG);
     h.events.length = 0;
 
-    await h.registry.noteTerminalPrompt({ ...PROMPT, source: 'hook' });
+    await h.registry.noteTerminalPrompt({ ...PROMPT, ...over });
 
     expect(pendingOf(h).map((r) => r.kind)).toEqual(['terminal_prompt']);
     expect(h.registry.list().recentlyResolved).toMatchObject([{ kind: 'awaiting_input', state: 'superseded' }]);
@@ -144,15 +153,50 @@ describe('ApprovalRegistry — terminal_prompt creation', () => {
   });
 
   it.each([
-    ['the question\'s own PermissionRequest', { source: 'hook' as const, toolName: 'AskUserQuestion' }],
-    ['a hook note that names no tool', { source: 'hook' as const, toolName: undefined }],
-    ['a detector read', { source: 'detector' as const }],
-  ])('%s leaves a pending AskUserQuestion record alone', async (_label, over) => {
-    const h = makeRegistry();
-    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', question: 'Pick a veg?' });
+    ['the question\'s own PermissionRequest', { source: 'hook' as const, toolName: 'AskUserQuestion' }, PERMISSION_ROWS, VEG],
+    // A subagent's permission request while the lead's question is still up.
+    ['a dialog while the question is still on screen', { source: 'hook' as const }, VEG_ROWS, VEG],
+    ['an unreadable screen', { source: 'hook' as const }, null, VEG],
+    // Nothing identifies a record without choices on screen: never retired on a guess.
+    ['a record that cannot be proven gone', { source: 'detector' as const }, PERMISSION_ROWS, { ...VEG, choices: undefined }],
+  ])('%s leaves a pending AskUserQuestion record alone', async (_label, over, rows, question) => {
+    const h = makeRegistry({ readScreenTail: async () => rows });
+    await h.registry.noteHookAwaitingInput(question);
     await h.registry.noteTerminalPrompt({ ...PROMPT, ...over });
     expect(pendingOf(h).map((r) => r.kind)).toEqual(['awaiting_input']);
     expect(creates(h)).toHaveLength(1);
+  });
+
+  it('a NEW question created while the screen is read is never superseded', async () => {
+    let asked = false;
+    const h: Harness = makeRegistry({
+      readScreenTail: async () => {
+        if (!asked) {
+          asked = true;
+          await h.registry.noteHookAwaitingInput({ ...VEG, question: 'Pick a fruit?' });
+        }
+        return PERMISSION_ROWS;
+      },
+    });
+    await h.registry.noteHookAwaitingInput(VEG);
+
+    await h.registry.noteTerminalPrompt({ ...PROMPT, source: 'hook' });
+
+    expect(pendingOf(h)).toMatchObject([{ kind: 'awaiting_input', question: 'Pick a fruit?' }]);
+  });
+
+  it('retireStaleQuestion expires the question only once the screen shows it gone', async () => {
+    let rows: string[] = VEG_ROWS;
+    const h = makeRegistry({ readScreenTail: async () => rows });
+    await h.registry.noteHookAwaitingInput(VEG);
+
+    await h.registry.retireStaleQuestion('pty-a');
+    expect(pendingOf(h).map((r) => r.kind)).toEqual(['awaiting_input']);
+
+    rows = PERMISSION_ROWS;
+    await h.registry.retireStaleQuestion('pty-a');
+    expect(pendingOf(h)).toEqual([]);
+    expect(h.registry.list().recentlyResolved).toMatchObject([{ kind: 'awaiting_input', state: 'expired' }]);
   });
 
   it('a hook-reported dialog never supersedes a pending gate or terminal prompt', async () => {

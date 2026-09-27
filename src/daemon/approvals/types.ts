@@ -382,6 +382,9 @@ export type ApprovalExpiryReason =
   | 'pane-gone'
   | 'prompt-gone'
   | 'answered-locally'
+  // The user submitted a new prompt: the input box is back, so the question
+  // it would answer is no longer on screen (Esc sends no hook of its own).
+  | 'prompt-submitted'
   // #783 — the gate self-deferred before the harness deadline (phone did not
   // answer in time). The record is expired so a late phone tap gets a 410.
   | 'gate-timed-out'
@@ -451,6 +454,12 @@ export interface ApprovalHookSink {
     reason: ApprovalExpiryReason,
     kind?: ApprovalRequest['kind'],
   ): void;
+  /**
+   * The agent is starting another tool: retire the pane's pending
+   * AskUserQuestion record if a screen read shows its question is gone.
+   * Optional so a sink without a screen (tests) can omit it.
+   */
+  retireStaleQuestion?(sessionId: string): void;
 }
 
 export interface ApprovalListResult {

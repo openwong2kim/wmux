@@ -544,15 +544,23 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     const { sessionId } = note;
     if (!isClaudeFamilyAgent(note.agent)) return;
     if (this.terminalPromptReads.has(sessionId)) return;
-    if (this.hasPending(sessionId) && !this.staleQuestionFor(note)) return;
+    // Pinned BEFORE any await: only this record may be superseded below. A
+    // question created while the screen is read is a new one, not stale.
+    const staleId = this.staleQuestionFor(note)?.id;
+    if (this.hasPending(sessionId) && !staleId) return;
     this.terminalPromptReads.add(sessionId);
     const seq = this.sweepSeq.get(sessionId) ?? 0;
     try {
       const read = await this.readDialogForCreation(sessionId);
       const binding = this.bindingFor(sessionId, note);
+      // The question must be proven gone from the screen, not just outlived by
+      // a hook: a subagent's permission request can arrive while the lead
+      // turn's question is still up.
+      const staleGone = staleId ? await this.questionGone(sessionId, staleId) : false;
       let created: ApprovalRequest | null = null;
       await this.mutate(() => {
-        const stale = this.staleQuestionFor(note);
+        const candidate = this.staleQuestionFor(note);
+        const stale = candidate && candidate.id === staleId && staleGone ? candidate : undefined;
         if (this.hasPending(sessionId) && !stale) return [];
         if ((this.sweepSeq.get(sessionId) ?? 0) !== seq) return [];
         // The pane must still be alive at the moment the record is minted.
@@ -567,7 +575,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           this.deps.log?.(
             'info',
             `[approvals] superseded stale question ${stale.id} on ${sessionId}: ` +
-              `a ${logText(note.toolName, 40)} permission dialog replaced it`,
+              `a ${logText(note.toolName ?? 'permission', 40)} dialog replaced it`,
           );
         }
         this.requests.push(record);
@@ -673,29 +681,55 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   }
 
   /**
-   * The pane's pending AskUserQuestion record, when a hook-reported permission
-   * dialog for ANOTHER tool proves it stale.
+   * The pane's lone pending AskUserQuestion record, as a CANDIDATE for being
+   * retired by another dialog — never retired on this alone.
    *
    * Esc on an AskUserQuestion rejects the tool: Claude Code sends no
    * PostToolUse for it and no Stop for the interrupt, so its `awaiting_input`
-   * record stayed pending for the rest of the session (measured on 2.1.283).
-   * The next permission dialog then found the pane "pending" and got no record
-   * at all, and the stale record's default approve — digit `1`, checked only
-   * for a `❯ 1.` row — would have pressed "Yes" on that dialog, a command the
-   * phone never showed. The PermissionRequest hook fires only while its own
-   * dialog is the one on screen, so a question for a different tool cannot
-   * still be up.
+   * record stayed pending for the rest of the session (measured on 2.1.283),
+   * and the next permission dialog found the pane "pending" and got no record.
+   * A candidate is superseded only when a screen read proves its question is
+   * gone (`questionGone`), so a subagent's permission request that lands while
+   * the question is still up changes nothing.
    *
-   * Narrow on purpose: hook-sourced notes only (a detector read proves less),
-   * a named tool that is not AskUserQuestion (Claude fires PermissionRequest
-   * for the question itself ~50 ms after its PreToolUse), and only when the one
-   * pending record is an `awaiting_input` — a gate or another terminal prompt
-   * keeps today's first-record-wins rule.
+   * Only a lone `awaiting_input` qualifies — a gate or another terminal prompt
+   * keeps today's first-record-wins rule — and never for the question's own
+   * PermissionRequest (Claude fires it ~50 ms after the question's PreToolUse).
    */
   private staleQuestionFor(note: TerminalPromptNote): ApprovalRequest | undefined {
-    if (note.source !== 'hook' || !note.toolName || note.toolName === 'AskUserQuestion') return undefined;
+    if (note.toolName === 'AskUserQuestion') return undefined;
     const pending = this.requests.filter((r) => r.state === 'pending' && r.sessionId === note.sessionId);
     return pending.length === 1 && pending[0].kind === 'awaiting_input' ? pending[0] : undefined;
+  }
+
+  /**
+   * True only when a fresh screen read shows the record's question is NOT on
+   * screen (`questionOnScreen` → `absent`). Unreadable, unprovable, or still
+   * there → false: a live question is never retired on a guess.
+   */
+  private async questionGone(sessionId: string, id: string): Promise<boolean> {
+    const record = this.requests.find((r) => r.id === id);
+    if (!record || record.state !== 'pending') return false;
+    const rows = await this.safeReadScreen(sessionId);
+    return !!rows && rows.length > 0 && questionOnScreen(rows, record) === 'absent';
+  }
+
+  /**
+   * Retire the pane's pending AskUserQuestion record when its question has
+   * left the screen. HookIngest calls this when the agent starts another tool
+   * (the permission gate's PreToolUse): that tool may belong to a subagent
+   * while the question is still up, so the screen decides. Never rejects.
+   */
+  async retireStaleQuestion(sessionId: string): Promise<void> {
+    try {
+      const candidate = this.staleQuestionFor({ sessionId, agent: '', source: 'hook' });
+      if (!candidate) return;
+      const id = candidate.id;
+      if (!(await this.questionGone(sessionId, id))) return;
+      await this.mutate(() => this.expirePendingWhere((r) => r.id === id, 'prompt-gone'));
+    } catch (err) {
+      this.deps.log?.('warn', `[approvals] stale question check failed for ${sessionId}: ${String(err)}`);
+    }
   }
 
   private hasPending(sessionId: string): boolean {

@@ -19,19 +19,27 @@ type Created = {
   question?: string;
   options?: string[];
 };
-type Expired = { sessionId: string; reason: ApprovalExpiryReason };
+type Expired = { sessionId: string; reason: ApprovalExpiryReason; kind?: string };
 
-function makeSink(): ApprovalHookSink & { created: Created[]; expired: Expired[]; gateCreated: Array<{ sessionId: string; toolName: string }> } {
+function makeSink(): ApprovalHookSink & {
+  created: Created[];
+  expired: Expired[];
+  gateCreated: Array<{ sessionId: string; toolName: string }>;
+  retired: string[];
+} {
   const created: Created[] = [];
   const expired: Expired[] = [];
   const gateCreated: Array<{ sessionId: string; toolName: string }> = [];
+  const retired: string[] = [];
   return {
     created,
     expired,
     gateCreated,
+    retired,
+    retireStaleQuestion: (sessionId) => { retired.push(sessionId); },
     noteHookAwaitingInput: (input) => { created.push(input); },
     noteGateAwaiting: (input) => { gateCreated.push({ sessionId: input.sessionId, toolName: input.toolName }); return `gate-${gateCreated.length}`; },
-    expireForSession: (sessionId, reason) => { expired.push({ sessionId, reason }); },
+    expireForSession: (sessionId, reason, kind) => { expired.push({ sessionId, reason, ...(kind ? { kind } : {}) }); },
   };
 }
 
@@ -61,6 +69,23 @@ function makeIngest(sessions: HookIngestSession[] = [
 }
 
 describe('hook → approval registry wiring', () => {
+  it('a submitted prompt expires the pane\'s pending question, and only questions', () => {
+    const { ingest, approvals } = makeIngest();
+
+    ingest.handle(makeSignal({ kind: 'agent.user_prompt_submit' }));
+
+    expect(approvals.expired).toEqual([{ sessionId: 'pty-a', reason: 'prompt-submitted', kind: 'awaiting_input' }]);
+  });
+
+  it('another tool starting asks the registry to retire a question that is gone; the question itself does not', () => {
+    const { ingest, approvals } = makeIngest();
+
+    ingest.handlePermissionGate(makeSignal({ kind: 'agent.awaiting_permission', payload: { tool_name: 'Bash' } }));
+    ingest.handlePermissionGate(makeSignal({ kind: 'agent.awaiting_permission', payload: { tool_name: 'AskUserQuestion' } }));
+
+    expect(approvals.retired).toEqual(['pty-a']);
+  });
+
   it('a hook awaiting_input that EMITS creates a request', () => {
     const { ingest, approvals } = makeIngest();
 
@@ -230,7 +255,7 @@ describe('hook → approval registry wiring', () => {
 
     ingest.handle(makeSignal({ kind: 'agent.input_answered' }));
 
-    expect(approvals.expired).toEqual([{ sessionId: 'pty-a', reason: 'answered-locally' }]);
+    expect(approvals.expired).toEqual([{ sessionId: 'pty-a', reason: 'answered-locally', kind: 'awaiting_input' }]);
   });
 
   it('agent.session_start expires it — a new session never asked the old question', () => {
