@@ -1,4 +1,5 @@
 import type { StateCreator } from 'zustand';
+import { paneTaskFoldKey } from '../../utils/sidebarLayout';
 import type { StoreState } from '../index';
 import type { Pane, PaneBranch, StashedPane, Workspace, AgentStatus } from '../../../shared/types';
 import type { AgentSlug } from '../../../shared/events';
@@ -1037,6 +1038,8 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
         delete state.paneLabel[leaf.id];
         // Drop the orchestrator-role mirror on the same teardown (mirrors label).
         delete state.paneRole[leaf.id];
+        // The sidebar's fold state for the tasks this pane requested.
+        if (state.sidebarTaskGroupExpanded) delete state.sidebarTaskGroupExpanded[paneTaskFoldKey(ws.id, leaf.id)];
         for (const s of leaf.surfaces) {
           if (s.ptyId) {
             delete state.surfaceAgent[s.ptyId];

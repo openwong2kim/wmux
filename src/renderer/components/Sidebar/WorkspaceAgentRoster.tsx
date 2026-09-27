@@ -2,6 +2,7 @@ import { Fragment, memo, useEffect, useMemo, useState, type ReactNode } from 're
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import {
+  agentSurfaceTitle,
   createWorkspaceAgentRosterSelector,
   type RosterChipAgent,
   type WorkspaceAgentRosterRow,
@@ -20,6 +21,9 @@ import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTi
 import { buildMentionReference, buildMentionTargets, focusedMentionSource } from '../../utils/agentMention';
 import { insertMention, toastMentionInsert } from '../../utils/agentMentionInsert';
 import { PaneTaskGroup, usePaneTaskSplit } from './SidebarTaskGroup';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
+import type { Workspace } from '../../../shared/types';
 
 /**
  * The roster row's `@`: insert this agent's reference into the focused agent's
@@ -108,6 +112,9 @@ interface WorkspaceRosterSummaryProps {
   /** Fan-out tasks nested under this roster's pane rows — counted on the
    *  collapsed chip, since folding the roster also hides them. */
   paneTaskCount?: number;
+  /** How many of those need you — red on the folded chip, so a task asking
+   *  for you never disappears behind a fold. */
+  paneTaskNeedYou?: number;
   open: boolean;
   onToggle: () => void;
 }
@@ -225,18 +232,20 @@ function WorkspaceRosterSummary({
   stashedCount,
   agents = [],
   paneTaskCount = 0,
+  paneTaskNeedYou = 0,
   open,
   onToggle,
 }: WorkspaceRosterSummaryProps) {
   const t = useT();
   const roster = { agentCount, stashedCount };
 
-  if (agentCount === 0 && stashedCount === 0) return null;
+  if (agentCount === 0 && stashedCount === 0 && paneTaskCount === 0) return null;
 
   const showTasks = !open && paneTaskCount > 0;
   const ariaLabel = [
     rosterSummaryAriaLabel(roster, open, t),
     showTasks ? (paneTaskCount === 1 ? t('sidebar.tasks.countOne') : t('sidebar.tasks.count', { count: paneTaskCount })) : undefined,
+    showTasks && paneTaskNeedYou > 0 ? t('strip.needsYou', { count: paneTaskNeedYou }) : undefined,
   ].filter(Boolean).join(', ');
 
   return (
@@ -313,12 +322,14 @@ function WorkspaceRosterSummary({
         </span>
       )}
       {/* Folding the roster also folds the tasks its panes requested: the
-          collapsed chip keeps them accounted for (muted — a task that needs
-          you lifts and re-opens the roster on its own). */}
+          collapsed chip keeps them accounted for — muted, with the ones that
+          need you counted in red (the only rendition while folded). */}
       {showTasks && (
-        <span className="flex items-center gap-0.5" data-roster-chip-tasks={paneTaskCount}>
+        <span className="flex items-center gap-0.5" data-roster-chip-tasks={paneTaskCount} data-roster-chip-needs-you={paneTaskNeedYou || undefined}>
           <IconFanOut size={8} />
-          {paneTaskCount}
+          {paneTaskNeedYou > 0 ? (
+            <span><span className="font-semibold text-[var(--accent-red)]">{paneTaskNeedYou}</span>/{paneTaskCount}</span>
+          ) : paneTaskCount}
         </span>
       )}
     </button>
@@ -353,8 +364,14 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
   const unseenByPtyId = useStore(useShallow(selectSidebarUnseen));
   // 2026-09-27 — this workspace's tasks, filed under the requesting pane.
   const taskSplit = usePaneTaskSplit(workspaceId, renderTask ? taskIds : undefined);
+  // A pane that asked for tasks keeps a row while it is open even after its
+  // agent ended (no roster row): a muted one, so its tasks stay under it.
+  const firstRowOfPane = new Map<string, number>();
+  roster.rows.forEach((row, index) => { if (!firstRowOfPane.has(row.paneId)) firstRowOfPane.set(row.paneId, index); });
+  const barePaneIds = [...taskSplit.byPane.keys()].filter((paneId) => !firstRowOfPane.has(paneId));
+  const bareRows = useStore(useShallow((s) => barePanesOf(s, workspaceId, barePaneIds)));
 
-  if (roster.agentCount === 0 && roster.stashedCount === 0) return null;
+  if (roster.agentCount === 0 && roster.stashedCount === 0 && taskSplit.byPane.size === 0) return null;
 
   // Computed once per render, not per row: the vendor column earns its width
   // only when the workspace actually mixes vendors.
@@ -372,10 +389,12 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
       id={rosterListId(workspaceId)}
       data-workspace-agent-roster
       onMouseDown={(event) => {
-        // A nested task row is a drag source of its own and holds a rename
-        // input: its press must keep its default (focus, drag) — its list
-        // stops the gestures that would reach the owner row instead.
-        if (event.target instanceof Element && event.target.closest('[data-pane-tasks]')) return;
+        // A nested task row — in a list of THIS roster — is a drag source of
+        // its own and holds a rename input: its press keeps its default
+        // (focus, drag); its list stops the gestures that would reach the
+        // owner row instead. Only a task row: the list's own padding, and a
+        // nested roster's controls (whose own roster handles them), do not.
+        if (isOwnTaskRowPress(event.target, event.currentTarget)) return;
         // Prevent Chromium from promoting the draggable WorkspaceItem ancestor
         // to a native drag source when the gesture starts on roster controls.
         event.preventDefault();
@@ -430,7 +449,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
             const rowAriaLabel = [row.ptyId && unseenByPtyId[row.ptyId] ? t('sidebar.changedSinceSeen') : undefined, primary, agentLabel !== primary ? agentLabel : undefined, secondary, unverifiableLabel ?? statusLabel, elapsed, stashedAgo, detail, verb]
               .filter(Boolean)
               .join(', ');
-            const rowTaskIds = taskSplit.byRow.get(row.surfaceId);
+            const rowTaskIds = firstRowOfPane.get(row.paneId) === index ? taskSplit.byPane.get(row.paneId) : undefined;
             // Keyed by paneId for stashed rows: an exited pane has no ptyId
             // left, and two of them would collide on the empty string.
             // Remote rows key by surfaceId: the synthetic remote:{...} ptyId
@@ -641,7 +660,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
               <PaneTaskGroup
                 key={rowKey}
                 ownerId={workspaceId}
-                surfaceId={row.surfaceId}
+                paneId={row.paneId}
                 paneName={[primary, secondary].filter(Boolean).join(' · ')}
                 taskIds={rowTaskIds}
                 ownerActive={ownerActive}
@@ -652,9 +671,86 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
               </PaneTaskGroup>
             );
           })}
+          {renderTask && onCloseTask && bareRows.map((entry) => {
+            const [paneId, surfaceId, label] = entry.split('\u0000');
+            const rowTaskIds = taskSplit.byPane.get(paneId);
+            if (!rowTaskIds) return null;
+            return (
+              <PaneTaskGroup
+                key={`bare:${paneId}`}
+                ownerId={workspaceId}
+                paneId={paneId}
+                paneName={label}
+                taskIds={rowTaskIds}
+                ownerActive={ownerActive}
+                renderTask={renderTask}
+                onCloseWorkspace={onCloseTask}
+              >
+                {(taskControls) => (
+                  <div className="group/mention flex min-w-0 items-center" data-roster-bare-pane={paneId}>
+                    <button
+                      type="button"
+                      draggable={false}
+                      className={`flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-[3px] text-left transition-colors hover:bg-[rgba(var(--bg-surface-rgb),0.65)] ${FOCUS_RING}`}
+                      title={t('roster.barePane', { name: label })}
+                      aria-label={t('roster.barePane', { name: label })}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        focusNotificationTarget(() => useStore.getState(), { ptyId: null, surfaceId });
+                      }}
+                      onDoubleClick={(event) => event.stopPropagation()}
+                    >
+                      {/* No agent here any more: no status mark, muted name. */}
+                      <span className="h-2.5 w-2.5 flex-none" aria-hidden="true" />
+                      <span className="min-w-0 flex-1 truncate text-[10px] text-[var(--text-muted)]">{label}</span>
+                    </button>
+                    {taskControls}
+                  </div>
+                )}
+              </PaneTaskGroup>
+            );
+          })}
       </div>
     </div>
   );
 }
+
+/** Whether a press started on a task row nested in a list this roster owns. */
+export function isOwnTaskRowPress(target: EventTarget | null, roster: Element): boolean {
+  if (!(target instanceof Element)) return false;
+  const list = target.closest('[data-pane-tasks]');
+  if (!list || !roster.contains(list)) return false;
+  const row = target.closest('.sidebar-row');
+  return !!row && list.contains(row);
+}
+
+/**
+ * Open panes of `workspaceId` among `paneIds`, as `paneId \0 surfaceId \0
+ * label` strings (reference-stable under useShallow). The label is the pane's
+ * name and coordinate, as the roster names a pane.
+ */
+function barePanesOf(
+  state: { workspaces: readonly Workspace[]; paneLabel: Record<string, string | undefined>; sidebarShowPaneCoordinates?: boolean },
+  workspaceId: string,
+  paneIds: readonly string[],
+): string[] {
+  if (paneIds.length === 0) return NO_BARE_PANES;
+  const ws = state.workspaces.find((w) => w.id === workspaceId);
+  if (!ws) return NO_BARE_PANES;
+  const out: string[] = [];
+  for (const leaf of getWorkspaceLeafPanes(ws)) {
+    if (!paneIds.includes(leaf.id)) continue;
+    const surface = leaf.surfaces.find((sf) => sf.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
+    if (!surface) continue;
+    const coord = computePaneAutoName(ws.wsOrdinal ?? 0, leaf.ordinal ?? 0);
+    const name = paneDisplayName(state.paneLabel[leaf.id], coord);
+    const title = agentSurfaceTitle(surface);
+    const label = [title, name].filter(Boolean).join(' · ');
+    out.push([leaf.id, surface.id, label].join('\u0000'));
+  }
+  return out;
+}
+
+const NO_BARE_PANES: string[] = [];
 
 export default memo(WorkspaceAgentRoster);

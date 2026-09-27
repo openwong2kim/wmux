@@ -13,7 +13,7 @@
 // It subscribes to its own tasks' statuses so the Sidebar list above it stays
 // decoupled from per-pane churn (see Sidebar.tsx, A1).
 
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
@@ -25,41 +25,18 @@ import { HIT_TARGET_24 } from '../hitArea';
 import Popover from '../ui/Popover';
 import { placePopover } from '../AgentToolbar/placePopover';
 import { CloseWorkspaceConfirm, type CloseConfirmAnchor } from './WorkspaceItem';
-import { CLOSE_SKIP_KEY as SKIP_KEY, closedPaneFoldKey, isTaskGroupExpanded, paneRowsFinished, paneTaskFoldKey, revalidateTaskForClose, splitTasksByPane, taskRollup, withTimeout, type PaneTaskSplit } from './sidebarTree';
+import { CLOSE_SKIP_KEY as SKIP_KEY, closedPaneFoldKey, isTaskGroupExpanded, paneRowsFinished, paneTaskFoldKey, revalidateTaskForClose, selectOwnerPaneTaskSplit, taskRollup, withTimeout, type PaneTaskSplit } from './sidebarTree';
 import { selectWorkspaceAgentRoster } from '../../stores/selectors/workspaceAgentRoster';
 import { isTaskReadyForReview } from '../../stores/selectors/reviewQueue';
 import { displayWorkspaceName } from '../../utils/fanoutProvenance';
 
-const NO_TASKS: readonly string[] = [];
-
 /**
- * An owner's tasks split by requesting pane, against the owner's live roster
- * rows. The selector yields one string per task (the row's surfaceId, or ''
- * for the "From closed pane" group), so it only re-renders when a task moves
- * between groups — not on the roster's output churn. The roster, the closed
- * pane group and the owner row all derive from this one split.
+ * An owner's tasks split by requesting pane (see selectOwnerPaneTaskSplit:
+ * one memoized split per owner, shared by the owner row, its roster and its
+ * closed-pane group, stable while no task changes group).
  */
 export function usePaneTaskSplit(ownerId: string, taskIds: readonly string[] | undefined): PaneTaskSplit {
-  const ids = taskIds ?? NO_TASKS;
-  const assignment = useStore(useShallow((s) => {
-    if (ids.length === 0) return NO_TASKS;
-    const split = splitTasksByPane(ids, (id) => s.fanoutOrigin?.[id], selectWorkspaceAgentRoster(s, ownerId).rows);
-    const rowOf = new Map<string, string>();
-    for (const [surfaceId, list] of split.byRow) for (const id of list) rowOf.set(id, surfaceId);
-    return ids.map((id) => rowOf.get(id) ?? '');
-  }));
-  return useMemo(() => {
-    const byRow = new Map<string, string[]>();
-    const closedPane: string[] = [];
-    ids.forEach((id, i) => {
-      const key = assignment[i];
-      if (!key) { closedPane.push(id); return; }
-      const list = byRow.get(key);
-      if (list) list.push(id);
-      else byRow.set(key, [id]);
-    });
-    return { byRow, closedPane };
-  }, [ids, assignment]);
+  return useStore((s) => selectOwnerPaneTaskSplit(s, ownerId, taskIds));
 }
 
 interface TaskGroupModelArgs {
@@ -113,12 +90,16 @@ interface TaskGroupMenuProps {
   /** Pane groups have no rollup line to show "N to review" on: the menu
    *  offers it instead. */
   toReview?: number;
+  /** Names the group the menu acts on (its accessible name). */
+  groupName: string;
   onCloseWorkspace: (id: string) => void;
   className: string;
 }
 
+const stopBubble = (event: { stopPropagation: () => void }) => event.stopPropagation();
+
 /** The ⋮ button with "Close finished tasks (N)" and its confirm. */
-function TaskGroupMenu({ ownerKey, finishedIds, nameOf, toReview = 0, onCloseWorkspace, className }: TaskGroupMenuProps) {
+function TaskGroupMenu({ ownerKey, finishedIds, nameOf, toReview = 0, groupName, onCloseWorkspace, className }: TaskGroupMenuProps) {
   const t = useT();
   // The exact set the confirm lists — closed as listed, each re-checked.
   const [confirmIds, setConfirmIds] = useState<string[]>([]);
@@ -214,8 +195,8 @@ function TaskGroupMenu({ ownerKey, finishedIds, nameOf, toReview = 0, onCloseWor
         type="button"
         draggable={false}
         className={className}
-        aria-label={t('sidebar.tasks.menu')}
-        title={t('sidebar.tasks.menu')}
+        aria-label={t('sidebar.tasks.menuFor', { name: groupName })}
+        title={t('sidebar.tasks.menuFor', { name: groupName })}
         aria-haspopup="menu"
         aria-expanded={!!menuAnchor}
         onMouseDown={(e) => e.stopPropagation()}
@@ -229,6 +210,16 @@ function TaskGroupMenu({ ownerKey, finishedIds, nameOf, toReview = 0, onCloseWor
       >
         <IconMoreVertical size={12} />
       </button>
+      {/* The menu and its confirm render inside the owner workspace's row for
+          a pane group: no click on them may reach the row (it would switch
+          workspace). `contents` keeps them out of the flex layout. */}
+      <span
+        className="contents"
+        onClick={stopBubble}
+        onDoubleClick={stopBubble}
+        onContextMenu={stopBubble}
+        data-task-group-overlay
+      >
       {menuAnchor && menuPos && (
         <Popover
           ref={menuRef}
@@ -285,11 +276,10 @@ function TaskGroupMenu({ ownerKey, finishedIds, nameOf, toReview = 0, onCloseWor
           }}
         />
       )}
+      </span>
     </>
   );
 }
-
-const stopBubble = (event: { stopPropagation: () => void }) => event.stopPropagation();
 
 /**
  * The indented task rows. Inside a roster the list sits within the owner
@@ -418,6 +408,7 @@ function SidebarTaskGroup({ groupKey, foldKey, taskIds, ownerActive, label, owne
           ownerKey={groupKey}
           finishedIds={finishedIds}
           nameOf={nameOf}
+          groupName={label ?? displayWorkspaceName(ownerName, false)}
           onCloseWorkspace={onCloseWorkspace}
           className={`${HIT_TARGET_24} flex-none rounded text-[var(--text-muted)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
         />
@@ -437,8 +428,8 @@ function SidebarTaskGroup({ groupKey, foldKey, taskIds, ownerActive, label, owne
 
 interface PaneTaskGroupProps {
   ownerId: string;
-  /** The requesting roster row's surface — the group's identity. */
-  surfaceId: string;
+  /** The requesting pane — the group's identity. */
+  paneId: string;
   /** The requesting pane's name, for the group's accessible name. */
   paneName: string;
   taskIds: readonly string[];
@@ -457,10 +448,10 @@ interface PaneTaskGroupProps {
  * only place the blocked task shows then. Unfolded, the task row carries the
  * red itself (two renditions, not three).
  */
-function PaneTaskGroupInner({ ownerId, surfaceId, paneName, taskIds, ownerActive, renderTask, onCloseWorkspace, children }: PaneTaskGroupProps) {
+function PaneTaskGroupInner({ ownerId, paneId, paneName, taskIds, ownerActive, renderTask, onCloseWorkspace, children }: PaneTaskGroupProps) {
   const t = useT();
   const listId = useId();
-  const foldKey = paneTaskFoldKey(ownerId, surfaceId);
+  const foldKey = paneTaskFoldKey(ownerId, paneId);
   const { rollup, anyNeedsYou, expanded, toggle, finishedIds, nameOf } = useTaskGroupModel({ taskIds, foldKey, ownerActive });
 
   if (!rollup) return <>{children(null)}</>;
@@ -508,6 +499,7 @@ function PaneTaskGroupInner({ ownerId, surfaceId, paneName, taskIds, ownerActive
         finishedIds={finishedIds}
         nameOf={nameOf}
         toReview={rollup.toReview}
+        groupName={paneName}
         onCloseWorkspace={onCloseWorkspace}
         className={`inline-flex h-6 w-0 min-w-0 flex-none items-center justify-center self-center -my-1.5 overflow-hidden rounded-[5px] text-[var(--text-muted)] hover:text-[var(--text-main)] group-hover/mention:w-6 focus-visible:w-6 aria-expanded:w-6 ${FOCUS_RING}`}
       />

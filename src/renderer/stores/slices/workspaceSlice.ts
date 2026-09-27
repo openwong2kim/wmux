@@ -19,7 +19,7 @@ import { retentionMigrationDone, markRetentionMigrationDone } from '../retention
 import { decUnread } from './notificationSlice';
 import { mergeDeadPaneRecovery, type DeadPaneRecovery } from '../../../shared/ptyRecovery';
 import { stashedPaneLiveness } from '../../../shared/paneStash';
-import { clampSidebarWidth, movePinned, pinnedFirst, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention, unpinNestedTasks } from '../../utils/sidebarLayout';
+import { clampSidebarWidth, dropOwnerFoldKeys, movePinned, pinnedFirst, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention, unpinNestedTasks } from '../../utils/sidebarLayout';
 import {
   collectLeafIds,
   getLeafPanes,
@@ -710,8 +710,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         void get().closeMissionForRemovedWorkspace?.(id);
         // #1481 — sidebar display state keyed by this workspace goes with it.
         get().pruneFanoutFor?.(id);
-        if (get().sidebarTaskGroupExpanded?.[id] !== undefined) {
-          set((s: StoreState) => { delete s.sidebarTaskGroupExpanded[id]; });
+        const foldKeys = Object.keys(get().sidebarTaskGroupExpanded ?? {});
+        if (foldKeys.some((k) => k === id || k.endsWith(`:${id}`) || k.includes(`:${id}:`))) {
+          set((s: StoreState) => { dropOwnerFoldKeys(s.sidebarTaskGroupExpanded, id); });
         }
         // Glance board: a removed workspace keeps no pin or new-workspace hold.
         if (get().sidebarPinnedIds?.includes(id) || get().sidebarNewAt?.[id] !== undefined) {
@@ -1382,6 +1383,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.sidebarTaskGroupExpanded = pruneTaskGroupExpanded(
         data.sidebarTaskGroupExpanded,
         new Set((data.workspaces ?? []).map((w) => w.id)),
+        (ownerId) => {
+          const ws = (data.workspaces ?? []).find((w) => w.id === ownerId);
+          return ws ? getWorkspaceLeafPanes(ws).map((leaf) => leaf.id) : [];
+        },
       );
       // Whitelisted, not a bare truthiness check: a forward-version session file
       // that names a fourth arrangement must not park an unknown string in the

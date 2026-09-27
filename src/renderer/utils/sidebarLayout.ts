@@ -84,22 +84,84 @@ export function sortModeMigratedToAttention(data: Parameters<typeof previousSide
 /** Remembered-expansion key of the "From closed workspace" group. */
 export const ORPHAN_GROUP_KEY = '__closed-owner__';
 
+/** Fold-state key of one pane's task group (2026-09-27: tasks nest under the
+ *  pane that requested them). */
+export function paneTaskFoldKey(ownerId: string, paneId: string): string {
+  return `pane:${ownerId}:${paneId}`;
+}
+
+/** Fold-state key of an owner's "From closed pane" group. */
+export function closedPaneFoldKey(ownerId: string): string {
+  return `closedPane:${ownerId}`;
+}
+
+const PANE_KEY = /^pane:([^:]+):(.+)$/;
+const CLOSED_PANE_KEY = /^closedPane:(.+)$/;
+
 /**
- * #1481 — keep only the task-group expansion entries whose owner is still an
- * open workspace (plus the closed-owner group's own key), dropping malformed
- * values. Without this every owner ever closed would stay in the session file.
+ * #1481 — keep only the task-group fold entries that can still apply,
+ * dropping malformed values; without this every owner and pane ever closed
+ * would stay in the session file. Kept: the closed-owner group's own key, an
+ * open owner's "From closed pane" key, and a pane key whose owner is open and
+ * (when `panesOf` is given) still holds that pane — visible or stashed.
+ *
+ * Before 2026-09-27 one key per owner (its id) folded all of its tasks. With
+ * `panesOf`, such a key is migrated once — onto the owner's closed-pane group
+ * and each of its panes, never over a key already set — and dropped.
  */
 export function pruneTaskGroupExpanded(
   map: unknown,
   liveIds: ReadonlySet<string>,
+  panesOf?: (ownerId: string) => readonly string[],
 ): Record<string, boolean> {
   const out: Record<string, boolean> = {};
   if (!map || typeof map !== 'object') return out;
-  for (const [ownerId, value] of Object.entries(map as Record<string, unknown>)) {
+  const legacy: [string, boolean][] = [];
+  for (const [key, value] of Object.entries(map as Record<string, unknown>)) {
     if (typeof value !== 'boolean') continue;
-    if (ownerId === ORPHAN_GROUP_KEY || liveIds.has(ownerId)) out[ownerId] = value;
+    if (key === ORPHAN_GROUP_KEY) { out[key] = value; continue; }
+    const pane = PANE_KEY.exec(key);
+    if (pane) {
+      if (liveIds.has(pane[1]) && (!panesOf || panesOf(pane[1]).includes(pane[2]))) out[key] = value;
+      continue;
+    }
+    const closed = CLOSED_PANE_KEY.exec(key);
+    if (closed) {
+      if (liveIds.has(closed[1])) out[key] = value;
+      continue;
+    }
+    if (liveIds.has(key)) {
+      if (panesOf) legacy.push([key, value]);
+      else out[key] = value;
+    }
+  }
+  for (const [ownerId, value] of legacy) {
+    for (const k of [closedPaneFoldKey(ownerId), ...panesOf!(ownerId).map((p) => paneTaskFoldKey(ownerId, p))]) {
+      if (out[k] === undefined) out[k] = value;
+    }
   }
   return out;
+}
+
+/** Drop the pane fold keys of `ws` whose pane it no longer holds (in place). */
+export function dropStalePaneFoldKeys(
+  map: Record<string, boolean> | undefined,
+  ownerId: string,
+  livePaneIds: readonly string[],
+): void {
+  if (!map) return;
+  const prefix = `pane:${ownerId}:`;
+  for (const key of Object.keys(map)) {
+    if (key.startsWith(prefix) && !livePaneIds.includes(key.slice(prefix.length))) delete map[key];
+  }
+}
+
+/** Drop every fold key that belongs to owner `ownerId` (in place). */
+export function dropOwnerFoldKeys(map: Record<string, boolean> | undefined, ownerId: string): void {
+  if (!map) return;
+  for (const key of Object.keys(map)) {
+    if (key === ownerId || key === closedPaneFoldKey(ownerId) || key.startsWith(`pane:${ownerId}:`)) delete map[key];
+  }
 }
 
 // ─── Pinned to top (owner decision 2026-09-26) ───────────────────────────────
