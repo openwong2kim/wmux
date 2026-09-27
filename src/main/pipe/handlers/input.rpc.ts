@@ -67,7 +67,7 @@ const delay = (ms: number): Promise<void> =>
 // cursor, so bytes flow whether or not anything was committed.
 //
 // Two signals are accepted, both of which require the pane to have MOVED:
-//   (a) turn start — a prompt-submit hook fired AFTER our \r, with a
+//   (a) turn start — a prompt-submit hook received AFTER our \r, with a
 //       running status. A freshly built mirror snapshot alone is not evidence.
 //   (b) composer cleared — the text we just typed has LEFT the composer area
 //       at the bottom of the screen. Positional (see `rowFromBottom`), because
@@ -179,7 +179,6 @@ export function composerCleared(before: string, after: string, needle: string): 
 /** A running snapshot needs a fresh prompt-submit hook to prove a turn started. */
 export function isTurnStart(reading: AgentStatusReading, enterAt: number): boolean {
   return reading.status === 'running'
-    && reading.ts >= enterAt
     && reading.turnStartedAt !== undefined
     && reading.turnStartedAt >= enterAt;
 }
@@ -191,13 +190,12 @@ export function screenTail(screen: string, count = SUBMIT_RECEIPT_TAIL_LINES): s
   return lines.slice(-count).join('\n');
 }
 
-/** One agent-status observation: the value, and WHEN the snapshot carrying it
- *  was taken. The timestamp is load-bearing — see `awaitSubmitReceipt`. */
+/** Agent status plus submit evidence received on main's clock. */
 export interface AgentStatusReading {
   status: string;
-  /** Epoch ms the snapshot was built (renderer push time). */
+  /** Renderer snapshot time, informational only; never compared with main time. */
   ts: number;
-  /** Epoch ms a prompt-submit hook fired; never inferred from bytes. */
+  /** Epoch ms main received a prompt-submit hook; never inferred from bytes. */
   turnStartedAt?: number;
 }
 
@@ -213,9 +211,10 @@ export interface SubmitReceipt {
   agentStatusAfter: string | null;
   /** The Enter was sent a second time because the first produced no receipt. */
   retried: boolean;
-  /** Why we accepted; 'none' when we watched and nothing moved, 'unobservable'
+  /** 'running_unconfirmed' means running was observed without submit evidence.
+   *  Otherwise why we accepted; 'none' when nothing moved, 'unobservable'
    *  when neither signal was available to watch in the first place. */
-  signal: 'turn_start' | 'composer_cleared' | 'none' | 'unobservable';
+  signal: 'turn_start' | 'composer_cleared' | 'running_unconfirmed' | 'none' | 'unobservable';
   /** Present only when `accepted` is false. */
   screenTail?: string;
 }
@@ -231,12 +230,12 @@ export interface SubmitReceipt {
  *
  * Two things that look like over-caution and are not:
  *
- *   - A running status needs a prompt-submit hook fired AFTER the \r.
+ *   - A running status needs a prompt-submit hook received AFTER the \r.
  *     Echo/redraw byte promotion can reach the mirror after Enter, so neither
  *     a status transition nor the snapshot's timestamp proves submission.
  *   - We re-send the Enter ONLY when the needle was in the composer to begin
- *     with. Otherwise the pane might be showing a confirmation dialog, and a
- *     blind second Enter presses its default.
+ *     with, and no running status has been observed. Running alone cannot
+ *     prove submission, but another Enter could double-submit a real turn.
  */
 export async function awaitSubmitReceipt(
   probe: SubmitProbe,
@@ -248,7 +247,7 @@ export async function awaitSubmitReceipt(
     pollMs?: number;
     maxTotalMs?: number;
     sleep?: (ms: number) => Promise<void>;
-    /** Epoch ms the \r was written. Older snapshots and hooks cannot confirm it. */
+    /** Epoch ms main wrote the \r, compared only with main hook receive time. */
     enterAt?: number;
     now?: () => number;
   } = {},
@@ -272,6 +271,7 @@ export async function awaitSubmitReceipt(
   }
 
   let status = before.agentStatus;
+  let runningObserved = status === 'running';
   let screen = before.screen;
   let retried = false;
   const hardDeadline = enterAt + maxTotalMs;
@@ -280,10 +280,11 @@ export async function awaitSubmitReceipt(
    *  (expensive) screen read — a hook-fast turn start should not wait on IPC. */
   const pollStatus = async (): Promise<boolean> => {
     const reading = await probe.readAgentStatus();
-    if (!reading || reading.ts < enterAt) return false;
+    if (!reading) return false;
     const started = isTurnStart(reading, enterAt)
       && reading.turnStartedAt !== before.turnStartedAt;
     status = reading.status;
+    if (status === 'running') runningObserved = true;
     return started;
   };
 
@@ -308,7 +309,7 @@ export async function awaitSubmitReceipt(
         }
       }
     }
-    if (attempt === 0 && attempts === 2 && now() < hardDeadline) {
+    if (attempt === 0 && attempts === 2 && !runningObserved && now() < hardDeadline) {
       retried = true;
       try {
         resendEnter();
@@ -325,7 +326,7 @@ export async function awaitSubmitReceipt(
     accepted: false,
     agentStatusAfter: status,
     retried,
-    signal: composerUsable ? 'none' : 'unobservable',
+    signal: runningObserved ? 'running_unconfirmed' : composerUsable ? 'none' : 'unobservable',
     ...(screen ? { screenTail: screenTail(screen) } : {}),
   };
 }

@@ -895,7 +895,7 @@ describe('input.send — submit receipt', () => {
 
   // #935 — agentStatus is byte-promoted, so the pane echoing our own text can
   // flip it to running. A snapshot from before the \r must not sign for it.
-  it('ignores a running status whose snapshot predates the Enter', async () => {
+  it('does not infer submission from running even when the renderer clock differs', async () => {
     const { probe } = fakeProbe([COMPOSER], [stale('running')]);
     const receipt = await awaitSubmitReceipt(
       probe,
@@ -905,7 +905,8 @@ describe('input.send — submit receipt', () => {
       waitOpts(),
     );
     expect(receipt.accepted).toBe(false);
-    expect(receipt.signal).toBe('none');
+    expect(receipt.signal).toBe('running_unconfirmed');
+    expect(receipt.retried).toBe(false);
   });
 
   it('checks the status BEFORE the first screen poll (a hook-fast turn costs no IPC)', async () => {
@@ -934,12 +935,13 @@ describe('input.send — submit receipt', () => {
     expect(receipt.signal).toBe('composer_cleared');
   });
 
-  // THE regression this change exists for: bytes arrived (the TUI repainted its
-  // box and cursor) but nothing was committed. Byte activity is not a receipt.
-  it('does NOT accept on echo-only byte activity, and retries the Enter once', async () => {
-    const echo1 = ['claude> ready', '', '│ > write me a haiku│', '  ? for shortcuts'].join('\n');
-    const echo2 = ['claude> ready', '', '│ > write me a haiku ▌│', '  ? for shortcuts'].join('\n');
-    const { probe } = fakeProbe([echo1, echo2], [fresh('idle')]);
+  it.each(['idle', 'running'])('keeps missing submit evidence honest while status is %s', async (status) => {
+    const frame = status === 'running'
+      ? ['› write me a haiku', '• Working (esc to interrupt)', '›', '  ? for shortcuts'].join('\n')
+      : ['claude> ready', '', '│ > write me a haiku ▌│', '  ? for shortcuts'].join('\n');
+    // A real turn can retain the prompt near the bottom; sending Enter again
+    // would duplicate input. Idle echo alone still permits the bounded retry.
+    const { probe } = fakeProbe([frame], [fresh(status)]);
     const resend = vi.fn();
     const receipt = await awaitSubmitReceipt(
       probe,
@@ -949,9 +951,8 @@ describe('input.send — submit receipt', () => {
       waitOpts({ windowMs: 100 }),
     );
     expect(receipt.accepted).toBe(false);
-    expect(receipt.signal).toBe('none');
-    expect(resend).toHaveBeenCalledTimes(1);
-    // The caller gets the pane's own words back instead of a bare false.
+    expect(receipt.signal).toBe(status === 'running' ? 'running_unconfirmed' : 'none');
+    expect(resend).toHaveBeenCalledTimes(status === 'running' ? 0 : 1);
     expect(receipt.screenTail).toContain('write me a haiku');
   });
 
@@ -975,12 +976,12 @@ describe('input.send — submit receipt', () => {
       );
       expect(receipt).toMatchObject({
         accepted: false,
-        signal: 'none',
+        signal: 'running_unconfirmed',
         agentStatusAfter: 'running',
-        retried: true,
+        retried: false,
       });
       expect(receipt.screenTail).toContain('› write me a haiku');
-      expect(resend).toHaveBeenCalledTimes(1);
+      expect(resend).not.toHaveBeenCalled();
     },
   );
 
@@ -1007,7 +1008,7 @@ describe('input.send — submit receipt', () => {
 
   it('accepts on the retry when the turn starts late', async () => {
     // Byte promotion arrives first; the prompt-submit hook follows the retry.
-    const statuses = [null, null, null, null, fresh('running'), hookStarted()];
+    const statuses = [null, null, null, null, null, fresh('running'), hookStarted()];
     const { probe } = fakeProbe([COMPOSER], statuses);
     const resend = vi.fn();
     const receipt = await awaitSubmitReceipt(
@@ -1107,11 +1108,12 @@ describe('input.send — submit receipt', () => {
     expect(composerCleared('unrelated', 'still unrelated', 'ghost')).toBe(false);
   });
 
-  it('isTurnStart requires a fresh running snapshot and prompt-submit hook', () => {
+  it('isTurnStart uses main hook time independently of the renderer clock', () => {
     expect(isTurnStart(hookStarted(), ENTER_AT)).toBe(true);
     expect(isTurnStart(fresh('running'), ENTER_AT)).toBe(false);
     expect(isTurnStart({ ...hookStarted(), turnStartedAt: ENTER_AT - 1 }, ENTER_AT)).toBe(false);
-    expect(isTurnStart({ ...hookStarted(), ts: ENTER_AT - 1 }, ENTER_AT)).toBe(false);
+    expect(isTurnStart({ ...hookStarted(), ts: ENTER_AT - 60_000 }, ENTER_AT)).toBe(true);
+    expect(isTurnStart({ ...hookStarted(), ts: ENTER_AT + 60_000 }, ENTER_AT)).toBe(true);
     expect(isTurnStart({ ...hookStarted(), status: 'awaiting_input' }, ENTER_AT)).toBe(false);
   });
 

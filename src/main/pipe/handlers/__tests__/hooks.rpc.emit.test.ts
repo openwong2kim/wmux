@@ -733,7 +733,7 @@ describe('hooks.signal — agent.user_prompt_submit turns the pane running', () 
     // heuristic with only the turn-end hook left to unmute it.
     expect(stub.router.noteHookTurnStart).not.toHaveBeenCalled();
     expect(stub.router.notePromptSubmit).toHaveBeenCalledWith('pty-1',
-      expect.objectContaining({ kind: 'agent.user_prompt_submit' }));
+      expect.objectContaining({ kind: 'agent.user_prompt_submit' }), expect.any(Number), true);
   });
 
   it('does not tag the broadcast with a hookKind, so the renderer latch stays shut', async () => {

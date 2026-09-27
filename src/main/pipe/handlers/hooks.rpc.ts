@@ -528,6 +528,7 @@ export function registerHooksRpc(
       return { ok: false, reason: 'invalid-envelope' };
     }
     const signal: AgentSignal = params;
+    const receivedAt = Date.now();
 
     // 1b. Brain-pty lane. The `claude-pty` orchestrator brain runs the
     //     interactive Claude Code TUI in its own daemon session and uses this
@@ -839,7 +840,8 @@ export function registerHooksRpc(
       // toast, no ledger write, no lifecycle tee, exactly like every other
       // non-emit kind that returns here.
       if (signal.kind === 'agent.user_prompt_submit') {
-        hookRouter.notePromptSubmit(ptyId, signal);
+        hookRouter.notePromptSubmit(ptyId, signal, receivedAt,
+          isUnambiguousPromptTarget(ptyId, signal, workspaces));
         // Deliberately NOT `noteHookTurnStart`, and deliberately not tagged
         // with `hookKind` for the renderer's latch either. The latch mutes the
         // byte heuristic in both directions, and its two release paths are the
@@ -1378,6 +1380,37 @@ export function resolvePtyIdForSignal(
     }
   }
   return resolvePtyIdForCwd(signal.cwd, workspaces);
+}
+
+/** Receipt-only attribution: lifecycle routing may choose an active pane,
+ * but a submit receipt cannot guess between matching workspace surfaces. */
+export function isUnambiguousPromptTarget(
+  ptyId: string,
+  signal: AgentSignal,
+  workspaces: WorkspaceListEntry[],
+): boolean {
+  if (resolvePtyIdForSignal(signal, workspaces) !== ptyId) return false;
+  if (signal.ptyId === ptyId) return true;
+  let matches = signal.workspaceId ? workspaces.filter((w) => w.id === signal.workspaceId) : [];
+  if (matches.length === 0) {
+    const target = normalizeCwd(signal.cwd);
+    let longest = -1;
+    for (const workspace of workspaces) {
+      if (!workspace.metadata?.cwd) continue;
+      const cwd = normalizeCwd(workspace.metadata.cwd);
+      if (target !== cwd && !target.startsWith(cwd.endsWith('/') ? cwd : `${cwd}/`)) continue;
+      if (cwd.length > longest) {
+        longest = cwd.length;
+        matches = [workspace];
+      } else if (cwd.length === longest) matches.push(workspace);
+    }
+  }
+  // Missing membership data cannot prove that the active pane is the only one.
+  if (matches.some((w) => !w.ptyIds)) return false;
+  const candidates = new Set(matches.flatMap((w) => [
+    ...(w.ptyIds ?? []), ...(w.activePtyId ? [w.activePtyId] : []),
+  ]));
+  return candidates.size === 1 && candidates.has(ptyId);
 }
 
 /**

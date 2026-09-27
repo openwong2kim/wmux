@@ -271,10 +271,16 @@ export class HookSignalRouter {
     if (this.turnStart.has(ptyId)) this.armTurnExpiry(ptyId);
   }
 
-  /** Receipt evidence must name the exact pane and retain the hook's fire time. */
-  notePromptSubmit(ptyId: string, signal: AgentSignal): void {
-    if (signal.kind !== 'agent.user_prompt_submit' || signal.ptyId !== ptyId) return;
-    this.promptSubmitAt.set(ptyId, signal.ts);
+  /** Receipt evidence uses main's clock and an exact or uniquely resolved pane. */
+  notePromptSubmit(
+    ptyId: string,
+    signal: AgentSignal,
+    receivedAt = Date.now(),
+    uniqueFallback = false,
+  ): void {
+    if (signal.kind !== 'agent.user_prompt_submit') return;
+    if (signal.ptyId !== ptyId && !uniqueFallback) return;
+    this.promptSubmitAt.set(ptyId, receivedAt);
   }
 
   /** Latest observed prompt-submit hook, for input delivery receipts only. */

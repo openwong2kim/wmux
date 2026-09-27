@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   resolvePtyIdForCwd,
   resolvePtyIdForSignal,
+  isUnambiguousPromptTarget,
   findWorkspaceIdForPty,
   resolveWorkspacesForSignal,
   STALE_TRUST_MS,
@@ -18,6 +19,20 @@ function signal(overrides: Partial<AgentSignal>): AgentSignal {
     ...overrides,
   };
 }
+
+it.each([undefined, 'w1'])('accepts only a unique fallback receipt target (workspace %s)', (workspaceId) => {
+  const hook = signal({ kind: 'agent.user_prompt_submit', workspaceId });
+  const workspace = { id: 'w1', name: 'one', metadata: { cwd: '/foo/bar' }, activePtyId: 'p1', ptyIds: ['p1'] };
+  expect(isUnambiguousPromptTarget('p1', hook, [workspace])).toBe(true);
+  expect(isUnambiguousPromptTarget('p1', hook, [{ ...workspace, ptyIds: ['p1', 'p2'] }])).toBe(false);
+  expect(isUnambiguousPromptTarget('p1', hook, [{ ...workspace, ptyIds: undefined }])).toBe(false);
+  expect(isUnambiguousPromptTarget('p1', hook, [])).toBe(false);
+  if (!workspaceId) {
+    expect(isUnambiguousPromptTarget('p1', hook, [workspace,
+      { ...workspace, id: 'w2', activePtyId: 'p2', ptyIds: ['p2'] },
+    ])).toBe(false);
+  }
+});
 
 describe('resolvePtyIdForCwd', () => {
   it('exact cwd match returns activePtyId', () => {

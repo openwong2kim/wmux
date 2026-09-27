@@ -18,6 +18,7 @@ import { settleHookTurnToIdle, broadcastSettledIdle } from './turnSettle';
 import { eventBus } from '../events/EventBus';
 import {
   findWorkspaceIdForPty,
+  isUnambiguousPromptTarget,
   STALE_TRUST_MS,
   ACTIVITY_THROTTLE_MS,
   activityFromSignalPayload,
@@ -196,6 +197,7 @@ const WORKSPACE_LIST_CACHE_TTL_MS = 2_000;
 export class DaemonNotificationRouter {
   private cleanups: Array<() => void> = [];
   private lastAgentEventAt = new Map<string, number>();
+  private warnedMissingReceiptRouter = false;
   /**
    * Per-PTY last-known agent display name. Populated on every
    * `session:agent` event so the `session:prompt` (OSC 133) handler can
@@ -698,6 +700,7 @@ export class DaemonNotificationRouter {
 
   start(): void {
     const onAgent = (payload: { sessionId: string; event: unknown }) => {
+      const receivedAt = this.now();
       try {
         const win = this.getWindow();
         const ev = payload.event as AgentEventPayload;
@@ -745,7 +748,16 @@ export class DaemonNotificationRouter {
               lastMessage: '',
             });
           } else if (metadataKind === 'agent.user_prompt_submit') {
-            if (ev.signal) this.getHookRouter?.()?.notePromptSubmit(payload.sessionId, ev.signal);
+            const hookRouter = this.getHookRouter?.();
+            if (ev.signal && hookRouter) {
+              const mirrored = this.getMirror().peek();
+              const uniqueFallback = mirrored !== null && mirrored.ageMs < STALE_TRUST_MS
+                && isUnambiguousPromptTarget(payload.sessionId, ev.signal, mirrored.entries);
+              hookRouter.notePromptSubmit(payload.sessionId, ev.signal, receivedAt, uniqueFallback);
+            } else if (ev.signal && !this.warnedMissingReceiptRouter) {
+              this.warnedMissingReceiptRouter = true;
+              console.warn('[DaemonNotificationRouter] Prompt-submit receipt evidence unavailable: hook router is not initialized.');
+            }
             // The TURN START, and the whole point of the hook: the pane goes
             // 'running' the instant a prompt is submitted, instead of once the
             // byte-rate heuristic has seen enough output to guess. Like the
