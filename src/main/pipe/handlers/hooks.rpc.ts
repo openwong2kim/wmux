@@ -839,6 +839,7 @@ export function registerHooksRpc(
       // toast, no ledger write, no lifecycle tee, exactly like every other
       // non-emit kind that returns here.
       if (signal.kind === 'agent.user_prompt_submit') {
+        hookRouter.notePromptSubmit(ptyId, signal);
         // Deliberately NOT `noteHookTurnStart`, and deliberately not tagged
         // with `hookKind` for the renderer's latch either. The latch mutes the
         // byte heuristic in both directions, and its two release paths are the

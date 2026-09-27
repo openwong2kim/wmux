@@ -745,6 +745,7 @@ export class DaemonNotificationRouter {
               lastMessage: '',
             });
           } else if (metadataKind === 'agent.user_prompt_submit') {
+            if (ev.signal) this.getHookRouter?.()?.notePromptSubmit(payload.sessionId, ev.signal);
             // The TURN START, and the whole point of the hook: the pane goes
             // 'running' the instant a prompt is submitted, instead of once the
             // byte-rate heuristic has seen enough output to guess. Like the

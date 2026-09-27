@@ -827,7 +827,7 @@ describe('input.send — submit receipt', () => {
    */
   function fakeProbe(
     frames: string[],
-    statuses: Array<{ status: string; ts: number } | null>,
+    statuses: Array<{ status: string; ts: number; turnStartedAt?: number } | null>,
   ): { probe: SubmitProbe; screenReads: () => number } {
     const state = { polls: 0, screens: 0 };
     const at = <T,>(arr: T[], i: number): T => arr[Math.min(i, arr.length - 1)]!;
@@ -849,8 +849,9 @@ describe('input.send — submit receipt', () => {
   }
 
   const ENTER_AT = 5_000;
-  /** A reading the mirror pushed AFTER our Enter — the only kind that counts. */
+  /** A snapshot built after Enter; receipt evidence still needs a fresh hook. */
   const fresh = (status: string) => ({ status, ts: ENTER_AT + 10 });
+  const hookStarted = () => ({ ...fresh('running'), turnStartedAt: ENTER_AT + 5 });
   /** A reading from before the Enter: our own echo, byte-promoted (#935). */
   const stale = (status: string) => ({ status, ts: ENTER_AT - 10 });
 
@@ -876,13 +877,13 @@ describe('input.send — submit receipt', () => {
     '  ? for shortcuts',
   ].join('\n');
 
-  it('accepts on a turn start reported AFTER the Enter', async () => {
-    const { probe } = fakeProbe([COMPOSER], [fresh('running')]);
+  it('accepts a Claude Code prompt-submit hook reported AFTER the Enter', async () => {
+    const { probe } = fakeProbe([COMPOSER], [hookStarted()]);
     const resend = vi.fn();
     const receipt = await awaitSubmitReceipt(
       probe,
       NEEDLE,
-      { screen: COMPOSER, agentStatus: 'idle' },
+      { screen: COMPOSER, agentStatus: 'running' },
       resend,
       waitOpts(),
     );
@@ -908,7 +909,7 @@ describe('input.send — submit receipt', () => {
   });
 
   it('checks the status BEFORE the first screen poll (a hook-fast turn costs no IPC)', async () => {
-    const p = fakeProbe([COMPOSER], [fresh('running')]);
+    const p = fakeProbe([COMPOSER], [hookStarted()]);
     const receipt = await awaitSubmitReceipt(
       p.probe,
       NEEDLE,
@@ -954,6 +955,35 @@ describe('input.send — submit receipt', () => {
     expect(receipt.screenTail).toContain('write me a haiku');
   });
 
+  it.each([undefined, ENTER_AT - 10, ENTER_AT])(
+    'rejects fresh Codex redraw promotion with no new prompt-submit hook (%s)',
+    async (turnStartedAt) => {
+      const composer = ['╭ Codex ╮', '', '› write me a haiku', '  ? for shortcuts'].join('\n');
+      const redraw = ['╭ Codex ╮', '', '› write me a haiku ▌', '  ? for shortcuts'].join('\n');
+      // Echo/redraw promotes the status after Enter, but the input is unsent.
+      const { probe } = fakeProbe([composer, redraw], [
+        fresh('idle'),
+        { ...fresh('running'), turnStartedAt },
+      ]);
+      const resend = vi.fn();
+      const receipt = await awaitSubmitReceipt(
+        probe,
+        NEEDLE,
+        { screen: composer, agentStatus: 'idle', turnStartedAt },
+        resend,
+        waitOpts(),
+      );
+      expect(receipt).toMatchObject({
+        accepted: false,
+        signal: 'none',
+        agentStatusAfter: 'running',
+        retried: true,
+      });
+      expect(receipt.screenTail).toContain('› write me a haiku');
+      expect(resend).toHaveBeenCalledTimes(1);
+    },
+  );
+
   // A soft newline pushed the text up one row and it is STILL uncommitted —
   // the precise failure the receipt exists to catch, so "moved" is not enough.
   it('does NOT accept when the needle merely moves up inside the composer', async () => {
@@ -976,8 +1006,8 @@ describe('input.send — submit receipt', () => {
   });
 
   it('accepts on the retry when the turn starts late', async () => {
-    // Nothing for the whole first window, running only after the re-send.
-    const statuses = [null, null, null, null, null, fresh('running')];
+    // Byte promotion arrives first; the prompt-submit hook follows the retry.
+    const statuses = [null, null, null, null, fresh('running'), hookStarted()];
     const { probe } = fakeProbe([COMPOSER], statuses);
     const resend = vi.fn();
     const receipt = await awaitSubmitReceipt(
@@ -1077,17 +1107,12 @@ describe('input.send — submit receipt', () => {
     expect(composerCleared('unrelated', 'still unrelated', 'ghost')).toBe(false);
   });
 
-  it('isTurnStart only fires on a move INTO a turn', () => {
-    expect(isTurnStart('idle', 'running')).toBe(true);
-    expect(isTurnStart('waiting', 'running')).toBe(true);
-    expect(isTurnStart(null, 'running')).toBe(true);
-    // A PREVIOUS turn ending inside our window, not ours beginning.
-    expect(isTurnStart('running', 'awaiting_input')).toBe(false);
-    expect(isTurnStart('idle', 'awaiting_input')).toBe(false);
-    expect(isTurnStart('running', 'running')).toBe(false);
-    // decay, not a turn start
-    expect(isTurnStart('running', 'idle')).toBe(false);
-    expect(isTurnStart('idle', null)).toBe(false);
+  it('isTurnStart requires a fresh running snapshot and prompt-submit hook', () => {
+    expect(isTurnStart(hookStarted(), ENTER_AT)).toBe(true);
+    expect(isTurnStart(fresh('running'), ENTER_AT)).toBe(false);
+    expect(isTurnStart({ ...hookStarted(), turnStartedAt: ENTER_AT - 1 }, ENTER_AT)).toBe(false);
+    expect(isTurnStart({ ...hookStarted(), ts: ENTER_AT - 1 }, ENTER_AT)).toBe(false);
+    expect(isTurnStart({ ...hookStarted(), status: 'awaiting_input' }, ENTER_AT)).toBe(false);
   });
 
   describe('the RPC result', () => {

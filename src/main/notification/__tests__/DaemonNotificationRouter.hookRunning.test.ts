@@ -70,6 +70,7 @@ interface Captured {
 function stubHookRouter(runningGoverned: boolean): HookSignalRouter {
   return {
     noteHookTurnStart: vi.fn(),
+    notePromptSubmit: vi.fn(),
     releaseHookTurnStart: vi.fn(),
     governsRunningState: vi.fn().mockReturnValue(runningGoverned),
     noteAgentOnPane: vi.fn(),
@@ -121,7 +122,7 @@ function metadataEvent(hookKind: string, agent = 'Claude Code') {
       source: 'hook',
       hookKind,
       decision: 'activity',
-      signal: { kind: hookKind, agent: 'claude', cwd: '/repo', payload: {}, ts: 1 },
+      signal: { kind: hookKind, agent: 'claude', ptyId: PTY, cwd: '/repo', payload: {}, ts: 1 },
     },
   };
 }
@@ -188,6 +189,8 @@ describe('DaemonNotificationRouter — the byte heuristic stands down on a hook-
     // The latch records WHICH agent opened the turn (F4): a different agent
     // launched in the same shell must not inherit this one's claim.
     expect(hookRouter.noteHookTurnStart).toHaveBeenCalledWith(PTY, expect.any(Number), 'claude');
+    expect(hookRouter.notePromptSubmit).toHaveBeenCalledWith(PTY,
+      expect.objectContaining({ kind: 'agent.user_prompt_submit', ptyId: PTY, ts: 1 }));
     router.stop();
   });
 
@@ -389,6 +392,7 @@ describe('DaemonNotificationRouter — a settle is marked, and survives its own 
     let governed = true;
     return {
       noteHookTurnStart: vi.fn(() => { governed = true; }),
+      notePromptSubmit: vi.fn(),
       releaseHookTurnStart: vi.fn(() => { governed = false; }),
       governsRunningState: vi.fn(() => governed),
       noteAgentOnPane: vi.fn(),

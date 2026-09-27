@@ -844,6 +844,7 @@ const inputRpc = registerInputRpc(
   () => daemonClient,
   makeRoleBindingResolver(() => mainWindow),
   (ptyId, data) => ptyBridge.noteInterruptInput(ptyId, data),
+  { readTurnStartedAt: (ptyId) => hookSignalRouter?.promptSubmitAtFor(ptyId) },
 );
 // Non-operator deliveries (A2A, company, channel mention nudges) are pasted
 // and submitted here, behind the same approval guard as `input.send`, checked
