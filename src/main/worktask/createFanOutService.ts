@@ -20,6 +20,7 @@ import type { RpcMethod } from '../../shared/rpc';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
 import { getProjectConfigStore } from '../project/ProjectConfigStore';
 import { FanOutService } from './FanOutService';
+import { sanitizeFanoutOrigin } from '../../shared/fanoutOrigin';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -49,9 +50,10 @@ export function createFanOutService(
       spawnWorkspace: async (p) => {
         const res = (await sendToRenderer(getWindow, 'fanout.spawnWorkspace', p, {
           timeoutMs: SPAWN_TIMEOUT_MS,
-        })) as { workspaceId?: string; ptyId?: string; initialCommand?: string; error?: string };
+        })) as { workspaceId?: string; ptyId?: string; initialCommand?: string; fanoutOrigin?: unknown; error?: string };
         if (res && typeof res.error === 'string') return { error: res.error };
         if (res && typeof res.workspaceId === 'string') {
+          const fanoutOrigin = sanitizeFanoutOrigin(res.fanoutOrigin);
           return {
             workspaceId: res.workspaceId,
             ...(res.ptyId ? { ptyId: res.ptyId } : {}),
@@ -59,6 +61,9 @@ export function createFanOutService(
             ...(typeof res.initialCommand === 'string' && res.initialCommand
               ? { initialCommand: res.initialCommand }
               : {}),
+            // The requester the renderer stamped, reused for the fan-out's
+            // later tasks (see FanOutRendererPort.fanoutOrigin).
+            ...(fanoutOrigin ? { fanoutOrigin } : {}),
           };
         }
         return { error: 'fanout.spawnWorkspace: renderer returned no workspaceId' };

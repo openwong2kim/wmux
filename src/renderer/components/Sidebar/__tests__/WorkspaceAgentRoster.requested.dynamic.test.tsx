@@ -4,7 +4,7 @@
 // it asked for, so two panes in one workspace show their own numbers; a click
 // opens the workspace's task group.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import WorkspaceAgentRoster from '../WorkspaceAgentRoster';
@@ -43,7 +43,7 @@ afterEach(() => {
 describe('roster "requested" badge', () => {
   it('gives each requesting pane its own count and opens the task group on click', async () => {
     useStore.setState({
-      workspaces: [owner, task('t1'), task('t2'), task('t3')],
+      workspaces: [owner, task('t1'), task('t2'), task('t3'), task('t4')],
       activeWorkspaceId: 'ws-owner',
       surfaceAgent: {
         'pty-62': { name: 'Claude Code', status: 'idle' },
@@ -53,18 +53,31 @@ describe('roster "requested" badge', () => {
         t1: { kind: 'pane', paneId: 'p62', surfaceId: 's62' },
         t2: { kind: 'pane', paneId: 'p74', surfaceId: 's74' },
         t3: { kind: 'pane', paneId: 'p74', surfaceId: 's74' },
+        t4: { kind: 'pane', paneId: 'p74', surfaceId: 's74' },
       },
       fanoutProvenance: {},
+      // t3's owner is another workspace: its badge lives there, not here.
+      fanoutLineage: { t1: 'ws-owner', t2: 'ws-owner', t3: 'ws-owner', t4: 'ws-elsewhere' },
+      fanoutSpawnOwner: {},
       missionByPaneGroup: {},
       sidebarTaskGroupExpanded: { 'ws-owner': false },
     });
+    // Stands in for the workspace row, which selects on click and is a drag source.
+    const rowPress = vi.fn();
     await act(async () => {
-      root.render(createElement(WorkspaceAgentRoster, { workspaceId: 'ws-owner', pulsingPaneId: null }));
+      root.render(createElement('div', { onPointerDown: rowPress, onMouseDown: rowPress, onMouseUp: rowPress, onClick: rowPress },
+        createElement(WorkspaceAgentRoster, { workspaceId: 'ws-owner', pulsingPaneId: null })));
     });
     const badges = [...container.querySelectorAll('[data-roster-requested]')] as HTMLButtonElement[];
     expect(badges.map((b) => b.textContent)).toEqual(['1 requested', '2 requested']);
 
-    await act(async () => { badges[1].click(); });
+    // A real press must not reach the workspace row (it selects / drags).
+    await act(async () => {
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        badges[1].dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, detail: 1 }));
+      }
+    });
+    expect(rowPress).not.toHaveBeenCalled();
     expect(useStore.getState().sidebarTaskGroupExpanded['ws-owner']).toBe(true);
   });
 });

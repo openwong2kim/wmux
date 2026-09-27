@@ -457,11 +457,36 @@ describe('depth-1 lineage stamp', () => {
     for (const t of res.tasks) expect(lineage.fanoutOwnerOf(t.workspaceId!)).toBe('ws-ceo');
   });
 
-  it('hands the renderer who asked, and stamps a GUI or orchestrator origin main-side without replacing a recorded one', async () => {
-    const pane = makeRendererFake();
-    await new FanOutService({ daemon: makeDaemonFake().port, renderer: pane.port, worktrees: makeWorktreesFake() })
-      .start({ ...baseReq(), idempotencyKey: 'k-pane', caller: { kind: 'pane', ptyId: 'pty-74' } });
-    for (const p of pane.spawned) expect((p as { fanoutCaller?: unknown }).fanoutCaller).toEqual({ kind: 'pane', ptyId: 'pty-74' });
+  it('resolves the requester once per fan-out: the first task\'s origin is reused, never re-resolved', async () => {
+    // The renderer resolves the caller on the first spawn; later tasks must
+    // carry THAT origin, even if the pane is gone by then.
+    const calls: Array<Record<string, unknown>> = [];
+    let seq = 0;
+    const resolving: FanOutRendererPort = {
+      spawnWorkspace: vi.fn(async (p) => {
+        calls.push({ ...p });
+        seq++;
+        return { workspaceId: `ws-r${seq}`, ptyId: `pty-r${seq}`,
+          ...(seq === 1 ? { fanoutOrigin: { kind: 'pane' as const, paneId: 'p74', surfaceId: 's74', label: 'w115-74' } } : {}) };
+      }),
+    };
+    await new FanOutService({ daemon: makeDaemonFake().port, renderer: resolving, worktrees: makeWorktreesFake() })
+      .start({ ...baseReq(), titles: ['A', 'B', 'C'], idempotencyKey: 'k-pane', caller: { kind: 'pane', ptyId: 'pty-74' } });
+    expect(calls.map((c) => [c.fanoutCaller, c.fanoutOrigin])).toEqual([
+      [{ kind: 'pane', ptyId: 'pty-74' }, undefined],
+      [undefined, { kind: 'pane', paneId: 'p74', surfaceId: 's74', label: 'w115-74' }],
+      [undefined, { kind: 'pane', paneId: 'p74', surfaceId: 's74', label: 'w115-74' }],
+    ]);
+
+    // First resolution found no pane: no later task gets a requester either.
+    const none = makeRendererFake();
+    await new FanOutService({ daemon: makeDaemonFake().port, renderer: none.port, worktrees: makeWorktreesFake() })
+      .start({ ...baseReq(), idempotencyKey: 'k-none', caller: { kind: 'pane', ptyId: 'pty-gone' } });
+    expect(none.spawned.map((p) => [(p as { fanoutCaller?: unknown }).fanoutCaller, (p as { fanoutOrigin?: unknown }).fanoutOrigin]))
+      .toEqual([[{ kind: 'pane', ptyId: 'pty-gone' }, undefined], [undefined, undefined]]);
+  });
+
+  it('stamps a GUI or orchestrator origin main-side without replacing a recorded one', async () => {
 
     const gui = makeRendererFake();
     const res = await new FanOutService({ daemon: makeDaemonFake().port, renderer: gui.port, worktrees: makeWorktreesFake() })

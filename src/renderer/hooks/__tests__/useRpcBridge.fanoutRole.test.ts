@@ -66,7 +66,7 @@ describe('useRpcBridge — fan-out task roles', () => {
 
   it('returns the launched command so a re-fire replays the bound one', () => {
     const block = fanoutSpawnBlock();
-    expect(block).toMatch(/return \{ workspaceId: newWsId, ptyId, initialCommand: launchCommand \}/);
+    expect(block).toMatch(/return \{ workspaceId: newWsId, ptyId, initialCommand: launchCommand, \.\.\.\(fanoutOrigin \? \{ fanoutOrigin \} : \{\}\) \}/);
     // …and that variable is read off the options the PTY was actually created
     // with, so the role rewrite, the marker decision and the workspace profile
     // are all already in it.
@@ -150,6 +150,8 @@ describe('useRpcBridge — fan-out task roles', () => {
     const block = fanoutSpawnBlock();
     expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf, \.\.\.\(fanoutOrigin \? \{ fanoutOrigin \} : \{\}\) \} : createOptions/);
     // The requester is resolved from the layout BEFORE addWorkspace changes it.
+    // …once per fan-out: a later task arrives with the first task's origin.
+    expect(block).toMatch(/params\.fanoutOrigin !== undefined\s*\? sanitizeFanoutOrigin\(params\.fanoutOrigin\)\s*: originFromCaller/);
     const resolved = block.indexOf('originFromCaller(useStore.getState(), params.fanoutCaller)');
     expect(resolved).toBeGreaterThan(-1);
     expect(resolved).toBeLessThan(block.indexOf('store.addWorkspace(name)'));

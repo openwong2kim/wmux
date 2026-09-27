@@ -4,7 +4,7 @@
 // pane (a link that jumps to it), the launch-time name marked closed once the
 // pane is gone, the GUI, the orchestrator, or "unknown" — never a guess.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import WorkspaceItem from '../WorkspaceItem';
@@ -38,8 +38,9 @@ const task: Workspace = {
 } as Workspace;
 
 const noop = () => undefined;
+let onSelect = vi.fn();
 
-async function render(origin?: FanoutOrigin): Promise<void> {
+async function render(origin?: FanoutOrigin, opts: { isActive?: boolean } = {}): Promise<void> {
   useStore.setState({
     workspaces: [owner, task],
     activeWorkspaceId: 'ws-owner',
@@ -51,8 +52,8 @@ async function render(origin?: FanoutOrigin): Promise<void> {
   });
   await act(async () => {
     root.render(createElement(WorkspaceItem, {
-      workspaceId: 'ws-task', isActive: false, isMultiview: false, index: 1,
-      onSelect: noop, onCtrlSelect: noop, onRename: noop, onClose: noop, onArchive: noop,
+      workspaceId: 'ws-task', isActive: opts.isActive ?? false, isMultiview: false, index: 1,
+      onSelect, onCtrlSelect: noop, onRename: noop, onClose: noop, onArchive: noop,
       onCopyInfo: noop, onDuplicate: noop, onReorder: noop, taskRow: true,
     }));
   });
@@ -61,6 +62,7 @@ async function render(origin?: FanoutOrigin): Promise<void> {
 const line = () => container.querySelector('[data-task-requester]') as HTMLElement | null;
 
 beforeEach(() => {
+  onSelect = vi.fn();
   container = document.createElement('div');
   document.body.appendChild(container);
   act(() => { root = createRoot(container); });
@@ -71,33 +73,60 @@ afterEach(() => {
 });
 
 describe('task row requester line', () => {
-  it('names the live requesting pane and the agent doing the task; a click jumps to that pane', async () => {
-    await render({ kind: 'pane', paneId: 'p74', surfaceId: 's74', label: 'Compare · w115-74' });
-    expect(line()?.textContent).toContain('Requested by Compare · w115-74');
-    expect(container.querySelector('[data-task-assignee]')?.textContent).toBe('Codex CLI');
-    // Not the workspace's active pane: the jump has to move focus.
-    useStore.setState({ activeWorkspaceId: 'ws-task' });
+  it('leads with the requesting pane\'s coordinate, on its own line outside the name row', async () => {
+    const origin: FanoutOrigin = { kind: 'pane', paneId: 'p74', surfaceId: 's74', label: 'w115-74 · Compare' };
+    for (const isActive of [false, true]) {
+      await render(origin, { isActive });
+      const el = line()!;
+      expect(el.textContent).toBe('by w115-74 · Compare');
+      // The coordinate comes before the name, so an end-truncation drops the
+      // name first and never the part that tells two panes apart.
+      expect(el.textContent!.indexOf('w115-74')).toBeLessThan(el.textContent!.indexOf('Compare'));
+      // Its own line at the row's width: not inside the name/actions flex row.
+      expect(el.closest('.flex.min-w-0.items-start')).toBeNull();
+      // Nothing else shares the line.
+      expect(el.querySelectorAll('[data-task-assignee]')).toHaveLength(0);
+    }
+  });
+
+  it('a real press + release + click jumps to the requesting pane and never selects the task row', async () => {
+    await render({ kind: 'pane', paneId: 'p74', surfaceId: 's74', label: 'w115-74 · Compare' });
+    expect(useStore.getState().workspaces.find((w) => w.id === 'ws-owner')?.activePaneId).toBe('p62');
     const jump = container.querySelector('[data-task-requester-jump]') as HTMLButtonElement;
-    expect(jump.getAttribute('aria-label')).toBe('Go to Compare · w115-74');
-    await act(async () => { jump.click(); });
+    expect(jump.getAttribute('aria-label')).toBe('Go to w115-74 · Compare');
+    await act(async () => {
+      for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+        jump.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, detail: 1 }));
+      }
+    });
+    expect(onSelect).not.toHaveBeenCalled();
     const st = useStore.getState();
     expect(st.activeWorkspaceId).toBe('ws-owner');
     expect(st.workspaces.find((w) => w.id === 'ws-owner')?.activePaneId).toBe('p74');
   });
 
   it('keeps the launch-time name once the pane is closed, marked closed and not clickable', async () => {
-    await render({ kind: 'pane', paneId: 'p-gone', surfaceId: 's-gone', label: 'Planner · w115-9' });
-    expect(line()?.textContent).toContain('Requested by Planner · w115-9 · closed');
+    await render({ kind: 'pane', paneId: 'p-gone', surfaceId: 's-gone', label: 'w115-9 · Planner' });
+    expect(line()?.textContent).toBe('by w115-9 · Planner· closed');
     expect(container.querySelector('[data-task-requester-jump]')).toBeNull();
   });
 
   it('says a GUI start, the orchestrator, or that the requester is unknown', async () => {
     await render({ kind: 'gui' });
-    expect(line()?.textContent).toContain('Started by you');
+    expect(line()?.textContent).toBe('Started by you');
     await render({ kind: 'orchestrator' });
-    expect(line()?.textContent).toContain('Requested by Orchestrator');
+    expect(line()?.textContent).toBe('by Orchestrator');
     await render(undefined);
     expect(line()?.getAttribute('data-task-requester')).toBe('unknown');
-    expect(line()?.textContent).toContain('Requester unknown');
+    expect(line()?.textContent).toBe('Requester unknown');
+  });
+
+  it('the glyph tooltip names the same requester as the line', async () => {
+    await render({ kind: 'pane', paneId: 'p74', surfaceId: 's74', label: 'w115-74 · Compare' });
+    const tip = container.querySelector('[data-task-provenance]')?.getAttribute('title') ?? '';
+    expect(tip).toContain('w115-74 · Compare');
+    act(() => { useStore.setState({ paneLabel: { p74: 'Renamed' } }); });
+    expect(container.querySelector('[data-task-provenance]')?.getAttribute('title')).toContain('w115-74 · Renamed');
+    expect(line()?.textContent).toBe('by w115-74 · Renamed');
   });
 });

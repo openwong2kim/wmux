@@ -258,13 +258,16 @@ describe('requester origin on the lineage stamp', () => {
       tasks: {
         'ws-old': { owner: 'ws-owner', at: 5 },
         'ws-bad': { owner: 'ws-owner', at: 6, origin: { kind: 'someone-else', paneId: 'p' } },
+        // A pane origin with no ids can never name its pane: dropped.
+        'ws-idless': { owner: 'ws-owner', at: 7, origin: { kind: 'pane', label: 'w1-1' } },
       },
     }), 'utf8');
     const g = guards(dir);
     expect(g.fanoutOwnerOf('ws-old')).toBe('ws-owner');
-    expect(g.lineageFor(['ws-old', 'ws-bad'])).toEqual({
+    expect(g.lineageFor(['ws-old', 'ws-bad', 'ws-idless'])).toEqual({
       'ws-old': { owner: 'ws-owner', at: 5 },
       'ws-bad': { owner: 'ws-owner', at: 6 },
+      'ws-idless': { owner: 'ws-owner', at: 7 },
     });
   });
 

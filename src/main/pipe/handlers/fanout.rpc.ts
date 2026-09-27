@@ -932,8 +932,11 @@ export function registerFanOutRpc(
       verifiedWorkspaceId: callerWorkspaceId,
       workerPermissionMode: workerMode,
       // Who asked, for each task's lineage stamp: the orchestrator, or the
-      // calling pane (the renderer turns its ptyId into stable pane ids).
-      caller: commanderWorkspaceId ? { kind: 'orchestrator' } : { kind: 'pane', ptyId: senderPtyId },
+      // calling pane (the renderer turns its ptyId into stable pane ids). A
+      // caller that names no pane records no requester at all.
+      ...(commanderWorkspaceId
+        ? { caller: { kind: 'orchestrator' as const } }
+        : senderPtyId ? { caller: { kind: 'pane' as const, ptyId: senderPtyId } } : {}),
     };
     const presetName = selection.kind === 'preset' ? selection.preset.name : undefined;
 

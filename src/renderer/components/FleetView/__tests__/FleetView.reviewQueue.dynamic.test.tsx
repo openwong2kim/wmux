@@ -161,12 +161,23 @@ describe('FleetView — Ready to review', () => {
     mount();
     await settle();
     const text = () => reviewRow('ws-t1')!.querySelector('[data-fleet-review-requester]')?.textContent;
-    expect(text()).toBe('Requested by owner project › w0-0');
+    expect(text()).toBe('by owner project › w0-0');
     act(() => { useStore.setState({ fanoutOrigin: { 'ws-t1': { kind: 'gui' } } }); });
     expect(text()).toBe('Started by you');
     expect(reviewRow('ws-t1')!.textContent).toContain('owner project');
     act(() => { useStore.setState({ fanoutOrigin: {}, fanoutProvenance: {} }); });
     expect(text()).toBe('Requester unknown');
+  });
+
+  it('names the requester on a task row in every section, not only Ready to review', async () => {
+    act(() => { useStore.setState({ fanoutOrigin: { 'ws-t2': { kind: 'pane', paneId: 'po', surfaceId: 's-po', label: 'w0-0' } } }); });
+    mount();
+    await settle();
+    // ws-t2 is running: an ordinary Fleet card, not a review row.
+    const card = container.querySelector('[data-fleet-card][data-workspace-id="ws-t2"]')!;
+    expect(card.querySelector('[data-fleet-requester]')?.textContent).toBe('by owner project › w0-0');
+    // A workspace that is not a fan-out task carries none.
+    expect(container.querySelector('[data-fleet-card][data-workspace-id="ws-o"] [data-fleet-requester]')).toBeNull();
   });
 
   it('draws no section when nothing is ready (an agent still running)', async () => {

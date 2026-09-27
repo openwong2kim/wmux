@@ -38,7 +38,9 @@ function boundedString(raw: unknown, max: number): string | undefined {
 /**
  * Validate an origin read from disk or handed over IPC. Unknown kinds and
  * non-objects yield undefined; oversized or non-string fields are dropped
- * rather than failing the whole origin.
+ * rather than failing the whole origin. A pane origin with neither a paneId
+ * nor a surfaceId can never name its pane, so it yields undefined too — the
+ * task then reads as "requester unknown" instead of carrying a dead stamp.
  */
 export function sanitizeFanoutOrigin(raw: unknown): FanoutOrigin | undefined {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
@@ -49,6 +51,7 @@ export function sanitizeFanoutOrigin(raw: unknown): FanoutOrigin | undefined {
   const paneId = boundedString(r['paneId'], ID_MAX);
   const surfaceId = boundedString(r['surfaceId'], ID_MAX);
   const label = boundedString(r['label'], LABEL_MAX);
+  if (!paneId && !surfaceId) return undefined;
   return {
     kind,
     ...(paneId ? { paneId } : {}),

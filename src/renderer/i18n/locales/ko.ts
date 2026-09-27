@@ -181,6 +181,7 @@ export const ko = {
   'sidebar.provenance.callerPane': '에이전트 페인',
   'sidebar.provenance.closedOwner': '닫힌 워크스페이스',
   'sidebar.requester.by': '요청: {name}',
+  'sidebar.requester.closed': '종료됨',
   'sidebar.requester.gui': '직접 시작',
   'sidebar.requester.orchestrator': '오케스트레이터',
   'sidebar.requester.unknown': '요청 판 미확인',

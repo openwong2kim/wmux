@@ -19,7 +19,7 @@ import { selectSidebarUnseen } from '../../stores/selectors/sidebarSeen';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 import { buildMentionReference, buildMentionTargets, focusedMentionSource } from '../../utils/agentMention';
 import { insertMention, toastMentionInsert } from '../../utils/agentMentionInsert';
-import { countTasksRequestedByPane } from '../../utils/fanoutProvenance';
+import { requestedCountFor, selectRequestedCounts } from '../../utils/fanoutProvenance';
 
 /** Open this workspace's fan-out task group and bring it into view. */
 function revealTaskGroup(ownerWorkspaceId: string): void {
@@ -333,10 +333,10 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
   const unverifiableMinutesByPtyId = useStore(useShallow(selectUnverifiablePaneMinutes));
   // Glance board: per-pane "changed since you last looked".
   const unseenByPtyId = useStore(useShallow(selectSidebarUnseen));
-  // Per pane: how many open fan-out tasks it requested (the lineage origin,
-  // else the audit caller). Two agent panes in one workspace each show their own.
-  const paneIds = roster.rows.map((row) => row.paneId);
-  const requestedCounts = useStore(useShallow((s) => paneIds.map((id) => countTasksRequestedByPane(s, id))));
+  // Per agent surface: how many open fan-out tasks nested under THIS
+  // workspace it requested (the lineage origin). One memoized map for the
+  // whole sidebar; each row only looks its count up.
+  const requestedCounts = useStore(selectRequestedCounts);
 
   if (roster.agentCount === 0 && roster.stashedCount === 0) return null;
 
@@ -403,6 +403,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
             // the one thing a stashed row exists to prove — that the session is
             // still alive and still moving — at exactly the moment the user is
             // looking at it, and would leave keyboard users with no verb at all.
+            const requestedCount = requestedCountFor(requestedCounts, workspaceId, row);
             const verb = row.stashed
               ? (exited ? t('roster.recoverAction') : t('roster.unstashAction'))
               : undefined;
@@ -568,23 +569,30 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     </span>
                   ) : null}
                 </button>
-                {(requestedCounts[index] ?? 0) > 0 && (
+                {requestedCount > 0 && (
                   // A sibling of the row button (a button cannot hold one).
                   <button
                     type="button"
                     draggable={false}
-                    data-roster-requested={requestedCounts[index]}
+                    data-roster-requested={requestedCount}
                     className={`flex-none self-center whitespace-nowrap rounded px-1 text-[10px] tabular-nums text-[var(--text-muted)] hover:text-[var(--accent-blue)] ${FOCUS_RING}`}
-                    title={t('sidebar.requester.badgeLabel', { count: requestedCounts[index] })}
-                    aria-label={t('sidebar.requester.badgeLabel', { count: requestedCounts[index] })}
+                    title={t('sidebar.requester.badgeLabel', { count: requestedCount })}
+                    aria-label={t('sidebar.requester.badgeLabel', { count: requestedCount })}
                     onClick={(event) => {
                       event.stopPropagation();
                       revealTaskGroup(workspaceId);
                     }}
-                    onMouseDown={(event) => event.preventDefault()}
+                    // The workspace row is a native drag source that selects
+                    // its workspace: none of the press may reach it.
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                    onMouseUp={(event) => event.stopPropagation()}
                     onDoubleClick={(event) => event.stopPropagation()}
                   >
-                    {t('sidebar.requester.badge', { count: requestedCounts[index] })}
+                    {t('sidebar.requester.badge', { count: requestedCount })}
                   </button>
                 )}
                 {/* Mention this agent in the focused one — shown on hover or

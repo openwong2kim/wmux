@@ -218,7 +218,8 @@ function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEd
   const elapsed = elapsedMs !== undefined && elapsedMs >= IDLE_SHOW_AFTER_MS ? formatIdle(elapsedMs) : undefined;
   const owner = entry.ownerName ?? t('sidebar.tasks.orphanGroup');
   // Which pane asked for the task (workspace › pane), or who else did.
-  const requester = useStore(useShallow((s) => fleetRequesterText(s, entry.workspaceId, owner, t)));
+  const requester = useStore(useShallow((s) => fleetRequesterText(s, entry.workspaceId, t)))
+    ?? { text: '', includesOwner: false };
   const changeText = summary
     ? summary.files === 0
       ? t('fleet.review.noChanges')
@@ -281,7 +282,7 @@ function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEd
             title={[requester.includesOwner ? undefined : owner, requester.text, entry.branch].filter(Boolean).join(' · ')}
           >
             {!requester.includesOwner && <span>{owner}</span>}
-            <span data-fleet-review-requester>{requester.text}</span>
+            {requester.text && <span data-fleet-review-requester>{requester.text}</span>}
             {entry.branch && <span className="font-mono" data-fleet-review-branch>{entry.branch}</span>}
           </span>
         </span>

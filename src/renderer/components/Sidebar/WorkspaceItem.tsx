@@ -26,7 +26,8 @@ import WorkspaceAgentRoster, { WorkspaceRosterSummaryMemo, STASH_PULSE_MS } from
 import { displayPath } from '../../utils/displayPath';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 import { timeAgo } from '../../utils/timeAgo';
-import { displayWorkspaceName, provenanceCallerLabel, provenanceTooltip, requesterName, resolveCallerPane, resolveTaskRequester } from '../../utils/fanoutProvenance';
+import { displayWorkspaceName, provenanceTooltip, requesterName, resolveTaskRequester } from '../../utils/fanoutProvenance';
+import { useShallow } from 'zustand/react/shallow';
 import TaskRequesterLine from './TaskRequesterLine';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 
@@ -437,6 +438,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const lineageOwner = useStore((s) => (taskRow ? s.fanoutLineage[workspaceId] : undefined));
   const taskOwnerId = taskRow ? childMission?.owner?.verifiedWorkspaceId ?? lineageOwner ?? spawnOwner : undefined;
   const taskOwnerName = useStore((s) => (taskOwnerId ? s.workspaces.find((w) => w.id === taskOwnerId)?.name : undefined));
+  // Who asked for this task — subscribed once, shared by the visible
+  // requester line and the glyph's tooltip so the two can never disagree.
+  const requester = useStore(useShallow((s) => (taskRow ? resolveTaskRequester(s, workspaceId) : undefined)));
 
   // Idle badge — how long since ANY of this workspace's surfaces last showed
   // life: agent activity (surfaceActivityAt, same stamps the fleet 'running'
@@ -761,14 +765,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   if (!workspace) return null;
 
   const displayName = displayWorkspaceName(workspace.name, taskRow);
-  // The requester on the lineage stamp names the caller when there is one;
-  // the audit-derived caller covers tasks stamped before it existed.
-  const requester = taskRow ? resolveTaskRequester(useStore.getState(), workspaceId) : undefined;
   const provenanceTitle = taskRow
     ? provenanceTooltip({
       ownerName: taskOwnerName ? displayWorkspaceName(taskOwnerName, false) : undefined,
-      caller: (requester && requesterName(requester, t))
-        ?? provenanceCallerLabel(provenance, (ptyId) => resolveCallerPane(useStore.getState(), ptyId), t),
+      caller: requester && requesterName(requester, t),
       when: provenance?.at ?? childMission?.createdAt ? timeAgo(provenance?.at ?? childMission?.createdAt ?? 0) : undefined,
     }, t)
     : undefined;
@@ -976,9 +976,6 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                   </span>
                 )}
               </div>
-              {/* Which pane asked for this task, and which agent is doing it —
-                  at rest, not only in the glyph's tooltip. */}
-              {taskRow && <TaskRequesterLine workspaceId={workspaceId} agents={rosterCounts.agents} />}
               {metadata && <WorkspaceContextLine metadata={metadata} onPortClick={handlePortClick} />}
             </>
           )}
@@ -1102,6 +1099,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           </button>
         </div>
         </div>
+        {/* Which pane asked for this task — at rest, on a line of its own at
+            the row's full width (the name line's hover actions and roster
+            summary would otherwise squeeze it to a few characters). */}
+        {taskRow && !editing && requester && <TaskRequesterLine requester={requester} />}
         {/* Mounted only when expanded: a collapsed list would subscribe to the
             whole roster projection to render nothing. */}
         {!editing && rosterOpen && (

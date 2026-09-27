@@ -5,6 +5,7 @@ import { resolveStartupCwd, shellDisplayName, withDefaultShell, withRoleBinding,
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
 import { originFromCaller } from '../utils/fanoutProvenance';
+import { sanitizeFanoutOrigin } from '../../shared/fanoutOrigin';
 import { validateMessage } from '../../shared/types';
 import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEvidence } from '../../shared/types';
 import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
@@ -1089,8 +1090,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
 
     // Who asked, resolved from the layout BEFORE addWorkspace changes it: a
     // pane caller's ptyId becomes its stable pane/surface ids and a snapshot
-    // of its name, which main stamps on the lineage with the owner.
-    const fanoutOrigin = originFromCaller(useStore.getState(), params.fanoutCaller);
+    // of its name, which main stamps on the lineage with the owner. Later
+    // tasks of the same fan-out arrive with the first task's origin instead,
+    // so one fan-out never names two requesters.
+    const fanoutOrigin = params.fanoutOrigin !== undefined
+      ? sanitizeFanoutOrigin(params.fanoutOrigin)
+      : originFromCaller(useStore.getState(), params.fanoutCaller);
 
     store.addWorkspace(name);
     const afterAdd = useStore.getState();
@@ -1217,7 +1222,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // task would come back on the default (expensive) one with nothing said.
     // It carries the model-env marker exactly as launched, so main can tell
     // whether the neutralisation survived when it reports a stuck worker.
-    return { workspaceId: newWsId, ptyId, initialCommand: launchCommand };
+    return { workspaceId: newWsId, ptyId, initialCommand: launchCommand, ...(fanoutOrigin ? { fanoutOrigin } : {}) };
   }
 
   // -------------------------------------------------------------------------
