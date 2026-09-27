@@ -104,7 +104,7 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 
 | Method | Params | Tier | Notes |
 |---|---|---|---|
-| `a2a.resolve.identity` | `{ workspaceId? }` | stable | Returns `{ mappings }` — the current PID→ptyId map (from `~/.wmux/pid-map`) that a caller walks up its own process tree to resolve its owning workspace (PROTOCOL.md §6.1 path B). Not a finished identity; the pty→workspace edge is resolved live. |
+| `a2a.resolve.identity` | `{ workspaceId?, callerPid? }` | stable | Returns `{ mappings }` — the current PID→ptyId map (from `~/.wmux/pid-map`) that a caller walks up its own process tree to resolve its owning workspace (PROTOCOL.md §6.1 path B). Not a finished identity; the pty→workspace edge is resolved live. With `callerPid`, main also walks the caller's ancestry and adds `resolved` plus `resolvedStatus`: `hit`, `miss` (a process table was read and no pane shell is among the caller's ancestors), or `unavailable` (nothing could be verified). A pipe request that sends `callerPid` with `senderPtyId` / `callerPtyId` is refused unless that pane's shell is among the caller's ancestors. |
 | `a2a.whoami` | — | stable | The calling MCP's claimed identity. |
 | `a2a.discover` | `{ filter? }` | stable | Lists other agents in the local wmux instance. |
 | `a2a.task.send` | `{ to, paneId?, surfaceId?, title?, taskId?, message, execute?, silent?, data? }` | stable | `execute:true` is new-task only; approval is gated before task creation unless global A2A execute auto-approve is enabled. |
