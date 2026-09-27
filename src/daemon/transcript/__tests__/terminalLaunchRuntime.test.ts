@@ -17,3 +17,10 @@ it('does not restart or retry a failed runtime startup', async () => {
   await expect(startNativeCodexRuntime({ CODEX_HOME: '/tmp/failed' })).rejects.toThrow('unavailable');
   expect(execFile).toHaveBeenCalledTimes(1);
 });
+it('starts the shared runtime without any pane identity, keeping the instance suffix', async () => {
+  vi.mocked(execFile).mockImplementation((...args: unknown[]) => { (args.at(-1) as (error: Error | null) => void)(null); return {} as ReturnType<typeof execFile>; });
+  await startNativeCodexRuntime({ CODEX_HOME: '/tmp/identity', WMUX_PTY_ID: 'pty-a', WMUX_WORKSPACE_ID: 'ws-a',
+    WMUX_WORKSPACE_NAME: 'A', WMUX_SURFACE_ID: 'sf-a', WMUX_MEMBER_ID: 'pty-a', WMUX_BRAIN_PTY: '1', WMUX_DATA_SUFFIX: '-demo' });
+  const opts = vi.mocked(execFile).mock.calls[0][2] as { env: NodeJS.ProcessEnv };
+  expect(opts.env).toEqual({ CODEX_HOME: '/tmp/identity', WMUX_DATA_SUFFIX: '-demo' });
+});

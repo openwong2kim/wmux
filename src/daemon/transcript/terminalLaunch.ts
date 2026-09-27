@@ -39,7 +39,8 @@ export async function startNativeCodexRuntime(env: NodeJS.ProcessEnv): Promise<v
   if (existing) return existing;
   if (startingAccounts.size >= 8) throw new Error('Too many runtime starts');
   const task = new Promise<void>((resolve, reject) => {
-    execFile('codex', ['app-server', 'daemon', 'start'], { env, timeout: 15000, maxBuffer: 64000, windowsHide: true },
+    // Stripped here too so no caller can seed a pane identity into the shared server.
+    execFile('codex', ['app-server', 'daemon', 'start'], { env: codexRuntimeEnv(env), timeout: 15000, maxBuffer: 64000, windowsHide: true },
       error => error ? reject(new Error('Native Codex runtime unavailable')) : resolve());
   });
   startingAccounts.set(key, task);
