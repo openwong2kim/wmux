@@ -97,7 +97,9 @@ const INTEGRATION_VERSION = 12;
 //
 // Not covered (the codex CLI is reached without this function): scripts and
 // `bash -c`/`zsh -c` lines, `env codex`, `exec codex`, a full path to the
-// binary, a user-defined `codex` function (left alone on purpose), shells
+// binary, a shell started inside the pane (nested zsh/bash, tmux, screen —
+// they read the user's rc, not this one), a user-defined `codex` function
+// (left alone on purpose), shells
 // with the integration turned off, fish/pwsh, and shells opened before v12
 // was installed.
 // -----------------------------------------------------------------------

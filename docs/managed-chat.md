@@ -141,7 +141,8 @@ A line that already picks a server (`--remote`, `--no-daemon`) and a user-define
 `WMUX_SHELL_INTEGRATION=0` turns it off with the rest of the integration.
 
 The function is not reached by scripts, `bash -c`/`zsh -c` lines, `env codex`,
-`exec codex`, a full path to the binary, fish or PowerShell, or shells opened
+`exec codex`, a full path to the binary, a shell started inside the pane (a
+nested zsh or bash, tmux, screen), fish or PowerShell, or shells opened
 before the integration update; those still start the shared server with whatever
 environment they have.
 
