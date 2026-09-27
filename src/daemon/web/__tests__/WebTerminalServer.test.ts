@@ -269,11 +269,12 @@ function makeDevices() {
   const liveActivityRegistrations: Array<{ deviceId: string } & Record<string, unknown>> = [];
   /** Forces the store's answer, so the route's status mapping can be exercised. */
   const liveActivityBox: { reason: string } = { reason: '' };
-  const box = { mintThrows: false };
+  const box: { mintThrows: boolean; mintGate: Promise<void> | null } = { mintThrows: false, mintGate: null };
   let seq = 0;
   const devices: WebDeviceResolver = {
     async mint(params) {
       mintCalls.push({ ...params });
+      if (box.mintGate) await box.mintGate;
       if (box.mintThrows) throw new Error('roster write failed');
       seq += 1;
       const deviceId = `dev-${seq}`;
@@ -463,7 +464,7 @@ describe('WebTerminalServer', () => {
   let liveActivityBox: { reason: string };
   let liveActivityRegisteredCalls: number;
   let deviceTouchCalls: string[];
-  let deviceBox: { mintThrows: boolean };
+  let deviceBox: { mintThrows: boolean; mintGate: Promise<void> | null };
   let resizeCalls: Array<{ id: string; cols: number; rows: number }>;
   let resizeBox: ReturnType<typeof makeDeps>['resizeBox'];
   let lifecycleCalls: Array<{ op: 'create' | 'destroy'; arg: unknown }>;
@@ -3452,6 +3453,50 @@ describe('WebTerminalServer', () => {
       server.disconnectDevice(phone.deviceId);
       expect(server.liveDeviceIds().size).toBe(0);
       ac.abort();
+    });
+
+    it('a pairing started for the other card during a slow mint is never burned by it', async () => {
+      await startRO();
+      const phone = server.startPairing({ name: 'Phone', allowInput: true, flow: 'phone' });
+      if (!phone.ok) throw new Error(phone.error);
+      let release: () => void = () => undefined;
+      deviceBox.mintGate = new Promise<void>((r) => { release = r; });
+      const redeeming = fetch(`${base()}/api/pair?code=${phone.code}`);
+      await new Promise((r) => setTimeout(r, 30));
+      // The phone code is already claimed: a second redemption loses, and the
+      // computer card may start while the mint is still in flight.
+      expect((await fetch(`${base()}/api/pair?code=${phone.code}`)).status).toBe(403);
+      const computer = server.startPairing({ name: 'Computer', allowInput: false, flow: 'computer' });
+      if (!computer.ok) throw new Error(computer.error);
+      release();
+      expect((await redeeming).status).toBe(200);
+      deviceBox.mintGate = null;
+      // The computer pairing survived the phone's redemption untouched.
+      expect(server.status()).toMatchObject({
+        pairCode: computer.code,
+        pendingDeviceName: 'Computer',
+        pendingDeviceAllowInput: false,
+        pendingPairFlow: 'computer',
+      });
+      expect(deviceMintCalls[0]).toEqual({ name: 'Phone', allowInput: true, kind: 'phone' });
+    });
+
+    it('a failed mint gives the code back only if the slot has not moved on', async () => {
+      await startRO();
+      const phone = server.startPairing({ name: 'Phone', flow: 'phone' });
+      if (!phone.ok) throw new Error(phone.error);
+      let release: () => void = () => undefined;
+      deviceBox.mintGate = new Promise<void>((r) => { release = r; });
+      deviceBox.mintThrows = true;
+      const redeeming = fetch(`${base()}/api/pair?code=${phone.code}`);
+      await new Promise((r) => setTimeout(r, 30));
+      const computer = server.startPairing({ name: 'Computer', flow: 'computer' });
+      if (!computer.ok) throw new Error(computer.error);
+      release();
+      expect((await redeeming).status).toBe(500);
+      deviceBox.mintGate = null;
+      deviceBox.mintThrows = false;
+      expect(server.status()).toMatchObject({ pairCode: computer.code, pendingPairFlow: 'computer' });
     });
 
     it('never writes a pairing code into the daemon log', async () => {

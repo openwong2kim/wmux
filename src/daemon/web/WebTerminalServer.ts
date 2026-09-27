@@ -1329,6 +1329,13 @@ export class WebTerminalServer {
    * other way round). Absent exactly when `pendingDeviceName` is.
    */
   private pendingPairFlow: PairFlow | undefined;
+  /**
+   * Bumped whenever the code slot changes hands (a mint or a burn). A
+   * redemption records it before its await, so a slot re-minted meanwhile —
+   * the other card starting — is never burned or restored by the request
+   * that belonged to the old code.
+   */
+  private pairGeneration = 0;
 
   /**
    * The grant a pairing code carries when nobody said. Typing `--allow-input`
@@ -7126,6 +7133,7 @@ export class WebTerminalServer {
     this.pairCode = code;
     this.pairExpiresAt = Date.now() + PAIR_TTL_MS;
     this.pairAttempts = PAIR_MAX_ATTEMPTS;
+    this.pairGeneration += 1;
     // Deliberately does NOT clear `pendingDeviceName`. A replacement minted
     // after a burned attempt budget is still the same operator pairing the same
     // device, so the name has to survive it — see the test that burns five
@@ -7199,23 +7207,45 @@ export class WebTerminalServer {
       return this.json(res, 200, { token: this.token });
     }
 
+    // Claim the slot BEFORE the await: the mint is async, and in that window
+    // a second redemption of the same code, or the other card starting a
+    // new pairing, must not see (or burn) this one. Everything the device is
+    // minted with is read now, from the pairing this code belonged to.
+    const claimed = {
+      code: this.pairCode,
+      expiresAt: this.pairExpiresAt,
+      attempts: this.pairAttempts,
+      name: this.pendingDeviceName,
+      allowInput: this.pendingDeviceAllowInput,
+      flow: this.pendingPairFlow,
+      kind: this.redeemingDeviceKind(req),
+    };
+    this.burnPairCode();
+    const claimedGeneration = this.pairGeneration;
+
     let minted: { deviceId: string; deviceSecret: string };
     try {
-      minted = await devices.mint({
-        name: this.pendingDeviceName,
-        allowInput: this.pendingDeviceAllowInput,
-        kind: this.redeemingDeviceKind(req),
-      });
+      minted = await devices.mint({ name: claimed.name, allowInput: claimed.allowInput, kind: claimed.kind });
     } catch (err) {
-      // The roster could not be persisted. Do NOT burn the code and do NOT
-      // fall back to the shared token: a credential the daemon cannot
-      // remember is one the operator can never revoke.
+      // The roster could not be persisted. Do NOT fall back to the shared
+      // token: a credential the daemon cannot remember is one the operator
+      // can never revoke. Give the code back so the operator can retry —
+      // unless the slot has moved on since, in which case the newer pairing
+      // stays exactly as it is.
+      if (this.pairGeneration === claimedGeneration && this.server) {
+        this.pairCode = claimed.code;
+        this.pairExpiresAt = claimed.expiresAt;
+        this.pairAttempts = claimed.attempts;
+        this.pendingDeviceName = claimed.name;
+        this.pendingDeviceAllowInput = claimed.allowInput;
+        this.pendingPairFlow = claimed.flow;
+        this.pairGeneration += 1;
+      }
       this.deps.log('error', `[web] device mint failed: ${errMsg(err)}`);
       return this.json(res, 500, { error: 'pairing failed' });
     }
 
-    // Success: hand the credential over exactly once, then burn the code.
-    this.burnPairCode();
+    // Success: the code was consumed when it was claimed above.
     return this.json(res, 200, {
       deviceId: minted.deviceId,
       deviceSecret: minted.deviceSecret,
@@ -7243,6 +7273,7 @@ export class WebTerminalServer {
     this.pairCode = '';
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
+    this.pairGeneration += 1;
     this.pendingDeviceName = undefined;
     this.pendingPairFlow = undefined;
     // Back to the server's default rather than to `false`: a redeemed code
