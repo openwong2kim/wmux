@@ -474,13 +474,14 @@ describe('terminal_prompt binding to the pane\'s own tool call', () => {
     expect(await create(t)).not.toHaveProperty('choices');
   });
 
-  it('the hook payload binds when the transcript has nothing', async () => {
+  it('the hook payload alone (no transcript call id) never binds: nothing proves which call a key answers', async () => {
     const h = makeRegistry();
     h.pane.pending = null;
     await h.registry.noteTerminalPrompt({
       sessionId: 'pty-a', agent: 'claude', toolName: 'Bash', source: 'hook', toolInput: CALL.input,
     });
-    expect(h.registry.list().pending[0]?.choices).toEqual([{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }]);
+    expect(h.registry.list().pending[0]).not.toHaveProperty('choices');
+    expect(h.registry.list().pending[0]).not.toHaveProperty('promptFingerprint');
   });
 
   it('the same dialog for two different calls has two fingerprints; the stale answer is refused', async () => {

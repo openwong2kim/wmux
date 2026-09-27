@@ -4439,35 +4439,54 @@ describe('WebTerminalServer', () => {
           body: JSON.stringify(body),
         });
 
-      it('/detail returns the full command to any reader of /api/approvals; never on the list', async () => {
-        await startRO();
+      it('/detail needs --allow-transcript and the dialog capability; the command is never on the list', async () => {
+        await startWithTranscript();
         const phone = await pairDevice('Reader', false);
         approvalRecords.push(tp());
         approvalBox.details.set('ap-tp', detail());
-        const res = await fetch(`${base()}/api/approvals/ap-tp/detail`, { headers: bearer(phone.token) });
+        const read = (headers: Record<string, string> = CAPS, id = 'ap-tp') =>
+          fetch(`${base()}/api/approvals/${id}/detail`, { headers: { ...bearer(phone.token), ...headers } });
+        const res = await read();
         expect(res.status).toBe(200);
         expect(res.headers.get('cache-control')).toBe('no-store');
         expect(await res.json()).toEqual(detail());
         const listed = await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(phone.token), ...CAPS } })).json();
         expect(listed.pending[0]).toMatchObject({ hasDetail: true });
         expect(JSON.stringify(listed)).not.toContain('/end');
+        // Without the capability that shows the dialog's question: 501.
+        expect((await read({})).status).toBe(501);
         // Unauthenticated: 401. Unknown, informational or settled: 404.
-        expect((await fetch(`${base()}/api/approvals/ap-tp/detail`)).status).toBe(401);
-        expect((await fetch(`${base()}/api/approvals/nope/detail`, { headers: bearer(phone.token) })).status).toBe(404);
+        expect((await fetch(`${base()}/api/approvals/ap-tp/detail`, { headers: CAPS })).status).toBe(401);
+        expect((await read(CAPS, 'nope')).status).toBe(404);
         approvalBox.details.clear();
-        expect((await fetch(`${base()}/api/approvals/ap-tp/detail`, { headers: bearer(phone.token) })).status).toBe(404);
+        expect((await read()).status).toBe(404);
         approvalBox.details.set('ap-tp', detail());
         approvalRecords[0]!.state = 'resolved';
-        expect((await fetch(`${base()}/api/approvals/ap-tp/detail`, { headers: bearer(phone.token) })).status).toBe(404);
+        expect((await read()).status).toBe(404);
       });
 
-      it('/api/config advertises detail and (with the input grant) decline', async () => {
+      it('/detail is 403 on a server without --allow-transcript, and no record offers it', async () => {
+        const info = await startRW();
+        approvalRecords.push(tp());
+        approvalBox.details.set('ap-tp', detail());
+        const res = await fetch(`${base()}/api/approvals/ap-tp/detail`, { headers: { ...bearer(info.token as string), ...CAPS } });
+        expect(res.status).toBe(403);
+        expect(await res.text()).not.toContain('/end');
+        const listed = await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(info.token as string), ...CAPS } })).json();
+        expect(listed.pending[0]).not.toHaveProperty('hasDetail');
+      });
+
+      it('/api/config advertises detail (with --allow-transcript) and decline (with the input grant)', async () => {
         await startRW();
         const writer = await pairDevice('Writer', true);
         const reader = await pairDevice('Reader', false);
         const cfg = async (token: string) => (await fetch(`${base()}/api/config`, { headers: bearer(token) })).json();
-        expect(await cfg(writer.token)).toMatchObject({ terminalPromptDetail: true, terminalPromptDecline: true });
-        expect(await cfg(reader.token)).toMatchObject({ terminalPromptDetail: true, terminalPromptDecline: false });
+        expect(await cfg(writer.token)).toMatchObject({ terminalPromptDetail: false, terminalPromptDecline: true });
+        expect(await cfg(reader.token)).toMatchObject({ terminalPromptDetail: false, terminalPromptDecline: false });
+        await server.stop();
+        await startWithTranscript();
+        const later = await pairDevice('Transcript reader', false);
+        expect(await cfg(later.token)).toMatchObject({ terminalPromptDetail: true });
       });
 
       it('decline reaches the registry with the route\'s marker — on an informational record too', async () => {
@@ -4517,6 +4536,8 @@ describe('WebTerminalServer', () => {
         ['already-resolved', 409],
         ['already-answered', 409],
         ['prompt-changed', 409],
+        ['prompt-unverified', 409],
+        ['answer-too-soon', 425],
         ['expired', 410],
       ] as const)('maps the registry\'s %s to %i and says nothing was written', async (reason, status) => {
         await startRW();
@@ -4545,14 +4566,22 @@ describe('WebTerminalServer', () => {
           tp({ id: 'tp-superseded', state: 'superseded', resolvedAt: 4 }),
           tp({ id: 'tp-info-expired', state: 'expired', question: undefined, choices: undefined, promptFingerprint: undefined, resolvedAt: 3 }),
           tp({ id: 'tp-answerable-expired', state: 'expired', resolvedAt: 2 }),
+          // Declined from a phone while it could not be answered Yes/No: no question, still an answer.
+          tp({
+            id: 'tp-declined-info', state: 'resolved', pressedAt: 2, decision: 'deny', resolvedAt: 2,
+            question: undefined, reason: undefined, choices: undefined, promptFingerprint: undefined,
+          }),
           mkApproval({ id: 'ap-question', state: 'resolved', question: 'Pick one', resolvedAt: 1 }),
         );
+        const expected = ['tp-answered', 'tp-declined-info', 'ap-question'];
         const capable = await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(info.token as string), ...CAPS } })).json();
-        expect(capable.recentlyResolved.map((r: { id: string }) => r.id)).toEqual(['tp-answered', 'ap-question']);
+        expect(capable.recentlyResolved.map((r: { id: string }) => r.id)).toEqual(expected);
         expect(capable.recentlyResolved[0]).toMatchObject({ question: 'Do you want to proceed?', decision: 'approve' });
-        // An older client is never shown the dialog's question, so none of them.
+        expect(capable.recentlyResolved[1]).toMatchObject({ toolName: 'Bash', summary: expect.any(String), decision: 'deny' });
+        // Decided from the record, not from what this caller is shown: an older
+        // client (no question on the wire) sees the same rows.
         const legacy = await (await fetch(`${base()}/api/approvals`, { headers: bearer(info.token as string) })).json();
-        expect(legacy.recentlyResolved.map((r: { id: string }) => r.id)).toEqual(['ap-question']);
+        expect(legacy.recentlyResolved.map((r: { id: string }) => r.id)).toEqual(expected);
       });
     });
 
@@ -6371,10 +6400,10 @@ describe('WebTerminalServer', () => {
       approvalBox.details.set('ap-brain-tp', {
         id: 'ap-brain-tp', command: 'secret brain command', commandHash: 'h', commandBytes: 20, truncated: false,
       });
-      const info = await startRW();
+      const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: true });
       const paired = await fetch(`${base()}/api/pair?code=${info.pairCode as string}`);
       const deviceToken = ((await paired.json()) as { token: string }).token;
-      const asDevice = { Authorization: `Bearer ${deviceToken}`, 'X-Wmux-Client-Caps': 'terminal-prompt-decline' };
+      const asDevice = { Authorization: `Bearer ${deviceToken}`, 'X-Wmux-Client-Caps': 'terminal-prompt-answer, terminal-prompt-decline' };
       const read = await fetch(`${base()}/api/approvals/ap-brain-tp/detail`, { headers: asDevice });
       expect(read.status).toBe(404);
       expect(await read.text()).not.toContain('secret');
@@ -6384,7 +6413,7 @@ describe('WebTerminalServer', () => {
       expect(declined.status).toBe(404);
       expect(resolveCalls).toEqual([]);
       // The operator keeps its view of the brain.
-      const asOperator = bearer(info.token as string);
+      const asOperator = { ...bearer(info.token as string), 'X-Wmux-Client-Caps': 'terminal-prompt-answer' };
       expect((await fetch(`${base()}/api/approvals/ap-brain-tp/detail`, { headers: asOperator })).status).toBe(200);
     });
 

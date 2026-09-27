@@ -280,6 +280,10 @@ export type ApprovalResolveFailure =
   | 'prompt-changed'
   // A `terminal_prompt` answer too soon after the record appeared.
   | 'answer-too-soon'
+  // A `terminal_prompt` decline (or answer) for a record the daemon cannot tie
+  // to one tool call on screen: it was never matched to its transcript call.
+  // Nothing is written; the record stays pending.
+  | 'prompt-unverified'
   // A `terminal_prompt` answer whose `decision` does not match the option its
   // `choiceKey` names (approve ↔ plain Yes, deny ↔ plain No), or whose
   // `choiceKey` / `promptFingerprint` is missing.

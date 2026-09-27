@@ -19,6 +19,15 @@ describe('latestPendingToolUse', () => {
     ])).toEqual({ id: 't2', name: 'Bash', input: { command: 'rm -rf build' }, unanswered: 1 });
   });
 
+  it('counts unanswered calls, and leaves the count out when a cut window may hide one', () => {
+    const batch = [useEntry('a', 'Bash', { command: 'x' }), useEntry('b', 'Bash', { command: 'y' })];
+    expect(latestPendingToolUse(batch)?.unanswered).toBe(2);
+    // The window starts mid-batch: no user entry before the earliest open call.
+    expect(latestPendingToolUse([useEntry('b', 'Bash', { command: 'y' })], { windowCut: true })).not.toHaveProperty('unanswered');
+    // A user entry inside the window before the batch: the batch is whole.
+    expect(latestPendingToolUse([resultEntry('z'), useEntry('b', 'Bash', { command: 'y' })], { windowCut: true })?.unanswered).toBe(1);
+  });
+
   it('is null once the latest call has its result, or when there is none', () => {
     expect(latestPendingToolUse([useEntry('t1', 'Bash', { command: 'ls' }), resultEntry('t1')])).toBeNull();
     expect(latestPendingToolUse([])).toBeNull();

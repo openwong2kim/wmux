@@ -141,6 +141,12 @@ describe('parseTerminalPrompt', () => {
     expect(terminalPromptAnswerability(parsed).answerable).toBe(false);
   });
 
+  it('whitespace is collapsed, never dropped: a space inside the command changes the hash', () => {
+    const with_ = (cmd: string) => parseTerminalPrompt(DIALOG.map((r) => (r === '   rm -rf build/cache' ? `   ${cmd}` : r)))!;
+    expect(with_('rm -rf /tmp/cache').fingerprint).not.toBe(with_('rm -rf / tmp/cache').fingerprint);
+    expect(with_('rm -rf   /tmp/cache').fingerprint).toBe(with_('rm -rf /tmp/cache').fingerprint);
+  });
+
   it('the fingerprint survives the TUI breaking a command over different rows', () => {
     const one = [...DIALOG];
     one.splice(5, 1, '   rm -rf build/cache other/dir');

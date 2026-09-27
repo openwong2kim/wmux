@@ -199,9 +199,10 @@ describe('a long command, as the TUI draws it', () => {
     expect(parsed.descriptionRows).toEqual(['Run shell command']);
     expect(parsed.options.map((o) => o.key)).toEqual(['1', '2', '3']);
     expect(parsed.options[1]!.label).toMatch(/^Yes, and allow .* commands$/);
-    // The same dialog at the other width hashes the same: a resize (a word
-    // broken in a different place) is not a different dialog.
-    expect(parsed.fingerprint).toBe(parseTerminalPrompt(WIDE, { cols: 140 })!.fingerprint);
+    // Whitespace is collapsed, never dropped: a space inside the command
+    // is part of what the hash covers.
+    const spaced = rows.map((r) => r.replace('mkdir -p', 'mkdir - p'));
+    expect(parseTerminalPrompt(spaced, { cols })!.fingerprint).not.toBe(parsed.fingerprint);
     expect(dialogMatchesToolCall(parsed, { name: 'Bash', command: COMMAND })).toBe(true);
     // Anything else under the same rows does not bind: a changed tail, a
     // character changed where the TUI broke the word, a different description.
@@ -283,12 +284,15 @@ describe('A — a command longer than the 200-character summary', () => {
   });
 });
 
+/** The PermissionRequest hook's note for CALL: evidence the call waits on its dialog. */
+const HOOK = { source: 'hook' as const, toolName: 'Bash', toolInput: { command: COMMAND } };
+
 describe('B — the dialog\'s top scrolled off a short pane', () => {
-  it('binds to the transcript\'s one pending call when its option rows are on screen', async () => {
+  it('binds to the transcript\'s one pending call when the hook fired for it and its option rows are on screen', async () => {
     const h = makeRegistry();
     h.pane.rows = TOP_CUT;
     h.pane.cols = 80;
-    const record = await create(h);
+    const record = await create(h, HOOK);
     expect(record).toMatchObject({
       toolUseId: 'toolu_long',
       choices: [{ key: '1', label: 'Yes' }, { key: '3', label: 'No' }],
@@ -302,7 +306,7 @@ describe('B — the dialog\'s top scrolled off a short pane', () => {
   it('the visible option rows are in the fingerprint', async () => {
     const h = makeRegistry();
     h.pane.rows = TOP_CUT;
-    const record = await create(h);
+    const record = await create(h, HOOK);
     h.pane.rows = TOP_CUT.map((r) => r.replace('3. No', '3. No, and tell Claude what to do differently'));
     settle(h);
     expect(await approve(h, record)).toMatchObject({ ok: false, reason: 'prompt-changed' });
@@ -310,26 +314,51 @@ describe('B — the dialog\'s top scrolled off a short pane', () => {
   });
 
   it.each([
-    ['two calls pending (parallel tool use)', { pending: { ...CALL, unanswered: 2 } }],
-    ['no transcript call (hook input only)', { pending: null }],
-    ['visible command rows that are not the call\'s tail', { rows: TOP_CUT.map((r) => r.replace('done-one', 'done-TWO')) }],
-    ['no command row on screen at all', { rows: TOP_CUT.slice(4) }],
-    ['the option to press cut off the bottom', { rows: TOP_CUT.slice(0, -3) }],
-  ])('%s → informational', async (_label, over: { pending?: PendingToolUse | null; rows?: string[] }) => {
+    // A RUNNING tool is an unanswered tool_use too: its output can print a
+    // question, options and a footer under the tail of its own command.
+    ['a running tool printing a look-alike (no PermissionRequest for it)', {}],
+    ['the hook fired for another call', { note: { ...HOOK, toolInput: { command: 'ls' } } }],
+    ['two calls pending (parallel tool use)', { note: HOOK, pending: { ...CALL, unanswered: 2 } }],
+    ['the pending count unknown (the transcript window was cut)', { note: HOOK, pending: { ...CALL, unanswered: undefined } }],
+    ['no transcript call (hook input only)', { note: HOOK, pending: null }],
+    ['visible command rows that are not the call\'s tail', { note: HOOK, rows: TOP_CUT.map((r) => r.replace('done-one', 'done-TWO')) }],
+    ['no command row on screen at all', { note: HOOK, rows: TOP_CUT.slice(4) }],
+    ['the option to press cut off the bottom', { note: HOOK, rows: TOP_CUT.slice(0, -3) }],
+  ])('%s → informational, and neither a Yes nor an Esc is ever written', async (_label, over: {
+    note?: Partial<Parameters<ApprovalRegistry['noteTerminalPrompt']>[0]>;
+    pending?: PendingToolUse | null;
+    rows?: string[];
+  }) => {
     const h = makeRegistry();
     h.pane.rows = over.rows ?? TOP_CUT;
     if ('pending' in over) h.pane.pending = over.pending ?? null;
-    const record = await create(h, over.pending === null ? { source: 'hook', toolName: 'Bash', toolInput: { command: COMMAND } } : {});
+    const record = await create(h, over.note ?? {});
     expect(record).not.toHaveProperty('choices');
     expect(record).not.toHaveProperty('promptFingerprint');
     expect(h.registry.terminalPromptDetail(record.id)).toBeNull();
+    settle(h);
+    expect(await approve(h, record, { promptFingerprint: 'a'.repeat(32) })).toMatchObject({ ok: false });
+    expect(await decline(h, record)).toMatchObject({ ok: false });
+    expect(h.writes).toEqual([]);
+  });
+
+  it('the hook\'s evidence ends with the pane\'s sweep', async () => {
+    const h = makeRegistry();
+    h.pane.rows = TOP_CUT;
+    await create(h, HOOK);
+    await h.registry.expireForSession('pty-a', 'turn-ended');
+    await h.registry.noteTerminalPrompt({ sessionId: 'pty-a', agent: 'claude', source: 'detector' });
+    const [again] = h.registry.list().pending;
+    expect(again).toBeDefined();
+    expect(again).not.toHaveProperty('choices');
   });
 });
 
-describe('C — decline: one Esc, only while pending and on screen', () => {
+describe('C — decline: one Esc, only for the dialog the phone saw', () => {
   it('writes exactly one Esc and marks the record answered; a second decline writes nothing', async () => {
     const h = makeRegistry();
     const record = await create(h);
+    settle(h);
     const out = await decline(h, record, { promptFingerprint: record.promptFingerprint });
     expect(out).toMatchObject({ ok: true, request: { decision: 'deny', state: 'pending' } });
     expect(out.ok && typeof out.request.pressedAt).toBe('number');
@@ -339,13 +368,22 @@ describe('C — decline: one Esc, only while pending and on screen', () => {
     expect(h.logs.some((l) => /terminal-prompt decline outcome=pressed .*via=escape/.test(l))).toBe(true);
   });
 
-  it('is allowed on an informational record (declining is the safe direction)', async () => {
+  it('works on a matched record the phone cannot answer Yes/No (a row the TUI cut)', async () => {
     const h = makeRegistry();
-    h.pane.pending = null;
+    // The option label ends in an ellipsis: not answerable, still this call's dialog.
+    h.pane.rows = WIDE.map((r) => (r.includes('/tmp/lcH1/work/scratchpad/dd-main commands') ? `${r}…` : r));
     const record = await create(h);
     expect(record).not.toHaveProperty('promptFingerprint');
+    settle(h);
     expect(await decline(h, record)).toMatchObject({ ok: true });
     expect(h.writes).toEqual(['\x1b']);
+  });
+
+  it('within the reflex window: answer-too-soon, nothing written', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    expect(await decline(h, record)).toMatchObject({ ok: false, reason: 'answer-too-soon' });
+    expect(h.writes).toEqual([]);
   });
 
   it('after the record settled: 409/410 and nothing written', async () => {
@@ -366,6 +404,7 @@ describe('C — decline: one Esc, only while pending and on screen', () => {
   it('the dialog closing between the read and the write: nothing written', async () => {
     const h = makeRegistry();
     const record = await create(h);
+    settle(h);
     // Right after the screen read the agent moves on: output lands and the
     // dialog is gone by the time the write would happen.
     h.afterRender.fn = () => {
@@ -380,17 +419,8 @@ describe('C — decline: one Esc, only while pending and on screen', () => {
   it('a key in the pane between the read and the write: nothing written', async () => {
     const h = makeRegistry();
     const record = await create(h);
+    settle(h);
     h.afterRender.fn = () => { h.pane.keyInputRevision += 1; };
-    expect(await decline(h, record)).toMatchObject({ ok: false, reason: 'prompt-changed' });
-    expect(h.writes).toEqual([]);
-  });
-
-  it('a different dialog on screen, or no dialog: nothing written', async () => {
-    const h = makeRegistry();
-    const record = await create(h);
-    h.pane.rows = WIDE.map((r) => r.replace('done-one', 'done-TWO'));
-    expect(await decline(h, record)).toMatchObject({ ok: false, reason: 'prompt-changed' });
-    h.pane.rows = null;
     expect(await decline(h, record)).toMatchObject({ ok: false, reason: 'prompt-changed' });
     expect(h.writes).toEqual([]);
   });
@@ -398,6 +428,7 @@ describe('C — decline: one Esc, only while pending and on screen', () => {
   it('refuses a caller without the route\'s marker, an approve, or a stale fingerprint', async () => {
     const h = makeRegistry();
     const record = await create(h);
+    settle(h);
     expect(await decline(h, record, { terminalPromptDecline: undefined, terminalPromptAnswer: TERMINAL_PROMPT_WEB_ANSWER }))
       .toMatchObject({ ok: false, reason: 'invalid-choice' });
     expect(await h.registry.resolve({
@@ -407,4 +438,76 @@ describe('C — decline: one Esc, only while pending and on screen', () => {
     expect(await decline(h, record, { promptFingerprint: 'f'.repeat(32) })).toMatchObject({ ok: false, reason: 'prompt-changed' });
     expect(h.writes).toEqual([]);
   });
+});
+
+/** Call B: the agent's NEXT call, with its own dialog. */
+const COMMAND_B = COMMAND.replace('done-one', 'done-bee');
+const CALL_B: PendingToolUse = { id: 'toolu_bee', name: 'Bash', input: { command: COMMAND_B }, unanswered: 1 };
+const WIDE_B = WIDE.map((r) => r.replace('done-one', 'done-bee'));
+
+describe('unprovable → nothing written, on both write paths', () => {
+  type Path = 'approve' | 'decline';
+  const press = (h: Harness, record: ApprovalRequest, path: Path) =>
+    (path === 'approve'
+      ? approve(h, record, { promptFingerprint: record.promptFingerprint ?? 'a'.repeat(32) })
+      : decline(h, record));
+
+  const cases: Array<[string, (h: Harness) => Promise<ApprovalRequest>]> = [
+    ['a record minted before any dialog was drawn, bound to call A, while call B\'s dialog is up', async (h) => {
+      h.pane.rows = null;
+      const record = await create(h);
+      h.pane.rows = WIDE_B;
+      h.pane.pending = CALL_B;
+      return record;
+    }],
+    ['a record for call A while call B (same screen text) is now pending', async (h) => {
+      const record = await create(h);
+      h.pane.pending = { ...CALL, id: 'toolu_other' };
+      return record;
+    }],
+    ['a record for call A whose input changed under the same id', async (h) => {
+      const record = await create(h);
+      h.pane.pending = { ...CALL, input: { command: COMMAND, timeout: 1 } };
+      return record;
+    }],
+    ['a key or click since the record was created (answered in the pane)', async (h) => {
+      const record = await create(h);
+      h.pane.keyInputRevision += 1;
+      return record;
+    }],
+    ['a new PTY since the record was created', async (h) => {
+      const record = await create(h);
+      h.pane.incarnation = 'inc-2';
+      return record;
+    }],
+    ['a different dialog on screen now', async (h) => {
+      const record = await create(h);
+      h.pane.rows = WIDE_B;
+      return record;
+    }],
+    ['no dialog on screen now', async (h) => {
+      const record = await create(h);
+      h.pane.rows = null;
+      return record;
+    }],
+    ['a record with no transcript call at all', async (h) => {
+      h.pane.pending = null;
+      return create(h);
+    }],
+    ['a record bound only by the hook\'s input (no call id)', async (h) => {
+      h.pane.pending = null;
+      return create(h, HOOK);
+    }],
+  ];
+
+  for (const path of ['approve', 'decline'] as const) {
+    it.each(cases)(`${path}: %s`, async (_label, arrange) => {
+      const h = makeRegistry();
+      const record = await arrange(h);
+      settle(h);
+      const out = await press(h, record, path);
+      expect(out.ok).toBe(false);
+      expect(h.writes).toEqual([]);
+    });
+  }
 });

@@ -21,8 +21,11 @@
 //
 //   - a FINGERPRINT of the whole dialog — title, question, reason, every
 //     command line and every option key and label, untruncated, whitespace
-//     removed — that does not change when the selection cursor moves or when
-//     the TUI re-wraps a row (at a space or inside a word, as a resize does).
+//     runs collapsed to one space — that does not change when the selection
+//     cursor moves or when the TUI re-wraps a row at a space. A row broken
+//     INSIDE a word (a long path) reads as a space there, so a resize that
+//     moves such a break changes the hash and the record is refreshed once.
+//     Whitespace is never dropped: `rm -rf /tmp/x` and `rm -rf / tmp/x` differ.
 //     A remote answer is fenced on it: pressing a key is only honest if the
 //     dialog on screen is the one the phone was shown.
 //   - whether the dialog is ACTIVE: exactly one option carries the cursor, the
@@ -232,20 +235,17 @@ export function parseTerminalPrompt(
 
   // The hash takes the FULL text. Caps below are for display only; hashing a
   // capped field would let two dialogs that differ past the cap collide.
-  // Whitespace is left out: where the TUI broke a row depends on the width —
-  // at a space (which it drops) or inside a long word (where joining rows with
-  // a space would add one) — and a resize must not change the hash. What the
-  // command IS, whitespace included, is pinned by the call's own input hash
-  // once the record binds (ApprovalRegistry.bindFingerprint).
-  const squash = (text: string): string => text.replace(/\s+/g, '');
+  // Whitespace runs collapse to ONE space, never to nothing: deleting them
+  // would hash `rm -rf /tmp/x` and `rm -rf / tmp/x` alike. The command is one
+  // string, not the row list, so a re-wrap at a space does not change it.
   const fingerprint = crypto
     .createHash('sha256')
     .update(JSON.stringify([
-      squash(fullTitle ?? ''),
-      squash(fullQuestion),
-      squash(fullReason ?? ''),
-      squash(fullCommand.join('')),
-      fullOptions.map((o) => [o.key, squash(o.label)]),
+      normalizePromptText(fullTitle ?? ''),
+      normalizePromptText(fullQuestion),
+      normalizePromptText(fullReason ?? ''),
+      normalizePromptText(fullCommand.join(' ')),
+      fullOptions.map((o) => [o.key, normalizePromptText(o.label)]),
     ]))
     .digest('hex')
     .slice(0, PROMPT_FINGERPRINT_HEX);
