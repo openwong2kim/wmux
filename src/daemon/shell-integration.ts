@@ -66,84 +66,139 @@ const INTEGRATION_VERSION = 12;
 //
 // Measured against codex-cli 0.157.1 with a fresh CODEX_HOME and no server
 // running:
-//   - `codex`, `codex resume --last`  → start a managed server (ppid 1) that
-//     carries every WMUX_* key of the shell that typed it.
-//   - `codex --no-daemon`, `codex --no-daemon resume --last`,
-//     `codex resume --no-daemon --last` → no server, no control socket.
-//   - `codex exec …`, `codex e …`, `codex review …` → run in-process; they
-//     start no server and did not connect to one that was already running.
+//   - `codex`, `codex resume --last`, `codex agents` → start a managed server
+//     (ppid 1) that carries every WMUX_* key of the shell that typed it.
+//   - `--no-daemon` (before or after `resume`) → no server, no control socket.
+//   - `-c features.daemon_auto_start=false` → interactive forms and `exec`
+//     run in-process instead, with no error; `agents` still starts a server,
+//     and an explicit `app-server daemon start` still works.
+//   - `exec`/`e`/`review` → run in-process; no server started, and none
+//     connected to when one was already running.
 //
-// So the function classifies the command line the way codex's own parser
-// does (first non-option word, skipping the values of options that take one;
-// everything after `--` is the prompt) and then:
-//   - interactive forms (no subcommand, a prompt, `resume`, `fork`) run with
-//     `--no-daemon` prepended, keeping the pane's environment — the thread
-//     runs inside this process, so its commands act as this pane and nothing
-//     outlives it;
-//   - `exec`/`e`/`review` run unchanged — the hooks bridge needs WMUX_PTY_ID
-//     to attribute their events to this pane;
-//   - every other subcommand (`agents`, `queue`, `app-server`,
-//     `remote-control`, `app`, `exec-server`, …), and an interactive form on a
-//     codex that has no `--no-daemon`, runs with every WMUX_* key removed, so
-//     a server it starts carries no pane identity (its children then fail
-//     closed instead of acting as this pane).
+// Classifying the command line is best effort, so no classification is
+// trusted to keep the pane identity on its own:
+//   - every wrapped call gets `-c features.daemon_auto_start=false` when the
+//     installed codex knows that feature — a misread line still cannot start
+//     the server from this shell;
+//   - any word naming a server (`app-server`, `exec-server`, `remote-control`,
+//     `daemon`), anywhere on the line, runs the call with every WMUX_* key
+//     removed. A false positive only drops the pane identity for that run;
+//   - interactive forms (no subcommand, a prompt, `resume`, `fork`, any
+//     `-i/--image`, which only the interactive CLI takes) also get
+//     `--no-daemon` and keep the pane env — the thread runs in this process,
+//     so its commands act as this pane and nothing outlives it. Without the
+//     feature guard or `--no-daemon` they run with WMUX_* removed;
+//   - `exec`/`e`/`review` keep the pane env: the hooks bridge needs
+//     WMUX_PTY_ID to attribute their events to this pane;
+//   - an option this function does not know, before the first word, means the
+//     subcommand cannot be told apart from an option value: identity is kept
+//     only when the feature guard is available (plus `--no-daemon`), otherwise
+//     WMUX_* is removed;
+//   - every other subcommand (`agents`, `queue`, `app`, `login`, …) runs with
+//     WMUX_* removed.
 // It steps aside entirely when the command already chooses a server
 // (`--remote`, `--no-daemon` — wmux's own Codex launches pass `--remote`),
 // when WMUX_CODEX_WRAP=0, or when no codex executable is on PATH.
 //
-// The binary is resolved once and always called by absolute path: zsh
-// alias-expands the word after `command`, and the user's rc (which may hold
-// `alias codex=…`) is sourced before this function is defined.
+// What the installed codex supports is probed once per binary (keyed by its
+// path, inode and mtime) with `--help` and `features list`, both run with
+// WMUX_* removed. The binary is always called by absolute path: zsh
+// alias-expands the word after `command`, and the user's rc is sourced before
+// this function is defined. On WSL the pane PATH starts with wmux's own codex
+// shim, which finds the real codex by skipping WMUX_WSL_BIN; calls that remove
+// WMUX_* therefore go to the real codex directly (through the shim they would
+// find the shim again and re-exec forever).
 //
 // Not covered (the codex CLI is reached without this function): scripts and
 // `bash -c`/`zsh -c` lines, `env codex`, `exec codex`, a full path to the
-// binary, a shell started inside the pane (nested zsh/bash, tmux, screen —
-// they read the user's rc, not this one), a user-defined `codex` function
-// (left alone on purpose), shells
-// with the integration turned off, fish/pwsh, and shells opened before v12
-// was installed.
+// binary, a user alias for codex that expands to anything but `codex …`
+// (aliases win over functions), a shell started inside the pane (nested
+// zsh/bash, tmux, screen — they read the user's rc, not this one), a
+// user-defined `codex` function (left alone on purpose), Git Bash, shells with
+// the integration turned off, fish/pwsh, and shells opened before v12 was
+// installed.
 // -----------------------------------------------------------------------
-const CODEX_SEED_GUARD_CLASSIFY = `__wmux_codex_classify() {
-  local __wmux_a __wmux_skip=0 __wmux_sub='' __wmux_end=0
+function codexSeedGuardHelpers(unsetAll: string): string {
+  return `__wmux_codex_classify() {
+  local __wmux_a __wmux_skip=0 __wmux_sub='' __wmux_end=0 __wmux_pass=0 __wmux_srv=0 __wmux_img=0 __wmux_unk=0
   __wmux_codex_kind=''
   for __wmux_a in "$@"; do
+    case "$__wmux_a" in
+      app-server|exec-server|remote-control|daemon) __wmux_srv=1 ;;
+    esac
+    [ "$__wmux_end" = 1 ] && continue
     if [ "$__wmux_skip" = 1 ]; then __wmux_skip=0; continue; fi
     case "$__wmux_a" in
-      --) __wmux_end=1; break ;;
-      --remote|--remote=*|--no-daemon) __wmux_codex_kind=pass; return 0 ;;
-      -c|--config|-m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|-C|--cd|-i|--image|--enable|--disable|--add-dir|--local-provider|--remote-auth-token-env|-o|--output-last-message|--output-schema|--color|--thread-source|--base|--commit|--title) __wmux_skip=1 ;;
-      -*) ;;
-      *) [ -z "$__wmux_sub" ] && __wmux_sub="$__wmux_a" ;;
+      --) __wmux_end=1; continue ;;
+      --remote|--remote=*|--no-daemon) __wmux_pass=1; continue ;;
+    esac
+    { [ -n "$__wmux_sub" ] || [ "$__wmux_img" = 1 ]; } && continue
+    case "$__wmux_a" in
+      -c|--config|-m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|-C|--cd|--enable|--disable|--add-dir|--local-provider|--remote-auth-token-env) __wmux_skip=1 ;;
+      -i|--image|-i?*|--image=*) __wmux_img=1 ;;
+      --oss|--strict-config|--approve-for-me|--dangerously-bypass-approvals-and-sandbox|--dangerously-bypass-hook-trust|--worktree|--search|--no-alt-screen|-h|--help|-V|--version) ;;
+      -[cmpsaC]?*) ;;
+      --*=*)
+        case "\${__wmux_a%%=*}" in
+          --config|--model|--profile|--sandbox|--ask-for-approval|--cd|--enable|--disable|--add-dir|--local-provider|--remote-auth-token-env) ;;
+          *) __wmux_unk=1 ;;
+        esac ;;
+      -*) __wmux_unk=1 ;;
+      *) __wmux_sub="$__wmux_a" ;;
     esac
   done
-  [ "$__wmux_end" = 1 ] && [ -z "$__wmux_sub" ] && __wmux_sub=' prompt'
-  case "$__wmux_sub" in
-    ''|resume|fork) __wmux_codex_kind=tui ;;
-    exec|e|review) __wmux_codex_kind=env ;;
-    agents|login|logout|mcp|plugin|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|queue|archive|delete|migrate-rollouts|unarchive|cloud|exec-server|features|help) __wmux_codex_kind=scrub ;;
-    *) __wmux_codex_kind=tui ;;
-  esac
+  if [ "$__wmux_srv" = 1 ]; then __wmux_codex_kind=scrub
+  elif [ "$__wmux_pass" = 1 ]; then __wmux_codex_kind=pass
+  elif [ "$__wmux_img" = 1 ]; then __wmux_codex_kind=tui
+  elif [ "$__wmux_unk" = 1 ]; then __wmux_codex_kind=unknown
+  else
+    case "$__wmux_sub" in
+      ''|resume|fork) __wmux_codex_kind=tui ;;
+      exec|e|review) __wmux_codex_kind=env ;;
+      agents|login|logout|mcp|plugin|app|completion|update|doctor|sandbox|debug|apply|a|queue|archive|delete|migrate-rollouts|unarchive|cloud|features|help) __wmux_codex_kind=scrub ;;
+      *) __wmux_codex_kind=tui ;;
+    esac
+  fi
 }
 
-# Does this codex accept --no-daemon? Asked once per binary and version.
-__wmux_codex_has_nodaemon() {
-  local __wmux_key __wmux_help
-  __wmux_key="$1|$("$1" --version 2>/dev/null)"
-  if [ "\${__wmux_codex_probe_key-}" != "$__wmux_key" ]; then
-    __wmux_help=$("$1" --help 2>/dev/null)
-    case "$__wmux_help" in
-      *--no-daemon*) __wmux_codex_nodaemon=1 ;;
-      *) __wmux_codex_nodaemon=0 ;;
-    esac
-    __wmux_codex_probe_key="$__wmux_key"
-  fi
-  [ "$__wmux_codex_nodaemon" = 1 ]
+# PATH without wmux's WSL codex shim directory (a no-op off WSL).
+__wmux_codex_strip_path() {
+  local __wmux_rest="$PATH:" __wmux_d __wmux_clean=''
+  while [ -n "$__wmux_rest" ]; do
+    __wmux_d=\${__wmux_rest%%:*}
+    __wmux_rest=\${__wmux_rest#*:}
+    [ "$__wmux_d" = "\${WMUX_WSL_BIN:-}" ] && continue
+    __wmux_clean="\${__wmux_clean:+$__wmux_clean:}$__wmux_d"
+  done
+  printf '%s' "$__wmux_clean"
+}
+
+# What does this codex support? Asked once per binary (path + inode + mtime).
+__wmux_codex_probe() {
+  local __wmux_key __wmux_out
+  __wmux_key="$1|$(command \\ls -lLi -- "$1" 2>/dev/null)"
+  [ "\${__wmux_codex_probe_key-}" = "$__wmux_key" ] && return 0
+  __wmux_out=$(${unsetAll}; "$1" --help 2>/dev/null </dev/null)
+  case "$__wmux_out" in
+    *--no-daemon*) __wmux_codex_nodaemon=1 ;;
+    *) __wmux_codex_nodaemon=0 ;;
+  esac
+  __wmux_out=$(${unsetAll}; "$1" features list 2>/dev/null </dev/null)
+  case "$__wmux_out" in
+    *daemon_auto_start*) __wmux_codex_guard=1 ;;
+    *) __wmux_codex_guard=0 ;;
+  esac
+  __wmux_codex_probe_key="$__wmux_key"
 }`;
+}
 
 /** The dispatching body shared by both shells. `unsetAll` is the
- *  shell-specific statement that removes every WMUX_* variable. */
-function codexSeedGuardBody(unsetAll: string): string {
-  return `  if [ -z "$__wmux_bin" ]; then
+ *  shell-specific statement that removes every WMUX_* variable; `lookup` is
+ *  the shell's PATH search for codex. */
+function codexSeedGuardBody(unsetAll: string, lookup: string): string {
+  return `  local __wmux_bin __wmux_real __wmux_keep=0
+  __wmux_bin=$(${lookup})
+  if [ -z "$__wmux_bin" ]; then
     command codex "$@"
     return
   fi
@@ -152,41 +207,58 @@ function codexSeedGuardBody(unsetAll: string): string {
     return
   fi
   __wmux_codex_classify "$@"
+  if [ "$__wmux_codex_kind" = pass ]; then
+    "$__wmux_bin" "$@"
+    return
+  fi
+  __wmux_real=$__wmux_bin
+  if [ -n "\${WMUX_WSL_BIN:-}" ]; then
+    __wmux_real=$(PATH=$(__wmux_codex_strip_path); ${lookup})
+    if [ -z "$__wmux_real" ]; then
+      "$__wmux_bin" "$@"
+      return
+    fi
+  fi
+  __wmux_codex_probe "$__wmux_real"
   case "$__wmux_codex_kind" in
+    env) __wmux_keep=1 ;;
     tui)
-      if __wmux_codex_has_nodaemon "$__wmux_bin"; then
-        "$__wmux_bin" --no-daemon "$@"
-      else
-        ( ${unsetAll}; exec "$__wmux_bin" "$@" )
+      [ "$__wmux_codex_nodaemon" = 1 ] && set -- --no-daemon "$@"
+      { [ "$__wmux_codex_guard" = 1 ] || [ "$__wmux_codex_nodaemon" = 1 ]; } && __wmux_keep=1
+      ;;
+    unknown)
+      if [ "$__wmux_codex_guard" = 1 ]; then
+        [ "$__wmux_codex_nodaemon" = 1 ] && set -- --no-daemon "$@"
+        __wmux_keep=1
       fi
       ;;
-    scrub) ( ${unsetAll}; exec "$__wmux_bin" "$@" ) ;;
-    *) "$__wmux_bin" "$@" ;;
-  esac`;
+  esac
+  [ "$__wmux_codex_guard" = 1 ] && set -- -c features.daemon_auto_start=false "$@"
+  if [ "$__wmux_keep" = 1 ]; then
+    "$__wmux_bin" "$@"
+  else
+    ( ${unsetAll}; exec "$__wmux_real" "$@" )
+  fi`;
 }
 
 const BASH_CODEX_SEED_GUARD = `# Codex shared-server seed guard (v12). Off with WMUX_CODEX_WRAP=0. Skipped on
 # Git Bash and when the user already defines a codex function.
 if [ -z "\${MSYSTEM:-}" ] && ! declare -F codex >/dev/null 2>&1; then
-${CODEX_SEED_GUARD_CLASSIFY}
+${codexSeedGuardHelpers('unset "${!WMUX_@}" 2>/dev/null')}
 
 function codex {
-  local __wmux_bin
-  __wmux_bin=$(type -P codex 2>/dev/null)
-${codexSeedGuardBody('unset "${!WMUX_@}" 2>/dev/null')}
+${codexSeedGuardBody('unset "${!WMUX_@}" 2>/dev/null', 'type -P codex 2>/dev/null')}
 }
 fi`;
 
 const ZSH_CODEX_SEED_GUARD = `# Codex shared-server seed guard (v12). Off with WMUX_CODEX_WRAP=0. Skipped when
 # the user already defines a codex function.
 if (( ! \${+functions[codex]} )); then
-${CODEX_SEED_GUARD_CLASSIFY}
+${codexSeedGuardHelpers("unset -m 'WMUX_*'")}
 
 function codex {
   emulate -L zsh
-  local __wmux_bin
-  __wmux_bin=$(whence -p codex 2>/dev/null)
-${codexSeedGuardBody("unset -m 'WMUX_*'")}
+${codexSeedGuardBody("unset -m 'WMUX_*'", 'whence -p codex 2>/dev/null')}
 }
 fi`;
 const VERSION_FILE = '.version';
