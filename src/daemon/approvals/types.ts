@@ -415,6 +415,10 @@ export interface TerminalPromptNote {
   toolInput?: Record<string, unknown>;
   /** The hook's `tool_use_id`, when it carried one. */
   toolUseId?: string;
+  /** The hook's Claude `session_id`: must be the pane's own agent session. */
+  hookSessionId?: string;
+  /** The hook's `prompt_id` (the user turn): an extra discriminator, never proof alone. */
+  promptId?: string;
   /** `hook` (PermissionRequest) or `detector` (confirmed screen attention). */
   source: 'hook' | 'detector';
 }

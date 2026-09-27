@@ -1037,6 +1037,8 @@ export class HookIngest {
         ? rawInput as Record<string, unknown>
         : undefined;
       const toolUseId = typeof signal.payload?.tool_use_id === 'string' ? signal.payload.tool_use_id : undefined;
+      const hookSessionId = typeof signal.payload?.session_id === 'string' ? signal.payload.session_id : undefined;
+      const promptId = typeof signal.payload?.prompt_id === 'string' ? signal.payload.prompt_id : undefined;
       this.recordTerminalPrompt({
         sessionId,
         agent: signal.agent,
@@ -1045,6 +1047,8 @@ export class HookIngest {
         ...(summary ? { summary } : {}),
         ...(toolInput ? { toolInput } : {}),
         ...(toolUseId ? { toolUseId } : {}),
+        ...(hookSessionId ? { hookSessionId } : {}),
+        ...(promptId ? { promptId } : {}),
         source: 'hook',
       });
       return;

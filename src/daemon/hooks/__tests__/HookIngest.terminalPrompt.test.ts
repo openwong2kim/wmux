@@ -79,6 +79,15 @@ describe('HookIngest — terminal_prompt records', () => {
       expect(f.awaitingInput).toEqual([]);
     });
 
+    it('carries the hook\'s Claude session_id and prompt_id (2.1.283 sends no tool_use_id)', () => {
+      const f = makeIngest();
+      f.ingest.handle(makeSignal({
+        payload: { ...PERMISSION_REQUEST, session_id: 'sess-1', prompt_id: 'prompt-1', permission_mode: 'default' },
+      }));
+      expect(f.terminalPrompts).toMatchObject([{ hookSessionId: 'sess-1', promptId: 'prompt-1', source: 'hook' }]);
+      expect(f.terminalPrompts[0]).not.toHaveProperty('toolUseId');
+    });
+
     it('covers the whole Claude family', () => {
       const f = makeIngest();
       f.ingest.handle(makeSignal({ agent: 'openclaude', payload: PERMISSION_REQUEST }));

@@ -940,12 +940,20 @@ this holds when it is created:
 
 - the dialog is the ACTIVE one, it offers a plain `Yes`, and no row of it was
   cut by the TUI (a row ending in `…`);
-- it is bound to the tool call the agent actually made — the pane's own Claude
-  transcript has that call as its latest `tool_use` with no result yet, BY ITS
-  ID, with the same tool and exactly the command the dialog shows, however
-  long. The PermissionRequest hook's input alone never binds (nothing in it
-  proves which call a key would answer); such a record upgrades once the
-  transcript catches up. The rows are matched against the
+- it is bound to the tool call the agent actually made, with the same tool and
+  exactly the command the dialog shows, however long — either
+  - by the pane's own Claude transcript: that call is its latest `tool_use`
+    with no result yet, BY ITS ID (and a PermissionRequest pending for the
+    pane, if any, names the same call), or
+  - by the PermissionRequest hook, since Claude Code 2.1.283 often writes the
+    `tool_use` only after the dialog is answered and its hook carries no
+    `tool_use_id`: the hook's `session_id` is the pane's own Claude session,
+    it is the ONLY PermissionRequest pending on the pane (two at once → not
+    answerable), it arrived after the pane's previous dialog settled, no key
+    reached the pane and the PTY is the same since it arrived, the dialog's
+    title names the hook's tool, and the rows spell the hook's whole command.
+    `prompt_id` is compared when present, never proof on its own. A transcript
+    call that appears later must be that same call; The rows are matched against the
   call's WHOLE command, including where the TUI broke a row inside a word (a
   long path) and the `│` gutter newer Claude Code builds draw left of it; a
   wrapped option label is one option;

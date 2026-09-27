@@ -97,6 +97,9 @@ const TOP_CUT = [
   ' Esc to cancel · Tab to amend',
 ];
 
+/** The pane's own Claude session (its transcript's basename). */
+const SESSION = '0e010e5e-4e56-48f4-b980-f7b52beffe85';
+
 const CALL: PendingToolUse = { id: 'toolu_long', name: 'Bash', input: { command: COMMAND }, unanswered: 1 };
 
 let tmpDir: string;
@@ -136,6 +139,7 @@ function makeRegistry(overrides: Partial<ApprovalRegistryDeps> = {}): Harness {
     },
     promptScreenMark: () => ({ bytes: h.pane.bytes, keyInputRevision: h.pane.keyInputRevision, incarnation: h.pane.incarnation }),
     pendingToolUse: () => h.pane.pending,
+    agentSessionId: () => SESSION,
     promptReadDelay: async () => undefined,
     log: (_level, message) => { h.logs.push(message); },
     now: () => h.clock.now,
@@ -284,8 +288,19 @@ describe('A — a command longer than the 200-character summary', () => {
   });
 });
 
-/** The PermissionRequest hook's note for CALL: evidence the call waits on its dialog. */
-const HOOK = { source: 'hook' as const, toolName: 'Bash', toolInput: { command: COMMAND } };
+/**
+ * The PermissionRequest hook's note for CALL, as HookIngest builds it from
+ * Claude Code 2.1.283's real payload (keys: cwd, hook_event_name,
+ * permission_mode, prompt_id, scratchpad_dir, session_id, tool_input,
+ * tool_name, transcript_path — no tool_use_id).
+ */
+const HOOK = {
+  source: 'hook' as const,
+  toolName: 'Bash',
+  toolInput: { command: COMMAND },
+  hookSessionId: SESSION,
+  promptId: 'd295f9e3-b691-4b17-be6d-de40ce709012',
+};
 
 describe('B — the dialog\'s top scrolled off a short pane', () => {
   it('binds to the transcript\'s one pending call when the hook fired for it and its option rows are on screen', async () => {
@@ -494,9 +509,15 @@ describe('unprovable → nothing written, on both write paths', () => {
       h.pane.pending = null;
       return create(h);
     }],
-    ['a record bound only by the hook\'s input (no call id)', async (h) => {
+    ['a PermissionRequest from another Claude session', async (h) => {
       h.pane.pending = null;
-      return create(h, HOOK);
+      return create(h, { ...HOOK, hookSessionId: 'another-session' });
+    }],
+    ['a hook-bound record whose PermissionRequest is joined by a second one', async (h) => {
+      h.pane.pending = null;
+      const record = await create(h, HOOK);
+      await h.registry.noteTerminalPrompt({ sessionId: 'pty-a', agent: 'claude', ...HOOK, toolInput: { command: 'ls' } });
+      return record;
     }],
   ];
 
@@ -510,4 +531,98 @@ describe('unprovable → nothing written, on both write paths', () => {
       expect(h.writes).toEqual([]);
     });
   }
+});
+
+describe('D — bound by the PermissionRequest hook when the transcript has no tool_use yet', () => {
+  const hookOnly = (): Harness => {
+    const h = makeRegistry();
+    h.pane.pending = null;
+    return h;
+  };
+
+  it('the real 2.1.283 hook payload makes the dialog answerable without the transcript', async () => {
+    const h = hookOnly();
+    const record = await create(h, HOOK);
+    expect(record).toMatchObject({ choices: [{ key: '1', label: 'Yes' }, { key: '3', label: 'No' }] });
+    expect(record.promptFingerprint).toMatch(/^[0-9a-f]{32}$/);
+    expect(record).not.toHaveProperty('toolUseId');
+    expect(h.registry.terminalPromptDetail(record.id)?.command).toBe(COMMAND);
+    settle(h);
+    expect(await approve(h, record)).toMatchObject({ ok: true });
+    expect(h.writes).toEqual(['1']);
+  });
+
+  it('decline on a hook-bound record writes one Esc', async () => {
+    const h = hookOnly();
+    const record = await create(h, HOOK);
+    settle(h);
+    expect(await decline(h, record)).toMatchObject({ ok: true });
+    expect(h.writes).toEqual(['\x1b']);
+  });
+
+  it('a detector-first card upgrades when the hook arrives', async () => {
+    const h = hookOnly();
+    const first = await create(h);
+    expect(first).not.toHaveProperty('promptFingerprint');
+    await h.registry.noteTerminalPrompt({ sessionId: 'pty-a', agent: 'claude', ...HOOK });
+    for (let i = 0; i < 20 && !h.registry.list().pending[0]?.promptFingerprint; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(h.registry.list().pending[0]).toMatchObject({ choices: [{ key: '1', label: 'Yes' }, { key: '3', label: 'No' }] });
+  });
+
+  it('the transcript call, once it is there, still has to be the hook\'s call', async () => {
+    const h = hookOnly();
+    const record = await create(h, HOOK);
+    h.pane.pending = { ...CALL, input: { command: COMMAND_B } };
+    settle(h);
+    expect(await approve(h, record)).toMatchObject({ ok: false, reason: 'prompt-changed' });
+    expect(h.writes).toEqual([]);
+    // …and a transcript call that disagrees with the hook at creation: informational.
+    const t = makeRegistry();
+    t.pane.pending = { ...CALL, input: { command: COMMAND_B } };
+    t.pane.rows = WIDE_B;
+    expect(await create(t, HOOK)).not.toHaveProperty('promptFingerprint');
+  });
+
+  it.each([
+    ['two concurrent PermissionRequests', async (h: Harness) => {
+      await h.registry.noteTerminalPrompt({ sessionId: 'pty-a', agent: 'claude', ...HOOK, toolInput: { command: 'ls' } });
+      return create(h, HOOK);
+    }],
+    ['the hook\'s command is not the one on screen', async (h: Harness) => {
+      h.pane.rows = WIDE_B;
+      return create(h, HOOK);
+    }],
+    ['the hook names another tool than the dialog', async (h: Harness) => create(h, { ...HOOK, toolName: 'Write' })],
+    ['a key reached the pane after the hook', async (h: Harness) => {
+      // The hook lands before the dialog is drawn; a key reaches the pane
+      // before anything reads it. Every later look sees the key.
+      h.pane.rows = null;
+      const record = await create(h, HOOK);
+      h.pane.keyInputRevision += 1;
+      h.pane.rows = WIDE;
+      for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 5));
+      return h.registry.list().pending[0] ?? record;
+    }],
+    ['a hook from another Claude session', async (h: Harness) => create(h, { ...HOOK, hookSessionId: 'someone-else' })],
+  ])('%s → informational, zero bytes', async (_label, arrange) => {
+    const h = hookOnly();
+    const record = await arrange(h);
+    expect(record).not.toHaveProperty('promptFingerprint');
+    settle(h);
+    expect((await approve(h, record, { promptFingerprint: 'a'.repeat(32) })).ok).toBe(false);
+    expect((await decline(h, record)).ok).toBe(false);
+    expect(h.writes).toEqual([]);
+  });
+
+  it('the next call\'s hook after the previous dialog settled binds again', async () => {
+    const h = hookOnly();
+    const first = await create(h, HOOK);
+    settle(h);
+    expect(await approve(h, first)).toMatchObject({ ok: true });
+    await h.registry.expireForSession('pty-a', 'screen-cleared');
+    h.clock.now += 10_000;
+    h.pane.rows = WIDE_B;
+    const second = await create(h, { ...HOOK, toolInput: { command: COMMAND_B } });
+    expect(second.promptFingerprint).toMatch(/^[0-9a-f]{32}$/);
+  });
 });

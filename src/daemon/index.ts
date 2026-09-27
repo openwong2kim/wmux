@@ -400,6 +400,12 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       const transcriptPath = transcriptProjector?.transcriptPath(sessionId) ?? null;
       return transcriptPath ? readPendingToolUse(transcriptPath) : null;
     },
+    // The pane's own Claude session: its bound transcript's basename.
+    agentSessionId: (sessionId) => {
+      const transcriptPath = transcriptProjector?.transcriptPath(sessionId) ?? null;
+      const base = transcriptPath ? path.basename(transcriptPath) : '';
+      return base.endsWith('.jsonl') ? base.slice(0, -'.jsonl'.length) : null;
+    },
     promptScreenMark: (sessionId) => {
       const managed = sessionManager.getSession(sessionId);
       if (!managed) return null;

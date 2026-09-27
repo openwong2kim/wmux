@@ -211,7 +211,7 @@ export function parseTerminalPrompt(
   // Rows at the body's own indent are its prose: the first is the title, the
   // ones after the indented command block are the reason (the TUI may wrap it
   // over several rows). Indented rows are the command and its description.
-  // With the top cut off there is no title: every prose row is the reason.
+  // With the top rule cut off, a visible "<Tool> command" row is still the title.
   let fullTitle: string | undefined;
   const fullCommand: string[] = [];
   const gutterRows: string[] = [];
@@ -223,7 +223,12 @@ export function parseTerminalPrompt(
       if (GUTTER.test(text)) gutterRows.push(normalizePromptText(text.replace(GUTTER, '')));
       else indentedPlain.push(normalizePromptText(text));
       fullCommand.push(normalizePromptText(text.replace(GUTTER, '')));
-    } else if (topRuleFound && fullTitle === undefined && fullCommand.length === 0 && reasonParts.length === 0) {
+    } else if (
+      fullTitle === undefined && fullCommand.length === 0 && reasonParts.length === 0
+      // With the top rule cut off, the first prose row is still the title
+      // when it reads like one ("Bash command"): never folded into the reason.
+      && (topRuleFound || toolFromDialogTitle(normalizePromptText(line)) !== undefined)
+    ) {
       fullTitle = normalizePromptText(line);
     } else {
       reasonParts.push(normalizePromptText(line));
@@ -375,7 +380,8 @@ export function dialogMatchesToolCall(
 ): boolean {
   const topCut = opts.topCut === true;
   if (topCut) {
-    if (parsed.topRuleFound || parsed.title !== undefined) return false;
+    if (parsed.topRuleFound) return false;
+    if (parsed.title !== undefined && toolFromDialogTitle(parsed.title) !== call.name) return false;
   } else if (!parsed.topRuleFound || toolFromDialogTitle(parsed.title) !== call.name) {
     return false;
   }

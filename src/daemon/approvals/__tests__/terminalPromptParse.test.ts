@@ -165,8 +165,15 @@ describe('parseTerminalPrompt', () => {
     expect(parseTerminalPrompt(DIALOG.filter((r) => !r.includes('Esc to cancel')))!.active).toBe(false);
   });
 
+  it('with the top rule off screen, a visible "Bash command" row stays the title, not the reason', () => {
+    const parsed = parseTerminalPrompt(DIALOG.slice(3))!;
+    expect(parsed.topRuleFound).toBe(false);
+    expect(parsed.title).toBe('Bash command');
+    expect(parsed.reason).toBe('Permission rule Bash(rm -rf *) requires confirmation for this command.');
+  });
+
   it('a dialog taller than the viewport (top rule off screen) never binds as a whole dialog', () => {
-    const cut = DIALOG.slice(3);
+    const cut = DIALOG.slice(4);
     const parsed = parseTerminalPrompt(cut)!;
     expect(parsed.topRuleFound).toBe(false);
     expect(parsed.title).toBeUndefined();
