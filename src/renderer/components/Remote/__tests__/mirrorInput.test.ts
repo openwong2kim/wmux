@@ -15,6 +15,8 @@ import {
   decideMirrorKey,
   decideMirrorKeyWithRepeat,
   shouldHonorMirrorClipboardWrite,
+  createMirrorGestureTracker,
+  MIRROR_GESTURE_MAX_PRESS_MS,
   MIRROR_OSC52_GESTURE_WINDOW_MS,
   type MirrorKeyEventLike,
   type MirrorKeyOptions,
@@ -285,5 +287,37 @@ describe('shouldHonorMirrorClipboardWrite', () => {
     expect(shouldHonorMirrorClipboardWrite({ ...base, replaying: true })).toBe(false);
     expect(shouldHonorMirrorClipboardWrite({ ...base, readOnly: true })).toBe(false);
     expect(shouldHonorMirrorClipboardWrite({ ...base, visible: false })).toBe(false);
+  });
+});
+
+describe('createMirrorGestureTracker', () => {
+  it('press inside then release completes a gesture, once', () => {
+    const g = createMirrorGestureTracker();
+    g.pressInside(100);
+    g.release(300);
+    expect(g.completedAt()).toBe(300);
+    g.consume();
+    expect(g.completedAt()).toBeNull();
+  });
+
+  it('a release with no press, or after the bound, completes nothing', () => {
+    const g = createMirrorGestureTracker();
+    g.release(50);
+    expect(g.completedAt()).toBeNull();
+    g.pressInside(0);
+    g.release(MIRROR_GESTURE_MAX_PRESS_MS + 1);
+    expect(g.completedAt()).toBeNull();
+  });
+
+  it('cancel disarms a press and revokes a completed gesture', () => {
+    const g = createMirrorGestureTracker();
+    g.pressInside(0);
+    g.cancel();
+    g.release(10);
+    expect(g.completedAt()).toBeNull();
+    g.pressInside(20);
+    g.release(30);
+    g.cancel();
+    expect(g.completedAt()).toBeNull();
   });
 });

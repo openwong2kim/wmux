@@ -786,6 +786,8 @@ export const pl = {
   'terminal.supervisedRestart': '[wmux] nadzorowany restart #{count} — zatrzymaj: menu panelu',
   'terminal.supervisedRestartExit': '[wmux] nadzorowany restart #{count} (kod {code}) — zatrzymaj: menu panelu',
   'terminal.copied': 'Skopiowano!',
+  'remote.clipboardCopiedFrom': 'Skopiowano z {host}',
+  'remote.clipboardCopiedFromRemote': 'Skopiowano ze zdalnego hosta',
   'terminal.copyFailed': 'Kopiowanie nie powiodło się — zaznaczenie zachowane',
   'terminal.mouseOwnedSelectHint': 'Ta aplikacja używa myszy — przytrzymaj Shift, aby zaznaczyć tekst',
   'terminal.mouseOwnedSelectHintMac': 'Ta aplikacja używa myszy — przytrzymaj Option, aby zaznaczyć tekst',

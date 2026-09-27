@@ -791,6 +791,8 @@ export const en = {
   'terminal.supervisedRestart': '[wmux] supervised restart #{count} — stop: pane menu',
   'terminal.supervisedRestartExit': '[wmux] supervised restart #{count} (exit {code}) — stop: pane menu',
   'terminal.copied': 'Copied!',
+  'remote.clipboardCopiedFrom': 'Copied from {host}',
+  'remote.clipboardCopiedFromRemote': 'Copied from the remote host',
   'terminal.copyFailed': 'Copy failed — selection kept',
   'terminal.mouseOwnedSelectHint': 'This app is using the mouse — hold Shift to select text',
   'terminal.mouseOwnedSelectHintMac': 'This app is using the mouse — hold Option to select text',

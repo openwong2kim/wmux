@@ -32,6 +32,7 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
   const [attachId, setAttachId] = useState<string | null>(null);
   const [error, setError] = useState<string | undefined>(undefined);
   const [allowInput, setAllowInput] = useState<boolean | undefined>(undefined);
+  const [hostLabel, setHostLabel] = useState<string | undefined>(undefined);
   const teardown = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
@@ -42,6 +43,7 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
       if (cancelled) return;
       const host = hosts.find((h) => h.id === hostId);
       setAllowInput(host?.allowInput);
+      setHostLabel(host?.label);
     });
     return () => { cancelled = true; };
   }, [hostId]);
@@ -105,6 +107,7 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
           attachId={attachId}
           error={error}
           readOnly={allowInput === false}
+          hostLabel={hostLabel}
           onTitleChange={(title) => onTitleChange(surfaceId, title)}
         />
       </div>

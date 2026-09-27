@@ -549,6 +549,12 @@ function reportViewerVisibility(ptyId: string | null | undefined, visible: boole
 // Lightweight copy feedback toast — injects/removes a DOM element
 let copyToastTimer: ReturnType<typeof setTimeout> | null = null;
 function showCopyToast() {
+  showCopyToastText(t('terminal.copied'));
+}
+
+/** The success toast with caller-supplied text — a remote mirror names the
+ *  host a clipboard write came from, so it is never silent. */
+export function showCopyToastText(text: string) {
   let el = document.getElementById('wmux-copy-toast');
   if (!el) {
     el = document.createElement('div');
@@ -556,7 +562,7 @@ function showCopyToast() {
     el.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:var(--accent-green);color:var(--bg-base);font-family:monospace;font-size:11px;font-weight:600;padding:3px 12px;border-radius:4px;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.2s';
     document.body.appendChild(el);
   }
-  el.textContent = t('terminal.copied');
+  el.textContent = text;
   el.style.opacity = '1';
   if (copyToastTimer) clearTimeout(copyToastTimer);
   copyToastTimer = setTimeout(() => { el!.style.opacity = '0'; }, 1200);

@@ -25,8 +25,9 @@ function gridStyle(count: number): CSSProperties {
  *  the SAME remote sessionIds, so nothing in the pane list changes and this
  *  effect would never fire again — the mirror would sit blank forever with no
  *  visible error. The epoch is bumped by the store whenever `stale` clears. */
-function PaneCell({ hostId, pane, readOnly, attachEpoch }: {
+function PaneCell({ hostId, hostLabel, pane, readOnly, attachEpoch }: {
   hostId: string;
+  hostLabel: string;
   pane: RemotePaneSummary;
   readOnly: boolean;
   attachEpoch: number | undefined;
@@ -86,7 +87,7 @@ function PaneCell({ hostId, pane, readOnly, attachEpoch }: {
         {pane.cwd ? ` — ${pane.cwd}` : ''}
       </div>
       <div className="flex-1 min-h-0">
-        <RemoteMirrorTerminal attachId={attachId} error={error} readOnly={readOnly} />
+        <RemoteMirrorTerminal attachId={attachId} error={error} readOnly={readOnly} hostLabel={hostLabel} />
       </div>
     </div>
   );
@@ -148,6 +149,7 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
           <PaneCell
             key={pane.sessionId}
             hostId={workspace.hostId}
+            hostLabel={workspace.hostLabel}
             pane={pane}
             readOnly={allowInput === false}
             attachEpoch={workspace.attachEpoch}

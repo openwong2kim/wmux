@@ -163,8 +163,56 @@ export function decideMirrorKeyWithRepeat(
   return decision;
 }
 
+/** Longest press (mousedown in the mirror → mouseup) still read as one drag. */
+export const MIRROR_GESTURE_MAX_PRESS_MS = 10_000;
+
+export interface MirrorGestureTracker {
+  /** Primary-button mousedown INSIDE this mirror. */
+  pressInside(now: number): void;
+  /** Any mouseup in the window. Completes a gesture only if one is armed. */
+  release(now: number): void;
+  /** Mousedown elsewhere, pointercancel, window blur, page hidden. */
+  cancel(): void;
+  /** When the last completed gesture ended, or null. */
+  completedAt(): number | null;
+  /** Spend the completed gesture — one gesture authorises one write. */
+  consume(): void;
+}
+
 /**
- * How long after the user's last mouse-up / key press inside a mirror an OSC 52
+ * The only thing that opens a mirror's OSC 52 window: a mouse press that
+ * started in THIS mirror and was released within MIRROR_GESTURE_MAX_PRESS_MS.
+ *
+ * Keyboard input deliberately does not count. A mirror forwards every
+ * keystroke to the remote app, so "the user just pressed a key" is true for
+ * the whole time they type, and a host could swap the clipboard once per key.
+ * The cost: a keyboard-driven copy in the remote app (vim/tmux yank to OSC 52)
+ * is not honoured in a mirror; a mouse drag in the same app still is.
+ *
+ * A press whose release never arrived (let go over a webview or native UI)
+ * stays armed only until the next sign the user moved on — a click elsewhere,
+ * a window blur, the page hiding, or the press bound — so an unrelated later
+ * mouseup cannot complete it.
+ */
+export function createMirrorGestureTracker(): MirrorGestureTracker {
+  let armedAt: number | null = null;
+  let completed: number | null = null;
+  return {
+    pressInside(now) { armedAt = now; },
+    release(now) {
+      if (armedAt !== null && now - armedAt >= 0 && now - armedAt <= MIRROR_GESTURE_MAX_PRESS_MS) {
+        completed = now;
+      }
+      armedAt = null;
+    },
+    cancel() { armedAt = null; completed = null; },
+    completedAt: () => completed,
+    consume() { completed = null; },
+  };
+}
+
+/**
+ * How long after the user's last mouse-up inside a mirror an OSC 52
  * clipboard write from the remote app is still taken as the answer to it.
  *
  * Wide enough for the round trip a copy-on-select takes (mouse-up is forwarded
@@ -176,7 +224,7 @@ export const MIRROR_OSC52_GESTURE_WINDOW_MS = 2000;
 
 export interface MirrorClipboardWriteState {
   now: number;
-  /** When the user last released the mouse or pressed a key in THIS mirror. */
+  /** When the user's last drag in THIS mirror ended (createMirrorGestureTracker). */
   lastGestureAt: number | null;
   /** xterm is parsing an attach/reconnect snapshot — stored output, not a request. */
   replaying: boolean;

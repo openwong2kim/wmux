@@ -898,14 +898,94 @@ describe('RemoteMirrorTerminal', () => {
       unmount();
     });
 
-    it('a key press in the mirror also counts (a keyboard-driven copy)', () => {
+    it('typing in the mirror does not open the window (no per-keystroke clipboard swap)', () => {
       const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
       const term = termInstances[0]!;
-      surface(container).dispatchEvent(new KeyboardEvent('keydown', { key: 'y', bubbles: true }));
+      const el = surface(container);
+      for (const key of ['a', 'Shift', 'Meta', 'y']) {
+        el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+      }
 
-      term.oscHandlers.get(52)?.(osc52('yanked'));
+      term.oscHandlers.get(52)?.(osc52('swapped while typing'));
 
-      expect(clipboardWrite).toHaveBeenCalledWith('yanked');
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('a bare mousedown with no matching mouseup does not open the window', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      surface(container).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+      term.oscHandlers.get(52)?.(osc52('mid-press'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('a lost mouseup is not revived by a later click elsewhere', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      // Pressed in the mirror, released where the window never saw it.
+      surface(container).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      // A later, unrelated click somewhere else in the app.
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+      term.oscHandlers.get(52)?.(osc52('injected'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('a completed drag is revoked by a click elsewhere before the write arrives', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      gesture(surface(container));
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+      term.oscHandlers.get(52)?.(osc52('injected'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('window blur disarms a pending press', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      surface(container).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      window.dispatchEvent(new Event('blur'));
+      window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+      term.oscHandlers.get(52)?.(osc52('injected'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('a press held longer than the gesture bound does not count', () => {
+      vi.useFakeTimers();
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      surface(container).dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      vi.advanceTimersByTime(11_000);
+      window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+
+      term.oscHandlers.get(52)?.(osc52('late'));
+
+      expect(clipboardWrite).not.toHaveBeenCalled();
+      unmount();
+    });
+
+    it('an honoured write is announced with the host it came from', () => {
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" hostLabel="build-box" />);
+      const term = termInstances[0]!;
+      gesture(surface(container));
+
+      term.oscHandlers.get(52)?.(osc52('hello'));
+
+      expect(clipboardWrite).toHaveBeenCalledWith('hello');
+      expect(document.getElementById('wmux-copy-toast')?.textContent).toContain('build-box');
       unmount();
     });
 

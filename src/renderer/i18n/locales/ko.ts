@@ -475,6 +475,8 @@ export const ko = {
   'terminal.supervisedRestart': '[wmux] 감독 재시작 #{count} — 중지: 창 메뉴',
   'terminal.supervisedRestartExit': '[wmux] 감독 재시작 #{count} (종료 {code}) — 중지: 창 메뉴',
   'terminal.copied': '복사됨!',
+  'remote.clipboardCopiedFrom': '{host}에서 복사됨',
+  'remote.clipboardCopiedFromRemote': '원격 호스트에서 복사됨',
   'terminal.copyFailed': '복사 실패 — 선택 영역 유지됨',
   'terminal.mouseOwnedSelectHint': '이 앱이 마우스를 사용 중 — Shift를 누른 채 드래그하면 선택됩니다',
   'terminal.mouseOwnedSelectHintMac': '이 앱이 마우스를 사용 중 — Option을 누른 채 드래그하면 선택됩니다',
