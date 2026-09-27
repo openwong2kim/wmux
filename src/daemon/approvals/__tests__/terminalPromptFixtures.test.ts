@@ -3,11 +3,11 @@
 // semantics in KEYS.md there).
 //
 // These tests PIN what today's screen predicates make of the real screens.
-// They are not targets: several rows below are gaps the phone-prompt track
-// closes later (an unboxed ExitPlanMode dialog nothing parses, Edit/Write
-// dialogs whose wrapped option cuts the parse, a 207-character command over
-// the 200-character summary cap). A change that moves one of these is a
-// behaviour change and has to say so.
+// They are not targets: some rows below are gaps the phone-prompt track
+// closes later (an unboxed ExitPlanMode dialog nothing parses). #1567 closed
+// two (Edit/Write dialogs whose wrapped option cut the parse, a 207-character
+// command over the 200-character summary cap) and says so on each row. A
+// change that moves one of these is a behaviour change and has to say so.
 
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -58,48 +58,54 @@ const EXPECTED: Record<string, { looksLikePrompt: boolean; parsed: Parsed | null
   'claude-ask-single-01-initial.json': { looksLikePrompt: true, parsed: null },
   'claude-ask-single-02-after-down.json': { looksLikePrompt: true, parsed: null },
   'claude-ask-single-03-after-digit3.json': { looksLikePrompt: false, parsed: null },
-  // Whole and active, but the 207-character command exceeds the summary cap.
+  // #1567: the 207-character command no longer blocks answering — the
+  // summary is capped for display only; the record binds the whole command.
   'claude-bash-long-01.json': {
     looksLikePrompt: true,
-    parsed: { tool: 'Bash', options: 4, active: true, topRuleFound: true, answerable: false },
+    parsed: { tool: 'Bash', options: 4, active: true, topRuleFound: true, answerable: true },
   },
-  // Top rule scrolled off: never answerable.
+  // #1567: top rule scrolled off. The options may be answered, but the record
+  // binds only with the pane's own PermissionRequest for exactly this call
+  // (ApprovalRegistry), never from the screen alone.
   'claude-bash-long-02-top-cut-100x16.json': {
     looksLikePrompt: true,
-    parsed: { tool: 'Bash', options: 4, active: true, topRuleFound: false, answerable: false },
+    parsed: { tool: 'Bash', options: 4, active: true, topRuleFound: false, answerable: true },
   },
-  // Command top cut AND the option list windowed ("↓ 3." marker, no "4. No").
+  // Command top cut AND the option list windowed ("↓ 3." marker, no "4. No"):
+  // not active, so no record ever binds it (#1567 only dropped the length cap).
   'claude-bash-long-03-top-cut-80x11.json': {
     looksLikePrompt: true,
-    parsed: { options: 2, active: false, topRuleFound: false, answerable: false },
+    parsed: { options: 2, active: false, topRuleFound: false, answerable: true },
   },
   // No digits: arrows + Enter only.
   'claude-bypass-warning-menu.json': { looksLikePrompt: false, parsed: null },
-  // The wrapped option 2 ends the option list, so "3. No" is lost and the
-  // dialog reads inactive; no "<Tool> command" title binds it either.
+  // #1567: the wrapped option 2 is one option now, so "3. No" is kept and the
+  // dialog reads active. No "<Tool> command" title binds it, so its record
+  // stays informational.
   'claude-edit-01.json': {
     looksLikePrompt: true,
-    parsed: { options: 2, active: false, topRuleFound: true, answerable: true },
+    parsed: { options: 3, active: true, topRuleFound: true, answerable: true },
   },
   // ExitPlanMode ("Would you like to proceed?", indented, unboxed): unparsed.
   'claude-plan-01-initial.json': { looksLikePrompt: true, parsed: null },
   'claude-plan-02-after-digit3.json': { looksLikePrompt: true, parsed: null },
   'claude-plan-03-feedback-typed.json': { looksLikePrompt: true, parsed: null },
   'claude-plan-04-replanned.json': { looksLikePrompt: true, parsed: null },
+  // The Write dialog that followed the approved plan (#1567: wrapped option, as above).
   'claude-plan-05-digit2-approved.json': {
     looksLikePrompt: true,
-    parsed: { options: 2, active: false, topRuleFound: true, answerable: true },
+    parsed: { options: 3, active: true, topRuleFound: true, answerable: true },
   },
   'claude-plan-06-bypass-row.json': { looksLikePrompt: true, parsed: null },
   'claude-plan-07-empty-feedback.json': { looksLikePrompt: false, parsed: null },
   'claude-write-01-create.json': {
     looksLikePrompt: true,
-    parsed: { options: 2, active: false, topRuleFound: true, answerable: true },
+    parsed: { options: 3, active: true, topRuleFound: true, answerable: true },
   },
   // Tab turned "Yes" into the amend field: no plain Yes left.
   'claude-write-02-tab-amend.json': {
     looksLikePrompt: true,
-    parsed: { options: 2, active: false, topRuleFound: true, answerable: false },
+    parsed: { options: 3, active: true, topRuleFound: true, answerable: false },
   },
   'claude-write-03-no-rejected.json': { looksLikePrompt: false, parsed: null },
   // A false positive of the cursor-row check: Codex's `> 1.` sign-in menu.
