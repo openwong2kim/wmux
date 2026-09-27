@@ -151,6 +151,15 @@ export function planWebStart(
     if (previous.tailscale && !tailscale) {
       narrowed.push('the tailnet (tailscale serve) address stops working for paired devices');
     }
+    // Fronts behind a dropped Host name (a reverse proxy, a certificate DNS
+    // name) stop working too. The tailnet case is already said above.
+    if (!(previous.tailscale && !tailscale)) {
+      const next = new Set(allowedHosts.map((h) => h.toLowerCase()));
+      const dropped = previous.allowedHosts.filter((h) => !next.has(h.toLowerCase()));
+      if (dropped.length > 0) {
+        narrowed.push(`requests for ${dropped.join(', ')} are no longer accepted (dropped from --allow-host)`);
+      }
+    }
     if (!webHostIsLoopback(previous.host) && webHostIsLoopback(nextHost)) {
       narrowed.push(`the server is no longer reachable from the network (was ${previous.host}, now loopback only)`);
     }

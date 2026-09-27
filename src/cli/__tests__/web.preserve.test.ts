@@ -180,6 +180,12 @@ describe('planWebStart (tailnet paths, no tailscale shell-out)', () => {
     expect(plan.narrowed.join(' ')).toContain('tailnet');
   });
 
+  it('warns when a re-run drops an allowed host a front depends on', () => {
+    const proxied: PreviousWebShape = { ...tailnet, tailscale: false, allowedHosts: ['box.example.test'] };
+    expect(planWebStart(['--loopback'], undefined, proxied, 7681).narrowed.join(' ')).toContain('box.example.test');
+    expect(planWebStart(['--allow-input'], undefined, proxied, 7681).narrowed).toEqual([]);
+  });
+
   it('refuses contradictory flags', () => {
     expect(() => planWebStart(['--allow-input', '--no-allow-input'], undefined, tailnet, 7681)).toThrow();
     expect(() => planWebStart(['--loopback', '--expose'], undefined, tailnet, 7681)).toThrow();
