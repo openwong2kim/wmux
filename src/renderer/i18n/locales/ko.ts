@@ -1464,6 +1464,15 @@ export const ko = {
   'deck.expandDock': '도구 패널 열기',
   'deck.hasSignal': '확인할 것이 있음',
   'web.running': '실행 중',
+  'web.allowTranscript': '대화 접근',
+  'web.allowTranscriptHint': '폰 Chat 뷰: 페어링된 기기가 도구 출력을 포함한 에이전트 대화를 읽을 수 있습니다.',
+  'web.allowUpload': '사진·파일 업로드',
+  'web.allowUploadHint': '페어링된 기기가 이 컴퓨터로 사진과 파일을 보낼 수 있습니다.',
+  'web.phoneAccess': '폰 접근',
+  'web.advanced': '고급',
+  'web.allowDangerousLaunch': '위험 실행',
+  'web.allowDangerousLaunchWarning':
+    '페어링된 폰이 승인이나 샌드박스를 끄는 모드로 Claude·Codex를 시작할 수 있습니다. 그런 실행마다 이 컴퓨터에 알림이 표시됩니다.',
   'deck.commanderPlaceholder': 'agent에 지시하거나 @로 pane을 멘션…',
   'deck.jumpToPane': '이 pane으로 이동',
   // Bridge P2① — agent 스레드 위에 고정되는 에이전트 명단.

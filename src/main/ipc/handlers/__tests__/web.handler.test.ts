@@ -90,6 +90,7 @@ describe('web.handler — forwarding', () => {
       allowInput: false,
       allowedHosts: [],
       tailscale: false,
+      inheritUnsetGrants: true,
     });
   });
 
@@ -102,6 +103,7 @@ describe('web.handler — forwarding', () => {
       allowInput: true,
       allowedHosts: [],
       tailscale: false,
+      inheritUnsetGrants: true,
     });
   });
 
@@ -114,6 +116,85 @@ describe('web.handler — forwarding', () => {
       allowInput: false,
       allowedHosts: [],
       tailscale: false,
+      inheritUnsetGrants: true,
+    });
+  });
+
+  it('start forwards every phone grant the popover decided', async () => {
+    installConnected({ running: true });
+    await getHandler(IPC.WEB_START)(fakeEvent, {
+      allowTranscript: true,
+      allowUpload: false,
+      allowDangerousLaunch: true,
+    });
+    const params = rpc.mock.calls.find((c) => c[0] === 'daemon.web.start')?.[1] as Record<string, unknown>;
+    expect(params).toMatchObject({
+      allowTranscript: true,
+      allowUpload: false,
+      allowDangerousLaunch: true,
+      inheritUnsetGrants: true,
+    });
+  });
+
+  it('start leaves a grant the renderer did not send for the daemon to inherit', async () => {
+    installConnected({ running: true });
+    await getHandler(IPC.WEB_START)(fakeEvent, { allowInput: true });
+    const params = rpc.mock.calls.find((c) => c[0] === 'daemon.web.start')?.[1] as Record<string, unknown>;
+    // Absent, not false: an explicit false would reset a grant the operator
+    // set through `wmux web --allow-transcript` / `--allow-upload`.
+    expect(params).not.toHaveProperty('allowTranscript');
+    expect(params).not.toHaveProperty('allowUpload');
+    expect(params).not.toHaveProperty('allowDangerousLaunch');
+    expect(params['inheritUnsetGrants']).toBe(true);
+  });
+
+  describe('setGrants (apply while running)', () => {
+    /** A daemon that answers status with `status` and echoes starts back as running. */
+    function installRouted(status: WebTerminalInfo): void {
+      rpc = vi.fn(async (method: string, params: Record<string, unknown>) =>
+        method === 'daemon.web.status' ? status : { ...status, ...params, running: true },
+      );
+      const dc = { rpc, isConnected: true } as unknown as DaemonClient;
+      registerWebHandlers(() => dc, execAbsent);
+    }
+
+    it('restarts in place with the running shape and only the changed grant', async () => {
+      installRouted({
+        running: true,
+        port: 8123,
+        host: '127.0.0.1',
+        allowInput: true,
+        allowUpload: false,
+        allowTranscript: false,
+        allowDangerousLaunch: true,
+        allowedHosts: ['box.example.ts.net'],
+        tailscale: true,
+      });
+      const res = (await getHandler(IPC.WEB_SET_GRANTS)(fakeEvent, { allowTranscript: true })) as WebTerminalInfo;
+      expect(rpc).toHaveBeenCalledWith('daemon.web.start', {
+        port: 8123,
+        host: '127.0.0.1',
+        allowedHosts: ['box.example.ts.net'],
+        tailscale: true,
+        allowInput: true,
+        allowTranscript: true,
+        inheritUnsetGrants: true,
+      });
+      expect(res.running).toBe(true);
+      expect(res.allowDangerousLaunch).toBe(true);
+    });
+
+    it('does not start a stopped server', async () => {
+      installRouted({ running: false });
+      const res = (await getHandler(IPC.WEB_SET_GRANTS)(fakeEvent, { allowUpload: true })) as WebTerminalInfo;
+      expect(rpc).not.toHaveBeenCalledWith('daemon.web.start', expect.anything());
+      expect(res.running).toBe(false);
+    });
+
+    it('ignores non-boolean grants instead of reading them as a decision', async () => {
+      installRouted({ running: true, port: 7681, host: '127.0.0.1', allowInput: false, allowedHosts: [], tailscale: false });
+      await getHandler(IPC.WEB_SET_GRANTS)(fakeEvent, { allowTranscript: 'on', allowUpload: 1 });
+      expect(rpc).not.toHaveBeenCalledWith('daemon.web.start', expect.anything());
     });
   });
 
@@ -349,6 +430,7 @@ describe('web.handler — forwarding', () => {
       allowInput: false,
       allowedHosts: ['box.tail1234.ts.net'],
       tailscale: true,
+      inheritUnsetGrants: true,
     });
     expect(sawBinding).toContain('serve');
   });

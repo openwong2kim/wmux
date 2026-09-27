@@ -90,3 +90,47 @@ export function decideWebStartPolicy(input: WebStartPolicyInput): WebStartPolicy
 
   return { tls, token, rotateCredentials };
 }
+
+/** The four per-server phone grants a `daemon.web.start` decides. */
+export interface WebStartGrants {
+  allowInput: boolean;
+  allowUpload: boolean;
+  allowTranscript: boolean;
+  allowDangerousLaunch: boolean;
+}
+
+const GRANT_KEYS = ['allowInput', 'allowUpload', 'allowTranscript', 'allowDangerousLaunch'] as const;
+
+/**
+ * Resolve the grants for one daemon.web.start.
+ *
+ * An explicit boolean always wins. Otherwise a grant is OFF — the fail-closed
+ * default the CLI relies on (`wmux web` without `--allow-transcript` means
+ * "no transcript") — unless the caller set `inheritUnsetGrants`. The desktop
+ * sets it because it does not own every grant: it has no control for the
+ * dangerous-launch ceiling, and a start or in-place restart from the popover
+ * used to reset a ceiling the operator set with the CLI. With inheritance an
+ * unsent grant keeps the running server's value, or the persisted record's
+ * when nothing is running and that record is still enabled. An operator stop
+ * clears the record, so inheritance never revives a revoked grant.
+ */
+export function resolveWebStartGrants(
+  params: Partial<Record<(typeof GRANT_KEYS)[number] | 'inheritUnsetGrants', unknown>>,
+  live: Partial<WebStartGrants> | undefined,
+  previous: WebPersistedState,
+): WebStartGrants {
+  const inherit = params.inheritUnsetGrants === true;
+  const resolve = (key: (typeof GRANT_KEYS)[number]): boolean => {
+    const explicit = params[key];
+    if (typeof explicit === 'boolean') return explicit;
+    if (!inherit) return false;
+    if (live) return live[key] === true;
+    return previous.enabled && previous[key] === true;
+  };
+  return {
+    allowInput: resolve('allowInput'),
+    allowUpload: resolve('allowUpload'),
+    allowTranscript: resolve('allowTranscript'),
+    allowDangerousLaunch: resolve('allowDangerousLaunch'),
+  };
+}

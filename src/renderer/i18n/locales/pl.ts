@@ -849,6 +849,15 @@ export const pl = {
   'web.headline': 'Udostępnij panele przeglądarce',
   'web.allowInput': 'Zezwól na wejście',
   'web.expose': 'Udostępnij w sieci',
+  'web.allowTranscript': 'Dostęp do rozmów',
+  'web.allowTranscriptHint': 'Widok czatu na telefonie: sparowane urządzenia mogą czytać rozmowy agentów, w tym wyniki narzędzi.',
+  'web.allowUpload': 'Przesyłanie zdjęć i plików',
+  'web.allowUploadHint': 'Sparowane urządzenia mogą wysyłać zdjęcia i pliki na ten komputer.',
+  'web.phoneAccess': 'Dostęp z telefonu',
+  'web.advanced': 'Zaawansowane',
+  'web.allowDangerousLaunch': 'Niebezpieczne uruchamianie',
+  'web.allowDangerousLaunchWarning':
+    'Pozwala sparowanemu telefonowi uruchamiać Claude lub Codex w trybach bez zatwierdzeń lub bez piaskownicy. Każde takie uruchomienie pokazuje powiadomienie na tym komputerze.',
   // "tailnet" means nothing to someone who has not used Tailscale, and this
   // checkbox is the first place most people will meet the word. Name the
   // outcome (HTTPS, which is what makes pairing possible) and the requirement.

@@ -31,6 +31,7 @@ import type {
   WebDeviceSetInputResult,
   WebDeviceSummary,
   WebStartArgs,
+  WebGrantArgs,
   WebTerminalInfo,
 } from '../shared/web';
 import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteHostPublic, RemoteWorkspaceSummary } from '../shared/remoteHosts';
@@ -1512,6 +1513,8 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.invoke(IPC.WEB_PAIR_START, { name, allowInput }) as Promise<WebTerminalInfo>,
   start: (args: WebStartArgs) =>
     ipcRenderer.invoke(IPC.WEB_START, args) as Promise<WebTerminalInfo>,
+  setGrants: (args: WebGrantArgs) =>
+    ipcRenderer.invoke(IPC.WEB_SET_GRANTS, args) as Promise<WebTerminalInfo>,
   stop: () => ipcRenderer.invoke(IPC.WEB_STOP) as Promise<WebTerminalInfo>,
   // Roster surface. Unlike the calls above these do NOT resolve a
   // WebTerminalInfo: the device roster is owned by the store, not by a running

@@ -16,6 +16,7 @@ import type {
   WebDeviceSetInputResult,
   WebDeviceSummary,
   WebStartArgs,
+  WebGrantArgs,
   WebTerminalInfo,
 } from './web';
 import type { BrowserHelpOutcome, BrowserHelpRequestInfo } from './browserHelp';
@@ -157,6 +158,11 @@ declare global {
         status: (args?: { verifyFront?: boolean }) => Promise<WebTerminalInfo>;
         /** Start the server. `allowInput`/`expose` default false (read-only + loopback). */
         start: (args: WebStartArgs) => Promise<WebTerminalInfo>;
+        /**
+         * Change transcript / upload access on the RUNNING server in place.
+         * Resolves the current status untouched when the server is stopped.
+         */
+        setGrants: (args: WebGrantArgs) => Promise<WebTerminalInfo>;
         /** Stop the server. Resolves the post-stop state (`running:false`). */
         stop: () => Promise<WebTerminalInfo>;
         /**

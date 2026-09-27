@@ -8,6 +8,7 @@ import {
   type WebDeviceRevokeResult,
   type WebDeviceSetInputResult,
   type WebDeviceSummary,
+  type WebGrantArgs,
   type WebStartArgs,
   type WebTerminalInfo,
 } from '../../../shared/web';
@@ -44,6 +45,19 @@ import {
  * (see cli/commands/web.ts, which reads `response.result as WebInfo`);
  * DaemonClient.rpc resolves that `result` for us.
  */
+/**
+ * The phone grants a renderer decided, and only as real booleans. Anything
+ * else stays absent, so the daemon keeps the current value instead of reading
+ * a malformed field as "turn it off" (or on).
+ */
+function pickGrants(args: WebGrantArgs): WebGrantArgs {
+  const out: WebGrantArgs = {};
+  for (const key of ['allowInput', 'allowTranscript', 'allowUpload', 'allowDangerousLaunch'] as const) {
+    if (typeof args[key] === 'boolean') out[key] = args[key];
+  }
+  return out;
+}
+
 export function registerWebHandlers(
   getDaemonClient: () => DaemonClient | null,
   /**
@@ -173,6 +187,17 @@ export function registerWebHandlers(
         // on every interface for someone who asked for HTTPS.
         const tailscale = args.tailscale === true;
         const expose = !tailscale && args.expose === true;
+        // A boolean from the popover is the operator's choice. Anything else
+        // stays ABSENT, and `inheritUnsetGrants` has the daemon keep the
+        // running (or persisted) value of every grant not sent, instead of
+        // resetting a flag set with `wmux web --allow-…` to false. Input is
+        // already decided above (fail-closed, as before).
+        const { allowTranscript, allowUpload, allowDangerousLaunch } = pickGrants(args);
+        const grants = {
+          ...(allowTranscript !== undefined ? { allowTranscript } : {}),
+          ...(allowUpload !== undefined ? { allowUpload } : {}),
+          ...(allowDangerousLaunch !== undefined ? { allowDangerousLaunch } : {}),
+        };
 
         const start = await startWebTransport({
           port: WEB_DEFAULT_PORT,
@@ -184,8 +209,10 @@ export function registerWebHandlers(
               port: WEB_DEFAULT_PORT,
               host,
               allowInput,
+              ...grants,
               allowedHosts,
               tailscale,
+              inheritUnsetGrants: true,
             });
             // `call` never rejects; it reports failure as `error`. Feed that
             // back so a failed start rolls the serve registration back instead
@@ -214,6 +241,46 @@ export function registerWebHandlers(
         return start.value;
       },
     ),
+  );
+
+  ipcMain.removeHandler(IPC.WEB_SET_GRANTS);
+  ipcMain.handle(
+    IPC.WEB_SET_GRANTS,
+    wrapHandler(IPC.WEB_SET_GRANTS, async (_event, input: unknown): Promise<WebTerminalInfo> => {
+      const grants = pickGrants(input && typeof input === 'object' ? (input as WebGrantArgs) : {});
+      // The raw status, not `withFront`: that blanks `allowedHosts` when the
+      // tailnet front looks gone, and restarting with the blanked list would
+      // make the loss permanent.
+      const info = await call('daemon.web.status', {});
+      if (!info.running || info.error !== undefined || Object.keys(grants).length === 0) {
+        return withFront(info);
+      }
+      // Restart in place, the same thing `wmux web --allow-transcript` does
+      // on a running server: same port, bind, allowed hosts and transport, so
+      // the daemon keeps the token, the device roster and any native TLS
+      // listener (decideWebStartPolicy), and the tailnet front — registered on
+      // this same port — keeps pointing at it. NOT routed through WEB_START,
+      // which pins the default port and derives the bind from the checkboxes
+      // and would move a server the CLI started elsewhere. Open streams drop
+      // and reconnect, as they do on a CLI re-run.
+      const next = await call('daemon.web.start', {
+        port: info.port ?? WEB_DEFAULT_PORT,
+        host: info.host,
+        allowedHosts: info.allowedHosts ?? [],
+        tailscale: info.tailscale === true,
+        allowInput: info.allowInput === true,
+        ...grants,
+        inheritUnsetGrants: true,
+      });
+      if (next.error !== undefined) {
+        // A failed reply carries no trustworthy running status. Report what
+        // is actually up (the old server may still be) with the error on it,
+        // so the popover does not flip to a stopped body over a live server.
+        const status = await call('daemon.web.status', {});
+        return withFront(status.error === undefined ? { ...status, error: next.error } : next);
+      }
+      return withFront(next);
+    }),
   );
 
   ipcMain.removeHandler(IPC.WEB_PAIR_REFRESH);
@@ -451,6 +518,7 @@ export function registerWebHandlers(
   return () => {
     ipcMain.removeHandler(IPC.WEB_STATUS);
     ipcMain.removeHandler(IPC.WEB_START);
+    ipcMain.removeHandler(IPC.WEB_SET_GRANTS);
     ipcMain.removeHandler(IPC.WEB_STOP);
     ipcMain.removeHandler(IPC.WEB_PAIR_REFRESH);
     ipcMain.removeHandler(IPC.WEB_PAIR_START);

@@ -1444,6 +1444,10 @@ export class WebTerminalServer {
     tailscale: boolean;
     host: string;
     token: string;
+    allowInput: boolean;
+    allowUpload: boolean;
+    allowTranscript: boolean;
+    allowDangerousLaunch: boolean;
   } | undefined {
     if (!this.server || !this.opts) return undefined;
     return {
@@ -1451,6 +1455,11 @@ export class WebTerminalServer {
       tailscale: this.opts.tailscale === true,
       host: this.opts.host,
       token: this.token,
+      // What a start that inherits unsent grants keeps (resolveWebStartGrants).
+      allowInput: this.opts.allowInput === true,
+      allowUpload: this.opts.allowUpload === true,
+      allowTranscript: this.opts.allowTranscript === true,
+      allowDangerousLaunch: this.opts.allowDangerousLaunch === true,
     };
   }
 

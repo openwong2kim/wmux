@@ -856,6 +856,17 @@ export const en = {
   'web.headline': 'Serve panes to a browser',
   'web.allowInput': 'Allow input',
   'web.expose': 'Expose to network',
+  // Phone grants. Named by what the operator sees on the phone (the Chat view,
+  // a photo), not by the CLI flag — the hint says what the grant exposes.
+  'web.allowTranscript': 'Conversation access',
+  'web.allowTranscriptHint': 'Phone Chat view: paired devices can read agent conversations, including tool output.',
+  'web.allowUpload': 'Photo & file upload',
+  'web.allowUploadHint': 'Paired devices can send photos and files to this computer.',
+  'web.phoneAccess': 'Phone access',
+  'web.advanced': 'Advanced',
+  'web.allowDangerousLaunch': 'Dangerous launch',
+  'web.allowDangerousLaunchWarning':
+    'Lets a paired phone start Claude or Codex in modes that turn approvals or the sandbox off. Each such launch shows a notice on this computer.',
   // "tailnet" means nothing to someone who has not used Tailscale, and this
   // checkbox is the first place most people will meet the word. Name the
   // outcome (HTTPS, which is what makes pairing possible) and the requirement.

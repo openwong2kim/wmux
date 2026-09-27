@@ -40,6 +40,18 @@ export interface WebTerminalInfo {
   port?: number;
   host?: string;
   allowInput?: boolean;
+  /** Whether paired devices may upload files (`--allow-upload`). */
+  allowUpload?: boolean;
+  /**
+   * Whether paired devices may read agent transcripts — the phone's Chat view
+   * (`--allow-transcript`). Without it `/turns` answers 403.
+   */
+  allowTranscript?: boolean;
+  /**
+   * Whether a chat launch may start an agent with approvals or the sandbox off
+   * (`--allow-dangerous-launch`, or the popover's Advanced option).
+   */
+  allowDangerousLaunch?: boolean;
   /** True when the daemon itself terminates HTTPS (not a Tailscale front). */
   tls?: boolean;
   token?: string;
@@ -238,6 +250,31 @@ export interface WebStartArgs {
    * (and weaker) transport, not an addition to this one.
    */
   tailscale?: boolean;
+  /**
+   * Let paired devices read agent transcripts (the phone's Chat view). Absent
+   * means "not the popover's decision": the daemon keeps the running or
+   * persisted value rather than resetting it.
+   */
+  allowTranscript?: boolean;
+  /** Let paired devices upload photos and files. Absent behaves as above. */
+  allowUpload?: boolean;
+  /**
+   * Let a phone start Claude/Codex with approvals or the sandbox off. The
+   * popover's Advanced option; absent behaves as above.
+   */
+  allowDangerousLaunch?: boolean;
+}
+
+/**
+ * Grants the popover changes on a RUNNING server. Only the fields present are
+ * changed; the server keeps its port, bind, allowed hosts, transport, token
+ * and paired devices.
+ */
+export interface WebGrantArgs {
+  allowInput?: boolean;
+  allowTranscript?: boolean;
+  allowUpload?: boolean;
+  allowDangerousLaunch?: boolean;
 }
 
 /**
