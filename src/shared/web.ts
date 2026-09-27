@@ -294,15 +294,47 @@ export function webBindHost(expose: boolean | undefined): string {
   return expose ? WEB_EXPOSE_HOST : WEB_LOOPBACK_HOST;
 }
 
-/** Whether a bind host is confined to this machine. */
+/** A dotted-quad IPv4 literal (each octet 0-255, no leading junk). */
+function ipv4Octets(s: string): number[] | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+  if (!m) return null;
+  const octets = m.slice(1).map(Number);
+  return octets.every((o) => o <= 255) ? octets : null;
+}
+
+/**
+ * Whether a host is confined to this machine — and therefore whether a
+ * credential may go to it over plain http.
+ *
+ * STRICT on purpose: a hostname is not an address. `127.0.0.1.nip.io` or
+ * `127.evil.example` START with "127." but resolve wherever their owner says,
+ * so only these count:
+ *
+ *   - an IPv4 literal in 127.0.0.0/8
+ *   - exactly `localhost` (a trailing root dot is tolerated)
+ *   - `::1`, bracketed or not
+ *   - an IPv4-mapped IPv6 address whose IPv4 is in 127.0.0.0/8, in either
+ *     the dotted (`::ffff:127.0.0.1`) or hex (`::ffff:7f00:1`) spelling
+ *
+ * Everything else — including `0.0.0.0`, which binds EVERY interface — is not.
+ */
 export function webHostIsLoopback(host: string): boolean {
-  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
-  return (
-    normalized === 'localhost' ||
-    normalized === '::1' ||
-    normalized === WEB_LOOPBACK_HOST ||
-    normalized.startsWith('127.')
-  );
+  let h = host.trim().toLowerCase();
+  if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);
+  if (h.endsWith('.') && !h.endsWith('..')) h = h.slice(0, -1);
+  if (h === 'localhost') return true;
+  if (h === '::1' || h === '0:0:0:0:0:0:0:1') return true;
+  const v4 = ipv4Octets(h);
+  if (v4) return v4[0] === 127;
+  const mapped = /^(?:0{0,4}:){0,4}:?:ffff:(.+)$/.exec(h);
+  if (mapped) {
+    const tail = mapped[1];
+    const dotted = ipv4Octets(tail);
+    if (dotted) return dotted[0] === 127;
+    const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(tail);
+    if (hex) return (parseInt(hex[1], 16) >> 8) === 127;
+  }
+  return false;
 }
 
 /** Whether an info's bind host is a loopback address (not phone-reachable). */
