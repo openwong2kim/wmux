@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react';
+import { Fragment, memo, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import {
@@ -8,7 +8,7 @@ import {
 } from '../../stores/selectors/workspaceAgentRoster';
 import { focusNotificationTarget, focusPaneByPtyId } from '../../hooks/useNotificationListener';
 import { useT } from '../../hooks/useT';
-import { IconEye, IconEyeOff, IconChevron, IconExternalLink } from '../icons';
+import { IconEye, IconEyeOff, IconChevron, IconExternalLink, IconFanOut } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24_ROW } from '../hitArea';
 import { timeAgo } from '../../utils/timeAgo';
@@ -19,19 +19,7 @@ import { selectSidebarUnseen } from '../../stores/selectors/sidebarSeen';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 import { buildMentionReference, buildMentionTargets, focusedMentionSource } from '../../utils/agentMention';
 import { insertMention, toastMentionInsert } from '../../utils/agentMentionInsert';
-import { requestedCountFor, selectRequestedCounts } from '../../utils/fanoutProvenance';
-
-/** Open this workspace's fan-out task group and bring it into view. */
-function revealTaskGroup(ownerWorkspaceId: string): void {
-  useStore.getState().setSidebarTaskGroupExpanded(ownerWorkspaceId, true);
-  requestAnimationFrame(() => {
-    // Matched on the attribute value rather than a CSS.escape'd selector:
-    // `CSS` is not defined in every DOM this runs in (jsdom has none).
-    const group = Array.from(document.querySelectorAll<HTMLElement>('[data-task-group]'))
-      .find((el) => el.dataset.taskGroup === ownerWorkspaceId);
-    group?.scrollIntoView?.({ block: 'nearest' });
-  });
-}
+import { PaneTaskGroup, usePaneTaskSplit } from './SidebarTaskGroup';
 
 /**
  * The roster row's `@`: insert this agent's reference into the focused agent's
@@ -95,6 +83,16 @@ interface WorkspaceAgentRosterProps {
    * component is only mounted once it is open.
    */
   pulsingPaneId: string | null;
+  /** 2026-09-27 — this workspace's fan-out tasks (Sidebar's tree, list
+   *  order). Each nests under the roster row of the pane that requested it;
+   *  the rest render in Sidebar's "From closed pane" group. */
+  taskIds?: readonly string[];
+  /** Renders one nested task row (Sidebar's WorkspaceItem in task mode). */
+  renderTask?: (id: string) => ReactNode;
+  /** Sidebar's workspace close, for a pane group's "Close finished tasks". */
+  onCloseTask?: (id: string) => void;
+  /** The workspace is the active one (opens its pane groups by default). */
+  ownerActive?: boolean;
 }
 
 interface WorkspaceRosterSummaryProps {
@@ -107,6 +105,9 @@ interface WorkspaceRosterSummaryProps {
   agents?: readonly RosterChipAgent[];
   /** Agents beyond the drawn ones ("+N"). */
   extra?: number;
+  /** Fan-out tasks nested under this roster's pane rows — counted on the
+   *  collapsed chip, since folding the roster also hides them. */
+  paneTaskCount?: number;
   open: boolean;
   onToggle: () => void;
 }
@@ -223,6 +224,7 @@ function WorkspaceRosterSummary({
   agentCount,
   stashedCount,
   agents = [],
+  paneTaskCount = 0,
   open,
   onToggle,
 }: WorkspaceRosterSummaryProps) {
@@ -231,7 +233,11 @@ function WorkspaceRosterSummary({
 
   if (agentCount === 0 && stashedCount === 0) return null;
 
-  const ariaLabel = rosterSummaryAriaLabel(roster, open, t);
+  const showTasks = !open && paneTaskCount > 0;
+  const ariaLabel = [
+    rosterSummaryAriaLabel(roster, open, t),
+    showTasks ? (paneTaskCount === 1 ? t('sidebar.tasks.countOne') : t('sidebar.tasks.count', { count: paneTaskCount })) : undefined,
+  ].filter(Boolean).join(', ');
 
   return (
     <button
@@ -306,13 +312,22 @@ function WorkspaceRosterSummary({
           {stashedCount}
         </span>
       )}
+      {/* Folding the roster also folds the tasks its panes requested: the
+          collapsed chip keeps them accounted for (muted — a task that needs
+          you lifts and re-opens the roster on its own). */}
+      {showTasks && (
+        <span className="flex items-center gap-0.5" data-roster-chip-tasks={paneTaskCount}>
+          <IconFanOut size={8} />
+          {paneTaskCount}
+        </span>
+      )}
     </button>
   );
 }
 
 export const WorkspaceRosterSummaryMemo = memo(WorkspaceRosterSummary);
 
-function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRosterProps) {
+function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask, onCloseTask, ownerActive = false }: WorkspaceAgentRosterProps) {
   const t = useT();
   const selector = useMemo(
     () => createWorkspaceAgentRosterSelector(workspaceId),
@@ -336,10 +351,8 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
   const unverifiableMinutesByPtyId = useStore(useShallow(selectUnverifiablePaneMinutes));
   // Glance board: per-pane "changed since you last looked".
   const unseenByPtyId = useStore(useShallow(selectSidebarUnseen));
-  // Per agent surface: how many open fan-out tasks nested under THIS
-  // workspace it requested (the lineage origin). One memoized map for the
-  // whole sidebar; each row only looks its count up.
-  const requestedCounts = useStore(selectRequestedCounts);
+  // 2026-09-27 — this workspace's tasks, filed under the requesting pane.
+  const taskSplit = usePaneTaskSplit(workspaceId, renderTask ? taskIds : undefined);
 
   if (roster.agentCount === 0 && roster.stashedCount === 0) return null;
 
@@ -359,6 +372,10 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
       id={rosterListId(workspaceId)}
       data-workspace-agent-roster
       onMouseDown={(event) => {
+        // A nested task row is a drag source of its own and holds a rename
+        // input: its press must keep its default (focus, drag) — its list
+        // stops the gestures that would reach the owner row instead.
+        if (event.target instanceof Element && event.target.closest('[data-pane-tasks]')) return;
         // Prevent Chromium from promoting the draggable WorkspaceItem ancestor
         // to a native drag source when the gesture starts on roster controls.
         event.preventDefault();
@@ -406,7 +423,6 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
             // the one thing a stashed row exists to prove — that the session is
             // still alive and still moving — at exactly the moment the user is
             // looking at it, and would leave keyboard users with no verb at all.
-            const requestedCount = requestedCountFor(requestedCounts, workspaceId, row);
             const verb = row.stashed
               ? (exited ? t('roster.recoverAction') : t('roster.unstashAction'))
               : undefined;
@@ -414,16 +430,15 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
             const rowAriaLabel = [row.ptyId && unseenByPtyId[row.ptyId] ? t('sidebar.changedSinceSeen') : undefined, primary, agentLabel !== primary ? agentLabel : undefined, secondary, unverifiableLabel ?? statusLabel, elapsed, stashedAgo, detail, verb]
               .filter(Boolean)
               .join(', ');
-            return (
-              // Keyed by paneId for stashed rows: an exited pane has no ptyId
-              // left, and two of them would collide on the empty string.
-              <div
-                // Remote rows key by surfaceId: the synthetic remote:{...}
-                // ptyId collides when two mirror tabs attach to the SAME
-                // remote session (multi-attach is supported).
-                key={row.stashed ? row.paneId : row.remote ? row.surfaceId : row.ptyId}
-                className="min-w-0"
-              >
+            const rowTaskIds = taskSplit.byRow.get(row.surfaceId);
+            // Keyed by paneId for stashed rows: an exited pane has no ptyId
+            // left, and two of them would collide on the empty string.
+            // Remote rows key by surfaceId: the synthetic remote:{...} ptyId
+            // collides when two mirror tabs attach to the SAME remote session
+            // (multi-attach is supported).
+            const rowKey = row.stashed ? row.paneId : row.remote ? row.surfaceId : row.ptyId;
+            const renderRow = (taskControls: ReactNode) => (
+              <div className="min-w-0">
                 {startsStashedGroup && (
                   <div
                     className="mt-1 flex items-center gap-1.5 border-t border-[var(--border-soft)] pt-1 pr-1 text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]"
@@ -572,32 +587,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     </span>
                   ) : null}
                 </button>
-                {requestedCount > 0 && (
-                  // A sibling of the row button (a button cannot hold one).
-                  <button
-                    type="button"
-                    draggable={false}
-                    data-roster-requested={requestedCount}
-                    className={`flex-none self-center whitespace-nowrap rounded px-1 text-[10px] tabular-nums text-[var(--text-muted)] hover:text-[var(--accent-blue)] ${FOCUS_RING}`}
-                    title={t('sidebar.requester.badgeLabel', { count: requestedCount })}
-                    aria-label={t('sidebar.requester.badgeLabel', { count: requestedCount })}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      revealTaskGroup(workspaceId);
-                    }}
-                    // The workspace row is a native drag source that selects
-                    // its workspace: none of the press may reach it.
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                    }}
-                    onMouseUp={(event) => event.stopPropagation()}
-                    onDoubleClick={(event) => event.stopPropagation()}
-                  >
-                    {t('sidebar.requester.badge', { count: requestedCount })}
-                  </button>
-                )}
+                {taskControls}
                 {/* Mention this agent in the focused one — shown on hover or
                     keyboard focus, never on the focused pane's own row. A
                     sibling of the row button (a button cannot hold one). */}
@@ -645,6 +635,21 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                   </div>
                 )}
               </div>
+            );
+            if (!rowTaskIds || !renderTask || !onCloseTask) return <Fragment key={rowKey}>{renderRow(null)}</Fragment>;
+            return (
+              <PaneTaskGroup
+                key={rowKey}
+                ownerId={workspaceId}
+                surfaceId={row.surfaceId}
+                paneName={[primary, secondary].filter(Boolean).join(' · ')}
+                taskIds={rowTaskIds}
+                ownerActive={ownerActive}
+                renderTask={renderTask}
+                onCloseWorkspace={onCloseTask}
+              >
+                {renderRow}
+              </PaneTaskGroup>
             );
           })}
       </div>

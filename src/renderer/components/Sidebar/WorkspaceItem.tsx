@@ -28,7 +28,8 @@ import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTi
 import { timeAgo } from '../../utils/timeAgo';
 import { displayWorkspaceName, provenanceTooltip, requesterName, resolveTaskRequester } from '../../utils/fanoutProvenance';
 import { useShallow } from 'zustand/react/shallow';
-import TaskRequesterLine from './TaskRequesterLine';
+import { usePaneTaskSplit } from './SidebarTaskGroup';
+import { taskNeedsYou } from './sidebarTree';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 
 interface WorkspaceItemProps {
@@ -56,6 +57,17 @@ interface WorkspaceItemProps {
    * the drop math assumes flat siblings, and a task's place is its owner's.
    */
   taskRow?: boolean;
+  /**
+   * 2026-09-27 — this workspace's fan-out tasks (owner rows only). Each one
+   * nests under the roster row of the pane that requested it; the rest are
+   * Sidebar's "From closed pane" group. Undefined for a row with no tasks,
+   * so memo still holds for the common row.
+   */
+  nestedTaskIds?: readonly string[];
+  /** Renders one nested task row. */
+  renderTask?: (id: string) => React.ReactNode;
+  /** Sidebar's workspace close, for a pane group's "Close finished tasks". */
+  onCloseTask?: (id: string) => void;
 }
 
 /**
@@ -288,7 +300,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, nestedTaskIds, renderTask, onCloseTask }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
   const workspace = useStore(selectWorkspaceById(workspaceId));
@@ -370,6 +382,19 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // churn still does not rerender this component.
   const [rosterOpen, setRosterOpen] = useState(isActive);
   const toggleRoster = useCallback(() => setRosterOpen((value) => !value), []);
+  // 2026-09-27 — fan-out tasks nest under the roster row of the pane that
+  // requested them, so folding the roster folds them too. Two things must not
+  // hide there: the task you are working in (entering it makes this row
+  // inactive, which would fold the roster under you), and a task that needs
+  // you (it re-opens the roster, the way a stash pulse does).
+  const paneTaskSplit = usePaneTaskSplit(workspaceId, renderTask ? nestedTaskIds : undefined);
+  const paneTaskIds = useMemo(() => [...paneTaskSplit.byRow.values()].flat(), [paneTaskSplit]);
+  const paneTaskActive = useStore((s) => !!s.activeWorkspaceId && paneTaskIds.includes(s.activeWorkspaceId));
+  const paneTaskNeedsYou = useStore((s) => paneTaskIds.some((id) => taskNeedsYou(selectWorkspaceAgentStatus(s, id))));
+  useEffect(() => {
+    if (paneTaskNeedsYou) setRosterOpen(true);
+  }, [paneTaskNeedsYou]);
+  const rosterShown = rosterOpen || paneTaskActive;
   // Counts only — a reference-stable projection of two integers, so this does
   // not rerender the row on terminal output the way the full roster would.
   // #1481 — the chip projection: counts plus up to three agents for the
@@ -384,7 +409,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   /** Rows whose roster summary must not wait for the pointer — see its JSX.
    *  #1481 — the summary now names who is here and what they are doing, which
    *  is the reason to scan the list, so it no longer hides at rest. */
-  const rosterAlwaysShown = rosterOpen || hasRoster;
+  const rosterAlwaysShown = rosterShown || hasRoster;
   // Newly selected workspaces reveal their agents automatically; workspaces
   // that move to the background collapse back to the count. The user can still
   // explicitly toggle either state until selection changes again.
@@ -438,8 +463,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const lineageOwner = useStore((s) => (taskRow ? s.fanoutLineage[workspaceId] : undefined));
   const taskOwnerId = taskRow ? childMission?.owner?.verifiedWorkspaceId ?? lineageOwner ?? spawnOwner : undefined;
   const taskOwnerName = useStore((s) => (taskOwnerId ? s.workspaces.find((w) => w.id === taskOwnerId)?.name : undefined));
-  // Who asked for this task — subscribed once, shared by the visible
-  // requester line and the glyph's tooltip so the two can never disagree.
+  // Who asked for this task — for the fan-out glyph's tooltip. The sidebar
+  // shows it by nesting the task under the requesting pane (2026-09-27).
   const requester = useStore(useShallow((s) => (taskRow ? resolveTaskRequester(s, workspaceId) : undefined)));
 
   // Idle badge — how long since ANY of this workspace's surfaces last showed
@@ -997,9 +1022,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               workspaceId={workspaceId}
               agentCount={rosterCounts.agentCount}
               stashedCount={rosterCounts.stashedCount}
-              agents={rosterOpen ? undefined : rosterCounts.agents}
+              agents={rosterShown ? undefined : rosterCounts.agents}
               extra={rosterCounts.extra}
-              open={rosterOpen}
+              paneTaskCount={paneTaskIds.length}
+              open={rosterShown}
               onToggle={toggleRoster}
             />
           </span>
@@ -1099,14 +1125,17 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           </button>
         </div>
         </div>
-        {/* Which pane asked for this task — at rest, on a line of its own at
-            the row's full width (the name line's hover actions and roster
-            summary would otherwise squeeze it to a few characters). */}
-        {taskRow && !editing && requester && <TaskRequesterLine requester={requester} />}
         {/* Mounted only when expanded: a collapsed list would subscribe to the
             whole roster projection to render nothing. */}
-        {!editing && rosterOpen && (
-          <WorkspaceAgentRoster workspaceId={workspaceId} pulsingPaneId={pulsingPaneId} />
+        {!editing && rosterShown && (
+          <WorkspaceAgentRoster
+            workspaceId={workspaceId}
+            pulsingPaneId={pulsingPaneId}
+            taskIds={nestedTaskIds}
+            renderTask={renderTask}
+            onCloseTask={onCloseTask}
+            ownerActive={isActive}
+          />
         )}
       </div>
 

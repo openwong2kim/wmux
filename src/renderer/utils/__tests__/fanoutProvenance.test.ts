@@ -10,8 +10,6 @@ import {
   originFromCaller,
   resolveTaskRequester,
   requesterLine,
-  requestedCountFor,
-  selectRequestedCounts,
   fleetRequesterText,
 } from '../fanoutProvenance';
 import type { WorkTask } from '../../../shared/workTask';
@@ -185,31 +183,6 @@ describe('requester origin (who asked for a task)', () => {
     expect(requesterLine(resolveTaskRequester(state, 't4'), t)).toBe('Started by you');
     expect(requesterLine(resolveTaskRequester(state, 't6'), t)).toBe('by Orchestrator');
     expect(requesterLine(resolveTaskRequester(state, 't5'), t)).toBe('Requester unknown');
-  });
-
-  it('counts per requesting surface, scoped to the owner the task nests under', () => {
-    const state = {
-      ...base,
-      workspaces: [owner, task('t1'), task('t2'), task('t3'), task('t4'), task('t5'), task('t6')],
-      fanoutOrigin: {
-        t1: { kind: 'pane' as const, paneId: 'p62', surfaceId: 's62' },
-        t2: { kind: 'pane' as const, paneId: 'p74', surfaceId: 's74' },
-        t3: { kind: 'pane' as const, paneId: 'p74', surfaceId: 's74' },
-        t4: { kind: 'pane' as const, paneId: 'p74', surfaceId: 's74' },
-        t5: { kind: 'pane' as const, paneId: 'p74', surfaceId: 's74b' },
-        t6: { kind: 'pane' as const, paneId: 'p74', surfaceId: 's74' },
-      },
-      fanoutLineage: { t1: 'ws-owner', t2: 'ws-owner', t3: 'ws-owner', t4: 'ws-owner', t5: 'ws-owner', t6: 'ws-other' },
-      missionByPaneGroup: { t4: { owner: { verifiedWorkspaceId: 'ws-owner', principalId: 'ws-owner' }, detachedAt: 5 } as WorkTask },
-    };
-    const counts = selectRequestedCounts(state);
-    expect(selectRequestedCounts(state)).toBe(counts); // memoized
-    expect(requestedCountFor(counts, 'ws-owner', { paneId: 'p62', surfaceId: 's62' })).toBe(1);
-    // Two agent tabs in one pane each count their own (t4 is detached, t6 nests elsewhere).
-    expect(requestedCountFor(counts, 'ws-owner', { paneId: 'p74', surfaceId: 's74' })).toBe(2);
-    expect(requestedCountFor(counts, 'ws-owner', { paneId: 'p74', surfaceId: 's74b' })).toBe(1);
-    expect(requestedCountFor(counts, 'ws-other', { paneId: 'p74', surfaceId: 's74' })).toBe(1);
-    expect(requestedCountFor(counts, 'ws-owner', { paneId: 'nope', surfaceId: 'nope' })).toBe(0);
   });
 
   it('fleet text folds in the owner only when the requester pane lives in the owner workspace', () => {

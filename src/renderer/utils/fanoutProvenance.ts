@@ -373,64 +373,6 @@ type CountState = {
   fanoutSpawnOwner?: Record<string, string | undefined>;
 };
 
-/** owner workspace id → requester key (`s:<surfaceId>` / `p:<paneId>`) → open tasks. */
-export type RequestedCounts = Record<string, Record<string, number>>;
-
-let requestedCountsCache: { inputs: readonly unknown[]; value: RequestedCounts } | null = null;
-
-/**
- * Open fan-out tasks per requesting surface, grouped by the owner workspace
- * the task nests under. Memoized on the store slices it reads, so every
- * roster row can look its count up without a scan of its own. Detached tasks
- * do not count: they no longer nest under the owner the badge opens.
- */
-export function selectRequestedCounts(state: CountState): RequestedCounts {
-  const inputs = [state.workspaces, state.fanoutOrigin, state.missionByPaneGroup, state.fanoutLineage, state.fanoutSpawnOwner];
-  const cached = requestedCountsCache;
-  if (cached && inputs.every((v, i) => v === cached.inputs[i])) return cached.value;
-  const value: RequestedCounts = {};
-  for (const ws of state.workspaces) {
-    const origin = state.fanoutOrigin?.[ws.id];
-    if (origin?.kind !== 'pane') continue;
-    const key = origin.surfaceId ? `s:${origin.surfaceId}` : origin.paneId ? `p:${origin.paneId}` : '';
-    if (!key) continue;
-    const link = resolveTaskLink(state.missionByPaneGroup?.[ws.id], state.fanoutLineage?.[ws.id], state.fanoutSpawnOwner?.[ws.id]);
-    if (!link || link.detached || !link.ownerId) continue;
-    const forOwner = (value[link.ownerId] ??= {});
-    forOwner[key] = (forOwner[key] ?? 0) + 1;
-  }
-  // Layout churn (a title, a cwd) replaces `workspaces` without moving a
-  // count: keep the previous object then, so no roster re-renders for it.
-  const kept = cached && sameRequestedCounts(cached.value, value) ? cached.value : value;
-  requestedCountsCache = { inputs, value: kept };
-  return kept;
-}
-
-function sameRequestedCounts(a: RequestedCounts, b: RequestedCounts): boolean {
-  const owners = Object.keys(a);
-  if (owners.length !== Object.keys(b).length) return false;
-  for (const owner of owners) {
-    const x = a[owner];
-    const y = b[owner];
-    if (!y) return false;
-    const keys = Object.keys(x);
-    if (keys.length !== Object.keys(y).length || keys.some((k) => x[k] !== y[k])) return false;
-  }
-  return true;
-}
-
-/** A roster row's count: tasks whose origin names its surface, plus (only for
- *  origins recorded without a surface) tasks naming its pane. */
-export function requestedCountFor(
-  counts: RequestedCounts,
-  ownerWorkspaceId: string,
-  row: { surfaceId?: string; paneId: string },
-): number {
-  const forOwner = counts[ownerWorkspaceId];
-  if (!forOwner) return 0;
-  return (row.surfaceId ? forOwner[`s:${row.surfaceId}`] ?? 0 : 0) + (forOwner[`p:${row.paneId}`] ?? 0);
-}
-
 /**
  * Fleet: the requester as `by <coordinate · name> · <workspace>` — the part
  * that tells panes apart leads and the workspace comes last, so a narrow row

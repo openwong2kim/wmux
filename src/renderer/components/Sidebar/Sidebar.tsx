@@ -4,7 +4,7 @@ import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
 import { useGlanceBoardOrder } from './useGlanceBoardOrder';
 import { buildSidebarTree, ORPHAN_GROUP_KEY } from './sidebarTree';
-import SidebarTaskGroup from './SidebarTaskGroup';
+import SidebarTaskGroup, { ClosedPaneTaskGroup } from './SidebarTaskGroup';
 import SidebarResizeHandle from './SidebarResizeHandle';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
 import WorkspaceItem from './WorkspaceItem';
@@ -340,9 +340,11 @@ export default function Sidebar() {
             leads that list and is shown as stored, so inside it the row's
             real position and its place on screen agree. */}
         {/* #1481 — fan-out tasks nest under the workspace that fanned them
-            out (SidebarTaskGroup: rollup, fold, close-finished). Detached
-            tasks are ordinary rows; tasks whose owner is gone collect in the
-            "From closed workspace" group below. */}
+            out; since 2026-09-27 under the roster row of the pane that
+            requested them (PaneTaskGroup: rollup, fold, close-finished), with
+            the rest in the owner's trailing "From closed pane" group.
+            Detached tasks are ordinary rows; tasks whose owner is gone
+            collect in the "From closed workspace" group below. */}
         {tree.top.map((node) => {
           const rw = remoteByRowId.get(node.id);
           if (rw) {
@@ -376,12 +378,15 @@ export default function Sidebar() {
                 onCopyInfo={handleCopySessionInfo}
                 onDuplicate={duplicateWorkspace}
                 onReorder={reorderWorkspace}
+                nestedTaskIds={node.taskIds.length > 0 ? node.taskIds : undefined}
+                renderTask={node.taskIds.length > 0 ? renderTask : undefined}
+                onCloseTask={node.taskIds.length > 0 ? handleClose : undefined}
               />
               {node.taskIds.length > 0 && (
-                <SidebarTaskGroup
-                  groupKey={node.id}
-                  taskIds={node.taskIds}
+                <ClosedPaneTaskGroup
+                  ownerId={node.id}
                   ownerName={ws.name}
+                  taskIds={node.taskIds}
                   ownerActive={node.id === activeWorkspaceId}
                   renderTask={renderTask}
                   onCloseWorkspace={handleClose}

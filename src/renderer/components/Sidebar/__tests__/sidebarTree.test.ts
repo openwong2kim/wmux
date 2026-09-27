@@ -1,6 +1,7 @@
 // #1481 — fan-out nesting, rollup, default expansion and "finished".
 import { describe, expect, it, vi } from 'vitest';
-import { buildSidebarTree, isTaskGroupExpanded, paneRowsFinished, revalidateTaskForClose, taskRollup, withTimeout, ORPHAN_GROUP_KEY } from '../sidebarTree';
+import { buildSidebarTree, closedPaneFoldKey, isTaskGroupExpanded, paneRowsFinished, paneTaskFoldKey, revalidateTaskForClose, splitTasksByPane, taskRollup, withTimeout, ORPHAN_GROUP_KEY } from '../sidebarTree';
+import type { FanoutOrigin } from '../../../../shared/fanoutOrigin';
 import type { WorkTask } from '../../../../shared/workTask';
 import type { TaskLink } from '../../../utils/fanoutProvenance';
 import type { AgentStatus } from '../../../../shared/types';
@@ -45,6 +46,73 @@ describe('buildSidebarTree', () => {
     expect(tree.top.map((n) => n.id)).toEqual(['t1']);
     // #1481 review B9 — it still renders as a task row.
     expect(tree.taskIds.has('t1')).toBe(true);
+  });
+});
+
+// 2026-09-27 — tasks nest under the roster row of the pane that requested them.
+describe('splitTasksByPane', () => {
+  const origins = (map: Record<string, FanoutOrigin>) => (id: string) => map[id];
+  // Pane p1 holds two agent tabs (s1a, s1b); pane p2 one (s2).
+  const roster = [
+    { paneId: 'p1', surfaceId: 's1a' },
+    { paneId: 'p1', surfaceId: 's1b' },
+    { paneId: 'p2', surfaceId: 's2' },
+  ];
+  const byRow = (split: ReturnType<typeof splitTasksByPane>) => Object.fromEntries(split.byRow);
+
+  it('files each task under the requesting surface, keeping list order', () => {
+    const split = splitTasksByPane(['t3', 't1', 't2'], origins({
+      t1: { kind: 'pane', paneId: 'p1', surfaceId: 's1a' },
+      t2: { kind: 'pane', paneId: 'p2', surfaceId: 's2' },
+      t3: { kind: 'pane', paneId: 'p1', surfaceId: 's1a' },
+    }), roster);
+    expect(byRow(split)).toEqual({ s1a: ['t3', 't1'], s2: ['t2'] });
+    expect(split.closedPane).toEqual([]);
+  });
+
+  it('matches an origin recorded without a surface by its pane (first row of the pane)', () => {
+    const split = splitTasksByPane(['t1'], origins({ t1: { kind: 'pane', paneId: 'p1' } }), roster);
+    expect(byRow(split)).toEqual({ s1a: ['t1'] });
+  });
+
+  it('sends a closed pane — or a closed tab of a pane still open — to the trailing group', () => {
+    const split = splitTasksByPane(['t1', 't2', 't3'], origins({
+      t1: { kind: 'pane', paneId: 'gone', surfaceId: 'gone-s', label: 'w1-9 · old' },
+      // The surface left; its pane's other tab did not ask.
+      t2: { kind: 'pane', paneId: 'p1', surfaceId: 's1-closed' },
+      t3: { kind: 'pane', paneId: 'p2', surfaceId: 's2' },
+    }), roster);
+    expect(split.closedPane).toEqual(['t1', 't2']);
+    expect(byRow(split)).toEqual({ s2: ['t3'] });
+  });
+
+  it('sends GUI, orchestrator and unknown requesters to the trailing group', () => {
+    const split = splitTasksByPane(['gui', 'orch', 'bare'], origins({
+      gui: { kind: 'gui' },
+      orch: { kind: 'orchestrator' },
+      bare: { kind: 'pane' },
+    }), roster);
+    expect(split.closedPane).toEqual(['gui', 'orch', 'bare']);
+    expect(split.byRow.size).toBe(0);
+  });
+
+  it('sends a legacy task with no origin stamp to the trailing group', () => {
+    const split = splitTasksByPane(['legacy'], origins({}), roster);
+    expect(split.closedPane).toEqual(['legacy']);
+  });
+
+  it('owner gone still lands in the workspace-level orphan group, not a pane group', () => {
+    // The pane split only ever sees an open owner's tasks: buildSidebarTree
+    // takes a task whose owner is gone out of every owner first.
+    const tree = buildSidebarTree(rows('a', 't1'), links({ t1: { ownerId: 'closed-ws', detached: false } }));
+    expect(tree.orphanTaskIds).toEqual(['t1']);
+    expect(tree.top.find((n) => n.id === 'a')?.taskIds).toEqual([]);
+  });
+
+  it('keys fold state per owner and requesting surface', () => {
+    expect(paneTaskFoldKey('ws1', 's1a')).not.toBe(paneTaskFoldKey('ws1', 's2'));
+    expect(paneTaskFoldKey('ws1', 's1a')).not.toBe(paneTaskFoldKey('ws2', 's1a'));
+    expect(closedPaneFoldKey('ws1')).not.toBe('ws1');
   });
 });
 
