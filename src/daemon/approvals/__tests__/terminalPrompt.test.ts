@@ -123,6 +123,51 @@ describe('ApprovalRegistry — terminal_prompt creation', () => {
     expect(creates(t)).toHaveLength(1);
   });
 
+  it('a hook-reported dialog for another tool supersedes a stale AskUserQuestion record', async () => {
+    // Measured on 2.1.283: Esc on a question sends no PostToolUse and no Stop,
+    // so its record outlived it, and the next Bash dialog got no record at all.
+    const h = makeRegistry();
+    await h.registry.noteHookAwaitingInput({
+      sessionId: 'pty-a', agent: 'claude', question: 'Pick a veg?', choices: [{ key: '1', label: 'Kale' }],
+    });
+    h.events.length = 0;
+
+    await h.registry.noteTerminalPrompt({ ...PROMPT, source: 'hook' });
+
+    expect(pendingOf(h).map((r) => r.kind)).toEqual(['terminal_prompt']);
+    expect(h.registry.list().recentlyResolved).toMatchObject([{ kind: 'awaiting_input', state: 'superseded' }]);
+    expect(h.events.map((e) => e.type)).toEqual(['supersede', 'create']);
+    // The stale record can no longer press `1` into the Bash dialog.
+    expect(await h.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' }))
+      .toMatchObject({ ok: false, reason: 'expired' });
+    expect(h.writes).toEqual([]);
+  });
+
+  it.each([
+    ['the question\'s own PermissionRequest', { source: 'hook' as const, toolName: 'AskUserQuestion' }],
+    ['a hook note that names no tool', { source: 'hook' as const, toolName: undefined }],
+    ['a detector read', { source: 'detector' as const }],
+  ])('%s leaves a pending AskUserQuestion record alone', async (_label, over) => {
+    const h = makeRegistry();
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', question: 'Pick a veg?' });
+    await h.registry.noteTerminalPrompt({ ...PROMPT, ...over });
+    expect(pendingOf(h).map((r) => r.kind)).toEqual(['awaiting_input']);
+    expect(creates(h)).toHaveLength(1);
+  });
+
+  it('a hook-reported dialog never supersedes a pending gate or terminal prompt', async () => {
+    const g = makeRegistry();
+    g.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', toolName: 'Bash' });
+    await g.registry.noteTerminalPrompt({ ...PROMPT, source: 'hook' });
+    expect(pendingOf(g).map((r) => r.kind)).toEqual(['awaiting_permission']);
+
+    const t = makeRegistry();
+    await t.registry.noteTerminalPrompt({ ...PROMPT, source: 'hook' });
+    await t.registry.noteTerminalPrompt({ ...PROMPT, source: 'hook', toolName: 'Edit' });
+    expect(pendingOf(t)).toHaveLength(1);
+    expect(creates(t)).toHaveLength(1);
+  });
+
   it('a hook record supersedes it; it never supersedes a hook record', async () => {
     const h = makeRegistry();
     await h.registry.noteTerminalPrompt(PROMPT);

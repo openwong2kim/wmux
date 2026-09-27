@@ -525,7 +525,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * that includes the `tool_use` id. Anything else — detector-only with no
    * binding, a command that does not match — is informational for everyone.
    *
-   * Created only when nothing is pending on the pane; never supersedes. A
+   * Created only when nothing is pending on the pane, with one exception (see
+   * `staleQuestionFor`): a hook-reported dialog for another tool supersedes a
+   * pending AskUserQuestion record, which it proves is no longer on screen. A
    * detector-found record is also refused for the same dialog the screen check
    * released within the cooldown. Never rejects: failures are logged.
    */
@@ -540,7 +542,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   private async noteTerminalPromptInner(note: TerminalPromptNote): Promise<void> {
     const { sessionId } = note;
     if (!isClaudeFamilyAgent(note.agent)) return;
-    if (this.terminalPromptReads.has(sessionId) || this.hasPending(sessionId)) return;
+    if (this.terminalPromptReads.has(sessionId)) return;
+    if (this.hasPending(sessionId) && !this.staleQuestionFor(note)) return;
     this.terminalPromptReads.add(sessionId);
     const seq = this.sweepSeq.get(sessionId) ?? 0;
     try {
@@ -548,15 +551,28 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       const binding = this.bindingFor(sessionId, note);
       let created: ApprovalRequest | null = null;
       await this.mutate(() => {
-        if (this.hasPending(sessionId)) return [];
+        const stale = this.staleQuestionFor(note);
+        if (this.hasPending(sessionId) && !stale) return [];
         if ((this.sweepSeq.get(sessionId) ?? 0) !== seq) return [];
         // The pane must still be alive at the moment the record is minted.
         if (this.deps.promptScreenMark && this.deps.promptScreenMark(sessionId) === null) return [];
         const record = this.buildTerminalPrompt(note, read, binding);
         if (note.source !== 'hook' && this.inCooldown(sessionId, record.dialogKey)) return [];
+        const events: ApprovalEvent[] = [];
+        if (stale) {
+          stale.state = 'superseded';
+          stale.resolvedAt = this.now();
+          events.push({ type: 'supersede', request: copyRequest(stale) });
+          this.deps.log?.(
+            'info',
+            `[approvals] superseded stale question ${stale.id} on ${sessionId}: ` +
+              `a ${logText(note.toolName, 40)} permission dialog replaced it`,
+          );
+        }
         this.requests.push(record);
         created = record;
-        return [{ type: 'create', request: copyRequest(record) }];
+        events.push({ type: 'create', request: copyRequest(record) });
+        return events;
       });
       const record: ApprovalRequest | null = created;
       if (record && !(record as ApprovalRequest).promptFingerprint && this.deps.readPromptScreen) {
@@ -653,6 +669,32 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     const live = await this.readActiveDialog(sessionId);
     if (!live) return;
     await this.supersedeWithFresh(record, live);
+  }
+
+  /**
+   * The pane's pending AskUserQuestion record, when a hook-reported permission
+   * dialog for ANOTHER tool proves it stale.
+   *
+   * Esc on an AskUserQuestion rejects the tool: Claude Code sends no
+   * PostToolUse for it and no Stop for the interrupt, so its `awaiting_input`
+   * record stayed pending for the rest of the session (measured on 2.1.283).
+   * The next permission dialog then found the pane "pending" and got no record
+   * at all, and the stale record's default approve — digit `1`, checked only
+   * for a `❯ 1.` row — would have pressed "Yes" on that dialog, a command the
+   * phone never showed. The PermissionRequest hook fires only while its own
+   * dialog is the one on screen, so a question for a different tool cannot
+   * still be up.
+   *
+   * Narrow on purpose: hook-sourced notes only (a detector read proves less),
+   * a named tool that is not AskUserQuestion (Claude fires PermissionRequest
+   * for the question itself ~50 ms after its PreToolUse), and only when the one
+   * pending record is an `awaiting_input` — a gate or another terminal prompt
+   * keeps today's first-record-wins rule.
+   */
+  private staleQuestionFor(note: TerminalPromptNote): ApprovalRequest | undefined {
+    if (note.source !== 'hook' || !note.toolName || note.toolName === 'AskUserQuestion') return undefined;
+    const pending = this.requests.filter((r) => r.state === 'pending' && r.sessionId === note.sessionId);
+    return pending.length === 1 && pending[0].kind === 'awaiting_input' ? pending[0] : undefined;
   }
 
   private hasPending(sessionId: string): boolean {
