@@ -76,6 +76,11 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
     selection(id: string, pane: P): { cwd?: string } | undefined;
   };
   startCodexRuntime(env: NodeJS.ProcessEnv): Promise<void>;
+  /**
+   * Before a Codex launch: restart a shared server that predates a clean start
+   * when no Codex pane is live, or notify once when one is. Never throws.
+   */
+  ensureCleanCodexRuntime?(paneId: string, env: NodeJS.ProcessEnv): Promise<void>;
   loadSkills(agent: string, cwd: string, env: Record<string, string | undefined>): Promise<ChatSkillCatalog>;
   log(level: 'info' | 'warn', message: string): void;
   /** Host desktop notification for a pane. */
@@ -482,6 +487,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         // Hook session_id can name an invocation rather than the conversation.
         // Observe the existing native TUI transport for authoritative thread IDs.
         await deps.relays.retire(id);
+        await deps.ensureCleanCodexRuntime?.(id, env);
         try { relay = await deps.relays.prepare(id, pane); }
         catch (error) {
           if (!deps.relays.unavailable(error)) throw error;

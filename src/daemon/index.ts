@@ -139,6 +139,7 @@ import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, ty
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
 import { chatAgentStatus } from './transcript/chatAgentStatus';
 import { startNativeCodexRuntime } from './transcript/terminalLaunch';
+import { createCodexRuntimeHygiene, runCodexDaemon } from './transcript/codexRuntimeHygiene';
 import { interruptChatTurn } from './transcript/interruptChatTurn';
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
 import { ChatSessionService } from './chat/ChatSessionService';
@@ -3384,6 +3385,15 @@ function registerRpcHandlers(
   // Phone native chat bridge (contract v0.3.1). The desktop RPCs below call the
   // same functions, so binding resolution, receipts, launch and skills cannot
   // drift between the two transports.
+  const codexRuntimeHygiene = createCodexRuntimeHygiene({
+    runDaemon: runCodexDaemon,
+    liveCodexPanes: () => sessionManager.listSessions()
+      .filter((s) => agentDisplayToSlug(readDaemonAgentState(s.id).agentName ?? '') === 'codex').length,
+    recordPath: path.join(wmuxDir, 'codex-runtime-clean.json'),
+    notice: (paneId, title, body) => pipeServer.broadcast({ type: 'notification.event', sessionId: paneId,
+      data: { source: 'security', title, body, ts: Date.now() } }),
+    log: (level, message) => log(level, message),
+  });
   const bridge: NativeChatBridge = createChatBridge({
     pane: (id) => sessionManager.getSession(id),
     agentState: (id) => readDaemonAgentState(id),
@@ -3445,6 +3455,7 @@ function registerRpcHandlers(
       selection: (id, pane) => codexPaneRelays.selection(id, pane),
     },
     startCodexRuntime: (env) => startNativeCodexRuntime(env),
+    ensureCleanCodexRuntime: (paneId, env) => codexRuntimeHygiene.ensureClean(paneId, env),
     loadSkills: (agent, cwd, env) => loadChatSkills(agent, cwd, env),
     log: (level, message) => log(level, message),
     // Main shows `source:'security'` as an always-on toast. Straight onto the

@@ -1,23 +1,17 @@
 import { validTerminalLaunchMode } from '../../shared/transcript/terminalChat';
 import { execFile } from 'node:child_process';
-import { ENV_KEYS } from '../../shared/constants';
-
-/** Per-pane identity keys. Everything else (notably WMUX_DATA_SUFFIX, which only
- * selects the instance) is kept. */
-const PANE_IDENTITY_KEYS: readonly string[] = [
-  ENV_KEYS.WORKSPACE_ID, ENV_KEYS.WORKSPACE_NAME, ENV_KEYS.SURFACE_ID,
-  ENV_KEYS.PTY_ID, ENV_KEYS.MEMBER_ID, ENV_KEYS.BRAIN_PTY,
-];
+import { stripWmuxNamespace } from '../web/webPaneEnv';
 
 /** Environment for the shared Codex runtime server. That server outlives the pane
  * that starts it and parents shell commands and MCP servers for every Codex pane on
- * the account, so it must not carry any one pane's identity.
- * Known limit: the server is per account, not per wmux instance, so the first
- * starter's non-identity env (including WMUX_DATA_SUFFIX) wins across instances. */
+ * the account, so it carries no WMUX_* key at all: not a pane identity, and not
+ * WMUX_DATA_SUFFIX either (the server is per account, not per wmux instance, so a
+ * suffix would point every Codex thread at whichever instance started it first).
+ * Pane identity and the instance suffix are supplied per thread instead. */
 export function codexRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = { ...env };
-  for (const key of PANE_IDENTITY_KEYS) delete out[key];
-  return out;
+  const defined: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) if (typeof v === 'string') defined[k] = v;
+  return stripWmuxNamespace(defined);
 }
 /** Quote an initial instruction for the verified POSIX shell.
  * Never accept controls, terminal escapes or a caller-supplied launcher. */
@@ -39,7 +33,7 @@ export async function startNativeCodexRuntime(env: NodeJS.ProcessEnv): Promise<v
   if (existing) return existing;
   if (startingAccounts.size >= 8) throw new Error('Too many runtime starts');
   const task = new Promise<void>((resolve, reject) => {
-    // Stripped here too so no caller can seed a pane identity into the shared server.
+    // Stripped here too so no caller can seed wmux state into the shared server.
     execFile('codex', ['app-server', 'daemon', 'start'], { env: codexRuntimeEnv(env), timeout: 15000, maxBuffer: 64000, windowsHide: true },
       error => error ? reject(new Error('Native Codex runtime unavailable')) : resolve());
   });
