@@ -1100,17 +1100,25 @@ export function attentionScore(rank: number, atMinute: number): number {
  * its statuses are frozen at the last successful poll. The host sends no
  * stamps, so a remote row sorts after local rows of the same class.
  */
-export function remoteWorkspaceAttentionScore(
+export function remoteWorkspaceAttentionClass(
   rw: Pick<AttachedRemoteWorkspace, 'panes' | 'stale' | 'authRejected'>,
-): number {
-  let rank = ATTENTION_CLASS_RANK.idle;
+): FleetAttentionClass {
+  let best: FleetAttentionClass = 'idle';
   if (!rw.stale && !rw.authRejected) {
     for (const p of rw.panes) {
       if (!p.agentName) continue;
-      rank = Math.min(rank, ATTENTION_CLASS_RANK[fleetAttentionClass({ agentStatus: p.agentStatus ?? 'idle', unverifiable: false })]);
+      const c = fleetAttentionClass({ agentStatus: p.agentStatus ?? 'idle', unverifiable: false });
+      if (ATTENTION_CLASS_RANK[c] < ATTENTION_CLASS_RANK[best]) best = c;
     }
   }
-  return attentionScore(rank, 0);
+  return best;
+}
+
+/** The class above as a score, so the row sorts by what it shows. */
+export function remoteWorkspaceAttentionScore(
+  rw: Pick<AttachedRemoteWorkspace, 'panes' | 'stale' | 'authRejected'>,
+): number {
+  return attentionScore(ATTENTION_CLASS_RANK[remoteWorkspaceAttentionClass(rw)], 0);
 }
 
 /** One row's section and detail — `groupFleetPanes` without the grouping. */

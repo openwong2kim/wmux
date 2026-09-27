@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
 import { remoteWorkspaceDisplayName, type AttachedRemoteWorkspace } from '../../stores/slices/remoteWorkspacesSlice';
+import { remoteWorkspaceAttentionClass } from '../../stores/selectors/fleet';
 import {
   WORKSPACE_COLOR_IDS,
   normalizeWorkspaceColor,
@@ -63,6 +64,9 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
   const hostName = workspace.hostLabel || t('remote.hostFallback');
   const rejectedText = workspace.authRejected ? t('remote.authRejected', { host: hostName }) : null;
   const tagHex = workspaceColorHex(normalizeWorkspaceColor(workspace.color));
+  // The row sorts by this class (Sidebar), so it must also say it: a mirror
+  // lifted to the top with no visible reason reads as a sorting bug.
+  const needsYou = remoteWorkspaceAttentionClass(workspace) === 'needsYou';
 
   return (
     <div className="relative mx-2">
@@ -71,7 +75,7 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
         tabIndex={0}
         aria-pressed={isActive}
         aria-label={rejectedText ? `${displayName} — ${rejectedText}` : `${displayName} — ${hostName}`}
-        className={`group sidebar-row px-3 py-1 cursor-pointer rounded-md select-none ${
+        className={`group sidebar-row px-3 py-1 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive
             ? 'sidebar-row-active text-[var(--text-main)]'
             : 'text-[var(--text-subtle)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
@@ -106,7 +110,7 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
             className="w-1.5 h-1.5 rounded-full flex-shrink-0"
             style={tagHex
               ? { backgroundColor: tagHex }
-              : { backgroundColor: isActive && !workspace.stale ? 'var(--accent)' : 'var(--text-muted)' }}
+              : { backgroundColor: needsYou ? 'var(--accent-red)' : isActive && !workspace.stale ? 'var(--accent)' : 'var(--text-muted)' }}
           />
           <div className="flex-1 min-w-0">
             {editing ? (
@@ -148,6 +152,11 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
               </span>
             </div>
           </div>
+          {needsYou && (
+            <span className={`font-sans text-[10px] font-semibold text-[var(--accent-red)] flex-shrink-0 ${isActive ? '' : 'group-hover:hidden'}`} data-remote-needs-you>
+              {t('workspace.needsYou')}
+            </span>
+          )}
         </div>
       </div>
 

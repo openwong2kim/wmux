@@ -276,7 +276,7 @@ export default function Sidebar() {
       <SidebarNavigation />
       <div className="wmux-sidebar-section">
         <span className="truncate">{t('sidebar.workspaces')}</span>
-        <span className="wmux-sidebar-total">{workspaces.length}</span>
+        <span className="wmux-sidebar-total">{listedCount}</span>
         <button
           ref={pickerButtonRef}
           type="button"
