@@ -88,6 +88,44 @@ export function mirrorFitKey(parts: {
 }
 
 /**
+ * When the mirror may ask the remote to resize again: once per box size, font
+ * ceiling and face — the inputs that decide what grid the box holds.
+ *
+ * Deliberately NOT {@link mirrorFitKey}: that one carries the remote grid, and
+ * the remote grid is exactly what a granted request changes. Keyed on it, every
+ * grant re-armed the request, and because the ideal grid was re-derived from a
+ * font the fit had just changed, the next answer could be a cell or two off the
+ * last — so the mirror and the remote traded two grids forever, delivering a
+ * SIGWINCH to the remote app on every swap. A remote-side change (a grant, or
+ * someone re-gridding the pane on the host) is never a reason to ask again.
+ */
+export function mirrorResizeRequestKey(parts: {
+  boxWidth: number;
+  boxHeight: number;
+  maxFontSize: number;
+  fontFamily: string;
+}): string {
+  const { boxWidth, boxHeight, maxFontSize, fontFamily } = parts;
+  return `${boxWidth}x${boxHeight}x${maxFontSize}x${fontFamily}`;
+}
+
+/** A remote grid within this many cells of the ideal in both axes is left
+ *  alone: the font fit absorbs a one-cell residue, while a resize costs the
+ *  remote app a SIGWINCH and a full repaint. */
+export const REMOTE_RESIZE_HYSTERESIS_CELLS = 1;
+
+/** Whether `ideal` is far enough from the remote's current grid to be worth a
+ *  resize request (see {@link REMOTE_RESIZE_HYSTERESIS_CELLS}). */
+export function shouldRequestRemoteResize(
+  ideal: { cols: number; rows: number },
+  cols: number,
+  rows: number,
+): boolean {
+  return Math.abs(ideal.cols - cols) > REMOTE_RESIZE_HYSTERESIS_CELLS
+    || Math.abs(ideal.rows - rows) > REMOTE_RESIZE_HYSTERESIS_CELLS;
+}
+
+/**
  * Pick the font size at which `cols × rows` fits inside the box.
  *
  * Pass 1 is a linear prediction: cell width is very nearly proportional to font
@@ -168,14 +206,15 @@ function quantise(size: number): number {
  * mirror silently misrepresenting a still-differently-sized session through a
  * shrunk or oversized font.
  *
- * Same extrapolation `computeMirrorFontSize` uses (px per font unit, measured
- * from the CURRENT render, not assumed) — just solved for cell counts at
- * `maxFontSize` instead of for a font size at fixed cell counts. Deliberately
- * has no `settledFontSize`-style "never grow" guard: unlike a font-size
- * staircase, asking the remote for a bigger grid than the box last got has
- * exactly one failure mode (the daemon says no), not an oscillation, because
- * the daemon's applied geometry — not this calculation — is what the mirror
- * ever actually renders at.
+ * Prefers `ceilingCell`, the cell size MEASURED while the mirror was drawn at
+ * `maxFontSize`. Without it, the cell size is extrapolated from the CURRENT
+ * render (px per font unit) — the same approximation `computeMirrorFontSize`
+ * uses for its pass-1 prediction. That approximation is not good enough to ask
+ * a remote for a grid with: xterm's cell size is a staircase in the font size
+ * (`ceil`/`floor` through the device pixel ratio), so extrapolating from a
+ * shrunk font lands a cell or two away from the real answer, and a different
+ * shrunk font lands somewhere else. The caller must therefore not re-ask on
+ * every remote grid change — see {@link mirrorResizeRequestKey}.
  */
 export function computeMirrorGeometry(input: {
   boxWidth: number;
@@ -186,10 +225,12 @@ export function computeMirrorGeometry(input: {
   renderedHeight: number;
   currentFontSize: number;
   maxFontSize: number;
+  /** Cell size (CSS px) measured at `maxFontSize` for the current face. */
+  ceilingCell?: { width: number; height: number };
 }): { cols: number; rows: number } | null {
   const {
     boxWidth, boxHeight, cols, rows,
-    renderedWidth, renderedHeight, currentFontSize, maxFontSize,
+    renderedWidth, renderedHeight, currentFontSize, maxFontSize, ceilingCell,
   } = input;
 
   const measurable =
@@ -202,11 +243,17 @@ export function computeMirrorGeometry(input: {
 
   const ceiling = Math.max(MIN_MIRROR_FONT_SIZE, Number.isFinite(maxFontSize) ? maxFontSize : 0);
 
-  // Cell size at the CURRENT font size, extrapolated to the ceiling — the same
-  // "very nearly proportional to font size" approximation computeMirrorFontSize
-  // relies on for its own pass-1 prediction.
-  const cellWidthAtCeiling = (renderedWidth / currentFontSize) * (ceiling / cols);
-  const cellHeightAtCeiling = (renderedHeight / currentFontSize) * (ceiling / rows);
+  // The measured ceiling cell when there is one; otherwise the cell size at the
+  // CURRENT font, extrapolated to the ceiling (only "very nearly" right).
+  const measured = ceilingCell
+    && Number.isFinite(ceilingCell.width) && Number.isFinite(ceilingCell.height)
+    && ceilingCell.width > 0 && ceilingCell.height > 0;
+  const cellWidthAtCeiling = measured
+    ? ceilingCell.width
+    : (renderedWidth / currentFontSize) * (ceiling / cols);
+  const cellHeightAtCeiling = measured
+    ? ceilingCell.height
+    : (renderedHeight / currentFontSize) * (ceiling / rows);
   if (!(cellWidthAtCeiling > 0) || !(cellHeightAtCeiling > 0)) return null;
 
   const idealCols = Math.floor(boxWidth / cellWidthAtCeiling);

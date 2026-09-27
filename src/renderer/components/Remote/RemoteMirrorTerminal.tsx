@@ -3,7 +3,10 @@ import { Terminal } from '@xterm/xterm';
 import { useT } from '../../hooks/useT';
 import { sanitizeTitle } from '../../../main/pty/titleDetect';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
-import { computeMirrorFontSize, computeMirrorGeometry, mirrorFitKey, MAX_FIT_PASSES } from './mirrorFit';
+import {
+  computeMirrorFontSize, computeMirrorGeometry, mirrorFitKey, mirrorResizeRequestKey,
+  shouldRequestRemoteResize, MAX_FIT_PASSES, MIN_MIRROR_FONT_SIZE,
+} from './mirrorFit';
 import { createMirrorGestureTracker, decideMirrorKeyWithRepeat, shouldHonorMirrorClipboardWrite } from './mirrorInput';
 import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE } from './keyboardProtocol';
 import { useStore } from '../../stores';
@@ -250,9 +253,24 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
   /** `${cols}x${rows}` this component last POSTed to `/resize`, so a box that
    *  keeps re-triggering `runFit` at the SAME size (e.g. font-shrink passes
    *  for the same box) does not repost an identical, already-answered
-   *  request. Cleared on a genuine box-size change (new `boxKey`), which is
+   *  request. Cleared on a genuine box-size change (new request key), which is
    *  exactly when asking again might get a different answer. */
   const lastRequestedGeometryRef = useRef<string | null>(null);
+
+  /** The `mirrorResizeRequestKey` the resize decision was last made for. One
+   *  decision per box size / font ceiling / face — never per remote grid, or
+   *  each grant re-arms the next request (see mirrorFit.ts). */
+  const lastRequestKeyRef = useRef<string | null>(null);
+
+  /** Cell size measured while the mirror was drawn at the font ceiling, keyed
+   *  by ceiling + face. xterm's cell size is a staircase in the font size, so
+   *  this — not an extrapolation from a shrunk font — is what the box's grid is
+   *  computed from once it is known. */
+  const ceilingCellRef = useRef<{ key: string; width: number; height: number } | null>(null);
+
+  /** Whether the remote's grid has arrived (first meta). Before it, `term.cols`
+   *  is xterm's default, and a request computed against it is noise. */
+  const gridKnownRef = useRef(false);
 
   /**
    * Ask the remote daemon to resize the PTY to `cols × rows` — the preferred
@@ -303,13 +321,31 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
       maxFontSize: maxFontSizeRef.current,
       fontFamily: terminalFontFamilyRef.current,
     });
-    if (boxKey !== state.boxKey) {
-      state.boxKey = boxKey;
-      state.settled = undefined;
-      state.passes = 0;
-      // A genuinely new box size: worth asking the remote for again, even if
-      // an earlier box already tried (and was refused for) this exact grid.
-      lastRequestedGeometryRef.current = null;
+    // Remember the real cell size whenever the mirror is drawn at the ceiling.
+    // Same clamp computeMirrorGeometry applies, so the two agree on "ceiling".
+    const ceiling = Math.max(MIN_MIRROR_FONT_SIZE, maxFontSizeRef.current);
+    const ceilingKey = `${ceiling}x${terminalFontFamilyRef.current}`;
+    if (
+      term.options.fontSize === ceiling &&
+      term.cols > 0 && term.rows > 0 &&
+      screen.offsetWidth > 0 && screen.offsetHeight > 0
+    ) {
+      ceilingCellRef.current = {
+        key: ceilingKey,
+        width: screen.offsetWidth / term.cols,
+        height: screen.offsetHeight / term.rows,
+      };
+    }
+
+    // The resize request: decided once per box size, not once per remote grid.
+    const requestKey = mirrorResizeRequestKey({
+      boxWidth,
+      boxHeight,
+      maxFontSize: maxFontSizeRef.current,
+      fontFamily: terminalFontFamilyRef.current,
+    });
+    if (gridKnownRef.current && requestKey !== lastRequestKeyRef.current) {
+      const cell = ceilingCellRef.current;
       const ideal = computeMirrorGeometry({
         boxWidth,
         boxHeight,
@@ -319,13 +355,27 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
         renderedHeight: screen.offsetHeight,
         currentFontSize: term.options.fontSize ?? maxFontSizeRef.current,
         maxFontSize: maxFontSizeRef.current,
+        ceilingCell: cell && cell.key === ceilingKey ? cell : undefined,
       });
-      // Only worth a round trip when it would actually change something — a
-      // box whose ideal grid already matches the remote's current one gains
-      // nothing from asking, win or lose.
-      if (ideal && (ideal.cols !== term.cols || ideal.rows !== term.rows)) {
-        requestRemoteResize(ideal.cols, ideal.rows);
+      // Unmeasurable (hidden, not laid out): leave the key unspent so the
+      // first real measurement still gets to decide.
+      if (ideal) {
+        lastRequestKeyRef.current = requestKey;
+        // A genuinely new box size: worth asking the remote for again, even if
+        // an earlier box already tried (and was refused for) this exact grid.
+        lastRequestedGeometryRef.current = null;
+        // Only worth a round trip (and a SIGWINCH on the remote) when the grid
+        // is off by more than the font fit can absorb.
+        if (shouldRequestRemoteResize(ideal, term.cols, term.rows)) {
+          requestRemoteResize(ideal.cols, ideal.rows);
+        }
       }
+    }
+
+    if (boxKey !== state.boxKey) {
+      state.boxKey = boxKey;
+      state.settled = undefined;
+      state.passes = 0;
     } else if (state.passes >= MAX_FIT_PASSES) {
       return;
     }
@@ -698,6 +748,8 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
     // one) — either way, whatever this component last asked THAT session's
     // daemon to resize to says nothing about this one.
     lastRequestedGeometryRef.current = null;
+    lastRequestKeyRef.current = null;
+    gridKnownRef.current = false;
     const remote = window.electronAPI?.remote;
     if (!remote) return;
 
@@ -707,6 +759,11 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
       if (!term) return;
       term.reset();
       term.resize(e.cols, e.rows);
+      // A fresh attach or a reconnect: the grid is new information, so the box
+      // gets one decision against it. (A grant arrives as onPaneResize, below,
+      // and deliberately does not reset this.)
+      gridKnownRef.current = true;
+      lastRequestKeyRef.current = null;
       repaintDepthRef.current += 1;
       try {
         const snapshot = decodeBase64Bytes(e.snapshotB64);

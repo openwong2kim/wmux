@@ -43,7 +43,17 @@ class FakeTerminal {
     setupLog.push('open');
   }
   reset(): void { this.resetCalls++; }
-  resize(cols: number, rows: number): void { this.resized.push({ cols, rows }); }
+  /** xterm's own grid, as `term.cols`/`term.rows` report it. */
+  cols = 80;
+  rows = 24;
+  /** Left undefined unless a test lays the terminal out — `runFit` returns
+   *  early without an `.xterm-screen`, which is every other test's world. */
+  element: HTMLElement | undefined = undefined;
+  resize(cols: number, rows: number): void {
+    this.resized.push({ cols, rows });
+    this.cols = cols;
+    this.rows = rows;
+  }
   /**
    * xterm's `write(data, callback)` — the callback fires once the parser has
    * consumed the chunk, which is the seam the repaint gate hangs off. The fake
@@ -144,6 +154,7 @@ describe('RemoteMirrorTerminal', () => {
   let errorHandlers: Handler[];
   let paneDetach: ReturnType<typeof vi.fn>;
   let paneWrite: ReturnType<typeof vi.fn>;
+  let paneResize: ReturnType<typeof vi.fn>;
   let clipboardWrite: ReturnType<typeof vi.fn>;
   let clipboardRead: ReturnType<typeof vi.fn>;
 
@@ -157,6 +168,7 @@ describe('RemoteMirrorTerminal', () => {
     errorHandlers = [];
     paneDetach = vi.fn(() => Promise.resolve());
     paneWrite = vi.fn();
+    paneResize = vi.fn(() => Promise.resolve({ ok: true }));
 
     (window as unknown as { electronAPI: unknown }).electronAPI = {
       remote: {
@@ -182,6 +194,7 @@ describe('RemoteMirrorTerminal', () => {
         },
         paneDetach,
         paneWrite,
+        paneResize,
       },
     };
 
@@ -498,6 +511,92 @@ describe('RemoteMirrorTerminal', () => {
     expect(term.written).toHaveLength(writesAfterAttach); // nothing repainted
 
     unmount();
+  });
+
+  // The remote mirror "breathing" bug: every grant arrived as a resize event,
+  // changed the remote grid, and re-armed the resize request — so the mirror
+  // asked again, against a font the fit had just changed, for a grid one or
+  // two cells away, forever (~2 Hz, SIGWINCH on the host each time).
+  describe('remote resize requests', () => {
+    // A stepped cell model (dpr 1): xterm's cell size is not proportional to
+    // the font size, which is what made each extrapolation disagree.
+    const cellW = (f: number) => Math.ceil(0.6021 * f);
+    const cellH = (f: number) => Math.ceil(1.1719 * f);
+
+    function layOut(container: HTMLElement, term: FakeTerminal, box: { w: number; h: number }) {
+      const el = document.createElement('div');
+      const screen = document.createElement('div');
+      screen.className = 'xterm-screen';
+      el.appendChild(screen);
+      const font = () => Number(term.options['fontSize']);
+      Object.defineProperty(screen, 'offsetWidth', { get: () => term.cols * cellW(font()) });
+      Object.defineProperty(screen, 'offsetHeight', { get: () => term.rows * cellH(font()) });
+      term.element = el;
+      const boxEl = container.querySelector('div.relative') as HTMLElement;
+      Object.defineProperty(boxEl, 'clientWidth', { get: () => box.w, configurable: true });
+      Object.defineProperty(boxEl, 'clientHeight', { get: () => box.h, configurable: true });
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      useStore.setState({ terminalFontSize: 12.5 });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('★ a granted resize does not trigger another request', async () => {
+      const box = { w: 448, h: 726 };
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      layOut(container, term, box);
+
+      await act(async () => {
+        metaHandlers.forEach((h) => h({ attachId: 'a1', cols: 36, rows: 44, snapshotB64: btoa('') }));
+        term.flushWrites();
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(paneResize).toHaveBeenCalledTimes(1);
+      expect(paneResize).toHaveBeenLastCalledWith('a1', 56, 48);
+
+      // The grant, echoed back through the mirror's own stream. Then a second
+      // one: a remote that re-grids on its own is not something to fight.
+      for (const [cols, rows] of [[56, 48], [53, 46]]) {
+        await act(async () => {
+          resizeHandlers.forEach((h) => h({ attachId: 'a1', cols, rows }));
+          await vi.advanceTimersByTimeAsync(1000);
+        });
+      }
+      expect(paneResize).toHaveBeenCalledTimes(1);
+
+      unmount();
+    });
+
+    it('asks again when the box itself changes size', async () => {
+      const box = { w: 448, h: 726 };
+      const { container, unmount } = render(<RemoteMirrorTerminal attachId="a1" />);
+      const term = termInstances[0]!;
+      layOut(container, term, box);
+
+      await act(async () => {
+        metaHandlers.forEach((h) => h({ attachId: 'a1', cols: 36, rows: 44, snapshotB64: btoa('') }));
+        term.flushWrites();
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(paneResize).toHaveBeenCalledTimes(1);
+
+      box.w = 800;
+      await act(async () => {
+        // A ResizeObserver callback in the app; jsdom has none, and a remote
+        // resize event is the other path that re-runs the fit.
+        resizeHandlers.forEach((h) => h({ attachId: 'a1', cols: 56, rows: 48 }));
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(paneResize).toHaveBeenCalledTimes(2);
+      expect(paneResize).toHaveBeenLastCalledWith('a1', 100, 48);
+
+      unmount();
+    });
   });
 
   it('ignores a resize aimed at a different attach', () => {
