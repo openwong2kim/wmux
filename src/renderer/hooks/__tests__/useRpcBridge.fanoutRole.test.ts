@@ -149,12 +149,11 @@ describe('useRpcBridge — fan-out task roles', () => {
   it('hands the lineage owner to pty.create (main stamps it inside the create), with no await before it', () => {
     const block = fanoutSpawnBlock();
     expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf, \.\.\.\(fanoutOrigin \? \{ fanoutOrigin \} : \{\}\) \} : createOptions/);
-    // The requester is resolved from the layout BEFORE addWorkspace changes it.
-    // …once per fan-out: a later task arrives with the first task's origin.
-    expect(block).toMatch(/params\.fanoutOrigin !== undefined\s*\? sanitizeFanoutOrigin\(params\.fanoutOrigin\)\s*: originFromCaller/);
-    const resolved = block.indexOf('originFromCaller(useStore.getState(), params.fanoutCaller)');
-    expect(resolved).toBeGreaterThan(-1);
-    expect(resolved).toBeLessThan(block.indexOf('store.addWorkspace(name)'));
+    // The requester arrives resolved (main resolved it once, at request
+    // time): the spawn only sanitizes it and never re-resolves a ptyId
+    // against the layout, which may have moved on since.
+    expect(block).toMatch(/const fanoutOrigin = sanitizeFanoutOrigin\(params\.fanoutOrigin\);/);
+    expect(block).not.toMatch(/originFromCaller|fanoutCaller/);
     // An await between addWorkspace and pty.create lets the empty-leaf funnel
     // spawn a plain shell into the new pane first.
     const end = block.indexOf('await window.electronAPI.pty.create(');

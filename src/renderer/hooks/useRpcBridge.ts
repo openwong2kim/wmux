@@ -1088,14 +1088,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       console.warn('[wmux:role-binding] fan-out agent not swapped', { role, note: swap.note });
     }
 
-    // Who asked, resolved from the layout BEFORE addWorkspace changes it: a
-    // pane caller's ptyId becomes its stable pane/surface ids and a snapshot
-    // of its name, which main stamps on the lineage with the owner. Later
-    // tasks of the same fan-out arrive with the first task's origin instead,
-    // so one fan-out never names two requesters.
-    const fanoutOrigin = params.fanoutOrigin !== undefined
-      ? sanitizeFanoutOrigin(params.fanoutOrigin)
-      : originFromCaller(useStore.getState(), params.fanoutCaller);
+    // Who asked: main resolved it ONCE when the fan-out was requested
+    // (fanout.resolveOrigin below) and sends the same origin with every task.
+    // Never re-resolved against today's layout — the requesting pane may have
+    // closed since, and its ptyId may belong to another pane by now.
+    const fanoutOrigin = sanitizeFanoutOrigin(params.fanoutOrigin);
 
     store.addWorkspace(name);
     const afterAdd = useStore.getState();
@@ -2073,6 +2070,18 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
   // map (orchestratorRoleBindings) live in the renderer store, so the renderer
   // is the natural place to resolve the pair. Fields are additive — legacy
   // callers that read only `workspaceId` are unaffected.
+  // Fan-out requester (#1575): main asks, once per fan-out and before any
+  // approval or git work, which pane holds the caller's ptyId. Scoped to the
+  // workspace main verified as the fan-out's owner: a pane found anywhere
+  // else is not recorded as the requester. Renderer-only (sendToRenderer from
+  // pipe/handlers/fanout.rpc.ts), never exposed on the pipe.
+  if (method === 'fanout.resolveOrigin') {
+    const ptyId = typeof params.ptyId === 'string' ? params.ptyId : '';
+    const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+    if (!ptyId || !workspaceId) return { origin: null };
+    return { origin: originFromCaller(store, { kind: 'pane', ptyId }, workspaceId) ?? null };
+  }
+
   if (method === 'input.findOwnerWorkspace') {
     const ptyId = typeof params.ptyId === 'string' ? params.ptyId : '';
     if (!ptyId) return { workspaceId: null };

@@ -133,6 +133,13 @@ describe('requester origin (who asked for a task)', () => {
     expect(originFromCaller(base, undefined)).toBeUndefined();
   });
 
+  it('records a pane requester only inside the fan-out\'s owning workspace', () => {
+    expect(originFromCaller(base, { kind: 'pane', ptyId: 'pty-74' }, 'ws-owner'))
+      .toEqual({ kind: 'pane', paneId: 'p74', surfaceId: 's74', label: 'w115-74 · Compare' });
+    // The pty lives in ws-owner, but the fan-out is owned by another workspace.
+    expect(originFromCaller(base, { kind: 'pane', ptyId: 'pty-74' }, 'ws-other')).toBeUndefined();
+  });
+
   it('shows the live label for an open pane, and the snapshot marked closed once it is gone', () => {
     const origin = { kind: 'pane' as const, paneId: 'p74', surfaceId: 's74', label: 'w115-74 · Compare' };
     const live = resolveTaskRequester({ ...base, paneLabel: { p74: 'Renamed' }, fanoutOrigin: { t1: origin } }, 't1');

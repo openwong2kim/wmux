@@ -457,33 +457,30 @@ describe('depth-1 lineage stamp', () => {
     for (const t of res.tasks) expect(lineage.fanoutOwnerOf(t.workspaceId!)).toBe('ws-ceo');
   });
 
-  it('resolves the requester once per fan-out: the first task\'s origin is reused, never re-resolved', async () => {
-    // The renderer resolves the caller on the first spawn; later tasks must
-    // carry THAT origin, even if the pane is gone by then.
-    const calls: Array<Record<string, unknown>> = [];
-    let seq = 0;
-    const resolving: FanOutRendererPort = {
-      spawnWorkspace: vi.fn(async (p) => {
-        calls.push({ ...p });
-        seq++;
-        return { workspaceId: `ws-r${seq}`, ptyId: `pty-r${seq}`,
-          ...(seq === 1 ? { fanoutOrigin: { kind: 'pane' as const, paneId: 'p74', surfaceId: 's74', label: 'w115-74' } } : {}) };
-      }),
-    };
-    await new FanOutService({ daemon: makeDaemonFake().port, renderer: resolving, worktrees: makeWorktreesFake() })
-      .start({ ...baseReq(), titles: ['A', 'B', 'C'], idempotencyKey: 'k-pane', caller: { kind: 'pane', ptyId: 'pty-74' } });
-    expect(calls.map((c) => [c.fanoutCaller, c.fanoutOrigin])).toEqual([
-      [{ kind: 'pane', ptyId: 'pty-74' }, undefined],
-      [undefined, { kind: 'pane', paneId: 'p74', surfaceId: 's74', label: 'w115-74' }],
-      [undefined, { kind: 'pane', paneId: 'p74', surfaceId: 's74', label: 'w115-74' }],
-    ]);
+  it('hands every task the one origin resolved at request time — even when the first spawn fails', async () => {
+    // The requester was resolved once, before the fan-out ran. Every spawn
+    // carries exactly that origin: the service never asks the renderer to
+    // re-resolve a ptyId, so a pane that closes mid-fan-out cannot move its
+    // tasks to whichever pane holds that ptyId next.
+    const origin = { kind: 'pane' as const, paneId: 'p74', surfaceId: 's74', label: 'w115-74' };
+    const renderer = makeRendererFake({ spawnFailOn: (name) => name.endsWith('A') });
+    const res = await new FanOutService({ daemon: makeDaemonFake().port, renderer: renderer.port, worktrees: makeWorktreesFake() })
+      .start({ ...baseReq(), titles: ['A', 'B', 'C'], idempotencyKey: 'k-pane', caller: origin });
+    expect(renderer.spawned).toHaveLength(3);
+    for (const p of renderer.spawned) {
+      expect((p as { fanoutOrigin?: unknown }).fanoutOrigin).toEqual(origin);
+      expect(p).not.toHaveProperty('fanoutCaller');
+    }
+    // …and main's confirming re-mark stamps that same origin.
+    for (const t of res.tasks.filter((x) => x.workspaceId)) {
+      expect(lineage.lineageFor([t.workspaceId!])[t.workspaceId!].origin).toEqual(origin);
+    }
 
-    // First resolution found no pane: no later task gets a requester either.
+    // No resolvable requester: no task carries one.
     const none = makeRendererFake();
     await new FanOutService({ daemon: makeDaemonFake().port, renderer: none.port, worktrees: makeWorktreesFake() })
-      .start({ ...baseReq(), idempotencyKey: 'k-none', caller: { kind: 'pane', ptyId: 'pty-gone' } });
-    expect(none.spawned.map((p) => [(p as { fanoutCaller?: unknown }).fanoutCaller, (p as { fanoutOrigin?: unknown }).fanoutOrigin]))
-      .toEqual([[{ kind: 'pane', ptyId: 'pty-gone' }, undefined], [undefined, undefined]]);
+      .start({ ...baseReq(), idempotencyKey: 'k-none' });
+    for (const p of none.spawned) expect(p).not.toHaveProperty('fanoutOrigin');
   });
 
   it('stamps a GUI or orchestrator origin main-side without replacing a recorded one', async () => {

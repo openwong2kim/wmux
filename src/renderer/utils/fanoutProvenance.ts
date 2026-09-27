@@ -294,17 +294,20 @@ function findOriginSurface(state: RequesterState, origin: FanoutOrigin): PaneHit
 
 /**
  * The origin to stamp for a fan-out caller, resolved from the renderer's
- * layout at spawn time. A pane caller no open pane holds yields undefined —
- * an origin without ids would be stamped for good and could never name the
- * pane, so the task reads as "requester unknown" instead.
+ * layout once, when the fan-out is requested. A pane caller no open pane
+ * holds yields undefined — an origin without ids would be stamped for good and
+ * could never name the pane, so the task reads as "requester unknown"
+ * instead. So does a pane outside `ownerWorkspaceId` (when given): the
+ * requester is a pane of the workspace that owns the fan-out, or nobody.
  */
-export function originFromCaller(state: RequesterState, caller: unknown): FanoutOrigin | undefined {
+export function originFromCaller(state: RequesterState, caller: unknown, ownerWorkspaceId?: string): FanoutOrigin | undefined {
   if (!caller || typeof caller !== 'object') return undefined;
   const c = caller as { kind?: unknown; ptyId?: unknown };
   if (c.kind === 'gui' || c.kind === 'orchestrator') return { kind: c.kind };
   if (c.kind !== 'pane' || typeof c.ptyId !== 'string' || !c.ptyId) return undefined;
   const loc = layoutIndex(state.workspaces).byPty.get(c.ptyId);
   if (!loc) return undefined;
+  if (ownerWorkspaceId !== undefined && loc.ws.id !== ownerWorkspaceId) return undefined;
   const hit = describe(state, loc);
   return { kind: 'pane', paneId: hit.paneId, surfaceId: hit.surfaceId, label: hit.label };
 }

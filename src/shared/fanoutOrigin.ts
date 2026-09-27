@@ -22,10 +22,6 @@ export interface FanoutOrigin {
   label?: string;
 }
 
-/** What the fan-out service knows about its caller: the pipe resolves a pane
- *  caller to its ptyId only; the renderer turns that into a FanoutOrigin. */
-export type FanoutCaller = { kind: 'pane'; ptyId: string } | { kind: 'orchestrator' } | { kind: 'gui' };
-
 const ID_MAX = 128;
 const LABEL_MAX = 200;
 
