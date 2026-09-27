@@ -35,7 +35,9 @@ function TaskRequesterLine({ workspaceId, agents = [] }: TaskRequesterLineProps)
           type="button"
           draggable={false}
           // The row is a native drag source and selects its own workspace on
-          // click: this control only jumps to the requesting pane.
+          // click: this control only jumps to the requesting pane. The roster
+          // marker puts it behind the row's handleDragStart rejection too.
+          data-workspace-agent-roster
           className={`min-w-0 truncate rounded text-left hover:text-[var(--accent-blue)] ${FOCUS_RING}`}
           title={line}
           aria-label={t('sidebar.requester.jump', { name: requesterName(live, t) ?? '' })}
