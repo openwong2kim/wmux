@@ -1,0 +1,35 @@
+{
+ "tui": "claude",
+ "version": "Claude Code 2.1.283",
+ "cols": 80,
+ "rows": 11,
+ "modes": [
+  "1000",
+  "1002",
+  "1003",
+  "1004",
+  "1006",
+  "1049",
+  "2004",
+  "2031"
+ ],
+ "cursor": [
+  1,
+  6
+ ],
+ "keysSent": "(prompt drawn)",
+ "note": "80x11: command top scrolled off AND option list windowed (↓ marker, '4. No' not rendered)",
+ "screen": [
+  "   │ beta-three beta-four beta-five beta-six beta-seven beta-eight beta-nine",
+  "   │ beta-ten gamma-one gamma-two gamma-three > /dev/null && touch",
+  "   │ long-cmd-done2.txt",
+  "   Echo word list to null and create marker file",
+  "",
+  " Do you want to proceed?",
+  " ❯ 1. Yes",
+  "   2. Yes, and always allow access to /private/tmp/demo/proj from this project",
+  " ↓ 3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+  "",
+  " Esc to cancel · Tab to amend"
+ ]
+}

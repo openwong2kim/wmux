@@ -1,0 +1,40 @@
+{
+ "tui": "claude",
+ "version": "Claude Code 2.1.283",
+ "cols": 100,
+ "rows": 16,
+ "modes": [
+  "1000",
+  "1002",
+  "1003",
+  "1004",
+  "1006",
+  "1049",
+  "2004",
+  "2031"
+ ],
+ "cursor": [
+  1,
+  10
+ ],
+ "keysSent": "(prompt drawn)",
+ "note": "same 207-char Bash dialog at 100x16: top rule scrolled off, command still whole",
+ "screen": [
+  " Bash command",
+  " Tip: auto mode handles these prompts for you — choose \"switch to auto mode\" below",
+  "",
+  "   │ echo alpha-one alpha-two alpha-three alpha-four alpha-five alpha-six alpha-seven alpha-eight",
+  "   │ alpha-nine alpha-ten beta-one beta-two beta-three beta-four beta-five beta-six beta-seven",
+  "   │ beta-eight beta-nine beta-ten gamma-one gamma-two gamma-three > /dev/null && touch",
+  "   │ long-cmd-done.txt",
+  "   Echo word list to null and create marker file",
+  "",
+  " Do you want to proceed?",
+  " ❯ 1. Yes",
+  "   2. Yes, and always allow access to /private/tmp/demo/proj from this project",
+  "   3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+  "   4. No",
+  "",
+  " Esc to cancel · Tab to amend"
+ ]
+}
