@@ -1,5 +1,7 @@
 // The sidebar's display order for every sort mode, shared by the full sidebar
 // and the compact rail so the two never disagree (glance board, 2026-09-25).
+// Attached remote rows join only the full sidebar (the rail has no remote
+// rows), so the rail's order is the full list with those rows left out.
 // The pinned group leads in every mode and is shown as stored; only the rows
 // below it re-sort, under the settle rule (pinned to top, 2026-09-26).
 

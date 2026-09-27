@@ -149,8 +149,12 @@ export default function Sidebar() {
       new Set(workspaces.map((w) => w.id)),
     );
   }, [orderedWorkspaces, workspaces, missionByPaneGroup, fanoutLineage, fanoutSpawnOwner]);
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const activeRemoteKey = useStore((s) => s.activeRemoteKey);
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  // While a mirror is on screen the local selection is only remembered, not
+  // shown: with remote rows in the same list, marking both would show two
+  // selected rows. Task-group folding still follows the real selection.
+  const shownActiveId = activeRemoteKey ? null : activeWorkspaceId;
   const setActiveRemoteKey = useStore((s) => s.setActiveRemoteKey);
   const detachRemoteWorkspace = useStore((s) => s.detachRemoteWorkspace);
   const removeWorkspace = useStore((s) => s.removeWorkspace);
@@ -188,19 +192,21 @@ export default function Sidebar() {
   // Ctrl+F terminal-search shortcut (useKeyboard), so this is scoped to the
   // sidebar root via onKeyDown and stops propagation so the global handler
   // does not also fire.
+  // Remote rows share the list and the query, so they count toward showing it.
+  const listedCount = workspaces.length + remoteWorkspaces.length;
   const handleSidebarKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'f' && (e.ctrlKey || e.metaKey) && workspaces.length >= 3) {
+    if (e.key === 'f' && (e.ctrlKey || e.metaKey) && listedCount >= 3) {
       e.preventDefault();
       e.stopPropagation();
       wsSearchRef.current?.focus();
     }
-  }, [workspaces.length]);
+  }, [listedCount]);
 
   // The search input hides below 3 workspaces; clear any leftover query so
   // the list can't stay filtered with no visible way to reset it.
   useEffect(() => {
-    if (workspaces.length < 3) setWsSearch('');
-  }, [workspaces.length]);
+    if (listedCount < 3) setWsSearch('');
+  }, [listedCount]);
 
   // A1: 콜백을 useCallback으로 안정화해 memo(WorkspaceItem)가 실효하게 한다.
   // 요약만 구독하므로 개별 ws는 getState()로 명령형 조회한다(구독 다이어트).
@@ -243,7 +249,7 @@ export default function Sidebar() {
   const renderTask = useCallback((id: string) => (
     <WorkspaceItem
       workspaceId={id}
-      isActive={id === activeWorkspaceId}
+      isActive={id === shownActiveId}
       isMultiview={multiviewIds.includes(id)}
       index={workspaces.findIndex((w) => w.id === id)}
       onSelect={setActiveWorkspace}
@@ -256,7 +262,7 @@ export default function Sidebar() {
       onReorder={reorderWorkspace}
       taskRow
     />
-  ), [activeWorkspaceId, multiviewIds, workspaces, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
+  ), [shownActiveId, multiviewIds, workspaces, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
 
   return (
     <div
@@ -283,7 +289,7 @@ export default function Sidebar() {
       </div>
 
       {/* Workspace search input — only visible when 3+ workspaces */}
-      {workspaces.length >= 3 && (
+      {listedCount >= 3 && (
         <div className="px-3 pb-1">
           <input
             ref={wsSearchRef}
@@ -359,7 +365,7 @@ export default function Sidebar() {
             <Fragment key={node.id}>
               <WorkspaceItem
                 workspaceId={ws.id}
-                isActive={ws.id === activeWorkspaceId}
+                isActive={ws.id === shownActiveId}
                 isMultiview={multiviewIds.includes(ws.id)}
                 index={workspaces.indexOf(ws)}
                 onSelect={setActiveWorkspace}
