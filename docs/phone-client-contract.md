@@ -2025,9 +2025,9 @@ not the desktop fields.
   - `nestedUnder: "pane"` with `requesterPaneId` — the desktop draws the task
     under the owner's pane that asked for it. `requesterPaneId` is a desktop
     pane id that one of this reply's sessions under `ownerWorkspaceId`
-    carries: this row's `panes[]` entries and `GET /api/sessions` rows carry
-    the same `paneId`. Draw the task row indented under the pane group with
-    that `paneId`.
+    carries: the `ownerWorkspaceId` row's `panes[]` entries and
+    `GET /api/sessions` rows carry the same `paneId`. Draw the task row
+    indented under the owner's pane group with that `paneId`.
   - `nestedUnder: "closedPane"` (no `requesterPaneId`) — the requesting pane is
     gone, or no pane asked (the task came from the orchestrator or the
     desktop's own UI). Draw it in a trailing "From closed pane" group under
