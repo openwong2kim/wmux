@@ -53,7 +53,140 @@ import { isMac } from '../shared/platform';
 // successful cmdlet failed with the previous native command's code. Movement
 // since the last prompt is what separates "this number describes the command
 // that just ran" from "this number is left over".
-const INTEGRATION_VERSION = 11;
+// v12: a `codex` shell function in the bash and zsh integrations. Codex CLI
+// 0.157+ starts one shared per-account background server the first time a
+// TUI runs, and that server outlives the pane that started it and parents
+// the shell commands and MCP servers of every later Codex thread on the
+// account. Typed in a pane, it inherited that pane's WMUX_* keys, so other
+// panes' Codex commands acted as the first pane. See CODEX_SEED_GUARD.
+const INTEGRATION_VERSION = 12;
+
+// -----------------------------------------------------------------------
+// Codex shared-server seed guard (v12) — shared by the bash and zsh scripts.
+//
+// Measured against codex-cli 0.157.1 with a fresh CODEX_HOME and no server
+// running:
+//   - `codex`, `codex resume --last`  → start a managed server (ppid 1) that
+//     carries every WMUX_* key of the shell that typed it.
+//   - `codex --no-daemon`, `codex --no-daemon resume --last`,
+//     `codex resume --no-daemon --last` → no server, no control socket.
+//   - `codex exec …`, `codex e …`, `codex review …` → run in-process; they
+//     start no server and did not connect to one that was already running.
+//
+// So the function classifies the command line the way codex's own parser
+// does (first non-option word, skipping the values of options that take one;
+// everything after `--` is the prompt) and then:
+//   - interactive forms (no subcommand, a prompt, `resume`, `fork`) run with
+//     `--no-daemon` prepended, keeping the pane's environment — the thread
+//     runs inside this process, so its commands act as this pane and nothing
+//     outlives it;
+//   - `exec`/`e`/`review` run unchanged — the hooks bridge needs WMUX_PTY_ID
+//     to attribute their events to this pane;
+//   - every other subcommand (`agents`, `queue`, `app-server`,
+//     `remote-control`, `app`, `exec-server`, …), and an interactive form on a
+//     codex that has no `--no-daemon`, runs with every WMUX_* key removed, so
+//     a server it starts carries no pane identity (its children then fail
+//     closed instead of acting as this pane).
+// It steps aside entirely when the command already chooses a server
+// (`--remote`, `--no-daemon` — wmux's own Codex launches pass `--remote`),
+// when WMUX_CODEX_WRAP=0, or when no codex executable is on PATH.
+//
+// The binary is resolved once and always called by absolute path: zsh
+// alias-expands the word after `command`, and the user's rc (which may hold
+// `alias codex=…`) is sourced before this function is defined.
+//
+// Not covered (the codex CLI is reached without this function): scripts and
+// `bash -c`/`zsh -c` lines, `env codex`, `exec codex`, a full path to the
+// binary, a user-defined `codex` function (left alone on purpose), shells
+// with the integration turned off, fish/pwsh, and shells opened before v12
+// was installed.
+// -----------------------------------------------------------------------
+const CODEX_SEED_GUARD_CLASSIFY = `__wmux_codex_classify() {
+  local __wmux_a __wmux_skip=0 __wmux_sub='' __wmux_end=0
+  __wmux_codex_kind=''
+  for __wmux_a in "$@"; do
+    if [ "$__wmux_skip" = 1 ]; then __wmux_skip=0; continue; fi
+    case "$__wmux_a" in
+      --) __wmux_end=1; break ;;
+      --remote|--remote=*|--no-daemon) __wmux_codex_kind=pass; return 0 ;;
+      -c|--config|-m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|-C|--cd|-i|--image|--enable|--disable|--add-dir|--local-provider|--remote-auth-token-env|-o|--output-last-message|--output-schema|--color|--thread-source|--base|--commit|--title) __wmux_skip=1 ;;
+      -*) ;;
+      *) [ -z "$__wmux_sub" ] && __wmux_sub="$__wmux_a" ;;
+    esac
+  done
+  [ "$__wmux_end" = 1 ] && [ -z "$__wmux_sub" ] && __wmux_sub=' prompt'
+  case "$__wmux_sub" in
+    ''|resume|fork) __wmux_codex_kind=tui ;;
+    exec|e|review) __wmux_codex_kind=env ;;
+    agents|login|logout|mcp|plugin|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|queue|archive|delete|migrate-rollouts|unarchive|cloud|exec-server|features|help) __wmux_codex_kind=scrub ;;
+    *) __wmux_codex_kind=tui ;;
+  esac
+}
+
+# Does this codex accept --no-daemon? Asked once per binary and version.
+__wmux_codex_has_nodaemon() {
+  local __wmux_key __wmux_help
+  __wmux_key="$1|$("$1" --version 2>/dev/null)"
+  if [ "\${__wmux_codex_probe_key-}" != "$__wmux_key" ]; then
+    __wmux_help=$("$1" --help 2>/dev/null)
+    case "$__wmux_help" in
+      *--no-daemon*) __wmux_codex_nodaemon=1 ;;
+      *) __wmux_codex_nodaemon=0 ;;
+    esac
+    __wmux_codex_probe_key="$__wmux_key"
+  fi
+  [ "$__wmux_codex_nodaemon" = 1 ]
+}`;
+
+/** The dispatching body shared by both shells. `unsetAll` is the
+ *  shell-specific statement that removes every WMUX_* variable. */
+function codexSeedGuardBody(unsetAll: string): string {
+  return `  if [ -z "$__wmux_bin" ]; then
+    command codex "$@"
+    return
+  fi
+  if [ "\${WMUX_CODEX_WRAP:-1}" = "0" ]; then
+    "$__wmux_bin" "$@"
+    return
+  fi
+  __wmux_codex_classify "$@"
+  case "$__wmux_codex_kind" in
+    tui)
+      if __wmux_codex_has_nodaemon "$__wmux_bin"; then
+        "$__wmux_bin" --no-daemon "$@"
+      else
+        ( ${unsetAll}; exec "$__wmux_bin" "$@" )
+      fi
+      ;;
+    scrub) ( ${unsetAll}; exec "$__wmux_bin" "$@" ) ;;
+    *) "$__wmux_bin" "$@" ;;
+  esac`;
+}
+
+const BASH_CODEX_SEED_GUARD = `# Codex shared-server seed guard (v12). Off with WMUX_CODEX_WRAP=0. Skipped on
+# Git Bash and when the user already defines a codex function.
+if [ -z "\${MSYSTEM:-}" ] && ! declare -F codex >/dev/null 2>&1; then
+${CODEX_SEED_GUARD_CLASSIFY}
+
+function codex {
+  local __wmux_bin
+  __wmux_bin=$(type -P codex 2>/dev/null)
+${codexSeedGuardBody('unset "${!WMUX_@}" 2>/dev/null')}
+}
+fi`;
+
+const ZSH_CODEX_SEED_GUARD = `# Codex shared-server seed guard (v12). Off with WMUX_CODEX_WRAP=0. Skipped when
+# the user already defines a codex function.
+if (( ! \${+functions[codex]} )); then
+${CODEX_SEED_GUARD_CLASSIFY}
+
+function codex {
+  emulate -L zsh
+  local __wmux_bin
+  __wmux_bin=$(whence -p codex 2>/dev/null)
+${codexSeedGuardBody("unset -m 'WMUX_*'")}
+}
+fi`;
 const VERSION_FILE = '.version';
 
 // -----------------------------------------------------------------------
@@ -232,6 +365,10 @@ if [ -r "\$HOME/.bashrc" ] && [ -z "\${__WMUX_BASHRC_SOURCED:-}" ]; then
   . "\$HOME/.bashrc"
 fi
 
+# After the user's rc (so an existing codex function is seen) and after the
+# opt-out above (WMUX_SHELL_INTEGRATION=0 turns this off too).
+${BASH_CODEX_SEED_GUARD}
+
 __wmux_last_exit=0
 
 __wmux_preexec() {
@@ -352,6 +489,10 @@ fi
 if [ "\${WMUX_SHELL_INTEGRATION:-1}" = "0" ]; then
   return 0 2>/dev/null
 fi
+
+# After the user's .zshrc (so an existing codex function is seen) and after the
+# opt-out above (WMUX_SHELL_INTEGRATION=0 turns this off too).
+${ZSH_CODEX_SEED_GUARD}
 
 # preexec: 명령 실행 직전 → C (command start)
 __wmux_preexec() { printf '\\033]133;C\\a'; }
