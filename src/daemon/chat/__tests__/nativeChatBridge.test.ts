@@ -430,6 +430,26 @@ describe('launch', () => {
     expect(await createChatBridge(g.deps).launch({ id: 'pane', agent: 'codex', prompt: 'go' })).toMatchObject({ error: 'agent-runtime-unavailable', effect: 'none' });
   });
 
+  it('starts the shared Codex runtime without the pane identity but with the instance suffix', async () => {
+    const f = fixture();
+    f.state.pane!.meta.env = { WMUX_WORKSPACE_ID: 'ws-a', WMUX_WORKSPACE_NAME: 'A', WMUX_SURFACE_ID: 'sf-a',
+      WMUX_PTY_ID: 'pty-a', WMUX_MEMBER_ID: 'pty-a', WMUX_BRAIN_PTY: '1', WMUX_DATA_SUFFIX: '-demo', KEEP_ME: 'yes' };
+    let prepared = 0;
+    f.deps.relays.prepare = async () => {
+      if (prepared++ === 0) throw Object.assign(new Error('no socket'), { code: 'ENOENT' });
+      return { url: 'unix:///tmp/relay.sock', commit: () => true, close: async () => undefined };
+    };
+    f.deps.relays.unavailable = () => true;
+    const started: NodeJS.ProcessEnv[] = [];
+    f.deps.startCodexRuntime = async (env) => { started.push(env); };
+    expect(await createChatBridge(f.deps).launch({ id: 'pane', agent: 'codex', prompt: 'go' })).toMatchObject({ ok: true });
+    expect(started).toHaveLength(1);
+    for (const key of ['WMUX_WORKSPACE_ID', 'WMUX_WORKSPACE_NAME', 'WMUX_SURFACE_ID', 'WMUX_PTY_ID', 'WMUX_MEMBER_ID', 'WMUX_BRAIN_PTY']) {
+      expect(started[0]).not.toHaveProperty(key);
+    }
+    expect(started[0]).toMatchObject({ WMUX_DATA_SUFFIX: '-demo', KEEP_ME: 'yes' });
+  });
+
   it('types nothing when the grant is gone, and is uncertain when typing throws', async () => {
     const f = fixture();
     expect(await f.bridge.launch({ id: 'pane', agent: 'claude', prompt: 'go', authorized: async () => false }))

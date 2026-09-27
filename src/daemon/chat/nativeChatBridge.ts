@@ -9,7 +9,7 @@ import type { AgentLaunchOptions } from '../web/agentLaunch';
 import { buildAgentLaunch } from '../web/agentLaunch';
 import { screenBlocksChatSend } from '../transcript/chatScreenGate';
 import { deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
-import { terminalLaunchCommand } from '../transcript/terminalLaunch';
+import { codexRuntimeEnv, terminalLaunchCommand } from '../transcript/terminalLaunch';
 import type { TerminalChatService } from '../transcript/TerminalChatService';
 import type { ChatSessionService } from './ChatSessionService';
 import { ChatSendReceiptStore, type StoredChatOutcome } from './ChatSendReceiptStore';
@@ -487,7 +487,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
           if (!deps.relays.unavailable(error)) throw error;
           const moved = notReady(id, pane, revision);
           if (moved) return fail('launch-not-ready', moved);
-          try { await deps.startCodexRuntime(env); relay = await deps.relays.prepare(id, pane); }
+          try { await deps.startCodexRuntime(codexRuntimeEnv(env)); relay = await deps.relays.prepare(id, pane); }
           catch { return fail('agent-runtime-unavailable'); }
         }
         if (!RELAY_URL.test(relay.url)) return fail('launch-unconfirmed');

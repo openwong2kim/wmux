@@ -1,5 +1,24 @@
 import { validTerminalLaunchMode } from '../../shared/transcript/terminalChat';
 import { execFile } from 'node:child_process';
+import { ENV_KEYS } from '../../shared/constants';
+
+/** Per-pane identity keys. Everything else (notably WMUX_DATA_SUFFIX, which only
+ * selects the instance) is kept. */
+const PANE_IDENTITY_KEYS: readonly string[] = [
+  ENV_KEYS.WORKSPACE_ID, ENV_KEYS.WORKSPACE_NAME, ENV_KEYS.SURFACE_ID,
+  ENV_KEYS.PTY_ID, ENV_KEYS.MEMBER_ID, ENV_KEYS.BRAIN_PTY,
+];
+
+/** Environment for the shared Codex runtime server. That server outlives the pane
+ * that starts it and parents shell commands and MCP servers for every Codex pane on
+ * the account, so it must not carry any one pane's identity.
+ * Known limit: the server is per account, not per wmux instance, so the first
+ * starter's non-identity env (including WMUX_DATA_SUFFIX) wins across instances. */
+export function codexRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env };
+  for (const key of PANE_IDENTITY_KEYS) delete out[key];
+  return out;
+}
 /** Quote an initial instruction for the verified POSIX shell.
  * Never accept controls, terminal escapes or a caller-supplied launcher. */
 export function terminalLaunchCommand(agent: unknown, prompt: unknown, mode: unknown = 'default'): string {
