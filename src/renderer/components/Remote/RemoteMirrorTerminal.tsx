@@ -5,7 +5,9 @@ import { sanitizeTitle } from '../../../main/pty/titleDetect';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
 import {
   computeMirrorFontSize, computeMirrorGeometry, mirrorFitKey, mirrorResizeRequestKey,
-  shouldRequestRemoteResize, MAX_FIT_PASSES, MIN_MIRROR_FONT_SIZE,
+  mirrorCeilingCellKey, shouldRequestRemoteResize, classifyResizeRefusal, resizeRetryDelayMs,
+  planExternalReopen, initialExternalResizeState, DESK_PROBE_INTERVAL_MS,
+  MAX_FIT_PASSES, MIN_MIRROR_FONT_SIZE,
 } from './mirrorFit';
 import { createMirrorGestureTracker, decideMirrorKeyWithRepeat, shouldHonorMirrorClipboardWrite } from './mirrorInput';
 import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE } from './keyboardProtocol';
@@ -250,48 +252,151 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
   const maxFontSizeRef = useRef(terminalFontSize);
   maxFontSizeRef.current = terminalFontSize;
 
-  /** `${cols}x${rows}` this component last POSTed to `/resize`, so a box that
-   *  keeps re-triggering `runFit` at the SAME size (e.g. font-shrink passes
-   *  for the same box) does not repost an identical, already-answered
-   *  request. Cleared on a genuine box-size change (new request key), which is
-   *  exactly when asking again might get a different answer. */
-  const lastRequestedGeometryRef = useRef<string | null>(null);
-
-  /** The `mirrorResizeRequestKey` the resize decision was last made for. One
-   *  decision per box size / font ceiling / face — never per remote grid, or
-   *  each grant re-arms the next request (see mirrorFit.ts). */
-  const lastRequestKeyRef = useRef<string | null>(null);
+  /**
+   * The resize request, decided once per {@link mirrorResizeRequestKey} — box
+   * size, font ceiling, face, pixel ratio — never per remote grid: a grant
+   * changes the remote grid, and a decision keyed on it re-armed itself on
+   * every grant (see mirrorFit.ts). `consumed` is the key whose decision is
+   * done: asked and answered (granted, or refused for good), or nothing to ask.
+   */
+  const consumedRequestKeyRef = useRef<string | null>(null);
+  /** The request key the latest fit pass computed. */
+  const currentRequestKeyRef = useRef<string | null>(null);
+  /** The request on the wire or waiting to be retried. Identity-compared: a
+   *  reply for anything but the current object is stale. */
+  const inflightRef = useRef<{ key: string } | null>(null);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deskProbeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const externalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Grids that are the echo of this mirror's own latest request (asked for,
+   *  and what the host applied). A resize carrying one of them is our grant
+   *  coming back, and must never re-open the decision. */
+  const echoGridsRef = useRef<Set<string>>(new Set());
+  /** When the host last granted a request of ours. */
+  const lastGrantAtRef = useRef(-Infinity);
+  const externalStateRef = useRef(initialExternalResizeState());
 
   /** Cell size measured while the mirror was drawn at the font ceiling, keyed
-   *  by ceiling + face. xterm's cell size is a staircase in the font size, so
-   *  this — not an extrapolation from a shrunk font — is what the box's grid is
-   *  computed from once it is known. */
+   *  by {@link mirrorCeilingCellKey}. xterm's cell size is a staircase in the
+   *  font size, so a request is only ever computed from this measurement —
+   *  never extrapolated from a shrunk font. */
   const ceilingCellRef = useRef<{ key: string; width: number; height: number } | null>(null);
 
-  /** Whether the remote's grid has arrived (first meta). Before it, `term.cols`
-   *  is xterm's default, and a request computed against it is noise. */
+  /** Whether the remote's grid has arrived (a meta, or the first resize).
+   *  Before it, `term.cols` is xterm's default and a request would be noise. */
   const gridKnownRef = useRef(false);
+
+  const clearRequestTimers = useCallback(() => {
+    for (const ref of [retryTimerRef, deskProbeTimerRef, externalTimerRef]) {
+      if (ref.current !== null) {
+        clearTimeout(ref.current);
+        ref.current = null;
+      }
+    }
+  }, []);
+
+  /** Forget every decision, e.g. for a new attach. */
+  const resetRequestState = useCallback(() => {
+    clearRequestTimers();
+    consumedRequestKeyRef.current = null;
+    inflightRef.current = null;
+    echoGridsRef.current = new Set();
+    lastGrantAtRef.current = -Infinity;
+    externalStateRef.current = initialExternalResizeState();
+  }, [clearRequestTimers]);
+
+  /** Re-open the decision for the current key, unless a request is already
+   *  out for it, and run a fit pass to make it. */
+  const reopenDecision = useCallback(() => {
+    if (inflightRef.current && inflightRef.current.key === currentRequestKeyRef.current) return;
+    consumedRequestKeyRef.current = null;
+    scheduleFitRef.current();
+  }, []);
 
   /**
    * Ask the remote daemon to resize the PTY to `cols × rows` — the preferred
-   * fix for a box/grid mismatch, tried before falling back to font-shrink.
-   * Fire-and-forget from the caller's point of view: a grant arrives back
-   * through `onPaneResize` (this mirror's own SSE stream, see the attach
-   * effect below), not through this function's return value, so there is
-   * nothing here to await into a render. A refusal or a transport failure is
-   * silently swallowed — `runFit`'s existing font-shrink math is what handles
-   * that box on this pass regardless.
+   * fix for a box/grid mismatch, with font-shrink covering the box meanwhile.
+   * The grant itself reaches the mirror through `onPaneResize`; the reply here
+   * only decides whether this key's decision is done:
+   * - accepted: done.
+   * - `desk-owns-size`: done, but asked again every DESK_PROBE_INTERVAL_MS
+   *   while nothing changes, because the host sends no event when its own
+   *   window stops showing the pane.
+   * - rate-limited / transient: retried with backoff while the attach and the
+   *   key are still current; done once the backoff runs out.
+   * - anything else: done.
    */
-  const requestRemoteResize = useCallback((cols: number, rows: number) => {
+  const sendResizeRequest = useCallback((key: string, cols: number, rows: number, attempt: number) => {
     const id = attachIdRef.current;
-    if (!id) return;
-    if (cols < MIN_REMOTE_RESIZE_COLS || rows < MIN_REMOTE_RESIZE_ROWS) return;
-    const key = `${cols}x${rows}`;
-    if (lastRequestedGeometryRef.current === key) return;
-    lastRequestedGeometryRef.current = key;
-    window.electronAPI?.remote?.paneResize(id, cols, rows)
-      .catch(() => { /* see doc comment above — font-shrink is the fallback */ });
-  }, []);
+    const remote = window.electronAPI?.remote;
+    if (!id || !remote?.paneResize) return;
+    const request = { key };
+    inflightRef.current = request;
+    echoGridsRef.current = new Set([`${cols}x${rows}`]);
+    const current = () =>
+      inflightRef.current === request && attachIdRef.current === id && currentRequestKeyRef.current === key;
+    const settle = (res: { ok: true; cols: number; rows: number } | { ok: false; reason: string }) => {
+      if (!current()) {
+        if (inflightRef.current === request) {
+          inflightRef.current = null;
+          scheduleFitRef.current();
+        }
+        return;
+      }
+      inflightRef.current = null;
+      if (res.ok) {
+        echoGridsRef.current.add(`${res.cols}x${res.rows}`);
+        lastGrantAtRef.current = Date.now();
+        consumedRequestKeyRef.current = key;
+        return;
+      }
+      const kind = classifyResizeRefusal(res.reason);
+      if (kind === 'retry') {
+        const delay = resizeRetryDelayMs(attempt);
+        if (delay !== null) {
+          inflightRef.current = request;
+          retryTimerRef.current = setTimeout(() => {
+            retryTimerRef.current = null;
+            if (!current()) {
+              if (inflightRef.current === request) inflightRef.current = null;
+              scheduleFitRef.current();
+              return;
+            }
+            sendResizeRequestRef.current(key, cols, rows, attempt + 1);
+          }, delay);
+          return;
+        }
+      }
+      consumedRequestKeyRef.current = key;
+      if (kind === 'desk') {
+        if (deskProbeTimerRef.current !== null) clearTimeout(deskProbeTimerRef.current);
+        deskProbeTimerRef.current = setTimeout(() => {
+          deskProbeTimerRef.current = null;
+          if (attachIdRef.current === id && consumedRequestKeyRef.current === key) reopenDecision();
+        }, DESK_PROBE_INTERVAL_MS);
+      }
+    };
+    remote.paneResize(id, cols, rows).then(
+      settle,
+      (err: unknown) => settle({ ok: false, reason: err instanceof Error ? err.message : String(err) }),
+    );
+  }, [reopenDecision]);
+  const sendResizeRequestRef = useRef(sendResizeRequest);
+  sendResizeRequestRef.current = sendResizeRequest;
+
+  /** A resize this mirror did not ask for: the host's own window, or another
+   *  viewer. Re-open the decision once, rate-limited, and yield to a party that
+   *  keeps overriding our grants (see planExternalReopen). */
+  const noteExternalResize = useCallback(() => {
+    const delay = planExternalReopen(externalStateRef.current, Date.now(), lastGrantAtRef.current);
+    if (delay === null) return;
+    if (externalTimerRef.current !== null) clearTimeout(externalTimerRef.current);
+    externalTimerRef.current = setTimeout(() => {
+      externalTimerRef.current = null;
+      externalStateRef.current.lastReopenAt = Date.now();
+      reopenDecision();
+    }, delay);
+  }, [reopenDecision]);
 
   /**
    * One measure→decide→apply pass, run from an animation frame so it lands
@@ -323,8 +428,13 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
     });
     // Remember the real cell size whenever the mirror is drawn at the ceiling.
     // Same clamp computeMirrorGeometry applies, so the two agree on "ceiling".
+    const dpr = window.devicePixelRatio || 1;
     const ceiling = Math.max(MIN_MIRROR_FONT_SIZE, maxFontSizeRef.current);
-    const ceilingKey = `${ceiling}x${terminalFontFamilyRef.current}`;
+    const ceilingKey = mirrorCeilingCellKey({
+      ceilingFontSize: ceiling,
+      fontFamily: terminalFontFamilyRef.current,
+      devicePixelRatio: dpr,
+    });
     if (
       term.options.fontSize === ceiling &&
       term.cols > 0 && term.rows > 0 &&
@@ -343,31 +453,59 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
       boxHeight,
       maxFontSize: maxFontSizeRef.current,
       fontFamily: terminalFontFamilyRef.current,
+      devicePixelRatio: dpr,
     });
-    if (gridKnownRef.current && requestKey !== lastRequestKeyRef.current) {
-      const cell = ceilingCellRef.current;
-      const ideal = computeMirrorGeometry({
-        boxWidth,
-        boxHeight,
-        cols: term.cols,
-        rows: term.rows,
-        renderedWidth: screen.offsetWidth,
-        renderedHeight: screen.offsetHeight,
-        currentFontSize: term.options.fontSize ?? maxFontSizeRef.current,
-        maxFontSize: maxFontSizeRef.current,
-        ceilingCell: cell && cell.key === ceilingKey ? cell : undefined,
-      });
-      // Unmeasurable (hidden, not laid out): leave the key unspent so the
-      // first real measurement still gets to decide.
-      if (ideal) {
-        lastRequestKeyRef.current = requestKey;
-        // A genuinely new box size: worth asking the remote for again, even if
-        // an earlier box already tried (and was refused for) this exact grid.
-        lastRequestedGeometryRef.current = null;
-        // Only worth a round trip (and a SIGWINCH on the remote) when the grid
-        // is off by more than the font fit can absorb.
-        if (shouldRequestRemoteResize(ideal, term.cols, term.rows)) {
-          requestRemoteResize(ideal.cols, ideal.rows);
+    if (requestKey !== currentRequestKeyRef.current) {
+      // The user changed something on this side: a fresh decision, and any
+      // standing yield to another viewer or pending desk probe is void.
+      currentRequestKeyRef.current = requestKey;
+      externalStateRef.current = initialExternalResizeState();
+      clearRequestTimers();
+    }
+    const pending = inflightRef.current !== null && inflightRef.current.key === requestKey;
+    if (
+      gridKnownRef.current && !pending &&
+      requestKey !== consumedRequestKeyRef.current &&
+      boxWidth > 0 && boxHeight > 0
+    ) {
+      const cell = ceilingCellRef.current && ceilingCellRef.current.key === ceilingKey
+        ? ceilingCellRef.current
+        : null;
+      if (!cell) {
+        // Measure before deciding: draw at the ceiling for one pass, and let
+        // the fit start over from there. Deciding from an extrapolation
+        // instead would spend this key on a grid a cell or two off.
+        if (term.options.fontSize !== ceiling && screen.offsetWidth > 0 && screen.offsetHeight > 0) {
+          term.options.fontSize = ceiling;
+          state.boxKey = '';
+          scheduleFit();
+          return;
+        }
+      } else {
+        const ideal = computeMirrorGeometry({
+          boxWidth,
+          boxHeight,
+          cols: term.cols,
+          rows: term.rows,
+          renderedWidth: screen.offsetWidth,
+          renderedHeight: screen.offsetHeight,
+          currentFontSize: term.options.fontSize ?? maxFontSizeRef.current,
+          maxFontSize: maxFontSizeRef.current,
+          ceilingCell: cell,
+        });
+        if (ideal) {
+          // Only worth a round trip (and a SIGWINCH on the remote) when the grid
+          // is off by more than the font fit can absorb.
+          if (
+            shouldRequestRemoteResize(ideal, term.cols, term.rows) &&
+            ideal.cols >= MIN_REMOTE_RESIZE_COLS && ideal.rows >= MIN_REMOTE_RESIZE_ROWS
+          ) {
+            sendResizeRequest(requestKey, ideal.cols, ideal.rows, 0);
+          } else {
+            consumedRequestKeyRef.current = requestKey;
+            inflightRef.current = null;
+            clearRequestTimers();
+          }
         }
       }
     }
@@ -382,6 +520,25 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
     state.passes += 1;
 
     const currentFontSize = term.options.fontSize ?? maxFontSizeRef.current;
+    // With the ceiling cell measured, "does the grid fit at the user's font?"
+    // has an exact answer. Take it: the linear prediction below, made from a
+    // shrunk font's cells, can land half a point short, and the shrink-only
+    // guard would then hold the mirror below the configured font for good.
+    const measuredCell = ceilingCellRef.current && ceilingCellRef.current.key === ceilingKey
+      ? ceilingCellRef.current
+      : null;
+    if (
+      measuredCell &&
+      term.cols * measuredCell.width <= boxWidth &&
+      term.rows * measuredCell.height <= boxHeight
+    ) {
+      state.settled = ceiling;
+      if (currentFontSize !== ceiling) {
+        term.options.fontSize = ceiling;
+        scheduleFit();
+      }
+      return;
+    }
     const { fontSize } = computeMirrorFontSize({
       boxWidth,
       boxHeight,
@@ -468,6 +625,32 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
   // SSE stream and re-attaches it. Same discipline as `readOnlyRef`.
   const scheduleFitRef = useRef(scheduleFit);
   scheduleFitRef.current = scheduleFit;
+  const noteExternalResizeRef = useRef(noteExternalResize);
+  noteExternalResizeRef.current = noteExternalResize;
+
+  // Request timers die with the component, like the fit's own.
+  useEffect(() => clearRequestTimers, [clearRequestTimers]);
+
+  // Moving the window to a display with another pixel ratio changes every cell
+  // size: the measured ceiling cell is void and the box needs a new decision
+  // (the request key carries the ratio). `resolution` only matches one exact
+  // value, so the query is re-armed for the new ratio on every change.
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    let mql: MediaQueryList | null = null;
+    const onChange = () => {
+      ceilingCellRef.current = null;
+      arm();
+      scheduleFit();
+    };
+    const arm = () => {
+      mql?.removeEventListener('change', onChange);
+      mql = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+      mql.addEventListener('change', onChange);
+    };
+    arm();
+    return () => mql?.removeEventListener('change', onChange);
+  }, [scheduleFit]);
 
   // Mount the xterm instance once, for the lifetime of this component.
   //
@@ -747,8 +930,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
     // A fresh attachId is a different session (or a reconnect to the same
     // one) — either way, whatever this component last asked THAT session's
     // daemon to resize to says nothing about this one.
-    lastRequestedGeometryRef.current = null;
-    lastRequestKeyRef.current = null;
+    resetRequestState();
     gridKnownRef.current = false;
     const remote = window.electronAPI?.remote;
     if (!remote) return;
@@ -763,7 +945,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
       // gets one decision against it. (A grant arrives as onPaneResize, below,
       // and deliberately does not reset this.)
       gridKnownRef.current = true;
-      lastRequestKeyRef.current = null;
+      resetRequestState();
       repaintDepthRef.current += 1;
       try {
         const snapshot = decodeBase64Bytes(e.snapshotB64);
@@ -792,7 +974,17 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
     // repaints itself on SIGWINCH; those bytes arrive through onPaneData.
     const offResize = remote.onPaneResize((e) => {
       if (e.attachId !== attachId) return;
-      termRef.current?.resize(e.cols, e.rows);
+      const term = termRef.current;
+      const before = term ? `${term.cols}x${term.rows}` : '';
+      term?.resize(e.cols, e.rows);
+      const grid = `${e.cols}x${e.rows}`;
+      // A missed meta (a viewer that joined late) must not block requests
+      // until the next reconnect: any geometry from the remote is the grid.
+      if (!gridKnownRef.current) {
+        gridKnownRef.current = true;
+      } else if (grid !== before && !echoGridsRef.current.has(grid)) {
+        noteExternalResizeRef.current();
+      }
       scheduleFitRef.current();
     });
     const offData = remote.onPaneData((e) => {

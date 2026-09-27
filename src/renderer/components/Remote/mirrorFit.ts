@@ -104,9 +104,22 @@ export function mirrorResizeRequestKey(parts: {
   boxHeight: number;
   maxFontSize: number;
   fontFamily: string;
+  /** Cell sizes round through the device pixel ratio, so moving the window to
+   *  a display with a different one changes the grid the box holds. */
+  devicePixelRatio: number;
 }): string {
-  const { boxWidth, boxHeight, maxFontSize, fontFamily } = parts;
-  return `${boxWidth}x${boxHeight}x${maxFontSize}x${fontFamily}`;
+  const { boxWidth, boxHeight, maxFontSize, fontFamily, devicePixelRatio } = parts;
+  return `${boxWidth}x${boxHeight}x${maxFontSize}x${fontFamily}@${devicePixelRatio}`;
+}
+
+/** Identity of a measured ceiling cell: the same font, face and pixel ratio
+ *  draw the same cell, anything else must be measured again. */
+export function mirrorCeilingCellKey(parts: {
+  ceilingFontSize: number;
+  fontFamily: string;
+  devicePixelRatio: number;
+}): string {
+  return `${parts.ceilingFontSize}x${parts.fontFamily}@${parts.devicePixelRatio}`;
 }
 
 /** A remote grid within this many cells of the ideal in both axes is left
@@ -260,4 +273,87 @@ export function computeMirrorGeometry(input: {
   const idealRows = Math.floor(boxHeight / cellHeightAtCeiling);
   if (idealCols <= 0 || idealRows <= 0) return null;
   return { cols: idealCols, rows: idealRows };
+}
+
+/**
+ * What the mirror does with a refused or failed resize request.
+ *
+ * - `desk`: the host's own window shows the pane and owns its size. Nothing to
+ *   retry soon; the font fit handles the box, and a slow probe asks again later
+ *   in case the host has since looked away (it sends no event when it does).
+ * - `final`: a request that cannot succeed by asking again (bad geometry,
+ *   rejected credential, attach gone).
+ * - `retry`: rate-limited or transient (network, a pane still recovering).
+ */
+export type ResizeRefusal = 'desk' | 'retry' | 'final';
+
+export function classifyResizeRefusal(reason: string): ResizeRefusal {
+  if (reason === 'desk-owns-size') return 'desk';
+  if (
+    reason === 'bad-geometry' ||
+    reason === 'auth-rejected' ||
+    reason === 'unknown attach' ||
+    reason === 'unknown host' ||
+    reason === 'cols and rows must be numbers'
+  ) return 'final';
+  return 'retry';
+}
+
+/** Backoff for `retry` refusals. The host's own floor between accepted resizes
+ *  is 250 ms, so the first retry already clears it. */
+export const RESIZE_RETRY_DELAYS_MS = [500, 1000, 2000, 4000] as const;
+
+/** Delay before retry number `attempt` (0-based), or null once exhausted. */
+export function resizeRetryDelayMs(attempt: number): number | null {
+  return RESIZE_RETRY_DELAYS_MS[attempt] ?? null;
+}
+
+/** How often a desk-refused request is asked again while nothing else changes.
+ *  A refused request costs the host nothing (no SIGWINCH), so this is cheap. */
+export const DESK_PROBE_INTERVAL_MS = 10_000;
+
+/** Least time between two decisions re-opened by resizes this mirror did not ask
+ *  for. Well above the host's 400 ms meta debounce, so a burst collapses. */
+export const EXTERNAL_REOPEN_MIN_INTERVAL_MS = 2_000;
+
+/** A resize from elsewhere this soon after one of OUR grants is someone else
+ *  asking for a different grid — another viewer, or the host's own window. */
+export const REMOTE_FIGHT_WINDOW_MS = 10_000;
+
+export interface ExternalResizeState {
+  /** When an external change last re-opened the decision. */
+  lastReopenAt: number;
+  /** External changes that overrode a recent grant of ours, within the window. */
+  overrides: number;
+  lastOverrideAt: number;
+}
+
+export function initialExternalResizeState(): ExternalResizeState {
+  return { lastReopenAt: -Infinity, overrides: 0, lastOverrideAt: -Infinity };
+}
+
+/**
+ * A resize this mirror did not ask for (not an echo of its own grant) arrived.
+ * Returns how long to wait before re-opening the resize decision, or null to
+ * leave the remote's grid alone and only fit the font.
+ *
+ * One re-open per external change, never sooner than
+ * {@link EXTERNAL_REOPEN_MIN_INTERVAL_MS} after the previous one. When a change
+ * overrides a grant of ours for the SECOND time inside
+ * {@link REMOTE_FIGHT_WINDOW_MS}, another party wants a different grid and
+ * asking again would only trade grids with it — so this mirror yields until
+ * its own box or font changes (which resets `overrides`).
+ */
+export function planExternalReopen(
+  state: ExternalResizeState,
+  now: number,
+  lastGrantAt: number,
+): number | null {
+  if (now - state.lastOverrideAt > REMOTE_FIGHT_WINDOW_MS) state.overrides = 0;
+  if (now - lastGrantAt < REMOTE_FIGHT_WINDOW_MS) {
+    state.overrides += 1;
+    state.lastOverrideAt = now;
+  }
+  if (state.overrides > 1) return null;
+  return Math.max(0, state.lastReopenAt + EXTERNAL_REOPEN_MIN_INTERVAL_MS - now);
 }

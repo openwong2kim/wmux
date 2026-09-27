@@ -10,7 +10,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   computeMirrorFontSize, computeMirrorGeometry, mirrorFitKey, mirrorResizeRequestKey,
-  shouldRequestRemoteResize, MAX_FIT_PASSES, MIN_MIRROR_FONT_SIZE, type MirrorFitInput,
+  mirrorCeilingCellKey, shouldRequestRemoteResize, classifyResizeRefusal, resizeRetryDelayMs,
+  planExternalReopen, initialExternalResizeState,
+  EXTERNAL_REOPEN_MIN_INTERVAL_MS, REMOTE_FIGHT_WINDOW_MS,
+  MAX_FIT_PASSES, MIN_MIRROR_FONT_SIZE, type MirrorFitInput,
 } from '../mirrorFit';
 
 /** A 80×24 remote grid rendered at 14px into a box that comfortably holds it. */
@@ -225,13 +228,15 @@ describe('mirrorFitKey', () => {
 // re-armed the request on every grant — a mirror asking again for the answer
 // it had just been given, against a slightly different font each time.
 describe('mirrorResizeRequestKey', () => {
-  const base = { boxWidth: 800, boxHeight: 400, maxFontSize: 14, fontFamily: 'Cascadia Code' };
+  const base = { boxWidth: 800, boxHeight: 400, maxFontSize: 14, fontFamily: 'Cascadia Code', devicePixelRatio: 2 };
 
   it.each([
     ['box width', { boxWidth: 801 }],
     ['box height', { boxHeight: 401 }],
     ['the user font size', { maxFontSize: 16 }],
     ['the user font family', { fontFamily: 'IBM Plex Mono' }],
+    // Cells round through the pixel ratio: another display, another grid.
+    ['the device pixel ratio', { devicePixelRatio: 1 }],
   ] as Array<[string, Partial<typeof base>]>)('changes when %s changes', (_label, over) => {
     expect(mirrorResizeRequestKey({ ...base, ...over })).not.toBe(mirrorResizeRequestKey(base));
   });
@@ -314,7 +319,7 @@ describe('remote resize loop (stepped cell model)', () => {
         if (font === ceiling) ceilingCell = { width: cellW(font), height: cellH(font) };
         const key = policy === 'per-grant'
           ? mirrorFitKey({ ...box, cols, rows, maxFontSize: ceiling, fontFamily: 'f' })
-          : mirrorResizeRequestKey({ ...box, maxFontSize: ceiling, fontFamily: 'f' });
+          : mirrorResizeRequestKey({ ...box, maxFontSize: ceiling, fontFamily: 'f', devicePixelRatio: 1 });
         if (key === lastKey) break;
         lastKey = key;
         const ideal = computeMirrorGeometry({
@@ -341,5 +346,67 @@ describe('remote resize loop (stepped cell model)', () => {
     expect(new Set(before.slice(-4)).size).toBe(2);
     // The fix: one request for this box, for the grid the box really holds.
     expect(simulate('per-box')).toEqual(['56x48']);
+  });
+});
+
+describe('mirrorCeilingCellKey', () => {
+  const base = { ceilingFontSize: 14, fontFamily: 'Cascadia Code', devicePixelRatio: 2 };
+  it.each([
+    ['font size', { ceilingFontSize: 15 }],
+    ['face', { fontFamily: 'Menlo' }],
+    ['pixel ratio', { devicePixelRatio: 1 }],
+  ] as Array<[string, Partial<typeof base>]>)('a measurement is void once the %s changes', (_l, over) => {
+    expect(mirrorCeilingCellKey({ ...base, ...over })).not.toBe(mirrorCeilingCellKey(base));
+  });
+});
+
+describe('classifyResizeRefusal', () => {
+  it('the host window owning the size is its own case (probe slowly, never hammer)', () => {
+    expect(classifyResizeRefusal('desk-owns-size')).toBe('desk');
+  });
+  it.each(['resize-too-often', 'resize-failed', 'fetch failed', 'HTTP 502', 'The operation was aborted due to timeout'])(
+    '%s is retried', (reason) => {
+      expect(classifyResizeRefusal(reason)).toBe('retry');
+    },
+  );
+  it.each(['bad-geometry', 'auth-rejected', 'unknown attach', 'unknown host'])('%s is final', (reason) => {
+    expect(classifyResizeRefusal(reason)).toBe('final');
+  });
+});
+
+describe('resizeRetryDelayMs', () => {
+  it('backs off and then gives up', () => {
+    expect([0, 1, 2, 3].map(resizeRetryDelayMs)).toEqual([500, 1000, 2000, 4000]);
+    expect(resizeRetryDelayMs(4)).toBeNull();
+  });
+});
+
+describe('planExternalReopen', () => {
+  it('re-opens at once for a change with no grant of ours behind it (the host window)', () => {
+    const s = initialExternalResizeState();
+    expect(planExternalReopen(s, 100_000, -Infinity)).toBe(0);
+  });
+
+  it('keeps re-opens at least the minimum interval apart', () => {
+    const s = initialExternalResizeState();
+    s.lastReopenAt = 100_000;
+    expect(planExternalReopen(s, 100_500, -Infinity)).toBe(EXTERNAL_REOPEN_MIN_INTERVAL_MS - 500);
+  });
+
+  it('answers the first override of a fresh grant, then yields to a party that overrides again', () => {
+    const s = initialExternalResizeState();
+    const grant = 100_000;
+    expect(planExternalReopen(s, grant + 1_000, grant)).toBe(0);
+    s.lastReopenAt = grant + 1_000;
+    const regrant = grant + 3_500;
+    expect(planExternalReopen(s, regrant + 1_000, regrant)).toBeNull();
+  });
+
+  it('forgets old overrides once the fight window has passed', () => {
+    const s = initialExternalResizeState();
+    expect(planExternalReopen(s, 100_000, 99_000)).toBe(0);
+    s.lastReopenAt = 100_000;
+    const later = 100_000 + REMOTE_FIGHT_WINDOW_MS + 5_000;
+    expect(planExternalReopen(s, later, later - 1_000)).toBe(0);
   });
 });
