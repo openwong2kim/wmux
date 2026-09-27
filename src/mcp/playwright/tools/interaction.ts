@@ -818,7 +818,10 @@ async function resolveTypeTarget(
     requireSingleMatch(addr.selector, await page.locator(addr.selector).count());
     return page.locator(addr.selector).first() as unknown as TypeTarget;
   }
-  const el = await resolveRef(page, addr.ref as string, notes && { notes });
+  const el = await resolveRef(page, addr.ref as string, {
+    allowTextEntrySwap: true,
+    ...(notes && { notes }),
+  });
   if (!el) throw refMissing(addr.ref as string, page);
   return el as unknown as TypeTarget;
 }

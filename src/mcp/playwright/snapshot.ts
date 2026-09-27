@@ -2883,6 +2883,13 @@ export interface ResolveRefOptions {
    * caller that does not care keeps its one-line call.
    */
   notes?: string[];
+  /**
+   * Let a text-entry ref follow a field the page replaced under a sibling
+   * text-entry role with the same name (#1466). Only the typing tools opt in:
+   * for them the replacement is the field the agent meant; a click, hover or
+   * replayed step keeps refusing rather than acting on a different element.
+   */
+  allowTextEntrySwap?: boolean;
 }
 
 /**
@@ -2912,6 +2919,7 @@ export async function resolveRef(
     options?.strictCount === true,
     options?.timeout,
     options?.notes,
+    options?.allowTextEntrySwap === true,
   );
   if (primary) return primary;
 
@@ -3036,6 +3044,7 @@ async function resolveRefViaAxMap(
   strictCount = false,
   timeout?: number,
   notes?: string[],
+  allowTextEntrySwap = false,
 ): Promise<ElementHandle | null> {
   const wanted = refNumber(ref);
   if (wanted === null) return null;
@@ -3126,7 +3135,9 @@ async function resolveRefViaAxMap(
   }
 
   if (count === 0) {
-    const swapped = await resolveSwappedTextEntry(root, target, timeout);
+    // Never on the replay lane: strictCount exists to refuse a stand-in there.
+    if (!allowTextEntrySwap || strictCount) return null;
+    const swapped = await resolveSwappedTextEntry(root, target, refs, timeout);
     if (swapped) {
       if (recovered) notes?.push(recovered);
       notes?.push(swappedTextEntryNote(wanted, target.role, swapped.role, target.name));
@@ -3194,15 +3205,31 @@ const TEXT_ENTRY_ROLES: readonly string[] = ['textbox', 'searchbox', 'combobox']
  * Only for a ref the snapshot saw ONE of (a named singleton), and only when
  * exactly one element across the other text-entry roles carries that exact
  * name: two candidates is a guess, and a guess is worse than a stale error.
+ * The candidate must also take typed text: a native `<select>` is a combobox
+ * too, and filling one is not what a search-box ref asked for.
+ *
+ * And it must be NEW: if the snapshot already listed a sibling-role field with
+ * that name in the same frame, that field existed alongside the ref's element,
+ * so it is a different field that survived — not the replacement — and typing
+ * into it would overwrite something the agent never named.
  */
 async function resolveSwappedTextEntry(
   root: Page | Frame | Locator,
   target: RefEntry,
+  refs: readonly RefEntry[],
   timeout?: number,
 ): Promise<{ handle: ElementHandle; role: string } | null> {
   if (!target.name || target.sameNameTotal !== 1 || !TEXT_ENTRY_ROLES.includes(target.role)) {
     return null;
   }
+  const coexisted = refs.some(
+    (entry) =>
+      entry !== target &&
+      entry.name === target.name &&
+      entry.frameKey === target.frameKey &&
+      TEXT_ENTRY_ROLES.includes(entry.role),
+  );
+  if (coexisted) return null;
   try {
     let found: { locator: Locator; role: string } | null = null;
     for (const role of TEXT_ENTRY_ROLES) {
@@ -3214,9 +3241,16 @@ async function resolveSwappedTextEntry(
       found = { locator, role };
     }
     if (!found) return null;
-    const handle = await found.locator
-      .nth(0)
-      .elementHandle(timeout === undefined ? undefined : { timeout });
+    const candidate = found.locator.nth(0);
+    const wait = timeout === undefined ? undefined : { timeout };
+    const editable = await candidate.evaluate(
+      (el) =>
+        el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || (el as HTMLElement).isContentEditable,
+      undefined,
+      wait,
+    );
+    if (!editable) return null;
+    const handle = await candidate.elementHandle(wait);
     return handle ? { handle, role: found.role } : null;
   } catch {
     return null;
