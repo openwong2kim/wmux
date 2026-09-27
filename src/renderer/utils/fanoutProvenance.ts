@@ -453,7 +453,9 @@ export function fleetRequesterText(
     const name = requesterName(requester, t) ?? '';
     return {
       text: t('sidebar.requester.by', { name: wsName ? `${name} · ${displayWorkspaceName(wsName, false)}` : name }),
-      includesOwner: !!wsName,
+      // Only when the named workspace IS the owner may the row drop its owner
+      // line; a requester pane living elsewhere must not hide the real owner.
+      includesOwner: !!wsName && !!link?.ownerId && wsId === link.ownerId,
     };
   }
   return { text: requesterLine(requester, t), includesOwner: false };

@@ -12,6 +12,7 @@ import {
   requesterLine,
   requestedCountFor,
   selectRequestedCounts,
+  fleetRequesterText,
 } from '../fanoutProvenance';
 import type { WorkTask } from '../../../shared/workTask';
 import type { Workspace } from '../../../shared/types';
@@ -202,5 +203,17 @@ describe('requester origin (who asked for a task)', () => {
     expect(requestedCountFor(counts, 'ws-owner', { paneId: 'p74', surfaceId: 's74b' })).toBe(1);
     expect(requestedCountFor(counts, 'ws-other', { paneId: 'p74', surfaceId: 's74' })).toBe(1);
     expect(requestedCountFor(counts, 'ws-owner', { paneId: 'nope', surfaceId: 'nope' })).toBe(0);
+  });
+
+  it('fleet text folds in the owner only when the requester pane lives in the owner workspace', () => {
+    const origin = { kind: 'pane' as const, paneId: 'p74', surfaceId: 's74', label: 'w115-74 · Compare' };
+    const other = { id: 'ws-real', name: 'real-owner', wsOrdinal: 9, activePaneId: 'q', rootPane: leaf('q', 1, [surface('sq', 'pty-q')]) } as unknown as Workspace;
+    // Requester pane in the owner workspace: the owner is part of the text.
+    const same = fleetRequesterText({ ...base, workspaces: [owner, task('t1')], fanoutOrigin: { t1: origin }, fanoutLineage: { t1: 'ws-owner' } }, 't1', t);
+    expect(same).toEqual({ text: 'by w115-74 · Compare · app', includesOwner: true });
+    // Requester pane lives in another workspace than the task's owner: the
+    // row must keep showing the real owner.
+    const elsewhere = fleetRequesterText({ ...base, workspaces: [owner, other, task('t1')], fanoutOrigin: { t1: origin }, fanoutLineage: { t1: 'ws-real' } }, 't1', t);
+    expect(elsewhere).toEqual({ text: 'by w115-74 · Compare · app', includesOwner: false });
   });
 });
