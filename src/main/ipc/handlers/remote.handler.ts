@@ -28,6 +28,7 @@ import { isCategoryMuted } from '../../notification/mutedCategories';
 import { toastManager } from '../../notification/ToastManager';
 import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey, REMOTE_POLL_INTERVAL_MS } from '../../../shared/remoteHosts';
 import { normalizeWorkspaceColor } from '../../../shared/workspaceColors';
+import { DEVICE_KIND_HEADER } from '../../../shared/web';
 import type {
   PairFailureReason,
   RemoteAttachmentDescriptor,
@@ -182,6 +183,9 @@ async function exchangePairCode(
       // pairing) but still a credential-minting request: never follow a
       // redirect, and don't let a hung remote hang the modal forever.
       redirect: 'error',
+      // Display only: the host's roster shows this device as a computer. The
+      // host allowlists the value and never authorizes on it.
+      headers: { [DEVICE_KIND_HEADER]: 'computer' },
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
   } catch {

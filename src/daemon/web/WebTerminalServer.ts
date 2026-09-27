@@ -71,7 +71,15 @@ import {
   type SkillCatalogEntry,
 } from '../../main/deck/skillCatalogScan';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
-import { webHostIsLoopback, type PairRefusal, type WebTlsConfig } from '../../shared/web';
+import {
+  DEVICE_KIND_HEADER,
+  normalizeDeviceKind,
+  webHostIsLoopback,
+  type DeviceKind,
+  type PairFlow,
+  type PairRefusal,
+  type WebTlsConfig,
+} from '../../shared/web';
 import type { RemotePaneSummary, RemoteResumeInfo } from '../../shared/remoteHosts';
 import { normalizeResumeCwd, type ResumeBinding } from '../../shared/agentResume';
 import { assistantPreview } from '../../shared/assistantPreview';
@@ -343,6 +351,10 @@ export interface WebTerminalInfo {
    * refusal shape is a fourth thing to forget.
    */
   pairRefusal?: PairRefusal;
+  /** Name, grant and flow of the pending pairing; present only with a live code. */
+  pendingDeviceName?: string;
+  pendingDeviceAllowInput?: boolean;
+  pendingPairFlow?: PairFlow;
   /** Which transport this server was started on. Reported, never acted on. */
   tailscale?: boolean;
   /**
@@ -398,7 +410,7 @@ export type DeviceAuthResult =
  */
 export interface WebDeviceResolver {
   resolve(deviceId: string, secret: string): Promise<DeviceAuthResult> | DeviceAuthResult;
-  mint(params: { name?: string; allowInput?: boolean }): Promise<{ deviceId: string; deviceSecret: string }>;
+  mint(params: { name?: string; allowInput?: boolean; kind?: DeviceKind }): Promise<{ deviceId: string; deviceSecret: string }>;
   /**
    * Record a successful auth. Optional because it is bookkeeping, not
    * authorization: a store that does not track `lastSeenAt` is still a valid
@@ -463,6 +475,8 @@ export interface WebDeviceSummary {
   /** The device's own resolved grant; the server flag is applied separately. */
   allowInput: boolean;
   revokedAt?: number;
+  /** Display-only self-description from pairing. Never used for authorization. */
+  kind?: DeviceKind;
 }
 
 /**
@@ -489,7 +503,7 @@ type AuthOutcome = { ok: true; principal: WebPrincipal } | { ok: false; reason: 
  */
 export type WebPairStartResult =
   | { ok: true; code: string; expiresAt: number }
-  | { ok: false; error: string };
+  | { ok: false; error: string; reason?: 'busy' };
 
 /**
  * Pane lifecycle as far as the HTTP surface is concerned.
@@ -1308,6 +1322,13 @@ export class WebTerminalServer {
    * unticked checkbox still means read-only on an input-enabled server.
    */
   private pendingDeviceAllowInput = false;
+  /**
+   * Which card the pending name and grant belong to. Held, replaced and
+   * cleared together with them, so a re-mint on expiry or a burned attempt
+   * budget can never carry the phone card's name onto a computer link (or the
+   * other way round). Absent exactly when `pendingDeviceName` is.
+   */
+  private pendingPairFlow: PairFlow | undefined;
 
   /**
    * The grant a pairing code carries when nobody said. Typing `--allow-input`
@@ -1497,6 +1518,7 @@ export class WebTerminalServer {
     this.token = options.token || crypto.randomUUID();
     this.opts = options;
     this.pendingDeviceName = undefined;
+    this.pendingPairFlow = undefined;
     // AFTER `this.opts` is set — the default reads the flag from it.
     this.pendingDeviceAllowInput = this.defaultPendingGrant();
     this.generatePairCode();
@@ -1521,6 +1543,7 @@ export class WebTerminalServer {
         this.pairExpiresAt = 0;
         this.pairAttempts = 0;
         this.pendingDeviceName = undefined;
+        this.pendingPairFlow = undefined;
         this.pendingDeviceAllowInput = false;
         reject(err);
       };
@@ -1612,6 +1635,7 @@ export class WebTerminalServer {
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
     this.pendingDeviceName = undefined;
+    this.pendingPairFlow = undefined;
     this.pendingDeviceAllowInput = false;
     // Capabilities against a server that is going away. Nothing to preserve.
     this.streamTickets.clear();
@@ -1714,18 +1738,65 @@ export class WebTerminalServer {
    * walks to the phone, types it, and only then learns the server would never
    * have minted anything.
    */
-  startPairing(params: { name?: string; allowInput?: boolean } = {}): WebPairStartResult {
+  startPairing(
+    params: { name?: string; allowInput?: boolean; flow?: PairFlow } = {},
+  ): WebPairStartResult {
     if (!this.server) return { ok: false, error: 'the web server is not running — start it first' };
     const refusal = this.mintRefusal();
     if (refusal) return { ok: false, error: refusal };
+    // A caller that predates flows is the phone card, which is all there was.
+    const flow: PairFlow = params.flow === 'computer' ? 'computer' : 'phone';
+    // One code slot, two cards. Refuse BEFORE minting: minting first would
+    // rotate the code under the other card's QR or link on every refused
+    // click. The operator ends the other pairing explicitly (`cancelPairing`).
+    if (this.pendingPairFlow !== undefined && this.pendingPairFlow !== flow && this.pairIsLive()) {
+      return {
+        ok: false,
+        reason: 'busy',
+        error: 'another pairing is in progress — cancel it first',
+      };
+    }
     const label = typeof params.name === 'string' ? params.name.trim() : '';
     this.generatePairCode();
     this.pendingDeviceName = label || undefined;
+    this.pendingPairFlow = label ? flow : undefined;
     // `??`, not `===`: an omitted grant inherits the server's, an explicit
     // `false` stays false. Collapsing those two would either mute the GUI's
     // unticked box or mute every headless pairing.
     this.pendingDeviceAllowInput = params.allowInput ?? this.defaultPendingGrant();
     return { ok: true, code: this.pairCode, expiresAt: this.pairExpiresAt };
+  }
+
+  /**
+   * `daemon.web.pairCancel` — end the pairing in progress, whichever card
+   * started it. Burns the code with its name, grant and flow, so nothing the
+   * operator was about to hand out survives the cancel.
+   */
+  cancelPairing(): WebTerminalInfo {
+    if (!this.server) return { running: false };
+    this.burnPairCode();
+    return this.status();
+  }
+
+  /** Whether a named pairing is still redeemable (a live code with a name). */
+  private pairIsLive(): boolean {
+    return this.pendingDeviceName !== undefined && this.pairCode !== '' && Date.now() <= this.pairExpiresAt;
+  }
+
+  /**
+   * Devices holding a live stream right now. One half of "active now": a
+   * stream is opened with a ticket and never re-authenticates, so a phone
+   * watching a pane for an hour has a stale `lastSeenAt` while plainly present.
+   */
+  liveDeviceIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const client of this.clients) {
+      if (client.principal.kind === 'device') ids.add(client.principal.deviceId);
+    }
+    for (const client of this.eventClients) {
+      if (client.principal.kind === 'device') ids.add(client.principal.deviceId);
+    }
+    return ids;
   }
 
   /**
@@ -1958,6 +2029,7 @@ export class WebTerminalServer {
         ? {
             pendingDeviceName: this.pendingDeviceName,
             pendingDeviceAllowInput: this.pendingDeviceAllowInput,
+            pendingPairFlow: this.pendingPairFlow ?? 'phone',
           }
         : {}),
     };
@@ -2060,7 +2132,7 @@ export class WebTerminalServer {
       if (req.headers['sec-fetch-site'] === 'cross-site') {
         return this.json(res, 403, { error: 'cross-site request refused' });
       }
-      this.handlePair(res, url).catch((err: unknown) => this.failRequest(res, err));
+      this.handlePair(req, res, url).catch((err: unknown) => this.failRequest(res, err));
       return;
     }
 
@@ -7076,7 +7148,7 @@ export class WebTerminalServer {
    * store, and the pairing screen keeps working unchanged — but it is now a
    * per-device credential, not the operator's.
    */
-  private async handlePair(res: http.ServerResponse, url: URL): Promise<void> {
+  private async handlePair(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
     const supplied = (url.searchParams.get('code') ?? '').trim().toUpperCase();
 
     if (!this.pairCode || Date.now() > this.pairExpiresAt) {
@@ -7132,6 +7204,7 @@ export class WebTerminalServer {
       minted = await devices.mint({
         name: this.pendingDeviceName,
         allowInput: this.pendingDeviceAllowInput,
+        kind: this.redeemingDeviceKind(req),
       });
     } catch (err) {
       // The roster could not be persisted. Do NOT burn the code and do NOT
@@ -7150,12 +7223,28 @@ export class WebTerminalServer {
     });
   }
 
+  /**
+   * What the redeeming device is, for the roster icon only.
+   *
+   * The desktop client says so in a header. Without one, a code minted by the
+   * phone card was redeemed by what the operator called a phone (the web page
+   * or the phone app, neither of which sends the header); anything else is
+   * `unknown`. Never read by an authorization decision — the header is
+   * caller-written and only picks an icon.
+   */
+  private redeemingDeviceKind(req: http.IncomingMessage): DeviceKind {
+    const claimed = normalizeDeviceKind(req.headers[DEVICE_KIND_HEADER]);
+    if (claimed !== 'unknown') return claimed;
+    return this.pendingPairFlow === 'phone' ? 'phone' : 'unknown';
+  }
+
   /** Consume the active pairing code (single use) and its pending name. */
   private burnPairCode(): void {
     this.pairCode = '';
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
     this.pendingDeviceName = undefined;
+    this.pendingPairFlow = undefined;
     // Back to the server's default rather than to `false`: a redeemed code
     // must not leave the NEXT device on this host worse off than the first.
     this.pendingDeviceAllowInput = this.defaultPendingGrant();

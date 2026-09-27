@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { scheduleTokenFileReHarden, secureWriteTokenFile } from '../../shared/security';
 import { DeviceAuditLog, type DeviceActor } from './deviceAudit';
+import { normalizeDeviceKind, type DeviceKind } from '../../shared/web';
 
 /**
  * M3 — the per-device credential roster for `wmux web` (`devices.json`).
@@ -110,6 +111,8 @@ export interface DeviceSummary {
   allowInput: boolean;
   /** Set once, never cleared — revocation is permanent; a device re-pairs to return. */
   revokedAt?: number;
+  /** What the device said it was at pairing. Display only; `unknown` for legacy records. */
+  kind: DeviceKind;
 }
 
 /**
@@ -319,6 +322,13 @@ interface DeviceRecord {
   allowInput?: boolean;
   push?: DevicePushRegistration;
   liveActivity?: DeviceLiveActivityRegistration;
+  /**
+   * What the device said it was when it paired (`phone` | `computer`).
+   * Additive and optional: absent on every record written before it existed,
+   * which lists as `unknown`, and an older daemon reading a newer file simply
+   * ignores it. Display only — never consulted by `resolve`.
+   */
+  kind?: Exclude<DeviceKind, 'unknown'>;
 }
 
 /** Resolve a record's grant, applying the grandfather rule in one place. */
@@ -432,6 +442,7 @@ export class DeviceStore {
         // can actually do, and a legacy record's absent field means granted.
         allowInput: recordAllowsInput(d),
         ...(d.revokedAt !== undefined ? { revokedAt: d.revokedAt } : {}),
+        kind: d.kind ?? 'unknown',
       }));
   }
 
@@ -450,7 +461,7 @@ export class DeviceStore {
    * HTTP handler awaits this, and a promise-returning signature leaves room to
    * move the write off the event loop later without touching that call site.
    */
-  async mint(params: { name?: string; allowInput?: boolean } = {}): Promise<MintedDevice> {
+  async mint(params: { name?: string; allowInput?: boolean; kind?: DeviceKind } = {}): Promise<MintedDevice> {
     const name = params.name ?? '';
     // Written EXPLICITLY on every new record, never left absent. That is what
     // keeps an absent field meaning "roster predates this field" rather than
@@ -481,6 +492,8 @@ export class DeviceStore {
       lastSeenAt: at,
       allowInput,
     };
+    const kind = normalizeDeviceKind(params.kind);
+    if (kind !== 'unknown') record.kind = kind;
     this.derivations += 1;
 
     this.devices.set(deviceId, record);
@@ -1336,6 +1349,10 @@ function coerceDevice(raw: unknown): DeviceRecord | null {
   if ('allowInput' in o && o['allowInput'] !== undefined) {
     record.allowInput = o['allowInput'] === true;
   }
+  // Allowlisted or dropped: an unrecognised value lists as `unknown`, which is
+  // all this display-only field can safely say about it.
+  const kind = normalizeDeviceKind(o['kind']);
+  if (kind !== 'unknown') record.kind = kind;
   // Any truthy finite revokedAt keeps the device refused. A malformed one is
   // treated as REVOKED rather than active: fail-closed is the only safe read of
   // "this record may have been revoked".

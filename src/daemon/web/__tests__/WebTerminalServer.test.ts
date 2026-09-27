@@ -2641,7 +2641,7 @@ describe('WebTerminalServer', () => {
     // UUIDs cannot be operated, so the name has to reach the store.
     // The grant rides with the name for the same reason: both are decided at
     // the desk, and the phone types only a code.
-    expect(deviceMintCalls).toEqual([{ name: 'Wife phone', allowInput: true }]);
+    expect(deviceMintCalls).toEqual([{ name: 'Wife phone', allowInput: true, kind: 'phone' }]);
 
     // A second pairing is a DIFFERENT device — that is the whole point.
     const second = await pairDevice('Tablet');
@@ -3305,7 +3305,7 @@ describe('WebTerminalServer', () => {
     expect(paired.status).toBe(200);
     // `startPairing` was called with a name and no grant, so the device
     // registers read-only — an unstated grant is never read as "yes".
-    expect(deviceMintCalls).toEqual([{ name: 'Named phone', allowInput: false }]);
+    expect(deviceMintCalls).toEqual([{ name: 'Named phone', allowInput: false, kind: 'phone' }]);
 
     // Redeeming consumes the name AND the grant: the next device inherits
     // neither. A code minted without a fresh decision registers a read-only
@@ -3313,7 +3313,178 @@ describe('WebTerminalServer', () => {
     server.refreshPairCode();
     const next = server.status().pairCode as string;
     expect((await fetch(`${base()}/api/pair?code=${next}`)).status).toBe(200);
-    expect(deviceMintCalls[1]).toEqual({ name: undefined, allowInput: false });
+    expect(deviceMintCalls[1]).toEqual({ name: undefined, allowInput: false, kind: 'unknown' });
+  });
+
+  // ── phone / computer pairing flows (one code slot) ─────────────────────────
+
+  describe('phone and computer pairing share one code slot without mixing', () => {
+    /** Burn the attempt budget and let the server re-mint lazily (the expiry path). */
+    const burnAndReMint = async (): Promise<string> => {
+      for (let i = 0; i < 5; i++) await fetch(`${base()}/api/pair?code=ZZZZZZZZ`);
+      const realNow = Date.now();
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 31_000);
+      try {
+        await fetch(`${base()}/api/pair?code=ZZZZZZZZ`);
+        return server.status().pairCode as string;
+      } finally {
+        nowSpy.mockRestore();
+      }
+    };
+
+    it('refuses a computer start while a phone pairing is live, before touching the code', async () => {
+      await startRO();
+      const phone = server.startPairing({ name: 'Wife phone', allowInput: true, flow: 'phone' });
+      if (!phone.ok) throw new Error(phone.error);
+
+      const computer = server.startPairing({ name: 'Computer', allowInput: false, flow: 'computer' });
+      expect(computer).toMatchObject({ ok: false, reason: 'busy' });
+
+      // The phone's QR still encodes the same code, name and grant.
+      const status = server.status();
+      expect(status.pairCode).toBe(phone.code);
+      expect(status.pendingDeviceName).toBe('Wife phone');
+      expect(status.pendingDeviceAllowInput).toBe(true);
+      expect(status.pendingPairFlow).toBe('phone');
+
+      expect((await fetch(`${base()}/api/pair?code=${phone.code}`)).status).toBe(200);
+      expect(deviceMintCalls).toEqual([{ name: 'Wife phone', allowInput: true, kind: 'phone' }]);
+    });
+
+    it('keeps the computer name, grant and flow across the re-mint path, and never lends them to the phone', async () => {
+      await startRO();
+      const computer = server.startPairing({ name: 'Computer', allowInput: true, flow: 'computer' });
+      if (!computer.ok) throw new Error(computer.error);
+
+      const replacement = await burnAndReMint();
+      expect(replacement).toHaveLength(8);
+      expect(replacement).not.toBe(computer.code);
+      const status = server.status();
+      expect(status.pendingDeviceName).toBe('Computer');
+      expect(status.pendingDeviceAllowInput).toBe(true);
+      expect(status.pendingPairFlow).toBe('computer');
+
+      // The phone card cannot start over the live computer pairing…
+      expect(server.startPairing({ name: 'Phone', allowInput: false, flow: 'phone' })).toMatchObject({
+        ok: false,
+        reason: 'busy',
+      });
+      // …until the operator cancels it. Then the phone gets ITS name and grant.
+      const cancelled = server.cancelPairing();
+      expect(cancelled.pendingDeviceName).toBeUndefined();
+      expect(cancelled.pendingPairFlow).toBeUndefined();
+      expect(cancelled.pairCode).not.toBe(replacement);
+
+      const phone = server.startPairing({ name: 'Phone', allowInput: false, flow: 'phone' });
+      if (!phone.ok) throw new Error(phone.error);
+      expect(server.status()).toMatchObject({
+        pendingDeviceName: 'Phone',
+        pendingDeviceAllowInput: false,
+        pendingPairFlow: 'phone',
+      });
+      // The cancelled computer code no longer redeems anything.
+      expect((await fetch(`${base()}/api/pair?code=${replacement}`)).status).toBe(403);
+      expect((await fetch(`${base()}/api/pair?code=${phone.code}`)).status).toBe(200);
+      expect(deviceMintCalls).toEqual([{ name: 'Phone', allowInput: false, kind: 'phone' }]);
+    });
+
+    it('lets the other card start once the pending code has expired, replacing the whole triple', async () => {
+      await startRO();
+      const phone = server.startPairing({ name: 'Phone', allowInput: true, flow: 'phone' });
+      if (!phone.ok) throw new Error(phone.error);
+      const realNow = Date.now();
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 11 * 60_000);
+      try {
+        const computer = server.startPairing({ name: 'Computer', allowInput: false, flow: 'computer' });
+        expect(computer.ok).toBe(true);
+        expect(server.status()).toMatchObject({
+          pendingDeviceName: 'Computer',
+          pendingDeviceAllowInput: false,
+          pendingPairFlow: 'computer',
+        });
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it('re-minting the same flow ("New code") is allowed and keeps that flow', async () => {
+      await startRO();
+      const first = server.startPairing({ name: 'Computer', allowInput: false, flow: 'computer' });
+      const again = server.startPairing({ name: 'Computer', allowInput: false, flow: 'computer' });
+      expect(first.ok && again.ok).toBe(true);
+      if (first.ok && again.ok) expect(again.code).not.toBe(first.code);
+      expect(server.status().pendingPairFlow).toBe('computer');
+    });
+
+    it('records the kind the desktop client states, allowlisted; flow decides only when it says nothing', async () => {
+      await startRO();
+      const computer = server.startPairing({ name: 'Computer', flow: 'computer' });
+      if (!computer.ok) throw new Error(computer.error);
+      const res = await fetch(`${base()}/api/pair?code=${computer.code}`, {
+        headers: { 'X-Wmux-Device-Kind': ' Computer ' },
+      });
+      expect(res.status).toBe(200);
+
+      const phone = server.startPairing({ name: 'Phone', flow: 'phone' });
+      if (!phone.ok) throw new Error(phone.error);
+      // Not on the allowlist: never trusted, falls back to what the card said.
+      await fetch(`${base()}/api/pair?code=${phone.code}`, { headers: { 'X-Wmux-Device-Kind': 'admin' } });
+
+      const unlabelled = server.startPairing({ name: 'Typed by hand', flow: 'computer' });
+      if (!unlabelled.ok) throw new Error(unlabelled.error);
+      await fetch(`${base()}/api/pair?code=${unlabelled.code}`);
+
+      expect(deviceMintCalls.map((c) => (c as { kind?: string }).kind)).toEqual(['computer', 'phone', 'unknown']);
+    });
+
+    it('lists a device holding a live stream in liveDeviceIds, and drops it on disconnect', async () => {
+      await startRO();
+      const phone = await pairDevice('Watching phone');
+      expect(server.liveDeviceIds().size).toBe(0);
+      const ticket = await ticketFor(phone.token);
+      const ac = new AbortController();
+      const pane = await fetch(`${base()}/api/stream?session=s1&ticket=${encodeURIComponent(ticket)}`, {
+        signal: ac.signal,
+      });
+      expect(pane.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 30));
+      expect([...server.liveDeviceIds()]).toEqual([phone.deviceId]);
+      server.disconnectDevice(phone.deviceId);
+      expect(server.liveDeviceIds().size).toBe(0);
+      ac.abort();
+    });
+
+    it('never writes a pairing code into the daemon log', async () => {
+      const lines: string[] = [];
+      const fresh = makeDeps();
+      const logged = new WebTerminalServer({
+        sessionManager: fresh.sessionManager,
+        devices: fresh.devices,
+        log: (_level, msg) => { lines.push(msg); },
+        assetsDir: os.tmpdir(),
+      });
+      const info = await logged.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
+      const at = `http://127.0.0.1:${info.port}`;
+      const codes = new Set<string>([info.pairCode as string]);
+      try {
+        const phone = logged.startPairing({ name: 'Phone', flow: 'phone' });
+        if (!phone.ok) throw new Error(phone.error);
+        codes.add(phone.code);
+        logged.status();
+        await fetch(`${at}/api/pair?code=ZZZZZZZZ`);
+        expect((await fetch(`${at}/api/pair?code=${phone.code}`)).status).toBe(200);
+        const computer = logged.startPairing({ name: 'Computer', flow: 'computer' });
+        if (!computer.ok) throw new Error(computer.error);
+        codes.add(computer.code);
+        const refused = logged.startPairing({ name: 'Phone', flow: 'phone' });
+        expect(refused.ok).toBe(false);
+        codes.add(logged.cancelPairing().pairCode as string);
+      } finally {
+        await logged.stop();
+      }
+      const joined = lines.join('\n');
+      for (const code of codes) expect(joined).not.toContain(code);
+    });
   });
 
   // ── stream tickets (B3) ────────────────────────────────────────────────────

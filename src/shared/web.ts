@@ -112,6 +112,8 @@ export interface WebTerminalInfo {
   pendingDeviceName?: string;
   /** The input grant the pending code will register the device with. */
   pendingDeviceAllowInput?: boolean;
+  /** Which card the pending code belongs to. Present exactly when the name is. */
+  pendingPairFlow?: PairFlow;
   /**
    * Why the transport could not be brought up, when a start asked for one it
    * could not get (tailscale absent, logged out, someone else serving on :443).
@@ -190,6 +192,13 @@ export interface WebDeviceSummary {
   allowInput: boolean;
   /** Set once and never cleared — revocation is permanent; a device re-pairs to return. */
   revokedAt?: number;
+  /** What the device said it was when it paired. Display only. */
+  kind?: DeviceKind;
+  /**
+   * Seen within `DEVICE_ACTIVE_WINDOW_MS`, or holding a live stream right now.
+   * Computed by the daemon at list time; never true for a revoked device.
+   */
+  activeNow?: boolean;
 }
 
 /** Result of changing one device's input grant. Fail-closed, like the revoke. */
@@ -305,3 +314,73 @@ export function webIsLoopback(info: WebTerminalInfo): boolean {
 export function webIsExposed(info: WebTerminalInfo): boolean {
   return info.host === WEB_EXPOSE_HOST || info.host === '::';
 }
+
+// ─── Pairing flows, device kinds and the computer pairing link ─────────────
+
+/**
+ * Which card minted the current pairing code. The server has ONE code slot, so
+ * the two flows are mutually exclusive: the pending name, input grant and flow
+ * are held together and replaced together, never mixed.
+ */
+export type PairFlow = 'phone' | 'computer';
+
+/**
+ * What a paired device says it is. DISPLAY ONLY: it picks an icon in the
+ * roster and is never read by an authorization decision. `unknown` covers
+ * every record written before the field existed and any value outside the
+ * allowlist.
+ */
+export type DeviceKind = 'phone' | 'computer' | 'unknown';
+
+/** Request header the desktop client sends on `GET /api/pair`. */
+export const DEVICE_KIND_HEADER = 'x-wmux-device-kind';
+
+/** Allowlist a claimed device kind. Anything else is `unknown`. */
+export function normalizeDeviceKind(raw: unknown): DeviceKind {
+  if (typeof raw !== 'string') return 'unknown';
+  const value = raw.trim().toLowerCase();
+  return value === 'phone' || value === 'computer' ? value : 'unknown';
+}
+
+/**
+ * Fragment key of a computer pairing link: `<origin>/pair#wmux-desktop-code=X`.
+ *
+ * The code rides in the FRAGMENT so it never reaches a server log or a
+ * Referer, and under a key the browser page recognises and refuses to redeem:
+ * a computer link opened in a browser must not pair that browser. The same
+ * string is duplicated in `daemon/web/frontend/pairQuery.js` (no bundler
+ * there); a test keeps the two equal.
+ */
+export const DESKTOP_PAIR_FRAGMENT_KEY = 'wmux-desktop-code';
+
+/** Build the computer pairing link for a pair origin (`https://host[:port]`). */
+export function buildDesktopPairLink(origin: string, code: string): string {
+  return `${origin}/pair#${DESKTOP_PAIR_FRAGMENT_KEY}=${encodeURIComponent(code)}`;
+}
+
+/**
+ * The origin a computer pairing link may point at, or '' when none qualifies.
+ *
+ * Only an HTTPS address that another machine can reach: a Tailscale front or
+ * the daemon's own TLS listener. A plaintext or loopback origin is never
+ * offered — a device credential never expires, so it is not handed over in
+ * the clear, and 127.0.0.1 means nothing on another computer.
+ */
+export function webComputerPairOrigin(info: WebTerminalInfo): string {
+  if (!info.running || info.pairRefusal) return '';
+  for (const raw of info.urls ?? []) {
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      continue;
+    }
+    if (url.protocol !== 'https:') continue;
+    if (webHostIsLoopback(url.hostname)) continue;
+    return url.origin;
+  }
+  return '';
+}
+
+/** A device is "active now" when it was seen within this window. */
+export const DEVICE_ACTIVE_WINDOW_MS = 120_000;

@@ -26,6 +26,7 @@ import type {
   LanLinkPeersListResult,
 } from '../shared/lanlink';
 import type {
+  PairFlow,
   WebDeviceListError,
   WebDeviceRevokeResult,
   WebDeviceSetInputResult,
@@ -1509,8 +1510,9 @@ document.addEventListener('DOMContentLoaded', () => {
   status: (args?: { verifyFront?: boolean }) =>
     ipcRenderer.invoke(IPC.WEB_STATUS, args ?? {}) as Promise<WebTerminalInfo>,
   pairRefresh: () => ipcRenderer.invoke(IPC.WEB_PAIR_REFRESH) as Promise<WebTerminalInfo>,
-  pairStart: (name: string, allowInput = false) =>
-    ipcRenderer.invoke(IPC.WEB_PAIR_START, { name, allowInput }) as Promise<WebTerminalInfo>,
+  pairStart: (name: string, allowInput = false, flow?: PairFlow) =>
+    ipcRenderer.invoke(IPC.WEB_PAIR_START, { name, allowInput, ...(flow ? { flow } : {}) }) as Promise<WebTerminalInfo>,
+  pairCancel: () => ipcRenderer.invoke(IPC.WEB_PAIR_CANCEL) as Promise<WebTerminalInfo>,
   start: (args: WebStartArgs) =>
     ipcRenderer.invoke(IPC.WEB_START, args) as Promise<WebTerminalInfo>,
   setGrants: (args: WebGrantArgs) =>

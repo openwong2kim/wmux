@@ -349,8 +349,9 @@ describe('DeviceStore — roster housekeeping', () => {
     const [row] = s.list();
     // `allowInput` is a capability flag, not secret material — it is what the
     // roster UI renders the grant from. The guard stays exact so anything that
-    // is NOT on this list has to be argued for.
-    expect(Object.keys(row).sort()).toEqual(['allowInput', 'createdAt', 'deviceId', 'lastSeenAt', 'name']);
+    // is NOT on this list has to be argued for. `kind` is the display-only
+    // phone/computer label the roster picks an icon from.
+    expect(Object.keys(row).sort()).toEqual(['allowInput', 'createdAt', 'deviceId', 'kind', 'lastSeenAt', 'name']);
   });
 
   it('throttles lastSeenAt writes but always updates in memory', async () => {

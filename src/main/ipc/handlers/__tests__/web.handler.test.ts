@@ -556,7 +556,60 @@ describe('web.handler — device roster', () => {
     installConnected({ devices: roster });
     const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: unknown[] };
     expect(rpc).toHaveBeenCalledWith('daemon.web.deviceList', {});
-    expect(res.devices).toEqual(roster);
+    // An older daemon sends neither kind nor activity: the roster is still
+    // complete, reading as an unknown, idle device.
+    expect(res.devices).toEqual([{ ...roster[0], kind: 'unknown', activeNow: false }]);
+  });
+
+  it('deviceList carries an allowlisted kind and the daemon activity verdict', async () => {
+    installConnected({
+      devices: [
+        { deviceId: 'd1', name: 'Laptop', createdAt: 1, lastSeenAt: 2, allowInput: true, kind: 'computer', activeNow: true },
+        { deviceId: 'd2', name: 'Odd', createdAt: 1, lastSeenAt: 2, allowInput: true, kind: 'toaster', activeNow: 'yes' },
+      ],
+    });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as {
+      devices: { kind: string; activeNow: boolean }[];
+      error?: string;
+    };
+    expect(res.error).toBeUndefined();
+    expect(res.devices.map((d) => [d.kind, d.activeNow])).toEqual([
+      ['computer', true],
+      ['unknown', false],
+    ]);
+  });
+
+  it('pairStart forwards the card only when the renderer states it, and pairCancel reaches the daemon', async () => {
+    installConnected({ ok: true, running: true });
+    await getHandler(IPC.WEB_PAIR_START)(fakeEvent, { name: 'Computer', allowInput: false, flow: 'computer' });
+    expect(rpc).toHaveBeenCalledWith('daemon.web.pairStart', { name: 'Computer', allowInput: false, flow: 'computer' });
+    rpc.mockClear();
+    await getHandler(IPC.WEB_PAIR_START)(fakeEvent, { name: 'Phone', flow: 'tablet' });
+    expect(rpc).toHaveBeenCalledWith('daemon.web.pairStart', { name: 'Phone' });
+    rpc.mockClear();
+    await getHandler(IPC.WEB_PAIR_CANCEL)(fakeEvent);
+    expect(rpc).toHaveBeenCalledWith('daemon.web.pairCancel', {});
+  });
+
+  it('never writes a pairing code to the main-process log, even when pairing fails', async () => {
+    const code = 'K7QX2MNP';
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation(() => undefined),
+    );
+    try {
+      rpc = vi.fn(async (method: string) => {
+        if (method === 'daemon.web.pairStart') throw new Error('boom');
+        return { running: true, pairCode: code, pendingDeviceName: 'Computer', pendingPairFlow: 'computer' };
+      });
+      registerWebHandlers(() => ({ rpc, isConnected: true }) as unknown as DaemonClient, execAbsent);
+      await getHandler(IPC.WEB_PAIR_START)(fakeEvent, { name: 'Computer', flow: 'computer' });
+      await getHandler(IPC.WEB_STATUS)(fakeEvent);
+      await getHandler(IPC.WEB_PAIR_CANCEL)(fakeEvent);
+      const written = spies.flatMap((s) => s.mock.calls.map((c) => c.map(String).join(' '))).join('\n');
+      expect(written).not.toContain(code);
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
   });
 
   // A daemon too old to send the grant predates per-device grants entirely,

@@ -11,6 +11,7 @@ import type {
   LanLinkPeersListResult,
 } from './lanlink';
 import type {
+  PairFlow,
   WebDeviceListError,
   WebDeviceRevokeResult,
   WebDeviceSetInputResult,
@@ -180,7 +181,9 @@ declare global {
          * rows cannot be operated — "which of these three do I revoke?" has no
          * answer six months later.
          */
-        pairStart: (name: string, allowInput?: boolean) => Promise<WebTerminalInfo>;
+        pairStart: (name: string, allowInput?: boolean, flow?: PairFlow) => Promise<WebTerminalInfo>;
+        /** End the pairing in progress, whichever card started it. */
+        pairCancel?: () => Promise<WebTerminalInfo>;
         /**
          * The paired-device roster.
          *

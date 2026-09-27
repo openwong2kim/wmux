@@ -1873,7 +1873,20 @@
 
   // The /pair route always opens the pairing screen (even if a stale token is
   // stored) — the operator explicitly navigated here to key in a code.
-  if (location.pathname === '/pair') {
+  if (location.pathname === '/pair' && pairQuery.hasDesktopCode(location.hash)) {
+    // A COMPUTER pairing link, opened in a browser. It is meant for the wmux
+    // app on another computer, so this page must not redeem it, must not put
+    // it in the form, and must not leave it in the address bar. The code is
+    // never read: only the marker is checked. The fragment never reached the
+    // server, so dropping it here is the last copy this page holds.
+    try { history.replaceState(null, '', location.pathname); } catch (e) { /* non-fatal */ }
+    setConn('error', 'not paired');
+    showOverlay(
+      'info',
+      'This link is for the wmux app',
+      'Paste this link into the wmux app on the other computer. This browser was not paired.'
+    );
+  } else if (location.pathname === '/pair') {
     showPairing();
     // A scanned QR arrives as /pair?code=ABCD2345. Strip the code from the
     // address bar FIRST, before anything can fail: a code left parked in

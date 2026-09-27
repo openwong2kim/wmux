@@ -135,6 +135,7 @@ import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
 import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore';
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
+import { withActivity } from './web/deviceActivity';
 import { buildWebPaneEnv } from './web/webPaneEnv';
 import type { ApprovalDecision } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
@@ -3008,15 +3009,27 @@ function registerRpcHandlers(
     // device paired by a client that predates this parameter — including the
     // CLI, which has no way to state it.
     const allowInput = params['allowInput'];
+    // Which card is pairing. Absent is the phone card — the only one a caller
+    // predating this field could have meant.
+    const flow = params['flow'] === 'computer' ? 'computer' : 'phone';
     return webServer.startPairing({
       name,
+      flow,
       ...(typeof allowInput === 'boolean' ? { allowInput } : {}),
     });
   });
 
+  // End the pairing in progress, whichever card started it.
+  pipeServer.onRpc('daemon.web.pairCancel', async () => {
+    await afterRestore();
+    return webServer.cancelPairing();
+  });
+
   pipeServer.onRpc('daemon.web.deviceList', async () => {
     await afterRestore();
-    return { devices: getDeviceStore().list() };
+    // `activeNow` is computed here, at list time, from the store's in-memory
+    // `lastSeenAt` and the server's live streams. Never persisted.
+    return { devices: withActivity(getDeviceStore().list(), webServer.liveDeviceIds(), Date.now()) };
   });
 
   pipeServer.onRpc('daemon.web.deviceSetInput', async (params) => {

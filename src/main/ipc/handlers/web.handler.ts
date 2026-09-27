@@ -4,6 +4,7 @@ import { wrapHandler } from '../wrapHandler';
 import type { DaemonClient } from '../../DaemonClient';
 import {
   WEB_DEFAULT_PORT,
+  normalizeDeviceKind,
   type WebDeviceListError,
   type WebDeviceRevokeResult,
   type WebDeviceSetInputResult,
@@ -309,7 +310,8 @@ export function registerWebHandlers(
   ipcMain.handle(
     IPC.WEB_PAIR_START,
     wrapHandler(IPC.WEB_PAIR_START, async (_event, input: unknown): Promise<WebTerminalInfo> => {
-      const pairArgs = input && typeof input === 'object' ? (input as { name?: unknown; allowInput?: unknown }) : {};
+      const pairArgs =
+        input && typeof input === 'object' ? (input as { name?: unknown; allowInput?: unknown; flow?: unknown }) : {};
       const name = String(pairArgs.name ?? '');
       // Absent stays ABSENT across this hop. Collapsing it to `false` here
       // would reach the daemon as an explicit refusal and override
@@ -317,6 +319,9 @@ export function registerWebHandlers(
       // does not send the field — which is the whole point of the daemon
       // reading it as optional.
       const allowInput = typeof pairArgs.allowInput === 'boolean' ? pairArgs.allowInput : undefined;
+      // Same discipline for the card: forwarded only when stated, so the
+      // daemon's own default (the phone card) stays the one place it lives.
+      const flow = pairArgs.flow === 'computer' || pairArgs.flow === 'phone' ? pairArgs.flow : undefined;
       const dc = getDaemonClient();
       if (!dc || !dc.isConnected) {
         return {
@@ -333,6 +338,7 @@ export function registerWebHandlers(
         const res = (await dc.rpc('daemon.web.pairStart', {
           name,
           ...(allowInput !== undefined ? { allowInput } : {}),
+          ...(flow !== undefined ? { flow } : {}),
         })) as {
           ok?: boolean;
           error?: string;
@@ -354,6 +360,16 @@ export function registerWebHandlers(
         });
       }
       return withFront(info);
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.WEB_PAIR_CANCEL);
+  ipcMain.handle(
+    IPC.WEB_PAIR_CANCEL,
+    wrapHandler(IPC.WEB_PAIR_CANCEL, async (): Promise<WebTerminalInfo> => {
+      // Answers a fresh WebTerminalInfo like every other control call, so the
+      // popover renders the server's word on what is pending now.
+      return withFront(await call('daemon.web.pairCancel', {}));
     }),
   );
 
@@ -383,6 +399,10 @@ export function registerWebHandlers(
       // full of read-only badges for devices that are typing right now.
       allowInput: typeof d['allowInput'] === 'boolean' ? d['allowInput'] : true,
       ...(typeof d['revokedAt'] === 'number' ? { revokedAt: d['revokedAt'] } : {}),
+      // Display-only, and optional: a daemon too old to send either still
+      // yields a complete roster rather than a 'malformed' one.
+      kind: normalizeDeviceKind(d['kind']),
+      activeNow: d['activeNow'] === true,
     };
   };
 
@@ -526,6 +546,7 @@ export function registerWebHandlers(
     ipcMain.removeHandler(IPC.WEB_STOP);
     ipcMain.removeHandler(IPC.WEB_PAIR_REFRESH);
     ipcMain.removeHandler(IPC.WEB_PAIR_START);
+    ipcMain.removeHandler(IPC.WEB_PAIR_CANCEL);
     ipcMain.removeHandler(IPC.WEB_DEVICE_LIST);
     ipcMain.removeHandler(IPC.WEB_DEVICE_REVOKE);
     ipcMain.removeHandler(IPC.WEB_DEVICE_SET_INPUT);

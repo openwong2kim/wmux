@@ -337,6 +337,34 @@ describe('remote.handler — hostsPair', () => {
     expect(pairUrl).toBe('https://box:9600/api/pair?code=ABCD1234');
     expect(pairInit?.redirect).toBe('error');
     expect(pairInit?.signal).toBeInstanceOf(AbortSignal);
+    // So the host's roster shows this desktop as a computer (display only).
+    expect(pairInit?.headers).toEqual({ 'x-wmux-device-kind': 'computer' });
+  });
+
+  it('never writes the pairing code to the main-process log on any outcome', async () => {
+    const code = 'K7QX2MNP';
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation(() => undefined),
+    );
+    try {
+      const outcomes = [
+        async () => { throw new Error(`connect ECONNREFUSED /api/pair?code=${code}`); },
+        async () => jsonResponse({ error: 'invalid code', attemptsLeft: 4 }, false, 403),
+        async () => jsonResponse({ token: 'd1.s1' }),
+      ];
+      for (const outcome of outcomes) {
+        const fetchImpl = vi.fn(async (url: string) => {
+          if (String(url).includes('/api/pair')) return outcome();
+          return jsonResponse({ allowInput: false });
+        });
+        registerRemoteHandlers({ store: fakeStore() as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+        await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', code);
+      }
+      const written = spies.flatMap((s) => s.mock.calls.map((c) => c.map(String).join(' '))).join('\n');
+      expect(written).not.toContain(code);
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
   });
 
   it('strips a trailing path/slash down to the bare origin', async () => {
