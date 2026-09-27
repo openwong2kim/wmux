@@ -66,6 +66,8 @@ describe('wmux web native TLS flags (#764)', () => {
   });
 
   it('sends only absolute TLS paths and reports the HTTPS pairing origin', async () => {
+    // A fresh start: nothing running, nothing persisted.
+    sendDaemonStringRequestMock.mockResolvedValueOnce({ id: 'status', ok: true, result: { running: false } });
     sendDaemonStringRequestMock.mockResolvedValue({
       id: 'tls-start',
       ok: true,

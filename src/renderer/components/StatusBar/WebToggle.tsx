@@ -276,24 +276,27 @@ export function WebPopoverBody({
   // paired phone start Claude/Codex with approvals or the sandbox off. The
   // parent opens the disclosure whenever the grant is on, so an active ceiling
   // is never hidden.
-  const advanced = (dangerous: boolean, disabled: boolean) => (
+  const advanced = (dangerous: boolean, disabled: boolean) => {
+    // Never hidden while on, whatever the disclosure state says.
+    const shown = advancedOpen || dangerous;
+    return (
     <div className="flex flex-col gap-2">
       <button
         type="button"
-        aria-expanded={advancedOpen}
+        aria-expanded={shown}
         onClick={onToggleAdvanced}
         className={`ui-note flex items-center gap-1 self-start rounded-[6px] ${FOCUS_RING}`}
       >
         <span
           aria-hidden="true"
           className="inline-flex transition-transform"
-          style={{ transform: advancedOpen ? 'rotate(90deg)' : undefined }}
+          style={{ transform: shown ? 'rotate(90deg)' : undefined }}
         >
           <IconChevron size={11} />
         </span>
         {t('web.advanced')}
       </button>
-      {advancedOpen ? (
+      {shown ? (
         <>
           <div className="ui-group">
             <Field label={t('web.allowDangerousLaunch')} className="ui-row">
@@ -314,6 +317,7 @@ export function WebPopoverBody({
       ) : null}
     </div>
   );
+  };
   if (!info.running) {
     return (
       <>
@@ -639,31 +643,51 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
    * on deliberate moments — never from the 10s poll, which would spawn a
    * process six times a minute for a fact that changes when a human acts.
    */
+  /**
+   * Grants ticked in the stopped popover since the server was last seen.
+   * Only these are sent by Start; the rest are left to the daemon, which
+   * inherits them from a record that is still enabled and finds nothing after
+   * a stop (a stop clears it: "do not bring this back").
+   */
+  const touchedGrants = useRef(new Set<keyof WebGrantArgs>());
+  const wasRunning = useRef(false);
+
+  /**
+   * Take a status reply. A server that is no longer running — stopped here,
+   * by `wmux web --stop`, or anywhere else — resets every grant checkbox to
+   * off: seeding them from the server that WAS running would let the next
+   * Start send a revoked grant back as an explicit true.
+   */
+  const applyInfo = useCallback((next: WebTerminalInfo) => {
+    setInfo(next);
+    if (next.running) {
+      // Seed the transport checkbox from what is actually running, so a daemon
+      // restart cannot leave the box unchecked over a tailnet server — the
+      // operator's next Stop → Start would silently drop them onto loopback.
+      setTailscale(next.tailscale === true);
+      wasRunning.current = true;
+      touchedGrants.current.clear();
+    } else if (wasRunning.current) {
+      wasRunning.current = false;
+      touchedGrants.current.clear();
+      setAllowInput(false);
+      setAllowTranscript(false);
+      setAllowUpload(false);
+      setAllowDangerousLaunch(false);
+    }
+  }, []);
+
   const refresh = useCallback(async (verifyFront = false) => {
     const a = webApi();
     if (!a) return;
     try {
       const next = await a.status(verifyFront ? { verifyFront: true } : undefined);
-      setInfo(next);
-      // Seed the transport checkbox from what is actually running, so a daemon
-      // restart cannot leave the box unchecked over a tailnet server — the
-      // operator's next Stop → Start would silently drop them onto loopback.
-      if (next.running) {
-        setTailscale(next.tailscale === true);
-        // Same for the grants: the stopped body's next Start sends them, so
-        // they must start from what was actually running — a server the CLI
-        // started with `--allow-transcript` must not come back without it.
-        setAllowInput(next.allowInput === true);
-        setAllowTranscript(next.allowTranscript === true);
-        setAllowUpload(next.allowUpload === true);
-        setAllowDangerousLaunch(next.allowDangerousLaunch === true);
-        if (next.allowDangerousLaunch === true) setAdvancedOpen(true);
-      }
+      applyInfo(next);
     } catch {
       // Handler resolves rather than rejects; a rejection here means the bridge
       // is missing entirely — leave the last known state untouched.
     }
-  }, []);
+  }, [applyInfo]);
 
   // One mount-time fetch keeps the resting amber dot correct without a
   // continuous poll (the popover-open poll below covers live updates).
@@ -733,20 +757,24 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
     if (!a) return;
     setBusy(true);
     try {
-      const args: WebStartArgs = {
-        allowInput,
-        expose,
-        tailscale,
-        allowTranscript,
-        allowUpload,
-        allowDangerousLaunch,
-      };
-      const next = await a.start(args);
-      setInfo(next);
+      // Look again first: the popover may be up to a poll behind. A server
+      // started (or stopped) elsewhere since then is not ours to restart.
+      const current = await a.status();
+      if (current.running) {
+        applyInfo(current);
+        return;
+      }
+      const values = { allowTranscript, allowUpload, allowDangerousLaunch };
+      const grants: WebGrantArgs = {};
+      for (const key of ['allowTranscript', 'allowUpload', 'allowDangerousLaunch'] as const) {
+        if (touchedGrants.current.has(key)) grants[key] = values[key];
+      }
+      const args: WebStartArgs = { allowInput, expose, tailscale, ...grants };
+      applyInfo(await a.start(args));
     } finally {
       setBusy(false);
     }
-  }, [allowInput, expose, tailscale, allowTranscript, allowUpload, allowDangerousLaunch]);
+  }, [allowInput, expose, tailscale, allowTranscript, allowUpload, allowDangerousLaunch, applyInfo]);
 
   /**
    * A grant row was toggled. Stopped, it only changes what the next Start
@@ -756,6 +784,7 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   const handleToggleGrant = useCallback(
     async (key: keyof WebGrantArgs) => {
       if (!info.running) {
+        touchedGrants.current.add(key);
         if (key === 'allowInput') setAllowInput((v) => !v);
         else if (key === 'allowTranscript') setAllowTranscript((v) => !v);
         else if (key === 'allowUpload') setAllowUpload((v) => !v);
@@ -767,19 +796,14 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
       const args: WebGrantArgs = { [key]: info[key] !== true };
       setBusy(true);
       try {
-        const next = await a.setGrants(args);
-        setInfo(next);
-        if (next.running) {
-          setAllowInput(next.allowInput === true);
-          setAllowTranscript(next.allowTranscript === true);
-          setAllowUpload(next.allowUpload === true);
-          setAllowDangerousLaunch(next.allowDangerousLaunch === true);
-        }
+        // The running rows read `info`; a stop that overtook this change
+        // comes back as running:false and resets the stopped-body grants.
+        applyInfo(await a.setGrants(args));
       } finally {
         setBusy(false);
       }
     },
-    [info],
+    [info, applyInfo],
   );
 
   // The two transports are alternatives, not additions: `tailscale serve`
@@ -805,12 +829,11 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
     if (!a) return;
     setBusy(true);
     try {
-      const next = await a.stop();
-      setInfo(next);
+      applyInfo(await a.stop());
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [applyInfo]);
 
   const copyValue = useCallback(async (target: Exclude<CopyTarget, null>, value: string) => {
     if (!value) return;

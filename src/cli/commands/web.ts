@@ -164,13 +164,32 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
     console.error('Error: --port must be an integer between 1 and 65535');
     process.exit(1);
   }
-  if (plan.kept.length > 0) {
+  // `--json` carries these inside the result instead: a JSON consumer reads
+  // stdout as one document.
+  if (!jsonMode && plan.kept.length > 0) {
     console.log(
       `Keeping previous settings not given on this command line: ${plan.kept.join(', ')}. ` +
         'Turn one off with --no-allow-<x>, --loopback or --no-tls, or use --stop.',
     );
   }
-  for (const line of plan.narrowed) console.warn(`WARNING: this restart narrows access: ${line}.`);
+  if (!jsonMode) {
+    for (const line of plan.narrowed) console.warn(`WARNING: this restart narrows access: ${line}.`);
+  }
+  // A grant the previous server did not report is left out, and the daemon
+  // is asked to keep it rather than read the silence as "off".
+  const unknownGrant = Object.values(grants).some((v) => v === undefined);
+  const grantParams = {
+    ...(grants.allowInput !== undefined ? { allowInput: grants.allowInput } : {}),
+    ...(grants.allowUpload !== undefined ? { allowUpload: grants.allowUpload } : {}),
+    ...(grants.allowTranscript !== undefined ? { allowTranscript: grants.allowTranscript } : {}),
+    // The ceiling is sent only when on, so the daemon's fail-closed default is
+    // what every other invocation gets — except when inheritance is on, where
+    // an explicit off must be said out loud or it would be inherited.
+    ...(grants.allowDangerousLaunch === true || (unknownGrant && grants.allowDangerousLaunch === false)
+      ? { allowDangerousLaunch: grants.allowDangerousLaunch }
+      : {}),
+    ...(unknownGrant ? { inheritUnsetGrants: true } : {}),
+  };
 
   // #596: the token survives a restart, so same-transport option changes no
   // longer lock out a paired phone. `--new-token` is the explicit manual
@@ -192,13 +211,7 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
       const res = await sendDaemonStringRequest('daemon.web.start', {
         port,
         host,
-        allowInput: grants.allowInput,
-        allowUpload: grants.allowUpload,
-        allowTranscript: grants.allowTranscript,
-        // The ceiling for chat launches with approvals (Claude) or approvals
-        // and the sandbox (Codex) off. Only ever sent when on, so the daemon's
-        // fail-closed default is what every other invocation gets.
-        ...(grants.allowDangerousLaunch ? { allowDangerousLaunch: true } : {}),
+        ...grantParams,
         allowedHosts: hosts,
         newToken,
         // Explicit false distinguishes "the operator chose HTTP" from a re-run
@@ -221,7 +234,11 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
     process.exit(1);
   }
   for (const warning of start.warnings) console.warn(warning);
-  return report(start.value, jsonMode, 'start', start.tailnet);
+  const value =
+    jsonMode && start.value.ok && isRecord(start.value.result)
+      ? { ...start.value, result: { ...start.value.result, kept: plan.kept, narrowed: plan.narrowed } }
+      : start.value;
+  return report(value, jsonMode, 'start', start.tailnet);
 }
 
 /**
@@ -241,10 +258,11 @@ async function loadPreviousWebShape(): Promise<PreviousWebShape | undefined> {
         tailscale: r.tailscale === true,
         allowedHosts: Array.isArray(r.allowedHosts) ? r.allowedHosts.filter((h) => typeof h === 'string') : [],
         tls: r.tls === true,
-        allowInput: r.allowInput === true,
-        allowUpload: r.allowUpload === true,
-        allowTranscript: r.allowTranscript === true,
-        allowDangerousLaunch: r.allowDangerousLaunch === true,
+        // Absent (an older daemon) stays unknown rather than reading as off.
+        allowInput: typeof r.allowInput === 'boolean' ? r.allowInput : undefined,
+        allowUpload: typeof r.allowUpload === 'boolean' ? r.allowUpload : undefined,
+        allowTranscript: typeof r.allowTranscript === 'boolean' ? r.allowTranscript : undefined,
+        allowDangerousLaunch: typeof r.allowDangerousLaunch === 'boolean' ? r.allowDangerousLaunch : undefined,
       };
     }
   } catch {

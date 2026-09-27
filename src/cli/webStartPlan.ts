@@ -11,10 +11,15 @@ export interface PreviousWebShape {
   tailscale: boolean;
   allowedHosts: string[];
   tls: boolean;
-  allowInput: boolean;
-  allowUpload: boolean;
-  allowTranscript: boolean;
-  allowDangerousLaunch: boolean;
+  /**
+   * Each grant, or undefined when the previous server did not report it (an
+   * older daemon). An unknown grant is never sent, so it is never switched
+   * off by accident; the daemon keeps it (`inheritUnsetGrants`).
+   */
+  allowInput: boolean | undefined;
+  allowUpload: boolean | undefined;
+  allowTranscript: boolean | undefined;
+  allowDangerousLaunch: boolean | undefined;
 }
 
 export type WebGrantName = 'allowInput' | 'allowUpload' | 'allowTranscript' | 'allowDangerousLaunch';
@@ -34,7 +39,8 @@ export interface WebStartPlan {
   expose: boolean;
   tailscale: boolean;
   allowedHosts: string[];
-  grants: Record<WebGrantName, boolean>;
+  /** undefined = unknown and not given: leave it to the daemon. */
+  grants: Record<WebGrantName, boolean | undefined>;
   /**
    * `false` = plain HTTP chosen, a config = native TLS chosen, undefined = not
    * this run's decision, so the daemon keeps whatever the server already had.
@@ -70,16 +76,22 @@ export function planWebStart(
   const kept: string[] = [];
   const narrowed: string[] = [];
 
-  const grants = {} as Record<WebGrantName, boolean>;
+  if (requestedTls && hasFlag(args, '--no-tls')) {
+    throw new Error('--no-tls cannot be combined with --tls-cert/--tls-key');
+  }
+
+  const grants = {} as Record<WebGrantName, boolean | undefined>;
   for (const [name, flag] of Object.entries(WEB_GRANT_FLAGS) as [WebGrantName, string][]) {
     const on = hasFlag(args, `--${flag}`);
     const off = hasFlag(args, `--no-${flag}`);
     if (on && off) throw new Error(`--${flag} and --no-${flag} cannot be used together`);
     if (on || off) {
       grants[name] = on;
+    } else if (!previous) {
+      grants[name] = false;
     } else {
-      grants[name] = previous?.[name] === true;
-      if (grants[name]) kept.push(`--${flag}`);
+      grants[name] = previous[name];
+      if (grants[name] === true) kept.push(`--${flag}`);
     }
   }
 
@@ -155,7 +167,11 @@ export function planWebStart(
     // name) stop working too. The tailnet case is already said above.
     if (!(previous.tailscale && !tailscale)) {
       const next = new Set(allowedHosts.map((h) => h.toLowerCase()));
-      const dropped = previous.allowedHosts.filter((h) => !next.has(h.toLowerCase()));
+      // With the tailnet kept, startWebTransport re-adds its MagicDNS name,
+      // so that one is not being dropped.
+      const dropped = previous.allowedHosts.filter(
+        (h) => !next.has(h.toLowerCase()) && !(tailscale && h.toLowerCase().endsWith('.ts.net')),
+      );
       if (dropped.length > 0) {
         narrowed.push(`requests for ${dropped.join(', ')} are no longer accepted (dropped from --allow-host)`);
       }

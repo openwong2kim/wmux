@@ -2808,6 +2808,9 @@ function registerRpcHandlers(
   const afterRestore = async (): Promise<void> => {
     if (webRestore) await webRestore;
   };
+  // Bumped by every operator stop. An in-place grant change
+  // (`onlyIfRunning`) that a stop overtook must not bring the server back.
+  let webStopGeneration = 0;
   pipeServer.onRpc('daemon.web.start', async (params) => {
     await afterRestore();
     const p = params as {
@@ -2818,6 +2821,7 @@ function registerRpcHandlers(
       allowTranscript?: boolean;
       allowDangerousLaunch?: boolean;
       inheritUnsetGrants?: boolean;
+      onlyIfRunning?: boolean;
       allowedHosts?: unknown;
       newToken?: boolean;
       tailscale?: boolean;
@@ -2835,6 +2839,12 @@ function registerRpcHandlers(
       : [];
     const requestedTls = parseWebTlsConfig(p.tls);
     const tailscale = p.tailscale === true;
+    // The desktop's in-place grant change restarts a RUNNING server. A stop
+    // that landed after it read status wins: nothing is started, and the
+    // record the stop cleared is not written back.
+    const onlyIfRunning = p.onlyIfRunning === true;
+    const stopGeneration = webStopGeneration;
+    if (onlyIfRunning && !webServer.currentStartState) return webServer.status();
     const loadedPrevious = loadWebStateWithDiagnostics(wmuxDir);
     // Each grant is its own opt-in and fail-closed: a caller that says nothing
     // gets a read-only server that cannot write files, read transcripts, or
@@ -2867,6 +2877,10 @@ function registerRpcHandlers(
       ...(tls ? { tls } : {}),
       token,
     });
+    if (onlyIfRunning && stopGeneration !== webStopGeneration) {
+      await webServer.stop();
+      return webServer.status();
+    }
     if (rotateCredentials) {
       // A device authenticates with its own durable `deviceId.secret`, so
       // rotating only the operator token is not a credential rotation. Do
@@ -2905,6 +2919,7 @@ function registerRpcHandlers(
     // a teardown of a server the operator still wants and therefore preserves
     // both the persisted listener and its paired devices.
     await afterRestore();
+    webStopGeneration += 1;
     // #783 — the answering surface is going away, so every gate still holding a
     // bridge open is now unanswerable. Defer them here instead of making each
     // one wait out its own deadline in front of a blocked agent.

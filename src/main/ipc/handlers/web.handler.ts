@@ -271,6 +271,10 @@ export function registerWebHandlers(
         allowInput: info.allowInput === true,
         ...grants,
         inheritUnsetGrants: true,
+        // Atomic on the daemon side: a stop that lands after the status read
+        // above wins, instead of this restart reviving a server the operator
+        // just stopped.
+        onlyIfRunning: true,
       });
       if (next.error !== undefined) {
         // A failed reply carries no trustworthy running status. Report what

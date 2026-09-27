@@ -430,6 +430,12 @@ describe('WebPopoverBody — phone grants', () => {
     expect(checked.slice(-2)).toEqual(['true', 'false']);
   });
 
+  it('never hides a dangerous launch that is on, even with the disclosure closed', () => {
+    const html = renderBody({ info: { ...running, allowDangerousLaunch: true }, advancedOpen: false });
+    expect(html).toContain('web.allowDangerousLaunchWarning');
+    expect(renderBody({ allowDangerousLaunch: true, advancedOpen: false })).toContain('web.allowDangerousLaunchWarning');
+  });
+
   it('keeps dangerous launch behind a closed Advanced disclosure by default', () => {
     const closed = renderBody({});
     expect(closed).toContain('web.advanced');

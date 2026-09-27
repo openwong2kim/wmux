@@ -112,19 +112,63 @@ describe('WebToggle phone grants', () => {
     expect(checkbox('Allow input').getAttribute('aria-checked')).toBe('true');
   });
 
-  it('a Start after a running server sends the grants that server had', async () => {
-    status = { ...running, allowTranscript: true, allowUpload: false };
-    stop.mockResolvedValue({ running: false });
-    start.mockResolvedValue(status);
+  it('a Stop revokes: the next Start does not revive transcript, upload or dangerous launch', async () => {
+    status = { ...running, allowTranscript: true, allowUpload: true };
+    stop.mockImplementation(async () => {
+      status = { running: false };
+      return status;
+    });
+    start.mockResolvedValue({ running: true });
     await mountAndOpen();
 
     await act(async () => buttonNamed('Stop').click());
     await flush();
+    expect(checkbox('Conversation access').getAttribute('aria-checked')).toBe('false');
     await act(async () => buttonNamed('Start').click());
     await flush();
 
-    expect(start).toHaveBeenCalledWith(
-      expect.objectContaining({ allowTranscript: true, allowUpload: false, allowDangerousLaunch: true }),
-    );
+    const args = start.mock.calls[0][0] as Record<string, unknown>;
+    // Not sent at all: the stop cleared the record, so the daemon's inherit
+    // resolves them to off. An explicit true here would be a revived grant.
+    expect(args['allowTranscript']).not.toBe(true);
+    expect(args['allowUpload']).not.toBe(true);
+    expect(args['allowDangerousLaunch']).not.toBe(true);
+  });
+
+  it('a server stopped elsewhere (CLI --stop) resets the grants on the next status read', async () => {
+    status = { ...running, allowTranscript: true };
+    await mountAndOpen();
+    // The CLI stops it; the popover is reopened and re-reads status.
+    status = { running: false };
+    const toggle = container.querySelector('[data-testid="deck-web-toggle"]') as HTMLButtonElement;
+    await act(async () => toggle.click());
+    await act(async () => toggle.click());
+    await flush();
+    start.mockResolvedValue({ running: true });
+    await act(async () => buttonNamed('Start').click());
+    await flush();
+    expect((start.mock.calls[0][0] as Record<string, unknown>)['allowTranscript']).not.toBe(true);
+  });
+
+  it('a grant the operator ticks in the stopped popover is sent explicitly', async () => {
+    status = { running: false };
+    start.mockResolvedValue({ running: true });
+    await mountAndOpen();
+    await act(async () => checkbox('Conversation access').click());
+    await act(async () => buttonNamed('Start').click());
+    await flush();
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ allowTranscript: true }));
+    expect(start.mock.calls[0][0]).not.toHaveProperty('allowDangerousLaunch');
+  });
+
+  it('Start over a server that is already running does not restart it', async () => {
+    status = { running: false };
+    await mountAndOpen();
+    // Started from the CLI after the popover last looked.
+    status = { ...running, allowTranscript: true };
+    await act(async () => buttonNamed('Start').click());
+    await flush();
+    expect(start).not.toHaveBeenCalled();
+    expect(checkbox('Conversation access').getAttribute('aria-checked')).toBe('true');
   });
 });

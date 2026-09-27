@@ -131,6 +131,29 @@ describe('wmux web re-run keeps what it was not told to change', () => {
     expect(startParams()).toMatchObject({ port: 7690, host: '0.0.0.0', allowInput: true, allowTranscript: true });
   });
 
+  it('--json prints the result only, with what was kept and narrowed inside it', async () => {
+    daemon(exposedWithTranscript);
+    await handleWeb(['--loopback'], true);
+    expect(lines).toHaveLength(1);
+    const out = JSON.parse(lines[0]) as { running: boolean; kept: string[]; narrowed: string[] };
+    expect(out.running).toBe(true);
+    expect(out.kept).toContain('--allow-transcript');
+    expect(out.narrowed.join(' ')).toContain('loopback');
+  });
+
+  it('an older daemon that does not report a grant keeps it instead of being sent false', async () => {
+    const old: Record<string, unknown> = { ...exposedWithTranscript };
+    delete old['allowTranscript'];
+    delete old['allowDangerousLaunch'];
+    daemon(old);
+    await handleWeb(['--allow-input'], false);
+    const params = startParams();
+    expect(params).not.toHaveProperty('allowTranscript');
+    expect(params).not.toHaveProperty('allowDangerousLaunch');
+    expect(params['inheritUnsetGrants']).toBe(true);
+    expect(params['allowUpload']).toBe(true);
+  });
+
   it('a fresh start keeps the fail-closed defaults exactly', async () => {
     daemon({ running: false });
     await handleWeb([], false);
@@ -184,6 +207,16 @@ describe('planWebStart (tailnet paths, no tailscale shell-out)', () => {
     const proxied: PreviousWebShape = { ...tailnet, tailscale: false, allowedHosts: ['box.example.test'] };
     expect(planWebStart(['--loopback'], undefined, proxied, 7681).narrowed.join(' ')).toContain('box.example.test');
     expect(planWebStart(['--allow-input'], undefined, proxied, 7681).narrowed).toEqual([]);
+  });
+
+  it('does not report the MagicDNS name as dropped when the tailnet is kept', () => {
+    expect(planWebStart(['--allow-host', 'extra.example.test'], undefined, tailnet, 7681).narrowed).toEqual([]);
+  });
+
+  it('refuses --no-tls together with a certificate', () => {
+    expect(() =>
+      planWebStart(['--no-tls'], { certPath: '/c.pem', keyPath: '/k.pem' }, { ...tailnet, tailscale: false }, 7681),
+    ).toThrow(/--no-tls/);
   });
 
   it('refuses contradictory flags', () => {

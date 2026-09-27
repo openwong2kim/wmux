@@ -179,6 +179,8 @@ describe('web.handler — forwarding', () => {
         allowInput: true,
         allowTranscript: true,
         inheritUnsetGrants: true,
+        // A stop that lands between the status read and this start must win.
+        onlyIfRunning: true,
       });
       expect(res.running).toBe(true);
       expect(res.allowDangerousLaunch).toBe(true);
