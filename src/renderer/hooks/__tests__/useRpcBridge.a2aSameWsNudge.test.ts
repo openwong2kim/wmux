@@ -5,7 +5,8 @@
 // addressed pane; the line in the sender's pane was the receiver's reply,
 // which used the same "new A2A task <id> from <workspace>" text — and in a
 // same-workspace task both parties share the workspace name. These tests drive
-// the real handler and read the bytes that reach each pty.
+// the real handler and read the bytes that reach each pty. A reply also must
+// not type into a sender pane that is back at its shell (#1489 gate).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
@@ -106,5 +107,24 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
     expect(afterReply).toContain(`[wmux] reply on A2A task ${id8} from Shared — a2a_task_query`);
     expect(afterReply).not.toContain('new A2A task');
     expect(writesTo(PTY_B)).toBe('');
+  });
+
+  it('a reply to a sender pane that is back at its shell writes nothing there', async () => {
+    const sent = await sendAtoB();
+    // A's agent exited: the pane is a plain shell, where a typed line runs.
+    useStore.getState().clearSurfaceAgent(PTY_A);
+    useStore.getState().hydrateAgentAlive({ [PTY_B]: true });
+
+    write.mockClear();
+    await handleRpcMethod('a2a.task.update', {
+      workspaceId: WS.id, taskId: sent.taskId, status: 'working', message: 'on it', senderPtyId: PTY_B,
+    });
+    expect(writesTo(PTY_A)).toBe('');
+
+    const reply = (await handleRpcMethod('a2a.task.send', {
+      workspaceId: WS.id, taskId: sent.taskId, message: 'done', senderPtyId: PTY_B,
+    })) as Result;
+    expect(reply.delivery).toMatchObject({ stored: true, notified: false, reason: 'no_agent_pane' });
+    expect(writesTo(PTY_A)).toBe('');
   });
 });

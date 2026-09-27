@@ -2728,12 +2728,14 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
             // evidenced only at workspace level still gets its nudge, and a
             // pinned anchor or silent:false no longer reaches a shell (#1489).
             const replyNoAgentTarget = !a2aTargetHasAgent(targetWs, replyPty);
-            if (decision.sameWs) {
-              // Same-ws sibling: pointer-only nudge (no full-body injection).
-              write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply'), replyPty, operator);
-            } else if (replyNoAgentTarget) {
+            // The no-agent check comes first for a same-ws sibling too: a
+            // sender pane back at its shell would run the nudge line (#1573).
+            if (replyNoAgentTarget) {
               // Nothing written — see NO_AGENT_PANE_HINT.
               mode = 'no-agent-pane';
+            } else if (decision.sameWs) {
+              // Same-ws sibling: pointer-only nudge (no full-body injection).
+              write = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName, 'reply'), replyPty, operator);
             } else {
               const liveMeta = deliveryLiveMeta(store.surfaceAgent, replyPty, targetWs.metadata);
               if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
@@ -3245,7 +3247,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         const sameWsUnverified = sameWsTask && !callerPtyIdUpdate;
         if (!pinnedAddressLost && !sameWsNoAnchor && !selfLoop && !sameWsUnverified) {
           if (sameWsTask) {
-            updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName, 'reply'), explicitPty, operator);
+            // #1573 — the same #1489 gate as below: a sibling pane back at its
+            // shell would run the nudge line as a command. Write nothing then.
+            if (a2aTargetHasAgent(targetWs, explicitPty)) {
+              updateWrite = await deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName, 'reply'), explicitPty, operator);
+            }
           } else {
             // #1336 — the same unaddressed rule as send/reply. Without it the
             // status-update message on a pin-less task still pasted its body
