@@ -1038,7 +1038,17 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         !!rows && rows.length > 0 && looksLikeApprovalPrompt(rows));
       if (pressRefusal) return { result: pressRefusal };
 
-      if (!rows || rows.length === 0 || !looksLikeApprovalPrompt(rows)) {
+      // A default approve presses `1`, so the record's OWN option 1 must be the
+      // one on screen, not merely some `❯ 1.` row. A record that outlived its
+      // question (Esc sends no hook) would otherwise press "Yes" on whatever
+      // dialog came next — a Claude permission prompt's first row is `❯ 1. Yes`.
+      const defaultChoice = params.decision === 'approve' && !choiceDigit
+        ? record.choices?.find((c) => c.key === keys.approve)
+        : undefined;
+      if (
+        !rows || rows.length === 0 || !looksLikeApprovalPrompt(rows)
+        || (defaultChoice && !looksLikeChoiceOnScreen(rows, defaultChoice.key, defaultChoice.label))
+      ) {
         // Refusal expires the request: whatever the pane is showing now, it is
         // not the prompt this record was minted for, so leaving it pending would
         // just invite the same refusal on the next tap.

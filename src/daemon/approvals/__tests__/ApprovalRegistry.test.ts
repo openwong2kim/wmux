@@ -212,6 +212,34 @@ describe('ApprovalRegistry — lifecycle', () => {
     expect(h.registry.list().pending).toHaveLength(1);
   });
 
+  it('a default approve never presses into a dialog that is not the record\'s own question', async () => {
+    // Esc on a question sends no hook, so its record can outlive it; the next
+    // dialog Claude draws (a permission prompt) also starts with `❯ 1.`.
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude', {
+      question: 'Pick a veg?',
+      choices: [{ key: '1', label: 'Kale' }, { key: '2', label: 'Leek' }],
+    });
+    await settle();
+    h.setScreen([' Do you want to proceed?', ' ❯ 1. Yes', '   2. No']);
+
+    const res = await h.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' });
+
+    expect(res).toMatchObject({ ok: false, reason: 'prompt-gone' });
+    expect(h.writes).toEqual([]);
+
+    // The record's own question on screen still answers with the default press.
+    const own = makeRegistry();
+    await awaitingInput(own.registry, 'pty-a', 'claude', {
+      question: 'Pick a veg?',
+      choices: [{ key: '1', label: 'Kale' }, { key: '2', label: 'Leek' }],
+    });
+    await settle();
+    own.setScreen(['Pick a veg?', '', '❯ 1. Kale', '  2. Leek', '  3. Type something.']);
+    expect(await own.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' })).toMatchObject({ ok: true });
+    expect(own.writes).toEqual([{ sessionId: 'pty-a', data: '1' }]);
+  });
+
   it('openclaude answers through the same map as claude', async () => {
     const h = makeRegistry();
     await awaitingInput(h.registry, 'pty-a', 'openclaude');
