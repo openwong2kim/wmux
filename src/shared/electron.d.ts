@@ -19,7 +19,7 @@ import type {
   WebTerminalInfo,
 } from './web';
 import type { BrowserHelpOutcome, BrowserHelpRequestInfo } from './browserHelp';
-import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteHostPublic, RemoteWorkspaceSummary } from './remoteHosts';
+import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteWorkspaceSummary } from './remoteHosts';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -229,7 +229,8 @@ declare global {
         >;
         hostsRemove: (id: string) => Promise<boolean>;
         workspacesList: (hostId: string) => Promise<
-          { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string }
+          | { ok: true; workspaces: RemoteWorkspaceSummary[] }
+          | { ok: false; error: string; reason?: RemoteErrorReason }
         >;
         /** Bootstraps the FIRST pane of a NEW workspace on `hostId` (#1001).
          *  The caller mints `workspaceId` — the daemon has no registry of its
@@ -238,7 +239,7 @@ declare global {
          *  unreachable host, a rejected token, or the remote's own daemon
          *  refusing the create. */
         workspaceCreate: (hostId: string, workspaceId: string, cwd?: string) => Promise<
-          { ok: true; sessionId: string } | { ok: false; error: string }
+          { ok: true; sessionId: string } | { ok: false; error: string; reason?: RemoteErrorReason }
         >;
         /** Destroy a session on `hostId` — the teardown twin of
          *  `workspaceCreate` (#1129). Detaches every live stream on that
@@ -248,7 +249,7 @@ declare global {
          *  own wording otherwise — notably on a host running without
          *  `--allow-input`, which refuses a close. Never rejects. */
         sessionClose: (hostId: string, sessionId: string) => Promise<
-          { ok: true } | { ok: false; error: string }
+          { ok: true } | { ok: false; error: string; reason?: RemoteErrorReason }
         >;
         /** Persisted attach descriptors — read on renderer boot to restore
          *  the attachments a reload/restart wiped out of the memory-only
@@ -291,8 +292,12 @@ declare global {
         onPaneData: (callback: (e: { attachId: string; dataB64: string }) => void) => () => void;
         onPaneExit: (callback: (e: { attachId: string }) => void) => () => void;
         /** Fires once reconnection gives up after too many consecutive
-         *  failures — the stream is dead until a fresh attach. */
-        onPaneError: (callback: (e: { attachId: string; message: string }) => void) => () => void;
+         *  failures — the stream is dead until a fresh attach. With
+         *  `reason: 'auth-rejected'` it fires at once instead: the host
+         *  answered 401, so no retry was attempted and only re-pairing helps. */
+        onPaneError: (
+          callback: (e: { attachId: string; message: string; reason?: RemoteErrorReason }) => void,
+        ) => () => void;
         /**
          * #1391 — ask MAIN to drive the `/api/workspaces` liveness cadence.
          *

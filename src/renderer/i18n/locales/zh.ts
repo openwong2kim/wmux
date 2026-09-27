@@ -1811,4 +1811,11 @@ export const zh = {
   'remote.pairUnreachable': '无法访问该主机',
   'remote.pairIncompatible': '该机器的 wmux 版本过旧，无法远程附加',
   'remote.pairFailed': '配对失败 — 请检查应用日志',
+  'remote.paneCountOne': '1 个面板',
+  'remote.attached': '已附加',
+  'remote.attachedConfirm': '已附加 {name}',
+  'remote.authRejected': '{host} 不再接受这台电脑 — 请重新配对',
+  'remote.authRejectedDetail': '它的 wmux web 已重启或停止，或这台电脑已被移除',
+  'remote.pairAgain': '重新配对',
+  'remote.hostFallback': '远程主机',
 } as const;

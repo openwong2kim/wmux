@@ -2400,6 +2400,13 @@ export const en = {
   'remote.pairUnreachable': 'Could not reach that host',
   'remote.pairIncompatible': "That machine's wmux is too old for remote attach",
   'remote.pairFailed': 'Pairing failed — check the app logs',
+  'remote.paneCountOne': '1 pane',
+  'remote.attached': 'Attached',
+  'remote.attachedConfirm': 'Attached {name}',
+  'remote.authRejected': '{host} no longer accepts this computer — pair again',
+  'remote.authRejectedDetail': 'Its wmux web was restarted or stopped, or this computer was removed from it',
+  'remote.pairAgain': 'Pair again',
+  'remote.hostFallback': 'the remote host',
 } as const;
 
 export type TranslationKey = keyof typeof en;

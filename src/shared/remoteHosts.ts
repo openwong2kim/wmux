@@ -233,6 +233,14 @@ export type PairFailureReason =
   | 'incompatible'
   | 'pairing-failed';
 
+/** Machine-readable reason attached to a failed remote call. `auth-rejected`
+ *  means the host answered 401: it no longer accepts this computer's
+ *  credential (its `wmux web` was restarted or stopped, which revokes paired
+ *  devices, or this device was revoked). Retrying cannot help — the only way
+ *  back is to pair again. A 403 is never this: the host's 403s are feature
+ *  gates (`--allow-input`, transcript access), not a rejected credential. */
+export type RemoteErrorReason = 'auth-rejected';
+
 /** Parse a pasted `wmux web` URL into origin + token. Returns null when the
  * string is not an http(s) URL or carries no token= query param. */
 export function parseWebUrl(raw: string): { origin: string; token: string } | null {

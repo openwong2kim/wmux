@@ -19,7 +19,7 @@ import { app, ipcMain } from 'electron';
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
-import { RemoteHostClient } from '../../remote/RemoteHostClient';
+import { RemoteHostClient, isRemoteAuthRejected } from '../../remote/RemoteHostClient';
 import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
 import type { RemoteAttachmentsStore } from '../../remote/RemoteAttachmentsStore';
 import { RemoteAttentionSubscriber } from '../../remote/RemoteAttentionSubscriber';
@@ -31,6 +31,7 @@ import { normalizeWorkspaceColor } from '../../../shared/workspaceColors';
 import type {
   PairFailureReason,
   RemoteAttachmentDescriptor,
+  RemoteErrorReason,
   RemoteHost,
   RemoteHostPublic,
   RemoteWorkspaceSummary,
@@ -82,6 +83,13 @@ interface AttachRecord {
   sessionId: string;
   senderId: number;
   sender: WebContents;
+}
+
+/** A failed client call as an IPC result. A rejected credential carries its
+ *  reason so the renderer can offer "pair again" instead of a raw message. */
+function failure(err: unknown): { ok: false; error: string; reason?: RemoteErrorReason } {
+  const error = err instanceof Error ? err.message : String(err);
+  return isRemoteAuthRejected(err) ? { ok: false, error, reason: err.reason } : { ok: false, error };
 }
 
 function assertString(v: unknown, field: string): string {
@@ -615,7 +623,9 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     async (
       _e: IpcMainInvokeEvent,
       hostId: unknown,
-    ): Promise<{ ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string }> => {
+    ): Promise<
+      { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string; reason?: RemoteErrorReason }
+    > => {
       const id = assertString(hostId, 'hostId');
       const host = store.get(id);
       if (!host) return { ok: false, error: 'unknown host' };
@@ -631,7 +641,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         const res = await client.listWorkspaces();
         return { ok: true, workspaces: res.workspaces };
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        return failure(err);
       }
     }));
 
@@ -642,7 +652,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       hostId: unknown,
       workspaceId: unknown,
       cwd?: unknown,
-    ): Promise<{ ok: true; sessionId: string } | { ok: false; error: string }> => {
+    ): Promise<{ ok: true; sessionId: string } | { ok: false; error: string; reason?: RemoteErrorReason }> => {
       const id = assertString(hostId, 'hostId');
       const wsId = assertString(workspaceId, 'workspaceId');
       const safeCwd = cwd === undefined ? undefined : assertString(cwd, 'cwd');
@@ -652,7 +662,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         const { sessionId } = await client.createWorkspace(wsId, safeCwd);
         return { ok: true, sessionId };
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        return failure(err);
       }
     }));
 
@@ -666,7 +676,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       _e: IpcMainInvokeEvent,
       hostId: unknown,
       sessionId: unknown,
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+    ): Promise<{ ok: true } | { ok: false; error: string; reason?: RemoteErrorReason }> => {
       const id = assertString(hostId, 'hostId');
       const session = assertString(sessionId, 'sessionId');
       const client = getOrCreateClient(id);
@@ -681,7 +691,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       try {
         await client.closeSession(session);
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        return failure(err);
       }
       // The session is gone. Drop every live attach on this (host, session) —
       // for any sender, since a session can legitimately be mirrored from

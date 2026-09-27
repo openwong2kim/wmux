@@ -23,6 +23,7 @@
 
 import * as crypto from 'crypto';
 import type {
+  RemoteErrorReason,
   RemoteHost,
   RemotePaneSummary,
   RemoteWorkspaceSummary,
@@ -63,6 +64,29 @@ export interface RemoteExitEvent {
 export interface RemoteErrorEvent {
   attachId: string;
   message: string;
+  /** Set when the stream ended because the host rejected the credential —
+   *  the renderer offers "pair again" instead of a generic disconnect. */
+  reason?: RemoteErrorReason;
+}
+
+/**
+ * The host answered 401: it no longer accepts this computer's credential.
+ * Every 401 the host's web server sends means exactly that — an unknown or
+ * revoked device (`{ error: 'unauthorized', reason }`) or a grant that expired
+ * mid-request (`authorization-expired`). Its 403s are feature gates
+ * (`--allow-input`, transcript access, host allowlist) and deliberately stay
+ * ordinary errors: "this host is read-only" must never read as "pair again".
+ */
+export class RemoteAuthRejectedError extends Error {
+  readonly reason = 'auth-rejected' as const;
+  constructor(operation: string) {
+    super(`${operation} failed: the host no longer accepts this computer's credential`);
+    this.name = 'RemoteAuthRejectedError';
+  }
+}
+
+export function isRemoteAuthRejected(err: unknown): err is RemoteAuthRejectedError {
+  return err instanceof RemoteAuthRejectedError;
 }
 
 export interface RemotePaneEvents {
@@ -255,6 +279,7 @@ export class RemoteHostClient implements RemotePaneEvents {
       redirect: 'error',
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
+    if (res.status === 401) throw new RemoteAuthRejectedError('createWorkspace');
     if (!res.ok) {
       let message = `createWorkspace failed: HTTP ${res.status}`;
       try {
@@ -306,6 +331,7 @@ export class RemoteHostClient implements RemotePaneEvents {
       },
     );
     if (res.ok || res.status === 404) return;
+    if (res.status === 401) throw new RemoteAuthRejectedError('closeSession');
     let message = `closeSession failed: HTTP ${res.status}`;
     try {
       const parsed = (await res.json()) as { error?: string; detail?: string };
@@ -362,6 +388,7 @@ export class RemoteHostClient implements RemotePaneEvents {
     } catch {
       body = null;
     }
+    if (res.status === 401) return { ok: false, reason: 'auth-rejected' };
     if (!res.ok) {
       const parsed = body as { error?: string; detail?: string } | null;
       return { ok: false, reason: parsed?.error ?? parsed?.detail ?? `HTTP ${res.status}` };
@@ -382,8 +409,18 @@ export class RemoteHostClient implements RemotePaneEvents {
       redirect: 'error',
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
+    if (res.status === 401) throw new RemoteAuthRejectedError('listWorkspaces');
     if (!res.ok) {
-      throw new Error(`listWorkspaces failed: HTTP ${res.status}`);
+      // The host's own wording when it gives one, like the other calls here.
+      let message = `listWorkspaces failed: HTTP ${res.status}`;
+      try {
+        const parsed = (await res.json()) as { error?: string; detail?: string };
+        if (parsed?.detail) message = parsed.detail;
+        else if (parsed?.error) message = parsed.error;
+      } catch {
+        /* body wasn't JSON — fall back to the generic message */
+      }
+      throw new Error(message);
     }
     let body: unknown;
     try {
@@ -467,6 +504,11 @@ export class RemoteHostClient implements RemotePaneEvents {
         redirect: 'error',
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
+      if (res.status === 401) {
+        const err = new RemoteAuthRejectedError('write');
+        for (const w of waiters) w.reject(err);
+        return;
+      }
       if (!res.ok) {
         let message = `write failed: HTTP ${res.status}`;
         try {
@@ -516,6 +558,17 @@ export class RemoteHostClient implements RemotePaneEvents {
       return;
     }
     if (attachment.detached) return;
+    if (res.status === 401) {
+      // The host has said no to this credential. Retrying cannot change that
+      // answer, so no backoff loop: report it once, now, and leave the
+      // attachment idle until it is detached or the host is paired again.
+      void res.body?.cancel().catch(() => { /* nothing left to release */ });
+      const err = new RemoteAuthRejectedError('stream');
+      for (const cb of this.errorCbs) {
+        cb({ attachId: attachment.attachId, message: err.message, reason: err.reason });
+      }
+      return;
+    }
     if (!res.ok || !res.body) {
       this.scheduleReconnect(attachment, new Error(`stream failed: HTTP ${res.status}`));
       return;

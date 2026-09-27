@@ -33,7 +33,7 @@ import type {
   WebStartArgs,
   WebTerminalInfo,
 } from '../shared/web';
-import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteHostPublic, RemoteWorkspaceSummary } from '../shared/remoteHosts';
+import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteWorkspaceSummary } from '../shared/remoteHosts';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -1542,15 +1542,15 @@ document.addEventListener('DOMContentLoaded', () => {
   hostsRemove: (id: string) => ipcRenderer.invoke(IPC.REMOTE_HOSTS_REMOVE, id) as Promise<boolean>,
   workspacesList: (hostId: string) =>
     ipcRenderer.invoke(IPC.REMOTE_WORKSPACES_LIST, hostId) as Promise<
-      { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string }
+      { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string; reason?: RemoteErrorReason }
     >,
   workspaceCreate: (hostId: string, workspaceId: string, cwd?: string) =>
     ipcRenderer.invoke(IPC.REMOTE_WORKSPACE_CREATE, hostId, workspaceId, cwd) as Promise<
-      { ok: true; sessionId: string } | { ok: false; error: string }
+      { ok: true; sessionId: string } | { ok: false; error: string; reason?: RemoteErrorReason }
     >,
   sessionClose: (hostId: string, sessionId: string) =>
     ipcRenderer.invoke(IPC.REMOTE_SESSION_CLOSE, hostId, sessionId) as Promise<
-      { ok: true } | { ok: false; error: string }
+      { ok: true } | { ok: false; error: string; reason?: RemoteErrorReason }
     >,
   attachmentsList: () =>
     ipcRenderer.invoke(IPC.REMOTE_ATTACHMENTS_LIST) as Promise<RemoteAttachmentDescriptor[]>,
@@ -1590,8 +1590,8 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.on(IPC.REMOTE_PANE_EXIT, listener);
     return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_EXIT, listener); };
   },
-  onPaneError: (callback: (e: { attachId: string; message: string }) => void) => {
-    const listener = (_event: unknown, payload: { attachId: string; message: string }) => callback(payload);
+  onPaneError: (callback: (e: { attachId: string; message: string; reason?: RemoteErrorReason }) => void) => {
+    const listener = (_event: unknown, payload: { attachId: string; message: string; reason?: RemoteErrorReason }) => callback(payload);
     ipcRenderer.on(IPC.REMOTE_PANE_ERROR, listener);
     return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_ERROR, listener); };
   },

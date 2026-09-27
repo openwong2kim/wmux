@@ -35,6 +35,11 @@ export interface AttachedRemoteWorkspace {
    *  because a laptop slept would be silent data loss — it just renders
    *  disconnected until a refresh succeeds or the user detaches. */
   stale?: boolean;
+  /** The host answered 401: it no longer accepts this computer's credential.
+   *  Implies `stale`, but unlike a sleeping laptop it will not heal on its
+   *  own — the row says so and offers to pair again. Cleared by the next
+   *  successful fetch. */
+  authRejected?: boolean;
   /**
    * #1329 — this row exists ONLY to drive the per-host poll for a
    * remote-terminal SURFACE (the "New remote pane" / "Split right|down —
@@ -174,6 +179,15 @@ export interface RemoteWorkspacesSlice {
   setRemoteWorkspacePanes: (key: string, panes: RemotePaneSummary[], name?: string) => void;
   /** Marks the entry unreachable (or reachable again) without dropping it. */
   setRemoteWorkspaceStale: (key: string, stale: boolean) => void;
+  /** Flags (or clears) every row on `hostId` as refused by the host — see
+   *  `AttachedRemoteWorkspace.authRejected`. */
+  setRemoteHostAuthRejected: (hostId: string, rejected: boolean) => void;
+  /** The host whose stale credential the user asked to replace from outside
+   *  the attach modal (a remote workspace's "Pair again"). AppLayout mounts
+   *  the modal for it: re-pairing removes the host, which unmounts every view
+   *  of that host — including the one the request came from. */
+  remoteRepairHostId: string | null;
+  requestRemoteRepair: (hostId: string | null) => void;
   /** #1086 — rename the row LOCALLY (the remote host owns the real name).
    *  Empty clears the alias; the remote snapshot name shows again. */
   renameRemoteWorkspace: (key: string, label: string | null) => void;
@@ -236,6 +250,7 @@ export function selectAttachedRemoteWorkspaces(state: {
 export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/immer', never]], [], RemoteWorkspacesSlice> = (set) => ({
   remoteWorkspaces: [],
   activeRemoteKey: null,
+  remoteRepairHostId: null,
 
   attachRemoteWorkspace: (w) => {
     // Persist the MERGED entry, not `w`: a re-attach hands us a fresh snapshot
@@ -346,6 +361,7 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
       entry.stale = false;
       entry.attachEpoch = (entry.attachEpoch ?? 0) + 1;
     }
+    if (entry.authRejected) entry.authRejected = false;
   }),
 
   setRemoteWorkspaceStale: (key, stale) => set((state: StoreState) => {
@@ -358,6 +374,17 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
     if (wasStale === stale) return;
     entry.stale = stale;
     if (!stale) entry.attachEpoch = (entry.attachEpoch ?? 0) + 1;
+  }),
+
+  setRemoteHostAuthRejected: (hostId, rejected) => set((state: StoreState) => {
+    for (const entry of state.remoteWorkspaces) {
+      if (entry.hostId !== hostId || (entry.authRejected === true) === rejected) continue;
+      entry.authRejected = rejected;
+    }
+  }),
+
+  requestRemoteRepair: (hostId) => set((state: StoreState) => {
+    state.remoteRepairHostId = hostId;
   }),
 
   renameRemoteWorkspace: (key, label) => {

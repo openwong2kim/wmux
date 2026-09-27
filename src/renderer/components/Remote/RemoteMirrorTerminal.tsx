@@ -131,6 +131,9 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
   const termRef = useRef<Terminal | null>(null);
   const [exited, setExited] = useState(false);
   const [disconnected, setDisconnected] = useState(false);
+  /** The stream ended because the host rejected this computer's credential —
+   *  says "pair again" instead of the generic connection-lost line. */
+  const [authRejected, setAuthRejected] = useState(false);
   // Read via ref inside the attach-lifecycle effect below so a readOnly
   // flip (allowInput probe resolving after mount) doesn't tear down and
   // re-subscribe the whole attach — only paneWrite needs the live value.
@@ -683,6 +686,7 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
     if (!attachId) return;
     setExited(false);
     setDisconnected(false);
+    setAuthRejected(false);
     // A fresh attachId is a different session (or a reconnect to the same
     // one) — either way, whatever this component last asked THAT session's
     // daemon to resize to says nothing about this one.
@@ -745,7 +749,8 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
     });
     const offError = remote.onPaneError((e) => {
       if (e.attachId !== attachId) return;
-      setDisconnected(true);
+      if (e.reason === 'auth-rejected') setAuthRejected(true);
+      else setDisconnected(true);
     });
     const dataDisposable = termRef.current?.onData((data) => {
       if (readOnlyRef.current) return; // read-only host — swallow locally, don't POST a write that'll be rejected
@@ -803,6 +808,15 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
           style={{ color: 'var(--accent-red)', background: 'var(--bg-overlay-scrim, rgba(0, 0, 0, 0.55))' }}
         >
           {t('remote.disconnected')}
+        </div>
+      )}
+      {authRejected && (
+        <div
+          role="alert"
+          className="absolute bottom-0 left-0 right-0 px-2 py-1 text-[10px] font-mono"
+          style={{ color: 'var(--accent-red)', background: 'var(--bg-overlay-scrim, rgba(0, 0, 0, 0.55))' }}
+        >
+          {t('remote.authRejected', { host: hostLabel || t('remote.hostFallback') })}
         </div>
       )}
     </div>

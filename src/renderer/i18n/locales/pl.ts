@@ -2352,7 +2352,7 @@ export const pl = {
   'remote.morePanes': '+{count} więcej paneli',
   'remote.mirrorDescription': 'Lustrzane odbicie obszaru roboczego z innego wmuxa',
   'remote.labelOptional': 'Etykieta (opcjonalna)',
-  'remote.paneCount': '{count} paneli',
+  'remote.paneCount': 'Panele: {count}',
 
   // ─── Remote Workspace Attach: pair-with-code ──────────────────────────────
   'remote.pairTab': 'Sparuj kodem',
@@ -2371,4 +2371,11 @@ export const pl = {
   'remote.pairUnreachable': 'Nie udało się połączyć z tym hostem',
   'remote.pairIncompatible': 'wmux na tej maszynie jest za stary dla zdalnego dołączenia',
   'remote.pairFailed': 'Parowanie nie powiodło się — sprawdź logi aplikacji',
+  'remote.paneCountOne': '1 panel',
+  'remote.attached': 'Dołączono',
+  'remote.attachedConfirm': 'Dołączono {name}',
+  'remote.authRejected': '{host} nie akceptuje już tego komputera — sparuj ponownie',
+  'remote.authRejectedDetail': 'Jego wmux web został zrestartowany lub zatrzymany albo ten komputer został z niego usunięty',
+  'remote.pairAgain': 'Sparuj ponownie',
+  'remote.hostFallback': 'zdalny host',
 } as const;

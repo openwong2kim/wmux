@@ -114,7 +114,7 @@ const BACKOFF_MAX_MS = 5 * 60_000;
  *  it — during boot restore, that means descriptors that never restore at all. */
 type HostResult =
   | { ok: true; workspaces: RemoteWorkspaceSummary[] }
-  | { ok: false };
+  | { ok: false; authRejected?: boolean };
 
 interface BackoffEntry {
   failures: number;
@@ -130,7 +130,7 @@ async function fetchHost(remote: RemoteApi, hostId: string): Promise<HostResult>
   } catch {
     return { ok: false };
   }
-  if (!res?.ok) return { ok: false };
+  if (!res?.ok) return res?.reason === 'auth-rejected' ? { ok: false, authRejected: true } : { ok: false };
   // Defensive even though RemoteHostClient normalises: this is a trust
   // boundary, and `.find()` on a non-array is a thrown TypeError.
   return { ok: true, workspaces: Array.isArray(res.workspaces) ? res.workspaces : [] };
@@ -140,6 +140,7 @@ async function fetchHost(remote: RemoteApi, hostId: string): Promise<HostResult>
  *  store fresh: an attach/detach may have landed while the request was in
  *  flight, and both actions no-op on a key that is no longer there. */
 function applyHostResult(hostId: string, result: HostResult): void {
+  if (!result.ok && result.authRejected) useStore.getState().setRemoteHostAuthRejected(hostId, true);
   const attached = useStore.getState().remoteWorkspaces.filter((w) => w.hostId === hostId);
   for (const w of attached) {
     const found = result.ok
@@ -160,13 +161,17 @@ function applyHostResult(hostId: string, result: HostResult): void {
   }
 }
 
-function noteHostResult(backoff: Map<string, BackoffEntry>, hostId: string, ok: boolean): void {
-  if (ok) {
+function noteHostResult(backoff: Map<string, BackoffEntry>, hostId: string, result: HostResult): void {
+  if (result.ok) {
     backoff.delete(hostId);
     return;
   }
   const failures = (backoff.get(hostId)?.failures ?? 0) + 1;
-  const delay = Math.min(REMOTE_POLL_INTERVAL_MS * 2 ** (failures - 1), BACKOFF_MAX_MS);
+  // A host that rejected our credential keeps rejecting it until the user
+  // pairs again, so it goes straight to the slowest rung instead of climbing.
+  const delay = result.authRejected
+    ? BACKOFF_MAX_MS
+    : Math.min(REMOTE_POLL_INTERVAL_MS * 2 ** (failures - 1), BACKOFF_MAX_MS);
   backoff.set(hostId, { failures, nextAttemptAt: Date.now() + delay });
 }
 
@@ -254,7 +259,7 @@ export function useRemoteAttachmentsLifecycle(): void {
         try {
           const result = await fetchHost(remote, hostId);
           if (unmounted.current) return;
-          noteHostResult(backoff.current, hostId, result.ok);
+          noteHostResult(backoff.current, hostId, result);
           applyHostResult(hostId, result);
         } catch {
           // One misbehaving host must never abort the round: the hosts queued

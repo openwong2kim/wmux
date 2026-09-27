@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useT } from '../../hooks/useT';
+import { useStore } from '../../stores';
+import RemoteRepairNotice from './RemoteRepairNotice';
 import type { AttachedRemoteWorkspace } from '../../stores/slices/remoteWorkspacesSlice';
 import type { RemotePaneSummary } from '../../../shared/remoteHosts';
 import RemoteMirrorTerminal from './RemoteMirrorTerminal';
@@ -115,6 +117,7 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
   // at mount — the view stays mounted for the app session per the
   // hidden-but-alive rule above) is that probe.
   const [allowInput, setAllowInput] = useState<boolean | undefined>(undefined);
+  const requestRemoteRepair = useStore((s) => s.requestRemoteRepair);
 
   useEffect(() => {
     let cancelled = false;
@@ -133,6 +136,18 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
+      {/* The host refused this computer's credential: nothing here will
+          reconnect on its own, so say so above the (now frozen) panes. The
+          modal is mounted by AppLayout, not here — pairing again removes the
+          host and with it this view. */}
+      {workspace.authRejected && (
+        <div className="px-3 py-2 flex-shrink-0">
+          <RemoteRepairNotice
+            hostLabel={workspace.hostLabel || t('remote.hostFallback')}
+            onRepair={() => requestRemoteRepair(workspace.hostId)}
+          />
+        </div>
+      )}
       {allowInput === false && (
         <div
           className="px-3 py-1.5 text-[11px] font-mono flex-shrink-0"

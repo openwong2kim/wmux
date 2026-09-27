@@ -130,7 +130,9 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
             <div
               className="text-[10px] font-mono truncate"
               style={{ color: workspace.stale ? 'var(--text-muted)' : 'var(--accent)' }}
-              title={workspace.stale ? t('remote.disconnected') : undefined}
+              title={workspace.authRejected
+                ? t('remote.authRejected', { host: workspace.hostLabel })
+                : workspace.stale ? t('remote.disconnected') : undefined}
             >
               {workspace.hostLabel}
             </div>
