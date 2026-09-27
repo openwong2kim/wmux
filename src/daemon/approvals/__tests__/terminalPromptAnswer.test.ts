@@ -698,14 +698,20 @@ describe('a key or click in the pane refreshes the record instead of wedging it'
   it('a refresh sends no second push', async () => {
     const { h, advance } = withTimers();
     const sent: string[] = [];
+    // The push grace runs on its own timers; fire whatever is still armed.
+    const graceTimers = new Map<number, () => void>();
+    let nextTimer = 0;
     const router = new ApprovalPushRouter({
       build: (r) => ({ title: 't', body: r.id, approvalId: r.id }),
+      buildRetraction: (r) => ({ title: 'retract', body: r.id }),
       collapseId: (r) => `ap-${r.sessionId}`,
       suppress: () => false,
       send: (payload) => { sent.push(payload.approvalId as string); },
       park: () => undefined,
       forget: () => undefined,
       isParked: () => false,
+      setTimer: (fn) => { graceTimers.set(++nextTimer, fn); return nextTimer; },
+      clearTimer: (handle) => { graceTimers.delete(handle as number); },
     });
     h.registry.onEvent((e) => router.onEvent(e));
     await create(h);
@@ -714,6 +720,7 @@ describe('a key or click in the pane refreshes the record instead of wedging it'
     key(h);
     await advance(3_000);
     expect(supersedes(h)).toBe(2);
+    for (const fire of [...graceTimers.values()]) fire();
     expect(sent).toHaveLength(1);
   });
 

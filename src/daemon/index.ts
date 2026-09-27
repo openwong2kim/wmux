@@ -113,7 +113,11 @@ import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/Transcript
 import { PushSender } from './push/PushSender';
 import { RelayTransport } from './push/RelayTransport';
 import { LiveActivityPusher, type LiveActivityCounts } from './push/LiveActivityPusher';
-import { approvalPushCollapseId, buildApprovalPushPayload } from './push/approvalPushPayload';
+import {
+  approvalPushCollapseId,
+  buildApprovalPushPayload,
+  buildApprovalRetractionPayload,
+} from './push/approvalPushPayload';
 import { WebhookSink } from './push/WebhookSink';
 import { buildApprovalNotifyPayload, buildAttentionNotifyPayload } from './push/notifyPayload';
 import {
@@ -6275,9 +6279,12 @@ async function main(): Promise<void> {
   });
   // One push per awaiting episode: send or park on `create`, drop a parked one
   // once its approval is moot, and carry it over when a record is replaced
-  // within the same episode (see ApprovalPushRouter).
+  // within the same episode (see ApprovalPushRouter). A `terminal_prompt`
+  // waits out a grace period first and is retracted if it ends after its push
+  // went out.
   const approvalPushRouter = new ApprovalPushRouter({
     build: (r) => buildApprovalPushPayload(r),
+    buildRetraction: (r) => buildApprovalRetractionPayload(r),
     collapseId: (r) => approvalPushCollapseId(r),
     suppress: (payload) => shouldSuppressPush({
       state: desktopPresence.snapshot(),

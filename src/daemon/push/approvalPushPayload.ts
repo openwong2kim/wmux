@@ -156,3 +156,34 @@ function lockScreenChoiceFields(
 export function approvalPushCollapseId(request: ApprovalRequest): string {
   return `ap-${request.sessionId}`.slice(0, 64);
 }
+
+/** The `kind` marker a retraction carries. See {@link buildApprovalRetractionPayload}. */
+export const APPROVAL_RETRACTION_KIND = 'approval_retraction';
+
+/**
+ * The follow-up push that replaces a delivered approval banner once its record
+ * is over (answered at the computer, the dialog cleared, the turn ended).
+ *
+ * Sent under the SAME collapse id as the original, so APNs replaces the banner
+ * rather than stacking a second one.
+ *
+ * NO `approvalId`, deliberately. Every shipped Notification Service Extension
+ * attaches the approval category, its buttons and the deep link whenever that
+ * field is non-empty — a retraction carrying it would put Approve back on the
+ * lock screen for a record that no longer exists. Without it an existing
+ * extension renders this as a plain notify-only banner, which is the backward-
+ * compatible reading. An extension that knows `kind` can go further (silence
+ * it, or remove the banner outright) — see docs/phone-client-contract.md.
+ */
+export function buildApprovalRetractionPayload(request: ApprovalRequest): PushPayload {
+  return {
+    title: 'Approval resolved',
+    body: request.state === 'expired'
+      ? 'The prompt closed — nothing to do.'
+      : 'Answered at the computer — nothing to do.',
+    sessionId: request.sessionId,
+    kind: APPROVAL_RETRACTION_KIND,
+    retractsApprovalId: request.id,
+    resolution: request.state === 'expired' ? 'expired' : 'resolved',
+  };
+}
