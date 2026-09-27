@@ -74,10 +74,12 @@ export async function handlePhoneWorkspaces(command: string, payload: Record<str
 /**
  * The daemon drops a reply over its per-request byte cap without answering,
  * which would turn every list call into a timeout, so the sidebar must fit.
- * It degrades in steps, cheapest loss first: tab titles go, then the pane
- * rows (names and the pane ids tasks are filed under — a task whose requesting
- * pane is no longer listed goes out without it), and only then the whole
- * sidebar. The workspace list itself is never cut.
+ * It degrades in steps, cheapest loss first. The pane placement (every pane
+ * id and every task's pane group) goes before anything the reply carried
+ * before it existed, so a sidebar that fit without it still arrives whole;
+ * then tab titles, then the pane rows, and only then the whole sidebar. With
+ * the placement gone a nested task keeps only its workspace-level `nested`.
+ * The workspace list itself is never cut.
  */
 export function fitSidebarToBudget(
   base: { workspaces: unknown[] },
@@ -87,28 +89,29 @@ export function fitSidebarToBudget(
 ): PhoneSidebarSnapshot | null {
   const fits = (candidate: PhoneSidebarSnapshot) => Buffer.byteLength(JSON.stringify({ ...base, sidebar: candidate })) <= budget;
   if (fits(sidebar)) return sidebar;
+  onDrop('budget.panePlacement');
+  const withoutPlacement: PhoneSidebarSnapshot = {
+    ...sidebar,
+    workspaces: sidebar.workspaces.map((row) => {
+      if (row.task?.paneGroup === undefined && row.task?.requesterPaneId === undefined) return row;
+      const { paneGroup: _paneGroup, requesterPaneId: _requesterPaneId, ...task } = row.task;
+      return { ...row, task };
+    }),
+    panes: sidebar.panes.map(({ paneId: _paneId, ...pane }) => pane),
+  };
+  if (fits(withoutPlacement)) return withoutPlacement;
   onDrop('budget.surfaceTitles');
   const withoutTitles: PhoneSidebarSnapshot = {
-    ...sidebar,
-    panes: sidebar.panes.map((pane) => ({
+    ...withoutPlacement,
+    panes: withoutPlacement.panes.map((pane) => ({
       ptyId: pane.ptyId,
       workspaceId: pane.workspaceId,
-      ...(pane.paneId !== undefined ? { paneId: pane.paneId } : {}),
       ...(pane.paneName !== undefined ? { paneName: pane.paneName } : {}),
     })),
   };
   if (fits(withoutTitles)) return withoutTitles;
   onDrop('budget.panes');
-  const withoutPanes: PhoneSidebarSnapshot = {
-    ...sidebar,
-    panes: [],
-    // No pane rows left to name: a task keeps only its workspace-level nesting.
-    workspaces: sidebar.workspaces.map((row) => {
-      if (row.task?.requesterPaneId === undefined) return row;
-      const { paneGroup: _paneGroup, requesterPaneId: _requesterPaneId, ...task } = row.task;
-      return { ...row, task };
-    }),
-  };
+  const withoutPanes: PhoneSidebarSnapshot = { ...withoutPlacement, panes: [] };
   if (fits(withoutPanes)) return withoutPanes;
   onDrop('budget.sidebar');
   return null;

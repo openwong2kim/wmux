@@ -80,7 +80,7 @@ describe('phone workspace bridge', () => {
       sidebar: { activeWorkspaceId: null, workspaces: [], panes: [] },
     });
   });
-  it('degrades an oversized sidebar in steps: titles, then pane names, then everything', () => {
+  it('degrades an oversized sidebar in steps: pane placement, then titles, then pane rows, then everything', () => {
     const base = { workspaces: [{ id: 'ws-1', name: 'One', sessionId: 's1' }] };
     const sidebar: PhoneSidebarSnapshot = {
       activeWorkspaceId: 'ws-1',
@@ -91,28 +91,63 @@ describe('phone workspace bridge', () => {
       ],
       panes: Array.from({ length: 20 }, (_, i) => ({ ptyId: `pty-${i}`, workspaceId: 'ws-1', paneId: `pane-${i}`, surfaceTitle: 't'.repeat(100), paneName: `w1-${i}` })),
     };
+    // Every task keeps workspace-level nesting only, closed-pane verdict included.
+    const workspaceLevel = [
+      sidebar.workspaces[0],
+      { id: 'ws-t1', order: 1, pinned: false, task: { ownerWorkspaceId: 'ws-1', detached: false, nested: true } },
+      { id: 'ws-t2', order: 2, pinned: false, task: { ownerWorkspaceId: 'ws-1', detached: false, nested: true } },
+    ];
     const size = (candidate: PhoneSidebarSnapshot | null) => Buffer.byteLength(JSON.stringify(candidate ? { ...base, sidebar: candidate } : base));
     const full = size(sidebar);
     expect(fitSidebarToBudget(base, sidebar, full)).toBe(sidebar);
 
-    const noTitles = fitSidebarToBudget(base, sidebar, full - 1)!;
+    const noPlacement = fitSidebarToBudget(base, sidebar, full - 1)!;
+    expect(noPlacement.panes).toEqual(sidebar.panes.map(({ paneId: _paneId, ...pane }) => pane));
+    expect(noPlacement.workspaces).toEqual(workspaceLevel);
+
+    const noTitles = fitSidebarToBudget(base, sidebar, size(noPlacement) - 1)!;
     expect(noTitles.panes).toHaveLength(20);
-    expect(noTitles.panes.every((p) => !('surfaceTitle' in p) && p.paneName !== undefined)).toBe(true);
-    // The pane ids tasks are filed under stay with the pane rows.
-    expect(noTitles.panes.map((p) => p.paneId)).toEqual(sidebar.panes.map((p) => p.paneId));
-    expect(noTitles.workspaces).toEqual(sidebar.workspaces);
+    expect(noTitles.panes.every((p) => !('surfaceTitle' in p) && !('paneId' in p) && p.paneName !== undefined)).toBe(true);
+    expect(noTitles.workspaces).toEqual(workspaceLevel);
 
     const noPanes = fitSidebarToBudget(base, sidebar, size(noTitles) - 1)!;
     expect(noPanes.panes).toEqual([]);
-    // With no pane rows left, a task names no pane; the closed-pane verdict stands.
-    expect(noPanes.workspaces).toEqual([
-      sidebar.workspaces[0],
-      { id: 'ws-t1', order: 1, pinned: false, task: { ownerWorkspaceId: 'ws-1', detached: false, nested: true } },
-      sidebar.workspaces[2],
-    ]);
+    expect(noPanes.workspaces).toEqual(workspaceLevel);
     expect(noPanes.activeWorkspaceId).toBe('ws-1');
 
     expect(fitSidebarToBudget(base, sidebar, size(noPanes) - 1)).toBeNull();
+  });
+  it('keeps every title whenever the sidebar fit without the pane placement (20 workspaces, 512 sessions)', () => {
+    const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    const owners = Array.from({ length: 10 }, (_, i) => `ws-${uuid(i)}`);
+    const tasks = Array.from({ length: 10 }, (_, i) => `ws-${uuid(100 + i)}`);
+    const all = [...owners, ...tasks];
+    const base = { workspaces: all.map((id) => ({ id, name: 'workspace name', sessionId: 'daemon-00000000' })) };
+    const title = (i: number) => `✳ ${'x'.repeat(40)} ${i}`;
+    const prePr: PhoneSidebarSnapshot = {
+      activeWorkspaceId: owners[0],
+      workspaces: all.map((id, order) => ({
+        id, order, pinned: false,
+        ...(order >= 10 ? { task: { ownerWorkspaceId: owners[order - 10], detached: false, nested: true } } : {}),
+      })),
+      panes: Array.from({ length: 512 }, (_, i) => ({
+        ptyId: `daemon-${String(i).padStart(8, '0')}`, workspaceId: all[i % 20], surfaceTitle: title(i), paneName: `w${i % 20}-${i}`,
+      })),
+    };
+    const withPlacement: PhoneSidebarSnapshot = {
+      ...prePr,
+      workspaces: prePr.workspaces.map((row, order) => row.task
+        ? { ...row, task: { ...row.task, paneGroup: 'pane' as const, requesterPaneId: `pane-${uuid(order)}` } }
+        : row),
+      panes: prePr.panes.map((pane, i) => ({ ...pane, paneId: `pane-${uuid(1000 + i)}` })),
+    };
+    const size = (candidate: PhoneSidebarSnapshot) => Buffer.byteLength(JSON.stringify({ ...base, sidebar: candidate }));
+    // The case this pins: the pre-placement payload fit, the placement alone tips it over.
+    expect(size(prePr)).toBeLessThanOrEqual(PHONE_WORKSPACES_REPLY_BUDGET_BYTES);
+    expect(size(withPlacement)).toBeGreaterThan(PHONE_WORKSPACES_REPLY_BUDGET_BYTES);
+    const fitted = fitSidebarToBudget(base, withPlacement)!;
+    expect(fitted).toEqual(prePr);
+    expect(fitted.panes.every((pane, i) => pane.surfaceTitle === title(i))).toBe(true);
   });
   it('keeps the workspace fields when many panes overflow the real budget', async () => {
     const list = [{ id: 'ws-1', name: 'One', activePtyId: 's1' }];

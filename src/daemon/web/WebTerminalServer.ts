@@ -2905,7 +2905,9 @@ export class WebTerminalServer {
         if (!pane) return s;
         return {
           ...s,
-          ...(pane.paneId !== undefined ? { paneId: pane.paneId } : {}),
+          // Same rule as /api/workspaces: a pane id only where the desktop and
+          // this daemon agree which workspace the session runs in.
+          ...(pane.paneId !== undefined && pane.workspaceId === s.workspaceId ? { paneId: pane.paneId } : {}),
           ...(pane.surfaceTitle !== undefined ? { surfaceTitle: pane.surfaceTitle } : {}),
           ...(pane.paneName !== undefined ? { paneName: pane.paneName } : {}),
         };

@@ -8428,10 +8428,12 @@ describe('WebTerminalServer', () => {
           { ptyId: 'd-plain', workspaceId: PLAIN, paneId: 'pane-plain', paneName: 'w1-1' },
           { ptyId: 'd-a', workspaceId: OWNER, paneId: 'pane-a', paneName: 'w2-1' },
           { ptyId: 'd-b', workspaceId: OWNER, paneId: 'pane-b', paneName: 'w2-2' },
+          // The desktop places this session in OWNER; the daemon runs it in PLAIN.
+          { ptyId: 'd-mis', workspaceId: OWNER, paneId: 'pane-mis', paneName: 'w2-3' },
           ...['t-live', 't-closed', 't-browser', 't-foreign', 't-detached', 't-orphan'].map((id) => ({ ptyId: `d-${id}`, workspaceId: id, paneId: `pane-${id}` })),
         ],
       };
-      const sessions = [['d-plain', PLAIN], ['d-a', OWNER], ['d-b', OWNER], ...['t-live', 't-closed', 't-browser', 't-foreign', 't-detached', 't-orphan'].map((id) => [`d-${id}`, id])]
+      const sessions = [['d-plain', PLAIN], ['d-a', OWNER], ['d-b', OWNER], ['d-mis', PLAIN], ...['t-live', 't-closed', 't-browser', 't-foreign', 't-detached', 't-orphan'].map((id) => [`d-${id}`, id])]
         .map(([id, ws]) => ({
           id, cwd: '/repo', cols: 80, rows: 24, state: 'attached',
           agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
@@ -8463,6 +8465,11 @@ describe('WebTerminalServer', () => {
         const listed = (await getJson(token, '/api/sessions')).sessions as Row[];
         expect(listed.find((r) => r.id === 'd-a')).toMatchObject({ paneId: 'pane-a', paneName: 'w2-1', workspaceId: OWNER });
         expect(listed.find((r) => r.id === 'd-b')).toMatchObject({ paneId: 'pane-b' });
+        // Both routes expose the same pane ids: none where the workspaces disagree.
+        expect(listed.find((r) => r.id === 'd-mis')).toMatchObject({ paneName: 'w2-3' });
+        expect(listed.find((r) => r.id === 'd-mis')).not.toHaveProperty('paneId');
+        const routePaneIds = (body.workspaces as Row[]).flatMap((w) => (w.panes as Row[]).map((pane) => pane.paneId)).filter(Boolean).sort();
+        expect(listed.map((r) => r.paneId).filter(Boolean).sort()).toEqual(routePaneIds);
         expect(JSON.stringify(body)).not.toContain('pane-browser');
         // Stale past the bound: every desktop field goes, the new ones with them.
         clockOffsetMs += 1500;

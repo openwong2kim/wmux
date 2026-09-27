@@ -2035,8 +2035,9 @@ not the desktop fields.
   - Both absent on a `nested` task — draw it under the owner at workspace
     level, as `nested` alone says. This happens when the requesting pane is
     alive but has no session the phone lists (a pane of browser tabs only),
-    when the desktop is too old to say, and when the pane rows were cut to fit
-    the reply.
+    when the desktop is too old to say, and when the desktop's reply was over
+    its size budget: the pane placement (every `paneId`, `nestedUnder` and
+    `requesterPaneId`) is the first thing cut, before tab titles.
 
   If no session you hold carries `requesterPaneId` (the two routes are
   polled separately and can disagree for a poll), fall back the same way.
