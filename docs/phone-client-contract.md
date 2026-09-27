@@ -1363,20 +1363,35 @@ on. Its sealed plaintext:
   "body": "No longer waiting — nothing to do.",
   "sessionId": "<pane session id>",
   "kind": "approval_retraction",
-  "retractsApprovalId": "<the approvalId the original push carried>",
+  "retractsApprovalId": "<the approvalId of the push being replaced>",
   "resolution": "expired"
 }
 ```
 
-`resolution` is `"expired"` (the dialog was answered in the pane, cleared, or
-the turn ended — an answer typed at the computer lands here) or `"resolved"`
-(the body then reads "Answered — nothing to do."). There is **never an `approvalId`** on a retraction:
+`retractsApprovalId` is the `approvalId` the delivered push carried. It can
+differ from the record that just ended: a record re-parsed within the same
+episode inherits its predecessor's delivered push, and a banner left by a
+record superseded by a different question is retracted by the next record in
+that pane (or, with none taking it over, by itself after 30 s).
+
+`resolution` is `"expired"` (the dialog was answered in the pane, cleared,
+superseded, or the turn ended — an answer typed at the computer lands here) or
+`"resolved"` (the body then reads "Answered — nothing to do."). There is
+**never an `approvalId`** on a retraction:
 an extension that sees one attaches the approval category, its buttons and the
 deep link, which would put Approve back on the lock screen for a record that no
 longer exists. No retraction is sent when the push never left (the record ended
-inside the grace, or while presence still held it), nor when the record was
-answered through the phone's own `press` (tapping the banner already removed
-it). Gate records (`awaiting_input`, `awaiting_permission`) are not retracted.
+inside the grace, or while presence still held it, or the held push was
+dropped), when the record was answered through `press` (a phone answer, a
+desktop answer through the pipe, or the one-Esc decline — a press inside the
+grace also cancels the push), or when a later push — a gate or another
+approval — has since replaced the banner under the same collapse id. Gate
+records (`awaiting_input`, `awaiting_permission`) are not retracted.
+
+**Known limit: daemon restart.** Which pushes were delivered is held in memory
+only. A restart expires every pending record without events, so a banner
+delivered before the restart is not retracted; the phone's next
+`/api/approvals` read shows nothing pending.
 
 **Backward compatible by construction.** An extension that does not know
 `kind` renders a retraction as a plain notify-only banner ("Approval resolved")

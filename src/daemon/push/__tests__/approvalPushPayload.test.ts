@@ -189,7 +189,7 @@ describe('approvalPushCollapseId', () => {
 
 describe('buildApprovalRetractionPayload', () => {
   it('carries no approvalId, so a shipped extension cannot put buttons back on it', () => {
-    const p = buildApprovalRetractionPayload(request({ kind: 'terminal_prompt', state: 'resolved' }));
+    const p = buildApprovalRetractionPayload(request({ kind: 'terminal_prompt', state: 'resolved' }), 'a');
     expect(p).not.toHaveProperty('approvalId');
     expect(p).not.toHaveProperty('requiresInAppChoice');
     expect(p.kind).toBe(APPROVAL_RETRACTION_KIND);
@@ -198,11 +198,23 @@ describe('buildApprovalRetractionPayload', () => {
     expect(typeof p.body).toBe('string');
   });
 
-  it('names the record it retracts and threads under the same pane', () => {
+  it('names the push it retracts and threads under the same pane', () => {
     const r = request({ kind: 'terminal_prompt', state: 'expired' });
-    const p = buildApprovalRetractionPayload(r);
+    const p = buildApprovalRetractionPayload(r, r.id);
     expect(p.retractsApprovalId).toBe(r.id);
     expect(p.sessionId).toBe(r.sessionId);
     expect(p.resolution).toBe('expired');
+  });
+
+  it('names the approval id that was delivered, not the record that ended', () => {
+    const r = request({ kind: 'terminal_prompt', state: 'resolved' });
+    const p = buildApprovalRetractionPayload(r, 'delivered-earlier');
+    expect(p.retractsApprovalId).toBe('delivered-earlier');
+  });
+
+  it('never calls a superseded record answered', () => {
+    const p = buildApprovalRetractionPayload(request({ kind: 'terminal_prompt', state: 'superseded' }), 'x');
+    expect(p.resolution).toBe('expired');
+    expect(p.body).not.toMatch(/Answered/);
   });
 });

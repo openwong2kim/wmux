@@ -205,10 +205,12 @@ describe('DeferredPushQueue', () => {
 
   function harness(initiallyPresent = true) {
     const send = vi.fn();
+    const onOutcome = vi.fn();
     let presentNow = initiallyPresent;
     let fire: (() => void) | null = null;
     const queue = new DeferredPushQueue({
       send,
+      onOutcome,
       isPresent: () => presentNow,
       staleAfterMs: () => DESKTOP_PRESENCE_STALE_AFTER_MS,
       setTimer: (fn) => {
@@ -222,6 +224,7 @@ describe('DeferredPushQueue', () => {
     return {
       queue,
       send,
+      onOutcome,
       setPresent: (v: boolean) => {
         presentNow = v;
       },
@@ -291,6 +294,24 @@ describe('DeferredPushQueue', () => {
     const sentIds = h.send.mock.calls.map((c) => (c[0] as PushPayload).approvalId);
     expect(sentIds).not.toContain('ap-0');
     expect(sentIds).toContain(`ap-${DEFERRED_PUSH_CAP}`);
+  });
+
+  it('reports each released push as delivered, with its collapse id', () => {
+    const h = harness();
+    h.queue.park('ap-1', payload('ap-1'), 'ap-sess-1');
+    h.setPresent(false);
+    h.queue.onPresenceChanged();
+    expect(h.onOutcome).toHaveBeenCalledWith('ap-1', 'delivered', 'ap-sess-1');
+  });
+
+  it('reports a push evicted past the cap as dropped, and a forgotten one not at all', () => {
+    const h = harness();
+    h.queue.park('gone', payload('gone'));
+    h.queue.forget('gone');
+    for (let i = 0; i < DEFERRED_PUSH_CAP + 1; i++) {
+      h.queue.park(`ap-${i}`, payload(`ap-${i}`), 'ap-sess-1');
+    }
+    expect(h.onOutcome.mock.calls).toEqual([['ap-0', 'dropped', 'ap-sess-1']]);
   });
 
   it('drops everything on dispose without sending', () => {

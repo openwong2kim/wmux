@@ -709,7 +709,6 @@ describe('a key or click in the pane refreshes the record instead of wedging it'
       send: (payload) => { sent.push(payload.approvalId as string); },
       park: () => undefined,
       forget: () => undefined,
-      isParked: () => false,
       setTimer: (fn) => { graceTimers.set(++nextTimer, fn); return nextTimer; },
       clearTimer: (handle) => { graceTimers.delete(handle as number); },
     });

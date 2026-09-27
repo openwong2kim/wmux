@@ -175,17 +175,25 @@ export const APPROVAL_RETRACTION_KIND = 'approval_retraction';
  * compatible reading. An extension that knows `kind` can go further (silence
  * it, or remove the banner outright) — see docs/phone-client-contract.md.
  */
-export function buildApprovalRetractionPayload(request: ApprovalRequest): PushPayload {
+export function buildApprovalRetractionPayload(
+  request: ApprovalRequest,
+  /**
+   * The approval id of the push being replaced — the one on the phone. It can
+   * differ from `request.id` when the delivered record was re-parsed and
+   * replaced within the same episode, or superseded by a later question.
+   */
+  deliveredApprovalId: string,
+): PushPayload {
+  // Only a `resolved` record was answered. `expired` covers an answer typed at
+  // the computer too (`answered-locally`), and `superseded` was replaced by a
+  // different question — neither body claims where, or whether, it was answered.
+  const answered = request.state === 'resolved';
   return {
     title: 'Approval resolved',
-    // `expired` covers an answer typed at the computer too (`answered-locally`),
-    // so neither body claims where it was answered.
-    body: request.state === 'expired'
-      ? 'No longer waiting — nothing to do.'
-      : 'Answered — nothing to do.',
+    body: answered ? 'Answered — nothing to do.' : 'No longer waiting — nothing to do.',
     sessionId: request.sessionId,
     kind: APPROVAL_RETRACTION_KIND,
-    retractsApprovalId: request.id,
-    resolution: request.state === 'expired' ? 'expired' : 'resolved',
+    retractsApprovalId: deliveredApprovalId,
+    resolution: answered ? 'resolved' : 'expired',
   };
 }

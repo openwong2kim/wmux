@@ -6199,6 +6199,10 @@ async function main(): Promise<void> {
   // the pane's banner rather than stacking a second one.
   const deferredPush = new DeferredPushQueue({
     send: (payload, opts) => pushSender.notify(payload, opts),
+    // Whether a held push went out or was evicted unsent decides whether its
+    // record may later retract it. Only called on a release or an eviction,
+    // both of which happen after the router below exists.
+    onOutcome: (id, outcome, collapseId) => approvalPushRouter.onParkedOutcome(id, outcome, collapseId),
     isPresent: desktopIsPresent,
     staleAfterMs: () => presenceConfig().staleAfterMs,
     log: (level, msg) => log(level, msg),
@@ -6284,7 +6288,7 @@ async function main(): Promise<void> {
   // went out.
   const approvalPushRouter = new ApprovalPushRouter({
     build: (r) => buildApprovalPushPayload(r),
-    buildRetraction: (r) => buildApprovalRetractionPayload(r),
+    buildRetraction: (r, deliveredId) => buildApprovalRetractionPayload(r, deliveredId),
     collapseId: (r) => approvalPushCollapseId(r),
     suppress: (payload) => shouldSuppressPush({
       state: desktopPresence.snapshot(),
@@ -6295,7 +6299,6 @@ async function main(): Promise<void> {
     send: (payload, opts) => pushSender.notify(payload, opts),
     park: (id, payload, collapseId) => deferredPush.park(id, payload, collapseId),
     forget: (id) => deferredPush.forget(id),
-    isParked: (id) => deferredPush.has(id),
     log: (level, msg) => log(level, msg),
   });
   approvalRegistry.onEvent((event) => {
@@ -6313,6 +6316,12 @@ async function main(): Promise<void> {
     }
     approvalPushRouter.onEvent(event);
   });
+  // Anything that became pending before the subscription above: a
+  // `terminal_prompt` gets its grace re-armed from `createdAt`. At boot the
+  // registry has already expired every persisted pending record, so this is
+  // normally empty — and a banner delivered before a restart is not retracted,
+  // because which pushes were delivered is not persisted.
+  approvalPushRouter.adopt(approvalRegistry.list().pending);
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   // Desktop presence, reported by the Electron main process on every
   // focus/blur transition. Registered here rather than in `registerRpcHandlers`
