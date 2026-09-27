@@ -73,7 +73,7 @@ import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
 import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
 import { registerA2aChannelRpc } from './pipe/handlers/a2a.channel.rpc';
-import { CallerTableResolver, createPaneAncestryGate, daemonLiveShellPid, identitySnapshot } from './pty/callerAncestry';
+import { CallerTableResolver, cachedFor, createPaneAncestryGate, daemonLiveShellPid, identitySnapshot } from './pty/callerAncestry';
 import { pidsForPtyId } from './pty/pidMap';
 import { registerCompanyRpc } from './pipe/handlers/company.rpc';
 import { registerEventsRpc } from './pipe/handlers/events.rpc';
@@ -950,11 +950,18 @@ registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, {
   getDaemonClient: () => daemonClient,
   tableResolver: callerTables,
 });
+// The gate runs on every pane-claiming request (terminal reads and event
+// polls too), so the daemon's session list is shared for a short window.
+const liveSessions = cachedFor(async () => {
+  const dc = daemonClient;
+  if (!dc) throw new Error('daemon not connected');
+  return dc.rpc('daemon.listSessions', {});
+}, 1500);
+const liveShellPidFromDaemon = daemonLiveShellPid(liveSessions);
 rpcRouter.setPaneAncestryGate(createPaneAncestryGate({
   resolver: callerTables,
   liveShellPid: async (ptyId) => {
-    const dc = daemonClient;
-    if (dc) return daemonLiveShellPid(() => dc.rpc('daemon.listSessions', {}))(ptyId);
+    if (daemonClient) return liveShellPidFromDaemon(ptyId);
     // No daemon: the pid-map is the only record. One entry is the shell; none
     // means no live pane; several are ambiguous.
     const pids = pidsForPtyId(ptyId);

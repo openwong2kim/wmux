@@ -225,3 +225,22 @@ export function daemonLiveShellPid(
     return null;
   };
 }
+
+/**
+ * Memoize an async read for `ttlMs`. The gate runs on every pane-claiming
+ * request (terminal reads and event polls included), so the daemon's session
+ * list is fetched at most once per window instead of once per request. A
+ * failed read is not cached.
+ */
+export function cachedFor<T>(read: () => Promise<T>, ttlMs: number, now: () => number = Date.now): () => Promise<T> {
+  let cached: { at: number; value: Promise<T> } | null = null;
+  return () => {
+    const t = now();
+    if (cached && t - cached.at < ttlMs) return cached.value;
+    const value = read();
+    const entry = { at: t, value };
+    cached = entry;
+    value.catch(() => { if (cached === entry) cached = null; });
+    return value;
+  };
+}

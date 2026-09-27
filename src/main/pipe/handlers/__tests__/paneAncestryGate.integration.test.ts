@@ -61,6 +61,9 @@ const WRITES: Array<{ method: string; params: Record<string, unknown> }> = [
   { method: 'a2a.task.send', params: { workspaceId: 'ws-A', message: 'do it', to: 'ws-B' } },
   { method: 'input.send', params: { workspaceId: 'ws-A', ptyId: 'pty-B', text: 'rm -rf x' } },
   { method: 'input.sendKey', params: { workspaceId: 'ws-A', ptyId: 'pty-B', key: 'enter' } },
+  { method: 'a2a.task.update', params: { workspaceId: 'ws-A', taskId: 't-1', status: 'completed' } },
+  { method: 'a2a.channel.ack', params: { channelId: 'ch-1', memberId: 'pty-A', uptoSeq: 3 } },
+  { method: 'a2a.channel.join', params: { channelId: 'ch-1', member: { memberId: 'pty-A', memberName: 'a' } } },
 ];
 
 function handlerSideEffects(daemonRpc: ReturnType<typeof vi.fn>): string[] {

@@ -11,6 +11,7 @@ vi.mock('child_process', async (importOriginal) => ({
 vi.mock('../winSnapshotNative', () => ({ tryNativeProcessTable: nativeTableMock }));
 
 import {
+  cachedFor,
   CallerTableResolver,
   callerDescendsFrom,
   createPaneAncestryGate,
@@ -110,5 +111,21 @@ describe('identitySnapshot', () => {
       cb(null, { stdout: '' });
     });
     await expect(identitySnapshot(1000)).rejects.toThrow();
+  });
+});
+
+describe('cachedFor', () => {
+  it('shares one read inside the window and drops a failed read', async () => {
+    let now = 0;
+    let fail = false;
+    const read = vi.fn(async () => { if (fail) throw new Error('down'); return [1]; });
+    const get = cachedFor(read, 1500, () => now);
+    await get(); await get();
+    expect(read).toHaveBeenCalledTimes(1);
+    now = 2000; fail = true;
+    await expect(get()).rejects.toThrow();
+    fail = false;
+    await get();
+    expect(read).toHaveBeenCalledTimes(3);
   });
 });
