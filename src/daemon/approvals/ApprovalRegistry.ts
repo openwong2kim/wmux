@@ -76,7 +76,7 @@ import {
   decideApprovalPress,
   keystrokesForAgent,
   looksLikeApprovalPrompt,
-  looksLikeChoiceOnScreen,
+  questionOnScreen,
   type ApprovalPressFacts,
 } from './approvalKeystrokes';
 import {
@@ -98,6 +98,7 @@ import type {
   ApprovalResolveFailure,
   ApprovalResolveParams,
   ApprovalResolveResult,
+  AnswerRefusalReason,
   TerminalPromptNote,
 } from './types';
 import { TERMINAL_PROMPT_WEB_ANSWER } from './types';
@@ -973,28 +974,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         };
       }
 
-      // One key cannot answer a multi-select or multi-question AskUserQuestion
-      // (measured: a digit toggles one checkbox, or answers the first question
-      // and moves to the next tab). Refuse an approve — with or without a
-      // choiceKey — BEFORE the screen read and without expiring: the record is
-      // still live, a human can answer it in the pane, and deny (Esc) still
-      // cancels the whole tool, so it stays allowed.
-      if (params.decision === 'approve' && record.questionShape) {
-        return {
-          result: {
-            ok: false,
-            reason: 'needs-v2',
-            request: copyRequest(record),
-          } as ApprovalResolveResult,
-        };
-      }
-
       // ── choiceKey validation ──────────────────────────────────────────────
       // When present, the caller is selecting a specific option rather than the
       // default first-option mapping. Validate that the key belongs to this
       // request's stored choices — fail closed on any mismatch.
       let choiceDigit: string | null = null;
-      let choiceLabel: string | null = null;
       if (params.choiceKey !== undefined) {
         // Only an affirmative can select an option. Empty is malformed rather
         // than "absent": silently defaulting it would press option 1.
@@ -1029,75 +1013,85 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           };
         }
         choiceDigit = match.key;
-        choiceLabel = match.label;
       }
 
-      const rows = await this.safeReadScreen(record.sessionId);
-
-      const pressRefusal = this.refuseOutOfScopePress(params, record,
-        !!rows && rows.length > 0 && looksLikeApprovalPrompt(rows));
-      if (pressRefusal) return { result: pressRefusal };
-
-      // A default approve presses `1`, so the record's OWN option 1 must be the
-      // one on screen, not merely some `❯ 1.` row. A record that outlived its
-      // question (Esc sends no hook) would otherwise press "Yes" on whatever
-      // dialog came next — a Claude permission prompt's first row is `❯ 1. Yes`.
-      const defaultChoice = params.decision === 'approve' && !choiceDigit
-        ? record.choices?.find((c) => c.key === keys.approve)
-        : undefined;
-      if (
-        !rows || rows.length === 0 || !looksLikeApprovalPrompt(rows)
-        || (defaultChoice && !looksLikeChoiceOnScreen(rows, defaultChoice.key, defaultChoice.label))
-      ) {
-        // Refusal expires the request: whatever the pane is showing now, it is
-        // not the prompt this record was minted for, so leaving it pending would
-        // just invite the same refusal on the next tap.
-        record.state = 'expired';
-        record.resolvedAt = this.now();
-        if (rows && rows.length > 0) record.screenTail = formatScreenTail(rows);
-        this.deps.log?.(
-          'info',
-          `[approvals] refused ${record.id} on ${record.sessionId}: no answerable prompt on screen`,
-        );
-        return {
-          events: [{ type: 'expire' as ApprovalEventType, request: copyRequest(record) }],
-          result: { ok: false, reason: 'prompt-gone', request: copyRequest(record) } as ApprovalResolveResult,
-        };
+      // ── Prove the key lands on THIS question, or write nothing ────────────
+      // A record can outlive its question (Esc sends no hook), and the next
+      // dialog Claude draws starts with `❯ 1.` too. So every press — approve,
+      // choiceKey, deny — first proves the record's own dialog is on screen
+      // (question row and every option row, see questionOnScreen), then proves
+      // the pane has not moved between that read and the write: same PTY, no
+      // key or click, no output, checked synchronously after the last await.
+      // Anything short of that proof refuses. Ambiguity never presses a key.
+      if (!record.question || !record.choices?.length) {
+        return { result: this.answerInTerminal(record, 'unsupported-shape') };
       }
-
-      // ── choiceKey screen re-verify ────────────────────────────────────────
-      // When resolving with a specific choiceKey, verify that the option row
-      // matching that key+label is visible on screen. This prevents stale
-      // choices from typing digits into a prompt that has redrawn with different
-      // options. The check looks for `<digit>. <label-substring>` or
-      // `<digit>) <label-substring>` on a row that also has the selection cursor.
-      if (choiceDigit && choiceLabel) {
-        if (!looksLikeChoiceOnScreen(rows, choiceDigit, choiceLabel)) {
-          // The option is not visible — fail closed without expiring. The prompt
-          // may still be valid for a default approve/deny, just not for this
-          // specific choice (e.g. a re-render reordered options).
-          this.deps.log?.(
-            'info',
-            `[approvals] refused choiceKey '${choiceDigit}' on ${record.id}: option not visible on screen`,
-          );
-          return {
-            result: {
-              ok: false,
-              reason: 'invalid-choice-key',
-              request: copyRequest(record),
-            } as ApprovalResolveResult,
-          };
+      const readQuestion = this.deps.readPromptScreen;
+      const markNow = this.deps.promptScreenMark;
+      if (!readQuestion || !markNow) {
+        return { result: this.answerInTerminal(record, 'screen-unreadable') };
+      }
+      let rows: readonly string[] = [];
+      for (let attempt = 1; ; attempt++) {
+        let read: Awaited<ReturnType<typeof readQuestion>> = null;
+        try {
+          read = await readQuestion(record.sessionId);
+        } catch (err) {
+          this.deps.log?.('warn', `[approvals] screen read failed for ${record.sessionId}: ${String(err)}`);
         }
-      }
+        rows = read?.rows ?? [];
 
-      // Last check before the bytes: the screen re-read above can take seconds.
-      const refusedWrite = await this.reauthorize(params, record);
-      if (refusedWrite) return { result: refusedWrite };
-      // Policy again, after the last await: the operator may have turned
-      // autonomy or approval pressing off while reauthorize ran, and the scope
-      // read above predates that. Same rule the gate branch follows.
-      const lateRefusal = this.refuseOutOfScopePress(params, record, true);
-      if (lateRefusal) return { result: lateRefusal };
+        const pressRefusal = this.refuseOutOfScopePress(params, record,
+          rows.length > 0 && looksLikeApprovalPrompt(rows));
+        if (pressRefusal) return { result: pressRefusal };
+
+        const proof = read && rows.length > 0 ? questionOnScreen(rows, record) : 'absent';
+        if (!read || proof !== 'match' && proof !== 'changed') {
+          // Whatever the pane is showing now, it is not this question: expire,
+          // so the card stops inviting the same refusal.
+          return this.expireUnpressed(record, rows, 'prompt-gone', 'its question is not on screen');
+        }
+        if (proof === 'changed') {
+          // The question is there but its options do not all read back (a
+          // re-render, a wrap). Still live: keep it pending, press nothing.
+          this.deps.log?.('info', `[approvals] refused ${record.id} on ${record.sessionId}: options changed on screen`);
+          return { result: { ok: false, reason: 'prompt-changed', request: copyRequest(record) } };
+        }
+
+        // One key cannot answer a multi-select or multi-question AskUserQuestion
+        // (measured: a digit toggles one checkbox, or answers the first question
+        // and moves to the next tab). Refuse an approve — with or without a
+        // choiceKey — without expiring: the question is live (proved above), a
+        // human can answer it in the pane, and deny (Esc) still cancels it.
+        if (params.decision === 'approve' && record.questionShape) {
+          return { result: { ok: false, reason: 'needs-v2', request: copyRequest(record) } };
+        }
+
+        // Last check before the bytes: the screen read above can take seconds.
+        const refusedWrite = await this.reauthorize(params, record);
+        if (refusedWrite) return { result: refusedWrite };
+        // Policy again, after the last await: the operator may have turned
+        // autonomy or approval pressing off while reauthorize ran, and the scope
+        // read above predates that. Same rule the gate branch follows.
+        const lateRefusal = this.refuseOutOfScopePress(params, record, true);
+        if (lateRefusal) return { result: lateRefusal };
+
+        // The fence — synchronous from here to the write, nothing can interleave.
+        const now = markNow(record.sessionId);
+        if (!now) return this.expireUnpressed(record, rows, 'prompt-gone', 'the pane is gone');
+        if (now.incarnation !== read.mark.incarnation || now.keyInputRevision !== read.mark.keyInputRevision) {
+          // A key or click reached the pane (or it restarted) since the read: a
+          // human may just have answered, and whatever is up now is unproven.
+          this.deps.log?.('info', `[approvals] refused ${record.id} on ${record.sessionId}: the pane took input since the read`);
+          return { result: { ok: false, reason: 'prompt-changed', request: copyRequest(record) } };
+        }
+        if (now.bytes !== read.mark.bytes) {
+          if (attempt < TERMINAL_PROMPT_ANSWER_ATTEMPTS) continue;
+          this.deps.log?.('info', `[approvals] refused ${record.id} on ${record.sessionId}: the pane kept drawing`);
+          return { result: { ok: false, reason: 'prompt-changed', request: copyRequest(record) } };
+        }
+        break;
+      }
 
       // Determine the data to send: choiceKey overrides the default mapping.
       // When choiceKey is set, we send exactly that digit — no CR.
@@ -1115,15 +1109,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         );
       }
       if (!delivered) {
-        // The pane died between the screen read and the write. Same answer as a
+        // The pane died between the fence and the write. Same answer as a
         // vanished prompt — there is nothing to press.
-        record.state = 'expired';
-        record.resolvedAt = this.now();
-        record.screenTail = formatScreenTail(rows);
-        return {
-          events: [{ type: 'expire' as ApprovalEventType, request: copyRequest(record) }],
-          result: { ok: false, reason: 'prompt-gone', request: copyRequest(record) } as ApprovalResolveResult,
-        };
+        return this.expireUnpressed(record, rows, 'prompt-gone', 'the write did not land');
       }
 
       // Bytes are out. The flip is last so a failed write never consumes the
@@ -1570,6 +1558,29 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         : verdict === 'timeout' ? 'authorization-unconfirmed'
         : 'unauthorized',
       request: copyRequest(record),
+    };
+  }
+
+  /** A 501 `answer-in-terminal` for a press the daemon cannot make, naming why. */
+  private answerInTerminal(record: ApprovalRequest, why: AnswerRefusalReason): ApprovalResolveResult {
+    this.deps.log?.('info', `[approvals] refused ${record.id} on ${record.sessionId}: answer in terminal (${why})`);
+    return { ok: false, reason: 'answer-in-terminal', answerRefusal: why, request: copyRequest(record) };
+  }
+
+  /** Expire an `awaiting_input` record without writing to its pane (inside the mutation chain). */
+  private expireUnpressed(
+    record: ApprovalRequest,
+    rows: readonly string[],
+    reason: 'prompt-gone',
+    why: string,
+  ): { events: ApprovalEvent[]; result: ApprovalResolveResult } {
+    record.state = 'expired';
+    record.resolvedAt = this.now();
+    if (rows.length > 0) record.screenTail = formatScreenTail(rows);
+    this.deps.log?.('info', `[approvals] refused ${record.id} on ${record.sessionId}: ${why}`);
+    return {
+      events: [{ type: 'expire', request: copyRequest(record) }],
+      result: { ok: false, reason, request: copyRequest(record) },
     };
   }
 

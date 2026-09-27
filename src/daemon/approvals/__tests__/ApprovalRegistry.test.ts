@@ -38,8 +38,16 @@ const PROMPT_ROWS = [
   '│                                          │',
   '│ ❯ 1. Rewrite the parser                  │',
   '│   2. Patch the existing one              │',
+  '│   3. Type something.                     │',
   '╰──────────────────────────────────────────╯',
 ];
+
+/** What PROMPT_ROWS asks, as the hook reports it. */
+const PROMPT_RECORD = {
+  question: 'Which approach should I take?',
+  options: ['Rewrite the parser', 'Patch the existing one'],
+  choices: [{ key: '1', label: 'Rewrite the parser' }, { key: '2', label: 'Patch the existing one' }],
+};
 
 /** A pane that has moved on — numbered list, but no select on screen. */
 const NO_PROMPT_ROWS = [
@@ -58,6 +66,14 @@ interface Harness {
   /** Gate the screen read so a test can hold a resolve mid-flight. */
   blockScreen: () => () => void;
   ids: { next: number };
+  /**
+   * The pane's state as the daemon reads it (output bytes, key input, PTY
+   * incarnation). Mutate it to simulate the pane moving between the screen
+   * read and the write.
+   */
+  mark: { bytes: number; keyInputRevision: number; incarnation: string | null };
+  /** Runs once, right after the NEXT screen read returns (the TOCTOU window). */
+  afterRead: (fn: () => void) => void;
 }
 
 function makeRegistry(overrides: Partial<ApprovalRegistryDeps> = {}): Harness {
@@ -67,13 +83,27 @@ function makeRegistry(overrides: Partial<ApprovalRegistryDeps> = {}): Harness {
   let release: (() => void) | null = null;
   const ids = { next: 1 };
   let clock = 1_000;
+  const mark = { bytes: 0, keyInputRevision: 0, incarnation: 'inc-1' as string | null };
+  let pendingAfterRead: (() => void) | null = null;
+  const readScreen = async (): Promise<string[] | null> => {
+    if (release) await new Promise<void>((resolve) => { release = resolve; });
+    return screen;
+  };
 
   const deps: ApprovalRegistryDeps = {
     wmuxDir: tmpDir,
-    readScreenTail: async () => {
-      if (release) await new Promise<void>((resolve) => { release = resolve; });
-      return screen;
+    readScreenTail: readScreen,
+    // The press path reads the grid WITH the pane's state at that instant, and
+    // re-reads the state synchronously before the write.
+    readPromptScreen: async () => {
+      const rows = await readScreen();
+      const at = { ...mark };
+      const hook = pendingAfterRead;
+      pendingAfterRead = null;
+      hook?.();
+      return rows ? { rows, mark: at } : null;
     },
+    promptScreenMark: () => ({ ...mark }),
     writeToSession: (sessionId, data) => {
       writes.push({ sessionId, data });
       return true;
@@ -104,6 +134,8 @@ function makeRegistry(overrides: Partial<ApprovalRegistryDeps> = {}): Harness {
       };
     },
     ids,
+    mark,
+    afterRead: (fn) => { pendingAfterRead = fn; },
   };
 }
 
@@ -118,7 +150,11 @@ function awaitingInput(
   agent = 'claude',
   extras: { question?: string; options?: string[]; choices?: Array<{ key: string; label: string }> } = {},
 ): Promise<void> {
-  return registry.noteHookAwaitingInput({ sessionId, agent, workspaceId: 'ws-1', ...extras });
+  // By default the record describes PROMPT_ROWS exactly: a press is only ever
+  // made into the record's own question, so a record needs one to be pressed.
+  return registry.noteHookAwaitingInput({
+    sessionId, agent, workspaceId: 'ws-1', ...PROMPT_RECORD, ...extras,
+  });
 }
 
 /** Drain pending microtasks — enough to park a mutation at its first await. */
@@ -252,6 +288,109 @@ describe('ApprovalRegistry — lifecycle', () => {
   });
 });
 
+describe('ApprovalRegistry — no proof of the own dialog, no bytes', () => {
+  const PERMISSION_ROWS = [' Do you want to proceed?', ' ❯ 1. Yes', '   2. No', '', ' Esc to cancel · Tab to amend'];
+  const YES_NO = {
+    question: 'Ship it?',
+    options: ['Yes', 'No'],
+    choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }],
+  };
+
+  it.each([
+    ['default approve', { decision: 'approve' as const }],
+    ['deny', { decision: 'deny' as const }],
+  ])('a record with no choices: %s writes nothing and stays for the desk', async (_label, over) => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude', { options: undefined, choices: undefined });
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', resolvedBy: 'phone', ...over });
+
+    expect(res).toMatchObject({ ok: false, reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape' });
+    expect(h.writes).toEqual([]);
+    expect(h.registry.list().pending).toHaveLength(1);
+  });
+
+  it.each([
+    ['default approve', { decision: 'approve' as const }],
+    ['approve with a choiceKey', { decision: 'approve' as const, choiceKey: '1' }],
+    ['deny', { decision: 'deny' as const }],
+  ])('a stale "Yes" question facing a permission dialog: %s writes nothing and expires', async (_label, over) => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry, 'pty-a', 'claude', YES_NO);
+    await settle();
+    h.setScreen(PERMISSION_ROWS);
+
+    const res = await h.registry.resolve({ id: 'req-1', resolvedBy: 'phone', ...over });
+
+    expect(res).toMatchObject({ ok: false, reason: 'prompt-gone' });
+    expect(h.writes).toEqual([]);
+    expect(h.registry.list().pending).toHaveLength(0);
+  });
+
+  it('a question whose options no longer all read back: 409, still pending, nothing written', async () => {
+    const h = makeRegistry();
+    await awaitingInput(h.registry);
+    await settle();
+    // A narrow pane re-wrapped option 2 into something the prefix rule cannot read.
+    h.setScreen(['Which approach should I take?', '❯ 1. Rewrite the parser', '  2. Patch the', '  existing one']);
+
+    for (const decision of ['approve', 'deny'] as const) {
+      const res = await h.registry.resolve({ id: 'req-1', decision, resolvedBy: 'phone' });
+      expect(res).toMatchObject({ ok: false, reason: 'prompt-changed' });
+    }
+    expect(h.writes).toEqual([]);
+    expect(h.registry.list().pending).toHaveLength(1);
+  });
+
+  it.each([
+    ['a key or click reached the pane', (m: Harness['mark']) => { m.keyInputRevision += 1; }],
+    ['the PTY was replaced', (m: Harness['mark']) => { m.incarnation = 'inc-2'; }],
+  ])('%s between the screen read and the write: nothing written, still pending', async (_label, move) => {
+    for (const decision of ['approve', 'deny'] as const) {
+      const h = makeRegistry();
+      await awaitingInput(h.registry);
+      await settle();
+      h.afterRead(() => move(h.mark));
+
+      const res = await h.registry.resolve({ id: 'req-1', decision, resolvedBy: 'phone' });
+
+      expect(res).toMatchObject({ ok: false, reason: 'prompt-changed' });
+      expect(h.writes).toEqual([]);
+      expect(h.registry.list().pending).toHaveLength(1);
+    }
+  });
+
+  it('output between the read and the write: read again; a pane that keeps drawing is never pressed', async () => {
+    const once = makeRegistry();
+    await awaitingInput(once.registry);
+    await settle();
+    once.afterRead(() => { once.mark.bytes += 10; });
+    expect(await once.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' })).toMatchObject({ ok: true });
+    expect(once.writes).toEqual([{ sessionId: 'pty-a', data: '1' }]);
+
+    const busy = makeRegistry();
+    await awaitingInput(busy.registry);
+    await settle();
+    const keepDrawing = (): void => { busy.mark.bytes += 10; busy.afterRead(keepDrawing); };
+    busy.afterRead(keepDrawing);
+    expect(await busy.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' }))
+      .toMatchObject({ ok: false, reason: 'prompt-changed' });
+    expect(busy.writes).toEqual([]);
+  });
+
+  it('a registry with no marked screen read cannot prove anything, so it never presses', async () => {
+    const h = makeRegistry({ readPromptScreen: undefined, promptScreenMark: undefined });
+    await awaitingInput(h.registry);
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' });
+
+    expect(res).toMatchObject({ ok: false, reason: 'answer-in-terminal', answerRefusal: 'screen-unreadable' });
+    expect(h.writes).toEqual([]);
+  });
+});
+
 describe('ApprovalRegistry — questions one key cannot answer (needs-v2)', () => {
   // The record a multi-question AskUserQuestion produced on a live 2.1.283
   // pane: only questions[0] is surfaced, so it LOOKS like a plain select.
@@ -261,6 +400,14 @@ describe('ApprovalRegistry — questions one key cannot answer (needs-v2)', () =
     choices: [{ key: '1', label: 'Small' }, { key: '2', label: 'Large' }],
     questionShape: 'multi-question' as const,
   };
+  // Its first tab, as measured (fixtures/terminal-prompts/claude-ask-multi-01-q1.json).
+  const Q1_ROWS = [
+    '←  ☐ Size  ☐ Toppings  ✔ Submit  →',
+    'Which size?',
+    '❯ 1. Small',
+    '  2. Large',
+    '  3. Type something.',
+  ];
 
   it.each([
     ['multi-question, default approve', multiQuestion, undefined],
@@ -268,6 +415,7 @@ describe('ApprovalRegistry — questions one key cannot answer (needs-v2)', () =
     ['multi-select, approve with a choiceKey', { ...multiQuestion, questionShape: 'multi-select' as const }, '1'],
   ])('%s → needs-v2, nothing typed, still pending', async (_label, extras, choiceKey) => {
     const h = makeRegistry();
+    h.setScreen(Q1_ROWS);
     await h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', ...extras });
     await settle();
 
@@ -280,8 +428,22 @@ describe('ApprovalRegistry — questions one key cannot answer (needs-v2)', () =
     expect(h.registry.list().pending).toHaveLength(1);
   });
 
+  it('a question that is already gone expires rather than answering needs-v2', async () => {
+    const h = makeRegistry();
+    h.setScreen(NO_PROMPT_ROWS);
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', ...multiQuestion });
+    await settle();
+
+    const res = await h.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' });
+
+    expect(res).toMatchObject({ ok: false, reason: 'prompt-gone' });
+    expect(h.writes).toEqual([]);
+    expect(h.registry.list().pending).toHaveLength(0);
+  });
+
   it('deny still cancels it with Esc — Esc cancels the whole tool whatever its shape', async () => {
     const h = makeRegistry();
+    h.setScreen(Q1_ROWS);
     await h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', ...multiQuestion });
     await settle();
 
@@ -525,7 +687,7 @@ describe('ApprovalRegistry — pre-write screen re-verify', () => {
 
   it('refuses when the screen read throws', async () => {
     const h = makeRegistry({
-      readScreenTail: async () => { throw new Error('headless parse blew up'); },
+      readPromptScreen: async () => { throw new Error('headless parse blew up'); },
     });
     await awaitingInput(h.registry);
     await settle();
@@ -687,13 +849,17 @@ describe('A4 — the question a request is asking', () => {
     expect(h.registry.list().pending[0].options).toEqual(asked.options);
   });
 
-  it('a request with no question is still created and still resolvable', async () => {
+  it('a request with no question is still created, but never pressed into', async () => {
     const h = makeRegistry();
-    await awaitingInput(h.registry);
+    await awaitingInput(h.registry, 'pty-a', 'claude', { question: undefined });
 
     expect(h.registry.list().pending[0].question).toBeUndefined();
+    // Nothing identifies its dialog on screen, so no key can be proven to
+    // reach it: answer at the computer, and the record stays.
     const res = await h.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' });
-    expect(res.ok).toBe(true);
+    expect(res).toMatchObject({ ok: false, reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape' });
+    expect(h.writes).toEqual([]);
+    expect(h.registry.list().pending).toHaveLength(1);
   });
 
   it('a hand-edited oversized question is re-truncated on read-back', async () => {
@@ -750,6 +916,7 @@ describe('risk hint — a UI step-up signal, never a gate', () => {
   it('★ never blocks an answer — a flagged request resolves like any other', async () => {
     const h = makeRegistry();
     await awaitingInput(h.registry, 'pty-a', 'claude', { question: 'git push --force to main?' });
+    h.setScreen(['git push --force to main?', '❯ 1. Rewrite the parser', '  2. Patch the existing one', '  3. Type something.']);
 
     const res = await h.registry.resolve({ id: 'req-1', decision: 'approve', resolvedBy: 'phone' });
 
@@ -868,7 +1035,7 @@ describe('resolvedBy sanitation', () => {
     const { registry: reg } = makeRegistry();
     // A workspaceId is required for a press: the scope check cannot classify a
     // pane it cannot name, and unknown is a refusal.
-    await reg.noteHookAwaitingInput({ sessionId: 'p1', agent: 'claude', workspaceId: 'ws-1' });
+    await reg.noteHookAwaitingInput({ sessionId: 'p1', agent: 'claude', workspaceId: 'ws-1', ...PROMPT_RECORD });
     const id = reg.list().pending[0].id;
 
     const out = await reg.resolve({
@@ -894,7 +1061,7 @@ it('logs the SANITIZED label, not the raw parameter', async () => {
     });
     // A workspaceId is required for a press: the scope check cannot classify a
     // pane it cannot name, and unknown is a refusal.
-    await reg.noteHookAwaitingInput({ sessionId: 'p1', agent: 'claude', workspaceId: 'ws-1' });
+    await reg.noteHookAwaitingInput({ sessionId: 'p1', agent: 'claude', workspaceId: 'ws-1', ...PROMPT_RECORD });
     const id = reg.list().pending[0].id;
 
     const LF = String.fromCharCode(0x0a);
@@ -949,7 +1116,7 @@ it('logs the SANITIZED label, not the raw parameter', async () => {
 
 describe('choices and choiceKey — per-option resolve', () => {
   const CHOICES_INPUT = {
-    question: 'Which approach?',
+    question: 'Which approach should I take?',
     options: ['Rewrite the parser', 'Patch the existing one'],
     choices: [
       { key: '1', label: 'Rewrite the parser' },
@@ -960,10 +1127,11 @@ describe('choices and choiceKey — per-option resolve', () => {
   /** A screen that shows option 2 with a cursor on it. */
   const SCREEN_WITH_CHOICE_2 = [
     '╭──────────────────────────────────────────╮',
-    '│ Which approach?                           │',
+    '│ Which approach should I take?             │',
     '│                                          │',
     '│   1. Rewrite the parser                   │',
     '│ ❯ 2. Patch the existing one              │',
+    '│   3. Type something.                     │',
     '╰──────────────────────────────────────────╯',
   ];
 
@@ -1040,7 +1208,7 @@ describe('choices and choiceKey — per-option resolve', () => {
 
   it('choiceKey on a request with no choices fails with invalid-choice-key', async () => {
     const h = makeRegistry();
-    await awaitingInput(h.registry, 'pty-a', 'claude'); // no choices
+    await awaitingInput(h.registry, 'pty-a', 'claude', { options: undefined, choices: undefined });
     await settle();
 
     const res = await h.registry.resolve({
@@ -1060,6 +1228,7 @@ describe('choices and choiceKey — per-option resolve', () => {
     // Screen only shows option 1, not option 2
     h.setScreen([
       '╭──────────────────────────────────────────╮',
+      '│ Which approach should I take?             │',
       '│ ❯ 1. Rewrite the parser                   │',
       '╰──────────────────────────────────────────╯',
     ]);
@@ -1073,7 +1242,9 @@ describe('choices and choiceKey — per-option resolve', () => {
       choiceKey: '2',
     });
 
-    expect(res).toMatchObject({ ok: false, reason: 'invalid-choice-key' });
+    // The question is there but not every option reads back: the dialog is not
+    // proven, so nothing is pressed (not even the key whose row IS visible).
+    expect(res).toMatchObject({ ok: false, reason: 'prompt-changed' });
     expect(h.writes).toHaveLength(0);
     // Still pending — not expired, because the prompt IS there, just not this choice.
     expect(h.registry.list().pending).toHaveLength(1);
@@ -1542,7 +1713,7 @@ describe('ApprovalRegistry — press scope is enforced at resolve', () => {
   it('names the record, not the wiring, when the request has no workspaceId', async () => {
     const logs: string[] = [];
     const h = makeRegistry({ log: (_level, message) => logs.push(message) });
-    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude' });
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', ...PROMPT_RECORD });
     await settle();
 
     const res = await h.registry.resolve({ id: 'req-1', ...automatedApprove });

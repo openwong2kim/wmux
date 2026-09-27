@@ -163,6 +163,78 @@ export function looksLikeChoiceOnScreen(
   return rows.some((row) => pattern.test(row));
 }
 
+/**
+ * Is THIS AskUserQuestion — the record's own question and every one of its
+ * options — the dialog on screen right now?
+ *
+ *   unprovable  the record carries no question text or no choices, so there
+ *               is nothing to identify its dialog by. Never pressed into.
+ *   absent      no row shows the question: the dialog is gone (answered,
+ *               cancelled with Esc, replaced by another dialog).
+ *   changed     the question row is there but the option rows do not all
+ *               match (a re-render, a wrap the prefix rule cannot bridge).
+ *   match       the question row, then each option row in key order below it,
+ *               then Claude's own free-text row (`N. Type something.`).
+ *
+ * Identity is the whole dialog, not one label: a question whose option 1 is
+ * "Yes" must not match a permission prompt's `❯ 1. Yes`. Each option row is
+ * anchored (optional frame, optional cursor, the exact key, `.`) so `11. Yes`
+ * cannot stand in for key 1, and its text must EQUAL the label or be a prefix
+ * of it (a label cut at the pane's width) — never the other way round, which
+ * is how `Yes` would match `Yes, and always allow …`. A multi-select row's
+ * `[ ]` / `[✔]` checkbox is skipped. The question row matches the same way:
+ * equal to the question, or a prefix of it at least 8 characters long (or the
+ * whole question when shorter), so a prompt echo such as
+ * `❯ Call AskUserQuestion … "Pick a fruit?"` does not count.
+ *
+ * The trailing `Type something` row is what makes it an AskUserQuestion at
+ * all: Claude Code (2.1.283, measured) appends it to every question, single-
+ * and multi-select, and draws it on no permission dialog. Without it a
+ * question that happens to read "Do you want to proceed?" with options Yes/No
+ * would be indistinguishable from the permission prompt of the same words.
+ */
+export type QuestionScreenProof = 'unprovable' | 'absent' | 'changed' | 'match';
+
+const FRAME_EDGE = /^[\s│║┃]*|[\s│║┃]*$/g;
+const MIN_QUESTION_PREFIX = 8;
+const MIN_LABEL_PREFIX = 3;
+const FREE_TEXT_ROW = /^(?:❯\s*)?\d{1,2}\.\s+(?:\[[^\]]*\]\s*)?Type something\.?$/;
+
+const normalizeText = (text: string): string => text.replace(/\s+/g, ' ').trim();
+
+/** `text` equals `full`, or is a prefix of it at least `min` characters long (the whole of a shorter `full`). */
+function isCutOf(text: string, full: string, min: number): boolean {
+  const cut = text.replace(/…$/, '').trimEnd();
+  if (!cut) return false;
+  if (cut === full) return true;
+  return full.startsWith(cut) && cut.length >= Math.min(full.length, min);
+}
+
+export function questionOnScreen(
+  rows: readonly string[],
+  record: { question?: string; choices?: ReadonlyArray<{ key: string; label: string }> },
+): QuestionScreenProof {
+  const question = record.question ? normalizeText(record.question) : '';
+  const choices = record.choices ?? [];
+  if (!question || choices.length === 0) return 'unprovable';
+  const lines = rows.map((row) => normalizeText(row.replace(FRAME_EDGE, '')));
+  const questionAt = lines.findIndex((line) => isCutOf(line, question, MIN_QUESTION_PREFIX));
+  if (questionAt < 0) return 'absent';
+  let from = questionAt + 1;
+  for (const choice of choices) {
+    const label = normalizeText(choice.label);
+    const row = new RegExp(`^(?:❯\\s*)?${escapeDigit(choice.key)}\\.\\s+(?:\\[[^\\]]*\\]\\s*)?(.*)$`);
+    let found = -1;
+    for (let i = from; i < lines.length; i++) {
+      const m = row.exec(lines[i]);
+      if (m && isCutOf(m[1], label, MIN_LABEL_PREFIX)) { found = i; break; }
+    }
+    if (found < 0) return 'changed';
+    from = found + 1;
+  }
+  return lines.slice(from).some((line) => FREE_TEXT_ROW.test(line)) ? 'match' : 'changed';
+}
+
 function escapeDigit(d: string): string {
   // Digits are regex-safe, but be explicit for safety.
   return d.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
