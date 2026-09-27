@@ -15,12 +15,16 @@ export class CodexPaneRelays {
   private stopped = false;
   constructor(private readonly create:typeof createCodexTuiRelay = createCodexTuiRelay,
     private readonly cleanupError:()=>void = ()=> { /* noop */ },
-    private readonly stateChanged:(id:string,owner:ManagedSession)=>void = ()=> { /* noop */ }) {}
+    private readonly stateChanged:(id:string,owner:ManagedSession)=>void = ()=> { /* noop */ },
+    /** Before every relay (and so every wmux Codex launch): make sure the shared
+     * account server runs, started with no WMUX_* variable. Must not throw. */
+    private readonly ensureRuntime:(id:string,codeHome?:string)=>Promise<void> = async()=> { /* noop */ }) {}
 
   async prepare(id:string, codeHome?:string) {
     if (this.stopped || this.entries.has(id) || this.entries.size >= 256 || this.creating.size >= 256) throw new Error('Codex pane relay unavailable');
     const entry:Entry = {id,relayId:randomUUID(),retired:false};
     this.entries.set(id,entry);
+    try {await this.ensureRuntime(id,codeHome);} catch {/* The relay probe below decides availability. */}
     let creation:Promise<Relay> | undefined;
     try {
       creation = this.create({codeHome,onStateChange:()=>{

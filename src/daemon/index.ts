@@ -138,8 +138,7 @@ import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
 import { chatAgentStatus } from './transcript/chatAgentStatus';
-import { startNativeCodexRuntime } from './transcript/terminalLaunch';
-import { createCodexRuntimeHygiene, runCodexDaemon } from './transcript/codexRuntimeHygiene';
+import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
 import { interruptChatTurn } from './transcript/interruptChatTurn';
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
 import { ChatSessionService } from './chat/ChatSessionService';
@@ -217,8 +216,19 @@ let deviceStore: DeviceStore | null = null;
 // registerRpcHandlers runs, which is before either site.
 let sessionLifecycle: WebSessionLifecycle | null = null;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
+// Late-bound: the pipe server that carries notices exists only after boot.
+let broadcastCodexNotice: ((paneId:string|undefined,title:string,body:string)=>void) | undefined;
+// Every wmux Codex launch goes through a pane relay; before each, the shared
+// account server is started with no WMUX_* variable (never stopped/restarted).
+const codexSharedRuntime = createCodexSharedRuntime({
+  runDaemon: runCodexDaemon,
+  stateDir: path.join(os.homedir(), '.wmux-codex-runtime'),
+  notice: (paneId, title, body) => broadcastCodexNotice?.(paneId, title, body),
+  log: (level, message) => log(level, message),
+});
 const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Codex relay cleanup failed'),
-  (id,owner)=>persistCodexRelayState?.(id,owner));
+  (id,owner)=>persistCodexRelayState?.(id,owner),
+  async (id,codeHome)=>{ await codexSharedRuntime.ensureStarted(id,{...process.env,...(codeHome ? {CODEX_HOME:codeHome} : {})}); });
 
 /**
  * #919 — canonical pane-agent identity for one pane, right now. Folds the
@@ -3385,15 +3395,6 @@ function registerRpcHandlers(
   // Phone native chat bridge (contract v0.3.1). The desktop RPCs below call the
   // same functions, so binding resolution, receipts, launch and skills cannot
   // drift between the two transports.
-  const codexRuntimeHygiene = createCodexRuntimeHygiene({
-    runDaemon: runCodexDaemon,
-    liveCodexPanes: () => sessionManager.listSessions()
-      .filter((s) => agentDisplayToSlug(readDaemonAgentState(s.id).agentName ?? '') === 'codex').length,
-    recordPath: path.join(wmuxDir, 'codex-runtime-clean.json'),
-    notice: (paneId, title, body) => pipeServer.broadcast({ type: 'notification.event', sessionId: paneId,
-      data: { source: 'security', title, body, ts: Date.now() } }),
-    log: (level, message) => log(level, message),
-  });
   const bridge: NativeChatBridge = createChatBridge({
     pane: (id) => sessionManager.getSession(id),
     agentState: (id) => readDaemonAgentState(id),
@@ -3454,8 +3455,10 @@ function registerRpcHandlers(
       unavailable: (error) => (error as NodeJS.ErrnoException)?.code === 'ENOENT' || error instanceof CodexRelayUnavailableError,
       selection: (id, pane) => codexPaneRelays.selection(id, pane),
     },
-    startCodexRuntime: (env) => startNativeCodexRuntime(env),
-    ensureCleanCodexRuntime: (paneId, env) => codexRuntimeHygiene.ensureClean(paneId, env),
+    startCodexRuntime: async (env) => {
+      const state = await codexSharedRuntime.ensureStarted(undefined, env);
+      if (state.kind === 'failed') throw new Error(state.reason);
+    },
     loadSkills: (agent, cwd, env) => loadChatSkills(agent, cwd, env),
     log: (level, message) => log(level, message),
     // Main shows `source:'security'` as an always-on toast. Straight onto the
@@ -3464,6 +3467,8 @@ function registerRpcHandlers(
       data: { source: 'security', title, body, ts: Date.now() } }),
   });
   chatBridge = bridge;
+  broadcastCodexNotice = (paneId, title, body) => pipeServer.broadcast({ type: 'notification.event',
+    ...(paneId ? { sessionId: paneId } : {}), data: { source: 'security', title, body, ts: Date.now() } });
 
   pipeServer.onRpc('daemon.chat.skills', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'skills') || typeof params.id !== 'string') return { skills: [], state: 'unavailable' };

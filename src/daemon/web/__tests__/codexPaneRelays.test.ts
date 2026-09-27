@@ -115,3 +115,14 @@ describe('Codex pane relay lifetime',()=>{
     expect(cleanup).toHaveBeenCalledOnce();
   });
 });
+describe('Codex pane relay runtime start',()=>{
+  it('ensures the shared runtime before creating every relay, and survives its failure',async()=>{
+    const order:string[]=[];
+    const connection=relay();
+    const registry=new CodexPaneRelays(async()=>{order.push('create');return connection;},undefined,undefined,
+      async(id,codeHome)=>{order.push(`runtime:${id}:${codeHome}`);throw new Error('codex missing');});
+    await registry.prepare('pane','/h/.codex');
+    expect(order).toEqual(['runtime:pane:/h/.codex','create']);
+    await registry.shutdown();
+  });
+});

@@ -430,7 +430,7 @@ describe('launch', () => {
     expect(await createChatBridge(g.deps).launch({ id: 'pane', agent: 'codex', prompt: 'go' })).toMatchObject({ error: 'agent-runtime-unavailable', effect: 'none' });
   });
 
-  it('starts the shared Codex runtime with no WMUX_* key, after the clean-start check', async () => {
+  it('starts the shared Codex runtime with no WMUX_* key', async () => {
     const f = fixture();
     f.state.pane!.meta.env = { WMUX_WORKSPACE_ID: 'ws-a', WMUX_WORKSPACE_NAME: 'A', WMUX_SURFACE_ID: 'sf-a',
       WMUX_PTY_ID: 'pty-a', WMUX_MEMBER_ID: 'pty-a', WMUX_BRAIN_PTY: '1', WMUX_DATA_SUFFIX: '-demo', KEEP_ME: 'yes' };
@@ -441,11 +441,8 @@ describe('launch', () => {
     };
     f.deps.relays.unavailable = () => true;
     const started: NodeJS.ProcessEnv[] = [];
-    const order: string[] = [];
-    f.deps.startCodexRuntime = async (env) => { order.push('start'); started.push(env); };
-    f.deps.ensureCleanCodexRuntime = async (paneId) => { order.push(`clean:${paneId}`); };
+    f.deps.startCodexRuntime = async (env) => { started.push(env); };
     expect(await createChatBridge(f.deps).launch({ id: 'pane', agent: 'codex', prompt: 'go' })).toMatchObject({ ok: true });
-    expect(order).toEqual(['clean:pane', 'start']);
     expect(started).toHaveLength(1);
     expect(Object.keys(started[0]).filter((k) => k.startsWith('WMUX_'))).toEqual([]);
     expect(started[0]).toMatchObject({ KEEP_ME: 'yes' });
