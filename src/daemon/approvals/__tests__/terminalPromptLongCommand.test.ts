@@ -199,6 +199,9 @@ describe('a long command, as the TUI draws it', () => {
     expect(parsed.descriptionRows).toEqual(['Run shell command']);
     expect(parsed.options.map((o) => o.key)).toEqual(['1', '2', '3']);
     expect(parsed.options[1]!.label).toMatch(/^Yes, and allow .* commands$/);
+    // The same dialog at the other width hashes the same: a resize (a word
+    // broken in a different place) is not a different dialog.
+    expect(parsed.fingerprint).toBe(parseTerminalPrompt(WIDE, { cols: 140 })!.fingerprint);
     expect(dialogMatchesToolCall(parsed, { name: 'Bash', command: COMMAND })).toBe(true);
     // Anything else under the same rows does not bind: a changed tail, a
     // character changed where the TUI broke the word, a different description.

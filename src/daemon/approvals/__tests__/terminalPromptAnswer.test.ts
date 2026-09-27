@@ -165,7 +165,9 @@ describe('terminal_prompt creation from the screen', () => {
   });
 
   it.each([
-    ['taller than the viewport (no top rule)', DIALOG.slice(3)],
+    // A top-cut dialog binds only to the ONE pending transcript call (see
+    // terminalPromptLongCommand.test.ts); CALL here carries no such count.
+    ['taller than the viewport (no top rule), not provably the only pending call', DIALOG.slice(3)],
     ['printed by cat (a shell prompt below it)', [...DIALOG, '$ cat dialog.txt', '$ ']],
     ['no plain Yes', DIALOG.map((r) => r.replace('❯ 1. Yes', '❯ 1. Yes, allow once'))],
     ['nothing on screen', null],
