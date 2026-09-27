@@ -444,16 +444,24 @@ no empty reply row or reserved gap under the latest prompt.
   The pane row itself carries the group's fold chevron and a muted mono
   `⑂ N` count; folded with a task that needs you it reads `⑂ M/N` with M in
   red (the only rendition while folded). Its ⋮ (revealed on hover or focus,
-  like the row's `@`) holds `Show K finished tasks waiting for review` and
-  `Close finished tasks (N)`. A pane with no tasks renders as before. Tasks
-  whose requesting pane is not a live roster row of the owner — the pane
-  closed or no longer runs an agent, the GUI or the orchestrator asked, or
-  the stamp predates origins — collect in one trailing `From closed pane`
-  group under the owner, with the rollup line below. Matching is by the
-  origin's surface id (else its pane id), never the pty id. Folding the
-  roster folds its pane groups, so the roster holds open while one of its
-  tasks is the active workspace, re-opens when one of them starts needing
-  you (and does not fold when its owner moves to the background then), and its collapsed summary adds a muted `⑂ N`. Pane rows keep layout
+  like the row's `@`, named for its pane) holds `Show K finished tasks
+  waiting for review` and `Close finished tasks (N)`. A pane with no tasks
+  renders as before; an open pane whose agent ended keeps a muted row (no
+  status mark) while it has tasks. Tasks are matched to the owner pane that
+  holds the origin's surface now — a stashed pane included — else, for an
+  origin without a surface, to its pane; never by pty id. Tasks with no such
+  pane — the requesting tab closed, the GUI or the orchestrator asked, or the
+  stamp predates origins — collect in one trailing `From closed pane` group
+  under the owner, with the rollup line below. Folding the roster folds its
+  pane groups, so a task that needs you must still show: the roster holds
+  open while one of its tasks is the active workspace, re-opens each time
+  one more starts needing you (and does not fold when its owner moves to the
+  background then), stays open while the workspace is being renamed, and its
+  collapsed summary adds a muted `⑂ N` — `⑂ M/N` with M red when M of them
+  need you (said in its accessible name too). Fold state is kept per owner
+  and pane and dropped when the pane or owner closes; the old per-owner key
+  is carried over once. Nested task rows use their own hover group, so
+  hovering the owner reveals none of their chrome. Pane rows keep layout
   order; a task that needs you lifts its owner in the Attention order. A group is open
   while its owner is active or one of its tasks needs you, otherwise folded; a
   user toggle is remembered, and a group always opens while one of its own
