@@ -248,6 +248,16 @@ export interface HookIngestDeps {
    * Optional: only the daemon supplies it.
    */
   onAuthorityTouched?: (sessionId: string) => void;
+  /**
+   * #1463 — the agent itself reported that the question its pane was blocked
+   * on has been answered (`agent.input_answered`, AskUserQuestion's
+   * PostToolUse). The daemon releases the pane's awaiting state through the
+   * same path a recognised answer key takes, so the status leaves "Needs you"
+   * now. Without it, an answer the key check cannot see (a mouse click on an
+   * option) waited for the screen verifier or the turn end. Only the daemon
+   * supplies it; a failure is non-fatal.
+   */
+  onInputAnswered?: (sessionId: string) => void;
 }
 
 /**
@@ -776,6 +786,11 @@ export class HookIngest {
     this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
     if (signal.kind === 'agent.input_answered') {
       this.deps.approvals?.expireForSession(sessionId, 'answered-locally', 'awaiting_input');
+      try {
+        this.deps.onInputAnswered?.(sessionId);
+      } catch (err) {
+        this.deps.log?.('warn', `[hooks] input-answered callback failed for ${sessionId}: ${String(err)}`);
+      }
       return { ok: true };
     }
 

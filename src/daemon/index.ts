@@ -3665,6 +3665,12 @@ function registerRpcHandlers(
         const managed = sessionManager.getSession(sessionId);
         if (managed) agentProcessTracker.arm(sessionId, managed.meta.pid);
       },
+      // #1463 — the agent's own "question answered" signal takes the same
+      // release path an answer key does (the `answered` → `session:answered`
+      // running broadcast). A no-op when the pane is not awaiting.
+      onInputAnswered: (sessionId) => {
+        sessionManager.getSession(sessionId)?.bridge.clearAwaiting('input');
+      },
     });
   }
   const ingest = hookIngest;

@@ -342,6 +342,20 @@ describe('HookIngest', () => {
       expect(fixture.emitted).toHaveLength(0);
     });
 
+    it('#1463 — hands the answer to the daemon so the pane leaves Needs you now', () => {
+      // The key check cannot see every answer (a mouse click on an option), so
+      // the agent's own "answered" signal is the release path of last resort.
+      // A permission gate answer is not a question answer and stays out.
+      const answered: string[] = [];
+      const withHook = new HookIngest({ ...fixture.deps, onInputAnswered: (id: string) => { answered.push(id); } });
+      withHook.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.permission_answered' }));
+      expect(answered).toEqual([]);
+      withHook.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.input_answered' }));
+      expect(answered).toEqual(['pty-a']);
+      // The status still travels on the daemon's `answered` broadcast, never here.
+      expect(fixture.emitted).toHaveLength(0);
+    });
+
     it('scopes the sweep to awaiting_input so a parallel permission gate survives', () => {
       // A turn can open a gate and an AskUserQuestion at once. Answering the
       // question locally says nothing about the gate, and expiring the gate

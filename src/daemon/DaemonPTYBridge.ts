@@ -274,11 +274,12 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /**
    * The dialog this pane was blocked on is gone, although no answer key was
-   * seen (the screen verifier read the pane and found no dialog on it twice).
+   * seen (the screen verifier read the pane and found no dialog on it twice,
+   * or — `input` — the agent's own hook reported the question answered).
    * Runs exactly the path a recognised answer key runs. Returns false, and
    * does nothing, when the pane was not awaiting.
    */
-  clearAwaiting(reason: 'screen-cleared'): boolean {
+  clearAwaiting(reason: 'input' | 'screen-cleared'): boolean {
     if (!this.awaitingHuman) return false;
     this.startAnsweredTurn(true, reason);
     return true;

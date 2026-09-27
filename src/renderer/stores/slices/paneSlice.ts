@@ -283,7 +283,7 @@ export interface PaneSlice {
   // decays at HOOK_RUNNING_TTL_MS because it is EVIDENCE ("a tool fired 40s
   // ago"), and evidence goes stale. This is a CLAIM ("the agent's own hook says
   // a turn is open"), and a claim stands until it is withdrawn — by the turn's
-  // end (any complete/awaiting_input/waiting/error/idle broadcast, incl. the
+  // end (any complete/waiting/error/idle broadcast, incl. the
   // process-death edge and main's 30-min expiry) or by the pane's disposal. It
   // exists because a hook-governed pane no longer emits byte-driven 'running'
   // at all: a quiet turn (long bash, web search, silent reasoning) would
@@ -348,10 +348,14 @@ const ATTENTION_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
 // Everything an agent can report EXCEPT 'running' — including 'idle', which is
 // what the process-death edge and main's turn-expiry timer broadcast for a pane
 // whose agent died without ever sending a Stop.
+// #1463 — NOT 'awaiting_input': a question asked mid-turn pauses the turn, it
+// does not end it (main's own latch stays up through it too). Closing it here
+// left the answered pane on the 120 s activity stamp alone, so a quiet stretch
+// after the answer read as idle mid-turn. The attention status still wins in
+// every derivation while the question is open.
 const TURN_CLOSING_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
   'complete',
   'waiting',
-  'awaiting_input',
   'error',
   'idle',
 ]);
@@ -654,6 +658,16 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // Pane.tsx ("the user has seen this"), which says nothing about whether
     // the turn is still running.
     if (status && TURN_CLOSING_STATUSES.has(status)) {
+      // #1463 — a latched turn that ENDS (Stop / StopFailure) also withdraws
+      // the activity stamp, as a settle does: the turn's own end beats a
+      // decaying guess. Left behind, the stamp repainted the pane 'running'
+      // for up to 120 s once the user had seen the result — in Fleet, which
+      // promotes on it, but not in the sidebar roster, which does not.
+      // 'idle' keeps its own rule (only a SETTLED idle drops the stamp), and
+      // an unlatched pane is the byte heuristic's, which this does not touch.
+      if (status !== 'idle' && state.surfaceTurnOpenAt[ptyId] !== undefined) {
+        delete state.surfaceActivityAt[ptyId];
+      }
       delete state.surfaceTurnOpenAt[ptyId];
     }
   }),
