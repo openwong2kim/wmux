@@ -52,6 +52,7 @@ import { wslDistroArgs, isWslDistroSpawnArgs } from '../../../shared/wslDistro';
 import { getDefaultWslDistro } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
 import { stampFanoutTaskPane } from '../../worktask/fanoutGuards';
+import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
 import {
   removeSessionPromptSchedulesForPty,
 } from '../../pty/sessionPromptScheduleStore';
@@ -121,6 +122,8 @@ type PtyCreateOptions = {
   spawnKind?: SpawnKind;
   /** Fan-out task pane: the owner workspace this one's lineage stamp names. */
   fanoutTaskOf?: string;
+  /** Fan-out task pane: who asked, stamped with the owner (sanitized there). */
+  fanoutOrigin?: FanoutOrigin;
 };
 
 

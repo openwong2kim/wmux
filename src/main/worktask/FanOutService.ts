@@ -38,6 +38,7 @@ import * as crypto from 'node:crypto';
 import { TaskWorktreeManager, taskIdSuffix } from './TaskWorktreeManager';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { type FanoutAgentChoice } from '../../shared/fanoutPreset';
+import type { FanoutCaller, FanoutOrigin } from '../../shared/fanoutOrigin';
 import type { TaskWorktreePlan } from './TaskWorktreeManager';
 import type { ProjectConfigState } from '../../shared/wmuxProjectConfig';
 import { getTaskLedger, rememberMissionChannel, noteWorkTaskClosed } from '../deck/taskLedgerHost';
@@ -132,6 +133,10 @@ export interface FanOutRendererPort {
      *  hands it to pty.create, whose main-side handler stamps it BEFORE the
      *  PTY (and the agent) exists; a failed stamp fails the spawn. */
     fanoutTaskOf?: string;
+    /** Who asked for this task. The renderer resolves a pane caller's ptyId to
+     *  the pane's stable ids and display name from its layout, and hands that
+     *  origin to pty.create, which stamps it with the owner. */
+    fanoutCaller?: FanoutCaller;
     /** The operator's worker permission mode (main-side setting). The renderer
      *  appends the matching flag and the worker allow-list AFTER the role
      *  rewrite, and only when the final launcher is claude. */
@@ -211,6 +216,9 @@ export interface FanOutRequest {
   /** Worker permission mode, read once by the caller so the audit record and
    *  every task agree. Absent → read once from the Settings store per run. */
   workerPermissionMode?: FanoutWorkerPermissionMode;
+  /** Who asked: the GUI dialog, the orchestrator, or a pane (by ptyId). Rides
+   *  to the renderer's spawn and ends up on each task's lineage stamp. */
+  caller?: FanoutCaller;
 }
 
 /** 태스크 단위 결과(리포트 — 상태 구분). */
@@ -528,6 +536,7 @@ export class FanOutService {
         ...(entries[k].role ? { role: entries[k].role } : {}),
         ...(entries[k].agent ? { agentChoice: entries[k].agent } : {}),
         workerMode,
+        ...(req.caller ? { caller: req.caller } : {}),
       });
       tasks.push(r);
       // This task is through its spawn: from here its stamped workspace (if
@@ -600,6 +609,7 @@ export class FanOutService {
         ...(e.role ? { role: e.role } : {}),
         ...(e.agent ? { agentChoice: e.agent } : {}),
         workerMode,
+        ...(req.caller ? { caller: req.caller } : {}),
       });
       tasks.push(r);
       (this.lineage ?? getFanOutGuards()).taskSettled(req.idempotencyKey);
@@ -685,6 +695,8 @@ export class FanOutService {
     agentChoice?: FanoutAgentChoice;
     /** worktree:false — create an output folder in this batch instead of a worktree. */
     output?: { batchDir: string };
+    /** Who asked (see FanOutRequest.caller). */
+    caller?: FanoutCaller;
   }): Promise<FanOutTaskResult> {
     const base: FanOutTaskResult = { index: ctx.index, title: ctx.title, ok: false };
     if (ctx.agentChoice) base.agent = ctx.agentChoice.agent;
@@ -834,6 +846,7 @@ export class FanOutService {
         ...(ctx.role ? { role: ctx.role } : {}),
         ...(ctx.agentChoice ? { agentChoice: ctx.agentChoice } : {}),
         fanoutTaskOf: ctx.verifiedWorkspaceId,
+        ...(ctx.caller ? { fanoutCaller: ctx.caller } : {}),
         workerPermissionMode: ctx.workerMode,
       });
       if ('error' in spawned) {
@@ -852,9 +865,15 @@ export class FanOutService {
     }
     base.workspaceId = workspaceId;
     // The renderer already stamped the lineage before the agent launched; this
-    // second write is idempotent and covers a renderer that did not.
+    // second write is idempotent and covers a renderer that did not. It never
+    // replaces an origin the renderer recorded. Main can name a GUI or
+    // orchestrator caller itself; a pane caller only the renderer can resolve.
+    const mainOrigin: FanoutOrigin | undefined =
+      ctx.caller && ctx.caller.kind !== 'pane' ? { kind: ctx.caller.kind } : undefined;
     try {
-      (this.lineage ?? getFanOutGuards()).markTask(workspaceId, ctx.verifiedWorkspaceId);
+      const lineage = this.lineage ?? getFanOutGuards();
+      if (mainOrigin) lineage.markTask(workspaceId, ctx.verifiedWorkspaceId, mainOrigin);
+      else lineage.markTask(workspaceId, ctx.verifiedWorkspaceId);
     } catch (err) {
       console.warn(`[fanout] could not confirm the lineage stamp for ${workspaceId}: ${String(err)}`);
     }

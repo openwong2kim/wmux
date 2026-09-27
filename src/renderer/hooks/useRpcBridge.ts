@@ -4,6 +4,7 @@ import { useStore } from '../stores';
 import { resolveStartupCwd, shellDisplayName, withDefaultShell, withRoleBinding, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
+import { originFromCaller } from '../utils/fanoutProvenance';
 import { validateMessage } from '../../shared/types';
 import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEvidence } from '../../shared/types';
 import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
@@ -1086,6 +1087,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       console.warn('[wmux:role-binding] fan-out agent not swapped', { role, note: swap.note });
     }
 
+    // Who asked, resolved from the layout BEFORE addWorkspace changes it: a
+    // pane caller's ptyId becomes its stable pane/surface ids and a snapshot
+    // of its name, which main stamps on the lineage with the owner.
+    const fanoutOrigin = originFromCaller(useStore.getState(), params.fanoutCaller);
+
     store.addWorkspace(name);
     const afterAdd = useStore.getState();
     const newWs = afterAdd.workspaces.find((w) => w.id === afterAdd.activeWorkspaceId);
@@ -1102,7 +1108,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // empty-leaf funnel spawn a plain shell into this pane first.
     const fanoutTaskOf = typeof params.fanoutTaskOf === 'string' ? params.fanoutTaskOf : '';
     // #1481 — lets the sidebar nest this workspace under its owner right away.
-    if (fanoutTaskOf) useStore.getState().noteFanoutSpawn?.(newWsId, fanoutTaskOf);
+    if (fanoutTaskOf) useStore.getState().noteFanoutSpawn?.(newWsId, fanoutTaskOf, fanoutOrigin);
 
     // Unnested so the FINAL command is readable: withDefaultShell first (there
     // has to be a command to rewrite), then the role binding, then the marker
@@ -1167,7 +1173,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     let ptyId: string;
     try {
       const created = await window.electronAPI.pty.create(
-        fanoutTaskOf ? { ...createOptions, fanoutTaskOf } : createOptions,
+        fanoutTaskOf ? { ...createOptions, fanoutTaskOf, ...(fanoutOrigin ? { fanoutOrigin } : {}) } : createOptions,
       );
       ptyId = created.id;
     } catch (err) {

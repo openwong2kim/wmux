@@ -457,6 +457,24 @@ describe('depth-1 lineage stamp', () => {
     for (const t of res.tasks) expect(lineage.fanoutOwnerOf(t.workspaceId!)).toBe('ws-ceo');
   });
 
+  it('hands the renderer who asked, and stamps a GUI or orchestrator origin main-side without replacing a recorded one', async () => {
+    const pane = makeRendererFake();
+    await new FanOutService({ daemon: makeDaemonFake().port, renderer: pane.port, worktrees: makeWorktreesFake() })
+      .start({ ...baseReq(), idempotencyKey: 'k-pane', caller: { kind: 'pane', ptyId: 'pty-74' } });
+    for (const p of pane.spawned) expect((p as { fanoutCaller?: unknown }).fanoutCaller).toEqual({ kind: 'pane', ptyId: 'pty-74' });
+
+    const gui = makeRendererFake();
+    const res = await new FanOutService({ daemon: makeDaemonFake().port, renderer: gui.port, worktrees: makeWorktreesFake() })
+      .start({ ...baseReq(), idempotencyKey: 'k-gui', caller: { kind: 'gui' } });
+    const ids = res.tasks.map((t) => t.workspaceId!);
+    for (const id of ids) expect(lineage.lineageFor([id])[id].origin).toEqual({ kind: 'gui' });
+
+    // A pane origin the renderer stamped first survives the service's re-mark.
+    lineage.markTask('ws-pre', 'ws-ceo', { kind: 'pane', paneId: 'p74', label: 'w115-74' });
+    lineage.markTask('ws-pre', 'ws-ceo', { kind: 'orchestrator' });
+    expect(lineage.lineageFor(['ws-pre'])['ws-pre'].origin).toEqual({ kind: 'pane', paneId: 'p74', label: 'w115-74' });
+  });
+
   it('hands the renderer the operator\'s worker permission mode for every task', async () => {
     const renderer = makeRendererFake();
     const svc = new FanOutService({

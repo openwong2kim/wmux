@@ -71,8 +71,8 @@ describe('useRpcBridge — fan-out task roles', () => {
     // with, so the role rewrite, the marker decision and the workspace profile
     // are all already in it.
     expect(block).toMatch(/const launchCommand = createOptions\.initialCommand \?\? ''/);
-    // (Spread with only the lineage owner added — the command is unchanged.)
-    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf \} : createOptions,?\s*\)/);
+    // (Spread with only the lineage owner and origin added — the command is unchanged.)
+    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf, \.\.\.\(fanoutOrigin \? \{ fanoutOrigin \} : \{\}\) \} : createOptions,?\s*\)/);
   });
 
   it('applies the binding to the launch command via withRoleBinding', () => {
@@ -148,7 +148,11 @@ describe('useRpcBridge — fan-out task roles', () => {
 
   it('hands the lineage owner to pty.create (main stamps it inside the create), with no await before it', () => {
     const block = fanoutSpawnBlock();
-    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf \} : createOptions/);
+    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf, \.\.\.\(fanoutOrigin \? \{ fanoutOrigin \} : \{\}\) \} : createOptions/);
+    // The requester is resolved from the layout BEFORE addWorkspace changes it.
+    const resolved = block.indexOf('originFromCaller(useStore.getState(), params.fanoutCaller)');
+    expect(resolved).toBeGreaterThan(-1);
+    expect(resolved).toBeLessThan(block.indexOf('store.addWorkspace(name)'));
     // An await between addWorkspace and pty.create lets the empty-leaf funnel
     // spawn a plain shell into the new pane first.
     const end = block.indexOf('await window.electronAPI.pty.create(');

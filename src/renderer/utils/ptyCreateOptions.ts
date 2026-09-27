@@ -1,5 +1,6 @@
 import type { SpawnKind } from '../../shared/spawnKind';
 import type { DeadPaneRecovery } from '../../shared/ptyRecovery';
+import type { FanoutOrigin } from '../../shared/fanoutOrigin';
 import { applyRoleBinding, type RoleBinding } from '../../shared/orchestratorRole';
 
 export interface PtyCreateOptions {
@@ -21,6 +22,8 @@ export interface PtyCreateOptions {
   /** Fan-out task pane: main stamps the workspace's depth-1 lineage with this
    *  owner inside the create, before the PTY exists. */
   fanoutTaskOf?: string;
+  /** Fan-out task pane: who asked, stamped on the lineage with the owner. */
+  fanoutOrigin?: FanoutOrigin;
   /**
    * Workspace profile env overlay. Merged into the new PTY's environment AFTER
    * the safe-inherited baseline and BEFORE wmux identity vars are forced, so a

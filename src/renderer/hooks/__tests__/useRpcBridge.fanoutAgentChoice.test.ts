@@ -139,6 +139,6 @@ describe('useRpcBridge — fanout.spawnWorkspace wiring for agent choices', () =
   });
 
   it('keeps the lineage stamp on the same pty.create call (depth-1 and caps still apply)', () => {
-    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf \} : createOptions,?\s*\)/);
+    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf, \.\.\.\(fanoutOrigin \? \{ fanoutOrigin \} : \{\}\) \} : createOptions,?\s*\)/);
   });
 });

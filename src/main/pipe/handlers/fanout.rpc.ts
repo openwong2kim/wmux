@@ -931,6 +931,9 @@ export function registerFanOutRpc(
         : { worktree: false, outputFolder: fanoutPresetOutputFolder((selection as { preset: FanoutPreset }).preset) }),
       verifiedWorkspaceId: callerWorkspaceId,
       workerPermissionMode: workerMode,
+      // Who asked, for each task's lineage stamp: the orchestrator, or the
+      // calling pane (the renderer turns its ptyId into stable pane ids).
+      caller: commanderWorkspaceId ? { kind: 'orchestrator' } : { kind: 'pane', ptyId: senderPtyId },
     };
     const presetName = selection.kind === 'preset' ? selection.preset.name : undefined;
 

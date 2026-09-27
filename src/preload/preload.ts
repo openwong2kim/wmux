@@ -119,7 +119,7 @@ const electronAPI = {
     // wmux.json leaf — `exec` runs the command as the pane's ROOT process and
     // `supervision` arms the daemon's PaneSupervisor (daemon mode only; the
     // local branch ignores them with a one-time warning toast).
-    create: (options?: { shell?: string; cwd?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string }) =>
+    create: (options?: { shell?: string; cwd?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string; fanoutOrigin?: { kind: 'pane' | 'orchestrator' | 'gui'; paneId?: string; surfaceId?: string; label?: string } }) =>
       ipcRenderer.invoke(IPC.PTY_CREATE, options),
     write: (id: string, data: string) => {
       ipcRenderer.send(IPC.PTY_WRITE, id, data);
@@ -491,7 +491,7 @@ const electronAPI = {
   fanout: {
     start: (req: Record<string, unknown>) => ipcRenderer.invoke(IPC.FANOUT_START, req),
     lineage: (workspaceIds: string[]) =>
-      ipcRenderer.invoke(IPC.FANOUT_LINEAGE, workspaceIds) as Promise<Record<string, { owner: string; at: number }>>,
+      ipcRenderer.invoke(IPC.FANOUT_LINEAGE, workspaceIds) as Promise<Record<string, { owner: string; at: number; origin?: import('../shared/fanoutOrigin').FanoutOrigin }>>,
     recentAudit: (limit: number) =>
       ipcRenderer.invoke(IPC.FANOUT_AUDIT_RECENT, limit) as Promise<
         import('../main/worktask/fanoutGuards').FanOutAuditRecord[]

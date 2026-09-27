@@ -306,6 +306,7 @@ describe('a commander brain is a verifiable caller without a pty', () => {
     await h.flush();
     expect(h.start).toHaveBeenCalledTimes(1);
     expect(h.request().verifiedWorkspaceId).toBe(CALLER_WS);
+    expect(h.request().caller).toEqual({ kind: 'orchestrator' });
   });
 
   it('ignores a senderPtyId a commander states — the token outranks it', async () => {
@@ -781,6 +782,8 @@ describe('R2 — the caller workspace is derived, not asserted', () => {
     await h.call(goodParams());
     await h.flush();
     expect(h.request().verifiedWorkspaceId).toBe(CALLER_WS);
+    // …and which pane asked, by its ptyId (the renderer resolves the pane).
+    expect(h.request().caller).toEqual({ kind: 'pane', ptyId: 'pty-1' });
   });
 
   it('rejects a caller-supplied memberId', async () => {

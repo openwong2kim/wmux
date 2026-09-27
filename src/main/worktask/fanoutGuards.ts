@@ -33,6 +33,7 @@ import { getWmuxDir } from '../../daemon/config';
 import { atomicWriteJSONSync } from '../../daemon/util/atomicWrite';
 import { getTaskLedger } from '../deck/taskLedgerHost';
 import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
+import { sanitizeFanoutOrigin, type FanoutOrigin } from '../../shared/fanoutOrigin';
 
 export const FANOUT_LIVE_TASK_CAP = 8;
 export const FANOUT_HOURLY_TASK_CAP = 24;
@@ -56,6 +57,9 @@ const CORRUPT_SUFFIX = '.corrupt-';
 interface LineageStamp {
   owner: string;
   at: number;
+  /** Who asked for the task (additive: older stamps lack it, and an older
+   *  reader ignores it). Display only — the depth-1 check reads `owner`. */
+  origin?: FanoutOrigin;
 }
 
 interface HourlyStamp {
@@ -207,7 +211,9 @@ export class FanOutGuards {
         for (const [ws, v] of Object.entries(tasks as Record<string, unknown>)) {
           const s = v as Partial<LineageStamp> | null;
           if (s && typeof s.owner === 'string' && s.owner.length > 0) {
-            map.set(ws, { owner: s.owner, at: typeof s.at === 'number' ? s.at : 0 });
+            // A malformed origin drops the origin, never the stamp.
+            const origin = sanitizeFanoutOrigin(s.origin);
+            map.set(ws, { owner: s.owner, at: typeof s.at === 'number' ? s.at : 0, ...(origin ? { origin } : {}) });
           }
         }
       } catch {
@@ -240,14 +246,25 @@ export class FanOutGuards {
   }
 
   /** Stamp `workspaceId` as a task of `ownerWorkspaceId`. Synchronous and
-   *  durable before it returns; throws when the write fails. */
-  markTask(workspaceId: string, ownerWorkspaceId: string): void {
+   *  durable before it returns; throws when the write fails. A re-mark by the
+   *  same owner never erases a recorded origin: it only adds one the stamp
+   *  does not have yet. */
+  markTask(workspaceId: string, ownerWorkspaceId: string, origin?: FanoutOrigin): void {
     if (!workspaceId || !ownerWorkspaceId) throw new Error('markTask: workspace ids are required');
     const map = this.loadLineage();
-    if (map.get(workspaceId)?.owner === ownerWorkspaceId) return;
+    const clean = sanitizeFanoutOrigin(origin);
+    const existing = map.get(workspaceId);
+    if (existing?.owner === ownerWorkspaceId) {
+      if (existing.origin || !clean) return;
+      const next = new Map(map);
+      next.set(workspaceId, { ...existing, origin: clean });
+      atomicWriteJSONSync(this.lineagePath(), { version: 1, tasks: Object.fromEntries(next) });
+      this.lineage = next;
+      return;
+    }
     const next = new Map(map);
     next.delete(workspaceId);
-    next.set(workspaceId, { owner: ownerWorkspaceId, at: this.now() });
+    next.set(workspaceId, { owner: ownerWorkspaceId, at: this.now(), ...(clean ? { origin: clean } : {}) });
     while (next.size > LINEAGE_MAX_ENTRIES) {
       const oldest = next.keys().next();
       if (oldest.done) break;
@@ -519,8 +536,8 @@ export class FanOutGuards {
    * no stamps (the sidebar then falls back to the task ledger), unlike
    * fanoutOwnerOf, whose depth-1 check must refuse on doubt.
    */
-  lineageFor(workspaceIds: readonly string[]): Record<string, { owner: string; at: number }> {
-    const out: Record<string, { owner: string; at: number }> = {};
+  lineageFor(workspaceIds: readonly string[]): Record<string, { owner: string; at: number; origin?: FanoutOrigin }> {
+    const out: Record<string, { owner: string; at: number; origin?: FanoutOrigin }> = {};
     let map: Map<string, LineageStamp>;
     try {
       map = this.loadLineage();
@@ -529,7 +546,7 @@ export class FanOutGuards {
     }
     for (const id of workspaceIds) {
       const stamp = map.get(id);
-      if (stamp) out[id] = { owner: stamp.owner, at: stamp.at };
+      if (stamp) out[id] = { owner: stamp.owner, at: stamp.at, ...(stamp.origin ? { origin: { ...stamp.origin } } : {}) };
     }
     return out;
   }
@@ -564,16 +581,21 @@ export class FanOutGuards {
  * than as a separate renderer round-trip keeps the renderer's spawn free of an
  * extra await — during which the empty-leaf funnel would race it with a plain
  * shell. Throws (failing the create) when the stamp cannot be written.
+ *
+ * `fanoutOrigin` — who asked, as the renderer resolved it from its layout — is
+ * stamped with the owner. It is sanitized here; a malformed one is dropped.
  */
 export function stampFanoutTaskPane(
-  options: { fanoutTaskOf?: unknown; workspaceId?: unknown } | undefined,
+  options: { fanoutTaskOf?: unknown; workspaceId?: unknown; fanoutOrigin?: unknown } | undefined,
   guards: Pick<FanOutGuards, 'markTask'> = getFanOutGuards(),
 ): void {
   const owner = typeof options?.fanoutTaskOf === 'string' ? options.fanoutTaskOf : '';
   if (!owner) return;
   const ws = typeof options?.workspaceId === 'string' ? options.workspaceId : '';
   if (!ws) throw new Error('PTY_CREATE: a fan-out task pane needs its workspaceId for the lineage stamp');
-  guards.markTask(ws, owner);
+  const origin = sanitizeFanoutOrigin(options?.fanoutOrigin);
+  if (origin) guards.markTask(ws, owner, origin);
+  else guards.markTask(ws, owner);
 }
 
 let hosted: FanOutGuards | null = null;

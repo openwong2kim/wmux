@@ -128,7 +128,7 @@ export function registerFanOutHandler(service: FanOutService): () => void {
       } catch (err) {
         return { ok: false, error: `fan-out audit log could not be written: ${(err as Error).message}`, tasks: [] };
       }
-      const result = await service.start({ ...req, workerPermissionMode: workerMode });
+      const result = await service.start({ ...req, workerPermissionMode: workerMode, caller: { kind: 'gui' } });
       try {
         guards.appendAudit({
           ...base,
