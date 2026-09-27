@@ -5,11 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import WebSocket,{WebSocketServer} from 'ws';
 import {describe,it,expect} from 'vitest';
-import {createCodexTuiRelay,CodexRelayUnavailableError,type CodexRelayThreadIdentity} from '../codexTuiRelay';
+import {createCodexTuiRelay,CodexRelayUnavailableError,type CodexRelayPolicy} from '../codexTuiRelay';
+import {threadIdentityEnv} from '../codexRelayPolicy';
 const threadId='01234567-89ab-4cde-8123-456789abcdef';
 const systemThreadId='11111111-89ab-4cde-8123-456789abcdef';
 const otherThreadId='22222222-89ab-4cde-8123-456789abcdef';
-async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpstreamRequest?:(request:{id?:unknown;method?:unknown;params?:Record<string,unknown>})=>void; threadIdentity?:CodexRelayThreadIdentity}={}) {
+async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpstreamRequest?:(request:{id?:unknown;method?:unknown;params?:Record<string,unknown>})=>void; policy?:CodexRelayPolicy; respond?:(request:{id?:unknown;method?:unknown;params?:Record<string,unknown>})=>unknown}={}) {
   // macOS's per-user tmpdir is too long for a Unix socket path (sun_path is
   // 104 bytes there); /tmp keeps the fixture sockets addressable.
   const home=await mkdtemp(path.join(process.platform === 'darwin' ? '/tmp' : os.tmpdir(),'wmux-relay-test-'));
@@ -25,6 +26,9 @@ async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpst
     socket.on('message',bytes=>{
       const request=JSON.parse(bytes.toString());
       if(ready)options.onUpstreamRequest?.(request);
+      if(request.id===undefined)return;
+      const custom=ready?options.respond?.(request):undefined;
+      if(custom!==undefined){socket.send(JSON.stringify({id:request.id,...(custom as object)}));return;}
       const system=request.params?.threadSource==='system';
       socket.send(JSON.stringify({id:request.id,result:{thread:{id:system?systemThreadId:threadId,cwd:'/repo'}}}));
     });
@@ -32,7 +36,7 @@ async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpst
   const actualPath = options.linked ? path.join(home, 'actual.sock') : upstreamPath;
   await new Promise<void>(resolve=>server.listen(actualPath,resolve));
   if (options.linked) await symlink(actualPath, upstreamPath);
-  const relay=await createCodexTuiRelay({codeHome:home,onStateChange:options.onStateChange,threadIdentity:options.threadIdentity});
+  const relay=await createCodexTuiRelay({codeHome:home,onStateChange:options.onStateChange,policy:options.policy});
   ready=true;
   const connect=async(origin?:string)=>{
     const socket=new WebSocket(relay.url.replace('unix://','ws+unix://')+':/rpc',{origin});
@@ -228,89 +232,126 @@ describe.skipIf(process.platform === 'win32')('pane-owned Codex Unix relay',()=>
   });
 });
 
-describe.skipIf(process.platform === 'win32')('pane identity on Codex thread requests',()=>{
-  const ID = {WMUX_PTY_ID:'pty-a',WMUX_WORKSPACE_ID:'ws-a',WMUX_MEMBER_ID:'pty-a',WMUX_SOCKET_PATH:'/s',WMUX_DATA_SUFFIX:''};
-  const reply = (client:WebSocket) => new Promise<Record<string,unknown>>(resolve=>client.once('message',b=>resolve(JSON.parse(b.toString()))));
+describe.skipIf(process.platform === 'win32')('relay request policy',()=>{
+  type Req={id?:unknown;method?:unknown;params?:Record<string,unknown>};
+  const ID=threadIdentityEnv({id:'pty-a',env:{WMUX_WORKSPACE_ID:'ws-a'}},{});
+  const reply=(client:WebSocket)=>new Promise<Record<string,unknown>>(resolve=>client.once('message',b=>resolve(JSON.parse(b.toString()))));
+  const WITH_WMUX={result:{config:{mcp_servers:{wmux:{command:'node'}}}}};
+  function policy(over:Partial<CodexRelayPolicy>={}):CodexRelayPolicy & {owners:Map<string,string>; refusals:string[]} {
+    const owners=new Map<string,string>();const refusals:string[]=[];
+    return {paneId:'pty-a',identity:()=>ID,serverProven:()=>true,
+      owner:(t)=>owners.has(t)?{paneId:owners.get(t)!,live:true}:undefined,
+      recordOwner:(t)=>{owners.set(t,'pty-a');},refused:(r)=>refusals.push(r),owners,refusals,...over};
+  }
+  const respondWith=(loaded:string[]=[])=>(r:Req)=>r.method==='config/read'?WITH_WMUX:r.method==='thread/loaded/list'?{result:{data:loaded,nextCursor:null}}:undefined;
 
-  it('adds the pane identity to thread/start and thread/resume, keeping the client config', async () => {
-    const seen:Array<Record<string,unknown>> = [];
-    const f = await fixture({threadIdentity:{identity:()=>ID,mcp:()=>true},onUpstreamRequest:r=>{seen.push(r as Record<string,unknown>);}});
+  it('injects identity on start/resume/fork (title threads too), overwrites forged keys, and records ownership', async () => {
+    const seen:Req[]=[];const p=policy();
+    const f=await fixture({policy:p,respond:respondWith(),onUpstreamRequest:r=>seen.push(r)});
     try {
-      const client = await f.connect();
-      let got = reply(client);
-      client.send(JSON.stringify({id:1,method:'thread/start',params:{cwd:'/repo',config:{model:'x','shell_environment_policy.set.WMUX_PTY_ID':'forged'}}}));
-      await got;
-      got = reply(client);
-      client.send(JSON.stringify({id:2,method:'thread/resume',params:{threadId}}));
-      await got;
-      const [start,resume] = seen.map(r=>(r.params as {config:Record<string,unknown>}).config);
-      expect(start).toMatchObject({model:'x','shell_environment_policy.set.WMUX_PTY_ID':'pty-a','mcp_servers.wmux.env.WMUX_PTY_ID':'pty-a','shell_environment_policy.set.WMUX_WORKSPACE_ID':'ws-a'});
-      expect(resume).toMatchObject({'shell_environment_policy.set.WMUX_PTY_ID':'pty-a','mcp_servers.wmux.env.WMUX_MEMBER_ID':'pty-a'});
+      const client=await f.connect();
+      for (const [i,frame] of [
+        {method:'thread/start',params:{config:{model:'x','shell_environment_policy.set.WMUX_PTY_ID':'forged',shell_environment_policy:{set:{WMUX_WORKSPACE_ID:'forged'}},'mcp_servers.wmux.env':{WMUX_PTY_ID:'forged'}}}},
+        {method:'thread/start',params:{ephemeral:true,threadSource:'system'}},
+        {method:'thread/resume',params:{threadId}},
+        {method:'thread/fork',params:{threadId}},
+      ].entries()) { const got=reply(client);client.send(JSON.stringify({id:i+1,...frame}));await got; }
+      const cfgs=seen.filter(r=>typeof r.method==='string'&&/^thread\//.test(r.method)).map(r=>(r.params as {config:Record<string,unknown>}).config);
+      expect(cfgs).toHaveLength(4);
+      for (const c of cfgs) {
+        expect(c).toMatchObject({'shell_environment_policy.set.WMUX_PTY_ID':'pty-a','shell_environment_policy.set.WMUX_WORKSPACE_ID':'ws-a','mcp_servers.wmux.env.WMUX_PTY_ID':'pty-a','shell_environment_policy.set.WMUX_AUTH_TOKEN':''});
+        expect(JSON.stringify(c)).not.toContain('forged');
+      }
+      expect(cfgs[0].model).toBe('x');
+      expect(p.owners.get(threadId)).toBe('pty-a');
       client.terminate();
     } finally { await f.cleanup(); }
   });
 
-  it('leaves the MCP override out when the account has no wmux MCP server', async () => {
-    const seen:Array<Record<string,unknown>> = [];
-    const f = await fixture({threadIdentity:{identity:()=>ID,mcp:()=>false},onUpstreamRequest:r=>{seen.push(r as Record<string,unknown>);}});
+  it('command/exec: WMUX_* in env replaced by the pane identity', async () => {
+    const seen:Req[]=[];
+    const f=await fixture({policy:policy(),onUpstreamRequest:r=>seen.push(r),respond:(r)=>r.method==='command/exec'?{result:{exitCode:0}}:undefined});
     try {
-      const client = await f.connect();
-      const got = reply(client);
-      client.send(JSON.stringify({id:1,method:'thread/start',params:{}}));
+      const client=await f.connect();const got=reply(client);
+      client.send(JSON.stringify({id:1,method:'command/exec',params:{command:['env'],env:{WMUX_PTY_ID:'forged',FOO:'1'}}}));
       await got;
-      const config = (seen[0].params as {config:Record<string,unknown>}).config;
-      expect(Object.keys(config).some(k=>k.startsWith('mcp_servers.'))).toBe(false);
-      expect(config['shell_environment_policy.set.WMUX_PTY_ID']).toBe('pty-a');
+      const env=(seen.find(r=>r.method==='command/exec')!.params as {env:Record<string,unknown>}).env;
+      expect(env).toMatchObject({FOO:'1',WMUX_PTY_ID:'pty-a',WMUX_WORKSPACE_ID:'ws-a',WMUX_AUTH_TOKEN:null});
       client.terminate();
     } finally { await f.cleanup(); }
   });
 
-  it('forwards title-generation threads untouched', async () => {
-    const seen:Array<Record<string,unknown>> = [];
-    const f = await fixture({threadIdentity:{identity:()=>ID,mcp:()=>true},onUpstreamRequest:r=>{seen.push(r as Record<string,unknown>);}});
+  it('refuses batches, unknown methods, and turns on a thread this pane does not own', async () => {
+    const seen:Req[]=[];const p=policy();
+    const f=await fixture({policy:p,onUpstreamRequest:r=>seen.push(r)});
     try {
-      const client = await f.connect();
-      const got = reply(client);
-      client.send(JSON.stringify({id:1,method:'thread/start',params:{ephemeral:true,threadSource:'system'}}));
-      await got;
-      expect(seen[0].params).toEqual({ephemeral:true,threadSource:'system'});
-      client.terminate();
-    } finally { await f.cleanup(); }
-  });
-
-  it('refuses (never forwards identity-less) a malformed thread request or one without a pane', async () => {
-    const seen:unknown[] = []; const refused:string[] = [];
-    let identity:Record<string,string>|undefined = ID;
-    const f = await fixture({threadIdentity:{identity:()=>identity,mcp:()=>true,refused:r=>refused.push(r)},onUpstreamRequest:r=>seen.push(r)});
-    try {
-      const client = await f.connect();
-      let got = reply(client);
-      client.send(JSON.stringify({id:1,method:'thread/start',params:{config:'not-a-table'}}));
-      expect(await got).toMatchObject({id:1,error:{message:expect.stringContaining('not started')}});
-      identity = undefined;
-      got = reply(client);
-      client.send(JSON.stringify({id:2,method:'thread/start',params:{}}));
+      const client=await f.connect();
+      let got=reply(client);client.send(JSON.stringify([{id:1,method:'thread/list'}]));
+      await new Promise(r=>setTimeout(r,100));
+      got=reply(client);client.send(JSON.stringify({id:2,method:'thread/secretNewThing',params:{}}));
       expect(await got).toMatchObject({id:2,error:{}});
-      expect(seen).toEqual([]);
-      expect(refused).toHaveLength(2);
+      got=reply(client);client.send(JSON.stringify({id:3,method:'turn/start',params:{threadId:otherThreadId,input:[]}}));
+      expect(await got).toMatchObject({id:3,error:{}});
+      expect(seen.filter(r=>r.method!=='initialize')).toEqual([]);
+      expect(p.refusals).toHaveLength(3);
       client.terminate();
+    } finally { await f.cleanup(); }
+  });
+
+  it('refuses a resume of a thread owned by another live pane, or already loaded elsewhere', async () => {
+    const seen:Req[]=[];const p=policy();p.owners.set(otherThreadId,'pty-b');
+    const f=await fixture({policy:p,respond:respondWith([systemThreadId]),onUpstreamRequest:r=>seen.push(r)});
+    try {
+      const client=await f.connect();
+      let got=reply(client);client.send(JSON.stringify({id:1,method:'thread/resume',params:{threadId:otherThreadId}}));
+      expect(await got).toMatchObject({id:1,error:{}});
+      got=reply(client);client.send(JSON.stringify({id:2,method:'thread/resume',params:{threadId:systemThreadId}}));
+      expect(await got).toMatchObject({id:2,error:{}});
+      expect(seen.some(r=>r.method==='thread/resume')).toBe(false);
+      client.terminate();
+    } finally { await f.cleanup(); }
+  });
+
+  it('on an unproven server, refuses when the MCP config or thread ownership cannot be determined', async () => {
+    const seen:Req[]=[];
+    const f=await fixture({policy:policy({serverProven:()=>false}),respond:(r)=>r.method==='config/read'||r.method==='thread/loaded/list'?{error:{message:'nope'}}:undefined,onUpstreamRequest:r=>seen.push(r)});
+    try {
+      const client=await f.connect();
+      let got=reply(client);client.send(JSON.stringify({id:1,method:'thread/start',params:{}}));
+      expect(await got).toMatchObject({id:1,error:{}});
+      got=reply(client);client.send(JSON.stringify({id:2,method:'config/mcpServer/reload',params:{}}));
+      expect(await got).toMatchObject({id:2,error:{}});
+      expect(seen.some(r=>r.method==='thread/start'||r.method==='config/mcpServer/reload')).toBe(false);
+      client.terminate();
+    } finally { await f.cleanup(); }
+  });
+
+  it('tears the relay down when the pane never commits, instead of holding frames', async () => {
+    const seen:Req[]=[];
+    const f=await fixture({policy:policy({identity:()=>undefined}),onUpstreamRequest:r=>seen.push(r)});
+    try {
+      const client=await f.connect();
+      const got=reply(client);
+      client.send(JSON.stringify({id:1,method:'thread/start',params:{}}));
+      expect(await got).toMatchObject({id:1,error:{}});
+      await new Promise(r=>setTimeout(r,50));
+      expect(f.relay.retired()).toBe(true);
+      expect(seen.some(r=>r.method==='thread/start')).toBe(false);
     } finally { await f.cleanup(); }
   }, 10000);
 
-  it('waits briefly for the pane to be committed, and keeps frame order', async () => {
-    const seen:Array<{id?:unknown;method?:unknown}> = [];
+  it('drops the connection when held frames exceed the bound', async () => {
+    let release!:(v:Record<string,string>)=>void;
     let identity:Record<string,string>|undefined;
-    const f = await fixture({threadIdentity:{identity:()=>identity,mcp:()=>false},onUpstreamRequest:r=>seen.push(r)});
+    void new Promise<Record<string,string>>(r=>{release=r;}).then(v=>{identity=v;});
+    const f=await fixture({policy:policy({identity:()=>identity})});
     try {
-      const client = await f.connect();
-      const got = reply(client);
-      client.send(JSON.stringify({id:1,method:'thread/start',params:{}}));
-      client.send(JSON.stringify({id:2,method:'model/list',params:{}}));
-      setTimeout(()=>{identity = ID;},150);
-      await got;
-      await new Promise(r=>setTimeout(r,100));
-      expect(seen.map(r=>r.id)).toEqual([1,2]);
-      client.terminate();
+      const client=await f.connect();
+      client.send(JSON.stringify({id:0,method:'thread/start',params:{}}));
+      for (let i=1;i<=70;i++) client.send(JSON.stringify({id:i,method:'model/list',params:{}}));
+      await new Promise(r=>setTimeout(r,200));
+      expect(f.relay.retired()).toBe(true);
+      release(ID);
     } finally { await f.cleanup(); }
   });
 });

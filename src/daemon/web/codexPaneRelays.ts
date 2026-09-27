@@ -2,10 +2,22 @@ import {randomUUID} from 'node:crypto';
 import type {ManagedSession} from '../DaemonSessionManager';
 import {createCodexTuiRelay} from './codexTuiRelay';
 import type {CodexRelayObservation} from './codexTuiSelection';
-import {createWmuxMcpProbe,threadIdentityEnv} from './codexThreadIdentity';
+import {threadIdentityEnv} from './codexRelayPolicy';
 
 type Relay = Awaited<ReturnType<typeof createCodexTuiRelay>>;
 interface Entry {id:string; relayId:string; relay?:Relay; owner?:ManagedSession; retired:boolean}
+
+export interface CodexPaneRelayHooks {
+  /** Before every relay (and so every wmux Codex launch): make sure the shared
+   * account server runs, started with no WMUX_* variable. Must not throw. */
+  ensureRuntime?:(id:string,codeHome?:string)=>Promise<void>;
+  /** Is the account's shared server proven to have been started clean? */
+  serverProven?:(codeHome?:string)=>boolean;
+  /** A Codex request in pane `id` was refused. */
+  refused?:(id:string,reason:string)=>void;
+}
+/** Remembered thread owners; the oldest is forgotten past this (forgotten = unknown owner). */
+const MAX_THREAD_OWNERS = 4096;
 
 /** Owns relay reservations before PTY spawn and live ownership after it.
  * A failed/retired spawn cannot install a late relay into a recycled pane ID. */
@@ -17,27 +29,45 @@ export class CodexPaneRelays {
   constructor(private readonly create:typeof createCodexTuiRelay = createCodexTuiRelay,
     private readonly cleanupError:()=>void = ()=> { /* noop */ },
     private readonly stateChanged:(id:string,owner:ManagedSession)=>void = ()=> { /* noop */ },
-    /** Before every relay (and so every wmux Codex launch): make sure the shared
-     * account server runs, started with no WMUX_* variable. Must not throw. */
-    private readonly ensureRuntime:(id:string,codeHome?:string)=>Promise<void> = async()=> { /* noop */ },
-    /** A Codex thread request in pane `id` was refused because it could not carry pane identity. */
-    private readonly identityRefused:(id:string,reason:string)=>void = ()=> { /* noop */ }) {}
+    private readonly hooks:CodexPaneRelayHooks = {}) {}
+
+  /** Thread id → pane that started, resumed or forked it through its relay. */
+  private readonly threadOwners = new Map<string,string>();
+
+  private ownerOf(threadId:string) {
+    const paneId = this.threadOwners.get(threadId);
+    if (paneId === undefined) return undefined;
+    const entry = this.entries.get(paneId);
+    return {paneId,live:!!entry && !entry.retired && !!entry.owner};
+  }
+
+  private recordOwner(threadId:string, paneId:string) {
+    this.threadOwners.delete(threadId);
+    this.threadOwners.set(threadId,paneId);
+    if (this.threadOwners.size > MAX_THREAD_OWNERS) {
+      const oldest = this.threadOwners.keys().next().value;
+      if (oldest !== undefined) this.threadOwners.delete(oldest);
+    }
+  }
 
   async prepare(id:string, codeHome?:string) {
     if (this.stopped || this.entries.has(id) || this.entries.size >= 256 || this.creating.size >= 256) throw new Error('Codex pane relay unavailable');
     const entry:Entry = {id,relayId:randomUUID(),retired:false};
     this.entries.set(id,entry);
-    try {await this.ensureRuntime(id,codeHome);} catch {/* The relay probe below decides availability. */}
+    try {await this.hooks.ensureRuntime?.(id,codeHome);} catch {/* The relay probe below decides availability. */}
     let creation:Promise<Relay> | undefined;
     try {
       creation = this.create({codeHome,onStateChange:()=>{
         if (!entry.retired && this.entries.get(id) === entry && entry.owner) this.stateChanged(id,entry.owner);
-      },threadIdentity:{
+      },policy:{
+        paneId:id,
         // Only the committed owner's own session record; never a client value.
         identity:()=>!entry.retired && this.entries.get(id) === entry && entry.owner && entry.owner.meta.id === id
           ? threadIdentityEnv({id,env:entry.owner.meta.env}) : undefined,
-        mcp:createWmuxMcpProbe(codeHome),
-        refused:(reason)=>this.identityRefused(id,reason),
+        serverProven:()=>this.hooks.serverProven?.(codeHome) ?? false,
+        owner:(threadId)=>this.ownerOf(threadId),
+        recordOwner:(threadId)=>{ if (!entry.retired && this.entries.get(id) === entry) this.recordOwner(threadId,id); },
+        refused:(reason)=>this.hooks.refused?.(id,reason),
       }});
       this.creating.add(creation);
       const relay = await creation;

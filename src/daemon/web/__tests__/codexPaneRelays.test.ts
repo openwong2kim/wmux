@@ -121,27 +121,50 @@ describe('Codex pane relay runtime start',()=>{
     const order:string[]=[];
     const connection=relay();
     const registry=new CodexPaneRelays(async()=>{order.push('create');return connection;},undefined,undefined,
-      async(id,codeHome)=>{order.push(`runtime:${id}:${codeHome}`);throw new Error('codex missing');});
+      {ensureRuntime:async(id,codeHome)=>{order.push(`runtime:${id}:${codeHome}`);throw new Error('codex missing');}});
     await registry.prepare('pane','/h/.codex');
     expect(order).toEqual(['runtime:pane:/h/.codex','create']);
     await registry.shutdown();
   });
 });
-describe('Codex pane relay thread identity',()=>{
+type RelayOptions = Parameters<typeof createCodexTuiRelay>[0];
+describe('Codex pane relay policy',()=>{
+  const paneOf=(id:string)=>({meta:{id,state:'attached',env:{WMUX_WORKSPACE_ID:`ws-${id}`,WMUX_PTY_ID:'forged'}}} as unknown as ManagedSession);
+  function setup(hooks:ConstructorParameters<typeof CodexPaneRelays>[3]={}) {
+    const options=new Map<string,RelayOptions>();
+    const registry=new CodexPaneRelays((async(o:RelayOptions & {policy?:{paneId:string}})=>{options.set(o.policy!.paneId,o);return relay();}) as unknown as typeof createCodexTuiRelay,undefined,undefined,hooks);
+    return {registry,policy:(id:string)=>options.get(id)!.policy!};
+  }
   it('serves identity only from the committed owner\'s session record, and none after retirement',async()=>{
-    let options:Parameters<typeof createCodexTuiRelay>[0] | undefined;
-    const connection=relay();
     const refused=vi.fn();
-    const registry=new CodexPaneRelays((async(o:Parameters<typeof createCodexTuiRelay>[0])=>{options=o;return connection;}) as unknown as typeof createCodexTuiRelay,undefined,undefined,undefined,refused);
+    const {registry,policy}=setup({refused});
     const lease=await registry.prepare('pane');
-    const identity=options!.threadIdentity!;
-    expect(identity.identity()).toBeUndefined();
-    const pane={meta:{id:'pane',state:'attached',env:{WMUX_WORKSPACE_ID:'ws-1',WMUX_PTY_ID:'forged'}}} as unknown as ManagedSession;
-    lease.commit(pane);
-    expect(identity.identity()).toMatchObject({WMUX_PTY_ID:'pane',WMUX_WORKSPACE_ID:'ws-1',WMUX_MEMBER_ID:'pane'});
-    identity.refused?.('malformed');
+    expect(policy('pane').identity()).toBeUndefined();
+    lease.commit(paneOf('pane'));
+    expect(policy('pane').identity()).toMatchObject({WMUX_PTY_ID:'pane',WMUX_WORKSPACE_ID:'ws-pane',WMUX_MEMBER_ID:'pane'});
+    policy('pane').refused?.('malformed');
     expect(refused).toHaveBeenCalledWith('pane','malformed');
     await registry.retire('pane');
-    expect(identity.identity()).toBeUndefined();
+    expect(policy('pane').identity()).toBeUndefined();
+  });
+  it('tracks which pane owns a thread, and whether that pane is still live',async()=>{
+    const {registry,policy}=setup();
+    const a=await registry.prepare('a');a.commit(paneOf('a'));
+    const b=await registry.prepare('b');b.commit(paneOf('b'));
+    policy('a').recordOwner('thread-1');
+    expect(policy('b').owner('thread-1')).toEqual({paneId:'a',live:true});
+    await registry.retire('a');
+    expect(policy('b').owner('thread-1')).toEqual({paneId:'a',live:false});
+    // A retired relay cannot claim threads any more.
+    policy('a').recordOwner('thread-2');
+    expect(policy('b').owner('thread-2')).toBeUndefined();
+    await registry.shutdown();
+  });
+  it('reports the server proven only when the runtime says so, per account',async()=>{
+    const {registry,policy}=setup({serverProven:(home)=>home==='/clean'});
+    await registry.prepare('a','/clean');await registry.prepare('b','/other');
+    expect(policy('a').serverProven()).toBe(true);
+    expect(policy('b').serverProven()).toBe(false);
+    await registry.shutdown();
   });
 });
