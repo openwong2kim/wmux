@@ -347,3 +347,24 @@ export function countTasksRequestedByPane(
   }
   return n;
 }
+
+/**
+ * Fleet's review row: the requester as `Requested by <workspace> › <pane>`
+ * when a pane is named (`includesOwner` — the owner span is replaced), else
+ * the plain requester line shown beside the owner.
+ */
+export function fleetRequesterText(
+  state: RequesterState,
+  taskWorkspaceId: string,
+  ownerName: string,
+  t: T,
+): { text: string; includesOwner: boolean } {
+  const requester = resolveTaskRequester(state, taskWorkspaceId);
+  if (requester.kind === 'pane' && (requester.live || requester.label)) {
+    const wsName = requester.live
+      ? displayWorkspaceName(state.workspaces.find((w) => w.id === requester.workspaceId)?.name ?? ownerName, false)
+      : ownerName;
+    return { text: t('sidebar.requester.by', { name: `${wsName} › ${requesterName(requester, t) ?? ''}` }), includesOwner: true };
+  }
+  return { text: requesterLine(requester, t), includesOwner: false };
+}

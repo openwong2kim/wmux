@@ -156,6 +156,19 @@ describe('FleetView — Ready to review', () => {
     expect(row.querySelector('[data-fleet-elapsed]')?.textContent).toBe('5m');
   });
 
+  it('names the requester: workspace › requesting pane, else who started it', async () => {
+    act(() => { useStore.setState({ fanoutOrigin: { 'ws-t1': { kind: 'pane', paneId: 'po', surfaceId: 's-po', label: 'w0-0' } } }); });
+    mount();
+    await settle();
+    const text = () => reviewRow('ws-t1')!.querySelector('[data-fleet-review-requester]')?.textContent;
+    expect(text()).toBe('Requested by owner project › w0-0');
+    act(() => { useStore.setState({ fanoutOrigin: { 'ws-t1': { kind: 'gui' } } }); });
+    expect(text()).toBe('Started by you');
+    expect(reviewRow('ws-t1')!.textContent).toContain('owner project');
+    act(() => { useStore.setState({ fanoutOrigin: {}, fanoutProvenance: {} }); });
+    expect(text()).toBe('Requester unknown');
+  });
+
   it('draws no section when nothing is ready (an agent still running)', async () => {
     setAgents({ 'pty-1': 'running', 'pty-2': 'running' });
     mount();
