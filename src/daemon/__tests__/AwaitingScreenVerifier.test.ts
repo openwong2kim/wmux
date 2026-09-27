@@ -388,6 +388,28 @@ describe('AwaitingScreenVerifier with a terminal_prompt record held on the pane'
     expect(cleared).toEqual(['p1']);
   });
 
+  it('an answered dialog left above the agent\'s next output does not hold the record', async () => {
+    const pane: FakePane = {
+      awaiting: true, eligible: true, mark: 0,
+      rows: [...WRAPPED_FOOTER_DIALOG, '', '⏺ Bash(rm -rf build/cache)', '  ⎿  (No content)', '', '❯ '],
+    };
+    const { verifier, cleared } = makeVerifier(pane, { holdsPrompt: () => true });
+    output(verifier, pane);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(cleared).toEqual(['p1']);
+  });
+
+  it('a dialog scrolled far above the bottom rows does not hold the record', async () => {
+    const pane: FakePane = {
+      awaiting: true, eligible: true, mark: 0,
+      rows: [...WRAPPED_FOOTER_DIALOG, ...Array.from({ length: 12 }, (_, i) => `  line ${i}`)],
+    };
+    const { verifier, cleared } = makeVerifier(pane, { holdsPrompt: () => true });
+    output(verifier, pane);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(cleared).toEqual(['p1']);
+  });
+
   it('without a record, the structural rule alone decides (dialog text left above still releases)', async () => {
     const pane: FakePane = {
       awaiting: true, eligible: true, mark: 0,

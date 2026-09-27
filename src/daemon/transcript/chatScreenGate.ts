@@ -65,20 +65,30 @@ export function screenShowsActiveDialog(rows: readonly string[]): boolean {
 }
 
 /**
- * Is Claude Code's permission dialog anywhere on the grid: a parsed dialog with
- * its selection cursor, or a cursor option row?
+ * Is Claude Code's permission dialog still up near the bottom of the grid: a
+ * cursor option row among the last few non-blank rows, with no agent output
+ * after it?
  *
- * Wider than `screenShowsActiveDialog` on purpose. That check wants the dialog
- * to own the bottom of the screen, and a live dialog can fail it — a footer
- * wrapped onto a second row at a narrow width, anything drawn under it. The
- * verifier uses this one only while wmux holds a `terminal_prompt` record for
- * the pane, so an approval it recorded is not released while it is visible.
+ * Looser than `screenShowsActiveDialog`, which wants the footer to close the
+ * screen: a live dialog can fail that (its footer wrapped onto a second row at
+ * a narrow width, a status row drawn under it). Tighter than "anywhere on the
+ * grid": an answered dialog left above the agent's next output (`⏺ …`, `⎿ …`,
+ * `✻ …`) does not count, so it cannot hold a pane "needs you" indefinitely.
+ * The verifier uses this only while wmux holds a `terminal_prompt` record for
+ * the pane.
  */
 export function screenShowsPermissionDialog(rows: readonly string[]): boolean {
-  const parsed = parseTerminalPrompt(rows);
-  if (parsed && parsed.options.some((option) => option.selected)) return true;
-  return looksLikeApprovalPrompt(rows);
+  const tail = rows.filter((row) => row.trim().length > 0).slice(-PERMISSION_TAIL_ROWS);
+  let cursor = -1;
+  tail.forEach((row, i) => { if (looksLikeApprovalPrompt([row])) cursor = i; });
+  if (cursor < 0) return false;
+  return !tail.slice(cursor + 1).some((row) => AGENT_OUTPUT_ROW.test(row.trim()));
 }
+
+/** Non-blank bottom rows a held dialog's cursor row must sit in. */
+const PERMISSION_TAIL_ROWS = 10;
+/** A row the agent draws once it has moved on: tool call, tool result, spinner. */
+const AGENT_OUTPUT_ROW = /^(?:[⏺●✻✶✳✢✽]|⎿)/;
 
 /** Non-blank rows at the bottom the structural check looks at. */
 const ACTIVE_DIALOG_TAIL_ROWS = 6;
