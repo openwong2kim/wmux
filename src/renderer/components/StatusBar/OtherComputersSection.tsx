@@ -7,7 +7,7 @@ import { PopoverSection } from '../ui/Popover';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import { pairReasonMessage } from '../Sidebar/AttachRemoteModal';
-import { parseRemotePairInput, type RemotePairInputError } from '../../../shared/remotePairInput';
+import { maskPairInput, parseRemotePairInput, type RemotePairInputError } from '../../../shared/remotePairInput';
 import type { RemoteHostPublic, RemoteHostStatus } from '../../../shared/remoteHosts';
 
 /**
@@ -30,6 +30,7 @@ const STATUS_DOT: Record<RemoteHostStatus, string> = {
   reachable: 'bg-[var(--accent-green)]',
   unreachable: 'bg-[var(--text-muted)]',
   'needs-repair': 'bg-[var(--accent-yellow)]',
+  insecure: 'bg-[var(--text-muted)]',
 };
 
 const STATUS_LABEL: Record<RemoteHostStatus, string> = {
@@ -37,6 +38,7 @@ const STATUS_LABEL: Record<RemoteHostStatus, string> = {
   reachable: 'remote.hubStatusReachable',
   unreachable: 'remote.hubStatusUnreachable',
   'needs-repair': 'remote.hubStatusNeedsRepair',
+  insecure: 'remote.hubStatusInsecure',
 };
 
 const INPUT_ERROR: Record<RemotePairInputError, string> = {
@@ -44,6 +46,8 @@ const INPUT_ERROR: Record<RemotePairInputError, string> = {
   'not-a-link': 'remote.hubInputNotALink',
   'missing-code': 'remote.hubInputMissingCode',
   'bad-code': 'remote.hubInputBadCode',
+  insecure: 'remote.hubInputInsecure',
+  userinfo: 'remote.hubInputUserinfo',
 };
 
 export function hostStatusText(t: T, status: RemoteHostStatus | undefined): string {
@@ -66,7 +70,16 @@ const OtherComputersSection = forwardRef<HTMLDivElement, OtherComputersSectionPr
   const [pairOpen, setPairOpen] = useState(false);
   /** The host whose rejected credential a successful pairing replaces. */
   const [repairTarget, setRepairTarget] = useState<RemoteHostPublic | null>(null);
+  /**
+   * The real field value. What the field SHOWS is `maskPairInput(input)`
+   * while it came from a paste — the address in the clear, the code or token
+   * as dots — and the typed text as-is otherwise (the person typing it has
+   * it in front of them anyway).
+   */
   const [input, setInput] = useState('');
+  const [masked, setMasked] = useState(false);
+  /** Where the last pairing went, said in plain text once it succeeded. */
+  const [pairedWith, setPairedWith] = useState<string | null>(null);
   const [pairing, setPairing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -107,7 +120,9 @@ const OtherComputersSection = forwardRef<HTMLDivElement, OtherComputersSectionPr
   const openPair = useCallback((target: RemoteHostPublic | null) => {
     setRepairTarget(target);
     setInput('');
+    setMasked(false);
     setError(null);
+    setPairedWith(null);
     setPairOpen(true);
   }, []);
 
@@ -115,8 +130,14 @@ const OtherComputersSection = forwardRef<HTMLDivElement, OtherComputersSectionPr
     setPairOpen(false);
     setRepairTarget(null);
     setInput('');
+    setMasked(false);
     setError(null);
   }, []);
+
+  const parsed = input.trim() ? parseRemotePairInput(input) : null;
+  const destination = parsed && parsed.kind !== 'error' ? parsed.origin : null;
+  /** A re-pair renews one host; a link for any other address is refused. */
+  const originMismatch = !!(repairTarget && destination && destination !== repairTarget.origin);
 
   /**
    * Read the clipboard ONLY here, on this click. Never on open, never on
@@ -128,6 +149,7 @@ const OtherComputersSection = forwardRef<HTMLDivElement, OtherComputersSectionPr
       const text = await window.clipboardAPI?.readText();
       if (typeof text === 'string' && mounted.current) {
         setInput(text.trim());
+        setMasked(true);
         setError(null);
       }
     } catch {
@@ -141,6 +163,12 @@ const OtherComputersSection = forwardRef<HTMLDivElement, OtherComputersSectionPr
     const parsed = parseRemotePairInput(input);
     if (parsed.kind === 'error') {
       setError(t(INPUT_ERROR[parsed.reason]));
+      return;
+    }
+    // Never rebind a host to another machine: a re-pair must come from the
+    // same address the host was paired at.
+    if (repairTarget && parsed.origin !== repairTarget.origin) {
+      setError(t('remote.hubRepairOriginMismatch', { origin: parsed.origin, name: repairTarget.label }));
       return;
     }
     // A token URL registers a NEW host; it cannot stand in for a re-pair,
@@ -175,14 +203,17 @@ const OtherComputersSection = forwardRef<HTMLDivElement, OtherComputersSectionPr
         }
       }
       closePair();
-      await refreshHosts();
-      await refreshStatuses(true);
+      setPairedWith(parsed.origin);
+      // The form is free at once; statuses fill in behind it.
+      void refreshHosts().then(() => refreshStatuses(true));
     } catch {
       if (mounted.current) setError(t('remote.pairFailed'));
     } finally {
       if (mounted.current) setPairing(false);
     }
   }, [input, pairing, repairTarget, t, setRemoteHostAuthRejected, closePair, refreshHosts, refreshStatuses]);
+
+  const insecureHost = (status: RemoteHostStatus | undefined) => status === 'insecure';
 
   return (
     <PopoverSection
@@ -215,8 +246,17 @@ const OtherComputersSection = forwardRef<HTMLDivElement, OtherComputersSectionPr
                     type="button"
                     data-testid="remote-hub-host"
                     data-status={status ?? 'checking'}
+                    // A host on plain http is not opened: listing its
+                    // workspaces would send this computer's token in the clear.
+                    disabled={insecureHost(status)}
                     onClick={() => (needsRepair ? openPair(host) : onOpenHost(host.id))}
-                    title={needsRepair ? t('remote.hubPairAgain') : t('remote.hubOpenHost', { name: host.label })}
+                    title={
+                      insecureHost(status)
+                        ? t('remote.hubInsecureHint')
+                        : needsRepair
+                          ? t('remote.hubPairAgain')
+                          : t('remote.hubOpenHost', { name: host.label })
+                    }
                     className={`flex min-w-0 flex-1 items-center gap-2 rounded-[6px] text-left ${FOCUS_RING}`}
                   >
                     <span className="shrink-0 text-[var(--text-sub)]" aria-hidden="true">
@@ -256,16 +296,31 @@ const OtherComputersSection = forwardRef<HTMLDivElement, OtherComputersSectionPr
             <p className="ui-note">
               {repairTarget ? t('remote.hubRepairHint', { name: repairTarget.label }) : t('remote.hubPairHint')}
             </p>
-            {/* Masked like the attach dialog's URL field: a pasted link can be
-                a `wmux web` token URL, and that token does not expire. */}
+            {/* Plain text, so the address is readable; a pasted secret (the
+                code, a `wmux web` token) shows as dots. Editing a masked value
+                starts over rather than splicing into text that is not shown. */}
             <Input
               ref={inputRef}
-              type="password"
+              type="text"
               autoComplete="off"
               spellCheck={false}
-              value={input}
+              value={masked ? maskPairInput(input) : input}
+              onPaste={(e) => {
+                const text = e.clipboardData?.getData('text') ?? '';
+                if (!text) return;
+                e.preventDefault();
+                setInput(text.trim());
+                setMasked(true);
+                setError(null);
+              }}
               onChange={(e) => {
-                setInput(e.target.value);
+                const next = e.target.value;
+                if (masked) {
+                  setInput(next.includes('•') ? '' : next);
+                  setMasked(false);
+                } else {
+                  setInput(next);
+                }
                 setError(null);
               }}
               onKeyDown={(e) => {
@@ -275,23 +330,38 @@ const OtherComputersSection = forwardRef<HTMLDivElement, OtherComputersSectionPr
               aria-label={t('remote.hubPairPlaceholder')}
               className="w-full text-[13px]"
             />
+            {destination ? (
+              <p className="ui-note" data-testid="remote-hub-destination">
+                {t('remote.hubDestination', { origin: destination })}
+              </p>
+            ) : null}
+            {originMismatch && repairTarget && destination ? (
+              <p className="ui-row-error" role="alert" data-testid="remote-hub-origin-mismatch">
+                {t('remote.hubRepairOriginMismatch', { origin: destination, name: repairTarget.label })}
+              </p>
+            ) : null}
             <div className="flex items-center gap-2">
               <Button size="sm" onClick={() => void handlePaste()} disabled={pairing}>
                 {t('remote.hubPasteLink')}
               </Button>
-              <Button size="sm" onClick={() => void handleSubmit()} disabled={pairing || !input.trim()}>
+              <Button size="sm" onClick={() => void handleSubmit()} disabled={pairing || !input.trim() || originMismatch}>
                 {pairing ? t('remote.hubPairing') : t('remote.hubPair')}
               </Button>
               <Button variant="ghost" size="sm" onClick={closePair} disabled={pairing} className="ml-auto">
                 {t('remote.hubCancel')}
               </Button>
             </div>
-            {error ? (
-              <p className="ui-note text-[var(--accent-red)]" role="alert">
+            {error && !originMismatch ? (
+              <p className="ui-row-error" role="alert">
                 {error}
               </p>
             ) : null}
           </div>
+        ) : null}
+        {!pairOpen && pairedWith ? (
+          <p className="ui-note" data-testid="remote-hub-paired-with">
+            {t('remote.hubPairedWith', { origin: pairedWith })}
+          </p>
         ) : null}
       </div>
     </PopoverSection>

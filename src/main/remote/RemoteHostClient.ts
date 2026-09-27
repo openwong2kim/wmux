@@ -169,6 +169,8 @@ interface Attachment {
   generation: number;
   /** onError already told this mirror the host rejected the credential. */
   authRejectedReported?: boolean;
+  /** An SSE response is open and being read right now (not reconnecting). */
+  streamOpen?: boolean;
 }
 
 interface WriteQueueState {
@@ -500,10 +502,13 @@ export class RemoteHostClient implements RemotePaneEvents {
     this.openStream(attachment);
   }
 
-  /** Live streams this client holds — what makes the hub say "connected". */
+  /** Streams that are open and being read right now — what makes the hub
+   *  say "connected". An attachment waiting to reconnect does not count. */
   liveAttachmentCount(): number {
     let n = 0;
-    for (const attachment of this.attachments.values()) if (!attachment.detached) n += 1;
+    for (const attachment of this.attachments.values()) {
+      if (!attachment.detached && attachment.streamOpen === true) n += 1;
+    }
     return n;
   }
 
@@ -654,13 +659,16 @@ export class RemoteHostClient implements RemotePaneEvents {
       return;
     }
 
+    attachment.streamOpen = true;
     try {
       await this.pumpStream(attachment, res.body, superseded);
+      attachment.streamOpen = false;
       if (superseded()) return;
       // The stream ended without an explicit abort — treat as a drop and
       // reconnect the same as a network error.
       this.scheduleReconnect(attachment, new Error('stream closed'));
     } catch (err) {
+      attachment.streamOpen = false;
       if (superseded()) return;
       this.scheduleReconnect(attachment, err);
     }

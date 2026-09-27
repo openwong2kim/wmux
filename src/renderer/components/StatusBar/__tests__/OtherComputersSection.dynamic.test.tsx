@@ -121,7 +121,12 @@ describe('Other computers — pairing field', () => {
     await act(async () => buttonNamed('Paste link')!.click());
     await flush();
     expect(readText).toHaveBeenCalledTimes(1);
-    expect(field().value).toBe(LINK);
+    // The address is readable; only the code is dots.
+    expect(field().type).toBe('text');
+    expect(field().value).toBe('https://desk.tail1234.ts.net/pair#wmux-desktop-code=••••••••');
+    expect(container.querySelector('[data-testid="remote-hub-destination"]')?.textContent).toBe(
+      'Pairs with https://desk.tail1234.ts.net',
+    );
   });
 
   it('pairs a new computer from the pasted link in one click', async () => {
@@ -168,10 +173,10 @@ describe('Other computers — pairing field', () => {
     await mount();
     act(() => buttonNamed('Pair again')!.click());
     expect(container.textContent).toContain('“revoked-mac”');
-    type(LINK);
+    type('https://revoked.ts.net/pair#wmux-desktop-code=QWXZ7K9M');
     await act(async () => buttonNamed('Pair')!.click());
     await flush();
-    expect(hostsPair).toHaveBeenCalledWith('https://desk.tail1234.ts.net', 'QWXZ7K9M', undefined, 'revoked');
+    expect(hostsPair).toHaveBeenCalledWith('https://revoked.ts.net', 'QWXZ7K9M', undefined, 'revoked');
     expect(useStore.getState().remoteWorkspaces[0]?.authRejected).toBe(false);
     act(() => useStore.setState({ remoteWorkspaces: [] }));
   });
@@ -185,5 +190,63 @@ describe('Other computers — pairing field', () => {
     await flush();
     expect(container.querySelector('[role="alert"]')?.textContent).toBeTruthy();
     expect(container.querySelector('[data-testid="remote-hub-pair-form"]')).not.toBeNull();
+  });
+});
+
+describe('Other computers — credential safety', () => {
+  const openForm = () => act(() => (container.querySelector('[aria-label="Pair new computer"]') as HTMLButtonElement).click());
+
+  it('refuses a re-pair whose link points at a different machine, before any IPC', async () => {
+    await mount();
+    act(() => buttonNamed('Pair again')!.click());
+    type(LINK); // desk.tail1234.ts.net, not revoked.ts.net
+    expect(container.querySelector('[data-testid="remote-hub-origin-mismatch"]')?.textContent).toContain(
+      'https://desk.tail1234.ts.net',
+    );
+    expect(buttonNamed('Pair')!.disabled).toBe(true);
+    expect(hostsPair).not.toHaveBeenCalled();
+  });
+
+  it('refuses plain http to another computer with a "needs HTTPS" reason', async () => {
+    await mount();
+    openForm();
+    type('http://192.168.1.5:7681/pair#wmux-desktop-code=QWXZ7K9M');
+    await act(async () => buttonNamed('Pair')!.click());
+    await flush();
+    expect(hostsPair).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('needs HTTPS');
+  });
+
+  it('refuses a link hiding its address behind user@', async () => {
+    await mount();
+    openForm();
+    type('https://desk.ts.net@evil.example/pair#wmux-desktop-code=QWXZ7K9M');
+    await act(async () => buttonNamed('Pair')!.click());
+    await flush();
+    expect(hostsPair).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')?.className).toBe('ui-row-error');
+  });
+
+  it('frees the form as soon as pairing succeeds; statuses refresh behind it', async () => {
+    await mount();
+    hostsStatus.mockReturnValue(new Promise(() => undefined)); // never answers
+    openForm();
+    type(LINK);
+    await act(async () => buttonNamed('Pair')!.click());
+    await flush();
+    expect(container.querySelector('[data-testid="remote-hub-pair-form"]')).toBeNull();
+    expect(container.querySelector('[data-testid="remote-hub-paired-with"]')?.textContent).toBe(
+      'Paired with https://desk.tail1234.ts.net',
+    );
+    // Open again at once: not stuck "Pairing…".
+    openForm();
+    expect(buttonNamed('Pairing…')).toBeUndefined();
+  });
+
+  it('does not open a host registered over plain http (its token would cross in the clear)', async () => {
+    hostsStatus.mockResolvedValue({ live: 'insecure' });
+    await mount();
+    expect(rows()[0].disabled).toBe(true);
+    expect(statusTexts()[0]).toBe('Needs HTTPS');
   });
 });

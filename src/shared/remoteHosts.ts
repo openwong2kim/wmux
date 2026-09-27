@@ -249,8 +249,10 @@ export type RemoteErrorReason = 'auth-rejected';
  *   - `unreachable`  did not answer (off, asleep, network) — never a reason
  *                    to re-pair, which would throw away a working credential
  *   - `needs-repair` answered 401: it no longer accepts this computer
+ *   - `insecure`     registered over plain http to another machine: not
+ *                    probed, because the token would cross in the clear
  */
-export type RemoteHostStatus = 'connected' | 'reachable' | 'unreachable' | 'needs-repair';
+export type RemoteHostStatus = 'connected' | 'reachable' | 'unreachable' | 'needs-repair' | 'insecure';
 
 /** Parse a pasted `wmux web` URL into origin + token. Returns null when the
  * string is not an http(s) URL or carries no token= query param. */

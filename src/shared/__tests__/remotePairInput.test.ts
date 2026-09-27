@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizePairCode, parseRemotePairInput } from '../remotePairInput';
+import { maskPairInput, normalizePairCode, parseRemotePairInput } from '../remotePairInput';
 import { buildDesktopPairLink } from '../web';
 
 const pair = (origin: string, code: string) => ({ kind: 'pair', origin, code });
@@ -20,8 +20,9 @@ describe('parseRemotePairInput', () => {
     // Address + code, as the old two-field form asked for them.
     ['https://h.ts.net:7681 qwxz7k9m', pair('https://h.ts.net:7681', 'QWXZ7K9M')],
     ['https://h.ts.net:7681/pair\tQWXZ7K9M', pair('https://h.ts.net:7681', 'QWXZ7K9M')],
-    // Plaintext is parsed; the host refuses it at redemption with its own reason.
-    ['http://192.168.1.5:7681/pair#wmux-desktop-code=QWXZ7K9M', pair('http://192.168.1.5:7681', 'QWXZ7K9M')],
+    // Plain http only to this same machine: loopback never leaves it.
+    ['http://127.0.0.1:7681/pair#wmux-desktop-code=QWXZ7K9M', pair('http://127.0.0.1:7681', 'QWXZ7K9M')],
+    ['http://localhost:7681 QWXZ7K9M', pair('http://localhost:7681', 'QWXZ7K9M')],
   ])('pairs from %j', (input, expected) => {
     expect(parseRemotePairInput(input)).toEqual(expected);
   });
@@ -50,6 +51,15 @@ describe('parseRemotePairInput', () => {
     ['https://h.ts.net/pair#wmux-desktop-code=OOOOOOOO', 'bad-code'],
     ['https://h.ts.net/pair?code=12345678', 'bad-code'],
     ['https://h.ts.net nope', 'bad-code'],
+    // A credential never goes to another machine in the clear, in any shape.
+    ['http://192.168.1.5:7681/pair#wmux-desktop-code=QWXZ7K9M', 'insecure'],
+    ['http://192.168.1.5:7681/pair?code=QWXZ7K9M', 'insecure'],
+    ['http://desk.tail1234.ts.net QWXZ7K9M', 'insecure'],
+    ['http://box.lan:7681/?token=abc', 'insecure'],
+    // The address shown must be the address used.
+    ['https://desk.ts.net@evil.example/pair#wmux-desktop-code=QWXZ7K9M', 'userinfo'],
+    ['https://user:pw@h.ts.net:7681/?token=abc', 'userinfo'],
+    ['https://a@h.ts.net QWXZ7K9M', 'userinfo'],
   ])('rejects %j as %s', (input, reason) => {
     expect(parseRemotePairInput(input)).toEqual(err(reason));
   });
@@ -61,5 +71,15 @@ describe('normalizePairCode', () => {
     expect(normalizePairCode('QWXZ 7K9M')).toBe('QWXZ7K9M');
     expect(normalizePairCode('QWXZ7K9')).toBe('');
     expect(normalizePairCode('QWXZ7K9I')).toBe('');
+  });
+});
+
+describe('maskPairInput', () => {
+  it('shows the address and hides only the secret', () => {
+    expect(maskPairInput('https://h.ts.net/pair#wmux-desktop-code=QWXZ7K9M')).toBe('https://h.ts.net/pair#wmux-desktop-code=••••••••');
+    expect(maskPairInput('https://h.ts.net:7681/?token=abc-123')).toBe('https://h.ts.net:7681/?token=••••••••');
+    expect(maskPairInput('https://h.ts.net/pair?code=QWXZ7K9M')).toBe('https://h.ts.net/pair?code=••••••••');
+    expect(maskPairInput('https://h.ts.net:7681 QWXZ7K9M')).toBe('https://h.ts.net:7681 ••••••••');
+    expect(maskPairInput('https://h.ts.net')).toBe('https://h.ts.net');
   });
 });

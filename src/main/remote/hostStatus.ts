@@ -1,4 +1,5 @@
 import type { RemoteHost, RemoteHostStatus } from '../../shared/remoteHosts';
+import { isCredentialSafeOrigin } from '../../shared/remotePairInput';
 
 /**
  * Reachability of each paired host, for the Remote hub's "Other computers".
@@ -97,6 +98,15 @@ export class HostStatusProber {
   }
 
   private async probeOne(host: RemoteHost): Promise<ProbedStatus> {
+    // The bearer token is never sent to another machine over plain http.
+    // Such a host (registered before this rule) is reported, not probed.
+    let url: URL;
+    try {
+      url = new URL(host.origin);
+    } catch {
+      return 'unreachable';
+    }
+    if (!isCredentialSafeOrigin(url)) return 'insecure';
     let res: Response;
     try {
       res = await this.fetchImpl(`${host.origin}/api/config`, {

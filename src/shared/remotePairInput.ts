@@ -1,4 +1,4 @@
-import { DESKTOP_PAIR_FRAGMENT_KEY } from './web';
+import { DESKTOP_PAIR_FRAGMENT_KEY, webHostIsLoopback } from './web';
 
 /**
  * What the "+ Pair new computer" field was given.
@@ -29,7 +29,38 @@ export type RemotePairInputError =
   /** An address with no code or token in it. */
   | 'missing-code'
   /** A code that cannot be one the host minted. */
-  | 'bad-code';
+  | 'bad-code'
+  /** Plain http:// to another machine: a credential would cross in the clear. */
+  | 'insecure'
+  /** `user@host` — the address a person sees is not the one it connects to. */
+  | 'userinfo';
+
+/**
+ * Whether a credential may be sent to this origin: HTTPS, or plain HTTP to
+ * this same machine (loopback never leaves it). Shared by the parser, the
+ * main-process pairing handlers and the status probe, so the three cannot
+ * disagree about where a token may go.
+ */
+export function isCredentialSafeOrigin(url: URL): boolean {
+  if (url.protocol === 'https:') return true;
+  return url.protocol === 'http:' && webHostIsLoopback(url.hostname);
+}
+
+/** Why an origin must not receive a credential, or null when it may. */
+export function credentialOriginProblem(url: URL): 'insecure' | 'userinfo' | null {
+  if (url.username || url.password) return 'userinfo';
+  return isCredentialSafeOrigin(url) ? null : 'insecure';
+}
+
+/**
+ * The field's display text: the address in the clear, the secret — a code or
+ * a token — replaced with dots. The real value is kept apart by the caller.
+ */
+export function maskPairInput(raw: string): string {
+  const parts = raw.trim().split(/\s+/);
+  if (parts.length === 2 && /^https?:\/\//i.test(parts[0])) return `${parts[0]} ••••••••`;
+  return raw.replace(/([?&#](?:token|code|wmux-desktop-code)=)[^&#\s]+/gi, '$1••••••••');
+}
 
 /** The host's code alphabet: A-Z2-9 without the ambiguous 0/O/1/I. */
 const CODE_RE = /^[A-HJ-NP-Z2-9]{8}$/;
@@ -80,6 +111,8 @@ export function parseRemotePairInput(input: string): RemotePairInput {
   if (parts.length === 2) {
     const url = parseHttpUrl(parts[0]);
     if (!url) return { kind: 'error', reason: 'not-a-link' };
+    const problem = credentialOriginProblem(url);
+    if (problem) return { kind: 'error', reason: problem };
     const code = normalizePairCode(parts[1]);
     return code ? { kind: 'pair', origin: url.origin, code } : { kind: 'error', reason: 'bad-code' };
   }
@@ -87,6 +120,8 @@ export function parseRemotePairInput(input: string): RemotePairInput {
 
   const url = parseHttpUrl(text);
   if (!url) return { kind: 'error', reason: 'not-a-link' };
+  const problem = credentialOriginProblem(url);
+  if (problem) return { kind: 'error', reason: problem };
 
   // The computer link wins over anything else in the same URL: it is the one
   // shape made for this field.

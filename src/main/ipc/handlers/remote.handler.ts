@@ -30,6 +30,7 @@ import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey, REMOTE_POLL
 import { normalizeWorkspaceColor } from '../../../shared/workspaceColors';
 import { DEVICE_KIND_HEADER } from '../../../shared/web';
 import { HostStatusProber, combineHostStatus } from '../../remote/hostStatus';
+import { credentialOriginProblem } from '../../../shared/remotePairInput';
 import type {
   PairFailureReason,
   RemoteAttachmentDescriptor,
@@ -545,6 +546,13 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
 
       const parsed = parseWebUrl(url);
       if (!parsed) return { ok: false, error: 'invalid wmux web URL' };
+      // The token never crosses to another machine in the clear, and the
+      // address the operator sees must be the one it connects to.
+      const problem = credentialOriginProblem(new URL(url.trim()));
+      if (problem === 'userinfo') return { ok: false, error: 'invalid wmux web URL' };
+      if (problem === 'insecure') {
+        return { ok: false, error: 'that host needs HTTPS — a token is never sent to another computer over plain http' };
+      }
       if (store.list().some((h) => h.origin === parsed.origin)) {
         return { ok: false, error: 'already registered' };
       }
@@ -602,10 +610,19 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         if (u.protocol !== 'http:' && u.protocol !== 'https:') {
           return { ok: false, reason: 'invalid-origin' };
         }
+        // The minted credential never crosses to another machine in the
+        // clear, and `user@` would make the shown address a lie.
+        const problem = credentialOriginProblem(u);
+        if (problem === 'userinfo') return { ok: false, reason: 'invalid-origin' };
+        if (problem === 'insecure') return { ok: false, reason: 'insecure-transport' };
         origin = u.origin;
       } catch {
         return { ok: false, reason: 'invalid-origin' };
       }
+
+      // A re-pair renews THIS host's credential; it never rebinds the host to
+      // a different machine, whatever link was pasted.
+      if (replacing && replacing.origin !== origin) return { ok: false, reason: 'pairing-failed' };
 
       if (store.list().some((h) => h.origin === origin && h.id !== replacing?.id)) {
         return { ok: false, reason: 'already-registered' };

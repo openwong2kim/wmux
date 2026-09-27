@@ -1474,3 +1474,61 @@ describe('remote.handler — hostsStatus (the Remote hub)', () => {
     await expect(getHandler(IPC.REMOTE_HOSTS_STATUS)({}, true)).resolves.toEqual({ off: 'unreachable' });
   });
 });
+
+
+describe('remote.handler — credentials only over HTTPS, and no rebinding', () => {
+  const h = (id: string, origin: string): RemoteHost => ({ id, label: id, origin, token: `t-${id}`, addedAt: 0 });
+
+  it('hostsPair refuses plain http to another machine and user@ origins without fetching', async () => {
+    const fetchImpl = vi.fn();
+    registerRemoteHandlers({ store: fakeStore() as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    await expect(getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'http://192.168.1.5:7681', 'QWXZ7K9M')).resolves.toEqual({
+      ok: false,
+      reason: 'insecure-transport',
+    });
+    await expect(getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://a@evil.example', 'QWXZ7K9M')).resolves.toEqual({
+      ok: false,
+      reason: 'invalid-origin',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('hostsPair still allows plain http to this same machine', async () => {
+    const fetchImpl = vi.fn(async (url: string) =>
+      String(url).includes('/api/pair') ? jsonResponse({ token: 't' }) : jsonResponse({ allowInput: false }),
+    );
+    registerRemoteHandlers({ store: fakeStore() as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const res = (await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'http://127.0.0.1:7681', 'QWXZ7K9M')) as { ok: boolean };
+    expect(res.ok).toBe(true);
+  });
+
+  it('hostsAdd refuses a plain-http token URL to another machine without fetching', async () => {
+    const fetchImpl = vi.fn();
+    const store = fakeStore();
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const res = (await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'http://box.lan:7681/?token=abc')) as { ok: boolean; error?: string };
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('HTTPS');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.add).not.toHaveBeenCalled();
+  });
+
+  it('a re-pair whose origin differs from the host being replaced fails and changes nothing', async () => {
+    const store = fakeStore([h('office', 'https://office.ts.net')]);
+    const fetchImpl = vi.fn();
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://elsewhere.ts.net', 'QWXZ7K9M', undefined, 'office');
+    expect(res).toEqual({ ok: false, reason: 'pairing-failed' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.replaceCredential).not.toHaveBeenCalled();
+  });
+
+  it('hostsStatus never sends the token to a plain-http host on another machine', async () => {
+    const store = fakeStore([h('lan', 'http://192.168.1.5:7681'), h('local', 'http://127.0.0.1:7681')]);
+    const fetchImpl = vi.fn(async () => jsonResponse({}));
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const res = await getHandler(IPC.REMOTE_HOSTS_STATUS)({}, true);
+    expect(res).toEqual({ lan: 'insecure', local: 'reachable' });
+    expect(fetchImpl.mock.calls.map((c) => String((c as unknown[])[0]))).toEqual(['http://127.0.0.1:7681/api/config']);
+  });
+});
