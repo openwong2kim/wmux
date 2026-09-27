@@ -25,6 +25,18 @@ function unauthorized(): Response {
   } as unknown as Response;
 }
 
+function unauthorizedBody(body: unknown): Response {
+  return {
+    ok: false,
+    status: 401,
+    body: null,
+    json: async () => {
+      if (body === undefined) throw new SyntaxError('not JSON');
+      return body;
+    },
+  } as unknown as Response;
+}
+
 function forbidden(error: string): Response {
   return {
     ok: false,
@@ -81,5 +93,54 @@ describe('RemoteHostClient — credential rejected (401)', () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(errors).toHaveLength(1);
+  });
+
+  it('the host\'s authorization-expired 401 is a rejected credential too', async () => {
+    const client = new RemoteHostClient(
+      host,
+      vi.fn(async () => unauthorizedBody({ error: 'authorization-expired' })) as unknown as typeof fetch,
+    );
+    expect(isRemoteAuthRejected(await client.listWorkspaces().catch((e: unknown) => e))).toBe(true);
+  });
+
+  it('a 401 that is not the host\'s own credential answer (a proxy in front) stays an ordinary error', async () => {
+    const client = new RemoteHostClient(host, vi.fn(async () => unauthorizedBody(undefined)) as unknown as typeof fetch);
+    const err = await client.listWorkspaces().catch((e: unknown) => e);
+    expect(isRemoteAuthRejected(err)).toBe(false);
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it('a stream answered by a non-credential 401 keeps the normal reconnect loop', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async () => unauthorizedBody(undefined));
+    const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+    const errors: Array<{ reason?: string }> = [];
+    client.onError((e) => errors.push(e));
+    client.attach('sess-1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(errors).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(7000);
+    expect(fetchImpl.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('after a rejected write, queued input is dropped and later writes never reach the host', async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const fetchImpl = vi.fn(async () => { await gate; return unauthorized(); });
+    const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+
+    const first = client.write('sess-1', 'a').catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(10); // first POST now in flight
+    const queued = client.write('sess-1', 'b').catch((e: unknown) => e);
+    release();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(isRemoteAuthRejected(await first)).toBe(true);
+    expect(isRemoteAuthRejected(await queued)).toBe(true);
+    const later = client.write('sess-1', 'c').catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(isRemoteAuthRejected(await later)).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

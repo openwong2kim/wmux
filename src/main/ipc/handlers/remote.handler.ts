@@ -477,6 +477,23 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     sender.on('did-start-navigation', onNavigationListener);
   }
 
+  /** Every live connection to `hostId` was built on its old credential:
+   *  the cached client, its attaches, and the attention subscription. Drop
+   *  them so the next attach and the next sync open fresh ones. */
+  function dropHostConnections(hostId: string): void {
+    const client = clients.get(hostId);
+    if (client) {
+      client.detachAll();
+      clients.delete(hostId);
+    }
+    for (const [attachId, record] of [...attachRecords.entries()]) {
+      if (record.hostId === hostId) detachAttach(attachId);
+    }
+    attentionSubs.get(hostId)?.stop();
+    attentionSubs.delete(hostId);
+    syncAttentionSubs();
+  }
+
   function publicHost(host: RemoteHostPublic): RemoteHostPublic {
     const cached = allowInputCache.get(host.id);
     return cached === undefined ? host : { ...host, allowInput: cached };
@@ -537,6 +554,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       rawOrigin: unknown,
       rawCode: unknown,
       label?: unknown,
+      replaceHostId?: unknown,
     ): Promise<
       | { ok: true; host: RemoteHostPublic }
       | { ok: false; reason: PairFailureReason; attemptsLeft?: number }
@@ -544,6 +562,10 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       const originInput = assertString(rawOrigin, 'origin');
       const code = assertString(rawCode, 'code').trim();
       const safeLabel = label === undefined ? undefined : assertString(label, 'label');
+      // Re-pairing a host that rejected its old credential: the new token
+      // replaces the old one on the SAME record, so its attachments survive.
+      const replacing = replaceHostId === undefined ? null : store.get(assertString(replaceHostId, 'replaceHostId'));
+      if (replaceHostId !== undefined && !replacing) return { ok: false, reason: 'pairing-failed' };
 
       let origin: string;
       try {
@@ -556,7 +578,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         return { ok: false, reason: 'invalid-origin' };
       }
 
-      if (store.list().some((h) => h.origin === origin)) {
+      if (store.list().some((h) => h.origin === origin && h.id !== replacing?.id)) {
         return { ok: false, reason: 'already-registered' };
       }
 
@@ -580,11 +602,14 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       // still in scope as an in-flight local.
       let result: ReturnType<typeof store.addDirect>;
       try {
-        result = store.addDirect(origin, exchange.token, safeLabel);
+        result = replacing
+          ? store.replaceCredential(replacing.id, origin, exchange.token, safeLabel)
+          : store.addDirect(origin, exchange.token, safeLabel);
       } catch {
         return { ok: false, reason: 'pairing-failed' };
       }
       if (!result.ok) return { ok: false, reason: 'already-registered' };
+      if (replacing) dropHostConnections(replacing.id);
 
       allowInputCache.set(result.host.id, probe.allowInput);
       return { ok: true, host: { ...result.host, allowInput: probe.allowInput } };

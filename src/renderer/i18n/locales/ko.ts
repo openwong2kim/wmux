@@ -485,6 +485,7 @@ export const ko = {
   'remote.authRejectedDetail': '그쪽 wmux web이 재시작·중지되었거나 이 컴퓨터가 기기 목록에서 제거되었습니다',
   'remote.pairAgain': '다시 페어링',
   'remote.hostFallback': '원격 호스트',
+  'remote.needsPairing': '다시 페어링 필요',
   'terminal.copyFailed': '복사 실패 — 선택 영역 유지됨',
   'terminal.mouseOwnedSelectHint': '이 앱이 마우스를 사용 중 — Shift를 누른 채 드래그하면 선택됩니다',
   'terminal.mouseOwnedSelectHintMac': '이 앱이 마우스를 사용 중 — Option을 누른 채 드래그하면 선택됩니다',

@@ -2407,6 +2407,7 @@ export const en = {
   'remote.authRejectedDetail': 'Its wmux web was restarted or stopped, or this computer was removed from it',
   'remote.pairAgain': 'Pair again',
   'remote.hostFallback': 'the remote host',
+  'remote.needsPairing': 'Pair again needed',
 } as const;
 
 export type TranslationKey = keyof typeof en;

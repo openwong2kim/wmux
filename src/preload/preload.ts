@@ -1534,8 +1534,10 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.invoke(IPC.REMOTE_HOSTS_ADD, rawUrl, label) as Promise<
       { ok: true; host: RemoteHostPublic } | { ok: false; error: string }
     >,
-  hostsPair: (origin: string, code: string, label?: string) =>
-    ipcRenderer.invoke(IPC.REMOTE_HOSTS_PAIR, origin, code, label) as Promise<
+  hostsPair: (origin: string, code: string, label?: string, replaceHostId?: string) =>
+    ipcRenderer.invoke(
+      IPC.REMOTE_HOSTS_PAIR, origin, code, label, ...(replaceHostId ? [replaceHostId] : []),
+    ) as Promise<
       | { ok: true; host: RemoteHostPublic }
       | { ok: false; reason: PairFailureReason; attemptsLeft?: number }
     >,

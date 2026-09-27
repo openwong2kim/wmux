@@ -543,6 +543,28 @@ describe('RemoteMirrorTerminal', () => {
     unmount();
   });
 
+  it('after the host rejects the credential, keystrokes are swallowed and the host is flagged', () => {
+    act(() => {
+      useStore.setState({
+        remoteWorkspaces: [{ key: 'host-1:ws-1', hostId: 'host-1', hostLabel: 'box', workspaceId: 'ws-1', name: '', panes: [] }],
+      });
+    });
+    const { unmount } = render(<RemoteMirrorTerminal attachId="a1" hostId="host-1" hostLabel="box" />);
+    const term = termInstances[0];
+
+    act(() => {
+      errorHandlers.forEach((h) => h({ attachId: 'a1', message: 'rejected', reason: 'auth-rejected' }));
+    });
+    act(() => {
+      term.onDataHandler?.('ls\n');
+    });
+
+    expect(paneWrite).not.toHaveBeenCalled();
+    expect(useStore.getState().remoteWorkspaces[0].authRejected).toBe(true);
+    unmount();
+    act(() => { useStore.setState({ remoteWorkspaces: [] }); });
+  });
+
   it('does nothing while attachId is null (attach still in flight)', () => {
     const { unmount } = render(<RemoteMirrorTerminal attachId={null} />);
     expect(metaHandlers).toHaveLength(0);

@@ -161,6 +161,14 @@ function fakeStore(hosts: RemoteHost[] = []) {
       return { ok: true as const, host: pub };
     }),
     remove: vi.fn((id: string) => byId.delete(id)),
+    replaceCredential: vi.fn((id: string, origin: string, token: string, label?: string) => {
+      const prev = byId.get(id);
+      if (!prev) return { ok: false as const, error: 'unknown host' };
+      const host: RemoteHost = { ...prev, origin, token, ...(label ? { label } : {}) };
+      byId.set(id, host);
+      const { token: _t, ...pub } = host;
+      return { ok: true as const, host: pub };
+    }),
     addDirect: vi.fn((origin: string, token: string, label?: string) => {
       if ([...byId.values()].some((h) => h.origin === origin)) {
         return { ok: false as const, error: 'already registered' };
@@ -450,6 +458,64 @@ describe('remote.handler — hostsPair', () => {
     await expect(
       getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE'),
     ).resolves.toEqual({ ok: false, reason: 'pairing-failed' });
+  });
+});
+
+describe('remote.handler — hostsPair replacing a rejected credential', () => {
+  const STALE: RemoteHost = { id: 'host-1', label: 'box', origin: 'https://box:9600', token: 'stale', addedAt: 0 };
+
+  function setup() {
+    const store = fakeStore([{ ...STALE }]);
+    const attachments = fakeAttachments([
+      { key: 'host-1:ws-1', hostId: 'host-1', hostLabel: 'box', workspaceId: 'ws-1', name: 'one' },
+    ]);
+    const clients: Array<ReturnType<typeof fakeClient>> = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).includes('/api/pair')) return jsonResponse({ token: 'fresh' });
+      return jsonResponse({ allowInput: true });
+    });
+    registerRemoteHandlers({
+      store: store as never,
+      attachments: attachments as never,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      clientFactory: (h) => { const c = fakeClient(h); clients.push(c); return c; },
+    });
+    return { store, attachments, clients };
+  }
+
+  it('keeps the host id and its attachments, and swaps only the credential', async () => {
+    const { store, attachments } = setup();
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE', undefined, 'host-1') as { ok: boolean; host?: RemoteHostPublic };
+
+    expect(res).toMatchObject({ ok: true, host: { id: 'host-1' } });
+    expect(store.get('host-1')?.token).toBe('fresh');
+    expect(store.addDirect).not.toHaveBeenCalled();
+    expect(store.remove).not.toHaveBeenCalled();
+    expect(attachments.list()).toHaveLength(1);
+  });
+
+  it('drops the client built on the stale token so the next attach uses the new one', async () => {
+    const { clients } = setup();
+    const sender = fakeSender(1);
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'host-1', 'sess-1');
+    expect(clients).toHaveLength(1);
+
+    await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE', undefined, 'host-1');
+    expect(clients[0].detachAll).toHaveBeenCalled();
+
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'host-1', 'sess-1');
+    expect(clients).toHaveLength(2);
+    expect((clients[1] as unknown as { host: RemoteHost }).host.token).toBe('fresh');
+  });
+
+  it('a failed exchange leaves the stale host untouched', async () => {
+    const store = fakeStore([{ ...STALE }]);
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: 'invalid code', attemptsLeft: 2 }, false, 403));
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'WRONG', undefined, 'host-1') as { ok: boolean };
+    expect(res.ok).toBe(false);
+    expect(store.get('host-1')?.token).toBe('stale');
   });
 });
 

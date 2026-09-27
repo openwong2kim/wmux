@@ -36,6 +36,9 @@ export interface RemoteMirrorTerminalProps {
   /** The paired host's label, named in the toast when the remote app sets
    *  the local clipboard. */
   hostLabel?: string;
+  /** The paired host's id — flags the host's rows when it rejects the
+   *  credential, so the workspace view and the sidebar say so too. */
+  hostId?: string;
 }
 
 /** Decode a base64 payload into raw bytes and hand it to xterm as-is — the
@@ -118,7 +121,7 @@ const MIN_REMOTE_RESIZE_ROWS = 8;
  * when it does not — the fallback is not a regression, it is what made this
  * safe to ship without a protocol bump.
  */
-export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitleChange, hostLabel }: RemoteMirrorTerminalProps) {
+export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitleChange, hostLabel, hostId }: RemoteMirrorTerminalProps) {
   const t = useT();
   // Ref, same reason as readOnlyRef below: the title subscription is wired
   // once inside the mount-only effect, and a parent re-render passing a new
@@ -144,7 +147,11 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
    * and nothing renders from it.
    */
   const remoteKeyboardRef = useRef(INITIAL_REMOTE_KEYBOARD_STATE);
-  readOnlyRef.current = readOnly;
+  // A host that rejected the credential takes no input either: swallow it
+  // locally instead of POSTing writes the host will refuse.
+  readOnlyRef.current = readOnly || authRejected;
+  const hostIdRef = useRef(hostId);
+  hostIdRef.current = hostId;
   const hostLabelRef = useRef(hostLabel);
   hostLabelRef.current = hostLabel;
   // Same reason: the key handler is installed once, at mount, and needs the
@@ -749,8 +756,13 @@ export default function RemoteMirrorTerminal({ attachId, error, readOnly, onTitl
     });
     const offError = remote.onPaneError((e) => {
       if (e.attachId !== attachId) return;
-      if (e.reason === 'auth-rejected') setAuthRejected(true);
-      else setDisconnected(true);
+      if (e.reason === 'auth-rejected') {
+        readOnlyRef.current = true; // before the re-render: the next key is already swallowed
+        setAuthRejected(true);
+        if (hostIdRef.current) useStore.getState().setRemoteHostAuthRejected(hostIdRef.current, true);
+      } else {
+        setDisconnected(true);
+      }
     });
     const dataDisposable = termRef.current?.onData((data) => {
       if (readOnlyRef.current) return; // read-only host — swallow locally, don't POST a write that'll be rejected

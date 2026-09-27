@@ -2378,4 +2378,5 @@ export const pl = {
   'remote.authRejectedDetail': 'Jego wmux web został zrestartowany lub zatrzymany albo ten komputer został z niego usunięty',
   'remote.pairAgain': 'Sparuj ponownie',
   'remote.hostFallback': 'zdalny host',
+  'remote.needsPairing': 'Wymaga ponownego sparowania',
 } as const;

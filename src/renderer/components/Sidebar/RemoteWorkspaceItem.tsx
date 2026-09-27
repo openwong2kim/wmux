@@ -59,6 +59,8 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
   };
 
   const displayName = workspace.label || workspace.name || workspace.workspaceId.slice(0, 8);
+  const hostName = workspace.hostLabel || t('remote.hostFallback');
+  const rejectedText = workspace.authRejected ? t('remote.authRejected', { host: hostName }) : null;
   const tagHex = workspaceColorHex(normalizeWorkspaceColor(workspace.color));
 
   return (
@@ -67,7 +69,7 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
         role="button"
         tabIndex={0}
         aria-pressed={isActive}
-        aria-label={`${displayName} — ${workspace.hostLabel}`}
+        aria-label={rejectedText ? `${displayName} — ${rejectedText}` : `${displayName} — ${hostName}`}
         className={`group sidebar-row px-3 py-1 cursor-pointer rounded-md select-none ${
           isActive
             ? 'sidebar-row-active text-[var(--text-main)]'
@@ -130,11 +132,12 @@ export default function RemoteWorkspaceItem({ workspace, isActive, onSelect, onD
             <div
               className="text-[10px] font-mono truncate"
               style={{ color: workspace.stale ? 'var(--text-muted)' : 'var(--accent)' }}
-              title={workspace.authRejected
-                ? t('remote.authRejected', { host: workspace.hostLabel })
-                : workspace.stale ? t('remote.disconnected') : undefined}
+              title={rejectedText ?? (workspace.stale ? t('remote.disconnected') : undefined)}
             >
-              {workspace.hostLabel}
+              {hostName}
+              {/* Not only a tooltip: a host that refused this computer will not
+                  come back on its own, so the row says so where it is read. */}
+              {rejectedText && ` · ${t('remote.needsPairing')}`}
             </div>
           </div>
         </div>

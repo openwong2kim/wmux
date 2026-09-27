@@ -143,7 +143,11 @@ async function fetchHost(remote: RemoteApi, hostId: string): Promise<HostResult>
  *  store fresh: an attach/detach may have landed while the request was in
  *  flight, and both actions no-op on a key that is no longer there. */
 function applyHostResult(hostId: string, result: HostResult): void {
-  if (!result.ok && result.authRejected) useStore.getState().setRemoteHostAuthRejected(hostId, true);
+  // Host-level, BEFORE the per-row pass: a host that answers again must clear
+  // the flag on every row, including ones it no longer lists (those go stale
+  // below, which heals on its own — a lingering "pair again" would not).
+  if (result.ok) useStore.getState().setRemoteHostAuthRejected(hostId, false);
+  else if (result.authRejected) useStore.getState().setRemoteHostAuthRejected(hostId, true);
   const attached = useStore.getState().remoteWorkspaces.filter((w) => w.hostId === hostId);
   for (const w of attached) {
     const found = result.ok
@@ -510,6 +514,26 @@ export function useRemoteAttachmentsLifecycle(): void {
   //
   //     Losing the tick must cost freshness, never the poll itself. Exactly one
   //     driver is ever live: arming the fallback tears the tick listener down.
+  // A host whose rejected flag was cleared from outside a poll — it was just
+  // paired again — has a slowest-rung deadline that is now meaningless. Drop
+  // it and ask at once, so the rows come back without a five-minute wait.
+  const rejectedHosts = useStore((s) => [
+    ...new Set(s.remoteWorkspaces.filter((w) => w.authRejected).map((w) => w.hostId)),
+  ].sort().join('\n'));
+  const prevRejectedHosts = useRef('');
+  useEffect(() => {
+    const before = prevRejectedHosts.current ? prevRejectedHosts.current.split('\n') : [];
+    prevRejectedHosts.current = rejectedHosts;
+    const now = new Set(rejectedHosts ? rejectedHosts.split('\n') : []);
+    let healed = false;
+    for (const hostId of before) {
+      if (now.has(hostId) || !backoff.current.get(hostId)?.authRejected) continue;
+      backoff.current.delete(hostId);
+      healed = true;
+    }
+    if (healed) void refresh();
+  }, [rejectedHosts, refresh]);
+
   const hasAttachments = useStore((s) => s.remoteWorkspaces.length > 0);
   useEffect(() => {
     if (!hasAttachments) return;

@@ -25,6 +25,12 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   // backdrop dismissal, and the whole thing closes via the same onClose the
   // picker itself uses once the modal is done.
   const [attachRemoteOpen, setAttachRemoteOpen] = useState(false);
+  // A "Pair again" opens AppLayout's own copy of the attach dialog; two
+  // stacked copies would fight over focus and Escape, so this one yields.
+  const remoteRepairHostId = useStore((s) => s.remoteRepairHostId);
+  useEffect(() => {
+    if (remoteRepairHostId) onClose();
+  }, [remoteRepairHostId, onClose]);
 
   const handleSelect = useCallback((presetId: string | null) => {
     if (presetId === null) {

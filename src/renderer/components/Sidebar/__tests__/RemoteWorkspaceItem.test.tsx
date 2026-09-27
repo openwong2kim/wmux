@@ -130,4 +130,13 @@ describe('RemoteWorkspaceItem', () => {
 
     unmount();
   });
+
+  it('names a rejected credential in the accessible name and on a visible line', () => {
+    const { container } = render(
+      <RemoteWorkspaceItem workspace={{ ...WS, hostLabel: '', authRejected: true, stale: true }} isActive={false} onSelect={vi.fn()} onDetach={vi.fn()} />,
+    );
+    const row = container.querySelector('[role="button"]') as HTMLElement;
+    expect(row.getAttribute('aria-label')).toContain('the remote host no longer accepts this computer');
+    expect(container.textContent).toContain('Pair again needed');
+  });
 });

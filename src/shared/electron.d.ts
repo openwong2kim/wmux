@@ -222,8 +222,10 @@ declare global {
          *  unauthenticated `GET /api/pair` route, then registers the host —
          *  the credential-in-clipboard-free alternative to hostsAdd's
          *  paste-URL flow. `reason` is machine-readable; the caller
-         *  translates it. */
-        hostsPair: (origin: string, code: string, label?: string) => Promise<
+         *  translates it. With `replaceHostId` the new credential replaces
+         *  that host's rejected one in place (same id, so its attachments
+         *  survive) instead of registering a new host. */
+        hostsPair: (origin: string, code: string, label?: string, replaceHostId?: string) => Promise<
           | { ok: true; host: RemoteHostPublic }
           | { ok: false; reason: PairFailureReason; attemptsLeft?: number }
         >;

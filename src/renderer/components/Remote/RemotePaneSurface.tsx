@@ -108,6 +108,7 @@ export default function RemotePaneSurface({ hostId, sessionId, surfaceId, shell,
           error={error}
           readOnly={allowInput === false}
           hostLabel={hostLabel}
+          hostId={hostId}
           onTitleChange={(title) => onTitleChange(surfaceId, title)}
         />
       </div>

@@ -104,31 +104,95 @@ describe('AttachRemoteModal — re-pair and attached state', () => {
     unmount();
   });
 
-  it('"Pair again" drops the stale host and pre-fills Pair with code for it', async () => {
+  it('"Pair again" only pre-fills Pair with code — the host is not removed', async () => {
     workspacesList.mockResolvedValue({ ok: false, error: 'x', reason: 'auth-rejected' });
     const { container, unmount } = await openHost();
-    hostsList.mockResolvedValue([]);
 
     act(() => { button(container, 'Pair again')!.click(); });
     await flush();
 
-    expect(hostsRemove).toHaveBeenCalledWith('host-1');
+    expect(hostsRemove).not.toHaveBeenCalled();
     const address = container.querySelector('input[aria-label="Host address"]') as HTMLInputElement;
-    expect(address).not.toBeNull();
     expect(address.value).toBe(HOST.origin);
+    // Focus lands on the code field once the pair form has rendered.
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Pairing code');
     unmount();
   });
 
-  it('opened for a repair, it performs it straight away', async () => {
-    hostsList.mockResolvedValueOnce([HOST]).mockResolvedValue([]);
+  it('pairing after "Pair again" replaces the credential of that same host', async () => {
+    workspacesList.mockResolvedValue({ ok: false, error: 'x', reason: 'auth-rejected' });
+    const hostsPair = (window as unknown as { electronAPI: { remote: { hostsPair: ReturnType<typeof vi.fn> } } })
+      .electronAPI.remote.hostsPair;
+    hostsPair.mockResolvedValue({ ok: true, host: HOST });
+    const { container, unmount } = await openHost();
+    act(() => { button(container, 'Pair again')!.click(); });
+    await flush();
+
+    const code = container.querySelector('input[aria-label="Pairing code"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+    act(() => { setter.call(code, 'ABCD1234'); code.dispatchEvent(new Event('input', { bubbles: true })); });
+    workspacesList.mockResolvedValue({ ok: true, workspaces: [WS_A] });
+    act(() => { button(container, 'Pair')!.click(); });
+    await flush();
+
+    expect(hostsPair).toHaveBeenCalledWith(HOST.origin, 'ABCD1234', HOST.label, 'host-1');
+    expect(hostsRemove).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain('no longer accepts');
+    unmount();
+  });
+
+  it('opened for a repair, it pre-fills without removing anything', async () => {
     const { container, unmount } = render(
       <AttachRemoteModal onClose={() => { /* noop */ }} repairHostId="host-1" />,
     );
     await flush();
 
-    expect(hostsRemove).toHaveBeenCalledWith('host-1');
+    expect(hostsRemove).not.toHaveBeenCalled();
     const address = container.querySelector('input[aria-label="Host address"]') as HTMLInputElement;
     expect(address.value).toBe(HOST.origin);
+    unmount();
+  });
+
+  it('a late 401 from a create on another host does not flag the host now selected', async () => {
+    const OTHER: RemoteHostPublic = { ...HOST, id: 'host-2', label: 'lab-box', origin: 'https://lab:9600' };
+    hostsList.mockResolvedValue([HOST, OTHER]);
+    let resolveCreate!: (v: unknown) => void;
+    const workspaceCreate = (window as unknown as { electronAPI: { remote: { workspaceCreate: ReturnType<typeof vi.fn> } } })
+      .electronAPI.remote.workspaceCreate;
+    workspaceCreate.mockReturnValue(new Promise((r) => { resolveCreate = r; }));
+    const { container, unmount } = await openHost();
+
+    act(() => { button(container, 'New workspace on this host')!.click(); });
+    await flush();
+    act(() => { button(container, 'lab-box')!.click(); });
+    await flush();
+    await act(async () => { resolveCreate({ ok: false, error: 'x', reason: 'auth-rejected' }); });
+    await flush();
+
+    expect(container.textContent).not.toContain('no longer accepts');
+    unmount();
+  });
+
+  it('falls back to a generic name when the host has no label', async () => {
+    hostsList.mockResolvedValue([{ ...HOST, label: '' }]);
+    workspacesList.mockResolvedValue({ ok: false, error: 'x', reason: 'auth-rejected' });
+    const view = render(<AttachRemoteModal onClose={() => { /* noop */ }} repairHostId="host-1" />);
+    await flush();
+    expect(view.container.textContent).toContain('the remote host no longer accepts this computer');
+    view.unmount();
+  });
+
+  it('a workspace already tracked for a remote pane counts as attached', async () => {
+    useStore.setState({
+      remoteWorkspaces: [{
+        key: 'host-1:ws-b', hostId: 'host-1', hostLabel: 'office-mac',
+        workspaceId: 'ws-b', name: 'beta', panes: [], ephemeral: true,
+      }],
+    });
+    const { container, unmount } = await openHost();
+    const beta = Array.from(container.querySelectorAll('.ui-row')).find((r) => r.textContent?.includes('beta')) as HTMLElement;
+    expect(beta.textContent).toContain('Attached');
+    expect(button(beta, 'Attach')).toBeUndefined();
     unmount();
   });
 

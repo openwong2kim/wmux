@@ -70,12 +70,14 @@ export interface RemoteErrorEvent {
 }
 
 /**
- * The host answered 401: it no longer accepts this computer's credential.
- * Every 401 the host's web server sends means exactly that — an unknown or
- * revoked device (`{ error: 'unauthorized', reason }`) or a grant that expired
- * mid-request (`authorization-expired`). Its 403s are feature gates
- * (`--allow-input`, transcript access, host allowlist) and deliberately stay
- * ordinary errors: "this host is read-only" must never read as "pair again".
+ * The host answered 401 with one of its own credential errors: it no longer
+ * accepts this computer's credential — an unknown or revoked device
+ * (`{ error: 'unauthorized', reason }`) or a grant that expired mid-request
+ * (`{ error: 'authorization-expired' }`). A 401 WITHOUT that body came from
+ * something in front of the host (a proxy, a captive portal) and stays an
+ * ordinary, retryable error. The host's 403s are feature gates
+ * (`--allow-input`, transcript access, host allowlist) and are never this:
+ * "this host is read-only" must not read as "pair again".
  */
 export class RemoteAuthRejectedError extends Error {
   readonly reason = 'auth-rejected' as const;
@@ -87,6 +89,32 @@ export class RemoteAuthRejectedError extends Error {
 
 export function isRemoteAuthRejected(err: unknown): err is RemoteAuthRejectedError {
   return err instanceof RemoteAuthRejectedError;
+}
+
+/** The `error` values the host's web server puts on a credential 401. */
+const HOST_CREDENTIAL_ERRORS: ReadonlySet<string> = new Set(['unauthorized', 'authorization-expired']);
+
+type ErrorBody = { error?: unknown; detail?: unknown } | null;
+
+/** Reads a failed response's JSON body once; null when it is not JSON. */
+async function readErrorBody(res: Response): Promise<ErrorBody> {
+  try {
+    const body = (await res.json()) as unknown;
+    return typeof body === 'object' && body !== null ? (body as ErrorBody) : null;
+  } catch {
+    return null;
+  }
+}
+
+function isCredentialRejection(status: number, body: ErrorBody): boolean {
+  return status === 401 && typeof body?.error === 'string' && HOST_CREDENTIAL_ERRORS.has(body.error);
+}
+
+/** The host's own wording for a failure, else `fallback`. */
+function errorMessage(body: ErrorBody, fallback: string): string {
+  if (typeof body?.detail === 'string' && body.detail) return body.detail;
+  if (typeof body?.error === 'string' && body.error) return body.error;
+  return fallback;
 }
 
 export interface RemotePaneEvents {
@@ -136,6 +164,8 @@ interface Attachment {
   reconnectAttempt: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   detached: boolean;
+  /** onError already told this mirror the host rejected the credential. */
+  authRejectedReported?: boolean;
 }
 
 interface WriteQueueState {
@@ -233,6 +263,8 @@ export class RemoteHostClient implements RemotePaneEvents {
   private dataCbs: Array<(e: RemoteDataEvent) => void> = [];
   private exitCbs: Array<(e: RemoteExitEvent) => void> = [];
   private errorCbs: Array<(e: RemoteErrorEvent) => void> = [];
+  /** Set once the host refuses this credential; see `rejected`. */
+  private authRejected = false;
 
   constructor(host: RemoteHost, fetchImpl: typeof fetch = fetch) {
     this.host = host;
@@ -279,17 +311,10 @@ export class RemoteHostClient implements RemotePaneEvents {
       redirect: 'error',
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    if (res.status === 401) throw new RemoteAuthRejectedError('createWorkspace');
     if (!res.ok) {
-      let message = `createWorkspace failed: HTTP ${res.status}`;
-      try {
-        const parsed = (await res.json()) as { error?: string; detail?: string };
-        if (parsed?.detail) message = parsed.detail;
-        else if (parsed?.error) message = parsed.error;
-      } catch {
-        /* body wasn't JSON — fall back to the generic message */
-      }
-      throw new Error(message);
+      const body = await readErrorBody(res);
+      if (isCredentialRejection(res.status, body)) throw this.rejected('createWorkspace');
+      throw new Error(errorMessage(body, `createWorkspace failed: HTTP ${res.status}`));
     }
     let body: unknown;
     try {
@@ -331,16 +356,9 @@ export class RemoteHostClient implements RemotePaneEvents {
       },
     );
     if (res.ok || res.status === 404) return;
-    if (res.status === 401) throw new RemoteAuthRejectedError('closeSession');
-    let message = `closeSession failed: HTTP ${res.status}`;
-    try {
-      const parsed = (await res.json()) as { error?: string; detail?: string };
-      if (parsed?.detail) message = parsed.detail;
-      else if (parsed?.error) message = parsed.error;
-    } catch {
-      /* body wasn't JSON — fall back to the generic message */
-    }
-    throw new Error(message);
+    const body = await readErrorBody(res);
+    if (isCredentialRejection(res.status, body)) throw this.rejected('closeSession');
+    throw new Error(errorMessage(body, `closeSession failed: HTTP ${res.status}`));
   }
 
   /**
@@ -388,7 +406,10 @@ export class RemoteHostClient implements RemotePaneEvents {
     } catch {
       body = null;
     }
-    if (res.status === 401) return { ok: false, reason: 'auth-rejected' };
+    if (isCredentialRejection(res.status, body as ErrorBody)) {
+      this.rejected('resizeSession');
+      return { ok: false, reason: 'auth-rejected' };
+    }
     if (!res.ok) {
       const parsed = body as { error?: string; detail?: string } | null;
       return { ok: false, reason: parsed?.error ?? parsed?.detail ?? `HTTP ${res.status}` };
@@ -409,18 +430,11 @@ export class RemoteHostClient implements RemotePaneEvents {
       redirect: 'error',
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    if (res.status === 401) throw new RemoteAuthRejectedError('listWorkspaces');
     if (!res.ok) {
       // The host's own wording when it gives one, like the other calls here.
-      let message = `listWorkspaces failed: HTTP ${res.status}`;
-      try {
-        const parsed = (await res.json()) as { error?: string; detail?: string };
-        if (parsed?.detail) message = parsed.detail;
-        else if (parsed?.error) message = parsed.error;
-      } catch {
-        /* body wasn't JSON — fall back to the generic message */
-      }
-      throw new Error(message);
+      const body = await readErrorBody(res);
+      if (isCredentialRejection(res.status, body)) throw this.rejected('listWorkspaces');
+      throw new Error(errorMessage(body, `listWorkspaces failed: HTTP ${res.status}`));
     }
     let body: unknown;
     try {
@@ -466,6 +480,9 @@ export class RemoteHostClient implements RemotePaneEvents {
   }
 
   write(attachId: string, utf8: string): Promise<void> {
+    // The host has refused this credential: nothing typed can reach it until
+    // the host is paired again (which builds a fresh client).
+    if (this.authRejected) return Promise.reject(new RemoteAuthRejectedError('write'));
     const attachment = this.attachments.get(attachId);
     const sessionId = attachment ? attachment.sessionId : attachId;
     let queue = this.writeQueues.get(sessionId);
@@ -504,20 +521,18 @@ export class RemoteHostClient implements RemotePaneEvents {
         redirect: 'error',
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
-      if (res.status === 401) {
-        const err = new RemoteAuthRejectedError('write');
-        for (const w of waiters) w.reject(err);
-        return;
-      }
       if (!res.ok) {
-        let message = `write failed: HTTP ${res.status}`;
-        try {
-          const parsed = (await res.json()) as { error?: string };
-          if (parsed?.error) message = parsed.error;
-        } catch {
-          /* body wasn't JSON — fall back to the generic message */
+        const body = await readErrorBody(res);
+        if (isCredentialRejection(res.status, body)) {
+          const err = this.rejected('write');
+          // Drop what queued up behind this POST too: none of it can land.
+          const queued = queue.waiters;
+          queue.pending = [];
+          queue.waiters = [];
+          for (const w of [...waiters, ...queued]) w.reject(err);
+          return;
         }
-        const err = new Error(message);
+        const err = new Error(typeof body?.error === 'string' && body.error ? body.error : `write failed: HTTP ${res.status}`);
         for (const w of waiters) w.reject(err);
         return;
       }
@@ -528,9 +543,29 @@ export class RemoteHostClient implements RemotePaneEvents {
     } finally {
       queue.inFlight = false;
       // More writes may have accumulated while this POST was in flight.
-      if (queue.pending.length > 0) {
+      if (queue.pending.length > 0 && !this.authRejected) {
         this.scheduleWriteFlush(sessionId, queue);
       }
+    }
+  }
+
+  /**
+   * Latch the host's refusal of this credential and tell every attached
+   * mirror once. Returns the error for the caller to throw or report. A
+   * re-pair replaces the whole client, which is what clears the latch.
+   */
+  private rejected(operation: string): RemoteAuthRejectedError {
+    const err = new RemoteAuthRejectedError(operation);
+    this.authRejected = true;
+    for (const attachment of this.attachments.values()) this.reportAuthRejected(attachment, err);
+    return err;
+  }
+
+  private reportAuthRejected(attachment: Attachment, err: RemoteAuthRejectedError): void {
+    if (attachment.authRejectedReported || attachment.detached) return;
+    attachment.authRejectedReported = true;
+    for (const cb of this.errorCbs) {
+      cb({ attachId: attachment.attachId, message: err.message, reason: err.reason });
     }
   }
 
@@ -559,14 +594,17 @@ export class RemoteHostClient implements RemotePaneEvents {
     }
     if (attachment.detached) return;
     if (res.status === 401) {
-      // The host has said no to this credential. Retrying cannot change that
-      // answer, so no backoff loop: report it once, now, and leave the
-      // attachment idle until it is detached or the host is paired again.
-      void res.body?.cancel().catch(() => { /* nothing left to release */ });
-      const err = new RemoteAuthRejectedError('stream');
-      for (const cb of this.errorCbs) {
-        cb({ attachId: attachment.attachId, message: err.message, reason: err.reason });
+      const body = await readErrorBody(res);
+      if (attachment.detached) return;
+      if (isCredentialRejection(res.status, body)) {
+        // The host has said no to this credential. Retrying cannot change
+        // that answer, so no backoff loop: report it once, now, and leave the
+        // attachment idle until it is detached or the host is paired again.
+        this.rejected('stream');
+        this.reportAuthRejected(attachment, new RemoteAuthRejectedError('stream'));
+        return;
       }
+      this.scheduleReconnect(attachment, new Error('stream failed: HTTP 401'));
       return;
     }
     if (!res.ok || !res.body) {

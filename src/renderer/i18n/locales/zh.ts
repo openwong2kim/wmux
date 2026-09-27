@@ -1818,4 +1818,5 @@ export const zh = {
   'remote.authRejectedDetail': '它的 wmux web 已重启或停止，或这台电脑已被移除',
   'remote.pairAgain': '重新配对',
   'remote.hostFallback': '远程主机',
+  'remote.needsPairing': '需要重新配对',
 } as const;

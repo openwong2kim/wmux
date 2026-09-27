@@ -2045,7 +2045,11 @@ export default function AppLayout() {
       {/* "Pair again" from a remote workspace whose host rejected us. Lives
           here because re-pairing removes that host's views. */}
       {remoteRepairHostId && (
-        <AttachRemoteModal repairHostId={remoteRepairHostId} onClose={() => requestRemoteRepair(null)} />
+        <AttachRemoteModal
+          key={remoteRepairHostId}
+          repairHostId={remoteRepairHostId}
+          onClose={() => requestRemoteRepair(null)}
+        />
       )}
 
       {onboardingActive && (

@@ -89,7 +89,7 @@ function PaneCell({ hostId, hostLabel, pane, readOnly, attachEpoch }: {
         {pane.cwd ? ` — ${pane.cwd}` : ''}
       </div>
       <div className="flex-1 min-h-0">
-        <RemoteMirrorTerminal attachId={attachId} error={error} readOnly={readOnly} hostLabel={hostLabel} />
+        <RemoteMirrorTerminal attachId={attachId} error={error} readOnly={readOnly} hostLabel={hostLabel} hostId={hostId} />
       </div>
     </div>
   );

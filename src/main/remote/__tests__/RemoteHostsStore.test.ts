@@ -245,4 +245,24 @@ describe('RemoteHostsStore', () => {
     const stat = fs.statSync(filePath);
     expect(stat.mode & 0o777).toBe(0o600);
   });
+
+  it('replaceCredential swaps origin and token in place, keeping the id', () => {
+    const store = new RemoteHostsStore(filePath);
+    const added = store.add('https://office-mac.example:9600/?token=stale');
+    if (!added.ok) throw new Error('add failed');
+    const res = store.replaceCredential(added.host.id, 'https://office-mac.example:9600', 'fresh');
+
+    expect(res).toEqual({ ok: true, host: expect.objectContaining({ id: added.host.id }) });
+    expect(store.get(added.host.id)?.token).toBe('fresh');
+    expect(new RemoteHostsStore(filePath).get(added.host.id)?.token).toBe('fresh');
+  });
+
+  it('replaceCredential refuses an origin another host already owns', () => {
+    const store = new RemoteHostsStore(filePath);
+    const a = store.add('https://a.example:9600/?token=x');
+    store.add('https://b.example:9600/?token=y');
+    if (!a.ok) throw new Error('add failed');
+    expect(store.replaceCredential(a.host.id, 'https://b.example:9600', 'z')).toEqual({ ok: false, error: 'already registered' });
+    expect(store.get(a.host.id)?.token).toBe('x');
+  });
 });
