@@ -624,6 +624,9 @@ export const IPC = {
   // pasting the full wmux-web URL with the token embedded.
   REMOTE_HOSTS_PAIR: 'remote:hosts:pair',
   REMOTE_HOSTS_REMOVE: 'remote:hosts:remove',
+  // Per-host status for the Remote hub: `/api/config` probed with a short
+  // timeout, cached 60 s, combined with this app's live streams.
+  REMOTE_HOSTS_STATUS: 'remote:hosts:status',
   REMOTE_WORKSPACES_LIST: 'remote:workspaces:list',
   // Bootstrap the FIRST pane of a NEW workspace on a remote host (#1001):
   // the desktop mints the workspace id and hands it to `POST /api/sessions`

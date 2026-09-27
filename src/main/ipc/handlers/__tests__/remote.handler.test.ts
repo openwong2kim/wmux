@@ -114,6 +114,8 @@ function fakeClient(host: RemoteHost) {
     createWorkspace: vi.fn(async (): Promise<{ sessionId: string }> => ({ sessionId: 'web-1' })),
     closeSession: vi.fn(async (): Promise<void> => undefined),
     resizeSession: vi.fn(async (): Promise<{ ok: true; cols: number; rows: number }> => ({ ok: true, cols: 100, rows: 30 })),
+    isAuthRejected: vi.fn(() => false),
+    liveAttachmentCount: vi.fn(() => 0),
     onMeta: vi.fn((cb: (e: RemoteMetaEvent) => void) => { metaCbs.push(cb); }),
     onResize: vi.fn((cb: (e: RemoteResizeEvent) => void) => { resizeCbs.push(cb); }),
     onData: vi.fn((cb: (e: RemoteDataEvent) => void) => { dataCbs.push(cb); }),
@@ -1436,5 +1438,39 @@ describe('remote.handler — liveness poll tick (#1391)', () => {
 
     appListeners.get('will-quit')?.();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+
+describe('remote.handler — hostsStatus (the Remote hub)', () => {
+  const h = (id: string): RemoteHost => ({ id, label: id, origin: `https://${id}.ts.net`, token: `t-${id}`, addedAt: 0 });
+
+  it('reports each host by what it answered, and connected only with live streams', async () => {
+    const store = fakeStore([h('live'), h('idle'), h('off'), h('revoked')]);
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.startsWith('https://off.')) throw new TypeError('fetch failed');
+      if (url.startsWith('https://revoked.')) return jsonResponse({ error: 'unauthorized' }, false, 401);
+      return jsonResponse({ allowInput: true });
+    });
+    const made: Array<ReturnType<typeof fakeClient>> = [];
+    registerRemoteHandlers({
+      store: store as never,
+      attachments: fakeAttachments() as never,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      clientFactory: (host) => { const c = fakeClient(host); made.push(c); return c; },
+    });
+    const sender = { id: 1, isDestroyed: () => false, send: vi.fn(), on: vi.fn(), once: vi.fn(), removeListener: vi.fn() };
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'live', 'sess-1');
+    (made[0] as unknown as { liveAttachmentCount: ReturnType<typeof vi.fn> }).liveAttachmentCount.mockReturnValue(1);
+
+    const statuses = await getHandler(IPC.REMOTE_HOSTS_STATUS)({}, false);
+    expect(statuses).toEqual({ live: 'connected', idle: 'reachable', off: 'unreachable', revoked: 'needs-repair' });
+  });
+
+  it('never rejects and never suggests re-pairing for a host that did not answer', async () => {
+    const store = fakeStore([h('off')]);
+    const fetchImpl = vi.fn(async () => { throw new Error('ETIMEDOUT'); });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    await expect(getHandler(IPC.REMOTE_HOSTS_STATUS)({}, true)).resolves.toEqual({ off: 'unreachable' });
   });
 });

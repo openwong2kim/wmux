@@ -35,7 +35,7 @@ import type {
   WebGrantArgs,
   WebTerminalInfo,
 } from '../shared/web';
-import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteWorkspaceSummary } from '../shared/remoteHosts';
+import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteHostStatus, RemoteWorkspaceSummary } from '../shared/remoteHosts';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -1547,6 +1547,8 @@ document.addEventListener('DOMContentLoaded', () => {
       | { ok: false; reason: PairFailureReason; attemptsLeft?: number }
     >,
   hostsRemove: (id: string) => ipcRenderer.invoke(IPC.REMOTE_HOSTS_REMOVE, id) as Promise<boolean>,
+  hostsStatus: (force?: boolean) =>
+    ipcRenderer.invoke(IPC.REMOTE_HOSTS_STATUS, force === true) as Promise<Record<string, RemoteHostStatus>>,
   workspacesList: (hostId: string) =>
     ipcRenderer.invoke(IPC.REMOTE_WORKSPACES_LIST, hostId) as Promise<
       { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string; reason?: RemoteErrorReason }

@@ -500,6 +500,18 @@ export class RemoteHostClient implements RemotePaneEvents {
     this.openStream(attachment);
   }
 
+  /** Live streams this client holds — what makes the hub say "connected". */
+  liveAttachmentCount(): number {
+    let n = 0;
+    for (const attachment of this.attachments.values()) if (!attachment.detached) n += 1;
+    return n;
+  }
+
+  /** Whether the host has refused this credential (the latch `rejected` sets). */
+  isAuthRejected(): boolean {
+    return this.authRejected;
+  }
+
   detachAll(): void {
     for (const id of [...this.attachments.keys()]) {
       this.detach(id);

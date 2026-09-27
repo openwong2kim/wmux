@@ -241,6 +241,17 @@ export type PairFailureReason =
  *  gates (`--allow-input`, transcript access), not a rejected credential. */
 export type RemoteErrorReason = 'auth-rejected';
 
+/**
+ * A paired host as the Remote hub shows it (status = dot + text):
+ *
+ *   - `connected`    reachable, and this app holds live streams to it
+ *   - `reachable`    answered with this computer's credential
+ *   - `unreachable`  did not answer (off, asleep, network) — never a reason
+ *                    to re-pair, which would throw away a working credential
+ *   - `needs-repair` answered 401: it no longer accepts this computer
+ */
+export type RemoteHostStatus = 'connected' | 'reachable' | 'unreachable' | 'needs-repair';
+
 /** Parse a pasted `wmux web` URL into origin + token. Returns null when the
  * string is not an http(s) URL or carries no token= query param. */
 export function parseWebUrl(raw: string): { origin: string; token: string } | null {

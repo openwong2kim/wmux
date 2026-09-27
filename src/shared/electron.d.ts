@@ -21,7 +21,7 @@ import type {
   WebTerminalInfo,
 } from './web';
 import type { BrowserHelpOutcome, BrowserHelpRequestInfo } from './browserHelp';
-import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteWorkspaceSummary } from './remoteHosts';
+import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteHostStatus, RemoteWorkspaceSummary } from './remoteHosts';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -239,6 +239,10 @@ declare global {
           | { ok: false; reason: PairFailureReason; attemptsLeft?: number }
         >;
         hostsRemove: (id: string) => Promise<boolean>;
+        /** Status per paired host for the Remote hub (hostId → status).
+         *  Probes are cached 60 s unless `force`; never rejects, and a host
+         *  that did not answer is `unreachable`, never `needs-repair`. */
+        hostsStatus?: (force?: boolean) => Promise<Record<string, RemoteHostStatus>>;
         workspacesList: (hostId: string) => Promise<
           | { ok: true; workspaces: RemoteWorkspaceSummary[] }
           | { ok: false; error: string; reason?: RemoteErrorReason }
