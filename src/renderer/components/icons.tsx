@@ -405,6 +405,22 @@ export function IconRemoteDevices({ size = 14 }: { size?: number }) {
   </Icon>;
 }
 
+/** Phone — a paired handheld device (roster kind). Own glyph, no brand shape. */
+export function IconPhone({ size = 14 }: { size?: number }) {
+  return <Icon size={size}>
+    <rect x="4" y="1.5" width="6" height="11" rx="1.2" />
+    <path d="M6.4 10.6h1.2" />
+  </Icon>;
+}
+
+/** Computer — a paired desktop or laptop (roster kind). */
+export function IconComputer({ size = 14 }: { size?: number }) {
+  return <Icon size={size}>
+    <rect x="1.5" y="2.5" width="11" height="7" rx="1" />
+    <path d="M5 12h4M7 9.5V12" />
+  </Icon>;
+}
+
 /** Server — two stacked rack units: a workspace that lives on another machine. */
 export function IconServer({ size = 14 }: { size?: number }) {
   return <Icon size={size}>

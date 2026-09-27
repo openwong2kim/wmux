@@ -135,7 +135,7 @@ describe('WebPopoverBody — off state', () => {
   const html = renderBody({ info: { running: false } });
 
   it('shows the headline, both checkboxes and the Start primary', () => {
-    expect(html).toContain('web.headline');
+    expect(html).toContain('web.shareThisComputer');
     expect(html).toContain('web.allowInput');
     expect(html).toContain('web.expose');
     expect(html).toContain('web.start');
@@ -244,7 +244,7 @@ describe('WebPopoverBody — on state', () => {
 
   it('offers a way back when the pairing code is spent, instead of hiding the section', () => {
     const html = renderBody({ info: { ...runningInfo, pairCode: undefined } });
-    expect(html).toContain('web.onPhone');
+    expect(html).toContain('web.connectPhone');
     // A spent code lands back on the name field, which IS the way back: the
     // next device needs a name anyway, and minting from there gives it one.
     expect(html).toContain('web.showPairCode');
@@ -313,7 +313,7 @@ describe('WebPopoverBody — on state', () => {
   it('offers both connection paths: an openable URL and a token-free pair address', () => {
     const html = renderBody({ info: runningInfo });
     expect(html).toContain('web.openHere');
-    expect(html).toContain('web.onPhone');
+    expect(html).toContain('web.connectPhone');
     // The phone address must not carry the token — that is the point of the code.
     expect(html).toContain('/pair');
   });
