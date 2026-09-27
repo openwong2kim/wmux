@@ -19,6 +19,16 @@ import { selectSidebarUnseen } from '../../stores/selectors/sidebarSeen';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 import { buildMentionReference, buildMentionTargets, focusedMentionSource } from '../../utils/agentMention';
 import { insertMention, toastMentionInsert } from '../../utils/agentMentionInsert';
+import { countTasksRequestedByPane } from '../../utils/fanoutProvenance';
+
+/** Open this workspace's fan-out task group and bring it into view. */
+function revealTaskGroup(ownerWorkspaceId: string): void {
+  useStore.getState().setSidebarTaskGroupExpanded(ownerWorkspaceId, true);
+  requestAnimationFrame(() => {
+    const group = document.querySelector(`[data-task-group="${CSS.escape(ownerWorkspaceId)}"]`);
+    group?.scrollIntoView?.({ block: 'nearest' });
+  });
+}
 
 /**
  * The roster row's `@`: insert this agent's reference into the focused agent's
@@ -323,6 +333,10 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
   const unverifiableMinutesByPtyId = useStore(useShallow(selectUnverifiablePaneMinutes));
   // Glance board: per-pane "changed since you last looked".
   const unseenByPtyId = useStore(useShallow(selectSidebarUnseen));
+  // Per pane: how many open fan-out tasks it requested (the lineage origin,
+  // else the audit caller). Two agent panes in one workspace each show their own.
+  const paneIds = roster.rows.map((row) => row.paneId);
+  const requestedCounts = useStore(useShallow((s) => paneIds.map((id) => countTasksRequestedByPane(s, id))));
 
   if (roster.agentCount === 0 && roster.stashedCount === 0) return null;
 
@@ -554,6 +568,25 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId }: WorkspaceAgentRost
                     </span>
                   ) : null}
                 </button>
+                {(requestedCounts[index] ?? 0) > 0 && (
+                  // A sibling of the row button (a button cannot hold one).
+                  <button
+                    type="button"
+                    draggable={false}
+                    data-roster-requested={requestedCounts[index]}
+                    className={`flex-none self-center whitespace-nowrap rounded px-1 text-[10px] tabular-nums text-[var(--text-muted)] hover:text-[var(--accent-blue)] ${FOCUS_RING}`}
+                    title={t('sidebar.requester.badgeLabel', { count: requestedCounts[index] })}
+                    aria-label={t('sidebar.requester.badgeLabel', { count: requestedCounts[index] })}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      revealTaskGroup(workspaceId);
+                    }}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onDoubleClick={(event) => event.stopPropagation()}
+                  >
+                    {t('sidebar.requester.badge', { count: requestedCounts[index] })}
+                  </button>
+                )}
                 {/* Mention this agent in the focused one — shown on hover or
                     keyboard focus, never on the focused pane's own row. A
                     sibling of the row button (a button cannot hold one). */}
