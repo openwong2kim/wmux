@@ -381,6 +381,17 @@ describe('ApprovalPushRouter — review fixes', () => {
     expect(h.sent).toEqual(['old', 'a']);
   });
 
+  it('a superseded gate\'s banner is never retracted, even after the orphan bound', () => {
+    const present = { value: false };
+    const h = harness(present, G, 3 * G);
+    h.router.onEvent({ type: 'create', request: gate('g1') });
+    present.value = true;
+    h.router.onEvent({ type: 'create', request: gate('g2') });
+    h.router.onEvent({ type: 'supersede', request: { ...gate('g1'), state: 'superseded' } });
+    h.advance(100 * G);
+    expect(h.retractions()).toEqual([]);
+  });
+
   it('a parked push the queue dropped is never retracted', () => {
     const h = harness({ value: true }, G);
     h.router.onEvent({ type: 'create', request: record('a') });

@@ -254,7 +254,8 @@ export class ApprovalPushRouter {
         this.remember(r.id, { ...known, superseded: true });
       } else if (known.state === 'sent') {
         this.remember(r.id, { ...known, superseded: true });
-        this.markOrphan(collapseId, known.deliveredId, r);
+        // Gate banners are never retracted (see the header), orphaned or not.
+        if (r.kind === 'terminal_prompt') this.markOrphan(collapseId, known.deliveredId, r);
       }
       return;
     }
