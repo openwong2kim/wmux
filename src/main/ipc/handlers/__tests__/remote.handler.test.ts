@@ -107,6 +107,7 @@ function fakeClient(host: RemoteHost) {
     host,
     attach: vi.fn((_sessionId: string) => `attach-${host.id}-${nextAttachId++}`),
     detach: vi.fn(),
+    refresh: vi.fn(),
     detachAll: vi.fn(),
     write: vi.fn(async () => undefined),
     listWorkspaces: vi.fn(async (): Promise<RemoteWorkspacesResponse> => ({ workspaces: [] })),
@@ -733,6 +734,9 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
 
     expect(second.attachId).toBe(first.attachId);
     expect(client.attach).toHaveBeenCalledTimes(1);
+    // The second viewer gets its own meta + snapshot through a fresh stream.
+    expect((client as unknown as { refresh: ReturnType<typeof vi.fn> }).refresh)
+      .toHaveBeenCalledWith(first.attachId);
   });
 
   it('a different session on the same sender opens a distinct attach', async () => {

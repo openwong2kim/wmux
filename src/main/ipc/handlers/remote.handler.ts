@@ -811,7 +811,17 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       // attachId rather than opening a second SSE stream.
       const key = attachKey(sender.id, id, session);
       const existingAttachId = attachByKey.get(key);
-      if (existingAttachId) return { ok: true, attachId: existingAttachId };
+      if (existingAttachId) {
+        // A second viewer joining the shared attach (the renderer orders its
+        // own detach-before-reattach, so this is not a remount). The first
+        // viewer already consumed the attach's meta; re-open the stream so the
+        // newcomer gets the grid and a snapshot too, instead of a blank
+        // terminal that never learns the remote's geometry.
+        const record = attachRecords.get(existingAttachId);
+        const existingClient = record ? clients.get(record.hostId) : undefined;
+        existingClient?.refresh(existingAttachId);
+        return { ok: true, attachId: existingAttachId };
+      }
 
       const client = getOrCreateClient(id);
       if (!client) return { ok: false, error: 'unknown host' };

@@ -164,6 +164,9 @@ interface Attachment {
   reconnectAttempt: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   detached: boolean;
+  /** Bumped by `refresh`: a stream opened under an older generation is
+   *  superseded, so its late frames and its end must not act on the attach. */
+  generation: number;
   /** onError already told this mirror the host rejected the credential. */
   authRejectedReported?: boolean;
 }
@@ -455,6 +458,7 @@ export class RemoteHostClient implements RemotePaneEvents {
       reconnectAttempt: 0,
       reconnectTimer: null,
       detached: false,
+      generation: 0,
     };
     this.attachments.set(attachId, attachment);
     this.openStream(attachment);
@@ -471,6 +475,29 @@ export class RemoteHostClient implements RemotePaneEvents {
     }
     attachment.controller.abort();
     this.attachments.delete(attachId);
+  }
+
+  /**
+   * Re-open the attach's stream so the host sends a fresh meta + snapshot.
+   *
+   * For a second viewer that joins an existing attach in the same renderer
+   * (the attach is shared per host + session): the first viewer already
+   * consumed the attach's meta, so without a fresh one the newcomer never
+   * learns the grid or sees what is on screen. Every viewer of the attach
+   * repaints from the new snapshot, which is the price of sharing one stream.
+   */
+  refresh(attachId: string): void {
+    const attachment = this.attachments.get(attachId);
+    if (!attachment || attachment.detached) return;
+    if (attachment.reconnectTimer) {
+      clearTimeout(attachment.reconnectTimer);
+      attachment.reconnectTimer = null;
+    }
+    attachment.generation += 1;
+    attachment.controller.abort();
+    attachment.controller = new AbortController();
+    attachment.reconnectAttempt = 0;
+    this.openStream(attachment);
   }
 
   detachAll(): void {
@@ -579,6 +606,8 @@ export class RemoteHostClient implements RemotePaneEvents {
   }
 
   private async runStream(attachment: Attachment): Promise<void> {
+    const generation = attachment.generation;
+    const superseded = (): boolean => attachment.detached || attachment.generation !== generation;
     let res: Response;
     try {
       res = await this.fetchImpl(
@@ -589,13 +618,14 @@ export class RemoteHostClient implements RemotePaneEvents {
         { headers: this.authHeaders(), redirect: 'error', signal: attachment.controller.signal },
       );
     } catch (err) {
+      if (superseded()) return;
       this.scheduleReconnect(attachment, err);
       return;
     }
-    if (attachment.detached) return;
+    if (superseded()) return;
     if (res.status === 401) {
       const body = await readErrorBody(res);
-      if (attachment.detached) return;
+      if (superseded()) return;
       if (isCredentialRejection(res.status, body)) {
         // The host has said no to this credential. Retrying cannot change
         // that answer, so no backoff loop: report it once, now, and leave the
@@ -613,25 +643,29 @@ export class RemoteHostClient implements RemotePaneEvents {
     }
 
     try {
-      await this.pumpStream(attachment, res.body);
-      if (attachment.detached) return;
+      await this.pumpStream(attachment, res.body, superseded);
+      if (superseded()) return;
       // The stream ended without an explicit abort — treat as a drop and
       // reconnect the same as a network error.
       this.scheduleReconnect(attachment, new Error('stream closed'));
     } catch (err) {
-      if (attachment.detached) return;
+      if (superseded()) return;
       this.scheduleReconnect(attachment, err);
     }
   }
 
-  private async pumpStream(attachment: Attachment, body: ReadableStream<Uint8Array>): Promise<void> {
+  private async pumpStream(
+    attachment: Attachment,
+    body: ReadableStream<Uint8Array>,
+    superseded: () => boolean,
+  ): Promise<void> {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     try {
       for (;;) {
         const { done, value } = await reader.read();
-        if (done) return;
+        if (done || superseded()) return;
         // Reset the backoff schedule only once a frame has actually
         // arrived — resetting it right after headers (connect-only, no
         // data) would let a server that accepts the request then drops
@@ -644,7 +678,7 @@ export class RemoteHostClient implements RemotePaneEvents {
           const rawFrame = buffer.slice(0, sepIndex);
           buffer = buffer.slice(sepIndex + 2);
           this.handleFrame(attachment, rawFrame);
-          if (attachment.detached) return;
+          if (superseded()) return;
         }
       }
     } finally {
