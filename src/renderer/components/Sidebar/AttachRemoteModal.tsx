@@ -18,8 +18,9 @@ import type { PairFailureReason, RemoteHostPublic, RemoteWorkspaceSummary } from
 type AddHostMode = 'pair' | 'url';
 
 /** Maps a REMOTE_HOSTS_PAIR failure reason to its translated message —
- *  i18n lives here, renderer-side, not in main. */
-function pairReasonMessage(t: ReturnType<typeof useT>, reason: PairFailureReason, attemptsLeft?: number): string {
+ *  i18n lives here, renderer-side, not in main. Shared with the Remote hub's
+ *  pairing field so the two surfaces cannot word a failure differently. */
+export function pairReasonMessage(t: ReturnType<typeof useT>, reason: PairFailureReason, attemptsLeft?: number): string {
   switch (reason) {
     case 'invalid-origin': return t('remote.pairInvalidOrigin');
     case 'already-registered': return t('remote.pairAlreadyRegistered');
@@ -38,6 +39,9 @@ interface AttachRemoteModalProps {
   /** Open straight into re-pairing this host: its credential was rejected
    *  and the user already chose "Pair again" somewhere else. */
   repairHostId?: string;
+  /** Open with this host already selected — the Remote hub hands a clicked
+   *  host over here to list and attach its workspaces. */
+  initialHostId?: string;
 }
 
 /** How long the "Attached <name>" confirmation stays under the list. */
@@ -49,7 +53,7 @@ const ATTACHED_CONFIRM_MS = 2500;
  * field — the URL embeds the bearer token, so it must never be echoed
  * anywhere (this input, toasts, or error strings).
  */
-export default function AttachRemoteModal({ onClose, repairHostId }: AttachRemoteModalProps) {
+export default function AttachRemoteModal({ onClose, repairHostId, initialHostId }: AttachRemoteModalProps) {
   const t = useT();
   const attachRemoteWorkspace = useStore((s) => s.attachRemoteWorkspace);
   // Every row the store holds for a (host, workspace) — including the
@@ -300,6 +304,15 @@ export default function AttachRemoteModal({ onClose, repairHostId }: AttachRemot
     void selectHost(host.id);
     handleRepair(host);
   }, [repairHostId, loadingHosts, hosts, handleRepair, selectHost]);
+
+  // Opened from the Remote hub on a host: show its workspaces straight away.
+  const initialSelected = useRef(false);
+  useEffect(() => {
+    if (!initialHostId || repairHostId || loadingHosts || initialSelected.current) return;
+    if (!hosts.some((h) => h.id === initialHostId)) return;
+    initialSelected.current = true;
+    void selectHost(initialHostId);
+  }, [initialHostId, repairHostId, loadingHosts, hosts, selectHost]);
 
   // Attaching keeps the modal open: attaching several workspaces used to mean
   // reopening it for each one. The row flips to "Attached" in place and a

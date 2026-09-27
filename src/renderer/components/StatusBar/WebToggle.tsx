@@ -26,6 +26,9 @@ import Input from '../ui/Input';
 import Badge from '../ui/Badge';
 import { DECK_ICON_BUTTON, deckIconTone } from '../Deck/deckIconStyles';
 import PairedDevicesModal from './PairedDevicesModal';
+import OtherComputersSection from './OtherComputersSection';
+import AttachRemoteModal from '../Sidebar/AttachRemoteModal';
+import { useStore } from '../../stores';
 import {
   buildDesktopPairLink,
   webComputerPairOrigin,
@@ -867,6 +870,9 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   const [anchorTop, setAnchorTop] = useState(40);
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
+  const othersRef = useRef<HTMLDivElement | null>(null);
+  /** A host handed from "Other computers" to the attach dialog. */
+  const [attachHostId, setAttachHostId] = useState<string | null>(null);
 
   const api = webApi();
 
@@ -1013,6 +1019,43 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
       document.removeEventListener('keydown', onKey);
     };
   }, [open]);
+
+  const anchorUnderButton = useCallback(() => {
+    const r = btnRef.current?.getBoundingClientRect();
+    const menuWidth = 288; // w-72
+    if (r) {
+      setAnchorLeft(Math.max(8, Math.min(r.left, window.innerWidth - menuWidth - 8)));
+      setAnchorTop(Math.max(8, Math.min(r.bottom + 4, window.innerHeight - 8 - POPOVER_MAX_HEIGHT)));
+    }
+  }, []);
+
+  // The sidebar's Remote button IS the remote hub: other surfaces (the +
+  // menu's "Attach remote workspace") ask it to open on "Other computers"
+  // rather than opening a dialog of their own.
+  const setRemoteHubMounted = useStore((s) => s.setRemoteHubMounted);
+  useEffect(() => {
+    // Only a hub that actually renders counts: without the web bridge this
+    // component draws nothing, and a request sent to it would land nowhere.
+    if (variant !== 'sidebar' || !webApi()) return;
+    setRemoteHubMounted(true);
+    return () => setRemoteHubMounted(false);
+  }, [variant, setRemoteHubMounted]);
+  const hubRequestSeq = useStore((s) => s.remoteHubRequestSeq);
+  const seenHubRequest = useRef(hubRequestSeq);
+  const [scrollToOthers, setScrollToOthers] = useState(false);
+  useEffect(() => {
+    if (hubRequestSeq === seenHubRequest.current) return;
+    seenHubRequest.current = hubRequestSeq;
+    if (variant !== 'sidebar') return;
+    anchorUnderButton();
+    setOpen(true);
+    setScrollToOthers(true);
+  }, [hubRequestSeq, variant, anchorUnderButton]);
+  useEffect(() => {
+    if (!open || !scrollToOthers) return;
+    setScrollToOthers(false);
+    othersRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [open, scrollToOthers]);
 
   const toggleOpen = useCallback(() => {
     // Measure + anchor OUTSIDE the setOpen updater: state updaters must stay
@@ -1307,6 +1350,15 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
           } as CSSProperties}
           className="fixed z-50 w-72 overflow-y-auto"
         >
+          {/* This machine → other computers first: the client half of the
+              hub, independent of whether this machine is sharing itself. */}
+          <OtherComputersSection
+            ref={othersRef}
+            onOpenHost={(hostId) => {
+              setOpen(false);
+              setAttachHostId(hostId);
+            }}
+          />
           <WebPopoverBody
             info={info}
             allowInput={allowInput}
@@ -1359,6 +1411,11 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
           popover (a 288px box has no room behind a 440px modal), and a modal
           nested inside a node that just unmounted would go with it. */}
       {devicesOpen ? <PairedDevicesModal onClose={() => setDevicesOpen(false)} /> : null}
+      {/* Same reason as the roster: a sibling, so closing the popover on the
+          way does not take the dialog with it. */}
+      {attachHostId ? (
+        <AttachRemoteModal key={attachHostId} initialHostId={attachHostId} onClose={() => setAttachHostId(null)} />
+      ) : null}
     </div>
   );
 }

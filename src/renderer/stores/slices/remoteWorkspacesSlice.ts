@@ -188,6 +188,15 @@ export interface RemoteWorkspacesSlice {
    *  of that host — including the one the request came from. */
   remoteRepairHostId: string | null;
   requestRemoteRepair: (hostId: string | null) => void;
+  /** Bumped to ask the Remote hub (the sidebar's Remote popover) to open on
+   *  its "Other computers" section — the + menu's "Attach remote workspace". */
+  remoteHubRequestSeq: number;
+  openRemoteHub: () => void;
+  /** How many Remote hubs are mounted. Zero (the sidebar is not rendering
+   *  its nav) means a request has nowhere to land, and callers fall back to
+   *  the attach dialog. */
+  remoteHubMounted: number;
+  setRemoteHubMounted: (mounted: boolean) => void;
   /** #1086 — rename the row LOCALLY (the remote host owns the real name).
    *  Empty clears the alias; the remote snapshot name shows again. */
   renameRemoteWorkspace: (key: string, label: string | null) => void;
@@ -257,6 +266,16 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
   remoteWorkspaces: [],
   activeRemoteKey: null,
   remoteRepairHostId: null,
+  remoteHubRequestSeq: 0,
+  remoteHubMounted: 0,
+
+  openRemoteHub: () => set((state: StoreState) => {
+    state.remoteHubRequestSeq += 1;
+  }),
+
+  setRemoteHubMounted: (mounted) => set((state: StoreState) => {
+    state.remoteHubMounted = Math.max(0, state.remoteHubMounted + (mounted ? 1 : -1));
+  }),
 
   attachRemoteWorkspace: (w) => {
     // Persist the MERGED entry, not `w`: a re-attach hands us a fresh snapshot
