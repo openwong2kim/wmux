@@ -515,6 +515,16 @@ export class HookIngest {
   private readonly now: () => number;
   /** CompletionAlarm — gates every "turn finished" alarm on real turn end. */
   private readonly alarm: CompletionAlarm;
+  /**
+   * #1463 — sessions whose lead turn has ENDED as far as this ingest has
+   * broadcast (a Stop / StopFailure, or a fresh session with no turn yet), and
+   * nothing has reported work since. A `SubagentStop` landing here is not a
+   * subagent inside the lead turn: Claude Code runs a background subagent a
+   * few seconds after every Stop, and projecting it as `running` repainted a
+   * finished pane Running for the full 120 s activity window. Maintained in
+   * `broadcast`, the one place every status this ingest writes passes through.
+   */
+  private readonly leadTurnEnded = new Set<string>();
 
   constructor(deps: HookIngestDeps) {
     this.deps = deps;
@@ -938,6 +948,9 @@ export class HookIngest {
       // subagent's 'complete' at face value would flip the status dot (and the
       // phone liveness header, which special-cases this hookKind) mid-turn.
       this.alarm.observe(sessionId, signal.agent, cue);
+      // #1463 — after the lead turn ended there is no turn for it to be
+      // running in: say nothing rather than reopen a finished pane.
+      if (this.leadTurnEnded.has(sessionId)) return { ok: true };
       return this.broadcast(sessionId, {
         agent: agentSlugToDisplay(signal.agent),
         status: 'running',
@@ -1092,6 +1105,14 @@ export class HookIngest {
    * process on a hard 2s budget and treats an RPC error as a fatal hook.
    */
   private broadcast(sessionId: string, data: HookAgentEventData): HookSignalResponse {
+    // #1463 — track whether the lead turn is over (see `leadTurnEnded`). A
+    // Stop that still projects `running` (background agents left) is not an end.
+    if (data.hookKind === 'agent.session_start'
+      || ((data.hookKind === 'agent.stop' || data.hookKind === 'agent.stop_failure') && data.status !== 'running')) {
+      this.leadTurnEnded.add(sessionId);
+    } else if (data.hookKind !== 'agent.subagent_stop') {
+      this.leadTurnEnded.delete(sessionId);
+    }
     try {
       this.deps.emitAgentEvent(sessionId, data);
     } catch (err) {
@@ -1296,6 +1317,7 @@ export class HookIngest {
    */
   dropPty(sessionId: string): void {
     this.router.dropPty(sessionId);
+    this.leadTurnEnded.delete(sessionId);
     // Cancel any open provisional window for the disposed pane — a reused id
     // must start from an empty gate, not an inherited pending confirmation.
     this.alarm.dropPty(sessionId);

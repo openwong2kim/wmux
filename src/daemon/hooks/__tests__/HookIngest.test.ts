@@ -148,6 +148,27 @@ describe('HookIngest', () => {
       expect(data.signal.kind).toBe('agent.stop');
     });
 
+    it('#1463 — a SubagentStop after the turn ended does not reopen it', () => {
+      // Live dogfood (Claude Code 2.1.281): every Stop was followed ~6 s later
+      // by a background SubagentStop, whose `running` repainted the finished
+      // pane Running for two minutes.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.subagent_stop' }));
+      // Inside the turn it is still the turn's work.
+      expect(fixture.emitted.at(-1)?.data).toMatchObject({ status: 'running', hookKind: 'agent.subagent_stop' });
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.emitted.at(-1)?.data).toMatchObject({ status: 'complete', hookKind: 'agent.stop' });
+      const count = fixture.emitted.length;
+      vi.advanceTimersByTime(6_000);
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.subagent_stop' }));
+      expect(fixture.emitted).toHaveLength(count);
+      // The next turn start reopens it, and its subagents count again.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.subagent_stop' }));
+      expect(fixture.emitted.at(-1)?.data).toMatchObject({ status: 'running', hookKind: 'agent.subagent_stop' });
+    });
+
     it('maps subagent_stop and awaiting_input to their own shapes', () => {
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.subagent_stop' }));
       // A subagent stop is never a lead-turn end: status-only, immediate, and
