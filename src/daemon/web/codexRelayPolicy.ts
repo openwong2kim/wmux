@@ -19,20 +19,34 @@ import { WMUX_SERVER_KEY } from '../../shared/mcpTargets';
  *   ownThread   requests that run work inside an existing thread: allowed
  *               only on a thread this pane started, resumed or forked.
  *   proven      allowed only while the shared server is proven clean.
+ *   deny        never from a pane relay (remote execution environments,
+ *               remote control of the shared server, test-only methods).
  *   pass        everything else the protocol defines.
  *
  * A method the table does not know, a batch frame, or any request whose
  * identity cannot be guaranteed is refused and never forwarded.
  */
 
-export type MethodClass = 'identity' | 'exec' | 'ownThread' | 'proven' | 'pass';
+export type MethodClass = 'identity' | 'exec' | 'ownThread' | 'proven' | 'deny' | 'pass';
 
-/** Every client request of the Codex app-server protocol this relay knows. */
+/** Every client request of the Codex app-server protocol this relay knows,
+ * experimental methods included (the TUI uses some of them). */
 export const CLIENT_REQUEST_CLASSES: Readonly<Record<string, MethodClass>> = {
   'thread/start': 'identity',
   'thread/resume': 'identity',
   'thread/fork': 'identity',
   'command/exec': 'exec',
+  'process/spawn': 'exec',
+  'thread/queue/add': 'ownThread',
+  'thread/queue/start': 'ownThread',
+  'thread/realtime/start': 'ownThread',
+  'thread/realtime/appendAudio': 'ownThread',
+  'thread/realtime/appendSpeech': 'ownThread',
+  'thread/realtime/appendText': 'ownThread',
+  'environment/add': 'deny',
+  'remoteControl/enable': 'deny',
+  'remoteControl/pairing/start': 'deny',
+  'mock/experimentalMethod': 'deny',
   'turn/start': 'ownThread',
   'turn/steer': 'ownThread',
   'thread/shellCommand': 'ownThread',
@@ -68,6 +82,20 @@ export const CLIENT_REQUEST_CLASSES: Readonly<Record<string, MethodClass>> = {
     'thread/turns/list', 'thread/unarchive', 'thread/unsubscribe',
     'threadSection/create', 'threadSection/delete', 'threadSection/list', 'threadSection/update',
     'turn/interrupt', 'windowsSandbox/readiness', 'windowsSandbox/setupStart',
+    // Experimental
+    'account/bedrock/discover', 'account/bedrock/setup', 'collaborationMode/list', 'environment/info',
+    'environment/status', 'fuzzyFileSearch/sessionStart', 'fuzzyFileSearch/sessionStop',
+    'fuzzyFileSearch/sessionUpdate', 'mcpServer/event/stream/start', 'mcpServer/event/stream/stop', 'memory/reset',
+    'memory/status', 'plugin/search', 'process/kill', 'process/resizePty', 'process/writeStdin', 'project/create',
+    'project/delete', 'project/import', 'project/list', 'project/move', 'project/read', 'project/update',
+    'remoteControl/client/list', 'remoteControl/client/revoke', 'remoteControl/disable',
+    'remoteControl/pairing/status', 'remoteControl/status/read', 'rollout/compress', 'server/diagnostics',
+    'thread/backgroundTerminals/clean', 'thread/backgroundTerminals/list', 'thread/backgroundTerminals/terminate',
+    'thread/decrement_elicitation', 'thread/increment_elicitation', 'thread/memoryMode/set', 'thread/queue/delete',
+    'thread/queue/list', 'thread/queue/reorder', 'thread/queue/update', 'thread/realtime/listVoices',
+    'thread/realtime/stop', 'thread/search', 'thread/searchOccurrences', 'thread/settings/update',
+    'thread/timeline/list', 'turn/settings/update', 'userVerification/cancel', 'userVerification/delete',
+    'userVerification/enroll', 'userVerification/status', 'userVerification/verify',
   ].map((m) => [m, 'pass' as const])),
 };
 
@@ -294,6 +322,7 @@ export async function reviewClientFrame(message: unknown, ctx: PolicyContext): P
   const params = m.params === undefined || m.params === null ? {} : record(m.params);
   if (!params) return refuse('malformed request parameters');
 
+  if (cls === 'deny') return refuse(`${String(m.method)} is not available from a wmux pane`);
   if (cls === 'proven') return ctx.serverProven ? { kind: 'forward' } : refuse('the Codex background server has not been confirmed clean');
 
   if (cls === 'ownThread') {
@@ -312,6 +341,10 @@ export async function reviewClientFrame(message: unknown, ctx: PolicyContext): P
   }
 
   // identity: thread/start, thread/resume, thread/fork
+  // Remote execution environments run commands elsewhere; identity cannot follow.
+  if (Array.isArray(params.environments) && params.environments.length > 0) {
+    return refuse('remote execution environments are not available from a wmux pane');
+  }
   if (m.method !== 'thread/start') {
     const threadId = typeof params.threadId === 'string' ? params.threadId : '';
     const owner = threadId ? ctx.owner(threadId) : undefined;

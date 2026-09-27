@@ -22,6 +22,8 @@ describe('method table', () => {
   it('puts every thread-creating and command-running method outside "pass"', () => {
     for (const m of ['thread/start', 'thread/resume', 'thread/fork']) expect(CLIENT_REQUEST_CLASSES[m]).toBe('identity');
     expect(CLIENT_REQUEST_CLASSES['command/exec']).toBe('exec');
+    expect(CLIENT_REQUEST_CLASSES['process/spawn']).toBe('exec');
+    for (const m of ['environment/add', 'remoteControl/enable']) expect(CLIENT_REQUEST_CLASSES[m]).toBe('deny');
     for (const m of ['turn/start', 'turn/steer', 'thread/shellCommand', 'review/start', 'mcpServer/tool/call']) {
       expect(CLIENT_REQUEST_CLASSES[m]).toBe('ownThread');
     }
@@ -118,6 +120,13 @@ describe('reviewClientFrame', () => {
     const v = await reviewClientFrame(msg, ctx({ serverProven: true }));
     expect(v.kind).toBe('forward');
     expect(JSON.stringify(v)).not.toContain('mcp_servers');
+  });
+  it('denied methods and remote execution environments are refused', async () => {
+    expect((await reviewClientFrame({ id: 1, method: 'remoteControl/enable', params: {} }, ctx())).kind).toBe('refuse');
+    expect((await reviewClientFrame({ id: 1, method: 'thread/start', params: { environments: [{ environmentId: 'e', cwd: '/' }] } },
+      ctx({ serverProven: true }))).kind).toBe('refuse');
+    const spawn = await reviewClientFrame({ id: 1, method: 'process/spawn', params: { command: ['x'], env: { WMUX_PTY_ID: 'x' } } }, ctx());
+    expect(spawn).toMatchObject({ kind: 'forward', message: { params: { env: { WMUX_PTY_ID: 'pty-a' } } } });
   });
   it('command/exec without a committed pane is refused', async () => {
     expect((await reviewClientFrame({ id: 1, method: 'command/exec', params: { command: ['x'] } }, ctx({ identity: undefined }))).kind)
