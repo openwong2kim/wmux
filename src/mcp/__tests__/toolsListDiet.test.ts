@@ -82,6 +82,12 @@ const ECHOED_METHODS = new Set([
 function installSendRpcRouting(): void {
   mockSendRpc.mockImplementation(async (method: string, params: Record<string, unknown>) => {
     if (ECHOED_METHODS.has(method)) return { method, params };
+    // Writes (a2a.task.send) need a verified identity: an env-hint identity
+    // is read-only when main is down. Answer the handshake as a verified hit
+    // on the same workspace the env hint names.
+    if (method === 'a2a.resolve.identity') {
+      return { mappings: {}, entries: [], resolved: { workspaceId: 'ws-caller', ptyId: 'pty-caller' }, resolvedStatus: 'hit' };
+    }
     throw new Error(`rpc-down: ${method}`);
   });
 }

@@ -119,12 +119,26 @@ export function setCommanderRole(token: string): void {
   COMMANDER_TOKEN = token;
 }
 
+// The pid main walks when a request claims a pane (see withCallerPid).
+let CALLER_PID: number | undefined;
+
+export function setCallerPid(pid: number): void {
+  const value = Number.isInteger(pid) && pid > 0 ? pid : undefined;
+  const scope = getConnectionScope();
+  if (scope) {
+    scope.rpcIdentity.callerPid = value;
+    return;
+  }
+  CALLER_PID = value;
+}
+
 /** Effective identity for the CURRENT execution context (scope-aware). */
 function currentEnvelopeIdentity(): {
   clientName?: string;
   clientVersion?: string;
   commanderToken?: string;
   workspaceToken?: string;
+  callerPid?: number;
 } {
   const scope = getConnectionScope();
   if (scope) return scope.rpcIdentity;
@@ -133,7 +147,22 @@ function currentEnvelopeIdentity(): {
     clientVersion: CLIENT_VERSION,
     commanderToken: COMMANDER_TOKEN,
     workspaceToken: WORKSPACE_TOKEN,
+    callerPid: CALLER_PID,
   };
+}
+
+/**
+ * A request that claims a pane (`senderPtyId` / `callerPtyId`) carries our
+ * pid, so main can check that pane's shell is really one of our ancestors
+ * before acting as it. Every tool module attaches those fields itself; doing
+ * this once here means none of them can forget.
+ */
+export function withCallerPid(params: Record<string, unknown>): Record<string, unknown> {
+  if ('callerPid' in params) return params;
+  const claims = ['senderPtyId', 'callerPtyId'].some((k) => typeof params[k] === 'string' && (params[k] as string).length > 0);
+  if (!claims) return params;
+  const pid = currentEnvelopeIdentity().callerPid;
+  return pid ? { ...params, callerPid: pid } : params;
 }
 
 function readAuthToken(): string | undefined {
@@ -164,7 +193,7 @@ function attemptRpc(
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
-    const envelope: Record<string, unknown> = { id, method, params, token };
+    const envelope: Record<string, unknown> = { id, method, params: withCallerPid(params), token };
     const identity = currentEnvelopeIdentity();
     if (identity.clientName) envelope.clientName = identity.clientName;
     if (identity.clientVersion) envelope.clientVersion = identity.clientVersion;

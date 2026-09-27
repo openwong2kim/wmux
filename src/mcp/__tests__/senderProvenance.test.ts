@@ -56,10 +56,13 @@ describe('WI-002 senderPtyId provenance (source-level invariant)', () => {
     expect(mcpShimSrc).toMatch(/envPtyHint:\s*process\.env\.WMUX_PTY_ID\s*\|\|\s*''/);
   });
 
-  it('getTaskSenderPtyId prefers the VERIFIED ptyId, then falls back to the weak env hint', () => {
+  it('getTaskSenderPtyId prefers the VERIFIED ptyId, and uses the env hint only when main cannot verify', () => {
     // Precedence is the whole point: a verified walk result must win over the
-    // spoofable env hint whenever it exists.
-    expect(mcpIndexSrc).toMatch(/function\s+getTaskSenderPtyId\s*\(\s*\)\s*:\s*string\s*\{\s*return\s+MY_PTY_ID\s*\|\|\s*ENV_PTY_HINT\s*;?\s*\}/);
+    // spoofable env hint whenever it exists — and the hint is never used when
+    // main has said the caller is outside every pane (or could not check).
+    expect(mcpIndexSrc).toMatch(
+      /function\s+getTaskSenderPtyId\s*\(\s*\)\s*:\s*string\s*\{\s*return\s+MY_PTY_ID\s*\|\|\s*\(\s*envHintsAllowed\(\)\s*\?\s*ENV_PTY_HINT\s*:\s*''\s*\)\s*;?\s*\}/,
+    );
   });
 
   it('MY_PTY_ID is NEVER assigned from the weak env source (verified provenance preserved)', () => {

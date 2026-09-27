@@ -37,6 +37,12 @@ export interface RpcIdentityState {
    * unrepresentable rather than merely avoided.
    */
   workspaceToken?: string;
+  /**
+   * The process whose ancestry main checks when a request claims a pane
+   * (`senderPtyId` / `callerPtyId`): the shim's pid in the broker, our own pid
+   * in a single child. Per connection for the same reason as the rest.
+   */
+  callerPid?: number;
 }
 
 export interface ConnectionScope {

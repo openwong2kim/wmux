@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { sendRpc, setClientIdentity, setCommanderRole, setWorkspaceToken } from './wmux-client';
+import { sendRpc, setCallerPid, setClientIdentity, setCommanderRole, setWorkspaceToken } from './wmux-client';
+import {
+  isPaneAncestryStatus,
+  PANE_IDENTITY_MISS_MESSAGE,
+  PANE_IDENTITY_UNAVAILABLE_MESSAGE,
+  PANE_IDENTITY_UNVERIFIED_WRITE_MESSAGE,
+} from '../shared/paneIdentity';
 import { COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../shared/commanderSurface';
 import { CORE_TOOL_SURFACE } from '../shared/coreSurface';
 import type { RpcMethod } from '../shared/rpc';
@@ -379,6 +385,25 @@ let MY_WORKSPACE_ID = '';
 // hit-only.
 let MY_PTY_ID = '';
 let workspaceResolved = false;
+// Where the last identity lookup landed (see lookupPidMapWorkspace):
+//   'hit'         verified by main's walk or our own;
+//   'miss'        main read the process table: no pane shell above us;
+//   'unavailable' main could not read it (after its retry), our walk missed;
+//   'legacy'      main predates resolvedStatus and our walk missed;
+//   'down'        main unreachable.
+// The env hints may stand in for identity only in 'legacy' / 'down', and
+// then only for reads: in 'miss' / 'unavailable' they are exactly how a
+// process started under a shared background server would act as the pane
+// whose environment it inherited.
+type IdentityState = 'unknown' | 'hit' | 'miss' | 'unavailable' | 'legacy' | 'down';
+let identityState: IdentityState = 'unknown';
+// True when resolveWorkspaceId last answered from the env hint.
+let workspaceFromEnvHint = false;
+setCallerPid(ctx.callerPid);
+
+function envHintsAllowed(): boolean {
+  return identityState === 'legacy' || identityState === 'down';
+}
 
 /**
  * The MCP server's OWN pane anchor (ptyId) for the A2A task + terminal tools.
@@ -406,7 +431,7 @@ let workspaceResolved = false;
  * caller-asserted), not a same-user security boundary.
  */
 function getTaskSenderPtyId(): string {
-  return MY_PTY_ID || ENV_PTY_HINT;
+  return MY_PTY_ID || (envHintsAllowed() ? ENV_PTY_HINT : '');
 }
 
 /**
@@ -672,6 +697,7 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
   let mappings: Record<string, string> | undefined;
   let entries: Array<{ pid: string; ptyId: string; workspaceId: string }> | undefined;
   let resolved: { workspaceId?: unknown; ptyId?: unknown } | null | undefined;
+  let resolvedStatus: unknown;
   try {
     // callerPid lets main resolve our identity SERVER-SIDE: it walks our process
     // tree on its end (unsandboxed, reusing the port-watcher's process snapshot)
@@ -684,8 +710,10 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     mappings = (result as { mappings: Record<string, string> }).mappings;
     entries = (result as { entries?: Array<{ pid: string; ptyId: string; workspaceId: string }> }).entries;
     resolved = (result as { resolved?: { workspaceId?: unknown; ptyId?: unknown } | null }).resolved;
+    resolvedStatus = (result as { resolvedStatus?: unknown }).resolvedStatus;
   } catch {
     logIdentity('resolve.identity rpc-down');
+    identityState = 'down';
     return { status: 'rpc-down' };
   }
 
@@ -708,11 +736,22 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     typeof resolved.ptyId === 'string' && resolved.ptyId
   ) {
     MY_PTY_ID = resolved.ptyId;
+    identityState = 'hit';
     logIdentity(`server-walk HIT ws=${resolved.workspaceId} pty=${resolved.ptyId}`);
     return { status: 'hit', wsId: resolved.workspaceId, ptyId: resolved.ptyId };
   }
 
+  // main walked our real ancestry and found no pane shell: authoritative. Our
+  // own walk would read the same process table.
+  if (resolvedStatus === 'miss') {
+    identityState = 'miss';
+    logIdentity('server-walk MISS (no pane shell among our ancestors)');
+    return { status: 'miss' };
+  }
+  const nonHitState: IdentityState = isPaneAncestryStatus(resolvedStatus) ? 'unavailable' : 'legacy';
+
   if (!mappings || Object.keys(mappings).length === 0) {
+    identityState = nonHitState;
     logIdentity('resolve.identity empty-map');
     return { status: 'empty-map' };
   }
@@ -749,6 +788,7 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
       // only there would leave it empty whenever a terminal op resolved identity
       // first (senderPtyId would then be silently absent on the next send).
       MY_PTY_ID = match.ptyId ?? '';
+      identityState = 'hit';
       logIdentity(
         `walk HIT ws=${match.wsId} pty=${match.ptyId ?? ''} depth=${depth} mapSize=${knownPids.size}`,
       );
@@ -758,6 +798,7 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     if (!parentPid || parentPid === currentPid || parentPid <= 1) break;
     currentPid = parentPid;
   }
+  identityState = nonHitState;
   logIdentity(`walk MISS depth=${depth} lastPid=${currentPid} mapSize=${knownPids.size}`);
   return { status: 'miss' };
 }
@@ -795,6 +836,7 @@ async function resolveCommanderWorkspaceId(): Promise<string> {
 }
 
 async function resolveWorkspaceId(): Promise<string> {
+  workspaceFromEnvHint = false;
   if (workspaceResolved && MY_WORKSPACE_ID) return MY_WORKSPACE_ID;
 
   const lookup = await lookupPidMapWorkspace();
@@ -835,13 +877,14 @@ async function resolveWorkspaceId(): Promise<string> {
   // since this fallback exists precisely to carry the call through while the
   // RPC layer is briefly down. Not cached, so a later call re-checks once the
   // renderer is ready.
-  if (ENV_WORKSPACE_HINT) {
+  if (ENV_WORKSPACE_HINT && envHintsAllowed()) {
     if ((await isLiveWorkspace(ENV_WORKSPACE_HINT)) !== 'absent') {
       // WI-002: the workspace resolved from the env hint (walk did not hit), so
       // MY_PTY_ID is empty here — the A2A task tools recover senderPtyId from the
       // weak WMUX_PTY_ID env hint via getTaskSenderPtyId. Surface that this is
       // the path the launch demo depends on when the Windows walk is flaky.
       logIdentity(`resolved ws via env-hint (walk missed) senderPty=${getTaskSenderPtyId() ? 'weak-env' : 'none'}`);
+      workspaceFromEnvHint = true;
       return ENV_WORKSPACE_HINT;
     }
   }
@@ -853,6 +896,13 @@ async function resolveWorkspaceId(): Promise<string> {
   // like the env hint: drop it only on positive proof it is 'absent' (and clear
   // the cache so the next call re-resolves clean); keep it on 'unknown'
   // (workspace.list transiently down) to carry the call through a boot blip.
+  // A process that main now places under NO pane (its parent exited, or it was
+  // reparented) must not keep the pane it used to run under.
+  if (MY_WORKSPACE_ID && identityState === 'miss') {
+    MY_WORKSPACE_ID = '';
+    MY_PTY_ID = '';
+    workspaceResolved = false;
+  }
   if (MY_WORKSPACE_ID && (await isLiveWorkspace(MY_WORKSPACE_ID)) === 'absent') {
     MY_WORKSPACE_ID = '';
     MY_PTY_ID = '';
@@ -919,11 +969,28 @@ async function getParentPid(pid: number): Promise<number | null> {
 async function requireWorkspaceId(): Promise<string> {
   const wsId = await resolveWorkspaceId();
   if (!wsId) {
+    // Pane env present but main would not vouch for it: say why, rather than
+    // the generic "not inside wmux".
+    if (ENV_WORKSPACE_HINT || ENV_PTY_HINT) {
+      if (identityState === 'miss') throw new Error(`Workspace identity refused: ${PANE_IDENTITY_MISS_MESSAGE}`);
+      if (identityState === 'unavailable') throw new Error(`Workspace identity unknown: ${PANE_IDENTITY_UNAVAILABLE_MESSAGE}`);
+    }
     throw new Error(
       'Workspace identity unknown. This MCP server cannot determine which workspace it belongs to. ' +
       'Make sure you are running inside a wmux terminal workspace.'
     );
   }
+  return wsId;
+}
+
+/**
+ * requireWorkspaceId for tools that act AS the caller (send, update, cancel,
+ * broadcast, set skills). An identity taken only from the env hint — possible
+ * solely when main is unreachable or predates the check — is refused.
+ */
+async function requireWriteWorkspaceId(): Promise<string> {
+  const wsId = await requireWorkspaceId();
+  if (workspaceFromEnvHint) throw new Error(`Workspace identity unverified: ${PANE_IDENTITY_UNVERIFIED_WRITE_MESSAGE}`);
   return wsId;
 }
 
@@ -1587,7 +1654,7 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
   to?: string; pane_id?: string; surface_id?: string; title?: string; task_id?: string; message: string; execute?: boolean; silent?: boolean;
   data?: Record<string, unknown>; data_mime_type?: string;
 }) => {
-  const wsId = await requireWorkspaceId();
+  const wsId = await requireWriteWorkspaceId();
   const params: Record<string, unknown> = {
     workspaceId: wsId,
     message,
@@ -1671,7 +1738,7 @@ server.tool(
   'Update a task\'s status. Only the receiver workspace can change it. Transitions follow a state machine (see `status`): completed/failed/canceled are final, and a rejected transition names the allowed next states. `evidence` is required for both completed and failed; a rejection names what to attach. A completion with no verified item (command+passed, or inspection/artifact+verified) is still accepted but graded unverified (verifiedItemCount=0). Optionally attach an artifact on completion.',
   A2A_TASK_UPDATE_SHAPE,
   async ({ task_id, status, message, artifact_name, artifact_data, evidence }) => {
-    const wsId = await requireWorkspaceId();
+    const wsId = await requireWriteWorkspaceId();
     const params: Record<string, unknown> = { workspaceId: wsId, taskId: task_id, status };
     // S-C2: include our OWN ptyId so the renderer can compute per-pane role +
     // pane-granular status authz for this update. Verified PID-map hit preferred;
@@ -1701,7 +1768,7 @@ server.tool(
   'Cancel a task you previously sent. Only the original sender can cancel.',
   A2A_TASK_CANCEL_SHAPE,
   async ({ task_id, reason }) => {
-    const wsId = await requireWorkspaceId();
+    const wsId = await requireWriteWorkspaceId();
     return callRpc('a2a.task.cancel', { workspaceId: wsId, taskId: task_id, reason });
   },
 );
@@ -1712,7 +1779,7 @@ server.tool(
   'Send a message to ALL other workspaces at once (e.g. announcements, greetings). For targeted messages, use send_message instead.',
   A2A_BROADCAST_SHAPE,
   async ({ message, priority }) => {
-    const wsId = await requireWorkspaceId();
+    const wsId = await requireWriteWorkspaceId();
     return callRpc('a2a.broadcast', { message, priority: priority || 'normal', workspaceId: wsId });
   },
 );
@@ -1723,7 +1790,7 @@ server.tool(
   'Register your agent capabilities/skills so other agents can discover you via a2a_discover.',
   A2A_SET_SKILLS_SHAPE,
   async ({ skills, description }) => {
-    const wsId = await requireWorkspaceId();
+    const wsId = await requireWriteWorkspaceId();
     return callRpc('meta.setSkills', { workspaceId: wsId, skills, description });
   },
 );
