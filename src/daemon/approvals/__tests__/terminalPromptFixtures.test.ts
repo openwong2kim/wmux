@@ -14,7 +14,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseTerminalPrompt, terminalPromptAnswerability, toolFromDialogTitle } from '../terminalPromptParse';
 import { looksLikeApprovalPrompt } from '../approvalKeystrokes';
-import { TERMINAL_PROMPT_SUMMARY_MAX } from '../terminalPrompt';
 
 interface Fixture {
   tui: 'claude' | 'codex' | 'opencode';
@@ -141,7 +140,7 @@ describe('measured terminal-prompt fixtures', () => {
       options: parsed.options.length,
       active: parsed.active,
       topRuleFound: parsed.topRuleFound,
-      answerable: terminalPromptAnswerability(parsed, TERMINAL_PROMPT_SUMMARY_MAX).answerable,
+      answerable: terminalPromptAnswerability(parsed).answerable,
     }).toEqual({ tool: undefined, ...want.parsed });
   });
 

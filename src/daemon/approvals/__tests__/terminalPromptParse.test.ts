@@ -128,9 +128,17 @@ describe('parseTerminalPrompt', () => {
     const b = parseTerminalPrompt(long('/beta'))!;
     expect(a.commandLines[0]).toBe(b.commandLines[0]);
     expect(a.fingerprint).not.toBe(b.fingerprint);
-    // …and a cut field makes the dialog unanswerable.
+    // A display cap is not a cut: the dialog is still whole on screen.
     expect(a.truncated).toBe(true);
-    expect(terminalPromptAnswerability(a, 200).answerable).toBe(false);
+    expect(a.cut).toBe(false);
+    expect(terminalPromptAnswerability(a).answerable).toBe(true);
+  });
+
+  it('a row the TUI itself cut (ellipsis) makes the dialog unanswerable', () => {
+    const rows = DIALOG.map((r) => (r === '   rm -rf build/cache' ? '   rm -rf build/ca…' : r));
+    const parsed = parseTerminalPrompt(rows)!;
+    expect(parsed.cut).toBe(true);
+    expect(terminalPromptAnswerability(parsed).answerable).toBe(false);
   });
 
   it('the fingerprint survives the TUI breaking a command over different rows', () => {
@@ -151,11 +159,15 @@ describe('parseTerminalPrompt', () => {
     expect(parseTerminalPrompt(DIALOG.filter((r) => !r.includes('Esc to cancel')))!.active).toBe(false);
   });
 
-  it('a dialog taller than the viewport (top rule off screen) is not answerable', () => {
+  it('a dialog taller than the viewport (top rule off screen) never binds as a whole dialog', () => {
     const cut = DIALOG.slice(3);
     const parsed = parseTerminalPrompt(cut)!;
     expect(parsed.topRuleFound).toBe(false);
-    expect(terminalPromptAnswerability(parsed, 200)).toEqual({ answerable: false, choices: [] });
+    expect(parsed.title).toBeUndefined();
+    const call = { name: 'Bash', command: 'rm -rf build/cache', description: 'Remove the build cache' };
+    expect(dialogMatchesToolCall(parsed, call)).toBe(false);
+    // Only the registry's top-cut path (exact tool_use id) may bind it.
+    expect(dialogMatchesToolCall(parsed, call, { topCut: true })).toBe(true);
   });
 
   it('only the plain Yes and No are answerable choices; "don\'t ask again" never is', () => {
@@ -167,18 +179,18 @@ describe('parseTerminalPrompt', () => {
       '',
       ' Esc to cancel · Tab to amend',
     ];
-    expect(terminalPromptAnswerability(parseTerminalPrompt(rows)!, 200)).toEqual({
+    expect(terminalPromptAnswerability(parseTerminalPrompt(rows)!)).toEqual({
       answerable: true,
       choices: [{ key: '1', label: 'Yes' }, { key: '3', label: 'No' }],
     });
     const noPlainYes = rows.map((r) => r.replace(' ❯ 1. Yes', ' ❯ 1. Yes, allow once'));
-    expect(terminalPromptAnswerability(parseTerminalPrompt(noPlainYes)!, 200).answerable).toBe(false);
+    expect(terminalPromptAnswerability(parseTerminalPrompt(noPlainYes)!).answerable).toBe(false);
   });
 
-  it('a command longer than the summary can carry is not answerable', () => {
+  it('a command longer than the 200-character summary is still answerable', () => {
     const rows = DIALOG.map((r) => (r === '   Remove the build cache' ? `   ${'word '.repeat(45)}` : r));
-    expect(terminalPromptAnswerability(parseTerminalPrompt(rows)!, 200).answerable).toBe(false);
-    expect(terminalPromptAnswerability(parseTerminalPrompt(DIALOG)!, 200).answerable).toBe(true);
+    expect(terminalPromptAnswerability(parseTerminalPrompt(rows)!).answerable).toBe(true);
+    expect(terminalPromptAnswerability(parseTerminalPrompt(DIALOG)!).answerable).toBe(true);
   });
 
   it('parses the dialog off a real headless render of its bytes', async () => {

@@ -14,6 +14,12 @@ export interface PendingToolUse {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /**
+   * How many `tool_use` blocks in the read window have no `tool_result` yet,
+   * this one included. More than one means parallel calls: their dialogs come
+   * one at a time, so the latest call is not necessarily the dialog on screen.
+   */
+  unanswered?: number;
 }
 
 /** How much of the transcript's end is read. A permission wait is at the tail. */
@@ -37,6 +43,7 @@ function contentBlocks(entry: Json): Json[] {
 export function latestPendingToolUse(entries: readonly unknown[]): PendingToolUse | null {
   let latest: PendingToolUse | null = null;
   const answered = new Set<string>();
+  const called: string[] = [];
   for (const entry of entries) {
     if (!isObject(entry) || entry['isSidechain'] === true) continue;
     const type = entry['type'];
@@ -46,13 +53,15 @@ export function latestPendingToolUse(entries: readonly unknown[]): PendingToolUs
         const name = block['name'];
         if (typeof id === 'string' && id && typeof name === 'string' && name) {
           latest = { id, name, input: isObject(block['input']) ? block['input'] : {} };
+          called.push(id);
         }
       } else if (type === 'user' && block['type'] === 'tool_result' && typeof block['tool_use_id'] === 'string') {
         answered.add(block['tool_use_id']);
       }
     }
   }
-  return latest && !answered.has(latest.id) ? latest : null;
+  if (!latest || answered.has(latest.id)) return null;
+  return { ...latest, unanswered: new Set(called.filter((id) => !answered.has(id))).size };
 }
 
 /**

@@ -16,7 +16,7 @@ describe('latestPendingToolUse', () => {
       useEntry('t1', 'Bash', { command: 'ls' }),
       resultEntry('t1'),
       useEntry('t2', 'Bash', { command: 'rm -rf build' }),
-    ])).toEqual({ id: 't2', name: 'Bash', input: { command: 'rm -rf build' } });
+    ])).toEqual({ id: 't2', name: 'Bash', input: { command: 'rm -rf build' }, unanswered: 1 });
   });
 
   it('is null once the latest call has its result, or when there is none', () => {

@@ -45,7 +45,7 @@ import type { DaemonSessionManager, ManagedSession } from '../DaemonSessionManag
 // a CONSUMER: it lists, it resolves, it republishes lifecycle events. It never
 // constructs a request, and it never decides what bytes a decision means.
 import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
-import { TERMINAL_PROMPT_WEB_ANSWER } from '../approvals/types';
+import { TERMINAL_PROMPT_WEB_ANSWER, TERMINAL_PROMPT_WEB_DECLINE } from '../approvals/types';
 import { decisionForChoiceLabel } from '../approvals/terminalPromptParse';
 // Type only — the projector's implementation (transcript parsing, watch state,
 // fs watching) stays out of this module. The web server is a STATELESS consumer
@@ -226,6 +226,10 @@ function decodeTurnCursor(
  *                              unless `--allow-upload` (its own grant)
  *   GET  /api/approvals        pending + recently resolved approval requests
  *   POST /api/approvals/:id    resolve one — ALLOWED on a read-only server
+ *   GET  /api/approvals/:id/detail   the full command of a pending, bound
+ *                              `terminal_prompt` (≤64 KB) + its hash
+ *   POST /api/approvals/:id/decline  cancel a `terminal_prompt` dialog with one
+ *                              Esc, only while it is pending and on screen
  */
 
 export interface WebTerminalStartOptions {
@@ -2228,6 +2232,13 @@ export class WebTerminalServer {
         // false, when the device store cannot list, revoke and set grants —
         // the shape an older daemon serves.
         ...(this.deviceManagement() ? { deviceManagement: { scope: this.deviceScope(principal) } } : {}),
+        // `terminal_prompt` extras: `GET /api/approvals/:id/detail` (the full
+        // command) and `POST /api/approvals/:id/decline` (one Esc). OMITTED,
+        // not false, when approvals are not wired — the shape an older daemon
+        // serves. Decline, like every write, only with this caller's input grant.
+        ...(this.deps.approvals
+          ? { terminalPromptDetail: true, terminalPromptDecline: this.mayInput(principal) }
+          : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
         minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
         serverVersion: daemonServerVersion(),
@@ -2383,6 +2394,12 @@ export class WebTerminalServer {
     }
     if (req.method === 'GET' && p === '/api/approvals') {
       return this.handleApprovalsList(res, principal, clientCaps(req));
+    }
+    if (req.method === 'GET' && p.startsWith('/api/approvals/') && p.endsWith('/detail')) {
+      return this.handleApprovalDetail(res, p.slice('/api/approvals/'.length, -'/detail'.length), principal);
+    }
+    if (req.method === 'POST' && p.startsWith('/api/approvals/') && p.endsWith('/decline')) {
+      return this.handleApprovalDecline(req, res, p.slice('/api/approvals/'.length, -'/decline'.length), principal, url);
     }
     if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
       return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length), principal, url);
@@ -5904,9 +5921,23 @@ export class WebTerminalServer {
     // `attachableSession`: the operator's own surfaces keep the full list.
     const visible = (r: ApprovalRequest): boolean =>
       principal.kind === 'operator' || !this.isBrainApproval(r.sessionId);
+    // A settled `terminal_prompt` is history only when a phone ANSWERED it
+    // (`pressedAt`: approved or declined remotely) and this caller is shown
+    // its question. Everything else is not an answer anyone gave from here: a
+    // `superseded` record is the daemon replacing its own card (every key in
+    // the pane and every late parse mints one), and an informational card
+    // that expired when its dialog closed was never answerable. Listing them
+    // filled the "recently answered" list with rows that had no question.
+    const answeredHere = (r: ApprovalRequest, wire: Record<string, unknown>): boolean =>
+      r.kind !== 'terminal_prompt'
+      || (r.state !== 'superseded' && r.pressedAt !== undefined && typeof wire['question'] === 'string');
     return this.json(res, 200, {
       pending: listed.pending.filter(visible).map((r) => approvalWire(r, caps)),
-      recentlyResolved: listed.recentlyResolved.filter(visible).map((r) => approvalWire(r, caps)),
+      recentlyResolved: listed.recentlyResolved
+        .filter(visible)
+        .map((r) => ({ r, wire: approvalWire(r, caps) }))
+        .filter(({ r, wire }) => answeredHere(r, wire))
+        .map(({ wire }) => wire),
     });
   }
 
@@ -6189,6 +6220,177 @@ export class WebTerminalServer {
         });
       })().catch((err: unknown) => {
         this.deps.log('warn', `[web] approval resolve failed: ${errMsg(err)}`);
+        try {
+          this.json(res, 500, { error: 'approvals unavailable' });
+        } catch {
+          /* socket already gone */
+        }
+      });
+    });
+  }
+
+  /**
+   * `GET /api/approvals/:id/detail` — the FULL command of a pending
+   * `terminal_prompt` bound to its tool call. The record carries a 200-char
+   * `summary` only: it is replicated to SSE, the push payload and
+   * approvals.json, and a command can be arbitrarily long. The phone fetches
+   * the rest here, when the user opens the card.
+   *
+   * Same caller as `GET /api/approvals` (any authenticated principal — no
+   * input grant: this reads, it types nothing); the orchestrator brain's pane
+   * is a 404 for a device, like an unknown id. 404 too for a record that is
+   * settled, another kind, or was never bound (informational).
+   */
+  private handleApprovalDetail(res: http.ServerResponse, rawId: string, principal: WebPrincipal): void {
+    const approvals = this.deps.approvals;
+    if (!approvals?.terminalPromptDetail) return this.json(res, 503, { error: 'approvals unavailable' });
+    let id: string;
+    try {
+      id = decodeURIComponent(rawId);
+    } catch {
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    if (!id || id.includes('/')) return this.json(res, 404, { error: 'not-found' });
+    const record = approvals.list().pending.find((r) => r.id === id);
+    if (!record || record.kind !== 'terminal_prompt') return this.json(res, 404, { error: 'not-found' });
+    if (principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    const detail = approvals.terminalPromptDetail(id);
+    if (!detail) return this.json(res, 404, { error: 'not-found' });
+    return this.json(res, 200, detail, { 'Cache-Control': 'no-store' });
+  }
+
+  /**
+   * `POST /api/approvals/:id/decline` — cancel a `terminal_prompt` dialog with
+   * ONE Esc. Declining is the safe direction, so it is open for an
+   * informational record too (one the phone cannot answer Yes/No), but it is
+   * as atomic as an answer: the registry writes the Esc only while the record
+   * is still pending and a dialog is still active on the pane at write time,
+   * and writes nothing otherwise (409/410).
+   *
+   * Only for a client that declared `terminal-prompt-decline`, and only with
+   * the device's input grant (it types into the pane), re-checked after the
+   * body and again from inside the registry right before the write. The
+   * orchestrator brain's pane is a 404 for a device. Body: `{}` or
+   * `{"promptFingerprint":"<hex>"}` (when present it must be the record's);
+   * `decision` / `via`, if sent, must be `"deny"` / `"escape"`.
+   */
+  private handleApprovalDecline(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+    principal: WebPrincipal,
+    url: URL,
+  ): void {
+    const approvals = this.deps.approvals;
+    if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
+    let id: string;
+    try {
+      id = decodeURIComponent(rawId);
+    } catch {
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    if (!id || id.includes('/')) return this.json(res, 404, { error: 'not-found' });
+    const find = (): ApprovalRequest | undefined => {
+      const listed = approvals.list();
+      return listed.pending.find((r) => r.id === id) ?? listed.recentlyResolved.find((r) => r.id === id);
+    };
+    const record = find();
+    if (!record || (principal.kind === 'device' && this.isBrainApproval(record.sessionId))) {
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    if (record.kind !== 'terminal_prompt') return this.json(res, 400, { error: 'not-a-terminal-prompt' });
+    if (!clientCaps(req).terminalPromptDecline) {
+      return this.json(res, 501, { error: 'answer-in-terminal', reason: 'no-capability' });
+    }
+    if (!this.mayInput(principal)) {
+      return this.refuseInput(res, principal, 'declining a terminal prompt types into the pane — it needs the same grant as typing');
+    }
+    this.readJsonBody(req, res, (body) => {
+      void (async () => {
+        const parsedBody = (body ?? {}) as Record<string, unknown>;
+        if (typeof parsedBody !== 'object' || Array.isArray(parsedBody)) {
+          return this.json(res, 400, { error: 'invalid-body' });
+        }
+        if (parsedBody['decision'] !== undefined && parsedBody['decision'] !== 'deny') {
+          return this.json(res, 400, { error: "decision must be 'deny'" });
+        }
+        if (parsedBody['via'] !== undefined && parsedBody['via'] !== 'escape') {
+          return this.json(res, 400, { error: "via must be 'escape'" });
+        }
+        const rawFingerprint = parsedBody['promptFingerprint'];
+        if (rawFingerprint !== undefined && (typeof rawFingerprint !== 'string' || !/^[0-9a-f]{32}$/.test(rawFingerprint))) {
+          return this.json(res, 400, { error: 'invalid-prompt-fingerprint' });
+        }
+        const sameCaller = (now: WebPrincipal): boolean =>
+          now.kind === 'operator'
+            ? principal.kind === 'operator'
+            : principal.kind === 'device' && now.deviceId === principal.deviceId;
+        const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+        if (!fresh.ok || !sameCaller(fresh.principal)) return this.json(res, 401, { error: 'authorization-expired' });
+        const current = find();
+        if (!current || (fresh.principal.kind === 'device' && this.isBrainApproval(current.sessionId))) {
+          return this.json(res, 404, { error: 'not-found' });
+        }
+        if (!this.mayInput(fresh.principal)) return this.refuseInput(res, fresh.principal, 'Input permission changed');
+        const authorize = async (): Promise<'ok' | 'expired' | 'read-only'> => {
+          const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+          if (!now.ok || !sameCaller(now.principal)) return 'expired';
+          return this.mayInput(now.principal) ? 'ok' : 'read-only';
+        };
+        const result = await approvals.resolve({
+          id,
+          decision: 'deny',
+          resolvedBy: describePrincipal(fresh.principal),
+          ...(typeof rawFingerprint === 'string' ? { promptFingerprint: rawFingerprint } : {}),
+          // Set HERE, for a client that declared the capability — never read from the body.
+          terminalPromptDecline: TERMINAL_PROMPT_WEB_DECLINE,
+          authorize,
+        });
+        if (result.ok) {
+          return this.json(res, 200, {
+            state: result.request.state,
+            ...(typeof result.request.pressedAt === 'number' ? { pressedAt: result.request.pressedAt } : {}),
+            via: 'escape',
+            durable: result.durable,
+          });
+        }
+        // Every refusal wrote nothing.
+        switch (result.reason) {
+          case 'already-resolved':
+            return this.json(res, 409, { error: 'already-resolved', resolvedBy: result.resolvedBy, effect: 'none' });
+          case 'already-answered':
+            return this.json(res, 409, { error: 'already-answered', effect: 'none' });
+          case 'prompt-changed':
+            return this.json(res, 409, { error: 'prompt-changed', effect: 'none' });
+          case 'expired':
+          case 'prompt-gone':
+            return this.json(res, 410, {
+              error: result.reason,
+              ...(result.request ? { state: result.request.state } : {}),
+              effect: 'none',
+            });
+          case 'answer-in-terminal':
+            return this.json(res, 501, { error: 'answer-in-terminal', reason: result.answerRefusal });
+          case 'invalid-choice':
+            return this.json(res, 400, { error: 'invalid-choice' });
+          case 'not-found':
+            return this.json(res, 404, { error: 'not-found' });
+          case 'unauthorized':
+            return this.json(res, 401, { error: 'authorization-expired' });
+          case 'input-revoked':
+            return this.refuseInput(res, fresh.principal, 'Input permission changed');
+          case 'authorization-unconfirmed':
+            return this.json(res, 503, { error: 'authorization-unconfirmed' });
+          default: {
+            const reason = String(result.reason);
+            this.deps.log('warn', `[web] approval decline returned unknown reason: ${reason}`);
+            return this.json(res, 500, { error: reason });
+          }
+        }
+      })().catch((err: unknown) => {
+        this.deps.log('warn', `[web] approval decline failed: ${errMsg(err)}`);
         try {
           this.json(res, 500, { error: 'approvals unavailable' });
         } catch {
@@ -7438,16 +7640,22 @@ function cwdLeafOf(cwd: string | undefined): { cwdLeaf?: string } {
 export interface ClientCaps {
   /** Understands (and can answer) a `terminal_prompt` record's dialog. */
   terminalPromptAnswer: boolean;
+  /** Can decline a `terminal_prompt` dialog (`POST /api/approvals/:id/decline`). */
+  terminalPromptDecline?: boolean;
 }
 
 export const CLIENT_CAPS_HEADER = 'x-wmux-client-caps';
 export const CLIENT_CAP_TERMINAL_PROMPT_ANSWER = 'terminal-prompt-answer';
+export const CLIENT_CAP_TERMINAL_PROMPT_DECLINE = 'terminal-prompt-decline';
 
 export function clientCaps(req: http.IncomingMessage): ClientCaps {
   const raw = req.headers[CLIENT_CAPS_HEADER];
   const joined = Array.isArray(raw) ? raw.join(',') : raw ?? '';
   const tokens = new Set(joined.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean));
-  return { terminalPromptAnswer: tokens.has(CLIENT_CAP_TERMINAL_PROMPT_ANSWER) };
+  return {
+    terminalPromptAnswer: tokens.has(CLIENT_CAP_TERMINAL_PROMPT_ANSWER),
+    terminalPromptDecline: tokens.has(CLIENT_CAP_TERMINAL_PROMPT_DECLINE),
+  };
 }
 
 function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAnswer: false }): Record<string, unknown> {
@@ -7480,6 +7688,9 @@ function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAns
           }
         : {}),
       ...(answerable ? { choices: r.choices, promptFingerprint: r.promptFingerprint } : {}),
+      // The full command is at `GET /api/approvals/:id/detail` (an answerable
+      // record is always bound to its call, so it always has one).
+      ...(answerable ? { hasDetail: true } : {}),
       ...(typeof r.pressedAt === 'number' ? { pressedAt: r.pressedAt } : {}),
       ...(r.decision ? { decision: r.decision } : {}),
       ...(r.selectedChoiceKey ? { selectedChoiceKey: r.selectedChoiceKey } : {}),

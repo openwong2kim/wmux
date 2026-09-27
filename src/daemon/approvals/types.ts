@@ -528,10 +528,45 @@ export interface ApprovalResolveParams {
    * (the pipe RPC, MCP `approval_press`) can never carry it.
    */
   terminalPromptAnswer?: typeof TERMINAL_PROMPT_WEB_ANSWER;
+  /**
+   * `terminal_prompt` only: set by the web decline route for a caller that
+   * declared `terminal-prompt-decline`. The answer is then ONE Esc, written
+   * only while the record is pending and its dialog is on screen; `decision`
+   * must be 'deny' and `choiceKey` absent.
+   */
+  terminalPromptDecline?: typeof TERMINAL_PROMPT_WEB_DECLINE;
 }
 
 /** The web route's marker for a capable `terminal_prompt` answer (see above). */
 export const TERMINAL_PROMPT_WEB_ANSWER: unique symbol = Symbol('terminal-prompt-web-answer');
+
+/**
+ * The web decline route's marker (`POST /api/approvals/:id/decline`): cancel a
+ * `terminal_prompt` dialog with ONE Esc. A Symbol for the same reason as the
+ * answer marker — JSON callers can never carry it.
+ */
+export const TERMINAL_PROMPT_WEB_DECLINE: unique symbol = Symbol('terminal-prompt-web-decline');
+
+/**
+ * `GET /api/approvals/:id/detail` — the full text a pending, bound
+ * `terminal_prompt` is about. Kept in daemon memory only: never on the record,
+ * so never in approvals.json, an SSE event or a push.
+ */
+export interface TerminalPromptDetail {
+  id: string;
+  toolName?: string;
+  /** The call's full command (Bash) or path/url, up to TERMINAL_PROMPT_DETAIL_MAX_BYTES. */
+  command: string;
+  /** sha256 (hex) of the FULL command's UTF-8 bytes, even when `command` was capped. */
+  commandHash: string;
+  /** UTF-8 byte length of the full command. */
+  commandBytes: number;
+  /** `command` was capped at TERMINAL_PROMPT_DETAIL_MAX_BYTES. */
+  truncated: boolean;
+}
+
+/** Most bytes of a command `/detail` returns. */
+export const TERMINAL_PROMPT_DETAIL_MAX_BYTES = 64 * 1024;
 
 /**
  * The whole surface a consumer (the web server, the daemon RPCs) needs. The
@@ -550,4 +585,10 @@ export interface ApprovalRegistryApi {
   resolve(params: ApprovalResolveParams): Promise<ApprovalResolveResult>;
   /** Subscribe to lifecycle transitions. Returns the unsubscribe function. */
   onEvent(listener: (event: ApprovalEvent) => void): () => void;
+  /**
+   * The full command of a PENDING `terminal_prompt` bound to its tool call,
+   * or null (unknown id, settled, another kind, or never bound). Optional so
+   * a registry that predates it still type-checks.
+   */
+  terminalPromptDetail?(id: string): TerminalPromptDetail | null;
 }
