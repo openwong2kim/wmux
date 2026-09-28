@@ -435,8 +435,7 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
     // One entry per native adapter; an adapter with no entry cannot be answered from here.
     answerNative: async (native, reply) => {
       const adapters: Partial<Record<NativeDecisionRef['adapter'], (n: NativeDecisionRef, r: NativeDecisionReply) => Promise<NativeDecisionOutcome>>> = {
-        // Codex: a phone's Yes is `accept`, its No is `cancel` (what Esc sends in the TUI).
-        codex: (n, r) => codexPaneRelays.answer(n, r.decision === 'approve' ? 'accept' : 'cancel'),
+        codex: (n, r) => codexPaneRelays.answer(n, r.decision),
       };
       return adapters[native.adapter]?.(native, reply) ?? 'unavailable';
     },

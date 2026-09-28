@@ -134,16 +134,18 @@ export class CodexPaneRelays {
   }
 
   /**
-   * A phone's answer to one request: Yes = `accept`, No = `cancel`. Only the
-   * relay incarnation that reported the request can answer it, and only while
-   * its pane still owns the thread; anything else is `not-found`.
+   * A phone's answer to one request: Yes = `accept`, No = `cancel` (what Esc
+   * sends in the TUI; it interrupts the turn). Only the relay incarnation that
+   * reported the request can answer it, and only while its pane still owns the
+   * thread; anything else is `not-found`.
    */
-  answer(ref:{relayId?:string; threadId?:string; requestId:string}, decision:CodexDecisionAnswer):Promise<CodexAnswerOutcome> {
+  answer(ref:{relayId?:string; threadId?:string; requestId:string}, decision:'approve'|'deny'):Promise<CodexAnswerOutcome> {
+    const answer:CodexDecisionAnswer = decision === 'approve' ? 'accept' : 'cancel';
     const entry = ref.relayId === undefined ? undefined : [...this.entries.values()].find(e=>e.relayId === ref.relayId);
     if (!entry || entry.retired || !entry.owner || !entry.relay || entry.relay.retired() || ref.threadId === undefined) return Promise.resolve('not-found');
     const owner = this.ownerOf(ref.threadId);
     if (owner?.paneId !== entry.id || !owner.live) return Promise.resolve('not-found');
-    return entry.relay.answer(ref.threadId,ref.requestId,decision);
+    return entry.relay.answer(ref.threadId,ref.requestId,answer);
   }
 
   retire(id:string):Promise<void> {

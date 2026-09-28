@@ -169,3 +169,54 @@ describe('Codex pane relay policy',()=>{
     await registry.shutdown();
   });
 });
+describe('Codex pane relay phone answers',()=>{
+  const paneOf=(id:string)=>({meta:{id,state:'attached',env:{}}} as unknown as ManagedSession);
+  const request={method:'item/commandExecution/requestApproval' as const,threadId:'thread-1',question:'Run?',toolName:'command'};
+  function setup(hooks:ConstructorParameters<typeof CodexPaneRelays>[3]={}) {
+    const options=new Map<string,RelayOptions>();const relays=new Map<string,ReturnType<typeof relay>>();
+    const registry=new CodexPaneRelays((async(o:RelayOptions & {policy?:{paneId:string}})=>{
+      const r=relay();options.set(o.policy!.paneId,o);relays.set(o.policy!.paneId,r);return r;
+    }) as unknown as typeof createCodexTuiRelay,undefined,undefined,hooks);
+    return {registry,policy:(id:string)=>options.get(id)!.policy!,relay:(id:string)=>relays.get(id)!};
+  }
+  it('reports a pending request with its relay incarnation, and answers Yes as accept and No as cancel',async()=>{
+    const pending=vi.fn();const settled=vi.fn();
+    const {registry,policy,relay:relayOf}=setup({decisionPending:pending,decisionSettled:settled});
+    const lease=await registry.prepare('a');
+    // No committed owner yet: nothing to record against.
+    policy('a').decisionPending?.('0',request);
+    expect(pending).not.toHaveBeenCalled();
+    const pane=paneOf('a');lease.commit(pane);policy('a').recordOwner('thread-1');
+    policy('a').decisionPending?.('0',request);
+    const ref=pending.mock.calls[0]![2];
+    expect(pending).toHaveBeenCalledWith('a',pane,{relayId:expect.any(String),threadId:'thread-1',requestId:'0',method:request.method},request);
+    await expect(registry.answer(ref,'approve')).resolves.toBe('ok');
+    await expect(registry.answer(ref,'deny')).resolves.toBe('ok');
+    expect(relayOf('a').answer.mock.calls).toEqual([['thread-1','0','accept'],['thread-1','0','cancel']]);
+    policy('a').decisionSettled?.('0','thread-1','answered-locally');
+    expect(settled).toHaveBeenCalledWith('a',{relayId:ref.relayId,threadId:'thread-1',requestId:'0'},'answered-locally');
+    await registry.shutdown();
+  });
+  it('answers only through the reporting relay while its pane still owns the thread',async()=>{
+    const pending=vi.fn();
+    const {registry,policy,relay:relayOf}=setup({decisionPending:pending});
+    const a=await registry.prepare('a');a.commit(paneOf('a'));policy('a').recordOwner('thread-1');
+    policy('a').decisionPending?.('0',request);
+    const ref=pending.mock.calls[0]![2];
+    // Another relay's id space, no relay at all, or no thread: never this request.
+    await expect(registry.answer({...ref,relayId:'other'},'approve')).resolves.toBe('not-found');
+    await expect(registry.answer({requestId:'0',threadId:'thread-1'},'approve')).resolves.toBe('not-found');
+    await expect(registry.answer({relayId:ref.relayId,requestId:'0'},'approve')).resolves.toBe('not-found');
+    // Another pane resumed the thread: it is no longer this pane's to answer.
+    const b=await registry.prepare('b');b.commit(paneOf('b'));policy('b').recordOwner('thread-1');
+    await expect(registry.answer(ref,'approve')).resolves.toBe('not-found');
+    policy('a').recordOwner('thread-1');
+    // The pane's relay retired (the account server restarted): a new relay starts ids at 0 again.
+    await registry.retire('a');
+    await expect(registry.answer(ref,'approve')).resolves.toBe('not-found');
+    const next=await registry.prepare('a');next.commit(paneOf('a'));policy('a').recordOwner('thread-1');
+    await expect(registry.answer(ref,'approve')).resolves.toBe('not-found');
+    expect(relayOf('a').answer).not.toHaveBeenCalled();
+    await registry.shutdown();
+  });
+});

@@ -1,11 +1,13 @@
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
 import {mkdtemp,mkdir,rm,stat,access,symlink} from 'node:fs/promises';
+import {readFileSync} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket,{WebSocketServer} from 'ws';
 import {describe,it,expect} from 'vitest';
-import {createCodexTuiRelay,CodexRelayUnavailableError,type CodexRelayPolicy} from '../codexTuiRelay';
+import {createCodexTuiRelay,CodexRelayUnavailableError,type CodexRelayPolicy,type CodexDecisionSettledReason} from '../codexTuiRelay';
+import type {CodexDecisionRequest} from '../codexDecisions';
 import {threadIdentityEnv} from '../codexRelayPolicy';
 const threadId='01234567-89ab-4cde-8123-456789abcdef';
 const systemThreadId='11111111-89ab-4cde-8123-456789abcdef';
@@ -490,5 +492,149 @@ describe.skipIf(process.platform === 'win32')('relay client responses',()=>{
       expect(f.relay.retired()).toBe(true);
       expect(refusals).toHaveLength(1);
     } finally { client.terminate();await f.cleanup(); }
+  });
+});
+
+// Phone answers to Codex approvals. The relay writes one kind of frame
+// upstream on its own: the bare answer to a server request that is still
+// awaiting one on this connection, for a thread this pane owns.
+describe.skipIf(process.platform === 'win32')('phone answers to Codex approvals',()=>{
+  const measured=JSON.parse(readFileSync(path.join(__dirname,'fixtures','codex-server-requests.json'),'utf8')) as
+    {serverRequests:Record<string,{request:{method:string;id:number;params:Record<string,unknown>}}>};
+  const command=measured.serverRequests['item/commandExecution/requestApproval']!.request;
+  const owned=command.params.threadId as string;
+  const foreign='33333333-89ab-4cde-8123-456789abcdef';
+  const request=(id:number|string,params:Record<string,unknown>={})=>({...command,id,params:{...command.params,...params}});
+  type Owner=(threadId:string)=>{paneId:string;live:boolean}|undefined;
+  async function open(o:{owner?:Owner}={}) {
+    const raw:string[]=[];const unmatched:number[]=[];
+    const pending:Array<{requestId:string;request:CodexDecisionRequest}>=[];
+    const settled:Array<{requestId:string;threadId:string;reason:CodexDecisionSettledReason}>=[];
+    const owners:{current:Owner}={current:o.owner ?? (id=>id===owned ? {paneId:'pty-a',live:true} : {paneId:'pty-b',live:true})};
+    const policy:CodexRelayPolicy={paneId:'pty-a',identity:()=>threadIdentityEnv({id:'pty-a',env:{}},{}),serverProven:()=>true,
+      owner:(id)=>owners.current(id),recordOwner:()=>{/* not exercised here */},
+      unmatchedResponse:(count)=>{unmatched.push(count);},
+      decisionPending:(requestId,r)=>{pending.push({requestId,request:r});},
+      decisionSettled:(requestId,threadId,reason)=>{settled.push({requestId,threadId,reason});}};
+    const f=await fixture({policy,onUpstreamRequest:(r,text)=>{if(r.method===undefined)raw.push(text);}});
+    const client=await f.connect();
+    const deliver=async(frame:object)=>{
+      const got=new Promise<void>(resolve=>client.once('message',()=>resolve()));
+      f.upstream()!.send(JSON.stringify(frame));await got;
+    };
+    // A round trip through the relay: every frame sent before it has been handled.
+    const settle=async()=>{
+      const got=new Promise<void>(resolve=>client.once('message',()=>resolve()));
+      client.send(JSON.stringify({id:101,method:'model/list',params:{}}));await got;
+    };
+    await settle();
+    return {f,client,raw,unmatched,pending,settled,owners,deliver,settle};
+  }
+
+  it('records an owned approval and injects the bare answer under the server id, id 0 included', async () => {
+    const t=await open();
+    try {
+      await t.deliver(request(0));
+      expect(t.pending).toEqual([{requestId:'0',request:{method:'item/commandExecution/requestApproval',threadId:owned,
+        question:'Create out.txt in the project?',toolName:'command',summary:"/bin/zsh -lc 'touch out.txt'"}}]);
+      await expect(t.f.relay.answer(owned,'0','accept')).resolves.toBe('ok');
+      await t.settle();
+      expect(t.raw).toEqual(['{"id":0,"result":{"decision":"accept"}}']);
+      // Phone first: the TUI's later answer to the same id is not forwarded,
+      // and the server's resolved notice reports nothing back.
+      t.client.send(JSON.stringify({id:0,result:{decision:'cancel'}}));
+      await t.deliver({method:'serverRequest/resolved',params:{threadId:owned,requestId:0}});
+      await t.settle();
+      expect(t.raw).toHaveLength(1);
+      expect(t.unmatched).toEqual([1]);
+      expect(t.settled).toEqual([]);
+      await expect(t.f.relay.answer(owned,'0','accept')).resolves.toBe('not-found');
+    } finally { t.client.terminate();await t.f.cleanup(); }
+  });
+
+  it('keeps a string server id a string, apart from the numeric id of the same digits', async () => {
+    const t=await open();
+    try {
+      await t.deliver(request('7'));
+      expect(t.pending[0]?.requestId).toBe('s:7');
+      await expect(t.f.relay.answer(owned,'7','cancel')).resolves.toBe('not-found');
+      await expect(t.f.relay.answer(owned,'s:7','cancel')).resolves.toBe('ok');
+      await t.settle();
+      expect(t.raw).toEqual(['{"id":"7","result":{"decision":"cancel"}}']);
+    } finally { t.client.terminate();await t.f.cleanup(); }
+  });
+
+  it('TUI first: forwards its answer, settles on serverRequest/resolved, and the phone finds nothing', async () => {
+    const t=await open();
+    try {
+      await t.deliver(request(1));
+      t.client.send(JSON.stringify({id:1,result:{decision:'accept'}}));
+      await t.settle();
+      await expect(t.f.relay.answer(owned,'1','accept')).resolves.toBe('not-found');
+      await t.deliver({method:'serverRequest/resolved',params:{threadId:owned,requestId:1}});
+      expect(t.raw).toEqual(['{"id":1,"result":{"decision":"accept"}}']);
+      expect(t.settled).toEqual([{requestId:'1',threadId:owned,reason:'answered-locally'}]);
+    } finally { t.client.terminate();await t.f.cleanup(); }
+  });
+
+  it('settles the same way when another client answered first', async () => {
+    const t=await open();
+    try {
+      await t.deliver(request(2));
+      await t.deliver({method:'serverRequest/resolved',params:{threadId:owned,requestId:2}});
+      expect(t.settled).toEqual([{requestId:'2',threadId:owned,reason:'answered-locally'}]);
+      await expect(t.f.relay.answer(owned,'2','accept')).resolves.toBe('not-found');
+      expect(t.raw).toEqual([]);
+    } finally { t.client.terminate();await t.f.cleanup(); }
+  });
+
+  it('ignores a thread this pane does not own, and one whose owning pane is not live', async () => {
+    const t=await open({owner:id=>id===owned ? {paneId:'pty-a',live:false} : {paneId:'pty-b',live:true}});
+    try {
+      await t.deliver(request(3));
+      await t.deliver(request(4,{threadId:foreign}));
+      expect(t.pending).toEqual([]);
+      await expect(t.f.relay.answer(owned,'3','accept')).resolves.toBe('not-found');
+      await expect(t.f.relay.answer(foreign,'4','accept')).resolves.toBe('not-found');
+      await t.settle();
+      expect(t.raw).toEqual([]);
+    } finally { t.client.terminate();await t.f.cleanup(); }
+  });
+
+  it('refuses an answer naming another thread, or after another pane took the thread', async () => {
+    const t=await open();
+    try {
+      await t.deliver(request(5));
+      await expect(t.f.relay.answer(foreign,'5','accept')).resolves.toBe('not-found');
+      t.owners.current=()=>({paneId:'pty-b',live:true});
+      await expect(t.f.relay.answer(owned,'5','accept')).resolves.toBe('not-found');
+      await t.settle();
+      expect(t.raw).toEqual([]);
+    } finally { t.client.terminate();await t.f.cleanup(); }
+  });
+
+  it('offers only a request whose own choices include accept and cancel', async () => {
+    const t=await open();
+    try {
+      await t.deliver(request(6,{availableDecisions:['accept',{acceptWithExecpolicyAmendment:{execpolicy_amendment:['x']}},'decline']}));
+      await t.deliver({method:'mcpServer/elicitation/request',id:7,params:{threadId:owned,mode:'form',message:'m'}});
+      expect(t.pending).toEqual([]);
+      await expect(t.f.relay.answer(owned,'6','accept')).resolves.toBe('not-found');
+    } finally { t.client.terminate();await t.f.cleanup(); }
+  });
+
+  it('settles on turn/completed, and everything on disconnect, since ids restart with the next connection', async () => {
+    const t=await open();
+    try {
+      await t.deliver(request(8));
+      await t.deliver({method:'turn/completed',params:{threadId:owned,turn:{id:'turn-1'}}});
+      expect(t.settled).toEqual([{requestId:'8',threadId:owned,reason:'turn-ended'}]);
+      await t.deliver(request(10));
+      const closed=new Promise<void>(resolve=>t.client.once('close',()=>resolve()));
+      t.client.terminate();await closed;
+      await new Promise(r=>setTimeout(r,20));
+      expect(t.settled.at(-1)).toEqual({requestId:'10',threadId:owned,reason:'pane-gone'});
+      await expect(t.f.relay.answer(owned,'10','accept')).resolves.toBe('not-found');
+    } finally { await t.f.cleanup(); }
   });
 });
