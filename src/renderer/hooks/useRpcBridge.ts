@@ -33,6 +33,7 @@ import {
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { t } from '../i18n';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName, type A2aFormatOptions } from '../utils/a2aFormat';
+import { bodyPreview } from '../../shared/nudgePreview';
 import type { A2aPriority } from '../utils/a2aFormat';
 import { findPendingExecuteRequest, requestExecuteApproval, requestFanOutApproval, requestTaskApproval } from '../utils/executeApprovalGate';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
@@ -689,13 +690,25 @@ function applySenderReopen(taskId: string, params: RpcParams): boolean {
 // existing one (#1573). Both parties of a same-workspace task share the
 // workspace name, so a reply labeled "new task" reads, in the sender's pane,
 // exactly like its own send's nudge landing there too.
-function buildA2aNudge(taskId: string, senderName: string, kind: 'new' | 'reply'): string {
+// A new task also carries its title and body as a one-line preview, so the
+// receiver knows what arrived without a query.
+export function buildA2aNudge(
+  taskId: string,
+  senderName: string,
+  kind: 'new' | 'reply',
+  about?: { title?: string; message?: string },
+): string {
   const id8 = taskId.replace(/^task[-_]?/, '').slice(0, 8);
   const what = kind === 'new' ? 'new A2A task' : 'reply on A2A task';
+  // The default title is the message's own head; repeating it adds nothing.
+  const title = about?.title && !about.message?.startsWith(about.title) ? about.title : '';
+  // Another workspace's text TYPED into a live agent prompt: bodyPreview keeps
+  // it one bounded line with no control or shell-substitution characters.
+  const preview = bodyPreview([title, about?.message ?? ''].filter(Boolean).join(' — '));
   // Sanitize the user-editable workspace name: a CR/LF in it would otherwise
   // split this "single line" into a multi-line bracketed paste (submitted with
   // `\r\r`) and inject text into the very live-agent prompt this path protects.
-  return `[wmux] ${what} ${id8} from ${sanitizeA2aName(senderName)} — a2a_task_query`;
+  return `[wmux] ${what} ${id8} from ${sanitizeA2aName(senderName)}${preview ? `: ${preview}` : ''} — a2a_task_query`;
 }
 
 // ---------------------------------------------------------------------------
@@ -3004,7 +3017,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         // onto the EventBus below, so the receiver can still poll it.
         mode = 'no-agent-pane';
       } else if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
-        write = await deliverPtyNudge(target, buildA2aNudge(newTaskId, fromName, 'new'), explicitPty, operator);
+        write = await deliverPtyNudge(target, buildA2aNudge(newTaskId, fromName, 'new', { title, message }), explicitPty, operator);
       } else {
         write = await deliverPtyNotification(target, fromName, message, explicitPty, operator);
         mode = 'notification';

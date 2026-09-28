@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
-import { handleRpcMethod } from '../useRpcBridge';
+import { buildA2aNudge, handleRpcMethod } from '../useRpcBridge';
 import { formatBracketedPastePayload } from '../../../shared/ptyMessageDelivery';
 
 const PTY_A = 'pty-1573-a';
@@ -82,8 +82,21 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
   it('a pane_id-addressed send nudges only the addressed pane', async () => {
     const sent = await sendAtoB();
     expect(sent.delivery).toMatchObject({ notified: true, mode: 'nudge' });
-    expect(writesTo(PTY_B)).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared`);
+    expect(writesTo(PTY_B)).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared: please review — a2a_task_query`);
     expect(writesTo(PTY_A)).toBe('');
+  });
+
+  it('a new-task nudge previews title and body as one line with no shell metacharacters', () => {
+    const line = buildA2aNudge('task-12345678-rest', 'Ops', 'new', {
+      title: 'Fix login',
+      message: 'run $(rm x) and `id`\nsecond line\r\x1b[31m',
+    });
+    expect(line).toBe('[wmux] new A2A task 12345678 from Ops: Fix login — run (rm x) and id — a2a_task_query');
+    const long = buildA2aNudge('task-12345678', 'Ops', 'new', { message: 'y'.repeat(5000) });
+    expect(long.length).toBeLessThan(300);
+    // A default title is the body's own head: it is not repeated.
+    expect(buildA2aNudge('task-1', 'Ops', 'new', { title: 'hello', message: 'hello world' }))
+      .toBe('[wmux] new A2A task 1 from Ops: hello world — a2a_task_query');
   });
 
   it("the receiver's reply reaches the sender labeled as a reply, not a new task", async () => {
