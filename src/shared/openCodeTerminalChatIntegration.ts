@@ -7,30 +7,76 @@ import { getExecEnv } from './execEnv';
 import { findLifecycleAssetSourceFrom, inspectLifecycleAsset, installLifecycleAsset } from './lifecycleIntegrations';
 
 export interface OpenCodeTerminalChatInstall {
-  state: 'current' | 'manual-config' | 'unavailable' | 'unsupported-version' | 'not-found' | 'error';
+  state: 'current' | 'manual-config' | 'unavailable' | 'unsupported-version' | 'not-found' | 'timeout' | 'error';
   configPath: string;
   pluginUrl: string;
   error?: string;
 }
+/** `opencode --version` is a Bun binary; on a loaded machine it takes seconds to start. */
+export const OPENCODE_PROBE_TIMEOUT_MS = 10_000;
+/** Delay before the one in-session retry after a timed-out probe. */
+export const OPENCODE_PROBE_RETRY_MS = 60_000;
+/** A version string (null = ran but printed no usable version), or why no version was read. */
+export type OpenCodeVersionProbe = { version: string | null } | { state: 'not-found' | 'timeout' | 'error'; error: string };
+const probeFailure = (error: NodeJS.ErrnoException): OpenCodeVersionProbe =>
+  ({ state: error.code === 'ENOENT' ? 'not-found' : error.code === 'ETIMEDOUT' ? 'timeout' : 'error', error: String(error) });
+
+/** Non-blocking probe for the GUI process. */
+export function probeOpenCodeVersion(timeoutMs = OPENCODE_PROBE_TIMEOUT_MS): Promise<OpenCodeVersionProbe> {
+  return new Promise(resolve => {
+    let stdout = ''; let settled = false;
+    const done = (result: OpenCodeVersionProbe) => { if (!settled) { settled = true; clearTimeout(timer); resolve(result); } };
+    const child = crossSpawn('opencode', ['--version'], { windowsHide: true, env: getExecEnv(), stdio: ['ignore', 'pipe', 'ignore'] });
+    const timer = setTimeout(() => {
+      child.kill();
+      done(probeFailure(Object.assign(new Error(`opencode --version timed out after ${timeoutMs}ms`), { code: 'ETIMEDOUT' })));
+    }, timeoutMs);
+    child.stdout?.setEncoding('utf8').on('data', (chunk: string) => { if (stdout.length < 8192) stdout += chunk; });
+    child.on('error', error => done(probeFailure(error)));
+    child.on('close', code => done({ version: code === 0 ? stdout : null }));
+  });
+}
+
+/**
+ * Main-process install: the probe never blocks the event loop, and a probe
+ * that timed out (a loaded machine at login) is retried once later in the
+ * session instead of waiting for the next app start.
+ */
+export async function installOpenCodeTerminalChat(
+  options: { configRoot: string; startDir: string; sourcePath?: string },
+  deps: { probe?: () => Promise<OpenCodeVersionProbe>; wait?: (ms: number) => Promise<void>; onRetry?: (first: OpenCodeTerminalChatInstall) => void } = {},
+): Promise<OpenCodeTerminalChatInstall> {
+  const probe = deps.probe ?? (() => probeOpenCodeVersion());
+  const first = openCodeTerminalChatIntegration({ ...options, install: true, probe: await probe() });
+  if (first.state !== 'timeout') return first;
+  deps.onRetry?.(first);
+  await (deps.wait ?? (ms => new Promise<void>(resolve => { setTimeout(resolve, ms).unref(); })))(OPENCODE_PROBE_RETRY_MS);
+  return openCodeTerminalChatIntegration({ ...options, install: true, probe: await probe() });
+}
+
 /** TUI modules are configured separately from OpenCode's server plugins.
  * Preserve foreign plugins and refuse JSONC/malformed files rather than
  * silently discarding comments or settings. The reported URL can be added by
  * the operator in that case. No global agent config is changed by dev startup. */
 export function openCodeTerminalChatIntegration(options: {
-  configRoot: string; startDir: string; sourcePath?: string; install?: boolean; version?: string | null;
+  configRoot: string; startDir: string; sourcePath?: string; install?: boolean; version?: string | null; probe?: OpenCodeVersionProbe;
 }): OpenCodeTerminalChatInstall {
   const destinationPath = path.join(options.configRoot, 'wmux-chat-tui.mjs');
   const configPath = path.join(options.configRoot, 'tui.json');
   const pluginUrl = pathToFileURL(destinationPath).href;
   const base = { configPath, pluginUrl };
   if (options.install) {
-    let version = options.version;
-    if (version === undefined) {
-      const probe = crossSpawn.sync('opencode', ['--version'], { encoding: 'utf8', timeout: 3000, maxBuffer: 8192, windowsHide: true, env: getExecEnv() });
-      // No version was read (not on PATH, or timed out): not a version verdict.
-      if (probe.error) return { ...base, state: (probe.error as NodeJS.ErrnoException).code === 'ENOENT' ? 'not-found' : 'error', error: String(probe.error) };
-      version = probe.status === 0 ? probe.stdout : null;
+    let probe: OpenCodeVersionProbe;
+    if (options.version !== undefined) probe = { version: options.version };
+    else if (options.probe) probe = options.probe;
+    else {
+      // The CLI (`wmux setup-hooks`) may block; the GUI passes an async probe.
+      const run = crossSpawn.sync('opencode', ['--version'], { encoding: 'utf8', timeout: OPENCODE_PROBE_TIMEOUT_MS, maxBuffer: 8192, windowsHide: true, env: getExecEnv() });
+      probe = run.error ? probeFailure(run.error) : { version: run.status === 0 ? run.stdout : null };
     }
+    // No version was read (not on PATH, or timed out): not a version verdict.
+    if ('state' in probe) return { ...base, state: probe.state, error: probe.error };
+    const version = probe.version;
     const match = /^(?:opencode\s+)?(\d+)\.(\d+)\.(\d+)\s*$/.exec(version?.trim() ?? '');
     if (!match || Number(match[1]) !== 1 || Number(match[2]) < 18 || Number(match[2]) === 18 && Number(match[3]) < 30) return { ...base, state: 'unsupported-version' };
   }
