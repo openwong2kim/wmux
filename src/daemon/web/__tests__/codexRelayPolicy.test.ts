@@ -17,6 +17,9 @@ describe('method table', () => {
     expect(classify({ method: 'somethingNew' })).toEqual({ refuse: expect.any(String) });
     expect(classify([{ id: 1, method: 'thread/list' }])).toEqual({ refuse: expect.any(String) });
     expect(classify({ id: 1, result: {} })).toBe('response');
+    expect(classify({ id: 1.5, method: 'thread/list' })).toEqual({ refuse: expect.any(String) });
+    expect(classify({ id: 2 ** 60, method: 'thread/list' })).toEqual({ refuse: expect.any(String) });
+    expect(classify({ id: null, method: 'thread/list' })).toEqual({ refuse: expect.any(String) });
   });
 
   it('puts every thread-creating and command-running method outside "pass"', () => {

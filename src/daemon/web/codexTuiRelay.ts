@@ -22,9 +22,10 @@ const IDENTITY_POLL_MS = 50;
 /** Client frames held while one waits: past either bound the connection is dropped. */
 const MAX_HELD_FRAMES = 64;
 const MAX_TRACKED_REQUESTS = 256;
-/** Server requests delivered to the client and still awaiting its answer; the
- * oldest is dropped past this. */
+/** Server requests delivered to the client and still awaiting its answer;
+ * past this the connection is closed rather than an entry being dropped. */
 const MAX_PENDING_SERVER_REQUESTS = 256;
+const isRequestId = (id:unknown):id is string|number => typeof id === 'string' || Number.isSafeInteger(id);
 
 /**
  * Deny-by-default request policy (codexRelayPolicy.ts). Without it the relay
@@ -148,17 +149,18 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     // Requests whose responses hand this pane a thread.
     const tracked = new Map<string|number,string>();
     // The relay forwards a client response only for a server request it
-    // delivered to this client and that is still awaiting an answer.
-    const pendingServerRequests = new Set<string|number>();
+    // delivered to this client and that is still awaiting an answer
+    // (request id -> thread id, when the request names one).
+    const pendingServerRequests = new Map<string|number,string|undefined>();
     let unmatchedResponses = 0;
     const needsIdentity = (message:unknown) => {
       const cls = classify(message);
       return cls === 'identity' || cls === 'exec';
     };
-    const review = async (frame:{bytes:Buffer;message:unknown}):Promise<void> => {
-      if (classify(frame.message) === 'response') {
-        const id = (frame.message as {id?:unknown}).id;
-        if ((typeof id === 'string' || typeof id === 'number') && pendingServerRequests.delete(id)) { handleClient(frame);return; }
+    /** `answersPending`: set for a client response, decided when it arrived. */
+    const review = async (frame:{bytes:Buffer;message:unknown}, answersPending?:boolean):Promise<void> => {
+      if (answersPending !== undefined) {
+        if (answersPending) { handleClient(frame);return; }
         // Dropped without a reply: the id belongs to the server's request ids,
         // so an error frame carrying it could be read as an answer to the client's own request.
         unmatchedResponses++;
@@ -204,10 +206,19 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     let clientChain:Promise<void> = Promise.resolve();
     let heldFrames = 0, heldBytes = 0;
     client.on('message',(raw,binary)=>{
-      const frame = decode(raw,binary);if(!frame)return;
+      const decoded = decode(raw,binary);if(!decoded)return;
+      // Upstream receives the frame as the relay parsed and reviewed it.
+      const frame = {bytes:Buffer.from(JSON.stringify(decoded.message)),message:decoded.message};
+      if (frame.bytes.length > MAX_FRAME) { retire();return; }
       if (heldFrames + 1 > MAX_HELD_FRAMES || heldBytes + frame.bytes.length > MAX_BUFFER) { retire();return; }
+      // A response claims its pending request on arrival, not after the frames queued ahead of it.
+      let answersPending:boolean|undefined;
+      if (classify(frame.message) === 'response') {
+        const id = (frame.message as {id?:unknown}).id;
+        answersPending = isRequestId(id) && pendingServerRequests.delete(id);
+      }
       heldFrames++;heldBytes += frame.bytes.length;
-      clientChain = clientChain.then(()=>review(frame)).catch(()=>retire())
+      clientChain = clientChain.then(()=>review(frame,answersPending)).catch(()=>retire())
         .finally(()=>{heldFrames--;heldBytes -= frame.bytes.length;});
     });
     upstream.on('message',(raw,binary)=>{
@@ -215,15 +226,19 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       const before = JSON.stringify(tracker.current());
       tracker.fromServer(frame.message);
       const message = frame.message as {method?:unknown;params?:{threadId?:unknown;requestId?:unknown};id?:unknown;result?:unknown} | null;
-      if (message && typeof message.method === 'string' && (typeof message.id === 'string' || typeof message.id === 'number')) {
-        pendingServerRequests.add(message.id);
-        if (pendingServerRequests.size > MAX_PENDING_SERVER_REQUESTS) {
-          const oldest = pendingServerRequests.values().next().value;
-          if (oldest !== undefined) pendingServerRequests.delete(oldest);
+      if (message && typeof message.method === 'string' && isRequestId(message.id)) {
+        if (!pendingServerRequests.has(message.id) && pendingServerRequests.size >= MAX_PENDING_SERVER_REQUESTS) {
+          try {options.policy?.refused?.('too many Codex requests are awaiting an answer; the pane connection was closed');} catch {/* A notice cannot change the outcome. */}
+          retire();return;
         }
+        const threadId = message.params?.threadId;
+        pendingServerRequests.set(message.id,typeof threadId === 'string' ? threadId : undefined);
       } else if (message?.method === 'serverRequest/resolved') {
         const requestId = message.params?.requestId;
-        if (typeof requestId === 'string' || typeof requestId === 'number') pendingServerRequests.delete(requestId);
+        if (isRequestId(requestId)) pendingServerRequests.delete(requestId);
+      } else if (message?.method === 'turn/completed' && typeof message.params?.threadId === 'string') {
+        // A finished turn leaves none of its requests awaiting an answer.
+        for (const [id,threadId] of pendingServerRequests) if (threadId === message.params.threadId) pendingServerRequests.delete(id);
       }
       if (message && message.method === undefined && (typeof message.id === 'string' || typeof message.id === 'number')) {
         const method = tracked.get(message.id);
