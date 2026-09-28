@@ -116,20 +116,33 @@ export class TerminalChatService {
     return answer.ok ? answer.body : null;
   }
 
+  /** Whether the pane's live process has a valid plugin record, without contacting the plugin.
+   *  False covers "never installed", "not loaded" and a record left by an earlier process. */
+  async registered(id: string): Promise<boolean> {
+    try { return !!await this.record(id); } catch { return false; }
+  }
+
+  private async record(id: string): Promise<{ owner: Owner; record: Record<string, unknown> } | null> {
+    const owner = await this.deps.owner(id);
+    if (!owner) return null;
+    const file = path.join(this.deps.directory, `${createHash('sha256').update(id).digest('hex')}.json`);
+    const stat = await fs.lstat(file);
+    if (!stat.isFile() || stat.size > 1024 || process.platform !== 'win32' && (stat.mode & 0o077 || typeof process.getuid === 'function' && stat.uid !== process.getuid())) return null;
+    const record = object(JSON.parse(await fs.readFile(file, 'utf8')));
+    if (record.version !== 1 || record.agent !== 'opencode' || record.pid !== owner.pid || !Number.isInteger(record.port) ||
+        Number(record.port) < 1 || Number(record.port) > 65535 || typeof record.token !== 'string' || !/^[0-9a-f]{64}$/.test(record.token)) return null;
+    return { owner, record };
+  }
+
   /** `left` is true once the request may have reached the plugin. `authorized`
    *  runs as the last await before the request leaves, after the owner checks. */
   private async exchange(id: string, request: Record<string, unknown>, authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean>):
     Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; left: boolean; unauthorized?: true }> {
     let left = false;
     try {
-      const owner = await this.deps.owner(id);
-      if (!owner) return { ok: false, left };
-      const file = path.join(this.deps.directory, `${createHash('sha256').update(id).digest('hex')}.json`);
-      const stat = await fs.lstat(file);
-      if (!stat.isFile() || stat.size > 1024 || process.platform !== 'win32' && (stat.mode & 0o077 || typeof process.getuid === 'function' && stat.uid !== process.getuid())) return { ok: false, left };
-      const record = object(JSON.parse(await fs.readFile(file, 'utf8')));
-      if (record.version !== 1 || record.agent !== 'opencode' || record.pid !== owner.pid || !Number.isInteger(record.port) ||
-          Number(record.port) < 1 || Number(record.port) > 65535 || typeof record.token !== 'string' || !/^[0-9a-f]{64}$/.test(record.token)) return { ok: false, left };
+      const found = await this.record(id);
+      if (!found) return { ok: false, left };
+      const { owner, record } = found;
       const sameOwner = async () => JSON.stringify(await this.deps.owner(id)) === JSON.stringify(owner);
       if (!await sameOwner()) return { ok: false, left };
       if (authorized) {

@@ -105,6 +105,17 @@ describe('resolve', () => {
       launch: { reason: 'agent-running' } });
   });
 
+  it('names why an OpenCode pane is unreadable without changing its reason', async () => {
+    const f = fixture(); f.state.agent.agentName = 'OpenCode';
+    let registered = false;
+    f.deps.terminalChat = () => ({ read: async () => null, send: f.tuiSend as never, subscribe: f.subscribe, unsubscribe: f.unsubscribe,
+      registered: async () => registered });
+    const bridge = createChatBridge(f.deps);
+    expect(await bridge.resolve('pane')).toMatchObject({ source: 'none', status: { reason: 'unavailable' }, cause: 'opencode-plugin-missing' });
+    registered = true;
+    expect(await bridge.resolve('pane')).toMatchObject({ cause: 'opencode-plugin-unreachable' });
+  });
+
   it('picks a managed record only with no live agent and no transcript', async () => {
     const f = fixture();
     f.managed.has.mockReturnValue(true);

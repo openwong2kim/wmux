@@ -1,7 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+const spawnSync = vi.hoisted(() => vi.fn());
+vi.mock('cross-spawn', () => ({ default: { sync: spawnSync } }));
+import { getExecEnv } from '../execEnv';
 import { openCodeTerminalChatIntegration } from '../openCodeTerminalChatIntegration';
 function fixture(run: (dir: string, options: Parameters<typeof openCodeTerminalChatIntegration>[0]) => void) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-tui-install-'));
@@ -33,5 +36,16 @@ describe('OpenCode TUI installation', () => {
     fs.writeFileSync(path.join(dir, 'wmux-chat-tui.mjs'), '// user-owned');
     expect(openCodeTerminalChatIntegration(options).state).toBe('unavailable');
     expect(fs.readFileSync(path.join(dir, 'wmux-chat-tui.mjs'), 'utf8')).toBe('// user-owned');
+  }));
+  it('probes opencode with the GUI exec env and reports a missing binary as not-found', () => fixture((dir, options) => {
+    const probe = { ...options, version: undefined };
+    spawnSync.mockReturnValue({ status: null, stdout: '', error: Object.assign(new Error('spawnSync opencode ENOENT'), { code: 'ENOENT' }) });
+    expect(openCodeTerminalChatIntegration(probe).state).toBe('not-found');
+    expect(spawnSync.mock.calls[0][2].env).toBe(getExecEnv());
+    expect(fs.existsSync(path.join(dir, 'tui.json'))).toBe(false);
+    spawnSync.mockReturnValue({ status: null, stdout: '', error: Object.assign(new Error('spawnSync opencode ETIMEDOUT'), { code: 'ETIMEDOUT' }) });
+    expect(openCodeTerminalChatIntegration(probe)).toMatchObject({ state: 'error', error: expect.stringContaining('ETIMEDOUT') });
+    spawnSync.mockReturnValue({ status: 0, stdout: '1.18.30\n' });
+    expect(openCodeTerminalChatIntegration(probe).state).toBe('current');
   }));
 });

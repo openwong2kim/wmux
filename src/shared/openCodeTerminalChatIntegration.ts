@@ -3,10 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { getExecEnv } from './execEnv';
 import { findLifecycleAssetSourceFrom, inspectLifecycleAsset, installLifecycleAsset } from './lifecycleIntegrations';
 
 export interface OpenCodeTerminalChatInstall {
-  state: 'current' | 'manual-config' | 'unavailable' | 'unsupported-version' | 'error';
+  state: 'current' | 'manual-config' | 'unavailable' | 'unsupported-version' | 'not-found' | 'error';
   configPath: string;
   pluginUrl: string;
   error?: string;
@@ -25,7 +26,9 @@ export function openCodeTerminalChatIntegration(options: {
   if (options.install) {
     let version = options.version;
     if (version === undefined) {
-      const probe = crossSpawn.sync('opencode', ['--version'], { encoding: 'utf8', timeout: 3000, maxBuffer: 8192, windowsHide: true });
+      const probe = crossSpawn.sync('opencode', ['--version'], { encoding: 'utf8', timeout: 3000, maxBuffer: 8192, windowsHide: true, env: getExecEnv() });
+      // No version was read (not on PATH, or timed out): not a version verdict.
+      if (probe.error) return { ...base, state: (probe.error as NodeJS.ErrnoException).code === 'ENOENT' ? 'not-found' : 'error', error: String(probe.error) };
       version = probe.status === 0 ? probe.stdout : null;
     }
     const match = /^(?:opencode\s+)?(\d+)\.(\d+)\.(\d+)\s*$/.exec(version?.trim() ?? '');

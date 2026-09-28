@@ -31,6 +31,7 @@ describe('getExecEnv', () => {
       const { default: os } = await import('node:os');
       const { default: path } = await import('node:path');
       expect(env.PATH).toContain(path.join(os.homedir(), '.local', 'bin'));
+      expect(env.PATH).toContain(path.join(os.homedir(), '.opencode', 'bin'));
     } finally {
       process.env.PATH = originalPath;
     }

@@ -34,6 +34,12 @@ describe('native TUI attachment', () => {
   it('refuses a descriptor from another process before any network request', async () => fixture(async f => {
     f.setOwner(456); expect(await f.service.read('pane')).toBeNull(); expect(f.requests).toEqual([]);
   }));
+  it('reports a plugin record only for the live owner, without contacting the plugin', async () => fixture(async f => {
+    expect(await f.service.registered('pane')).toBe(true);
+    f.setOwner(456); expect(await f.service.registered('pane')).toBe(false);
+    f.setOwner(123); await fs.rm(f.file); expect(await f.service.registered('pane')).toBe(false);
+    expect(f.requests).toEqual([]);
+  }));
   it('discards a response when the pane owner changes during the request', async () => fixture(async f => {
     f.onRequest(() => f.setOwner(456)); expect(await f.service.read('pane')).toBeNull();
   }));

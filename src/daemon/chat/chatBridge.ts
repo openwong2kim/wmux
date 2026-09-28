@@ -64,11 +64,21 @@ export function projectChatBlocked(
  * `rawEpoch` (OpenCode) is loopback-token material and must never leave the
  * daemon; only `epoch` (the `t1:` hash) may be serialized.
  */
+/**
+ * Why a pane has no readable conversation, when the daemon can tell. Sent on
+ * `/turns` as `cause` beside the unchanged `reason`; a client treats an
+ * unknown or absent value as plain "unavailable".
+ * - `opencode-plugin-missing`: OpenCode runs in the pane, but no wmux TUI plugin
+ *   registered for that process (not installed, not loaded, or a stale record).
+ * - `opencode-plugin-unreachable`: the plugin registered for the process but did not answer.
+ */
+export type ChatUnavailableCause = 'opencode-plugin-missing' | 'opencode-plugin-unreachable';
+
 export type ChatResolution =
   | { source: 'tui'; status: TranscriptStatus; page: TranscriptPage; epoch: string; rawEpoch: string }
   | { source: 'managed'; status: TranscriptStatus; epoch: string }
   | { source: 'file'; status: TranscriptStatus; epoch?: string }
-  | { source: 'none'; status: TranscriptStatus; launch: ChatLaunchPreview };
+  | { source: 'none'; status: TranscriptStatus; launch: ChatLaunchPreview; cause?: ChatUnavailableCause };
 
 export interface ChatSendRequest {
   owner: ChatOwner;

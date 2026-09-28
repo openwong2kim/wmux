@@ -38,7 +38,8 @@ let cachedEnv: NodeJS.ProcessEnv | null = null;
 /**
  * Returns an env that corrects the macOS-specific case where passing `process.env`
  * straight to execFile is unsafe — on mac only, it appends the Homebrew/system
- * paths plus `~/.local/bin` (the conventional per-user CLI install dir) to PATH;
+ * paths plus `~/.local/bin` (the conventional per-user CLI install dir) and
+ * `~/.opencode/bin` (OpenCode's installer default) to PATH;
  * on other platforms it returns `process.env` as-is (no recompute).
  */
 export function getExecEnv(): NodeJS.ProcessEnv {
@@ -46,7 +47,9 @@ export function getExecEnv(): NodeJS.ProcessEnv {
   if (cachedEnv) return cachedEnv;
 
   const existing = (process.env.PATH || '').split(':').filter(Boolean);
-  const merged = [...new Set([...existing, ...MAC_PATH_FALLBACKS, path.join(os.homedir(), '.local', 'bin')])];
+  const merged = [...new Set([...existing, ...MAC_PATH_FALLBACKS, path.join(os.homedir(), '.local', 'bin'),
+    // OpenCode's official install script defaults to INSTALL_DIR=$HOME/.opencode/bin.
+    path.join(os.homedir(), '.opencode', 'bin')])];
   cachedEnv = { ...process.env, PATH: merged.join(':') };
   return cachedEnv;
 }

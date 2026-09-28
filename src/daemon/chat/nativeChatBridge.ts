@@ -53,7 +53,7 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   /** Chat-refined agent state (reads the transcript tail for Claude/Codex). */
   chatAgentState(id: string): ChatAgentState;
   projector: { status(id: string): TranscriptStatus; snapshot(id: string, opts?: { before: number }): TranscriptPage | null };
-  terminalChat(): Pick<TerminalChatService, 'read' | 'send' | 'subscribe' | 'unsubscribe'> | null;
+  terminalChat(): Pick<TerminalChatService, 'read' | 'send' | 'subscribe' | 'unsubscribe'> & Partial<Pick<TerminalChatService, 'registered'>> | null;
   managed(): Pick<ChatSessionService, 'has' | 'status' | 'snapshot' | 'send' | 'conversationEpoch'> | null;
   /**
    * Null while the approval registry is not wired: treated as "may be pending".
@@ -198,7 +198,11 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       const rawEpoch = page.cursor.historyEpoch ?? '';
       return { source: 'tui', status, page, epoch: tuiHistoryEpoch(rawEpoch), rawEpoch };
     }
-    if (found.kind === 'opencode') return { source: 'none', status: { available: false, reason: 'unavailable' }, launch: await preview(id, true) };
+    if (found.kind === 'opencode') {
+      const registered = await deps.terminalChat()?.registered?.(id);
+      return { source: 'none', status: { available: false, reason: 'unavailable' }, launch: await preview(id, true),
+        ...(registered === undefined ? {} : { cause: registered ? 'opencode-plugin-unreachable' : 'opencode-plugin-missing' }) };
+    }
     if (found.kind === 'managed') {
       const managed = deps.managed();
       const status = managed?.status(id);

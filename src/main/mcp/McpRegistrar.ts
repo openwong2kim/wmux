@@ -461,7 +461,8 @@ export class McpRegistrar {
     }
     const chat = openCodeTerminalChatIntegration({ configRoot, startDir: app.getAppPath(), install: true,
       ...(app.isPackaged ? { sourcePath: path.join(process.resourcesPath, 'cli-bundle', 'wmux-chat-tui.mjs') } : {}) });
-    if (chat.state !== 'current') console.warn(`[McpRegistrar] OpenCode terminal chat: ${chat.state}; add ${chat.pluginUrl} to ${chat.configPath} plugin list`);
+    if (chat.state === 'not-found') console.warn(`[McpRegistrar] OpenCode terminal chat: opencode not found on PATH; ${chat.pluginUrl} not installed (${chat.error})`);
+    else if (chat.state !== 'current') console.warn(`[McpRegistrar] OpenCode terminal chat: ${chat.state}${chat.error ? ` (${chat.error})` : ''}; add ${chat.pluginUrl} to ${chat.configPath} plugin list`);
     if (installed.action !== 'none') {
       console.log(`[McpRegistrar] OpenCode lifecycle plugin ${installed.action} → ${dest}`);
     }
