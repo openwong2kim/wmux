@@ -243,6 +243,46 @@ describe('DaemonPTYBridge — running-episode turn id', () => {
     expect(turn()).toEqual({ ...codexTurn, state: 'idle' });
   });
 
+  it('Claude /exit then a hookless Codex first turn: a mid-turn detector complete does not split the id', () => {
+    const osc133 = (c: string) => feed(`\x1b]133;${c}\x07`);
+    bridge.noteInput('claude\r');
+    osc133('C');
+    bridge.noteSessionStart(Date.now(), 'startup');
+    vi.advanceTimersByTime(100);
+    bridge.noteInput('fix it\r');
+    bridge.noteAgentStatus('running', true);
+    bridge.noteAgentStatus('complete', true);
+    vi.advanceTimersByTime(100);
+    bridge.noteInput('/exit\r');
+    osc133('D;0');
+    osc133('A');
+    osc133('B');
+    vi.advanceTimersByTime(100);
+    bridge.noteInput('codex\r');
+    osc133('C');
+    vi.advanceTimersByTime(17_000);
+
+    // Codex's first prompt; none of its hooks arrive until the turn is over.
+    bridge.noteInput('explain the tests\r');
+    const codexTurn = turn();
+    expect(codexTurn.state).toBe('running');
+    vi.advanceTimersByTime(100);
+    feed(BIG);
+    vi.advanceTimersByTime(10_000);
+    bridge.noteAgentStatus('complete'); // detector read a pause between tools
+    expect(turn().id).toBe(codexTurn.id);
+    vi.advanceTimersByTime(6_000);
+    feed(BIG); // work resumes: byte promotion
+    expect(turn()).toEqual({ ...codexTurn, state: 'running' });
+    vi.advanceTimersByTime(200);
+    bridge.noteTranscriptTurnEnd(Date.now()); // rollout task_complete
+    expect(turn()).toEqual({ ...codexTurn, state: 'idle' });
+    // A burst after the recorded end is not the same turn resuming.
+    vi.advanceTimersByTime(7_000);
+    bridge.noteInput('next\r');
+    expect(turn().id).not.toBe(codexTurn.id);
+  });
+
   it('an agent that ends without a Stop (process exit) closes its episode', () => {
     bridge.noteInput('go\r');
     bridge.noteAgentStatus('running', true);

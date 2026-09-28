@@ -133,6 +133,14 @@ export class DaemonPTYBridge extends EventEmitter {
   private turnOpenedAt = 0;
   /** An authoritative hook has reported on this pane: only hooks and the transcript end its episodes. */
   private hookSeen = false;
+  /**
+   * The episode was closed by a detector settle only. That read can be wrong
+   * mid-turn (a pause between tools on an agent whose hooks have not spoken
+   * yet), so the next running edge that is not a submit resumes the same
+   * episode instead of starting another. A submit, a hook settle, a recorded
+   * transcript end or the agent ending makes the close final.
+   */
+  private turnSoftClosed = false;
 
   /**
    * Reads the pane's transcript for the latest recorded turn end (epoch ms),
@@ -366,6 +374,7 @@ export class DaemonPTYBridge extends EventEmitter {
       }
       // Still open = no settle and no recorded end since it began: a prompt
       // typed into the running turn, however long the turn has been quiet.
+      this.turnSoftClosed = false;
       this.openTurn();
     }
     this.lastTurnStartedAt = Date.now();
@@ -431,7 +440,7 @@ export class DaemonPTYBridge extends EventEmitter {
         this.lastTurnStartedAt = Date.now();
         // The first hook after a settle is an autonomous turn; later hooks, and
         // any hook behind an unanswered dialog, belong to the open episode.
-        if (!this.awaitingHuman) this.openTurn();
+        if (!this.awaitingHuman) this.openTurn(true);
       }
       this.explicitTerminalStatus = false;
       this.settledStatus = null;
@@ -467,7 +476,7 @@ export class DaemonPTYBridge extends EventEmitter {
     // a pane with hooks only the hook's own settle (Stop / StopFailure) counts:
     // the detector's `complete` / `waiting` also match footers mid-turn.
     if (authoritative) this.hookSeen = true;
-    if (!this.awaitingHuman && (authoritative || !this.hookSeen)) this.turnOpen = false;
+    if (!this.awaitingHuman && (authoritative || !this.hookSeen)) this.closeTurn(!authoritative);
     this.settledAtMs = Date.now();
     this.submittedTurnPending = false;
     if (this.resizeGuardTimer) {
@@ -508,11 +517,23 @@ export class DaemonPTYBridge extends EventEmitter {
     return this.lastTurnStartedAt;
   }
 
-  private openTurn(): void {
+  /** `resume`: a running edge that is not a submit may reopen a detector-closed episode. */
+  private openTurn(resume = false): void {
     if (this.turnOpen) return;
-    this.turnSeq += 1;
     this.turnOpen = true;
+    if (resume && this.turnSoftClosed) {
+      this.turnSoftClosed = false;
+      return;
+    }
+    this.turnSoftClosed = false;
+    this.turnSeq += 1;
     this.turnOpenedAt = Date.now();
+  }
+
+  private closeTurn(soft = false): void {
+    if (this.turnOpen) this.turnSoftClosed = soft;
+    else if (!soft) this.turnSoftClosed = false;
+    this.turnOpen = false;
   }
 
   /**
@@ -522,7 +543,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * when the end predates the latest turn evidence.
    */
   noteTranscriptTurnEnd(at: number): void {
-    if (this.turnOpen && !this.awaitingHuman && at >= this.turnOpenedAt) this.turnOpen = false;
+    if ((this.turnOpen || this.turnSoftClosed) && !this.awaitingHuman && at >= this.turnOpenedAt) this.closeTurn();
   }
 
   /**
@@ -532,7 +553,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * afresh: until one reports, its detector settles count.
    */
   noteAgentEnded(): void {
-    this.turnOpen = false;
+    this.closeTurn();
     this.hookSeen = false;
   }
 
@@ -575,7 +596,7 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   noteSessionStart(signalTs: number, source: unknown): void {
     const atIdlePrompt = this.explicitTerminalStatus && this.settledStatus === 'waiting' && !this.awaitingHuman;
-    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt } = this;
+    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, turnSoftClosed } = this;
     this.noteAgentStatus('running', true);
     // The session start is not turn evidence itself: a duplicate delivery of
     // it must neither clear nor re-set the state the first one left. Nor does
@@ -586,6 +607,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.turnOpen = turnOpen;
     this.turnSeq = turnSeq;
     this.turnOpenedAt = turnOpenedAt;
+    this.turnSoftClosed = turnSoftClosed;
     if (!isFreshSessionSource(source)) {
       this.preTurn = false;
       return;
@@ -730,7 +752,7 @@ export class DaemonPTYBridge extends EventEmitter {
         this.explicitTerminalStatus = false;
         this.settledStatus = null;
         this.submittedTurnPending = false;
-        this.openTurn();
+        this.openTurn(true);
         // Deliberately NOT resetEmissionState(). The unsettled path below
         // clears the detector's dedup so a new turn's footer can speak again;
         // doing it here would let the idle chrome that is still on screen
@@ -755,7 +777,7 @@ export class DaemonPTYBridge extends EventEmitter {
             }, RESIZE_REDRAW_GUARD_MS - elapsed);
           } else {
             this.agentDetector?.resetEmissionState();
-            this.openTurn();
+            this.openTurn(true);
           }
         }
       }
@@ -1092,6 +1114,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.preTurn = false;
     this.turnEvidenceAt = 0;
     this.turnOpen = false;
+    this.turnSoftClosed = false;
     this.hookSeen = false;
     this.awaitingHuman = false;
     this.oscParser = null;
