@@ -1270,7 +1270,7 @@ export function createWorkspaceListCache(
  *     resume-binding clobber the X6③ exact-ptyId routing was added to prevent.
  *     The resolver returns EXACTLY `signal.ptyId` only when its exact-ptyId
  *     branch fires (id present in the list + workspace cross-check), which is
- *     the topology-stable case; any fallback returns a different id.
+ *     the topology-stable case; otherwise it now returns null (#1523).
  *
  * On the env fast path (2) we `prime()` the cache (fire-and-forget) so it stays
  * warm for the next hook without blocking this one. A mirror hit (1) needs no
@@ -1360,9 +1360,12 @@ export function resolvePtyIdForSignal(
     // WMUX_PTY_ID is pane-env-controlled, so without the workspace cross-check an
     // authenticated hook could target another live pane by id (codex P2). A hook
     // with no workspaceId (older bridge / standalone) still trusts a live ptyId.
-    if (ptyWorkspaceId && (!signal.workspaceId || ptyWorkspaceId === signal.workspaceId)) {
-      return signal.ptyId;
-    }
+    // #1523: a claimed ptyId that fails either check is refused — never re-routed
+    // to the workspace's active pane or a cwd match, which would hand a pane that
+    // is not the sender another agent's turn and resume binding.
+    return ptyWorkspaceId && (!signal.workspaceId || ptyWorkspaceId === signal.workspaceId)
+      ? signal.ptyId
+      : null;
   }
   if (signal.workspaceId) {
     const match = workspaces.find((w) => w.id === signal.workspaceId);

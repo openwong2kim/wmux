@@ -88,6 +88,8 @@ export interface HookIngestSession {
   env?: Record<string, string>;
   /** ISO 8601. Tie-break when several panes match the same cwd. */
   lastActivity?: string;
+  /** The pane's current resume binding; only `agent` is read, to guard a guessed route. */
+  resumeBinding?: Pick<ResumeBinding, 'agent'>;
 }
 
 /**
@@ -327,7 +329,11 @@ function mostRecent(sessions: HookIngestSession[]): HookIngestSession | null {
  *      workspaceId — only when that session really belongs to the claimed
  *      workspace. Pane env is attacker-writable from inside the pane, so
  *      without the cross-check an authenticated hook could target a different
- *      live pane by id.
+ *      live pane by id. A signal that claims a ptyId failing either check is
+ *      REFUSED (null) — it never falls through to the tiers below (#1523).
+ *      Its pane is gone (or it is not who it says), so any other pane the
+ *      workspace/cwd tiers would pick is a guess, and a wrong guess hands that
+ *      pane another agent's turn and resume binding.
  *   2. `workspaceId` — WMUX_WORKSPACE_ID. Narrow the candidate set to that
  *      workspace, then pick by cwd within it. Main resolves this tier to the
  *      workspace's ACTIVE surface, which the daemon cannot know (focus lives
@@ -342,10 +348,9 @@ export function resolveSessionIdForSignal(
 ): string | null {
   if (signal.ptyId) {
     const exact = sessions.find((s) => s.id === signal.ptyId);
-    if (exact) {
-      const ws = exact.env?.[ENV_KEYS.WORKSPACE_ID];
-      if (!signal.workspaceId || ws === signal.workspaceId) return exact.id;
-    }
+    if (!exact) return null;
+    const ws = exact.env?.[ENV_KEYS.WORKSPACE_ID];
+    return !signal.workspaceId || ws === signal.workspaceId ? exact.id : null;
   }
 
   if (signal.workspaceId) {
@@ -525,6 +530,10 @@ export class HookIngest {
    * `broadcast`, the one place every status this ingest writes passes through.
    */
   private readonly leadTurnEnded = new Set<string>();
+  /** Claimed ptyIds already logged as refused, so a closed pane logs once (#1523). */
+  private readonly refusedClaims = new Set<string>();
+  /** Every signal refused because its claimed pane is not live here. Never decremented. */
+  private refusedClaimCount = 0;
 
   constructor(deps: HookIngestDeps) {
     this.deps = deps;
@@ -581,11 +590,19 @@ export class HookIngest {
    *     30s log flush, so it is null on an idle daemon and its `total` is not
    *     comparable to `latency.total`. Read non-destructively (`peek`), so
    *     polling this RPC never blanks the daemon's own rolling log line.
+   *   - `refused.claimedPaneNotLive` counts signals dropped because the ptyId
+   *     they claim is not a live pane here, or lives in another workspace
+   *     (#1523). Cumulative since daemon start, like `workspaceMatchRate`.
    */
-  health(): { latency: LatencyStats; flood: HookFloodSummary | null } {
+  health(): {
+    latency: LatencyStats;
+    flood: HookFloodSummary | null;
+    refused: { claimedPaneNotLive: number };
+  } {
     return {
       latency: this.meter.getStats(),
       flood: this.floodMeter.peek(HOOK_FLOOD_LOG_INTERVAL_MS),
+      refused: { claimedPaneNotLive: this.refusedClaimCount },
     };
   }
 
@@ -629,7 +646,8 @@ export class HookIngest {
     this.meter.recordWorkspaceMatch(sessionId != null);
 
     if (!sessionId) {
-      // Agent running outside any wmux pane — fail open.
+      // Agent running outside any wmux pane, or its claimed pane is gone — fail open.
+      this.noteRefusedClaim(signal);
       return { ok: false, reason: 'no-workspace-match' };
     }
 
@@ -774,8 +792,10 @@ export class HookIngest {
 
     this.meter.recordWorkspaceMatch(sessionId != null);
     if (!sessionId) {
-      // The agent is running outside any live wmux pane. Expected for
-      // standalone use; the per-pane event is dropped, health still recorded.
+      // The agent is running outside any live wmux pane (expected for
+      // standalone use), or the pane it claims is gone. The per-pane event is
+      // dropped, health still recorded.
+      this.noteRefusedClaim(signal);
       return { ok: false, reason: 'no-workspace-match' };
     }
 
@@ -851,19 +871,31 @@ export class HookIngest {
           );
         }
       }
-      try {
-        this.deps.applyResumeBinding(sessionId, {
-          agent: signal.agent,
-          sessionId: signal.agentSessionId,
-          cwd: signal.cwd,
-          ...(permissionMode ? { permissionMode } : {}),
-          ...(transcriptPath ? { transcriptPath } : {}),
-          ts: signal.ts,
-        });
-      } catch (err) {
-        // A binding we failed to persist costs an exact resume after a
-        // reboot, never the signal itself.
-        this.deps.log?.('warn', `[hooks] resume binding failed for ${sessionId}: ${String(err)}`);
+      // A guessed route (workspace/cwd tier) never replaces a DIFFERENT agent's
+      // binding: only a signal whose ptyId named this pane may rebind it. A
+      // claimed-ptyId signal is exact-or-refused above, so this only ever
+      // holds back senders that carry no ptyId at all.
+      const prevAgent = sessions.find((s) => s.id === sessionId)?.resumeBinding?.agent;
+      if (signal.ptyId !== sessionId && prevAgent && prevAgent !== signal.agent) {
+        this.deps.log?.(
+          'info',
+          `[hooks] kept ${prevAgent} resume binding on ${sessionId}: ${signal.agent} signal was not pane-exact`,
+        );
+      } else {
+        try {
+          this.deps.applyResumeBinding(sessionId, {
+            agent: signal.agent,
+            sessionId: signal.agentSessionId,
+            cwd: signal.cwd,
+            ...(permissionMode ? { permissionMode } : {}),
+            ...(transcriptPath ? { transcriptPath } : {}),
+            ts: signal.ts,
+          });
+        } catch (err) {
+          // A binding we failed to persist costs an exact resume after a
+          // reboot, never the signal itself.
+          this.deps.log?.('warn', `[hooks] resume binding failed for ${sessionId}: ${String(err)}`);
+        }
       }
     }
 
@@ -1097,6 +1129,17 @@ export class HookIngest {
       ...(asked.choices ? { choices: asked.choices } : {}),
       ...(asked.questionShape ? { questionShape: asked.questionShape } : {}),
     });
+  }
+
+  /** Count a refused claimed-pane signal; log it once per ptyId (bounded set). */
+  private noteRefusedClaim(signal: AgentSignal): void {
+    const ptyId = signal.ptyId;
+    if (!ptyId) return;
+    this.refusedClaimCount += 1;
+    if (this.refusedClaims.has(ptyId)) return;
+    if (this.refusedClaims.size >= 256) this.refusedClaims.clear();
+    this.refusedClaims.add(ptyId);
+    this.deps.log?.('info', `[hooks] refused ${signal.agent} ${signal.kind} for ${ptyId}: claimed-pane-not-live`);
   }
 
   /**
