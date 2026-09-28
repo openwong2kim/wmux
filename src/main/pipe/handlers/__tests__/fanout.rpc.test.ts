@@ -562,6 +562,29 @@ describe('an evicted key can never restart a fan-out that already spawned', () =
     } as unknown as FanOutGuards;
   }
 
+  it('keeps the same guarantees on the real guard store (small flood)', async () => {
+    // The flood below uses a permissive double, so this case runs a short one
+    // through the REAL store (temp dir): 13 two-task fan-outs are 26 tasks,
+    // past the 24-task hourly cap unless each unspawned task is refunded on
+    // disk, and the forgotten key answers expired instead of running again.
+    const guards = new FanOutGuards({
+      dir: fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wmux-fanout-rpc-')),
+      countLiveTasks: () => 0,
+      ledgerTaskOwner: () => null,
+    });
+    const h = setup({ guards });
+    await h.call(goodParams({ idempotencyKey: 'the-real-one' }));
+    await h.flush();
+    h.forgetResult('the-real-one');
+    await flood(h, 13);
+    expect(h.start).toHaveBeenCalledTimes(14);
+
+    const res = await h.call(goodParams({ idempotencyKey: 'the-real-one' }));
+    await h.flush();
+    expect(res).toMatchObject({ ok: false, status: 'expired' });
+    expect(h.start.mock.calls.filter((c) => (c[0] as FanOutRequest).idempotencyKey.endsWith('the-real-one'))).toHaveLength(1);
+  });
+
   it('answers expired — not a fresh request — after eviction pressure on both stores', async () => {
     const h = setup({ guards: permissiveGuards() });
     await h.call(goodParams({ idempotencyKey: 'the-real-one' }));
