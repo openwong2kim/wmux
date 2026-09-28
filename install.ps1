@@ -201,8 +201,14 @@ try {
 # install folder, so it counts as running.
 function Test-WmuxRunning {
     $root = Join-Path $env:LOCALAPPDATA 'wmux'
-    $procs = Get-CimInstance Win32_Process -Filter "Name='wmux.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$root\", [System.StringComparison]::OrdinalIgnoreCase) }
+    # The script runs with $ErrorActionPreference = 'Stop'; a broken WMI must
+    # not abort the install after the download, so a failed query means "not running".
+    try {
+        $procs = Get-CimInstance Win32_Process -Filter "Name='wmux.exe'" -ErrorAction Stop |
+            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$root\", [System.StringComparison]::OrdinalIgnoreCase) }
+    } catch {
+        return $false
+    }
     return [bool]$procs
 }
 

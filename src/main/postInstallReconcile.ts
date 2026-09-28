@@ -87,6 +87,20 @@ export function planPostInstallReconcile(probe: ReconcileProbe): ReconcilePlan {
   return { installCliShim: !probe.shimExists, autostart: autostartAction, shortcuts };
 }
 
+/**
+ * Whether a Run value target still resolves. Only the `app-X.Y.Z\wmux.exe`
+ * tail is trusted, and it is checked under OUR install root: reg.exe prints in
+ * the OEM code page, so a profile path with non-ASCII characters comes back
+ * garbled, and comparing the whole path would "retarget" on every boot. A
+ * value that does not name an `app-*` exe is not one we wrote, so it reports
+ * alive and is left alone. Pure apart from one stat; exported for tests.
+ */
+export function autostartTargetAlive(target: string, root: string): boolean {
+  const m = /[\\/](app-[^\\/]+)[\\/]wmux\.exe$/i.exec(target);
+  if (!m) return true;
+  return fs.existsSync(path.join(root, m[1], 'wmux.exe'));
+}
+
 export function isEmptyPlan(plan: ReconcilePlan): boolean {
   return !plan.installCliShim && plan.autostart === null && plan.shortcuts.length === 0;
 }
@@ -169,7 +183,7 @@ export async function runPostInstallReconcile(opts: ReconcileOptions): Promise<R
       freshInstall: opts.freshInstall,
       shimExists: fs.existsSync(path.join(root, 'bin', 'wmux.cmd')),
       autostartTarget: target,
-      autostartTargetExists: target !== null && fs.existsSync(target),
+      autostartTargetExists: target !== null && autostartTargetAlive(target, root),
       desktopShortcutExists: desktopShortcutExists(opts.desktopDir),
       startMenuShortcutExists: startMenuShortcutExists(appData),
     });

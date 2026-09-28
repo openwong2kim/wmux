@@ -6,8 +6,16 @@
  * what the next boot may redo, and above all what it must NOT redo: a user's
  * autostart opt-out and deleted shortcuts must survive every update.
  */
-import { describe, it, expect } from 'vitest';
-import { planPostInstallReconcile, isEmptyPlan, type ReconcileProbe } from '../postInstallReconcile';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import {
+  planPostInstallReconcile,
+  isEmptyPlan,
+  autostartTargetAlive,
+  type ReconcileProbe,
+} from '../postInstallReconcile';
 import { parseRunValue } from '../autostart';
 
 const CUR = 'C:\\Users\\u\\AppData\\Local\\wmux\\app-3.62.1\\wmux.exe';
@@ -74,6 +82,26 @@ describe('planPostInstallReconcile', () => {
     expect(planPostInstallReconcile(probe({ firstRun: true, desktopShortcutExists: false })).shortcuts).toEqual([]);
     // Ordinary boot.
     expect(planPostInstallReconcile(probe({ freshInstall: true, desktopShortcutExists: false })).shortcuts).toEqual([]);
+  });
+});
+
+describe('autostartTargetAlive', () => {
+  let root: string;
+  beforeAll(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-reconcile-'));
+    fs.mkdirSync(path.join(root, 'app-3.62.1'));
+    fs.writeFileSync(path.join(root, 'app-3.62.1', 'wmux.exe'), '');
+  });
+  afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  it('checks the app-X.Y.Z tail under our root, not the printed prefix', () => {
+    // reg.exe prints in the OEM code page: a non-ASCII profile path arrives garbled.
+    expect(autostartTargetAlive('C:\\Users\\???\\AppData\\Local\\wmux\\app-3.62.1\\wmux.exe', root)).toBe(true);
+    expect(autostartTargetAlive('C:\\Users\\???\\AppData\\Local\\wmux\\app-3.60.0\\wmux.exe', root)).toBe(false);
+  });
+
+  it('treats a value it did not write as alive, so it is never rewritten', () => {
+    expect(autostartTargetAlive('C:\\Tools\\launcher.exe', root)).toBe(true);
   });
 });
 
