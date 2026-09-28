@@ -30,6 +30,27 @@ describe('buildExecArgs', () => {
     expect(PWSH_EXIT_TAIL).toContain('exit 1');
   });
 
+  // #1620: on a factory-default Windows client powershell.exe resolves an npm
+  // agent (`codex`) to its .ps1 shim, which the Restricted policy blocks. The
+  // caller decides the policy args; the builder only has to place them.
+  it('places pwsh policy args before -Command, so they are argv and not command text', () => {
+    const policy = ['-ExecutionPolicy', 'RemoteSigned'];
+    expect(buildExecArgs('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', CMD, policy)).toEqual([
+      '-NoLogo',
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'RemoteSigned',
+      '-Command',
+      `${CMD}${PWSH_EXIT_TAIL}`,
+    ]);
+  });
+
+  it('ignores pwsh policy args for non-PowerShell families', () => {
+    const policy = ['-ExecutionPolicy', 'RemoteSigned'];
+    expect(buildExecArgs('C:\\Windows\\System32\\cmd.exe', CMD, policy)).toEqual(['/d', '/s', '/c', CMD]);
+    expect(buildExecArgs('/bin/bash', CMD, policy)).toEqual(['-lc', CMD]);
+  });
+
   it('cmd.exe gets /d /s /c (native child exit-code propagation, AutoRun skipped)', () => {
     expect(buildExecArgs('C:\\Windows\\System32\\cmd.exe', CMD)).toEqual(['/d', '/s', '/c', CMD]);
   });

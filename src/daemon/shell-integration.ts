@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getWmuxDir } from './config';
 import { isMac } from '../shared/platform';
+import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
 
 /**
  * Shell integration installer: materializes OSC 133 init scripts into
@@ -729,8 +730,13 @@ export function buildSpawnInjection(shellPath: string): SpawnInjection | null {
   if (kind === 'pwsh') {
     // -NoExit keeps the interactive session alive after the init script runs.
     // Dot-source the script so its function definitions persist in the shell.
+    // On a factory-default Windows client the effective policy is Restricted
+    // and the dot-source fails (#1620); the policy args must precede -Command.
     return {
-      args: ['-NoLogo', '-NoExit', '-Command', `. '${paths.pwsh.replace(/'/g, "''")}'`],
+      args: [
+        '-NoLogo', '-NoExit', ...windowsPowerShellPolicyArgs(shellPath),
+        '-Command', `. '${paths.pwsh.replace(/'/g, "''")}'`,
+      ],
       env: { WMUX_SHELL_INTEGRATION: '1' },
     };
   }

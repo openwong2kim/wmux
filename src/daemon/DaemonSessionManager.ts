@@ -18,6 +18,7 @@ import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { expandTilde } from '../shared/expandTilde';
 import { restoreSeam } from '../shared/restoreSeam';
 import { buildExecArgs } from './execWrapper';
+import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac, parseWindowsBuildNumber } from '../shared/platform';
 import { shouldUseBundledConpty, spawnWithConptyPolicy } from '../shared/conptyWindows';
@@ -503,10 +504,12 @@ export class DaemonSessionManager extends EventEmitter {
       // the ORIGINAL below (meta.exec.command). Replay-only callers set
       // execLaunchCommand; brand-new sessions omit it → spawn === persisted.
       const launchCommand = params.execLaunchCommand ?? params.exec.command;
-      let execArgs = buildExecArgs(cmd, launchCommand);
+      // #1620: on a factory-default Windows client, powershell.exe resolves an
+      // npm agent (`codex`) to its .ps1 shim, which Restricted blocks.
+      let execArgs = buildExecArgs(cmd, launchCommand, windowsPowerShellPolicyArgs(cmd));
       if (!execArgs) {
         cmd = this.resolveExecFallbackShell();
-        execArgs = buildExecArgs(cmd, launchCommand);
+        execArgs = buildExecArgs(cmd, launchCommand, windowsPowerShellPolicyArgs(cmd));
       }
       if (!execArgs) {
         throw new Error(`No usable wrapper shell for exec session (resolved: ${cmd})`);

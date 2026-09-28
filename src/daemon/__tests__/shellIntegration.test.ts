@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import { spawnSync } from 'child_process';
+import { FACTORY_DEFAULT_SCOPES, __setPolicyProbeForTests } from '../../shared/pwshExecutionPolicy';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -48,6 +49,42 @@ describe('buildSpawnInjection — zsh', () => {
   it('알 수 없는 셸은 injection이 없다(일반 spawn)', () => {
     expect(buildSpawnInjection('/usr/bin/fish')).toBeNull();
     expect(buildSpawnInjection('cmd.exe')).toBeNull();
+  });
+});
+
+// #1620: a Windows client that never set an execution policy runs Restricted,
+// which refuses to dot-source the init script. Windows PowerShell 5.1 then gets
+// a process-scoped RemoteSigned; pwsh 7 (ships RemoteSigned) and any machine
+// with an explicit policy get nothing extra.
+describe('buildSpawnInjection — PowerShell execution policy (#1620)', () => {
+  const PS51 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const PS7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+  afterEach(() => __setPolicyProbeForTests(null));
+
+  function dotSource(args: string[] | undefined): string {
+    return args?.[args.length - 1] ?? '';
+  }
+
+  it('5.1 on a factory-default machine: RemoteSigned, placed before -Command', () => {
+    __setPolicyProbeForTests({ scopes: FACTORY_DEFAULT_SCOPES, platform: 'win32' });
+    const inj = buildSpawnInjection(PS51);
+    expect(inj?.args.slice(0, 5)).toEqual(['-NoLogo', '-NoExit', '-ExecutionPolicy', 'RemoteSigned', '-Command']);
+    expect(dotSource(inj?.args)).toMatch(/^\. '.*wmux-shell-init\.ps1'$/);
+    expect(inj?.env.WMUX_SHELL_INTEGRATION).toBe('1');
+  });
+
+  it('5.1 with an explicit policy: argv unchanged from before the fix', () => {
+    __setPolicyProbeForTests({ scopes: { ...FACTORY_DEFAULT_SCOPES, currentUser: 'set' }, platform: 'win32' });
+    const inj = buildSpawnInjection(PS51);
+    expect(inj?.args.slice(0, 3)).toEqual(['-NoLogo', '-NoExit', '-Command']);
+    expect(inj?.args).not.toContain('-ExecutionPolicy');
+  });
+
+  it('pwsh 7 never gets the flag, even on a factory-default machine', () => {
+    __setPolicyProbeForTests({ scopes: FACTORY_DEFAULT_SCOPES, platform: 'win32' });
+    const inj = buildSpawnInjection(PS7);
+    expect(inj?.args.slice(0, 3)).toEqual(['-NoLogo', '-NoExit', '-Command']);
+    expect(inj?.args).not.toContain('-ExecutionPolicy');
   });
 });
 

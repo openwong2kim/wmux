@@ -13,9 +13,11 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import type { ManagedSession } from '../DaemonSessionManager';
 import { DaemonSessionManager } from '../DaemonSessionManager';
 import type { PromptEvent } from '../PromptEventLog';
+import { FACTORY_DEFAULT_SCOPES, __setPolicyProbeForTests } from '../../shared/pwshExecutionPolicy';
 
 const SYS = process.env.SystemRoot || 'C:\\Windows';
 const PF = process.env.ProgramFiles || 'C:\\Program Files';
@@ -432,5 +434,99 @@ describe.runIf(hasGitBash)('OSC 133 runtime — bash.exe (Git Bash)', () => {
       'command_end with non-zero exitCode',
     );
     expect(cmdEnd.exitCode).toBe(1);
+  }, EVENT_TIMEOUT_MS + 2000);
+});
+
+// #1620: a Windows client that never set an execution policy runs Restricted,
+// and a Restricted powershell.exe refuses to load ANY .ps1 — wmux's own init,
+// and the npm .ps1 shim an agent like `codex` resolves to. CI runners ship a
+// permissive machine policy, so the Restricted default is reproduced per pane
+// with the Process-scope env var PSExecutionPolicyPreference. The probe is
+// pinned so the host's real registry cannot decide the outcome.
+describe.runIf(hasPowerShell)('execution policy on a factory-default machine — powershell.exe (#1620)', () => {
+  // createSession's env REPLACES the child environment (powershell.exe cannot
+  // even load without SystemRoot), so overlay onto the real one.
+  const RESTRICTED_ENV = { ...(process.env as Record<string, string>), PSExecutionPolicyPreference: 'Restricted' };
+  const BLOCKED = /UnauthorizedAccess/;
+  let manager: DaemonSessionManager;
+  let tmp: string | undefined;
+
+  afterEach(() => {
+    if (manager) manager.disposeAll();
+    __setPolicyProbeForTests(null);
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+    tmp = undefined;
+  });
+
+  it('control: with no policy arg, Restricted blocks the init script and no markers arrive', async () => {
+    __setPolicyProbeForTests({ scopes: { ...FACTORY_DEFAULT_SCOPES, currentUser: 'set' }, platform: 'win32' });
+    manager = new DaemonSessionManager();
+    const id = `rt-policy-control-${Date.now()}`;
+    manager.createSession({ id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()), env: RESTRICTED_ENV });
+    const managed = manager.getSession(id)!;
+
+    // Proves the env var reached the pane AND that this setup reproduces the bug.
+    await waitForOutputAfter(managed, 0, BLOCKED, 'the Restricted policy error');
+
+    managed.ptyProcess.write('echo wmux-policy-control\r');
+    await waitForOutputAfter(managed, 0, /wmux-policy-control[\s\S]*wmux-policy-control/, 'echo output');
+    expect(managed.promptLog.size).toBe(0);
+  }, EVENT_TIMEOUT_MS * 2 + 2000);
+
+  it('fix: RemoteSigned lets the init script load, so OSC 133 command markers arrive', async () => {
+    __setPolicyProbeForTests({ scopes: FACTORY_DEFAULT_SCOPES, platform: 'win32' });
+    manager = new DaemonSessionManager();
+    const id = `rt-policy-fix-${Date.now()}`;
+    manager.createSession({ id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()), env: RESTRICTED_ENV });
+    const managed = manager.getSession(id)!;
+    const baseline = managed.promptLog.size;
+
+    managed.ptyProcess.write('echo wmux-policy-fix\r');
+    const cmdStart = await waitForEventAfter(managed, baseline, (e) => e.type === 'command_start', 'command_start');
+    const cmdEnd = await waitForEventAfter(
+      managed,
+      baseline,
+      (e) => e.type === 'command_end' && e.byteOffset >= cmdStart.byteOffset,
+      'command_end after command_start',
+    );
+    expect(cmdEnd.exitCode).toBe(0);
+    expect(managed.ringBuffer.readAll().toString('utf8')).not.toMatch(BLOCKED);
+  }, EVENT_TIMEOUT_MS * 2 + 2000);
+
+  // Stand-in for an npm agent shim (codex.ps1) that PowerShell prefers over
+  // the .cmd: any .ps1 run by an exec unit hits the same policy gate.
+  function writeProbeScript(): string {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-policy-'));
+    const script = path.join(tmp, 'wmuxprobe.ps1');
+    fs.writeFileSync(script, "Write-Output 'wmux-ps1-ran'\n");
+    return script;
+  }
+
+  it('exec unit control: Restricted blocks a .ps1 agent shim', async () => {
+    __setPolicyProbeForTests({ scopes: { ...FACTORY_DEFAULT_SCOPES, currentUser: 'set' }, platform: 'win32' });
+    const script = writeProbeScript();
+    manager = new DaemonSessionManager();
+    const id = `rt-policy-exec-control-${Date.now()}`;
+    manager.createSession({
+      id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()), env: RESTRICTED_ENV,
+      exec: { command: `& '${script.replace(/'/g, "''")}'` },
+    });
+    const managed = manager.getSession(id)!;
+    await waitForOutputAfter(managed, 0, BLOCKED, 'the Restricted policy error');
+    expect(managed.ringBuffer.readAll().toString('utf8')).not.toContain('wmux-ps1-ran');
+  }, EVENT_TIMEOUT_MS + 2000);
+
+  it('exec unit fix: RemoteSigned lets the .ps1 agent shim run', async () => {
+    __setPolicyProbeForTests({ scopes: FACTORY_DEFAULT_SCOPES, platform: 'win32' });
+    const script = writeProbeScript();
+    manager = new DaemonSessionManager();
+    const id = `rt-policy-exec-fix-${Date.now()}`;
+    manager.createSession({
+      id, cmd: POWERSHELL, cwd: path.resolve(process.cwd()), env: RESTRICTED_ENV,
+      exec: { command: `& '${script.replace(/'/g, "''")}'` },
+    });
+    const managed = manager.getSession(id)!;
+    await waitForOutputAfter(managed, 0, /wmux-ps1-ran/, 'the script output');
+    expect(managed.ringBuffer.readAll().toString('utf8')).not.toMatch(BLOCKED);
   }, EVENT_TIMEOUT_MS + 2000);
 });

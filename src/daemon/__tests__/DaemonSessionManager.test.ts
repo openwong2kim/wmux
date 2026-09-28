@@ -86,17 +86,24 @@ import { DaemonSessionManager } from '../DaemonSessionManager';
 import { restoreSeam } from '../../shared/restoreSeam';
 import { createDefaultConfig } from '../config';
 import { PWSH_EXIT_TAIL } from '../execWrapper';
+import { FACTORY_DEFAULT_SCOPES, __setPolicyProbeForTests } from '../../shared/pwshExecutionPolicy';
+
+// #1620: never let the host's real registry decide PowerShell argv here. Pin a
+// machine with an explicit policy (no extra args) unless a test opts in.
+const EXPLICIT_POLICY = { scopes: { ...FACTORY_DEFAULT_SCOPES, currentUser: 'set' as const }, platform: 'win32' as const };
 
 describe('DaemonSessionManager', () => {
   let manager: DaemonSessionManager;
 
   beforeEach(() => {
+    __setPolicyProbeForTests(EXPLICIT_POLICY);
     manager = new DaemonSessionManager();
     lastMockPty = null;
   });
 
   afterEach(() => {
     manager.disposeAll();
+    __setPolicyProbeForTests(null);
   });
 
   // 1. createSession → session created with state = detached
@@ -1161,6 +1168,32 @@ describe('DaemonSessionManager', () => {
       // The unit command is persisted on meta so recovery/restart replays
       // the loop itself, not an empty shell.
       expect(session.exec).toEqual({ command: 'claude /loop' });
+    });
+
+    // #1620: on a factory-default Windows client powershell.exe resolves an npm
+    // agent (`codex`) to its .ps1 shim, and Restricted blocks it.
+    it('gives a Windows PowerShell 5.1 exec unit RemoteSigned on a factory-default machine', () => {
+      __setPolicyProbeForTests({ scopes: FACTORY_DEFAULT_SCOPES, platform: 'win32' });
+      manager.createSession({ id: 'exec-ps51', cmd: 'powershell.exe', cwd: '.', exec: { command: 'codex' } });
+      expect(lastMockPty?.spawnArgs).toEqual([
+        '-NoLogo',
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'RemoteSigned',
+        '-Command',
+        `codex${PWSH_EXIT_TAIL}`,
+      ]);
+    });
+
+    it('leaves a 5.1 exec unit alone when the machine has an explicit policy', () => {
+      manager.createSession({ id: 'exec-ps51-explicit', cmd: 'powershell.exe', cwd: '.', exec: { command: 'codex' } });
+      expect(lastMockPty?.spawnArgs).not.toContain('-ExecutionPolicy');
+    });
+
+    it('never gives a pwsh 7 exec unit the flag', () => {
+      __setPolicyProbeForTests({ scopes: FACTORY_DEFAULT_SCOPES, platform: 'win32' });
+      manager.createSession({ id: 'exec-pwsh7', cmd: 'pwsh.exe', cwd: '.', exec: { command: 'codex' } });
+      expect(lastMockPty?.spawnArgs).not.toContain('-ExecutionPolicy');
     });
 
     // X6: a non-persisted execLaunchCommand spawns the resume-rewritten command

@@ -41,7 +41,12 @@ export const PWSH_EXIT_TAIL =
   '; $__wmuxOk = $?; $__wmuxLec = $LASTEXITCODE;' +
   ' if ($null -ne $__wmuxLec) { exit $__wmuxLec } elseif ($__wmuxOk) { exit 0 } else { exit 1 }';
 
-export function buildExecArgs(shellPath: string, command: string): string[] | null {
+/**
+ * `pwshPolicyArgs` is inserted before `-Command` for the pwsh/powershell
+ * family only (see src/shared/pwshExecutionPolicy.ts, #1620). The caller
+ * decides it so this stays a pure argv builder.
+ */
+export function buildExecArgs(shellPath: string, command: string, pwshPolicyArgs: readonly string[] = []): string[] | null {
   // Split on BOTH path separators so a Windows shell path (C:\…\pwsh.exe) is
   // classified by its family even when this daemon runs on POSIX, where
   // path.basename would keep the backslashes and miss the stem. The shell
@@ -52,7 +57,7 @@ export function buildExecArgs(shellPath: string, command: string): string[] | nu
     .replace(/\.exe$/, '');
 
   if (stem === 'pwsh' || stem === 'powershell') {
-    return ['-NoLogo', '-NoProfile', '-Command', `${command}${PWSH_EXIT_TAIL}`];
+    return ['-NoLogo', '-NoProfile', ...pwshPolicyArgs, '-Command', `${command}${PWSH_EXIT_TAIL}`];
   }
   if (stem === 'cmd') {
     return ['/d', '/s', '/c', command];

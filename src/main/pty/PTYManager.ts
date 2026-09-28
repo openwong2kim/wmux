@@ -18,6 +18,7 @@ import { isWindows, parseWindowsBuildNumber } from '../../shared/platform';
 import { shouldUseBundledConpty, spawnWithConptyPolicy } from '../../shared/conptyWindows';
 import { ShellDetector } from '../../shared/ShellDetector';
 import { forgetPtyShell, recordPtyShell } from './ptyShellRegistry';
+import { windowsPowerShellPolicyArgs } from '../../shared/pwshExecutionPolicy';
 
 export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
 
@@ -91,6 +92,7 @@ export class PTYManager {
   buildHookInjection(
     shellType: ShellType,
     env: Record<string, string>,
+    shellPath = '',
   ): { args: string[]; env: Record<string, string> } {
     const hooksDir = this.getShellHooksDir();
     const args: string[] = [];
@@ -102,7 +104,9 @@ export class PTYManager {
           env[ENV_KEYS.SHELL_HOOK] = hookPath;
           // Use -NoExit -Command to dot-source the hook script
           // Quoting with single quotes inside double quotes handles spaces in path
-          args.push('-NoExit', '-Command', `. '${hookPath}'`);
+          // #1620: a factory-default Windows client runs Restricted, which
+          // refuses the dot-source. Policy args must precede -Command.
+          args.push('-NoExit', ...windowsPowerShellPolicyArgs(shellPath), '-Command', `. '${hookPath}'`);
         }
         break;
       }
@@ -292,7 +296,7 @@ export class PTYManager {
     const shellType = this.detectShellType(shell);
     const hookInjection = wsl
       ? buildWslInjection({ target: wsl.target, cwd, env, integrationDir: getWmuxDir(), bashInit: BASH_INIT })
-      : this.buildHookInjection(shellType, env);
+      : this.buildHookInjection(shellType, env, shell);
     const spawnArgs = wsl ? hookInjection.args : [...(options?.shellArgs ?? []), ...hookInjection.args];
 
     // node-pty throws synchronously on a missing/invalid shell binary or an
