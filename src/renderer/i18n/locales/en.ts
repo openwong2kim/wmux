@@ -1036,6 +1036,7 @@ export const en = {
   'accounts.loginAgain': 'Log in again',
   'accounts.loginAddFailed': 'Could not save “{name}”: {error}',
   'accounts.loginTabFailed': "Couldn't open a login tab here. Copy the command and run it in any terminal.",
+  'accounts.loginStatusFailed': "Couldn't check the current login for “{name}”, so a new login can't be detected safely. Try again.",
   'settings.shortcuts': 'Keyboard shortcuts',
   // #1152 — checkbox on each advertised row; unchecked = the built-in is
   // unbound and the key passes through to the terminal (e.g. Codex Ctrl+T).

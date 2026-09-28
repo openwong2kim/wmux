@@ -2034,4 +2034,5 @@ export const ko = {
   'accounts.loginAgain': '다시 로그인',
   'accounts.loginAddFailed': '“{name}”을(를) 저장하지 못했습니다: {error}',
   'accounts.loginTabFailed': '여기서 로그인 탭을 열 수 없습니다. 명령어를 복사해 아무 터미널에서나 실행하세요.',
+  'accounts.loginStatusFailed': '“{name}”의 현재 로그인을 확인하지 못해 새 로그인을 안전하게 감지할 수 없습니다. 다시 시도하세요.',
 } as const;

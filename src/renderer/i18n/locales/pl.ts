@@ -1027,6 +1027,7 @@ export const pl = {
   'accounts.loginAgain': 'Zaloguj ponownie',
   'accounts.loginAddFailed': 'Nie udało się zapisać „{name}”: {error}',
   'accounts.loginTabFailed': 'Nie udało się tu otworzyć karty logowania. Skopiuj polecenie i uruchom je w dowolnym terminalu.',
+  'accounts.loginStatusFailed': 'Nie udało się sprawdzić bieżącego logowania „{name}”, więc nowego logowania nie da się bezpiecznie wykryć. Spróbuj ponownie.',
   'settings.shortcuts': 'Skróty klawiszowe',
   'settings.shortcutDisableHint': 'Wł.: wmux obsługuje ten klawisz. Wył.: klawisz trafia do terminala.',
   'settings.tabGeneral': 'Ogólne',

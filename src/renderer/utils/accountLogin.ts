@@ -29,7 +29,9 @@ export interface AccountLoginRequest {
 }
 
 export interface PendingLogin extends AccountLoginRequest {
-  phase: 'waiting' | 'timed-out';
+  /** 'starting' = baseline read / tab spawn in flight; 'error' = the current
+   *  credential could not be read, so completion can't be told apart from it. */
+  phase: 'starting' | 'waiting' | 'timed-out' | 'error';
   /** False when no login tab could be opened (Settings shows the copy fallback). */
   tabOpen: boolean;
 }
@@ -108,18 +110,25 @@ async function openLoginTab(req: AccountLoginRequest): Promise<LoginTab | null> 
     ws.profile,
   );
   try {
-    const created = await window.electronAPI.pty.create(options) as { id: string; cwd?: string };
-    const fresh = useStore.getState();
-    if (!fresh.workspaces.some((w) => w.id === ws.id)) {
-      void window.electronAPI.pty.dispose(created.id).catch(() => undefined);
+    const created = await window.electronAPI.pty.create(options) as { id: string; shell?: string; cwd?: string };
+    const dispose = () => { void window.electronAPI.pty.dispose(created.id).catch(() => undefined); };
+    // The workspace or its pane may have been closed/split away during the await.
+    const freshWs = useStore.getState().workspaces.find((w) => w.id === ws.id);
+    if (!freshWs || !getWorkspaceLeafPanes(freshWs).some((p) => p.id === paneId)) {
+      dispose();
       return null;
     }
-    const title = t('accounts.loginTabTitle', { name: req.name });
-    fresh.addSurface(paneId, created.id, title, created.cwd || cwd || '', ws.id);
-    const after = useStore.getState();
+    // addSurface's third argument is the SHELL (also the initial title); the
+    // restore path re-spawns it, so it must be a real shell, never the label.
+    useStore.getState().addSurface(paneId, created.id, created.shell || options.shell || '', created.cwd || cwd || '', ws.id);
     const surface = findSurfaceByPty(ws.id, created.id);
-    // Lock the title so the shell's own title escape can't overwrite it.
-    if (surface) after.updateSurfaceTitle(surface.surfaceId, title);
+    if (!surface) {
+      dispose();
+      return null;
+    }
+    const after = useStore.getState();
+    // Set + lock the title so the shell's own title escape can't overwrite it.
+    after.updateSurfaceTitle(surface.surfaceId, t('accounts.loginTabTitle', { name: req.name }));
     after.setActivePane(paneId);
     after.setSettingsPanelVisible(false);
     return { workspaceId: ws.id, ptyId: created.id };
@@ -217,46 +226,86 @@ function startPolling(w: Watch): void {
   }, LOGIN_TIMEOUT_MS);
 }
 
-/** Open a login tab for an account (new or existing) and watch for the login. */
-export async function startAccountLogin(req: AccountLoginRequest): Promise<void> {
-  const existing = watches.get(req.configDir);
-  if (existing) { await reopenAccountLoginTab(req.configDir); return; }
+/** Read the credential stamp a re-login must move away from. Retried once; a
+ *  failure is reported rather than guessed, since an empty baseline would count
+ *  the OLD credential as a fresh login. */
+async function readBaseline(req: AccountLoginRequest): Promise<Watch['baseline'] | 'failed'> {
   const api = window.electronAPI?.accounts;
-  let baseline: Watch['baseline'];
-  if (req.accountId && api) {
+  if (!req.accountId || !api) return undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const st = await api.credentialStatus({ vendor: req.vendor, configDir: req.configDir });
-      if (st.loggedIn) baseline = { stamp: st.stamp ?? null };
-    } catch { /* treat as not logged in */ }
+      return st.loggedIn ? { stamp: st.stamp ?? null } : undefined;
+    } catch { /* retry once */ }
   }
-  const w: Watch = { entry: { ...req, phase: 'waiting', tabOpen: false }, tab: null, baseline, poll: null, timeout: null };
+  return 'failed';
+}
+
+/** Open a login tab for an account (new or existing) and watch for the login. */
+export async function startAccountLogin(req: AccountLoginRequest): Promise<void> {
+  if (watches.has(req.configDir)) {
+    const cur = watches.get(req.configDir)!;
+    if (cur.entry.phase !== 'starting') await reopenAccountLoginTab(req.configDir);
+    return;
+  }
+  // Register synchronously, before any await, so a double click can't start a
+  // second watch (and a second tab) for the same dir.
+  const w: Watch = { entry: { ...req, phase: 'starting', tabOpen: false }, tab: null, baseline: undefined, poll: null, timeout: null };
   watches.set(req.configDir, w);
-  w.tab = await openLoginTab(req);
-  w.entry = { ...w.entry, tabOpen: w.tab !== null };
+  emit();
+  const baseline = await readBaseline(req);
+  if (watches.get(req.configDir) !== w) return; // cancelled meanwhile
+  if (baseline === 'failed') {
+    w.entry = { ...w.entry, phase: 'error' };
+    emit();
+    useStore.getState().pushToast({ level: 'error', message: t('accounts.loginStatusFailed', { name: req.name }) });
+    return;
+  }
+  w.baseline = baseline;
+  const tab = await openLoginTab(req);
+  if (watches.get(req.configDir) !== w) { closeLoginTab(tab); return; }
+  w.tab = tab;
+  w.entry = { ...w.entry, tabOpen: tab !== null };
   startPolling(w);
 }
 
-/** Restart detection after a timeout (the login tab is left as it is). */
+/** Restart detection after a timeout (the login tab is left as it is), or retry
+ *  from the start after a failed baseline read. */
 export function checkAccountLoginAgain(configDir: string): void {
   const w = watches.get(configDir);
-  if (w) startPolling(w);
+  if (!w || w.entry.phase === 'starting') return;
+  if (w.entry.phase === 'error') {
+    // The baseline was never read: start over from it.
+    watches.delete(configDir);
+    const { phase: _phase, tabOpen: _tabOpen, ...req } = w.entry;
+    void startAccountLogin(req);
+    return;
+  }
+  startPolling(w);
 }
 
 /** Open a fresh login tab for a pending login (e.g. the first one was closed). */
 export async function reopenAccountLoginTab(configDir: string): Promise<void> {
   const w = watches.get(configDir);
-  if (!w) return;
+  if (!w || w.entry.phase === 'starting' || w.entry.phase === 'error') return;
+  stopTimers(w);
   closeLoginTab(w.tab);
-  w.tab = await openLoginTab(w.entry);
-  w.entry = { ...w.entry, tabOpen: w.tab !== null };
+  w.tab = null;
+  const tab = await openLoginTab(w.entry);
+  if (watches.get(configDir) !== w) { closeLoginTab(tab); return; }
+  w.tab = tab;
+  w.entry = { ...w.entry, tabOpen: tab !== null };
   startPolling(w);
 }
 
-/** Stop waiting. The login tab stays so an in-flight login isn't cut off. */
+/** Stop waiting. A NEW account's login tab is closed too: once the watch is
+ *  gone nothing would register the account if that login later completed. A
+ *  re-login's tab stays, since the account is already registered. */
 export function cancelAccountLogin(configDir: string): void {
   const w = watches.get(configDir);
   if (!w) return;
   stopTimers(w);
   watches.delete(configDir);
   emit();
+  if (!w.entry.accountId) closeLoginTab(w.tab);
 }

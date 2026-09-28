@@ -6,6 +6,7 @@ vi.mock('../../stores', () => ({ useStore: { getState: () => store.state } }));
 import {
   startAccountLogin,
   cancelAccountLogin,
+  checkAccountLoginAgain,
   getPendingAccountLogins,
   LOGIN_POLL_INTERVAL_MS,
 } from '../accountLogin';
@@ -27,7 +28,7 @@ function setup(profileEnv?: Record<string, string>) {
     usageRefresh: vi.fn(),
   };
   const pty = {
-    create: vi.fn(async () => ({ id: 'pty-login', cwd: '/home/u' })),
+    create: vi.fn(async () => ({ id: 'pty-login', shell: '/bin/zsh', cwd: '/home/u' })),
     dispose: vi.fn(async () => undefined),
   };
   store.state = {
@@ -45,7 +46,7 @@ function setup(profileEnv?: Record<string, string>) {
     pushToast: vi.fn(),
   };
   (globalThis as unknown as { window: unknown }).window = { electronAPI: { accounts: api, pty } };
-  return { api, pty, statuses, state: store.state as Record<string, ReturnType<typeof vi.fn>> };
+  return { api, pty, statuses, ws, state: store.state as Record<string, ReturnType<typeof vi.fn>> };
 }
 
 describe('startAccountLogin', () => {
@@ -97,5 +98,66 @@ describe('startAccountLogin', () => {
     await vi.advanceTimersByTimeAsync(LOGIN_POLL_INTERVAL_MS);
     expect(api.usageRefresh).toHaveBeenCalledWith('a1');
     expect(api.add).not.toHaveBeenCalled();
+  });
+
+  it('passes the real shell to addSurface, never the tab title (restore re-spawns it)', async () => {
+    const { state } = setup();
+    await startAccountLogin({ vendor: 'claude', name: 'Work', configDir: '/acc/claude-1', loginCommand: 'x' });
+    expect(state.addSurface.mock.calls[0][2]).toBe('/bin/zsh');
+  });
+
+  it('a double click starts one watch and one tab', async () => {
+    const { pty } = setup();
+    const req = { vendor: 'claude' as const, name: 'Work', configDir: '/acc/claude-1', loginCommand: 'x' };
+    await Promise.all([startAccountLogin(req), startAccountLogin(req)]);
+    expect(pty.create).toHaveBeenCalledTimes(1);
+    expect(getPendingAccountLogins()).toHaveLength(1);
+  });
+
+  it('disposes the pty when the target pane vanished during create', async () => {
+    const { pty, ws, state } = setup();
+    pty.create.mockImplementationOnce(async () => {
+      ws.rootPane = { type: 'leaf', id: 'pane-other', surfaces: [] };
+      return { id: 'pty-login', shell: '/bin/zsh', cwd: '/home/u' };
+    });
+    await startAccountLogin({ vendor: 'claude', name: 'Work', configDir: '/acc/claude-1', loginCommand: 'x' });
+    expect(pty.dispose).toHaveBeenCalledWith('pty-login');
+    expect(state.addSurface).not.toHaveBeenCalled();
+    expect(getPendingAccountLogins()[0].tabOpen).toBe(false);
+  });
+
+  it('a re-login from a logged-out baseline completes on the first login', async () => {
+    const { api, statuses } = setup();
+    statuses.push({ loggedIn: false, stamp: null });
+    await startAccountLogin({ vendor: 'claude', name: 'Work', configDir: '/acc/claude-1', loginCommand: 'x', accountId: 'a1' });
+    statuses.push({ loggedIn: true, stamp: null });
+    await vi.advanceTimersByTimeAsync(LOGIN_POLL_INTERVAL_MS);
+    expect(api.usageRefresh).toHaveBeenCalledWith('a1');
+  });
+
+  it('a failed baseline read (after one retry) shows an error and opens no tab', async () => {
+    const { api, pty } = setup();
+    api.credentialStatus.mockRejectedValueOnce(new Error('ipc')).mockRejectedValueOnce(new Error('ipc'));
+    await startAccountLogin({ vendor: 'claude', name: 'Work', configDir: '/acc/claude-1', loginCommand: 'x', accountId: 'a1' });
+    expect(api.credentialStatus).toHaveBeenCalledTimes(2);
+    expect(pty.create).not.toHaveBeenCalled();
+    expect(getPendingAccountLogins()[0].phase).toBe('error');
+    // Retrying starts over from the baseline read.
+    checkAccountLoginAgain('/acc/claude-1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pty.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancelling a NEW-account login closes its tab; a re-login keeps it', async () => {
+    const { pty, state } = setup();
+    await startAccountLogin({ vendor: 'claude', name: 'Work', configDir: '/acc/claude-1', loginCommand: 'x' });
+    cancelAccountLogin('/acc/claude-1');
+    expect(pty.dispose).toHaveBeenCalledWith('pty-login');
+    expect(state.closeSurface).toHaveBeenCalled();
+
+    const again = setup();
+    await startAccountLogin({ vendor: 'claude', name: 'Work', configDir: '/acc/claude-2', loginCommand: 'x', accountId: 'a2' });
+    cancelAccountLogin('/acc/claude-2');
+    expect(again.pty.dispose).not.toHaveBeenCalled();
   });
 });

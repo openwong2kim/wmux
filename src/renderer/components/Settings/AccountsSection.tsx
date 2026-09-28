@@ -136,7 +136,8 @@ function CopyCommandButton({ command }: { command: string }): React.ReactElement
 /** A login that is open in a terminal tab and not yet detected. */
 function PendingLoginRow({ entry }: { entry: PendingLogin }): React.ReactElement {
   const t = useT();
-  const waiting = entry.phase === 'waiting';
+  const waiting = entry.phase === 'waiting' || entry.phase === 'starting';
+  const failed = entry.phase === 'error';
   return (
     <div className="settings-row" data-account-login={entry.configDir}>
       <div className="flex flex-col gap-2">
@@ -145,17 +146,21 @@ function PendingLoginRow({ entry }: { entry: PendingLogin }): React.ReactElement
           {waiting && <span className="inline-block w-2 h-2 rounded-full animate-pulse shrink-0" style={{ background: 'var(--accent-amber)' }} />}
           {waiting
             ? t('accounts.waitingForLoginNamed', { name: entry.name })
-            : t('accounts.loginTimedOut', { name: entry.name })}
+            : failed
+              ? t('accounts.loginStatusFailed', { name: entry.name })
+              : t('accounts.loginTimedOut', { name: entry.name })}
         </div>
-        {!entry.tabOpen && (
+        {!entry.tabOpen && !failed && entry.phase !== 'starting' && (
           <div className="text-[11px] text-[var(--text-sub)]">{t('accounts.loginTabFailed')}</div>
         )}
         <div className="flex flex-wrap justify-end gap-2">
           <CopyCommandButton command={entry.loginCommand} />
           <Button variant="ghost" size="md" onClick={() => cancelAccountLogin(entry.configDir)}>{t('common.cancel')}</Button>
-          <Button variant="secondary" size="md" onClick={() => { void reopenAccountLoginTab(entry.configDir); }}>
-            {t('accounts.openLoginTab')}
-          </Button>
+          {!failed && entry.phase !== 'starting' && (
+            <Button variant="secondary" size="md" onClick={() => { void reopenAccountLoginTab(entry.configDir); }}>
+              {t('accounts.openLoginTab')}
+            </Button>
+          )}
           {!waiting && (
             <Button variant="primary" size="md" onClick={() => checkAccountLoginAgain(entry.configDir)}>
               {t('accounts.checkAgain')}
