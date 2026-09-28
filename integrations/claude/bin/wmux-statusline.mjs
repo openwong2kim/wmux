@@ -26,26 +26,38 @@
 // AFTER the line is written to stdout, a changed `rate_limits` sample is
 // pushed to the running wmux app over its local main pipe (`usage.rateLimits`,
 // authenticated with the ~/.wmux<suffix>-auth-token file) so the usage view
-// shows live numbers instead of polling. That push is fire-and-forget: sent
-// only when the sample differs from the last one delivered for this config
-// dir (a small state file in the OS temp dir), capped at 300 ms, every error
-// swallowed, and it never changes stdout or the exit code. With wmux not
-// running (no token / no pipe) it costs a file read and nothing else.
+// shows live numbers instead of polling.
+//
+// Claude Code waits for this process to EXIT before painting the line
+// (measured: closing stdout early does not help), so the push never runs in
+// this process. It is handed to a detached child (`--push`, stdio ignored,
+// unref'd) and this process exits at once. The child caps its own work at
+// 300 ms and swallows every error; stdout and the exit code never depend on
+// it. A push is spawned only when wmux has run here (its token file exists)
+// and the sample differs from the last one the app accepted for this config
+// dir — or that acceptance is over 10 minutes old (an app restart forgets
+// it). State lives in ~/.wmux<suffix>/statusline-push/, owner-only.
 //
 // Self-contained on purpose: Claude Code invokes it as a bare `node` command
 // from settings.json, so no TS imports and no wmux install-dir dependency
 // (installed to the stable ~/.wmux/hooks/ path by `wmux setup-statusline`).
 
-import { readFileSync, writeFileSync, renameSync } from 'node:fs';
-import { homedir, tmpdir, userInfo } from 'node:os';
+import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from 'node:fs';
+import { homedir, userInfo } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { createConnection } from 'node:net';
 import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-/** Hard cap for the live-usage push, connect to reply, all pipes included. */
+/** Hard cap for the live-usage push (in the child), connect to reply, all pipes included. */
 const PUSH_TIMEOUT_MS = 300;
-/** A push that did not get through is retried on a later render, at most this often. */
+/** A push the app did not accept is retried on a later render, at most this often. */
 const PUSH_RETRY_MS = 60_000;
+/** An accepted sample is re-sent unchanged after this long (the app may have restarted). */
+const PUSH_RESEND_MS = 10 * 60_000;
+/** Env var carrying the payload from the statusline process to the push child. */
+const PUSH_PAYLOAD_ENV = 'WMUX_STATUSLINE_PUSH';
 
 function getHome() {
   return process.env.USERPROFILE || process.env.HOME || homedir();
@@ -201,8 +213,11 @@ function main() {
   const sample = rateLimitsSample(rl);
   process.stdout.write(parts.join(' · '), () => {
     if (!sample) return;
-    pushRateLimits(home, typeof rawConfigDir === 'string' && rawConfigDir.length > 0 ? rawConfigDir : null, sample)
-      .catch(() => { /* never let the push affect the statusline */ });
+    try {
+      spawnPush(home, typeof rawConfigDir === 'string' && rawConfigDir.length > 0 ? resolve(rawConfigDir) : null, sample);
+    } catch {
+      // never let the push affect the statusline
+    }
   });
 }
 
@@ -224,13 +239,29 @@ function rateLimitsSample(rl) {
 // WMUX_SOCKET_PATH — injected into wmux panes — is preferred, with the derived
 // name as the fallback for a stale value.
 
+function dataSuffix() {
+  return process.env.WMUX_DATA_SUFFIX || '';
+}
+
 function mainPipePaths() {
-  const suffix = process.env.WMUX_DATA_SUFFIX || '';
   const derived = process.platform === 'win32'
-    ? `\\\\.\\pipe\\wmux${suffix}-${userInfo().username || 'default'}`
-    : join(homedir() || '/tmp', `.wmux${suffix}.sock`);
+    ? `\\\\.\\pipe\\wmux${dataSuffix()}-${userInfo().username || 'default'}`
+    : join(homedir() || '/tmp', `.wmux${dataSuffix()}.sock`);
   const env = process.env.WMUX_SOCKET_PATH;
   return typeof env === 'string' && env.length > 0 && env !== derived ? [env, derived] : [derived];
+}
+
+function tokenPath(home) {
+  return join(home, `.wmux${dataSuffix()}-auth-token`);
+}
+
+function stateDir(home) {
+  return join(home, `.wmux${dataSuffix()}`, 'statusline-push');
+}
+
+function statePathFor(home, pipes, configDir) {
+  const key = createHash('sha1').update(`${pipes[0]}\0${configDir ?? ''}`).digest('hex').slice(0, 16);
+  return join(stateDir(home), `${key}.json`);
 }
 
 function readState(path) {
@@ -238,54 +269,76 @@ function readState(path) {
   return parsed && typeof parsed.sig === 'string' ? parsed : null;
 }
 
-function writeState(path, state) {
+function writeState(home, path, state) {
   try {
+    mkdirSync(stateDir(home), { recursive: true, mode: 0o700 });
     const tmp = `${path}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
     renameSync(tmp, path);
   } catch {
-    // Unwritable temp dir: the next render simply pushes again.
+    // Unwritable state dir: the next render simply pushes again.
   }
 }
 
-async function pushRateLimits(home, configDir, rateLimits) {
+/** Statusline side: decide cheaply whether a push is due, and if so hand it to
+ *  a detached child so this process can exit immediately. */
+function spawnPush(home, configDir, rateLimits) {
+  if (!existsSync(tokenPath(home))) return; // wmux has never run here
   const pipes = mainPipePaths();
   const sig = JSON.stringify({ configDir, rateLimits });
-  const key = createHash('sha1').update(`${pipes[0]}\0${configDir ?? ''}`).digest('hex').slice(0, 16);
-  const statePath = join(tmpdir(), `wmux-statusline-${key}.json`);
+  const statePath = statePathFor(home, pipes, configDir);
   const prev = readState(statePath);
   const now = Date.now();
-  if (prev && prev.sig === sig && (prev.ok || now - (prev.at || 0) < PUSH_RETRY_MS)) return;
+  if (prev && prev.sig === sig && now - (prev.at || 0) < (prev.ok ? PUSH_RESEND_MS : PUSH_RETRY_MS)) return;
+  // Claim the send before spawning, so a burst of renders spawns one child.
+  writeState(home, statePath, { sig, ok: false, at: now });
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--push'], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    env: { ...process.env, [PUSH_PAYLOAD_ENV]: JSON.stringify({ configDir, rateLimits, sig }) },
+  });
+  child.on('error', () => { /* spawn failure: retried on a later render */ });
+  child.unref();
+}
 
+/** Push child: one request, recorded as delivered only when the app says it
+ *  applied the sample. */
+async function runPush() {
+  const payload = JSON.parse(process.env[PUSH_PAYLOAD_ENV] || 'null');
+  if (!payload || typeof payload.sig !== 'string') return;
+  const home = getHome();
+  const { configDir, rateLimits, sig } = payload;
   let token = null;
   try {
-    token = readFileSync(join(home, `.wmux${process.env.WMUX_DATA_SUFFIX || ''}-auth-token`), 'utf8').trim() || null;
+    token = readFileSync(tokenPath(home), 'utf8').trim() || null;
   } catch {
     token = null;
   }
-  if (!token) return; // wmux has never run here — nothing to tell
+  if (!token) return;
 
+  const pipes = mainPipePaths();
   const request = {
     id: `statusline-${randomUUID()}`,
     method: 'usage.rateLimits',
     params: { configDir, ptyId: process.env.WMUX_PTY_ID || null, rateLimits },
     token,
   };
-  const deadline = now + PUSH_TIMEOUT_MS;
-  let delivered = false;
+  const deadline = Date.now() + PUSH_TIMEOUT_MS;
+  let accepted = false;
   for (const pipe of pipes) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
     const res = await sendOnce(pipe, request, remaining);
-    if (res === 'reply') { delivered = true; break; }
-    if (res !== 'no-pipe') break; // reached something but no answer — don't double-send
+    if (res === 'no-pipe') continue; // could not connect — safe to try the next pipe
+    accepted = res !== 'fail' && res.ok === true && res.result?.ok === true && res.result?.applied === true;
+    break; // reached something — never double-send
   }
-  writeState(statePath, { sig, ok: delivered, at: Date.now() });
+  writeState(home, statePathFor(home, pipes, configDir), { sig, ok: accepted, at: Date.now() });
 }
 
-/** One request over one pipe. Resolves 'reply' (any response with our id —
- *  the app heard it, whatever it decided), 'no-pipe' (could not connect; safe
- *  to try the next pipe) or 'fail'. Never rejects. */
+/** One request over one pipe. Resolves the parsed response carrying our id,
+ *  'no-pipe' (could not connect) or 'fail'. Never rejects. */
 function sendOnce(pipe, request, timeoutMs) {
   return new Promise((resolveResult) => {
     let settled = false;
@@ -310,7 +363,8 @@ function sendOnce(pipe, request, timeoutMs) {
         const line = buffer.slice(0, nl);
         buffer = buffer.slice(nl + 1);
         try {
-          if (JSON.parse(line)?.id === request.id) { settle('reply'); return; }
+          const parsed = JSON.parse(line);
+          if (parsed?.id === request.id) { settle(parsed); return; }
         } catch { /* not ours */ }
       }
     });
@@ -319,4 +373,8 @@ function sendOnce(pipe, request, timeoutMs) {
   });
 }
 
-main();
+if (process.argv[2] === '--push') {
+  runPush().catch(() => { /* a push child has no one to report to */ });
+} else {
+  main();
+}
