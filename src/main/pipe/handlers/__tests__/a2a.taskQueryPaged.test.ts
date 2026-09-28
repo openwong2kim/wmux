@@ -207,7 +207,7 @@ describe('a2a.task.query view: page — #1598 orphaned tasks', () => {
   });
 
   it('does not flag an ended task whose receiver pane is gone', async () => {
-    const ended = { ...gone, status: { ...gone.status, state: 'completed' } };
+    const ended: Rec = { ...gone, status: { ...gone.status, state: 'completed' } };
     sendToRendererMock.mockImplementation(async (_w: unknown, method: string, params: Rec) => (method === 'pane.list'
       ? [{ id: 'pane-live', surfacePtyIds: ['pty-1'] }]
       : { workspaceId: WS, tasks: applyTaskQueryView([live], params) }));
