@@ -1,15 +1,23 @@
 /**
- * Caller-facing view of an `a2a.task.query` result for the a2a_task_query tool.
+ * Paged view of `a2a.task.query` for the a2a_task_query tool.
  *
- * The RPC returns every matching task with its full history, which grows
- * without bound (20+ tasks came back at ~74 KB and blew the 64 KiB result
- * cap). The tool therefore lists compact summaries, newest first, one page at
- * a time, and returns the full task only when the caller names it — itself
- * bounded, newest messages first. Every shape here fits the result cap on its
- * own, so the generic cap never has to cut it. The RPC contract is untouched:
- * the brain and other RPC callers still read full tasks.
+ * Full tasks carry their whole history, which grows without bound: 20+ tasks
+ * blew the 64 KiB tool result cap, and 135 tasks (~1.4 MB) outgrew the 1 MiB
+ * daemon line, so the reply was dropped and the call sat out the 10 s RPC
+ * timeout. A caller that sends `view: 'page'` therefore gets compact
+ * summaries, newest first, one page at a time, and the full task only when it
+ * names one — itself bounded, newest messages first.
+ *
+ * The work is split so no hop carries full histories for a list: each task
+ * source (renderer cache, daemon log) runs {@link applyTaskQueryView} on its
+ * own rows, main merges the two and runs {@link shapeTaskQueryResult}. A call
+ * without `view` is untouched: the brain and other RPC callers still read full
+ * tasks. Runs in the renderer too, so nothing here that the renderer calls
+ * may touch Node's Buffer.
  */
-import { DEFAULT_RESULT_CAP_BYTES } from './resultCap';
+
+/** Byte budget for one result: the MCP tool result cap (DEFAULT_RESULT_CAP_BYTES). */
+export const TASK_QUERY_CAP_BYTES = 64 * 1024;
 
 export const DEFAULT_TASK_PAGE_LIMIT = 20;
 export const MAX_TASK_PAGE_LIMIT = 100;
@@ -38,17 +46,27 @@ function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+/** UTF-8 length of a string (a lone surrogate encodes as U+FFFD, 3 bytes). */
+function utf8Length(text: string): number {
+  let bytes = 0;
+  for (const char of text) {
+    const cp = char.codePointAt(0) ?? 0;
+    bytes += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+  }
+  return bytes;
+}
+
 function bytesOf(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value, null, 2), 'utf8');
+  return utf8Length(JSON.stringify(value, null, 2));
 }
 
 /** Cut to at most `maxBytes` of UTF-8 on a code-point boundary, marking the cut. */
 function clipBytes(text: string, maxBytes: number): string {
-  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  if (utf8Length(text) <= maxBytes) return text;
   let out = '';
   let used = 0;
   for (const char of text) {
-    const size = Buffer.byteLength(char, 'utf8');
+    const size = utf8Length(char);
     if (used + size > maxBytes - 3) break;
     out += char;
     used += size;
@@ -56,14 +74,13 @@ function clipBytes(text: string, maxBytes: number): string {
   return `${out}…`;
 }
 
-function createdAtOf(task: Rec): string {
-  const meta = isRec(task.metadata) ? task.metadata : {};
-  return str(meta.createdAt) ?? '';
+/** Sort and cursor keys of a summary row. */
+function createdAtOf(summary: Rec): string {
+  return str(summary.createdAt) ?? '';
 }
 
-function updatedAtOf(task: Rec): string {
-  const meta = isRec(task.metadata) ? task.metadata : {};
-  return str(meta.updatedAt) ?? str(meta.createdAt) ?? '';
+function updatedAtOf(summary: Rec): string {
+  return str(summary.updatedAt) ?? str(summary.createdAt) ?? '';
 }
 
 function messageText(message: unknown): string {
@@ -194,16 +211,40 @@ function detailView(envelope: Rec, task: Rec, cursor: string | undefined, capByt
   return render(low, true);
 }
 
+/** Whether an `a2a.task.query` call asked for the paged view. */
+export function isPagedTaskQuery(params: Rec): boolean {
+  return params.view === 'page';
+}
+
+/** The task a paged call names, if any (then it gets that task in full). */
+export function pagedTaskId(params: Rec): string | undefined {
+  return isPagedTaskQuery(params) && typeof params.taskId === 'string' && params.taskId ? params.taskId : undefined;
+}
+
 /**
- * Shape a raw `a2a.task.query` result. A result that is not a `{tasks: []}`
- * envelope (an RPC error) passes through untouched.
+ * What one task source returns for a query: every task in full without
+ * `view` (the legacy contract), and for `view: 'page'` either the named task in
+ * full or a summary of each task.
+ */
+export function applyTaskQueryView<T extends object>(tasks: readonly T[], params: Rec): unknown[] {
+  if (!isPagedTaskQuery(params)) return [...tasks];
+  const taskId = pagedTaskId(params);
+  if (taskId) return tasks.filter((task) => (task as Rec).id === taskId);
+  return tasks.map((task) => summarizeTask(task as Rec));
+}
+
+/**
+ * Shape a merged paged `a2a.task.query` result: full tasks when
+ * `options.taskId` names one, summary rows ({@link summarizeTask}) otherwise.
+ * A result that is not a `{tasks: []}` envelope (an RPC error) passes through
+ * untouched.
  */
 export function shapeTaskQueryResult(result: unknown, options: TaskQueryViewOptions = {}): unknown {
   if (!isRec(result) || !Array.isArray(result.tasks)) return result;
   const envelope: Rec = { ...result };
   delete envelope.tasks;
   const tasks = (result.tasks as unknown[]).filter(isRec);
-  const capBytes = options.capBytes ?? DEFAULT_RESULT_CAP_BYTES;
+  const capBytes = options.capBytes ?? TASK_QUERY_CAP_BYTES;
 
   if (options.taskId) {
     const task = tasks.find((candidate) => candidate.id === options.taskId);
@@ -240,7 +281,7 @@ export function shapeTaskQueryResult(result: unknown, options: TaskQueryViewOpti
     ...envelope,
     total: ordered.length,
     remaining: rest.length - count,
-    tasks: rest.slice(0, count).map(summarizeTask),
+    tasks: rest.slice(0, count),
     ...(snapshot && { nextUpdatedSince: snapshot }),
     ...(count < rest.length && count > 0 && {
       nextCursor: encodeCursor(['l', createdAtOf(rest[count - 1]), String(rest[count - 1].id), snapshot]),

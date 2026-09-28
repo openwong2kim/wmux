@@ -13,6 +13,7 @@ import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/co
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
 import { isTaskEnded, isVerifiedTaskSender } from '../../shared/a2aReopen';
+import { applyTaskQueryView } from '../../shared/a2aTaskQueryView';
 import { getLeafPanes, getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
 import { findStashedEntry, paneStashedError, stashedPaneLiveness } from '../../shared/paneStash';
 import { applyRoleAgent, bindingEnforcesModel, normalizeRoleBinding, sanitizeOrchRole } from '../../shared/orchestratorRole';
@@ -3120,7 +3121,8 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       }
     }
     const tasks = store.queryTasks(workspaceId, { status, role, updatedSince });
-    return { workspaceId, tasks };
+    // view: 'page' (a2a_task_query) → summaries, or the one named task in full.
+    return { workspaceId, tasks: applyTaskQueryView(tasks, params) };
   }
 
   if (method === 'a2a.task.update') {

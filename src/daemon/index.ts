@@ -43,6 +43,7 @@ import {
 import { stopWebServerDurably } from './web/webStop';
 import { decideWebStartPolicy, resolveWebStartGrants } from './web/webStartPolicy';
 import { scheduleTokenFileReHarden } from '../shared/security';
+import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { readSessionTextReplay } from './sessionTextReplay';
@@ -4803,7 +4804,9 @@ function registerRpcHandlers(
       ...(p.role === 'user' || p.role === 'agent' ? { role: p.role } : {}),
       ...(typeof p.updatedSince === 'string' && p.updatedSince ? { updatedSince: p.updatedSince } : {}),
     });
-    return { ok: true, workspaceId, tasks };
+    // view: 'page' → summaries, or the one named task in full: a list reply
+    // must stay far below the 1 MiB control-line cap of DaemonClient.
+    return { ok: true, workspaceId, tasks: applyTaskQueryView(tasks, p) };
   });
 
   // ── WorkTask 미션 채널 (J0 §3) ──────────────────────────────────────

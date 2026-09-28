@@ -38,7 +38,6 @@ import { registerPaneLifecycleTools } from './paneLifecycle';
 import { registerFleetTriageTools } from './fleetTriage';
 import { registerReplTools } from './repl/tools';
 import { inputSchemaDeclaresMaxBytes, wrapHandlerWithResultCap } from './resultCap';
-import { shapeTaskQueryResult } from './a2aTaskQueryView';
 import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
 import { unlistToolsFromListing } from './listFilter';
 import { UNLISTED_TOOLS_SET } from '../shared/unlistedTools';
@@ -1666,12 +1665,12 @@ server.tool(
   A2A_TASK_QUERY_SHAPE,
   async ({ status, role, updated_since, task_id, message_id, limit, cursor }) => {
     const wsId = await requireWorkspaceId();
-    let raw: unknown;
-    await callRpc('a2a.task.query', { workspaceId: wsId, status, role, updatedSince: updated_since }, undefined, (result) => {
-      raw = result;
+    // view: 'page' has main (and each task source) page and summarize, so a
+    // list never carries full histories over any hop.
+    return callRpc('a2a.task.query', {
+      workspaceId: wsId, status, role, updatedSince: updated_since,
+      view: 'page', taskId: task_id, messageId: message_id, limit, cursor,
     });
-    const shaped = shapeTaskQueryResult(raw, { taskId: task_id, messageId: message_id, limit, cursor });
-    return { content: [{ type: 'text', text: typeof shaped === 'string' ? shaped : JSON.stringify(shaped, null, 2) }] };
   },
 );
 
