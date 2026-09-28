@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,6 +6,34 @@ import { sessionFiles, searchSessionFiles } from '../sessionFiles';
 let root: string;
 beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), 'wmux-files-')); });
 afterEach(async () => { await fs.rm(root, { recursive: true, force: true }); });
+
+/**
+ * One read-only directory just over the 200-entry page / result cap, shared by
+ * every case that needs more than a page. Creating and deleting hundreds of
+ * entries per case was what timed out on the Windows runner, so it is built
+ * once, from the cheapest entries there are: `mkdir` for directories and hard
+ * links to one seed file for files (no per-file open/write/close to scan).
+ *
+ * 202 rather than 201 so the name-last entry (`needle-201`) is a DIRECTORY: a
+ * filesystem that lists by name (NTFS) then ends on an entry the whole-directory
+ * sort does not end on, so sorting each page on its own is still caught there.
+ */
+const WIDE = 202;
+let wide: string;
+beforeAll(async () => {
+  wide = await fs.mkdtemp(path.join(os.tmpdir(), 'wmux-files-wide-'));
+  const seed = path.join(wide, '.seed');
+  await fs.writeFile(seed, '');
+  // Directories and files interleaved, created in an order opendir has no
+  // reason to preserve.
+  await Promise.all(Array.from({length:WIDE}, (_, i) => {
+    const j = (i * 97) % WIDE;
+    const entry = path.join(wide, `needle-${String(j).padStart(3,'0')}`);
+    return j % 3 === 0 ? fs.mkdir(entry) : fs.link(seed, entry);
+  }));
+  await fs.rm(seed);
+});
+afterAll(async () => { await fs.rm(wide, { recursive: true, force: true }); });
 /** Narrows the listing branch of the union so pages can be compared directly. */
 async function list(base: string, relative: string, offset: number): Promise<{
   entries: Array<{name: string; path: string; directory: boolean}>;
@@ -38,27 +66,21 @@ describe('workspace file reads', () => {
     await fs.writeFile(path.join(root, 'binary'), Buffer.from([0, 1, 2]));
     await expect(sessionFiles(root, 'binary', 0, true)).rejects.toMatchObject({status:415});
   });
-  // 205 creates plus a per-entry lstat is slow on the Windows runner under load.
-  it('paginates directories without dropping entries', { timeout: 30_000 }, async () => {
-    await Promise.all(Array.from({length:205}, (_, i) => fs.writeFile(path.join(root, `file-${i}`), '')));
-    const first = await sessionFiles(root, '', 0, false);
-    const second = await sessionFiles(root, '', 200, false);
+  it('paginates directories without dropping entries', async () => {
+    const first = await sessionFiles(wide, '', 0, false);
+    const second = await sessionFiles(wide, '', 200, false);
     expect(first).toHaveProperty('nextOffset',200);
     expect(second).toHaveProperty('nextOffset',null);
-    if ('entries' in first && 'entries' in second) expect(new Set([...first.entries!, ...second.entries!].map(e => e.path)).size).toBe(205);
+    if ('entries' in first && 'entries' in second) expect(new Set([...first.entries!, ...second.entries!].map(e => e.path)).size).toBe(WIDE);
   });
   it('orders pages against the whole directory, not against each page', async () => {
-    // Directories and files interleaved, created in an order opendir has no
-    // reason to preserve: paging previously sorted each slice on its own, so an
-    // entry could land on two pages or on none.
-    await Promise.all(Array.from({length:260}, (_, i) =>
-      i % 3 === 0 ? fs.mkdir(path.join(root, `entry-${String((i * 97) % 260).padStart(3,'0')}`))
-                  : fs.writeFile(path.join(root, `entry-${String((i * 97) % 260).padStart(3,'0')}`), '')));
-    const first = await list(root, '', 0);
-    const second = await list(root, '', 200);
+    // `wide` interleaves directories and files: paging previously sorted each
+    // slice on its own, so an entry could land on two pages or on none.
+    const first = await list(wide, '', 0);
+    const second = await list(wide, '', 200);
     const paged = [...first.entries, ...second.entries];
     expect(second.nextOffset).toBeNull();
-    expect(paged).toHaveLength(260);
+    expect(paged).toHaveLength(WIDE);
     const expected = [...paged].sort((a, b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name));
     expect(paged.map(e => e.name)).toEqual(expected.map(e => e.name));
   });
@@ -91,8 +113,8 @@ describe('workspace filename search', () => {
     await expect(searchSessionFiles(root, '', ' ')).rejects.toMatchObject({status:400});
   });
   it('reports truncation when matches exceed the result cap', async () => {
-    await Promise.all(Array.from({length:205}, (_, i) => fs.writeFile(path.join(root, `needle-${i}`), '')));
-    const result = await searchSessionFiles(root, '', 'needle');
+    // Every entry of `wide`, directories included, matches.
+    const result = await searchSessionFiles(wide, '', 'needle');
     expect(result.entries).toHaveLength(200);
     expect(result.truncated).toBe(true);
   });
