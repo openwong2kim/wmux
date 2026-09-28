@@ -32,6 +32,22 @@ describe('classifyLaunchScreen', () => {
     expect(out?.kind === 'first-run' && out.prompt.kind).toBe('trust');
   });
 
+  it('treats the codex-cli 0.157 "Trust this folder?" screen as trust (never answered)', () => {
+    const screen = [
+      'Folder access',
+      '',
+      'Trust this folder?',
+      '/work/repo',
+      '',
+      '› 1. Trust and continue',
+      '  2. Quit',
+      '',
+      'Press enter to continue',
+    ].join('\n');
+    const out = classifyLaunchScreen(screen);
+    expect(out?.kind === 'first-run' && out.prompt.kind).toBe('trust');
+  });
+
   it('reports any other menu as blocking — an AskUserQuestion is never pasted into', () => {
     expect(classifyLaunchScreen(ASK_USER_QUESTION)).toEqual({ kind: 'blocking', headline: 'unrecognised menu' });
     expect(classifyLaunchScreen('Update available!\n› 1. Update now\n  2. Skip')).toEqual({ kind: 'blocking', headline: 'unrecognised menu' });

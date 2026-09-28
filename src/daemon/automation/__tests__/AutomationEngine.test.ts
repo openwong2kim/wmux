@@ -509,3 +509,20 @@ describe('AutomationEngine — readiness diagnostics', () => {
     expect(line).not.toContain('do the thing');
   });
 });
+
+describe('AutomationEngine — attached finished runs', () => {
+  it('a completed run a human opened does not block the next occurrence; an unattended linger still does', async () => {
+    let attached = false;
+    const h = harness({ ports: { isAttached: () => attached } });
+    const run = await startedRun(h);
+    await h.engine.onAgentEvent(`auto-${run.id}`, { kind: 'agent.stop', status: 'complete', decision: 'emit' });
+    const blocked = await h.engine.runNow(run.automationId, 'manual');
+    expect(blocked.ok && blocked.run).toMatchObject({ state: 'skipped', reason: 'overlap' });
+    attached = true;
+    const next = await h.engine.runNow(run.automationId, 'manual');
+    expect(next.ok && next.run.state).toBe('launching');
+    await settle();
+    expect(h.created).toHaveLength(2);
+    expect(h.destroyed).toEqual([]);
+  });
+});

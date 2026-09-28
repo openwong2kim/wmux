@@ -238,7 +238,7 @@ export function detectFirstRunPrompt(screen: string): FirstRunPrompt | null {
 }
 
 /** Codex's folder-trust screen (wording differs across releases). Never answered. */
-const CODEX_TRUST_HEADLINE = /do you trust the (?:contents of this directory|files in this folder)/i;
+const CODEX_TRUST_HEADLINE = /do you trust the (?:contents of this directory|files in this folder)|trust this folder\?/i;
 
 /** Menu furniture that means "something is waiting for a keypress". */
 const MENU_FOOTER = /enter to (?:confirm|continue)|press enter to/i;

@@ -540,9 +540,16 @@ export class AutomationEngine {
     const snapshot = clone(automation);
     const mode = effectiveMode(snapshot);
     // Overlap: an open run, or any run of this schedule whose session is still
-    // live (lingering after completion, or ambiguous).
+    // live (lingering after completion, or ambiguous). A completed/failed run
+    // whose session a human has opened does not count: that session is theirs
+    // now, and the next occurrence gets its own PTY.
     const active = this.runs.some((r) => r.automationId === automation.id && !isFinalRunState(r.state)) ||
-      [...this.live.values()].some((l) => this.runs.find((r) => r.id === l.runId)?.automationId === automation.id);
+      [...this.live.values()].some((l) => {
+        const r = this.runs.find((x) => x.id === l.runId);
+        if (r?.automationId !== automation.id) return false;
+        const handedOver = (r.state === 'completed' || r.state === 'failed') && this.ports.isAttached(l.ptyId);
+        return !handedOver;
+      });
     if (active) {
       const skipped = this.recordSkipped(automation, scheduledFor, 'overlap', trigger);
       this.pruneAndDrop();
