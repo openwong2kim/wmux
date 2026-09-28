@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import type {ManagedSession} from '../DaemonSessionManager';
-import {createCodexTuiRelay} from './codexTuiRelay';
+import {createCodexTuiRelay,type CodexAnswerOutcome,type CodexDecisionSettledReason} from './codexTuiRelay';
+import type {CodexDecisionAnswer,CodexDecisionRequest} from './codexDecisions';
 import type {CodexRelayObservation} from './codexTuiSelection';
 import {threadIdentityEnv} from './codexRelayPolicy';
 
@@ -17,7 +18,13 @@ export interface CodexPaneRelayHooks {
   refused?:(id:string,reason:string)=>void;
   /** A client response in pane `id` was not forwarded (no matching pending server request). */
   unmatchedResponse?:(id:string,count:number)=>void;
+  /** A Codex approval a phone may answer is pending in pane `id` (its committed owner). */
+  decisionPending?:(id:string,owner:ManagedSession,ref:CodexDecisionRef,request:CodexDecisionRequest)=>void;
+  /** A request reported by `decisionPending` is over without `answer`. */
+  decisionSettled?:(id:string,ref:CodexDecisionRef,reason:CodexDecisionSettledReason)=>void;
 }
+/** One Codex request, keyed by (relay incarnation, thread, server request id). */
+export interface CodexDecisionRef {relayId:string; threadId:string; requestId:string; method?:string}
 /** Remembered thread owners; the oldest is forgotten past this (forgotten = unknown owner). */
 const MAX_THREAD_OWNERS = 4096;
 
@@ -71,6 +78,13 @@ export class CodexPaneRelays {
         recordOwner:(threadId)=>{ if (!entry.retired && this.entries.get(id) === entry) this.recordOwner(threadId,id); },
         refused:(reason)=>this.hooks.refused?.(id,reason),
         unmatchedResponse:(count)=>this.hooks.unmatchedResponse?.(id,count),
+        decisionPending:(requestId,request)=>{
+          if (entry.retired || this.entries.get(id) !== entry || !entry.owner) return;
+          this.hooks.decisionPending?.(id,entry.owner,{relayId:entry.relayId,threadId:request.threadId,requestId,method:request.method},request);
+        },
+        decisionSettled:(requestId,threadId,reason)=>{
+          this.hooks.decisionSettled?.(id,{relayId:entry.relayId,threadId,requestId},reason);
+        },
       }});
       this.creating.add(creation);
       const relay = await creation;
@@ -117,6 +131,19 @@ export class CodexPaneRelays {
     if (!relay || relay.retired()) return {live:false};
     const selected = relay.current();
     return selected ? {live:true,selection:selected} : {live:true};
+  }
+
+  /**
+   * A phone's answer to one request: Yes = `accept`, No = `cancel`. Only the
+   * relay incarnation that reported the request can answer it, and only while
+   * its pane still owns the thread; anything else is `not-found`.
+   */
+  answer(ref:{relayId?:string; threadId?:string; requestId:string}, decision:CodexDecisionAnswer):Promise<CodexAnswerOutcome> {
+    const entry = ref.relayId === undefined ? undefined : [...this.entries.values()].find(e=>e.relayId === ref.relayId);
+    if (!entry || entry.retired || !entry.owner || !entry.relay || entry.relay.retired() || ref.threadId === undefined) return Promise.resolve('not-found');
+    const owner = this.ownerOf(ref.threadId);
+    if (owner?.paneId !== entry.id || !owner.live) return Promise.resolve('not-found');
+    return entry.relay.answer(ref.threadId,ref.requestId,decision);
   }
 
   retire(id:string):Promise<void> {

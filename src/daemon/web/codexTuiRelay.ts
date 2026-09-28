@@ -6,6 +6,7 @@ import WebSocket,{WebSocketServer,type RawData} from 'ws';
 import {CodexTuiSelectionTracker} from './codexTuiSelection';
 import {connectCodexSettings} from './codexSettingsTransport';
 import {classify,reviewClientFrame,threadIdsFromResponse,type PolicyContext} from './codexRelayPolicy';
+import {codexDecisionFromRequest,type CodexDecisionAnswer,type CodexDecisionRequest} from './codexDecisions';
 
 export class CodexRelayUnavailableError extends Error {
   constructor() {super('Codex account server is not ready');}
@@ -26,6 +27,10 @@ const MAX_TRACKED_REQUESTS = 256;
  * past this the connection is closed rather than an entry being dropped. */
 const MAX_PENDING_SERVER_REQUESTS = 256;
 const isRequestId = (id:unknown):id is string|number => typeof id === 'string' || Number.isSafeInteger(id);
+/** A server request id as a string key; a string id never collides with a numeric one. */
+export const codexRequestKey = (id:string|number):string => typeof id === 'number' ? String(id) : `s:${id}`;
+export type CodexDecisionSettledReason = 'answered-locally' | 'turn-ended' | 'pane-gone';
+export type CodexAnswerOutcome = 'ok' | 'not-found' | 'unavailable';
 
 /**
  * Deny-by-default request policy (codexRelayPolicy.ts). Without it the relay
@@ -43,6 +48,11 @@ export interface CodexRelayPolicy {
   /** A client response was not forwarded: it answered no server request
    * pending on this connection. `count` is the total for the connection. */
   unmatchedResponse?: (count:number) => void;
+  /** An approval a phone may answer (codexDecisions.ts) arrived for a thread
+   * this pane owns. `requestId` is `codexRequestKey` of the server's id. */
+  decisionPending?: (requestId:string, request:CodexDecisionRequest) => void;
+  /** A request reported by `decisionPending` is over without `answer`. */
+  decisionSettled?: (requestId:string, threadId:string, reason:CodexDecisionSettledReason) => void;
 }
 
 /** A single-use endpoint for a daemon-owned TUI. It never starts/stops Codex's
@@ -80,6 +90,8 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
   let claimed = false;
   let retired = false;
   let closing:Promise<void> | undefined;
+  // The live connection's phone-answer path; none before a TUI connects.
+  let answerOnConnection:((threadId:string,requestId:string,decision:CodexDecisionAnswer)=>Promise<CodexAnswerOutcome>) | undefined;
   const close = ():Promise<void> => {
     if (closing) return closing;
     retired = true;
@@ -152,6 +164,37 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     // delivered to this client and that is still awaiting an answer
     // (request id -> thread id, when the request names one).
     const pendingServerRequests = new Map<string|number,string|undefined>();
+    // The subset a phone may answer (codexRequestKey -> the server's own id and its thread).
+    const decisions = new Map<string,{id:string|number;threadId:string}>();
+    const settleDecision = (key:string, reason:CodexDecisionSettledReason) => {
+      const decision = decisions.get(key);
+      if (!decision) return;
+      decisions.delete(key);
+      try {options.policy?.decisionSettled?.(key,decision.threadId,reason);} catch {/* A notice cannot change the outcome. */}
+    };
+    /**
+     * The one frame the relay writes upstream on its own: the answer to a
+     * server request that is still awaiting one on this connection, for a
+     * thread this pane owns. It is a response — the server's own id, verbatim,
+     * and nothing but `result.decision` — so it can answer nothing else. The
+     * request stops being pending here, so the TUI's own later answer to the
+     * same id is not forwarded.
+     */
+    answerOnConnection = async (threadId, requestId, decision) => {
+      const pending = decisions.get(requestId);
+      if (!pending || pending.threadId !== threadId || !pendingServerRequests.has(pending.id)) return 'not-found';
+      const owner = options.policy?.owner(threadId);
+      if (!options.policy || owner?.paneId !== options.policy.paneId || !owner.live) return 'not-found';
+      const bytes = Buffer.from(JSON.stringify({id:pending.id,result:{decision}}));
+      if (retired || upstream.readyState !== WebSocket.OPEN || upstream.bufferedAmount + bytes.length > MAX_BUFFER) return 'unavailable';
+      pendingServerRequests.delete(pending.id);
+      decisions.delete(requestId);
+      return new Promise<CodexAnswerOutcome>(resolve=>{
+        upstream.send(bytes,{binary:false},error=>{
+          if (error) {retire();resolve('unavailable');} else resolve('ok');
+        });
+      });
+    };
     let unmatchedResponses = 0;
     const needsIdentity = (message:unknown) => {
       const cls = classify(message);
@@ -233,12 +276,28 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
         }
         const threadId = message.params?.threadId;
         pendingServerRequests.set(message.id,typeof threadId === 'string' ? threadId : undefined);
+        const decision = options.policy?.decisionPending ? codexDecisionFromRequest(message) : undefined;
+        // Only for a thread this pane owns: the server fans a request out to
+        // every connection subscribed to its thread.
+        const owner = decision ? options.policy?.owner(decision.threadId) : undefined;
+        if (decision && owner?.paneId === options.policy?.paneId && owner?.live) {
+          const key = codexRequestKey(message.id);
+          decisions.set(key,{id:message.id,threadId:decision.threadId});
+          try {options.policy?.decisionPending?.(key,decision);} catch {decisions.delete(key);}
+        }
       } else if (message?.method === 'serverRequest/resolved') {
         const requestId = message.params?.requestId;
-        if (isRequestId(requestId)) pendingServerRequests.delete(requestId);
+        if (isRequestId(requestId)) {
+          pendingServerRequests.delete(requestId);
+          // Answered by the TUI or another client: never by the phone, whose
+          // answer already took the request off `decisions`.
+          const key = codexRequestKey(requestId);
+          if (decisions.get(key)?.threadId === message.params?.threadId) settleDecision(key,'answered-locally');
+        }
       } else if (message?.method === 'turn/completed' && typeof message.params?.threadId === 'string') {
         // A finished turn leaves none of its requests awaiting an answer.
         for (const [id,threadId] of pendingServerRequests) if (threadId === message.params.threadId) pendingServerRequests.delete(id);
+        for (const [key,decision] of decisions) if (decision.threadId === message.params.threadId) settleDecision(key,'turn-ended');
       }
       if (message && message.method === undefined && (typeof message.id === 'string' || typeof message.id === 'number')) {
         const method = tracked.get(message.id);
@@ -257,7 +316,12 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     });
     for(const socket of [client,upstream]) {
       socket.on('error',retire);
-      socket.on('close',()=>{queued.length=0;queuedBytes=0;tracked.clear();pendingServerRequests.clear();retire();});
+      socket.on('close',()=>{
+        queued.length=0;queuedBytes=0;tracked.clear();pendingServerRequests.clear();
+        // Request ids restart with the next connection: nothing here is answerable any more.
+        for (const key of [...decisions.keys()]) settleDecision(key,'pane-gone');
+        retire();
+      });
     }
   });
   try {
@@ -272,7 +336,10 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     // `retired` lets the owner tell "this relay is live and nothing is selected"
     // from "this relay is gone" — after close() the tracker reports no selection
     // either way, and only the former may erase a durable recovery hint.
-    return {url:`unix://${socketPath}`,current:()=>tracker.current(),retired:()=>retired,close};
+    return {url:`unix://${socketPath}`,current:()=>tracker.current(),retired:()=>retired,close,
+      /** A phone's answer to a request reported by `decisionPending`. */
+      answer:(threadId:string,requestId:string,decision:CodexDecisionAnswer):Promise<CodexAnswerOutcome> =>
+        retired || !answerOnConnection ? Promise.resolve('not-found') : answerOnConnection(threadId,requestId,decision)};
   } catch(error) {await close();throw error;}
 }
 

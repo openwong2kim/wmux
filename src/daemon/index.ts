@@ -108,7 +108,7 @@ import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, Dae
 import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
-import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
+import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, isBrainPty } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, normalizeResumeCwd } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
@@ -147,7 +147,7 @@ import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore'
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
 import { withActivity } from './web/deviceActivity';
 import { buildWebPaneEnv } from './web/webPaneEnv';
-import type { ApprovalDecision, DecisionFormKind } from './approvals/types';
+import type { ApprovalDecision, DecisionFormKind, NativeDecisionOutcome, NativeDecisionRef, NativeDecisionReply } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
@@ -271,6 +271,24 @@ const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Co
     },
     unmatchedResponse: (id,count)=>{
       log('debug',`[codex-relay] did not forward a client response with no pending server request in ${id} (${count} on this connection)`);
+    },
+    // A Codex approval a phone may answer (native-rpc, answered through the relay).
+    decisionPending: (id,owner,ref,request)=>{
+      if (!approvalRegistry || isBrainPty({ id, env: owner.meta.env })) return;
+      const workspaceId = owner.meta.env?.[ENV_KEYS.WORKSPACE_ID];
+      void approvalRegistry.noteNativeDecision({
+        sessionId: id,
+        agent: 'codex',
+        ...(workspaceId ? { workspaceId } : {}),
+        native: { adapter: 'codex', ...ref },
+        form: { v: 1, kind: 'permission', actions: [{ id: 'approve', label: 'Yes' }, { id: 'deny', label: 'No' }] },
+        question: request.question,
+        toolName: request.toolName,
+        ...(request.summary ? { summary: request.summary } : {}),
+      }).catch(()=>log('warn',`[codex-relay] could not record a Codex approval in ${id}`));
+    },
+    decisionSettled: (id,ref,reason)=>{
+      void approvalRegistry?.expireNative(id,{ adapter: 'codex', ...ref },reason).catch(()=>undefined);
     },
   });
 
@@ -412,10 +430,16 @@ function sessionTextReader(sessionManager: DaemonSessionManager) {
 function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalRegistry {
   return new ApprovalRegistry({
     wmuxDir,
-    // The `phoneDecisions` kill switch, read on every use like `gate`. No
-    // native adapter is wired yet (`answerNative`), so a native record could
-    // not be answered from a phone even with the switch on.
+    // The `phoneDecisions` kill switch, read on every use like `gate`.
     phoneDecisions: () => coercePhoneDecisions(loadConfig().phoneDecisions),
+    // One entry per native adapter; an adapter with no entry cannot be answered from here.
+    answerNative: async (native, reply) => {
+      const adapters: Partial<Record<NativeDecisionRef['adapter'], (n: NativeDecisionRef, r: NativeDecisionReply) => Promise<NativeDecisionOutcome>>> = {
+        // Codex: a phone's Yes is `accept`, its No is `cancel` (what Esc sends in the TUI).
+        codex: (n, r) => codexPaneRelays.answer(n, r.decision === 'approve' ? 'accept' : 'cancel'),
+      };
+      return adapters[native.adapter]?.(native, reply) ?? 'unavailable';
+    },
     readScreenTail: async (sessionId) => {
       const managed = sessionManager.getSession(sessionId);
       if (!managed) return null;

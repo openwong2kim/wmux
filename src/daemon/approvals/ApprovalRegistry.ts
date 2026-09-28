@@ -162,7 +162,15 @@ const isNative = (r: ApprovalRequest): boolean => isNativeDecision(r);
 /** How long a settled native request is remembered, so a late re-notify cannot resurrect its card. */
 const NATIVE_SETTLED_MEMORY_MS = 10 * 60_000;
 const NATIVE_SETTLED_MEMORY_MAX = 1024;
-const nativeKey = (native: NativeDecisionRef): string => `${native.adapter}|${native.requestId}`;
+/**
+ * One agent request's identity. Codex request ids are small integers that
+ * every pane on an account server shares and that restart at 0 with it, so a
+ * Codex key also names the relay (its incarnation) and the thread. An OpenCode
+ * ref carries neither and keeps its `adapter|requestId` key.
+ */
+const nativeKey = (native: NativeDecisionRef): string => `${native.adapter}|${native.requestId}`
+  + (native.relayId !== undefined ? `|r:${native.relayId}` : '')
+  + (native.threadId !== undefined ? `|t:${native.threadId}` : '');
 /**
  * The stepwise driver (feedback on the plan dialog): the longest one step
  * waits for the screen to show what its key should have drawn, how often it
@@ -813,11 +821,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       const settledAt = this.nativeSettled.get(nativeKey(native));
       if (settledAt !== undefined && this.now() - settledAt < NATIVE_SETTLED_MEMORY_MS) return { result: null };
       const formFingerprint = crypto.createHash('sha256')
-        .update(`${native.adapter}|${native.requestId}|${canonicalJson(form)}`)
+        .update(`${nativeKey(native)}|${canonicalJson(form)}`)
         .digest('hex')
         .slice(0, 32);
       const existing = this.requests.find((r) => r.state === 'pending' && r.sessionId === snapshot.sessionId
-        && r.native?.adapter === native.adapter && r.native.requestId === native.requestId);
+        && r.native !== undefined && nativeKey(r.native) === nativeKey(native));
       if (existing && existing.formFingerprint === formFingerprint) return { result: existing.id };
       const enabled = this.decisionChannels().native;
       if (!existing && this.requests.filter(
@@ -1491,6 +1499,28 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    */
   expireById(id: string, reason: ApprovalExpiryReason): Promise<void> {
     return this.mutate(() => this.expirePendingWhere((r) => r.id === id, reason));
+  }
+
+  /**
+   * The agent's own server reports that one native request is settled — it
+   * was answered somewhere other than through this registry, its turn ended,
+   * or the channel to it is gone. The one path that expires a native record
+   * for `answered-locally`: `expireForSession` never does, because there that
+   * reason is inferred from the screen.
+   */
+  expireNative(sessionId: string, native: NativeDecisionRef, reason: ApprovalExpiryReason): Promise<void> {
+    const key = nativeKey(native);
+    return this.mutate(() => {
+      const events: ApprovalEvent[] = [];
+      for (const r of this.requests) {
+        if (r.state !== 'pending' || r.sessionId !== sessionId || !r.native || nativeKey(r.native) !== key) continue;
+        r.state = 'expired';
+        r.resolvedAt = this.now();
+        events.push({ type: 'expire', request: copyRequest(r) });
+      }
+      if (events.length > 0) this.deps.log?.('info', `[approvals] expired a native decision on ${sessionId} (${reason})`);
+      return events;
+    });
   }
 
   /**
