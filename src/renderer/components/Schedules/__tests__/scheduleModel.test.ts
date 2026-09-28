@@ -24,6 +24,8 @@ describe('parseToolNames (scoped mode)', () => {
     expect(validateForm({ ...base, toolsText: '' })).toContain('tools');
     expect(validateForm({ ...base, toolsText: 'Read, Bash(git push)' })).toContain('tools');
     expect(validateForm({ ...base, toolsText: 'Read, Grep' })).toEqual([]);
+    // Codex scoped is a fixed sandbox: no tool list to validate.
+    expect(validateForm({ ...base, agent: 'codex', toolsText: '' })).toEqual([]);
   });
 });
 

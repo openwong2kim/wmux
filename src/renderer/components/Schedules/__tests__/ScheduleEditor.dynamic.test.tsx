@@ -80,4 +80,16 @@ describe('ScheduleEditor', () => {
     expect(api.update.mock.invocationCallOrder[0]).toBeLessThan(api.grant.mock.invocationCallOrder[0]);
     expect(onSaved).toHaveBeenCalledWith('a1');
   });
+
+  it('hides the tool list for Codex scoped and never sends allowedTools', async () => {
+    const a = automation({ action: { kind: 'launch', cwd: '/w', agent: 'codex', prompt: 'p' } });
+    api.update.mockResolvedValue({ ok: true, automation: { ...a, revision: 4 } });
+    api.grant.mockResolvedValue({ ok: true, automation: a });
+    mount(a);
+    act(() => radio('Scoped').click());
+    expect(q('[data-schedule-tools]')).toBeNull();
+    expect(document.body.textContent).toContain('tool list applies to Claude only');
+    await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
+    expect(api.grant).toHaveBeenCalledWith('a1', 'scoped', undefined);
+  });
 });

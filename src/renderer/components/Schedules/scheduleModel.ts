@@ -70,6 +70,15 @@ export function parseToolNames(text: string): { tools: string[]; invalid: string
   return { tools, invalid };
 }
 
+/**
+ * Scoped mode takes a tool list for Claude only. Codex scoped is a fixed
+ * sandbox (writes inside the folder, no prompts); the daemon rejects a tool
+ * list for it, so none is ever sent.
+ */
+export function usesToolList(form: Pick<ScheduleForm, 'agent' | 'mode'>): boolean {
+  return form.mode === 'scoped' && form.agent === 'claude';
+}
+
 export type FormProblem = 'name' | 'prompt' | 'promptTooLong' | 'cwd' | 'weekdays' | 'time' | 'grace' | 'awaitTimeout' | 'tools';
 
 export function validateForm(form: ScheduleForm): FormProblem[] {
@@ -82,7 +91,7 @@ export function validateForm(form: ScheduleForm): FormProblem[] {
   if (!TIME_RE.test(form.time)) problems.push('time');
   if (!/^\d{1,4}$/.test(form.graceMinutes)) problems.push('grace');
   if (form.awaitTimeoutMinutes && !/^[1-9]\d{0,3}$/.test(form.awaitTimeoutMinutes)) problems.push('awaitTimeout');
-  if (form.mode === 'scoped') {
+  if (usesToolList(form)) {
     const { tools, invalid } = parseToolNames(form.toolsText);
     if (invalid.length > 0 || tools.length === 0) problems.push('tools');
   }

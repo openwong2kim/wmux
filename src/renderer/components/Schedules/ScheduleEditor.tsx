@@ -23,6 +23,7 @@ import {
   grantNeeded,
   parseToolNames,
   shouldWarnPermissionReset,
+  usesToolList,
   validateForm,
   type ScheduleForm,
 } from './scheduleModel';
@@ -128,7 +129,7 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
       }
       const id = saved.automation.id;
       if (grantNeeded(original, form, permissionTouched)) {
-        const granted = await api.grant(id, form.mode, form.mode === 'scoped' ? tools.tools : undefined);
+        const granted = await api.grant(id, form.mode, usesToolList(form) ? tools.tools : undefined);
         if (!granted.ok) {
           setError(granted.error);
           void useStore.getState().refreshSchedules();
@@ -237,7 +238,9 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
                 <Input type="time" value={form.time} onChange={(e) => set('time', e.target.value)} aria-label={t('schedules.time')} data-schedule-time />
               </div>
             </Field>
-            <Field label={t('schedules.permission')} description={t(`schedules.modeDesc.${form.mode}`)} layout="stacked">
+            <Field label={t('schedules.permission')} description={form.mode === 'scoped' && form.agent === 'codex'
+                ? t('schedules.modeDesc.scopedCodex')
+                : t(`schedules.modeDesc.${form.mode}`)} layout="stacked">
               <SegmentedControl<AutomationPermissionMode>
                 value={form.mode}
                 ariaLabel={t('schedules.permission')}
@@ -249,7 +252,7 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
                 onValueChange={pickMode}
               />
             </Field>
-            {form.mode === 'scoped' && (
+            {usesToolList(form) && (
               <Field label={t('schedules.tools')} description={t('schedules.toolsHint')} layout="stacked">
                 <Input
                   value={form.toolsText}
@@ -260,7 +263,7 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
                 />
               </Field>
             )}
-            {form.mode === 'scoped' && tools.invalid.length > 0 && (
+            {usesToolList(form) && tools.invalid.length > 0 && (
               <p className="ui-row-error" data-schedule-tools-error>
                 {t('schedules.toolsInvalid', { names: tools.invalid.join(', ') })}
               </p>

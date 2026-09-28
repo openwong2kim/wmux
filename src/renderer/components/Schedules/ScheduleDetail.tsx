@@ -30,9 +30,9 @@ export default function ScheduleDetail({ automation: a, accounts, onEdit }: {
     () => sortRunsNewestFirst(allRuns.filter((r) => r.automationId === a.id)).slice(0, AUTOMATION_DEFAULTS.runHistoryPerAutomation),
     [allRuns, a.id],
   );
-  const [outputRunId, setOutputRunId] = useState<string | null>(
-    () => runs.find((r) => !isLiveRun(r) && r.hasSnapshot)?.id ?? null,
-  );
+  // Collapsed by default: a snapshot can carry the agent's status line, which
+  // may show the signed-in account, and this view ends up in screen captures.
+  const [outputRunId, setOutputRunId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const api = window.electronAPI?.automation;
@@ -115,7 +115,11 @@ export default function ScheduleDetail({ automation: a, accounts, onEdit }: {
             variant="secondary"
             size="sm"
             disabled={busy || !api}
-            onClick={() => void act((x) => x.grant(a.id, a.permission.mode, a.permission.allowedTools))}
+            onClick={() => void act((x) => x.grant(
+              a.id,
+              a.permission.mode,
+              a.action.agent === 'claude' ? a.permission.allowedTools : undefined,
+            ))}
           >
             {t('schedules.regrant')}
           </Button>
@@ -196,8 +200,8 @@ function RunRow({ run, automation, showingOutput, onToggleOutput, onCancel }: {
           <Button variant="ghost" size="sm" onClick={onCancel}>{t('schedules.cancelRun')}</Button>
         )}
         {!live && run.hasSnapshot && (
-          <Button variant="ghost" size="sm" aria-expanded={showingOutput} onClick={onToggleOutput}>
-            {t('schedules.actionResult')}
+          <Button variant="ghost" size="sm" aria-expanded={showingOutput} onClick={onToggleOutput} data-run-output-toggle>
+            {showingOutput ? t('schedules.hideOutput') : t('schedules.showOutput')}
           </Button>
         )}
       </div>
