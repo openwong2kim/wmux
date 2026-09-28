@@ -132,6 +132,8 @@ const UNAVAILABLE_SKILLS: ChatSkillCatalog = { skills: [], state: 'unavailable' 
 const RELAY_URL = /^unix:\/\/\/[A-Za-z0-9_./-]+$/;
 /** A send waits this long after any lone ESC, so a paste cannot extend it into an escape sequence. */
 export const ESC_QUIET_MS = 300;
+/** `cancel-cooldown` retry hint while OpenCode admits a just-sent prompt. */
+export const OPENCODE_FENCE_RETRY_MS = 500;
 const slugOf = (state: ChatAgentState) => agentDisplayToSlug(state.agentName ?? '');
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const liveState = (pane: ChatPane) => ['attached', 'detached'].includes(pane.meta.state);
@@ -546,33 +548,58 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     const notRunning = (turn = resolution.turn) => refuse('turn-not-running', turn ? { turn: { ...turn } } : {});
     if (req.turnId !== undefined && req.turnId !== resolution.turn?.id) return notRunning();
     if (sending.has(id)) return refuse('chat-busy');
-    const inserted = store.insertPending(owner, clientCancelId, { paneId: id, fingerprint });
-    if (inserted === 'exists') return early() ?? refuse('cancel-id-conflict');
-    if (inserted !== 'inserted') return refuse(inserted === 'full' ? 'message-history-full' : 'chat-persist-failed');
+    // The receipt is written as the last step before the abort request
+    // leaves: after the owner, descriptor and write-time authorization
+    // checks, inside the final authorization callback (no await follows it).
+    let inserted: ReturnType<ChatCancelReceiptStore['insertPending']> | undefined;
+    const authorized = async (): Promise<boolean> => {
+      if (req.authorized && !await req.authorized()) return false;
+      inserted = store.insertPending(owner, clientCancelId, { paneId: id, fingerprint });
+      return inserted === 'inserted';
+    };
     sending.add(id);
     let aborted: Awaited<ReturnType<NonNullable<typeof service.abort>>>;
     try {
       aborted = await service.abort(id, req.agentSessionId, {
+        // The resolution's own read: no second round trip under the lock.
+        read: { status: resolution.status, page: resolution.page },
         // Only the read whose hash the phone matched may reach the plugin (N15).
         ...(req.historyEpoch !== undefined ? { expectedRawEpoch: resolution.rawEpoch } : {}),
         ...(req.turnId !== undefined ? { turnId: req.turnId } : {}),
-        ...(req.authorized ? { authorized: req.authorized } : {}),
+        authorized,
       });
     } catch (error) {
+      // Every path below settles an inserted receipt, so none is left pending
+      // (a daemon crash in between reads as uncertain after the restart).
       aborted = { result: 'unconfirmed' };
       deps.log('warn', `[chat] cancel for ${id} threw: ${error instanceof Error ? error.message : String(error)}`);
     } finally { sending.delete(id); }
+    if (inserted !== undefined && inserted !== 'inserted') {
+      if (inserted === 'exists') return early() ?? refuse('cancel-id-conflict');
+      return refuse(inserted === 'full' ? 'message-history-full' : 'chat-persist-failed');
+    }
     if (aborted.result === 'sent' || aborted.result === 'unconfirmed') {
       const turnId = aborted.turn?.id ?? req.turnId ?? resolution.turn?.id;
       const outcome = { effect: aborted.result === 'sent' ? 'interrupt-requested' as const : 'uncertain' as const, ...(turnId ? { turnId } : {}) };
-      if (!store.complete(owner, clientCancelId, outcome)) deps.log('warn', `[chat] cancel receipt for ${id} not persisted`);
+      if (inserted === 'inserted' && !store.complete(owner, clientCancelId, outcome)) deps.log('warn', `[chat] cancel receipt for ${id} not persisted`);
       return { clientCancelId, replayed: false, ...outcome, ...(aborted.result === 'unconfirmed' ? { error: 'cancel-failed' as const } : {}) };
     }
-    store.discard(owner, clientCancelId);
+    if (inserted === 'inserted') store.discard(owner, clientCancelId);
     switch (aborted.result) {
       case 'not_running': return notRunning(aborted.turn ?? resolution.turn);
       case 'prompt_active': return refuse('prompt-active', promptActive(id));
-      case 'session_changed': return refuse('session-changed', identityOf(await resolve(id)));
+      // The admission fence: the turn is about to run; try again shortly.
+      case 'pending': return refuse('cancel-cooldown', { retryAfterMs: OPENCODE_FENCE_RETRY_MS });
+      case 'session_changed': {
+        const fresh = await resolve(id);
+        const identity = identityOf(fresh);
+        // The same identity again: a plugin-side generation the phone cannot
+        // see changed. Re-reading would not help, so this is not session-changed.
+        if (identity.agentSessionId === req.agentSessionId && (req.historyEpoch === undefined || identity.historyEpoch === req.historyEpoch)) {
+          return refuse('chat-unavailable');
+        }
+        return refuse('session-changed', identity);
+      }
       case 'error': return aborted.reason === 'unauthorized' ? refuse('authorization-expired') : refuse('chat-unavailable');
       default: return refuse('chat-unavailable');
     }
@@ -680,7 +707,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   };
 
   const DESKTOP_ABORT: Partial<Record<string, ChatInterruptResult>> = {
-    sent: 'sent', not_running: 'not_running', prompt_active: 'blocked', session_changed: 'session_changed', unconfirmed: 'error',
+    sent: 'sent', not_running: 'not_running', pending: 'not_running', prompt_active: 'blocked', session_changed: 'session_changed', unconfirmed: 'error',
   };
 
   const desktopInterrupt = async (id: string, agentSessionId: string): Promise<ChatInterruptResult> => {
@@ -693,7 +720,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       // Another Stop is under way (as a cooldown reads).
       if (sending.has(id)) return 'not_running';
       sending.add(id);
-      try { return DESKTOP_ABORT[(await service.abort(id, agentSessionId)).result] ?? 'unavailable'; } catch { return 'error'; } finally { sending.delete(id); }
+      try { return DESKTOP_ABORT[(await service.abort(id, agentSessionId, { read: found.read })).result] ?? 'unavailable'; }
+      catch { return 'error'; } finally { sending.delete(id); }
     }
     // No registry = "may be pending".
     if (!deps.approvals()) return 'unavailable';

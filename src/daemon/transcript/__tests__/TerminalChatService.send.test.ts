@@ -8,7 +8,7 @@ import { TerminalChatService } from '../TerminalChatService';
 
 interface Plugin { epoch: string; answer: (res: ServerResponse) => void; requests: Record<string, unknown>[]; read?: Record<string, unknown> }
 
-async function fixture(run: (f: { service: TerminalChatService; plugin: Plugin }) => Promise<void>, log?: string[]) {
+async function fixture(run: (f: { service: TerminalChatService; plugin: Plugin; emit: ReturnType<typeof vi.fn> }) => Promise<void>, log?: string[]) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'wmux-tui-send-'));
   const plugin: Plugin = { epoch: 'a'.repeat(32) + ':1:ses_one', answer: res => res.end(JSON.stringify({ result: 'sent' })), requests: [] };
   const server = createServer((req, res) => {
@@ -23,8 +23,9 @@ async function fixture(run: (f: { service: TerminalChatService; plugin: Plugin }
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('No server');
   const file = path.join(directory, createHash('sha256').update('pane').digest('hex') + '.json');
   await fs.writeFile(file, JSON.stringify({ version: 1, agent: 'opencode', pid: 123, port: address.port, token: 'b'.repeat(64) }), { mode: 0o600 });
-  const service = new TerminalChatService({ directory, owner: async () => { log?.push('owner'); return { pid: 123, incarnation: 'i' }; }, emit: vi.fn() });
-  try { await run({ service, plugin }); }
+  const emit = vi.fn();
+  const service = new TerminalChatService({ directory, owner: async () => { log?.push('owner'); return { pid: 123, incarnation: 'i' }; }, emit });
+  try { await run({ service, plugin, emit }); }
   finally { service.dispose(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await fs.rm(directory, { recursive: true, force: true }); }
 }
 const sends = (plugin: Plugin) => plugin.requests.filter(r => r.action === 'send');
@@ -119,6 +120,16 @@ describe('TerminalChatService.abort (phone and desktop Stop)', () => {
     expect(await f.service.abort('pane', 'ses_two')).toEqual({ result: 'session_changed' });
     expect(await f.service.abort('pane', 'ses_one', { authorized: async () => false })).toEqual({ result: 'error', reason: 'unauthorized' });
     expect(aborts(f.plugin)).toEqual([]);
+  }));
+
+  it('a watch that loses the plugin turns cancel off with send', async () => fixture(async f => {
+    current(f);
+    f.service.subscribe('c', 'pane');
+    await vi.waitFor(() => expect(f.emit).toHaveBeenCalledTimes(1));
+    expect(f.emit.mock.calls[0][1].status.terminal.capabilities.cancel).toBe(true);
+    f.plugin.read = { phase: 'unknown-phase' };
+    await vi.waitFor(() => expect(f.emit).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    expect(f.emit.mock.calls[1][1].status.terminal.capabilities).toMatchObject({ send: false, cancel: false });
   }));
 
   it('maps an unknown answer to unavailable and a lost one to unconfirmed', async () => fixture(async f => {

@@ -14,7 +14,8 @@ interface NativeRead { status: TranscriptStatus; page: TranscriptPage; turn?: Ch
 export interface TerminalChatSendOutcome { result: ChatSendResult; reason?: 'receipts-full' | 'transport-lost' | 'too-large' | 'unauthorized' }
 /** What the plugin did with an abort. `turn` is the plugin's episode when it answered. */
 export interface TerminalChatAbortOutcome {
-  result: 'sent' | 'not_running' | 'prompt_active' | 'session_changed' | 'unconfirmed' | 'unavailable' | 'error';
+  /** `pending`: the plugin's admission fence, a send accepted but not yet running. */
+  result: 'sent' | 'not_running' | 'prompt_active' | 'pending' | 'session_changed' | 'unconfirmed' | 'unavailable' | 'error';
   reason?: 'transport-lost' | 'unauthorized';
   turn?: ChatTurn;
 }
@@ -67,10 +68,11 @@ export class TerminalChatService {
    * the session, generation, turn and phase checks beside the native abort.
    * Nothing is sent to a plugin that does not advertise `abort`, and an answer
    * outside the known set reads as `unavailable`, never as a maybe-abort.
+   * `read` reuses the caller's own fresh read instead of a second round trip.
    */
   async abort(id: string, sessionId: string,
-    opts: { expectedRawEpoch?: string; turnId?: string; authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean> } = {}): Promise<TerminalChatAbortOutcome> {
-    const read = await this.read(id);
+    opts: { expectedRawEpoch?: string; turnId?: string; read?: NativeRead; authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean> } = {}): Promise<TerminalChatAbortOutcome> {
+    const read = opts.read ?? await this.read(id);
     if (!read?.status.available) return { result: 'unavailable' };
     if (read.status.agentSessionId !== sessionId) return { result: 'session_changed' };
     const epoch = read.page.cursor.historyEpoch ?? '';
@@ -81,7 +83,7 @@ export class TerminalChatService {
     if (!answer.ok && answer.unauthorized) return { result: 'error', reason: 'unauthorized' };
     if (!answer.ok) return answer.left ? { result: 'unconfirmed', reason: 'transport-lost' } : { result: 'unavailable' };
     const value = String(answer.body.result);
-    const result = ['sent', 'not_running', 'prompt_active', 'session_changed', 'unconfirmed'].includes(value)
+    const result = ['sent', 'not_running', 'prompt_active', 'pending', 'session_changed', 'unconfirmed'].includes(value)
       ? value as TerminalChatAbortOutcome['result'] : 'unavailable';
     const turn = this.turn(answer.body);
     return { result, ...(turn ? { turn } : {}) };
@@ -153,7 +155,7 @@ export class TerminalChatService {
       if (this.watches.get(id) !== watch) return;
       const status: TranscriptStatus = read?.status ?? { ...watch.last?.status, available: false, reason: 'unavailable', agentAlive: false,
         ...(watch.last?.status.terminal ? { terminal: { ...watch.last.status.terminal,
-          capabilities: { ...watch.last.status.terminal.capabilities, send: false } } } : {}) };
+          capabilities: { ...watch.last.status.terminal.capabilities, send: false, cancel: false } } } : {}) };
       const page = read?.page ?? (watch.last ? { ...watch.last.page, events: [] } : this.page([], ''));
       const digest = createHash('sha256').update(JSON.stringify([status, page])).digest('hex');
       if (digest === watch.digest) return;
