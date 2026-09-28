@@ -11,6 +11,7 @@ import {
   TERMINAL_PROMPT_WEB_DECLINE,
   type ApprovalRequest,
   type DecisionForm,
+  type NativeDecisionOutcome,
   type NativeDecisionRef,
   type NativeDecisionReply,
 } from '../types';
@@ -20,7 +21,7 @@ let tmpDir: string;
 beforeEach(() => { tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-native-')); });
 afterEach(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); });
 
-function setup() {
+function setup(outcome: { next: NativeDecisionOutcome } = { next: 'ok' }) {
   const clock = { now: 10_000 };
   const answered: Array<{ ref: NativeDecisionRef; reply: NativeDecisionReply }> = [];
   const writes: string[] = [];
@@ -29,7 +30,7 @@ function setup() {
     wmuxDir: tmpDir,
     readScreenTail: async () => [],
     writeToSession: (_id, data) => { writes.push(data); return true; },
-    answerNative: async (ref, reply) => { answered.push({ ref, reply }); return 'ok'; },
+    answerNative: async (ref, reply) => { answered.push({ ref, reply }); return outcome.next; },
     now: () => clock.now,
     newId: () => `req-${next++}`,
   });
@@ -41,7 +42,8 @@ function setup() {
     });
     return registry.list().pending.find((r) => r.id === id);
   };
-  return { registry, clock, answered, writes, note };
+  const hookCard = () => registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'codex' });
+  return { registry, clock, answered, writes, note, hookCard };
 }
 
 describe('Codex native decisions', () => {
@@ -70,6 +72,8 @@ describe('Codex native decisions', () => {
     expect(t.registry.list().pending).toHaveLength(1);
     await t.registry.expireNative('pty-a', { adapter: 'codex', relayId: 'relay-1', threadId: 'thread-1', requestId: '0' }, 'answered-locally');
     expect(t.registry.list().pending).toEqual([]);
+    // A late re-notify of the request answered in the terminal does not bring the card back.
+    expect(await t.note('relay-1')).toBeUndefined();
     t.clock.now += TERMINAL_PROMPT_MIN_ANSWER_AGE_MS;
     const late = await t.registry.resolve({
       id: record.id, decision: 'approve', choiceKey: '1', promptFingerprint: record.promptFingerprint,
@@ -92,5 +96,49 @@ describe('Codex native decisions', () => {
       reply: { decision: 'deny', formKind: 'permission' },
     }]);
     expect(t.writes).toEqual([]);
+  });
+});
+
+describe('Codex native decisions, one card per prompt', () => {
+  it('replace the question-less card the PermissionRequest hook raised first, and hold back a later one', async () => {
+    const t = setup();
+    await t.hookCard();
+    expect(t.registry.list().pending.map((r) => r.kind)).toEqual(['awaiting_input']);
+    const record = await t.note('relay-1');
+    expect(t.registry.list().pending.map((r) => r.id)).toEqual([record!.id]);
+    await t.hookCard();
+    expect(t.registry.list().pending.map((r) => r.id)).toEqual([record!.id]);
+    // Once the decision is settled, the hook raises its card again as before.
+    await t.registry.expireNative('pty-a', { adapter: 'codex', relayId: 'relay-1', threadId: 'thread-1', requestId: '0' }, 'answered-locally');
+    await t.hookCard();
+    expect(t.registry.list().pending.map((r) => r.kind)).toEqual(['awaiting_input']);
+  });
+
+  it("leave another agent's card, and a Codex pane without a native decision, alone", async () => {
+    const t = setup();
+    await t.note('relay-1', '0', 'pty-b');
+    await t.hookCard();
+    await t.registry.noteHookAwaitingInput({ sessionId: 'pty-b', agent: 'claude', question: 'Pick one' });
+    expect(t.registry.list().pending.map((r) => `${r.sessionId}:${r.kind}`).sort())
+      .toEqual(['pty-a:awaiting_input', 'pty-b:awaiting_input', 'pty-b:terminal_prompt']);
+  });
+
+  it('answer uncertain when the relay could not confirm, without resolving the record', async () => {
+    const t = setup({ next: 'uncertain' });
+    const record = (await t.note('relay-1'))!;
+    t.clock.now += TERMINAL_PROMPT_MIN_ANSWER_AGE_MS;
+    const result = await t.registry.resolve({
+      id: record.id, decision: 'approve', choiceKey: '1', promptFingerprint: record.promptFingerprint,
+      resolvedBy: 'device Phone (d1)', terminalPromptAnswer: TERMINAL_PROMPT_WEB_ANSWER,
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'answer-uncertain' });
+    expect(t.registry.list().recentlyResolved.find((r) => r.id === record.id)).toBeUndefined();
+  });
+
+  it('do not survive a daemon restart: the relay that could answer them is gone', async () => {
+    const t = setup();
+    expect(await t.note('relay-1')).toBeDefined();
+    const restarted = new ApprovalRegistry({ wmuxDir: tmpDir, readScreenTail: async () => [], writeToSession: () => true });
+    expect(restarted.list().pending).toEqual([]);
   });
 });

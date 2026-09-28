@@ -657,6 +657,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       questionShape: input.questionShape,
     };
     return this.mutate(() => {
+      // A Codex pane whose approval is already up as a native decision: the
+      // hook's question-less card would be a second card for the same prompt.
+      if (!snapshot.question && this.shadowsCodexDecision(snapshot.sessionId, snapshot.agent)) return [];
       // A native decision is the agent's own request, settled by its server:
       // a screen-backed question on the same pane never replaces it.
       const superseded = this.requests.find(
@@ -876,10 +879,31 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         existing.resolvedAt = this.now();
         events.push({ type: 'supersede', request: copyRequest(existing) });
       }
+      // Codex's PermissionRequest hook runs before its server asks: the
+      // question-less card it left for this same prompt is replaced.
+      if (native.adapter === 'codex' && created.channel === 'native-rpc') {
+        for (const r of this.requests) {
+          if (r.state !== 'pending' || r.sessionId !== snapshot.sessionId || !this.isCodexHookCard(r)) continue;
+          r.state = 'superseded';
+          r.resolvedAt = this.now();
+          events.push({ type: 'supersede', request: copyRequest(r) });
+        }
+      }
       this.requests.push(created);
       events.push({ type: 'create', request: copyRequest(created), ...(existing ? { replaces: existing.id } : {}) });
       return { events, result: created.id };
     });
+  }
+
+  /** A Codex hook's `awaiting_input` card: no question, nothing native. */
+  private isCodexHookCard(r: ApprovalRequest): boolean {
+    return r.kind === 'awaiting_input' && r.agent === 'codex' && !isNative(r) && !r.question;
+  }
+
+  /** A Codex hook card here would duplicate a pending native Codex decision. */
+  private shadowsCodexDecision(sessionId: string, agent: string): boolean {
+    return agent === 'codex' && this.requests.some((r) => r.state === 'pending' && r.sessionId === sessionId
+      && r.native?.adapter === 'codex' && r.channel === 'native-rpc');
   }
 
   private decisionChannels(): PhoneDecisionsConfig {
@@ -2315,7 +2339,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       if (outcome === 'unavailable') return refuse('agent-unavailable');
       // Sent, never confirmed: it may have landed. The card stays up; the
       // agent's own event (or a later not-found) settles it.
-      if (outcome === 'timeout') return refuse('answer-uncertain');
+      if (outcome === 'timeout' || outcome === 'uncertain') return refuse('answer-uncertain');
       const result = await this.mutate<ApprovalResolveResult>(() => {
         if (outcome === 'not-found') {
           // The agent no longer holds the request (answered at the terminal,

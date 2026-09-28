@@ -12,7 +12,7 @@ import {threadIdentityEnv} from '../codexRelayPolicy';
 const threadId='01234567-89ab-4cde-8123-456789abcdef';
 const systemThreadId='11111111-89ab-4cde-8123-456789abcdef';
 const otherThreadId='22222222-89ab-4cde-8123-456789abcdef';
-async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpstreamRequest?:(request:{id?:unknown;method?:unknown;params?:Record<string,unknown>},raw:string)=>void; policy?:CodexRelayPolicy; respond?:(request:{id?:unknown;method?:unknown;params?:Record<string,unknown>})=>unknown}={}) {
+async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpstreamRequest?:(request:{id?:unknown;method?:unknown;params?:Record<string,unknown>},raw:string)=>void; policy?:CodexRelayPolicy; answerConfirmMs?:number; respond?:(request:{id?:unknown;method?:unknown;params?:Record<string,unknown>})=>unknown}={}) {
   // macOS's per-user tmpdir is too long for a Unix socket path (sun_path is
   // 104 bytes there); /tmp keeps the fixture sockets addressable.
   const home=await mkdtemp(path.join(process.platform === 'darwin' ? '/tmp' : os.tmpdir(),'wmux-relay-test-'));
@@ -38,7 +38,7 @@ async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpst
   const actualPath = options.linked ? path.join(home, 'actual.sock') : upstreamPath;
   await new Promise<void>(resolve=>server.listen(actualPath,resolve));
   if (options.linked) await symlink(actualPath, upstreamPath);
-  const relay=await createCodexTuiRelay({codeHome:home,onStateChange:options.onStateChange,policy:options.policy});
+  const relay=await createCodexTuiRelay({codeHome:home,onStateChange:options.onStateChange,policy:options.policy,answerConfirmMs:options.answerConfirmMs});
   ready=true;
   const connect=async(origin?:string)=>{
     const socket=new WebSocket(relay.url.replace('unix://','ws+unix://')+':/rpc',{origin});
@@ -506,7 +506,7 @@ describe.skipIf(process.platform === 'win32')('phone answers to Codex approvals'
   const foreign='33333333-89ab-4cde-8123-456789abcdef';
   const request=(id:number|string,params:Record<string,unknown>={})=>({...command,id,params:{...command.params,...params}});
   type Owner=(threadId:string)=>{paneId:string;live:boolean}|undefined;
-  async function open(o:{owner?:Owner}={}) {
+  async function open(o:{owner?:Owner;answerConfirmMs?:number}={}) {
     const raw:string[]=[];const unmatched:number[]=[];
     const pending:Array<{requestId:string;request:CodexDecisionRequest}>=[];
     const settled:Array<{requestId:string;threadId:string;reason:CodexDecisionSettledReason}>=[];
@@ -516,7 +516,7 @@ describe.skipIf(process.platform === 'win32')('phone answers to Codex approvals'
       unmatchedResponse:(count)=>{unmatched.push(count);},
       decisionPending:(requestId,r)=>{pending.push({requestId,request:r});},
       decisionSettled:(requestId,threadId,reason)=>{settled.push({requestId,threadId,reason});}};
-    const f=await fixture({policy,onUpstreamRequest:(r,text)=>{if(r.method===undefined)raw.push(text);}});
+    const f=await fixture({policy,answerConfirmMs:o.answerConfirmMs,onUpstreamRequest:(r,text)=>{if(r.method===undefined)raw.push(text);}});
     const client=await f.connect();
     const deliver=async(frame:object)=>{
       const got=new Promise<void>(resolve=>client.once('message',()=>resolve()));
@@ -531,24 +531,84 @@ describe.skipIf(process.platform === 'win32')('phone answers to Codex approvals'
     return {f,client,raw,unmatched,pending,settled,owners,deliver,settle};
   }
 
-  it('records an owned approval and injects the bare answer under the server id, id 0 included', async () => {
+  it('records an owned approval, injects the bare answer under the server id (id 0 included), and confirms it only on resolved', async () => {
     const t=await open();
     try {
       await t.deliver(request(0));
       expect(t.pending).toEqual([{requestId:'0',request:{method:'item/commandExecution/requestApproval',threadId:owned,
         question:'Create out.txt in the project?',toolName:'command',summary:"/bin/zsh -lc 'touch out.txt'"}}]);
-      await expect(t.f.relay.answer(owned,'0','accept')).resolves.toBe('ok');
+      let outcome:string|undefined;
+      const answered=t.f.relay.answer(owned,'0','accept').then(o=>{outcome=o;return o;});
       await t.settle();
       expect(t.raw).toEqual(['{"id":0,"result":{"decision":"accept"}}']);
+      // Written is not answered: still waiting for the server's word.
+      expect(outcome).toBeUndefined();
       // Phone first: the TUI's later answer to the same id is not forwarded,
-      // and the server's resolved notice reports nothing back.
+      // and a second phone answer is refused.
       t.client.send(JSON.stringify({id:0,result:{decision:'cancel'}}));
+      await expect(t.f.relay.answer(owned,'0','accept')).resolves.toBe('not-found');
       await t.deliver({method:'serverRequest/resolved',params:{threadId:owned,requestId:0}});
+      await expect(answered).resolves.toBe('ok');
       await t.settle();
       expect(t.raw).toHaveLength(1);
       expect(t.unmatched).toEqual([1]);
       expect(t.settled).toEqual([]);
-      await expect(t.f.relay.answer(owned,'0','accept')).resolves.toBe('not-found');
+    } finally { t.client.terminate();await t.f.cleanup(); }
+  });
+
+  it('is uncertain, and settles the record, when the server never confirms the answer', async () => {
+    const t=await open({answerConfirmMs:30});
+    try {
+      await t.deliver(request(11));
+      await expect(t.f.relay.answer(owned,'11','accept')).resolves.toBe('uncertain');
+      expect(t.settled).toEqual([{requestId:'11',threadId:owned,reason:'prompt-gone'}]);
+      // A resolved notice after that changes nothing.
+      await t.deliver({method:'serverRequest/resolved',params:{threadId:owned,requestId:11}});
+      expect(t.settled).toHaveLength(1);
+    } finally { t.client.terminate();await t.f.cleanup(); }
+  });
+
+  it('is uncertain when the connection drops before the server confirms, and settles the record', async () => {
+    const t=await open();
+    try {
+      await t.deliver(request(12));
+      const answered=t.f.relay.answer(owned,'12','cancel');
+      await new Promise(r=>setTimeout(r,20));
+      t.f.upstream()!.terminate();
+      await expect(answered).resolves.toBe('uncertain');
+      expect(t.settled).toEqual([{requestId:'12',threadId:owned,reason:'prompt-gone'}]);
+      expect(t.f.relay.retired()).toBe(true);
+    } finally { t.client.terminate();await t.f.cleanup(); }
+  });
+
+  it('is uncertain, settles the record and retires the relay when the write fails', async () => {
+    const t=await open();
+    const send=WebSocket.prototype.send;
+    try {
+      await t.deliver(request(15));
+      WebSocket.prototype.send=function(this:WebSocket,data:unknown,...rest:unknown[]){
+        const cb=rest.find(a=>typeof a==='function') as ((e?:Error)=>void)|undefined;
+        if (String(data).includes('"decision"')) { cb?.(new Error('write failed'));return; }
+        return (send as (...a:unknown[])=>void).call(this,data,...rest);
+      } as typeof send;
+      await expect(t.f.relay.answer(owned,'15','accept')).resolves.toBe('uncertain');
+      WebSocket.prototype.send=send;
+      expect(t.settled).toEqual([{requestId:'15',threadId:owned,reason:'prompt-gone'}]);
+      expect(t.f.relay.retired()).toBe(true);
+    } finally { WebSocket.prototype.send=send;t.client.terminate();await t.f.cleanup(); }
+  });
+
+  it('confirms on a resolved notice that carries no thread id', async () => {
+    const t=await open();
+    try {
+      await t.deliver(request(13));
+      const answered=t.f.relay.answer(owned,'13','accept');
+      await t.settle();
+      await t.deliver({method:'serverRequest/resolved',params:{requestId:13}});
+      await expect(answered).resolves.toBe('ok');
+      await t.deliver(request(14));
+      await t.deliver({method:'serverRequest/resolved',params:{requestId:14}});
+      expect(t.settled).toEqual([{requestId:'14',threadId:owned,reason:'answered-locally'}]);
     } finally { t.client.terminate();await t.f.cleanup(); }
   });
 
@@ -558,22 +618,27 @@ describe.skipIf(process.platform === 'win32')('phone answers to Codex approvals'
       await t.deliver(request('7'));
       expect(t.pending[0]?.requestId).toBe('s:7');
       await expect(t.f.relay.answer(owned,'7','cancel')).resolves.toBe('not-found');
-      await expect(t.f.relay.answer(owned,'s:7','cancel')).resolves.toBe('ok');
+      const answered=t.f.relay.answer(owned,'s:7','cancel');
       await t.settle();
       expect(t.raw).toEqual(['{"id":"7","result":{"decision":"cancel"}}']);
+      await t.deliver({method:'serverRequest/resolved',params:{threadId:owned,requestId:'7'}});
+      await expect(answered).resolves.toBe('ok');
     } finally { t.client.terminate();await t.f.cleanup(); }
   });
 
-  it('TUI first: forwards its answer, settles on serverRequest/resolved, and the phone finds nothing', async () => {
+  it('TUI first: settles the moment its answer arrives; a phone answer before the late resolved is never injected', async () => {
     const t=await open();
     try {
       await t.deliver(request(1));
       t.client.send(JSON.stringify({id:1,result:{decision:'accept'}}));
       await t.settle();
-      await expect(t.f.relay.answer(owned,'1','accept')).resolves.toBe('not-found');
-      await t.deliver({method:'serverRequest/resolved',params:{threadId:owned,requestId:1}});
-      expect(t.raw).toEqual(['{"id":1,"result":{"decision":"accept"}}']);
       expect(t.settled).toEqual([{requestId:'1',threadId:owned,reason:'answered-locally'}]);
+      // resolved has not arrived yet: the phone still finds nothing to answer.
+      await expect(t.f.relay.answer(owned,'1','cancel')).resolves.toBe('not-found');
+      await t.deliver({method:'serverRequest/resolved',params:{threadId:owned,requestId:1}});
+      await t.settle();
+      expect(t.raw).toEqual(['{"id":1,"result":{"decision":"accept"}}']);
+      expect(t.settled).toHaveLength(1);
     } finally { t.client.terminate();await t.f.cleanup(); }
   });
 

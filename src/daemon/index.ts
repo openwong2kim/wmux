@@ -281,7 +281,8 @@ const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Co
         agent: 'codex',
         ...(workspaceId ? { workspaceId } : {}),
         native: { adapter: 'codex', ...ref },
-        form: { v: 1, kind: 'permission', actions: [{ id: 'approve', label: 'Yes' }, { id: 'deny', label: 'No' }] },
+        // No is Codex's `cancel`, which interrupts the whole turn: the label says so.
+        form: { v: 1, kind: 'permission', actions: [{ id: 'approve', label: 'Yes' }, { id: 'deny', label: 'No, stop the turn' }] },
         question: request.question,
         toolName: request.toolName,
         ...(request.summary ? { summary: request.summary } : {}),

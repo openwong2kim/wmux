@@ -14,14 +14,14 @@ describe('Codex approvals a phone may answer',()=>{
     expect(codexDecisionFromRequest(r)).toEqual({method:r.method,threadId:r.params.threadId,
       question:'Create out.txt in the project?',toolName:'command',summary:"/bin/zsh -lc 'touch out.txt'"});
   });
-  it('reads a file-change approval, which carries no reason, root or choice list', () => {
+  it('leaves a file change to the terminal: its request shows neither the files nor the diff', () => {
     const r = request('item/fileChange/requestApproval');
-    expect(codexDecisionFromRequest(r)).toEqual({method:r.method,threadId:r.params.threadId,
-      question:'Allow these file changes?',toolName:'file change'});
+    expect(codexDecisionFromRequest(r)).toBeUndefined();
+    expect(codexDecisionFromRequest({...r,params:{...r.params,grantRoot:'/repo',availableDecisions:['accept','cancel']}})).toBeUndefined();
   });
   it('leaves every other measured request to the terminal', () => {
     const others = Object.entries(measured.serverRequests)
-      .filter(([method,entry])=>entry.request && !method.endsWith('/requestApproval'));
+      .filter(([method,entry])=>entry.request && method !== 'item/commandExecution/requestApproval');
     expect(others.length).toBeGreaterThan(0);
     for (const [,entry] of others) expect(codexDecisionFromRequest(entry.request)).toBeUndefined();
     expect(codexDecisionFromRequest({...request('item/commandExecution/requestApproval'),method:'execCommandApproval'})).toBeUndefined();
@@ -32,6 +32,8 @@ describe('Codex approvals a phone may answer',()=>{
     expect(with_({availableDecisions:['accept',{acceptWithExecpolicyAmendment:{}}]})).toBeUndefined();
     expect(with_({availableDecisions:['acceptForSession','cancel']})).toBeUndefined();
     expect(with_({availableDecisions:'accept,cancel'})).toBeUndefined();
+    // No choice list: nothing says this request accepts a phone's plain Yes/No.
+    expect(with_({availableDecisions:undefined})).toBeUndefined();
     expect(with_({threadId:undefined})).toBeUndefined();
     expect(with_({command:''})).toBeUndefined();
     expect(codexDecisionFromRequest(null)).toBeUndefined();

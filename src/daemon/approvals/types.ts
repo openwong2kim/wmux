@@ -342,9 +342,10 @@ export interface NativeDecisionReply {
 /**
  * A native adapter's answer. `not-found`: the agent no longer has the
  * request (answered locally, or gone). `unavailable`: the agent's server could
- * not be reached — nothing was delivered.
+ * not be reached — nothing was delivered. `uncertain`: sent, but the agent's
+ * server never confirmed that this answer is the one that took.
  */
-export type NativeDecisionOutcome = 'ok' | 'not-found' | 'unavailable';
+export type NativeDecisionOutcome = 'ok' | 'not-found' | 'unavailable' | 'uncertain';
 
 /** Longest the registry waits on a native adapter before calling the answer uncertain. */
 export const NATIVE_ANSWER_TIMEOUT_MS = 10_000;

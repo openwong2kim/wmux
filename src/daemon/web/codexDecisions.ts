@@ -2,17 +2,17 @@
  * Codex approval requests (app-server ServerRequests) a phone may answer.
  * Shapes: src/daemon/web/__tests__/fixtures/codex-server-requests.json.
  *
- * Only a plain Yes/No approval is offered: Yes = `accept`, No = `cancel`
- * (what the TUI sends for Esc, which interrupts the turn). A request that does
- * not offer both is left to the terminal. Choices that grant lasting
- * permission (`acceptForSession`, `acceptWithExecpolicyAmendment`) are never
- * offered. Elicitation, `requestUserInput` and the legacy approval methods
- * need forms and stay in the terminal.
+ * Only a command approval that lists its own choices, including both `accept`
+ * and `cancel`, is offered: Yes = `accept`, No = `cancel` (what the TUI sends
+ * for Esc, which interrupts the turn). Choices that grant lasting permission
+ * (`acceptForSession`, `acceptWithExecpolicyAmendment`) are never offered.
+ * A file change stays in the terminal: its request carries neither the files
+ * nor the diff, so a phone would approve changes it cannot see. Elicitation,
+ * `requestUserInput` and the legacy approval methods stay there too.
  */
 
 export const CODEX_DECISION_METHODS = [
   'item/commandExecution/requestApproval',
-  'item/fileChange/requestApproval',
 ] as const;
 export type CodexDecisionMethod = typeof CODEX_DECISION_METHODS[number];
 export type CodexDecisionAnswer = 'accept' | 'cancel';
@@ -37,17 +37,9 @@ export function codexDecisionFromRequest(message: unknown): CodexDecisionRequest
   const p = params as Record<string, unknown>;
   const threadId = text(p.threadId);
   if (!threadId) return undefined;
-  // Absent (a file change carries none): the TUI offers accept and cancel.
-  if (p.availableDecisions !== undefined) {
-    if (!Array.isArray(p.availableDecisions)) return undefined;
-    if (!p.availableDecisions.includes('accept') || !p.availableDecisions.includes('cancel')) return undefined;
-  }
-  const reason = text(p.reason);
-  if (method === 'item/commandExecution/requestApproval') {
-    const command = text(p.command);
-    if (!command) return undefined;
-    return {method, threadId, question: reason ?? 'Run this command?', toolName: 'command', summary: command};
-  }
-  return {method: 'item/fileChange/requestApproval', threadId, question: reason ?? 'Allow these file changes?', toolName: 'file change',
-    ...(text(p.grantRoot) ? {summary: text(p.grantRoot)} : {})};
+  if (!Array.isArray(p.availableDecisions)) return undefined;
+  if (!p.availableDecisions.includes('accept') || !p.availableDecisions.includes('cancel')) return undefined;
+  const command = text(p.command);
+  if (!command) return undefined;
+  return {method: 'item/commandExecution/requestApproval', threadId, question: text(p.reason) ?? 'Run this command?', toolName: 'command', summary: command};
 }

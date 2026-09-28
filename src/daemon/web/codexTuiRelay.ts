@@ -29,8 +29,11 @@ const MAX_PENDING_SERVER_REQUESTS = 256;
 const isRequestId = (id:unknown):id is string|number => typeof id === 'string' || Number.isSafeInteger(id);
 /** A server request id as a string key; a string id never collides with a numeric one. */
 export const codexRequestKey = (id:string|number):string => typeof id === 'number' ? String(id) : `s:${id}`;
-export type CodexDecisionSettledReason = 'answered-locally' | 'turn-ended' | 'pane-gone';
-export type CodexAnswerOutcome = 'ok' | 'not-found' | 'unavailable';
+export type CodexDecisionSettledReason = 'answered-locally' | 'turn-ended' | 'pane-gone' | 'prompt-gone';
+/** `uncertain`: written, but the server never confirmed that this answer took. */
+export type CodexAnswerOutcome = 'ok' | 'not-found' | 'unavailable' | 'uncertain';
+/** How long a phone's answer waits for the server to report the request resolved. */
+const ANSWER_CONFIRM_MS = 5000;
 
 /**
  * Deny-by-default request policy (codexRelayPolicy.ts). Without it the relay
@@ -57,7 +60,7 @@ export interface CodexRelayPolicy {
 
 /** A single-use endpoint for a daemon-owned TUI. It never starts/stops Codex's
  * account server; the pane lifecycle owns and must close this relay. */
-export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMethod?:(method:string)=>void; onStateChange?:()=>void; policy?:CodexRelayPolicy}) {
+export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMethod?:(method:string)=>void; onStateChange?:()=>void; policy?:CodexRelayPolicy; answerConfirmMs?:number}) {
   const codeHome = options.codeHome ?? path.join(os.homedir(),'.codex');
   if (!path.isAbsolute(codeHome) || codeHome.includes('\0') || codeHome.includes(':')) throw new Error('Invalid Codex account scope');
   const upstreamPath = path.join(codeHome,'app-server-control','app-server-control.sock');
@@ -164,12 +167,16 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     // delivered to this client and that is still awaiting an answer
     // (request id -> thread id, when the request names one).
     const pendingServerRequests = new Map<string|number,string|undefined>();
-    // The subset a phone may answer (codexRequestKey -> the server's own id and its thread).
-    const decisions = new Map<string,{id:string|number;threadId:string}>();
+    // The subset a phone may answer (codexRequestKey -> the server's own id and
+    // its thread). `confirm` is set once the phone's answer was written: the
+    // request then waits for the server to report it resolved.
+    type Decision = {id:string|number; threadId:string; confirm?:(outcome:CodexAnswerOutcome)=>void};
+    const decisions = new Map<string,Decision>();
     const settleDecision = (key:string, reason:CodexDecisionSettledReason) => {
       const decision = decisions.get(key);
       if (!decision) return;
       decisions.delete(key);
+      if (decision.confirm) { decision.confirm('uncertain');return; }
       try {options.policy?.decisionSettled?.(key,decision.threadId,reason);} catch {/* A notice cannot change the outcome. */}
     };
     /**
@@ -179,19 +186,38 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
      * and nothing but `result.decision` — so it can answer nothing else. The
      * request stops being pending here, so the TUI's own later answer to the
      * same id is not forwarded.
+     *
+     * A written frame is not an answer that took: another client may have
+     * answered first, and the server ignores a late answer without a word.
+     * `ok` only when the server reports the request resolved after the write;
+     * anything else (a write error, the turn ending, the connection closing,
+     * no word in time) is `uncertain`, and the record is settled so no card
+     * is left up for a request nobody can answer from here any more.
      */
     answerOnConnection = async (threadId, requestId, decision) => {
       const pending = decisions.get(requestId);
-      if (!pending || pending.threadId !== threadId || !pendingServerRequests.has(pending.id)) return 'not-found';
+      if (!pending || pending.confirm || pending.threadId !== threadId || !pendingServerRequests.has(pending.id)) return 'not-found';
       const owner = options.policy?.owner(threadId);
       if (!options.policy || owner?.paneId !== options.policy.paneId || !owner.live) return 'not-found';
       const bytes = Buffer.from(JSON.stringify({id:pending.id,result:{decision}}));
       if (retired || upstream.readyState !== WebSocket.OPEN || upstream.bufferedAmount + bytes.length > MAX_BUFFER) return 'unavailable';
       pendingServerRequests.delete(pending.id);
-      decisions.delete(requestId);
       return new Promise<CodexAnswerOutcome>(resolve=>{
+        const timer = setTimeout(()=>finish('uncertain'),options.answerConfirmMs ?? ANSWER_CONFIRM_MS);
+        timer.unref?.();
+        const finish = (outcome:CodexAnswerOutcome) => {
+          if (!pending.confirm) return;
+          pending.confirm = undefined;
+          clearTimeout(timer);
+          if (decisions.get(requestId) === pending) decisions.delete(requestId);
+          resolve(outcome);
+          if (outcome !== 'ok') {
+            try {options.policy?.decisionSettled?.(requestId,threadId,'prompt-gone');} catch {/* A notice cannot change the outcome. */}
+          }
+        };
+        pending.confirm = finish;
         upstream.send(bytes,{binary:false},error=>{
-          if (error) {retire();resolve('unavailable');} else resolve('ok');
+          if (error) {finish('uncertain');retire();}
         });
       });
     };
@@ -259,6 +285,8 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       if (classify(frame.message) === 'response') {
         const id = (frame.message as {id?:unknown}).id;
         answersPending = isRequestId(id) && pendingServerRequests.delete(id);
+        // The TUI answered: a phone answer to the same request is refused from now on.
+        if (answersPending) settleDecision(codexRequestKey(id as string|number),'answered-locally');
       }
       heldFrames++;heldBytes += frame.bytes.length;
       clientChain = clientChain.then(()=>review(frame,answersPending)).catch(()=>retire())
@@ -289,10 +317,16 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
         const requestId = message.params?.requestId;
         if (isRequestId(requestId)) {
           pendingServerRequests.delete(requestId);
-          // Answered by the TUI or another client: never by the phone, whose
-          // answer already took the request off `decisions`.
+          // A phone answer waiting for this confirms; otherwise the TUI or
+          // another client answered. A notice without a thread id still names
+          // the request by its id.
           const key = codexRequestKey(requestId);
-          if (decisions.get(key)?.threadId === message.params?.threadId) settleDecision(key,'answered-locally');
+          const decision = decisions.get(key);
+          const threadId = message.params?.threadId;
+          if (decision && (threadId === undefined || threadId === decision.threadId)) {
+            if (decision.confirm) decision.confirm('ok');
+            else settleDecision(key,'answered-locally');
+          }
         }
       } else if (message?.method === 'turn/completed' && typeof message.params?.threadId === 'string') {
         // A finished turn leaves none of its requests awaiting an answer.

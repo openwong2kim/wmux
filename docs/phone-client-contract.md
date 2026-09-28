@@ -905,8 +905,8 @@ prompts are answered with the phone pane's terminal controls when `--allow-input
 is enabled, or at the desktop otherwise. Structured choice
 support for these agents will be added only after their respective projects
 expose authoritative approval hooks — the daemon does not guess keystrokes.
-A Codex pane that wmux launched is the exception: its command and file-change
-approvals are answered through Codex's own server (see "Codex approvals"
+A Codex pane that wmux launched is the exception: its command approvals are
+answered through Codex's own server (see "Codex approvals"
 under Decision forms).
 
 ### `terminal_prompt` — the agent's own permission dialog
@@ -1367,25 +1367,33 @@ back on, and it still never blocks typing into its pane.
 
 A Codex pane that wmux launched with a relay (`POST /api/sessions
 {agentLaunch}` or chat launch) talks to Codex's account server through that
-per-pane relay. The relay turns two of Codex's approval requests into native
-permission decisions (`agent: 'codex'`, `kind: 'terminal_prompt'`):
-
-| Codex request | `question` | `summary` | `toolName` |
-| --- | --- | --- | --- |
-| `item/commandExecution/requestApproval` | Codex's `reason`, else `Run this command?` | the command | `command` |
-| `item/fileChange/requestApproval` | Codex's `reason`, else `Allow these file changes?` | `grantRoot`, when Codex names one | `file change` |
+per-pane relay. The relay turns Codex's command approvals
+(`item/commandExecution/requestApproval`) into native permission decisions
+(`agent: 'codex'`, `kind: 'terminal_prompt'`): `question` is Codex's `reason`
+(else `Run this command?`), `summary` the command, `toolName` `command`.
 
 - **Yes** is Codex's `accept`. **No** (`choiceKey` `2`, or `/decline`) is
   Codex's `cancel`: the same answer as Esc in the Codex TUI, and like Esc it
-  **interrupts the whole turn**. Say so on the No button.
-- Only a request whose own `availableDecisions` include both `accept` and
-  `cancel` becomes a decision. Choices that grant lasting permission
+  **interrupts the whole turn**. The v1 `choices` stay exactly `Yes` / `No`;
+  the `decision-v2` form's deny action is labelled `No, stop the turn`. Say so
+  on the No button either way.
+- Only a request that lists its own `availableDecisions`, including both
+  `accept` and `cancel`, becomes a decision. Choices that grant lasting permission
   (`acceptForSession`, `acceptWithExecpolicyAmendment`) are never offered.
-  MCP elicitation, `requestUserInput` and other Codex requests stay in the
-  terminal: no card.
+  File changes (`item/fileChange/requestApproval`) stay in the terminal: the
+  request carries neither the files nor the diff. MCP elicitation,
+  `requestUserInput` and other Codex requests stay there too: no card.
+- One card per prompt: the question-less card Codex's `PermissionRequest` hook
+  raises on that pane is replaced by the decision, and not raised again while
+  the decision is pending.
 - The request must belong to a thread this pane started, resumed or forked.
   Another pane subscribed to the same thread gets no card for it.
-- The Codex overlay in the pane closes by itself once the phone answers.
+- The Codex overlay in the pane closes by itself once the phone answers. The
+  answer is final (200) only once Codex's server reports the request resolved
+  after it. If that does not happen within 5 s (the request was answered
+  elsewhere at the same moment, the connection dropped), the answer is 409
+  `answer-uncertain` and the card expires: re-read the pane.
+- A daemon restart expires every pending Codex decision.
 - The card expires when the request is answered anywhere else (the Codex TUI,
   another client), when its turn ends, or when the pane's relay goes away
   (for example the account server restarted). A phone answer after that is
