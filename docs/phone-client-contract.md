@@ -1299,6 +1299,7 @@ v1 paths.
 | --- | --- |
 | `decisionForms` | The form kinds this daemon produces: any of `permission`, `plan`, `questions`. **Empty today** — offer no v2 answer while it is |
 | `chatCancel` | Whether this caller may use `POST /api/sessions/<id>/chat/cancel` (its input grant) |
+| `chatQueue` | Whether this caller's `chat-queue` sends are held by the daemon queue (its input grant, and a queue that loaded) |
 
 **The record.** For a `decision-v2` caller, a record that can still be
 answered may carry:
@@ -1462,6 +1463,88 @@ the same turn. The Esc once-per-turn latch and cooldown do not apply: an
 abort of a turn that has already ended is simply `turn-not-running`. When
 the abort request left but its answer was lost, the result is 500
 `cancel-failed` with `effect:"uncertain"`, as for a Claude/Codex write.
+
+### Chat queue
+
+A send that carries the `chat-queue` capability (in `X-Wmux-Client-Caps` on
+the send request itself) is held by the daemon while the pane's turn runs, or
+while anything is already waiting in the pane's queue (any owner), and typed
+after the turn ends. This applies to Claude, Codex and OpenCode alike. Without
+the capability a send behaves as before: Claude takes it into its own composer
+queue (`queued:true`), the others answer 409 `chat-busy`.
+
+**Semantics.** The daemon queue delivers **after the turn ends**, one item per
+ended turn: after a delivery, the next item waits until the turn that
+delivery started has begun (a new `chat.turn.id`) and ended. Claude's own
+composer queue instead folds a message into the running turn at a tool
+boundary; the daemon queue never does. It is FIFO per pane, and not ordered
+against desktop or raw terminal input. A cancel does not clear it. Each item
+has a 10-minute lifetime. Nothing is retried after a write: an item fails
+rather than being typed twice.
+
+**Send answer.** 202 `{state:"queued", replayed:false, clientMessageId,
+effect:"queued"}`. A repeat with the same id and body answers 200 with the
+item's current `state` (and `reason`), `replayed:true`; `effect` is `queued`
+while it waits, `submitted` once delivered, `uncertain` for `uncertain`, and
+`none` otherwise. The same id with another body is 409 `message-id-conflict`.
+429 `queue-full` when the caller already has 8 waiting items on the pane.
+
+**States and reasons** (closed set):
+
+| `state` | `reason` |
+| --- | --- |
+| `queued` | — |
+| `delivering` | — |
+| `delivered` | — |
+| `failed` | `draft-present` (text left in the composer), `blocked` (a dialog held it for its whole lifetime), `prompt-active` (an approval held it), `expired`, `delivery-unconfirmed` |
+| `canceled` | `user`, `daemon-restart`, `authorization-revoked`, `pane-closed`, `session-changed` |
+| `uncertain` | `restart-uncertain` (the daemon restarted mid-delivery) |
+
+**Authorization at delivery.** The daemon re-checks the owner right before
+the first write and again before Enter: the device must still be paired and
+hold input, the server must still run with `--allow-input` and
+`--allow-transcript`, and the pane must be the same incarnation. Any failure
+cancels the item (`authorization-revoked`). Unpairing a device, withdrawing
+its input grant or stopping the server cancels that owner's waiting items at
+once. A closed pane cancels its items (`pane-closed`); a new conversation in
+the pane cancels them at their turn (`session-changed`).
+
+**Restart.** The prompt text is never written to disk. After a daemon restart
+every `queued` item reads `canceled` (`daemon-restart`) and every `delivering`
+item `uncertain` (`restart-uncertain`); nothing is delivered.
+
+**`/turns`.** For a `chat-queue` caller on a daemon whose queue loaded, the
+chat object carries `queue: [{clientMessageId, state, reason?, queuedAt, at,
+preview?}]`: the caller's own items on the pane, most recent kept, in enqueue
+order. `preview` is the first 80 characters, held in memory only (absent after
+a restart). `capabilities.queue` is `true` for a live Claude, Codex or
+OpenCode agent, and `capabilities.send` stays `true` while a turn runs. User
+rows the daemon typed for this caller carry `clientMessageId` (best effort;
+omitted when no row matches). Without the capability the object is unchanged.
+
+**Receipt.** `GET /api/sessions/<id>/chat/messages/<clientMessageId>` adds
+`queue: {state, reason?}` for a message that went through the queue, and reads
+`state:"queued"` while the item waits.
+
+**`DELETE /api/sessions/<id>/chat/queue/<clientMessageId>`** takes an item
+back. Needs the input grant (403 otherwise); only the owner's items are found.
+
+| Status | Body |
+| --- | --- |
+| 200 | `{state:"canceled", clientMessageId}` — also on a repeat |
+| 409 | `already-delivered` `{state}` |
+| 409 | `delivery-in-progress` `{state}` |
+| 409 | `queue-item-final` `{state, reason}` — `failed` or `uncertain` |
+| 404 | `queue-item-not-found` |
+| 404 | `pane-not-found` |
+
+A 404 without one of these two `error` values means the route is missing (an
+older daemon).
+
+**SSE `chat.queue`.** `{sessionId, clientMessageId, state, reason?, at}` on
+every state change, live-only like `chat.blocked` (no `id:`, never replayed),
+and only to the item's owner among the pane's `/turns` watchers. `/turns` is
+the authoritative state after a reconnect.
 
 ---
 
@@ -2710,7 +2793,8 @@ transcript), then the Claude/Codex transcript file — and adds `chat` to every
   and every other capability `false` or absent. `cancel` is `false` unless you
   sent the `chat-cancel` capability (see Chat cancel); for OpenCode it also
   needs a plugin that advertises abort. `queue:true` (live Claude) means a send
-  during a running turn can be accepted and answered with `queued:true`.
+  during a running turn can be accepted and answered with `queued:true`. A
+  `chat-queue` caller sees `queue` for all three agents instead (see Chat queue).
 - **`blocked` is authoritative and computed at read time**: a pending approval
   (`by:"approval"`), or `by:"terminal"` for a `terminal_prompt` record (as
   `by:"approval"` with its `approvalId` only when you sent the
