@@ -1297,7 +1297,7 @@ v1 paths.
 | Key | Meaning |
 | --- | --- |
 | `decisionForms` | The form kinds this daemon produces: any of `permission`, `plan`, `questions`. **Empty today** — offer no v2 answer while it is |
-| `chatCancel` | Whether the chat cancel route exists. `false` today |
+| `chatCancel` | Whether this caller may use `POST /api/sessions/<id>/chat/cancel` (its input grant) |
 
 **The record.** For a `decision-v2` caller, a record that can still be
 answered may carry:
@@ -1410,10 +1410,11 @@ where `status` / `result` are the stored final response.
 
 ### Chat cancel
 
-Reserved: the `chat-cancel` capability is parsed and `/api/config` reports
-`chatCancel: false`. `POST /api/sessions/<id>/chat/cancel` and
-`capabilities.cancel: true` on the chat object are not served yet; the chat
-object keeps `cancel: false` for every client.
+`POST /api/sessions/<id>/chat/cancel` writes one Esc into a running Claude or
+Codex turn. The chat object's `capabilities.cancel` is passed through only to
+a caller that sends the `chat-cancel` capability; every other client keeps
+`cancel: false`. The route itself does not require the capability. Full
+request and response rules are documented with the cancel/queue section.
 
 ---
 
@@ -2659,8 +2660,8 @@ transcript), then the Claude/Codex transcript file — and adds `chat` to every
   `launch` is true only on a `none` binding with `launch.ready`. `streaming` is
   `false` on transcript-file bindings (Claude/Codex rows land per record, not
   per token) and absent for OpenCode. A `managed` binding has `history:true`
-  and every other capability `false` or absent. `cancel` is always `false` on
-  the phone (Stop is in Terminal). `queue:true` (live Claude) means a send
+  and every other capability `false` or absent. `cancel` is `false` unless you
+  sent the `chat-cancel` capability (see Chat cancel). `queue:true` (live Claude) means a send
   during a running turn can be accepted and answered with `queued:true`.
 - **`blocked` is authoritative and computed at read time**: a pending approval
   (`by:"approval"`), or `by:"terminal"` for a `terminal_prompt` record (as

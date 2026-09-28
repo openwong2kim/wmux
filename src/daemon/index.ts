@@ -2,6 +2,7 @@ import { loadChatSkills } from './transcript/chatSkills';
 import { TerminalChatService } from './transcript/TerminalChatService';
 import type { ChatBridge, ChatLaunchRequest } from './chat/chatBridge';
 import { ChatSendReceiptStore } from './chat/ChatSendReceiptStore';
+import { ChatCancelReceiptStore } from './chat/ChatCancelReceiptStore';
 import { createChatBridge, type NativeChatBridge } from './chat/nativeChatBridge';
 import {captureCodexRelayResume, codexRelayResumeCommand} from './web/codexRelayResume';
 import { recoverCodexPane } from './web/recoverCodexPane';
@@ -151,7 +152,6 @@ import { deliverScheduledPrompt } from './sessionPromptDelivery';
 import { chatAgentStatus, confirmedStopAt, transcriptTurnEnd } from './transcript/chatAgentStatus';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
-import { interruptChatTurn } from './transcript/interruptChatTurn';
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
 import { ChatSessionService } from './chat/ChatSessionService';
 import { chatProviders } from './chat/providers';
@@ -198,6 +198,7 @@ let transcriptProjector: TranscriptProjector | null = null;
 let chatBridge: ChatBridge | null = null;
 // One writer per daemon, even if registerRpcHandlers runs twice. `undefined` = not loaded yet.
 let chatSendReceipts: ChatSendReceiptStore | null | undefined;
+let chatCancelReceipts: ChatCancelReceiptStore | null | undefined;
 let chatSessions: ChatSessionService | null = null;
 let terminalChat: TerminalChatService | null = null;
 const chatSubscribers = new Map<string, Set<string>>();
@@ -3453,6 +3454,14 @@ function registerRpcHandlers(
       log('error', `[chat] send receipts unreadable; phone chat send disabled: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  if (chatCancelReceipts === undefined) {
+    try { chatCancelReceipts = new ChatCancelReceiptStore(wmuxDir); }
+    catch (error) {
+      // Same rule as sends: a cancel id that may have pressed ESC must not be forgotten.
+      chatCancelReceipts = null;
+      log('error', `[chat] cancel receipts unreadable; phone chat cancel disabled: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   // Phone native chat bridge (contract v0.3.1). The desktop RPCs below call the
   // same functions, so binding resolution, receipts, launch and skills cannot
   // drift between the two transports.
@@ -3505,6 +3514,7 @@ function registerRpcHandlers(
       return true;
     },
     receipts: chatSendReceipts,
+    cancelReceipts: chatCancelReceipts,
     idleShell: (pid, env) => agentProcessTracker.idleShellState(pid, env),
     installedAgents: (env) => installedAgentLaunchOptions(env),
     relays: {
@@ -4071,39 +4081,13 @@ function registerRpcHandlers(
   });
 
   // Chat view's Stop for a terminal-bound agent: the same ESC its TUI takes,
-  // behind the same identity/approval/screen checks as a chat send.
+  // through the bridge's cancel path, so the desktop Stop and the phone cancel
+  // share one send lock, one once-per-turn latch and one cooldown.
   pipeServer.onRpc('daemon.transcript.interrupt', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'interrupt')) return { result: 'unavailable' };
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const agentSessionId = typeof params['agentSessionId'] === 'string' ? params['agentSessionId'] : '';
-    // The bridge's dispatch order: a native TUI binding has no ESC path here.
-    if (!id || !approvalRegistry || (await bridge.route(id)).kind === 'native') return { result: 'unavailable' };
-    // ESC between a send's pastes would strand them in the composer.
-    if (bridge.sendInFlight(id)) return { result: 'blocked' };
-    const result = await interruptChatTurn(agentSessionId, {
-      getTranscriptSessionId: () => projector.status(id).agentSessionId,
-      // The chat write fence: any pending record, whatever its kind.
-      hasOpenApproval: () => bridge.hasOpenApproval(id),
-      readScreen: async () => {
-        const managed = sessionManager.getSession(id);
-        if (!managed) return null;
-        const outcome = await generateTextSnapshot({ cols: managed.meta.cols ?? 80, rows: managed.meta.rows ?? 24, scrollback: 0, initial: managed.ringBuffer.readAll() });
-        return outcome.ok ? outcome.rows.map((r) => r.text) : null;
-      },
-      getAgentState: () => {
-        const current = readChatAgentState(id);
-        const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;
-        return slug && current.agentVerified ? { slug, status: current.agentStatus } : null;
-      },
-      write: (data) => {
-        const managed = sessionManager.getSession(id);
-        if (!managed) return false;
-        managed.ptyProcess.write(data);
-        managed.bridge.noteInput(data);
-        return true;
-      },
-    });
-    return { result };
+    return { result: await bridge.desktopInterrupt(id, agentSessionId) };
   });
 
   // daemon.readPromptEvents — read structured OSC 133 prompt/command events

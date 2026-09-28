@@ -25,6 +25,33 @@ export function screenBlocksChatSend(rows: readonly string[] | null): boolean {
   return looksLikeApprovalPrompt(rows) || rows.some((row) => DIALOG_FOOTER_ROW.test(row));
 }
 
+/**
+ * Claude Code's live spinner row: a spinner glyph, a gerund ending in `…`, and
+ * a parenthesised counter carrying elapsed time or tokens, e.g.
+ * `✻ Embellishing… (1s · ↓ 25 tokens · thinking with medium effort)`,
+ * `✢ Ruminating… (8s · ↓ 238 tokens)`,
+ * `✢ Onioning… (running UserPromptSubmit hook · 0s)`.
+ * The finished-turn summary (`✻ Worked for 12s`) has no `…(` and never matches.
+ * Claude Code does not draw `esc to interrupt` (#935).
+ */
+const CLAUDE_RUNNING_ROW = /^[✻✶✳✢✽] ?\S[^(]*… ?\((?:[^)]*[\s(·])?(?:\d+[hms]\b|[\d.]+k? tokens\b)/;
+/** Codex's status row, e.g. `• Working (1s • esc to interrupt)`. */
+const CODEX_RUNNING_ROW = /^•\s.*\besc to interrupt\)\s*$/i;
+
+/**
+ * Positive evidence, on the grid itself, that the agent's turn is running
+ * right now: the status row the agent draws only while it works. The status
+ * a hook reported can outlive the turn by the hook's delivery lag; this row
+ * cannot. Both agents hide the row while answer text streams (captured on
+ * Claude Code 2.1.283 and Codex 0.157.1), so its absence refuses a Stop that
+ * may well have been safe; its presence is never stale.
+ */
+export function screenShowsRunningTurn(rows: readonly string[] | null, slug: string): boolean {
+  if (!rows) return false;
+  const row = slug === 'claude' ? CLAUDE_RUNNING_ROW : slug === 'codex' ? CODEX_RUNNING_ROW : null;
+  return !!row && rows.some((line) => row.test(line.trim()));
+}
+
 /** The question line of Claude Code's permission dialog. */
 const PROCEED_QUESTION_ROW = /\bDo you want to proceed\b/i;
 

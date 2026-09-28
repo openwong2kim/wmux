@@ -127,8 +127,10 @@ import { cursorMatches, decodeChatCursor, encodeChatCursor, type ReadSource } fr
 import { ChatLaunchReceiptStore, type LaunchReceiptState } from './chatLaunchReceipts';
 import {
   buildChatObject,
+  cancelResponse,
   hasConversation,
   launchResponse,
+  parseCancelBody,
   parseLaunchBody,
   parseSendBody,
   resolutionAgentSessionId,
@@ -862,6 +864,8 @@ const MAX_JSON_BODY_BYTES = 8 * 1024;
 const CHAT_SEND_MAX_BODY_BYTES = 96 * 1024;
 /** Chat launch body cap: 2,000 units × 6 bytes plus the envelope. */
 const CHAT_LAUNCH_MAX_BODY_BYTES = 16 * 1024;
+/** Chat cancel body cap: four short strings. */
+const CHAT_CANCEL_MAX_BODY_BYTES = 4 * 1024;
 /** Same 1 Hz floor as the nudge: a blocked badge must be right, not instant. */
 const CHAT_BLOCKED_COALESCE_MS = 1000;
 /**
@@ -2341,9 +2345,9 @@ export class WebTerminalServer {
               terminalPromptDecline: this.mayInput(principal),
               // decision-v2 (docs/phone-client-contract.md): the form kinds
               // this daemon produces — none yet, so a client offers no v2
-              // answer — and whether `/chat/cancel` exists (not yet).
+              // answer — and whether this caller may use `/chat/cancel`.
               decisionForms: [],
-              chatCancel: false,
+              chatCancel: this.mayInput(principal),
             }
           : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
@@ -2375,15 +2379,17 @@ export class WebTerminalServer {
       const rest = p.slice('/api/sessions/'.length);
       // Native chat writes and their receipts nest under the pane (contract
       // §3.2), so the pane is resolved and checked before any body is read.
-      const chatRoute = /^([^/]+)\/chat\/(messages|launch)(?:\/([^/]+))?$/.exec(rest);
+      const chatRoute = /^([^/]+)\/chat\/(messages|launch|cancel)(?:\/([^/]+))?$/.exec(rest);
       if (chatRoute) {
         const [, rawId, kind, rawReceipt] = chatRoute;
-        if (req.method === 'POST' && rawReceipt === undefined) {
+        if (kind === 'cancel') {
+          if (req.method === 'POST' && rawReceipt === undefined) return this.handleChatCancel(req, res, rawId, url, principal);
+        } else if (req.method === 'POST' && rawReceipt === undefined) {
           return kind === 'messages'
             ? this.handleChatSend(req, res, rawId, url, principal)
             : this.handleChatLaunch(req, res, rawId, url, principal);
         }
-        if (req.method === 'GET' && rawReceipt !== undefined) {
+        if (kind !== 'cancel' && req.method === 'GET' && rawReceipt !== undefined) {
           return kind === 'messages'
             ? this.handleChatSendReceipt(res, rawId, rawReceipt, principal)
             : this.handleChatLaunchReceipt(res, rawId, rawReceipt, principal);
@@ -3828,7 +3834,8 @@ export class WebTerminalServer {
     // Only a file binding has a daemon-tracked episode, and only a caller
     // that declared a cap that uses it is shown one.
     const turn = (caps.chatCancel === true || caps.chatQueue === true) && resolution.source === 'file' ? chat.turn(sessionId) : undefined;
-    this.json(res, 200, { ...body, chat: buildChatObject(resolution, projectChatBlocked(blocked, caps), turn ? { turn } : {}) });
+    this.json(res, 200, { ...body, chat: buildChatObject(resolution, projectChatBlocked(blocked, caps),
+      { ...(turn ? { turn } : {}), chatCancel: caps.chatCancel === true }) });
   }
 
   /** The `/turns` page for a resolved binding, read synchronously; undefined once answered (503). */
@@ -4242,6 +4249,58 @@ export class WebTerminalServer {
         this.json(res, wire.status, wire.body);
       })().catch((err: unknown) => this.failRequest(res, err));
     }, CHAT_SEND_MAX_BODY_BYTES);
+  }
+
+  /**
+   * `POST /api/sessions/:id/chat/cancel`: one ESC into the pane's running
+   * Claude/Codex turn. Same gate order as send; the 404 names `pane-not-found`
+   * so a client can tell a missing pane from a daemon without the route. The
+   * `chat-cancel` cap is not required here: the route existing is the opt-in.
+   */
+  private handleChatCancel(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+    url: URL,
+    principal: WebPrincipal,
+  ): void {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+    if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Stopping a turn types into this pane');
+    const id = decodePathSegment(rawId);
+    const pane = id === null ? undefined : this.readableSession(id);
+    if (!pane || id === null) return this.json(res, 404, { error: 'pane-not-found' });
+    const chat = this.deps.chat?.() ?? null;
+    if (!chat) return this.json(res, 503, { error: 'chat-unavailable' });
+    const incarnation = pane.meta.incarnationId;
+
+    this.readJsonBody(req, res, (body) => {
+      void (async () => {
+        const fresh = await this.reauthorizeChatWrite(req, res, url, principal, id, pane, incarnation);
+        if (!fresh) return;
+        const parsed = parseCancelBody(body);
+        if (!parsed.ok) {
+          return this.json(res, 400, {
+            error: 'invalid-chat-request',
+            detail: parsed.detail,
+            effect: 'none',
+            ...(parsed.clientCancelId !== undefined ? { clientCancelId: parsed.clientCancelId } : {}),
+          });
+        }
+        const { clientCancelId } = parsed.value;
+        const authorize = this.chatWriteAuthorizer(req, res, url, principal, id, pane, incarnation);
+        let outcome;
+        try {
+          outcome = await chat.cancel({ owner: chatOwner(fresh), id, ...parsed.value, authorized: () => authorize('first-write') });
+        } catch (err) {
+          // No `effect`: whether the ESC was written is unknown.
+          this.deps.log('warn', `[web] chat cancel threw for ${id}: ${errMsg(err)}`);
+          return this.json(res, 500, { error: 'cancel-failed', clientCancelId });
+        }
+        const wire = cancelResponse(outcome);
+        this.json(res, wire.status, wire.body);
+      })().catch((err: unknown) => this.failRequest(res, err));
+    }, CHAT_CANCEL_MAX_BODY_BYTES);
   }
 
   /**

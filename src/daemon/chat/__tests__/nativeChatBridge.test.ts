@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TranscriptPage, TranscriptStatus } from '../../../shared/transcript/turnEvents';
 import { ChatSendReceiptStore } from '../ChatSendReceiptStore';
+import { ChatCancelReceiptStore } from '../ChatCancelReceiptStore';
 import { createChatBridge, WEB_BRIDGE_CLIENT, type ChatAgentState, type ChatPane, type NativeChatBridgeDeps } from '../nativeChatBridge';
 import { OPENCODE_MAX_SEND_BYTES, fileHistoryEpoch, projectChatBlocked, tuiHistoryEpoch } from '../chatBridge';
 
@@ -24,11 +25,11 @@ const TUI_STATUS: TranscriptStatus = { available: true, reason: 'ok', agentSessi
 function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-bridge-')); dirs.push(dir);
   const typed: string[] = [];
-  const shell = { empty: true, revision: 0 };
+  const shell = { empty: true, revision: 0, escAt: 0 };
   const pane: ChatPane = {
     meta: { id: 'pane', state: 'attached', pid: 100, cwd: '/live', env: {}, spawnCwd: '/spawn', incarnationId: 'inc' },
     bridge: { isEmptyShellPrompt: () => shell.empty, getInputRevision: () => shell.revision,
-      noteInput: () => { shell.revision++; shell.empty = false; } },
+      noteInput: () => { shell.revision++; shell.empty = false; }, getLastEscAt: () => shell.escAt },
     promptLog: { size: 3, isCommandRunning: () => false },
     ptyProcess: { write: (data) => { typed.push(data); } },
   };
@@ -65,8 +66,9 @@ function fixture() {
       : { id: state.pendingApproval, kind: state.pendingKind, answerable: state.pendingAnswerable } }),
     readScreen: async () => state.screen,
     agentProcessAlive: async () => { await aliveGate; return true; },
-    write: (_id, data) => { written.push(data); state.agent.inputRevision++; return true; },
+    write: (_id, data) => { written.push(data); state.agent.inputRevision++; if (data === '\x1b') shell.escAt = Date.now(); return true; },
     receipts: new ChatSendReceiptStore(dir),
+    cancelReceipts: new ChatCancelReceiptStore(dir),
     idleShell: async () => state.idle,
     installedAgents: async () => state.installed.map(agent => ({ agent, models: [], efforts: [] })),
     relays: { retire: async () => undefined, prepare: async () => ({ url: 'unix:///tmp/relay.sock', commit: () => true, close: async () => undefined }),
@@ -583,11 +585,132 @@ describe('a terminal_prompt record: reported as the terminal, fenced like any ap
     const result = await interruptChatTurn('conv', {
       getTranscriptSessionId: () => 'conv',
       hasOpenApproval: () => f.bridge.hasOpenApproval('pane'),
-      readScreen: async () => ['✻ Working… (esc to interrupt)'],
+      readScreen: async () => ['✢ Ruminating… (8s · ↓ 238 tokens)'],
       getAgentState: () => ({ slug: 'claude', status: 'running' }),
       write: (data) => { writes.push(data); return true; },
     });
     expect(result).toBe('blocked');
     expect(writes).toEqual([]);
+  });
+});
+
+describe('cancel', () => {
+  const RUNNING = ['✢ Ruminating… (8s · ↓ 238 tokens)', '─'.repeat(40), '❯ ', '─'.repeat(40)];
+  const EPOCH = fileHistoryEpoch('claude', 'conv', 'a.jsonl');
+  const running = () => {
+    const f = fixture(); f.liveClaude();
+    f.state.agent = { ...f.state.agent, agentStatus: 'running', turn: { id: 't1:n.3', state: 'running', startedAt: Date.now() - 5_000 } };
+    f.state.screen = RUNNING;
+    return f;
+  };
+  const phoneCancel = (extra: Record<string, unknown> = {}) =>
+    ({ owner: 'device:a' as const, id: 'pane', agentSessionId: 'conv', historyEpoch: EPOCH, turnId: 't1:n.3', clientCancelId: msgId(), ...extra });
+
+  it('writes one ESC for the named running turn and replays the same id without writing again', async () => {
+    const f = running();
+    const req = phoneCancel();
+    expect(await f.bridge.cancel(req)).toEqual({ clientCancelId: req.clientCancelId, replayed: false, effect: 'interrupt-requested', turnId: 't1:n.3' });
+    expect(f.written).toEqual(['\x1b']);
+    expect(await f.bridge.cancel(req)).toEqual({ clientCancelId: req.clientCancelId, replayed: true, effect: 'interrupt-requested', turnId: 't1:n.3' });
+    expect(await f.bridge.cancel({ ...req, turnId: 't1:n.4' })).toMatchObject({ error: 'cancel-id-conflict', effect: 'none' });
+    // A second id in the same turn is refused: the turn already has its ESC.
+    expect(await f.bridge.cancel(phoneCancel())).toMatchObject({ error: 'turn-already-interrupted', turnId: 't1:n.3', effect: 'none' });
+    expect(f.written).toEqual(['\x1b']);
+    expect(f.bridge.sendInFlight('pane')).toBe(false);
+  });
+
+  it('a refused cancel leaves no receipt, so the same id re-evaluates', async () => {
+    const f = running();
+    f.state.screen = ['  one hundred four', '─'.repeat(40), '❯ ', '─'.repeat(40)];
+    const req = phoneCancel();
+    expect(await f.bridge.cancel(req)).toMatchObject({ error: 'turn-not-running', turn: { id: 't1:n.3', state: 'running' }, effect: 'none' });
+    f.state.screen = RUNNING;
+    expect(await f.bridge.cancel(req)).toMatchObject({ effect: 'interrupt-requested', replayed: false });
+  });
+
+  it('turn mismatch, idle turn, dead agent: turn-not-running and nothing written', async () => {
+    const f = running();
+    expect(await f.bridge.cancel(phoneCancel({ turnId: 't1:n.2' }))).toMatchObject({ error: 'turn-not-running', turn: { id: 't1:n.3' } });
+    f.state.agent.agentStatus = 'complete';
+    expect(await f.bridge.cancel(phoneCancel())).toMatchObject({ error: 'turn-not-running' });
+    f.state.agent.agentStatus = 'running'; f.state.agent.agentVerified = false;
+    expect(await f.bridge.cancel(phoneCancel())).toMatchObject({ error: 'turn-not-running' });
+    expect(f.written).toEqual([]);
+  });
+
+  it('prompt-active names the pending record and who answers it', async () => {
+    const f = running();
+    f.state.pendingApproval = 'apr_t'; f.state.pendingKind = 'terminal_prompt';
+    expect(await f.bridge.cancel(phoneCancel())).toMatchObject({ error: 'prompt-active', by: 'terminal', approvalId: 'apr_t' });
+    f.state.pendingKind = 'permission';
+    expect(await f.bridge.cancel(phoneCancel())).toMatchObject({ error: 'prompt-active', by: 'approval', approvalId: 'apr_t' });
+    f.state.pendingApproval = undefined; f.state.agent.agentStatus = 'awaiting_input';
+    const awaiting = await f.bridge.cancel(phoneCancel());
+    expect(awaiting).toMatchObject({ error: 'prompt-active', by: 'terminal' });
+    expect(awaiting).not.toHaveProperty('approvalId');
+    expect(f.written).toEqual([]);
+  });
+
+  it('session, id and binding refusals', async () => {
+    const f = running();
+    expect(await f.bridge.cancel(phoneCancel({ agentSessionId: 'other' }))).toMatchObject({ error: 'session-changed', agentSessionId: 'conv', historyEpoch: EPOCH });
+    expect(await f.bridge.cancel(phoneCancel({ historyEpoch: 'h1:stale' }))).toMatchObject({ error: 'session-changed' });
+    expect(await f.bridge.cancel(phoneCancel({ clientCancelId: 'nope' }))).toMatchObject({ error: 'invalid-chat-request' });
+    expect(await f.bridge.cancel(phoneCancel({ clientCancelId: `${Date.now() - 25 * 3600_000}-${randomUUID()}` }))).toMatchObject({ error: 'message-id-expired' });
+    f.state.native = { status: TUI_STATUS, page: page('raw') };
+    expect(await f.bridge.cancel(phoneCancel())).toMatchObject({ error: 'cancel-unsupported' });
+    expect(f.written).toEqual([]);
+  });
+
+  it('refuses without a cancel receipt store', async () => {
+    const f = running();
+    const bridge = createChatBridge({ ...f.deps, cancelReceipts: null });
+    expect(await bridge.cancel(phoneCancel())).toMatchObject({ error: 'chat-persist-failed' });
+  });
+
+  it('a desktop Stop and a phone cancel landing together write one ESC', async () => {
+    const f = running();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const bridge = createChatBridge({ ...f.deps, readScreen: async () => { await gate; return RUNNING; } });
+    const desktop = bridge.desktopInterrupt('pane', 'conv');
+    const phone = bridge.cancel(phoneCancel());
+    release();
+    expect(await desktop).toBe('sent');
+    expect(await phone).toMatchObject({ error: 'chat-busy', effect: 'none' });
+    expect(f.written).toEqual(['\x1b']);
+    // Sequential: the phone finds the turn's ESC, the desktop hears not_running.
+    expect(await bridge.cancel(phoneCancel())).toMatchObject({ error: 'turn-already-interrupted' });
+    expect(await bridge.desktopInterrupt('pane', 'conv')).toBe('not_running');
+    expect(f.written).toEqual(['\x1b']);
+  });
+
+  it('cooldown: an ESC from anywhere less than 2 s ago holds a new turn\'s cancel', async () => {
+    const f = running();
+    f.shell.escAt = Date.now() - 500;
+    f.state.agent.turn = { id: 't1:n.3', state: 'running', startedAt: f.shell.escAt + 100 };
+    const refused = await f.bridge.cancel(phoneCancel());
+    expect(refused).toMatchObject({ error: 'cancel-cooldown', effect: 'none' });
+    expect(refused.retryAfterMs).toBeGreaterThan(0);
+    expect(refused.retryAfterMs).toBeLessThanOrEqual(1500);
+    expect(f.written).toEqual([]);
+  });
+
+  it('a send right after an ESC waits out the quiet window before pasting', async () => {
+    const f = running();
+    const delays: number[] = [];
+    const bridge = createChatBridge({ ...f.deps, delay: async (ms) => { delays.push(ms); } });
+    f.shell.escAt = Date.now();
+    await bridge.send(phoneSend('next'));
+    expect(delays[0]).toBeGreaterThan(200);
+    expect(delays[0]).toBeLessThanOrEqual(300);
+  });
+
+  it('desktop keeps its enum: unavailable without a registry or on a native binding', async () => {
+    const f = running();
+    expect(await createChatBridge({ ...f.deps, approvals: () => null }).desktopInterrupt('pane', 'conv')).toBe('unavailable');
+    f.state.native = { status: TUI_STATUS, page: page('raw') };
+    expect(await f.bridge.desktopInterrupt('pane', 'conv')).toBe('unavailable');
+    expect(f.written).toEqual([]);
   });
 });

@@ -179,6 +179,51 @@ export type ChatLaunchOutcome =
   | { ok: true; effect: 'submitted' }
   | { ok: false; error: ChatLaunchTag; reason?: ChatLaunchReason; effect: ChatEffect };
 
+/** What a cancel did to the pane: nothing, one ESC written, or maybe one. */
+export type ChatCancelEffect = 'none' | 'interrupt-requested' | 'uncertain';
+
+export interface ChatCancelRequest {
+  owner: ChatOwner;
+  /** Pane id. */
+  id: string;
+  agentSessionId: string;
+  historyEpoch?: string;
+  /** The running turn the caller saw (`chat.turn.id`); any other is refused. */
+  turnId?: string;
+  /** `<13-digit ms>-<lowercase uuid>`. */
+  clientCancelId: string;
+  /** Re-authorization, called after the screen read and before the ESC. `false` writes nothing. */
+  authorized?: () => Promise<boolean>;
+}
+
+/** HTTP-facing error tags a cancel can end in. */
+export type ChatCancelTag =
+  | 'turn-not-running' | 'prompt-active' | 'session-changed' | 'chat-busy' | 'cancel-cooldown'
+  | 'turn-already-interrupted' | 'cancel-id-conflict' | 'cancel-unsupported' | 'invalid-chat-request'
+  | 'message-id-expired' | 'authorization-expired' | 'chat-unavailable' | 'chat-persist-failed'
+  | 'message-history-full' | 'cancel-failed';
+
+export interface ChatCancelOutcome {
+  clientCancelId: string;
+  replayed: boolean;
+  effect: ChatCancelEffect;
+  /** Absent on success. */
+  error?: ChatCancelTag;
+  detail?: string;
+  /** The turn the ESC was aimed at (success), or the one in the way (`turn-already-interrupted`). */
+  turnId?: string;
+  /** `turn-not-running`: the pane's episode as it is now, when it has one. */
+  turn?: ChatTurn;
+  /** `prompt-active`. */
+  by?: 'approval' | 'terminal';
+  approvalId?: string;
+  /** `cancel-cooldown`. */
+  retryAfterMs?: number;
+  /** Current identity, on `session-changed`. */
+  agentSessionId?: string;
+  historyEpoch?: string;
+}
+
 export interface DangerousLaunchTrace {
   at: number;
   owner: ChatOwner;
@@ -200,6 +245,8 @@ export interface ChatBridge {
   /** Read-time blocked state (contract §5.2). Always undefined for a brain pane. */
   blocked(id: string, resolution: ChatResolution): Promise<ChatBlocked | undefined>;
   send(request: ChatSendRequest): Promise<ChatSendOutcome>;
+  /** One ESC into a running Claude/Codex turn, under the pane's send lock. */
+  cancel(request: ChatCancelRequest): Promise<ChatCancelOutcome>;
   /** Owner-bound receipt read; never dispatches. `unknown` when absent, for another owner or another pane. */
   receipt(owner: ChatOwner, id: string, clientMessageId: string): ChatSendReceiptView;
   launch(request: ChatLaunchRequest): Promise<ChatLaunchOutcome>;

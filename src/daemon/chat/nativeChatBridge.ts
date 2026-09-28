@@ -4,19 +4,21 @@ import { isBrainPty } from '../../shared/constants';
 import type { AgentStatus } from '../../shared/types';
 import type { ChatSkillCatalog } from '../../shared/transcript/chatSkills';
 import type { TerminalLaunchAgent } from '../../shared/transcript/terminalChat';
-import type { ChatSendResult, TranscriptPage, TranscriptStatus } from '../../shared/transcript/turnEvents';
+import type { ChatInterruptResult, ChatSendResult, TranscriptPage, TranscriptStatus } from '../../shared/transcript/turnEvents';
 import type { AgentLaunchOptions } from '../web/agentLaunch';
 import { buildAgentLaunch } from '../web/agentLaunch';
 import { screenBlocksChatSend } from '../transcript/chatScreenGate';
 import { deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
+import { INTERRUPT_COOLDOWN_MS, interruptChatTurn, type ChatInterruptVerdict } from '../transcript/interruptChatTurn';
 import { codexRuntimeEnv, terminalLaunchCommand } from '../transcript/terminalLaunch';
 import type { TerminalChatFailure, TerminalChatService } from '../transcript/TerminalChatService';
 import type { ChatSessionService } from './ChatSessionService';
 import { ChatSendReceiptStore, type StoredChatOutcome } from './ChatSendReceiptStore';
+import { ChatCancelReceiptStore } from './ChatCancelReceiptStore';
 import {
   CHAT_LAUNCH_MAX_UNITS, CHAT_MESSAGE_RETENTION_MS, CHAT_SEND_MAX_UNITS, OPENCODE_MAX_SEND_BYTES, OPENCODE_REQUEST_MAX_BYTES,
   checkChatId, fileHistoryEpoch, openCodeSendBytes, tuiHistoryEpoch,
-  type ChatBlocked, type ChatBridge, type ChatEffect, type ChatLaunchOutcome, type ChatLaunchPreview, type ChatLaunchReason,
+  type ChatBlocked, type ChatBridge, type ChatCancelOutcome, type ChatCancelRequest, type ChatCancelTag, type ChatEffect, type ChatLaunchOutcome, type ChatLaunchPreview, type ChatLaunchReason,
   type ChatLaunchRequest, type ChatLaunchTag, type ChatOwner, type ChatResolution, type ChatSendOutcome, type ChatSendRequest,
   type ChatSendTag, type ChatTurn, type DangerousLaunchTrace,
 } from './chatBridge';
@@ -30,7 +32,11 @@ export interface ChatPane {
     id: string; state: string; pid: number; cwd: string; env: Record<string, string>;
     exec?: unknown; wslTarget?: unknown; spawnCwd?: string; incarnationId?: string;
   };
-  bridge: { isEmptyShellPrompt(): boolean; getInputRevision(): number; noteInput(data: string): void };
+  bridge: {
+    isEmptyShellPrompt(): boolean; getInputRevision(): number; noteInput(data: string): void;
+    /** When a lone ESC last reached the pane, from any source (0 = never). */
+    getLastEscAt(): number;
+  };
   promptLog: { readonly size: number; isCommandRunning(): boolean };
   ptyProcess: { write(data: string): void };
 }
@@ -68,6 +74,8 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   write(id: string, data: string): boolean;
   /** Null when the store could not be loaded: the phone refuses, the desktop sends without dedup. */
   receipts: ChatSendReceiptStore | null;
+  /** Null when the store could not be loaded: phone cancels are refused. */
+  cancelReceipts: ChatCancelReceiptStore | null;
   idleShell(pid: number, env: NodeJS.ProcessEnv): Promise<{ ok: true } | { ok: false; reason: 'missing' | 'unsupported-shell' | 'shell-has-children' }>;
   installedAgents(env: NodeJS.ProcessEnv): Promise<AgentLaunchOptions[]>;
   relays: {
@@ -102,6 +110,11 @@ export interface NativeChatBridge extends ChatBridge {
   /** `daemon.transcript.send`: never refuses a desktop request id, mints one instead. */
   desktopSend(req: { id: string; agentSessionId: string; text: string; requestId: unknown; attachments?: readonly string[] }):
     Promise<{ result: ChatSendResult; effect?: ChatEffect; replayed: boolean; pending?: true; queued?: true }>;
+  /**
+   * `daemon.transcript.interrupt`: the desktop Stop, through the same lock,
+   * once-per-turn latch and cooldown as the phone cancel. No receipt.
+   */
+  desktopInterrupt(id: string, agentSessionId: string): Promise<ChatInterruptResult>;
   /** A file-binding send is between its first check and its last write (Stop must wait). */
   sendInFlight(id: string): boolean;
   /**
@@ -115,7 +128,10 @@ export interface NativeChatBridge extends ChatBridge {
 
 const UNAVAILABLE_SKILLS: ChatSkillCatalog = { skills: [], state: 'unavailable' };
 const RELAY_URL = /^unix:\/\/\/[A-Za-z0-9_./-]+$/;
+/** A send waits this long after any lone ESC, so a paste cannot extend it into an escape sequence. */
+export const ESC_QUIET_MS = 300;
 const slugOf = (state: ChatAgentState) => agentDisplayToSlug(state.agentName ?? '');
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const liveState = (pane: ChatPane) => ['attached', 'detached'].includes(pane.meta.state);
 
 /** Result for desktop callers when the outcome carries no verdict of its own. */
@@ -129,6 +145,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   const platform = deps.platform ?? process.platform;
   const launching = new Set<string>();
   const sending = new Set<string>();
+  const lastEscAt = (id: string): number => deps.pane(id)?.bridge.getLastEscAt() ?? 0;
 
   const route = async (id: string): Promise<ChatRoute> => {
     const service = deps.terminalChat();
@@ -314,6 +331,10 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     let denied: 'paste' | 'submit' | undefined;
     const authorize = req.authorized;
     try {
+      // `\x1b` then `\x1b[200~` can read as one escape sequence: let a recent
+      // lone ESC (any source) land on its own first.
+      const sinceEsc = lastEscAt(id) > 0 ? now() - lastEscAt(id) : Infinity;
+      if (sinceEsc < ESC_QUIET_MS) await (deps.delay ?? sleep)(ESC_QUIET_MS - sinceEsc);
       const result = await deliverChatPrompt(req.agentSessionId, req.text, {
         getTranscriptSessionId: () => deps.projector.status(id).agentSessionId,
         hasOpenApproval: () => hasOpenApproval(id),
@@ -454,6 +475,130 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   };
 
   // ---------------------------------------------------------------------------
+  // Cancel (chat Stop)
+
+  /**
+   * The ESC itself, shared by the phone route and the desktop RPC. Takes the
+   * pane's send lock for the whole check → read → write, so a Stop can never
+   * land between a send's paste and its Enter, and two Stops cannot both pass
+   * the once-per-turn check.
+   */
+  const interruptLocked = async (id: string, agentSessionId: string,
+    opts: { turnId?: string; authorized?: () => Promise<boolean> } = {}): Promise<ChatInterruptVerdict | 'busy'> => {
+    if (sending.has(id)) return 'busy';
+    sending.add(id);
+    try {
+      return await interruptChatTurn(agentSessionId, {
+        getTranscriptSessionId: () => deps.projector.status(id).agentSessionId,
+        hasOpenApproval: () => hasOpenApproval(id),
+        readScreen: () => deps.readScreen(id),
+        getAgentState: () => {
+          const current = deps.chatAgentState(id);
+          const slug = slugOf(current);
+          return slug && current.agentVerified ? { slug, status: current.agentStatus, ...(current.turn ? { turn: current.turn } : {}) } : null;
+        },
+        write: (data) => deps.write(id, data),
+        lastEscAt: () => lastEscAt(id),
+        now,
+        ...(opts.turnId !== undefined ? { expectedTurnId: opts.turnId } : {}),
+        ...(opts.authorized ? { authorized: opts.authorized } : {}),
+      });
+    } finally { sending.delete(id); }
+  };
+
+  const cancel = async (req: ChatCancelRequest): Promise<ChatCancelOutcome> => {
+    const { owner, id, clientCancelId } = req;
+    const refuse = (error: ChatCancelTag, extra: Partial<ChatCancelOutcome> = {}): ChatCancelOutcome =>
+      ({ clientCancelId, replayed: false, effect: 'none', error, ...extra });
+    const idCheck = checkChatId(clientCancelId, now(), CHAT_MESSAGE_RETENTION_MS);
+    if (idCheck === 'invalid') return refuse('invalid-chat-request', { detail: 'clientCancelId' });
+    if (idCheck === 'expired') return refuse('message-id-expired');
+    const store = deps.cancelReceipts;
+    if (!store) return refuse('chat-persist-failed');
+    const fingerprint = ChatCancelReceiptStore.fingerprint(id, req.agentSessionId, req.historyEpoch, req.turnId);
+    const early = (): ChatCancelOutcome | undefined => {
+      const entry = store.lookup(owner, clientCancelId);
+      if (!entry) return undefined;
+      if (entry.fingerprint !== fingerprint) return refuse('cancel-id-conflict');
+      // Pending: the first request holds the pane lock right now.
+      if (entry.state === 'pending' || !entry.outcome) return refuse('chat-busy');
+      return { clientCancelId, replayed: true, effect: entry.outcome.effect, ...(entry.outcome.turnId ? { turnId: entry.outcome.turnId } : {}),
+        ...(entry.outcome.effect === 'uncertain' ? { error: 'cancel-failed' as const } : {}) };
+    };
+    const replayed = early();
+    if (replayed) return replayed;
+    if (!req.agentSessionId) return refuse('invalid-chat-request', { detail: 'agentSessionId' });
+
+    const resolution = await resolve(id);
+    const agent = resolution.source === 'file' ? resolution.status.terminal?.agent : undefined;
+    if (agent !== 'claude' && agent !== 'codex') return refuse('cancel-unsupported');
+    if (resolution.status.agentSessionId !== req.agentSessionId ||
+        req.historyEpoch !== undefined && req.historyEpoch !== (resolution.source === 'file' ? resolution.epoch : undefined)) {
+      return refuse('session-changed', identityOf(resolution));
+    }
+    const turnNow = () => deps.chatAgentState(id).turn;
+    const notRunning = () => { const turn = turnNow(); return refuse('turn-not-running', turn ? { turn: { ...turn } } : {}); };
+    // The agent exited: whatever turn there was is over.
+    if (!resolution.status.terminal?.capabilities.cancel) return notRunning();
+    if (sending.has(id)) return refuse('chat-busy');
+
+    // Synchronous with the lookup above: a concurrent same-id cancel sees `pending`.
+    const inserted = store.insertPending(owner, clientCancelId, { paneId: id, fingerprint });
+    if (inserted === 'exists') return early() ?? refuse('cancel-id-conflict');
+    if (inserted === 'full') return refuse('message-history-full');
+    if (inserted === 'persist-failed') return refuse('chat-persist-failed');
+
+    let verdict: ChatInterruptVerdict | 'busy';
+    try {
+      verdict = await interruptLocked(id, req.agentSessionId, { ...(req.turnId !== undefined ? { turnId: req.turnId } : {}),
+        ...(req.authorized ? { authorized: req.authorized } : {}) });
+    } catch { verdict = 'error'; }
+    const turn = turnNow();
+    if (verdict === 'sent' || verdict === 'error') {
+      // `error` = the write threw: the ESC may have reached the pane.
+      const outcome = verdict === 'sent'
+        ? { effect: 'interrupt-requested' as const, ...(turn ? { turnId: turn.id } : {}) }
+        : { effect: 'uncertain' as const };
+      if (!store.complete(owner, clientCancelId, outcome)) deps.log('warn', `[chat] cancel receipt for ${id} not persisted`);
+      return verdict === 'sent' ? { clientCancelId, replayed: false, ...outcome }
+        : { clientCancelId, replayed: false, effect: 'uncertain', error: 'cancel-failed' };
+    }
+    store.discard(owner, clientCancelId);
+    switch (verdict) {
+      case 'busy': return refuse('chat-busy');
+      case 'session_changed': return refuse('session-changed', identityOf(await resolve(id)));
+      case 'blocked': {
+        const pending = deps.approvals()?.pendingFor(id);
+        return refuse('prompt-active', pending
+          ? { by: pending.kind === 'terminal_prompt' ? 'terminal' : 'approval', approvalId: pending.id }
+          : { by: 'terminal' });
+      }
+      case 'already_interrupted': return refuse('turn-already-interrupted', turn ? { turnId: turn.id } : {});
+      case 'cooldown':
+        return refuse('cancel-cooldown', { retryAfterMs: Math.max(1, INTERRUPT_COOLDOWN_MS - (now() - lastEscAt(id))) });
+      case 'unauthorized': return refuse('authorization-expired');
+      case 'unavailable': return refuse('chat-unavailable');
+      default:
+        // not_running, turn_mismatch: the turn the caller meant is not running.
+        deps.log('info', `[chat] cancel for ${id} refused: ${verdict}`);
+        return notRunning();
+    }
+  };
+
+  /** The desktop's enum: its Stop shows `not_running` / `blocked` notices and treats the rest as failed. */
+  const DESKTOP_INTERRUPT: Record<ChatInterruptVerdict | 'busy', ChatInterruptResult> = {
+    sent: 'sent', not_running: 'not_running', blocked: 'blocked', session_changed: 'session_changed',
+    unavailable: 'unavailable', error: 'error', turn_mismatch: 'not_running', already_interrupted: 'not_running',
+    cooldown: 'blocked', unauthorized: 'unavailable', busy: 'blocked',
+  };
+
+  const desktopInterrupt = async (id: string, agentSessionId: string): Promise<ChatInterruptResult> => {
+    // A native TUI binding has no ESC path here; no registry = "may be pending".
+    if (!id || !deps.approvals() || (await route(id)).kind === 'native') return 'unavailable';
+    return DESKTOP_INTERRUPT[await interruptLocked(id, agentSessionId)];
+  };
+
+  // ---------------------------------------------------------------------------
   // Launch
 
   const launch = async (req: ChatLaunchRequest): Promise<ChatLaunchOutcome> => {
@@ -558,6 +703,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     turn: (id) => deps.chatAgentState(id).turn,
     blocked,
     send: (req) => sendWith(req, true),
+    cancel,
     receipt: (owner: ChatOwner, id: string, clientMessageId: string) =>
       deps.receipts?.view(owner, id, clientMessageId) ?? { clientMessageId, state: 'unknown' },
     launch,
@@ -600,6 +746,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       return { result, replayed: outcome.replayed, ...(outcome.effect ? { effect: outcome.effect } : {}),
         ...(outcome.pending ? { pending: true as const } : {}), ...(outcome.queued ? { queued: true as const } : {}) };
     },
+    desktopInterrupt,
     sendInFlight: (id) => sending.has(id),
     hasOpenApproval,
     desktopSkills: (id, agent) => skillsWith(id, agent, 'cwd'),

@@ -1,0 +1,124 @@
+{
+  "_about": {
+    "source": "Real TUIs run in a 100x30 pty (env scrubbed to HOME/PATH/TERM/LANG), every output byte recorded, then rendered through the daemon's own generateTextSnapshot. Captured 2026-09-28. Rows trimmed to the bottom of the grid; status-line, account, banner and path rows removed.",
+    "agents": {
+      "claude": "Claude Code 2.1.283, classic renderer",
+      "codex": "Codex CLI 0.157.1"
+    },
+    "evidence": [
+      "claude-thinking",
+      "claude-tool",
+      "codex-working"
+    ],
+    "noEvidence": {
+      "claude-starting": "first second of a turn: spinner without its counter yet",
+      "claude-streaming": "answer text streaming: Claude hides the spinner row (the turn IS running)",
+      "claude-interrupted": "after one ESC",
+      "codex-streaming": "answer text streaming: Codex hides the status row (the turn IS running)",
+      "codex-interrupted": "after one ESC"
+    }
+  },
+  "claude-thinking": [
+    "❯ Write the English words for the numbers one through two hundred, one per line. Do not use any",
+    "  tools.",
+    "",
+    "✻ Embellishing… (1s · ↓ 25 tokens · thinking with medium effort)",
+    "                                                                                ◐ medium · /effort",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "❯",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents"
+  ],
+  "claude-tool": [
+    "❯ Run the shell command sleep 12 with the Bash tool, then reply with the single word done.",
+    "",
+    "  Running 1 shell command…",
+    "  ⎿  $ sleep 12",
+    "",
+    "✢ Ruminating… (8s · ↓ 238 tokens)",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "❯",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents"
+  ],
+  "claude-streaming": [
+    "  ninety-six",
+    "  ninety-seven",
+    "  ninety-eight",
+    "  ninety-nine",
+    "  one hundred",
+    "  one hundred one",
+    "  one hundred two",
+    "  one hundred three",
+    "  one hundred four",
+    "",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "❯",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents"
+  ],
+  "claude-interrupted": [
+    "❯ Run the shell command sleep 12 with the Bash tool, then reply with the single word done.",
+    "",
+    "  Ran 1 shell command",
+    "  ⎿  Interrupted · What should Claude do instead?",
+    "",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "❯",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  ⏵⏵ auto mode on · 1 shell · ← 2 agents"
+  ],
+  "claude-starting": [
+    "❯ Write the English words for the numbers one through two hundred, one per line. Do not use any",
+    "  tools.",
+    "",
+    "· Flummoxing…",
+    "                                                                                ◐ medium · /effort",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "❯",
+    "────────────────────────────────────────────────────────────────────────────────────────────────────",
+    "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents"
+  ],
+  "codex-working": [
+    "› Write the English words for the numbers one through two hundred, one per line. Do not run any",
+    "  commands or use any tools.",
+    "",
+    "• Working (1s • esc to interrupt)",
+    "",
+    "› Ask Codex to do anything",
+    "",
+    "  ? for shortcuts"
+  ],
+  "codex-streaming": [
+    "  fifty-two",
+    "  fifty-three",
+    "  fifty-four",
+    "  fifty-five",
+    "  fifty-six",
+    "  fifty-seven",
+    "  fifty-eight",
+    "  fifty-nine",
+    "  sixty",
+    "  sixty",
+    "",
+    "› Ask Codex to do anything",
+    "",
+    "  ? for shortcuts"
+  ],
+  "codex-interrupted": [
+    "  one hundred twenty-eight",
+    "  one hundred twenty-nine",
+    "  one hundred thirty",
+    "  one hundred thirty-one",
+    "  one hundred thirty-two",
+    "  one hundred",
+    "",
+    "■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/",
+    "feedback` to report the issue.",
+    "                                   Tip: You can run any shell command from Codex using ! (e.g. !ls)",
+    "",
+    "› Ask Codex to do anything",
+    "",
+    "  ? for shortcuts"
+  ]
+}
