@@ -4,7 +4,7 @@
  * detached cleanly by the Settings toggle, and answers DA1 exactly once —
  * advertising sixel (`4`) only while it is loaded.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { Terminal } from '@xterm/xterm';
 import {
   INLINE_IMAGE_ADDON_OPTIONS,
@@ -91,6 +91,28 @@ describe('inline image addon (#1641)', () => {
       attachInlineImages(term);
       expect(getInlineImageAddon(term)!.storageLimit).toBe(64);
     } finally {
+      term.dispose();
+    }
+  });
+
+  it('never loads the addon where WebAssembly cannot compile (CSP), so images cannot stall output', async () => {
+    vi.resetModules();
+    const Real = WebAssembly.Module;
+    const spy = vi.spyOn(WebAssembly, 'Module').mockImplementation(() => {
+      throw new WebAssembly.CompileError('blocked by CSP');
+    });
+    const term = new Terminal({ allowProposedApi: true });
+    try {
+      const fresh = await import('../inlineImages');
+      fresh.attachInlineImages(term);
+      expect(fresh.getInlineImageAddon(term)).toBeNull();
+      expect(await replies(term, '\x1b[c')).toEqual(['\x1b[?1;2c']);
+      // An OSC 1337 image is ignored and the text after it still lands.
+      await write(term, '\x1b]1337;File=inline=1:AAAA\x07after');
+      expect(term.buffer.active.getLine(0)?.translateToString(true)).toContain('after');
+    } finally {
+      spy.mockRestore();
+      expect(WebAssembly.Module).toBe(Real);
       term.dispose();
     }
   });

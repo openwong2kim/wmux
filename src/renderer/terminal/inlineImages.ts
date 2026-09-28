@@ -48,6 +48,29 @@ const attachments = new WeakMap<Terminal, Attachment>();
 let loadedModule: ImageAddonModule | null = null;
 let modulePromise: Promise<ImageAddonModule> | null = null;
 
+let wasmUsable: boolean | null = null;
+
+/**
+ * Whether this page may compile WebAssembly. The addon's sixel decoder and
+ * its OSC 1337 base64 decoder are both WebAssembly; under a CSP without
+ * 'wasm-unsafe-eval' the first image throws a CompileError inside xterm's
+ * parser and every byte of output after it is lost. Probing with the
+ * smallest valid module (magic + version) fails the same way, so without it
+ * the addon is never loaded and images are ignored rather than fatal.
+ */
+export function canCompileWasm(): boolean {
+  if (wasmUsable === null) {
+    try {
+      new WebAssembly.Module(new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]));
+      wasmUsable = true;
+    } catch (err) {
+      console.warn('[wmux:inline-images] WebAssembly is blocked here; inline images stay off', err);
+      wasmUsable = false;
+    }
+  }
+  return wasmUsable;
+}
+
 /** Start fetching the addon chunk. Safe to call repeatedly. */
 export function preloadInlineImageAddon(): Promise<ImageAddonModule> {
   if (!modulePromise) {
@@ -82,7 +105,7 @@ function activate(terminal: Terminal, attachment: Attachment, mod: ImageAddonMod
  * first pane of a cold start can therefore miss images in its own replay.
  */
 export function attachInlineImages(terminal: Terminal): void {
-  if (attachments.has(terminal)) return;
+  if (attachments.has(terminal) || !canCompileWasm()) return;
   const attachment: Attachment = { addon: null, detached: false, windowOptions: undefined };
   attachments.set(terminal, attachment);
   if (loadedModule) {
