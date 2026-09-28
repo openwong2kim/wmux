@@ -99,7 +99,10 @@ function activate(terminal: Terminal, attachment: Attachment, mod: ImageAddonMod
     attachment.addon = addon;
   } catch (err) {
     // A terminal disposed between the sync and the chunk arriving.
+    // A half-activated addon may already have registered its DA1/DCS
+    // handlers; dispose it so the terminal stops advertising sixel.
     console.warn('[wmux:inline-images] addon load failed', err);
+    try { addon.dispose(); } catch { /* already torn down with the terminal */ }
     attachments.delete(terminal);
   }
 }
