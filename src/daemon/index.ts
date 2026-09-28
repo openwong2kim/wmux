@@ -248,6 +248,9 @@ const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Co
       codexRefusalNoticedAt.set(id,now);
       notifyCodexIdentityRefused?.(id,reason);
     },
+    unmatchedResponse: (id,count)=>{
+      log('debug',`[codex-relay] did not forward a client response with no pending server request in ${id} (${count} on this connection)`);
+    },
   });
 
 /**

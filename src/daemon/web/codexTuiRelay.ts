@@ -22,6 +22,9 @@ const IDENTITY_POLL_MS = 50;
 /** Client frames held while one waits: past either bound the connection is dropped. */
 const MAX_HELD_FRAMES = 64;
 const MAX_TRACKED_REQUESTS = 256;
+/** Server requests delivered to the client and still awaiting its answer; the
+ * oldest is dropped past this. */
+const MAX_PENDING_SERVER_REQUESTS = 256;
 
 /**
  * Deny-by-default request policy (codexRelayPolicy.ts). Without it the relay
@@ -36,6 +39,9 @@ export interface CodexRelayPolicy {
   /** A server response gave this pane a thread. */
   recordOwner: (threadId:string) => void;
   refused?: (reason:string) => void;
+  /** A client response was not forwarded: it answered no server request
+   * pending on this connection. `count` is the total for the connection. */
+  unmatchedResponse?: (count:number) => void;
 }
 
 /** A single-use endpoint for a daemon-owned TUI. It never starts/stops Codex's
@@ -141,11 +147,24 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     };
     // Requests whose responses hand this pane a thread.
     const tracked = new Map<string|number,string>();
+    // The relay forwards a client response only for a server request it
+    // delivered to this client and that is still awaiting an answer.
+    const pendingServerRequests = new Set<string|number>();
+    let unmatchedResponses = 0;
     const needsIdentity = (message:unknown) => {
       const cls = classify(message);
       return cls === 'identity' || cls === 'exec';
     };
     const review = async (frame:{bytes:Buffer;message:unknown}):Promise<void> => {
+      if (classify(frame.message) === 'response') {
+        const id = (frame.message as {id?:unknown}).id;
+        if ((typeof id === 'string' || typeof id === 'number') && pendingServerRequests.delete(id)) { handleClient(frame);return; }
+        // Dropped without a reply: the id belongs to the server's request ids,
+        // so an error frame carrying it could be read as an answer to the client's own request.
+        unmatchedResponses++;
+        try {options.policy?.unmatchedResponse?.(unmatchedResponses);} catch {/* A notice cannot change the outcome. */}
+        return;
+      }
       const policy = options.policy;
       if (!policy) { handleClient(frame);return; }
       let identity = policy.identity();
@@ -195,7 +214,17 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       const frame = decode(raw,binary);if(!frame)return;
       const before = JSON.stringify(tracker.current());
       tracker.fromServer(frame.message);
-      const message = frame.message as {method?:unknown;params?:{threadId?:unknown};id?:unknown;result?:unknown} | null;
+      const message = frame.message as {method?:unknown;params?:{threadId?:unknown;requestId?:unknown};id?:unknown;result?:unknown} | null;
+      if (message && typeof message.method === 'string' && (typeof message.id === 'string' || typeof message.id === 'number')) {
+        pendingServerRequests.add(message.id);
+        if (pendingServerRequests.size > MAX_PENDING_SERVER_REQUESTS) {
+          const oldest = pendingServerRequests.values().next().value;
+          if (oldest !== undefined) pendingServerRequests.delete(oldest);
+        }
+      } else if (message?.method === 'serverRequest/resolved') {
+        const requestId = message.params?.requestId;
+        if (typeof requestId === 'string' || typeof requestId === 'number') pendingServerRequests.delete(requestId);
+      }
       if (message && message.method === undefined && (typeof message.id === 'string' || typeof message.id === 'number')) {
         const method = tracked.get(message.id);
         if (method !== undefined) {
@@ -213,7 +242,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     });
     for(const socket of [client,upstream]) {
       socket.on('error',retire);
-      socket.on('close',()=>{queued.length=0;queuedBytes=0;tracked.clear();retire();});
+      socket.on('close',()=>{queued.length=0;queuedBytes=0;tracked.clear();pendingServerRequests.clear();retire();});
     }
   });
   try {
