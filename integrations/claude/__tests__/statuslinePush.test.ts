@@ -100,7 +100,11 @@ function removeToken(): void {
 }
 
 function clearState(): void {
-  fs.rmSync(stateDir(), { recursive: true, force: true });
+  // A detached `--push` child from the previous test can still be writing its
+  // state here (tmp file, then rename). On Windows a file created after rmSync
+  // listed the directory makes the final rmdir fail with ENOTEMPTY (seen on
+  // windows-latest CI and 2 of 8 local runs). rmSync retries on exactly that.
+  fs.rmSync(stateDir(), { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
 }
 
 function readStates(): Array<{ sig: string; ok: boolean; at: number }> {
