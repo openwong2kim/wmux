@@ -526,6 +526,17 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /**
+   * The agent that owned this pane is gone (its process exited, another agent
+   * replaced it, or the shell took the foreground back). It sends no Stop for
+   * that, so its episode ends here, and the next agent's hooks are judged
+   * afresh: until one reports, its detector settles count.
+   */
+  noteAgentEnded(): void {
+    this.turnOpen = false;
+    this.hookSeen = false;
+  }
+
+  /**
    * Start of the evidence a transcript end must postdate to count for the
    * current state: the last submit/hook, or a later byte-promoted episode.
    */
@@ -568,8 +579,8 @@ export class DaemonPTYBridge extends EventEmitter {
     this.noteAgentStatus('running', true);
     // The session start is not turn evidence itself: a duplicate delivery of
     // it must neither clear nor re-set the state the first one left. Nor does
-    // it start a running episode (a resume or a compaction continues the one
-    // there was; a fresh session has none).
+    // it touch the running episode: Codex fires its SessionStart inside the
+    // first turn, and a resume or a compaction continues the one there was.
     this.preTurn = preTurn;
     this.turnEvidenceAt = turnEvidenceAt;
     this.turnOpen = turnOpen;
@@ -581,7 +592,6 @@ export class DaemonPTYBridge extends EventEmitter {
     }
     if (signalTs < turnEvidenceAt) return;
     this.preTurn = true;
-    this.turnOpen = false;
     if (atIdlePrompt && this.sessionId) this.emit('idle', { sessionId: this.sessionId, preTurn: true });
   }
 
@@ -813,6 +823,9 @@ export class DaemonPTYBridge extends EventEmitter {
         if (parsed) {
           if (parsed.type === 'command_end') { this.completedShellCommand = this.shellCommandRunning; this.shellCommandRunning = false; }
           if (parsed.type === 'command_start') { this.shellCommandRunning = true; this.completedShellCommand = false; this.emptyShellPrompt = false; }
+          // The shell's foreground program changed hands: whatever episode was
+          // open (an agent's, or the Enter that launched the next one) is over.
+          if (parsed.type === 'command_start' || parsed.type === 'command_end') this.noteAgentEnded();
           if (parsed.type === 'prompt_end') {
             this.emptyShellPrompt = this.inputRevision === 0 || this.completedShellCommand;
             this.completedShellCommand = false;

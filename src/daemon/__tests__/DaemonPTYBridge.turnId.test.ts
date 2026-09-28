@@ -184,19 +184,73 @@ describe('DaemonPTYBridge — running-episode turn id', () => {
     expect(turn().id).not.toBe(first);
   });
 
-  it('a SessionStart never opens an episode; a fresh one ends the old one', () => {
+  it('a SessionStart never opens or ends an episode (Codex fires it inside its first turn)', () => {
     bridge.noteInput('go\r');
     const first = turn();
     bridge.noteSessionStart(Date.now(), 'compact');
     bridge.noteSessionStart(Date.now() - 10_000, 'startup'); // late duplicate
+    vi.advanceTimersByTime(100);
+    bridge.noteSessionStart(Date.now(), 'startup'); // fresh, after the submit
     expect(turn()).toEqual(first);
     bridge.noteAgentStatus('complete', true);
     vi.advanceTimersByTime(100);
     bridge.noteSessionStart(Date.now(), 'clear');
     expect(turn()).toEqual({ ...first, state: 'idle' });
-    vi.advanceTimersByTime(100);
+  });
+
+  it('Claude /exit then Codex: the first Codex prompt gets a new id that holds for the whole turn', () => {
+    const osc133 = (c: string) => feed(`\x1b]133;${c}\x07`);
+    // Claude, launched from the shell, with hooks.
+    bridge.noteInput('claude\r');
+    osc133('C');
     bridge.noteSessionStart(Date.now(), 'startup');
-    expect(turn().id).toBe(first.id);
+    vi.advanceTimersByTime(100);
+    bridge.noteInput('fix it\r');
+    bridge.noteAgentStatus('running', true);
+    bridge.noteAgentStatus('complete', true);
+    const claudeTurn = turn().id;
+
+    // `/exit` is typed like a prompt and opens an episode no Stop will close.
+    vi.advanceTimersByTime(100);
+    bridge.noteInput('/exit\r');
+    const exitEpisode = turn().id;
+    expect(exitEpisode).not.toBe(claudeTurn);
+    osc133('D;0'); // the shell has the foreground back
+    osc133('A');
+    osc133('B');
+    expect(turn().state).toBe('idle');
+
+    // Codex launch, then its first prompt.
+    vi.advanceTimersByTime(100);
+    bridge.noteInput('codex\r');
+    osc133('C');
+    vi.advanceTimersByTime(2000);
+    bridge.noteInput('explain the tests\r');
+    const codexTurn = turn();
+    expect(codexTurn.id).not.toBe(exitEpisode);
+    expect(codexTurn.state).toBe('running');
+
+    // Codex's lazy SessionStart, its hooks, and a detector settle mid-turn.
+    bridge.noteSessionStart(Date.now(), 'startup');
+    bridge.noteAgentStatus('running', true);
+    vi.advanceTimersByTime(100);
+    feed(BIG);
+    bridge.noteAgentStatus('complete'); // held detector stop confirmed by the alarm
+    bridge.noteAgentStatus('running', true);
+    vi.advanceTimersByTime(30_000);
+    expect(turn().id).toBe(codexTurn.id);
+    bridge.noteAgentStatus('complete', true); // the real Stop
+    expect(turn()).toEqual({ ...codexTurn, state: 'idle' });
+  });
+
+  it('an agent that ends without a Stop (process exit) closes its episode', () => {
+    bridge.noteInput('go\r');
+    bridge.noteAgentStatus('running', true);
+    const first = turn().id;
+    bridge.noteAgentEnded();
+    expect(turn().state).toBe('idle');
+    bridge.noteInput('next\r');
+    expect(turn().id).not.toBe(first);
   });
 
   it('never repeats an id from another bridge lifetime (daemon restart)', () => {

@@ -6941,6 +6941,10 @@ async function main(): Promise<void> {
     }
     const managed = sessionManager.getSession(sessionId);
     if (!managed) return;
+    // A death edge, or a launch edge for a different agent than the last one
+    // seen here, ends the previous agent's running episode.
+    const previousSlug = managed.meta.lastDetectedAgent;
+    if (!state.alive || (state.slug && previousSlug && state.slug !== previousSlug)) managed.bridge.noteAgentEnded();
     const screenSlug = managed.bridge.getLastAgent();
     const canonical = canonicalIdentityFor(
       agentProcessTracker,
