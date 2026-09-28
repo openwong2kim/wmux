@@ -90,6 +90,8 @@ export interface HookIngestSession {
   lastActivity?: string;
   /** The pane's current resume binding; only `agent` is read, to guard a guessed route. */
   resumeBinding?: Pick<ResumeBinding, 'agent'>;
+  /** Canonical agent the detector/process tracker last saw in this pane. */
+  lastDetectedAgent?: string;
 }
 
 /**
@@ -534,6 +536,10 @@ export class HookIngest {
   private readonly refusedClaims = new Set<string>();
   /** Every signal refused because its claimed pane is not live here. Never decremented. */
   private refusedClaimCount = 0;
+  /** Gate ptyIds already logged as allowed-on-refusal (bounded, like refusedClaims). */
+  private readonly refusedGateClaims = new Set<string>();
+  /** PreToolUse gates allowed (fail-open) because their claimed pane was refused. */
+  private refusedGateCount = 0;
 
   constructor(deps: HookIngestDeps) {
     this.deps = deps;
@@ -593,16 +599,22 @@ export class HookIngest {
    *   - `refused.claimedPaneNotLive` counts signals dropped because the ptyId
    *     they claim is not a live pane here, or lives in another workspace
    *     (#1523). Cumulative since daemon start, like `workspaceMatchRate`.
+   *     `refused.gateBypassedOnRefusedClaim` counts the PreToolUse gates among
+   *     them separately: those are not dropped silently but ALLOWED (fail-open),
+   *     so the tool ran without a wmux gate.
    */
   health(): {
     latency: LatencyStats;
     flood: HookFloodSummary | null;
-    refused: { claimedPaneNotLive: number };
+    refused: { claimedPaneNotLive: number; gateBypassedOnRefusedClaim: number };
   } {
     return {
       latency: this.meter.getStats(),
       flood: this.floodMeter.peek(HOOK_FLOOD_LOG_INTERVAL_MS),
-      refused: { claimedPaneNotLive: this.refusedClaimCount },
+      refused: {
+        claimedPaneNotLive: this.refusedClaimCount,
+        gateBypassedOnRefusedClaim: this.refusedGateCount,
+      },
     };
   }
 
@@ -647,7 +659,7 @@ export class HookIngest {
 
     if (!sessionId) {
       // Agent running outside any wmux pane, or its claimed pane is gone — fail open.
-      this.noteRefusedClaim(signal);
+      this.noteRefusedGate(signal);
       return { ok: false, reason: 'no-workspace-match' };
     }
 
@@ -875,8 +887,13 @@ export class HookIngest {
       // binding: only a signal whose ptyId named this pane may rebind it. A
       // claimed-ptyId signal is exact-or-refused above, so this only ever
       // holds back senders that carry no ptyId at all.
-      const prevAgent = sessions.find((s) => s.id === sessionId)?.resumeBinding?.agent;
-      if (signal.ptyId !== sessionId && prevAgent && prevAgent !== signal.agent) {
+      // The pane switching agents is not a clobber: when the detector/process
+      // tracker already sees `signal.agent` running there, the old binding is
+      // the stale one and the new session must be captured.
+      const routed = sessions.find((s) => s.id === sessionId);
+      const prevAgent = routed?.resumeBinding?.agent;
+      if (signal.ptyId !== sessionId && prevAgent && prevAgent !== signal.agent
+          && routed?.lastDetectedAgent !== signal.agent) {
         this.deps.log?.(
           'info',
           `[hooks] kept ${prevAgent} resume binding on ${sessionId}: ${signal.agent} signal was not pane-exact`,
@@ -1140,6 +1157,21 @@ export class HookIngest {
     if (this.refusedClaims.size >= 256) this.refusedClaims.clear();
     this.refusedClaims.add(ptyId);
     this.deps.log?.('info', `[hooks] refused ${signal.agent} ${signal.kind} for ${ptyId}: claimed-pane-not-live`);
+  }
+
+  /** Count a gate allowed because its claimed pane was refused; log once per ptyId with the tool. */
+  private noteRefusedGate(signal: AgentSignal): void {
+    const ptyId = signal.ptyId;
+    if (!ptyId) return;
+    this.refusedGateCount += 1;
+    if (this.refusedGateClaims.has(ptyId)) return;
+    if (this.refusedGateClaims.size >= 256) this.refusedGateClaims.clear();
+    this.refusedGateClaims.add(ptyId);
+    const tool = typeof signal.payload?.tool_name === 'string' ? signal.payload.tool_name.slice(0, 64).replace(/[^\w.:-]/g, '_') : 'unknown';
+    this.deps.log?.(
+      'info',
+      `[hooks] allowed ${signal.agent} tool ${tool} ungated for ${ptyId}: claimed-pane-not-live`,
+    );
   }
 
   /**

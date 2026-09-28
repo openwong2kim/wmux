@@ -501,7 +501,7 @@ describe('HookIngest', () => {
       const health = ingest.health();
       expect(health.latency.total).toBe(0);
       expect(health.latency.workspaceMatchRate).toEqual({ matched: 0, missed: 0 });
-      expect(health.refused).toEqual({ claimedPaneNotLive: 0 });
+      expect(health.refused).toEqual({ claimedPaneNotLive: 0, gateBypassedOnRefusedClaim: 0 });
       // Nothing recorded yet → no partial window to report.
       expect(health.flood).toBeNull();
     });
@@ -1271,7 +1271,7 @@ describe('HookIngest — a signal whose claimed pane is gone is refused (#1523)'
     expect(fixture.bindings).toHaveLength(0);
     expect(fixture.emitted).toHaveLength(0);
     expect(fixture.nudges).toHaveLength(0);
-    expect(ingest.health().refused).toEqual({ claimedPaneNotLive: 2 });
+    expect(ingest.health().refused).toEqual({ claimedPaneNotLive: 2, gateBypassedOnRefusedClaim: 0 });
     const refusals = logs.filter((l) => l.message.includes('claimed-pane-not-live'));
     expect(refusals).toEqual([{ level: 'info', message: expect.stringContaining('pty-closed') }]);
   });
@@ -1280,7 +1280,9 @@ describe('HookIngest — a signal whose claimed pane is gone is refused (#1523)'
     const fixture = makeDeps([claudePane]);
     const ingest = new HookIngest(fixture.deps);
     expect(ingest.handle(codexStop({ cwd: '/elsewhere' })).ok).toBe(false);
-    expect(ingest.health().refused).toEqual({ claimedPaneNotLive: 0 });
+    expect(ingest.handlePermissionGate(codexStop({ kind: 'agent.awaiting_permission', cwd: '/elsewhere' })).ok)
+      .toBe(false);
+    expect(ingest.health().refused).toEqual({ claimedPaneNotLive: 0, gateBypassedOnRefusedClaim: 0 });
   });
 
   it('ptyId of a live pane in ANOTHER workspace → refused', () => {
@@ -1293,17 +1295,24 @@ describe('HookIngest — a signal whose claimed pane is gone is refused (#1523)'
     expect(fixture.emitted).toHaveLength(0);
   });
 
-  it('a refused permission gate fails open without touching the Claude pane', () => {
+  it('a refused permission gate fails open without touching the Claude pane, and leaves a trace', () => {
     const fixture = makeDeps([claudePane]);
-    const ingest = new HookIngest(fixture.deps);
-    const res = ingest.handlePermissionGate(codexStop({
+    const logs: string[] = [];
+    const ingest = new HookIngest({ ...fixture.deps, log: (_level, message) => { logs.push(message); } });
+    const gate = () => ingest.handlePermissionGate(codexStop({
       kind: 'agent.awaiting_permission',
       ptyId: 'pty-closed',
       workspaceId: 'ws-1',
       payload: { tool_name: 'Bash' },
     }));
-    expect(res).toEqual({ ok: false, reason: 'no-workspace-match' });
+    expect(gate()).toEqual({ ok: false, reason: 'no-workspace-match' });
+    expect(gate()).toEqual({ ok: false, reason: 'no-workspace-match' });
     expect(fixture.emitted).toHaveLength(0);
+    expect(ingest.health().refused).toEqual({ claimedPaneNotLive: 0, gateBypassedOnRefusedClaim: 2 });
+    const traces = logs.filter((m) => m.includes('ungated'));
+    expect(traces).toHaveLength(1);
+    expect(traces[0]).toContain('Bash');
+    expect(traces[0]).toContain('pty-closed');
   });
 
   it('exact live ptyId → routed as before', () => {
@@ -1329,6 +1338,26 @@ describe('HookIngest — a signal whose claimed pane is gone is refused (#1523)'
     const ingest = new HookIngest(fixture.deps);
     // No ptyId: routed by workspace to the lone pane, but that pane is bound to
     // claude — a codex binding from a guess must not replace it.
+    expect(ingest.handle(codexStop({ workspaceId: 'ws-1' })).ok).toBe(true);
+    expect(fixture.bindings).toHaveLength(0);
+  });
+
+  it('a guessed route may rebind when the detector already sees the new agent in the pane', () => {
+    // The pane went claude → codex and the sender carries no ptyId: the old
+    // binding is the stale one, so the new session must be captured.
+    const switched = { ...claudePane, lastDetectedAgent: 'codex' };
+    const fixture = makeDeps([switched]);
+    const ingest = new HookIngest(fixture.deps);
+    expect(ingest.handle(codexStop({ workspaceId: 'ws-1' })).ok).toBe(true);
+    expect(fixture.bindings).toEqual([
+      expect.objectContaining({ ptyId: 'pty-claude', binding: expect.objectContaining({ agent: 'codex' }) }),
+    ]);
+  });
+
+  it('a guessed route still cannot clobber when the pane is still running the bound agent', () => {
+    const stillClaude = { ...claudePane, lastDetectedAgent: 'claude' };
+    const fixture = makeDeps([stillClaude]);
+    const ingest = new HookIngest(fixture.deps);
     expect(ingest.handle(codexStop({ workspaceId: 'ws-1' })).ok).toBe(true);
     expect(fixture.bindings).toHaveLength(0);
   });
