@@ -77,6 +77,16 @@ const AUGMENTS = /\bdeclare\s+(?:global\b|module\s+['"])/;
  * module augmentation outside a .d.ts, and script-scope (non-module) files
  * outside the src slice, whose globals would no longer meet in one program.
  */
+const STATIC_MODULE_SYNTAX = new RegExp(
+  String.raw`^[ \t]*(?:import[ \t]+(?:type[ \t]+)?[\w*{$'"]` +
+    String.raw`|export[ \t]+(?:\*|\{|=|default\b|type\b|interface\b|class\b|const\b|let\b|var\b|function\b|async\b|enum\b|declare\b|abstract\b|namespace\b))`,
+  'm',
+);
+
+function stripCommentsAndTemplates(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/`(?:\\[\s\S]|[^`\\])*`/g, '``');
+}
+
 export function scopeProblems(rootConfig, srcSliceConfig, root = ROOT) {
   const src = new Set(rootFiles(srcSliceConfig));
   const problems = [];
@@ -87,7 +97,12 @@ export function scopeProblems(rootConfig, srcSliceConfig, root = ROOT) {
     if (AUGMENTS.test(text) && !AUGMENTING_FILES.has(rel)) {
       problems.push(`${rel} declares a global or module augmentation — move it to a .d.ts or list it in AUGMENTING_FILES and the slices that need it`);
     }
-    if (!src.has(file)) {
+    // A static import/export declaration already makes the file a module, so
+    // only the rare file without one pays for a full parse (slow on CI runners).
+    // The fast path must never call a script a module: dynamic `import(…)`,
+    // `import.meta`, an `export:` object key, and text inside block comments or
+    // template literals do not count.
+    if (!src.has(file) && !STATIC_MODULE_SYNTAX.test(stripCommentsAndTemplates(text))) {
       const kind = /\.[jt]sx$/.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
       if (!ts.isExternalModule(ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, kind))) {
         problems.push(`${rel} is a script (no import/export); outside the src slice its globals are not checked against the rest`);

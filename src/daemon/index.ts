@@ -46,6 +46,7 @@ import {
 import { stopWebServerDurably } from './web/webStop';
 import { decideWebStartPolicy, resolveWebStartGrants } from './web/webStartPolicy';
 import { scheduleTokenFileReHarden } from '../shared/security';
+import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { readSessionTextReplay } from './sessionTextReplay';
@@ -254,6 +255,9 @@ const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Co
       if (codexRefusalNoticedAt.size > 1024) codexRefusalNoticedAt.clear();
       codexRefusalNoticedAt.set(id,now);
       notifyCodexIdentityRefused?.(id,reason);
+    },
+    unmatchedResponse: (id,count)=>{
+      log('debug',`[codex-relay] did not forward a client response with no pending server request in ${id} (${count} on this connection)`);
     },
   });
 
@@ -2500,7 +2504,7 @@ function registerRpcHandlers(
     if (capped.truncated) {
       log('info', `[readText] session=${p.id} response truncated to fit frame budget (${outcome.rows.length} rows)`);
     }
-    return { ok: true, mode: 'rows', rows: capped.rows, bufferType: outcome.bufferType, truncated: capped.truncated };
+    return { ok: true, mode: 'rows', rows: capped.rows, bufferType: outcome.bufferType, rowsBelowCursor: outcome.rowsBelowCursor, truncated: capped.truncated };
   });
 
   // daemon.listSessions
@@ -3612,7 +3616,13 @@ function registerRpcHandlers(
           && data.signal.payload?.['tool_name'] === 'AskUserQuestion'
           ? data.signal.ts
           : undefined;
-        sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status, true, questionAt);
+        const hookBridge = sessionManager.getSession(sessionId)?.bridge;
+        // #1463 — SessionStart applies the same edge, then may mark the pane pre-turn.
+        if (data.signal.kind === 'agent.session_start') {
+          hookBridge?.noteSessionStart(data.signal.ts, data.signal.payload?.['source']);
+        } else {
+          hookBridge?.noteAgentStatus(data.status, true, questionAt);
+        }
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
         // Phone liveness header. The desktop reads pane state off this same
@@ -4816,7 +4826,9 @@ function registerRpcHandlers(
       ...(p.role === 'user' || p.role === 'agent' ? { role: p.role } : {}),
       ...(typeof p.updatedSince === 'string' && p.updatedSince ? { updatedSince: p.updatedSince } : {}),
     });
-    return { ok: true, workspaceId, tasks };
+    // view: 'page' → summaries, or the one named task in full: a list reply
+    // must stay far below the 1 MiB control-line cap of DaemonClient.
+    return { ok: true, workspaceId, tasks: applyTaskQueryView(tasks, p) };
   });
 
   // ── WorkTask 미션 채널 (J0 §3) ──────────────────────────────────────
@@ -5416,11 +5428,12 @@ function wireEvents(
   // Bridge-level events: forward agent/critical/idle/active from all sessions
   // to clients (main process). These are emitted by DaemonSessionManager
   // which re-emits bridge events.
-  sessionManager.on('session:idle', (payload: { sessionId: string }) => {
+  sessionManager.on('session:idle', (payload: { sessionId: string; preTurn?: boolean }) => {
     const event: DaemonEvent = {
       type: 'activity.idle',
       sessionId: payload.sessionId,
-      data: null,
+      // #1463 — silence before any turn (a TUI boot): main settles it.
+      data: payload.preTurn ? { preTurn: true } : null,
     };
     pipeServer.broadcast(event);
   });

@@ -155,6 +155,55 @@ describe('JSON-aware truncation', () => {
     const capped = capText(object, DEFAULT_RESULT_CAP_BYTES);
     expect(capped).toMatch(/\[truncated: \d+ of \d+ bytes shown\]/);
   });
+
+  it('keeps a capped JSON object parseable by trimming its largest array', () => {
+    const envelope = JSON.stringify(
+      { workspaceId: 'ws-1', truncated: 'caller data', notes: ['small'], tasks: records },
+      null,
+      2,
+    );
+    const capped = capText(envelope, DEFAULT_RESULT_CAP_BYTES);
+    expect(Buffer.byteLength(capped, 'utf8')).toBeLessThanOrEqual(DEFAULT_RESULT_CAP_BYTES);
+    const parsed = JSON.parse(capped) as Record<string, unknown>;
+    // Every other property survives, a pre-existing key included; only the
+    // largest array lost its tail.
+    expect(parsed['workspaceId']).toBe('ws-1');
+    expect(parsed['truncated']).toBe('caller data');
+    expect(parsed['notes']).toEqual(['small']);
+    expect(Object.keys(parsed).slice(0, 4)).toEqual(['workspaceId', 'truncated', 'notes', 'tasks']);
+    const tasks = parsed['tasks'] as unknown[];
+    expect(tasks[0]).toEqual(records[0]);
+    expect(parsed['_truncated']).toEqual({
+      fields: { tasks: { shownItems: tasks.length, totalItems: records.length } },
+      totalBytes: Buffer.byteLength(envelope, 'utf8'),
+    });
+    expect(tasks.length).toBeGreaterThan(0);
+    expect(tasks.length).toBeLessThan(records.length);
+    expect(capText(capped, DEFAULT_RESULT_CAP_BYTES)).toBe(capped);
+  });
+
+  it('trims a second large array when emptying the largest is not enough', () => {
+    const half = records.slice(0, Math.ceil(records.length * 0.6));
+    const envelope = JSON.stringify({ a: half, b: half }, null, 2);
+    expect(Buffer.byteLength(JSON.stringify({ a: [], b: half }, null, 2))).toBeGreaterThan(DEFAULT_RESULT_CAP_BYTES);
+    const parsed = JSON.parse(capText(envelope, DEFAULT_RESULT_CAP_BYTES)) as Record<string, unknown>;
+    const cut = (parsed['_truncated'] as { fields: Record<string, { shownItems: number }> }).fields;
+    expect(Object.keys(cut).sort()).toEqual(['a', 'b']);
+    expect((parsed['a'] as unknown[]).length + (parsed['b'] as unknown[]).length).toBeGreaterThan(0);
+  });
+
+  it('never trims a paged result: a kept cursor would skip the dropped items', () => {
+    const page = JSON.stringify({ events: records, nextCursor: records.length }, null, 2);
+    const capped = capText(page, DEFAULT_RESULT_CAP_BYTES);
+    expect(capped).toMatch(/\[truncated: \d+ of \d+ bytes shown\]/);
+    expect(capped).not.toContain('_truncated');
+  });
+
+  it('falls back to the head+tail cut when the object does not fit with its arrays emptied', () => {
+    const object = JSON.stringify({ body: 'z'.repeat(200_000), items: [1, 2, 3] });
+    const capped = capText(object, DEFAULT_RESULT_CAP_BYTES);
+    expect(capped).toMatch(/\[truncated: \d+ of \d+ bytes shown\]/);
+  });
 });
 
 describe('idempotency', () => {

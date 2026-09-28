@@ -441,6 +441,9 @@ function makeSubmitProbe(
           // rows, and a viewport we cannot get in 300ms is a poll to skip, not
           // a submit to stall.
           tail_lines: SUBMIT_RECEIPT_READ_LINES,
+          // Composer rows are counted up from the cursor row; the statusline
+          // and hints a TUI draws below it must not push the needle out (#1595).
+          endAtCursor: true,
           timeoutMs: SUBMIT_RECEIPT_READ_TIMEOUT_MS,
         });
         if (result !== null && typeof result === 'object') {

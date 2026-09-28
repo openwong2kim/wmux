@@ -14,7 +14,7 @@ import {
   getLastBroadcastAgentStatus,
   clearLastBroadcastAgentStatus,
 } from '../ipc/handlers/metadata.handler';
-import { settleHookTurnToIdle, broadcastSettledIdle } from './turnSettle';
+import { settleHookTurnToIdle, broadcastSettledIdle, holdsUnreadResult, holdsUnsettledRunningClaim } from './turnSettle';
 import { eventBus } from '../events/EventBus';
 import {
   findWorkspaceIdForPty,
@@ -27,7 +27,7 @@ import {
   VETO_TRACE_THROTTLE_MS,
   readStopMessage,
 } from '../pipe/handlers/hooks.rpc';
-import type { AgentSignal } from '../../shared/hooks/signal-types';
+import { isFreshSessionSource, type AgentSignal } from '../../shared/hooks/signal-types';
 import type { AgentLastMessage } from '../../shared/events';
 import { getWorkspaceMirror, type WorkspaceMirror } from '../workspace/WorkspaceMirror';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
@@ -747,6 +747,15 @@ export class DaemonNotificationRouter {
               pendingQuestion: '',
               lastMessage: '',
             });
+            // #1463 — a fresh session (startup, resume, `/clear`) means the
+            // turn before it is over. `/clear` typed mid-turn runs right after
+            // the Stop, and its SessionStart cancels the Stop still held in the
+            // daemon's verdict window, so no turn end ever arrives: the prompt
+            // submit's latch held the pane Running until its 30-minute expiry.
+            // Never on `compact` (mid-turn auto-compaction) or an unknown source.
+            if (isFreshSessionSource(ev.signal?.payload?.['source'])) {
+              settleHookTurnToIdle(payload.sessionId, this.getHookRouter?.() ?? null, win, this.now());
+            }
           } else if (metadataKind === 'agent.user_prompt_submit') {
             const hookRouter = this.getHookRouter?.();
             if (ev.signal && hookRouter) {
@@ -1187,13 +1196,31 @@ export class DaemonNotificationRouter {
       }
     };
 
-    const onIdle = (payload: { sessionId: string }) => {
+    const onIdle = (payload: { sessionId: string; preTurn?: boolean }) => {
       const now = Date.now();
       // Daemon-mode twin of the PTYBridge.onActiveToIdle gate: byte silence on
       // a hook-governed pane is not a turn end (quiet reasoning, a long tool
       // call), so the clear would only make the dot flicker. The hook's Stop
       // settles it; the process-death edge covers an agent that never sent one.
       if (this.getHookRouter?.()?.governsRunningState(payload.sessionId, now)) return;
+      // #1463 — the daemon saw no turn since the agent's SessionStart: this is
+      // a TUI boot (or `/clear`) settling at its prompt, not a quiet turn. A
+      // SETTLE, so the renderer drops the boot burst's running stamp instead
+      // of holding it 120 s. It skips the deference window below: the recent
+      // "precise" event there is the detector's withheld idle-prompt `waiting`,
+      // which never reached the renderer. An unread result still stands.
+      // Status only: no agentName (it is the live agent's identity), and no
+      // redraw guard — the byte cycle already ended, and the guard would
+      // swallow the one `running` edge of a turn submitted right after.
+      if (payload.preTurn === true) {
+        if (holdsUnreadResult(payload.sessionId)) return;
+        broadcastMetadataUpdate(this.getWindow(), {
+          ptyId: payload.sessionId,
+          agentStatus: 'idle',
+          settled: true,
+        });
+        return;
+      }
       const lastAgentAt = this.lastAgentEventAt.get(payload.sessionId) ?? 0;
       // #935 direction 3: the suppression window defers to a recent precise
       // status ONLY while that status is still what is actually showing.
@@ -1279,7 +1306,9 @@ export class DaemonNotificationRouter {
         if (paneSlug && paneSlug !== payload.slug) return;
         const router = this.getHookRouter?.() ?? null;
         const latchOpen = router?.governsRunningState(payload.sessionId, this.now()) === true;
-        if (!latchOpen && getLastBroadcastAgentStatus(payload.sessionId) !== 'running') return;
+        // #1463 — also a pane already byte-idle whose running stamp the
+        // renderer still holds (an unmarked idle does not withdraw it).
+        if (!latchOpen && !holdsUnsettledRunningClaim(payload.sessionId)) return;
         router?.releaseHookTurnStart(payload.sessionId);
         broadcastSettledIdle(payload.sessionId, this.getWindow(), this.now());
       } catch (err) {

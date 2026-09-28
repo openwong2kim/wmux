@@ -120,6 +120,7 @@ import {
   type ChatBridge,
   type ChatOwner,
   type ChatResolution,
+  type ChatUnavailableCause,
 } from '../chat/chatBridge';
 import type { TranscriptCursor } from '../../shared/transcript/turnEvents';
 import { cursorMatches, decodeChatCursor, encodeChatCursor, type ReadSource } from './chatCursor';
@@ -3840,11 +3841,11 @@ export class WebTerminalServer {
     const reply = (body: Record<string, unknown>) => body;
     // No `cursor` on purpose: a client that had a conversation drops its rows
     // and reads again from nothing.
-    const unavailable = (reason: string) =>
-      reply({ available: false, reason, ...(carried ? { reset: true, events: [] } : {}) });
+    const unavailable = (reason: string, cause?: ChatUnavailableCause) =>
+      reply({ available: false, reason, ...(cause ? { cause } : {}), ...(carried ? { reset: true, events: [] } : {}) });
 
     if (resolution.source === 'none' || !hasConversation(resolution)) {
-      return unavailable(resolution.status.reason);
+      return unavailable(resolution.status.reason, resolution.source === 'none' ? resolution.cause : undefined);
     }
     const src: ReadSource = resolution.source;
     const agentSessionId = resolutionAgentSessionId(resolution) ?? '';

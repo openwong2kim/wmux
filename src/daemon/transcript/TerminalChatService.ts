@@ -6,6 +6,9 @@ import { validStoredEvent } from '../chat/storedEvent';
 import { OPENCODE_REQUEST_MAX_BYTES } from '../chat/chatBridge';
 
 interface Owner { pid: number; incarnation: string }
+/** Why a read reached no conversation, from the read itself (feeds `/turns` `cause`). */
+export type TerminalChatFailure = 'no-record' | 'transport-refused' | 'invalid-record' | 'owner-mismatch' | 'error';
+type Exchange = { ok: true; body: Record<string, unknown> } | { ok: false; left: boolean; failure: TerminalChatFailure; unauthorized?: true };
 interface NativeRead { status: TranscriptStatus; page: TranscriptPage }
 export interface TerminalChatSendOutcome { result: ChatSendResult; reason?: 'receipts-full' | 'transport-lost' | 'too-large' | 'unauthorized' }
 interface Watch { clients: Set<string>; timer: ReturnType<typeof setInterval>; busy: boolean; seq: number; digest?: string; epoch?: string; ids?: Set<string>; last?: NativeRead }
@@ -25,19 +28,26 @@ export class TerminalChatService {
   constructor(private readonly deps: TerminalChatDependencies) {}
 
   async read(id: string): Promise<NativeRead | null> {
-    const result = await this.request(id, { action: 'read' });
-    if (!result) return null;
-    if (result.available === false) return { status: { available: false, reason: 'stale-session', agentAlive: true }, page: this.page([], '') };
+    const inspected = await this.inspect(id);
+    return 'read' in inspected ? inspected.read : null;
+  }
+
+  /** `read`, or why there is nothing to read. */
+  async inspect(id: string): Promise<{ read: NativeRead } | { failure: TerminalChatFailure }> {
+    const answer = await this.exchange(id, { action: 'read' });
+    if (!answer.ok) return { failure: answer.failure };
+    const result = answer.body;
+    if (result.available === false) return { read: { status: { available: false, reason: 'stale-session', agentAlive: true }, page: this.page([], '') } };
     const sessionId = result.sessionId;
     const epoch = result.epoch;
     if (typeof sessionId !== 'string' || !/^ses_[a-zA-Z0-9]+$/.test(sessionId) || typeof epoch !== 'string' || epoch.length > 256 ||
         !Array.isArray(result.events) || result.events.length > 3000 || !result.events.every(validStoredEvent) ||
-        !['complete', 'running', 'awaiting_input'].includes(String(result.phase))) return null;
+        !['complete', 'running', 'awaiting_input'].includes(String(result.phase))) return { failure: 'error' };
     const phase = result.phase as 'complete' | 'running' | 'awaiting_input';
-    return { status: { available: true, reason: 'ok', agentSessionId: sessionId, agentAlive: true, agentStatus: phase,
+    return { read: { status: { available: true, reason: 'ok', agentSessionId: sessionId, agentAlive: true, agentStatus: phase,
       terminal: { kind: 'terminal', agent: 'opencode', nativeSessionId: sessionId, historyTruncated: result.truncated === true,
         capabilities: { history: true, send: phase === 'complete', permissions: false, cancel: false, fileUndo: false } },
-    }, page: { ...this.page(result.events as TurnEvent[], epoch), truncatedHead: result.truncated === true } };
+    }, page: { ...this.page(result.events as TurnEvent[], epoch), truncatedHead: result.truncated === true } } };
   }
 
   /**
@@ -111,31 +121,36 @@ export class TerminalChatService {
     } finally { watch.busy = false; }
   }
 
-  private async request(id: string, request: Record<string, unknown>): Promise<Record<string, unknown> | null> {
-    const answer = await this.exchange(id, request);
-    return answer.ok ? answer.body : null;
+  private async record(id: string): Promise<{ owner: Owner; record: Record<string, unknown> } | TerminalChatFailure> {
+    const owner = await this.deps.owner(id);
+    if (!owner) return 'owner-mismatch';
+    const file = path.join(this.deps.directory, `${createHash('sha256').update(id).digest('hex')}.json`);
+    let stat: Awaited<ReturnType<typeof fs.lstat>>;
+    try { stat = await fs.lstat(file); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'no-record'; throw error; }
+    if (!stat.isFile() || stat.size > 1024 || process.platform !== 'win32' && (stat.mode & 0o077 || typeof process.getuid === 'function' && stat.uid !== process.getuid())) return 'invalid-record';
+    let record: Record<string, unknown>;
+    try { record = object(JSON.parse(await fs.readFile(file, 'utf8'))); } catch (error) { if (error instanceof SyntaxError) return 'invalid-record'; throw error; }
+    if (record.version !== 1 || record.agent !== 'opencode' || !Number.isInteger(record.port) ||
+        Number(record.port) < 1 || Number(record.port) > 65535 || typeof record.token !== 'string' || !/^[0-9a-f]{64}$/.test(record.token)) return 'invalid-record';
+    if (record.pid !== owner.pid) return 'owner-mismatch';
+    return { owner, record };
   }
 
   /** `left` is true once the request may have reached the plugin. `authorized`
    *  runs as the last await before the request leaves, after the owner checks. */
   private async exchange(id: string, request: Record<string, unknown>, authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean>):
-    Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; left: boolean; unauthorized?: true }> {
+    Promise<Exchange> {
     let left = false;
     try {
-      const owner = await this.deps.owner(id);
-      if (!owner) return { ok: false, left };
-      const file = path.join(this.deps.directory, `${createHash('sha256').update(id).digest('hex')}.json`);
-      const stat = await fs.lstat(file);
-      if (!stat.isFile() || stat.size > 1024 || process.platform !== 'win32' && (stat.mode & 0o077 || typeof process.getuid === 'function' && stat.uid !== process.getuid())) return { ok: false, left };
-      const record = object(JSON.parse(await fs.readFile(file, 'utf8')));
-      if (record.version !== 1 || record.agent !== 'opencode' || record.pid !== owner.pid || !Number.isInteger(record.port) ||
-          Number(record.port) < 1 || Number(record.port) > 65535 || typeof record.token !== 'string' || !/^[0-9a-f]{64}$/.test(record.token)) return { ok: false, left };
+      const found = await this.record(id);
+      if (typeof found === 'string') return { ok: false, left, failure: found };
+      const { owner, record } = found;
       const sameOwner = async () => JSON.stringify(await this.deps.owner(id)) === JSON.stringify(owner);
-      if (!await sameOwner()) return { ok: false, left };
+      if (!await sameOwner()) return { ok: false, left, failure: 'owner-mismatch' };
       if (authorized) {
         let ok = false;
         try { ok = await authorized('first-write'); } catch { /* a failed check is a refusal */ }
-        if (!ok) return { ok: false, left, unauthorized: true };
+        if (!ok) return { ok: false, left, failure: 'error', unauthorized: true };
       }
       left = true;
       let response: Response;
@@ -144,23 +159,23 @@ export class TerminalChatService {
           headers: { Authorization: `Bearer ${record.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(request) });
       } catch (error) {
         // A refused connection provably delivered nothing.
-        if ((error as { cause?: { code?: unknown } })?.cause?.code === 'ECONNREFUSED') left = false;
+        if ((error as { cause?: { code?: unknown } })?.cause?.code === 'ECONNREFUSED') return { ok: false, left: false, failure: 'transport-refused' };
         throw error;
       }
       // The plugin answers non-2xx only before dispatch (bad auth, unparsable body).
-      if (!response.ok) return { ok: false, left: false };
-      if (!response.body) return { ok: false, left };
+      if (!response.ok) return { ok: false, left: false, failure: 'error' };
+      if (!response.body) return { ok: false, left, failure: 'error' };
       const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let bytes = 0;
       try {
         for (;;) {
           const chunk = await reader.read(); if (chunk.done) break;
           bytes += chunk.value.byteLength;
-          if (bytes > 128000) { await reader.cancel(); return { ok: false, left }; }
+          if (bytes > 128000) { await reader.cancel(); return { ok: false, left, failure: 'error' }; }
           chunks.push(chunk.value);
         }
       } finally { reader.releaseLock(); }
-      if (!await sameOwner()) return { ok: false, left };
+      if (!await sameOwner()) return { ok: false, left, failure: 'owner-mismatch' };
       return { ok: true, body: object(JSON.parse(Buffer.concat(chunks).toString('utf8'))) };
-    } catch { return { ok: false, left }; }
+    } catch { return { ok: false, left, failure: 'error' }; }
   }
 }

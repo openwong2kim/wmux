@@ -12,12 +12,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// These walk the real repository (thousands of files); slow CI runners need room.
+const REPO_WALK_MS = 60_000;
+
 describe('typecheck slices', () => {
   it('cover tsconfig.json exactly', () => {
     const { missing, extra } = coverageGaps(ROOT_CONFIG, SLICES.map((n) => sliceConfig(n)));
     expect(missing).toEqual([]);
     expect(extra).toEqual([]);
-  });
+  }, REPO_WALK_MS);
 
   it('put every test file in exactly one test slice', () => {
     const seen = new Map();
@@ -29,12 +32,12 @@ describe('typecheck slices', () => {
       }
     }
     expect(seen.size).toBeGreaterThan(0);
-  });
+  }, REPO_WALK_MS);
 
   it('leave compiler options to tsconfig.json and keep whole-program checks intact', () => {
     expect(sliceConfigProblems(SLICES)).toEqual([]);
     expect(scopeProblems(ROOT_CONFIG, sliceConfig('src'))).toEqual([]);
-  });
+  }, REPO_WALK_MS);
 
   it('reports an unlisted augmentation and a script outside the src slice', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'typecheck-scope-'));
@@ -51,6 +54,32 @@ describe('typecheck slices', () => {
         expect.stringContaining('src/aug.ts declares a global'),
         expect.stringContaining('src/__tests__/script.test.ts is a script'),
       ]));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still parses scripts that only look like modules', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'typecheck-lookalike-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'src/__tests__'), { recursive: true });
+      const scripts = {
+        'dynamic.test.ts': "import('node:fs').then(() => {});\n",
+        'key.test.ts': 'const o = {\n  export: true,\n};\n',
+        'comment.test.ts': '/*\nimport x from "y";\n*/\nconst a = 1;\n',
+        'template.test.ts': 'const t = `\nexport const b = 2;\n`;\n',
+      };
+      for (const [name, body] of Object.entries(scripts)) fs.writeFileSync(path.join(dir, 'src/__tests__', name), body);
+      fs.writeFileSync(path.join(dir, 'src/__tests__/real.test.ts'), 'import fs from "node:fs";\nvoid fs;\n');
+      fs.writeFileSync(path.join(dir, 'src/app.ts'), 'export const app = 1;\n');
+      fs.writeFileSync(path.join(dir, 'tsconfig.json'), JSON.stringify({ include: ['src/**/*'] }));
+      fs.writeFileSync(path.join(dir, 'src.json'), JSON.stringify({ extends: './tsconfig.json', exclude: ['src/**/__tests__/**'] }));
+
+      const problems = scopeProblems(path.join(dir, 'tsconfig.json'), path.join(dir, 'src.json'), dir);
+      for (const name of Object.keys(scripts)) {
+        expect(problems).toEqual(expect.arrayContaining([expect.stringContaining(`src/__tests__/${name} is a script`)]));
+      }
+      expect(problems.some((p) => p.includes('real.test.ts'))).toBe(false);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
