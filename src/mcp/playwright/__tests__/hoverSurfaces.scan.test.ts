@@ -261,6 +261,45 @@ describe('the phase-1 scan when the rule walk stops early', () => {
 
     expect(scan().map((el) => el.id)).toEqual(['account']);
   });
+
+  it('[fix] forces no layout on a page with no hover rule and no candidate', () => {
+    mount('<p>text</p>');
+    style('.a { color: red }');
+    const settle = vi.fn(() => ({ left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 }));
+    Object.defineProperty(document.documentElement, 'getBoundingClientRect', { configurable: true, value: settle });
+    try {
+      expect(scan()).toEqual([]);
+      expect(settle).not.toHaveBeenCalled();
+    } finally {
+      delete (document.documentElement as { getBoundingClientRect?: unknown }).getBoundingClientRect;
+    }
+  });
+
+  it('[fix] keeps the page\'s pending layout off the walk\'s clock', () => {
+    // The first box read (for the first :hover rule) settles a second of render
+    // debt; the walk must not count it, or every rule after it — the second
+    // menu here — is never read.
+    let now = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    mount(
+      '<nav><ul><li><a href="#p" id="lnk">Products</a>' +
+        '<ul class="sub" data-zero-box><li><a href="#s" data-zero-box>Shoes</a></li></ul></li></ul></nav>' +
+        '<aside><ul><li><a href="#h" id="help">Help</a>' +
+        '<ol class="more" data-zero-box><li><a href="#f" data-zero-box>FAQ</a></li></ol></li></ul></aside>',
+    );
+    style('nav li:hover > ul.sub { display: block }\naside li:hover > ol.more { display: block }');
+    const settle = vi.fn(() => {
+      now += 1_000;
+      return { left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 };
+    });
+    Object.defineProperty(document.documentElement, 'getBoundingClientRect', { configurable: true, value: settle });
+    try {
+      expect(scan().map((el) => el.id).sort()).toEqual(['help', 'lnk']);
+      expect(settle).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (document.documentElement as { getBoundingClientRect?: unknown }).getBoundingClientRect;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
