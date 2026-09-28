@@ -691,6 +691,13 @@ export class DaemonPTYBridge extends EventEmitter {
     this.agentUnsubscribe = agentDetector.onEvent((agentEvent) => {
       this.noteAgentStatus(agentEvent.status);
       this.emit('agent', { sessionId, event: agentEvent });
+      // #1463 — the agent's idle prompt, before any turn. The status above
+      // ends the byte cycle, so no silence idle follows it, and main withholds
+      // a detector `waiting` on a hook-reporting pane: without this the boot
+      // burst's running stamp was the pane's last word for 120 s.
+      if (agentEvent.status === 'waiting' && this.isPreTurn()) {
+        this.emit('idle', { sessionId, preTurn: true });
+      }
     });
 
     // Critical action detection

@@ -65,6 +65,30 @@ describe('DaemonPTYBridge — #1463 pre-turn silence', () => {
     expect(idle.at(-1)).toEqual({ sessionId: 'sess-1' });
   });
 
+  it('reports the agent idle prompt before any turn as pre-turn silence', () => {
+    // Live: Claude's boot paint ends on its idle footer, the detector reports
+    // `waiting`, and that status ends the byte cycle — no silence idle follows.
+    const detector = (bridge as unknown as {
+      agentDetector: { callbacks: Array<(e: { agent: string; status: string; message: string }) => void> };
+    }).agentDetector;
+    const detect = (status: string) =>
+      detector.callbacks.forEach((cb) => cb({ agent: 'Claude Code', status, message: '' }));
+
+    bridge.noteInput('claude\r');
+    vi.advanceTimersByTime(300);
+    sessionStart();
+    feed(BIG);
+    detect('waiting');
+    expect(idle).toEqual([{ sessionId: 'sess-1', preTurn: true }]);
+
+    // After a submitted prompt the same footer is a turn's end, not a boot.
+    vi.advanceTimersByTime(2000);
+    bridge.noteInput('fix the tests\r');
+    vi.advanceTimersByTime(100);
+    detect('waiting');
+    expect(idle).toHaveLength(1);
+  });
+
   it('never marks silence on a pane whose agent reported no session start', () => {
     bridge.noteInput('codex\r');
     feed(BIG);

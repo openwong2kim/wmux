@@ -15,7 +15,7 @@ import {
   getLastBroadcastAgentStatus,
   clearLastBroadcastAgentStatus,
 } from '../ipc/handlers/metadata.handler';
-import { settleHookTurnToIdle, broadcastSettledIdle, holdsUnsettledRunningClaim } from './turnSettle';
+import { settleHookTurnToIdle, broadcastSettledIdle, holdsUnreadResult, holdsUnsettledRunningClaim } from './turnSettle';
 import { eventBus } from '../events/EventBus';
 import {
   findWorkspaceIdForPty,
@@ -1201,6 +1201,23 @@ export class DaemonNotificationRouter {
       // call), so the clear would only make the dot flicker. The hook's Stop
       // settles it; the process-death edge covers an agent that never sent one.
       if (this.getHookRouter?.()?.governsRunningState(payload.sessionId, now)) return;
+      // #1463 — the daemon saw no turn since the agent's SessionStart: this is
+      // a TUI boot (or `/clear`) settling at its prompt, not a quiet turn. A
+      // SETTLE, so the renderer drops the boot burst's running stamp instead
+      // of holding it 120 s. It skips the deference window below: the recent
+      // "precise" event there is the detector's withheld idle-prompt `waiting`,
+      // which never reached the renderer. An unread result still stands.
+      if (payload.preTurn === true) {
+        if (holdsUnreadResult(payload.sessionId)) return;
+        markSettled(payload.sessionId, this.now());
+        broadcastMetadataUpdate(this.getWindow(), {
+          ptyId: payload.sessionId,
+          agentStatus: 'idle',
+          agentName: '',
+          settled: true,
+        });
+        return;
+      }
       const lastAgentAt = this.lastAgentEventAt.get(payload.sessionId) ?? 0;
       // #935 direction 3: the suppression window defers to a recent precise
       // status ONLY while that status is still what is actually showing.
@@ -1233,15 +1250,10 @@ export class DaemonNotificationRouter {
         // mid-turn and on plain shells). Precise completions still come from the
         // Stop/awaiting_input hook + detector paths. See
         // plans/agent-status-dot-quiet-notifications-2026-07-12.md.
-        // #1463 — silence after a SessionStart with no turn since is a TUI
-        // boot settling, not a quiet turn. Marked as a settle so the renderer
-        // drops the boot burst's running stamp instead of holding it 120 s.
-        if (payload.preTurn === true) markSettled(payload.sessionId, this.now());
         broadcastMetadataUpdate(win, {
           ptyId: payload.sessionId,
           agentStatus: 'idle',
           agentName: '',
-          ...(payload.preTurn === true ? { settled: true } : {}),
         });
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:idle error:', err);

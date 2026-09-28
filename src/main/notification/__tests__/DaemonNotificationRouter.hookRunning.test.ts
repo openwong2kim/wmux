@@ -539,6 +539,23 @@ describe('DaemonNotificationRouter — #1463 withdraws an unlatched running stam
     router.stop();
   });
 
+  it('settles pre-turn silence right after the detector\'s withheld idle-prompt waiting', () => {
+    // A hook-reporting pane: main withholds the detector's `waiting`, but it
+    // still opens the deference window. Deferring to a status the renderer
+    // never received left the boot stamp standing.
+    const hookRouter = stubHookRouter(false);
+    (hookRouter.governsDetectorStatus as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    const { router, captured } = makeRouter(hookRouter);
+    metadataHandlerMocks.lastBroadcastAgentStatus.set(PTY, 'idle');
+    captured.agent?.({
+      sessionId: PTY,
+      event: { agent: 'Claude Code', status: 'waiting', message: '' },
+    });
+    captured.idle?.({ sessionId: PTY, preTurn: true });
+    expect(lastPatch()).toMatchObject({ agentStatus: 'idle', settled: true });
+    router.stop();
+  });
+
   it('leaves ordinary byte silence unmarked — a quiet turn is not a turn end', () => {
     const { router, captured } = makeRouter(stubHookRouter(false));
     captured.active?.({ sessionId: PTY, agentName: 'Codex' });
