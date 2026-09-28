@@ -374,7 +374,7 @@ GET /api/events?since=<cursor>     (Bearer)
 ## 5. Panes
 
 ```
-GET /api/config    → {allowInput, allowUpload, allowTranscript, liveActivityPush?,
+GET /api/config    → {allowInput, allowUpload, allowTranscript, inlineImages?, liveActivityPush?,
                       gatedTools, gateEnabled?, fleetSidebar?, channels?, terminalPromptDetail?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
                       serverVersion, hostPlatform}

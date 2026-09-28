@@ -65,6 +65,13 @@ describe('webStateStore (#596 — wmux web survives a daemon restart)', () => {
     expect(loadWebState(dir)).toEqual(enabled());
   });
 
+  it('persists inline images only when switched off (#1641)', () => {
+    expect(saveWebState(dir, enabled({ inlineImages: false }))).toBe(true);
+    expect(loadWebState(dir).inlineImages).toBe(false);
+    expect(saveWebState(dir, enabled())).toBe(true);
+    expect('inlineImages' in loadWebState(dir)).toBe(false);
+  });
+
   it('round-trips native TLS paths without persisting private-key bytes', () => {
     const certPath = path.join(dir, 'certificate.pem');
     const keyPath = path.join(dir, 'private-key.pem');

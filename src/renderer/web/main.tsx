@@ -71,8 +71,10 @@ w.__wmuxWebDebug = {
 
 useStore.setState({
   readOnly: true,
-  // The image addon decodes with WebAssembly, which the page's CSP does not
-  // allow ('wasm-unsafe-eval'); sixel / iTerm2 images stay off in the browser.
+  // Sixel / iTerm2 images stay off here even though the CSP now allows
+  // WebAssembly: the desktop addon answers size reports and ignores the
+  // server's `--no-inline-images` switch. The classic page (`/classic`) draws
+  // them with viewer-safe options (#1641).
   inlineImagesEnabled: false,
   sidebarVisible: !window.matchMedia(PHONE_QUERY).matches,
 });

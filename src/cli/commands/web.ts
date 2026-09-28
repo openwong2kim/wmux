@@ -29,6 +29,8 @@ interface WebInfo {
   allowTranscript?: boolean;
   /** Whether chat launch may start an agent with approvals or the sandbox off. */
   allowDangerousLaunch?: boolean;
+  /** Whether the browser terminal draws inline images. Absent reads as on. */
+  inlineImages?: boolean;
   /** True when the daemon itself terminates HTTPS. */
   tls?: boolean;
   token?: string;
@@ -160,6 +162,14 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
     return;
   }
   const { port, grants } = plan;
+  // Inline images (#1641) are on unless the operator says otherwise. Sent only
+  // when given: the daemon keeps the running or persisted choice otherwise.
+  const imagesOn = hasFlag(args, '--inline-images');
+  const imagesOff = hasFlag(args, '--no-inline-images');
+  if (imagesOn && imagesOff) {
+    console.error('Error: --inline-images and --no-inline-images cannot be used together');
+    process.exit(1);
+  }
   if (!Number.isInteger(port) || port <= 0 || port >= 65536) {
     console.error('Error: --port must be an integer between 1 and 65535');
     process.exit(1);
@@ -212,6 +222,7 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
         port,
         host,
         ...grantParams,
+        ...(imagesOn || imagesOff ? { inlineImages: imagesOn } : {}),
         allowedHosts: hosts,
         newToken,
         // Explicit false distinguishes "the operator chose HTTP" from a re-run
@@ -428,7 +439,7 @@ function report(
   const nativeTls = info.tls === true;
 
   console.log('');
-  console.log(`  wmux web ${mode === 'start' ? 'started' : 'running'} — ${info.allowInput ? 'INPUT ENABLED' : 'read-only'}${info.allowUpload ? '  ·  uploads ENABLED' : ''}${info.allowTranscript ? '  ·  transcript ENABLED' : ''}${info.allowDangerousLaunch ? '  ·  DANGEROUS LAUNCH ENABLED' : ''}`);
+  console.log(`  wmux web ${mode === 'start' ? 'started' : 'running'} — ${info.allowInput ? 'INPUT ENABLED' : 'read-only'}${info.allowUpload ? '  ·  uploads ENABLED' : ''}${info.allowTranscript ? '  ·  transcript ENABLED' : ''}${info.allowDangerousLaunch ? '  ·  DANGEROUS LAUNCH ENABLED' : ''}${info.inlineImages === false ? '  ·  inline images off' : ''}`);
   console.log(`  bind ${info.host}:${info.port}${typeof info.clients === 'number' ? `  ·  ${info.clients} viewer(s)` : ''}`);
   console.log('');
 

@@ -57,6 +57,11 @@ export interface WebPersistedState {
    * set it on the host.
    */
   allowDangerousLaunch?: boolean;
+  /**
+   * `false` when the operator switched inline images off
+   * (`--no-inline-images`). Persisted only when false; absent reads as on.
+   */
+  inlineImages?: false;
   /** Native HTTPS PEM paths. Key bytes are never persisted here. */
   tls?: WebTlsConfig;
   allowedHosts: string[];
@@ -196,6 +201,7 @@ export function coerceWebStateWithDiagnostics(parsed: unknown): WebStateLoadResu
       // false at /api/config, so the field is omitted entirely unless true.
       ...(o['allowTranscript'] === true ? { allowTranscript: true } : {}),
       ...(o['allowDangerousLaunch'] === true ? { allowDangerousLaunch: true } : {}),
+      ...(o['inlineImages'] === false ? { inlineImages: false as const } : {}),
       ...(tls ? { tls } : {}),
       allowedHosts,
       tailscale,

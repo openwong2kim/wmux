@@ -57,7 +57,7 @@ import {
   coerceWebTlsConfig,
 } from './web/webStateStore';
 import { stopWebServerDurably } from './web/webStop';
-import { decideWebStartPolicy, resolveWebStartGrants } from './web/webStartPolicy';
+import { decideWebStartPolicy, resolveWebInlineImages, resolveWebStartGrants } from './web/webStartPolicy';
 import { scheduleTokenFileReHarden } from '../shared/security';
 import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
@@ -661,6 +661,7 @@ function persistWebState(
       allowUpload: info.allowUpload === true,
       allowTranscript: info.allowTranscript === true,
       ...(info.allowDangerousLaunch === true ? { allowDangerousLaunch: true } : {}),
+      ...(info.inlineImages === false ? { inlineImages: false as const } : {}),
       ...(info.tls === true && tls ? { tls } : {}),
       allowedHosts,
       tailscale,
@@ -801,6 +802,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
       allowUpload: state.allowUpload,
       allowTranscript: state.allowTranscript,
       allowDangerousLaunch: state.allowDangerousLaunch === true,
+      inlineImages: state.inlineImages !== false,
       ...(state.tls ? { tls: state.tls } : {}),
       allowedHosts: state.allowedHosts,
       // Replayed, not re-established: the serve registration lives with the
@@ -3118,6 +3120,7 @@ function registerRpcHandlers(
       allowUpload?: boolean;
       allowTranscript?: boolean;
       allowDangerousLaunch?: boolean;
+      inlineImages?: boolean;
       inheritUnsetGrants?: boolean;
       onlyIfRunning?: boolean;
       allowedHosts?: unknown;
@@ -3154,6 +3157,11 @@ function registerRpcHandlers(
       webServer.currentStartState,
       loadedPrevious.state,
     );
+    const inlineImages = resolveWebInlineImages(
+      p.inlineImages,
+      webServer.currentStartState,
+      loadedPrevious.state,
+    );
     const { tls, token, rotateCredentials } = decideWebStartPolicy({
       requestedTls,
       live: webServer.currentStartState,
@@ -3170,6 +3178,7 @@ function registerRpcHandlers(
       allowUpload,
       allowTranscript,
       allowDangerousLaunch,
+      inlineImages,
       allowedHosts,
       tailscale,
       ...(tls ? { tls } : {}),

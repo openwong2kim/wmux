@@ -178,31 +178,17 @@
     if (owner && owner.focus && owner !== document.body) { try { owner.focus(); } catch (e) { /* torn down */ } }
   }
 
-  // Inline images (#1641): iTerm2 OSC 1337 and, where WebAssembly may be
-  // compiled, sixel. Limits are sized for a phone rather than the addon's
-  // desktop defaults (16 MP per image, 128 MB of cache). Size reports stay
-  // off: they answer XTWINOPS queries through onData, and a viewer must never
-  // answer queries for the pane (see the repaint gate below).
-  var sixelWasmAllowed = (function () {
-    // The hash-pinned script-src refuses wasm compilation; probing with the
-    // 8-byte empty module keeps the addon from failing on its sixel decoder.
-    try {
-      return typeof WebAssembly === 'object' &&
-        !!new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
-    } catch (e) { return false; }
-  })();
+  // Inline images (#1641). The server can switch them off
+  // (`wmux web --no-inline-images`), and inlineImages.js refuses to load the
+  // addon where WebAssembly cannot compile, since its decoders would throw
+  // inside the parser and lose the output that follows an image.
+  var inlineImagesEnabled = true;
   function loadImageAddon(t) {
-    if (typeof ImageAddon !== 'object' || !ImageAddon.ImageAddon) return;
-    try {
-      t.loadAddon(new ImageAddon.ImageAddon({
-        enableSizeReports: false,
-        sixelSupport: sixelWasmAllowed,
-        pixelLimit: 2048 * 2048,
-        sixelSizeLimit: 4000000,
-        iipSizeLimit: 4000000,
-        storageLimit: 24
-      }));
-    } catch (e) { /* the terminal works without images */ }
+    wmuxInlineImages.load(t, {
+      enabled: inlineImagesEnabled,
+      ImageAddon: typeof ImageAddon === 'object' ? ImageAddon : null,
+      WebAssembly: typeof WebAssembly === 'object' ? WebAssembly : null
+    });
   }
 
   function newTerm(cols, rows) {
@@ -1922,6 +1908,9 @@
     showOverlay('loading', 'Connecting to wmux', 'Attaching to the daemon and loading live panes.');
     api('/api/config').then(function (r) { return r.json(); }).then(function (cfg) {
       allowInput = cfg.allowInput === true;
+      // Absent on a daemon predating the switch, which reads as on; the wasm
+      // probe still decides whether the addon can run at all.
+      inlineImagesEnabled = cfg.inlineImages !== false;
       bannerEl.textContent = allowInput ? 'input enabled' : 'read-only';
       bannerEl.setAttribute('data-mode', allowInput ? 'rw' : 'ro');
       // The bar is always available for zoom; the keys only when input is on

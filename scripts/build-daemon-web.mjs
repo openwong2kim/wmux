@@ -58,8 +58,7 @@ function inject(html, marker, content) {
 const xtermJs = read(join(repoRoot, 'node_modules', '@xterm', 'xterm', 'lib', 'xterm.js'));
 // Inline images (#1641): the addon's UMD build publishes `ImageAddon` on the
 // global. Inlined right after xterm so app.js can load it into every terminal.
-// Sixel additionally needs WebAssembly, which the hash-pinned script-src does
-// not allow; app.js detects that at runtime and keeps only the iTerm2 path.
+// Both of its decoders are WebAssembly; inlineImages.js probes before loading.
 const addonImageJs = read(join(repoRoot, 'node_modules', '@xterm', 'addon-image', 'lib', 'addon-image.js'));
 const xtermCss = read(join(repoRoot, 'node_modules', '@xterm', 'xterm', 'css', 'xterm.css'));
 const appCss = read(join(frontendDir, 'styles.css'));
@@ -104,6 +103,9 @@ const terminalSharedJs = buildSync({
   minify: true,
   logLevel: 'error',
 }).outputFiles[0].text;
+// Inline-image gate (#1641): the wasm probe and the addon options. Separate so
+// "no wasm, no addon" is unit tested against the exact bytes the phone runs.
+const inlineImagesJs = read(join(frontendDir, 'inlineImages.js'));
 let html = read(join(frontendDir, 'index.html'));
 
 html = inject(html, '/*__XTERM_CSS__*/', xtermCss);
@@ -116,6 +118,7 @@ html = inject(html, '/*__TOUCH_SCROLL_JS__*/', touchScrollJs);
 html = inject(html, '/*__KEYBOARD_PROTOCOL_JS__*/', keyboardProtocolJs);
 html = inject(html, '/*__KEYS_JS__*/', copyPasteKeysJs);
 html = inject(html, '/*__TERMINAL_SHARED_JS__*/', terminalSharedJs);
+html = inject(html, '/*__INLINE_IMAGES_JS__*/', inlineImagesJs);
 html = inject(html, '/*__APP_JS__*/', appJs);
 
 mkdirSync(outDir, { recursive: true });
@@ -232,18 +235,18 @@ function gatePage(file, expectedScripts) {
     process.exit(1);
   };
 
-  // The page inlines nine scripts (xterm, addon-image, attentionFormat, pairQuery,
-  // touchScroll, keyboardProtocol, copyPasteKeys, terminalShared, app) and one
-  // style block (xterm css + our css). A count that moved means index.html grew or lost a block and nobody
-  // re-read this gate; refuse rather than guess which. Raised 3 → 4 when
-  // pairQuery.js was added for QR pairing, 4 → 5 when touchScroll.js was added
+  // The page inlines ten scripts (xterm, addon-image, attentionFormat, pairQuery,
+  // touchScroll, keyboardProtocol, copyPasteKeys, terminalShared, inlineImages,
+  // app) and one style block (xterm css + our css). A count that moved means
+  // index.html grew or lost a block and nobody re-read this gate; refuse rather
+  // than guess which. Raised 3 → 4 when pairQuery.js was added for QR pairing, 4 → 5 when touchScroll.js was added
   // for #890, 5 → 6 when copyPasteKeys.js was added for browser copy/paste,
   // 6 → 7 when keyboardProtocol.js was added for the kitty-negotiation gate,
   // 7 → 8 when the shared terminal bundle (src/shared/terminal) was added,
-  // 8 → 9 when @xterm/addon-image was added for inline images (#1641): the
-  // policy itself is derived from the served bytes, so an extra block is hashed
-  // like the others — the count is here to make the change deliberate, not to cap
-  // it.
+  // 8 → 10 when @xterm/addon-image and its inlineImages.js gate were added for
+  // inline images (#1641): the policy itself is derived from the served bytes,
+  // so an extra block is hashed like the others — the count is here to make the
+  // change deliberate, not to cap it.
   //
   // app.html (/app) inlines two: the es2017 boot script and the es2022 bundle.
   if (blocks.scripts.length !== expectedScripts) {
@@ -288,7 +291,7 @@ function gatePage(file, expectedScripts) {
   return { policy, scriptHashes, styleHashes };
 }
 
-const terminalGate = gatePage('terminal.html', 9);
+const terminalGate = gatePage('terminal.html', 10);
 const appGate = gatePage('app.html', 2);
 
 writeFileSync(

@@ -142,11 +142,17 @@ const STYLE_SRC = "'unsafe-inline'";
  * `/app/assets/` — same-origin files, never `data:` and never a third party —
  * so the page still makes zero external requests. The classic page loads no
  * font file, so the directive grants it nothing it uses.
+ *
+ * `'wasm-unsafe-eval'` lets the page compile WebAssembly, which the inline
+ * image decoders (sixel and base64) are built on (#1641). It allows no string
+ * evaluation of JavaScript; that still needs `'unsafe-eval'`, which is absent.
+ * A browser without CSP3 ignores the keyword and keeps refusing wasm, so the
+ * client probes before loading the image addon. Never added beside `'none'`.
  */
 export function buildWebCsp(html: string | null): string {
   const blocks = html ? extractInlineBlocks(html) : null;
   const scriptSrc = blocks && blocks.scripts.length > 0
-    ? blocks.scripts.map(cspHash).join(' ')
+    ? `${blocks.scripts.map(cspHash).join(' ')} 'wasm-unsafe-eval'`
     : "'none'";
   return [
     "default-src 'none'",

@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { WebTlsConfig } from '../../../shared/web';
 import type { WebPersistedState } from '../webStateStore';
-import { decideWebStartPolicy, resolveWebStartGrants, type WebStartPolicyInput } from '../webStartPolicy';
+import {
+  decideWebStartPolicy,
+  resolveWebInlineImages,
+  resolveWebStartGrants,
+  type WebStartPolicyInput,
+} from '../webStartPolicy';
 
 const TLS: WebTlsConfig = {
   certPath: '/absolute/certificate.pem',
@@ -253,5 +258,28 @@ describe('web start grant resolution', () => {
       allowTranscript: false,
       allowDangerousLaunch: false,
     });
+  });
+});
+
+describe('inline images switch (#1641)', () => {
+  it('is on for a fresh server', () => {
+    expect(resolveWebInlineImages(undefined, undefined, previous({ enabled: false }))).toBe(true);
+  });
+
+  it('an explicit value always wins', () => {
+    expect(resolveWebInlineImages(false, { inlineImages: true }, previous())).toBe(false);
+    expect(resolveWebInlineImages(true, { inlineImages: false }, previous({ inlineImages: false }))).toBe(true);
+  });
+
+  it('a re-run that does not say keeps the running server\'s choice', () => {
+    expect(resolveWebInlineImages(undefined, { inlineImages: false }, previous())).toBe(false);
+    expect(resolveWebInlineImages(undefined, { inlineImages: true }, previous({ inlineImages: false }))).toBe(true);
+  });
+
+  it('a restart keeps the persisted off, and an operator stop clears it', () => {
+    expect(resolveWebInlineImages(undefined, undefined, previous({ inlineImages: false }))).toBe(false);
+    expect(
+      resolveWebInlineImages(undefined, undefined, previous({ enabled: false, inlineImages: false })),
+    ).toBe(true);
   });
 });
