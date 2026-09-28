@@ -72,7 +72,9 @@ export function terminalChatHandler(api, epoch = randomBytes(16).toString('hex')
     const session = id && api.state.session.get(id);
     if (!api.state.ready || !session || session.id !== id) return undefined;
     const prompt = api.state.session.permission(id).length > 0 || api.state.session.question(id).length > 0;
-    const blocked = api.ui.dialog.open || prompt;
+    // A picker or palette the user opened is not the agent waiting: it never
+    // changes phase (or the phone's blocked state); only send holds for it.
+    const dialog = !!api.ui.dialog.open;
     const busy = ['busy', 'retry'].includes(api.state.session.status(id)?.type);
     const dispatch = pending.get(id);
     if (dispatch) {
@@ -84,13 +86,13 @@ export function terminalChatHandler(api, epoch = randomBytes(16).toString('hex')
     // Admission fence: a send was accepted but the TUI has not gone busy yet.
     // There is nothing native to abort yet.
     const fence = !busy && pending.has(id);
-    const phase = blocked ? 'awaiting_input' : busy || pending.has(id) ? 'running' : 'complete';
+    const phase = prompt ? 'awaiting_input' : busy || pending.has(id) ? 'running' : 'complete';
     let turn = turns.get(id);
     if (busy || pending.has(id)) { if (!turn?.open) turn = openTurn(id, Date.now()); }
     else if (phase === 'complete' && turn) turn.open = false;
     // Before the first episode: an idle id with no start.
     if (!turn) { turn = openTurn(id, undefined); turn.open = false; }
-    return { id, phase, epoch: `${epoch}:${generation}:${id}`, busy, prompt, fence, turnId: turn.id,
+    return { id, phase, epoch: `${epoch}:${generation}:${id}`, busy, prompt, dialog, fence, turnId: turn.id,
       ...(turn.startedAt !== undefined ? { turnStartedAt: turn.startedAt } : {}) };
   };
   const actions = typeof api.client?.session?.abort === 'function' ? ['read', 'send', 'abort'] : ['read', 'send'];
@@ -124,7 +126,7 @@ export function terminalChatHandler(api, epoch = randomBytes(16).toString('hex')
     const fingerprint = createHash('sha256').update(JSON.stringify([state.id, text])).digest('hex');
     const previous = requests.get(requestId);
     if (previous) return previous.fingerprint === fingerprint ? previous.result : { result: 'session_changed' };
-    if (state.phase === 'awaiting_input') return { result: 'blocked' };
+    if (state.phase === 'awaiting_input' || state.dialog) return { result: 'blocked' };
     if (state.phase === 'running') return { result: 'busy' };
     // A receipt past the retention can never be replayed: drop it.
     if (requests.size >= 512) {

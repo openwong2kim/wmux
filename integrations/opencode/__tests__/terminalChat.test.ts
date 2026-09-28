@@ -166,8 +166,26 @@ describe('OpenCode existing TUI bridge', () => {
       // A picker or palette the user opened does not hold the abort.
       f.api.state.session.question = () => [];
       f.api.ui.dialog.open = true;
-      expect(await f.handler(request)).toMatchObject({ result: 'sent', phase: 'awaiting_input' });
+      expect(await f.handler(request)).toMatchObject({ result: 'sent', phase: 'running' });
       expect(f.abort).toHaveBeenCalledTimes(1);
+    });
+    it('an ordinary dialog changes neither phase nor turn state; only send holds for it', async () => {
+      const f = fixture(); f.api.ui.dialog.open = true;
+      // Idle with a palette open: complete, not awaiting_input.
+      const idle = await f.handler({ action: 'read' });
+      expect(idle.phase).toBe('complete');
+      expect(await f.handler({ action: 'send', sessionId: 'ses_one', epoch: idle.epoch, text: 'next', requestId: 'request-1234567890' }))
+        .toEqual({ result: 'blocked' });
+      expect(f.promptAsync).not.toHaveBeenCalled();
+      // Busy with the palette open, aborted: the turn ends while it stays open.
+      f.api.state.session.status = () => ({ type: 'busy' });
+      const busy = await f.handler({ action: 'read' });
+      expect(busy.phase).toBe('running');
+      expect(await f.handler({ action: 'abort', sessionId: 'ses_one', epoch: busy.epoch, turnId: busy.turnId })).toMatchObject({ result: 'sent' });
+      f.api.state.session.status = () => ({ type: 'idle' });
+      expect(await f.handler({ action: 'read' })).toMatchObject({ phase: 'complete', turnId: busy.turnId });
+      expect(await f.handler({ action: 'abort', sessionId: 'ses_one', epoch: busy.epoch, turnId: busy.turnId }))
+        .toMatchObject({ result: 'not_running', phase: 'complete' });
     });
     it('the admission fence answers pending under the turn id the running turn keeps', async () => {
       const f = fixture(); const settled = await f.handler({ action: 'read' });

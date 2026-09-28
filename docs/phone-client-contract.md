@@ -1452,8 +1452,10 @@ messages arriving mid-turn do not change it. `startedAt` is when the plugin
 saw the turn start, and is absent before the first turn. The plugin aborts
 only while the TUI is busy. The agent's own permission or question request
 is 409 `prompt-active` (`by:"terminal"`, or `by:"approval"` with its
-`approvalId` when the daemon holds a record for it); any other dialog the
-user opened in the TUI does not hold the abort. Between an accepted send and
+`approvalId` when the daemon holds a record for it). Any other dialog the
+user opened in the TUI (a picker or palette) does not hold the abort and
+changes neither `agentStatus`, `blocked` nor `chat.turn`; only a send made
+while it is open is refused as `chat-blocked`. Between an accepted send and
 the TUI going busy there is nothing to abort yet: that answers 409
 `cancel-cooldown` with a short `retryAfterMs`, and a retry after it reaches
 the same turn. The Esc once-per-turn latch and cooldown do not apply: an
