@@ -111,8 +111,8 @@ const WINDOWS_CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.e
  */
 const LAUNCH_TIMEOUT_MS = 30_000;
 
-/** How long teardown waits for Chrome to exit before leaving it to Playwright's
- *  exit-time cleanup (see the afterAll below). */
+/** How long teardown waits for Chrome to exit before killing its process
+ *  (see the afterAll below). */
 const BROWSER_CLOSE_WAIT_MS = 10_000;
 
 interface CdpSession {
@@ -134,6 +134,7 @@ interface Snap {
 
 
 type Browser = { newPage: () => Promise<unknown>; close: () => Promise<void> };
+type BrowserWithCdp = { newBrowserCDPSession: () => Promise<CdpSession> };
 
 /**
  * The two modes, and why both are here.
@@ -177,6 +178,7 @@ interface Harness {
  */
 function harnessFor(mode: (typeof MODES)[number]): Harness {
   let browser: Browser | null = null;
+  let browserPid: number | null = null;
   let server: Server | null = null;
   let origin = '';
   let skipReason: string | null = null;
@@ -224,6 +226,25 @@ function harnessFor(mode: (typeof MODES)[number]): Harness {
     } finally {
       if (timer) clearTimeout(timer);
     }
+
+    // Remember the browser process id, so a teardown whose close never
+    // returns can kill it instead of leaving Chrome behind. Bounded and
+    // swallowed like the rest of setup: without a pid, teardown still works,
+    // it just cannot force the kill.
+    let pidTimer: ReturnType<typeof setTimeout> | undefined;
+    browserPid = await Promise.race([
+      (async () => {
+        const cdp = await (browser as unknown as BrowserWithCdp).newBrowserCDPSession();
+        const info = (await cdp.send('SystemInfo.getProcessInfo')) as {
+          processInfo?: Array<{ type?: string; id?: number }>;
+        };
+        return info.processInfo?.find((p) => p.type === 'browser')?.id ?? null;
+      })().catch(() => null),
+      new Promise<null>((resolve) => {
+        pidTimer = setTimeout(() => resolve(null), 5_000);
+      }),
+    ]);
+    if (pidTimer) clearTimeout(pidTimer);
 
     server = createServer((_req, res) => {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -277,22 +298,33 @@ function harnessFor(mode: (typeof MODES)[number]): Harness {
   // keep-alive socket Chrome still holds, and `browser.close()` waits for the
   // Chrome process to exit. Teardown asserts nothing, so it now drops the
   // sockets outright and gives the browser a bounded wait — the same "bounded
-  // and swallowed" rule setup follows. Playwright kills any browser it launched
-  // when this worker process exits, so an abandoned close leaks nothing.
+  // and swallowed" rule setup follows. A close that does not return in time
+  // kills the browser process, so Chrome is not left running.
   afterAll(async () => {
     server?.closeAllConnections();
     await new Promise<void>((resolve) => {
       if (!server) return resolve();
       server.close(() => resolve());
     });
+    if (!browser) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([
-      browser?.close().catch(() => undefined),
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, BROWSER_CLOSE_WAIT_MS);
+    const closed = await Promise.race([
+      browser.close().then(
+        () => true,
+        () => true,
+      ),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), BROWSER_CLOSE_WAIT_MS);
       }),
     ]);
     if (timer) clearTimeout(timer);
+    if (!closed && browserPid !== null) {
+      try {
+        process.kill(browserPid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
+    }
   }, 60_000);
 
   return {
