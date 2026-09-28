@@ -25,9 +25,12 @@ export const INLINE_IMAGE_ADDON_OPTIONS = {
   storageLimit: 64,
   sixelSizeLimit: 16 * 1024 * 1024,
   iipSizeLimit: 16 * 1024 * 1024,
-  // Size reports (CSI 14t / 16t / 18t) let apps size a sixel to the cell
-  // grid. The addon turns them on in windowOptions and never turns them off,
-  // so detachInlineImages restores the previous windowOptions itself.
+  // Size reports (CSI 14t / 16t / 18t) are ON deliberately: the pty carries no
+  // pixel size (TIOCGWINSZ xpixel/ypixel stay 0), so this is how sixel tools
+  // learn the cell size and fit an image to the grid instead of guessing. The
+  // replies carry pixel geometry only; replayed queries are stripped by
+  // replayQuerySanitizer. The addon never turns them off, so
+  // detachInlineImages restores the previous windowOptions itself.
   enableSizeReports: true,
 } as const satisfies Partial<IImageAddonOptions>;
 
@@ -56,12 +59,15 @@ let wasmUsable: boolean | null = null;
  * 'wasm-unsafe-eval' the first image throws a CompileError inside xterm's
  * parser and every byte of output after it is lost. Probing with the
  * smallest valid module (magic + version) fails the same way, so without it
- * the addon is never loaded and images are ignored rather than fatal.
+ * the addon is never loaded and images are ignored rather than fatal. The
+ * probe runs whatever the CSP says: an engine may lack WebAssembly outright
+ * or ignore 'wasm-unsafe-eval'.
  */
 export function canCompileWasm(): boolean {
   if (wasmUsable === null) {
     try {
-      new WebAssembly.Module(new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]));
+      const probe = new WebAssembly.Module(new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]));
+      new WebAssembly.Instance(probe);
       wasmUsable = true;
     } catch (err) {
       console.warn('[wmux:inline-images] WebAssembly is blocked here; inline images stay off', err);

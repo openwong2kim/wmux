@@ -108,8 +108,9 @@ describe('inline image addon (#1641)', () => {
       expect(fresh.getInlineImageAddon(term)).toBeNull();
       expect(await replies(term, '\x1b[c')).toEqual(['\x1b[?1;2c']);
       // An OSC 1337 image is ignored and the text after it still lands.
-      await write(term, '\x1b]1337;File=inline=1:AAAA\x07after');
-      expect(term.buffer.active.getLine(0)?.translateToString(true)).toContain('after');
+      await write(term, '\x1b]1337;File=inline=1:AAAA\x07after-iip\r\n\x1bPq#0!10~\x1b\\after-sixel');
+      expect(term.buffer.active.getLine(0)?.translateToString(true)).toContain('after-iip');
+      expect(term.buffer.active.getLine(1)?.translateToString(true)).toContain('after-sixel');
     } finally {
       spy.mockRestore();
       expect(WebAssembly.Module).toBe(Real);
