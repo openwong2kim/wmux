@@ -111,6 +111,10 @@ const WINDOWS_CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.e
  */
 const LAUNCH_TIMEOUT_MS = 30_000;
 
+/** How long teardown waits for Chrome to exit before leaving it to Playwright's
+ *  exit-time cleanup (see the afterAll below). */
+const BROWSER_CLOSE_WAIT_MS = 10_000;
+
 interface CdpSession {
   send: (method: string, params?: unknown) => Promise<unknown>;
 }
@@ -267,12 +271,28 @@ function harnessFor(mode: (typeof MODES)[number]): Harness {
   // real server does not always fit on a loaded CI runner — observed as
   // "Hook timed out in 10000ms" on #1424's macOS leg, in a suite whose own
   // tests had all passed. Teardown gets the same room `beforeAll` has.
+  //
+  // Even 60 s was not enough on macos-14 (headed leg), because neither step was
+  // bounded by anything but the hook itself: `server.close()` waits for every
+  // keep-alive socket Chrome still holds, and `browser.close()` waits for the
+  // Chrome process to exit. Teardown asserts nothing, so it now drops the
+  // sockets outright and gives the browser a bounded wait — the same "bounded
+  // and swallowed" rule setup follows. Playwright kills any browser it launched
+  // when this worker process exits, so an abandoned close leaks nothing.
   afterAll(async () => {
-    await browser?.close().catch(() => undefined);
+    server?.closeAllConnections();
     await new Promise<void>((resolve) => {
       if (!server) return resolve();
       server.close(() => resolve());
     });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      browser?.close().catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, BROWSER_CLOSE_WAIT_MS);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
   }, 60_000);
 
   return {
