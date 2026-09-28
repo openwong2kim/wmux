@@ -173,4 +173,81 @@ describe('DaemonPTYBridge — #1463 pre-turn silence', () => {
     vi.advanceTimersByTime(5000);
     expect(idle).toEqual([{ sessionId: 'sess-1' }]);
   });
+
+  describe('#1610 — Codex boot (no SessionStart before the first turn)', () => {
+    const BANNER = '\x1b[9;1H│ >_ OpenAI Codex (v0.149.1)            │\r\n';
+    const turn = () => bridge.getTurn(bridge.getAgentStatus());
+    const internals = () => bridge as unknown as { hookSeen: boolean; turnOpen: boolean };
+
+    /** Launch Enter, then the TUI boot paint carrying the banner, then silence. */
+    function bootCodex(): void {
+      bridge.noteInput('codex --no-daemon\r');
+      vi.advanceTimersByTime(300);
+      feed(BANNER + BIG);
+      vi.advanceTimersByTime(5000);
+    }
+
+    it('marks the boot silence pre-turn, and the first prompt runs as a normal turn', () => {
+      const active: unknown[] = [];
+      bridge.on('active', (e) => active.push(e));
+      bootCodex();
+      expect(idle).toEqual([{ sessionId: 'sess-1', preTurn: true }]);
+
+      bridge.noteInput('fix the tests\r');
+      expect(bridge.isPreTurn()).toBe(false);
+      const before = active.length;
+      vi.advanceTimersByTime(100);
+      feed(BIG);
+      expect(active.length).toBe(before + 1); // Running on the first output
+      expect(turn().state).toBe('running');
+      vi.advanceTimersByTime(5000);
+      expect(idle.at(-1)).toEqual({ sessionId: 'sess-1' });
+    });
+
+    it('marks every launch in the pane, not only the one that opened the gate', () => {
+      bootCodex();
+      bridge.noteInput('fix the tests\r');
+      vi.advanceTimersByTime(3100);
+      feed(BIG);
+      vi.advanceTimersByTime(5000);
+      expect(idle.at(-1)).toEqual({ sessionId: 'sess-1' });
+
+      // Ctrl+C, shell prompt back, Codex launched again in the same pane.
+      feed('\x1b]133;D;0\x07\x1b]133;A\x07% ');
+      bootCodex();
+      expect(idle.at(-1)).toEqual({ sessionId: 'sess-1', preTurn: true });
+    });
+
+    it('leaves the running episode and hook state alone (#1615)', () => {
+      bridge.noteInput('codex --no-daemon\r');
+      feed('\x1b]133;C\x07'); // shell integration: the launch ran, its episode ended
+      const launch = turn();
+      vi.advanceTimersByTime(300);
+      feed(BANNER + BIG);
+      expect(turn().id).toBe(launch.id);
+      expect(internals().hookSeen).toBe(false);
+
+      // A hookless Codex pane: the detector settle still closes the episode.
+      vi.advanceTimersByTime(5000);
+      bridge.noteInput('fix the tests\r');
+      const first = turn();
+      expect(first.id).not.toBe(launch.id);
+      vi.advanceTimersByTime(100);
+      feed(BIG);
+      bridge.noteAgentStatus('complete');
+      expect(internals().turnOpen).toBe(false);
+      bridge.noteInput('next\r');
+      expect(turn().id).not.toBe(first.id);
+    });
+
+    it('ignores the banner row printed by another agent', () => {
+      feed('Claude Code v2.1.172\n  bypass permissions on\n'); // Claude owns the pane
+      bridge.noteInput('show the codex banner\r');
+      vi.advanceTimersByTime(300);
+      feed('\r\x1b[5C\x1b[1B>_ OpenAI Codex (v0.149.1) and\r' + BIG);
+      expect(bridge.isPreTurn()).toBe(false);
+      vi.advanceTimersByTime(5000);
+      expect(idle.at(-1)).toEqual({ sessionId: 'sess-1' });
+    });
+  });
 });

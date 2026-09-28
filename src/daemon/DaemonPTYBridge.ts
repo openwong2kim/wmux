@@ -4,7 +4,7 @@ import type { IPty } from 'node-pty';
 import type { AgentStatus } from '../shared/types';
 import { OscParser } from '../main/pty/OscParser';
 import { TerminalNotificationParser } from '../main/pty/oscNotification';
-import { AgentDetector, type AgentEventStatus } from '../main/pty/AgentDetector';
+import { AgentDetector, drawsCodexBanner, type AgentEventStatus } from '../main/pty/AgentDetector';
 import { ActivityMonitor } from '../main/pty/ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from '../main/pty/cwdDetect';
 import { sanitizeTitle } from '../main/pty/titleDetect';
@@ -628,6 +628,18 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /**
+   * #1610 — a Codex session booted (its banner was drawn). Codex fires no
+   * SessionStart before its first turn, so this stands in for one: the pane is
+   * pre-turn until the next turn evidence. Only `preTurn` moves — the episode
+   * and `hookSeen` are left exactly as they were, so a hookless pane's detector
+   * settles still count.
+   */
+  private noteCodexBoot(): void {
+    if (this.awaitingHuman) return;
+    this.preTurn = true;
+  }
+
+  /**
    * #1463 — a session started and no turn has started since: no submitted
    * input, no answer, no other hook. Output in this state is the TUI booting
    * (or redrawing after `/clear`), so the silence after it ends nothing and
@@ -966,6 +978,9 @@ export class DaemonPTYBridge extends EventEmitter {
       // 갭). activity보다 뒤에서 처리해 같은 chunk의 명시 상태가 최종 승자가 된다.
       try {
         agentDetector.feed(data);
+        // #1610 — Codex sends no SessionStart until its first turn, so its
+        // banner is the boot signal: the silence after it is not a turn.
+        if (agentDetector.getLastAgent() === 'Codex CLI' && drawsCodexBanner(data)) this.noteCodexBoot();
       } catch {
         // detection 실패가 데이터 포워딩을 막아선 안 된다.
       }

@@ -546,6 +546,21 @@ function isCodexChrome(line: string): boolean {
     || /^Do\s*you\s*trust\s*the\s*contents\s*of\s*this\s*directory\?/.test(v);
 }
 
+/**
+ * #1610 — whether an output chunk draws the Codex banner row
+ * (`│ >_ OpenAI Codex (v…) │`). Codex prints it once per session boot (launch,
+ * resume, `/new`), with or without a prompt, and on both the plain and the
+ * `--remote` TUI. The caller must check the pane is Codex-owned: another
+ * agent's reply can print the same row.
+ */
+export function drawsCodexBanner(chunk: string): boolean {
+  if (!chunk.includes('OpenAI')) return false;
+  return candidateLines(chunk).some((line) => {
+    const stripped = stripAnsi(line);
+    return !SOURCE_LINE_RE.test(stripped) && /^>_\s*OpenAI\s*Codex\b/.test(visibleChrome(stripped));
+  });
+}
+
 function isGrokChrome(line: string): boolean {
   const stripped = stripAnsi(line);
   const v = visibleChrome(stripped);
