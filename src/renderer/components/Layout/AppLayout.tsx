@@ -97,17 +97,25 @@ interface ReconcilePtySession extends DeadPaneSessionSnapshot {
   createdAt?: string;
 }
 
-/** #1210 — drop a pane's detected agent identity once we know the TUI is gone. */
+/**
+ * #1210 — drop a pane's detected agent identity once we know the TUI is gone.
+ * #1463 — `requestedAt` is when the snapshot was asked for: only running
+ * evidence older than that is dropped with it, so an agent relaunched while the
+ * answer was in flight keeps its stamp. A dead process with a foreground
+ * command still running may be a relaunch the tracker has not re-armed for yet,
+ * so that case keeps the stamp too.
+ */
 function clearSurfaceAgentsKnownGone(
   agentAlive: Record<string, boolean>,
   commandRunning: Record<string, boolean>,
+  requestedAt: number,
 ): void {
   const store = useStore.getState();
   for (const [id, alive] of Object.entries(agentAlive)) {
-    if (alive === false) store.clearSurfaceAgent(id);
+    if (alive === false) store.clearSurfaceAgent(id, commandRunning[id] === true ? undefined : requestedAt);
   }
   for (const [id, running] of Object.entries(commandRunning)) {
-    if (running === false) store.clearSurfaceAgent(id);
+    if (running === false) store.clearSurfaceAgent(id, requestedAt);
   }
 }
 
@@ -1675,6 +1683,7 @@ export default function AppLayout() {
   //     respawn re-derives badges without waiting for the next event.
   useEffect(() => {
     const hydrate = () => {
+      const requestedAt = Date.now();
       void window.electronAPI.pty.list().then((sessions) => {
         const snapshot: Record<string, { status: 'armed' | 'stopped'; restartCount: number }> = {};
         // X6 ②: resume hints for recovered interactive agent panes.
@@ -1702,7 +1711,7 @@ export default function AppLayout() {
         // are the two signals that the TUI is gone — drop the identity so
         // auto-name, image-paste `auto`, and the principal registry stop
         // treating the leftover shell as Claude.
-        clearSurfaceAgentsKnownGone(agentAliveSnapshot, commandRunningSnapshot);
+        clearSurfaceAgentsKnownGone(agentAliveSnapshot, commandRunningSnapshot, requestedAt);
         seedSurfaceAgentsFromProcess(sessions, agentAliveSnapshot, commandRunningSnapshot);
         // 4d (channels): seed agent identity for panes the user has NOT
         // visited yet, so recovered agents show up as invite/mention
@@ -1763,6 +1772,7 @@ export default function AppLayout() {
   // note). One in-memory list RPC per 15s; negligible against the daemon idle diet.
   useEffect(() => {
     const refreshBindings = () => {
+      const requestedAt = Date.now();
       void window.electronAPI.pty.list().then((sessions) => {
         const snapshot: Record<string, ResumeBinding> = {};
         // OSC 133 shell state rides the same poll — keeps the chip's authoritative
@@ -1779,7 +1789,7 @@ export default function AppLayout() {
         useStore.getState().hydrateResumeBindings(snapshot);
         useStore.getState().hydrateCommandRunning(cmdSnapshot);
         useStore.getState().hydrateAgentAlive(agentAliveSnapshot);
-        clearSurfaceAgentsKnownGone(agentAliveSnapshot, cmdSnapshot);
+        clearSurfaceAgentsKnownGone(agentAliveSnapshot, cmdSnapshot, requestedAt);
         // An agent relaunched after boot (the Resume pill) is attributed by
         // the daemon seconds later; this tick is what brings its row back.
         seedSurfaceAgentsFromProcess(sessions, agentAliveSnapshot, cmdSnapshot);

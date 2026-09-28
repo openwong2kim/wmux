@@ -195,7 +195,8 @@ export interface PaneSlice {
   // Transient — never persisted (buildSessionData allowlist excludes it).
   surfaceAgent: Record<string, { name: string; status: AgentStatus; slug?: AgentSlug }>;
   setSurfaceAgent: (ptyId: string, name: string | undefined, status: AgentStatus | undefined, slug?: AgentSlug) => void;
-  clearSurfaceAgent: (ptyId: string) => void;
+  /** `evidenceBefore`: also drop the running stamp when it is no newer (#1463). */
+  clearSurfaceAgent: (ptyId: string, evidenceBefore?: number) => void;
   // P2 — per-pane user label (rename) mirror, keyed by paneId. Volatile and
   // never persisted (buildSessionData allowlist excludes it; MetadataStore /
   // metadata.json is the durable source). Fed by the pane.metadata.changed
@@ -690,16 +691,19 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     };
   }),
 
-  clearSurfaceAgent: (ptyId) => set((state: StoreState) => {
+  clearSurfaceAgent: (ptyId, evidenceBefore) => set((state: StoreState) => {
     if (!ptyId) return;
     delete state.surfaceAgent[ptyId];
     // #1463 — the agent is gone, so its byte/activity evidence is too. Fleet
     // rows are per pane, not per agent: a leftover running stamp kept "Turn in
     // progress" there for up to 120 s after the roster row had already dropped.
-    // The turn latch is left alone: this runs off a 15 s liveness snapshot that
-    // can be stale for an agent just relaunched in the pane, and main's settle
-    // edges already withdraw the latch when the agent really is gone.
-    delete state.surfaceActivityAt[ptyId];
+    // Only evidence from before the liveness snapshot was taken: a newer stamp
+    // belongs to whatever runs in the pane now. The turn latch is left alone:
+    // main's settle edges withdraw it when the agent really is gone.
+    const at = state.surfaceActivityAt[ptyId];
+    if (evidenceBefore !== undefined && at !== undefined && at <= evidenceBefore) {
+      delete state.surfaceActivityAt[ptyId];
+    }
   }),
 
   paneLabel: {},

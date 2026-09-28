@@ -30,7 +30,7 @@ const metadataHandlerMocks = vi.hoisted(() => {
       }
       if (payload.ptyId) {
         if (payload.settled === true) runningClaim.delete(payload.ptyId);
-        else if (payload.agentStatus === 'running' || payload.activity) runningClaim.add(payload.ptyId);
+        else if (payload.agentStatus === 'running') runningClaim.add(payload.ptyId);
       }
     },
   );
@@ -536,6 +536,18 @@ describe('DaemonNotificationRouter — #1463 withdraws an unlatched running stam
     captured.active?.({ sessionId: PTY, agentName: 'Claude Code' });
     captured.idle?.({ sessionId: PTY, preTurn: true });
     expect(lastPatch()).toMatchObject({ agentStatus: 'idle', settled: true });
+    // Status only: the live agent's identity is not blanked.
+    expect(lastPatch()).not.toHaveProperty('agentName');
+    router.stop();
+  });
+
+  it('does not swallow the running edge of a turn submitted right after the settle', () => {
+    const { router, captured } = makeRouter(stubHookRouter(false));
+    captured.active?.({ sessionId: PTY, agentName: 'Claude Code' });
+    captured.idle?.({ sessionId: PTY, preTurn: true });
+    broadcastMetadataUpdateMock.mockClear();
+    captured.active?.({ sessionId: PTY, agentName: 'Claude Code' });
+    expect(lastPatch()?.agentStatus).toBe('running');
     router.stop();
   });
 
@@ -565,20 +577,15 @@ describe('DaemonNotificationRouter — #1463 withdraws an unlatched running stam
     router.stop();
   });
 
-  it('settles an unlatched, byte-idle pane when its shell is back at the prompt', () => {
-    // Codex ran (byte 'running'), went quiet (unmarked idle), then Ctrl+C
-    // ended it and the shell drew its prompt.
+  it('does not settle an unlatched pane on a prompt marker alone', () => {
+    // A nested shell inside a quiet byte-heuristic turn can print the same
+    // marker. Only process truth (the exit edge below) proves the agent gone.
     const { router, captured } = makeRouter(stubHookRouter(false));
     captured.active?.({ sessionId: PTY, agentName: 'Codex' });
     captured.idle?.({ sessionId: PTY });
     broadcastMetadataUpdateMock.mockClear();
 
     captured.prompt?.({ sessionId: PTY, event: { type: 'command_end', ts: 1, byteOffset: 10, exitCode: 130 } });
-    expect(lastPatch()).toMatchObject({ agentStatus: 'idle', settled: true });
-
-    // Once withdrawn there is nothing left to settle: the next prompt is quiet.
-    broadcastMetadataUpdateMock.mockClear();
-    captured.prompt?.({ sessionId: PTY, event: { type: 'prompt_start', ts: 2, byteOffset: 20 } });
     expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
     router.stop();
   });

@@ -2,8 +2,9 @@
 // anyone prompted it: its TUI boot burst lit the pane, and the byte-silence
 // idle that followed was unmarked, so the renderer kept its 120 s running
 // stamp. The bridge now says when that silence came before any turn, so main
-// can settle it. Replays the daemon's own wiring: the SessionStart hook lands
-// as an authoritative `running` edge followed by `noteSessionStart()`.
+// can settle it. Replays the daemon's own wiring: a SessionStart hook goes to
+// `noteSessionStart(signal.ts, source)`, every other hook to
+// `noteAgentStatus(status, true)`.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { IPty } from 'node-pty';
 import { DaemonPTYBridge } from '../DaemonPTYBridge';
@@ -45,9 +46,23 @@ describe('DaemonPTYBridge — #1463 pre-turn silence', () => {
   });
 
   /** The daemon's hook wiring for SessionStart (daemon/index.ts emitAgentEvent). */
-  function sessionStart(): void {
-    bridge.noteAgentStatus('running', true);
-    bridge.noteSessionStart();
+  function sessionStart(source = 'startup', firedAt = Date.now()): void {
+    bridge.noteSessionStart(firedAt, source);
+  }
+
+  function detector() {
+    const d = (bridge as unknown as {
+      agentDetector: { callbacks: Array<(e: { agent: string; status: string; message: string }) => void> };
+    }).agentDetector;
+    return (status: string) => d.callbacks.forEach((cb) => cb({ agent: 'Claude Code', status, message: '' }));
+  }
+
+  /** Boot paint, then byte silence: the idle event it produced, if any. */
+  function bootSilence() {
+    const before = idle.length;
+    feed(BIG);
+    vi.advanceTimersByTime(5000);
+    return idle.slice(before);
   }
 
   it('marks the silence after a boot burst, and stops once a prompt is submitted', () => {
@@ -68,11 +83,7 @@ describe('DaemonPTYBridge — #1463 pre-turn silence', () => {
   it('reports the agent idle prompt before any turn as pre-turn silence', () => {
     // Live: Claude's boot paint ends on its idle footer, the detector reports
     // `waiting`, and that status ends the byte cycle — no silence idle follows.
-    const detector = (bridge as unknown as {
-      agentDetector: { callbacks: Array<(e: { agent: string; status: string; message: string }) => void> };
-    }).agentDetector;
-    const detect = (status: string) =>
-      detector.callbacks.forEach((cb) => cb({ agent: 'Claude Code', status, message: '' }));
+    const detect = detector();
 
     bridge.noteInput('claude\r');
     vi.advanceTimersByTime(300);
@@ -87,6 +98,62 @@ describe('DaemonPTYBridge — #1463 pre-turn silence', () => {
     vi.advanceTimersByTime(100);
     detect('waiting');
     expect(idle).toHaveLength(1);
+  });
+
+  it('reports it when SessionStart lands AFTER the boot already ended on the idle prompt', () => {
+    const detect = detector();
+    bridge.noteInput('claude\r');
+    vi.advanceTimersByTime(300);
+    feed(BIG);
+    detect('waiting'); // no session start yet: nothing to say
+    expect(idle).toEqual([]);
+    sessionStart();
+    expect(idle).toEqual([{ sessionId: 'sess-1', preTurn: true }]);
+  });
+
+  it('does not re-report the idle prompt on a pane an earlier status already settled', () => {
+    const detect = detector();
+    sessionStart();
+    feed(BIG);
+    detect('waiting');
+    detect('waiting');
+    expect(idle).toHaveLength(1);
+  });
+
+  it('never counts a mid-turn auto-compact SessionStart', () => {
+    bridge.noteInput('fix the tests\r');
+    vi.advanceTimersByTime(300);
+    sessionStart('compact');
+    expect(bootSilence()).toEqual([{ sessionId: 'sess-1' }]);
+  });
+
+  it('ignores a SessionStart without a source (an unknown bridge)', () => {
+    bridge.noteSessionStart(Date.now(), undefined);
+    expect(bootSilence()).toEqual([{ sessionId: 'sess-1' }]);
+  });
+
+  it('ignores a SessionStart that fired before the turn that has since started', () => {
+    // A retried or reordered delivery: the prompt submit arrived first.
+    const firedAt = Date.now();
+    vi.advanceTimersByTime(50);
+    bridge.noteAgentStatus('running', true); // UserPromptSubmit
+    vi.advanceTimersByTime(50);
+    sessionStart('startup', firedAt);
+    expect(bootSilence()).toEqual([{ sessionId: 'sess-1' }]);
+  });
+
+  it('a hook arriving in the same millisecond after SessionStart still ends pre-turn', () => {
+    sessionStart();
+    bridge.noteAgentStatus('running', true); // UserPromptSubmit, same ms
+    expect(bridge.isPreTurn()).toBe(false);
+  });
+
+  it('a duplicate delivery of the same SessionStart keeps the pre-turn state', () => {
+    const firedAt = Date.now();
+    sessionStart('startup', firedAt);
+    vi.advanceTimersByTime(200);
+    sessionStart('startup', firedAt);
+    expect(bridge.isPreTurn()).toBe(true);
   });
 
   it('never marks silence on a pane whose agent reported no session start', () => {

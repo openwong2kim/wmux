@@ -3600,9 +3600,12 @@ function registerRpcHandlers(
           ? data.signal.ts
           : undefined;
         const hookBridge = sessionManager.getSession(sessionId)?.bridge;
-        hookBridge?.noteAgentStatus(data.status, true, questionAt);
-        // #1463 — after the edge above, so the session start is the newer stamp.
-        if (data.signal.kind === 'agent.session_start') hookBridge?.noteSessionStart();
+        // #1463 — SessionStart applies the same edge, then may mark the pane pre-turn.
+        if (data.signal.kind === 'agent.session_start') {
+          hookBridge?.noteSessionStart(data.signal.ts, data.signal.payload?.['source']);
+        } else {
+          hookBridge?.noteAgentStatus(data.status, true, questionAt);
+        }
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
         // Phone liveness header. The desktop reads pane state off this same

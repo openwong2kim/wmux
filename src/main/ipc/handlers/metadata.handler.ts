@@ -58,8 +58,9 @@ const lastBroadcastAgentStatus = new Map<string, AgentStatus>();
 // status funnel so detector/hook/local/daemon paths cannot drift.
 const lastBroadcastAgentName = new Map<string, string>();
 // #1463 — PTYs the renderer may still paint 'running' from: a 'running' status
-// or an activity line went out and no settle has withdrawn it since. The
-// renderer keeps such a stamp for up to 120 s, through any unmarked idle.
+// went out and no settle has withdrawn it since. The renderer keeps such a
+// stamp for up to 120 s, through any unmarked idle. Cleared with the rest of
+// a PTY's record (clearLastBroadcastAgentStatus) on every pane teardown.
 const runningClaimOutstanding = new Set<string>();
 
 /** Whether a 'running' claim went out for this PTY that no settle has withdrawn. */
@@ -112,7 +113,7 @@ export function broadcastMetadataUpdate(
   }
   if (payload.ptyId) {
     if (payload.settled === true) runningClaimOutstanding.delete(payload.ptyId);
-    else if (payload.agentStatus === 'running' || payload.activity) runningClaimOutstanding.add(payload.ptyId);
+    else if (payload.agentStatus === 'running') runningClaimOutstanding.add(payload.ptyId);
   }
   if (payload.ptyId && payload.agentName !== undefined) {
     if (payload.agentName) lastBroadcastAgentName.set(payload.ptyId, payload.agentName);

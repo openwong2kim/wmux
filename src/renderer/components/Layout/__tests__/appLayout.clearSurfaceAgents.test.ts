@@ -28,10 +28,10 @@ describe('AppLayout clearSurfaceAgents wiring (#1210 / #1228)', () => {
       expect(clearAt).toBeGreaterThan(-1);
     }
     expect(source).toMatch(
-      /clearSurfaceAgentsKnownGone\(agentAliveSnapshot, commandRunningSnapshot\)/,
+      /clearSurfaceAgentsKnownGone\(agentAliveSnapshot, commandRunningSnapshot, requestedAt\)/,
     );
     expect(source).toMatch(
-      /clearSurfaceAgentsKnownGone\(agentAliveSnapshot, cmdSnapshot\)/,
+      /clearSurfaceAgentsKnownGone\(agentAliveSnapshot, cmdSnapshot, requestedAt\)/,
     );
   });
 

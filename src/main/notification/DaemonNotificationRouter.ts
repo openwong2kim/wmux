@@ -6,7 +6,6 @@ import { dispatchNotification } from './dispatchNotification';
 import { toastManager } from './ToastManager';
 import {
   clearPty as clearSuppression,
-  markSettled,
   recentlySettled,
   SETTLE_REDRAW_GUARD_MS,
 } from './idleSuppression';
@@ -1071,18 +1070,12 @@ export class DaemonNotificationRouter {
      * is proof the turn is over either way.
      */
     const settleAtShellPrompt = (ptyId: string) => {
-      const latched = settleHookTurnToIdle(
+      settleHookTurnToIdle(
         ptyId,
         this.getHookRouter?.() ?? null,
         this.getWindow(),
         this.now(),
       );
-      // #1463 — an unlatched pane (a byte-heuristic agent, or a hook agent
-      // between turns) can still hold the renderer's 120 s running stamp. A
-      // shell back at its prompt proves that agent is gone, so withdraw it.
-      if (!latched && holdsUnsettledRunningClaim(ptyId)) {
-        broadcastSettledIdle(ptyId, this.getWindow(), this.now());
-      }
     };
 
     // OSC 133 D markers from daemon mode. Mirror of PTYBridge.OscParser
@@ -1207,13 +1200,14 @@ export class DaemonNotificationRouter {
       // of holding it 120 s. It skips the deference window below: the recent
       // "precise" event there is the detector's withheld idle-prompt `waiting`,
       // which never reached the renderer. An unread result still stands.
+      // Status only: no agentName (it is the live agent's identity), and no
+      // redraw guard — the byte cycle already ended, and the guard would
+      // swallow the one `running` edge of a turn submitted right after.
       if (payload.preTurn === true) {
         if (holdsUnreadResult(payload.sessionId)) return;
-        markSettled(payload.sessionId, this.now());
         broadcastMetadataUpdate(this.getWindow(), {
           ptyId: payload.sessionId,
           agentStatus: 'idle',
-          agentName: '',
           settled: true,
         });
         return;

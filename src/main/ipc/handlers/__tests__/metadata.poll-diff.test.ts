@@ -193,8 +193,10 @@ describe('agent identity mirror', () => {
     expect(hasOutstandingRunningClaim('pty-claim')).toBe(true);
     broadcastMetadataUpdate(null, { ptyId: 'pty-claim', agentStatus: 'idle', settled: true });
     expect(hasOutstandingRunningClaim('pty-claim')).toBe(false);
+    // An activity line alone (a late transcript line on an idle pane) is no claim.
     broadcastMetadataUpdate(null, { ptyId: 'pty-claim', activity: 'Edit foo.ts' });
-    expect(hasOutstandingRunningClaim('pty-claim')).toBe(true);
+    expect(hasOutstandingRunningClaim('pty-claim')).toBe(false);
+    broadcastMetadataUpdate(null, { ptyId: 'pty-claim', agentStatus: 'running' });
     clearLastBroadcastAgentStatus('pty-claim');
     expect(hasOutstandingRunningClaim('pty-claim')).toBe(false);
   });

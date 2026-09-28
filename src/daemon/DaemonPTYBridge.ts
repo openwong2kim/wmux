@@ -116,8 +116,15 @@ export class DaemonPTYBridge extends EventEmitter {
   private explicitTerminalStatus = false;
   private submittedTurnPending = false;
   private lastTurnStartedAt = 0;
-  /** #1463 — when the agent's SessionStart hook last landed (see isPreTurn). */
-  private sessionStartedAt = 0;
+  /** #1463 — a session started and no turn has since (see isPreTurn). */
+  private preTurn = false;
+  /** #1463 — arrival time of the last turn evidence: submitted input, an
+   *  answer, or any hook other than SessionStart. A SessionStart that FIRED
+   *  before it (a late or retried delivery) says nothing about now. */
+  private turnEvidenceAt = 0;
+  /** #1463 — the SessionStart sources that begin a session with no turn.
+   *  `compact` fires mid-turn (auto-compact) and must never count. */
+  private static readonly PRE_TURN_SOURCES: ReadonlySet<string> = new Set(['startup', 'resume', 'clear']);
 
   /**
    * Which terminal status settled the pane, while one has. Read only to keep
@@ -321,6 +328,8 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private startAnsweredTurn(wasAwaiting: boolean, reason: 'input' | 'screen-cleared'): void {
     this.lastTurnStartedAt = Date.now();
+    this.preTurn = false;
+    this.turnEvidenceAt = this.lastTurnStartedAt;
 
     this.explicitTerminalStatus = false;
     this.settledStatus = null;
@@ -369,6 +378,12 @@ export class DaemonPTYBridge extends EventEmitter {
    * explicit running activity opens the gate again for autonomous work.
    */
   noteAgentStatus(status: AgentEventStatus, authoritative = false, questionAt?: number): void {
+    // #1463 — any hook is turn evidence. SessionStart re-sets `preTurn` after
+    // its own edge (noteSessionStart); detector statuses are not evidence.
+    if (authoritative) {
+      this.preTurn = false;
+      this.turnEvidenceAt = Date.now();
+    }
     if (status === 'running') {
       if (authoritative) this.lastTurnStartedAt = Date.now();
       this.explicitTerminalStatus = false;
@@ -442,23 +457,40 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /**
-   * #1463 — the agent's SessionStart hook landed. Called after the hook's own
-   * `running` edge has stamped `lastTurnStartedAt`, so the session start is
-   * never older than it.
+   * #1463 — the agent's SessionStart hook (fired at `signalTs`). Applies the
+   * hook's own `running` edge like every other hook, then marks the pane
+   * pre-turn — but only for a source that begins a session with no turn, and
+   * only when the hook fired after the last turn evidence arrived.
+   *
+   * If the boot already ended on the detector's idle prompt, no silence idle
+   * will follow, so the pre-turn idle is reported here.
    */
-  noteSessionStart(): void {
-    this.sessionStartedAt = Date.now();
+  noteSessionStart(signalTs: number, source: unknown): void {
+    const atIdlePrompt = this.explicitTerminalStatus && this.settledStatus === 'waiting' && !this.awaitingHuman;
+    const { preTurn, turnEvidenceAt } = this;
+    this.noteAgentStatus('running', true);
+    // The session start is not turn evidence itself: a duplicate delivery of
+    // it must neither clear nor re-set the state the first one left.
+    this.preTurn = preTurn;
+    this.turnEvidenceAt = turnEvidenceAt;
+    if (typeof source !== 'string' || !DaemonPTYBridge.PRE_TURN_SOURCES.has(source)) {
+      this.preTurn = false;
+      return;
+    }
+    if (signalTs < turnEvidenceAt) return;
+    this.preTurn = true;
+    if (atIdlePrompt && this.sessionId) this.emit('idle', { sessionId: this.sessionId, preTurn: true });
   }
 
   /**
    * #1463 — a session started and no turn has started since: no submitted
-   * input, no answer, no hook work. Output in this state is the TUI booting
+   * input, no answer, no other hook. Output in this state is the TUI booting
    * (or redrawing after `/clear`), so the silence after it ends nothing and
    * main may settle it. The Enter that launched the agent came before its
    * SessionStart, so it does not count as a turn.
    */
   isPreTurn(): boolean {
-    return this.sessionStartedAt > 0 && this.sessionStartedAt >= this.lastTurnStartedAt;
+    return this.preTurn;
   }
 
   private scanSubmittedInput(data: string): boolean {
@@ -689,13 +721,15 @@ export class DaemonPTYBridge extends EventEmitter {
     // Agent detection. Apply status priority before forwarding the event so a
     // same-chunk/full-screen redraw cannot race a terminal state back to running.
     this.agentUnsubscribe = agentDetector.onEvent((agentEvent) => {
+      const wasSettled = this.explicitTerminalStatus;
       this.noteAgentStatus(agentEvent.status);
       this.emit('agent', { sessionId, event: agentEvent });
       // #1463 — the agent's idle prompt, before any turn. The status above
       // ends the byte cycle, so no silence idle follows it, and main withholds
       // a detector `waiting` on a hook-reporting pane: without this the boot
-      // burst's running stamp was the pane's last word for 120 s.
-      if (agentEvent.status === 'waiting' && this.isPreTurn()) {
+      // burst's running stamp was the pane's last word for 120 s. Same gate as
+      // the silence idle: a pane an earlier status already settled is left be.
+      if (agentEvent.status === 'waiting' && !wasSettled && this.isPreTurn()) {
         this.emit('idle', { sessionId, preTurn: true });
       }
     });
@@ -937,7 +971,8 @@ export class DaemonPTYBridge extends EventEmitter {
     this.completedShellCommand = false;
     this.settledStatus = null;
     this.settledAtMs = 0;
-    this.sessionStartedAt = 0;
+    this.preTurn = false;
+    this.turnEvidenceAt = 0;
     this.awaitingHuman = false;
     this.oscParser = null;
     this.modeTracker = null;
