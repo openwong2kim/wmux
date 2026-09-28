@@ -10,7 +10,7 @@ import { buildAgentLaunch } from '../web/agentLaunch';
 import { screenBlocksChatSend } from '../transcript/chatScreenGate';
 import { deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { codexRuntimeEnv, terminalLaunchCommand } from '../transcript/terminalLaunch';
-import type { TerminalChatService } from '../transcript/TerminalChatService';
+import type { TerminalChatFailure, TerminalChatService } from '../transcript/TerminalChatService';
 import type { ChatSessionService } from './ChatSessionService';
 import { ChatSendReceiptStore, type StoredChatOutcome } from './ChatSendReceiptStore';
 import {
@@ -53,7 +53,7 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   /** Chat-refined agent state (reads the transcript tail for Claude/Codex). */
   chatAgentState(id: string): ChatAgentState;
   projector: { status(id: string): TranscriptStatus; snapshot(id: string, opts?: { before: number }): TranscriptPage | null };
-  terminalChat(): Pick<TerminalChatService, 'read' | 'send' | 'subscribe' | 'unsubscribe'> & Partial<Pick<TerminalChatService, 'registered'>> | null;
+  terminalChat(): Pick<TerminalChatService, 'read' | 'send' | 'subscribe' | 'unsubscribe'> & Partial<Pick<TerminalChatService, 'inspect'>> | null;
   managed(): Pick<ChatSessionService, 'has' | 'status' | 'snapshot' | 'send' | 'conversationEpoch'> | null;
   /**
    * Null while the approval registry is not wired: treated as "may be pending".
@@ -89,7 +89,7 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
 /** How the desktop RPCs dispatch a pane (contract §2.1). */
 export type ChatRoute =
   | { kind: 'native'; read: NonNullable<Awaited<ReturnType<TerminalChatService['read']>>> }
-  | { kind: 'opencode' } | { kind: 'managed' } | { kind: 'file' };
+  | { kind: 'opencode'; failure?: TerminalChatFailure } | { kind: 'managed' } | { kind: 'file' };
 
 export interface NativeChatBridge extends ChatBridge {
   route(id: string): Promise<ChatRoute>;
@@ -129,10 +129,12 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   const sending = new Set<string>();
 
   const route = async (id: string): Promise<ChatRoute> => {
-    const read = await deps.terminalChat()?.read(id);
+    const service = deps.terminalChat();
+    const inspected = service?.inspect ? await service.inspect(id) : { read: await service?.read(id) ?? null };
+    const read = 'read' in inspected ? inspected.read : null;
     if (read) return { kind: 'native', read };
     const live = deps.agentState(id);
-    if (slugOf(live) === 'opencode') return { kind: 'opencode' };
+    if (slugOf(live) === 'opencode') return { kind: 'opencode', ...('failure' in inspected ? { failure: inspected.failure } : {}) };
     if (!live.agentName && !deps.projector.status(id).available && deps.managed()?.has(id)) return { kind: 'managed' };
     return { kind: 'file' };
   };
@@ -199,9 +201,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       return { source: 'tui', status, page, epoch: tuiHistoryEpoch(rawEpoch), rawEpoch };
     }
     if (found.kind === 'opencode') {
-      const registered = await deps.terminalChat()?.registered?.(id);
-      return { source: 'none', status: { available: false, reason: 'unavailable' }, launch: await preview(id, true),
-        ...(registered === undefined ? {} : { cause: registered ? 'opencode-plugin-unreachable' : 'opencode-plugin-missing' }) };
+      const cause = found.failure === 'no-record' ? 'opencode-plugin-missing' as const
+        : found.failure === 'transport-refused' ? 'opencode-plugin-unreachable' as const : undefined;
+      return { source: 'none', status: { available: false, reason: 'unavailable' }, launch: await preview(id, true), ...(cause ? { cause } : {}) };
     }
     if (found.kind === 'managed') {
       const managed = deps.managed();

@@ -34,10 +34,16 @@ describe('native TUI attachment', () => {
   it('refuses a descriptor from another process before any network request', async () => fixture(async f => {
     f.setOwner(456); expect(await f.service.read('pane')).toBeNull(); expect(f.requests).toEqual([]);
   }));
-  it('reports a plugin record only for the live owner, without contacting the plugin', async () => fixture(async f => {
-    expect(await f.service.registered('pane')).toBe(true);
-    f.setOwner(456); expect(await f.service.registered('pane')).toBe(false);
-    f.setOwner(123); await fs.rm(f.file); expect(await f.service.registered('pane')).toBe(false);
+  it('names each read failure: owner, missing, invalid and refused records', async () => fixture(async f => {
+    f.setOwner(456); expect(await f.service.inspect('pane')).toEqual({ failure: 'owner-mismatch' });
+    f.setOwner(123);
+    const valid = await fs.readFile(f.file, 'utf8');
+    await fs.writeFile(f.file, '{not json'); expect(await f.service.inspect('pane')).toEqual({ failure: 'invalid-record' });
+    const closed = createServer(); await new Promise<void>(resolve => closed.listen(0, '127.0.0.1', resolve));
+    const port = (closed.address() as { port: number }).port; await new Promise<void>(resolve => closed.close(() => resolve()));
+    await fs.writeFile(f.file, JSON.stringify({ ...JSON.parse(valid), port }));
+    expect(await f.service.inspect('pane')).toEqual({ failure: 'transport-refused' });
+    await fs.rm(f.file); expect(await f.service.inspect('pane')).toEqual({ failure: 'no-record' });
     expect(f.requests).toEqual([]);
   }));
   it('discards a response when the pane owner changes during the request', async () => fixture(async f => {

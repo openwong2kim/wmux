@@ -68,9 +68,10 @@ export function projectChatBlocked(
  * Why a pane has no readable conversation, when the daemon can tell. Sent on
  * `/turns` as `cause` beside the unchanged `reason`; a client treats an
  * unknown or absent value as plain "unavailable".
- * - `opencode-plugin-missing`: OpenCode runs in the pane, but no wmux TUI plugin
- *   registered for that process (not installed, not loaded, or a stale record).
- * - `opencode-plugin-unreachable`: the plugin registered for the process but did not answer.
+ * - `opencode-plugin-missing`: OpenCode runs in the pane and no wmux TUI plugin
+ *   record exists for it (plugin not installed or not loaded).
+ * - `opencode-plugin-unreachable`: the pane's plugin record is valid, but its port refused the connection.
+ * Any other failure (stale or invalid record, owner change, a bad answer) sends no `cause`.
  */
 export type ChatUnavailableCause = 'opencode-plugin-missing' | 'opencode-plugin-unreachable';
 

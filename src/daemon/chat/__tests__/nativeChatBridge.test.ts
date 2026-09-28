@@ -105,15 +105,20 @@ describe('resolve', () => {
       launch: { reason: 'agent-running' } });
   });
 
-  it('names why an OpenCode pane is unreadable without changing its reason', async () => {
+  it('names why an OpenCode pane is unreadable from the read itself, without changing its reason', async () => {
     const f = fixture(); f.state.agent.agentName = 'OpenCode';
-    let registered = false;
-    f.deps.terminalChat = () => ({ read: async () => null, send: f.tuiSend as never, subscribe: f.subscribe, unsubscribe: f.unsubscribe,
-      registered: async () => registered });
+    let failure: 'no-record' | 'transport-refused' | 'invalid-record' | 'owner-mismatch' | 'error' = 'no-record';
+    const read = vi.fn(async () => null);
+    f.deps.terminalChat = () => ({ read, send: f.tuiSend as never, subscribe: f.subscribe, unsubscribe: f.unsubscribe,
+      inspect: async () => ({ failure }) });
     const bridge = createChatBridge(f.deps);
     expect(await bridge.resolve('pane')).toMatchObject({ source: 'none', status: { reason: 'unavailable' }, cause: 'opencode-plugin-missing' });
-    registered = true;
+    failure = 'transport-refused';
     expect(await bridge.resolve('pane')).toMatchObject({ cause: 'opencode-plugin-unreachable' });
+    for (failure of ['invalid-record', 'owner-mismatch', 'error'] as const) {
+      expect(await bridge.resolve('pane')).not.toHaveProperty('cause');
+    }
+    expect(read).not.toHaveBeenCalled();
   });
 
   it('picks a managed record only with no live agent and no transcript', async () => {
