@@ -106,24 +106,26 @@ describe('deckWorkStore — ownership lifecycle', () => {
   });
 
   it('caps the follow-up list, keeping the most recent', () => {
-    // Seed a record already at the 12-item cap with one raw write, then append
-    // once through the store. Appending 20 times through the store meant 21
-    // durable, rotating atomic writes, which timed out on loaded Windows
-    // runners; the cap is crossed by the single append either way.
+    // Seed a record just under the 12-item cap with one raw write, then append
+    // three times through the store: the first append fills the list, the next
+    // two cross the cap, each through its own load/save cycle. Appending 20
+    // times through the store meant 21 durable, rotating atomic writes, which
+    // timed out on loaded Windows runners.
     const work = beginOrContinueDeckWork('ws-1', 'objective', dir)!.work;
-    const full = Array.from({ length: 12 }, (_, i) => `step ${i + 1}`);
+    const seeded = Array.from({ length: 11 }, (_, i) => `step ${i + 1}`);
     writeFileSync(
       getDeckWorkPath(dir),
-      JSON.stringify({ version: 1, active: { 'ws-1': { ...work, followUps: full } } }),
+      JSON.stringify({ version: 1, active: { 'ws-1': { ...work, followUps: seeded } } }),
       'utf8',
     );
-    expect(loadActiveDeckWork('ws-1', dir)!.followUps).toEqual(full);
+    expect(loadActiveDeckWork('ws-1', dir)!.followUps).toEqual(seeded);
 
-    beginOrContinueDeckWork('ws-1', 'step 13', dir);
+    for (let i = 12; i <= 14; i++) beginOrContinueDeckWork('ws-1', `step ${i}`, dir);
     const capped = loadActiveDeckWork('ws-1', dir)!;
     expect(capped.followUps.length).toBeLessThanOrEqual(12);
-    expect(capped.followUps.at(-1)).toBe('step 13');
+    expect(capped.followUps.at(-1)).toBe('step 14');
     expect(capped.followUps).not.toContain('step 1');
+    expect(capped.followUps).not.toContain('step 2');
   });
 
   it('refuses an empty or whitespace-only request', () => {
