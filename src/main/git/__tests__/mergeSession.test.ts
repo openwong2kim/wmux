@@ -102,6 +102,8 @@ describe('detectConflicts — conflict detection (not exit code)', { timeout: GI
     baseOid = g(tpl.repo, ['rev-parse', 'HEAD']).trim();
   });
   afterAll(() => tpl.cleanup());
+  // Template state every copy starts from: main = base → main2 (f.txt "MAIN"),
+  // and branch feat = base → feat (f.txt "FEAT"), so the two conflict on f.txt.
   let scn: ReturnType<typeof makeRepo>;
   beforeEach(() => (scn = makeRepo(tpl.repo)));
   afterEach(() => scn.cleanup());
