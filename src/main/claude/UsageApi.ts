@@ -92,8 +92,16 @@ export async function fetchUsage(
   // wedge the caller's in-flight guard forever.
   const controller = new AbortController();
   const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
+  const toNetworkError = (err: unknown): UsageApiException => {
+    const aborted =
+      (err instanceof Error && err.name === 'AbortError') ||
+      (err instanceof DOMException && err.name === 'AbortError');
+    const message = aborted
+      ? `timed out after ${timeoutMs}ms`
+      : (err instanceof Error ? err.message : 'fetch failed');
+    return new UsageApiException({ kind: 'network', message }, message);
+  };
   let response: Response;
-  let body: string;
   try {
     response = await fetchImpl(ENDPOINT, {
       method: 'GET',
@@ -104,35 +112,41 @@ export async function fetchUsage(
       },
       signal: controller.signal,
     });
-    // Read the body under the same timeout — a stalled body is as much a
-    // hang as a stalled connect. Error bodies are read only to free the
-    // socket and are never kept (they can echo request details).
-    body = await response.text();
   } catch (err) {
-    const aborted =
-      (err instanceof Error && err.name === 'AbortError') ||
-      (err instanceof DOMException && err.name === 'AbortError');
-    const message = aborted
-      ? `timed out after ${timeoutMs}ms`
-      : (err instanceof Error ? err.message : 'fetch failed');
-    throw new UsageApiException({ kind: 'network', message }, message);
-  } finally {
     clearTimeout(abortTimer);
+    throw toNetworkError(err);
   }
 
-  if (response.status === 401 || response.status === 403) {
-    throw new UsageApiException({ kind: 'unauthorized' }, `HTTP ${response.status}`);
-  }
-  if (response.status === 429) {
-    const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'), Date.now());
-    throw new UsageApiException({ kind: 'rate-limited', retryAfterMs }, 'HTTP 429 rate limited');
-  }
+  // The status decides the outcome on its own for every non-2xx answer, so a
+  // body that fails or stalls cannot turn a 401/429 into a network error.
+  // Those bodies are drained in the background only to free the socket and
+  // are never kept (they can echo request details).
   if (!response.ok) {
+    clearTimeout(abortTimer);
+    void response.text().catch(() => { /* ignore */ });
+    if (response.status === 401 || response.status === 403) {
+      throw new UsageApiException({ kind: 'unauthorized' }, `HTTP ${response.status}`);
+    }
+    if (response.status === 429) {
+      const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'), Date.now());
+      throw new UsageApiException({ kind: 'rate-limited', retryAfterMs }, 'HTTP 429 rate limited');
+    }
     const statusText = response.statusText || `status ${response.status}`;
     throw new UsageApiException(
       { kind: 'http', status: response.status, statusText },
       `HTTP ${response.status} ${statusText}`,
     );
+  }
+
+  // 2xx: read the body under the same timeout — a stalled body is as much a
+  // hang as a stalled connect.
+  let body: string;
+  try {
+    body = await response.text();
+  } catch (err) {
+    throw toNetworkError(err);
+  } finally {
+    clearTimeout(abortTimer);
   }
 
   let json: unknown;
@@ -156,8 +170,8 @@ export async function fetchUsage(
  * are primary (utilization is already 0–100); `limits[]` entries of kind
  * `session` / `weekly_all` fill in when those are null. Every
  * `weekly_scoped` limit maps into `scoped`. Unknown or missing fields never
- * throw. Returns null when neither the 5h nor the 7d window is present, so
- * the caller reports an error instead of a silent 0%.
+ * throw. Returns null unless BOTH the 5h and the 7d window are found (from
+ * either source), so the caller reports an error instead of a silent 0%.
  */
 export function parseUsageBody(body: unknown, nowMs: number): UsageSnapshot | null {
   if (!isRecord(body)) return null;
@@ -166,7 +180,7 @@ export function parseUsageBody(body: unknown, nowMs: number): UsageSnapshot | nu
 
   const session = readWindow(body.five_hour) ?? readLimit(findLimit('session'));
   const weekly = readWindow(body.seven_day) ?? readLimit(findLimit('weekly_all'));
-  if (!session && !weekly) return null;
+  if (!session || !weekly) return null;
 
   const scoped: UsageScopedLimit[] = [];
   for (const l of limits) {
@@ -183,10 +197,10 @@ export function parseUsageBody(body: unknown, nowMs: number): UsageSnapshot | nu
   }
 
   const snapshot: UsageSnapshot = {
-    sessionPct: session?.pct ?? 0,
-    sessionResetEpochSec: session?.resetEpochSec ?? 0,
-    weeklyPct: weekly?.pct ?? 0,
-    weeklyResetEpochSec: weekly?.resetEpochSec ?? 0,
+    sessionPct: session.pct,
+    sessionResetEpochSec: session.resetEpochSec,
+    weeklyPct: weekly.pct,
+    weeklyResetEpochSec: weekly.resetEpochSec,
     fetchedAtMs: nowMs,
   };
   if (scoped.length > 0) snapshot.scoped = scoped;
@@ -198,10 +212,11 @@ const RATE_LIMIT_BASE_BACKOFF_MS = 5 * 60 * 1000;
 /** Upper bound for any 429 backoff, Retry-After included. */
 const RATE_LIMIT_MAX_BACKOFF_MS = 60 * 60 * 1000;
 
-/** Backoff after the `consecutive`-th 429 in a row (1-based). Honors the
- *  server's Retry-After when given; both paths cap at 60 min. */
+/** Backoff after the `consecutive`-th 429 in a row (1-based). Honors a
+ *  positive Retry-After; a missing, zero or already-past one falls back to
+ *  the exponential step, so the backoff is never 0 ms. Both cap at 60 min. */
 export function rateLimitBackoffMs(consecutive: number, retryAfterMs: number | null): number {
-  if (retryAfterMs !== null) return Math.min(Math.max(0, retryAfterMs), RATE_LIMIT_MAX_BACKOFF_MS);
+  if (retryAfterMs !== null && retryAfterMs > 0) return Math.min(retryAfterMs, RATE_LIMIT_MAX_BACKOFF_MS);
   const exp = RATE_LIMIT_BASE_BACKOFF_MS * 2 ** Math.max(0, consecutive - 1);
   return Math.min(exp, RATE_LIMIT_MAX_BACKOFF_MS);
 }

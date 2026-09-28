@@ -111,6 +111,7 @@ describe('parseUsageBody (pure)', () => {
   it('maps every weekly_scoped limit; string or missing scope tolerated', () => {
     const body = {
       five_hour: { utilization: 1, resets_at: null },
+      seven_day: { utilization: 2, resets_at: null },
       limits: [
         { kind: 'weekly_scoped', group: 'weekly', percent: 55.2, resets_at: null, scope: 'sonnet' },
         { kind: 'weekly_scoped', percent: 3 },
@@ -133,6 +134,16 @@ describe('parseUsageBody (pure)', () => {
     expect(s.sessionPct).toBe(100);
     expect(s.weeklyPct).toBe(0);
     expect(s.scoped).toBeUndefined();
+  });
+
+  it('only one window found (no fallback for the other) → null, not 0% ok', () => {
+    expect(parseUsageBody({ five_hour: { utilization: 40 }, seven_day: null }, FIXED_NOW)).toBeNull();
+    expect(parseUsageBody({ five_hour: null, seven_day: { utilization: 40 } }, FIXED_NOW)).toBeNull();
+    // ...but the missing one may come from limits[]
+    expect(parseUsageBody(
+      { five_hour: { utilization: 40 }, seven_day: null, limits: [{ kind: 'weekly_all', percent: 7 }] },
+      FIXED_NOW,
+    )?.weeklyPct).toBe(7);
   });
 
   it('all-null windows and no limits → null (caller reports error, not 0%)', () => {
@@ -158,6 +169,9 @@ describe('Retry-After and backoff', () => {
     const MIN = 60_000;
     expect(rateLimitBackoffMs(1, 90_000)).toBe(90_000);
     expect(rateLimitBackoffMs(1, 5 * 60 * MIN)).toBe(60 * MIN);
+    // zero / past Retry-After never means "retry now"
+    expect(rateLimitBackoffMs(1, 0)).toBe(5 * MIN);
+    expect(rateLimitBackoffMs(2, parseRetryAfter(new Date(FIXED_NOW - 5000).toUTCString(), FIXED_NOW))).toBe(10 * MIN);
     expect([1, 2, 3, 4, 5, 9].map((n) => rateLimitBackoffMs(n, null) / MIN)).toEqual([5, 10, 20, 40, 60, 60]);
   });
 });
@@ -195,6 +209,35 @@ describe('fetchUsage (with mocked fetch)', () => {
     const fetchImpl = makeFetch(new Response('slow down', { status: 429, headers: { 'retry-after': '300' } }));
     await expect(fetchUsage(TOKEN, fetchImpl)).rejects.toMatchObject({
       detail: { kind: 'rate-limited', retryAfterMs: 300_000 },
+    });
+  });
+
+  it('decides 429 / 401 by status even when the body read rejects', async () => {
+    const brokenBody = (status: number, headers: Record<string, string> = {}): Response => ({
+      ok: false,
+      status,
+      statusText: '',
+      headers: new Headers(headers),
+      text: () => Promise.reject(new Error('body stream broke')),
+    }) as unknown as Response;
+    await expect(fetchUsage(TOKEN, makeFetch(brokenBody(429, { 'retry-after': '60' })))).rejects.toMatchObject({
+      detail: { kind: 'rate-limited', retryAfterMs: 60_000 },
+    });
+    await expect(fetchUsage(TOKEN, makeFetch(brokenBody(401)))).rejects.toMatchObject({
+      detail: { kind: 'unauthorized' },
+    });
+  });
+
+  it('a 2xx whose body read rejects is a network error', async () => {
+    const res = {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: new Headers(),
+      text: () => Promise.reject(new Error('reset mid-body')),
+    } as unknown as Response;
+    await expect(fetchUsage(TOKEN, makeFetch(res))).rejects.toMatchObject({
+      detail: { kind: 'network', message: 'reset mid-body' },
     });
   });
 

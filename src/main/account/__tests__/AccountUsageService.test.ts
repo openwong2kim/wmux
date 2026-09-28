@@ -199,13 +199,15 @@ describe('AccountUsageService (M2 hook-gated usage)', () => {
     expect(load).not.toHaveBeenCalled();
   });
 
-  it('macOS/unsupported credential read → error status, no crash', async () => {
+  it('unsupported credential read → no crash; automatic skips, manual shows error', async () => {
     const svc = make({
       loadCredential: async () => ({ ok: false, reason: 'unsupported-platform', detail: 'keychain' }),
     });
     svc.setEnabled(true);
     await expect(svc.maybeProbe('A')).resolves.toBeUndefined();
-    expect(svc.getAll().find((e) => e.accountId === 'A')!.status).toBe('error');
+    expect(svc.getAll()).toEqual([]);
+    await svc.refreshNow('A');
+    expect(svc.getAll().find((e) => e.accountId === 'A')?.status).toBe('error');
   });
 
   it('token missing → token-missing status (no error noise)', async () => {
@@ -313,6 +315,55 @@ describe('AccountUsageService refresh-all timer and 429 backoff', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     await svc.refreshNow('A');
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+    svc.dispose();
+  });
+
+  it('hidden → visible while enabled schedules one catch-up pass (cooldown still applies)', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = okFetch();
+    const svc = make({ now: () => Date.now(), fetchImpl, listKnownIds: () => new Set(['A']) });
+    svc.setWindowVisible(false);
+    svc.setEnabled(true);
+    await vi.advanceTimersByTimeAsync(10_000); // initial pass skipped: hidden
+    expect(fetchImpl).not.toHaveBeenCalled();
+    svc.setWindowVisible(true);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    svc.setWindowVisible(false);
+    svc.setWindowVisible(true); // within cooldown → gated
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    svc.dispose();
+  });
+
+  it('unsupported-platform: automatic pass leaves the entry alone, manual refresh surfaces it', async () => {
+    let t = 1000;
+    let cred: LoadResult = OK_CRED;
+    const svc = make({ now: () => t, loadCredential: async () => cred, cooldownMs: 0 });
+    svc.setEnabled(true);
+    await svc.maybeProbe('A');
+    const before = svc.getAll().find((e) => e.accountId === 'A');
+    expect(before?.status).toBe('ok');
+    cred = { ok: false, reason: 'unsupported-platform' };
+    t += 1000;
+    await svc.maybeProbe('A');
+    expect(svc.getAll().find((e) => e.accountId === 'A')).toBe(before);
+    await svc.refreshNow('A');
+    expect(svc.getAll().find((e) => e.accountId === 'A')?.status).toBe('error');
+    svc.dispose();
+  });
+
+  it('toggle turned off during the credential read → nothing is sent', async () => {
+    const d = deferred<LoadResult>();
+    const fetchImpl = okFetch();
+    const svc = make({ loadCredential: () => d.promise, fetchImpl });
+    svc.setEnabled(true);
+    const p = svc.maybeProbe('A');
+    svc.setEnabled(false);
+    d.resolve(OK_CRED);
+    await p;
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(svc.getAll()).toEqual([]);
     svc.dispose();
   });
 });

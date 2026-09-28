@@ -176,7 +176,12 @@ export class AccountUsageService {
   /** Hooked to BrowserWindow show/hide so automatic probes don't burn quota for
    *  a dashboard nobody is looking at. Manual refresh is unaffected. */
   setWindowVisible(visible: boolean): void {
+    const cameBack = visible && !this.windowVisible;
     this.windowVisible = visible;
+    // Hidden → visible while on: one catch-up pass, so numbers that aged while
+    // nobody looked refresh now instead of at the next interval. The usual
+    // cooldown / backoff gates still apply per account.
+    if (cameBack && this.enabled && this.refreshTimer) this.scheduleRefreshAll();
   }
 
   onChange(cb: (entry: AccountUsageEntry) => void): () => void {
@@ -215,7 +220,7 @@ export class AccountUsageService {
     if (prev?.fetchedAtMs != null && this.now() - prev.fetchedAtMs < this.cooldownMs) {
       return;                                  // still fresh — don't re-spend
     }
-    await this.probe(accountId);
+    await this.probe(accountId, true);
   }
 
   /**
@@ -225,18 +230,24 @@ export class AccountUsageService {
    */
   async refreshNow(accountId: string): Promise<void> {
     if (this.inflight.has(accountId)) return;
-    await this.probe(accountId);
+    await this.probe(accountId, false);
   }
 
   /** The actual read-token → fetch-usage → update-cache work. Shared by
-   *  maybeProbe (gated) and refreshNow (ungated). Never throws. */
-  private async probe(accountId: string): Promise<void> {
+   *  maybeProbe (gated, `automatic`) and refreshNow (ungated). Never throws. */
+  private async probe(accountId: string, automatic: boolean): Promise<void> {
     const configDir = this.getConfigDir(accountId);
     if (!configDir) return; // unknown / non-claude account — nothing to probe
     const prev = this.cache.get(accountId);
     this.inflight.add(accountId);
     try {
       const cred = await this.loadCredential(configDir);
+      // The toggle may have gone off while the credential was being read.
+      if (automatic && !this.enabled) return;
+      // A platform that can't read per-account credentials is not an account
+      // fault: an automatic pass leaves the entry as it was instead of
+      // painting it red. A manual refresh still surfaces the reason.
+      if (automatic && !cred.ok && cred.reason === 'unsupported-platform') return;
       if (!cred.ok) {
         this.set(accountId, {
           status: cred.reason === 'not-found' ? 'token-missing' : 'error',
