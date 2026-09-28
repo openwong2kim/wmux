@@ -8,6 +8,8 @@ import { ChatSendReceiptStore } from '../ChatSendReceiptStore';
 import { ChatCancelReceiptStore } from '../ChatCancelReceiptStore';
 import { createChatBridge, WEB_BRIDGE_CLIENT, type ChatAgentState, type ChatPane, type NativeChatBridgeDeps } from '../nativeChatBridge';
 import { OPENCODE_MAX_SEND_BYTES, fileHistoryEpoch, projectChatBlocked, tuiHistoryEpoch } from '../chatBridge';
+import type { TerminalChatAbortOutcome } from '../../transcript/TerminalChatService';
+import { cancelResponse } from '../../web/chatWire';
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
@@ -781,6 +783,114 @@ describe('cancel', () => {
     expect(await createChatBridge({ ...f.deps, approvals: () => null }).desktopInterrupt('pane', 'conv')).toBe('unavailable');
     f.state.native = { status: TUI_STATUS, page: page('raw') };
     expect(await f.bridge.desktopInterrupt('pane', 'conv')).toBe('unavailable');
+    expect(f.written).toEqual([]);
+  });
+});
+
+describe('cancel (OpenCode plugin abort)', () => {
+  const TURN = 't1:oc.0123456789abcdef01234567';
+  const RAW = 'raw:1:ses_one';
+  const ABORTABLE: TranscriptStatus = { ...TUI_STATUS, agentStatus: 'running',
+    terminal: { ...TUI_STATUS.terminal!, capabilities: { ...TUI_STATUS.terminal!.capabilities, send: false, cancel: true } } };
+  const opencode = (status: TranscriptStatus = ABORTABLE) => {
+    const f = fixture();
+    const abort = vi.fn<(...args: unknown[]) => Promise<TerminalChatAbortOutcome>>(async () =>
+      ({ result: 'sent', turn: { id: TURN, state: 'running' } }));
+    f.state.native = { status, page: page(RAW) };
+    const read = async () => f.state.native ? { ...f.state.native, turn: { id: TURN, state: 'running' as const, startedAt: 5 } } : null;
+    f.deps.terminalChat = () => ({ read, send: f.tuiSend as never, subscribe: f.subscribe, unsubscribe: f.unsubscribe, abort });
+    return { ...f, abort, bridge: createChatBridge(f.deps) };
+  };
+  const tuiCancel = (extra: Record<string, unknown> = {}) =>
+    ({ owner: 'device:a' as const, id: 'pane', agentSessionId: 'ses_one', historyEpoch: tuiHistoryEpoch(RAW), turnId: TURN, clientCancelId: msgId(), ...extra });
+
+  it('resolves the plugin turn for /turns', async () => {
+    const f = opencode();
+    expect(await f.bridge.resolve('pane')).toMatchObject({ source: 'tui', turn: { id: TURN, state: 'running' } });
+  });
+
+  it('aborts through the plugin with the compared raw epoch and turn, and replays without a second abort', async () => {
+    const f = opencode();
+    const authorized = vi.fn(async () => true);
+    const req = tuiCancel({ authorized });
+    const first = await f.bridge.cancel(req);
+    expect(first).toEqual({ clientCancelId: req.clientCancelId, replayed: false, effect: 'interrupt-requested', turnId: TURN });
+    expect(cancelResponse(first).status).toBe(202);
+    expect(f.abort).toHaveBeenCalledWith('pane', 'ses_one', { expectedRawEpoch: RAW, turnId: TURN, authorized });
+    const again = await f.bridge.cancel(req);
+    expect(again).toMatchObject({ replayed: true, effect: 'interrupt-requested', turnId: TURN });
+    expect(cancelResponse(again).status).toBe(200);
+    expect(f.abort).toHaveBeenCalledTimes(1);
+    expect(f.written).toEqual([]);
+  });
+
+  it('maps plugin refusals to the route codes and stores no receipt', async () => {
+    const f = opencode();
+    const rows: Array<[TerminalChatAbortOutcome, number, Record<string, unknown>]> = [
+      [{ result: 'not_running', turn: { id: TURN, state: 'idle' } }, 409, { error: 'turn-not-running', turn: { id: TURN, state: 'idle' } }],
+      [{ result: 'prompt_active' }, 409, { error: 'prompt-active', by: 'terminal' }],
+      [{ result: 'session_changed' }, 409, { error: 'session-changed', agentSessionId: 'ses_one' }],
+      [{ result: 'unavailable' }, 409, { error: 'chat-unavailable' }],
+      [{ result: 'error', reason: 'unauthorized' }, 401, { error: 'authorization-expired' }],
+    ];
+    const req = tuiCancel();
+    for (const [aborted, status, body] of rows) {
+      f.abort.mockResolvedValueOnce(aborted);
+      const outcome = await f.bridge.cancel(req);
+      const wire = cancelResponse(outcome);
+      expect(wire.status, aborted.result).toBe(status);
+      expect(wire.body, aborted.result).toMatchObject({ ...body, effect: 'none' });
+    }
+    // Every refusal freed the id: the same one re-evaluates and can still stop the turn.
+    expect(await f.bridge.cancel(req)).toMatchObject({ effect: 'interrupt-requested', replayed: false });
+  });
+
+  it('a pending approval record names itself on prompt-active', async () => {
+    const f = opencode();
+    f.state.pendingApproval = 'apr_o'; f.state.pendingKind = 'permission';
+    f.abort.mockResolvedValueOnce({ result: 'prompt_active' });
+    expect(await f.bridge.cancel(tuiCancel())).toMatchObject({ error: 'prompt-active', by: 'approval', approvalId: 'apr_o' });
+  });
+
+  it('an unconfirmed abort is uncertain and replays with its 500', async () => {
+    const f = opencode();
+    f.abort.mockResolvedValueOnce({ result: 'unconfirmed', reason: 'transport-lost' });
+    const req = tuiCancel();
+    const first = await f.bridge.cancel(req);
+    expect(first).toMatchObject({ effect: 'uncertain', error: 'cancel-failed', turnId: TURN });
+    expect(cancelResponse(first).status).toBe(500);
+    expect(cancelResponse(await f.bridge.cancel(req))).toMatchObject({ status: 500, body: { replayed: true, effect: 'uncertain' } });
+    expect(f.abort).toHaveBeenCalledTimes(1);
+  });
+
+  it('a stale turn, session or epoch is refused before the plugin', async () => {
+    const f = opencode();
+    expect(await f.bridge.cancel(tuiCancel({ turnId: 't1:oc.ffffffffffffffffffffffff' })))
+      .toMatchObject({ error: 'turn-not-running', turn: { id: TURN, state: 'running' } });
+    expect(await f.bridge.cancel(tuiCancel({ agentSessionId: 'ses_two' }))).toMatchObject({ error: 'session-changed', agentSessionId: 'ses_one' });
+    expect(await f.bridge.cancel(tuiCancel({ historyEpoch: 't1:stale' }))).toMatchObject({ error: 'session-changed' });
+    expect(f.abort).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(f.dir, 'chat-cancel-receipts.json'))).toBe(false);
+  });
+
+  it('an old plugin (no abort advertised) is cancel-unsupported and never asked', async () => {
+    const f = opencode(TUI_STATUS);
+    expect(await f.bridge.cancel(tuiCancel())).toMatchObject({ error: 'cancel-unsupported', effect: 'none' });
+    expect(cancelResponse(await f.bridge.cancel(tuiCancel())).status).toBe(422);
+    expect(await f.bridge.desktopInterrupt('pane', 'ses_one')).toBe('unavailable');
+    expect(f.abort).not.toHaveBeenCalled();
+  });
+
+  it('the desktop Stop aborts through the plugin and keeps its enum', async () => {
+    const f = opencode();
+    expect(await f.bridge.desktopInterrupt('pane', 'ses_one')).toBe('sent');
+    expect(f.abort).toHaveBeenCalledWith('pane', 'ses_one');
+    f.abort.mockResolvedValueOnce({ result: 'prompt_active' });
+    expect(await f.bridge.desktopInterrupt('pane', 'ses_one')).toBe('blocked');
+    f.abort.mockResolvedValueOnce({ result: 'not_running' });
+    expect(await f.bridge.desktopInterrupt('pane', 'ses_one')).toBe('not_running');
+    f.abort.mockResolvedValueOnce({ result: 'unconfirmed' });
+    expect(await f.bridge.desktopInterrupt('pane', 'ses_one')).toBe('error');
     expect(f.written).toEqual([]);
   });
 });

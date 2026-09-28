@@ -88,7 +88,7 @@ export function projectChatBlocked(
 export type ChatUnavailableCause = 'opencode-plugin-missing' | 'opencode-plugin-unreachable';
 
 export type ChatResolution =
-  | { source: 'tui'; status: TranscriptStatus; page: TranscriptPage; epoch: string; rawEpoch: string }
+  | { source: 'tui'; status: TranscriptStatus; page: TranscriptPage; epoch: string; rawEpoch: string; turn?: ChatTurn }
   | { source: 'managed'; status: TranscriptStatus; epoch: string }
   | { source: 'file'; status: TranscriptStatus; epoch?: string }
   | { source: 'none'; status: TranscriptStatus; launch: ChatLaunchPreview; cause?: ChatUnavailableCause };
@@ -240,12 +240,12 @@ export interface ChatBridge {
   resolve(id: string): Promise<ChatResolution>;
   /** Tail snapshot of a managed record (read-only in phone v1), or null. */
   managedSnapshot(id: string): TranscriptPage | null;
-  /** The pane's running episode (file bindings only), or undefined. Served to `chat-cancel`/`chat-queue` callers only. */
+  /** The pane's running episode (file bindings; OpenCode's rides on its `tui` resolution), or undefined. Served to `chat-cancel`/`chat-queue` callers only. */
   turn(id: string): ChatTurn | undefined;
   /** Read-time blocked state (contract §5.2). Always undefined for a brain pane. */
   blocked(id: string, resolution: ChatResolution): Promise<ChatBlocked | undefined>;
   send(request: ChatSendRequest): Promise<ChatSendOutcome>;
-  /** One ESC into a running Claude/Codex turn, under the pane's send lock. */
+  /** One ESC into a running Claude/Codex turn under the pane's send lock, or the OpenCode plugin's abort. */
   cancel(request: ChatCancelRequest): Promise<ChatCancelOutcome>;
   /** Owner-bound receipt read; never dispatches. `unknown` when absent, for another owner or another pane. */
   receipt(owner: ChatOwner, id: string, clientMessageId: string): ChatSendReceiptView;

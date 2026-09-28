@@ -3,14 +3,23 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { ChatSendResult, TranscriptAppendData, TranscriptPage, TranscriptStatus, TurnEvent } from '../../shared/transcript/turnEvents';
 import { validStoredEvent } from '../chat/storedEvent';
-import { OPENCODE_REQUEST_MAX_BYTES } from '../chat/chatBridge';
+import { OPENCODE_REQUEST_MAX_BYTES, type ChatTurn } from '../chat/chatBridge';
 
 interface Owner { pid: number; incarnation: string }
 /** Why a read reached no conversation, from the read itself (feeds `/turns` `cause`). */
 export type TerminalChatFailure = 'no-record' | 'transport-refused' | 'invalid-record' | 'owner-mismatch' | 'error';
 type Exchange = { ok: true; body: Record<string, unknown> } | { ok: false; left: boolean; failure: TerminalChatFailure; unauthorized?: true };
-interface NativeRead { status: TranscriptStatus; page: TranscriptPage }
+/** `turn`: the plugin's running episode; absent from a plugin that predates it. */
+interface NativeRead { status: TranscriptStatus; page: TranscriptPage; turn?: ChatTurn }
 export interface TerminalChatSendOutcome { result: ChatSendResult; reason?: 'receipts-full' | 'transport-lost' | 'too-large' | 'unauthorized' }
+/** What the plugin did with an abort. `turn` is the plugin's episode when it answered. */
+export interface TerminalChatAbortOutcome {
+  result: 'sent' | 'not_running' | 'prompt_active' | 'session_changed' | 'unconfirmed' | 'unavailable' | 'error';
+  reason?: 'transport-lost' | 'unauthorized';
+  turn?: ChatTurn;
+}
+const TURN_ID = /^t1:[A-Za-z0-9._:-]{1,120}$/;
+const PHASES = ['complete', 'running', 'awaiting_input'];
 interface Watch { clients: Set<string>; timer: ReturnType<typeof setInterval>; busy: boolean; seq: number; digest?: string; epoch?: string; ids?: Set<string>; last?: NativeRead }
 export interface TerminalChatDependencies {
   directory: string;
@@ -42,12 +51,47 @@ export class TerminalChatService {
     const epoch = result.epoch;
     if (typeof sessionId !== 'string' || !/^ses_[a-zA-Z0-9]+$/.test(sessionId) || typeof epoch !== 'string' || epoch.length > 256 ||
         !Array.isArray(result.events) || result.events.length > 3000 || !result.events.every(validStoredEvent) ||
-        !['complete', 'running', 'awaiting_input'].includes(String(result.phase))) return { failure: 'error' };
+        !PHASES.includes(String(result.phase))) return { failure: 'error' };
     const phase = result.phase as 'complete' | 'running' | 'awaiting_input';
+    // A plugin that predates abort advertises no `actions`: Stop stays off.
+    const cancel = Array.isArray(result.actions) && result.actions.includes('abort');
+    const turn = this.turn(result);
     return { read: { status: { available: true, reason: 'ok', agentSessionId: sessionId, agentAlive: true, agentStatus: phase,
       terminal: { kind: 'terminal', agent: 'opencode', nativeSessionId: sessionId, historyTruncated: result.truncated === true,
-        capabilities: { history: true, send: phase === 'complete', permissions: false, cancel: false, fileUndo: false } },
-    }, page: { ...this.page(result.events as TurnEvent[], epoch), truncatedHead: result.truncated === true } } };
+        capabilities: { history: true, send: phase === 'complete', permissions: false, cancel, fileUndo: false } },
+    }, page: { ...this.page(result.events as TurnEvent[], epoch), truncatedHead: result.truncated === true }, ...(turn ? { turn } : {}) } };
+  }
+
+  /**
+   * Asks the plugin to abort the selected session's running turn. It repeats
+   * the session, generation, turn and phase checks beside the native abort.
+   * Nothing is sent to a plugin that does not advertise `abort`, and an answer
+   * outside the known set reads as `unavailable`, never as a maybe-abort.
+   */
+  async abort(id: string, sessionId: string,
+    opts: { expectedRawEpoch?: string; turnId?: string; authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean> } = {}): Promise<TerminalChatAbortOutcome> {
+    const read = await this.read(id);
+    if (!read?.status.available) return { result: 'unavailable' };
+    if (read.status.agentSessionId !== sessionId) return { result: 'session_changed' };
+    const epoch = read.page.cursor.historyEpoch ?? '';
+    if (opts.expectedRawEpoch !== undefined && opts.expectedRawEpoch !== epoch) return { result: 'session_changed' };
+    if (!read.status.terminal?.capabilities.cancel) return { result: 'unavailable' };
+    const request = { action: 'abort', sessionId, epoch, ...(opts.turnId !== undefined ? { turnId: opts.turnId } : {}) };
+    const answer = await this.exchange(id, request, opts.authorized);
+    if (!answer.ok && answer.unauthorized) return { result: 'error', reason: 'unauthorized' };
+    if (!answer.ok) return answer.left ? { result: 'unconfirmed', reason: 'transport-lost' } : { result: 'unavailable' };
+    const value = String(answer.body.result);
+    const result = ['sent', 'not_running', 'prompt_active', 'session_changed', 'unconfirmed'].includes(value)
+      ? value as TerminalChatAbortOutcome['result'] : 'unavailable';
+    const turn = this.turn(answer.body);
+    return { result, ...(turn ? { turn } : {}) };
+  }
+
+  private turn(body: Record<string, unknown>): ChatTurn | undefined {
+    if (typeof body.turnId !== 'string' || !TURN_ID.test(body.turnId) || !PHASES.includes(String(body.phase))) return undefined;
+    const startedAt = body.turnStartedAt;
+    return { id: body.turnId, state: body.phase === 'complete' ? 'idle' : 'running',
+      ...(typeof startedAt === 'number' && Number.isFinite(startedAt) && startedAt > 0 ? { startedAt } : {}) };
   }
 
   /**

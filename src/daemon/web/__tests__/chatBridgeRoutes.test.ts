@@ -392,10 +392,14 @@ describe('native chat routes (contract v0.3.1)', () => {
         void _turn;
         expect(rest).toEqual(before.body.chat);
       }
-      // No daemon-tracked episode outside a file binding.
+      // OpenCode: the episode rides on the plugin read, never the daemon's file-binding turn.
       chatBox.resolution = tuiResolution();
       const tui = await turns({ ...bearer(info.token as string), 'x-wmux-client-caps': 'chat-cancel' });
       expect(tui.body.chat).not.toHaveProperty('turn');
+      const pluginTurn = { id: 't1:oc.0123456789abcdef01234567', state: 'running', startedAt: 1_700_000_000_500 } as const;
+      chatBox.resolution = { ...tuiResolution(), turn: pluginTurn } as ChatResolution;
+      expect((await turns({ ...bearer(info.token as string), 'x-wmux-client-caps': 'chat-cancel' })).body.chat.turn).toEqual(pluginTurn);
+      expect((await turns(bearer(info.token as string))).body.chat).not.toHaveProperty('turn');
     });
 
     it('file forward read with a matching cursor is a delta with reset:false', async () => {

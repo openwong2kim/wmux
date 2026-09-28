@@ -3831,9 +3831,11 @@ export class WebTerminalServer {
     if (res.destroyed || res.writableEnded) return;
     this.noteChatBlocked(sessionId, resolution, blocked);
     const caps = clientCaps(req);
-    // Only a file binding has a daemon-tracked episode, and only a caller
-    // that declared a cap that uses it is shown one.
-    const turn = (caps.chatCancel === true || caps.chatQueue === true) && resolution.source === 'file' ? chat.turn(sessionId) : undefined;
+    // A file binding's episode is daemon-tracked; an OpenCode one comes from
+    // its plugin's read. Only a caller that declared a cap that uses it is shown one.
+    const wantsTurn = caps.chatCancel === true || caps.chatQueue === true;
+    const turn = !wantsTurn ? undefined : resolution.source === 'file' ? chat.turn(sessionId)
+      : resolution.source === 'tui' ? resolution.turn : undefined;
     this.json(res, 200, { ...body, chat: buildChatObject(resolution, projectChatBlocked(blocked, caps),
       { ...(turn ? { turn } : {}), chatCancel: caps.chatCancel === true }) });
   }

@@ -55,6 +55,7 @@ export function terminalChatHandler(api, epoch = randomBytes(16).toString('hex')
   const pending = new Map();
   let selected;
   let generation = 0;
+  let dispatches = 0;
   const current = () => {
     const route = api.route.current;
     const id = route.name === 'session' ? str(route.params?.sessionID) : '';
@@ -70,12 +71,35 @@ export function terminalChatHandler(api, epoch = randomBytes(16).toString('hex')
         message.role === 'assistant' && message.time?.completed && !dispatch.messages.has(message.id));
       if (!dispatch.sending && !busy && (dispatch.sawBusy || completed)) pending.delete(id);
     }
-    return { id, phase: blocked ? 'awaiting_input' : busy || pending.has(id) ? 'running' : 'complete', epoch: `${epoch}:${generation}:${id}` };
+    // Admission fence: a send was accepted but the TUI has not gone busy yet.
+    // There is nothing native to abort, and the prompt's own user message may
+    // not exist yet, so the fence's turn id carries its dispatch number.
+    const fence = !busy && pending.has(id);
+    const user = api.state.session.messages(id).filter(message => message.sessionID === id && message.role === 'user').at(-1);
+    const turnId = `t1:oc.${createHash('sha256').update(JSON.stringify([id, str(user?.id), fence ? pending.get(id).gen : 0])).digest('hex').slice(0, 24)}`;
+    return { id, phase: blocked ? 'awaiting_input' : busy || pending.has(id) ? 'running' : 'complete', epoch: `${epoch}:${generation}:${id}`,
+      fence, turnId, ...(typeof user?.time?.created === 'number' ? { turnStartedAt: user.time.created } : {}) };
   };
+  const actions = typeof api.client?.session?.abort === 'function' ? ['read', 'send', 'abort'] : ['read', 'send'];
   return async request => {
     const state = current();
     if (!state) return { available: false, reason: 'stale-session' };
-    if (request.action === 'read') return { available: true, sessionId: state.id, phase: state.phase, epoch: state.epoch, ...projectTuiMessages(api, state.id) };
+    if (request.action === 'read') {
+      return { available: true, sessionId: state.id, phase: state.phase, epoch: state.epoch, actions, turnId: state.turnId,
+        ...(state.turnStartedAt !== undefined ? { turnStartedAt: state.turnStartedAt } : {}), ...projectTuiMessages(api, state.id) };
+    }
+    if (request.action === 'abort' && actions.includes('abort')) {
+      // The same selected-session and generation checks as send.
+      if (request.sessionId !== state.id || request.epoch !== state.epoch) return { result: 'session_changed' };
+      const answer = result => ({ result, turnId: state.turnId, phase: state.phase });
+      if (request.turnId !== undefined && request.turnId !== state.turnId) return answer('not_running');
+      if (state.phase === 'awaiting_input') return answer('prompt_active');
+      if (state.phase !== 'running' || state.fence) return answer('not_running');
+      try {
+        await api.client.session.abort({ sessionID: state.id }, { throwOnError: true });
+        return answer('sent');
+      } catch { return answer('unconfirmed'); /* The abort may have reached the server. */ }
+    }
     if (request.action !== 'send') throw new Error('Unsupported operation');
     if (request.sessionId !== state.id || request.epoch !== state.epoch) return { result: 'session_changed' };
     const text = str(request.text);
@@ -98,7 +122,7 @@ export function terminalChatHandler(api, epoch = randomBytes(16).toString('hex')
     requests.set(requestId, record);
     // HTTP acceptance can precede the TUI's busy event. Keep an admission
     // fence until native completion is observed; elapsed time is not proof.
-    const dispatch = { sending: true, sawBusy: false,
+    const dispatch = { sending: true, sawBusy: false, gen: ++dispatches,
       messages: new Set(api.state.session.messages(state.id).map(message => message.id)) };
     pending.set(state.id, dispatch);
     try {
