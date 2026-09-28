@@ -57,6 +57,16 @@ const lastBroadcastAgentStatus = new Map<string, AgentStatus>();
 // still hosts the same agent before writing unattended input. Kept beside the
 // status funnel so detector/hook/local/daemon paths cannot drift.
 const lastBroadcastAgentName = new Map<string, string>();
+// #1463 — PTYs the renderer may still paint 'running' from: a 'running' status
+// went out and no settle has withdrawn it since. The renderer keeps such a
+// stamp for up to 120 s, through any unmarked idle. Cleared with the rest of
+// a PTY's record (clearLastBroadcastAgentStatus) on every pane teardown.
+const runningClaimOutstanding = new Set<string>();
+
+/** Whether a 'running' claim went out for this PTY that no settle has withdrawn. */
+export function hasOutstandingRunningClaim(ptyId: string): boolean {
+  return runningClaimOutstanding.has(ptyId);
+}
 
 /** Read side of {@link lastBroadcastAgentStatus} for the idle-clear deferral check. */
 export function getLastBroadcastAgentStatus(ptyId: string): AgentStatus | undefined {
@@ -71,12 +81,14 @@ export function getLastBroadcastAgentName(ptyId: string): string | undefined {
 export function clearLastBroadcastAgentStatus(ptyId: string): void {
   lastBroadcastAgentStatus.delete(ptyId);
   lastBroadcastAgentName.delete(ptyId);
+  runningClaimOutstanding.delete(ptyId);
 }
 
 /** Test-only: reset between PTYs when a suite reuses the same id across cases. */
 export function resetLastBroadcastAgentStatusForTests(): void {
   lastBroadcastAgentStatus.clear();
   lastBroadcastAgentName.clear();
+  runningClaimOutstanding.clear();
 }
 
 /**
@@ -98,6 +110,10 @@ export function broadcastMetadataUpdate(
   // to know about.
   if (payload.ptyId && payload.agentStatus !== undefined) {
     lastBroadcastAgentStatus.set(payload.ptyId, payload.agentStatus);
+  }
+  if (payload.ptyId) {
+    if (payload.settled === true) runningClaimOutstanding.delete(payload.ptyId);
+    else if (payload.agentStatus === 'running') runningClaimOutstanding.add(payload.ptyId);
   }
   if (payload.ptyId && payload.agentName !== undefined) {
     if (payload.agentName) lastBroadcastAgentName.set(payload.ptyId, payload.agentName);

@@ -198,6 +198,29 @@ describe('hook turn latch — the pane stays running while the turn is open', ()
     expect(pane().unverifiable).toBe(false);
   });
 
+  it('#1463 — an agent known gone drops Running in Fleet the moment the roster drops its row', () => {
+    // Codex ran, went byte-quiet (an unmarked idle keeps the stamp), then was
+    // ended with Ctrl+C. The liveness poll clears the identity; Fleet rows are
+    // per pane, so a leftover stamp kept "Turn in progress" there for 60-120 s.
+    applyMetadata({ agentStatus: 'running' });
+    applyMetadata({ agentStatus: 'idle' });
+    advance(20_000);
+    expect(pane().agentStatus).toBe('running');
+    useStore.getState().clearSurfaceAgent(PTY, Date.now());
+    expect(pane().agentStatus).toBe('idle');
+    expect(selectWorkspaceAgentRoster(useStore.getState(), 'ws').rows).toHaveLength(0);
+  });
+
+  it('#1463 — a stale "gone" snapshot keeps the running stamp of a relaunched agent', () => {
+    // The poll was requested before the new run's boot burst stamped the pane.
+    const requestedAt = Date.now();
+    advance(1_000);
+    applyMetadata({ agentStatus: 'running' });
+    useStore.getState().clearSurfaceAgent(PTY, requestedAt);
+    expect(useStore.getState().surfaceActivityAt[PTY]).toBeDefined();
+    expect(pane().agentStatus).toBe('running');
+  });
+
   it('closing the pane drops the latch so a reused ptyId cannot inherit it', () => {
     applyMetadata({ agentStatus: 'running', hookKind: 'agent.user_prompt_submit' });
     useStore.getState().closePane('pane');

@@ -198,6 +198,16 @@ export interface HookSignalResponse {
  * wmux build); HookSignalRouter validates with this function before
  * forwarding to AgentDetector dedup + sendNotification.
  */
+/**
+ * #1463 — a SessionStart `payload.source` that begins a session with no turn
+ * in it: a new process (`startup`), a resumed one (`resume`) or `/clear`
+ * (which Claude Code queues behind a running turn). `compact` fires mid-turn
+ * on auto-compaction, and an unknown or missing source proves nothing.
+ */
+export function isFreshSessionSource(source: unknown): boolean {
+  return source === 'startup' || source === 'resume' || source === 'clear';
+}
+
 /** Closed set of allowed agent slugs. Used by isAgentSignal to reject
  *  unknown agent values rather than accepting any string (codex round-2
  *  review P2 #9). Derived from the identity table, so it cannot drift from

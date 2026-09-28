@@ -4,6 +4,7 @@ import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import {
   broadcastMetadataUpdate,
   getLastBroadcastAgentStatus,
+  hasOutstandingRunningClaim,
 } from '../ipc/handlers/metadata.handler';
 import { markSettled } from './idleSuppression';
 
@@ -24,6 +25,16 @@ const UNREAD_RESULT_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
 export function holdsUnreadResult(ptyId: string): boolean {
   const last = getLastBroadcastAgentStatus(ptyId);
   return last !== undefined && UNREAD_RESULT_STATUSES.has(last);
+}
+
+/**
+ * #1463 — an UNLATCHED pane the renderer may still paint 'running': a byte or
+ * activity claim went out, no settle withdrew it, and no unread result stands.
+ * The renderer holds that claim for up to 120 s through an unmarked idle, so a
+ * settle edge that proves the agent is gone has to withdraw it too.
+ */
+export function holdsUnsettledRunningClaim(ptyId: string): boolean {
+  return hasOutstandingRunningClaim(ptyId) && !holdsUnreadResult(ptyId);
 }
 
 /**
