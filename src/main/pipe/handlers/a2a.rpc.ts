@@ -575,16 +575,25 @@ export function registerA2aRpc(
         ...(typeof params.idempotencyKey === 'string' ? { idempotencyKey: params.idempotencyKey } : {}),
       });
       if (gate.kind === 'reject') return { error: gate.error };
-      // ok → the renderer applies the daemon commit verbatim; unavailable →
-      // the renderer's own checked writer (fallback).
-      const res = await sendToRenderer(getWindow, 'a2a.task.update', gate.kind === 'ok'
-        ? { ...params, daemonCommitted: true, committedTask: gate.result.task }
-        : params);
       // A receiver's cancel also stops a background worker running the task.
-      const committed = gate.kind === 'ok' || !(isRecord(res) && typeof res.error === 'string');
-      if (params.status === 'canceled' && typeof params.taskId === 'string' && committed) {
-        claudeWorker.cancel(params.taskId);
+      // Once the daemon committed it, stop the worker before the renderer call:
+      // a renderer that throws or times out must not leave it running (a retry
+      // is refused as an invalid transition).
+      const cancelWorker = params.status === 'canceled' && typeof params.taskId === 'string'
+        ? params.taskId
+        : undefined;
+      if (gate.kind === 'ok') {
+        if (cancelWorker) claudeWorker.cancel(cancelWorker);
+        return sendToRenderer(getWindow, 'a2a.task.update', {
+          ...params,
+          daemonCommitted: true,
+          committedTask: gate.result.task,
+        });
       }
+      // unavailable → the renderer's own checked writer (fallback). Only an
+      // explicit ok from it counts as a committed cancel.
+      const res = await sendToRenderer(getWindow, 'a2a.task.update', params);
+      if (cancelWorker && isRecord(res) && res.ok === true) claudeWorker.cancel(cancelWorker);
       return res;
     }
     // Message-only update: may reopen an ended task (daemon first).

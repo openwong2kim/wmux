@@ -350,6 +350,32 @@ describe('a2a.task.update — #1598 orphaned tasks and receiver cancel', () => {
     expect(worker.cancel).toHaveBeenCalledWith('t1');
   });
 
+  it('a daemon-committed cancel stops the worker even when the renderer call throws', async () => {
+    sendToRendererMock.mockImplementation(async (_w: unknown, method: string) => {
+      if (method === 'pane.list') return [{ id: 'pane-b', surfacePtyIds: ['pty-b'] }];
+      throw new Error('renderer timeout');
+    });
+    const router = setup(okDaemon([]));
+    await router.dispatch({
+      id: 'o5',
+      method: 'a2a.task.update',
+      params: { taskId: 't1', workspaceId: 'ws-b', status: 'canceled', evidence: { summary: 'superseded', items: [] } },
+    });
+    expect(worker.cancel).toHaveBeenCalledWith('t1');
+  });
+
+  it('in the renderer fallback only an explicit ok stops the worker', async () => {
+    sendToRendererMock.mockImplementation(async (_w: unknown, method: string) =>
+      (method === 'pane.list' ? [{ id: 'pane-b', surfacePtyIds: ['pty-b'] }] : undefined));
+    const router = setup(async () => ({ ok: false, error: 'a2a.task.update: task log unavailable' }));
+    await router.dispatch({
+      id: 'o6',
+      method: 'a2a.task.update',
+      params: { taskId: 't1', workspaceId: 'ws-b', status: 'canceled', evidence: { summary: 'superseded', items: [] } },
+    });
+    expect(worker.cancel).not.toHaveBeenCalled();
+  });
+
   it('a refused cancel leaves the worker running', async () => {
     rendererWithPanes([{ id: 'pane-b', surfacePtyIds: ['pty-b'] }]);
     const router = setup(async () => ({ ok: false, error: 'a2a.task.update: cancel_reason_missing: x' }));
