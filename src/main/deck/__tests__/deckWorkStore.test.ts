@@ -106,11 +106,24 @@ describe('deckWorkStore — ownership lifecycle', () => {
   });
 
   it('caps the follow-up list, keeping the most recent', () => {
-    beginOrContinueDeckWork('ws-1', 'objective', dir);
-    for (let i = 1; i <= 20; i++) beginOrContinueDeckWork('ws-1', `step ${i}`, dir);
-    const work = loadActiveDeckWork('ws-1', dir)!;
-    expect(work.followUps.length).toBeLessThanOrEqual(12);
-    expect(work.followUps.at(-1)).toBe('step 20');
+    // Seed a record already at the 12-item cap with one raw write, then append
+    // once through the store. Appending 20 times through the store meant 21
+    // durable, rotating atomic writes, which timed out on loaded Windows
+    // runners; the cap is crossed by the single append either way.
+    const work = beginOrContinueDeckWork('ws-1', 'objective', dir)!.work;
+    const full = Array.from({ length: 12 }, (_, i) => `step ${i + 1}`);
+    writeFileSync(
+      getDeckWorkPath(dir),
+      JSON.stringify({ version: 1, active: { 'ws-1': { ...work, followUps: full } } }),
+      'utf8',
+    );
+    expect(loadActiveDeckWork('ws-1', dir)!.followUps).toEqual(full);
+
+    beginOrContinueDeckWork('ws-1', 'step 13', dir);
+    const capped = loadActiveDeckWork('ws-1', dir)!;
+    expect(capped.followUps.length).toBeLessThanOrEqual(12);
+    expect(capped.followUps.at(-1)).toBe('step 13');
+    expect(capped.followUps).not.toContain('step 1');
   });
 
   it('refuses an empty or whitespace-only request', () => {
