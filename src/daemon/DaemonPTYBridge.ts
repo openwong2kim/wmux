@@ -276,7 +276,27 @@ export class DaemonPTYBridge extends EventEmitter {
    * (approval digit/ESC) pass `forceSubmitted=true` because those controls do
    * not include Enter but still resume the blocked turn.
    */
-  noteInput(data: string, forceSubmitted = false): void {
+  noteInput(data: string, forceSubmitted?: boolean): void;
+  /**
+   * `selfWrite`: a key the stepwise approval driver typed. It moves the key
+   * revision like any key and returns the new revision, so the driver can
+   * record it synchronously and tell its own keys from a human's. It is not a
+   * human acting: no `fenceInput` (the pending record is not refreshed), no
+   * "answered", no submit — the driver calls `noteSubmitted` after its last key.
+   */
+  noteInput(data: string, opts: { selfWrite: true }): number;
+  noteInput(data: string, opts: boolean | { selfWrite: true } = false): void | number {
+    if (typeof opts === 'object') {
+      if (data.length > 0) {
+        this.lastInputAt = Date.now();
+        this.inputRevision += 1;
+        this.keyInputRevision += 1;
+        this.emptyShellPrompt = false;
+        this.completedShellCommand = false;
+      }
+      return this.keyInputRevision;
+    }
+    const forceSubmitted = opts;
     // Stamped for EVERY write, including the ordinary keystrokes that fall out
     // below. Output that arrives while the user is still typing is the TUI
     // echoing them, and echo must never be mistaken for the agent working —
@@ -354,6 +374,15 @@ export class DaemonPTYBridge extends EventEmitter {
     if (answeredAt < this.awaitingQuestionAt) return false;
     this.startAnsweredTurn(true, 'input');
     return true;
+  }
+
+  /**
+   * The stepwise approval driver typed its last key (see `noteInput`
+   * `selfWrite`): the dialog is answered and the turn resumes, exactly as a
+   * recognised answer key would have done it.
+   */
+  noteSubmitted(): void {
+    this.startAnsweredTurn(this.awaitingHuman, 'input');
   }
 
   /** Whether the pane is blocked on a human right now. */

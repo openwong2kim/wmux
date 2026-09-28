@@ -66,6 +66,8 @@ import {
 import {
   decisionForChoiceLabel,
   dialogMatchesToolCall,
+  normalizePromptText,
+  parsePlanPrompt,
   parseTerminalPrompt,
   terminalPromptAnswerability,
   toolFromDialogTitle,
@@ -161,6 +163,18 @@ const isNative = (r: ApprovalRequest): boolean => isNativeDecision(r);
 const NATIVE_SETTLED_MEMORY_MS = 10 * 60_000;
 const NATIVE_SETTLED_MEMORY_MAX = 1024;
 const nativeKey = (native: NativeDecisionRef): string => `${native.adapter}|${native.requestId}`;
+/**
+ * The stepwise driver (feedback on the plan dialog): the longest one step
+ * waits for the screen to show what its key should have drawn, how often it
+ * looks, and the bounds on one whole answer.
+ */
+export const STEP_RENDER_WAIT_MS = 1_500;
+export const STEP_POLL_MS = 100;
+export const STEP_TOTAL_MS = 20_000;
+export const STEP_MAX_KEYS = 40;
+/** The ExitPlanMode dialog's form actions. */
+export const PLAN_ACTION_APPROVE = 'approve-manual';
+export const PLAN_ACTION_FEEDBACK = 'feedback';
 /** Quiet time after a key/click before an overtaken record is refreshed. */
 export const TERMINAL_PROMPT_REFRESH_SETTLE_MS = 600;
 /** At most one refresh per record this often: key auto-repeat must not flood SSE. */
@@ -372,6 +386,16 @@ export interface ApprovalRegistryDeps {
   agentSessionId?: (sessionId: string) => string | null;
   /** `terminal_prompt` — the pane's state right now, read synchronously just before the write. */
   promptScreenMark?: (sessionId: string) => PromptScreenMark | null;
+  /**
+   * The stepwise driver's own key: write `data` to the PTY and return the
+   * pane's new key revision, synchronously, or null when nothing was written.
+   * The pane does not count it as a human key (no fence refresh, no
+   * "answered"), so the driver can tell its own keys from a human's by the
+   * revision alone. Absent ⇒ no stepwise answer.
+   */
+  writeStepKey?: (sessionId: string, data: string) => number | null;
+  /** After the stepwise driver's last key: the pane's turn resumes (once). */
+  noteSubmitted?: (sessionId: string) => void;
   /** Injected for tests: the wait between creation-time screen reads. */
   promptReadDelay?: (ms: number) => Promise<void>;
   /**
@@ -459,6 +483,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       loaded.requests.map((r) => {
         if (r.state !== 'pending') return r;
         invalidated++;
+        // A stepwise answer cut off by the restart: some of its keys may have
+        // landed. Expired (no `pressedAt`), and said so.
+        if (r.step) deps.log?.('info', `[approvals] expired ${r.id} with its answer at step ${r.step.index}/${r.step.total} (partial-at-restart)`);
         // A terminal_prompt whose answer was already written counts as
         // resolved: the key reached the old PTY.
         return { ...r, state: r.pressedAt !== undefined ? 'resolved' as const : 'expired' as const, resolvedAt: this.now() };
@@ -1005,7 +1032,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
 
   private answerablePrompt(sessionId: string): ApprovalRequest | undefined {
     return this.requests.find((r) => r.state === 'pending' && r.sessionId === sessionId
-      && r.kind === 'terminal_prompt' && !!r.promptFingerprint && r.pressedAt === undefined && !isNative(r));
+      && r.kind === 'terminal_prompt' && !!r.promptFingerprint && r.pressedAt === undefined && !r.step && !isNative(r));
   }
 
   private scheduleRefresh(sessionId: string, delayMs: number): void {
@@ -1159,8 +1186,12 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       this.deps.log?.('warn', `[approvals] prompt screen read failed for ${sessionId}: ${String(err)}`);
     }
     if (!screen) return null;
-    const parsed = parseTerminalPrompt(screen.rows, screen.cols ? { cols: screen.cols } : {});
-    return parsed && parsed.active ? { parsed, mark: screen.mark } : null;
+    const opts = screen.cols ? { cols: screen.cols } : {};
+    const parsed = parseTerminalPrompt(screen.rows, opts);
+    if (parsed && parsed.active) return { parsed, mark: screen.mark };
+    // Claude's ExitPlanMode dialog has a shape of its own (see parsePlanPrompt).
+    const plan = parsePlanPrompt(screen.rows, opts);
+    return plan && plan.active ? { parsed: plan, mark: screen.mark } : null;
   }
 
   /** A fresh `terminal_prompt` record from what was read and what it binds to. */
@@ -1169,6 +1200,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     read: DialogRead | null,
     binding: ToolCallBinding | null,
   ): ApprovalRequest {
+    if (read?.parsed.plan) return this.buildPlanPrompt(note, read, binding);
     const parsed = read?.parsed ?? null;
     const command = binding ? commandOfToolInput(binding.name, binding.input) : undefined;
     const description = typeof binding?.input['description'] === 'string' ? binding.input['description'] : undefined;
@@ -1250,6 +1282,92 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         : {}),
       matched: bound,
       topCut: bound && topCut,
+    };
+    Object.defineProperty(record, IDENTITY, { value: identity, enumerable: false });
+    return record;
+  }
+
+  /**
+   * A `terminal_prompt` for Claude's ExitPlanMode dialog. Bound like a
+   * permission dialog — to the transcript's pending `ExitPlanMode` call (the
+   * hook's evidence, when there is any, naming the same call), or to the
+   * pane's one pending PermissionRequest for it with no key since it arrived
+   * — but the screen is not asked to spell the plan: the dialog shows it
+   * rendered, and the call's whole input is in the fingerprint instead.
+   *
+   * Answerable (a `plan` form for `decision-v2` clients) only when bound, the
+   * dialog was read whole and active, both the manual-approve row and the
+   * feedback row are on it, no row would switch the session to bypass
+   * permissions, and the `stepwise` channel is on. Never any `choices`: a
+   * shipped phone keeps the informational card (and its decline).
+   */
+  private buildPlanPrompt(note: TerminalPromptNote, read: DialogRead, binding: ToolCallBinding | null): ApprovalRequest {
+    const { parsed, mark } = read;
+    const plan = parsed.plan!;
+    const planText = typeof binding?.input['plan'] === 'string' ? binding.input['plan'] : undefined;
+    const summary = boundRecordText(planText?.split('\n').find((line) => line.trim())?.replace(/^#+\s*/, ''), TERMINAL_PROMPT_SUMMARY_MAX)
+      ?? note.summary;
+    const planCall = !!binding && !binding.unbindable && binding.name === 'ExitPlanMode';
+    const evidence = this.soleEvidence(note.sessionId);
+    const bound = planCall && (binding.id
+      ? (this.permissionEvidence.get(note.sessionId) ?? []).length === 0 || this.evidenceAgrees(note.sessionId, binding)
+      : this.evidenceAgrees(note.sessionId, binding)
+        && !!evidence?.mark
+        && evidence.mark.keyInputRevision === mark.keyInputRevision
+        && evidence.mark.incarnation === mark.incarnation);
+    const inputHash = planCall ? toolInputHash(binding.input) : undefined;
+    const answerable = bound && parsed.active && !parsed.cut && !!plan.approve && !!plan.feedback && !plan.bypass
+      && this.decisionChannels().stepwise;
+    const fingerprint = answerable ? bindFingerprint(parsed.fingerprint, binding?.id, mark.keyInputRevision, inputHash) : undefined;
+    const record: WithIdentity = {
+      id: this.newId(),
+      sessionId: note.sessionId,
+      ...(note.workspaceId ? { workspaceId: note.workspaceId } : {}),
+      agent: note.agent,
+      kind: 'terminal_prompt',
+      toolName: binding?.name ?? note.toolName ?? 'ExitPlanMode',
+      ...(summary ? { summary } : {}),
+      ...(answerable && fingerprint
+        ? {
+            question: parsed.question,
+            channel: 'fenced-keys' as const,
+            form: {
+              v: 1 as const,
+              kind: 'plan' as const,
+              actions: [
+                { id: PLAN_ACTION_APPROVE, label: plan.approve!.label },
+                { id: PLAN_ACTION_FEEDBACK, label: plan.feedback!.label, needsText: true as const },
+              ],
+            },
+            formFingerprint: fingerprint,
+            // The same hash, so the paths that key on `promptFingerprint`
+            // (the refresh after a key, decline's echo) treat it as bound.
+            promptFingerprint: fingerprint,
+            ...(binding?.id ? { toolUseId: binding.id } : {}),
+            keyRevisionAtCreate: mark.keyInputRevision,
+          }
+        : {}),
+      dialogKey: `${parsed.fingerprint}|${binding?.id ?? '-'}`,
+      createdAt: this.now(),
+      state: 'pending',
+    };
+    const identity: TerminalPromptIdentity = {
+      screenFp: parsed.fingerprint,
+      mark: { keyInputRevision: mark.keyInputRevision, incarnation: mark.incarnation },
+      ...(planCall && inputHash
+        ? {
+            call: {
+              name: binding.name,
+              // The whole plan: what `GET /api/approvals/:id/detail` serves.
+              command: planText ?? '',
+              ...(binding.id ? { id: binding.id } : {}),
+              ...(binding.promptId ? { promptId: binding.promptId } : {}),
+              inputHash,
+            },
+          }
+        : {}),
+      matched: bound,
+      topCut: false,
     };
     Object.defineProperty(record, IDENTITY, { value: identity, enumerable: false });
     return record;
@@ -1356,8 +1474,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     // kind is even looked at, so it can never reach a screen read, a fence or
     // a keystroke.
     if (peek && isNative(peek)) return this.resolveNative(params, peek);
-    // A v2 answer: no form producer exists yet, so every record refuses it.
+    // A v2 answer: the plan dialog's form is answered by keys behind the
+    // fences; every other record refuses it.
     if (params.decisionAnswer !== undefined || params.decisionV2Answer !== undefined) {
+      if (peek?.kind === 'terminal_prompt' && peek.form?.kind === 'plan') return this.answerPlan(params, peek);
       return this.refuseDecisionAnswer(params, peek);
     }
     if (peek?.kind === 'terminal_prompt') return this.resolveTerminalPrompt(params, peek);
@@ -1676,6 +1796,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       return 'input';
     }
     if (live.parsed.fingerprint !== identity.screenFp) return 'screen';
+    // A plan dialog shows the plan rendered, not spelled: the call's whole
+    // input is bound through the fingerprint (bindFingerprint) instead.
+    if (live.parsed.plan) return call.name === 'ExitPlanMode' ? 'ok' : 'screen';
+    if (call.name === 'ExitPlanMode') return 'screen';
     const matches = live.parsed.topRuleFound
       ? dialogMatchesToolCall(live.parsed, call)
       : identity.topCut && dialogMatchesToolCall(live.parsed, call, { topCut: true });
@@ -1883,7 +2007,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     };
 
     if (record.state !== 'pending') return settled();
-    if (record.pressedAt !== undefined) return refuse('already-answered');
+    if (record.pressedAt !== undefined || record.step) return refuse('already-answered');
     if ((params.resolver ?? 'human') !== 'human' || params.terminalPromptDecline !== TERMINAL_PROMPT_WEB_DECLINE) {
       audit('answer-in-terminal');
       return { ok: false, reason: 'answer-in-terminal', answerRefusal: 'no-capability', request: copyRequest(record) };
@@ -1929,7 +2053,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
             },
           };
         }
-        if (record.pressedAt !== undefined) {
+        if (record.pressedAt !== undefined || record.step) {
           return { result: { ok: false, reason: 'already-answered', request: copyRequest(record) } };
         }
         const now = this.deps.promptScreenMark?.(record.sessionId) ?? null;
@@ -2143,10 +2267,341 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   }
 
   /**
+   * A `decision-v2` answer to Claude's ExitPlanMode dialog (`form.kind:
+   * 'plan'`). Fails closed at every step, like `resolveTerminalPrompt`:
+   *
+   *   1. settled → `already-resolved` / `expired`; a key already written
+   *      (`pressedAt`) or a stepwise answer started (`step`) → `already-answered`
+   *   2. who: a human through the web answer route (its Symbol marker) →
+   *      else `answer-in-terminal`; a record that is not bound, has no form or
+   *      was made with the `stepwise` switch off (or it is off now) →
+   *      `unsupported-shape`
+   *   3. what: one of the form's actions, no `answers`, `text` only with
+   *      `feedback` → else `invalid-choice`; the echoed `formFingerprint` must
+   *      be the record's → else `prompt-changed`
+   *   4. when: not within TERMINAL_PROMPT_MIN_ANSWER_AGE_MS of creation
+   *   5. the screen: re-read and proven the same dialog for the same call
+   *      with no key since the record was made (`provenDialog`); the action's
+   *      row still there under the same label. A changed dialog supersedes
+   *      the record, as a v1 answer does.
+   *
+   * `approve-manual` is then ONE key — the row's own number, read off the
+   * screen — under the same fence and `pressedAt` CAS as a v1 answer.
+   * `feedback` runs the stepwise driver (see driveFeedback).
+   */
+  private async answerPlan(params: ApprovalResolveParams, record: ApprovalRequest): Promise<ApprovalResolveResult> {
+    const answer = params.decisionAnswer;
+    const audit = (outcome: string): void => {
+      this.deps.log?.(
+        'info',
+        `[approvals] plan answer outcome=${outcome} record=${record.id} session=${record.sessionId} ` +
+          `by="${logText(sanitizeResolvedBy(params.resolvedBy))}" action=${logText(answer?.action, 20) || '-'} ` +
+          `text=${answer?.text !== undefined ? Buffer.byteLength(answer.text, 'utf8') : 0}B ` +
+          `step=${record.step ? `${record.step.index}/${record.step.total}:${record.step.status}` : '-'} ` +
+          `fp=${(record.formFingerprint ?? '').slice(0, 8) || '-'}`,
+      );
+    };
+    const refuse = (reason: Exclude<ApprovalResolveFailure, 'answer-in-terminal'>): ApprovalResolveResult => {
+      audit(reason);
+      return { ok: false, reason, request: copyRequest(record) };
+    };
+    const inTerminal = (why: AnswerRefusalReason): ApprovalResolveResult => {
+      audit(`answer-in-terminal:${why}`);
+      return { ok: false, reason: 'answer-in-terminal', answerRefusal: why, request: copyRequest(record) };
+    };
+    if (record.state !== 'pending') {
+      const reason = record.state === 'resolved' ? 'already-resolved' : 'expired';
+      audit(reason);
+      return {
+        ok: false,
+        reason,
+        ...(record.resolvedBy !== undefined ? { resolvedBy: record.resolvedBy } : {}),
+        request: copyRequest(record),
+      };
+    }
+    if (record.pressedAt !== undefined || record.step) return refuse('already-answered');
+    if ((params.resolver ?? 'human') !== 'human' || params.decisionV2Answer !== DECISION_V2_WEB_ANSWER || !answer) {
+      return inTerminal('no-capability');
+    }
+    const identity = identityOf(record);
+    const form = record.form;
+    if (!form || record.channel !== 'fenced-keys' || !record.formFingerprint || !identity?.matched || !identity.call
+      || !this.decisionChannels().stepwise) {
+      return inTerminal('unsupported-shape');
+    }
+    const action = form.actions.find((a) => a.id === answer.action);
+    if (!action || answer.answers !== undefined) return refuse('invalid-choice');
+    const feedback = action.id === PLAN_ACTION_FEEDBACK;
+    if (!feedback && answer.text !== undefined) return refuse('invalid-choice');
+    if (feedback && !this.deps.writeStepKey) return inTerminal('unsupported-shape');
+    if (answer.formFingerprint !== record.formFingerprint) return refuse('prompt-changed');
+    if (this.now() - record.createdAt < TERMINAL_PROMPT_MIN_ANSWER_AGE_MS) return refuse('answer-too-soon');
+
+    const refusedEarly = await this.reauthorize(params, record);
+    if (refusedEarly) {
+      audit(refusedEarly.ok ? 'ok' : refusedEarly.reason);
+      return refusedEarly;
+    }
+
+    for (let attempt = 1; attempt <= TERMINAL_PROMPT_ANSWER_ATTEMPTS; attempt++) {
+      const live = await this.readActiveDialog(record.sessionId);
+      if (!live) return refuse('prompt-changed');
+      const proven = this.provenDialog(record, live);
+      if (proven !== 'ok'
+        || bindFingerprint(live.parsed.fingerprint, record.toolUseId, record.keyRevisionAtCreate, identity.call.inputHash) !== record.formFingerprint) {
+        const superseded = await this.supersedeWithFresh(record, live);
+        audit(`prompt-changed:${proven}`);
+        return { ok: false, reason: 'prompt-changed', request: superseded ?? copyRequest(record) };
+      }
+      const row = feedback ? live.parsed.plan?.feedback : live.parsed.plan?.approve;
+      if (!row || row.label !== action.label) return refuse('prompt-changed');
+      if (feedback) return this.driveFeedback(params, record, live, row.key, answer, audit);
+
+      const refusedWrite = await this.reauthorize(params, record);
+      if (refusedWrite) {
+        audit(refusedWrite.ok ? 'ok' : refusedWrite.reason);
+        return refusedWrite;
+      }
+      const outcome = await this.mutate<'retry' | ApprovalResolveResult>(() => {
+        // ── Synchronous from here to the write: nothing can move in between. ──
+        if (record.state !== 'pending') {
+          return { result: { ok: false, reason: record.state === 'resolved' ? 'already-resolved' : 'expired', request: copyRequest(record) } };
+        }
+        if (record.pressedAt !== undefined || record.step) {
+          return { result: { ok: false, reason: 'already-answered', request: copyRequest(record) } };
+        }
+        const now = this.deps.promptScreenMark?.(record.sessionId) ?? null;
+        if (!now || now.incarnation !== live.mark.incarnation || now.keyInputRevision !== live.mark.keyInputRevision) {
+          return { result: { ok: false, reason: 'prompt-changed', request: copyRequest(record) } };
+        }
+        if (now.bytes !== live.mark.bytes) return { result: 'retry' };
+        record.pressedAt = this.now();
+        let delivered = false;
+        try {
+          delivered = this.deps.writeToSession(record.sessionId, row.key);
+        } catch (err) {
+          this.deps.log?.('warn', `[approvals] write failed for ${record.sessionId}: ${String(err)}`);
+        }
+        if (!delivered) {
+          delete record.pressedAt;
+          record.state = 'expired';
+          record.resolvedAt = this.now();
+          return {
+            events: [{ type: 'expire', request: copyRequest(record) }],
+            result: { ok: false, reason: 'prompt-gone', request: copyRequest(record) },
+          };
+        }
+        record.decision = 'approve';
+        record.selectedChoiceKey = row.key;
+        record.resolvedBy = sanitizeResolvedBy(params.resolvedBy);
+        return {
+          events: [{ type: 'press', request: copyRequest(record) }],
+          result: { ok: true, request: copyRequest(record), durable: true },
+        };
+      }, (result, durable) => (result !== 'retry' && result.ok ? { ...result, durable } : result));
+      if (outcome === 'retry') continue;
+      audit(outcome.ok ? 'pressed' : outcome.reason);
+      return outcome;
+    }
+    return refuse('prompt-changed');
+  }
+
+  /**
+   * The stepwise driver, first applied to the plan dialog's feedback: the
+   * feedback row's number (the cursor moves into its text field; nothing is
+   * submitted), the text as ONE bracketed paste (none for empty feedback),
+   * then Enter, which rejects the plan with that feedback.
+   *
+   * Every key is the driver's own (`writeStepKey`): the pane's key revision
+   * moves by exactly one per key and the returned revision is recorded on
+   * `record.step`, so a revision past it can only be someone else's key. The
+   * fence is checked synchronously right before every write, and every read
+   * between keys must show what the last key should have drawn — the cursor
+   * in the empty field, then the pasted text echoed there — within
+   * STEP_RENDER_WAIT_MS, the whole answer within STEP_TOTAL_MS.
+   *
+   * The record belongs to the answer from its first key (`step`): no refresh,
+   * supersede or screen-inferred expiry touches it while it runs. The last
+   * key resolves it. Anything else after the first key — a human key, a
+   * screen that never shows the expected state, a lost grant — leaves it
+   * `partial` and pending: 409 `prompt-changed` with `effect:'partial'` now,
+   * `already-answered` to every later answer, and the pane's own sweep settles
+   * it. No key is ever typed to undo what was typed.
+   */
+  private async driveFeedback(
+    params: ApprovalResolveParams,
+    record: ApprovalRequest,
+    first: DialogRead,
+    feedbackKey: string,
+    answer: NonNullable<ApprovalResolveParams['decisionAnswer']>,
+    audit: (outcome: string) => void,
+  ): Promise<ApprovalResolveResult> {
+    const writeStepKey = this.deps.writeStepKey!;
+    const sessionId = record.sessionId;
+    const text = answer.text;
+    const keys = [feedbackKey, ...(text !== undefined ? [`\x1b[200~${text}\x1b[201~`] : []), '\r'];
+    if (keys.length > STEP_MAX_KEYS) return this.answerInTerminal(record, 'unsupported-shape');
+    const plan = first.parsed.plan!;
+    const placeholder = plan.feedback!.label;
+    const compact = (value: string): string => normalizePromptText(value).replace(/\s+/g, '');
+    const onField = (p: ParsedTerminalPrompt): boolean =>
+      p.plan?.feedback?.key === feedbackKey && p.options.find((o) => o.selected)?.key === feedbackKey;
+    // What the screen must show before key `index` (the one before it drawn).
+    const expected = (index: number) => (p: ParsedTerminalPrompt): boolean => {
+      if (!onField(p)) return false;
+      const label = p.plan!.feedback!.label;
+      return index === 1 ? label === placeholder : compact(label) === compact(text ?? '');
+    };
+    const delay = this.deps.promptReadDelay
+      ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms).unref?.(); }));
+    const deadline = this.now() + STEP_TOTAL_MS;
+    const changed = (): ApprovalResolveResult => ({ ok: false, reason: 'prompt-changed', request: copyRequest(record) });
+
+    /** Stop after the first key: the record stays pending, marked `partial`. */
+    const partial = async (why: string): Promise<ApprovalResolveResult> => {
+      const result = await this.mutate<ApprovalResolveResult>(() => {
+        if (record.state !== 'pending' || record.step?.status !== 'running') return { result: changed() };
+        record.step.status = 'partial';
+        return { events: [{ type: 'press', request: copyRequest(record) }], result: changed() };
+      });
+      audit(`prompt-changed:partial:${why}`);
+      return result;
+    };
+    const unwritten = (why: string): ApprovalResolveResult => {
+      audit(`prompt-changed:${why}`);
+      return changed();
+    };
+
+    /** Poll the screen until it shows what key `index` needs, or say why not. */
+    const awaitScreen = async (index: number): Promise<DialogRead | 'moved' | 'timeout' | 'gone'> => {
+      const until = Math.min(this.now() + STEP_RENDER_WAIT_MS, deadline);
+      const want = expected(index);
+      for (;;) {
+        let screen: Awaited<ReturnType<NonNullable<ApprovalRegistryDeps['readPromptScreen']>>> = null;
+        try {
+          screen = (await this.deps.readPromptScreen?.(sessionId)) ?? null;
+        } catch {
+          screen = null;
+        }
+        if (!screen) return 'gone';
+        const step = record.step;
+        if (!step || screen.mark.incarnation !== step.incarnation || screen.mark.keyInputRevision !== step.expectedRevision) {
+          return 'moved';
+        }
+        const parsed = parsePlanPrompt(screen.rows, screen.cols ? { cols: screen.cols } : {});
+        if (parsed?.active && parsed.plan?.frameFingerprint === plan.frameFingerprint && want(parsed)) {
+          return { parsed, mark: screen.mark };
+        }
+        if (this.now() >= until) return 'timeout';
+        await delay(STEP_POLL_MS);
+      }
+    };
+
+    let read = first;
+    for (let index = 0; index < keys.length;) {
+      if (index > 0) {
+        const seen = await awaitScreen(index);
+        if (typeof seen === 'string') return partial(seen);
+        read = seen;
+      }
+      const refused = await this.reauthorize(params, record);
+      if (refused) {
+        if (index > 0) await partial('authorize');
+        audit(refused.ok ? 'ok' : refused.reason);
+        return refused;
+      }
+      if (this.now() > deadline) return index > 0 ? partial('deadline') : unwritten('deadline');
+      const at = index;
+      const outcome = await this.mutate<'retry' | 'written' | 'moved' | ApprovalResolveResult>(() => {
+        // ── Synchronous from here to the write: nothing can move in between. ──
+        if (record.state !== 'pending') {
+          return { result: { ok: false, reason: record.state === 'resolved' ? 'already-resolved' : 'expired', request: copyRequest(record) } };
+        }
+        const step = record.step;
+        // The CAS: a stepwise answer starts only on a record nothing answered.
+        if (at === 0 ? step !== undefined || record.pressedAt !== undefined
+          : step?.answerId !== answer.clientAnswerId || step.status !== 'running') {
+          return { result: { ok: false, reason: 'already-answered', request: copyRequest(record) } };
+        }
+        const now = this.deps.promptScreenMark?.(sessionId) ?? null;
+        const revision = at === 0 ? read.mark.keyInputRevision : step!.expectedRevision;
+        const incarnation = at === 0 ? read.mark.incarnation : step!.incarnation;
+        if (!now || (now.incarnation ?? '') !== (incarnation ?? '') || now.keyInputRevision !== revision) return { result: 'moved' };
+        if (now.bytes !== read.mark.bytes) return { result: 'retry' };
+        let written: number | null = null;
+        try {
+          written = writeStepKey(sessionId, keys[at]!);
+        } catch (err) {
+          this.deps.log?.('warn', `[approvals] step write failed for ${sessionId}: ${String(err)}`);
+        }
+        if (written === null) return { result: 'moved' };
+        const events: ApprovalEvent[] = [];
+        if (at === 0) {
+          record.step = {
+            answerId: answer.clientAnswerId,
+            index: 1,
+            total: keys.length,
+            expectedRevision: written,
+            incarnation: now.incarnation ?? '',
+            status: 'running',
+            startedAt: this.now(),
+          };
+          events.push({ type: 'press', request: copyRequest(record) });
+        } else {
+          step!.index = at + 1;
+          step!.expectedRevision = written;
+        }
+        if (at < keys.length - 1) return { events, result: 'written' };
+        // The last key: the plan is rejected with the feedback. The record is
+        // closed here, before the pane's turn resumes (noteSubmitted), so the
+        // pane's "answered" finds nothing left to sweep.
+        record.step!.status = 'done';
+        record.state = 'resolved';
+        record.decision = 'deny';
+        record.selectedChoiceKey = feedbackKey;
+        record.resolvedBy = sanitizeResolvedBy(params.resolvedBy);
+        record.resolvedAt = this.now();
+        if (text !== undefined) {
+          record.answerDigest = {
+            textBytes: Buffer.byteLength(text, 'utf8'),
+            textHash: crypto.createHash('sha256').update(text, 'utf8').digest('hex'),
+          };
+        }
+        try {
+          this.deps.noteSubmitted?.(sessionId);
+        } catch (err) {
+          this.deps.log?.('warn', `[approvals] noteSubmitted failed for ${sessionId}: ${String(err)}`);
+        }
+        return {
+          events: [{ type: 'resolve', request: copyRequest(record) }],
+          result: { ok: true, request: copyRequest(record), durable: true },
+        };
+      }, (result, durable) => (typeof result === 'object' && result.ok ? { ...result, durable } : result));
+      if (outcome === 'written') {
+        index++;
+        continue;
+      }
+      if (outcome === 'retry') {
+        // Output since the read: read again (and prove again, for the first key).
+        if (at === 0) {
+          const again = await this.readActiveDialog(sessionId);
+          if (!again || this.provenDialog(record, again) !== 'ok') return unwritten('retry');
+          read = again;
+        }
+        if (this.now() > deadline) return at > 0 ? partial('deadline') : unwritten('deadline');
+        continue;
+      }
+      if (outcome === 'moved') return at === 0 ? unwritten('input') : partial('input');
+      audit(outcome.ok ? 'answered' : outcome.reason);
+      return outcome;
+    }
+    return changed();
+  }
+
+  /**
    * A `decision-v2` answer (`POST /api/approvals/:id/answer`) for a record
-   * that is not native. The wire and its rails exist; the form producers do
-   * not yet, so after the lifecycle checks every record refuses it as
-   * `unsupported-shape`.
+   * that is not native and not a plan dialog (see answerPlan): after the
+   * lifecycle checks every such record refuses it as `unsupported-shape`.
    */
   private refuseDecisionAnswer(params: ApprovalResolveParams, record: ApprovalRequest | undefined): ApprovalResolveResult {
     if (!record) return { ok: false, reason: 'not-found' };
@@ -2185,7 +2640,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     };
     const fresh = this.buildTerminalPrompt(note, live, this.bindingFor(record.sessionId, note));
     return this.mutate<ApprovalRequest | null>(() => {
-      if (record.state !== 'pending' || record.pressedAt !== undefined) return { result: null };
+      // A stepwise answer owns the record from its first key: never replaced.
+      if (record.state !== 'pending' || record.pressedAt !== undefined || record.step) return { result: null };
       record.state = 'superseded';
       record.resolvedAt = this.now();
       fresh.createdAt = this.now();
@@ -2268,6 +2724,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // Only the agent's own events, the pane's end, the turn's end and a
       // restart settle a native decision — never what the screen suggests.
       if (isNative(r) && SCREEN_INFERRED_EXPIRY.has(reason)) continue;
+      // A stepwise answer in progress: its own keys move the screen (and the
+      // pane's "answered"), so nothing the screen suggests settles it. The
+      // driver closes it, or leaves it `partial` for the sweep to settle.
+      if (r.step?.status === 'running' && SCREEN_INFERRED_EXPIRY.has(reason)) continue;
       // A terminal_prompt whose remote answer was written RESOLVES when its
       // dialog is gone (the answered path, the screen check, the turn's end).
       if (r.pressedAt !== undefined) {

@@ -146,7 +146,27 @@ function coerceRequest(raw: unknown): ApprovalRequest | null {
   if (typeof o['pressedAt'] === 'number' && Number.isFinite(o['pressedAt'])) out.pressedAt = o['pressedAt'];
   // Kept so a native answer given before a restart still reads as one in the
   // history (it has no `pressedAt`). A closed set, like `kind`.
-  if (o['channel'] === 'native-rpc' || o['channel'] === 'none') out.channel = o['channel'];
+  if (o['channel'] === 'native-rpc' || o['channel'] === 'none' || o['channel'] === 'fenced-keys') out.channel = o['channel'];
+  // A stepwise answer's progress: a restart expires one that had not finished.
+  const step = o['step'];
+  if (step && typeof step === 'object' && !Array.isArray(step)) {
+    const s = step as Record<string, unknown>;
+    const count = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 64;
+    if ((s['status'] === 'running' || s['status'] === 'partial' || s['status'] === 'done')
+      && count(s['index']) && count(s['total']) && typeof s['answerId'] === 'string'
+      && typeof s['incarnation'] === 'string'
+      && Number.isFinite(s['expectedRevision']) && Number.isFinite(s['startedAt'])) {
+      out.step = {
+        answerId: s['answerId'].slice(0, 128),
+        index: s['index'],
+        total: s['total'],
+        expectedRevision: s['expectedRevision'] as number,
+        incarnation: s['incarnation'].slice(0, 128),
+        status: s['status'],
+        startedAt: s['startedAt'] as number,
+      };
+    }
+  }
   return out;
 }
 

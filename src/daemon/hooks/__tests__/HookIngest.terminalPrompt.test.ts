@@ -79,6 +79,24 @@ describe('HookIngest — terminal_prompt records', () => {
       expect(f.awaitingInput).toEqual([]);
     });
 
+    it('records ExitPlanMode as a terminal_prompt with its whole plan as the tool input (the plan form binds to it)', () => {
+      const f = makeIngest();
+      const plan = '# Plan: create hello.txt\n\n1. Write hello.txt with hi.';
+      f.ingest.handle(makeSignal({
+        payload: { hook_event_name: 'PermissionRequest', tool_name: 'ExitPlanMode', tool_input: { plan }, session_id: 'claude-1' },
+      }));
+      expect(f.terminalPrompts).toEqual([{
+        sessionId: 'pty-a',
+        agent: 'claude',
+        workspaceId: 'ws-1',
+        toolName: 'ExitPlanMode',
+        toolInput: { plan },
+        hookSessionId: 'claude-1',
+        source: 'hook',
+      }]);
+      expect(f.awaitingInput).toEqual([]);
+    });
+
     it('carries the hook\'s Claude session_id and prompt_id (2.1.283 sends no tool_use_id)', () => {
       const f = makeIngest();
       f.ingest.handle(makeSignal({

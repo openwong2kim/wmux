@@ -146,7 +146,7 @@ import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore'
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
 import { withActivity } from './web/deviceActivity';
 import { buildWebPaneEnv } from './web/webPaneEnv';
-import type { ApprovalDecision } from './approvals/types';
+import type { ApprovalDecision, DecisionFormKind } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
@@ -180,6 +180,10 @@ function getInputReceipts(): InputReceiptStore {
 let answerReceipts: AnswerReceiptStore | null = null;
 function getAnswerReceipts(): AnswerReceiptStore {
   return answerReceipts ??= new AnswerReceiptStore(getWmuxDir());
+}
+/** The `decision-v2` forms this daemon answers: the plan dialog while the `stepwise` channel is on. */
+function phoneDecisionForms(): DecisionFormKind[] {
+  return coercePhoneDecisions(loadConfig().phoneDecisions).stepwise ? ['plan'] : [];
 }
 function getRunHistory(): RunHistoryStore {
   return runHistory ??= new RunHistoryStore(getWmuxDir());
@@ -430,6 +434,17 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       managed.bridge.noteInput(data, true);
       return true;
     },
+    // The stepwise driver's own keys: the new key revision comes back in the
+    // same synchronous block as the write (see DaemonPTYBridge.noteInput).
+    writeStepKey: (sessionId, data) => {
+      const managed = sessionManager.getSession(sessionId);
+      if (!managed) return null;
+      managed.ptyProcess.write(data);
+      return managed.bridge.noteInput(data, { selfWrite: true });
+    },
+    noteSubmitted: (sessionId) => {
+      sessionManager.getSession(sessionId)?.bridge.noteSubmitted();
+    },
     // terminal_prompt — the visible grid at the live geometry, and the pane's
     // state (output bytes, key-carrying input, incarnation) at the instant the
     // ring was read. renderPaneScreen reads the ring synchronously before its
@@ -597,6 +612,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         runHistory: getRunHistory,
         inputReceipts: getInputReceipts,
         answerReceipts: getAnswerReceipts,
+        decisionForms: phoneDecisionForms,
         desktop: () => desktopPhoneBridge,
         agentLaunchOptions: installedAgentLaunchOptions,
         agentSettings: (id,authorized,choice)=>paneCodexSettings({
@@ -2831,6 +2847,7 @@ function registerRpcHandlers(
       runHistory: getRunHistory,
       inputReceipts: getInputReceipts,
       answerReceipts: getAnswerReceipts,
+      decisionForms: phoneDecisionForms,
         desktop: () => desktopPhoneBridge,
         agentLaunchOptions: installedAgentLaunchOptions,
         agentSettings: (id,authorized,choice)=>paneCodexSettings({

@@ -44,7 +44,7 @@ import type { DaemonSessionManager, ManagedSession } from '../DaemonSessionManag
 // headless-terminal dependency chain stay out of this module. The web server is
 // a CONSUMER: it lists, it resolves, it republishes lifecycle events. It never
 // constructs a request, and it never decides what bytes a decision means.
-import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest, ApprovalResolveResult } from '../approvals/types';
+import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest, ApprovalResolveResult, DecisionFormKind } from '../approvals/types';
 import {
   DECISION_V2_WEB_ANSWER,
   TERMINAL_PROMPT_WEB_ANSWER,
@@ -576,6 +576,8 @@ interface WebTerminalServerDeps {
   inputReceipts?: () => InputReceiptStore;
   /** Receipts for `POST /api/approvals/:id/answer`. Absent ⇒ that route is 503. */
   answerReceipts?: () => AnswerReceiptStore;
+  /** The `decision-v2` form kinds this daemon produces now (`/api/config` `decisionForms`). Absent ⇒ none. */
+  decisionForms?: () => DecisionFormKind[];
   sessionManager: DaemonSessionManager;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /**
@@ -2363,9 +2365,9 @@ export class WebTerminalServer {
               terminalPromptDetail: this.opts?.allowTranscript === true,
               terminalPromptDecline: this.mayInput(principal),
               // decision-v2 (docs/phone-client-contract.md): the form kinds
-              // this daemon produces — none yet, so a client offers no v2
-              // answer — and whether this caller may use `/chat/cancel`.
-              decisionForms: [],
+              // this daemon produces, and whether this caller may use
+              // `/chat/cancel`.
+              decisionForms: this.decisionForms(),
               chatCancel: this.mayInput(principal),
               // Whether this caller's `chat-queue` sends are held by the daemon.
               chatQueue: this.mayInput(principal) && this.deps.chat?.()?.queueEnabled?.() === true,
@@ -6741,6 +6743,15 @@ export class WebTerminalServer {
     });
   }
 
+  /** The `decision-v2` form kinds this daemon produces now; none when unknown. */
+  private decisionForms(): DecisionFormKind[] {
+    try {
+      return [...(this.deps.decisionForms?.() ?? [])];
+    } catch {
+      return [];
+    }
+  }
+
   /**
    * `POST /api/approvals/:id/answer` — a `decision-v2` answer: the form's
    * fingerprint, the client's own `clientAnswerId`, and an action, answers or
@@ -6754,8 +6765,8 @@ export class WebTerminalServer {
    * different body under the same id 409 `answer-id-reused`, and one that was
    * running when the daemon stopped 409 `answer-uncertain` — never re-run.
    *
-   * No form producer exists yet, so the registry refuses every answer with
-   * 501 `answer-in-terminal` / `unsupported-shape` after its lifecycle checks.
+   * Only the forms `decisionForms` lists are answered; the registry refuses
+   * every other record with 501 `answer-in-terminal` / `unsupported-shape`.
    */
   private handleApprovalAnswer(
     req: http.IncomingMessage,
@@ -8294,8 +8305,14 @@ function decisionAnswerResponse(result: ApprovalResolveResult): AnswerReceiptRes
   switch (result.reason) {
     case 'already-resolved':
       return { status: 409, body: { error: 'already-resolved', ...(result.resolvedBy ? { resolvedBy: result.resolvedBy } : {}), effect: 'none' } };
-    case 'already-answered':
     case 'prompt-changed':
+      // A stepwise answer stopped after some of its keys: say how far it got.
+      if (result.request?.step?.status === 'partial') {
+        const { index, total, status } = result.request.step;
+        return { status: 409, body: { error: 'prompt-changed', effect: 'partial', step: { index, total, status } } };
+      }
+      return { status: 409, body: { error: result.reason, effect: 'none' } };
+    case 'already-answered':
     case 'prompt-unverified':
       return { status: 409, body: { error: result.reason, effect: 'none' } };
     case 'expired':
@@ -8338,9 +8355,14 @@ function decisionAnswerResponse(result: ApprovalResolveResult): AnswerReceiptRes
  */
 function decisionV2Wire(r: ApprovalRequest, caps: ClientCaps): Record<string, unknown> {
   if (!caps.decisionV2) return {};
-  const open = r.state === 'pending' && r.pressedAt === undefined && !!r.form && !!r.formFingerprint;
+  // A stepwise answer that started (running, partial or done) leaves nothing to answer.
+  const open = r.state === 'pending' && r.pressedAt === undefined && !r.step && !!r.form && !!r.formFingerprint;
+  // The plan dialog: its question, and the whole plan at `/detail`.
+  const plan = open && r.kind === 'terminal_prompt' && r.form?.kind === 'plan' && !isNativeDecision(r);
   return {
     ...(open ? { form: r.form, formFingerprint: r.formFingerprint } : {}),
+    ...(plan && r.question ? { question: r.question } : {}),
+    ...(plan && caps.terminalPromptDetail ? { hasDetail: true } : {}),
     ...(r.step ? { step: { index: r.step.index, total: r.step.total, status: r.step.status } } : {}),
   };
 }

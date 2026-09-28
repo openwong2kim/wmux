@@ -35,7 +35,7 @@ import type {
   ApprovalRequest,
   ApprovalResolveResult,
 } from '../../approvals/types';
-import { DECISION_V2_WEB_ANSWER, TERMINAL_PROMPT_WEB_ANSWER, TERMINAL_PROMPT_WEB_DECLINE, type TerminalPromptDetail } from '../../approvals/types';
+import { DECISION_V2_WEB_ANSWER, TERMINAL_PROMPT_WEB_ANSWER, TERMINAL_PROMPT_WEB_DECLINE, type DecisionFormKind, type TerminalPromptDetail } from '../../approvals/types';
 import type { DaemonSessionManager } from '../../DaemonSessionManager';
 
 // A minimal fake of exactly what WebTerminalServer touches: getSession() (for
@@ -491,6 +491,8 @@ describe('WebTerminalServer', () => {
   let projectorMock: ReturnType<typeof makeDeps>['projectorMock'];
   /** #783 — the daemon's runtime gate flag, which the server only reads/writes. */
   let gateArmed: boolean;
+  /** The decision-v2 form kinds the daemon reports producing. */
+  let decisionFormKinds: DecisionFormKind[];
   /** Whether the daemon's Live Activity pusher reports itself enabled. */
   let liveActivityPushEnabled: boolean;
   let desktopBridge: DesktopPhoneBridge | null;
@@ -512,6 +514,7 @@ describe('WebTerminalServer', () => {
     agentLaunchEnv = undefined;
     settingsCalls = []; settingsHook = undefined;
     gateArmed = true;
+    decisionFormKinds = [];
     liveActivityPushEnabled = true;
     agentStates = {};
     resumeStates = {};
@@ -554,6 +557,7 @@ describe('WebTerminalServer', () => {
       runHistory: () => new RunHistoryStore(deps.uploadsDir),
       inputReceipts: () => new InputReceiptStore(deps.uploadsDir),
       answerReceipts: () => answerReceiptStore,
+      decisionForms: () => decisionFormKinds,
       desktop: () => desktopBridge,
       agentLaunchOptions: async env => { agentLaunchEnv = env; return [{agent:'claude',models:['opus','sonnet'],efforts:['low','high']}]; },
       agentSettings: async (id,authorized,choice)=>{
@@ -4995,6 +4999,55 @@ describe('WebTerminalServer', () => {
         body: typeof body === 'string' ? body : JSON.stringify(body),
       });
 
+    it('/api/config lists the plan form while the daemon produces it', async () => {
+      const info = await startRW();
+      decisionFormKinds = ['plan'];
+      const cfg = await (await fetch(`${base()}/api/config`, { headers: bearer(info.token as string) })).json();
+      expect(cfg.decisionForms).toEqual(['plan']);
+    });
+
+    const PLAN_FORM = {
+      v: 1 as const,
+      kind: 'plan' as const,
+      actions: [{ id: 'approve-manual', label: 'Yes, manually approve edits' }, { id: 'feedback', label: 'Tell Claude what to change', needsText: true as const }],
+    };
+    const planTp = (over: Partial<ApprovalRequest> = {}): ApprovalRequest => mkApproval({
+      id: 'ap-plan',
+      kind: 'terminal_prompt',
+      toolName: 'ExitPlanMode',
+      summary: 'Plan: create hello.txt',
+      question: 'Claude has written up a plan and is ready to execute. Would you like to proceed?',
+      channel: 'fenced-keys',
+      form: PLAN_FORM,
+      formFingerprint: FP,
+      promptFingerprint: FP,
+      toolUseId: 'toolu_plan',
+      keyRevisionAtCreate: 3,
+      ...over,
+    });
+
+    it('a plan dialog is an informational card to the shipped app; v2 gets its form, question and detail until an answer starts', async () => {
+      const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: true });
+      approvalRecords.push(planTp());
+      const read = async (headers: Record<string, string>) =>
+        (await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(info.token as string), ...headers } })).json()).pending[0];
+      expect(await read(OLD_IOS)).toEqual({
+        id: 'ap-plan', sessionId: 's1', agent: 'claude', kind: 'terminal_prompt', state: 'pending',
+        createdAt: 1_700_000_000_000, toolName: 'ExitPlanMode', summary: 'Plan: create hello.txt',
+      });
+      const v2 = await read({ 'X-Wmux-Client-Caps': 'terminal-prompt-answer, terminal-prompt-decline, decision-v2' });
+      expect(v2).toMatchObject({ form: PLAN_FORM, formFingerprint: FP, question: planTp().question, hasDetail: true });
+      expect(v2).not.toHaveProperty('choices');
+      expect(v2).not.toHaveProperty('channel');
+      approvalRecords.splice(0, 1, planTp({
+        step: { answerId: 'phone-answer-0001', index: 1, total: 3, expectedRevision: 4, incarnation: 'inc', status: 'partial', startedAt: 1 },
+      }));
+      const partial = await read({ 'X-Wmux-Client-Caps': 'decision-v2' });
+      expect(partial.step).toEqual({ index: 1, total: 3, status: 'partial' });
+      expect(partial).not.toHaveProperty('form');
+      expect(partial).not.toHaveProperty('hasDetail');
+    });
+
     it('a native permission reads to the shipped iOS app as a plain Yes/No dialog; v2 adds the form; nothing internal leaks', async () => {
       await startWithTranscript();
       const phone = await pairDevice('Old phone', false);
@@ -5209,6 +5262,27 @@ describe('WebTerminalServer', () => {
         const other = await pairDevice('Other phone', true);
         expect((await fetch(`${base()}/api/approvals/ap-native/answer/phone-answer-0001`, { headers: bearer(other.token) })).status).toBe(404);
         expect((await fetch(`${base()}/api/approvals/ap-other/answer/phone-answer-0001`, { headers: bearer(phone.token) })).status).toBe(404);
+      });
+
+      it('a stepwise answer a human interrupted is 409 partial with its progress, journaled as partial', async () => {
+        await startRW();
+        const phone = await pairDevice('Plan phone', true);
+        approvalRecords.push(planTp());
+        approvalBox.result = {
+          ok: false,
+          reason: 'prompt-changed',
+          request: planTp({ step: { answerId: 'phone-answer-0001', index: 1, total: 3, expectedRevision: 4, incarnation: 'inc', status: 'partial', startedAt: 1 } }),
+        };
+        const body = answerBody({ action: 'feedback', text: 'use bye instead' });
+        const res = await postAnswer(phone.token, body, V2, 'ap-plan');
+        expect(res.status).toBe(409);
+        expect(await res.json()).toEqual({ error: 'prompt-changed', effect: 'partial', step: { index: 1, total: 3, status: 'partial' } });
+        const receipt = await fetch(`${base()}/api/approvals/ap-plan/answer/phone-answer-0001`, { headers: bearer(phone.token) });
+        expect(await receipt.json()).toMatchObject({ state: 'partial', status: 409 });
+        // A plain prompt-changed (nothing typed) stays `effect: none`.
+        approvalBox.result = { ok: false, reason: 'prompt-changed', request: planTp() };
+        const none = await postAnswer(phone.token, answerBody({ clientAnswerId: 'phone-answer-0002' }), V2, 'ap-plan');
+        expect(await none.json()).toEqual({ error: 'prompt-changed', effect: 'none' });
       });
 
       it('a retry while the answer runs is 202; one running when the daemon stopped is 409 uncertain and never re-run', async () => {

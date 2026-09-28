@@ -191,6 +191,28 @@ describe('DaemonPTYBridge — fence input revision', () => {
   });
 });
 
+describe('DaemonPTYBridge — the stepwise driver\'s own keys', () => {
+  it('move the key revision and return it, but are not a human answering; noteSubmitted is', () => {
+    const h = makeHarness();
+    const fence: string[] = [];
+    h.bridge.on('fenceInput', (e: { sessionId: string }) => fence.push(e.sessionId));
+    h.bridge.noteAgentStatus('awaiting_input');
+    const before = h.bridge.getKeyInputRevision();
+    expect(h.bridge.noteInput('3', { selfWrite: true })).toBe(before + 1);
+    expect(h.bridge.noteInput('\x1b[200~use bye\x1b[201~', { selfWrite: true })).toBe(before + 2);
+    expect(h.bridge.noteInput('\r', { selfWrite: true })).toBe(before + 3);
+    expect(h.bridge.getKeyInputRevision()).toBe(before + 3);
+    expect(fence).toEqual([]);
+    expect(h.answered).toEqual([]);
+    expect(h.activity).toEqual([]);
+    expect(h.bridge.isAwaitingHuman()).toBe(true);
+    h.bridge.noteSubmitted();
+    expect(h.answered).toEqual([{ sessionId: 'sess-1', reason: 'input' }]);
+    expect(h.bridge.isAwaitingHuman()).toBe(false);
+    h.bridge.cleanup();
+  });
+});
+
 describe('DaemonPTYBridge — fenceInput event', () => {
   it('fires for a key or click, never for motion or focus', () => {
     const h = makeHarness();
