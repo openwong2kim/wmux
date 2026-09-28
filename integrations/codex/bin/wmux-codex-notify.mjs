@@ -12,7 +12,7 @@
 // A shared app-server may supply stale pane environment. The versioned
 // receiver verifies the notify parent's ancestry before trusting it; otherwise
 // it requires an exact recent completed thread/turn on a pane-owned relay.
-// Legacy payloads retain compatibility unless process evidence proves foreign.
+// Legacy payloads keep their claimed pane only while it is live and not proven foreign.
 //
 // This script:
 //   1. Parses the LAST argv as the Codex notify JSON payload.

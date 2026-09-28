@@ -6,6 +6,7 @@ import {
   type HookAgentEventData,
   type HookIngestSession,
 } from '../HookIngest';
+import { applyNotifyProvenance } from '../notifyProvenance';
 import { DEFAULT_ALARM_WINDOW_MS } from '../../../shared/hooks/CompletionAlarm';
 import type { AgentSignal, AgentSignalKind } from '../../../shared/hooks/signal-types';
 import type { ResumeBinding } from '../../../shared/agentResume';
@@ -1247,5 +1248,29 @@ describe('shared-server notification attribution', () => {
   it('does not classify a turn-id-only native hook as notify', () => {
     expect(resolveSessionIdForSignal(makeSignal({ agent: 'codex', ptyId: 'starter', payload: { 'turn-id': 'turn' } }),
       [session({ id: 'starter' })])).toBe('starter');
+  });
+
+  // A shared host started in a pane that has since closed keeps that pane's
+  // identity; the only live pane in its workspace belongs to another agent.
+  it.each([
+    ['official', 'foreign'], ['official', 'unknown'], ['legacy', 'foreign'], ['legacy', 'unknown'],
+  ] as const)('does not bind a %s notify from a closed pane (%s ancestry) to the live pane', (format, provenance) => {
+    const fixture = makeDeps([session({ id: 'claude-live', env: { WMUX_WORKSPACE_ID: 'ws-1' } })]);
+    const ingest = new HookIngest(fixture.deps);
+    const sent = makeSignal({ agent: 'codex', agentSessionId: 'thread-x', ptyId: 'closed-pane', workspaceId: 'ws-1',
+      payload: { source: 'codex.notify', notifyFormat: format, ...(format === 'official' ? { 'turn-id': 'turn-x' } : {}) } });
+    const result = ingest.handle(applyNotifyProvenance(sent, provenance));
+    expect(result.ok).toBe(false);
+    expect(fixture.bindings).toEqual([]);
+    expect(fixture.emitted).toEqual([]);
+    expect(ingest.router.isGovernedFor('claude-live', 'codex', 10000)).toBe(false);
+    ingest.dispose();
+  });
+  it('still binds a notify accepted on pane evidence to its exact live pane', () => {
+    const live = [session({ id: 'claude-live' }), session({ id: 'codex-pane' })];
+    const direct = applyNotifyProvenance(makeSignal({ agent: 'codex', agentSessionId: 'thread-x', ptyId: 'codex-pane',
+      workspaceId: 'ws-1', payload: { source: 'codex.notify', notifyFormat: 'legacy' } }), 'unknown');
+    expect(resolveSessionIdForSignal(direct, live)).toBe('codex-pane');
+    expect(resolveSessionIdForSignal({ ...direct, workspaceId: 'ws-other' }, live)).toBeNull();
   });
 });

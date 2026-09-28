@@ -23,9 +23,10 @@ pane identity through `daemon.hooks.notify.v1` (or `hooks.notify.v1` on main).
 The daemon trusts the claimed pane only when a fresh process-parent snapshot
 places that parent inside its live shell tree. Direct desktop launches therefore
 do not require a managed relay. Native Windows uses the existing in-process
-snapshot; legacy session_id-only clients retain their original pane/cwd routing
-when ancestry is unavailable, including cross-platform cases, unless evidence
-proves the parent foreign.
+snapshot. When ancestry is unavailable, including cross-platform cases, legacy
+session_id-only clients still reach their claimed pane, but only while that exact
+pane is live; they are never routed by workspace or cwd, and evidence that the
+parent is foreign always refuses them.
 
 Otherwise, exactly one live pane-owned relay must have observed that thread/turn
 complete within 15 seconds. The record survives `/new` and resume selection

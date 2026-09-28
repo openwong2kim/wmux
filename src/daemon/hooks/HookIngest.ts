@@ -351,6 +351,16 @@ export function resolveSessionIdForSignal(
     return owners.length === 1 ? owners[0].id : null;
   }
 
+  // A notify accepted on pane evidence binds only to that exact live pane. Its
+  // env may come from a shared host started in a pane that has since closed, so
+  // workspace/cwd guessing could attach it to an unrelated live pane.
+  if (signal.agent === 'codex' && signal.payload?.source === 'codex.notify.direct') {
+    const exact = signal.ptyId ? sessions.find((s) => s.id === signal.ptyId) : undefined;
+    if (!exact) return null;
+    const ws = exact.env?.[ENV_KEYS.WORKSPACE_ID];
+    return !signal.workspaceId || ws === signal.workspaceId ? exact.id : null;
+  }
+
   if (signal.ptyId) {
     const exact = sessions.find((s) => s.id === signal.ptyId);
     if (exact) {

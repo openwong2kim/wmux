@@ -25,8 +25,9 @@ export function notifyProvenance(
 }
 
 export function applyNotifyProvenance(signal: AgentSignal, provenance: 'owned' | 'foreign' | 'unknown'): AgentSignal {
-  // Older session_id-only clients and cross-OS bridges retain their original
-  // routing when no contrary process evidence is available. Official shared-host
+  // Older session_id-only clients and cross-OS bridges keep their claimed live
+  // pane when no contrary process evidence is available (exact pane only, no
+  // workspace/cwd fallback: see resolveSessionIdForSignal). Official shared-host
   // notifications must instead prove a completed turn on an owned relay.
   if (provenance === 'owned' || provenance === 'unknown' && signal.payload?.notifyFormat === 'legacy') {
     return { ...signal, payload: { ...signal.payload, source: 'codex.notify.direct' } };
