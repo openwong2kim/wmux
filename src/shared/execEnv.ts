@@ -17,6 +17,7 @@
 // execFile/spawn of an external binary from the GUI process passes
 // `env: getExecEnv()`. Do not add a new spawn site without it.
 
+import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { isLinux, isMac } from './platform';
@@ -46,11 +47,69 @@ let cachedEnv: NodeJS.ProcessEnv | null = null;
 export function getExecEnv(): NodeJS.ProcessEnv {
   if (!isMac && !isLinux) return process.env;
   if (cachedEnv) return cachedEnv;
+  cachedEnv = mergePath(process.env, []);
+  return cachedEnv;
+}
 
-  const existing = (process.env.PATH || '').split(':').filter(Boolean);
-  const merged = [...new Set([...existing, ...(isMac ? MAC_PATH_FALLBACKS : []), path.join(os.homedir(), '.local', 'bin'),
+/** The env's own PATH first (a PATH that already resolves a binary keeps resolving
+ *  it the same way), then `extra`, then the static fallbacks; deduplicated. */
+function mergePath(env: NodeJS.ProcessEnv, extra: string[]): NodeJS.ProcessEnv {
+  const existing = (env.PATH || '').split(':').filter(Boolean);
+  const merged = [...new Set([...existing, ...extra, ...(isMac ? MAC_PATH_FALLBACKS : []), path.join(os.homedir(), '.local', 'bin'),
     // OpenCode's official install script defaults to INSTALL_DIR=$HOME/.opencode/bin.
     path.join(os.homedir(), '.opencode', 'bin')])];
-  cachedEnv = { ...process.env, PATH: merged.join(':') };
-  return cachedEnv;
+  return { ...env, PATH: merged.join(':') };
+}
+
+// The static fallbacks cannot know a PATH entry that only the user's shell rc
+// adds — e.g. an npm global prefix such as ~/.local/node/bin exported from
+// ~/.zshrc, where `codex` is a `#!/usr/bin/env node` script that also needs the
+// `node` living next to it. For agent launches only, the daemon asks the user's
+// interactive login shell for its PATH once. Deliberately NOT folded into
+// getExecEnv(): that one is synchronous and backs every GUI spawn.
+const LOGIN_PATH_MARK = '__WMUX_LOGIN_PATH__';
+const LOGIN_SHELLS = new Set(['zsh', 'bash', 'sh']);
+let loginShellPath: string[] = [];
+let loginShellPathTask: Promise<string[]> | null = null;
+
+/**
+ * Resolve the interactive login shell's PATH (`$SHELL -ilc`) once, bounded by a
+ * timeout. Success and failure are both cached for the process lifetime, so a
+ * slow or hanging rc file costs at most one timeout. Only zsh/bash/sh are
+ * asked; any other shell resolves to [] and the static fallbacks apply.
+ */
+export function resolveLoginShellPath(): Promise<string[]> {
+  if (loginShellPathTask) return loginShellPathTask;
+  let shell = process.env.SHELL;
+  if (!shell) {
+    try { shell = os.userInfo().shell ?? undefined; } catch { shell = undefined; }
+  }
+  if ((!isMac && !isLinux) || !shell || !path.isAbsolute(shell) || !LOGIN_SHELLS.has(path.basename(shell))) {
+    loginShellPathTask = Promise.resolve([]);
+    return loginShellPathTask;
+  }
+  const loginShell = shell;
+  loginShellPathTask = new Promise<string[]>((resolve) => {
+    // The markers separate PATH from whatever an interactive rc prints.
+    const child = execFile(loginShell, ['-ilc', `printf '${LOGIN_PATH_MARK}%s${LOGIN_PATH_MARK}' "$PATH"`],
+      { env: process.env, timeout: 5000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024, windowsHide: true },
+      (error, stdout) => {
+        const parts = error ? [] : String(stdout).split(LOGIN_PATH_MARK);
+        loginShellPath = parts.length >= 3 ? parts[1].split(':').filter((dir) => path.isAbsolute(dir)) : [];
+        resolve(loginShellPath);
+      });
+    child.stdin?.end();
+  });
+  return loginShellPathTask;
+}
+
+/**
+ * `env` with its PATH augmented for an agent-launch spawn: the env's own PATH,
+ * then the login shell's PATH (once `resolveLoginShellPath()` has settled —
+ * callers await it first), then the static fallbacks. Unlike getExecEnv() it
+ * keeps the caller's env (a pane's, the Codex runtime's) instead of `process.env`.
+ */
+export function withAgentExecPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  if (!isMac && !isLinux) return env;
+  return mergePath(env, loginShellPath);
 }

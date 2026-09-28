@@ -1,17 +1,20 @@
 import { validTerminalLaunchMode } from '../../shared/transcript/terminalChat';
 import { runCli } from '../../shared/runCli';
 import { stripWmuxNamespace } from '../web/webPaneEnv';
+import { withAgentExecPath } from '../../shared/execEnv';
 
 /** Environment for the shared Codex runtime server. That server outlives the pane
  * that starts it and parents shell commands and MCP servers for every Codex pane on
  * the account, so it carries no WMUX_* key at all: not a pane identity, and not
  * WMUX_DATA_SUFFIX either (the server is per account, not per wmux instance, so a
  * suffix would point every Codex thread at whichever instance started it first).
- * Pane identity and the instance suffix are supplied per thread instead. */
+ * Pane identity and the instance suffix are supplied per thread instead.
+ * PATH is augmented so `codex` (and the `node` an npm-installed codex needs)
+ * resolves from a Finder-launched daemon's minimal launchd PATH. */
 export function codexRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const defined: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) if (typeof v === 'string') defined[k] = v;
-  return stripWmuxNamespace(defined);
+  return withAgentExecPath(stripWmuxNamespace(defined));
 }
 /** Quote an initial instruction for the verified POSIX shell.
  * Never accept controls, terminal escapes or a caller-supplied launcher. */

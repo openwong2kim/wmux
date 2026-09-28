@@ -12,6 +12,7 @@ import { CodexRelayUnavailableError } from './web/codexTuiRelay';
 import { paneCodexSettings } from './web/paneCodexSettings';
 import { CodexPaneRelays } from './web/codexPaneRelays';
 import { buildAgentLaunch, installedAgentLaunchOptions } from './web/agentLaunch';
+import { resolveLoginShellPath, withAgentExecPath } from '../shared/execEnv';
 import { workspaceAccountEnv } from './phone/workspaceAccountEnv';
 import { DesktopPhoneBridge } from './phone/DesktopPhoneBridge';
 import { RunHistoryStore } from './history/RunHistoryStore';
@@ -276,7 +277,7 @@ const codexSharedRuntime = createCodexSharedRuntime({
 const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Codex relay cleanup failed'),
   (id,owner)=>persistCodexRelayState?.(id,owner),
   {
-    ensureRuntime: async (id,codeHome)=>{ await codexSharedRuntime.ensureStarted(id,{...process.env,...(codeHome ? {CODEX_HOME:codeHome} : {})}); },
+    ensureRuntime: async (id,codeHome)=>{ await resolveLoginShellPath(); await codexSharedRuntime.ensureStarted(id,{...process.env,...(codeHome ? {CODEX_HOME:codeHome} : {})}); },
     serverProven: (codeHome)=>codexSharedRuntime.state(codeHome)?.kind === 'clean',
     refused: (id,reason)=>{
       log('warn',`[codex-relay] refused a Codex request in ${id}: ${reason}`);
@@ -2306,6 +2307,13 @@ function registerRpcHandlers(
       });
       if (workspaceId) env = await workspaceAccountEnv(env, workspaceId, desktopPhoneBridge);
       const agentCommand = agentLaunch ? buildAgentLaunch(agentLaunch, await installedAgentLaunchOptions(env)) : undefined;
+      // The pane runs `$SHELL -lc '<agent>'`, which reads the login profile but not
+      // ~/.zshrc; give it the PATH the probe above resolved the agent with, so a
+      // Finder-launched daemon's launchd PATH does not make the launch miss it.
+      if (agentCommand) {
+        const execPath = withAgentExecPath(env).PATH;
+        if (execPath) env = { ...env, PATH: execPath };
+      }
       let relay: Awaited<ReturnType<CodexPaneRelays['prepare']>> | undefined;
       if (agentLaunch?.agent === 'codex' && process.platform !== 'win32') {
         try { relay = await codexPaneRelays.prepare(id,env.CODEX_HOME); }
@@ -3683,6 +3691,7 @@ function registerRpcHandlers(
       selection: (id, pane) => codexPaneRelays.selection(id, pane),
     },
     startCodexRuntime: async (env) => {
+      await resolveLoginShellPath();
       const state = await codexSharedRuntime.ensureStarted(undefined, env);
       if (state.kind === 'failed') throw new Error(state.reason);
     },

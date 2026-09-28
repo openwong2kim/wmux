@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runCli } from '../../shared/runCli';
+import { resolveLoginShellPath, withAgentExecPath } from '../../shared/execEnv';
 
 export interface AgentLaunchChoice { agent: 'claude' | 'codex'; model?: string; effort?: string }
 export interface AgentLaunchOptions { agent: 'claude' | 'codex'; models: string[]; efforts: string[]; modelEfforts?: Record<string,string[]>; catalogState?: 'cached' | 'unavailable' }
@@ -49,15 +50,18 @@ async function codexOptions(env: NodeJS.ProcessEnv): Promise<AgentLaunchOptions>
 }
 let helpCache: {at:number;claude:string;codex:string} | undefined;
 let helpLoading: Promise<{claude:string;codex:string}> | undefined;
+// A Finder-launched daemon inherits launchd's /usr/bin:/bin:/usr/sbin:/sbin, so the
+// probe searches the login shell's PATH and the per-user/Homebrew fallbacks too.
 function help(command: string): Promise<string> {
   // runCli, not execFile: on Windows an npm-installed codex is a .cmd shim that
-  // execFile cannot find, so it was reported as not installed (#1619).
-  return runCli(command, ['--help'], { timeoutMs: 3000, maxBuffer: 128 * 1024 }).catch(() => '');
+  // execFile cannot find, so it was reported as not installed (#1619). The
+  // login-shell PATH makes a Finder-launched app find Homebrew/npm CLIs.
+  return runCli(command, ['--help'], { env: withAgentExecPath(process.env), timeoutMs: 3000, maxBuffer: 128 * 1024 }).catch(() => '');
 }
 async function installedHelp(): Promise<{claude:string;codex:string}> {
   if (helpCache && Date.now() - helpCache.at < 300000) return helpCache;
   if (helpLoading) return helpLoading;
-  helpLoading = Promise.all([help('claude'),help('codex')]).then(([claude,codex]) => {
+  helpLoading = resolveLoginShellPath().then(() => Promise.all([help('claude'),help('codex')])).then(([claude,codex]) => {
     helpCache = {at:Date.now(),claude,codex};
     helpLoading = undefined;
     return helpCache;
