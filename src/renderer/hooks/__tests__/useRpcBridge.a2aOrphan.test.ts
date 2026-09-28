@@ -62,6 +62,21 @@ describe('a2a.task.update — orphaned receiver pane (#1598)', () => {
     expect(useStore.getState().getTask(taskId)?.status.state).toBe('working');
   });
 
+  it('a status and a message in one call both land for the adopting pane', async () => {
+    const taskId = useStore.getState().createA2aTask({
+      title: 'pinned',
+      from: { workspaceId: WS.id, name: 'Orphan', paneId: 'pane-live' },
+      to: { workspaceId: WS.id, name: 'Orphan', paneId: 'pane-closed' },
+      history: [],
+      artifacts: [],
+    });
+    const res = await update({ workspaceId: WS.id, taskId, status: 'working', message: 'picking this up', senderPtyId: 'pty-now' });
+    expect(res.ok).toBe(true);
+    const task = useStore.getState().getTask(taskId);
+    expect(task?.status.state).toBe('working');
+    expect(task?.history.at(-1)?.role).toBe('agent');
+  });
+
   it('a live receiver pane keeps its task', async () => {
     const taskId = pinnedTask('pane-live');
     const res = await update({ workspaceId: WS.id, taskId, status: 'working', senderPtyId: 'pty-now' });

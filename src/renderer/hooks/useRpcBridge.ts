@@ -54,6 +54,7 @@ import {
 import { gatedSubmitToPty, submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import type { GatedSubmitRefusal } from '../../shared/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
+import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
 import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
@@ -3221,7 +3222,14 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // Per-pane role (S-C2): same model as the a2a.task.send reply branch, using
       // the callerAddr resolved above. Falls back to the ws-level role when the
       // caller's pane is unknown (preserves cross-ws behavior exactly).
-      const paneRole = resolvePaneRole(task.metadata, callerAddrUpdate);
+      // #1598: a verified pane of the receiver workspace that adopted a task
+      // whose receiver pane is gone speaks as the receiver, as its status
+      // update did (otherwise a status+message call commits the status and
+      // then refuses the message).
+      const adoptedOrphan = !!callerWsUpdate && !!callerAddrUpdate && isReceiverPaneGone(
+        task.metadata.to, workspaceId, callerLeavesUpdate.map((l) => l.id),
+      );
+      const paneRole = resolvePaneRole(task.metadata, callerAddrUpdate) ?? (adoptedOrphan ? 'agent' : null);
       // A fully pane-anchored same-ws task only admits its from/to panes (mirror
       // of the reply branch). A verified non-participant pane is rejected rather
       // than defaulting to the ws-level 'user' role. (A status-only update from a
