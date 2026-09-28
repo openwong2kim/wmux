@@ -132,7 +132,12 @@ async function resolveCallerPane(
   return { kind: 'absent' };
 }
 
-/** A workspace's panes, stashed ones included; null when the tree is unreadable. */
+/**
+ * A workspace's panes, stashed ones included; null when the tree is unreadable
+ * or the workspace is not there. `pane.list` answers [] for a workspace it does
+ * not know (before hydration, mid-switch), and a live workspace always has at
+ * least one pane, so an empty list is "unknown", never "every pane is gone".
+ */
 async function readWorkspacePanes(
   getWindow: () => BrowserWindow | null,
   workspaceId: string,
@@ -144,7 +149,8 @@ async function readWorkspacePanes(
     return null;
   }
   if (!Array.isArray(panes)) return null;
-  return panes.filter((pane): pane is Record<string, unknown> => isRecord(pane) && typeof pane.id === 'string');
+  const known = panes.filter((pane): pane is Record<string, unknown> => isRecord(pane) && typeof pane.id === 'string');
+  return known.length > 0 ? known : null;
 }
 
 /** Validate an RPC-supplied caller pid. Anything non-positive / non-integer is

@@ -206,6 +206,12 @@ describe('a2a.task.query view: page — #1598 orphaned tasks', () => {
     expect(one.task.orphaned).toBe(true);
   });
 
+  it('flags nothing when the workspace is not in the pane tree yet (empty pane list)', async () => {
+    const router = setupPanes([]);
+    const list = await query(router, { view: 'page' });
+    expect(list.tasks.some((t: Rec) => t.orphaned)).toBe(false);
+  });
+
   it('flags nothing when the pane tree is unreadable, and ignores a wire-supplied pane list', async () => {
     const router = setupPanes(null);
     const list = await query(router, { view: 'page', livePaneIds: ['pane-x'] });
