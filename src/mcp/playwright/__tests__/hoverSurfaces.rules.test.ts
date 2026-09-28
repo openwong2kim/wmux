@@ -8,6 +8,7 @@ import {
   hoverMenusNote,
   isHoverTriggerEligible,
   scanBudgetExhausted,
+  scoreBudgetExhausted,
   scoreHoverTrigger,
   type HoverTriggerSignals,
 } from '../hoverSurfaces';
@@ -241,6 +242,16 @@ describe('scanBudgetExhausted: the phase-1 bound', () => {
     // so they are two spellings of one number. This is the tripwire for a drift.
     expect(scanBudgetExhausted(MAX_CSS_RULES, 0)).toBe(true);
     expect(scanBudgetExhausted(MAX_CSS_RULES - 1, SCAN_BUDGET_MS - 1)).toBe(false);
+  });
+});
+
+describe('scoreBudgetExhausted: the scoring bound (#1597)', () => {
+  const { SCAN_BUDGET_MS } = HOVER_SCAN_LIMITS;
+
+  it('is the wall clock alone, on the same number as the walk', () => {
+    expect(scoreBudgetExhausted(0)).toBe(false);
+    expect(scoreBudgetExhausted(SCAN_BUDGET_MS - 1)).toBe(false);
+    expect(scoreBudgetExhausted(SCAN_BUDGET_MS)).toBe(true);
   });
 });
 
