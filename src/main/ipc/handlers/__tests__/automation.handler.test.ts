@@ -59,4 +59,11 @@ describe('automation IPC handlers', () => {
     rpc.mockRejectedValueOnce(new Error('Unknown method: automation.list'));
     await expect(call(IPC.AUTOMATION_LIST)).resolves.toEqual({ automations: [], available: false });
   });
+
+  it('passes enabled:false through to automation.create', async () => {
+    rpc.mockResolvedValue({ ok: true, automation: { id: 'n1' } });
+    const draft = { name: 'n', trigger: {}, action: {} };
+    await call(IPC.AUTOMATION_CREATE, draft, false);
+    expect(rpc).toHaveBeenCalledWith(AUTOMATION_RPC.create, { draft, enabled: false });
+  });
 });

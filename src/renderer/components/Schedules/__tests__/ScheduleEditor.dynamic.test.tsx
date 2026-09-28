@@ -91,7 +91,7 @@ describe('ScheduleEditor', () => {
     expect(api.grant).toHaveBeenCalledWith('a1', 'scoped', undefined);
   });
 
-  it('creates a scoped schedule disabled, grants, then enables — and a retry never creates twice', async () => {
+  it('creates a scoped schedule disabled atomically, grants, then enables — and a retry never creates twice', async () => {
     const created = automation({ id: 'new1' });
     api.create.mockResolvedValue({ ok: true, automation: created });
     api.setEnabled.mockResolvedValue({ ok: true, automation: created });
@@ -105,8 +105,8 @@ describe('ScheduleEditor', () => {
     act(() => type(q<HTMLInputElement>('[data-schedule-tools]')!, 'Read'));
     await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
     expect(api.create).toHaveBeenCalledTimes(1);
-    expect(api.setEnabled).toHaveBeenCalledWith('new1', false);
-    expect(api.setEnabled).not.toHaveBeenCalledWith('new1', true);
+    expect(api.create.mock.calls[0][1]).toBe(false);
+    expect(api.setEnabled).not.toHaveBeenCalled();
     expect(onSaved).not.toHaveBeenCalled();
 
     await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());

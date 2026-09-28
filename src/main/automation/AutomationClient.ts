@@ -55,7 +55,10 @@ export class AutomationClient {
   }
 
   create(params: AutomationCreateParams): Promise<AutomationMutationResult> {
-    return this.mutate(AUTOMATION_RPC.create, { draft: params.draft });
+    return this.mutate(AUTOMATION_RPC.create, {
+      draft: params.draft,
+      ...(typeof params.enabled === 'boolean' ? { enabled: params.enabled } : {}),
+    });
   }
 
   update(params: AutomationUpdateParams): Promise<AutomationMutationResult> {

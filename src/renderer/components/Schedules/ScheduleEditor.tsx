@@ -134,16 +134,12 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
         if (!saved.ok) return fail(saved.error);
         id = saved.automation.id;
       } else {
-        const saved = await api.create(draft);
+        // Created disabled (atomically, no nextRunAt): it cannot fire before
+        // its grant lands, and turns on only once everything succeeded.
+        const saved = await api.create(draft, false);
         if (!saved.ok) return fail(saved.error);
         id = saved.automation.id;
         setCreated(saved.automation);
-        // The daemon enables on create; a schedule that still needs its grant
-        // must not be able to fire in approval mode meanwhile.
-        if (needsGrant) {
-          const off = await api.setEnabled(id, false);
-          if (!off.ok) return fail(off.error);
-        }
       }
       if (needsGrant) {
         const granted = await api.grant(id, form.mode, usesToolList(form) ? tools.tools : undefined);

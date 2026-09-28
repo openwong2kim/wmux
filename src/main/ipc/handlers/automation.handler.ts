@@ -111,11 +111,11 @@ export function registerAutomationHandlers(
     }
   });
 
-  handle(IPC.AUTOMATION_CREATE, async (draft: unknown): Promise<AutomationMutationResult> => {
+  handle(IPC.AUTOMATION_CREATE, async (draft: unknown, enabled?: unknown): Promise<AutomationMutationResult> => {
     const a = api();
     if (!a) return refuse();
     if (!isDraft(draft)) return refuse('invalid draft');
-    return a.create({ draft });
+    return a.create({ draft, ...(typeof enabled === 'boolean' ? { enabled } : {}) });
   });
 
   handle(IPC.AUTOMATION_UPDATE, async (id: unknown, draft: unknown): Promise<AutomationMutationResult> => {

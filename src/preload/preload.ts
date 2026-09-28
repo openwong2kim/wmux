@@ -597,8 +597,8 @@ const electronAPI = {
       }>,
     snapshot: (runId: string) =>
       ipcRenderer.invoke(IPC.AUTOMATION_SNAPSHOT, runId) as Promise<{ text: string | null }>,
-    create: (draft: import('../shared/automation').AutomationDraft) =>
-      ipcRenderer.invoke(IPC.AUTOMATION_CREATE, draft) as Promise<
+    create: (draft: import('../shared/automation').AutomationDraft, enabled?: boolean) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_CREATE, draft, enabled) as Promise<
         import('../shared/automation').AutomationMutationResult
       >,
     update: (id: string, draft: import('../shared/automation').AutomationDraft) =>
