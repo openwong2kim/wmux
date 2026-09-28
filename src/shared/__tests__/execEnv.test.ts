@@ -51,11 +51,34 @@ describe('getExecEnv', () => {
   });
 });
 
-describe('getExecEnv on non-mac', () => {
+describe('getExecEnv on Linux', () => {
+  it('appends only the per-user install dirs, not the Homebrew paths', async () => {
+    vi.doMock('../platform', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../platform')>();
+      return { ...actual, isMac: false, isLinux: true };
+    });
+    vi.resetModules();
+    const originalPath = process.env.PATH;
+    process.env.PATH = '/usr/bin:/bin';
+    try {
+      const { getExecEnv } = await import('../execEnv');
+      const { default: os } = await import('node:os');
+      const { default: path } = await import('node:path');
+      const env = getExecEnv();
+      expect(env.PATH).toContain(path.join(os.homedir(), '.opencode', 'bin'));
+      expect(env.PATH).toContain(path.join(os.homedir(), '.local', 'bin'));
+      expect(env.PATH).not.toContain('/opt/homebrew/bin');
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+});
+
+describe('getExecEnv on Windows', () => {
   it('returns process.env as-is (no recompute)', async () => {
     vi.doMock('../platform', async (importOriginal) => {
       const actual = await importOriginal<typeof import('../platform')>();
-      return { ...actual, isMac: false };
+      return { ...actual, isMac: false, isLinux: false };
     });
     vi.resetModules();
     const { getExecEnv } = await import('../execEnv');

@@ -19,7 +19,7 @@
 
 import os from 'node:os';
 import path from 'node:path';
-import { isMac } from './platform';
+import { isLinux, isMac } from './platform';
 
 /** Homebrew (Apple Silicon/Intel), per-user CLI installs, and system paths. */
 const MAC_PATH_FALLBACKS = [
@@ -36,18 +36,19 @@ const MAC_PATH_FALLBACKS = [
 let cachedEnv: NodeJS.ProcessEnv | null = null;
 
 /**
- * Returns an env that corrects the macOS-specific case where passing `process.env`
- * straight to execFile is unsafe — on mac only, it appends the Homebrew/system
- * paths plus `~/.local/bin` (the conventional per-user CLI install dir) and
- * `~/.opencode/bin` (OpenCode's installer default) to PATH;
- * on other platforms it returns `process.env` as-is (no recompute).
+ * Returns an env that corrects the case where passing `process.env` straight to
+ * execFile is unsafe. On mac it appends the Homebrew/system paths; on mac and
+ * Linux (a desktop session's PATH may not include what a shell rc adds) it
+ * appends `~/.local/bin` (the conventional per-user CLI install dir) and
+ * `~/.opencode/bin` (OpenCode's installer default). On Windows it returns
+ * `process.env` as-is (no recompute).
  */
 export function getExecEnv(): NodeJS.ProcessEnv {
-  if (!isMac) return process.env;
+  if (!isMac && !isLinux) return process.env;
   if (cachedEnv) return cachedEnv;
 
   const existing = (process.env.PATH || '').split(':').filter(Boolean);
-  const merged = [...new Set([...existing, ...MAC_PATH_FALLBACKS, path.join(os.homedir(), '.local', 'bin'),
+  const merged = [...new Set([...existing, ...(isMac ? MAC_PATH_FALLBACKS : []), path.join(os.homedir(), '.local', 'bin'),
     // OpenCode's official install script defaults to INSTALL_DIR=$HOME/.opencode/bin.
     path.join(os.homedir(), '.opencode', 'bin')])];
   cachedEnv = { ...process.env, PATH: merged.join(':') };
