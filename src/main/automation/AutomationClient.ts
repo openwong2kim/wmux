@@ -1,7 +1,10 @@
 import {
   AUTOMATION_RPC,
   type Automation,
+  type AutomationAttention,
   type AutomationCancelRunParams,
+  type AutomationOkResult,
+  type AutomationRunNowResult,
   type AutomationCreateParams,
   type AutomationGrantParams,
   type AutomationMutationResult,
@@ -17,12 +20,6 @@ export interface AutomationRpcTransport {
   rpc(method: string, params?: Record<string, unknown>, opts?: { timeoutMs?: number }): Promise<unknown>;
 }
 
-/**
- * The contract types remove / runNow / cancelRun loosely; a daemon may answer
- * them with a bare `{ ok:true }`, so their callers only get the verdict.
- */
-export type AutomationActionResult = { ok: true } | { ok: false; error: string };
-
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -35,9 +32,13 @@ function errorText(err: unknown): string {
 export class AutomationClient {
   constructor(private readonly transport: AutomationRpcTransport) {}
 
-  async list(): Promise<Automation[]> {
-    const r = (await this.transport.rpc(AUTOMATION_RPC.list, {})) as { automations?: unknown } | null;
-    return Array.isArray(r?.automations) ? (r.automations as Automation[]) : [];
+  async list(): Promise<{ automations: Automation[]; pendingAttention: AutomationAttention[] }> {
+    const r = (await this.transport.rpc(AUTOMATION_RPC.list, {})) as
+      { automations?: unknown; pendingAttention?: unknown } | null;
+    return {
+      automations: Array.isArray(r?.automations) ? (r.automations as Automation[]) : [],
+      pendingAttention: Array.isArray(r?.pendingAttention) ? (r.pendingAttention as AutomationAttention[]) : [],
+    };
   }
 
   async runs(automationId?: string): Promise<AutomationRun[]> {
@@ -61,7 +62,7 @@ export class AutomationClient {
     return this.mutate(AUTOMATION_RPC.update, { id: params.id, draft: params.draft });
   }
 
-  remove(params: AutomationRemoveParams): Promise<AutomationActionResult> {
+  remove(params: AutomationRemoveParams): Promise<AutomationOkResult> {
     return this.act(AUTOMATION_RPC.remove, { id: params.id });
   }
 
@@ -77,15 +78,27 @@ export class AutomationClient {
     });
   }
 
-  runNow(params: AutomationRunNowParams): Promise<AutomationActionResult> {
-    return this.act(AUTOMATION_RPC.runNow, { id: params.id, kind: params.kind });
+  async runNow(params: AutomationRunNowParams): Promise<AutomationRunNowResult> {
+    try {
+      const r = (await this.transport.rpc(AUTOMATION_RPC.runNow, { id: params.id, kind: params.kind })) as
+        { ok?: unknown; run?: unknown; error?: unknown } | null;
+      if (r?.ok === true && r.run && typeof r.run === 'object') return { ok: true, run: r.run as AutomationRun };
+      return { ok: false, error: typeof r?.error === 'string' ? r.error : 'invalid daemon reply' };
+    } catch (err) {
+      return { ok: false, error: errorText(err) };
+    }
   }
 
-  cancelRun(params: AutomationCancelRunParams): Promise<AutomationActionResult> {
+  cancelRun(params: AutomationCancelRunParams): Promise<AutomationOkResult> {
     return this.act(AUTOMATION_RPC.cancelRun, { runId: params.runId });
   }
 
-  private async act(method: string, params: Record<string, unknown>): Promise<AutomationActionResult> {
+  /** Clear attention items the desktop has surfaced (first-party only). */
+  ackAttention(ids: string[]): Promise<AutomationOkResult> {
+    return this.act(AUTOMATION_RPC.ackAttention, { ids });
+  }
+
+  private async act(method: string, params: Record<string, unknown>): Promise<AutomationOkResult> {
     try {
       const r = (await this.transport.rpc(method, params)) as { ok?: unknown; error?: unknown } | null;
       if (r?.ok === true) return { ok: true };

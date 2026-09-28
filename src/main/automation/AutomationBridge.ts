@@ -3,6 +3,7 @@ import { IPC } from '../../shared/constants';
 import {
   AUTOMATION_EVENT,
   type Automation,
+  type AutomationAttention,
   type AutomationEvent,
   type AutomationRun,
 } from '../../shared/automation';
@@ -128,30 +129,64 @@ export class AutomationBridge {
     this.api = null;
   }
 
-  /** Connect-time (and renderer-requested) full pull. */
+  /** Connect-time full pull: snapshot to the renderer, then what needs a human. */
   async pull(): Promise<void> {
     const api = this.api;
     if (!api || !this.client?.isConnected) return;
-    let automations: Automation[];
+    let listed: { automations: Automation[]; pendingAttention: AutomationAttention[] };
     let runs: AutomationRun[];
     try {
-      [automations, runs] = await Promise.all([api.list(), api.runs()]);
+      [listed, runs] = await Promise.all([api.list(), api.runs()]);
     } catch {
       // A daemon without automation.* (older build) answers Unknown method:
       // there is nothing to show, and nothing to toast.
       return;
     }
     if (api !== this.api) return; // stopped or restarted meanwhile
-    this.send({ kind: 'snapshot', automations, runs });
-    const names = new Map(automations.map((a) => [a.id, a.name]));
+    this.send({ kind: 'snapshot', automations: listed.automations, runs });
+    const names = new Map(listed.automations.map((a) => [a.id, a.name]));
     for (const run of runs) {
       // Restore only what still needs a human now. Historical failures toast
       // once, live, through run-changed — never again on every launch.
       if (run.state === 'awaiting') this.toastRun(run, names.get(run.automationId) ?? '');
     }
-    for (const a of automations) {
-      if (a.proposed) this.toastAttention(a.id, a.name, 'proposed');
+    await this.surfaceAttention(api, listed.pendingAttention);
+  }
+
+  /**
+   * Drafts and raised grants come from the daemon's attention queue, which
+   * keeps them until a first-party client acknowledges them — so one that
+   * arrived while no desktop was connected still surfaces here. Toast each
+   * queued item once, then ack what was shown so the next launch stays quiet.
+   */
+  private async surfaceAttention(api: AutomationClient, items: AutomationAttention[]): Promise<void> {
+    const shown: string[] = [];
+    for (const item of items) {
+      if (!item || typeof item.id !== 'string' || typeof item.automationId !== 'string') continue;
+      if (item.kind !== 'proposed' && item.kind !== 'grant-raised') continue;
+      shown.push(item.id);
+      const key = `attention:${item.id}`;
+      if (toasted.has(key)) continue;
+      toasted.add(key);
+      this.toastAttention(item.automationId, item.automationName ?? '', item.kind);
     }
+    if (shown.length === 0) return;
+    // Refused or failed: the items stay queued and resurface on the next
+    // connect; the per-process key set keeps this process from repeating them.
+    await api.ackAttention(shown);
+  }
+
+  private async pullAttention(): Promise<void> {
+    const api = this.api;
+    if (!api || !this.client?.isConnected) return;
+    let pending: AutomationAttention[];
+    try {
+      pending = (await api.list()).pendingAttention;
+    } catch {
+      return;
+    }
+    if (api !== this.api) return;
+    await this.surfaceAttention(api, pending);
   }
 
   private handle(ev: AutomationEvent): void {
@@ -159,7 +194,9 @@ export class AutomationBridge {
     if (ev.type === 'run-changed') {
       this.toastRun(ev.run, ev.automationName);
     } else if (ev.type === 'attention') {
-      this.toastAttention(ev.automationId, ev.automationName, ev.kind);
+      // The live event carries no queue id; read the queue so the toast and
+      // its ack refer to the same item.
+      void this.pullAttention();
     }
   }
 
@@ -178,11 +215,6 @@ export class AutomationBridge {
   }
 
   private toastAttention(automationId: string, name: string, kind: 'proposed' | 'grant-raised'): void {
-    if (kind === 'proposed') {
-      const key = `proposed:${automationId}`;
-      if (toasted.has(key)) return;
-      toasted.add(key);
-    }
     // Detection is the control for drafts and raised grants (anyone holding the
     // daemon token could write them), so these ignore the toast toggle — the
     // same exemption the daemon's security notices get.

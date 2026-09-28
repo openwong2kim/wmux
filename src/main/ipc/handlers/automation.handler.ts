@@ -6,10 +6,12 @@ import type {
   Automation,
   AutomationDraft,
   AutomationMutationResult,
+  AutomationOkResult,
   AutomationPermissionMode,
+  AutomationRunNowResult,
   AutomationRun,
 } from '../../../shared/automation';
-import { AutomationClient, type AutomationActionResult } from '../../automation/AutomationClient';
+import { AutomationClient } from '../../automation/AutomationClient';
 import { setAutomationToastLabels } from '../../automation/AutomationBridge';
 
 const NO_DAEMON = 'daemon unavailable';
@@ -51,7 +53,7 @@ export function registerAutomationHandlers(getClient: () => DaemonClient | null)
     const a = api();
     if (!a) return { automations: [], available: false };
     try {
-      return { automations: await a.list(), available: true };
+      return { automations: (await a.list()).automations, available: true };
     } catch {
       // Older daemon (Unknown method) — the feature is simply not there.
       return { automations: [], available: false };
@@ -92,7 +94,7 @@ export function registerAutomationHandlers(getClient: () => DaemonClient | null)
     return a.update({ id, draft });
   });
 
-  handle(IPC.AUTOMATION_REMOVE, async (id: unknown): Promise<AutomationActionResult> => {
+  handle(IPC.AUTOMATION_REMOVE, async (id: unknown): Promise<AutomationOkResult> => {
     const a = api();
     if (!a) return refuse();
     if (!isId(id)) return refuse('invalid id');
@@ -119,14 +121,14 @@ export function registerAutomationHandlers(getClient: () => DaemonClient | null)
     },
   );
 
-  handle(IPC.AUTOMATION_RUN_NOW, async (id: unknown, kind: unknown): Promise<AutomationActionResult> => {
+  handle(IPC.AUTOMATION_RUN_NOW, async (id: unknown, kind: unknown): Promise<AutomationRunNowResult> => {
     const a = api();
     if (!a) return refuse();
     if (!isId(id) || (kind !== 'manual' && kind !== 'test')) return refuse('invalid request');
     return a.runNow({ id, kind });
   });
 
-  handle(IPC.AUTOMATION_CANCEL_RUN, async (runId: unknown): Promise<AutomationActionResult> => {
+  handle(IPC.AUTOMATION_CANCEL_RUN, async (runId: unknown): Promise<AutomationOkResult> => {
     const a = api();
     if (!a) return refuse();
     if (!isId(runId)) return refuse('invalid id');

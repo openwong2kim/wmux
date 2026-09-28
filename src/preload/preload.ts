@@ -604,9 +604,7 @@ const electronAPI = {
         import('../shared/automation').AutomationMutationResult
       >,
     remove: (id: string) =>
-      ipcRenderer.invoke(IPC.AUTOMATION_REMOVE, id) as Promise<
-        import('../main/automation/AutomationClient').AutomationActionResult
-      >,
+      ipcRenderer.invoke(IPC.AUTOMATION_REMOVE, id) as Promise<import('../shared/automation').AutomationOkResult>,
     setEnabled: (id: string, enabled: boolean) =>
       ipcRenderer.invoke(IPC.AUTOMATION_SET_ENABLED, id, enabled) as Promise<
         import('../shared/automation').AutomationMutationResult
@@ -616,13 +614,9 @@ const electronAPI = {
         import('../shared/automation').AutomationMutationResult
       >,
     runNow: (id: string, kind: 'manual' | 'test') =>
-      ipcRenderer.invoke(IPC.AUTOMATION_RUN_NOW, id, kind) as Promise<
-        import('../main/automation/AutomationClient').AutomationActionResult
-      >,
+      ipcRenderer.invoke(IPC.AUTOMATION_RUN_NOW, id, kind) as Promise<import('../shared/automation').AutomationRunNowResult>,
     cancelRun: (runId: string) =>
-      ipcRenderer.invoke(IPC.AUTOMATION_CANCEL_RUN, runId) as Promise<
-        import('../main/automation/AutomationClient').AutomationActionResult
-      >,
+      ipcRenderer.invoke(IPC.AUTOMATION_CANCEL_RUN, runId) as Promise<import('../shared/automation').AutomationOkResult>,
     setToastLabels: (labels: import('../main/automation/toastText').AutomationToastLabels) =>
       ipcRenderer.send(IPC.AUTOMATION_TOAST_LABELS, labels),
     onPush: (callback: (push: import('../main/automation/AutomationBridge').AutomationPush) => void) => {

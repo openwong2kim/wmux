@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPC } from '../../../shared/constants';
-import { AUTOMATION_EVENT, AUTOMATION_RPC, type Automation, type AutomationRun } from '../../../shared/automation';
+import { AUTOMATION_EVENT, AUTOMATION_RPC, type Automation, type AutomationAttention, type AutomationRun } from '../../../shared/automation';
 import {
   AutomationBridge,
   __resetAutomationBridgeForTest,
@@ -41,9 +41,15 @@ class FakeClient extends EventEmitter {
   isConnected = true;
   list: Automation[] = [];
   runs: AutomationRun[] = [];
-  rpc = vi.fn(async (method: string) => {
-    if (method === AUTOMATION_RPC.list) return { automations: this.list };
+  attention: AutomationAttention[] = [];
+  rpc = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    if (method === AUTOMATION_RPC.list) return { automations: this.list, pendingAttention: this.attention };
     if (method === AUTOMATION_RPC.runs) return { runs: this.runs };
+    if (method === AUTOMATION_RPC.ackAttention) {
+      const ids = params?.ids as string[];
+      this.attention = this.attention.filter((a) => !ids.includes(a.id));
+      return { ok: true };
+    }
     throw new Error(`Unknown method: ${method}`);
   });
 }
@@ -117,20 +123,39 @@ describe('AutomationBridge', () => {
     for (const [text] of toast.mock.calls) expect(text).not.toContain('quarterly');
   });
 
-  it('restores a still-awaiting run and a pending draft after an app restart, once per process', async () => {
+  it('restores an awaiting run and queued attention after a restart, then acks what it showed', async () => {
     const { toast, bridge, client } = setup();
     client.list = [automation(), automation({ id: 'a2', name: 'Draft', proposed: true, enabled: false })];
     client.runs = [run({ state: 'awaiting' }), run({ id: 'r0', state: 'failed' })];
+    client.attention = [
+      { id: 'at1', automationId: 'a2', automationName: 'Draft', kind: 'proposed', at: 1 },
+      { id: 'at2', automationId: 'a1', automationName: 'Morning report', kind: 'grant-raised', at: 2 },
+    ];
     bridge.start(client);
     await flush();
     expect(toast.mock.calls.map((c) => [c[0], c[2]])).toEqual([
       ['Morning report · Needs your response', { ignoreToastSetting: false }],
       ['Draft · Draft to review', { ignoreToastSetting: true }],
+      ['Morning report · Permission raised', { ignoreToastSetting: true }],
     ]);
+    expect(client.rpc).toHaveBeenCalledWith(AUTOMATION_RPC.ackAttention, { ids: ['at1', 'at2'] });
+    expect(client.attention).toEqual([]);
     // A pipe blip re-creates the bridge; nothing toasts twice.
     bridge.start(client);
     await flush();
-    expect(toast).toHaveBeenCalledTimes(2);
+    expect(toast).toHaveBeenCalledTimes(3);
+  });
+
+  it('surfaces a live attention event from the queue and acks it', async () => {
+    const { toast, bridge, client } = setup();
+    bridge.start(client);
+    await flush();
+    client.attention = [{ id: 'at9', automationId: 'a3', automationName: 'Nightly', kind: 'grant-raised', at: 1 }];
+    client.emit('event', { type: AUTOMATION_EVENT, sessionId: '', data: { type: 'attention', automationId: 'a3', automationName: 'Nightly', kind: 'grant-raised' } });
+    await flush();
+    await flush();
+    expect(toast.mock.calls.map((c) => c[0])).toEqual(['Nightly · Permission raised']);
+    expect(client.attention).toEqual([]);
   });
 
   it('opens the run from a toast click and uses the renderer-supplied labels', async () => {
