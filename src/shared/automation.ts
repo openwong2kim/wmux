@@ -44,7 +44,11 @@ export interface AutomationLaunchAction {
 
 export interface AutomationPermission {
   mode: AutomationPermissionMode;
-  /** scoped only: bare tool names (AUTOMATION_TOOL_NAME_RE). */
+  /**
+   * claude scoped only: bare tool names (AUTOMATION_TOOL_NAME_RE). codex has no
+   * per-tool allow-list: codex `scoped` means the workspace-write sandbox with
+   * no approval prompts, and a grant carrying tools for codex is refused.
+   */
   allowedTools?: string[];
   /** Revision the human granted `mode` at. Daemon-written only. */
   grantedRevision?: number;
@@ -154,8 +158,9 @@ export interface AutomationDraft {
 }
 
 // ── Daemon RPC contract ─────────────────────────────────────────────────────
-// Mutating methods are first-party only (desktop main). Reads are open to any
-// authenticated client.
+// Mutating methods and run snapshots are first-party only (desktop main).
+// `list` and `runs` are open to any authenticated client; a non-first-party
+// `list` gets each action with an empty `prompt` / `cwd` and no `accountId`.
 
 export const AUTOMATION_RPC = {
   list: 'automation.list',

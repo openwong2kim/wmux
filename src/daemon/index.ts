@@ -1612,8 +1612,15 @@ async function recoverSessions(
     // resumed agent would run unattended outside its run record (the engine
     // marks that run unknown). Reap a same-boot survivor, then tombstone it.
     if (session.id.startsWith(AUTOMATION_PTY_PREFIX)) {
-      if (!rebooted && await ProcessMonitor.isAlive(session.pid) && await isOurShellProcess(session.pid, session.cmd)) {
-        await killProcessTree(session.pid);
+      // Same proof the tombstone reconciliation uses: only a proven same boot
+      // plus a confirmed process identity may kill; otherwise just tombstone.
+      if (sameBootProven && await ProcessMonitor.isAlive(session.pid)) {
+        await reapIfIdentityConfirmed({
+          pid: session.pid,
+          cmd: session.cmd,
+          storedStartTime: session.pidStartTime,
+          reason: `scheduled-run session ${session.id} left by a previous daemon`,
+        });
       }
       session.state = 'dead';
       session.exitCode = null;
@@ -3772,11 +3779,12 @@ function registerRpcHandlers(
         const automationPane = automationEngine?.ownsPane(sessionId) === true;
         if (historySession && !automationPane) recordHistory(store => store.ingest(sessionId, historySession.meta.env, data));
         if (automationPane) {
-          void automationEngine?.onAgentEvent(sessionId, {
+          automationEngine?.onAgentEvent(sessionId, {
             kind: data.signal.kind,
             status: data.status,
+            ...(data.decision ? { decision: data.decision } : {}),
             ...(data.signal.agentSessionId ? { agentSessionId: data.signal.agentSessionId } : {}),
-          });
+          }).catch((err) => log('warn', `[automation] agent event handling failed for ${sessionId}:`, err));
         }
         // Hook Stop/awaiting-input is authoritative inside the same daemon that
         // owns byte activity. Settle the bridge before broadcasting so a later
@@ -4287,7 +4295,8 @@ function registerRpcHandlers(
     },
     killTree: (pid) => killProcessTree(pid),
   });
-  registerAutomationRpc((method, handler) => pipeServer.onRpc(method, handler), automationEngine, firstPartyOnly);
+  registerAutomationRpc((method, handler) => pipeServer.onRpc(method, handler), automationEngine, firstPartyOnly,
+    (clientId) => pipeServer.isFirstParty(clientId));
   void automationEngine.start().catch((err) => log('error', '[automation] engine start failed:', err));
 
   // Human chat input shares the scheduler's input-revision/identity guards,

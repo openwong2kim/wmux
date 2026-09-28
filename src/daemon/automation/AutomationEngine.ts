@@ -73,6 +73,8 @@ export const READY_POLL_MS = 1_000;
 export const READY_STABLE_READS = 2;
 /** Agent process gone but the PTY still up this long → ambiguous (`unknown`). */
 export const PROCESS_EXIT_SETTLE_MS = 30_000;
+/** An attached human may keep a completed session open this long at most. */
+export const LINGER_ATTACHED_MAX_MS = 60 * 60_000;
 const TRACKER_ARM_AFTER_MS = 10_000;
 const TRACKER_ARM_EVERY_MS = 35_000;
 const MINUTE_MS = 60_000;
@@ -131,8 +133,12 @@ interface LiveRun {
 export interface AgentEventSignal {
   kind: string;
   status: string;
+  /** HookIngest's arbitration. Only a confirmed turn end ('emit'/'dedup') completes a run. */
+  decision?: string;
   agentSessionId?: string;
 }
+
+const CONFIRMED_DECISIONS: ReadonlySet<string> = new Set(['emit', 'dedup']);
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -189,7 +195,9 @@ export class AutomationEngine {
     if (options.timers !== false) {
       this.tickTimer = setInterval(() => this.tick(), AUTOMATION_TICK_MS);
       this.tickTimer.unref?.();
-      this.monitorTimer = setInterval(() => void this.monitorOnce(), AUTOMATION_MONITOR_MS);
+      this.monitorTimer = setInterval(() => {
+        this.monitorOnce().catch((err) => this.ports.log('error', `[automation] monitor failed: ${String(err)}`));
+      }, AUTOMATION_MONITOR_MS);
       this.monitorTimer.unref?.();
       this.tick();
     }
@@ -346,12 +354,14 @@ export class AutomationEngine {
   async remove(id: unknown): Promise<AutomationOkResult> {
     const automation = this.find(id);
     if (!automation) return { ok: false, error: 'Not found' };
+    // Out of the schedule set BEFORE any await, so a tick in between cannot
+    // start a run for a schedule that is being deleted.
+    this.automations = this.automations.filter((a) => a.id !== automation.id);
+    this.attention = this.attention.filter((x) => x.automationId !== automation.id);
     for (const run of this.runs.filter((r) => r.automationId === automation.id)) {
       if (this.live.has(run.id)) await this.terminate(run, 'failed', 'cancelled');
       else if (!isFinalRunState(run.state)) this.finish(run, 'failed', 'cancelled');
     }
-    this.automations = this.automations.filter((a) => a.id !== automation.id);
-    this.attention = this.attention.filter((x) => x.automationId !== automation.id);
     this.pruneAndDrop();
     await this.persistAutomations();
     await this.persistRuns();
@@ -380,6 +390,13 @@ export class AutomationEngine {
     const before = effectiveMode(automation);
     if (mode === 'approval') {
       automation.permission = { mode: 'approval' };
+    } else if (mode === 'scoped' && automation.action.agent === 'codex') {
+      // codex scoped = workspace-write sandbox with no approval prompts; it has
+      // no per-tool allow-list, so a tool list would promise something unenforced.
+      if (allowedTools !== undefined && !(Array.isArray(allowedTools) && allowedTools.length === 0)) {
+        return { ok: false, error: 'Tool lists apply to claude only' };
+      }
+      automation.permission = { mode, grantedRevision: automation.revision };
     } else if (mode === 'scoped') {
       const tools = validateAllowedTools(allowedTools);
       if (!tools.ok) return { ok: false, error: tools.error };
@@ -462,7 +479,10 @@ export class AutomationEngine {
         automation.nextRunAt = plan.nextRunAt;
         automationsDirty = true;
       }
-      if (plan.fire !== null) void this.startRun(automation, plan.fire, 'scheduled');
+      if (plan.fire !== null) {
+        this.startRun(automation, plan.fire, 'scheduled')
+          .catch((err) => this.ports.log('error', `[automation] start failed: ${String(err)}`));
+      }
     }
     if (runsDirty) {
       this.pruneAndDrop();
@@ -514,7 +534,15 @@ export class AutomationEngine {
     scheduledFor: number,
     trigger: AutomationRun['trigger'],
   ): Promise<AutomationRun> {
-    const active = this.runs.find((r) => r.automationId === automation.id && !isFinalRunState(r.state));
+    // Snapshot what runs and under which grant in one synchronous step: an
+    // update/grant landing during the claim save below must not mix an old
+    // grant with a new action (or the reverse).
+    const snapshot = clone(automation);
+    const mode = effectiveMode(snapshot);
+    // Overlap: an open run, or any run of this schedule whose session is still
+    // live (lingering after completion, or ambiguous).
+    const active = this.runs.some((r) => r.automationId === automation.id && !isFinalRunState(r.state)) ||
+      [...this.live.values()].some((l) => this.runs.find((r) => r.id === l.runId)?.automationId === automation.id);
     if (active) {
       const skipped = this.recordSkipped(automation, scheduledFor, 'overlap', trigger);
       this.pruneAndDrop();
@@ -522,11 +550,10 @@ export class AutomationEngine {
       return skipped;
     }
     const id = this.newId();
-    const mode = effectiveMode(automation);
     const run: AutomationRun = {
       id,
       automationId: automation.id,
-      revision: automation.revision,
+      revision: snapshot.revision,
       effectiveMode: mode,
       scheduledFor,
       trigger,
@@ -543,7 +570,17 @@ export class AutomationEngine {
       void this.persistRuns();
       return run;
     }
-    void this.launch(run, clone(automation), mode);
+    this.launch(run, snapshot, mode).catch(async (err) => {
+      this.ports.log('error', `[automation] run ${run.id} launch crashed: ${String(err)}`);
+      try {
+        if (this.live.has(run.id)) await this.terminate(run, 'failed', 'launch_failed');
+        else {
+          this.finish(run, 'failed', 'launch_failed');
+          delete run.ptyId;
+          await this.persistRuns();
+        }
+      } catch { /* nothing left to do */ }
+    });
     return run;
   }
 
@@ -589,6 +626,19 @@ export class AutomationEngine {
       if (!isFinalRunState(run.state)) this.finish(run, 'failed', 'launch_failed');
       delete run.ptyId;
       await this.persistRuns();
+      return;
+    }
+    if (!this.live.has(run.id) || isFinalRunState(run.state)) {
+      // Cancelled (or removed) while the session was being created: the
+      // terminate that ran found no session yet, so reap it now.
+      const pid = this.ports.sessionPid(ptyId);
+      try {
+        if (pid !== null) await this.ports.killTree(pid);
+        await this.ports.destroySession(ptyId);
+      } catch (err) {
+        this.ports.log('warn', `[automation] run ${run.id} late reap failed: ${String(err)}`);
+      }
+      this.unregister(run.id);
       return;
     }
 
@@ -682,7 +732,12 @@ export class AutomationEngine {
     const started = this.now();
     for (;;) {
       if (isFinalRunState(run.state) || live.phase !== 'launching') return 'error';
-      const result = await this.ports.deliverPrompt(live.ptyId, agent, incarnationId, prompt);
+      let result: SessionPromptScheduleResult;
+      try {
+        result = await this.ports.deliverPrompt(live.ptyId, agent, incarnationId, prompt);
+      } catch {
+        return 'error';
+      }
       if (result !== 'busy' || this.now() - started >= READY_DEADLINE_MS) return result;
       await this.sleep(READY_POLL_MS);
     }
@@ -718,7 +773,9 @@ export class AutomationEngine {
     if (live.phase === 'lingering') {
       if (this.ports.sessionPid(live.ptyId) === null) {
         await this.terminate(run);
-      } else if (now >= (live.lingerUntil ?? 0) && !this.ports.isAttached(live.ptyId)) {
+      } else if (now >= (live.lingerUntil ?? 0) &&
+        (!this.ports.isAttached(live.ptyId) || now >= (live.lingerUntil ?? 0) + LINGER_ATTACHED_MAX_MS ||
+          now - (run.startedAt ?? now) > this.maxRunMs(run))) {
         await this.terminate(run);
       }
       return;
@@ -727,6 +784,12 @@ export class AutomationEngine {
     if (now - (run.startedAt ?? now) > this.maxRunMs(run)) {
       this.ports.log('warn', `[automation] run ${run.id} hit its run limit`);
       await this.terminate(run, 'failed', 'timeout');
+      return;
+    }
+    if (live.phase === 'launching') return;
+    if (this.ports.sessionPid(live.ptyId) === null) {
+      // Destroyed from outside (no session:died reaches us for that).
+      await this.terminate(run, 'unknown', 'process_exit');
       return;
     }
     if (live.phase !== 'monitoring') return;
@@ -741,9 +804,19 @@ export class AutomationEngine {
 
     const view = this.ports.readAgent(live.ptyId);
     if (view.status === 'running') live.sawRunning = true;
-    const awaiting = this.ports.hasPendingApproval(live.ptyId) ||
-      view.status === 'awaiting_input' ||
-      (live.sawRunning && view.status === 'waiting');
+    // Completion first: a finished turn must not be read as awaiting.
+    const turnEnd = this.ports.transcriptTurnEndAt(live.ptyId);
+    if (live.deliveredAt !== undefined && turnEnd !== undefined && turnEnd > live.deliveredAt) {
+      await this.complete(run, live, 'completed');
+      return;
+    }
+    if (live.sawRunning && view.status === 'complete') {
+      await this.complete(run, live, 'completed');
+      return;
+    }
+    // Only an approval record or an explicit question is "waiting on a human";
+    // a bare ready-for-input footer is not.
+    const awaiting = this.ports.hasPendingApproval(live.ptyId) || view.status === 'awaiting_input';
     if (awaiting) {
       if (run.state === 'running') {
         run.state = 'awaiting';
@@ -763,14 +836,6 @@ export class AutomationEngine {
       this.emitRun(run);
       await this.persistRuns();
     }
-    const turnEnd = this.ports.transcriptTurnEndAt(live.ptyId);
-    if (live.deliveredAt !== undefined && turnEnd !== undefined && turnEnd > live.deliveredAt) {
-      await this.complete(run, live, 'completed');
-      return;
-    }
-    if (live.sawRunning && view.status === 'complete') {
-      await this.complete(run, live, 'completed');
-    }
   }
 
   // ── Signals from the rest of the daemon ───────────────────────────────────
@@ -788,11 +853,12 @@ export class AutomationEngine {
     }
     if (live.phase !== 'monitoring' || live.deliveredAt === undefined) return;
     if (signal.status === 'running') live.sawRunning = true;
-    if (signal.kind === 'agent.stop_failure') {
+    const confirmed = signal.decision === undefined || CONFIRMED_DECISIONS.has(signal.decision);
+    if (signal.kind === 'agent.stop_failure' && confirmed) {
       await this.complete(run, live, 'failed', 'agent_error');
       return;
     }
-    if (signal.kind === 'agent.stop' && signal.status !== 'running') {
+    if (signal.kind === 'agent.stop' && signal.status !== 'running' && confirmed) {
       await this.complete(run, live, 'completed');
       return;
     }
@@ -820,8 +886,12 @@ export class AutomationEngine {
       this.unregister(runId);
       return;
     }
+    const delivered = this.live.get(runId)?.deliveredAt !== undefined;
     if (!isFinalRunState(run.state)) {
-      if (exitCode === 0) this.finish(run, 'completed');
+      // Exiting before the prompt was ever delivered is a failed launch,
+      // whatever the exit code says.
+      if (!delivered) this.finish(run, 'failed', 'launch_failed');
+      else if (exitCode === 0) this.finish(run, 'completed');
       else if (typeof exitCode === 'number') this.finish(run, 'failed', 'process_exit');
       else this.finish(run, 'unknown', 'process_exit');
     }

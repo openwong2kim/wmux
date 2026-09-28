@@ -356,3 +356,142 @@ describe('AutomationEngine — completion & caps', () => {
     expect(h.destroyed).toEqual([`auto-${run.id}`]);
   });
 });
+
+describe('AutomationEngine — review regressions', () => {
+  it('an update landing during the claim save cannot pair the new prompt with the old grant', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const a = await h.engine.create(draft());
+    if (!a.ok) throw new Error();
+    await h.engine.grant(a.automation.id, 'bypass', undefined);
+    const started = h.engine.runNow(a.automation.id, 'manual');
+    const edited = h.engine.update(a.automation.id, draft({ action: { kind: 'launch', cwd: '/work/repo', agent: 'claude', prompt: 'new prompt' } }));
+    await Promise.all([started, edited]);
+    await settle();
+    expect(h.created[0].command).toBe('claude --dangerously-skip-permissions');
+    expect(h.delivered).toEqual(['do the thing']);
+    expect(h.engine.listRuns()[0].revision).toBe(1);
+  });
+
+  it('a session that exits before the prompt was delivered is a failed launch, even with code 0', async () => {
+    const h = harness();
+    h.state.agent = { ...h.state.agent, verified: false };
+    let fired = false;
+    h.engine['ports'].sleep = async (ms) => {
+      h.clock.t += ms;
+      if (!fired) {
+        fired = true;
+        const pty = h.created[0].id;
+        h.alive.delete(pty);
+        await h.engine.onSessionDied(pty, 0);
+      }
+    };
+    await startedRun(h);
+    expect(h.engine.listRuns()[0]).toMatchObject({ state: 'failed', reason: 'launch_failed' });
+  });
+
+  it('a finished turn showing the ready footer completes instead of sticking in awaiting', async () => {
+    const h = harness();
+    await startedRun(h);
+    h.state.agent = { ...h.state.agent, status: 'running' };
+    await h.engine.monitorOnce();
+    h.state.agent = { ...h.state.agent, status: 'waiting' };
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0].state).toBe('running');
+    h.state.turnEndAt = h.clock.t + 1;
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0].state).toBe('completed');
+  });
+
+  it('a Stop the hook layer did not confirm is not a completion', async () => {
+    const h = harness();
+    const run = await startedRun(h);
+    await h.engine.onAgentEvent(`auto-${run.id}`, { kind: 'agent.stop', status: 'complete', decision: 'internal' });
+    expect(h.engine.listRuns()[0].state).toBe('running');
+    await h.engine.onAgentEvent(`auto-${run.id}`, { kind: 'agent.stop', status: 'complete', decision: 'emit' });
+    expect(h.engine.listRuns()[0].state).toBe('completed');
+  });
+
+  it('a lingering session still counts as active for overlap', async () => {
+    const h = harness();
+    const run = await startedRun(h);
+    await h.engine.onAgentEvent(`auto-${run.id}`, { kind: 'agent.stop', status: 'complete', decision: 'emit' });
+    const second = await h.engine.runNow(run.automationId, 'manual');
+    expect(second.ok && second.run).toMatchObject({ state: 'skipped', reason: 'overlap' });
+    expect(h.created).toHaveLength(1);
+  });
+
+  it('an attached client cannot hold a completed session open forever', async () => {
+    const h = harness({ ports: { isAttached: () => true } });
+    const run = await startedRun(h);
+    await h.engine.onAgentEvent(`auto-${run.id}`, { kind: 'agent.stop', status: 'complete', decision: 'emit' });
+    h.clock.t += 11 * MIN;
+    await h.engine.monitorOnce();
+    expect(h.destroyed).toEqual([]);
+    h.clock.t += 60 * MIN;
+    await h.engine.monitorOnce();
+    expect(h.destroyed).toEqual([`auto-${run.id}`]);
+  });
+
+  it('a session destroyed from outside settles the run as unknown', async () => {
+    const h = harness();
+    const run = await startedRun(h);
+    h.alive.delete(`auto-${run.id}`);
+    await h.engine.monitorOnce();
+    expect(h.engine.listRuns()[0]).toMatchObject({ state: 'unknown', reason: 'process_exit' });
+    expect(h.engine.ownsPane(`auto-${run.id}`)).toBe(false);
+  });
+
+  it('codex scoped takes no tool list', async () => {
+    const h = harness();
+    await h.engine.start({ timers: false });
+    const a = await h.engine.create(draft({ action: { kind: 'launch', cwd: '/w', agent: 'codex', prompt: 'x' } }));
+    if (!a.ok) throw new Error();
+    expect((await h.engine.grant(a.automation.id, 'scoped', ['Read'])).ok).toBe(false);
+    const g = await h.engine.grant(a.automation.id, 'scoped', undefined);
+    expect(g.ok && g.automation.permission).toEqual({ mode: 'scoped', grantedRevision: 1 });
+  });
+
+  it('a run cancelled while its session was being created reaps that session', async () => {
+    let release: () => void = () => undefined;
+    const h = harness();
+    h.engine['ports'].createSession = async (p) => {
+      await new Promise<void>((r) => { release = r; });
+      h.created.push(p);
+      h.alive.add(p.id);
+    };
+    await h.engine.start({ timers: false });
+    const a = await h.engine.create(draft());
+    if (!a.ok) throw new Error();
+    const res = await h.engine.runNow(a.automation.id, 'manual');
+    if (!res.ok) throw new Error();
+    await settle();
+    await h.engine.cancelRun(res.run.id);
+    release();
+    await settle();
+    expect(h.engine.listRuns()[0]).toMatchObject({ state: 'failed', reason: 'cancelled' });
+    expect(h.killed).toEqual([4242]);
+    expect(h.destroyed).toContain(`auto-${res.run.id}`);
+    expect(h.delivered).toEqual([]);
+    expect(h.engine.ownsPane(`auto-${res.run.id}`)).toBe(false);
+  });
+
+  it('a throwing prompt delivery fails the launch instead of escaping', async () => {
+    const h = harness({ ports: { deliverPrompt: async () => { throw new Error('boom'); } } });
+    const run = await startedRun(h);
+    expect(run).toMatchObject({ state: 'failed', reason: 'launch_failed' });
+  });
+
+  it('a tick during remove() cannot start a run for the schedule being deleted', async () => {
+    const h = harness();
+    const run = await startedRun(h);
+    const a = h.engine.list().automations[0];
+    h.clock.t = a.nextRunAt! + MIN;
+    const removing = h.engine.remove(run.automationId);
+    h.engine.tick();
+    await removing;
+    await settle();
+    expect(h.created).toHaveLength(1);
+    expect(h.engine.list().automations).toEqual([]);
+  });
+});

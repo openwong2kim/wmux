@@ -14,7 +14,7 @@
 // `enabled` or `permission` is ignored. `automation.grant` is the only writer
 // of a grant, and it records the automation's current revision server-side.
 
-import { AUTOMATION_PTY_PREFIX, AUTOMATION_RPC } from '../../shared/automation';
+import { AUTOMATION_PTY_PREFIX, AUTOMATION_RPC, type AutomationListResult } from '../../shared/automation';
 import type { AutomationEngine } from './AutomationEngine';
 
 type RpcHandler = (params: Record<string, unknown>, ctx: { clientId: string }) => Promise<unknown>;
@@ -33,16 +33,34 @@ export function assertExternalSessionId(params: Record<string, unknown>): void {
   }
 }
 
+/**
+ * What a non-first-party reader sees: names, schedules, agents and state, but
+ * not the prompt, the folder or the account (the prompt can carry anything the
+ * user typed, and none of it is needed to show a schedule list).
+ */
+export function redactListForThirdParty(result: AutomationListResult): AutomationListResult {
+  return {
+    automations: result.automations.map((a) => ({
+      ...a,
+      action: { kind: a.action.kind, agent: a.action.agent, cwd: '', prompt: '' },
+    })),
+    ...(result.pendingAttention ? { pendingAttention: result.pendingAttention } : {}),
+  };
+}
+
 export function registerAutomationRpc(
   onRpc: (method: string, handler: RpcHandler) => void,
   engine: AutomationEngine,
   firstPartyOnly: (clientId: string, method: string) => boolean,
+  /** Silent classification (no refusal log) for the read that is open to all. */
+  isFirstParty: (clientId: string) => boolean = () => false,
 ): void {
   const gated = (method: string, run: (params: Record<string, unknown>) => Promise<unknown>): void => {
     onRpc(method, async (params, ctx) => (firstPartyOnly(ctx.clientId, method) ? run(params ?? {}) : REFUSED));
   };
 
-  onRpc(AUTOMATION_RPC.list, async () => engine.list());
+  onRpc(AUTOMATION_RPC.list, async (_params, ctx) =>
+    (isFirstParty(ctx.clientId) ? engine.list() : redactListForThirdParty(engine.list())));
   onRpc(AUTOMATION_RPC.runs, async (params) => ({
     runs: engine.listRuns(typeof params?.['automationId'] === 'string' ? params['automationId'] : undefined),
   }));

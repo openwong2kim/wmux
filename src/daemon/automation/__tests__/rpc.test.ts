@@ -32,7 +32,7 @@ async function setup() {
   });
   await engine.start({ timers: false });
   const handlers = new Map<string, Handler>();
-  registerAutomationRpc((m, h) => handlers.set(m, h), engine, (clientId) => clientId === 'desktop');
+  registerAutomationRpc((m, h) => handlers.set(m, h), engine, (clientId) => clientId === 'desktop', (clientId) => clientId === 'desktop');
   const call = (method: string, params: Record<string, unknown>, clientId: string) => handlers.get(method)!(params, { clientId });
   return { engine, call };
 }
@@ -82,6 +82,18 @@ describe('automation RPC boundary', () => {
       id: created.automation.id, mode: 'bypass', grantedRevision: 99,
     }, 'desktop')) as AutomationMutationResult;
     expect(granted.ok && granted.automation.permission).toEqual({ mode: 'bypass', grantedRevision: 1 });
+  });
+
+  it('a non-first-party list gets no prompt, folder or account', async () => {
+    const { call } = await setup();
+    await call(AUTOMATION_RPC.create, {
+      draft: { ...draft, action: { ...draft.action, accountId: 'acct', prompt: 'secret plan' } },
+    }, 'desktop');
+    const third = (await call(AUTOMATION_RPC.list, {}, 'mcp')) as { automations: Array<{ name: string; action: Record<string, unknown> }> };
+    expect(third.automations[0].name).toBe('N');
+    expect(third.automations[0].action).toEqual({ kind: 'launch', agent: 'claude', cwd: '', prompt: '' });
+    const first = (await call(AUTOMATION_RPC.list, {}, 'desktop')) as { automations: Array<{ action: { prompt: string } }> };
+    expect(first.automations[0].action.prompt).toBe('secret plan');
   });
 
   it('external daemon.createSession may not use the reserved auto- prefix', () => {
