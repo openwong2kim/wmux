@@ -505,6 +505,16 @@ export class DaemonPTYBridge extends EventEmitter {
     return Date.now() - this.lastInputAt >= DaemonPTYBridge.INPUT_ECHO_QUIET_MS;
   }
 
+  /** #1621 — an episode is open (a submit or running edge not yet settled). */
+  isTurnOpen(): boolean {
+    return this.turnOpen;
+  }
+
+  /** #1621 — an authoritative hook has reported on this pane's current agent. */
+  hasHookReports(): boolean {
+    return this.hookSeen;
+  }
+
   /** Current stdin generation; every non-empty write advances it once. */
   isEmptyShellPrompt(): boolean { return this.emptyShellPrompt; }
 

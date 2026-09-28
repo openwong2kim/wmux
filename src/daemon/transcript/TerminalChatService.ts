@@ -27,6 +27,8 @@ export interface TerminalChatDependencies {
   /** Fresh process attribution, never a persisted/hook-only agent label. */
   owner(id: string): Promise<Owner | undefined>;
   emit(id: string, data: TranscriptAppendData, clients: readonly string[]): void;
+  /** #1621 — a send the plugin may have dispatched: a turn started outside the PTY's stdin. */
+  onSent?(id: string): void;
 }
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
@@ -35,6 +37,8 @@ const object = (value: unknown): Record<string, unknown> => value && typeof valu
  * Reads and sends revalidate pane process ownership at every asynchronous edge. */
 export class TerminalChatService {
   private watches = new Map<string, Watch>();
+  /** #1621 — sends that left for the plugin, per pane: a read spanning one may be stale. */
+  private sendsLeft = new Map<string, number>();
   constructor(private readonly deps: TerminalChatDependencies) {}
 
   async read(id: string): Promise<NativeRead | null> {
@@ -113,6 +117,7 @@ export class TerminalChatService {
     // Plugin repeats the selected-session, phase and generation checks directly
     // beside native dispatch; a server-side route switch cannot target another chat.
     const request = { action: 'send', sessionId, epoch, text, requestId };
+    this.sendsLeft.set(id, this.sendCount(id) + 1);
     // The plugin destroys an oversize body mid-read; that must never read as
     // "may have been delivered" (N16).
     if (Buffer.byteLength(JSON.stringify(request)) > OPENCODE_REQUEST_MAX_BYTES) return { result: 'error', reason: 'too-large' };
@@ -121,9 +126,13 @@ export class TerminalChatService {
     if (!answer.ok) return answer.left ? { result: 'unconfirmed', reason: 'transport-lost' } : { result: 'unavailable' };
     const value = answer.body.result;
     const result = ['sent', 'busy', 'blocked', 'unconfirmed', 'session_changed', 'unavailable', 'error'].includes(String(value)) ? value as ChatSendResult : 'unconfirmed';
+    if (result === 'sent' || result === 'unconfirmed') this.deps.onSent?.(id);
     // An older plugin answers a full receipt map with a bare `unavailable`.
     return result === 'unavailable' && answer.body.reason === 'receipts-full' ? { result, reason: 'receipts-full' } : { result };
   }
+
+  /** Sends attempted on this pane so far; changes before a send can reach the plugin. */
+  sendCount(id: string): number { return this.sendsLeft.get(id) ?? 0; }
 
   subscribe(client: string, id: string): void {
     const prior = this.watches.get(id);
@@ -141,7 +150,7 @@ export class TerminalChatService {
     if (!watch.clients.size) { clearInterval(watch.timer); this.watches.delete(id); }
   }
   dropClient(client: string): void { for (const id of this.watches.keys()) this.unsubscribe(client, id); }
-  dropPty(id: string): void { const watch = this.watches.get(id); if (watch) clearInterval(watch.timer); this.watches.delete(id); }
+  dropPty(id: string): void { this.sendsLeft.delete(id); const watch = this.watches.get(id); if (watch) clearInterval(watch.timer); this.watches.delete(id); }
   dispose(): void { for (const id of this.watches.keys()) this.dropPty(id); }
 
   private page(events: TurnEvent[], epoch: string): TranscriptPage {
