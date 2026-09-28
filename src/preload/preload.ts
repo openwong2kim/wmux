@@ -579,6 +579,69 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.ACCOUNT_USAGE_UPDATE, listener); };
     },
   },
+  // Scheduled runs. Invokes pass through to the daemon's automation.* RPCs and
+  // never reject for a missing daemon (empty lists / `{ ok:false }`). onPush
+  // carries daemon events + connect-time snapshots; onOpenRun is an OS toast
+  // click asking to open a run's terminal (or the schedule, for a draft).
+  automation: {
+    list: () =>
+      ipcRenderer.invoke(IPC.AUTOMATION_LIST) as Promise<{
+        automations: import('../shared/automation').Automation[];
+        available: boolean;
+      }>,
+    runs: (automationId?: string) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_RUNS, automationId) as Promise<{
+        runs: import('../shared/automation').AutomationRun[];
+      }>,
+    snapshot: (runId: string) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_SNAPSHOT, runId) as Promise<{ text: string | null }>,
+    create: (draft: import('../shared/automation').AutomationDraft) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_CREATE, draft) as Promise<
+        import('../shared/automation').AutomationMutationResult
+      >,
+    update: (id: string, draft: import('../shared/automation').AutomationDraft) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_UPDATE, id, draft) as Promise<
+        import('../shared/automation').AutomationMutationResult
+      >,
+    remove: (id: string) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_REMOVE, id) as Promise<
+        import('../main/automation/AutomationClient').AutomationActionResult
+      >,
+    setEnabled: (id: string, enabled: boolean) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_SET_ENABLED, id, enabled) as Promise<
+        import('../shared/automation').AutomationMutationResult
+      >,
+    grant: (id: string, mode: import('../shared/automation').AutomationPermissionMode, allowedTools?: string[]) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_GRANT, id, mode, allowedTools) as Promise<
+        import('../shared/automation').AutomationMutationResult
+      >,
+    runNow: (id: string, kind: 'manual' | 'test') =>
+      ipcRenderer.invoke(IPC.AUTOMATION_RUN_NOW, id, kind) as Promise<
+        import('../main/automation/AutomationClient').AutomationActionResult
+      >,
+    cancelRun: (runId: string) =>
+      ipcRenderer.invoke(IPC.AUTOMATION_CANCEL_RUN, runId) as Promise<
+        import('../main/automation/AutomationClient').AutomationActionResult
+      >,
+    setToastLabels: (labels: import('../main/automation/toastText').AutomationToastLabels) =>
+      ipcRenderer.send(IPC.AUTOMATION_TOAST_LABELS, labels),
+    onPush: (callback: (push: import('../main/automation/AutomationBridge').AutomationPush) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        push: import('../main/automation/AutomationBridge').AutomationPush,
+      ) => callback(push);
+      ipcRenderer.on(IPC.AUTOMATION_PUSH, listener);
+      return () => { ipcRenderer.removeListener(IPC.AUTOMATION_PUSH, listener); };
+    },
+    onOpenRun: (callback: (request: import('../main/automation/AutomationBridge').AutomationOpenRequest) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        request: import('../main/automation/AutomationBridge').AutomationOpenRequest,
+      ) => callback(request);
+      ipcRenderer.on(IPC.AUTOMATION_OPEN_RUN, listener);
+      return () => { ipcRenderer.removeListener(IPC.AUTOMATION_OPEN_RUN, listener); };
+    },
+  },
   deck: {
     // M1.5: one orchestrator per workspace — every call names the workspace
     // whose brain it addresses. `model` is the orchestrator model override

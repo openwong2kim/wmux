@@ -31,6 +31,7 @@ import { registerLanLinkHandlers } from './handlers/lanlink.handler';
 import { registerPaneResourcesHandlers } from './handlers/paneResources.handler';
 import { registerChatHandlers } from './handlers/chat.handler';
 import { registerWebHandlers } from './handlers/web.handler';
+import { registerAutomationHandlers } from './handlers/automation.handler';
 import { registerAccountHandlers } from './handlers/account.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
 import { applyUiZoom, winOverlayHeight } from '../window/uiZoom';
@@ -195,6 +196,9 @@ export function registerAllHandlers(
   // `{ running:false, error }` rather than throwing (see web.handler.ts).
   const cleanupChat = registerChatHandlers(daemonClient, getWindow);
   const cleanupWeb = registerWebHandlers(() => daemonClient ?? null);
+  // Scheduled runs — unconditional like web: with no daemon the calls resolve
+  // empty / refused instead of meeting a missing handler.
+  const cleanupAutomation = registerAutomationHandlers(() => daemonClient ?? null);
 
   // Multi-account registry (M1) — renderer-only, mode-agnostic (main owns
   // accounts.json in both local and daemon mode; spawn env is resolved in main).
@@ -489,6 +493,7 @@ export function registerAllHandlers(
     if (cleanupLanLink) cleanupLanLink();
     if (cleanupPaneResources) cleanupPaneResources();
     cleanupWeb();
+    cleanupAutomation();
     cleanupChat();
     cleanupAccounts();
     cleanupQuickCommands();

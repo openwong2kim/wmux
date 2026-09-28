@@ -567,6 +567,25 @@ export const IPC = {
   LANLINK_SEND: 'lanlink:send',
   LANLINK_PEERS_LIST: 'lanlink:peers:list',
   LANLINK_PEERS_REMOVE: 'lanlink:peers:remove',
+  // Scheduled runs (renderer → main → daemon `automation.*`). Invoke channels
+  // resolve even with no daemon (empty lists / `{ ok:false }`). AUTOMATION_PUSH
+  // carries daemon events and connect-time snapshots main → renderer;
+  // AUTOMATION_OPEN_RUN is an OS toast click asking the renderer to open a
+  // run's terminal; AUTOMATION_TOAST_LABELS hands main the localized status
+  // words for those toasts (main has no locale of its own).
+  AUTOMATION_LIST: 'automation:list',
+  AUTOMATION_RUNS: 'automation:runs',
+  AUTOMATION_SNAPSHOT: 'automation:snapshot',
+  AUTOMATION_CREATE: 'automation:create',
+  AUTOMATION_UPDATE: 'automation:update',
+  AUTOMATION_REMOVE: 'automation:remove',
+  AUTOMATION_SET_ENABLED: 'automation:setEnabled',
+  AUTOMATION_GRANT: 'automation:grant',
+  AUTOMATION_RUN_NOW: 'automation:runNow',
+  AUTOMATION_CANCEL_RUN: 'automation:cancelRun',
+  AUTOMATION_PUSH: 'automation:push',
+  AUTOMATION_OPEN_RUN: 'automation:openRun',
+  AUTOMATION_TOAST_LABELS: 'automation:toastLabels',
   // wmux web — browser/PWA terminal server control (renderer → main → daemon
   // control pipe). The server lives inside the daemon; these forward the
   // daemon.web.{status,start,stop} string RPCs and degrade gracefully when the

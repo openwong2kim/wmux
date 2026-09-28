@@ -67,7 +67,14 @@ export class ToastManager {
    * an agent with approvals off): the host user must see those even with
    * toasts turned off in Settings.
    */
-  showDirect(title: string, body: string, context?: ToastFocusContext, options?: { ignoreToastSetting?: boolean }): void {
+  showDirect(
+    title: string,
+    body: string,
+    context?: ToastFocusContext,
+    // `onClick` runs after the window is restored and focused — for toasts
+    // whose target is not a pane yet (a scheduled run's detached session).
+    options?: { ignoreToastSetting?: boolean; onClick?: () => void },
+  ): void {
     if (!this.enabled && !options?.ignoreToastSetting) return;
 
     if (!Notification.isSupported()) return;
@@ -96,6 +103,7 @@ export class ToastManager {
             workspaceId: context.workspaceId ?? null,
           });
         }
+        options?.onClick?.();
       }
     });
 

@@ -135,6 +135,8 @@ import { migrateScrollbackOnce } from './scrollback/legacyMigration';
 import { DaemonNotificationRouter } from './notification/DaemonNotificationRouter';
 import { markRendererNotificationListenerNotReady } from './notification/rendererNotificationReadiness';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
+import { AutomationBridge } from './automation/AutomationBridge';
+import { toastManager } from './notification/ToastManager';
 import { WorkspaceContextRouter } from './metadata/WorkspaceContextRouter';
 import { ensureDaemon, killDaemonByPidFile, killVerifiedDaemonPid, checkProcessLiveness, isDaemonPipeGone } from './daemon/launcher';
 import { DaemonRespawnController } from './daemon/DaemonRespawnController';
@@ -615,6 +617,11 @@ async function refreshTraySessionCount(): Promise<void> {
 // the notification pipeline 100% inert (Codex 2nd review #1).
 let daemonNotificationRouter: DaemonNotificationRouter | null = null;
 let remoteInboxBridge: RemoteInboxBridge | null = null;
+// Scheduled runs: daemon automation events → renderer + OS toasts.
+const automationBridge = new AutomationBridge(
+  () => mainWindow,
+  (text, onClick, opts) => toastManager.showDirect(text, '', undefined, { ...opts, onClick }),
+);
 // X1 — folds daemon context.git/context.ports broadcasts into the sidebar
 // metadata channel (and drives the gh PR cache). Same lifecycle as the
 // notification router above.
@@ -1771,6 +1778,7 @@ app.on('ready', async () => {
       remoteInboxBridge?.stop();
       remoteInboxBridge = new RemoteInboxBridge(() => mainWindow);
       remoteInboxBridge.start(client);
+      automationBridge.start(client);
       // X1 — context fold (git branch / worktree / ports / PR badge).
       workspaceContextRouter?.stop();
       workspaceContextRouter = new WorkspaceContextRouter(client, () => mainWindow);
@@ -1806,6 +1814,7 @@ app.on('ready', async () => {
       daemonNotificationRouter = null;
       remoteInboxBridge?.stop();
       remoteInboxBridge = null;
+      automationBridge.stop();
       workspaceContextRouter?.stop();
       workspaceContextRouter = null;
       daemonClient = null;
