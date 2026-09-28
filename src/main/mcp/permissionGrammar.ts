@@ -130,6 +130,13 @@ export function globToRegex(glob: string): RegExp {
   return new RegExp(`^${pattern}$`);
 }
 
+/**
+ * Capabilities whose methods carry no path the enforcer could match a glob
+ * against. A scoped grant for one would read as narrower than it is, so the
+ * grammar refuses it rather than letting it pass as unrestricted.
+ */
+const UNSCOPABLE_CAPABILITIES: ReadonlySet<string> = new Set(['automation.read', 'automation.write']);
+
 export function parsePermission(spec: unknown): PermissionParseResult {
   if (typeof spec !== 'string') {
     return { ok: false, error: 'permission must be a string' };
@@ -154,6 +161,9 @@ export function parsePermission(spec: unknown): PermissionParseResult {
   }
   if (pathGlob !== undefined && pathGlob.length === 0) {
     return { ok: false, error: `permission "${spec}" has empty path glob` };
+  }
+  if (pathGlob !== undefined && UNSCOPABLE_CAPABILITIES.has(capability)) {
+    return { ok: false, error: `capability "${capability}" takes no path glob` };
   }
 
   const parsed: ParsedPermission = { capability };
