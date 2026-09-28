@@ -1,7 +1,7 @@
 // worktree:list / add / remove 핸들러 테스트 — 실제 임시 git repo로 왕복 검증.
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, realpathSync, appendFileSync, cpSync } from 'node:fs';
 import os from 'node:os';
 import { join, basename, dirname } from 'node:path';
 
@@ -23,18 +23,37 @@ function g(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
 }
 
+// Each git spawn costs 100 ms+ on the Windows runner, so the base repo (and the
+// bare "origin" the remote-only test fetches from) is built once; every test
+// gets a byte copy of the repo. The copied index carries the template's stat
+// data, so it is refreshed once — otherwise git reads a.txt as modified.
+let templateBase: string;
+let templateRepo: string;
+let templateRemote: string;
+
+function buildTemplates(): void {
+  templateBase = realpathSync.native(mkdtempSync(join(os.tmpdir(), 'wmux-wth-tpl-')));
+  templateRepo = join(templateBase, 'repo');
+  mkdirSync(templateRepo);
+  g(templateRepo, ['init', '-q', '-b', 'main']);
+  appendFileSync(join(templateRepo, '.git', 'config'), '[user]\n\temail = t@t\n\tname = t\n');
+  writeFileSync(join(templateRepo, 'a.txt'), 'a\n');
+  g(templateRepo, ['add', '-A']);
+  g(templateRepo, ['commit', '-q', '-m', 'base']);
+  // Mimics an origin that has feat/remote at main's commit. Tests only fetch
+  // from it, so one shared bare repo is safe.
+  templateRemote = join(templateBase, 'remote.git');
+  g(templateBase, ['clone', '-q', '--bare', templateRepo, templateRemote]);
+  g(templateRemote, ['branch', 'feat/remote', 'main']);
+}
+
 function makeRepo(): { base: string; repo: string; cleanup: () => void } {
   // realpathSync.native로 8.3 단축폼(CI Windows RUNNER~1)을 롱폼으로 정규화 —
   // 핸들러가 git canonical 경로 기준으로 파생·비교하므로 fixture도 맞춰야 한다.
   const base = realpathSync.native(mkdtempSync(join(os.tmpdir(), 'wmux-wth-')));
   const repo = join(base, 'repo');
-  mkdirSync(repo);
-  g(repo, ['init', '-q', '-b', 'main']);
-  g(repo, ['config', 'user.email', 't@t']);
-  g(repo, ['config', 'user.name', 't']);
-  writeFileSync(join(repo, 'a.txt'), 'a\n');
-  g(repo, ['add', '-A']);
-  g(repo, ['commit', '-q', '-m', 'base']);
+  cpSync(templateRepo, repo, { recursive: true });
+  g(repo, ['update-index', '-q', '--refresh']);
   return { base, repo, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
@@ -43,6 +62,8 @@ type MutRes = { ok: boolean; worktreePath?: string; error?: string };
 
 describe('worktree.handler — list/add/remove 왕복', () => {
   let scn: ReturnType<typeof makeRepo>;
+  beforeAll(buildTemplates);
+  afterAll(() => rmSync(templateBase, { recursive: true, force: true }));
   beforeEach(() => {
     captured.clear();
     registerWorktreeHandlers();
@@ -148,13 +169,8 @@ describe('worktree.handler — list/add/remove 왕복', () => {
   });
 
   it('add — remote-only 브랜치는 origin 추적 로컬 브랜치로 체크아웃(Codex P2)', async () => {
-    // origin remote를 흉내내는 bare repo + feat/remote 브랜치.
-    const remoteBare = join(scn.base, 'remote.git');
-    g(scn.base, ['clone', '-q', '--bare', scn.repo, remoteBare]);
-    g(scn.repo, ['remote', 'add', 'origin', remoteBare]);
-    g(scn.repo, ['branch', 'feat/remote']);
-    g(scn.repo, ['push', '-q', 'origin', 'feat/remote']);
-    g(scn.repo, ['branch', '-D', 'feat/remote']); // 로컬에서 제거 → remote-only.
+    // The shared bare origin already has feat/remote; locally it is remote-only.
+    g(scn.repo, ['remote', 'add', 'origin', templateRemote]);
     g(scn.repo, ['fetch', '-q', 'origin']);
     const add = captured.get(IPC.WORKTREE_ADD)!;
     const a = (await add({}, scn.repo, 'feat/remote')) as MutRes;
