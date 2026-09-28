@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { interruptChatTurn, type ChatInterruptDeps } from '../interruptChatTurn';
 import { TITLE_FRESH_MS, screenShowsRunningTurn, titleShowsRunningTurn } from '../chatScreenGate';
 import type { AgentStatus } from '../../../shared/types';
-import screens from './fixtures/running-turn-screens.json';
+import fs from 'node:fs';
+import path from 'node:path';
+
+// Read, not imported: tsconfig.daemon.json compiles tests without resolveJsonModule.
+const screens: unknown = JSON.parse(
+  fs.readFileSync(path.join(__dirname, 'fixtures', 'running-turn-screens.json'), 'utf8'),
+);
 
 type Frame = { rows: string[]; title: { title: string; ageMs: number } };
 const captured = screens as unknown as Record<string, Frame> & {
