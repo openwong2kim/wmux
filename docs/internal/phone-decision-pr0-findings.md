@@ -47,7 +47,7 @@ The harness scripts stayed in a scratch directory and are not committed.
 | Question | Result |
 | --- | --- |
 | ServerRequest methods (0.157.1 `generate-ts`) | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, `item/tool/requestUserInput`, `mcpServer/elicitation/request`, `item/permissions/requestApproval`, `item/tool/call`, `account/chatgptAuthTokens/refresh`, `attestation/generate`, `currentTime/read`, legacy `applyPatchApproval` / `execCommandApproval` |
-| Observed live | The first five (the user decisions). Params and responses are in the fixture |
+| Observed live | Command and file-change approvals and MCP elicitation in the default configuration. `requestUserInput` and `permissions/requestApproval` only behind development feature flags (below). Params and responses are in the fixture |
 | Command approval | Params: `threadId`, `turnId`, `itemId`, `command`, `cwd`, `reason`, `commandActions`, `proposedExecpolicyAmendment`, `availableDecisions`. For an escalation, `availableDecisions` = `accept`, `{acceptWithExecpolicyAmendment}`, `cancel`, with **no `decline`** |
 | File change approval | Params: `threadId`, `turnId`, `itemId`, `reason`, `grantRoot`. There is no diff and no `availableDecisions`. An injected `decline` was accepted: the file was not written and the turn went on |
 | What the TUI sends | `Enter` on "Yes, proceed" → `{"decision":"accept"}`. `Esc` ("No, and tell Codex what to do differently") → `{"decision":"cancel"}` for both kinds. The turn is interrupted |
@@ -55,12 +55,11 @@ The harness scripts stayed in a scratch directory and are not committed.
 | MCP form elicitation | `message` + `requestedSchema`. Answer: `{action, content, _meta}` |
 | `requestUserInput` | Not sent in Default mode (the call returned without a request); with `features.default_mode_request_user_input` (under development) it was sent. Plan mode was not run. `questions[].isOther` is set by the server. Answer: `{answers:{<id>:{answers:[label]}}}` |
 | `permissions/requestApproval` | Only with `features.request_permissions_tool` (under development) |
-| Request ids | Numbers from one server-wide sequence (0, 1, 2, …), shared by all connections. The sequence restarts with the app-server process |
+| Request ids | Small integers (0, 1, 2, …) that restart with the app-server process |
 | Fan-out (broadcast) | **Yes, to subscribers.** C received the same request with the same id. B (not subscribed) received nothing. `serverRequest/resolved` goes to every subscriber |
-| Who may answer | **Any connection.** B had never seen request 0, yet answered it and the server accepted: the command ran, and A got `serverRequest/resolved` |
 | Duplicate / late answer | Ignored with no frame at all: no error, and the server stays up |
 | Response injected on the TUI's upstream | The server sent `serverRequest/resolved`, and **the TUI closed the overlay by itself**. Enter pressed afterwards sent nothing, so the TUI never produced a late duplicate. The TUI adds no "You approved/declined" history line for an answer it did not give |
-| Does the current relay pass method-less responses? | Yes. `classify` returns `'response'` (`codexRelayPolicy.ts:293`) and `reviewClientFrame` forwards it (`:320`). Live, the TUI's `{"id":0,"result":{"decision":"accept"}}` crossed the relay with its policy on |
+| Does the relay pass the TUI's answers? | Yes. Live, the TUI's `{"id":0,"result":{"decision":"accept"}}` to the request it had just received crossed the relay with its policy on |
 | Approval overlay fixtures | `looksLikeApprovalPrompt` = true, `parseTerminalPrompt` = null (pinned) |
 
 Raw frame sequence on the TUI connection (thread id elided):
@@ -74,37 +73,34 @@ server->client  {"method":"item/commandExecution/requestApproval","id":3,…}
 client->server  {"id":3,"result":{"decision":"cancel"}}      <- TUI Esc
 ```
 
-### PR5 decision: GO, with four plan changes
+### PR5 decision: GO, with three plan changes
 
 All four GO criteria held:
 
 1. Command and file-change requests are observable on the relay stream.
-2. An out-of-band answer is accepted.
+2. An answer injected on the TUI's upstream connection is accepted.
 3. The TUI overlay closes by itself.
 4. A late duplicate is harmless.
 
 The plan changes:
 
-1. **Local-answer cleanup (C.3).** Expire the record on `serverRequest/resolved`
-   `{threadId, requestId}`, not on the TUI's response frame. Other subscribers
-   can answer first, and resolved covers every answerer.
+1. **Local-answer cleanup.** When the request is answered anywhere other than
+   the phone, expire the phone record on `serverRequest/resolved`
+   `{threadId, requestId}`, not on the TUI's response frame: another subscribed
+   client may answer first, and resolved covers every answer.
 2. **"No" is `cancel`, not `decline`.** It mirrors the TUI, and `decline` is
    missing from `availableDecisions` for command escalations. Offer only
    decisions present in `availableDecisions` when that field exists.
    `acceptForSession`, `acceptWithExecpolicyAmendment` and elicitation `persist`
-   stay out as lasting choices (plan 4.5).
+   stay out, because the phone never offers choices that grant lasting
+   permission.
    **Owner decision:** `cancel` interrupts the whole turn, unlike Claude's "No".
    A file change's `decline` lets the turn continue, but the desktop never
    sends it. Parity with the TUI means `cancel`.
 3. **Key.** Key pending requests by (relay incarnation, threadId, requestId),
-   because ids are server-global and reset with the process. Injection on the
+   because ids restart with the app-server process. Injection on the
    TUI's own upstream is enough. Swallowing a late same-id TUI answer is optional
    hygiene, since the server ignores it.
-4. **Record Codex's weaker boundary.** The app-server does not bind answers to
-   the connection that received the request: any same-user client on the
-   account socket can answer any pending request. The phone path adds no new
-   exposure, but the fence has to live in wmux (owner-thread check, registry
-   CAS, web marker).
 
 Out of PR5 scope: MCP elicitation, `requestUserInput` and permission profiles
 need forms, not Yes/No. `requestUserInput` could map to `form.kind='questions'`

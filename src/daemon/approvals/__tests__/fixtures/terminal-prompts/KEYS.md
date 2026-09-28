@@ -85,8 +85,8 @@ config, so the trust prompt was not shown.
 | File change (`codex-approval-patch-01.json`) | `› 1. Yes, proceed (y)`, `2. Yes, and don't ask again for these files (a)`, `3. No, and tell Codex what to do differently (esc)` | `Esc` | `{"decision":"cancel"}`; the turn is interrupted |
 
 The `y`/`p`/`a` letters are drawn but were not exercised. Codex approvals are
-answered over the app-server protocol, never by keys: when any client answers
-the request, the server sends `serverRequest/resolved` and the TUI closes the
+answered over the app-server protocol, never by keys: once the request is
+answered, the server sends `serverRequest/resolved` and the TUI closes the
 overlay by itself (measured with an answer injected on the TUI's own upstream
 connection). Both fixtures are reference only and must stay unparsed. Request
 and response shapes: `src/daemon/web/__tests__/fixtures/codex-server-requests.json`.

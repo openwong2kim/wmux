@@ -8,6 +8,16 @@ import {
 
 const pinned = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'codex-app-server-methods.json'), 'utf8')) as
   { requests: string[]; notifications: string[] };
+const measuredText = fs.readFileSync(path.join(__dirname, 'fixtures', 'codex-server-requests.json'), 'utf8');
+const measured = JSON.parse(measuredText) as {
+  tuiConnectionSequence: Array<{ dir: string; frame: { id?: number; method?: string; result?: { decision?: string } } }>;
+};
+
+describe('measured Codex server requests fixture', () => {
+  it('is sanitized: no home paths, capture-machine names or credentials', () => {
+    expect(measuredText).not.toMatch(/\/Users\/|\/home\/|\.local\b|MacBook|installationId|wmux-pr0|\/p0-|Bearer |sk-[A-Za-z0-9]/);
+  });
+});
 
 describe('method table', () => {
   it('classifies exactly the pinned protocol, so a new method fails closed until it is reviewed', () => {
@@ -109,10 +119,15 @@ describe('reviewClientFrame', () => {
       ctx({ owner: () => ({ paneId: 'pty-b', live: true }) }));
     expect(other.kind).toBe('refuse');
   });
-  it('forwards the TUI\'s answers to server requests unchanged, even without identity (phone-decision PR0)', async () => {
-    // Measured TUI answers: Enter -> accept, Esc -> cancel (fixtures/codex-server-requests.json).
-    for (const answer of [{ id: 0, result: { decision: 'accept' } }, { id: 3, result: { decision: 'cancel' } }]) {
-      expect(await reviewClientFrame(answer, ctx({ identity: undefined }))).toEqual({ kind: 'forward' });
+  it('passes the TUI\'s measured answers to the approval requests it was shown (phone-decision PR0)', async () => {
+    // fixtures/codex-server-requests.json: the TUI connection's frames, Enter -> accept, Esc -> cancel.
+    const seq = measured.tuiConnectionSequence;
+    const answers = seq.filter((f) => f.dir === 'client->server');
+    expect(answers.map((f) => f.frame.result?.decision)).toEqual(['accept', 'cancel', 'cancel']);
+    for (const answer of answers) {
+      const shown = seq.slice(0, seq.indexOf(answer)).filter((f) => f.dir === 'server->client' && f.frame.method?.endsWith('/requestApproval'));
+      expect(shown.at(-1)?.frame.id).toBe(answer.frame.id);
+      expect(await reviewClientFrame(answer.frame, ctx())).toEqual({ kind: 'forward' });
     }
   });
   it('a resume by path (no thread id) on an unproven server is refused; allowed once proven', async () => {

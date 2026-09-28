@@ -86,7 +86,7 @@
    "note": "No availableDecisions field; the params carry no diff (the patch arrives as item/started fileChange). Injected \"decline\" was accepted: file not written, turn continued. TUI \"No\" (esc) sends \"cancel\" and interrupts the turn."
   },
   "item/tool/requestUserInput": {
-   "observed": true,
+   "observed": "only-behind-feature-flag",
    "request": {
     "method": "item/tool/requestUserInput",
     "id": 2,
@@ -196,7 +196,7 @@
    "note": "MCP tool-call approvals arrive as form elicitations with _meta.codex_approval_kind=\"mcp_tool_call\" and persist [\"session\",\"always\"] (lasting choices)."
   },
   "item/permissions/requestApproval": {
-   "observed": true,
+   "observed": "only-behind-feature-flag",
    "request": {
     "method": "item/permissions/requestApproval",
     "id": 2,
@@ -281,10 +281,10 @@
    "threadId": "<thread id>",
    "requestId": 0
   },
-  "note": "Sent to every connection subscribed to the thread after any answer (TUI, injected on the TUI connection, or another connection)."
+  "note": "Sent to every connection subscribed to the thread once the request is answered."
  },
  "facts": {
-  "requestIds": "Numbers from one server-wide sequence (0, 1, 2, …) shared by every connection; they restart with the app-server process.",
+  "requestIds": "Small integers (0, 1, 2, …) that restart with the app-server process.",
   "fanout": {
    "subscribedConnection": [
     {
@@ -294,14 +294,6 @@
    ],
    "unsubscribedConnection": [],
    "note": "A connection that ran thread/resume received the same request with the same id; an initialize-only connection received none."
-  },
-  "crossConnectionAnswer": {
-   "answeredBy": "B(foreign id)",
-   "commandRan": true,
-   "resolvedTo": [
-    "A"
-   ],
-   "note": "An initialize-only connection that never received the request answered it by id and the server accepted it."
   },
   "duplicateAnswer": {
    "effect": [],
@@ -321,7 +313,7 @@
      }
     }
    ],
-   "note": "The TUI answer (method-less response) crossed createCodexTuiRelay with its policy on (codexRelayPolicy classify -> \"response\" -> forward)."
+   "note": "The TUI answer to a request it received on this connection reached the app-server through createCodexTuiRelay with its policy on."
   }
  },
  "tuiConnectionSequence": [
