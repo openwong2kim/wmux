@@ -68,22 +68,33 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function sendAtoB(): Promise<Result> {
+async function sendAtoB(title?: string): Promise<Result> {
   return (await handleRpcMethod('a2a.task.send', {
     workspaceId: WS.id,
     to: WS.id,
     paneId: 'pane-1573-b',
     senderPtyId: PTY_A,
     message: 'please review',
+    ...(title !== undefined && { title }),
   })) as Result;
 }
 
 describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
   it('a pane_id-addressed send nudges only the addressed pane', async () => {
+    const sent = await sendAtoB('review the login fix');
+    expect(sent.delivery).toMatchObject({ notified: true, mode: 'nudge' });
+    expect(writesTo(PTY_B)).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared — title: "review the login fix" — a2a_task_query task_id:${sent.taskId}`);
+    expect(writesTo(PTY_B)).not.toContain('please review');
+    expect(writesTo(PTY_A)).toBe('');
+  });
+
+  it('an untitled task nudges with the id and sender only — the body is never a stand-in title', async () => {
     const sent = await sendAtoB();
     expect(sent.delivery).toMatchObject({ notified: true, mode: 'nudge' });
-    expect(writesTo(PTY_B)).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared — title: "please review" — a2a_task_query task_id:${sent.taskId}`);
-    expect(writesTo(PTY_A)).toBe('');
+    const line = writesTo(PTY_B);
+    expect(line).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared — a2a_task_query task_id:${sent.taskId}`);
+    expect(line).not.toContain('please review');
+    expect(line).not.toContain('title:');
   });
 
   it('a new-task nudge carries an allowlisted title and the full task id, never the body', () => {
@@ -102,8 +113,8 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
 
   it('a new-task nudge omits the title when the target agent has exited', async () => {
     useStore.getState().hydrateAgentAlive({ [PTY_A]: true, [PTY_B]: false });
-    await sendAtoB();
-    expect(writesTo(PTY_B)).not.toContain('please review');
+    await sendAtoB('review the login fix');
+    expect(writesTo(PTY_B)).not.toContain('review the login fix');
   });
 
   it("the receiver's reply reaches the sender labeled as a reply, not a new task", async () => {

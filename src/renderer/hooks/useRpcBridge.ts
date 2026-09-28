@@ -712,7 +712,8 @@ export function nudgeTitlePreview(title: string): string {
 
 // A new task names its title (never its body) so the receiver knows what
 // arrived; `title` is passed only when the pane is re-checked as a live agent
-// at write time. The full id lets the receiver fetch the task directly.
+// at write time. An untitled task gets no preview at all: the body is never a
+// stand-in for the title. The full id lets the receiver fetch the task directly.
 export function buildA2aNudge(taskId: string, senderName: string, kind: 'new' | 'reply', title?: string): string {
   const id8 = taskId.replace(/^task[-_]?/, '').slice(0, 8);
   const what = kind === 'new' ? 'new A2A task' : 'reply on A2A task';
@@ -3046,7 +3047,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         // onto the EventBus below, so the receiver can still poll it.
         mode = 'no-agent-pane';
       } else if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
-        write = await deliverPtyNudge(target, (pty) => buildA2aNudge(newTaskId, fromName, 'new', a2aFormatOptionsFor(pty).multiline ? title || message : undefined), explicitPty, operator);
+        write = await deliverPtyNudge(target, (pty) => buildA2aNudge(newTaskId, fromName, 'new', a2aFormatOptionsFor(pty).multiline ? title : undefined), explicitPty, operator);
       } else {
         write = await deliverPtyNotification(target, fromName, message, explicitPty, operator);
         mode = 'notification';
