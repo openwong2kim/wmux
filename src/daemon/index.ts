@@ -18,7 +18,8 @@ import { RunHistoryStore } from './history/RunHistoryStore';
 import { AutomationEngine } from './automation/AutomationEngine';
 import { assertExternalSessionId, registerAutomationRpc } from './automation/rpc';
 import { killProcessTree } from './automation/treeKill';
-import { AUTOMATION_EVENT, AUTOMATION_PTY_PREFIX } from '../shared/automation';
+import { recordedRunPtyIds } from './automation/store';
+import { AUTOMATION_EVENT } from '../shared/automation';
 import { InputReceiptStore } from './web/InputReceiptStore';
 import { AnswerReceiptStore } from './approvals/AnswerReceiptStore';
 import { coercePhoneDecisions } from './approvals/decisionConfig';
@@ -1539,6 +1540,8 @@ async function recoverSessions(
   // not `--continue`. The post-recovery ingestResumeSpool still does the durable
   // apply + cleanup; this just makes the binding available at replay-launch time.
   const spoolBindings = readResumeSpoolMap();
+  // Read before the automation engine starts and rewrites interrupted runs.
+  const automationRunPtyIds = recordedRunPtyIds(wmuxDir);
 
   // Detect reboot: if bootId changed, all old PIDs are stale — skip kill attempts
   const currentBootId = await getBootId();
@@ -1611,7 +1614,8 @@ async function recoverSessions(
     // Scheduled runs are never replayed: a relaunch would paste nothing and a
     // resumed agent would run unattended outside its run record (the engine
     // marks that run unknown). Reap a same-boot survivor, then tombstone it.
-    if (session.id.startsWith(AUTOMATION_PTY_PREFIX)) {
+    // Ownership comes from the runs file, not the id prefix.
+    if (automationRunPtyIds.has(session.id)) {
       // Same proof the tombstone reconciliation uses: only a proven same boot
       // plus a confirmed process identity may kill; otherwise just tombstone.
       if (sameBootProven && await ProcessMonitor.isAlive(session.pid)) {

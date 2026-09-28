@@ -29,7 +29,9 @@ const PERMISSION_FLAGS: Record<AutomationAgent, Record<AutomationPermissionMode,
     // Pinned: without it the run inherits the user's configured default mode
     // (which may auto-approve), and an approval run would never ask.
     approval: ['--permission-mode', 'default'],
-    scoped: ['--allowedTools'],
+    // Pinned before the variadic tool list: a user default mode that
+    // auto-approves would otherwise grant more than the scoped policy.
+    scoped: ['--permission-mode', 'default', '--allowedTools'],
     bypass: ['--dangerously-skip-permissions'],
   },
   codex: {

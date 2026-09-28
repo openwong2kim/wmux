@@ -5,7 +5,9 @@ import { describe, expect, it } from 'vitest';
 import { effectiveMode, validateAllowedTools, validateDraft } from '../draft';
 import {
   AUTOMATIONS_FILE,
+  AUTOMATION_RUNS_FILE,
   cleanSnapshotText,
+  recordedRunPtyIds,
   loadAutomations,
   pruneRuns,
   snapshotPath,
@@ -81,6 +83,22 @@ describe('store', () => {
     expect(fs.readFileSync(file, 'utf8')).toBe('hello');
     if (process.platform !== 'win32') expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     expect(snapshotPath(dir, '../escape')).toBeNull();
+  });
+
+  it('recovery ownership comes from the runs file, not the auto- prefix', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-own-'));
+    fs.writeFileSync(path.join(dir, AUTOMATION_RUNS_FILE), JSON.stringify({
+      version: 1,
+      runs: [
+        { id: 'r1', automationId: 'a1', revision: 1, effectiveMode: 'approval', scheduledFor: 1, trigger: 'scheduled', state: 'running', ptyId: 'auto-r1' },
+        { id: 'r2', automationId: 'a1', revision: 1, effectiveMode: 'approval', scheduledFor: 2, trigger: 'scheduled', state: 'completed' },
+      ],
+    }));
+    const owned = recordedRunPtyIds(dir);
+    expect(owned.has('auto-r1')).toBe(true);
+    // A user session that merely carries the prefix is not a scheduled run.
+    expect(owned.has('auto-user-pane')).toBe(false);
+    expect(recordedRunPtyIds(path.join(dir, 'missing')).size).toBe(0);
   });
 
   it('prunes final runs to the per-automation cap and drops orphans', () => {

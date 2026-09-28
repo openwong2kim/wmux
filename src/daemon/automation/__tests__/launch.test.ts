@@ -17,7 +17,7 @@ describe('scheduled-run command line through the three wrapper shells', () => {
   it('bash -lc', () => {
     expect(buildExecArgs('/bin/bash', scoped)).toEqual([
       '-lc',
-      'claude --model opus --allowedTools Read Edit mcp__wmux__pane_list',
+      'claude --model opus --permission-mode default --allowedTools Read Edit mcp__wmux__pane_list',
     ]);
   });
 
@@ -26,7 +26,7 @@ describe('scheduled-run command line through the three wrapper shells', () => {
       '-NoLogo',
       '-NoProfile',
       '-Command',
-      `claude --model opus --allowedTools Read Edit mcp__wmux__pane_list${PWSH_EXIT_TAIL}`,
+      `claude --model opus --permission-mode default --allowedTools Read Edit mcp__wmux__pane_list${PWSH_EXIT_TAIL}`,
     ]);
   });
 
@@ -42,7 +42,7 @@ describe('scheduled-run command line through the three wrapper shells', () => {
       '/d',
       '/s',
       '/c',
-      'claude --model opus --allowedTools Read Edit mcp__wmux__pane_list',
+      'claude --model opus --permission-mode default --allowedTools Read Edit mcp__wmux__pane_list',
     ]);
   });
 

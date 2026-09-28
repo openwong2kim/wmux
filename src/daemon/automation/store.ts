@@ -172,6 +172,15 @@ export function loadRuns(wmuxDir: string): AutomationRunsFileState {
   return { version: 1, runs };
 }
 
+/**
+ * The PTY ids scheduled runs recorded on disk. Recovery uses this — read
+ * before the engine rewrites interrupted runs — to decide which sessions are
+ * scheduled runs; the `auto-` id prefix alone is not proof of ownership.
+ */
+export function recordedRunPtyIds(wmuxDir: string): Set<string> {
+  return new Set(loadRuns(wmuxDir).runs.flatMap((r) => (r.ptyId ? [r.ptyId] : [])));
+}
+
 async function saveJson(file: string, data: unknown): Promise<boolean> {
   try {
     await atomicWriteJSON(file, data);
