@@ -70,7 +70,11 @@ function skillsAgent(agent: string | undefined): boolean {
  * reads, so the object can never describe a conversation the pane no longer
  * has. `rawEpoch` is never read — it is loopback-token material (N15).
  */
-export function buildChatObject(resolution: ChatResolution, blocked: ChatBlocked | undefined): Record<string, unknown> {
+export function buildChatObject(
+  resolution: ChatResolution,
+  blocked: ChatBlocked | undefined,
+  opts: { turn?: boolean } = {},
+): Record<string, unknown> {
   const { status } = resolution;
   const liveness = {
     ...(status.agentStatus !== undefined ? { agentStatus: status.agentStatus } : {}),
@@ -131,6 +135,9 @@ export function buildChatObject(resolution: ChatResolution, blocked: ChatBlocked
     historyTruncated: terminal?.historyTruncated === true,
     ...(resolution.source === 'tui' ? { maxSendBytes: OPENCODE_MAX_SEND_BYTES } : {}),
     ...liveness,
+    // Additive, and only for a caller that declared `chat-cancel` or
+    // `chat-queue`: an older client's `chat` object stays byte-identical.
+    ...(opts.turn && status.turn ? { turn: { ...status.turn } } : {}),
     capabilities: {
       ...(terminal ? phoneTerminalCapabilities(terminal.capabilities) : closed),
       // Rollout and JSONL rows land per record, not per token. OpenCode part

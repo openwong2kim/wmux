@@ -209,12 +209,26 @@ export interface TranscriptPage {
   truncatedHead: boolean;
 }
 
+/**
+ * One running episode of a terminal-bound agent. `id` is opaque (`t1:` prefix)
+ * and changes only on an idle -> running transition: answering a dialog or
+ * typing into a running turn keeps it. `startedAt` (epoch ms) is absent before
+ * the first episode.
+ */
+export interface ChatTurn {
+  id: string;
+  state: 'running' | 'idle';
+  startedAt?: number;
+}
+
 export interface TranscriptStatus {
   terminal?: import('./terminalChat').TerminalChatBinding;
   managed?: import('./chatSession').ManagedChatStatus;
   /** Live daemon state, separate from whether saved history can be read. */
   agentStatus?: import('../types').AgentStatus;
   agentAlive?: boolean;
+  /** Running episode of a terminal-bound agent (phone chat `turn`); absent when the daemon has none. */
+  turn?: ChatTurn;
   available: boolean;
   /**
    * Closed set matching what the projector's `resolvePath` actually returns:

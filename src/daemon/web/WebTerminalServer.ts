@@ -3824,7 +3824,11 @@ export class WebTerminalServer {
     const blocked = await this.readChatBlocked(chat, sessionId, resolution);
     if (res.destroyed || res.writableEnded) return;
     this.noteChatBlocked(sessionId, resolution, blocked);
-    this.json(res, 200, { ...body, chat: buildChatObject(resolution, projectChatBlocked(blocked, clientCaps(req))) });
+    const caps = clientCaps(req);
+    this.json(res, 200, {
+      ...body,
+      chat: buildChatObject(resolution, projectChatBlocked(blocked, caps), { turn: caps.chatCancel === true || caps.chatQueue === true }),
+    });
   }
 
   /** The `/turns` page for a resolved binding, read synchronously; undefined once answered (503). */
@@ -8068,8 +8072,10 @@ export interface ClientCaps {
   terminalPromptDetail?: boolean;
   /** Understands `form` records and answers them through `POST /api/approvals/:id/answer`. */
   decisionV2?: boolean;
-  /** Uses `POST /api/sessions/:id/chat/cancel` (no route yet: parsed, not acted on). */
+  /** Uses `POST /api/sessions/:id/chat/cancel` (no route yet). Today it only adds `chat.turn` to `/turns`. */
   chatCancel?: boolean;
+  /** Uses the daemon-held chat queue (not served yet). Today it only adds `chat.turn` to `/turns`. */
+  chatQueue?: boolean;
 }
 
 export const CLIENT_CAPS_HEADER = 'x-wmux-client-caps';
@@ -8077,6 +8083,7 @@ export const CLIENT_CAP_TERMINAL_PROMPT_ANSWER = 'terminal-prompt-answer';
 export const CLIENT_CAP_TERMINAL_PROMPT_DECLINE = 'terminal-prompt-decline';
 export const CLIENT_CAP_DECISION_V2 = 'decision-v2';
 export const CLIENT_CAP_CHAT_CANCEL = 'chat-cancel';
+export const CLIENT_CAP_CHAT_QUEUE = 'chat-queue';
 
 export function clientCaps(req: http.IncomingMessage): ClientCaps {
   const raw = req.headers[CLIENT_CAPS_HEADER];
@@ -8087,6 +8094,7 @@ export function clientCaps(req: http.IncomingMessage): ClientCaps {
     terminalPromptDecline: tokens.has(CLIENT_CAP_TERMINAL_PROMPT_DECLINE),
     decisionV2: tokens.has(CLIENT_CAP_DECISION_V2),
     chatCancel: tokens.has(CLIENT_CAP_CHAT_CANCEL),
+    chatQueue: tokens.has(CLIENT_CAP_CHAT_QUEUE),
   };
 }
 

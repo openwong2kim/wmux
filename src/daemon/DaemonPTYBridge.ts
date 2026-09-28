@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { randomBytes } from 'node:crypto';
 import type { IPty } from 'node-pty';
 import type { AgentStatus } from '../shared/types';
 import { OscParser } from '../main/pty/OscParser';
@@ -117,6 +118,22 @@ export class DaemonPTYBridge extends EventEmitter {
   private explicitTerminalStatus = false;
   private submittedTurnPending = false;
   private lastTurnStartedAt = 0;
+
+  /**
+   * Running-episode id (phone chat `turn.id`). A new episode opens only on a
+   * settled/idle -> running transition: a submit while the pane is not running,
+   * or the first running edge (hook or byte promotion) after the last one
+   * closed. Answering a dialog and a submit typed into a running turn (the
+   * agent's own composer queue) stay in the episode. `turnNonce` keeps ids from
+   * a previous daemon or PTY lifetime from ever comparing equal to a new one.
+   */
+  private readonly turnNonce = randomBytes(6).toString('hex');
+  private turnSeq = 0;
+  private turnOpen = false;
+  private turnOpenedAt = 0;
+
+  /** Last write to stdin that was a lone Esc, from any source (0 = never). */
+  private lastEscAt = 0;
   /** #1463 — a session started and no turn has since (see isPreTurn). */
   private preTurn = false;
   /** #1463 — arrival time of the last turn evidence: submitted input, an
@@ -246,7 +263,11 @@ export class DaemonPTYBridge extends EventEmitter {
     if (data.length > 0) {
       this.lastInputAt = Date.now();
       this.inputRevision += 1;
-      if (DaemonPTYBridge.stripPassiveInput(data).length > 0) {
+      const active = DaemonPTYBridge.stripPassiveInput(data);
+      // Every path that types into a pane ends here (pipe, web raw input, chat
+      // Stop, approval keys), so this is the one place a lone Esc is seen.
+      if (active === '\x1b') this.lastEscAt = this.lastInputAt;
+      if (active.length > 0) {
         this.keyInputRevision += 1;
         // Sizes nothing, carries nothing: a remote terminal-prompt answer that
         // a key or click has overtaken is refreshed off this.
@@ -325,6 +346,12 @@ export class DaemonPTYBridge extends EventEmitter {
    * screen leave the bridge in the same state.
    */
   private startAnsweredTurn(wasAwaiting: boolean, reason: 'input' | 'screen-cleared'): void {
+    // An answer resumes the episode it interrupted; a submit into a running
+    // turn is queued by the agent's own composer. Anything else starts one.
+    if (!wasAwaiting && !(this.turnOpen && this.getAgentStatus() === 'running')) {
+      this.turnOpen = false;
+      this.openTurn();
+    }
     this.lastTurnStartedAt = Date.now();
     this.preTurn = false;
     this.turnEvidenceAt = this.lastTurnStartedAt;
@@ -383,7 +410,12 @@ export class DaemonPTYBridge extends EventEmitter {
       this.turnEvidenceAt = Date.now();
     }
     if (status === 'running') {
-      if (authoritative) this.lastTurnStartedAt = Date.now();
+      if (authoritative) {
+        this.lastTurnStartedAt = Date.now();
+        // The first hook after a settle is an autonomous turn; later hooks, and
+        // any hook behind an unanswered dialog, belong to the open episode.
+        if (!this.awaitingHuman) this.openTurn();
+      }
       this.explicitTerminalStatus = false;
       this.settledStatus = null;
       // `awaitingHuman` deliberately survives. HookIngest projects
@@ -414,6 +446,8 @@ export class DaemonPTYBridge extends EventEmitter {
       this.awaitingHuman = true;
       this.awaitingQuestionAt = questionAt ?? null;
     } else if (authoritative) this.awaitingHuman = false;
+    // A settle ends the episode unless it is the dialog the turn waits on.
+    if (!this.awaitingHuman) this.turnOpen = false;
     this.settledAtMs = Date.now();
     this.submittedTurnPending = false;
     if (this.resizeGuardTimer) {
@@ -452,6 +486,43 @@ export class DaemonPTYBridge extends EventEmitter {
   /** Actual submitted input/hook work, excluding terminal redraw activity. */
   getLastTurnStartedAt(): number {
     return this.lastTurnStartedAt;
+  }
+
+  private openTurn(): void {
+    if (this.turnOpen) return;
+    this.turnSeq += 1;
+    this.turnOpen = true;
+    this.turnOpenedAt = Date.now();
+  }
+
+  /**
+   * The agent's transcript recorded a turn end (completed or interrupted) at
+   * `at`. An interrupt fires no Stop hook, so without this the episode would
+   * stay open and the next prompt would join it. Ignored behind a dialog, or
+   * when the end predates the latest turn evidence.
+   */
+  noteTranscriptTurnEnd(at: number): void {
+    if (this.turnOpen && !this.awaitingHuman && at >= this.lastTurnStartedAt) this.turnOpen = false;
+  }
+
+  /**
+   * The running episode as the phone sees it. `chatStatus` is the chat-refined
+   * status (transcript end_turn / abort applied); `running` needs both an open
+   * episode and a running or dialog-blocked status. `startedAt` is absent
+   * before the first episode.
+   */
+  getTurn(chatStatus: AgentStatus): { id: string; state: 'running' | 'idle'; startedAt?: number } {
+    const running = this.turnOpen && (chatStatus === 'running' || chatStatus === 'awaiting_input');
+    return {
+      id: `t1:${this.turnNonce}.${this.turnSeq}`,
+      state: running ? 'running' : 'idle',
+      ...(this.turnSeq > 0 ? { startedAt: this.turnOpenedAt } : {}),
+    };
+  }
+
+  /** When a lone Esc was last written to this PTY, from any source; 0 = never. */
+  getLastEscAt(): number {
+    return this.lastEscAt;
   }
 
   /**
@@ -615,6 +686,7 @@ export class DaemonPTYBridge extends EventEmitter {
         this.explicitTerminalStatus = false;
         this.settledStatus = null;
         this.submittedTurnPending = false;
+        this.openTurn();
         // Deliberately NOT resetEmissionState(). The unsettled path below
         // clears the detector's dedup so a new turn's footer can speak again;
         // doing it here would let the idle chrome that is still on screen
@@ -639,6 +711,7 @@ export class DaemonPTYBridge extends EventEmitter {
             }, RESIZE_REDRAW_GUARD_MS - elapsed);
           } else {
             this.agentDetector?.resetEmissionState();
+            this.openTurn();
           }
         }
       }
@@ -971,6 +1044,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.settledAtMs = 0;
     this.preTurn = false;
     this.turnEvidenceAt = 0;
+    this.turnOpen = false;
     this.awaitingHuman = false;
     this.oscParser = null;
     this.modeTracker = null;

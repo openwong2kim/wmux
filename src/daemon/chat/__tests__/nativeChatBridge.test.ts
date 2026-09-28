@@ -141,6 +141,13 @@ describe('resolve', () => {
     expect(await f.bridge.resolve('pane')).toMatchObject({ source: 'file', status: { terminal: { capabilities: { send: false } } } });
   });
 
+  it('carries the running episode from the chat agent state onto a file binding', async () => {
+    const f = fixture(); f.liveClaude();
+    expect((await f.bridge.resolve('pane')).status).not.toHaveProperty('turn');
+    f.state.agent.turn = { id: 't1:abc.2', state: 'running', startedAt: 5 };
+    expect((await f.bridge.resolve('pane')).status.turn).toEqual({ id: 't1:abc.2', state: 'running', startedAt: 5 });
+  });
+
   it('maps a live agent without a transcript to none/agent-running', async () => {
     const f = fixture(); f.state.agent.agentName = 'Codex CLI';
     expect(await f.bridge.resolve('pane')).toMatchObject({ source: 'none', launch: { ready: false, reason: 'agent-running' } });

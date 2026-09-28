@@ -346,6 +346,25 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(body.chat.capabilities).not.toHaveProperty('images');
     });
 
+    it('adds chat.turn only for a chat-cancel / chat-queue caller; everyone else gets the old object byte for byte', async () => {
+      const info = await start();
+      const before = await turns(bearer(info.token as string));
+      const turn = { id: 't1:abc.3', state: 'running', startedAt: 1_700_000_000_000 } as const;
+      chatBox.resolution = fileResolution({ turn });
+      const legacy = await turns(bearer(info.token as string));
+      expect(JSON.stringify(legacy.body.chat)).toBe(JSON.stringify(before.body.chat));
+      const other = await turns({ ...bearer(info.token as string), 'x-wmux-client-caps': 'terminal-prompt-answer,decision-v2' });
+      expect(JSON.stringify(other.body.chat)).toBe(JSON.stringify(before.body.chat));
+      // Capabilities stay what they were: this PR adds no cancel or queue.
+      for (const cap of ['chat-cancel', 'chat-queue', 'Chat-Queue, terminal-prompt-answer']) {
+        const { body } = await turns({ ...bearer(info.token as string), 'x-wmux-client-caps': cap });
+        expect(body.chat.turn).toEqual(turn);
+        const { turn: _turn, ...rest } = body.chat;
+        void _turn;
+        expect(rest).toEqual(before.body.chat);
+      }
+    });
+
     it('file forward read with a matching cursor is a delta with reset:false', async () => {
       const info = await start();
       const first = await turns(bearer(info.token as string));

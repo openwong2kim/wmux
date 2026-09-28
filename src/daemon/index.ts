@@ -148,7 +148,7 @@ import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
-import { chatAgentStatus } from './transcript/chatAgentStatus';
+import { chatAgentStatus, transcriptTurnEnd } from './transcript/chatAgentStatus';
 import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
 import { interruptChatTurn } from './transcript/interruptChatTurn';
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
@@ -3974,9 +3974,15 @@ function registerRpcHandlers(
     const bridge = sessionManager.getSession(id)?.bridge;
     if (['Claude Code', 'Codex CLI'].includes(live.agentName ?? '') && bridge && live.agentStatus !== 'awaiting_input') {
       const last = projector.snapshot(id)?.events.at(-1);
-      return { ...live, agentStatus: chatAgentStatus(live.agentStatus, last, bridge.getLastTurnStartedAt()) };
+      const turnStartedAt = bridge.getLastTurnStartedAt();
+      // An interrupt fires no Stop hook: the recorded end also closes the
+      // running episode, so the next prompt gets a new turn id.
+      const ended = transcriptTurnEnd(last, turnStartedAt);
+      if (ended) bridge.noteTranscriptTurnEnd(ended.at);
+      const agentStatus = chatAgentStatus(live.agentStatus, last, turnStartedAt);
+      return { ...live, agentStatus, turn: bridge.getTurn(agentStatus) };
     }
-    return live;
+    return bridge ? { ...live, turn: bridge.getTurn(live.agentStatus) } : live;
   };
   // Versioned method name is a rolling-upgrade safety boundary. An older
   // daemon's v1 handler would ignore the additive incarnationId parameter and

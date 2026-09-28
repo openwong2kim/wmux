@@ -4,7 +4,7 @@ import { isBrainPty } from '../../shared/constants';
 import type { AgentStatus } from '../../shared/types';
 import type { ChatSkillCatalog } from '../../shared/transcript/chatSkills';
 import type { TerminalLaunchAgent } from '../../shared/transcript/terminalChat';
-import type { ChatSendResult, TranscriptPage, TranscriptStatus } from '../../shared/transcript/turnEvents';
+import type { ChatSendResult, ChatTurn, TranscriptPage, TranscriptStatus } from '../../shared/transcript/turnEvents';
 import type { AgentLaunchOptions } from '../web/agentLaunch';
 import { buildAgentLaunch } from '../web/agentLaunch';
 import { screenBlocksChatSend } from '../transcript/chatScreenGate';
@@ -42,6 +42,8 @@ export interface ChatAgentState {
   inputQuiet: boolean;
   inputRevision: number;
   incarnationId: string | null;
+  /** The pane's running episode; absent when the pane has no PTY bridge. */
+  turn?: ChatTurn;
 }
 
 export interface LaunchRelay { url: string; commit(): boolean; close(): Promise<void> }
@@ -145,7 +147,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     const live = deps.chatAgentState(id);
     const slug = slugOf(live);
     const agentAlive = !!slug && slug === status.terminal?.agent && live.agentVerified;
-    return { ...status, agentStatus: live.agentStatus, agentAlive,
+    return { ...status, agentStatus: live.agentStatus, agentAlive, ...(live.turn ? { turn: live.turn } : {}),
       ...(status.terminal ? { terminal: { ...status.terminal, capabilities: { ...status.terminal.capabilities,
         send: agentAlive && ['claude', 'codex'].includes(slug!),
         cancel: agentAlive && ['claude', 'codex'].includes(slug!),
