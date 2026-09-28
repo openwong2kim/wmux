@@ -14,10 +14,10 @@ import {
   symlinkSync,
   realpathSync,
   appendFileSync,
-  cpSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { copyDirSync } from '../../../../test-utils/copyDirSync';
 
 // electron ipcMain을 캡처해 핸들러를 직접 호출한다.
 const captured = new Map<string, (...args: unknown[]) => unknown>();
@@ -114,7 +114,7 @@ function initTemplateRepo(repo: string, config: string, files: Record<string, st
 }
 
 function copyRepo(templateRepo: string, repo: string): void {
-  cpSync(templateRepo, repo, { recursive: true });
+  copyDirSync(templateRepo, repo);
   g(repo, ['update-index', '-q', '--refresh']);
 }
 

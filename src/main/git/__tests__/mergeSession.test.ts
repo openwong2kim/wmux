@@ -4,7 +4,8 @@
 // exit-code verdict, and the clean-merge→Land / conflict→Discard round-trips.
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, lstatSync, readFileSync, realpathSync, appendFileSync, cpSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, lstatSync, readFileSync, realpathSync, appendFileSync } from 'node:fs';
+import { copyDirSync } from '../../../test-utils/copyDirSync';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -50,7 +51,7 @@ function makeTemplate(): { base: string; repo: string; cleanup: () => void } {
 function makeRepo(templateRepo: string): { base: string; repo: string; cleanup: () => void } {
   const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'wmux-ms-')));
   const repo = join(base, 'repo');
-  cpSync(templateRepo, repo, { recursive: true });
+  copyDirSync(templateRepo, repo);
   g(repo, ['update-index', '-q', '--refresh']);
   return { base, repo, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }

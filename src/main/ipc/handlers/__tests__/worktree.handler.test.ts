@@ -1,7 +1,8 @@
 // worktree:list / add / remove 핸들러 테스트 — 실제 임시 git repo로 왕복 검증.
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, realpathSync, appendFileSync, cpSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, realpathSync, appendFileSync } from 'node:fs';
+import { copyDirSync } from '../../../../test-utils/copyDirSync';
 import os from 'node:os';
 import { join, basename, dirname } from 'node:path';
 
@@ -55,7 +56,7 @@ function makeRepo(): { base: string; repo: string; cleanup: () => void } {
   // 핸들러가 git canonical 경로 기준으로 파생·비교하므로 fixture도 맞춰야 한다.
   const base = realpathSync.native(mkdtempSync(join(os.tmpdir(), 'wmux-wth-')));
   const repo = join(base, 'repo');
-  cpSync(templateRepo, repo, { recursive: true });
+  copyDirSync(templateRepo, repo);
   g(repo, ['update-index', '-q', '--refresh']);
   return { base, repo, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
