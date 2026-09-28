@@ -7,7 +7,7 @@
  * (the opt-in cost contract) and hung-account-isolation (one failing account
  * must not wedge siblings).
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { AccountUsageService, type AccountUsageEntry } from '../AccountUsageService';
 import type { LoadResult } from '../../claude/claudeCredential';
 
@@ -16,14 +16,12 @@ const OK_CRED: LoadResult = {
   credential: { accessToken: 'sk-ant-test', subscriptionType: 'max', rateLimitTier: null, expiresAtMs: null },
 };
 
-function okFetch(fivePct = 0.5, sevenPct = 0.1): typeof fetch {
-  const headers = new Headers({
-    'anthropic-ratelimit-unified-5h-utilization': String(fivePct),
-    'anthropic-ratelimit-unified-5h-reset': '1700000000',
-    'anthropic-ratelimit-unified-7d-utilization': String(sevenPct),
-    'anthropic-ratelimit-unified-7d-reset': '1700100000',
+function okFetch(fivePct = 50, sevenPct = 10): typeof fetch {
+  const body = JSON.stringify({
+    five_hour: { utilization: fivePct, resets_at: '2023-11-14T22:13:20Z' },
+    seven_day: { utilization: sevenPct, resets_at: '2023-11-16T02:00:00Z' },
   });
-  return vi.fn().mockResolvedValue(new Response('{}', { status: 200, headers })) as unknown as typeof fetch;
+  return vi.fn().mockImplementation(async () => new Response(body, { status: 200 })) as unknown as typeof fetch;
 }
 
 /** Deferred controller so a probe can be held "in flight" for the coalesce test. */
@@ -43,6 +41,8 @@ function make(opts: {
   getConfigDir?: (id: string) => string | null;
   listKnownIds?: () => Set<string>;
   cooldownMs?: number;
+  refreshIntervalMs?: number;
+  staggerMs?: number;
 } = {}): AccountUsageService {
   return new AccountUsageService({
     now: opts.now ?? (() => 1000),
@@ -51,6 +51,8 @@ function make(opts: {
     getConfigDir: opts.getConfigDir ?? CLAUDE_DIRS,
     listKnownIds: opts.listKnownIds ?? (() => new Set(['A', 'B', 'C'])),
     cooldownMs: opts.cooldownMs ?? 5 * 60 * 1000,
+    refreshIntervalMs: opts.refreshIntervalMs,
+    staggerMs: opts.staggerMs,
   });
 }
 
@@ -65,7 +67,7 @@ describe('AccountUsageService (M2 hook-gated usage)', () => {
   });
 
   it('account resolves → exactly one probe, cache reflects %', async () => {
-    const fetchImpl = okFetch(0.42, 0.71);
+    const fetchImpl = okFetch(42, 71);
     const svc = make({ fetchImpl });
     svc.setEnabled(true);
     await svc.maybeProbe('A');
@@ -128,10 +130,10 @@ describe('AccountUsageService (M2 hook-gated usage)', () => {
     let t = 1000;
     // First probe ok, second returns 401.
     const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(new Response('{}', { status: 200, headers: new Headers({
-        'anthropic-ratelimit-unified-5h-utilization': '0.3',
-        'anthropic-ratelimit-unified-7d-utilization': '0.2',
-      }) }))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ five_hour: { utilization: 30 }, seven_day: { utilization: 20 } }),
+        { status: 200 },
+      ))
       // fetchUsage turns a 401 Response into the unauthorized UsageApiException
       // itself — the fetchImpl must RETURN the 401, not throw.
       .mockResolvedValue(new Response('{}', { status: 401 })) as unknown as typeof fetch;
@@ -153,7 +155,7 @@ describe('AccountUsageService (M2 hook-gated usage)', () => {
     // Account A network-errors; B succeeds. B must still get its number.
     const load = vi.fn(async () => OK_CRED);
     const fetchImpl = vi.fn(() => Promise.reject(new Error('ETIMEDOUT'))) as unknown as typeof fetch;
-    const okF = okFetch(0.2, 0.2);
+    const okF = okFetch(20, 20);
     // A uses failing fetch, B uses ok fetch — inject per-account via getConfigDir + two services is messy;
     // instead assert: A error leaves A in 'error' and does not throw, and B probes independently.
     const svcA = make({ loadCredential: load, fetchImpl });
@@ -248,5 +250,69 @@ describe('AccountUsageService (M2 hook-gated usage)', () => {
     expect(load).toHaveBeenCalledTimes(1);
     d.resolve(OK_CRED);
     await p1;
+  });
+});
+
+describe('AccountUsageService refresh-all timer and 429 backoff', () => {
+  const MIN = 60_000;
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('refreshes every claude account every 15 min, staggered, only while enabled', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = okFetch();
+    const svc = make({
+      now: () => Date.now(),
+      fetchImpl,
+      getConfigDir: (id) => (id === 'C' ? null : `C:/dirs/${id}`), // C = codex
+    });
+    svc.setEnabled(true);
+    await vi.advanceTimersByTimeAsync(10_000); // first account at +10s
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(10_000); // second at +20s
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(svc.getAll().map((e) => e.accountId).sort()).toEqual(['A', 'B']);
+    await vi.advanceTimersByTimeAsync(15 * MIN - 20_000); // next pass starts
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    svc.setEnabled(false); // zero traffic while off
+    await vi.advanceTimersByTimeAsync(60 * MIN);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    svc.dispose();
+  });
+
+  it('hidden window → the timer sends nothing', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = okFetch();
+    const svc = make({ now: () => Date.now(), fetchImpl });
+    svc.setWindowVisible(false);
+    svc.setEnabled(true);
+    await vi.advanceTimersByTimeAsync(20 * MIN);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    svc.dispose();
+  });
+
+  it('429 → error status, automatic probes back off, manual refresh bypasses', async () => {
+    let t = 1000;
+    const fetchImpl = vi.fn()
+      .mockImplementation(async () => new Response('slow', { status: 429 })) as unknown as typeof fetch;
+    const svc = make({ now: () => t, fetchImpl, cooldownMs: 0 });
+    svc.setEnabled(true);
+    await svc.maybeProbe('A');
+    const entry = svc.getAll().find((e) => e.accountId === 'A')!;
+    expect(entry.status).toBe('error');
+    expect(entry.lastError).toBe('HTTP 429 rate limited');
+    t += 4 * MIN;
+    await svc.maybeProbe('A'); // inside the 5 min backoff
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    t += 1 * MIN;
+    await svc.maybeProbe('A'); // 429 #2 → 10 min
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    t += 9 * MIN;
+    await svc.maybeProbe('A');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    await svc.refreshNow('A');
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    svc.dispose();
   });
 });

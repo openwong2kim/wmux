@@ -1,12 +1,12 @@
-// Anthropic 1-token dummy POST + rate-limit header parser.
+// Anthropic OAuth usage reader.
 //
-// Strategy (validated by `openwong2kim/claude-token-check`):
-//   1. POST a Haiku 4.5 request with `max_tokens: 1` and a 1-token body.
-//   2. Don't care about the response body. The interesting data is the
-//      four `anthropic-ratelimit-unified-*` headers.
-//   3. Return a UsageSnapshot. On 401/403, throw Unauthorized — the
-//      caller (UsagePoller) interprets that as "Claude Code logged out,
-//      pause the poller and surface the error in the UI".
+// Strategy: GET `/api/oauth/usage` with the Claude Code OAuth token. The
+// endpoint returns the account's current 5h / 7d utilization (and any
+// per-model weekly caps) as JSON — a read, so checking usage no longer
+// spends a model request against the quota it is measuring. On 401/403
+// throw Unauthorized — the caller (UsagePoller) interprets that as
+// "Claude Code logged out, surface the error in the UI". On 429 throw
+// RateLimited carrying Retry-After so the caller can back off.
 //
 // Token policy:
 //   - The token is passed in by the caller. We never read it from disk
@@ -20,8 +20,8 @@
 export interface UsageSnapshot {
   /** 5h window utilization, 0–100 (integer percent, rounded). */
   sessionPct: number;
-  /** 5h window reset time, Unix epoch SECONDS. 0 means "header missing
-   *  / clock skew" — caller can render as "unknown" rather than 0. */
+  /** 5h window reset time, Unix epoch SECONDS. 0 means "field missing
+   *  / unparseable" — caller can render as "unknown" rather than 0. */
   sessionResetEpochSec: number;
   /** 7d window utilization, 0–100. */
   weeklyPct: number;
@@ -48,6 +48,9 @@ export interface UsageScopedLimit {
 /** Discriminated error union. The UI maps these to copy strings. */
 export type UsageApiError =
   | { kind: 'unauthorized' }
+  /** HTTP 429. `retryAfterMs` is the server's Retry-After, null if absent
+   *  or unparseable (caller falls back to its own backoff). */
+  | { kind: 'rate-limited'; retryAfterMs: number | null }
   | { kind: 'http'; status: number; statusText: string }
   | { kind: 'network'; message: string }
   | { kind: 'malformed'; message: string };
@@ -61,28 +64,21 @@ export class UsageApiException extends Error {
   }
 }
 
-const ENDPOINT = 'https://api.anthropic.com/v1/messages';
-
-// User-Agent that matches the validated token-check setup. The OAuth
-// beta endpoint pairs with a Claude-Code-flavored UA in the reference
-// impl. We don't try a wmux-branded UA yet — if Anthropic gates the
-// rate-limit headers on UA, we'd be the ones to find out, and the
-// failure mode is silent (no headers, no UI update). Re-evaluate after
-// dogfood.
-const USER_AGENT = 'claude-code/2.1.5';
-const ANTHROPIC_VERSION = '2023-06-01';
+const ENDPOINT = 'https://api.anthropic.com/api/oauth/usage';
 const ANTHROPIC_BETA = 'oauth-2025-04-20';
-const MODEL = 'claude-haiku-4-5-20251001';
 
-const BODY = JSON.stringify({
-  model: MODEL,
-  max_tokens: 1,
-  messages: [{ role: 'user', content: 'hi' }],
-});
+// Honest client identity. main/index.ts sets the real app version at
+// startup; tests and other callers get a neutral placeholder.
+let clientVersion = 'dev';
+
+/** Set the version reported in the `user-agent: wmux/<version>` header. */
+export function setUsageClientVersion(version: string): void {
+  if (version) clientVersion = version;
+}
 
 /**
- * Send the 1-token probe and parse the rate-limit headers. Resolves
- * with a snapshot on 2xx; throws UsageApiException for everything else.
+ * Read the account's usage. Resolves with a snapshot on 2xx with a
+ * recognisable body; throws UsageApiException for everything else.
  *
  * `fetchImpl` defaults to global fetch (Electron main process has it).
  * Tests inject a stub.
@@ -90,27 +86,28 @@ const BODY = JSON.stringify({
 export async function fetchUsage(
   accessToken: string,
   fetchImpl: typeof fetch = fetch,
-  timeoutMs = 20_000,
+  timeoutMs = 10_000,
 ): Promise<UsageSnapshot> {
-  // 20s upper bound. Anthropic's typical p99 is well under this; the
-  // budget exists so a hung TCP connection / TLS handshake can't wedge
-  // UsagePoller's `inflight` flag forever (Codex review 2026-05-24 P2 #4).
+  // The budget exists so a hung TCP connection / TLS handshake can't
+  // wedge the caller's in-flight guard forever.
   const controller = new AbortController();
   const abortTimer = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
+  let body: string;
   try {
     response = await fetchImpl(ENDPOINT, {
-      method: 'POST',
+      method: 'GET',
       headers: {
-        'anthropic-version': ANTHROPIC_VERSION,
         'anthropic-beta': ANTHROPIC_BETA,
-        'content-type': 'application/json',
-        'user-agent': USER_AGENT,
+        'user-agent': `wmux/${clientVersion}`,
         authorization: `Bearer ${accessToken}`,
       },
-      body: BODY,
       signal: controller.signal,
     });
+    // Read the body under the same timeout — a stalled body is as much a
+    // hang as a stalled connect. Error bodies are read only to free the
+    // socket and are never kept (they can echo request details).
+    body = await response.text();
   } catch (err) {
     const aborted =
       (err instanceof Error && err.name === 'AbortError') ||
@@ -124,59 +121,150 @@ export async function fetchUsage(
   }
 
   if (response.status === 401 || response.status === 403) {
-    // Drain body to free the socket; ignore the contents — they can
-    // include token-bearing error envelopes we don't want to keep.
-    try { await response.text(); } catch { /* ignore */ }
     throw new UsageApiException({ kind: 'unauthorized' }, `HTTP ${response.status}`);
+  }
+  if (response.status === 429) {
+    const retryAfterMs = parseRetryAfter(response.headers.get('retry-after'), Date.now());
+    throw new UsageApiException({ kind: 'rate-limited', retryAfterMs }, 'HTTP 429 rate limited');
   }
   if (!response.ok) {
     const statusText = response.statusText || `status ${response.status}`;
-    try { await response.text(); } catch { /* ignore */ }
     throw new UsageApiException(
       { kind: 'http', status: response.status, statusText },
       `HTTP ${response.status} ${statusText}`,
     );
   }
 
-  // Headers parse independently of the body. We don't await response
-  // body parsing for happy path either — abort the body stream once we
-  // have the headers to free the socket. (Some fetch impls buffer the
-  // body anyway; we don't depend on it.)
-  try { await response.text(); } catch { /* ignore */ }
-
-  return parseSnapshot(response.headers, Date.now());
+  let json: unknown;
+  try {
+    json = JSON.parse(body);
+  } catch {
+    throw new UsageApiException({ kind: 'malformed', message: 'response is not JSON' }, 'malformed usage response: not JSON');
+  }
+  const snapshot = parseUsageBody(json, Date.now());
+  if (!snapshot) {
+    throw new UsageApiException(
+      { kind: 'malformed', message: 'no usage windows in response' },
+      'malformed usage response: no usage windows',
+    );
+  }
+  return snapshot;
 }
 
 /**
- * Pure helper. Exported so tests can drive it with mocked Headers and
- * an injected `now`.
+ * Pure parser for the `/api/oauth/usage` body. `five_hour` / `seven_day`
+ * are primary (utilization is already 0–100); `limits[]` entries of kind
+ * `session` / `weekly_all` fill in when those are null. Every
+ * `weekly_scoped` limit maps into `scoped`. Unknown or missing fields never
+ * throw. Returns null when neither the 5h nor the 7d window is present, so
+ * the caller reports an error instead of a silent 0%.
  */
-export function parseSnapshot(headers: Headers, nowMs: number): UsageSnapshot {
-  return {
-    sessionPct: readPercent(headers, 'anthropic-ratelimit-unified-5h-utilization'),
-    sessionResetEpochSec: readEpochSeconds(headers, 'anthropic-ratelimit-unified-5h-reset'),
-    weeklyPct: readPercent(headers, 'anthropic-ratelimit-unified-7d-utilization'),
-    weeklyResetEpochSec: readEpochSeconds(headers, 'anthropic-ratelimit-unified-7d-reset'),
+export function parseUsageBody(body: unknown, nowMs: number): UsageSnapshot | null {
+  if (!isRecord(body)) return null;
+  const limits = Array.isArray(body.limits) ? body.limits.filter(isRecord) : [];
+  const findLimit = (kind: string) => limits.find((l) => l.kind === kind);
+
+  const session = readWindow(body.five_hour) ?? readLimit(findLimit('session'));
+  const weekly = readWindow(body.seven_day) ?? readLimit(findLimit('weekly_all'));
+  if (!session && !weekly) return null;
+
+  const scoped: UsageScopedLimit[] = [];
+  for (const l of limits) {
+    if (l.kind !== 'weekly_scoped') continue;
+    const pct = toPct(l.percent);
+    if (pct === null) continue;
+    scoped.push({
+      kind: 'weekly_scoped',
+      group: typeof l.group === 'string' ? l.group : 'weekly',
+      pct,
+      resetEpochSec: toEpochSec(l.resets_at),
+      scope: scopeLabel(l.scope),
+    });
+  }
+
+  const snapshot: UsageSnapshot = {
+    sessionPct: session?.pct ?? 0,
+    sessionResetEpochSec: session?.resetEpochSec ?? 0,
+    weeklyPct: weekly?.pct ?? 0,
+    weeklyResetEpochSec: weekly?.resetEpochSec ?? 0,
     fetchedAtMs: nowMs,
   };
+  if (scoped.length > 0) snapshot.scoped = scoped;
+  return snapshot;
 }
 
-/** Utilization headers ship as a decimal 0.0–1.0. We convert to integer
- *  percent (rounded). Missing/non-numeric headers report 0 — caller
- *  combines with status to decide if 0% means "fresh" vs "no data". */
-function readPercent(headers: Headers, key: string): number {
-  const raw = headers.get(key);
-  if (!raw) return 0;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return 0;
-  return Math.max(0, Math.min(100, Math.round(n * 100)));
+/** First 429 backoff step without a Retry-After; doubles per repeat. */
+const RATE_LIMIT_BASE_BACKOFF_MS = 5 * 60 * 1000;
+/** Upper bound for any 429 backoff, Retry-After included. */
+const RATE_LIMIT_MAX_BACKOFF_MS = 60 * 60 * 1000;
+
+/** Backoff after the `consecutive`-th 429 in a row (1-based). Honors the
+ *  server's Retry-After when given; both paths cap at 60 min. */
+export function rateLimitBackoffMs(consecutive: number, retryAfterMs: number | null): number {
+  if (retryAfterMs !== null) return Math.min(Math.max(0, retryAfterMs), RATE_LIMIT_MAX_BACKOFF_MS);
+  const exp = RATE_LIMIT_BASE_BACKOFF_MS * 2 ** Math.max(0, consecutive - 1);
+  return Math.min(exp, RATE_LIMIT_MAX_BACKOFF_MS);
 }
 
-/** Reset headers ship as Unix epoch seconds. */
-function readEpochSeconds(headers: Headers, key: string): number {
-  const raw = headers.get(key);
-  if (!raw) return 0;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return Math.round(n);
+/** Retry-After is either delta-seconds or an HTTP date. Null when absent
+ *  or unparseable. */
+export function parseRetryAfter(raw: string | null, nowMs: number): number | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (/^\d+(\.\d+)?$/.test(trimmed)) return Math.round(Number(trimmed) * 1000);
+  const at = Date.parse(trimmed);
+  if (!Number.isFinite(at)) return null;
+  return Math.max(0, at - nowMs);
+}
+
+interface WindowReading { pct: number; resetEpochSec: number }
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** `{ utilization, resets_at }` object → reading; null if absent/unusable. */
+function readWindow(v: unknown): WindowReading | null {
+  if (!isRecord(v)) return null;
+  const pct = toPct(v.utilization);
+  if (pct === null) return null;
+  return { pct, resetEpochSec: toEpochSec(v.resets_at) ?? 0 };
+}
+
+/** `limits[]` entry `{ percent, resets_at }` → reading. */
+function readLimit(v: Record<string, unknown> | undefined): WindowReading | null {
+  if (!v) return null;
+  const pct = toPct(v.percent);
+  if (pct === null) return null;
+  return { pct, resetEpochSec: toEpochSec(v.resets_at) ?? 0 };
+}
+
+/** 0–100 number → clamped integer percent; null if not a finite number. */
+function toPct(v: unknown): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  return Math.max(0, Math.min(100, Math.round(v)));
+}
+
+/** ISO-8601 timestamp → Unix epoch seconds; null if absent/unparseable. */
+function toEpochSec(v: unknown): number | null {
+  if (typeof v !== 'string') return null;
+  const ms = Date.parse(v);
+  return Number.isFinite(ms) && ms > 0 ? Math.round(ms / 1000) : null;
+}
+
+/** The endpoint reports scope as an object (`{ model: { display_name, id },
+ *  surface }`) or a string. Reduce it to one human-readable label. */
+function scopeLabel(v: unknown): string | null {
+  if (typeof v === 'string') return v || null;
+  if (!isRecord(v)) return null;
+  const parts: string[] = [];
+  for (const key of ['model', 'surface']) {
+    const part = v[key];
+    if (typeof part === 'string' && part) parts.push(part);
+    else if (isRecord(part)) {
+      const name = part.display_name ?? part.id;
+      if (typeof name === 'string' && name) parts.push(name);
+    }
+  }
+  return parts.length > 0 ? parts.join(' · ') : null;
 }

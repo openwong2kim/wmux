@@ -65,6 +65,7 @@ import { revealStatsAggregator } from './perf/revealStatsAggregator';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { CompletionAlarm } from '../shared/hooks/CompletionAlarm';
 import { UsagePoller } from './claude/UsagePoller';
+import { setUsageClientVersion } from './claude/UsageApi';
 import { AccountUsageService } from './account/AccountUsageService';
 import { getAccountStore } from './account/accountStore';
 import { IPC, getWmuxHomeDir } from '../shared/constants';
@@ -1056,10 +1057,12 @@ const disposeDeckHandler = registerDeckHandler(() => mainWindow, {
 const disposeWorkspaceMirrorHandler = registerWorkspaceMirrorHandler();
 // Returns an unsubscribe for the signal-health push subscription. Called from
 // before-quit so HMR reload / shutdown does not leak the listener.
-// ─── M2 — per-account usage service (hook-gated, opt-in) ─────────────────────
+// ─── M2 — per-account usage service (opt-in) ─────────────────────────────────
 // Shares the opt-in USAGE_TOGGLE with the default-account poller below. Probes
 // fire on the `agent.stop` hook for the pane's bound claude account (main
-// resolves workspace → account here so hooks.rpc stays account-agnostic).
+// resolves workspace → account here so hooks.rpc stays account-agnostic) and on
+// the service's own staggered 15-min refresh of every account.
+setUsageClientVersion(app.getVersion());
 const accountUsageService = new AccountUsageService();
 const disposeAccountUsageListener = accountUsageService.onChange((entry) => {
   const win = mainWindow;
@@ -2435,6 +2438,7 @@ app.on('before-quit', async (e) => {
   safeStep('usagePoller.dispose', () => usagePoller.dispose());
   safeStep('disposePhoneBridge', () => { disposePhoneBridge?.(); disposePhoneBridge = null; });
   safeStep('disposeAccountUsageListener', () => disposeAccountUsageListener());
+  safeStep('accountUsageService.dispose', () => accountUsageService.dispose());
   safeStep('cleanupAccountUsageIpc', () => {
     ipcMain.removeHandler(IPC.ACCOUNT_USAGE_LIST);
     ipcMain.removeAllListeners(IPC.ACCOUNT_USAGE_REFRESH);

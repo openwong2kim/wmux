@@ -19,13 +19,7 @@ const OK_CREDENTIAL: LoadResult = {
 };
 
 function makeOkFetch(): typeof fetch {
-  const headers = new Headers({
-    'anthropic-ratelimit-unified-5h-utilization': '0.5',
-    'anthropic-ratelimit-unified-5h-reset': '1700000000',
-    'anthropic-ratelimit-unified-7d-utilization': '0.1',
-    'anthropic-ratelimit-unified-7d-reset': '1700100000',
-  });
-  return vi.fn().mockResolvedValue(new Response('{}', { status: 200, headers })) as unknown as typeof fetch;
+  return vi.fn().mockImplementation(async () => okUsageResponse()) as unknown as typeof fetch;
 }
 
 /** Build a credential result around a token the caller can swap, so a
@@ -55,18 +49,16 @@ function bearerOf(impl: typeof fetch, callIndex: number): string {
   return headers.authorization;
 }
 
-/** A fresh 200 with the rate-limit headers the parser reads. New each
- *  call, because a Response body can only be consumed once. */
+/** A fresh 200 with the usage body the parser reads. New each call,
+ *  because a Response body can only be consumed once. */
 function okUsageResponse(): Response {
-  return new Response('{}', {
-    status: 200,
-    headers: new Headers({
-      'anthropic-ratelimit-unified-5h-utilization': '0.5',
-      'anthropic-ratelimit-unified-5h-reset': '1700000000',
-      'anthropic-ratelimit-unified-7d-utilization': '0.1',
-      'anthropic-ratelimit-unified-7d-reset': '1700100000',
+  return new Response(
+    JSON.stringify({
+      five_hour: { utilization: 50, resets_at: '2023-11-14T22:13:20Z' },
+      seven_day: { utilization: 10, resets_at: '2023-11-16T02:00:00Z' },
     }),
-  });
+    { status: 200 },
+  );
 }
 
 function makeFlushPromises(): () => Promise<void> {
@@ -223,18 +215,7 @@ describe('UsagePoller', () => {
     const fetchImpl = vi
       .fn()
       .mockImplementationOnce(async () => new Response('unauth', { status: 401 }))
-      .mockImplementation(
-        async () =>
-          new Response('{}', {
-            status: 200,
-            headers: new Headers({
-              'anthropic-ratelimit-unified-5h-utilization': '0.5',
-              'anthropic-ratelimit-unified-5h-reset': '1700000000',
-              'anthropic-ratelimit-unified-7d-utilization': '0.1',
-              'anthropic-ratelimit-unified-7d-reset': '1700100000',
-            }),
-          }),
-      ) as unknown as typeof fetch;
+      .mockImplementation(async () => okUsageResponse()) as unknown as typeof fetch;
     const poller = new UsagePoller({
       intervalMs: 100_000,
       unauthorizedRecheckMs: 1000,
@@ -731,15 +712,10 @@ describe('UsagePoller', () => {
       .fn()
       .mockRejectedValueOnce(new Error('ECONNRESET'))
       .mockResolvedValueOnce(
-        new Response('{}', {
-          status: 200,
-          headers: new Headers({
-            'anthropic-ratelimit-unified-5h-utilization': '0.42',
-            'anthropic-ratelimit-unified-5h-reset': '1700000000',
-            'anthropic-ratelimit-unified-7d-utilization': '0.05',
-            'anthropic-ratelimit-unified-7d-reset': '1700100000',
-          }),
-        }),
+        new Response(
+          JSON.stringify({ five_hour: { utilization: 42 }, seven_day: { utilization: 5 } }),
+          { status: 200 },
+        ),
       ) as unknown as typeof fetch;
     const poller = new UsagePoller({
       intervalMs: 1000,
@@ -878,6 +854,71 @@ describe('UsagePoller', () => {
     unsub(); // idempotent
     await poller.refreshNow();
     expect(sub.mock.calls.length).toBe(initial);
+    poller.dispose();
+  });
+
+  it('defaults to a 15-minute poll interval', async () => {
+    const fetchImpl = makeOkFetch();
+    const poller = new UsagePoller({ loadCredential: async () => OK_CREDENTIAL, fetchImpl });
+    poller.start();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(callCount(fetchImpl)).toBe(1); // immediate first fetch
+    await vi.advanceTimersByTimeAsync(15 * 60_000 - 2);
+    expect(callCount(fetchImpl)).toBe(1);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(callCount(fetchImpl)).toBe(2);
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    expect(callCount(fetchImpl)).toBe(3);
+    poller.dispose();
+  });
+
+  it('429 with Retry-After: automatic ticks wait it out, then resume', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockImplementationOnce(async () =>
+        new Response('slow', { status: 429, headers: { 'retry-after': '3' } }))
+      .mockImplementation(async () => okUsageResponse()) as unknown as typeof fetch;
+    const poller = new UsagePoller({
+      intervalMs: 1000,
+      loadCredential: async () => OK_CREDENTIAL,
+      fetchImpl,
+    });
+    poller.start();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(poller.getState().status).toBe('http-error');
+    expect(poller.getState().lastError).toBe('HTTP 429 rate limited');
+    await vi.advanceTimersByTimeAsync(2000); // ticks at 1s, 2s skipped
+    expect(callCount(fetchImpl)).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000); // tick at 3s reaches the 3s Retry-After
+    expect(callCount(fetchImpl)).toBe(2);
+    expect(poller.getState().status).toBe('ok');
+    poller.dispose();
+  });
+
+  it('429 without Retry-After backs off exponentially; manual refresh bypasses', async () => {
+    const MIN = 60_000;
+    const fetchImpl = vi
+      .fn()
+      .mockImplementation(async () => new Response('slow', { status: 429 })) as unknown as typeof fetch;
+    const poller = new UsagePoller({
+      intervalMs: MIN,
+      unauthorizedRecheckMs: MIN,
+      loadCredential: async () => OK_CREDENTIAL,
+      fetchImpl,
+    });
+    poller.start();
+    await vi.advanceTimersByTimeAsync(1); // 429 #1 → 5 min backoff
+    expect(callCount(fetchImpl)).toBe(1);
+    await vi.advanceTimersByTimeAsync(4 * MIN);
+    expect(callCount(fetchImpl)).toBe(1);
+    await vi.advanceTimersByTimeAsync(1 * MIN); // t≈5m → 429 #2 → 10 min
+    expect(callCount(fetchImpl)).toBe(2);
+    await vi.advanceTimersByTimeAsync(9 * MIN);
+    expect(callCount(fetchImpl)).toBe(2);
+    await vi.advanceTimersByTimeAsync(1 * MIN); // t≈15m → 429 #3
+    expect(callCount(fetchImpl)).toBe(3);
+    await poller.refreshNow(); // explicit ask ignores the backoff
+    expect(callCount(fetchImpl)).toBe(4);
     poller.dispose();
   });
 });
