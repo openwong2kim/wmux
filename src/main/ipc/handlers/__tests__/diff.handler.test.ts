@@ -3,9 +3,19 @@
 // 실제 git worktree를 만들어 read → applyHunks 전 경로를 검증한다.
 // 커버: 워킹트리 대조(미커밋 포함)·untracked 합성·타겟 스냅샷·드리프트 거부·
 // dirty 거부·per-hunk 프로브·경로 검증·all-or-nothing apply.
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, symlinkSync, realpathSync } from 'node:fs';
+import {
+  mkdtempSync,
+  writeFileSync,
+  rmSync,
+  readFileSync,
+  mkdirSync,
+  symlinkSync,
+  realpathSync,
+  appendFileSync,
+  cpSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -77,6 +87,52 @@ function pick(
 
 // 태스크 worktree 시나리오를 구성한다: 본 repo + linked worktree.
 // worktree에 미커밋 변경 2파일 + untracked 1파일.
+// Each git spawn costs 100 ms+ on the Windows runner, so every fixture repo is
+// committed once (beforeAll) and each test gets a byte copy of it. A template
+// is always a plain repo: a linked worktree records absolute paths on both
+// sides, so it is added to the copy instead. The copied index carries the
+// template's stat data, so it is refreshed once — otherwise git reads every
+// tracked file as modified.
+const IDENTITY_CONFIG = '[user]\n\temail = t@t\n\tname = t\n';
+const NO_AUTOCRLF_CONFIG = '[core]\n\tautocrlf = false\n';
+
+function makeTemplateDir(): string {
+  return mkdtempSync(join(tmpdir(), 'wmux-diffh-tpl-'));
+}
+
+// init + config (written to .git/config directly) + one base commit of `files`.
+function initTemplateRepo(repo: string, config: string, files: Record<string, string>): void {
+  mkdirSync(repo, { recursive: true });
+  g(repo, ['init', '-q', '-b', 'main']);
+  appendFileSync(join(repo, '.git', 'config'), config);
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(join(repo, rel, '..'), { recursive: true });
+    writeFileSync(join(repo, rel), content);
+  }
+  g(repo, ['add', '-A']);
+  g(repo, ['commit', '-q', '-m', 'base']);
+}
+
+function copyRepo(templateRepo: string, repo: string): void {
+  cpSync(templateRepo, repo, { recursive: true });
+  g(repo, ['update-index', '-q', '--refresh']);
+}
+
+// Shared makeScenario template: a.txt + b.txt committed on main.
+let scenarioTemplateBase: string;
+let scenarioTemplateRepo: string;
+let scenarioTemplateOid: string;
+beforeAll(() => {
+  scenarioTemplateBase = makeTemplateDir();
+  scenarioTemplateRepo = join(scenarioTemplateBase, 'repo');
+  initTemplateRepo(scenarioTemplateRepo, IDENTITY_CONFIG + NO_AUTOCRLF_CONFIG, {
+    'a.txt': 'a1\na2\na3\na4\na5\n',
+    'b.txt': 'b1\nb2\nb3\n',
+  });
+  scenarioTemplateOid = g(scenarioTemplateRepo, ['rev-parse', 'HEAD']).trim();
+});
+afterAll(() => removeScenarioTree(scenarioTemplateBase));
+
 function makeScenario(): {
   repoRoot: string;
   worktreePath: string;
@@ -85,16 +141,8 @@ function makeScenario(): {
 } {
   const base = mkdtempSync(join(tmpdir(), 'wmux-diffh-'));
   const repoRoot = join(base, 'repo');
-  mkdirSync(repoRoot);
-  g(repoRoot, ['init', '-q', '-b', 'main']);
-  g(repoRoot, ['config', 'user.email', 't@t']);
-  g(repoRoot, ['config', 'user.name', 't']);
-  g(repoRoot, ['config', 'core.autocrlf', 'false']);
-  writeFileSync(join(repoRoot, 'a.txt'), 'a1\na2\na3\na4\na5\n');
-  writeFileSync(join(repoRoot, 'b.txt'), 'b1\nb2\nb3\n');
-  g(repoRoot, ['add', '-A']);
-  g(repoRoot, ['commit', '-q', '-m', 'base']);
-  const targetHeadOid = g(repoRoot, ['rev-parse', 'HEAD']).trim();
+  copyRepo(scenarioTemplateRepo, repoRoot);
+  const targetHeadOid = scenarioTemplateOid;
 
   // linked worktree 생성(태스크 브랜치).
   const worktreePath = join(base, 'wt');
@@ -162,26 +210,28 @@ describe('diff:read — 워킹트리 대조·untracked 합성·스냅샷', { tim
 describe('diff:read — T3 task base from the task.json stamp', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let base: string;
   let worktreePath: string;
+  let templateBase: string;
+  let templateRepo: string;
+  let upstreamOid: string;
+  beforeAll(() => {
+    templateBase = makeTemplateDir();
+    templateRepo = join(templateBase, 'repo');
+    initTemplateRepo(templateRepo, IDENTITY_CONFIG + NO_AUTOCRLF_CONFIG, { 'a.txt': 'a1\n' });
+    // "origin/main" moved on: an upstream commit the owner's main does not have.
+    g(templateRepo, ['checkout', '-q', '-b', 'upstream']);
+    writeFileSync(join(templateRepo, 'up.txt'), 'upstream\n');
+    g(templateRepo, ['add', '-A']);
+    g(templateRepo, ['commit', '-q', '-m', 'upstream']);
+    upstreamOid = g(templateRepo, ['rev-parse', 'HEAD']).trim();
+    g(templateRepo, ['checkout', '-q', 'main']);
+  });
+  afterAll(() => removeScenarioTree(templateBase));
   beforeEach(() => {
     captured.clear();
     registerDiffHandlers();
     base = mkdtempSync(join(tmpdir(), 'wmux-diffbase-'));
     const repoRoot = join(base, 'repo');
-    mkdirSync(repoRoot);
-    g(repoRoot, ['init', '-q', '-b', 'main']);
-    g(repoRoot, ['config', 'user.email', 't@t']);
-    g(repoRoot, ['config', 'user.name', 't']);
-    g(repoRoot, ['config', 'core.autocrlf', 'false']);
-    writeFileSync(join(repoRoot, 'a.txt'), 'a1\n');
-    g(repoRoot, ['add', '-A']);
-    g(repoRoot, ['commit', '-q', '-m', 'base']);
-    // "origin/main" moved on: an upstream commit the owner's main does not have.
-    g(repoRoot, ['checkout', '-q', '-b', 'upstream']);
-    writeFileSync(join(repoRoot, 'up.txt'), 'upstream\n');
-    g(repoRoot, ['add', '-A']);
-    g(repoRoot, ['commit', '-q', '-m', 'upstream']);
-    const upstreamOid = g(repoRoot, ['rev-parse', 'HEAD']).trim();
-    g(repoRoot, ['checkout', '-q', 'main']);
+    copyRepo(templateRepo, repoRoot);
     // The task branched from the upstream commit and changed a.txt.
     worktreePath = join(base, 'worktrees', 'task-1');
     g(repoRoot, ['worktree', 'add', '-q', '--no-track', '-b', 'wtask/task-1', worktreePath, upstreamOid]);
@@ -884,22 +934,23 @@ describe('diff:read — F8 targetHeadOid 형식 가드', { timeout: GIT_PROCESS_
 describe('diff:read — 워크스페이스 모드(일반 repo, oid 미지정)', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let base: string;
   let repo: string;
+  let templateBase: string;
 
+  beforeAll(() => {
+    templateBase = makeTemplateDir();
+    initTemplateRepo(join(templateBase, 'repo'), IDENTITY_CONFIG + NO_AUTOCRLF_CONFIG, {
+      'a.txt': 'a1\na2\na3\n',
+      // rename 테스트용 — rename 감지(유사도 50%+)가 성립할 만큼 라인 수를 확보.
+      'keep.txt': 'k1\nk2\nk3\nk4\nk5\nk6\nk7\nk8\nk9\nk10\n',
+    });
+  });
+  afterAll(() => removeScenarioTree(templateBase));
   beforeEach(() => {
     captured.clear();
     registerDiffHandlers();
     base = realpathSync.native(mkdtempSync(join(tmpdir(), 'wmux-diffws-')));
     repo = join(base, 'repo');
-    mkdirSync(repo);
-    g(repo, ['init', '-q', '-b', 'main']);
-    g(repo, ['config', 'user.email', 't@t']);
-    g(repo, ['config', 'user.name', 't']);
-    g(repo, ['config', 'core.autocrlf', 'false']);
-    writeFileSync(join(repo, 'a.txt'), 'a1\na2\na3\n');
-    // rename 테스트용 — rename 감지(유사도 50%+)가 성립할 만큼 라인 수를 확보.
-    writeFileSync(join(repo, 'keep.txt'), 'k1\nk2\nk3\nk4\nk5\nk6\nk7\nk8\nk9\nk10\n');
-    g(repo, ['add', '-A']);
-    g(repo, ['commit', '-q', '-m', 'base']);
+    copyRepo(join(templateBase, 'repo'), repo);
   });
   afterEach(() => removeScenarioTree(base));
 
@@ -960,8 +1011,7 @@ describe('diff:read — 워크스페이스 모드(일반 repo, oid 미지정)', 
     const fresh = join(base, 'fresh');
     mkdirSync(fresh);
     g(fresh, ['init', '-q', '-b', 'main']);
-    g(fresh, ['config', 'user.email', 't@t']);
-    g(fresh, ['config', 'user.name', 't']);
+    appendFileSync(join(fresh, '.git', 'config'), IDENTITY_CONFIG);
     writeFileSync(join(fresh, 'first.txt'), 'hello\n');
     g(fresh, ['add', '-A']); // staged, 커밋은 아직 없음(HEAD 없음).
     const read = captured.get(IPC.DIFF_READ)!;
@@ -994,7 +1044,13 @@ describe('diff:read — 워크스페이스 모드(일반 repo, oid 미지정)', 
 describe('diff:resolveRepo — cwd 정규화', { timeout: GIT_PROCESS_TIMEOUT_MS }, () => {
   let base: string;
   let repo: string;
+  let templateBase: string;
 
+  beforeAll(() => {
+    templateBase = makeTemplateDir();
+    initTemplateRepo(join(templateBase, 'repo'), IDENTITY_CONFIG, { 'sub/f.txt': 'x\n' });
+  });
+  afterAll(() => removeScenarioTree(templateBase));
   beforeEach(() => {
     captured.clear();
     registerDiffHandlers();
@@ -1002,14 +1058,7 @@ describe('diff:resolveRepo — cwd 정규화', { timeout: GIT_PROCESS_TIMEOUT_MS
     // git rev-parse가 반환하는 canonical 경로와 문자열 비교가 어긋나지 않게.
     base = realpathSync.native(mkdtempSync(join(tmpdir(), 'wmux-diffrr-')));
     repo = join(base, 'repo');
-    mkdirSync(repo);
-    g(repo, ['init', '-q', '-b', 'main']);
-    g(repo, ['config', 'user.email', 't@t']);
-    g(repo, ['config', 'user.name', 't']);
-    mkdirSync(join(repo, 'sub'));
-    writeFileSync(join(repo, 'sub', 'f.txt'), 'x\n');
-    g(repo, ['add', '-A']);
-    g(repo, ['commit', '-q', '-m', 'base']);
+    copyRepo(join(templateBase, 'repo'), repo);
   });
   afterEach(() => removeScenarioTree(base));
 
@@ -1057,21 +1106,22 @@ describe('diff:applyHunks — per-hunk selection granularity and selection-wide 
   // and `diff.interHunkContext` are pinned because the hunk split — and so the
   // index a selection refers to — depends on them, and a developer's global
   // gitconfig can widen both (a global `diff.context=10` merges these into one).
+  const baseText = `${Array.from({ length: 20 }, (_, i) => `L${i + 1}`).join('\n')}\n`;
+  let mhTemplateBase: string;
+  beforeAll(() => {
+    mhTemplateBase = makeTemplateDir();
+    initTemplateRepo(
+      join(mhTemplateBase, 'repo'),
+      `${IDENTITY_CONFIG}${NO_AUTOCRLF_CONFIG}[diff]\n\tcontext = 3\n\tinterHunkContext = 0\n`,
+      { 'long.txt': baseText, 'other.txt': baseText },
+    );
+  });
+  afterAll(() => removeScenarioTree(mhTemplateBase));
+
   function makeMultiHunkScenario() {
     const base = mkdtempSync(join(tmpdir(), 'wmux-diffh-mh-'));
     const repoRoot = join(base, 'repo');
-    mkdirSync(repoRoot);
-    g(repoRoot, ['init', '-q', '-b', 'main']);
-    g(repoRoot, ['config', 'user.email', 't@t']);
-    g(repoRoot, ['config', 'user.name', 't']);
-    g(repoRoot, ['config', 'core.autocrlf', 'false']);
-    g(repoRoot, ['config', 'diff.context', '3']);
-    g(repoRoot, ['config', 'diff.interHunkContext', '0']);
-    const baseText = `${Array.from({ length: 20 }, (_, i) => `L${i + 1}`).join('\n')}\n`;
-    writeFileSync(join(repoRoot, 'long.txt'), baseText);
-    writeFileSync(join(repoRoot, 'other.txt'), baseText);
-    g(repoRoot, ['add', '-A']);
-    g(repoRoot, ['commit', '-q', '-m', 'base']);
+    copyRepo(join(mhTemplateBase, 'repo'), repoRoot);
     const worktreePath = join(base, 'wt');
     g(repoRoot, ['worktree', 'add', '-q', '-b', 'wtask/mh', worktreePath, 'HEAD']);
     writeFileSync(
