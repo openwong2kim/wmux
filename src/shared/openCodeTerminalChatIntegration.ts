@@ -1,4 +1,5 @@
 import crossSpawn from 'cross-spawn';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,19 +22,44 @@ export type OpenCodeVersionProbe = { version: string | null } | { state: 'not-fo
 const probeFailure = (error: NodeJS.ErrnoException): OpenCodeVersionProbe =>
   ({ state: error.code === 'ENOENT' ? 'not-found' : error.code === 'ETIMEDOUT' ? 'timeout' : 'error', error: String(error) });
 
-/** Non-blocking probe for the GUI process. */
-export function probeOpenCodeVersion(timeoutMs = OPENCODE_PROBE_TIMEOUT_MS): Promise<OpenCodeVersionProbe> {
+/**
+ * Non-blocking probe for the GUI process. On timeout the whole process tree is
+ * killed (POSIX: its own process group, SIGTERM then SIGKILL; Windows:
+ * `taskkill /T /F`, since cross-spawn runs opencode.cmd under cmd.exe), and the
+ * probe settles only once the child has closed, so a retry never overlaps it.
+ */
+export function probeOpenCodeVersion(timeoutMs = OPENCODE_PROBE_TIMEOUT_MS, killGraceMs = 2000): Promise<OpenCodeVersionProbe> {
   return new Promise(resolve => {
-    let stdout = ''; let settled = false;
-    const done = (result: OpenCodeVersionProbe) => { if (!settled) { settled = true; clearTimeout(timer); resolve(result); } };
-    const child = crossSpawn('opencode', ['--version'], { windowsHide: true, env: getExecEnv(), stdio: ['ignore', 'pipe', 'ignore'] });
+    const posix = process.platform !== 'win32';
+    let stdout = ''; let settled = false; let timedOut = false;
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    const done = (result: OpenCodeVersionProbe) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); clearTimeout(grace); resolve(result);
+    };
+    const child = crossSpawn('opencode', ['--version'], { windowsHide: true, env: getExecEnv(), stdio: ['ignore', 'pipe', 'ignore'], detached: posix });
+    const killTree = (signal: NodeJS.Signals) => {
+      if (!child.pid) return;
+      if (!posix) { execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { env: getExecEnv(), windowsHide: true }, () => undefined); return; }
+      try { process.kill(-child.pid, signal); } catch { /* The group is already gone. */ }
+    };
     const timer = setTimeout(() => {
-      child.kill();
-      done(probeFailure(Object.assign(new Error(`opencode --version timed out after ${timeoutMs}ms`), { code: 'ETIMEDOUT' })));
+      timedOut = true;
+      child.stdout?.destroy();
+      killTree('SIGTERM');
+      grace = setTimeout(() => {
+        killTree('SIGKILL');
+        grace = setTimeout(() => done({ state: 'error', error: 'opencode --version did not exit after SIGKILL' }), killGraceMs);
+      }, killGraceMs);
     }, timeoutMs);
     child.stdout?.setEncoding('utf8').on('data', (chunk: string) => { if (stdout.length < 8192) stdout += chunk; });
     child.on('error', error => done(probeFailure(error)));
-    child.on('close', code => done({ version: code === 0 ? stdout : null }));
+    child.on('close', code => {
+      if (!timedOut) { done({ version: code === 0 ? stdout : null }); return; }
+      // The direct child is gone; reap anything left in its group.
+      if (posix) killTree('SIGKILL');
+      done(probeFailure(Object.assign(new Error(`opencode --version timed out after ${timeoutMs}ms`), { code: 'ETIMEDOUT' })));
+    });
   });
 }
 

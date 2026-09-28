@@ -50,16 +50,18 @@ describe('OpenCode TUI installation', () => {
     spawnSync.mockReturnValue({ status: 0, stdout: '1.18.30\n' });
     expect(openCodeTerminalChatIntegration(probe).state).toBe('current');
   }));
-  it('the async probe kills a hung opencode and reports a timeout', async () => {
+  it('the async probe reports a timeout only once the timed-out child has closed', async () => {
     vi.useFakeTimers();
     try {
-      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), kill: vi.fn() });
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough() });
       spawn.mockReturnValue(child);
-      const pending = probeOpenCodeVersion(10_000);
+      let settled = false;
+      const pending = probeOpenCodeVersion(10_000).finally(() => { settled = true; });
       expect(spawn.mock.calls.at(-1)?.[2].env).toBe(getExecEnv());
       await vi.advanceTimersByTimeAsync(10_000);
+      expect(settled).toBe(false); // not before the child has closed
+      child.emit('close', null);
       expect(await pending).toMatchObject({ state: 'timeout' });
-      expect(child.kill).toHaveBeenCalled();
     } finally { vi.useRealTimers(); }
   });
   it('retries a timed-out probe once in the same session, and never retries a missing binary', () => fixture(async (dir, { configRoot, startDir, sourcePath }) => {
