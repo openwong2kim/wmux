@@ -1291,10 +1291,9 @@ export async function resolveWorkspacesForSignal(
   // LAG a just-created pane by a few frames. So when the hook carries a ptyId we
   // apply the SAME exact-id guard as the env fast path (2): accept the mirror
   // only when the resolver returns EXACTLY `signal.ptyId` (the pane is really in
-  // the mirror). If the pane's push hasn't landed yet the resolver falls through
-  // to workspaceId → activePtyId (another pane's id); a bare non-null check would
-  // fast-path that misroute — the cross-pane resume-binding clobber the pull path
-  // avoids by fetching a list that already contains the new pane. On guard
+  // the mirror). If the pane's push hasn't landed yet the resolver returns null
+  // (#1523), so the signal must not be refused off a lagging mirror — the pull
+  // path fetches a list that already contains the new pane. On guard
   // failure we fall through to (2)/(3) unchanged. A workspaceId/cwd-only signal
   // (no ptyId) has no exact target to protect, so non-null acceptance holds and
   // it resolves against the mirror's up-to-date active-surface mapping.
