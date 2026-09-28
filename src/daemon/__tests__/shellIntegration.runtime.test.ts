@@ -445,8 +445,20 @@ describe.runIf(hasGitBash)('OSC 133 runtime — bash.exe (Git Bash)', () => {
 // pinned so the host's real registry cannot decide the outcome.
 describe.runIf(hasPowerShell)('execution policy on a factory-default machine — powershell.exe (#1620)', () => {
   // createSession's env REPLACES the child environment (powershell.exe cannot
-  // even load without SystemRoot), so overlay onto the real one.
-  const RESTRICTED_ENV = { ...(process.env as Record<string, string>), PSExecutionPolicyPreference: 'Restricted' };
+  // even load without SystemRoot), so overlay onto the real one. Windows env
+  // names are case-insensitive but a spread copy is not: an inherited
+  // PSEXECUTIONPOLICYPREFERENCE=Bypass (a parent started with -ExecutionPolicy
+  // Bypass, e.g. an AI coding agent's shell) would survive next to ours and
+  // win, so the controls time out and the fix cases pass vacuously. Drop every
+  // case variant before overlaying.
+  const RESTRICTED_ENV: Record<string, string> = {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(
+        (e): e is [string, string] => e[1] !== undefined && e[0].toLowerCase() !== 'psexecutionpolicypreference',
+      ),
+    ),
+    PSExecutionPolicyPreference: 'Restricted',
+  };
   const BLOCKED = /UnauthorizedAccess/;
   let manager: DaemonSessionManager;
   let tmp: string | undefined;
