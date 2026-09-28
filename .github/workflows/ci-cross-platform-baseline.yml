@@ -32,6 +32,9 @@ jobs:
   baseline:
     name: Baseline (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # The slowest leg (windows) takes ~13 min; a hung test must not hold a
+    # runner for the 6 h default.
+    timeout-minutes: 30
     strategy:
       # Per DX/Eng review T1 (per-OS independent publish policy): keep all
       # matrix legs running so we can see the full cross-platform picture

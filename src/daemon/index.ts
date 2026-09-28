@@ -1,10 +1,13 @@
 import { loadChatSkills } from './transcript/chatSkills';
 import { TerminalChatService } from './transcript/TerminalChatService';
+import { OpenCodeIdleSettler } from './transcript/openCodeIdleSettle';
 import type { ChatBridge, ChatLaunchRequest } from './chat/chatBridge';
 import { ChatSendReceiptStore } from './chat/ChatSendReceiptStore';
+import { ChatCancelReceiptStore } from './chat/ChatCancelReceiptStore';
+import { ChatQueueStore } from './chat/ChatQueue';
 import { createChatBridge, type NativeChatBridge } from './chat/nativeChatBridge';
 import {captureCodexRelayResume, codexRelayResumeCommand} from './web/codexRelayResume';
-import { recoverCodexPane } from './web/recoverCodexPane';
+import { codexCdOperand, recoverCodexPane, withCodexRemote } from './web/recoverCodexPane';
 import { CodexRelayUnavailableError } from './web/codexTuiRelay';
 import { paneCodexSettings } from './web/paneCodexSettings';
 import { CodexPaneRelays } from './web/codexPaneRelays';
@@ -47,6 +50,7 @@ import { stopWebServerDurably } from './web/webStop';
 import { decideWebStartPolicy, resolveWebStartGrants } from './web/webStartPolicy';
 import { scheduleTokenFileReHarden } from '../shared/security';
 import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
+import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { readSessionTextReplay } from './sessionTextReplay';
@@ -105,7 +109,7 @@ import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
-import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalizeResumeCwd } from '../shared/agentResume';
+import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, normalizeResumeCwd } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
@@ -115,6 +119,7 @@ import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/h
 import { checkNativeTranscriptPath } from './transcript/providers';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
+import { admitCodexCapture } from './transcript/codexCapture';
 import { PushSender } from './push/PushSender';
 import { RelayTransport } from './push/RelayTransport';
 import { LiveActivityPusher, type LiveActivityCounts } from './push/LiveActivityPusher';
@@ -147,9 +152,9 @@ import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
-import { chatAgentStatus } from './transcript/chatAgentStatus';
+import { chatAgentStatus, confirmedStopAt, transcriptTurnEnd } from './transcript/chatAgentStatus';
+import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
-import { interruptChatTurn } from './transcript/interruptChatTurn';
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
 import { ChatSessionService } from './chat/ChatSessionService';
 import { chatProviders } from './chat/providers';
@@ -194,8 +199,12 @@ let transcriptProjector: TranscriptProjector | null = null;
 // Phone native chat bridge (contract v0.3.1). Built in registerRpcHandlers next
 // to the services it wraps; the web server reads it lazily per request.
 let chatBridge: ChatBridge | null = null;
+// The same bridge with its daemon-only hooks (queue kicks, pane close).
+let nativeChatBridge: NativeChatBridge | null = null;
 // One writer per daemon, even if registerRpcHandlers runs twice. `undefined` = not loaded yet.
 let chatSendReceipts: ChatSendReceiptStore | null | undefined;
+let chatCancelReceipts: ChatCancelReceiptStore | null | undefined;
+let chatQueue: ChatQueueStore | null | undefined;
 let chatSessions: ChatSessionService | null = null;
 let terminalChat: TerminalChatService | null = null;
 const chatSubscribers = new Map<string, Set<string>>();
@@ -2215,7 +2224,7 @@ function registerRpcHandlers(
           // the home directory the same way.
           ...(cwd ? { cwd } : {}),
           env,
-        }, relay ? {execLaunchCommand:`${agentCommand} --remote ${relay.url}`} : undefined);
+        }, relay && agentCommand ? {execLaunchCommand:withCodexRemote(agentCommand,relay.url,codexCdOperand(cwd ?? os.homedir()))} : undefined);
         if (relay) {
           const managed = sessionManager.getSession(id);
           if (!managed || !relay.commit(managed)) {
@@ -3156,11 +3165,17 @@ function registerRpcHandlers(
     // start a search for a session that has moved on) and BEFORE the
     // provisional-capture guard below, which drops the SessionStart outright on
     // a reused pane — the `/clear` case where discovery matters most.
-    if (p.resumeBinding.transcriptPath) {
+    if (p.resumeBinding.agent === 'codex') {
+      // #1624: Codex decides admission BEFORE any search starts, so a title
+      // thread with no rollout can neither bind nor displace a pending search.
+      const decision = admitCodexCapture(id, prev, p.resumeBinding, managed.meta.env, transcriptDiscovery);
+      if (!decision.apply) return true;
+      p.resumeBinding = decision.binding;
+    } else if (p.resumeBinding.transcriptPath) {
       // The hook is authoritative. Once it has delivered a real path there is
       // nothing left to discover.
       transcriptDiscovery?.cancel(id);
-    } else if (p.resumeBinding.agent === 'claude' || p.resumeBinding.agent === 'codex') {
+    } else if (p.resumeBinding.agent === 'claude') {
       transcriptDiscovery?.start(id, p.resumeBinding.sessionId, p.resumeBinding.cwd, p.resumeBinding.agent);
     }
     // codex P2: a SessionStart fired before its transcript exists (F9) sends the
@@ -3168,8 +3183,7 @@ function registerRpcHandlers(
     // Don't let that provisional capture overwrite an existing transcript-derived
     // (authoritative) binding for a DIFFERENT session — a reboot in between would
     // then `--resume <wrong id>`.
-    if (prev && prev.agent === 'claude' && p.resumeBinding.agent === 'claude' && prev.transcriptPath && !p.resumeBinding.transcriptPath
-        && prev.sessionId !== p.resumeBinding.sessionId) {
+    if (isProvisionalCapture(prev, p.resumeBinding)) {
       return true;
     }
     // Sticky-merge: a capture that couldn't read permissionMode (transcript tail
@@ -3256,6 +3270,10 @@ function registerRpcHandlers(
       // authenticated pipe client the whole transcript AND put an oversized
       // payload on sockets that never asked for it.
       emitAppend: (sessionId, data, clientIds) => {
+        // Push side of the running-episode close: an interrupt fires no Stop
+        // hook, so the recorded end is the only signal the turn is over.
+        const ended = transcriptTurnEnd(data.events, 0);
+        if (ended) sessionManager.getSession(sessionId)?.bridge.noteTranscriptTurnEnd(ended.at);
         const event: DaemonEvent = { type: 'transcript.appended', sessionId, data };
         for (const clientId of clientIds) {
           // D6 — `sendTo` refuses once a client's unflushed buffer passes
@@ -3427,7 +3445,12 @@ function registerRpcHandlers(
         if (!pid || !await ProcessMonitor.isRunning(pid) || sessionManager.getSession(id) !== pane) return undefined;
         return { pid, incarnation: pane.meta.incarnationId };
       },
+      // #1621 — a phone or desktop chat send starts a turn the PTY's stdin never
+      // saw: mark it like a submit so the episode and the idle settle know.
+      onSent: id => { sessionManager.getSession(id)?.bridge.noteInput('', true); },
       emit: (id, data, clients) => {
+        // An OpenCode phase change may be the turn end the phone chat queue waits for.
+        nativeChatBridge?.nudgeQueue(id);
         for (const client of clients) {
           // The phone bridge's watch carries no content: a live-only nudge makes
           // watching phones re-read /turns, and it is never dropped for backpressure.
@@ -3445,6 +3468,22 @@ function registerRpcHandlers(
       // Refusing phone sends beats forgetting which ids may already have been typed.
       chatSendReceipts = null;
       log('error', `[chat] send receipts unreadable; phone chat send disabled: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (chatCancelReceipts === undefined) {
+    try { chatCancelReceipts = new ChatCancelReceiptStore(wmuxDir); }
+    catch (error) {
+      // Same rule as sends: a cancel id that may have pressed ESC must not be forgotten.
+      chatCancelReceipts = null;
+      log('error', `[chat] cancel receipts unreadable; phone chat cancel disabled: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (chatQueue === undefined) {
+    try { chatQueue = new ChatQueueStore(wmuxDir); }
+    catch (error) {
+      // Without the store a `chat-queue` send takes today's path (not advertised).
+      chatQueue = null;
+      log('error', `[chat] queue unreadable; phone chat queue disabled: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   // Phone native chat bridge (contract v0.3.1). The desktop RPCs below call the
@@ -3499,6 +3538,9 @@ function registerRpcHandlers(
       return true;
     },
     receipts: chatSendReceipts,
+    cancelReceipts: chatCancelReceipts,
+    queue: chatQueue,
+    onQueueEvent: (event) => webTerminalServer?.emitChatQueue(event),
     idleShell: (pid, env) => agentProcessTracker.idleShellState(pid, env),
     installedAgents: (env) => installedAgentLaunchOptions(env),
     relays: {
@@ -3522,6 +3564,7 @@ function registerRpcHandlers(
       data: { source: 'security', title, body, ts: Date.now() } }),
   });
   chatBridge = bridge;
+  nativeChatBridge = bridge;
   broadcastCodexNotice = (paneId, title, body) => pipeServer.broadcast({ type: 'notification.event',
     ...(paneId ? { sessionId: paneId } : {}), data: { source: 'security', title, body, ts: Date.now() } });
   notifyCodexIdentityRefused = (paneId, reason) => pipeServer.broadcast({ type: 'notification.event', sessionId: paneId,
@@ -3620,6 +3663,15 @@ function registerRpcHandlers(
         // #1463 — SessionStart applies the same edge, then may mark the pane pre-turn.
         if (data.signal.kind === 'agent.session_start') {
           hookBridge?.noteSessionStart(data.signal.ts, data.signal.payload?.['source']);
+        } else if (hookBridge && data.signal.agent === 'codex' && data.signal.kind === 'agent.stop' && data.status !== 'running') {
+          // A Codex stop arrives through the notify chain, and a wrapper in it
+          // can fire one between tool calls. The status settles as always, but
+          // the running episode ends only once the rollout records that turn's
+          // end (matching the hook's turn id when it names one); otherwise the
+          // next running edge resumes the same episode.
+          hookBridge.noteAgentStatus(data.status, true, questionAt, true);
+          const endedAt = confirmedStopAt(projector.snapshot(sessionId)?.events, data.signal.payload?.['turn-id']);
+          if (endedAt !== undefined) hookBridge.noteTranscriptTurnEnd(endedAt);
         } else {
           hookBridge?.noteAgentStatus(data.status, true, questionAt);
         }
@@ -3631,6 +3683,8 @@ function registerRpcHandlers(
         // WebTerminalServer.emitAgentLiveness). Harmless when the web server is
         // off or nobody opened the pane's turn view.
         webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(sessionId, data, Date.now()));
+        // A turn may have ended: the phone chat queue delivers its next item.
+        nativeChatBridge?.nudgeQueue(sessionId);
         // Outbound notification sinks: the END of a turn, and only the real one.
         // `agent.subagent_stop` also reports `status:'complete'`, and a run with
         // a dozen subagents would fire a dozen pings for one turn — so this keys
@@ -3666,6 +3720,7 @@ function registerRpcHandlers(
         // replay (CRITICAL 3). Delivered only to devices watching this pane; a
         // no-op until one opens it, and harmless when the web server is off.
         webTerminalServer?.emitTranscriptNudge(sessionId);
+        nativeChatBridge?.nudgeQueue(sessionId);
       },
       // CompletionAlarm — a held detector candidate confirms its window LATER,
       // after the `session:agent` handler that would have broadcast it has
@@ -3972,11 +4027,23 @@ function registerRpcHandlers(
     const live = readDaemonAgentState(id);
     const bridge = sessionManager.getSession(id)?.bridge;
     if (['Claude Code', 'Codex CLI'].includes(live.agentName ?? '') && bridge && live.agentStatus !== 'awaiting_input') {
-      const last = projector.snapshot(id)?.events.at(-1);
-      return { ...live, agentStatus: chatAgentStatus(live.agentStatus, last, bridge.getLastTurnStartedAt()) };
+      const events = projector.snapshot(id)?.events;
+      // Backstop for the append push: an interrupt fires no Stop hook, so a
+      // recorded end also closes the running episode (the bridge ignores an end
+      // older than the episode).
+      const ended = transcriptTurnEnd(events, 0);
+      if (ended) bridge.noteTranscriptTurnEnd(ended.at);
+      const agentStatus = chatAgentStatus(live.agentStatus, events, bridge.getTurnEvidenceStartedAt());
+      return { ...live, agentStatus, turn: bridge.getTurn(agentStatus) };
     }
-    return live;
+    return bridge ? { ...live, turn: bridge.getTurn(live.agentStatus) } : live;
   };
+  // A submit into an open episode checks the transcript first: nobody may be
+  // subscribed to push its interrupt record, and none of it reaches a hook.
+  DaemonPTYBridge.transcriptTurnEndProbe = (id) =>
+    ['Claude Code', 'Codex CLI'].includes(readDaemonAgentState(id).agentName ?? '')
+      ? transcriptTurnEnd(projector.snapshot(id)?.events, 0)?.at
+      : undefined;
   // Versioned method name is a rolling-upgrade safety boundary. An older
   // daemon's v1 handler would ignore the additive incarnationId parameter and
   // write anyway; v2 makes mixed versions fail with Unknown method pre-write.
@@ -4044,39 +4111,13 @@ function registerRpcHandlers(
   });
 
   // Chat view's Stop for a terminal-bound agent: the same ESC its TUI takes,
-  // behind the same identity/approval/screen checks as a chat send.
+  // through the bridge's cancel path, so the desktop Stop and the phone cancel
+  // share one send lock, one once-per-turn latch and one cooldown.
   pipeServer.onRpc('daemon.transcript.interrupt', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'interrupt')) return { result: 'unavailable' };
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const agentSessionId = typeof params['agentSessionId'] === 'string' ? params['agentSessionId'] : '';
-    // The bridge's dispatch order: a native TUI binding has no ESC path here.
-    if (!id || !approvalRegistry || (await bridge.route(id)).kind === 'native') return { result: 'unavailable' };
-    // ESC between a send's pastes would strand them in the composer.
-    if (bridge.sendInFlight(id)) return { result: 'blocked' };
-    const result = await interruptChatTurn(agentSessionId, {
-      getTranscriptSessionId: () => projector.status(id).agentSessionId,
-      // The chat write fence: any pending record, whatever its kind.
-      hasOpenApproval: () => bridge.hasOpenApproval(id),
-      readScreen: async () => {
-        const managed = sessionManager.getSession(id);
-        if (!managed) return null;
-        const outcome = await generateTextSnapshot({ cols: managed.meta.cols ?? 80, rows: managed.meta.rows ?? 24, scrollback: 0, initial: managed.ringBuffer.readAll() });
-        return outcome.ok ? outcome.rows.map((r) => r.text) : null;
-      },
-      getAgentState: () => {
-        const current = readChatAgentState(id);
-        const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;
-        return slug && current.agentVerified ? { slug, status: current.agentStatus } : null;
-      },
-      write: (data) => {
-        const managed = sessionManager.getSession(id);
-        if (!managed) return false;
-        managed.ptyProcess.write(data);
-        managed.bridge.noteInput(data);
-        return true;
-      },
-    });
-    return { result };
+    return { result: await bridge.desktopInterrupt(id, agentSessionId) };
   });
 
   // daemon.readPromptEvents — read structured OSC 133 prompt/command events
@@ -4765,7 +4806,7 @@ function registerRpcHandlers(
     });
   });
 
-  pipeServer.onRpc('a2a.task.update', async (rawParams) => {
+  pipeServer.onRpc('a2a.task.update', async (rawParams, ctx) => {
     if (!a2aTaskService) return { ok: false, error: 'a2a.task.update: task log unavailable' };
     const p = rawParams as Record<string, unknown>;
     const taskId = typeof p.taskId === 'string' ? p.taskId : '';
@@ -4774,9 +4815,12 @@ function registerRpcHandlers(
     if (!taskId || !workspaceId || !status) {
       return { ok: false, error: 'a2a.task.update: taskId, workspaceId, and status are required' };
     }
-    // 'canceled'는 a2a.task.cancel 전용(a2aSlice 현행 계약과 동형).
-    if (status === 'canceled') return { ok: false, error: 'a2a.task.update: use a2a.task.cancel instead' };
+    // 'canceled' is allowed here as the RECEIVER's drop (#1598): same authz and
+    // state machine as any transition, with a reason (evidence.summary).
     if (!isTaskState(status)) return { ok: false, error: `a2a.task.update: invalid status "${status}"` };
+    // Only the app's main process reads the pane tree; take the list from it
+    // alone. Anything else leaves it unknown (no relaxation).
+    const livePaneIds = pipeServer.isFirstParty(ctx.clientId) ? normalizeLivePaneIds(p.livePaneIds) : undefined;
     return a2aTaskService.transition({
       taskId,
       to: status,
@@ -4790,6 +4834,9 @@ function registerRpcHandlers(
       // can only narrow the workspace-level authz, never widen it.
       ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerAddr: { paneId: p.callerPaneId } } : {}),
       ...(p.requirePaneIdentity === true ? { requirePaneIdentity: true } : {}),
+      // #1598: main's read of the caller workspace's panes (same read as
+      // callerPaneId); lets a verified pane adopt a task whose pane is gone.
+      ...(livePaneIds ? { livePaneIds } : {}),
       // evidence는 서비스가 normalizeCompletionEvidenceWire로 재검증(sanitize)한 뒤
       // 완료증거 게이트(PR-B)로 판정한다 — completed/failed는 구조화 증거 강제(거부는
       // completion_evidence_* 사유코드로 호출자에 포워딩).
@@ -5409,10 +5456,34 @@ function wireEvents(
     });
   });
 
+  // #1621 — plugin-less OpenCode turn ends, read from the terminal chat plugin.
+  const openCodeIdleSettler = new OpenCodeIdleSettler({
+    bridge: id => sessionManager.getSession(id)?.bridge,
+    agentSlug: id => {
+      const screenAgent = sessionManager.getSession(id)?.bridge.getLastAgent();
+      return canonicalIdentityFor(agentProcessTracker, id, screenAgent ? agentDisplayToSlug(screenAgent) : undefined)?.slug;
+    },
+    read: async id => {
+      const inspected = await terminalChat?.inspect(id);
+      if (!inspected) return null;
+      if ('read' in inspected) return inspected.read;
+      // No chat plugin on this pane backs off; an owner check that has not caught up does not.
+      return ['no-record', 'transport-refused', 'invalid-record'].includes(inspected.failure) ? null : undefined;
+    },
+    sendCount: id => terminalChat?.sendCount(id) ?? 0,
+    emit: (id, data) => {
+      pipeServer.broadcast({ type: 'agent.event', sessionId: id, data });
+      webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(id, data, Date.now()));
+      nativeChatBridge?.nudgeQueue(id);
+    },
+  });
+
   // A pane the user closes while a reclassification is pending must not get a
   // ghost died event 15s later.
   sessionManager.on('session:destroyed', (payload: { id: string }) => {
     void codexPaneRelays.retire(payload.id);
+    nativeChatBridge?.paneClosed(payload.id);
+    openCodeIdleSettler.drop(payload.id);
     recordHistory(store => store.interrupted(payload.id));
     const t = interruptedTimers.get(payload.id);
     if (t) {
@@ -5444,9 +5515,20 @@ function wireEvents(
       data: payload.preTurn ? { preTurn: true } : null,
     };
     pipeServer.broadcast(event);
+    // #1621 — an OpenCode turn with no lifecycle `agent.stop` ends here, on
+    // silence. The chat plugin's phase says whether the turn is really over.
+    if (payload.preTurn) return;
+    openCodeIdleSettler.onIdle(payload.sessionId).then(settled => {
+      if (settled) log('info', `[opencode] ${payload.sessionId} turn ${settled} without a lifecycle stop; settled from the chat plugin phase`);
+    }, (err: unknown) => log('warn', `[opencode] idle settle failed for ${payload.sessionId}: ${String(err)}`));
   });
 
   sessionManager.on('session:active', (payload: { sessionId: string; agentName?: string; likelyRepaint?: boolean }) => {
+    // #1621 — let the OpenCode chat plugin see the busy session and mint its turn.
+    if (!payload.likelyRepaint) {
+      openCodeIdleSettler.onActive(payload.sessionId)
+        .catch((err: unknown) => log('warn', `[opencode] running probe failed for ${payload.sessionId}: ${String(err)}`));
+    }
     // An output burst on an awaiting pane may be its dialog closing. A no-op
     // for every pane that is not awaiting.
     awaitingVerifier.trigger(payload.sessionId, 'output');
@@ -5933,7 +6015,8 @@ async function shutdown(
       // listener up that nothing owns. Never rejects, and the bind is local, so
       // this cannot outlast the hard shutdown timeout below.
       if (webRestore) await webRestore;
-      await webTerminalServer.stop();
+      // A shutdown: queued phone chat messages read `daemon-restart`, not revoked.
+      await webTerminalServer.stop({ shutdown: true });
     } catch {
       /* ignore — never block shutdown on the optional web server */
     }
@@ -6917,6 +7000,10 @@ async function main(): Promise<void> {
     }
     const managed = sessionManager.getSession(sessionId);
     if (!managed) return;
+    // A death edge, or a launch edge for a different agent than the last one
+    // seen here, ends the previous agent's running episode.
+    const previousSlug = managed.meta.lastDetectedAgent;
+    if (!state.alive || (state.slug && previousSlug && state.slug !== previousSlug)) managed.bridge.noteAgentEnded();
     const screenSlug = managed.bridge.getLastAgent();
     const canonical = canonicalIdentityFor(
       agentProcessTracker,

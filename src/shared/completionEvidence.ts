@@ -67,20 +67,24 @@ export type EvidenceVerdict =
   | { ok: false; code: string };
 
 /**
- * 완료증거 게이트. to는 completed|failed만 — canceled(중단이지 결과 주장이 아님)와
- * teardown force-fail(의도적 우회 진입점, E10)은 이 게이트를 호출하지 않는다.
+ * 완료증거 게이트. to는 completed|failed, plus canceled when the RECEIVER cancels
+ * through a2a.task.update (reason required, like failed). The sender/receiver
+ * a2a.task.cancel path and the teardown force-fail (E10) do not call this gate.
  * 형태 검증은 completed·failed 공통(X8: malformed 진단 아이템의 감사 로그 잔류 차단),
  * verified 요구는 어느 전이에도 없다(E9 — 등급으로만 산출).
  */
 export function validateCompletionEvidence(
-  to: 'completed' | 'failed',
+  to: 'completed' | 'failed' | 'canceled',
   ev: CompletionEvidence | undefined,
 ): EvidenceVerdict {
+  // A receiver's cancel (a2a.task.update status 'canceled') follows the failed
+  // rule: the summary is the reason, items are optional.
+  const reasonMissing = to === 'canceled' ? 'cancel_reason_missing' : 'failure_reason_missing';
   if (!ev) {
-    return { ok: false, code: to === 'completed' ? 'completion_evidence_missing' : 'failure_reason_missing' };
+    return { ok: false, code: to === 'completed' ? 'completion_evidence_missing' : reasonMissing };
   }
   if (typeof ev.summary !== 'string' || ev.summary.trim() === '') {
-    return { ok: false, code: to === 'completed' ? 'completion_evidence_empty_summary' : 'failure_reason_missing' };
+    return { ok: false, code: to === 'completed' ? 'completion_evidence_empty_summary' : reasonMissing };
   }
   // 권위 검증기는 타입 표기를 신뢰하지 않는다 — items가 비배열(예: {})이면 아래
   // for..of가 verdict 대신 TypeError를 던져 게이트가 예외로 붕괴한다. fail-closed.

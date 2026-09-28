@@ -232,6 +232,30 @@ export function launcherStem(firstToken: string): string {
 }
 
 /**
+ * True when `next` must NOT replace `prev`: both belong to the same transcript
+ * agent, `prev` already points at a real transcript, and `next` names a
+ * DIFFERENT session that has no transcript yet.
+ *
+ * - claude: a SessionStart fires before its transcript exists (F9) and carries
+ *   the provisional id; a reboot in between would `--resume <wrong id>`.
+ * - codex (#1624): during the first turn Codex also completes an internal
+ *   title-generation thread that never gets a rollout. Its notify inherits the
+ *   pane env, so it arrives pane-exact and would otherwise clobber the real
+ *   session and leave the pane `no-transcript-path`.
+ *
+ * A genuine session switch (`/new`, resume) still rebinds: transcript discovery
+ * re-applies the new id WITH its path the moment its transcript exists.
+ */
+export function isProvisionalCapture(prev: ResumeBinding | undefined, next: ResumeBinding): boolean {
+  return !!prev
+    && (next.agent === 'claude' || next.agent === 'codex')
+    && prev.agent === next.agent
+    && !!prev.transcriptPath
+    && !next.transcriptPath
+    && prev.sessionId !== next.sessionId;
+}
+
+/**
  * X6 ③: merge a freshly-captured binding over the previously-persisted one,
  * keeping `permissionMode` and `transcriptPath` STICKY. The bridge reads
  * permissionMode from the transcript's last 64KB; a turn that writes >64KB after

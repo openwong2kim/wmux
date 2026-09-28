@@ -173,3 +173,60 @@ describe('a2a.task.query view: page — 150 tasks', () => {
     expect(timeouts[1]).toBeLessThan(10_000);
   });
 });
+
+describe('a2a.task.query view: page — #1598 orphaned tasks', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const pinned = (index: number, paneId: string): Rec => {
+    const t = task(index, 1, 10, 'submitted');
+    return { ...t, metadata: { ...t.metadata, to: { ...t.metadata.to, paneId } } };
+  };
+  // Renderer holds the live-pane task; the daemon alone holds the one whose
+  // pane closed in an earlier session (a restart survivor).
+  const live = pinned(1, 'pane-live');
+  const gone = pinned(2, 'pane-gone');
+
+  function setupPanes(panes: unknown): RpcRouter {
+    sendToRendererMock.mockImplementation(async (_w: unknown, method: string, params: Rec) => (method === 'pane.list'
+      ? panes
+      : { workspaceId: WS, tasks: applyTaskQueryView([live], params) }));
+    const dc = { rpc: async (_m: string, params: Rec) => ({ ok: true, workspaceId: WS, tasks: applyTaskQueryView([live, gone], params) }) } as unknown as DaemonClient;
+    const router = new RpcRouter();
+    registerA2aRpc(router, () => ({}) as BrowserWindow, {} as ClaudeWorker, { getDaemonClient: () => dc });
+    return router;
+  }
+
+  it('flags a task whose receiver pane is gone, in the list and in the full task', async () => {
+    const router = setupPanes([{ id: 'pane-live', surfacePtyIds: ['pty-1'] }]);
+    const list = await query(router, { view: 'page' });
+    const byId = Object.fromEntries(list.tasks.map((t: Rec) => [t.id, t]));
+    expect(byId[gone.id].orphaned).toBe(true);
+    expect(byId[live.id].orphaned).toBeUndefined();
+    const one = await query(router, { view: 'page', taskId: gone.id });
+    expect(one.task.orphaned).toBe(true);
+  });
+
+  it('does not flag an ended task whose receiver pane is gone', async () => {
+    const ended: Rec = { ...gone, status: { ...gone.status, state: 'completed' } };
+    sendToRendererMock.mockImplementation(async (_w: unknown, method: string, params: Rec) => (method === 'pane.list'
+      ? [{ id: 'pane-live', surfacePtyIds: ['pty-1'] }]
+      : { workspaceId: WS, tasks: applyTaskQueryView([live], params) }));
+    const dc = { rpc: async (_m: string, params: Rec) => ({ ok: true, workspaceId: WS, tasks: applyTaskQueryView([live, ended], params) }) } as unknown as DaemonClient;
+    const router = new RpcRouter();
+    registerA2aRpc(router, () => ({}) as BrowserWindow, {} as ClaudeWorker, { getDaemonClient: () => dc });
+    const list = await query(router, { view: 'page' });
+    expect(list.tasks.find((t: Rec) => t.id === ended.id)?.orphaned).toBeUndefined();
+  });
+
+  it('flags nothing when the workspace is not in the pane tree yet (empty pane list)', async () => {
+    const router = setupPanes([]);
+    const list = await query(router, { view: 'page' });
+    expect(list.tasks.some((t: Rec) => t.orphaned)).toBe(false);
+  });
+
+  it('flags nothing when the pane tree is unreadable, and ignores a wire-supplied pane list', async () => {
+    const router = setupPanes(null);
+    const list = await query(router, { view: 'page', livePaneIds: ['pane-x'] });
+    expect(list.tasks.some((t: Rec) => t.orphaned)).toBe(false);
+  });
+});

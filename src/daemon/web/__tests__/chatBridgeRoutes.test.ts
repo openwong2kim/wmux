@@ -15,13 +15,18 @@ import {
   fileHistoryEpoch,
   type ChatBlocked,
   type ChatBridge,
+  type ChatCancelOutcome,
+  type ChatCancelRequest,
+  type ChatDequeueResult,
   type ChatLaunchOutcome,
   type ChatLaunchRequest,
   type ChatOwner,
+  type ChatQueueItemView,
   type ChatResolution,
   type ChatSendOutcome,
   type ChatSendReceiptView,
   type ChatSendRequest,
+  type ChatTurn,
 } from '../../chat/chatBridge';
 import type { ChatSkillCatalog } from '../../../shared/transcript/chatSkills';
 
@@ -121,12 +126,19 @@ function makeFakeChat() {
   const box = {
     resolution: fileResolution() as ChatResolution,
     blocked: undefined as ChatBlocked | undefined,
+    turn: undefined as ChatTurn | undefined,
     managedPage: page([{ id: 'm1', kind: 'assistant_text', text: 'managed' }], { headOffset: 3, tailOffset: 3, fileSize: 0, mtimeMs: 0 }) as TranscriptPage | null,
     send: async (req: ChatSendRequest): Promise<ChatSendOutcome> => {
       if (req.authorized && !(await req.authorized())) {
         return { clientMessageId: req.clientMessageId, replayed: false, error: 'authorization-expired', result: 'error', effect: 'none' };
       }
       return { clientMessageId: req.clientMessageId, replayed: false, result: 'sent', effect: 'submitted' };
+    },
+    cancel: async (req: ChatCancelRequest): Promise<ChatCancelOutcome> => {
+      if (req.authorized && !(await req.authorized())) {
+        return { clientCancelId: req.clientCancelId, replayed: false, effect: 'none', error: 'authorization-expired' };
+      }
+      return { clientCancelId: req.clientCancelId, replayed: false, effect: 'interrupt-requested', turnId: 't1:abc.3' };
     },
     receipts: new Map<string, ChatSendReceiptView>(),
     launch: async (req: ChatLaunchRequest): Promise<ChatLaunchOutcome> => {
@@ -138,8 +150,10 @@ function makeFakeChat() {
   const bridge = {
     resolve: vi.fn(async (_id: string) => box.resolution),
     managedSnapshot: vi.fn((_id: string) => box.managedPage),
+    turn: vi.fn((_id: string) => box.turn),
     blocked: vi.fn(async (_id: string, _r: ChatResolution) => box.blocked),
     send: vi.fn((req: ChatSendRequest) => box.send(req)),
+    cancel: vi.fn((req: ChatCancelRequest) => box.cancel(req)),
     receipt: vi.fn((owner: ChatOwner, id: string, cmid: string): ChatSendReceiptView =>
       box.receipts.get(`${owner}|${id}|${cmid}`) ?? { clientMessageId: cmid, state: 'unknown' }),
     launch: vi.fn((req: ChatLaunchRequest) => box.launch(req)),
@@ -194,6 +208,9 @@ describe('native chat routes (contract v0.3.1)', () => {
         if (rec.revoked) return { ok: false, reason: 'revoked' };
         return { ok: true, deviceId, allowInput: rec.allowInput };
       },
+      // The roster a queued message is re-authorized against at delivery.
+      list: () => [...roster].map(([deviceId, rec]) => ({ deviceId, name: deviceId, createdAt: 0, lastSeenAt: 0,
+        allowInput: rec.allowInput, ...(rec.revoked ? { revokedAt: 1 } : {}) })),
     };
     const sessionManager = Object.assign(new EventEmitter(), {
       getSession: (id: string) => panes.get(id),
@@ -344,6 +361,50 @@ describe('native chat routes (contract v0.3.1)', () => {
       const { body } = await turns(bearer(info.token as string));
       expect(body.chat.capabilities).toMatchObject({ send: true, cancel: false, queue: true });
       expect(body.chat.capabilities).not.toHaveProperty('images');
+    });
+
+    it('passes cancel through only to a chat-cancel caller; without the cap it stays false', async () => {
+      const info = await start();
+      const resolution = chatBox.resolution as Extract<ChatResolution, { source: 'file' }>;
+      const withCancel = (cancel: boolean): ChatResolution => ({ ...resolution, status: { ...resolution.status, terminal: { ...resolution.status.terminal!,
+        capabilities: { ...resolution.status.terminal!.capabilities, cancel } } } });
+      chatBox.resolution = withCancel(true);
+      for (const caps of [undefined, 'chat-queue', 'terminal-prompt-answer, decision-v2']) {
+        const { body } = await turns({ ...bearer(info.token as string), ...(caps ? { 'x-wmux-client-caps': caps } : {}) });
+        expect(body.chat.capabilities.cancel, String(caps)).toBe(false);
+      }
+      expect((await turns({ ...bearer(info.token as string), 'x-wmux-client-caps': 'chat-cancel' })).body.chat.capabilities.cancel).toBe(true);
+      // The cap never turns on what the binding does not have (a dead agent).
+      chatBox.resolution = withCancel(false);
+      expect((await turns({ ...bearer(info.token as string), 'x-wmux-client-caps': 'chat-cancel' })).body.chat.capabilities.cancel).toBe(false);
+    });
+
+    it('adds chat.turn only for a chat-cancel / chat-queue caller; everyone else gets the old object byte for byte', async () => {
+      const info = await start();
+      const before = await turns(bearer(info.token as string));
+      const turn = { id: 't1:abc.3', state: 'running', startedAt: 1_700_000_000_000 } as const;
+      chatBox.turn = turn;
+      const legacy = await turns(bearer(info.token as string));
+      expect(chat.turn).not.toHaveBeenCalled();
+      expect(JSON.stringify(legacy.body.chat)).toBe(JSON.stringify(before.body.chat));
+      const other = await turns({ ...bearer(info.token as string), 'x-wmux-client-caps': 'terminal-prompt-answer,decision-v2' });
+      expect(JSON.stringify(other.body.chat)).toBe(JSON.stringify(before.body.chat));
+      // Capabilities stay what they were: the binding here says cancel:false.
+      for (const cap of ['chat-cancel', 'chat-queue', 'Chat-Queue, terminal-prompt-answer']) {
+        const { body } = await turns({ ...bearer(info.token as string), 'x-wmux-client-caps': cap });
+        expect(body.chat.turn).toEqual(turn);
+        const { turn: _turn, ...rest } = body.chat;
+        void _turn;
+        expect(rest).toEqual(before.body.chat);
+      }
+      // OpenCode: the episode rides on the plugin read, never the daemon's file-binding turn.
+      chatBox.resolution = tuiResolution();
+      const tui = await turns({ ...bearer(info.token as string), 'x-wmux-client-caps': 'chat-cancel' });
+      expect(tui.body.chat).not.toHaveProperty('turn');
+      const pluginTurn = { id: 't1:oc.0123456789abcdef01234567', state: 'running', startedAt: 1_700_000_000_500 } as const;
+      chatBox.resolution = { ...tuiResolution(), turn: pluginTurn } as ChatResolution;
+      expect((await turns({ ...bearer(info.token as string), 'x-wmux-client-caps': 'chat-cancel' })).body.chat.turn).toEqual(pluginTurn);
+      expect((await turns(bearer(info.token as string))).body.chat).not.toHaveProperty('turn');
     });
 
     it('file forward read with a matching cursor is a delta with reset:false', async () => {
@@ -750,6 +811,158 @@ describe('native chat routes (contract v0.3.1)', () => {
 
   // ------------------------------------------------------------ send receipt
 
+  describe('POST /chat/cancel', () => {
+    const url = (id = 's1') => `${base()}/api/sessions/${id}/chat/cancel`;
+    const cancelBody = (over: Record<string, unknown> = {}) => ({
+      agentSessionId: 'sess-a', historyEpoch: 'h1:x', turnId: 't1:abc.3', clientCancelId: freshId(), ...over,
+    });
+
+    it('gate matrix: no transcript, read-only server, read-only device, missing or brain pane (pane-not-found), no bridge', async () => {
+      const off = await start({ allowTranscript: false });
+      let res = await postJson(url(), bearer(off.token as string), cancelBody());
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/^transcript-disabled:/);
+      await server.stop();
+      const ro = await start({ allowInput: false });
+      res = await postJson(url(), bearer(ro.token as string), cancelBody());
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toMatch(/^read-only:/);
+      await server.stop();
+      await start();
+      res = await postJson(url(), device('ro', false), cancelBody());
+      expect(res.status).toBe(403);
+      for (const id of ['nope', 'brain-1']) {
+        res = await postJson(url(id), device('dev-1'), cancelBody());
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'pane-not-found' });
+      }
+      chatWired = false;
+      res = await postJson(url(), device('dev-1'), cancelBody());
+      expect(res.status).toBe(503);
+      chatWired = true;
+      // No cancel receipt route: a GET is not a launch or send receipt read.
+      res = await fetch(`${url()}/${freshId()}`, { headers: device('dev-1') });
+      expect(res.status).not.toBe(200);
+      expect(chat.cancel).not.toHaveBeenCalled();
+      expect(chat.receipt).not.toHaveBeenCalled();
+    });
+
+    it('cancels through the bridge with the device owner and answers 202 interrupt-requested', async () => {
+      await start();
+      const body = cancelBody();
+      const res = await postJson(url(), { ...device('dev-1'), 'x-wmux-client-caps': 'chat-cancel' }, body);
+      expect(res.status).toBe(202);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(await res.json()).toEqual({ result: 'sent', replayed: false, turnId: 't1:abc.3', clientCancelId: body.clientCancelId, effect: 'interrupt-requested' });
+      const req = chat.cancel.mock.calls[0][0];
+      expect(req).toMatchObject({ owner: 'device:dev-1', id: 's1', agentSessionId: 'sess-a', historyEpoch: 'h1:x', turnId: 't1:abc.3', clientCancelId: body.clientCancelId });
+      expect(typeof req.authorized).toBe('function');
+      // The cap is accepted, not required.
+      expect((await postJson(url(), device('dev-1'), cancelBody({ turnId: undefined, historyEpoch: undefined }))).status).toBe(202);
+    });
+
+    it('refuses unknown keys and non-string fields with 400 invalid-chat-request', async () => {
+      await start();
+      const h = device('dev-1');
+      const body = cancelBody({ force: true });
+      let res = await postJson(url(), h, body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'invalid-chat-request', effect: 'none', clientCancelId: body.clientCancelId });
+      for (const bad of [cancelBody({ agentSessionId: 1 }), cancelBody({ turnId: 3 }), cancelBody({ turnId: '' }), cancelBody({ historyEpoch: '' }),
+        cancelBody({ clientCancelId: undefined }), '[1]']) {
+        res = await postJson(url(), h, bad);
+        expect(res.status).toBe(400);
+      }
+      expect(chat.cancel).not.toHaveBeenCalled();
+    });
+
+    it('re-authorizes after the body: revoked 401, input withdrawn 403, pane restarted 409', async () => {
+      await start();
+      device('dev-1');
+      let r = await midBody(url(), 'dev-1', JSON.stringify(cancelBody()), () => { roster.get('dev-1')!.revoked = true; });
+      expect(r.status).toBe(401);
+      roster.get('dev-1')!.revoked = false;
+      r = await midBody(url(), 'dev-1', JSON.stringify(cancelBody()), () => { roster.get('dev-1')!.allowInput = false; });
+      expect(r.status).toBe(403);
+      roster.get('dev-1')!.allowInput = true;
+      r = await midBody(url(), 'dev-1', JSON.stringify(cancelBody()), () => { panes.get('s1')!.meta.incarnationId = 's1-inc-2'; });
+      expect(r.status).toBe(409);
+      expect(JSON.parse(r.body)).toEqual({ error: 'pane-incarnation-changed' });
+      expect(chat.cancel).not.toHaveBeenCalled();
+    });
+
+    it('the write-time predicate fails for a device revoked after the body', async () => {
+      await start();
+      const h = device('dev-1');
+      chatBox.cancel = async (req) => {
+        roster.get('dev-1')!.revoked = true;
+        expect(await req.authorized!()).toBe(false);
+        return { clientCancelId: req.clientCancelId, replayed: false, effect: 'none', error: 'authorization-expired' };
+      };
+      const res = await postJson(url(), h, cancelBody());
+      expect(res.status).toBe(401);
+      expect(await res.json()).toMatchObject({ error: 'authorization-expired', effect: 'none' });
+    });
+
+    it('maps every outcome row to its status and body', async () => {
+      await start();
+      const h = device('dev-1');
+      const rows: Array<[Partial<ChatCancelOutcome>, number, Record<string, unknown>]> = [
+        [{ error: 'turn-not-running', turn: { id: 't1:abc.3', state: 'idle', startedAt: 5 } }, 409, { error: 'turn-not-running', turn: { id: 't1:abc.3', state: 'idle' }, effect: 'none' }],
+        [{ error: 'prompt-active', by: 'terminal', approvalId: 'apr_1' }, 409, { error: 'prompt-active', by: 'terminal', approvalId: 'apr_1' }],
+        [{ error: 'prompt-active', by: 'terminal' }, 409, { error: 'prompt-active', by: 'terminal' }],
+        [{ error: 'session-changed', agentSessionId: 'sess-b', historyEpoch: 'h1:y' }, 409, { error: 'session-changed', agentSessionId: 'sess-b', historyEpoch: 'h1:y' }],
+        [{ error: 'chat-busy' }, 409, { error: 'chat-busy' }],
+        [{ error: 'cancel-cooldown', retryAfterMs: 1200 }, 409, { error: 'cancel-cooldown', retryAfterMs: 1200 }],
+        [{ error: 'turn-already-interrupted', turnId: 't1:abc.3' }, 409, { error: 'turn-already-interrupted', turnId: 't1:abc.3' }],
+        [{ error: 'cancel-id-conflict' }, 409, { error: 'cancel-id-conflict' }],
+        [{ error: 'cancel-unsupported' }, 422, { error: 'cancel-unsupported' }],
+        [{ error: 'invalid-chat-request', detail: 'clientCancelId' }, 400, { error: 'invalid-chat-request', detail: 'clientCancelId' }],
+        [{ error: 'message-id-expired' }, 400, { error: 'message-id-expired' }],
+        [{ error: 'chat-persist-failed' }, 500, { error: 'chat-persist-failed' }],
+        [{ error: 'message-history-full' }, 507, { error: 'message-history-full' }],
+        [{ error: 'cancel-failed', effect: 'uncertain' }, 500, { error: 'cancel-failed', effect: 'uncertain' }],
+      ];
+      for (const [outcome, status, body] of rows) {
+        chatBox.cancel = async (req) => ({ clientCancelId: req.clientCancelId, replayed: false, effect: 'none', ...outcome });
+        const sent = cancelBody();
+        const res = await postJson(url(), h, sent);
+        expect(res.status, String(outcome.error)).toBe(status);
+        const json = await res.json();
+        expect(json, String(outcome.error)).toMatchObject({ ...body, clientCancelId: sent.clientCancelId });
+        expect(json).toHaveProperty('effect');
+        if (outcome.error === 'prompt-active' && !outcome.approvalId) expect(json).not.toHaveProperty('approvalId');
+      }
+    });
+
+    it('a replayed cancel is 200 replayed:true with the first answer', async () => {
+      await start();
+      chatBox.cancel = async (req) => ({ clientCancelId: req.clientCancelId, replayed: true, effect: 'interrupt-requested', turnId: 't1:abc.3' });
+      const body = cancelBody();
+      const res = await postJson(url(), device('dev-1'), body);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ result: 'sent', replayed: true, turnId: 't1:abc.3', clientCancelId: body.clientCancelId, effect: 'interrupt-requested' });
+    });
+
+    it('a replayed uncertain cancel keeps its 500 and only gains replayed:true', async () => {
+      await start();
+      chatBox.cancel = async (req) => ({ clientCancelId: req.clientCancelId, replayed: true, effect: 'uncertain', error: 'cancel-failed', turnId: 't1:abc.3' });
+      const body = cancelBody();
+      const res = await postJson(url(), device('dev-1'), body);
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'cancel-failed', turnId: 't1:abc.3', effect: 'uncertain', clientCancelId: body.clientCancelId, replayed: true });
+    });
+
+    it('a bridge that throws is a 500 without effect', async () => {
+      await start();
+      chatBox.cancel = async () => { throw new Error('boom'); };
+      const body = cancelBody();
+      const res = await postJson(url(), device('dev-1'), body);
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'cancel-failed', clientCancelId: body.clientCancelId });
+    });
+  });
+
   describe('brain pane', () => {
     it('the operator token gets 404 on every chat write, receipt and skills route', async () => {
       const info = await start();
@@ -1047,8 +1260,9 @@ describe('native chat routes (contract v0.3.1)', () => {
         chatBinding: true, chatSend: true, chatLaunch: true, chatSkills: true, chatVersion: 1,
         chatLaunchModes: { claude: ['default'], codex: ['default'] },
       });
+      expect((await config(bearer(info.token as string))).chatCancel).toBe(true);
       const ro = await config(device('ro', false));
-      expect(ro).toMatchObject({ chatBinding: true, chatSend: false, chatLaunch: false, chatSkills: true, chatVersion: 1 });
+      expect(ro).toMatchObject({ chatBinding: true, chatSend: false, chatLaunch: false, chatSkills: true, chatVersion: 1, chatCancel: false });
       expect(ro).not.toHaveProperty('chatLaunchModes');
       await server.stop();
       const open = await start({ allowDangerousLaunch: true });
@@ -1187,6 +1401,185 @@ describe('native chat routes (contract v0.3.1)', () => {
       chatBox.resolution = managedResolution();
       await turns(bearer(info.token as string));
       expect(chat.watch).not.toHaveBeenCalled();
+    });
+  });
+
+  // ------------------------------------------------------------ daemon queue
+
+  describe('daemon queue (chat-queue)', () => {
+    const QUEUE_CAP = { 'x-wmux-client-caps': 'chat-queue' };
+    const item = (over: Partial<ChatQueueItemView> = {}): ChatQueueItemView =>
+      ({ clientMessageId: freshId(), state: 'queued', queuedAt: 1, at: 2, preview: 'first eighty', ...over });
+    const wireQueue = (over: { dequeue?: (owner: ChatOwner, id: string, cmid: string) => ChatDequeueResult } = {}) => {
+      const queue = vi.fn((_owner: ChatOwner, _id: string): ChatQueueItemView[] => []);
+      const fns = {
+        queueEnabled: vi.fn(() => true),
+        queue,
+        dequeue: vi.fn(over.dequeue ?? ((): ChatDequeueResult => ({ ok: true }))),
+        dropQueue: vi.fn((_match: (owner: ChatOwner) => boolean, _reason: 'authorization-revoked') => undefined),
+        delivered: vi.fn((_owner: ChatOwner, _id: string) => [] as Array<{ clientMessageId: string; text: string; at: number }>),
+      };
+      Object.assign(chat, fns);
+      return fns;
+    };
+    const del = (id: string, cmid: string, h: Record<string, string>) =>
+      fetch(`${base()}/api/sessions/${id}/chat/queue/${cmid}`, { method: 'DELETE', headers: h });
+
+    it('/turns: the queue view, queue and send capabilities only for a chat-queue caller; the golden is unchanged without it', async () => {
+      const info = await start();
+      const h = bearer(info.token as string);
+      const before = await turns(h);
+      const fns = wireQueue();
+      const mine = item();
+      fns.queue.mockImplementation((owner) => (owner === 'operator' ? [mine] : []));
+      const legacy = await turns(h);
+      expect(JSON.stringify(legacy.body.chat)).toBe(JSON.stringify(before.body.chat));
+      expect(JSON.stringify(legacy.body.events)).toBe(JSON.stringify(before.body.events));
+      expect(fns.queue).not.toHaveBeenCalled();
+
+      const capable = await turns({ ...h, ...QUEUE_CAP });
+      expect(capable.body.chat.queue).toEqual([mine]);
+      expect(capable.body.chat.capabilities).toMatchObject({ send: true, queue: true });
+      expect((await turns({ ...device('dev-2'), ...QUEUE_CAP })).body.chat.queue).toEqual([]);
+
+      // OpenCode while running: the daemon holds the send, so `send` is open.
+      chatBox.resolution = tuiResolution();
+      const tui = await turns({ ...h, ...QUEUE_CAP });
+      expect(tui.body.chat.capabilities).toMatchObject({ send: true, queue: true });
+      expect((await turns(h)).body.chat.capabilities).toMatchObject({ send: false });
+      expect((await turns(h)).body.chat.capabilities).not.toHaveProperty('queue');
+    });
+
+    it('/turns: the caller\'s delivered user rows carry their clientMessageId', async () => {
+      const info = await start();
+      const h = bearer(info.token as string);
+      const fns = wireQueue();
+      const cmid = freshId();
+      fns.delivered.mockImplementation((owner) => (owner === 'operator' ? [{ clientMessageId: cmid, text: 'snap', at: 0 }] : []));
+      expect((await turns({ ...h, ...QUEUE_CAP })).body.events[0]).toMatchObject({ kind: 'user_text', text: 'snap', clientMessageId: cmid });
+      expect((await turns(h)).body.events[0]).not.toHaveProperty('clientMessageId');
+      expect((await turns({ ...device('dev-3'), ...QUEUE_CAP })).body.events[0]).not.toHaveProperty('clientMessageId');
+    });
+
+    it('send: only a request carrying the cap opts into the queue, and a queued answer is 202 effect queued', async () => {
+      await start();
+      wireQueue();
+      const seen: ChatSendRequest[] = [];
+      chatBox.send = async (req) => {
+        seen.push(req);
+        return req.queue ? { clientMessageId: req.clientMessageId, replayed: false, queueState: 'queued' }
+          : { clientMessageId: req.clientMessageId, replayed: false, result: 'sent', effect: 'submitted' };
+      };
+      const url = `${base()}/api/sessions/s1/chat/messages`;
+      const body = sendBody();
+      const res = await postJson(url, { ...device('dev-1'), ...QUEUE_CAP }, body);
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ state: 'queued', replayed: false, clientMessageId: body.clientMessageId, effect: 'queued' });
+      expect(seen[0].queue).toBeDefined();
+      expect((await postJson(url, device('dev-1'), sendBody())).status).toBe(202);
+      expect(seen[1].queue).toBeUndefined();
+
+      // The deferred authorizer checks the live roster, not the finished request.
+      const authorized = seen[0].queue!.authorized;
+      expect(await authorized('first-write')).toBe(true);
+      roster.get('dev-1')!.allowInput = false;
+      expect(await authorized('first-write')).toBe(false);
+      roster.get('dev-1')!.allowInput = true;
+      roster.get('dev-1')!.revoked = true;
+      expect(await authorized('submit')).toBe(false);
+      roster.get('dev-1')!.revoked = false;
+      panes.get('s1')!.meta.incarnationId = 's1-inc-2';
+      expect(await authorized('first-write')).toBe(false);
+      panes.get('s1')!.meta.incarnationId = 's1-inc-1';
+      await server.stop();
+      expect(await authorized('first-write')).toBe(false);
+    });
+
+    it('DELETE: every status code, owner-bound, input required', async () => {
+      await start();
+      const answers: Record<string, ChatDequeueResult> = {};
+      const fns = wireQueue({ dequeue: (_owner, _id, cmid) => answers[cmid] ?? { ok: false, error: 'queue-item-not-found' } });
+      const [queued, delivered, delivering, failed] = [freshId(), freshId(), freshId(), freshId()];
+      answers[queued] = { ok: true };
+      answers[delivered] = { ok: false, error: 'already-delivered', state: 'delivered' };
+      answers[delivering] = { ok: false, error: 'delivery-in-progress', state: 'delivering' };
+      answers[failed] = { ok: false, error: 'queue-item-final', state: 'failed', reason: 'draft-present' };
+      const h = device('dev-1');
+      const ok = await del('s1', queued, h);
+      expect(ok.status).toBe(200);
+      expect(ok.headers.get('cache-control')).toBe('no-store');
+      expect(await ok.json()).toEqual({ state: 'canceled', clientMessageId: queued });
+      expect((await del('s1', queued, h)).status).toBe(200);
+      expect(fns.dequeue).toHaveBeenCalledWith('device:dev-1', 's1', queued);
+      const d1 = await del('s1', delivered, h);
+      expect([d1.status, await d1.json()]).toEqual([409, { error: 'already-delivered', state: 'delivered', clientMessageId: delivered }]);
+      const d2 = await del('s1', delivering, h);
+      expect([d2.status, (await d2.json()).error]).toEqual([409, 'delivery-in-progress']);
+      const d3 = await del('s1', failed, h);
+      expect([d3.status, await d3.json()]).toEqual([409, { error: 'queue-item-final', state: 'failed', reason: 'draft-present', clientMessageId: failed }]);
+      const missing = await del('s1', freshId(), h);
+      expect([missing.status, (await missing.json()).error]).toEqual([404, 'queue-item-not-found']);
+      const pane = await del('nope', queued, h);
+      expect([pane.status, (await pane.json()).error]).toEqual([404, 'pane-not-found']);
+      expect((await del('brain-1', queued, h)).status).toBe(404);
+      expect((await del('s1', queued, device('ro', false))).status).toBe(403);
+      // Another owner asks with its own namespace.
+      await del('s1', queued, device('dev-2'));
+      expect(fns.dequeue).toHaveBeenLastCalledWith('device:dev-2', 's1', queued);
+      // GET on the queue path is not a route.
+      expect((await fetch(`${base()}/api/sessions/s1/chat/queue/${queued}`, { headers: h })).status).toBe(404);
+    });
+
+    it('SSE chat.queue goes live to the owner among the pane watchers only', async () => {
+      await start();
+      wireQueue();
+      const mine = device('dev-1');
+      const events = await openEvents(mine);
+      const otherWatcher = await openEvents(device('dev-2'));
+      const notWatching = await openEvents(device('dev-3'));
+      try {
+        await turns(mine);
+        await turns(device('dev-2'));
+        const cmid = freshId();
+        server.emitChatQueue({ sessionId: 's1', owner: 'device:dev-1', clientMessageId: cmid, state: 'canceled', reason: 'user', at: 5 });
+        await until(() => events.box.wire.includes('event: chat.queue'));
+        const frame = events.box.wire.slice(events.box.wire.indexOf('event: chat.queue'));
+        expect(JSON.parse(frame.split('\n')[1].slice('data: '.length))).toEqual({ sessionId: 's1', clientMessageId: cmid, state: 'canceled', reason: 'user', at: 5 });
+        expect(events.box.wire).not.toMatch(/id: [^\n]*\nevent: chat\.queue/);
+        await new Promise((r) => setTimeout(r, 50));
+        expect(otherWatcher.box.wire).not.toContain('chat.queue');
+        expect(notWatching.box.wire).not.toContain('chat.queue');
+        const backlog = await (await fetch(`${base()}/api/events`, { headers: mine })).json();
+        expect(JSON.stringify(backlog)).not.toContain('chat.queue');
+      } finally { events.close(); otherWatcher.close(); notWatching.close(); }
+    });
+
+    it('unpairing or withdrawing input drops that device\'s queue; stopping the server drops every phone queue', async () => {
+      await start();
+      const fns = wireQueue();
+      server.disconnectDevice('dev-7');
+      const [byDevice, revoked] = fns.dropQueue.mock.calls[0];
+      expect([byDevice('device:dev-7'), byDevice('device:dev-8'), byDevice('operator')]).toEqual([true, false, false]);
+      expect(revoked).toBe('authorization-revoked');
+      await server.stop();
+      const [all, stopped] = fns.dropQueue.mock.calls[1];
+      expect([all('device:dev-8'), all('operator'), all('desktop')]).toEqual([true, true, false]);
+      expect(stopped).toBe('authorization-revoked');
+      // A daemon shutdown is a restart, not a revocation.
+      await start();
+      await server.stop({ shutdown: true });
+      expect(fns.dropQueue.mock.calls[2][1]).toBe('daemon-restart');
+    });
+
+    it('/api/config advertises chatQueue per caller, and only with a loaded queue', async () => {
+      const info = await start();
+      const config = async (h: Record<string, string>) => (await fetch(`${base()}/api/config`, { headers: h })).json() as Promise<Record<string, unknown>>;
+      expect((await config(bearer(info.token as string))).chatQueue).toBe(false);
+      const fns = wireQueue();
+      expect((await config(bearer(info.token as string))).chatQueue).toBe(true);
+      expect((await config(device('ro', false))).chatQueue).toBe(false);
+      fns.queueEnabled.mockReturnValue(false);
+      expect((await config(bearer(info.token as string))).chatQueue).toBe(false);
     });
   });
 });

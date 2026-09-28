@@ -3,10 +3,15 @@ import {
   OPENCODE_MAX_SEND_BYTES,
   fileHistoryEpoch,
   type ChatBlocked,
+  type ChatCancelOutcome,
+  type ChatCancelTag,
+  type ChatDequeueResult,
+  type ChatQueueItemView,
   type ChatLaunchOutcome,
   type ChatResolution,
   type ChatSendOutcome,
   type ChatSendTag,
+  type ChatTurn,
 } from '../chat/chatBridge';
 import {
   validTerminalLaunchMode,
@@ -70,7 +75,11 @@ function skillsAgent(agent: string | undefined): boolean {
  * reads, so the object can never describe a conversation the pane no longer
  * has. `rawEpoch` is never read — it is loopback-token material (N15).
  */
-export function buildChatObject(resolution: ChatResolution, blocked: ChatBlocked | undefined): Record<string, unknown> {
+export function buildChatObject(
+  resolution: ChatResolution,
+  blocked: ChatBlocked | undefined,
+  opts: { turn?: ChatTurn; chatCancel?: boolean; queue?: ChatQueueItemView[] } = {},
+): Record<string, unknown> {
   const { status } = resolution;
   const liveness = {
     ...(status.agentStatus !== undefined ? { agentStatus: status.agentStatus } : {}),
@@ -124,6 +133,11 @@ export function buildChatObject(resolution: ChatResolution, blocked: ChatBlocked
 
   const terminal = status.terminal;
   const agent = terminal?.agent;
+  // `queue` is passed only for a `chat-queue` caller on a daemon whose queue
+  // loaded: all three agents then queue in the daemon, so `send` stays open
+  // while a turn runs. Without it the capabilities are today's, byte for byte.
+  const queueing = opts.queue !== undefined && status.agentAlive === true && !!agent && QUEUE_AGENTS.includes(agent);
+  const capabilities = terminal ? phoneTerminalCapabilities(terminal.capabilities, opts.chatCancel === true) : closed;
   return {
     binding: 'terminal',
     ...(agent ? { agent } : {}),
@@ -131,8 +145,12 @@ export function buildChatObject(resolution: ChatResolution, blocked: ChatBlocked
     historyTruncated: terminal?.historyTruncated === true,
     ...(resolution.source === 'tui' ? { maxSendBytes: OPENCODE_MAX_SEND_BYTES } : {}),
     ...liveness,
+    // Additive: the route passes it only to a caller that declared
+    // `chat-cancel` or `chat-queue`, so an older client's object is unchanged.
+    ...(opts.turn ? { turn: { ...opts.turn } } : {}),
     capabilities: {
-      ...(terminal ? phoneTerminalCapabilities(terminal.capabilities) : closed),
+      ...capabilities,
+      ...(opts.queue !== undefined ? { queue: queueing, send: capabilities.send || queueing } : {}),
       // Rollout and JSONL rows land per record, not per token. OpenCode part
       // streaming is unverified, so its key is omitted (= unknown).
       ...(resolution.source === 'file' ? { streaming: false } : {}),
@@ -140,19 +158,24 @@ export function buildChatObject(resolution: ChatResolution, blocked: ChatBlocked
       skills: skillsAgent(agent),
     },
     ...blockedField,
+    ...(opts.queue !== undefined ? { queue: opts.queue.map((item) => ({ ...item })) } : {}),
   };
 }
 
+/** The agents whose sends the daemon queue can hold. */
+const QUEUE_AGENTS: readonly string[] = ['claude', 'codex', 'opencode'];
+
 /**
  * The desktop's terminal capabilities, minus what the phone has no route for:
- * Stop (`cancel`, desktop-only ESC) and image attachments (`images`). `queue`
+ * image attachments (`images`), and Stop (`cancel`) unless the caller declared
+ * `chat-cancel` — an older client keeps `cancel:false` byte for byte. `queue`
  * passes through; it pairs with a send's `queued:true`.
  */
 type TerminalCapabilities = TerminalChatBinding['capabilities'];
-function phoneTerminalCapabilities(capabilities: TerminalCapabilities): Omit<TerminalCapabilities, 'images'> {
+function phoneTerminalCapabilities(capabilities: TerminalCapabilities, chatCancel: boolean): Omit<TerminalCapabilities, 'images'> {
   const { images, ...rest } = capabilities;
   void images;
-  return { ...rest, cancel: false };
+  return { ...rest, cancel: chatCancel && capabilities.cancel };
 }
 
 // --- send -----------------------------------------------------------------
@@ -190,8 +213,19 @@ function sendStatus(tag: ChatSendTag): number {
     case 'invalid-chat-request':
     case 'message-id-expired': return 400;
     case 'chat-persist-failed': return 500;
+    case 'queue-full': return 429;
     default: return 409;
   }
+}
+
+/** `DELETE /api/sessions/:id/chat/queue/:clientMessageId`. */
+export function dequeueResponse(result: ChatDequeueResult, clientMessageId: string): WireResponse {
+  if (result.ok) return { status: 200, body: { state: 'canceled', clientMessageId } };
+  if (result.error === 'queue-item-not-found') return { status: 404, body: { error: result.error, clientMessageId } };
+  return {
+    status: 409,
+    body: { error: result.error, ...(result.state ? { state: result.state } : {}), ...(result.reason ? { reason: result.reason } : {}), clientMessageId },
+  };
 }
 
 /**
@@ -199,6 +233,17 @@ function sendStatus(tag: ChatSendTag): number {
  * the desktop's verbatim enum so `unconfirmed` keeps the desktop meaning.
  */
 export function sendResponse(outcome: ChatSendOutcome, clientMessageId: string): WireResponse {
+  if (outcome.queueState) {
+    // The daemon queue holds (or held) the message: `effect` says what that
+    // did to the pane so far. A replay answers 200 with the current state.
+    const state = outcome.queueState;
+    const effect = state === 'queued' || state === 'delivering' ? 'queued'
+      : state === 'delivered' ? 'submitted' : state === 'uncertain' ? 'uncertain' : 'none';
+    return {
+      status: outcome.replayed ? 200 : 202,
+      body: { state, ...(outcome.queueReason ? { reason: outcome.queueReason } : {}), replayed: outcome.replayed, clientMessageId, effect },
+    };
+  }
   if (outcome.pending) {
     // The one non-final answer: no effect, the client polls the receipt.
     return { status: 202, body: { state: 'pending', replayed: true, clientMessageId } };
@@ -315,4 +360,91 @@ export function launchResponse(outcome: ChatLaunchOutcome, clientLaunchId: strin
       clientLaunchId,
     },
   };
+}
+
+// --- cancel ---------------------------------------------------------------
+
+export interface CancelBody {
+  agentSessionId: string;
+  clientCancelId: string;
+  turnId?: string;
+  historyEpoch?: string;
+}
+
+const CANCEL_REQUIRED = ['agentSessionId', 'clientCancelId'] as const;
+const CANCEL_OPTIONAL = ['turnId', 'historyEpoch'] as const;
+
+/** Two required strings, two optional ones; any other key is refused, as on send. */
+export function parseCancelBody(body: unknown): { ok: true; value: CancelBody } | { ok: false; detail: string; clientCancelId?: string } {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, detail: 'body must be a JSON object' };
+  const o = body as Record<string, unknown>;
+  const ccid = typeof o.clientCancelId === 'string' ? o.clientCancelId : undefined;
+  const known: readonly string[] = [...CANCEL_REQUIRED, ...CANCEL_OPTIONAL];
+  const extra = Object.keys(o).filter((k) => !known.includes(k));
+  if (extra.length > 0) return { ok: false, detail: `unknown field: ${extra[0].slice(0, 64)}`, clientCancelId: ccid };
+  for (const key of CANCEL_REQUIRED) {
+    if (typeof o[key] !== 'string') return { ok: false, detail: `${key} must be a string`, clientCancelId: ccid };
+  }
+  for (const key of CANCEL_OPTIONAL) {
+    // Empty is refused, not read as absent: the receipt fingerprint could not tell them apart.
+    if (o[key] !== undefined && (typeof o[key] !== 'string' || !(o[key] as string) || (o[key] as string).length > 256)) {
+      return { ok: false, detail: `${key} must be a non-empty string when present`, clientCancelId: ccid };
+    }
+  }
+  return {
+    ok: true,
+    value: {
+      agentSessionId: o.agentSessionId as string,
+      clientCancelId: o.clientCancelId as string,
+      ...(typeof o.turnId === 'string' ? { turnId: o.turnId } : {}),
+      ...(typeof o.historyEpoch === 'string' ? { historyEpoch: o.historyEpoch } : {}),
+    },
+  };
+}
+
+function cancelStatus(tag: ChatCancelTag): number {
+  switch (tag) {
+    case 'authorization-expired': return 401;
+    case 'invalid-chat-request':
+    case 'message-id-expired': return 400;
+    case 'cancel-unsupported': return 422;
+    case 'message-history-full': return 507;
+    case 'chat-persist-failed':
+    case 'cancel-failed': return 500;
+    default: return 409;
+  }
+}
+
+/**
+ * Cancel response table. 202 means one ESC was written for `turnId`; whether
+ * the agent stopped shows later as `chat.turn.state` (an interrupt fires no
+ * Stop hook, so `running` can linger briefly).
+ */
+export function cancelResponse(outcome: ChatCancelOutcome): WireResponse {
+  const { clientCancelId, effect } = outcome;
+  let response: WireResponse;
+  if (!outcome.error) {
+    response = { status: 202, body: { result: 'sent', replayed: false, ...(outcome.turnId ? { turnId: outcome.turnId } : {}), clientCancelId, effect } };
+  } else {
+    response = {
+      status: cancelStatus(outcome.error),
+      body: {
+        error: outcome.error,
+        ...(outcome.detail ? { detail: outcome.detail } : {}),
+        ...(outcome.turn ? { turn: { id: outcome.turn.id, state: outcome.turn.state } } : {}),
+        ...(outcome.turnId ? { turnId: outcome.turnId } : {}),
+        ...(outcome.approvalId ? { approvalId: outcome.approvalId } : {}),
+        ...(outcome.by ? { by: outcome.by } : {}),
+        ...(typeof outcome.retryAfterMs === 'number' ? { retryAfterMs: outcome.retryAfterMs } : {}),
+        ...(outcome.agentSessionId ? { agentSessionId: outcome.agentSessionId } : {}),
+        ...(outcome.historyEpoch ? { historyEpoch: outcome.historyEpoch } : {}),
+        effect,
+        clientCancelId,
+      },
+    };
+  }
+  // A replayed success is 200; a replayed failure keeps its status (an
+  // uncertain ESC stays 500) and only gains `replayed:true`.
+  if (!outcome.replayed) return response;
+  return { status: outcome.error ? response.status : 200, body: { ...response.body, replayed: true } };
 }

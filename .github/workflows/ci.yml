@@ -7,9 +7,18 @@ on:
       - 'security-*'
   pull_request:
 
+# A newer push to the same PR supersedes the run in flight. A push to main or
+# security-* gets a group of its own (its SHA): one shared group would still
+# drop a queued run whenever a third push arrived, leaving that commit unchecked.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   validate:
     runs-on: windows-latest
+    # validate takes ~14 min; a hung step must not hold a runner for the 6 h default.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

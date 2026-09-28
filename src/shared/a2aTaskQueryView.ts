@@ -16,6 +16,9 @@
  * may touch Node's Buffer.
  */
 
+import { isReceiverPaneGone, normalizeLivePaneIds } from './a2aOrphanedTask';
+import { TERMINAL_STATES } from './types';
+
 /** Byte budget for one result: the MCP tool result cap (DEFAULT_RESULT_CAP_BYTES). */
 export const TASK_QUERY_CAP_BYTES = 64 * 1024;
 
@@ -222,15 +225,37 @@ export function pagedTaskId(params: Rec): string | undefined {
 }
 
 /**
+ * `row` with `orphaned: true` when `task` is pinned to a receiver pane of the
+ * querying workspace that no longer exists (#1598). Main supplies the live
+ * pane ids of that workspace as `params.livePaneIds`; without them (pane tree
+ * unreadable, or a call main did not annotate) nothing is flagged. An ended
+ * task is never flagged: nobody has to adopt it, so the mark would be noise.
+ */
+export function flagOrphanedTask(row: Rec, task: Rec, params: Rec): Rec {
+  const state = isRec(task.status) ? task.status.state : undefined;
+  if ((TERMINAL_STATES as readonly unknown[]).includes(state)) return row;
+  const meta = isRec(task.metadata) ? task.metadata : undefined;
+  const to = meta && isRec(meta.to) ? meta.to : undefined;
+  const workspaceId = str(params.workspaceId);
+  return workspaceId && isReceiverPaneGone(to, workspaceId, normalizeLivePaneIds(params.livePaneIds))
+    ? { ...row, orphaned: true }
+    : row;
+}
+
+/**
  * What one task source returns for a query: every task in full without
  * `view` (the legacy contract), and for `view: 'page'` either the named task in
- * full or a summary of each task.
+ * full or a summary of each task, flagged when orphaned.
  */
 export function applyTaskQueryView<T extends object>(tasks: readonly T[], params: Rec): unknown[] {
   if (!isPagedTaskQuery(params)) return [...tasks];
   const taskId = pagedTaskId(params);
-  if (taskId) return tasks.filter((task) => (task as Rec).id === taskId);
-  return tasks.map((task) => summarizeTask(task as Rec));
+  if (taskId) {
+    return tasks
+      .filter((task) => (task as Rec).id === taskId)
+      .map((task) => flagOrphanedTask(task as Rec, task as Rec, params));
+  }
+  return tasks.map((task) => flagOrphanedTask(summarizeTask(task as Rec), task as Rec, params));
 }
 
 /**

@@ -7,11 +7,12 @@ import type { PaneAddress } from '../../../hooks/a2aAddressing';
 
 type TestState = A2aSlice;
 
-function createTestStore() {
+function createTestStore(workspaces: unknown[] = []) {
   return create<TestState>()(
     immer((...args) => ({
       // @ts-expect-error — minimal test store doesn't match full StoreState
       ...createA2aSlice(...args),
+      workspaces,
     }))
   );
 }
@@ -636,5 +637,51 @@ describe('a2aSlice — updateTaskStatus 완료증거 게이트 (§6.M PR-B, 폴�
       },
     });
     expect(store.getState().a2aTasks[taskId].status.state).toBe('failed'); // evidence 없이도 수용
+  });
+});
+
+describe('a2aSlice — #1598 orphaned receiver pane + receiver cancel', () => {
+  const addrPaneC: PaneAddress = { ptyId: 'pty-C', paneId: 'pane-C', surfaceId: 'surf-C' };
+  const leaf = (id: string) => ({ type: 'leaf', id, surfaces: [], activeSurfaceId: '' });
+
+  function makePinnedTask(store: ReturnType<typeof createTestStore>) {
+    return store.getState().createA2aTask({
+      title: 'Pane task',
+      from: { workspaceId: 'ws-receiver', name: 'Old session' },
+      to: { workspaceId: 'ws-receiver', name: 'Receiver', paneId: 'pane-B' },
+      history: [makeMessage('hello')],
+      artifacts: [],
+    });
+  }
+
+  it('a pane of the receiver workspace moves a task whose addressed pane is gone', () => {
+    const store = createTestStore([{ id: 'ws-receiver', rootPane: leaf('pane-C') }]);
+    const taskId = makePinnedTask(store);
+    const r = store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver', addrPaneC);
+    expect(r.ok).toBe(true);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('working');
+  });
+
+  it('keeps the pane rule while the addressed pane is live, stashed included', () => {
+    const store = createTestStore([{ id: 'ws-receiver', rootPane: leaf('pane-C'), stashedPanes: [{ pane: leaf('pane-B') }] }]);
+    const taskId = makePinnedTask(store);
+    const r = store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver', addrPaneC);
+    expect(r.error).toMatch(/not the addressed receiver pane/);
+  });
+
+  it('the receiver cancels with a reason; without one it is refused', () => {
+    const store = createTestStore();
+    const taskId = store.getState().createA2aTask({
+      title: 'T',
+      from: { workspaceId: 'ws-sender', name: 'Sender' },
+      to: { workspaceId: 'ws-receiver', name: 'Receiver' },
+      history: [makeMessage('hi')],
+      artifacts: [],
+    });
+    const bare = store.getState().updateTaskStatus(taskId, 'canceled', 'ws-receiver');
+    expect(bare.error).toMatch(/^cancel_reason_missing/);
+    const ok = store.getState().updateTaskStatus(taskId, 'canceled', 'ws-receiver', undefined, undefined, { summary: 'superseded', items: [] });
+    expect(ok.ok).toBe(true);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('canceled');
   });
 });

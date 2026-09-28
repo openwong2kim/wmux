@@ -54,6 +54,7 @@ import {
 import { gatedSubmitToPty, submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import type { GatedSubmitRefusal } from '../../shared/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
+import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
 import { resolvePaneAddress, activePaneTerminalPty, resolveUnaddressedDelivery, paneHasDetectedAgent, describeAmbiguousDelivery, wsMetadataMayStandIn, NO_AGENT_PANE_HINT, decideSameWsSend, decideReplyDelivery, REPLY_SUPPRESS_HINTS, submitReceiptFields, countRoundTrips, maxSideMessages, REPLY_ROUND_CAP, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, detectedAgentTuiSlug, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
@@ -3142,12 +3143,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // pointer for a half-applied task).
     let nextState: TaskState | undefined;
     if (typeof params.status === 'string') {
-      // Block 'canceled' — must use a2a.task.cancel instead
-      if (params.status === 'canceled') {
-        return { error: 'a2a.task.update: use a2a.task.cancel instead' };
-      }
-      // Validate status value
-      const validStatuses = ['working', 'completed', 'failed', 'input-required'];
+      // Validate status value. 'canceled' is the receiver dropping the task
+      // (#1598); it needs a reason, like 'failed'.
+      const validStatuses = ['working', 'completed', 'failed', 'input-required', 'canceled'];
       if (!validStatuses.includes(params.status)) {
         return { error: `a2a.task.update: invalid status "${params.status}"` };
       }
@@ -3224,7 +3222,14 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // Per-pane role (S-C2): same model as the a2a.task.send reply branch, using
       // the callerAddr resolved above. Falls back to the ws-level role when the
       // caller's pane is unknown (preserves cross-ws behavior exactly).
-      const paneRole = resolvePaneRole(task.metadata, callerAddrUpdate);
+      // #1598: a verified pane of the receiver workspace that adopted a task
+      // whose receiver pane is gone speaks as the receiver, as its status
+      // update did (otherwise a status+message call commits the status and
+      // then refuses the message).
+      const adoptedOrphan = !!callerWsUpdate && !!callerAddrUpdate && isReceiverPaneGone(
+        task.metadata.to, workspaceId, callerLeavesUpdate.map((l) => l.id),
+      );
+      const paneRole = resolvePaneRole(task.metadata, callerAddrUpdate) ?? (adoptedOrphan ? 'agent' : null);
       // A fully pane-anchored same-ws task only admits its from/to panes (mirror
       // of the reply branch). A verified non-participant pane is rejected rather
       // than defaulting to the ws-level 'user' role. (A status-only update from a
@@ -3352,7 +3357,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // fire last.
     if (transitioned && nextState) {
       const updatedTask = store.getTask(taskId);
-      if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated', nextState);
+      if (updatedTask) emitA2aTaskEvent(updatedTask, nextState === 'canceled' ? 'cancelled' : 'updated', nextState);
     } else if (updateWrite.refused || updateReopened) {
       // The message is stored but its push was withheld: tee the pointer so a
       // receiver polling wmux_events_poll still learns the thread moved (the

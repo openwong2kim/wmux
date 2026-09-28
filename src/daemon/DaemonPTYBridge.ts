@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { randomBytes } from 'node:crypto';
 import type { IPty } from 'node-pty';
 import type { AgentStatus } from '../shared/types';
 import { OscParser } from '../main/pty/OscParser';
@@ -117,6 +118,43 @@ export class DaemonPTYBridge extends EventEmitter {
   private explicitTerminalStatus = false;
   private submittedTurnPending = false;
   private lastTurnStartedAt = 0;
+
+  /**
+   * Running-episode id (phone chat `turn.id`). A new episode opens only on a
+   * settled/idle -> running transition: a submit while the pane is not running,
+   * or the first running edge (hook or byte promotion) after the last one
+   * closed. Answering a dialog and a submit typed into a running turn (the
+   * agent's own composer queue) stay in the episode. `turnNonce` keeps ids from
+   * a previous daemon or PTY lifetime from ever comparing equal to a new one.
+   */
+  private readonly turnNonce = randomBytes(6).toString('hex');
+  private turnSeq = 0;
+  private turnOpen = false;
+  private turnOpenedAt = 0;
+  /** An authoritative hook has reported on this pane: only hooks and the transcript end its episodes. */
+  private hookSeen = false;
+  /**
+   * The episode was closed by a detector settle only. That read can be wrong
+   * mid-turn (a pause between tools on an agent whose hooks have not spoken
+   * yet), so the next running edge that is not a submit resumes the same
+   * episode instead of starting another. A submit, a hook settle, a recorded
+   * transcript end or the agent ending makes the close final.
+   */
+  private turnSoftClosed = false;
+
+  /**
+   * Reads the pane's transcript for the latest recorded turn end (epoch ms),
+   * or undefined. Installed once by the daemon; consulted on a submit while an
+   * episode is open, because an interrupt fires no Stop hook and nothing else
+   * would have closed it.
+   */
+  static transcriptTurnEndProbe: ((sessionId: string) => number | undefined) | null = null;
+
+  /** Last write to stdin that was a lone Esc, from any source (0 = never). */
+  private lastEscAt = 0;
+  /** Latest OSC 0/2 window title (sanitized) and when it arrived (0 = never). */
+  private lastTitle = '';
+  private lastTitleAt = 0;
   /** #1463 — a session started and no turn has since (see isPreTurn). */
   private preTurn = false;
   /** #1463 — arrival time of the last turn evidence: submitted input, an
@@ -246,7 +284,12 @@ export class DaemonPTYBridge extends EventEmitter {
     if (data.length > 0) {
       this.lastInputAt = Date.now();
       this.inputRevision += 1;
-      if (DaemonPTYBridge.stripPassiveInput(data).length > 0) {
+      const active = DaemonPTYBridge.stripPassiveInput(data);
+      // Every path that types into a pane ends here (pipe, web raw input, chat
+      // Stop, approval keys), so this is the one place a lone Esc is seen.
+      // Inside a bracketed paste an ESC is text, not a key.
+      if (active === '\x1b' && !this.inputInBracketedPaste) this.lastEscAt = this.lastInputAt;
+      if (active.length > 0) {
         this.keyInputRevision += 1;
         // Sizes nothing, carries nothing: a remote terminal-prompt answer that
         // a key or click has overtaken is refreshed off this.
@@ -325,6 +368,18 @@ export class DaemonPTYBridge extends EventEmitter {
    * screen leave the bridge in the same state.
    */
   private startAnsweredTurn(wasAwaiting: boolean, reason: 'input' | 'screen-cleared'): void {
+    // An answer resumes the episode it interrupted; a submit into a running
+    // turn is queued by the agent's own composer. Anything else starts one.
+    if (!wasAwaiting) {
+      if (this.turnOpen && this.sessionId) {
+        const endedAt = DaemonPTYBridge.transcriptTurnEndProbe?.(this.sessionId);
+        if (endedAt !== undefined) this.noteTranscriptTurnEnd(endedAt);
+      }
+      // Still open = no settle and no recorded end since it began: a prompt
+      // typed into the running turn, however long the turn has been quiet.
+      this.turnSoftClosed = false;
+      this.openTurn();
+    }
     this.lastTurnStartedAt = Date.now();
     this.preTurn = false;
     this.turnEvidenceAt = this.lastTurnStartedAt;
@@ -375,7 +430,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * Terminal states settle the turn and block later byte-only redraws;
    * explicit running activity opens the gate again for autonomous work.
    */
-  noteAgentStatus(status: AgentEventStatus, authoritative = false, questionAt?: number): void {
+  noteAgentStatus(status: AgentEventStatus, authoritative = false, questionAt?: number, provisional = false): void {
     // #1463 — any hook is turn evidence. SessionStart re-sets `preTurn` after
     // its own edge (noteSessionStart); detector statuses are not evidence.
     if (authoritative) {
@@ -383,7 +438,13 @@ export class DaemonPTYBridge extends EventEmitter {
       this.turnEvidenceAt = Date.now();
     }
     if (status === 'running') {
-      if (authoritative) this.lastTurnStartedAt = Date.now();
+      if (authoritative) {
+        this.hookSeen = true;
+        this.lastTurnStartedAt = Date.now();
+        // The first hook after a settle is an autonomous turn; later hooks, and
+        // any hook behind an unanswered dialog, belong to the open episode.
+        if (!this.awaitingHuman) this.openTurn(true);
+      }
       this.explicitTerminalStatus = false;
       this.settledStatus = null;
       // `awaitingHuman` deliberately survives. HookIngest projects
@@ -414,6 +475,13 @@ export class DaemonPTYBridge extends EventEmitter {
       this.awaitingHuman = true;
       this.awaitingQuestionAt = questionAt ?? null;
     } else if (authoritative) this.awaitingHuman = false;
+    // A settle ends the episode unless it is the dialog the turn waits on. On
+    // a pane with hooks only the hook's own settle (Stop / StopFailure) counts:
+    // the detector's `complete` / `waiting` also match footers mid-turn.
+    if (authoritative) this.hookSeen = true;
+    // `provisional`: a hook settle the transcript has not confirmed (see the
+    // daemon's Codex stop handling) closes like a detector settle does.
+    if (!this.awaitingHuman && (authoritative || !this.hookSeen)) this.closeTurn(!authoritative || provisional);
     this.settledAtMs = Date.now();
     this.submittedTurnPending = false;
     if (this.resizeGuardTimer) {
@@ -437,6 +505,16 @@ export class DaemonPTYBridge extends EventEmitter {
     return Date.now() - this.lastInputAt >= DaemonPTYBridge.INPUT_ECHO_QUIET_MS;
   }
 
+  /** #1621 — an episode is open (a submit or running edge not yet settled). */
+  isTurnOpen(): boolean {
+    return this.turnOpen;
+  }
+
+  /** #1621 — an authoritative hook has reported on this pane's current agent. */
+  hasHookReports(): boolean {
+    return this.hookSeen;
+  }
+
   /** Current stdin generation; every non-empty write advances it once. */
   isEmptyShellPrompt(): boolean { return this.emptyShellPrompt; }
 
@@ -454,6 +532,79 @@ export class DaemonPTYBridge extends EventEmitter {
     return this.lastTurnStartedAt;
   }
 
+  /** `resume`: a running edge that is not a submit may reopen a detector-closed episode. */
+  private openTurn(resume = false): void {
+    if (this.turnOpen) return;
+    this.turnOpen = true;
+    if (resume && this.turnSoftClosed) {
+      this.turnSoftClosed = false;
+      return;
+    }
+    this.turnSoftClosed = false;
+    this.turnSeq += 1;
+    this.turnOpenedAt = Date.now();
+  }
+
+  private closeTurn(soft = false): void {
+    if (this.turnOpen) this.turnSoftClosed = soft;
+    else if (!soft) this.turnSoftClosed = false;
+    this.turnOpen = false;
+  }
+
+  /**
+   * The agent's transcript recorded a turn end (completed or interrupted) at
+   * `at`. An interrupt fires no Stop hook, so without this the episode would
+   * stay open and the next prompt would join it. Ignored behind a dialog, or
+   * when the end predates the latest turn evidence.
+   */
+  noteTranscriptTurnEnd(at: number): void {
+    if ((this.turnOpen || this.turnSoftClosed) && !this.awaitingHuman && at >= this.turnOpenedAt) this.closeTurn();
+  }
+
+  /**
+   * The agent that owned this pane is gone (its process exited, another agent
+   * replaced it, or the shell took the foreground back). It sends no Stop for
+   * that, so its episode ends here, and the next agent's hooks are judged
+   * afresh: until one reports, its detector settles count.
+   */
+  noteAgentEnded(): void {
+    this.closeTurn();
+    this.hookSeen = false;
+  }
+
+  /**
+   * Start of the evidence a transcript end must postdate to count for the
+   * current state: the last submit/hook, or a later byte-promoted episode.
+   */
+  getTurnEvidenceStartedAt(): number {
+    return Math.max(this.lastTurnStartedAt, this.turnOpen ? this.turnOpenedAt : 0);
+  }
+
+  /**
+   * The running episode as the phone sees it. `chatStatus` is the chat-refined
+   * status (transcript end_turn / abort applied); `running` needs both an open
+   * episode and a running or dialog-blocked status. `startedAt` is absent
+   * before the first episode.
+   */
+  getTurn(chatStatus: AgentStatus): { id: string; state: 'running' | 'idle'; startedAt?: number } {
+    const running = this.turnOpen && (chatStatus === 'running' || chatStatus === 'awaiting_input');
+    return {
+      id: `t1:${this.turnNonce}.${this.turnSeq}`,
+      state: running ? 'running' : 'idle',
+      ...(this.turnSeq > 0 ? { startedAt: this.turnOpenedAt } : {}),
+    };
+  }
+
+  /** When a lone Esc was last written to this PTY, from any source; 0 = never. */
+  getLastEscAt(): number {
+    return this.lastEscAt;
+  }
+
+  /** The latest window title the program set, and when (`at` 0 = never). */
+  getTitle(): { title: string; at: number } {
+    return { title: this.lastTitle, at: this.lastTitleAt };
+  }
+
   /**
    * #1463 — the agent's SessionStart hook (fired at `signalTs`). Applies the
    * hook's own `running` edge like every other hook, then marks the pane
@@ -465,12 +616,18 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   noteSessionStart(signalTs: number, source: unknown): void {
     const atIdlePrompt = this.explicitTerminalStatus && this.settledStatus === 'waiting' && !this.awaitingHuman;
-    const { preTurn, turnEvidenceAt } = this;
+    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, turnSoftClosed } = this;
     this.noteAgentStatus('running', true);
     // The session start is not turn evidence itself: a duplicate delivery of
-    // it must neither clear nor re-set the state the first one left.
+    // it must neither clear nor re-set the state the first one left. Nor does
+    // it touch the running episode: Codex fires its SessionStart inside the
+    // first turn, and a resume or a compaction continues the one there was.
     this.preTurn = preTurn;
     this.turnEvidenceAt = turnEvidenceAt;
+    this.turnOpen = turnOpen;
+    this.turnSeq = turnSeq;
+    this.turnOpenedAt = turnOpenedAt;
+    this.turnSoftClosed = turnSoftClosed;
     if (!isFreshSessionSource(source)) {
       this.preTurn = false;
       return;
@@ -615,6 +772,7 @@ export class DaemonPTYBridge extends EventEmitter {
         this.explicitTerminalStatus = false;
         this.settledStatus = null;
         this.submittedTurnPending = false;
+        this.openTurn(true);
         // Deliberately NOT resetEmissionState(). The unsettled path below
         // clears the detector's dedup so a new turn's footer can speak again;
         // doing it here would let the idle chrome that is still on screen
@@ -639,6 +797,7 @@ export class DaemonPTYBridge extends EventEmitter {
             }, RESIZE_REDRAW_GUARD_MS - elapsed);
           } else {
             this.agentDetector?.resetEmissionState();
+            this.openTurn(true);
           }
         }
       }
@@ -672,6 +831,10 @@ export class DaemonPTYBridge extends EventEmitter {
         // OSC 0/2 window title (e.g. Claude Code `/rename`). OSC 1 (icon-only)
         // is ignored. Sanitized here so the daemon→main payload is already safe.
         const title = sanitizeTitle(event.data);
+        // Every title write, repeats included: chat Stop reads the agent's
+        // running spinner here and needs to know how fresh it is.
+        this.lastTitle = title;
+        this.lastTitleAt = Date.now();
         if (title) this.emit('title', { sessionId, title });
         return;
       }
@@ -706,6 +869,9 @@ export class DaemonPTYBridge extends EventEmitter {
         if (parsed) {
           if (parsed.type === 'command_end') { this.completedShellCommand = this.shellCommandRunning; this.shellCommandRunning = false; }
           if (parsed.type === 'command_start') { this.shellCommandRunning = true; this.completedShellCommand = false; this.emptyShellPrompt = false; }
+          // The shell's foreground program changed hands: whatever episode was
+          // open (an agent's, or the Enter that launched the next one) is over.
+          if (parsed.type === 'command_start' || parsed.type === 'command_end') this.noteAgentEnded();
           if (parsed.type === 'prompt_end') {
             this.emptyShellPrompt = this.inputRevision === 0 || this.completedShellCommand;
             this.completedShellCommand = false;
@@ -971,6 +1137,11 @@ export class DaemonPTYBridge extends EventEmitter {
     this.settledAtMs = 0;
     this.preTurn = false;
     this.turnEvidenceAt = 0;
+    this.turnOpen = false;
+    this.turnSoftClosed = false;
+    this.hookSeen = false;
+    this.lastTitle = '';
+    this.lastTitleAt = 0;
     this.awaitingHuman = false;
     this.oscParser = null;
     this.modeTracker = null;

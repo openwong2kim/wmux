@@ -106,6 +106,8 @@ interface SearchState {
   poller: ReturnType<typeof setInterval> | null;
   debounce: ReturnType<typeof setTimeout> | null;
   deadline: ReturnType<typeof setTimeout> | null;
+  /** Per-search override of the default deadline. */
+  deadlineMs?: number;
 }
 
 /**
@@ -179,7 +181,7 @@ export class TranscriptDiscovery {
    * DIFFERENT id supersedes: that is a `/clear` or a fresh claude in the same
    * pane, and the previous session's file is no longer the one to adopt.
    */
-  start(sessionId: string, agentSessionId: string, cwd: string, agent: DiscoverableAgent = 'claude'): void {
+  start(sessionId: string, agentSessionId: string, cwd: string, agent: DiscoverableAgent = 'claude', deadlineMs?: number): void {
     if (this.disposed || !sessionId || !agentSessionId) return;
     const existing = this.searches.get(sessionId);
     if (existing) {
@@ -194,6 +196,7 @@ export class TranscriptDiscovery {
       poller: null,
       debounce: null,
       deadline: null,
+      ...(deadlineMs !== undefined ? { deadlineMs } : {}),
     };
     this.searches.set(sessionId, state);
     // Usually a miss (SessionStart fires before the file exists), but a resumed
@@ -218,6 +221,12 @@ export class TranscriptDiscovery {
     this.disposed = true;
     for (const state of this.searches.values()) this.stop(state);
     this.searches.clear();
+  }
+
+  /** The search still running for this pane, if any. */
+  pendingFor(sessionId: string): { agent: DiscoverableAgent; agentSessionId: string } | undefined {
+    const state = this.searches.get(sessionId);
+    return state ? { agent: state.agent, agentSessionId: state.agentSessionId } : undefined;
   }
 
   /** Live search count — observability / tests only. */
@@ -300,7 +309,7 @@ export class TranscriptDiscovery {
       // Give up quietly. The first `agent.stop` still delivers the real path,
       // so this costs the early availability, never the feature.
       this.cancel(sessionId);
-    }, this.deadlineMs);
+    }, state.deadlineMs ?? this.deadlineMs);
     deadline.unref?.();
     state.deadline = deadline;
   }

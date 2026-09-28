@@ -3,20 +3,32 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { ChatSendResult, TranscriptAppendData, TranscriptPage, TranscriptStatus, TurnEvent } from '../../shared/transcript/turnEvents';
 import { validStoredEvent } from '../chat/storedEvent';
-import { OPENCODE_REQUEST_MAX_BYTES } from '../chat/chatBridge';
+import { OPENCODE_REQUEST_MAX_BYTES, type ChatTurn } from '../chat/chatBridge';
 
 interface Owner { pid: number; incarnation: string }
 /** Why a read reached no conversation, from the read itself (feeds `/turns` `cause`). */
 export type TerminalChatFailure = 'no-record' | 'transport-refused' | 'invalid-record' | 'owner-mismatch' | 'error';
 type Exchange = { ok: true; body: Record<string, unknown> } | { ok: false; left: boolean; failure: TerminalChatFailure; unauthorized?: true };
-interface NativeRead { status: TranscriptStatus; page: TranscriptPage }
+/** `turn`: the plugin's running episode; absent from a plugin that predates it. */
+interface NativeRead { status: TranscriptStatus; page: TranscriptPage; turn?: ChatTurn }
 export interface TerminalChatSendOutcome { result: ChatSendResult; reason?: 'receipts-full' | 'transport-lost' | 'too-large' | 'unauthorized' }
+/** What the plugin did with an abort. `turn` is the plugin's episode when it answered. */
+export interface TerminalChatAbortOutcome {
+  /** `pending`: the plugin's admission fence, a send accepted but not yet running. */
+  result: 'sent' | 'not_running' | 'prompt_active' | 'pending' | 'session_changed' | 'unconfirmed' | 'unavailable' | 'error';
+  reason?: 'transport-lost' | 'unauthorized';
+  turn?: ChatTurn;
+}
+const TURN_ID = /^t1:[A-Za-z0-9._:-]{1,120}$/;
+const PHASES = ['complete', 'running', 'awaiting_input'];
 interface Watch { clients: Set<string>; timer: ReturnType<typeof setInterval>; busy: boolean; seq: number; digest?: string; epoch?: string; ids?: Set<string>; last?: NativeRead }
 export interface TerminalChatDependencies {
   directory: string;
   /** Fresh process attribution, never a persisted/hook-only agent label. */
   owner(id: string): Promise<Owner | undefined>;
   emit(id: string, data: TranscriptAppendData, clients: readonly string[]): void;
+  /** #1621 — a send the plugin may have dispatched: a turn started outside the PTY's stdin. */
+  onSent?(id: string): void;
 }
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
@@ -25,6 +37,8 @@ const object = (value: unknown): Record<string, unknown> => value && typeof valu
  * Reads and sends revalidate pane process ownership at every asynchronous edge. */
 export class TerminalChatService {
   private watches = new Map<string, Watch>();
+  /** #1621 — sends that left for the plugin, per pane: a read spanning one may be stale. */
+  private sendsLeft = new Map<string, number>();
   constructor(private readonly deps: TerminalChatDependencies) {}
 
   async read(id: string): Promise<NativeRead | null> {
@@ -42,12 +56,48 @@ export class TerminalChatService {
     const epoch = result.epoch;
     if (typeof sessionId !== 'string' || !/^ses_[a-zA-Z0-9]+$/.test(sessionId) || typeof epoch !== 'string' || epoch.length > 256 ||
         !Array.isArray(result.events) || result.events.length > 3000 || !result.events.every(validStoredEvent) ||
-        !['complete', 'running', 'awaiting_input'].includes(String(result.phase))) return { failure: 'error' };
+        !PHASES.includes(String(result.phase))) return { failure: 'error' };
     const phase = result.phase as 'complete' | 'running' | 'awaiting_input';
+    // A plugin that predates abort advertises no `actions`: Stop stays off.
+    const cancel = Array.isArray(result.actions) && result.actions.includes('abort');
+    const turn = this.turn(result);
     return { read: { status: { available: true, reason: 'ok', agentSessionId: sessionId, agentAlive: true, agentStatus: phase,
       terminal: { kind: 'terminal', agent: 'opencode', nativeSessionId: sessionId, historyTruncated: result.truncated === true,
-        capabilities: { history: true, send: phase === 'complete', permissions: false, cancel: false, fileUndo: false } },
-    }, page: { ...this.page(result.events as TurnEvent[], epoch), truncatedHead: result.truncated === true } } };
+        capabilities: { history: true, send: phase === 'complete', permissions: false, cancel, fileUndo: false } },
+    }, page: { ...this.page(result.events as TurnEvent[], epoch), truncatedHead: result.truncated === true }, ...(turn ? { turn } : {}) } };
+  }
+
+  /**
+   * Asks the plugin to abort the selected session's running turn. It repeats
+   * the session, generation, turn and phase checks beside the native abort.
+   * Nothing is sent to a plugin that does not advertise `abort`, and an answer
+   * outside the known set reads as `unavailable`, never as a maybe-abort.
+   * `read` reuses the caller's own fresh read instead of a second round trip.
+   */
+  async abort(id: string, sessionId: string,
+    opts: { expectedRawEpoch?: string; turnId?: string; read?: NativeRead; authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean> } = {}): Promise<TerminalChatAbortOutcome> {
+    const read = opts.read ?? await this.read(id);
+    if (!read?.status.available) return { result: 'unavailable' };
+    if (read.status.agentSessionId !== sessionId) return { result: 'session_changed' };
+    const epoch = read.page.cursor.historyEpoch ?? '';
+    if (opts.expectedRawEpoch !== undefined && opts.expectedRawEpoch !== epoch) return { result: 'session_changed' };
+    if (!read.status.terminal?.capabilities.cancel) return { result: 'unavailable' };
+    const request = { action: 'abort', sessionId, epoch, ...(opts.turnId !== undefined ? { turnId: opts.turnId } : {}) };
+    const answer = await this.exchange(id, request, opts.authorized);
+    if (!answer.ok && answer.unauthorized) return { result: 'error', reason: 'unauthorized' };
+    if (!answer.ok) return answer.left ? { result: 'unconfirmed', reason: 'transport-lost' } : { result: 'unavailable' };
+    const value = String(answer.body.result);
+    const result = ['sent', 'not_running', 'prompt_active', 'pending', 'session_changed', 'unconfirmed'].includes(value)
+      ? value as TerminalChatAbortOutcome['result'] : 'unavailable';
+    const turn = this.turn(answer.body);
+    return { result, ...(turn ? { turn } : {}) };
+  }
+
+  private turn(body: Record<string, unknown>): ChatTurn | undefined {
+    if (typeof body.turnId !== 'string' || !TURN_ID.test(body.turnId) || !PHASES.includes(String(body.phase))) return undefined;
+    const startedAt = body.turnStartedAt;
+    return { id: body.turnId, state: body.phase === 'complete' ? 'idle' : 'running',
+      ...(typeof startedAt === 'number' && Number.isFinite(startedAt) && startedAt > 0 ? { startedAt } : {}) };
   }
 
   /**
@@ -67,6 +117,7 @@ export class TerminalChatService {
     // Plugin repeats the selected-session, phase and generation checks directly
     // beside native dispatch; a server-side route switch cannot target another chat.
     const request = { action: 'send', sessionId, epoch, text, requestId };
+    this.sendsLeft.set(id, this.sendCount(id) + 1);
     // The plugin destroys an oversize body mid-read; that must never read as
     // "may have been delivered" (N16).
     if (Buffer.byteLength(JSON.stringify(request)) > OPENCODE_REQUEST_MAX_BYTES) return { result: 'error', reason: 'too-large' };
@@ -75,9 +126,13 @@ export class TerminalChatService {
     if (!answer.ok) return answer.left ? { result: 'unconfirmed', reason: 'transport-lost' } : { result: 'unavailable' };
     const value = answer.body.result;
     const result = ['sent', 'busy', 'blocked', 'unconfirmed', 'session_changed', 'unavailable', 'error'].includes(String(value)) ? value as ChatSendResult : 'unconfirmed';
+    if (result === 'sent' || result === 'unconfirmed') this.deps.onSent?.(id);
     // An older plugin answers a full receipt map with a bare `unavailable`.
     return result === 'unavailable' && answer.body.reason === 'receipts-full' ? { result, reason: 'receipts-full' } : { result };
   }
+
+  /** Sends attempted on this pane so far; changes before a send can reach the plugin. */
+  sendCount(id: string): number { return this.sendsLeft.get(id) ?? 0; }
 
   subscribe(client: string, id: string): void {
     const prior = this.watches.get(id);
@@ -95,7 +150,7 @@ export class TerminalChatService {
     if (!watch.clients.size) { clearInterval(watch.timer); this.watches.delete(id); }
   }
   dropClient(client: string): void { for (const id of this.watches.keys()) this.unsubscribe(client, id); }
-  dropPty(id: string): void { const watch = this.watches.get(id); if (watch) clearInterval(watch.timer); this.watches.delete(id); }
+  dropPty(id: string): void { this.sendsLeft.delete(id); const watch = this.watches.get(id); if (watch) clearInterval(watch.timer); this.watches.delete(id); }
   dispose(): void { for (const id of this.watches.keys()) this.dropPty(id); }
 
   private page(events: TurnEvent[], epoch: string): TranscriptPage {
@@ -109,7 +164,7 @@ export class TerminalChatService {
       if (this.watches.get(id) !== watch) return;
       const status: TranscriptStatus = read?.status ?? { ...watch.last?.status, available: false, reason: 'unavailable', agentAlive: false,
         ...(watch.last?.status.terminal ? { terminal: { ...watch.last.status.terminal,
-          capabilities: { ...watch.last.status.terminal.capabilities, send: false } } } : {}) };
+          capabilities: { ...watch.last.status.terminal.capabilities, send: false, cancel: false } } } : {}) };
       const page = read?.page ?? (watch.last ? { ...watch.last.page, events: [] } : this.page([], ''));
       const digest = createHash('sha256').update(JSON.stringify([status, page])).digest('hex');
       if (digest === watch.digest) return;

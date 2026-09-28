@@ -1,0 +1,214 @@
+{
+  "_about": {
+    "source": "Real TUIs run in a 100x30 pty (env scrubbed to HOME/PATH/TERM/LANG), every output byte recorded, then rendered through the daemon's own generateTextSnapshot. Captured 2026-09-28. Rows trimmed to the bottom of the grid; status-line, account, banner and path rows removed. `title` is the last OSC 0/2 title at that moment and `ageMs` how long before it was set.",
+    "agents": {
+      "claude": "Claude Code 2.1.283, classic renderer",
+      "codex": "Codex CLI 0.157.1"
+    },
+    "titleCadence": "While a turn runs Claude rewrites its title every ~0.96 s (max gap 0.98 s), Codex every ~0.1 s (max gap 0.2 s).",
+    "screenEvidence": [
+      "claude-thinking",
+      "claude-tool",
+      "codex-working"
+    ],
+    "titleOnlyEvidence": {
+      "claude-streaming": "answer text streaming: no spinner row, title spinner up",
+      "claude-starting": "first second: spinner row without its counter, title spinner up",
+      "codex-streaming": "answer text streaming: no status row, title spinner up"
+    },
+    "noEvidence": {
+      "claude-interrupted": "after one ESC: title back to the idle mark",
+      "claude-done": "turn ended on its own",
+      "codex-interrupted": "after one ESC: spinner gone from the title",
+      "codex-done": "turn ended on its own"
+    }
+  },
+  "claude-thinking": {
+    "rows": [
+      "❯ Write the English words for the numbers one through two hundred, one per line. Do not use any",
+      "  tools.",
+      "",
+      "✻ Embellishing… (1s · ↓ 25 tokens · thinking with medium effort)",
+      "                                                                                ◐ medium · /effort",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "❯",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents"
+    ],
+    "title": {
+      "title": "◑ English numbers one to two hundred",
+      "ageMs": 525
+    }
+  },
+  "claude-tool": {
+    "rows": [
+      "❯ Run the shell command sleep 12 with the Bash tool, then reply with the single word done.",
+      "",
+      "  Running 1 shell command…",
+      "  ⎿  $ sleep 12",
+      "",
+      "✢ Ruminating… (8s · ↓ 238 tokens)",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "❯",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents"
+    ],
+    "title": {
+      "title": "◑ Sleep command test",
+      "ageMs": 280
+    }
+  },
+  "claude-streaming": {
+    "rows": [
+      "  ninety-six",
+      "  ninety-seven",
+      "  ninety-eight",
+      "  ninety-nine",
+      "  one hundred",
+      "  one hundred one",
+      "  one hundred two",
+      "  one hundred three",
+      "  one hundred four",
+      "",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "❯",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents"
+    ],
+    "title": {
+      "title": "◑ English number words 1-200",
+      "ageMs": 120
+    }
+  },
+  "claude-interrupted": {
+    "rows": [
+      "❯ Run the shell command sleep 12 with the Bash tool, then reply with the single word done.",
+      "",
+      "  Ran 1 shell command",
+      "  ⎿  Interrupted · What should Claude do instead?",
+      "",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "❯",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "  ⏵⏵ auto mode on · 1 shell · ← 2 agents"
+    ],
+    "title": {
+      "title": "✳ Sleep command test",
+      "ageMs": 1230
+    }
+  },
+  "claude-starting": {
+    "rows": [
+      "❯ Write the English words for the numbers one through two hundred, one per line. Do not use any",
+      "  tools.",
+      "",
+      "· Flummoxing…",
+      "                                                                                ◐ medium · /effort",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "❯",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents"
+    ],
+    "title": {
+      "title": "◐ Claude Code",
+      "ageMs": 247
+    }
+  },
+  "codex-working": {
+    "rows": [
+      "› Write the English words for the numbers one through two hundred, one per line. Do not run any",
+      "  commands or use any tools.",
+      "",
+      "• Working (1s • esc to interrupt)",
+      "",
+      "› Ask Codex to do anything",
+      "",
+      "  ? for shortcuts"
+    ],
+    "title": {
+      "title": "⠏ ⠏ | cwd-codex",
+      "ageMs": 0
+    }
+  },
+  "codex-streaming": {
+    "rows": [
+      "  fifty-two",
+      "  fifty-three",
+      "  fifty-four",
+      "  fifty-five",
+      "  fifty-six",
+      "  fifty-seven",
+      "  fifty-eight",
+      "  fifty-nine",
+      "  sixty",
+      "  sixty",
+      "",
+      "› Ask Codex to do anything",
+      "",
+      "  ? for shortcuts"
+    ],
+    "title": {
+      "title": "⠏ List numbers one through 200 | cwd-codex",
+      "ageMs": 0
+    }
+  },
+  "codex-interrupted": {
+    "rows": [
+      "  one hundred twenty-eight",
+      "  one hundred twenty-nine",
+      "  one hundred thirty",
+      "  one hundred thirty-one",
+      "  one hundred thirty-two",
+      "  one hundred",
+      "",
+      "■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/",
+      "feedback` to report the issue.",
+      "                                   Tip: You can run any shell command from Codex using ! (e.g. !ls)",
+      "",
+      "› Ask Codex to do anything",
+      "",
+      "  ? for shortcuts"
+    ],
+    "title": {
+      "title": "List numbers one through 200 | cwd-codex",
+      "ageMs": 1272
+    }
+  },
+  "claude-done": {
+    "rows": [
+      "❯ Reply with the single word ok and nothing else. Do not use any tools.",
+      "",
+      "⏺ ok",
+      "",
+      "✻ Baked for 2s · done 4:27 PM",
+      "",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "❯",
+      "────────────────────────────────────────────────────────────────────────────────────────────────────",
+      "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents"
+    ],
+    "title": {
+      "title": "✳ Single word ok",
+      "ageMs": 5564
+    }
+  },
+  "codex-done": {
+    "rows": [
+      "› Reply with the single word ok and nothing else. Do not run any commands or use any tools.",
+      "",
+      "• ok",
+      "",
+      "  4:27 PM",
+      "",
+      "                              Tip: Use /init to create an AGENTS.md with project-specific guidance.",
+      "",
+      "› Ask Codex to do anything",
+      "",
+      "  ? for shortcuts"
+    ],
+    "title": {
+      "title": "Acknowledge with ok | cwd-codex2",
+      "ageMs": 5181
+    }
+  }
+}

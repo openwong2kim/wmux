@@ -145,3 +145,28 @@ describe('Windows-shaped paths (pure function)', () => {
     expect(scanForTranscript(`..\\elsewhere\\${ID}`, env)).toEqual([]);
   });
 });
+
+describe('codex rollout discovery (#1624)', () => {
+  const REAL = '01a0e712-ff3d-77f3-834b-4854dcc549f1';
+  const TITLE = '01a0e713-2a61-7593-9d58-782daa920c8d';
+
+  it('adopts an existing rollout synchronously, so the binding holds a path before the title thread reports', () => {
+    const codexEnv = { CODEX_HOME: path.join(home, 'codex') };
+    const file = writeTranscript(
+      path.join(home, 'codex', 'sessions', '2026', '09', '28'),
+      `rollout-2026-09-28T17-12-57-${REAL}.jsonl`,
+    );
+    const onFound = vi.fn();
+    const discovery = new TranscriptDiscovery({ getSessionEnv: () => codexEnv, onFound, deadlineMs: 50 });
+    try {
+      discovery.start('pty-1', REAL, '/w', 'codex');
+      expect(onFound).toHaveBeenCalledTimes(1);
+      expect(onFound.mock.calls[0][0]).toMatchObject({ agent: 'codex', agentSessionId: REAL, transcriptPath: file });
+      // The title thread never writes a rollout, so it is never adopted.
+      discovery.start('pty-1', TITLE, '/w', 'codex');
+      expect(onFound).toHaveBeenCalledTimes(1);
+    } finally {
+      discovery.dispose();
+    }
+  });
+});

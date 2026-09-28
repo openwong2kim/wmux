@@ -55,13 +55,26 @@ export function terminalChatHandler(api, epoch = randomBytes(16).toString('hex')
   const pending = new Map();
   let selected;
   let generation = 0;
+  // Running episodes per session: the id is minted once on idle -> running
+  // (an accepted send or the first busy observation) and held until the
+  // session is seen complete. Messages arriving mid-turn never change it.
+  const turns = new Map();
+  let turnSeq = 0;
+  const openTurn = (id, at) => {
+    const turn = { id: `t1:oc.${createHash('sha256').update(JSON.stringify([epoch, id, ++turnSeq])).digest('hex').slice(0, 24)}`, open: true, startedAt: at };
+    turns.set(id, turn);
+    return turn;
+  };
   const current = () => {
     const route = api.route.current;
     const id = route.name === 'session' ? str(route.params?.sessionID) : '';
     if (selected !== id) { selected = id; generation++; }
     const session = id && api.state.session.get(id);
     if (!api.state.ready || !session || session.id !== id) return undefined;
-    const blocked = api.ui.dialog.open || api.state.session.permission(id).length > 0 || api.state.session.question(id).length > 0;
+    const prompt = api.state.session.permission(id).length > 0 || api.state.session.question(id).length > 0;
+    // A picker or palette the user opened is not the agent waiting: it never
+    // changes phase (or the phone's blocked state); only send holds for it.
+    const dialog = !!api.ui.dialog.open;
     const busy = ['busy', 'retry'].includes(api.state.session.status(id)?.type);
     const dispatch = pending.get(id);
     if (dispatch) {
@@ -70,12 +83,41 @@ export function terminalChatHandler(api, epoch = randomBytes(16).toString('hex')
         message.role === 'assistant' && message.time?.completed && !dispatch.messages.has(message.id));
       if (!dispatch.sending && !busy && (dispatch.sawBusy || completed)) pending.delete(id);
     }
-    return { id, phase: blocked ? 'awaiting_input' : busy || pending.has(id) ? 'running' : 'complete', epoch: `${epoch}:${generation}:${id}` };
+    // Admission fence: a send was accepted but the TUI has not gone busy yet.
+    // There is nothing native to abort yet.
+    const fence = !busy && pending.has(id);
+    const phase = prompt ? 'awaiting_input' : busy || pending.has(id) ? 'running' : 'complete';
+    let turn = turns.get(id);
+    if (busy || pending.has(id)) { if (!turn?.open) turn = openTurn(id, Date.now()); }
+    else if (phase === 'complete' && turn) turn.open = false;
+    // Before the first episode: an idle id with no start.
+    if (!turn) { turn = openTurn(id, undefined); turn.open = false; }
+    return { id, phase, epoch: `${epoch}:${generation}:${id}`, busy, prompt, dialog, fence, turnId: turn.id,
+      ...(turn.startedAt !== undefined ? { turnStartedAt: turn.startedAt } : {}) };
   };
+  const actions = typeof api.client?.session?.abort === 'function' ? ['read', 'send', 'abort'] : ['read', 'send'];
   return async request => {
     const state = current();
     if (!state) return { available: false, reason: 'stale-session' };
-    if (request.action === 'read') return { available: true, sessionId: state.id, phase: state.phase, epoch: state.epoch, ...projectTuiMessages(api, state.id) };
+    if (request.action === 'read') {
+      return { available: true, sessionId: state.id, phase: state.phase, epoch: state.epoch, actions, turnId: state.turnId,
+        ...(state.turnStartedAt !== undefined ? { turnStartedAt: state.turnStartedAt } : {}), ...projectTuiMessages(api, state.id) };
+    }
+    if (request.action === 'abort' && actions.includes('abort')) {
+      // The same selected-session and generation checks as send.
+      if (request.sessionId !== state.id || request.epoch !== state.epoch) return { result: 'session_changed' };
+      const answer = result => ({ result, turnId: state.turnId, phase: state.phase });
+      if (request.turnId !== undefined && request.turnId !== state.turnId) return answer('not_running');
+      // Only the agent's own permission or question is a prompt; a picker or
+      // palette the user opened does not stop an abort.
+      if (state.prompt) return answer('prompt_active');
+      if (state.fence) return answer('pending');
+      if (!state.busy) return answer('not_running');
+      try {
+        await api.client.session.abort({ sessionID: state.id }, { throwOnError: true });
+        return answer('sent');
+      } catch { return answer('unconfirmed'); /* The abort may have reached the server. */ }
+    }
     if (request.action !== 'send') throw new Error('Unsupported operation');
     if (request.sessionId !== state.id || request.epoch !== state.epoch) return { result: 'session_changed' };
     const text = str(request.text);
@@ -84,7 +126,7 @@ export function terminalChatHandler(api, epoch = randomBytes(16).toString('hex')
     const fingerprint = createHash('sha256').update(JSON.stringify([state.id, text])).digest('hex');
     const previous = requests.get(requestId);
     if (previous) return previous.fingerprint === fingerprint ? previous.result : { result: 'session_changed' };
-    if (state.phase === 'awaiting_input') return { result: 'blocked' };
+    if (state.phase === 'awaiting_input' || state.dialog) return { result: 'blocked' };
     if (state.phase === 'running') return { result: 'busy' };
     // A receipt past the retention can never be replayed: drop it.
     if (requests.size >= 512) {
@@ -101,6 +143,8 @@ export function terminalChatHandler(api, epoch = randomBytes(16).toString('hex')
     const dispatch = { sending: true, sawBusy: false,
       messages: new Set(api.state.session.messages(state.id).map(message => message.id)) };
     pending.set(state.id, dispatch);
+    // The turn starts when its prompt is accepted.
+    openTurn(state.id, Date.now());
     try {
       // Use THIS TUI's client and selected native session. Native events update
       // its screen as well as Chat. Local composer drafts remain untouched.

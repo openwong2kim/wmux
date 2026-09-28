@@ -25,6 +25,82 @@ export function screenBlocksChatSend(rows: readonly string[] | null): boolean {
   return looksLikeApprovalPrompt(rows) || rows.some((row) => DIALOG_FOOTER_ROW.test(row));
 }
 
+/**
+ * Claude Code's live spinner row: a spinner glyph, a gerund ending in `…`, and
+ * a parenthesised counter carrying elapsed time or tokens, e.g.
+ * `✻ Embellishing… (1s · ↓ 25 tokens · thinking with medium effort)`,
+ * `✢ Ruminating… (8s · ↓ 238 tokens)`,
+ * `✢ Onioning… (running UserPromptSubmit hook · 0s)`.
+ * The finished-turn summary (`✻ Worked for 12s`) has no `…(` and never matches.
+ * Claude Code does not draw `esc to interrupt` (#935).
+ */
+const CLAUDE_RUNNING_ROW = /^[✻✶✳✢✽] ?\S[^(]*… ?\((?:[^)]*[\s(·])?(?:\d+[hms]\b|[\d.]+k? tokens\b)/;
+/** Codex's status row, e.g. `• Working (1s • esc to interrupt)`. */
+const CODEX_RUNNING_ROW = /^•\s.*\besc to interrupt\)\s*$/i;
+
+/**
+ * Positive evidence, on the grid itself, that the agent's turn is running
+ * right now: the status row the agent draws only while it works. The status
+ * a hook reported can outlive the turn by the hook's delivery lag; this row
+ * cannot. Both agents hide the row while answer text streams (captured on
+ * Claude Code 2.1.283 and Codex 0.157.1), so its absence refuses a Stop that
+ * may well have been safe; its presence is never stale.
+ */
+export function screenShowsRunningTurn(rows: readonly string[] | null, slug: string): boolean {
+  if (!rows) return false;
+  const row = slug === 'claude' ? CLAUDE_RUNNING_ROW : slug === 'codex' ? CODEX_RUNNING_ROW : null;
+  return !!row && rows.some((line) => row.test(line.trim()));
+}
+
+/**
+ * Window-title spinners, captured on the same versions: Claude Code alternates
+ * `◐ <name>` / `◑ <name>` about once a second for the whole turn (thinking,
+ * tools, streaming) and sets `✳ <name>` when it ends or is interrupted. Codex
+ * puts a braille frame first (`⠙ <name> | <cwd>`) every ~100 ms and drops it
+ * when the turn ends. Unlike the screen row, both stay up while text streams.
+ */
+const CLAUDE_RUNNING_TITLE = /^[◐◑]\s/;
+const CODEX_RUNNING_TITLE = /^[⠁-⣿]\s/;
+/**
+ * A running title is refreshed at least every ~1 s (Claude; Codex ~0.1 s). One
+ * older than this is a program that stopped writing (killed mid-turn, pane
+ * handed back to a shell that sets no title) and proves nothing.
+ */
+export const TITLE_FRESH_MS = 3000;
+
+/** Does the current window title show the agent's running spinner, refreshed recently? */
+export function titleShowsRunningTurn(title: { title: string; at: number } | null | undefined, slug: string, now: number): boolean {
+  if (!title || title.at <= 0 || now - title.at > TITLE_FRESH_MS) return false;
+  const spinner = slug === 'claude' ? CLAUDE_RUNNING_TITLE : slug === 'codex' ? CODEX_RUNNING_TITLE : null;
+  return !!spinner && spinner.test(title.title);
+}
+
+const CLAUDE_IDLE_TITLE = /^✳\s/;
+
+/**
+ * Does the latest title, set during the turn (`at >= since`), say the turn is
+ * over? Claude swaps its spinner for `✳`; Codex drops the braille frame. A
+ * title from before the turn says nothing about it.
+ */
+export function titleShowsFinishedTurn(title: { title: string; at: number } | null | undefined, slug: string, since: number): boolean {
+  if (!title || title.at <= 0 || title.at < since) return false;
+  if (slug === 'claude') return CLAUDE_IDLE_TITLE.test(title.title);
+  if (slug === 'codex') return !CODEX_RUNNING_TITLE.test(title.title);
+  return false;
+}
+
+/**
+ * Claude Code runs its Stop hooks after the answer is complete, still under
+ * the spinner row and title (`Musing… (running Stop hooks… 0/2 · 2s)`,
+ * ~180 ms in the capture before the title turns `✳`). The turn is over by
+ * then; an ESC would only cut the hooks short.
+ */
+const CLAUDE_STOP_HOOK_ROW = /\brunning Stop hooks?\b/;
+
+export function screenShowsTurnEnding(rows: readonly string[] | null, slug: string): boolean {
+  return slug === 'claude' && !!rows && rows.some((row) => CLAUDE_STOP_HOOK_ROW.test(row));
+}
+
 /** The question line of Claude Code's permission dialog. */
 const PROCEED_QUESTION_ROW = /\bDo you want to proceed\b/i;
 

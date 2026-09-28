@@ -11,6 +11,8 @@ export interface ChatDeliveryDeps extends ScheduledPromptDeliveryDeps {
   hasOpenApproval: () => boolean;
   /** The pane's visible grid, parsed; null when it cannot be read. */
   readScreen: () => Promise<ChatScreenRows | null>;
+  /** Never type into a running turn (the daemon queue delivers after the turn ends). */
+  idleOnly?: boolean;
 }
 
 /** Keep transcript identity and approval checks inside the daemon, including
@@ -37,6 +39,13 @@ export async function deliverChatPrompt(
   // Mid-turn, a draft typed in Terminal would be joined the same way. Only the
   // empty composer on screen is permission for either (running stays 'busy').
   const claudeEmpty = initial.slug === 'claude' && claudeComposerEmpty(rows);
+  // A delayed (queued) message is typed with nobody watching: whatever the
+  // status reads, only an empty composer on screen is permission. A draft in
+  // a visible composer is `unconfirmed`; no composer at all (a usage screen,
+  // a picker the screen gate does not know) is a dialog to wait out.
+  if (deps.idleOnly && (initial.slug === 'claude' ? !claudeEmpty : !codexComposerEmpty(rows))) {
+    return (initial.slug === 'claude' ? claudeComposerVisible(rows) : codexComposerVisible(rows)) ? 'unconfirmed' : 'blocked';
+  }
   if (initial.slug === 'claude' && initial.status === 'idle' && !claudeEmpty) return 'unconfirmed';
   // Image paths become attachments only in Claude's composer, and only an
   // empty one: a failed earlier send may have left paths behind to duplicate.
@@ -52,7 +61,7 @@ export async function deliverChatPrompt(
     // double-Enter behavior is retained by the scheduler's default.
     ...(initial.slug === 'codex' ? { submitKeys: '\r' } : {}),
     // Claude queues a prompt submitted mid-turn, exactly as typed in Terminal.
-    ...(claudeEmpty ? { acceptRunning: true } : {}),
+    ...(claudeEmpty && !deps.idleOnly ? { acceptRunning: true } : {}),
     ...(attachments.length ? { leadingPastes: attachments.map(quoteImagePathForPty) } : {}),
     delay: async (ms) => {
       await (deps.delay ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))))(ms);
@@ -84,6 +93,26 @@ export function claudeComposerEmpty(rows: ChatScreenRows | null): boolean {
   // A fresh session dims a suggestion into the empty prompt: `❯ Try "…"`.
   const empty = /^❯(?: Try "[^"]*")?$/.test(tail[at] ?? '') || /^❯$/.test(rows.undimmed?.[at]?.trim() ?? '');
   return at > 0 && empty && rule(tail[at - 1]) && rule(tail[at + 1]);
+}
+
+/** The Claude composer is on screen (prompt row between two rules), empty or not. */
+export function claudeComposerVisible(rows: ChatScreenRows | null): boolean {
+  if (!rows || screenBlocksChatSend(rows)) return false;
+  const tail = rows.map(row => row.trim());
+  const rule = (row: string | undefined) => !!row && /^─{8,}$/.test(row);
+  let at = -1;
+  tail.forEach((row, index) => { if (/^❯(?:\s|$)/.test(row)) at = index; });
+  return at > 0 && rule(tail[at - 1]) && rule(tail[at + 1]);
+}
+
+/** The Codex composer is on screen (a `›` row over its model/cwd footer), empty or not. */
+export function codexComposerVisible(rows: ChatScreenRows | null): boolean {
+  if (!rows || codexScreenBlocked(rows)) return false;
+  const tail = rows.map(row => row.trimEnd());
+  const prompts = tail.flatMap((row, index) => /^\s*› /.test(row) || /^\s*›$/.test(row) ? [index] : []);
+  const at = prompts.at(-1);
+  if (at === undefined) return false;
+  return tail.slice(at + 1).some(row => /^\s*\S.+ · (?:[A-Za-z]:[\\/]|\/|~)/.test(row));
 }
 
 /** Codex 0.156/0.157 TUI; positive evidence, not an absence-of-errors heuristic.
