@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,17 +7,29 @@ import { randomUUID } from 'node:crypto';
 import { SessionGitController, type GitMutation } from '../sessionGit';
 import { buildGitEnv, createGitRunner } from '../sessionDiff';
 let root: string;
+let template: string;
 let controller: SessionGitController;
 const savedHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
 const git = (...args: string[]) => execFileSync('git', args, { cwd: root, env: buildGitEnv(), encoding: 'utf8' }).trim();
+// Each git spawn costs 100 ms+ on the Windows runner, so the empty repo is
+// initialised once and every test gets a byte copy of it. It has no commits and
+// no index yet, so the copy needs no index refresh.
+beforeAll(async () => {
+  template = await fs.mkdtemp(path.join(os.tmpdir(), 'wmux-phone-git-tpl-'));
+  process.env.HOME = template; process.env.USERPROFILE = template;
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: template, env: buildGitEnv() });
+  await fs.appendFile(path.join(template, '.git', 'config'), '[user]\n\tname = Phone Test\n\temail = phone@example.invalid\n');
+  process.env.HOME = savedHome.HOME; process.env.USERPROFILE = savedHome.USERPROFILE;
+});
+afterAll(async () => {
+  await fs.rm(template, { recursive: true, force: true });
+});
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'wmux-phone-git-'));
   // Point git's global config at the empty temp root so a runner's own
   // ~/.gitconfig (git-lfs filters on the macOS image) cannot leak in.
   process.env.HOME = root; process.env.USERPROFILE = root;
-  git('init', '-b', 'main');
-  git('config', 'user.name', 'Phone Test');
-  git('config', 'user.email', 'phone@example.invalid');
+  await fs.cp(template, root, { recursive: true });
   controller = new SessionGitController();
 });
 afterEach(async () => {
