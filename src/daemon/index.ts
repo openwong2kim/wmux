@@ -15,6 +15,7 @@ import { RunHistoryStore } from './history/RunHistoryStore';
 import { InputReceiptStore } from './web/InputReceiptStore';
 import { AnswerReceiptStore } from './approvals/AnswerReceiptStore';
 import { coercePhoneDecisions } from './approvals/decisionConfig';
+import { isNativeDecision } from './approvals/types';
 import { SCROLLBACK_ROWS } from './web/hostSearch';
 import { recoveryCwd, isWslShell, isWslCwdMissingError } from '../shared/wsl';
 import fs from 'node:fs';
@@ -5105,7 +5106,8 @@ function wireEvents(
     render: (id) => renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot),
     clear: (id) => { sessionManager.getSession(id)?.bridge.clearAwaiting('screen-cleared'); },
     holdsPrompt: (id) => approvalRegistry?.list().pending
-      .some((request) => request.sessionId === id && request.kind === 'terminal_prompt') === true,
+      // An agent-held (native) decision is not a dialog on this screen.
+      .some((request) => request.sessionId === id && request.kind === 'terminal_prompt' && !isNativeDecision(request)) === true,
     log: (level, message) => log(level, message),
   });
   const forgetAwaiting = (payload: { id: string }): void => awaitingVerifier.forget(payload.id);

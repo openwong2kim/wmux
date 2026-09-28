@@ -50,6 +50,19 @@ describe('AnswerReceiptStore', () => {
     }
   });
 
+  it('a final result that cannot reach disk reads back as uncertain, never done', async () => {
+    if (process.platform === 'win32') return;
+    const store = new AnswerReceiptStore(dir);
+    await store.begin('device:d1', 'answer-0000000001', 'ap-1', BODY);
+    fs.chmodSync(dir, 0o500);
+    try {
+      await store.finish('device:d1', 'answer-0000000001', 'done', FINAL);
+    } finally {
+      fs.chmodSync(dir, 0o700);
+    }
+    expect(store.peek('device:d1', 'answer-0000000001', 'ap-1', BODY)).toEqual({ kind: 'uncertain' });
+  });
+
   it('a released id is checked again; the answer text itself is never written', async () => {
     const store = new AnswerReceiptStore(dir);
     await store.begin('device:d1', 'answer-0000000001', 'ap-1', BODY);

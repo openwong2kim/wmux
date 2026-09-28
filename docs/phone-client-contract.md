@@ -1338,6 +1338,25 @@ Every native decision needs the input grant, on every route (403 otherwise).
 Only a phone or browser can answer one: the desktop answers it in the agent's
 own terminal.
 
+A native **question** with one single-select question keeps its `choices`
+(when every option key is a 1–2 digit number) and is answered like an
+`AskUserQuestion`: `{decision: 'approve', choiceKey}` from any client, no
+capability header needed; `deny` rejects it. Several questions or a
+multi-select carry no choices; approve answers 501 `needs-v2`.
+
+Extra outcomes on the v1 route and `/decline` for a native decision:
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 503 | `{error: 'agent-unavailable', effect: 'none'}` | The agent's server could not be reached. Nothing was delivered; retry |
+| 409 | `{error: 'answer-uncertain', effect: 'uncertain'}` | The agent's server did not confirm within 10 s. The answer may have landed; the card stays up until the agent settles it. Do not retry blindly — re-read the list |
+
+A card for a native request that was answered or went away is not raised
+again for that request. With the daemon's `phoneDecisions.native` switch off,
+a native decision is an informational card (no `choices`, no `form`): it
+cannot be answered or declined from a phone even after the switch is turned
+back on, and it still never blocks typing into its pane.
+
 #### `POST /api/approvals/<id>/answer`
 
 Requires `decision-v2` (else 501 `no-capability`) and the input grant (403),
@@ -1352,9 +1371,9 @@ orchestrator brain's pane is a 404 for a device. Body — unknown fields are 400
 ```
 
 At least one of `action` / `answers`. `text` and `other` refuse every C0
-control character (newline included — it would submit a dialog field early)
-and DEL, whitespace-only text, and more than 2,000 UTF-16 units. The daemon
-never stores the text itself.
+control character (newline included — it would submit a dialog field early),
+DEL, every C1 control (U+0080–U+009F), U+2028 / U+2029, whitespace-only text,
+and more than 2,000 UTF-16 units. The daemon never stores the text itself.
 
 | Status | Body | Meaning |
 | --- | --- | --- |
@@ -1366,16 +1385,22 @@ never stores the text itself.
 | 404 | `{error: 'not-found'}` | No such request (or a brain pane) |
 | 409 | `{error: 'already-resolved' \| 'already-answered' \| 'prompt-changed', effect: 'none' \| 'partial', step?}` | Someone else answered, or the screen moved (`partial`: some keys of a stepwise answer were typed; the record stays pending and answers `already-answered` from then on) |
 | 409 | `{error: 'answer-id-reused', effect: 'none'}` | This `clientAnswerId` was used for another body |
-| 409 | `{error: 'answer-uncertain', effect: 'uncertain'}` | It was running when the daemon stopped; it may or may not have landed and is never re-run |
+| 409 | `{error: 'answer-uncertain', effect: 'uncertain'}` | It was running when the daemon stopped, or the agent's server did not confirm it in time; it may or may not have landed and is never re-run |
 | 410 | `{error: 'expired' \| 'prompt-gone', effect: 'none'}` | The request is gone (an agent that no longer holds it included) |
 | 425 | `{error: 'answer-too-soon', effect: 'none'}` | Within 1.5 s of the request appearing |
 | 429 | `{error: 'answer-receipts-full', effect: 'none'}` | 512 live receipts for this caller |
 | 501 | `{error: 'answer-in-terminal', reason}` | `reason` as for the v1 route. **Every answer is `unsupported-shape` today** (no form producer yet) |
-| 503 | `{error: 'authorization-unconfirmed' \| 'approvals unavailable' \| 'answer-receipts-unavailable'}` | Retry |
+| 500 | `{error: 'internal-error' \| 'approvals unavailable'}` | Retry |
+| 503 | `{error: 'authorization-unconfirmed' \| 'agent-unavailable' \| 'approvals unavailable' \| 'answer-receipts-unavailable'}` | Retry |
 
 A final response is kept for 24 hours under `(caller, clientAnswerId)`: the
-same id and body again returns it with `replayed: true`. A response you may
-retry past (401, 403, 425, 5xx) is not kept, so the retry is checked afresh.
+same id and body again returns it with `replayed: true` — even after the
+request has left `/api/approvals` (the receipt is looked up before the
+request). Not kept, so a retry with the same id is checked afresh: 401, 403,
+425, 500, 503, and 409 `already-answered` (another answer was in flight).
+Everything else is final, including 409 `answer-uncertain`. A 400 is never
+journaled (the body is refused before the receipt), and neither is a 404 for a
+request that no longer exists when there is no receipt for it.
 
 #### `GET /api/approvals/<id>/answer/<clientAnswerId>`
 

@@ -327,9 +327,16 @@ export interface DecisionAnswer {
   text?: string;
 }
 
-/** What the daemon asks a native adapter to do with one request. */
+/**
+ * What the daemon asks a native adapter to do with one request. `formKind`
+ * picks the agent's call (OpenCode: `permission.reply` vs `question.reply` /
+ * `question.reject`); `choiceKey` is the option a single-select question was
+ * answered with (approve only).
+ */
 export interface NativeDecisionReply {
   decision: ApprovalDecision;
+  formKind: DecisionFormKind;
+  choiceKey?: string;
 }
 
 /**
@@ -339,6 +346,9 @@ export interface NativeDecisionReply {
  */
 export type NativeDecisionOutcome = 'ok' | 'not-found' | 'unavailable';
 
+/** Longest the registry waits on a native adapter before calling the answer uncertain. */
+export const NATIVE_ANSWER_TIMEOUT_MS = 10_000;
+
 /**
  * Who must hold the device's input grant to act on this record. True for a
  * permission gate or a terminal dialog (either one lets a tool run), for any
@@ -347,13 +357,22 @@ export type NativeDecisionOutcome = 'ok' | 'not-found' | 'unavailable';
  * the single-key approve of a screen-backed, non-native `awaiting_input`.
  */
 export function needsInputGrant(
-  record: Pick<ApprovalRequest, 'kind' | 'channel'>,
+  record: Pick<ApprovalRequest, 'kind' | 'channel' | 'native'>,
   via: 'resolve' | 'decline' | 'answer' = 'resolve',
 ): boolean {
   if (via !== 'resolve') return true;
   return record.kind === 'awaiting_permission'
     || record.kind === 'terminal_prompt'
-    || record.channel === 'native-rpc';
+    || isNativeDecision(record);
+}
+
+/**
+ * A record the agent's own server holds — on the `native-rpc` channel, or on
+ * `none` because the kill switch was off when it was made. Either way no
+ * screen or key rule applies to it: it is not a dialog wmux can read or type.
+ */
+export function isNativeDecision(record: Pick<ApprovalRequest, 'channel' | 'native'>): boolean {
+  return record.channel === 'native-rpc' || record.native !== undefined;
 }
 
 /**
@@ -417,7 +436,13 @@ export type ApprovalResolveFailure =
   // cannot answer (multi-select, or several questions). NOT an expiry: the
   // record stays pending, deny (Esc) still works, and a human answers the rest
   // in the pane. The web layer maps it to 501 with `reason: 'needs-v2'`.
-  | 'needs-v2';
+  | 'needs-v2'
+  // A native decision whose agent server could not be reached: nothing was
+  // delivered, the record stays pending, the caller may retry (503).
+  | 'agent-unavailable'
+  // A native decision whose agent server did not answer in time: the answer
+  // may or may not have landed. Never retried by the daemon (409).
+  | 'answer-uncertain';
 
 /**
  * The one-line `reason` a 501 carries on the web wire, next to its unchanged

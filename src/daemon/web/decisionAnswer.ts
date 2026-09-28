@@ -25,13 +25,16 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /**
  * Text typed on the phone that will be pasted into a dialog field. Every C0
- * control (newline included: it submits a dialog field early) and DEL are
- * refused, as are whitespace-only and over-long texts.
+ * control (newline included: it submits a dialog field early), DEL, every C1
+ * control and U+2028/U+2029 are refused, as are whitespace-only and over-long
+ * texts.
  */
 export function isValidDecisionText(value: unknown): value is string {
   return typeof value === 'string'
+    // C0, DEL, C1 (U+009B is a one-byte CSI to many terminals) and the
+    // Unicode line/paragraph separators, which some fields take as a newline.
     // eslint-disable-next-line no-control-regex -- refusing them is the point
-    && !/[\u0000-\u001f\u007f]/.test(value)
+    && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(value)
     && value.length <= DECISION_TEXT_MAX_UNITS
     && value.trim().length > 0;
 }

@@ -5107,6 +5107,51 @@ describe('WebTerminalServer', () => {
       expect(answerReceiptStore.lookup(`device:${phone.deviceId}`, 'phone-answer-0002')).toBeNull();
     });
 
+    it('a native single-select question is answerable from a client with no capability header, like AskUserQuestion', async () => {
+      await startRW();
+      const phone = await pairDevice('Oldest phone', true);
+      approvalRecords.push(nativeQuestion({
+        form: { v: 1, kind: 'questions', actions: [], questions: [{ id: 'q0', text: 'Which env?', multiSelect: false, allowOther: false, options: [{ key: '1', label: 'dev' }, { key: '2', label: 'prod' }] }] },
+        choices: [{ key: '1', label: 'dev' }, { key: '2', label: 'prod' }],
+        questionShape: undefined,
+      }));
+      approvalBox.result = { ok: true, durable: true, request: nativeQuestion({ state: 'resolved', selectedChoiceKey: '2' }) };
+      const res = await fetch(`${base()}/api/approvals/ap-native-q`, {
+        method: 'POST',
+        headers: { ...bearer(phone.token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'approve', choiceKey: '2' }),
+      });
+      expect(res.status).toBe(200);
+      expect(resolveCalls[0]).toMatchObject({ id: 'ap-native-q', decision: 'approve', choiceKey: '2' });
+      expect((resolveCalls[0] as Record<string, unknown>).terminalPromptAnswer).toBe(TERMINAL_PROMPT_WEB_ANSWER);
+    });
+
+    it('a native answer whose agent server is unreachable is 503; one that timed out is 409 uncertain', async () => {
+      await startRW();
+      const phone = await pairDevice('Old phone', true);
+      approvalRecords.push(nativeTp());
+      const post = () => fetch(`${base()}/api/approvals/ap-native`, {
+        method: 'POST',
+        headers: { ...bearer(phone.token), 'Content-Type': 'application/json', ...OLD_IOS },
+        body: JSON.stringify({ decision: 'approve', choiceKey: '1', promptFingerprint: FP }),
+      });
+      approvalBox.result = { ok: false, reason: 'agent-unavailable', request: nativeTp() };
+      const down = await post();
+      expect(down.status).toBe(503);
+      expect(await down.json()).toEqual({ error: 'agent-unavailable', effect: 'none' });
+      approvalBox.result = { ok: false, reason: 'answer-uncertain', request: nativeTp() };
+      const unsure = await post();
+      expect(unsure.status).toBe(409);
+      expect(await unsure.json()).toEqual({ error: 'answer-uncertain', effect: 'uncertain' });
+    });
+
+    it('a native record made with the kill switch off does not block typing into its pane', async () => {
+      const info = await startRW();
+      approvalRecords.push(nativeTp({ channel: 'none', form: undefined, choices: undefined, promptFingerprint: undefined }));
+      const res = await fetch(`${base()}/api/input?session=s1`, { method: 'POST', headers: bearer(info.token as string), body: '1\r' });
+      expect(res.status).toBe(204);
+    });
+
     describe('POST /api/approvals/:id/answer', () => {
       it('needs the decision-v2 capability; nothing reaches the registry without it', async () => {
         const info = await startRW();
@@ -5186,6 +5231,58 @@ describe('WebTerminalServer', () => {
         release();
         expect((await running).status).toBe(200);
         expect(resolveCalls).toHaveLength(1);
+      });
+
+      it('a receipt replays even after the approval has left the list; a new id for a gone approval is 404', async () => {
+        await startRW();
+        const phone = await pairDevice('Late retry', true);
+        approvalRecords.push(nativeTp());
+        approvalBox.result = { ok: true, durable: true, request: nativeTp({ state: 'resolved' }) };
+        expect((await postAnswer(phone.token, answerBody())).status).toBe(200);
+        approvalRecords.splice(0, approvalRecords.length);
+        const replay = await postAnswer(phone.token, answerBody());
+        expect(replay.status).toBe(200);
+        expect(await replay.json()).toEqual({ state: 'resolved', effect: 'complete', durable: true, replayed: true });
+        expect((await postAnswer(phone.token, answerBody({ clientAnswerId: 'phone-answer-0009' }))).status).toBe(404);
+        expect(resolveCalls).toHaveLength(1);
+      });
+
+      it.each([
+        ['agent-unavailable', 503],
+        ['already-answered', 409],
+        ['answer-too-soon', 425],
+      ] as const)('%s (%i) is released, so a retry with the same id runs again', async (reason, status) => {
+        await startRW();
+        const phone = await pairDevice('Retry phone', true);
+        approvalRecords.push(nativeTp());
+        approvalBox.result = { ok: false, reason, request: nativeTp() };
+        const first = await postAnswer(phone.token, answerBody());
+        expect(first.status).toBe(status);
+        approvalBox.result = { ok: true, durable: true, request: nativeTp({ state: 'resolved' }) };
+        expect((await postAnswer(phone.token, answerBody())).status).toBe(200);
+        expect(resolveCalls).toHaveLength(2);
+      });
+
+      it('answer-uncertain is final: kept and replayed, never re-run', async () => {
+        await startRW();
+        const phone = await pairDevice('Uncertain phone', true);
+        approvalRecords.push(nativeTp());
+        approvalBox.result = { ok: false, reason: 'answer-uncertain', request: nativeTp() };
+        const first = await postAnswer(phone.token, answerBody());
+        expect(first.status).toBe(409);
+        expect(await first.json()).toEqual({ error: 'answer-uncertain', effect: 'uncertain' });
+        expect((await postAnswer(phone.token, answerBody())).status).toBe(409);
+        expect(resolveCalls).toHaveLength(1);
+      });
+
+      it('an unmapped registry reason is a closed 500, never echoed', async () => {
+        await startRW();
+        const phone = await pairDevice('Odd phone', true);
+        approvalRecords.push(nativeTp());
+        approvalBox.result = { ok: false, reason: 'secret-internal-reason' as never, request: nativeTp() };
+        const res = await postAnswer(phone.token, answerBody());
+        expect(res.status).toBe(500);
+        expect(await res.text()).not.toContain('secret-internal-reason');
       });
 
       it('a device may not answer or read a receipt for the brain pane', async () => {

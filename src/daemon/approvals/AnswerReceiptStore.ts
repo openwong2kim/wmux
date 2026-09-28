@@ -100,17 +100,9 @@ export class AnswerReceiptStore {
    * then `finish` or `release` it.
    */
   async begin(owner: string, clientAnswerId: string, approvalId: string, bodyHash: string): Promise<AnswerReceiptBegin> {
-    this.prune();
+    const seen = this.peek(owner, clientAnswerId, approvalId, bodyHash);
+    if (seen) return seen;
     const key = receiptHash([owner, clientAnswerId]);
-    const existing = this.rows.get(key);
-    if (existing) {
-      if (existing.approvalId !== approvalId || existing.bodyHash !== bodyHash) return { kind: 'reused' };
-      if (existing.state === 'inFlight') return { kind: 'in-flight' };
-      if (existing.state === 'uncertain') return { kind: 'uncertain' };
-      return existing.result
-        ? { kind: 'replay', response: existing.result, state: existing.state }
-        : { kind: 'uncertain' };
-    }
     let owned = 0;
     for (const row of this.rows.values()) if (row.owner === owner) owned++;
     if (owned >= this.perOwnerMax) return { kind: 'full' };
@@ -126,7 +118,23 @@ export class AnswerReceiptStore {
     return { kind: 'new' };
   }
 
-  /** Record the final response for a claimed id. A failed write leaves it `inFlight` in memory, never `done`. */
+  /**
+   * What `(owner, clientAnswerId)` already stands for, or null when it is
+   * unused. Synchronous and side-effect free apart from pruning, so a route
+   * can replay a receipt before it looks for the approval — which may have
+   * left the registry's history long before the receipt expires.
+   */
+  peek(owner: string, clientAnswerId: string, approvalId: string, bodyHash: string): Exclude<AnswerReceiptBegin, { kind: 'new' | 'full' }> | null {
+    this.prune();
+    const existing = this.rows.get(receiptHash([owner, clientAnswerId]));
+    if (!existing) return null;
+    if (existing.approvalId !== approvalId || existing.bodyHash !== bodyHash) return { kind: 'reused' };
+    if (existing.state === 'inFlight') return { kind: 'in-flight' };
+    if (existing.state === 'uncertain' || !existing.result) return { kind: 'uncertain' };
+    return { kind: 'replay', response: existing.result, state: existing.state };
+  }
+
+  /** Record the final response for a claimed id. A failed write leaves it `uncertain`, never `done`. */
   async finish(
     owner: string,
     clientAnswerId: string,
@@ -141,8 +149,10 @@ export class AnswerReceiptStore {
     try {
       await this.save();
     } catch {
-      // The answer happened; only its receipt did not reach disk. A restart
-      // reloads it as in flight, i.e. uncertain — the honest reading.
+      // The answer happened; only its receipt did not reach disk, where it is
+      // still in flight (a restart reads that as uncertain). Say the same now,
+      // rather than a final result the disk does not hold.
+      if (this.rows.get(key) === next) this.rows.set(key, { ...row, state: 'uncertain' });
     }
   }
 
@@ -170,8 +180,9 @@ export class AnswerReceiptStore {
   private prune(): void {
     const cutoff = this.now() - ANSWER_RECEIPT_RETENTION_MS;
     for (const [key, row] of this.rows) {
-      // A running answer is never pruned from under its own request.
-      if (row.createdAt <= cutoff && row.state !== 'inFlight') this.rows.delete(key);
+      // Nothing runs for a day (the native answer is bounded by a timeout),
+      // so an old in-flight row is one a lost write stranded: drop it too.
+      if (row.createdAt <= cutoff) this.rows.delete(key);
     }
   }
 
