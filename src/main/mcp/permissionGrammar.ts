@@ -70,6 +70,11 @@ const KNOWN_CAPABILITIES = new Set<string>([
   // repository and remove a worktree, and one approval must not cover both.
   'task.read',
   'task.write',
+  // Scheduled runs (automation.list / automation.runs / automation.propose).
+  // Its own pair: a draft persists and later runs unattended once a human
+  // enables it, which neither a ledger nor a task grant should cover.
+  'automation.read',
+  'automation.write',
   // Plugin host UI contribution points (B-1). Enforced at contribution
   // registration time — the host refuses to mount the iframe/widget when
   // the capability is missing or the plugin isn't trusted; per-RPC

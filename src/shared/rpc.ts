@@ -557,7 +557,14 @@ export type RpcMethod =
   // Approval press (pipe/handlers/approvals.rpc.ts) — the brain answers a
   // worker's prompt through the approval registry instead of typing a digit.
   // Authorization is the daemon's press scope (decideApprovalPress).
-  | 'approval.press';
+  | 'approval.press'
+  // Scheduled runs on the pipe (pipe/handlers/automation.rpc.ts). An agent may
+  // only DRAFT a schedule (stored disabled, approval mode, surfaced to the
+  // human) and read a redacted list / run states; every other automation.*
+  // mutation stays on the renderer IPC surface.
+  | 'automation.propose'
+  | 'automation.list'
+  | 'automation.runs';
 
 // All available methods as array (for system.capabilities)
 export const ALL_RPC_METHODS = [
@@ -749,6 +756,9 @@ export const ALL_RPC_METHODS = [
   'task.git.log',
   'task.gh.prView',
   'approval.press',
+  'automation.propose',
+  'automation.list',
+  'automation.runs',
 ] as const satisfies readonly RpcMethod[];
 
 // === RPC Parameter Types ===
