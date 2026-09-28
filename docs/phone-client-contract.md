@@ -1413,8 +1413,19 @@ where `status` / `result` are the stored final response.
 `POST /api/sessions/<id>/chat/cancel` writes one Esc into a running Claude or
 Codex turn. The chat object's `capabilities.cancel` is passed through only to
 a caller that sends the `chat-cancel` capability; every other client keeps
-`cancel: false`. The route itself does not require the capability. Full
-request and response rules are documented with the cancel/queue section.
+`cancel: false`. The route itself does not require the capability.
+
+Body `{agentSessionId, clientCancelId, turnId?, historyEpoch?}`; it is gated
+like a send. 202 `{result:"sent", turnId, clientCancelId,
+effect:"interrupt-requested"}` means one Esc was written; whether the agent
+stopped shows later on `chat.turn`. A repeat with the same `clientCancelId`
+and body is 200 `replayed:true`. Refusals are 409 `turn-not-running` `{turn}`,
+`prompt-active` `{by, approvalId?}`, `session-changed`, `chat-busy`,
+`cancel-cooldown` `{retryAfterMs}`, `turn-already-interrupted` `{turnId}` or
+`cancel-id-conflict`, 422 `cancel-unsupported`, and 404 `pane-not-found`. The
+daemon writes the Esc only while the agent's own working row is on screen,
+and both Claude Code and Codex hide that row while answer text streams, so a
+cancel in that phase is refused with `turn-not-running`.
 
 ---
 
