@@ -657,11 +657,16 @@ export function registerHooksRpc(
     // durable saveImmediate, and the hook's 2s budget must never block on it.
     // agentSessionId is the #12235-safe origin id (transcript basename) the
     // bridge derived; cwd + permissionMode complete the binding (F5/F7).
+    //
+    // Only for a pane-EXACT route (#1523): this fallback cannot see the pane's
+    // current binding, so a workspace/cwd guess could replace another agent's
+    // conversation. Skipping it also keeps a guess out of the spool.
     if (
       (signal.kind === 'agent.session_start'
         || signal.kind === 'agent.stop'
         || signal.kind === 'agent.subagent_stop')
       && signal.agentSessionId
+      && signal.ptyId === ptyId
     ) {
       const permissionMode = readPermissionMode(signal.payload);
       const transcriptPath = typeof signal.payload?.transcript_path === 'string'
@@ -1157,6 +1162,11 @@ interface WorkspaceListCache {
    */
   peek(): { list: WorkspaceListEntry[]; ageMs: number } | null;
   /**
+   * Force one renderer round-trip, ignoring the TTL (coalesces with an
+   * in-flight fetch). Returns the last-known list when the fetch fails.
+   */
+  refresh(): Promise<WorkspaceListEntry[] | null>;
+  /**
    * Fire-and-forget refresh to keep the cache warm for `peek()` consumers.
    * No-op when already fresh or a refresh is in flight; coalesces with `get()`.
    * Never throws into the caller and never blocks it.
@@ -1211,6 +1221,7 @@ export function createWorkspaceListCache(
       if (isFresh()) return cached; // fresh hit — no renderer round-trip
       return refresh();
     },
+    refresh,
     peek(): { list: WorkspaceListEntry[]; ageMs: number } | null {
       if (cached === null) return null;
       return { list: cached, ageMs: now() - cachedAt };
@@ -1282,7 +1293,7 @@ export function createWorkspaceListCache(
  */
 export async function resolveWorkspacesForSignal(
   signal: AgentSignal,
-  cache: Pick<WorkspaceListCache, 'get' | 'peek' | 'prime'>,
+  cache: Pick<WorkspaceListCache, 'get' | 'peek' | 'prime'> & Partial<Pick<WorkspaceListCache, 'refresh'>>,
   mirror?: Pick<WorkspaceMirror, 'peek'>,
 ): Promise<{ workspaces: WorkspaceListEntry[] | null; fetchMs: number; fastPathed: boolean }> {
   // (1) Mirror first. Populated + fresh + the pure resolver places a pane → no
@@ -1317,7 +1328,19 @@ export async function resolveWorkspacesForSignal(
     return { workspaces: peeked.list, fetchMs: 0, fastPathed: true };
   }
   const fetchStart = Date.now();
-  const workspaces = await cache.get();
+  let workspaces = await cache.get();
+  // #1523: a claimed ptyId missing from the list is refused, and `get()` may
+  // have served a list up to its TTL old (or the last-known one after a failed
+  // fetch) — so a just-opened pane's first hook would be dropped. Force one
+  // fresh fetch before that verdict; if it fails, the old list stands.
+  if (
+    signal.ptyId
+    && workspaces
+    && cache.refresh
+    && resolvePtyIdForSignal(signal, workspaces) !== signal.ptyId
+  ) {
+    workspaces = (await cache.refresh()) ?? workspaces;
+  }
   return { workspaces, fetchMs: Date.now() - fetchStart, fastPathed: false };
 }
 
@@ -1362,9 +1385,13 @@ export function resolvePtyIdForSignal(
     // #1523: a claimed ptyId that fails either check is refused — never re-routed
     // to the workspace's active pane or a cwd match, which would hand a pane that
     // is not the sender another agent's turn and resume binding.
-    return ptyWorkspaceId && (!signal.workspaceId || ptyWorkspaceId === signal.workspaceId)
-      ? signal.ptyId
-      : null;
+    // The renderer owns pane placement, so a pane adopted into another workspace
+    // keeps its original WMUX_WORKSPACE_ID. When that claimed workspace no longer
+    // exists, the env value is just stale (the daemon, comparing env to env,
+    // routes it too) — only a claim naming a DIFFERENT live workspace is refused.
+    if (!ptyWorkspaceId) return null;
+    if (!signal.workspaceId || ptyWorkspaceId === signal.workspaceId) return signal.ptyId;
+    return workspaces.some((w) => w.id === signal.workspaceId) ? null : signal.ptyId;
   }
   if (signal.workspaceId) {
     const match = workspaces.find((w) => w.id === signal.workspaceId);

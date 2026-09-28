@@ -170,6 +170,25 @@ describe('hooks.signal — daemon relay', () => {
     expect(dispatchNotificationMock).toHaveBeenCalledTimes(1);
   });
 
+  it('local fallback persists a resume binding only for a pane-exact route (#1523)', async () => {
+    const { router: hookRouter } = stubHookRouter();
+    const daemon = fakeDaemon({ connected: false });
+    const bindingCalls = () => daemon.rpc.mock.calls.filter(([method]) => method === 'daemon.setResumeBinding');
+
+    // Exact: the signal names pty-1 and pty-1 is live → the binding is written.
+    await dispatchSignal(daemon.client, hookRouter, { ptyId: 'pty-1', agentSessionId: 'conv-exact' });
+    expect(bindingCalls()).toHaveLength(1);
+    expect(bindingCalls()[0][1]).toMatchObject({ id: 'pty-1', resumeBinding: { sessionId: 'conv-exact' } });
+
+    // Guessed: no ptyId, routed to pty-1 by workspace/cwd → routed, but no
+    // binding RPC (and so no spool fallback either).
+    const res = await dispatchSignal(daemon.client, hookRouter, {
+      agent: 'codex', workspaceId: 'ws-1', agentSessionId: 'conv-guess',
+    });
+    expect(res.result).toEqual({ ok: true });
+    expect(bindingCalls()).toHaveLength(1);
+  });
+
   it('falls back to local processing when there is no daemon client at all', async () => {
     const { router: hookRouter, recordHook } = stubHookRouter();
 

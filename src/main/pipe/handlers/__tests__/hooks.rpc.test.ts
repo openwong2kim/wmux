@@ -245,16 +245,31 @@ describe('resolvePtyIdForSignal — X6 ③ per-pane WMUX_PTY_ID routing', () => 
     expect(resolvePtyIdForSignal(signal({ cwd: '/repo/sub' }), workspaces)).toBe('p-active');
   });
 
-  it('a live ptyId is NOT trusted when it belongs to a DIFFERENT claimed workspace (anti-spoof)', () => {
-    // p-bg is a real live pane in ws-1, but the hook claims ws-evil. A pane-env
-    // -controlled WMUX_PTY_ID must not let an authenticated hook hijack another
-    // workspace's pane — the workspace cross-check rejects it, and the signal is
-    // refused rather than re-routed by cwd.
+  it('a live ptyId is NOT trusted when it belongs to a DIFFERENT live claimed workspace (anti-spoof)', () => {
+    // p-bg is a real live pane in ws-1, but the hook claims ws-2, another live
+    // workspace. A pane-env-controlled WMUX_PTY_ID must not let an authenticated
+    // hook hijack another workspace's pane — the workspace cross-check rejects
+    // it, and the signal is refused rather than re-routed by cwd.
+    const twoWorkspaces = [
+      ...workspaces,
+      { id: 'ws-2', name: 'Other', metadata: { cwd: '/other' }, activePtyId: 'p-other', ptyIds: ['p-other'] },
+    ];
     const got = resolvePtyIdForSignal(
-      signal({ ptyId: 'p-bg', workspaceId: 'ws-evil', cwd: '/repo' }),
-      workspaces,
+      signal({ ptyId: 'p-bg', workspaceId: 'ws-2', cwd: '/repo' }),
+      twoWorkspaces,
     );
     expect(got).toBeNull(); // neither p-bg (spoofed target) nor p-active (a guess)
+  });
+
+  it('a live ptyId whose claimed workspace no longer exists routes to that pane (adopted orphan)', () => {
+    // An orphan session adopted into ws-1 keeps its original WMUX_WORKSPACE_ID.
+    // That workspace is gone, so the env value is stale, not a claim on another
+    // live workspace — same verdict as the daemon, which compares env to env.
+    const got = resolvePtyIdForSignal(
+      signal({ ptyId: 'p-bg', workspaceId: 'ws-closed', cwd: '/repo' }),
+      workspaces,
+    );
+    expect(got).toBe('p-bg');
   });
 });
 
@@ -316,6 +331,36 @@ describe('resolveWorkspacesForSignal — env-routed fast path (Fix B)', () => {
     expect(fastPathed).toBe(false); // did NOT trust the fallback resolution
     expect(cache.get).toHaveBeenCalledTimes(1); // authoritative fetch instead
     expect(cache.prime).not.toHaveBeenCalled();
+  });
+
+  it('claimed ptyId missing from the TTL-cached list → one forced fresh fetch before refusing (#1523)', async () => {
+    const withNew: WS[] = [{ ...paneList[0], ptyIds: ['p1', 'p-new'] }];
+    const cache = { ...fakeCache({ peek: null, get: paneList }), refresh: vi.fn(async () => withNew) };
+    const { workspaces } = await resolveWorkspacesForSignal(
+      signal({ ptyId: 'p-new', workspaceId: 'w1', cwd: '/repo' }),
+      cache,
+    );
+    expect(cache.refresh).toHaveBeenCalledTimes(1);
+    expect(workspaces).toBe(withNew);
+    expect(resolvePtyIdForSignal(signal({ ptyId: 'p-new', workspaceId: 'w1', cwd: '/repo' }), workspaces!)).toBe('p-new');
+  });
+
+  it('forced fetch fails → the old list stands and the claim is refused', async () => {
+    const cache = { ...fakeCache({ peek: null, get: paneList }), refresh: vi.fn(async () => null) };
+    const { workspaces } = await resolveWorkspacesForSignal(
+      signal({ ptyId: 'p-gone', workspaceId: 'w1', cwd: '/repo' }),
+      cache,
+    );
+    expect(cache.refresh).toHaveBeenCalledTimes(1);
+    expect(workspaces).toBe(paneList);
+    expect(resolvePtyIdForSignal(signal({ ptyId: 'p-gone', workspaceId: 'w1', cwd: '/repo' }), workspaces!)).toBeNull();
+  });
+
+  it('no forced fetch when the claimed ptyId is already in the list, or the signal has no ptyId', async () => {
+    const cache = { ...fakeCache({ peek: null, get: paneList }), refresh: vi.fn(async () => paneList) };
+    await resolveWorkspacesForSignal(signal({ ptyId: 'p1', workspaceId: 'w1', cwd: '/repo' }), cache);
+    await resolveWorkspacesForSignal(signal({ workspaceId: 'w1', cwd: '/repo' }), cache);
+    expect(cache.refresh).not.toHaveBeenCalled();
   });
 
   it('env ptyId but cache staler than STALE_TRUST_MS → blocking fetch', async () => {
