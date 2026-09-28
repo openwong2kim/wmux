@@ -17,7 +17,7 @@
 // execFile/spawn of an external binary from the GUI process passes
 // `env: getExecEnv()`. Do not add a new spawn site without it.
 
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { isLinux, isMac } from './platform';
@@ -51,13 +51,14 @@ export function getExecEnv(): NodeJS.ProcessEnv {
   return cachedEnv;
 }
 
-/** The env's own PATH first (a PATH that already resolves a binary keeps resolving
- *  it the same way), then `extra`, then the static fallbacks; deduplicated. */
-function mergePath(env: NodeJS.ProcessEnv, extra: string[]): NodeJS.ProcessEnv {
+/** `first`, then the env's own PATH, then the static fallbacks (per-user ones
+ *  under the env's own HOME); deduplicated. */
+function mergePath(env: NodeJS.ProcessEnv, first: string[]): NodeJS.ProcessEnv {
+  const home = env.HOME || os.homedir();
   const existing = (env.PATH || '').split(':').filter(Boolean);
-  const merged = [...new Set([...existing, ...extra, ...(isMac ? MAC_PATH_FALLBACKS : []), path.join(os.homedir(), '.local', 'bin'),
+  const merged = [...new Set([...first, ...existing, ...(isMac ? MAC_PATH_FALLBACKS : []), path.join(home, '.local', 'bin'),
     // OpenCode's official install script defaults to INSTALL_DIR=$HOME/.opencode/bin.
-    path.join(os.homedir(), '.opencode', 'bin')])];
+    path.join(home, '.opencode', 'bin')])];
   return { ...env, PATH: merged.join(':') };
 }
 
@@ -65,51 +66,97 @@ function mergePath(env: NodeJS.ProcessEnv, extra: string[]): NodeJS.ProcessEnv {
 // adds — e.g. an npm global prefix such as ~/.local/node/bin exported from
 // ~/.zshrc, where `codex` is a `#!/usr/bin/env node` script that also needs the
 // `node` living next to it. For agent launches only, the daemon asks the user's
-// interactive login shell for its PATH once. Deliberately NOT folded into
+// interactive login shell for its PATH. Deliberately NOT folded into
 // getExecEnv(): that one is synchronous and backs every GUI spawn.
 const LOGIN_PATH_MARK = '__WMUX_LOGIN_PATH__';
 const LOGIN_SHELLS = new Set(['zsh', 'bash', 'sh']);
-let loginShellPath: string[] = [];
-let loginShellPathTask: Promise<string[]> | null = null;
+const LAUNCHD_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+export const LOGIN_PATH_TIMEOUT_MS = 5000;
+export const LOGIN_PATH_RETRY_MS = 60_000;
+let loginPath: string[] | null = null; // cached on success only
+let loginTask: Promise<string[] | null> | null = null;
+let loginFailedAt = -Infinity;
 
-/**
- * Resolve the interactive login shell's PATH (`$SHELL -ilc`) once, bounded by a
- * timeout. Success and failure are both cached for the process lifetime, so a
- * slow or hanging rc file costs at most one timeout. Only zsh/bash/sh are
- * asked; any other shell resolves to [] and the static fallbacks apply.
- */
-export function resolveLoginShellPath(): Promise<string[]> {
-  if (loginShellPathTask) return loginShellPathTask;
+function loginShell(): string | undefined {
   let shell = process.env.SHELL;
   if (!shell) {
     try { shell = os.userInfo().shell ?? undefined; } catch { shell = undefined; }
   }
-  if ((!isMac && !isLinux) || !shell || !path.isAbsolute(shell) || !LOGIN_SHELLS.has(path.basename(shell))) {
-    loginShellPathTask = Promise.resolve([]);
-    return loginShellPathTask;
+  return shell && path.isAbsolute(shell) && LOGIN_SHELLS.has(path.basename(shell)) ? shell : undefined;
+}
+
+/** The rc files run with only what a login needs: no tokens, WMUX_*, NODE_OPTIONS
+ *  or ELECTRON_* reach whatever they start. */
+function loginProbeEnv(shell: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { PATH: LAUNCHD_PATH, SHELL: shell, TERM: 'dumb' };
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === 'string' && (['HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG'].includes(key) || /^(LC|XDG)_/.test(key))) env[key] = value;
   }
-  const loginShell = shell;
-  loginShellPathTask = new Promise<string[]>((resolve) => {
-    // The markers separate PATH from whatever an interactive rc prints.
-    const child = execFile(loginShell, ['-ilc', `printf '${LOGIN_PATH_MARK}%s${LOGIN_PATH_MARK}' "$PATH"`],
-      { env: process.env, timeout: 5000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024, windowsHide: true },
-      (error, stdout) => {
-        const parts = error ? [] : String(stdout).split(LOGIN_PATH_MARK);
-        loginShellPath = parts.length >= 3 ? parts[1].split(':').filter((dir) => path.isAbsolute(dir)) : [];
-        resolve(loginShellPath);
-      });
-    child.stdin?.end();
+  return env;
+}
+
+function probeLoginShell(shell: string): Promise<string[] | null> {
+  return new Promise((resolve) => {
+    let out = '';
+    let settled = false;
+    // Own process group, so a timeout also takes down what the rc started.
+    const child = spawn(shell, ['-ilc', `printf '${LOGIN_PATH_MARK}%s${LOGIN_PATH_MARK}' "$PATH"`],
+      { env: loginProbeEnv(shell), stdio: ['ignore', 'pipe', 'ignore'], detached: true, windowsHide: true });
+    const finish = (result: string[] | null, kill: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (kill && child.pid) {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { /* group already gone */ }
+      }
+      child.stdout?.destroy();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish(null, true), LOGIN_PATH_TIMEOUT_MS);
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string) => {
+      out += chunk;
+      // The markers separate PATH from whatever an interactive rc prints.
+      const parts = out.split(LOGIN_PATH_MARK);
+      if (parts.length >= 3) finish(parts[1].split(':').filter((dir) => path.isAbsolute(dir)), false);
+      else if (out.length > 1024 * 1024) finish(null, true);
+    });
+    child.on('error', () => finish(null, false));
+    // 'close' waits for stdout to drain; an rc child still holding it runs into the timeout.
+    child.on('close', () => finish(null, false));
   });
-  return loginShellPathTask;
 }
 
 /**
- * `env` with its PATH augmented for an agent-launch spawn: the env's own PATH,
- * then the login shell's PATH (once `resolveLoginShellPath()` has settled —
- * callers await it first), then the static fallbacks. Unlike getExecEnv() it
- * keeps the caller's env (a pane's, the Codex runtime's) instead of `process.env`.
+ * The interactive login shell's PATH (`$SHELL -ilc`), bounded by a timeout.
+ * Only a success is cached for the process lifetime; after a failure (slow rc,
+ * missing shell) the next call within LOGIN_PATH_RETRY_MS resolves null without
+ * spawning, and a later one asks again. zsh/bash/sh only; any other shell
+ * resolves to [] and the static fallbacks apply.
  */
-export function withAgentExecPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function resolveLoginShellPath(now: number = Date.now()): Promise<string[] | null> {
+  if (loginPath) return Promise.resolve(loginPath);
+  if (loginTask) return loginTask;
+  if (!isMac && !isLinux) return Promise.resolve((loginPath = []));
+  const shell = loginShell();
+  if (!shell) return Promise.resolve((loginPath = []));
+  if (now - loginFailedAt < LOGIN_PATH_RETRY_MS) return Promise.resolve(null);
+  loginTask = probeLoginShell(shell).then((result) => {
+    loginTask = null;
+    if (result) loginPath = result;
+    else loginFailedAt = now;
+    return result;
+  });
+  return loginTask;
+}
+
+/**
+ * `env` with its PATH set up for an agent-launch spawn: the login shell's PATH
+ * first (what the user's terminal resolves `claude`/`codex`/`node` with), then
+ * the env's own PATH, then the static fallbacks. Unlike getExecEnv() it keeps
+ * the caller's env (a pane's, the Codex runtime's) instead of `process.env`.
+ */
+export async function agentExecEnv(env: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv> {
   if (!isMac && !isLinux) return env;
-  return mergePath(env, loginShellPath);
+  return mergePath(env, (await resolveLoginShellPath()) ?? []);
 }

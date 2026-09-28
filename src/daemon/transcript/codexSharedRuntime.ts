@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runCli } from '../../shared/runCli';
 import { codexRuntimeEnv } from './terminalLaunch';
+import { agentExecEnv } from '../../shared/execEnv';
 
 /**
  * The shared, per-account Codex background server, as wmux sees it.
@@ -203,10 +204,10 @@ export function createCodexSharedRuntime(deps: CodexSharedRuntimeDeps) {
 export type CodexSharedRuntime = ReturnType<typeof createCodexSharedRuntime>;
 
 /** `codex app-server daemon <sub>`, bounded like the existing runtime start. */
-export function runCodexDaemon(sub: 'version' | 'start', env: NodeJS.ProcessEnv): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // runCli resolves an npm codex.cmd shim on Windows, which execFile cannot (#1619).
-    runCli('codex', ['app-server', 'daemon', sub], { env, timeoutMs: 15000, maxBuffer: 64000 })
-      .then(resolve, () => reject(new Error(`codex app-server daemon ${sub} failed`)));
-  });
+export async function runCodexDaemon(sub: 'version' | 'start', env: NodeJS.ProcessEnv): Promise<string> {
+  // A Finder-launched daemon's launchd PATH lacks codex (and the node an npm install needs).
+  const execEnv = await agentExecEnv(env);
+  // runCli resolves an npm codex.cmd shim on Windows, which execFile cannot (#1619).
+  return runCli('codex', ['app-server', 'daemon', sub], { env: execEnv, timeoutMs: 15000, maxBuffer: 64000 })
+    .catch(() => { throw new Error(`codex app-server daemon ${sub} failed`); });
 }

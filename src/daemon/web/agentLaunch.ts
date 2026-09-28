@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runCli } from '../../shared/runCli';
-import { resolveLoginShellPath, withAgentExecPath } from '../../shared/execEnv';
+import { agentExecEnv, LOGIN_PATH_RETRY_MS, resolveLoginShellPath } from '../../shared/execEnv';
 
 export interface AgentLaunchChoice { agent: 'claude' | 'codex'; model?: string; effort?: string }
 export interface AgentLaunchOptions { agent: 'claude' | 'codex'; models: string[]; efforts: string[]; modelEfforts?: Record<string,string[]>; catalogState?: 'cached' | 'unavailable' }
@@ -48,31 +48,72 @@ async function codexOptions(env: NodeJS.ProcessEnv): Promise<AgentLaunchOptions>
   } catch { return codexOptionsFromCache(null); }
   finally { await handle?.close(); }
 }
-let helpCache: {at:number;claude:string;codex:string} | undefined;
-let helpLoading: Promise<{claude:string;codex:string}> | undefined;
-// A Finder-launched daemon inherits launchd's /usr/bin:/bin:/usr/sbin:/sbin, so the
-// probe searches the login shell's PATH and the per-user/Homebrew fallbacks too.
-function help(command: string): Promise<string> {
-  // runCli, not execFile: on Windows an npm-installed codex is a .cmd shim that
-  // execFile cannot find, so it was reported as not installed (#1619). The
-  // login-shell PATH makes a Finder-launched app find Homebrew/npm CLIs.
-  return runCli(command, ['--help'], { env: withAgentExecPath(process.env), timeoutMs: 3000, maxBuffer: 128 * 1024 }).catch(() => '');
+interface Probe { help: string; bin?: string }
+interface ProbedClis { at: number; ttl: number; path: string; claude: Probe; codex: Probe }
+let helpCache: ProbedClis | undefined;
+let helpLoading: Promise<ProbedClis> | undefined;
+/** First executable `name` on `searchPath`, as the shell's own lookup would find it. */
+export async function whichOnPath(name: string, searchPath: string): Promise<string | undefined> {
+  for (const dir of searchPath.split(':')) {
+    if (!path.isAbsolute(dir)) continue;
+    const file = path.join(dir, name);
+    try {
+      await fs.access(file, constants.X_OK);
+      if ((await fs.stat(file)).isFile()) return file;
+    } catch { /* not here */ }
+  }
+  return undefined;
 }
-async function installedHelp(): Promise<{claude:string;codex:string}> {
-  if (helpCache && Date.now() - helpCache.at < 300000) return helpCache;
+// A Finder-launched daemon inherits launchd's /usr/bin:/bin:/usr/sbin:/sbin, so the
+// probe resolves each CLI on the login shell's PATH plus the per-user/Homebrew
+// fallbacks, and remembers the absolute binary so the launch runs that same one.
+async function help(command: string, env: NodeJS.ProcessEnv): Promise<Probe> {
+  const bin = process.platform === 'win32' ? command : await whichOnPath(command, env.PATH ?? '');
+  if (!bin) return {help:''};
+  // runCli, not execFile: on Windows an npm-installed codex is a .cmd shim that
+  // execFile cannot find, so it was reported as not installed (#1619).
+  return runCli(bin, ['--help'], { env, timeoutMs: 3000, maxBuffer: 128 * 1024 })
+    .then((stdout) => ({help:stdout, ...(bin === command ? {} : {bin})}), () => ({help:''}));
+}
+async function installedHelp(): Promise<ProbedClis> {
+  if (helpCache && Date.now() - helpCache.at < helpCache.ttl) return helpCache;
   if (helpLoading) return helpLoading;
-  helpLoading = resolveLoginShellPath().then(() => Promise.all([help('claude'),help('codex')])).then(([claude,codex]) => {
-    helpCache = {at:Date.now(),claude,codex};
-    helpLoading = undefined;
-    return helpCache;
-  });
+  helpLoading = (async () => {
+    try {
+      const loginOk = process.platform === 'win32' || await resolveLoginShellPath() !== null;
+      const env = await agentExecEnv(process.env);
+      const [claude,codex] = await Promise.all([help('claude',env),help('codex',env)]);
+      // A failed login-shell probe may be why a CLI is missing; do not pin that for 5 minutes.
+      helpCache = {at:Date.now(),ttl:loginOk ? 300000 : LOGIN_PATH_RETRY_MS,path:env.PATH ?? '',claude,codex};
+      return helpCache;
+    } finally { helpLoading = undefined; }
+  })();
   return helpLoading;
+}
+// Printable, and nothing that ends or escapes a single-quoted word.
+const shellSafe = (value: string): boolean => value.length > 0 &&
+  [...value].every(c => c !== "'" && c !== '\\' && c.charCodeAt(0) >= 32 && c.charCodeAt(0) !== 127);
+/**
+ * Pin a `buildAgentLaunch` command to the binary and PATH the probe verified.
+ * The pane runs it through `$SHELL -lc`, whose profile (and macOS path_helper)
+ * rewrites PATH after the pane env is applied; `/usr/bin/env PATH=… <bin>` sets
+ * PATH for the agent itself last, so the binary and its `#!/usr/bin/env node`
+ * interpreter are the ones the probe saw. Returns the command unchanged when
+ * there is nothing verified to pin (Windows, or an unexpected character).
+ */
+export async function pinnedAgentLaunch(command: string): Promise<string> {
+  const agent = command.split(' ')[0];
+  if (process.platform === 'win32' || (agent !== 'claude' && agent !== 'codex')) return command;
+  const cli = await installedHelp();
+  const bin = cli[agent].bin;
+  if (!bin || !shellSafe(bin) || !shellSafe(cli.path)) return command;
+  return `/usr/bin/env PATH='${cli.path}' '${bin}'${command.slice(agent.length)}`;
 }
 export async function installedAgentLaunchOptions(env: NodeJS.ProcessEnv = process.env): Promise<AgentLaunchOptions[]> {
   const cli = await installedHelp();
-  const claude = claudeOptionsFromHelp(cli.claude);
+  const claude = claudeOptionsFromHelp(cli.claude.help);
   const options = claude ? [claude] : [];
-  if (cli.codex.includes('Codex CLI') && cli.codex.includes('--model') && cli.codex.includes('--config')) options.push(await codexOptions(env));
+  if (cli.codex.help.includes('Codex CLI') && cli.codex.help.includes('--model') && cli.codex.help.includes('--config')) options.push(await codexOptions(env));
   return options;
 }
 

@@ -11,8 +11,8 @@ import { codexCdOperand, recoverCodexPane, withCodexRemote } from './web/recover
 import { CodexRelayUnavailableError } from './web/codexTuiRelay';
 import { paneCodexSettings } from './web/paneCodexSettings';
 import { CodexPaneRelays } from './web/codexPaneRelays';
-import { buildAgentLaunch, installedAgentLaunchOptions } from './web/agentLaunch';
-import { resolveLoginShellPath, withAgentExecPath } from '../shared/execEnv';
+import { buildAgentLaunch, installedAgentLaunchOptions, pinnedAgentLaunch } from './web/agentLaunch';
+import { agentExecEnv } from '../shared/execEnv';
 import { workspaceAccountEnv } from './phone/workspaceAccountEnv';
 import { DesktopPhoneBridge } from './phone/DesktopPhoneBridge';
 import { RunHistoryStore } from './history/RunHistoryStore';
@@ -277,7 +277,7 @@ const codexSharedRuntime = createCodexSharedRuntime({
 const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Codex relay cleanup failed'),
   (id,owner)=>persistCodexRelayState?.(id,owner),
   {
-    ensureRuntime: async (id,codeHome)=>{ await resolveLoginShellPath(); await codexSharedRuntime.ensureStarted(id,{...process.env,...(codeHome ? {CODEX_HOME:codeHome} : {})}); },
+    ensureRuntime: async (id,codeHome)=>{ await codexSharedRuntime.ensureStarted(id,{...process.env,...(codeHome ? {CODEX_HOME:codeHome} : {})}); },
     serverProven: (codeHome)=>codexSharedRuntime.state(codeHome)?.kind === 'clean',
     refused: (id,reason)=>{
       log('warn',`[codex-relay] refused a Codex request in ${id}: ${reason}`);
@@ -2307,13 +2307,12 @@ function registerRpcHandlers(
       });
       if (workspaceId) env = await workspaceAccountEnv(env, workspaceId, desktopPhoneBridge);
       const agentCommand = agentLaunch ? buildAgentLaunch(agentLaunch, await installedAgentLaunchOptions(env)) : undefined;
-      // The pane runs `$SHELL -lc '<agent>'`, which reads the login profile but not
-      // ~/.zshrc; give it the PATH the probe above resolved the agent with, so a
-      // Finder-launched daemon's launchd PATH does not make the launch miss it.
-      if (agentCommand) {
-        const execPath = withAgentExecPath(env).PATH;
-        if (execPath) env = { ...env, PATH: execPath };
-      }
+      // The pane runs `$SHELL -lc '<agent>'`, whose profile rewrites PATH and skips
+      // ~/.zshrc; the spawn is pinned to the binary and PATH the probe verified
+      // (the persisted exec command stays the plain one). The pane env gets the
+      // agent PATH too, for a later recovery that replays the plain command.
+      const launchCommand = agentCommand ? await pinnedAgentLaunch(agentCommand) : undefined;
+      if (agentCommand) env = { ...env, PATH: (await agentExecEnv(env)).PATH ?? env.PATH };
       let relay: Awaited<ReturnType<CodexPaneRelays['prepare']>> | undefined;
       if (agentLaunch?.agent === 'codex' && process.platform !== 'win32') {
         try { relay = await codexPaneRelays.prepare(id,env.CODEX_HOME); }
@@ -2346,7 +2345,10 @@ function registerRpcHandlers(
           // the home directory the same way.
           ...(cwd ? { cwd } : {}),
           env,
-        }, relay && agentCommand ? {execLaunchCommand:withCodexRemote(agentCommand,relay.url,codexCdOperand(cwd ?? os.homedir()))} : undefined);
+        }, relay && agentCommand
+          // Relay flags first (they anchor on a leading `codex`), then pin the binary.
+          ? {execLaunchCommand:await pinnedAgentLaunch(withCodexRemote(agentCommand,relay.url,codexCdOperand(cwd ?? os.homedir())))}
+          : launchCommand !== agentCommand ? {execLaunchCommand:launchCommand} : undefined);
         if (relay) {
           const managed = sessionManager.getSession(id);
           if (!managed || !relay.commit(managed)) {
@@ -3691,7 +3693,6 @@ function registerRpcHandlers(
       selection: (id, pane) => codexPaneRelays.selection(id, pane),
     },
     startCodexRuntime: async (env) => {
-      await resolveLoginShellPath();
       const state = await codexSharedRuntime.ensureStarted(undefined, env);
       if (state.kind === 'failed') throw new Error(state.reason);
     },
