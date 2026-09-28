@@ -15,7 +15,8 @@
  *   (`WMUX_DATA_SUFFIX=-e2e-chat wmux web --allow-input --allow-transcript`).
  * - One fresh pane in it running the agent, spawned from a scrubbed environment
  *   (no CLAUDE*, ANTHROPIC*, AI_AGENT or outer WMUX_* variables), with one prompt
- *   already answered so its conversation exists. The agent must run
+ *   already answered so its conversation exists (Codex: answer two, and check
+ *   that /turns binds). The agent must run
  *   `python3 -c ...` without a permission prompt, for example:
  *     claude --allowedTools "Bash(python3:*)"
  *     codex (in an already-trusted directory; never accept a trust prompt here)
@@ -385,12 +386,14 @@ async function runPhone(agent, pty) {
       // asserted; what Claude then does with the queued prompt is agent behavior, recorded only.
       await idleAndDrained();
       await sleep(2100);
-      const stream = await startTurn(INTERRUPTION_PROMPT);
-      await until('answer streaming', async () => (await read()).events.some(e => !stream.seen.has(e.id) && e.kind === 'assistant_text'), 30000).catch(() => false);
+      await startTurn(INTERRUPTION_PROMPT);
+      // Claude writes the answer row only when the message ends, so wait a fixed time into the
+      // stream instead: past the input-quiet fence of the send above, well before the list ends.
+      await sleep(4000);
       const nativeWord = `NATIVE${Date.now() % 100000}`;
-      const native = await sendWhenReady(`Reply with exactly the single word ${nativeWord}`, CANCEL);
+      const native = await send(`Reply with exactly the single word ${nativeWord}`, CANCEL);
       assert.equal(native.status, 202, `native mid-turn send answered ${brief(native)}`);
-      assert.equal(native.body.queued, true);
+      assert.equal(native.body.queued, true, 'the native mid-turn send was not queued (the turn may have ended first)');
       const second = await send(`Reply with exactly the single word SECOND${nativeWord}`, CANCEL);
       assert.equal(second.status, 409, `a second native mid-turn send answered ${brief(second)}`);
       assert.equal(second.body.error, 'chat-busy');
