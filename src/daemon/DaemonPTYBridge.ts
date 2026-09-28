@@ -131,6 +131,16 @@ export class DaemonPTYBridge extends EventEmitter {
   private turnSeq = 0;
   private turnOpen = false;
   private turnOpenedAt = 0;
+  /** An authoritative hook has reported on this pane: only hooks and the transcript end its episodes. */
+  private hookSeen = false;
+
+  /**
+   * Reads the pane's transcript for the latest recorded turn end (epoch ms),
+   * or undefined. Installed once by the daemon; consulted on a submit while an
+   * episode is open, because an interrupt fires no Stop hook and nothing else
+   * would have closed it.
+   */
+  static transcriptTurnEndProbe: ((sessionId: string) => number | undefined) | null = null;
 
   /** Last write to stdin that was a lone Esc, from any source (0 = never). */
   private lastEscAt = 0;
@@ -266,7 +276,8 @@ export class DaemonPTYBridge extends EventEmitter {
       const active = DaemonPTYBridge.stripPassiveInput(data);
       // Every path that types into a pane ends here (pipe, web raw input, chat
       // Stop, approval keys), so this is the one place a lone Esc is seen.
-      if (active === '\x1b') this.lastEscAt = this.lastInputAt;
+      // Inside a bracketed paste an ESC is text, not a key.
+      if (active === '\x1b' && !this.inputInBracketedPaste) this.lastEscAt = this.lastInputAt;
       if (active.length > 0) {
         this.keyInputRevision += 1;
         // Sizes nothing, carries nothing: a remote terminal-prompt answer that
@@ -348,8 +359,13 @@ export class DaemonPTYBridge extends EventEmitter {
   private startAnsweredTurn(wasAwaiting: boolean, reason: 'input' | 'screen-cleared'): void {
     // An answer resumes the episode it interrupted; a submit into a running
     // turn is queued by the agent's own composer. Anything else starts one.
-    if (!wasAwaiting && !(this.turnOpen && this.getAgentStatus() === 'running')) {
-      this.turnOpen = false;
+    if (!wasAwaiting) {
+      if (this.turnOpen && this.sessionId) {
+        const endedAt = DaemonPTYBridge.transcriptTurnEndProbe?.(this.sessionId);
+        if (endedAt !== undefined) this.noteTranscriptTurnEnd(endedAt);
+      }
+      // Still open = no settle and no recorded end since it began: a prompt
+      // typed into the running turn, however long the turn has been quiet.
       this.openTurn();
     }
     this.lastTurnStartedAt = Date.now();
@@ -411,6 +427,7 @@ export class DaemonPTYBridge extends EventEmitter {
     }
     if (status === 'running') {
       if (authoritative) {
+        this.hookSeen = true;
         this.lastTurnStartedAt = Date.now();
         // The first hook after a settle is an autonomous turn; later hooks, and
         // any hook behind an unanswered dialog, belong to the open episode.
@@ -446,8 +463,11 @@ export class DaemonPTYBridge extends EventEmitter {
       this.awaitingHuman = true;
       this.awaitingQuestionAt = questionAt ?? null;
     } else if (authoritative) this.awaitingHuman = false;
-    // A settle ends the episode unless it is the dialog the turn waits on.
-    if (!this.awaitingHuman) this.turnOpen = false;
+    // A settle ends the episode unless it is the dialog the turn waits on. On
+    // a pane with hooks only the hook's own settle (Stop / StopFailure) counts:
+    // the detector's `complete` / `waiting` also match footers mid-turn.
+    if (authoritative) this.hookSeen = true;
+    if (!this.awaitingHuman && (authoritative || !this.hookSeen)) this.turnOpen = false;
     this.settledAtMs = Date.now();
     this.submittedTurnPending = false;
     if (this.resizeGuardTimer) {
@@ -502,7 +522,15 @@ export class DaemonPTYBridge extends EventEmitter {
    * when the end predates the latest turn evidence.
    */
   noteTranscriptTurnEnd(at: number): void {
-    if (this.turnOpen && !this.awaitingHuman && at >= this.lastTurnStartedAt) this.turnOpen = false;
+    if (this.turnOpen && !this.awaitingHuman && at >= this.turnOpenedAt) this.turnOpen = false;
+  }
+
+  /**
+   * Start of the evidence a transcript end must postdate to count for the
+   * current state: the last submit/hook, or a later byte-promoted episode.
+   */
+  getTurnEvidenceStartedAt(): number {
+    return Math.max(this.lastTurnStartedAt, this.turnOpen ? this.turnOpenedAt : 0);
   }
 
   /**
@@ -536,18 +564,24 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   noteSessionStart(signalTs: number, source: unknown): void {
     const atIdlePrompt = this.explicitTerminalStatus && this.settledStatus === 'waiting' && !this.awaitingHuman;
-    const { preTurn, turnEvidenceAt } = this;
+    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt } = this;
     this.noteAgentStatus('running', true);
     // The session start is not turn evidence itself: a duplicate delivery of
-    // it must neither clear nor re-set the state the first one left.
+    // it must neither clear nor re-set the state the first one left. Nor does
+    // it start a running episode (a resume or a compaction continues the one
+    // there was; a fresh session has none).
     this.preTurn = preTurn;
     this.turnEvidenceAt = turnEvidenceAt;
+    this.turnOpen = turnOpen;
+    this.turnSeq = turnSeq;
+    this.turnOpenedAt = turnOpenedAt;
     if (!isFreshSessionSource(source)) {
       this.preTurn = false;
       return;
     }
     if (signalTs < turnEvidenceAt) return;
     this.preTurn = true;
+    this.turnOpen = false;
     if (atIdlePrompt && this.sessionId) this.emit('idle', { sessionId: this.sessionId, preTurn: true });
   }
 
@@ -1045,6 +1079,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.preTurn = false;
     this.turnEvidenceAt = 0;
     this.turnOpen = false;
+    this.hookSeen = false;
     this.awaitingHuman = false;
     this.oscParser = null;
     this.modeTracker = null;

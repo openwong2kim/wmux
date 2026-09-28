@@ -7,6 +7,7 @@ import {
   type ChatResolution,
   type ChatSendOutcome,
   type ChatSendTag,
+  type ChatTurn,
 } from '../chat/chatBridge';
 import {
   validTerminalLaunchMode,
@@ -73,7 +74,7 @@ function skillsAgent(agent: string | undefined): boolean {
 export function buildChatObject(
   resolution: ChatResolution,
   blocked: ChatBlocked | undefined,
-  opts: { turn?: boolean } = {},
+  opts: { turn?: ChatTurn } = {},
 ): Record<string, unknown> {
   const { status } = resolution;
   const liveness = {
@@ -135,9 +136,9 @@ export function buildChatObject(
     historyTruncated: terminal?.historyTruncated === true,
     ...(resolution.source === 'tui' ? { maxSendBytes: OPENCODE_MAX_SEND_BYTES } : {}),
     ...liveness,
-    // Additive, and only for a caller that declared `chat-cancel` or
-    // `chat-queue`: an older client's `chat` object stays byte-identical.
-    ...(opts.turn && status.turn ? { turn: { ...status.turn } } : {}),
+    // Additive: the route passes it only to a caller that declared
+    // `chat-cancel` or `chat-queue`, so an older client's object is unchanged.
+    ...(opts.turn ? { turn: { ...opts.turn } } : {}),
     capabilities: {
       ...(terminal ? phoneTerminalCapabilities(terminal.capabilities) : closed),
       // Rollout and JSONL rows land per record, not per token. OpenCode part

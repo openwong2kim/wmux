@@ -3825,10 +3825,10 @@ export class WebTerminalServer {
     if (res.destroyed || res.writableEnded) return;
     this.noteChatBlocked(sessionId, resolution, blocked);
     const caps = clientCaps(req);
-    this.json(res, 200, {
-      ...body,
-      chat: buildChatObject(resolution, projectChatBlocked(blocked, caps), { turn: caps.chatCancel === true || caps.chatQueue === true }),
-    });
+    // Only a file binding has a daemon-tracked episode, and only a caller
+    // that declared a cap that uses it is shown one.
+    const turn = (caps.chatCancel === true || caps.chatQueue === true) && resolution.source === 'file' ? chat.turn(sessionId) : undefined;
+    this.json(res, 200, { ...body, chat: buildChatObject(resolution, projectChatBlocked(blocked, caps), turn ? { turn } : {}) });
   }
 
   /** The `/turns` page for a resolved binding, read synchronously; undefined once answered (503). */

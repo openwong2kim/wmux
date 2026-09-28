@@ -141,11 +141,13 @@ describe('resolve', () => {
     expect(await f.bridge.resolve('pane')).toMatchObject({ source: 'file', status: { terminal: { capabilities: { send: false } } } });
   });
 
-  it('carries the running episode from the chat agent state onto a file binding', async () => {
+  it('serves the running episode only through turn(), never on the shared status', async () => {
     const f = fixture(); f.liveClaude();
-    expect((await f.bridge.resolve('pane')).status).not.toHaveProperty('turn');
+    expect(f.bridge.turn('pane')).toBeUndefined();
     f.state.agent.turn = { id: 't1:abc.2', state: 'running', startedAt: 5 };
-    expect((await f.bridge.resolve('pane')).status.turn).toEqual({ id: 't1:abc.2', state: 'running', startedAt: 5 });
+    expect(f.bridge.turn('pane')).toEqual({ id: 't1:abc.2', state: 'running', startedAt: 5 });
+    expect((await f.bridge.resolve('pane')).status).not.toHaveProperty('turn');
+    expect(await f.bridge.status('pane')).not.toHaveProperty('turn');
   });
 
   it('maps a live agent without a transcript to none/agent-running', async () => {

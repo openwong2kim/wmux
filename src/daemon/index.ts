@@ -149,6 +149,7 @@ import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
 import { chatAgentStatus, transcriptTurnEnd } from './transcript/chatAgentStatus';
+import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
 import { interruptChatTurn } from './transcript/interruptChatTurn';
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
@@ -3257,6 +3258,10 @@ function registerRpcHandlers(
       // authenticated pipe client the whole transcript AND put an oversized
       // payload on sockets that never asked for it.
       emitAppend: (sessionId, data, clientIds) => {
+        // Push side of the running-episode close: an interrupt fires no Stop
+        // hook, so the recorded end is the only signal the turn is over.
+        const ended = transcriptTurnEnd(data.events, 0);
+        if (ended) sessionManager.getSession(sessionId)?.bridge.noteTranscriptTurnEnd(ended.at);
         const event: DaemonEvent = { type: 'transcript.appended', sessionId, data };
         for (const clientId of clientIds) {
           // D6 — `sendTo` refuses once a client's unflushed buffer passes
@@ -3973,17 +3978,23 @@ function registerRpcHandlers(
     const live = readDaemonAgentState(id);
     const bridge = sessionManager.getSession(id)?.bridge;
     if (['Claude Code', 'Codex CLI'].includes(live.agentName ?? '') && bridge && live.agentStatus !== 'awaiting_input') {
-      const last = projector.snapshot(id)?.events.at(-1);
-      const turnStartedAt = bridge.getLastTurnStartedAt();
-      // An interrupt fires no Stop hook: the recorded end also closes the
-      // running episode, so the next prompt gets a new turn id.
-      const ended = transcriptTurnEnd(last, turnStartedAt);
+      const events = projector.snapshot(id)?.events;
+      // Backstop for the append push: an interrupt fires no Stop hook, so a
+      // recorded end also closes the running episode (the bridge ignores an end
+      // older than the episode).
+      const ended = transcriptTurnEnd(events, 0);
       if (ended) bridge.noteTranscriptTurnEnd(ended.at);
-      const agentStatus = chatAgentStatus(live.agentStatus, last, turnStartedAt);
+      const agentStatus = chatAgentStatus(live.agentStatus, events, bridge.getTurnEvidenceStartedAt());
       return { ...live, agentStatus, turn: bridge.getTurn(agentStatus) };
     }
     return bridge ? { ...live, turn: bridge.getTurn(live.agentStatus) } : live;
   };
+  // A submit into an open episode checks the transcript first: nobody may be
+  // subscribed to push its interrupt record, and none of it reaches a hook.
+  DaemonPTYBridge.transcriptTurnEndProbe = (id) =>
+    ['Claude Code', 'Codex CLI'].includes(readDaemonAgentState(id).agentName ?? '')
+      ? transcriptTurnEnd(projector.snapshot(id)?.events, 0)?.at
+      : undefined;
   // Versioned method name is a rolling-upgrade safety boundary. An older
   // daemon's v1 handler would ignore the additive incarnationId parameter and
   // write anyway; v2 makes mixed versions fail with Unknown method pre-write.

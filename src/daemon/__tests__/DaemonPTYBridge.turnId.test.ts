@@ -36,6 +36,7 @@ describe('DaemonPTYBridge — running-episode turn id', () => {
 
   afterEach(() => {
     bridge.cleanup();
+    DaemonPTYBridge.transcriptTurnEndProbe = null;
     vi.useRealTimers();
   });
 
@@ -121,6 +122,83 @@ describe('DaemonPTYBridge — running-episode turn id', () => {
     expect(turn().id).not.toBe(first.id);
   });
 
+  it('a prompt typed into a long quiet turn (no bytes, no settle) stays in it', () => {
+    bridge.noteInput('run the migration\r');
+    bridge.noteAgentStatus('running', true);
+    const first = turn().id;
+    vi.advanceTimersByTime(100);
+    feed(BIG);
+    vi.advanceTimersByTime(30_000); // a long tool call: byte activity went idle
+    expect(bridge.getAgentStatus()).not.toBe('running');
+    bridge.noteInput('then summarize\r');
+    expect(turn().id).toBe(first);
+  });
+
+  it('a detector settle ends the episode only on a pane with no hook reports', () => {
+    bridge.noteInput('go\r');
+    bridge.noteAgentStatus('running', true); // this pane has hooks
+    const first = turn();
+    bridge.noteAgentStatus('complete'); // the idle footer matched mid-turn
+    bridge.noteAgentStatus('running', true);
+    bridge.noteInput('more\r');
+    expect(turn().id).toBe(first.id);
+
+    const hookless = new DaemonPTYBridge();
+    const fake = makeFakePty();
+    hookless.setupDataForwarding(fake.pty, new RingBuffer(65536), 'sess-2', new PromptEventLog());
+    hookless.noteInput('go\r');
+    const a = hookless.getTurn('running').id;
+    hookless.noteAgentStatus('complete');
+    expect(hookless.getTurn('running').state).toBe('idle');
+    hookless.noteInput('next\r');
+    expect(hookless.getTurn('running').id).not.toBe(a);
+    hookless.cleanup();
+  });
+
+  it('an end recorded before a byte-promoted episode does not close it', () => {
+    bridge.noteInput('go\r');
+    bridge.noteAgentStatus('complete', true);
+    const endedAt = Date.now();
+    vi.advanceTimersByTime(6100);
+    feed(BIG); // autonomous turn, promoted from bytes alone
+    const promoted = turn();
+    expect(promoted.state).toBe('running');
+    bridge.noteTranscriptTurnEnd(endedAt);
+    expect(turn()).toEqual(promoted);
+    expect(bridge.getTurnEvidenceStartedAt()).toBe(promoted.startedAt);
+  });
+
+  it('a submit consults the transcript, so an interrupt nobody polled still ends the episode', () => {
+    const endAt: { v?: number } = {};
+    DaemonPTYBridge.transcriptTurnEndProbe = (id) => (id === 'sess-1' ? endAt.v : undefined);
+    bridge.noteInput('long task\r');
+    bridge.noteAgentStatus('running', true);
+    const first = turn().id;
+    bridge.noteInput('queued\r'); // no end recorded: mid-turn
+    expect(turn().id).toBe(first);
+    vi.advanceTimersByTime(500);
+    bridge.noteInput('\x1b');
+    endAt.v = Date.now(); // `[Request interrupted by user]`
+    vi.advanceTimersByTime(500);
+    bridge.noteInput('try again\r');
+    expect(turn().id).not.toBe(first);
+  });
+
+  it('a SessionStart never opens an episode; a fresh one ends the old one', () => {
+    bridge.noteInput('go\r');
+    const first = turn();
+    bridge.noteSessionStart(Date.now(), 'compact');
+    bridge.noteSessionStart(Date.now() - 10_000, 'startup'); // late duplicate
+    expect(turn()).toEqual(first);
+    bridge.noteAgentStatus('complete', true);
+    vi.advanceTimersByTime(100);
+    bridge.noteSessionStart(Date.now(), 'clear');
+    expect(turn()).toEqual({ ...first, state: 'idle' });
+    vi.advanceTimersByTime(100);
+    bridge.noteSessionStart(Date.now(), 'startup');
+    expect(turn().id).toBe(first.id);
+  });
+
   it('never repeats an id from another bridge lifetime (daemon restart)', () => {
     const other = new DaemonPTYBridge();
     expect(other.getTurn('idle').id).not.toBe(bridge.getTurn('idle').id);
@@ -147,6 +225,13 @@ describe('DaemonPTYBridge — running-episode turn id', () => {
 
     vi.advanceTimersByTime(1000);
     bridge.noteInput('\x1b[I\x1b'); // glued to a focus report
-    expect(bridge.getLastEscAt()).toBe(Date.now());
+    const t2 = Date.now();
+    expect(bridge.getLastEscAt()).toBe(t2);
+
+    vi.advanceTimersByTime(1000);
+    bridge.noteInput('\x1b[200~'); // an ESC inside a paste is text
+    bridge.noteInput('\x1b');
+    bridge.noteInput('\x1b[201~');
+    expect(bridge.getLastEscAt()).toBe(t2);
   });
 });

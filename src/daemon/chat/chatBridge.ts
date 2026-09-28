@@ -34,6 +34,18 @@ export interface ChatLaunchPreview {
   maxPromptUnits: number;
 }
 
+/**
+ * One running episode of a terminal-bound agent (`/turns` `chat.turn`). `id` is
+ * opaque (`t1:` prefix) and changes only on an idle -> running transition:
+ * answering a dialog or typing into a running turn keeps it. `startedAt`
+ * (epoch ms) is absent before the first episode.
+ */
+export interface ChatTurn {
+  id: string;
+  state: 'running' | 'idle';
+  startedAt?: number;
+}
+
 export interface ChatBlocked {
   by: 'approval' | 'terminal';
   approvalId?: string;
@@ -183,6 +195,8 @@ export interface ChatBridge {
   resolve(id: string): Promise<ChatResolution>;
   /** Tail snapshot of a managed record (read-only in phone v1), or null. */
   managedSnapshot(id: string): TranscriptPage | null;
+  /** The pane's running episode (file bindings only), or undefined. Served to `chat-cancel`/`chat-queue` callers only. */
+  turn(id: string): ChatTurn | undefined;
   /** Read-time blocked state (contract §5.2). Always undefined for a brain pane. */
   blocked(id: string, resolution: ChatResolution): Promise<ChatBlocked | undefined>;
   send(request: ChatSendRequest): Promise<ChatSendOutcome>;
