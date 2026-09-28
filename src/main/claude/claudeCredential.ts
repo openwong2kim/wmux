@@ -10,6 +10,9 @@
 //
 //   macOS   — Keychain (Generic password, service "Claude Code-credentials",
 //             account == current user). Read via `security` CLI shell-out.
+//             A custom CLAUDE_CONFIG_DIR gets its own item, service
+//             "Claude Code-credentials-<first 8 hex of sha256(configDir)>"
+//             (see macKeychainServiceName).
 //   Windows — `%USERPROFILE%\.claude\.credentials.json` plain JSON file.
 //             Confirmed shape on user's machine 2026-05-24:
 //             { claudeAiOauth: { accessToken, refreshToken, expiresAt,
@@ -25,6 +28,7 @@
 
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -65,15 +69,9 @@ export type LoadResult =
 export async function loadClaudeCredential(configDir?: string): Promise<LoadResult> {
   try {
     if (process.platform === 'darwin') {
-      // Multi-account (M1): the macOS keychain reader keys on the current
-      // USERNAME, not the config dir (see loadFromMacKeychain), so it cannot
-      // partition per-account. A per-account read on macOS is not supported —
-      // report it explicitly rather than silently returning the default
-      // account's credential for account B (3-way review OQ1).
-      if (configDir) {
-        return { ok: false, reason: 'unsupported-platform', detail: 'macOS keychain cannot partition by config dir' };
-      }
-      return await loadFromMacKeychain();
+      // Multi-account (M1): each config dir has its own keychain item, so a
+      // per-account read never falls back to the default account's credential.
+      return await loadFromMacKeychain(macKeychainServiceName(configDir));
     }
     if (process.platform === 'win32') {
       return await loadFromWindowsJson(configDir);
@@ -96,8 +94,21 @@ export async function loadClaudeCredential(configDir?: string): Promise<LoadResu
   }
 }
 
-async function loadFromMacKeychain(): Promise<LoadResult> {
-  // `security find-generic-password -s "Claude Code-credentials" -a <user> -w`
+/**
+ * Keychain service name Claude Code uses for a config dir. The default login
+ * (no CLAUDE_CONFIG_DIR) uses the bare name; a custom dir appends the first 8
+ * hex chars of sha256 over the exact path string. The path is hashed as given —
+ * callers pass the same canonical dir that was exported to the login shell.
+ * Exported for unit testing.
+ */
+export function macKeychainServiceName(configDir?: string): string {
+  const base = 'Claude Code-credentials';
+  if (!configDir) return base;
+  return `${base}-${createHash('sha256').update(configDir).digest('hex').slice(0, 8)}`;
+}
+
+async function loadFromMacKeychain(service: string): Promise<LoadResult> {
+  // `security find-generic-password -s <service> -a <user> -w`
   // prints the secret as the entire stdout (no extra formatting). exit
   // code 44 ("specified item not found") means "user hasn't logged into
   // Claude Code yet" — distinct from any other failure.
@@ -113,7 +124,7 @@ async function loadFromMacKeychain(): Promise<LoadResult> {
     const { stdout } = await execFileAsync('security', [
       'find-generic-password',
       '-s',
-      'Claude Code-credentials',
+      service,
       '-a',
       username,
       '-w',

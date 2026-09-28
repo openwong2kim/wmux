@@ -3,12 +3,36 @@
  *
  * Mirrors the Swift TokenStore behavior from
  * `openwong2kim/claude-token-check` so cross-platform parity is
- * locked. The actual platform branches (Keychain shell-out, file read)
- * are not unit-tested here — they're integration concerns covered at
- * dogfood time.
+ * locked. The macOS Keychain branch is covered below with a mocked
+ * `security` shell-out (service-name derivation per config dir); the real
+ * keychain read is a dogfood concern.
  */
-import { describe, it, expect } from 'vitest';
-import { extractAccessToken, extractCredentialMetadata } from '../claudeCredential';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { promisify } from 'node:util';
+
+const securityMock = vi.hoisted(() => ({
+  calls: [] as string[][],
+  result: { stdout: '', stderr: '' } as { stdout: string; stderr: string } | Error,
+}));
+
+vi.mock('node:child_process', () => {
+  const execFile = vi.fn();
+  // loadFromMacKeychain uses promisify(execFile); the real execFile resolves
+  // {stdout, stderr} through promisify.custom, so the mock does the same.
+  (execFile as unknown as Record<symbol, unknown>)[promisify.custom] = async (_cmd: string, args: string[]) => {
+    securityMock.calls.push(args);
+    if (securityMock.result instanceof Error) throw securityMock.result;
+    return securityMock.result;
+  };
+  return { execFile, default: { execFile } };
+});
+
+import {
+  extractAccessToken,
+  extractCredentialMetadata,
+  loadClaudeCredential,
+  macKeychainServiceName,
+} from '../claudeCredential';
 
 describe('extractAccessToken', () => {
   it('returns null on empty / whitespace blob', () => {
@@ -139,5 +163,57 @@ describe('extractCredentialMetadata', () => {
       rateLimitTier: null,
       expiresAtMs: null,
     });
+  });
+});
+
+describe('macKeychainServiceName', () => {
+  it('uses the bare service name for the default login', () => {
+    expect(macKeychainServiceName()).toBe('Claude Code-credentials');
+    expect(macKeychainServiceName('')).toBe('Claude Code-credentials');
+  });
+
+  it('suffixes the first 8 hex chars of sha256(configDir) for a custom dir', () => {
+    // Verified against a real Claude Code keychain item for this exact path.
+    expect(macKeychainServiceName('/Users/x/.wmux/accounts/claude-3fa125fe'))
+      .toMatch(/^Claude Code-credentials-[0-9a-f]{8}$/);
+    expect(macKeychainServiceName('/Users/wong2kim/.wmux/accounts/claude-3fa125fe'))
+      .toBe('Claude Code-credentials-6ec7cbda');
+  });
+});
+
+describe('loadClaudeCredential on macOS', () => {
+  const realPlatform = process.platform;
+  beforeEach(() => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    securityMock.calls = [];
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: realPlatform });
+  });
+
+  it('reads the per-account keychain item for a config dir', async () => {
+    securityMock.result = {
+      stdout: JSON.stringify({ claudeAiOauth: { accessToken: 'sk-ant-account-b-1234567890', subscriptionType: 'max' } }),
+      stderr: '',
+    };
+    const res = await loadClaudeCredential('/Users/wong2kim/.wmux/accounts/claude-3fa125fe');
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.credential.subscriptionType).toBe('max');
+    const args = securityMock.calls[0];
+    expect(args[args.indexOf('-s') + 1]).toBe('Claude Code-credentials-6ec7cbda');
+  });
+
+  it('reads the default keychain item without a config dir', async () => {
+    securityMock.result = { stdout: 'sk-ant-default-raw-token-1234567890', stderr: '' };
+    const res = await loadClaudeCredential();
+    expect(res.ok).toBe(true);
+    const args = securityMock.calls[0];
+    expect(args[args.indexOf('-s') + 1]).toBe('Claude Code-credentials');
+  });
+
+  it('reports not-found when the account has no keychain item yet', async () => {
+    securityMock.result = Object.assign(new Error('item not found'), { code: 44 });
+    const res = await loadClaudeCredential('/Users/x/.wmux/accounts/claude-new');
+    expect(res).toEqual({ ok: false, reason: 'not-found' });
   });
 });
