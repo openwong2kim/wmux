@@ -148,9 +148,10 @@ function ScheduleRow({ automation: a, latest, runs, accounts, selected, onSelect
 }) {
   const t = useT();
   const live = runs.find((r) => r.automationId === a.id && isLiveRun(r));
+  // A draft's state is carried by its Proposed badge alone; the title says
+  // On/Off like any other row.
   const status = live
     ? runStateLabel(live.state)
-    : a.proposed ? t('schedules.badgeProposed')
     : a.enabled ? t('schedules.statusOn') : t('schedules.statusOff');
   const next = a.enabled && a.nextRunAt !== null ? t('schedules.nextRun', { time: formatWhen(a.nextRunAt) }) : describeTrigger(a);
   const agent = a.action.agent === 'codex' ? t('schedules.agentCodex') : t('schedules.agentClaude');
