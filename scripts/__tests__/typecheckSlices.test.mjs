@@ -59,6 +59,32 @@ describe('typecheck slices', () => {
     }
   });
 
+  it('still parses scripts that only look like modules', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'typecheck-lookalike-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'src/__tests__'), { recursive: true });
+      const scripts = {
+        'dynamic.test.ts': "import('node:fs').then(() => {});\n",
+        'key.test.ts': 'const o = {\n  export: true,\n};\n',
+        'comment.test.ts': '/*\nimport x from "y";\n*/\nconst a = 1;\n',
+        'template.test.ts': 'const t = `\nexport const b = 2;\n`;\n',
+      };
+      for (const [name, body] of Object.entries(scripts)) fs.writeFileSync(path.join(dir, 'src/__tests__', name), body);
+      fs.writeFileSync(path.join(dir, 'src/__tests__/real.test.ts'), 'import fs from "node:fs";\nvoid fs;\n');
+      fs.writeFileSync(path.join(dir, 'src/app.ts'), 'export const app = 1;\n');
+      fs.writeFileSync(path.join(dir, 'tsconfig.json'), JSON.stringify({ include: ['src/**/*'] }));
+      fs.writeFileSync(path.join(dir, 'src.json'), JSON.stringify({ extends: './tsconfig.json', exclude: ['src/**/__tests__/**'] }));
+
+      const problems = scopeProblems(path.join(dir, 'tsconfig.json'), path.join(dir, 'src.json'), dir);
+      for (const name of Object.keys(scripts)) {
+        expect(problems).toEqual(expect.arrayContaining([expect.stringContaining(`src/__tests__/${name} is a script`)]));
+      }
+      expect(problems.some((p) => p.includes('real.test.ts'))).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('flags a program path whose casing differs from the file on disk', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'typecheck-casing-'));
     try {
