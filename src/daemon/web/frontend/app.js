@@ -178,6 +178,33 @@
     if (owner && owner.focus && owner !== document.body) { try { owner.focus(); } catch (e) { /* torn down */ } }
   }
 
+  // Inline images (#1641): iTerm2 OSC 1337 and, where WebAssembly may be
+  // compiled, sixel. Limits are sized for a phone rather than the addon's
+  // desktop defaults (16 MP per image, 128 MB of cache). Size reports stay
+  // off: they answer XTWINOPS queries through onData, and a viewer must never
+  // answer queries for the pane (see the repaint gate below).
+  var sixelWasmAllowed = (function () {
+    // The hash-pinned script-src refuses wasm compilation; probing with the
+    // 8-byte empty module keeps the addon from failing on its sixel decoder.
+    try {
+      return typeof WebAssembly === 'object' &&
+        !!new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
+    } catch (e) { return false; }
+  })();
+  function loadImageAddon(t) {
+    if (typeof ImageAddon !== 'object' || !ImageAddon.ImageAddon) return;
+    try {
+      t.loadAddon(new ImageAddon.ImageAddon({
+        enableSizeReports: false,
+        sixelSupport: sixelWasmAllowed,
+        pixelLimit: 2048 * 2048,
+        sixelSizeLimit: 4000000,
+        iipSizeLimit: 4000000,
+        storageLimit: 24
+      }));
+    } catch (e) { /* the terminal works without images */ }
+  }
+
   function newTerm(cols, rows) {
     return new Terminal({
       cols: cols || 80,
@@ -460,6 +487,7 @@
     if (!term) {
       term = newTerm(cols, rows);
       term.open(termHost);
+      loadImageAddon(term);
       // Swipe to reach scrollback. A phone has no wheel and no Shift+PageUp, so
       // without this the only history it can ever see is the opening snapshot.
       attachTouchScroll(term, termHost, {
@@ -1602,6 +1630,7 @@
     var tile = { sessionId: s.id, term: null, es: null, el: el, head: head, scaler: scaler, ended: false, repaints: 0 };
     tile.term = newTerm(s.cols, s.rows);
     tile.term.open(host);
+    loadImageAddon(tile.term);
     // Same reason as the single-pane host: on iOS the keyboard only comes up
     // for a focus made inside a user gesture.
     host.addEventListener('click', function () { focusFromGesture(tile.term); });
