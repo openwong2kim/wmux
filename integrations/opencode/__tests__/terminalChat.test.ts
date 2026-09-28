@@ -232,3 +232,124 @@ describe('OpenCode existing TUI bridge', () => {
     expect(f.promptAsync).not.toHaveBeenCalled();
   });
 });
+
+describe('OpenCode decisions (permissions and questions)', () => {
+  // Root ses_one with a direct child ses_kid and a grandchild ses_deep; the
+  // TUI state has no session list, so children are found through events.
+  function decisionsFixture() {
+    const f = fixture();
+    const handlers: Record<string, (event: unknown) => void> = {};
+    const perms: Record<string, Array<Record<string, unknown>>> = { ses_one: [], ses_kid: [], ses_deep: [], ses_other: [] };
+    const questions: Record<string, Array<Record<string, unknown>>> = { ses_one: [], ses_kid: [], ses_deep: [], ses_other: [] };
+    const parents: Record<string, string | undefined> = { ses_one: undefined, ses_kid: 'ses_one', ses_deep: 'ses_kid', ses_other: undefined };
+    const reply = vi.fn(async (_input: unknown): Promise<unknown> => ({ data: true, response: { status: 200 } }));
+    const qReply = vi.fn(async (_input: unknown): Promise<unknown> => ({ data: true, response: { status: 200 } }));
+    const qReject = vi.fn(async (_input: unknown): Promise<unknown> => ({ data: true, response: { status: 200 } }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- a loose fake of the TUI api
+    const api = f.api as any;
+    api.event = { on: (type: string, fn: (event: unknown) => void) => { handlers[type] = fn; } };
+    api.client.permission = { reply };
+    api.client.question = { reply: qReply, reject: qReject };
+    api.state.session.get = (id: string) => (id in parents ? { id, parentID: parents[id] } : undefined);
+    api.state.session.permission = (id: string) => perms[id] ?? [];
+    api.state.session.question = (id: string) => questions[id] ?? [];
+    const handler = terminalChatHandler(api, 'epoch');
+    const ask = (sessionID: string, id = `per_${sessionID}`) => {
+      perms[sessionID]!.push({ id, sessionID, permission: 'bash', patterns: ['touch a'], always: ['*'], metadata: {} });
+      handlers['permission.asked']?.({ properties: { id, sessionID } });
+    };
+    return { api, handler, perms, questions, reply, qReply, qReject, ask };
+  }
+  it('advertises decisions next to read, send and abort', async () => {
+    const d = decisionsFixture();
+    expect((await d.handler({ action: 'read' })).actions).toEqual(['read', 'send', 'abort', 'decisions']);
+  });
+  it("a direct child's permission blocks the root route: phase awaiting_input", async () => {
+    const d = decisionsFixture();
+    expect((await d.handler({ action: 'read' })).phase).toBe('complete');
+    d.ask('ses_kid');
+    expect((await d.handler({ action: 'read' })).phase).toBe('awaiting_input');
+  });
+  it("lists what the TUI draws: the route's own and its direct children's, never a grandchild's or another root's", async () => {
+    const d = decisionsFixture();
+    d.ask('ses_one'); d.ask('ses_kid'); d.ask('ses_deep'); d.ask('ses_other');
+    const read = await d.handler({ action: 'decisions.read' });
+    expect(read).toMatchObject({ available: true, sessionId: 'ses_one', gone: [] });
+    expect(read.decisions.map((x: { requestId: string }) => x.requestId)).toEqual(['per_ses_one', 'per_ses_kid']);
+    expect(read.decisions[1]).toEqual({ kind: 'permission', requestId: 'per_ses_kid', sessionId: 'ses_kid', digest: expect.stringMatching(/^[0-9a-f]{32}$/), permission: 'bash', patterns: ['touch a'] });
+    // A child route draws none.
+    d.api.route.current.params.sessionID = 'ses_kid';
+    expect((await d.handler({ action: 'decisions.read' })).decisions).toEqual([]);
+  });
+  it('finds a child its task call started even when no event announced it (a TUI restart)', async () => {
+    const d = decisionsFixture();
+    d.perms.ses_kid!.push({ id: 'per_early', sessionID: 'ses_kid', permission: 'bash', patterns: ['ls'], always: [], metadata: {} });
+    expect((await d.handler({ action: 'read' })).phase).toBe('complete');
+    d.api.state.session.messages = () => [{ id: 'msg_a', sessionID: 'ses_one', role: 'assistant' }];
+    d.api.state.part = () => [{ id: 'p', sessionID: 'ses_one', messageID: 'msg_a', type: 'tool', tool: 'task', state: { status: 'running', metadata: { sessionId: 'ses_kid' } } }];
+    expect((await d.handler({ action: 'read' })).phase).toBe('awaiting_input');
+    expect((await d.handler({ action: 'decisions.read' })).decisions.map((x: { requestId: string }) => x.requestId)).toEqual(['per_early']);
+  });
+  it('answers a request in its own session even when the route shows another one', async () => {
+    const d = decisionsFixture();
+    d.ask('ses_kid');
+    const [listedKid] = (await d.handler({ action: 'decisions.read' })).decisions;
+    d.api.route.current.name = 'home';
+    expect(await d.handler({ action: 'decisions.reply', kind: 'permission', requestId: 'per_ses_kid', sessionId: 'ses_kid', digest: listedKid.digest, reply: 'once' })).toEqual({ result: 'ok' });
+    expect(d.reply).toHaveBeenCalledWith({ requestID: 'per_ses_kid', reply: 'once' });
+    // `gone` answers for known requests by their own session, whatever the route.
+    d.perms.ses_kid = [];
+    expect((await d.handler({ action: 'decisions.read', known: [{ requestId: 'per_ses_kid', sessionId: 'ses_kid' }] })).gone).toEqual(['per_ses_kid']);
+  });
+  it('refuses `always`, a request not listed and a grandchild; a 404 is not_found, a throw unconfirmed', async () => {
+    const d = decisionsFixture();
+    d.ask('ses_one'); d.ask('ses_deep');
+    const [own] = (await d.handler({ action: 'decisions.read' })).decisions;
+    const base = { action: 'decisions.reply', kind: 'permission', requestId: 'per_ses_one', sessionId: 'ses_one', digest: own.digest };
+    expect(await d.handler({ ...base, reply: 'always' })).toEqual({ result: 'refused' });
+    // The same id asking something else now: the card the phone saw is stale.
+    d.perms.ses_one![0]!.patterns = ['rm -rf /'];
+    expect(await d.handler({ ...base, reply: 'once' })).toEqual({ result: 'changed' });
+    d.perms.ses_one![0]!.patterns = ['touch a'];
+    expect(await d.handler({ ...base, requestId: 'per_nope', reply: 'once' })).toEqual({ result: 'not_found' });
+    expect(await d.handler({ ...base, requestId: 'per_ses_deep', sessionId: 'ses_deep', reply: 'once' })).toEqual({ result: 'not_found' });
+    expect(d.reply).not.toHaveBeenCalled();
+    d.reply.mockResolvedValueOnce({ error: { _tag: 'PermissionNotFoundError' }, response: { status: 404 } });
+    expect(await d.handler({ ...base, reply: 'reject' })).toEqual({ result: 'not_found' });
+    d.reply.mockRejectedValueOnce(new Error('socket hang up'));
+    expect(await d.handler({ ...base, reply: 'reject' })).toEqual({ result: 'unconfirmed' });
+  });
+  it('replies by option index with OpenCode\'s own labels; typed answers only where custom is allowed', async () => {
+    const d = decisionsFixture();
+    d.questions.ses_one = [{ id: 'que_1', sessionID: 'ses_one', questions: [
+      { question: 'Color?', header: 'Color', options: [{ label: 'Red', description: 'r' }] },
+      { question: 'Size?', header: 'Size', custom: false, multiple: true, options: [{ label: 'S', description: '' }, { label: 'L', description: '' }] }] }];
+    const read = await d.handler({ action: 'decisions.read' });
+    expect(read.decisions[0].questions[1]).toEqual({ question: 'Size?', header: 'Size', multiple: true, custom: false, options: [{ label: 'S' }, { label: 'L' }] });
+    expect(read.decisions[0].truncated).toBeUndefined();
+    const base = { action: 'decisions.reply', kind: 'question', requestId: 'que_1', sessionId: 'ses_one', digest: read.decisions[0].digest };
+    expect(await d.handler({ ...base, answers: [{ options: [0] }, { options: [], other: 'XL' }] })).toEqual({ result: 'refused' });
+    expect(await d.handler({ ...base, answers: [{ options: [0] }] })).toEqual({ result: 'refused' });
+    expect(await d.handler({ ...base, answers: [{ options: [5] }, { options: [0] }] })).toEqual({ result: 'refused' });
+    expect(await d.handler({ ...base, answers: [{ options: [], other: '  ' }, { options: [0] }] })).toEqual({ result: 'refused' });
+    expect(await d.handler({ ...base, answers: [{ options: [0, 0] }, { options: [0] }] })).toEqual({ result: 'refused' });
+    expect(d.qReply).not.toHaveBeenCalled();
+    expect(await d.handler({ ...base, answers: [{ options: [], other: 'Teal' }, { options: [1, 0] }] })).toEqual({ result: 'ok' });
+    expect(d.qReply).toHaveBeenCalledWith({ requestID: 'que_1', answers: [['Teal'], ['L', 'S']] });
+    expect(await d.handler({ ...base, reject: true })).toEqual({ result: 'ok' });
+    expect(d.qReject).toHaveBeenCalledWith({ requestID: 'que_1' });
+  });
+  it('marks a request it had to cut as truncated, and a long label answers with its full text', async () => {
+    const d = decisionsFixture();
+    const long = 'L'.repeat(250);
+    d.questions.ses_one = [{ id: 'que_2', sessionID: 'ses_one', questions: [{ question: 'Pick', header: 'P', options: [{ label: long }, { label: 'short' }] }] }];
+    const [item] = (await d.handler({ action: 'decisions.read' })).decisions;
+    expect(item.truncated).toBe(true);
+    expect(item.questions[0].options[0].label).toHaveLength(200);
+    // The plugin maps the index back to OpenCode's own, whole label.
+    expect(await d.handler({ action: 'decisions.reply', kind: 'question', requestId: 'que_2', sessionId: 'ses_one', digest: item.digest, answers: [{ options: [0] }] })).toEqual({ result: 'ok' });
+    expect(d.qReply).toHaveBeenCalledWith({ requestID: 'que_2', answers: [[long]] });
+    d.questions.ses_one = [{ id: 'que_3', sessionID: 'ses_one', questions: Array.from({ length: 9 }, (_, i) => ({ question: `q${i}`, header: '', options: [{ label: 'a' }] })) }];
+    expect((await d.handler({ action: 'decisions.read' })).decisions[0].truncated).toBe(true);
+  });
+});

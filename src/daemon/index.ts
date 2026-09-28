@@ -18,6 +18,7 @@ import { RunHistoryStore } from './history/RunHistoryStore';
 import { InputReceiptStore } from './web/InputReceiptStore';
 import { AnswerReceiptStore } from './approvals/AnswerReceiptStore';
 import { coercePhoneDecisions } from './approvals/decisionConfig';
+import { createOpenCodeDecisions } from './approvals/openCodeDecisions';
 import { isNativeDecision } from './approvals/types';
 import { SCROLLBACK_ROWS } from './web/hostSearch';
 import { recoveryCwd, isWslShell, isWslCwdMissingError } from '../shared/wsl';
@@ -182,9 +183,14 @@ let answerReceipts: AnswerReceiptStore | null = null;
 function getAnswerReceipts(): AnswerReceiptStore {
   return answerReceipts ??= new AnswerReceiptStore(getWmuxDir());
 }
-/** The `decision-v2` forms this daemon answers: the plan dialog while the `stepwise` channel is on. */
+/**
+ * The `decision-v2` forms this daemon answers: the plan dialog while the
+ * `stepwise` channel is on, agent-native permissions and questions (OpenCode)
+ * while the `native` channel is.
+ */
 function phoneDecisionForms(): DecisionFormKind[] {
-  return coercePhoneDecisions(loadConfig().phoneDecisions).stepwise ? ['plan'] : [];
+  const channels = coercePhoneDecisions(loadConfig().phoneDecisions);
+  return [...(channels.stepwise ? ['plan' as const] : []), ...(channels.native ? ['permission' as const, 'questions' as const] : [])];
 }
 function getRunHistory(): RunHistoryStore {
   return runHistory ??= new RunHistoryStore(getWmuxDir());
@@ -211,6 +217,11 @@ let chatCancelReceipts: ChatCancelReceiptStore | null | undefined;
 let chatQueue: ChatQueueStore | null | undefined;
 let chatSessions: ChatSessionService | null = null;
 let terminalChat: TerminalChatService | null = null;
+/** OpenCode permissions/questions as native records (built with terminalChat). */
+let openCodeDecisions: ReturnType<typeof createOpenCodeDecisions> | null = null;
+/** Last list-time reconcile per pane: a phone polling `/api/approvals` must not cost a plugin round trip each time. */
+const openCodeListReconciledAt = new Map<string, number>();
+const OPENCODE_LIST_RECONCILE_MS = 3_000;
 const chatSubscribers = new Map<string, Set<string>>();
 const chatPushTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const chatPushSeq = new Map<string, number>();
@@ -407,6 +418,31 @@ function queuedTextSnapshot(sessionManager: DaemonSessionManager, sessionId: str
  * web server caches the extracted text per pane, so a pane nobody wrote to
  * since the last search is not parsed again.
  */
+/**
+ * The decision-v2 piece of the web server, for BOTH construction sites: the
+ * list-time OpenCode reconcile — a request answered or raised
+ * while no signal arrived (a daemon restart included) shows up on the next
+ * `/api/approvals`. Throttled per pane and never awaited by the list.
+ */
+function webDecisionDeps(sessionManager: DaemonSessionManager) {
+  return {
+    reconcileDecisions: (): void => {
+      if (!openCodeDecisions) return;
+      const now = Date.now();
+      const live = new Set<string>();
+      for (const session of sessionManager.listLiveSessions()) {
+        live.add(session.id);
+        if (isBrainPty({ id: session.id, env: session.env })) continue;
+        if (agentDisplayToSlug(readAgentStateForWeb?.(session.id)?.agentName ?? '') !== 'opencode') continue;
+        if (now - (openCodeListReconciledAt.get(session.id) ?? 0) < OPENCODE_LIST_RECONCILE_MS) continue;
+        openCodeListReconciledAt.set(session.id, now);
+        void openCodeDecisions.reconcile(session.id);
+      }
+      for (const id of openCodeListReconciledAt.keys()) if (!live.has(id)) openCodeListReconciledAt.delete(id);
+    },
+  };
+}
+
 function sessionTextReader(sessionManager: DaemonSessionManager) {
   return async (sessionId: string) => {
     const outcome = await queuedTextSnapshot(sessionManager, sessionId, SCROLLBACK_ROWS);
@@ -434,9 +470,11 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
     // The `phoneDecisions` kill switch, read on every use like `gate`.
     phoneDecisions: () => coercePhoneDecisions(loadConfig().phoneDecisions),
     // One entry per native adapter; an adapter with no entry cannot be answered from here.
-    answerNative: async (native, reply) => {
+    answerNative: async (native, reply, sessionId) => {
       const adapters: Partial<Record<NativeDecisionRef['adapter'], (n: NativeDecisionRef, r: NativeDecisionReply) => Promise<NativeDecisionOutcome>>> = {
         codex: (n, r) => codexPaneRelays.answer(n, r.decision),
+        // OpenCode answers go back through the pane's own TUI plugin.
+        ...(openCodeDecisions ? { opencode: (n: NativeDecisionRef, r: NativeDecisionReply) => openCodeDecisions!.answer(n, r, sessionId) } : {}),
       };
       return adapters[native.adapter]?.(native, reply) ?? 'unavailable';
     },
@@ -638,6 +676,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         inputReceipts: getInputReceipts,
         answerReceipts: getAnswerReceipts,
         decisionForms: phoneDecisionForms,
+        ...webDecisionDeps(sessionManager),
         desktop: () => desktopPhoneBridge,
         agentLaunchOptions: installedAgentLaunchOptions,
         agentSettings: (id,authorized,choice)=>paneCodexSettings({
@@ -2873,6 +2912,7 @@ function registerRpcHandlers(
       inputReceipts: getInputReceipts,
       answerReceipts: getAnswerReceipts,
       decisionForms: phoneDecisionForms,
+      ...webDecisionDeps(sessionManager),
         desktop: () => desktopPhoneBridge,
         agentLaunchOptions: installedAgentLaunchOptions,
         agentSettings: (id,authorized,choice)=>paneCodexSettings({
@@ -3475,7 +3515,7 @@ function registerRpcHandlers(
   });
 
   if (!terminalChat) {
-    terminalChat = new TerminalChatService({ directory: path.join(wmuxDir, 'terminal-chat'),
+    terminalChat = new TerminalChatService({ directory: path.join(wmuxDir, 'terminal-chat'), log,
       owner: async id => {
         const pane = sessionManager.getSession(id);
         if (!pane?.meta.incarnationId || !['attached', 'detached'].includes(pane.meta.state)) return undefined;
@@ -3501,6 +3541,20 @@ function registerRpcHandlers(
       },
     });
     pipeServer.onClientClose(client => terminalChat?.dropClient(client));
+  }
+  if (!openCodeDecisions) {
+    openCodeDecisions = createOpenCodeDecisions({
+      read: async (id, known) => terminalChat ? terminalChat.readDecisions(id, known) : { state: 'unavailable' },
+      reply: async (id, reply) => terminalChat ? terminalChat.replyDecision(id, reply) : 'unavailable',
+      registry: {
+        list: () => approvalRegistry?.list() ?? { pending: [] },
+        noteNativeDecision: async (input) => approvalRegistry ? approvalRegistry.noteNativeDecision(input) : null,
+        expireNativeRequests: async (id, adapter, ids) => approvalRegistry ? approvalRegistry.expireNativeRequests(id, adapter, ids) : 0,
+        expireHookAwaiting: async (id, ids, unkeyed) => approvalRegistry ? approvalRegistry.expireHookAwaiting(id, ids, unkeyed) : 0,
+      },
+      workspaceOf: (id) => sessionManager.getSession(id)?.meta.env?.[ENV_KEYS.WORKSPACE_ID],
+      log,
+    });
   }
 
   if (chatSendReceipts === undefined) {
@@ -3798,6 +3852,7 @@ function registerRpcHandlers(
       onInputAnswered: (sessionId, answeredAt) => {
         sessionManager.getSession(sessionId)?.bridge.clearAnsweredQuestion(answeredAt);
       },
+      openCodeDecisions: async (sessionId, requestId) => openCodeDecisions ? openCodeDecisions.covers(sessionId, requestId) : 'unavailable',
     });
   }
   const ingest = hookIngest;

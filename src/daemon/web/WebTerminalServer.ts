@@ -578,6 +578,8 @@ interface WebTerminalServerDeps {
   answerReceipts?: () => AnswerReceiptStore;
   /** The `decision-v2` form kinds this daemon produces now (`/api/config` `decisionForms`). Absent ⇒ none. */
   decisionForms?: () => DecisionFormKind[];
+  /** Refresh agent-native decision records before a list; never awaited. */
+  reconcileDecisions?: () => void;
   sessionManager: DaemonSessionManager;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /**
@@ -6205,6 +6207,13 @@ export class WebTerminalServer {
   private handleApprovalsList(res: http.ServerResponse, principal: WebPrincipal, caps: ClientCaps): void {
     const approvals = this.deps.approvals;
     if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
+    // What an agent's own server raised or settled with no signal shows up on
+    // a later list (its records arrive over SSE); this list is not held for it.
+    try {
+      this.deps.reconcileDecisions?.();
+    } catch (err) {
+      this.deps.log('warn', `[web] decision reconcile failed: ${errMsg(err)}`);
+    }
     let listed: { pending: ApprovalRequest[]; recentlyResolved: ApprovalRequest[] };
     try {
       listed = approvals.list();
@@ -6772,8 +6781,9 @@ export class WebTerminalServer {
    * different body under the same id 409 `answer-id-reused`, and one that was
    * running when the daemon stopped 409 `answer-uncertain` — never re-run.
    *
-   * Only the forms `decisionForms` lists are answered; the registry refuses
-   * every other record with 501 `answer-in-terminal` / `unsupported-shape`.
+   * Only the forms `decisionForms` lists are answered (agent-native ones
+   * through the agent's own server); the registry refuses every other
+   * record with 501 `answer-in-terminal` / `unsupported-shape`.
    */
   private handleApprovalAnswer(
     req: http.IncomingMessage,

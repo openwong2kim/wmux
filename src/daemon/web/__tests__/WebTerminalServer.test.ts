@@ -463,6 +463,7 @@ describe('WebTerminalServer', () => {
   let approvalBox: ReturnType<typeof makeApprovals>['approvalBox'];
   let deviceRoster: Map<string, { secret: string; name?: string; revoked: boolean }>;
   let answerReceiptStore: AnswerReceiptStore;
+  let reconcileCalls: number;
   let deviceMintCalls: Array<{ name?: string }>;
   let pushRegistrations: Array<{ deviceId: string; apnsToken: string; publicKey: string }>;
   let liveActivityRegistrations: Array<{ deviceId: string } & Record<string, unknown>>;
@@ -547,6 +548,7 @@ describe('WebTerminalServer', () => {
     uploadsDir = deps.uploadsDir;
     projectorMock = deps.projectorMock;
     answerReceiptStore = new AnswerReceiptStore(deps.uploadsDir);
+    reconcileCalls = 0;
     server = new WebTerminalServer({
       sessionManager: deps.sessionManager,
       approvals: deps.approvals,
@@ -558,6 +560,7 @@ describe('WebTerminalServer', () => {
       inputReceipts: () => new InputReceiptStore(deps.uploadsDir),
       answerReceipts: () => answerReceiptStore,
       decisionForms: () => decisionFormKinds,
+      reconcileDecisions: () => { reconcileCalls += 1; },
       desktop: () => desktopBridge,
       agentLaunchOptions: async env => { agentLaunchEnv = env; return [{agent:'claude',models:['opus','sonnet'],efforts:['low','high']}]; },
       agentSettings: async (id,authorized,choice)=>{
@@ -4963,6 +4966,23 @@ describe('WebTerminalServer', () => {
       expect(plain).toMatchObject({ decisionForms: [], chatCancel: true });
       expect(await cfg(OLD_IOS)).toEqual(plain);
       expect(await cfg({ 'X-Wmux-Client-Caps': 'terminal-prompt-answer, decision-v2, chat-cancel' })).toEqual(plain);
+    });
+
+    it('/api/config advertises the form kinds the daemon produces, for every client alike', async () => {
+      const info = await startRW();
+      decisionFormKinds = ['permission', 'questions'];
+      const cfg = async (headers: Record<string, string>) =>
+        (await fetch(`${base()}/api/config`, { headers: { ...bearer(info.token as string), ...headers } })).json();
+      const plain = await cfg({});
+      expect(plain).toMatchObject({ decisionForms: ['permission', 'questions'] });
+      expect(await cfg(OLD_IOS)).toEqual(plain);
+    });
+
+    it('a list asks for agent-native decisions to be refreshed, and never waits for it', async () => {
+      const info = await startRO();
+      const before = reconcileCalls;
+      expect((await fetch(`${base()}/api/approvals`, { headers: bearer(info.token as string) })).status).toBe(200);
+      expect(reconcileCalls).toBe(before + 1);
     });
 
     const V2 = { 'X-Wmux-Client-Caps': 'terminal-prompt-answer, terminal-prompt-decline, decision-v2' };

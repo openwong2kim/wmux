@@ -322,7 +322,7 @@ describe('native decision records', () => {
     const marked: Omit<ApprovalResolveParams, 'decision'> = { id: record.id, resolvedBy: 'device Phone (d1)', terminalPromptAnswer: TERMINAL_PROMPT_WEB_ANSWER };
     expect(await h.registry.resolve({ ...marked, decision: 'approve', choiceKey: '9' })).toMatchObject({ reason: 'invalid-choice' });
     expect(await h.registry.resolve({ ...marked, decision: 'approve', choiceKey: '2' })).toMatchObject({ ok: true, request: { selectedChoiceKey: '2' } });
-    expect(h.native.map((c) => c.reply)).toEqual([{ decision: 'approve', formKind: 'questions', choiceKey: '2' }]);
+    expect(h.native.map((c) => c.reply)).toEqual([{ decision: 'approve', formKind: 'questions', choiceKey: '2', answers: [{ keys: ['2'] }] }]);
 
     const multi = await h.registry.noteNativeDecision({
       sessionId: 'pty-oc', agent: 'opencode', native: { adapter: 'opencode', requestId: 'que_2' },
@@ -437,17 +437,134 @@ describe('native decision records', () => {
     expect(h.writes).toEqual([]);
   });
 
-  it('a v2 answer is refused as unsupported-shape until the form producers land', async () => {
+  it('a v2 answer to a permission names approve or deny and must echo the form fingerprint', async () => {
     const h = makeRegistry();
     const record = await nativePermission(h);
     settle(h);
-    const v2: ApprovalResolveParams = {
+    const v2 = (answer: Partial<NonNullable<ApprovalResolveParams['decisionAnswer']>>): ApprovalResolveParams => ({
       id: record.id, decision: 'approve', resolvedBy: 'device Phone (d1)',
       decisionV2Answer: DECISION_V2_WEB_ANSWER,
-      decisionAnswer: { formFingerprint: record.formFingerprint!, clientAnswerId: 'a'.repeat(16), action: 'approve' },
-    };
-    expect(await h.registry.resolve(v2)).toMatchObject({ reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape' });
+      decisionAnswer: { formFingerprint: record.formFingerprint!, clientAnswerId: 'a'.repeat(16), ...answer },
+    });
+    expect(await h.registry.resolve(v2({ action: 'always' }))).toMatchObject({ reason: 'invalid-choice' });
+    expect(await h.registry.resolve(v2({ action: 'approve', formFingerprint: 'f'.repeat(32) }))).toMatchObject({ reason: 'prompt-changed' });
+    expect(await h.registry.resolve(v2({ action: 'approve', text: 'why' }))).toMatchObject({ reason: 'invalid-choice' });
     expect(h.native).toEqual([]);
+    const done = await h.registry.resolve(v2({ action: 'deny' }));
+    expect(done).toMatchObject({ ok: true, request: { state: 'resolved', decision: 'deny' } });
+    expect(done.ok && done.request.pressedAt).toBeUndefined();
+    expect(h.native).toEqual([{ ref: expect.objectContaining({ requestId: 'per_1' }), reply: { decision: 'deny', formKind: 'permission' } }]);
+    expect(h.writes).toEqual([]);
+  });
+
+  it('a v2 answer to questions hands the agent one label list per question, typed text only where allowed', async () => {
+    const h = makeRegistry();
+    const id = await h.registry.noteNativeDecision({
+      sessionId: 'pty-oc', agent: 'opencode', native: { adapter: 'opencode', requestId: 'que_9', nativeSessionId: 'ses_1' },
+      form: { v: 1, kind: 'questions', actions: [{ id: 'submit', label: 'Submit' }, { id: 'deny', label: 'Dismiss' }], questions: [
+        { id: 'q0', text: 'Toppings?', multiSelect: true, allowOther: false, options: [{ key: '1', label: 'Cheese' }, { key: '2', label: 'Basil' }] },
+        { id: 'q1', text: 'Size?', multiSelect: false, allowOther: true, options: [{ key: '1', label: 'Small' }] },
+      ] },
+    });
+    const record = h.registry.list().pending.find((r) => r.id === id)!;
+    settle(h);
+    const v2 = (answers: NonNullable<NonNullable<ApprovalResolveParams['decisionAnswer']>['answers']>): ApprovalResolveParams => ({
+      id: record.id, decision: 'approve', resolvedBy: 'device Phone (d1)', decisionV2Answer: DECISION_V2_WEB_ANSWER,
+      decisionAnswer: { formFingerprint: record.formFingerprint!, clientAnswerId: 'b'.repeat(16), answers },
+    });
+    // Typed text on a question that allows none; a question left out; two answers to a single select.
+    expect(await h.registry.resolve(v2([{ questionId: 'q0', keys: [], other: 'Olive' }, { questionId: 'q1', keys: ['1'] }]))).toMatchObject({ reason: 'invalid-choice' });
+    expect(await h.registry.resolve(v2([{ questionId: 'q0', keys: ['1'] }]))).toMatchObject({ reason: 'invalid-choice' });
+    expect(await h.registry.resolve(v2([{ questionId: 'q0', keys: ['1'] }, { questionId: 'q1', keys: ['1'], other: 'Huge' }]))).toMatchObject({ reason: 'invalid-choice' });
+    expect(h.native).toEqual([]);
+    const done = await h.registry.resolve(v2([{ questionId: 'q1', keys: [], other: 'Huge' }, { questionId: 'q0', keys: ['2', '1'] }]));
+    expect(done).toMatchObject({ ok: true, request: { state: 'resolved' } });
+    expect(h.native.at(-1)!.reply).toEqual({ decision: 'approve', formKind: 'questions', answers: [{ keys: ['2', '1'] }, { keys: [], other: 'Huge' }] });
+    // The typed text is kept as a digest, never verbatim.
+    const stored = h.registry.list().recentlyResolved.find((r) => r.id === record.id)!;
+    expect(stored.answerDigest).toMatchObject({ textBytes: 4 });
+    expect(JSON.stringify(stored)).not.toContain('Huge');
+  });
+
+  it('a whitespace-only typed answer, and a v1 approve of several questions, are refused for good', async () => {
+    const h = makeRegistry();
+    const id = await h.registry.noteNativeDecision({
+      sessionId: 'pty-oc', agent: 'opencode', native: { adapter: 'opencode', requestId: 'que_w', nativeSessionId: 'ses_1' },
+      form: { v: 1, kind: 'questions', actions: [], questions: [
+        { id: 'q0', text: 'A?', multiSelect: false, allowOther: true, options: [{ key: '1', label: 'x' }] },
+        { id: 'q1', text: 'B?', multiSelect: false, allowOther: true, options: [{ key: '1', label: 'y' }] },
+      ] },
+    });
+    settle(h);
+    expect(await h.registry.resolve({
+      id: id!, decision: 'approve', resolvedBy: 'device Phone (d1)', decisionV2Answer: DECISION_V2_WEB_ANSWER,
+      decisionAnswer: { formFingerprint: h.registry.list().pending[0]!.formFingerprint!, clientAnswerId: 'c'.repeat(16),
+        answers: [{ questionId: 'q0', keys: [], other: '   ' }, { questionId: 'q1', keys: ['1'] }] },
+    })).toMatchObject({ reason: 'invalid-choice' });
+    // A shipped phone cannot answer several questions: needs-v2 (501), not a retry.
+    expect(await h.registry.resolve({ id: id!, decision: 'approve', choiceKey: '1', resolvedBy: 'device Phone (d1)', terminalPromptAnswer: TERMINAL_PROMPT_WEB_ANSWER }))
+      .toMatchObject({ reason: 'needs-v2' });
+    expect(h.native).toEqual([]);
+  });
+
+  it('the agent refusing an answer is final; a request that changed is prompt-changed', async () => {
+    const h = makeRegistry();
+    const record = await nativePermission(h);
+    settle(h);
+    h.outcome.next = 'refused';
+    expect(await h.registry.resolve(v1Answer(record))).toMatchObject({ ok: false, reason: 'invalid-choice' });
+    h.outcome.next = 'changed';
+    expect(await h.registry.resolve(v1Answer(record))).toMatchObject({ ok: false, reason: 'prompt-changed' });
+    expect(h.registry.list().pending.map((r) => r.id)).toContain(record.id);
+  });
+
+  it('the fingerprint covers what the card shows: a new command under the same id replaces the card', async () => {
+    const h = makeRegistry();
+    const first = await nativePermission(h);
+    const again = await h.registry.noteNativeDecision({
+      sessionId: 'pty-oc', agent: 'opencode', workspaceId: 'ws-1',
+      native: { adapter: 'opencode', requestId: 'per_1', nativeSessionId: 'ses_1' },
+      form: PERMISSION, question: 'Allow bash: npm test?', toolName: 'bash', summary: 'rm -rf build',
+    });
+    expect(again).not.toBe(first.id);
+    const now = h.registry.list().pending;
+    expect(now).toHaveLength(1);
+    expect(now[0]!.formFingerprint).not.toBe(first.formFingerprint);
+    expect(h.events.map((e) => e.type)).toEqual(['create', 'supersede', 'create']);
+  });
+
+  it('expireHookAwaiting settles only the named informational cards, never a native record', async () => {
+    const h = makeRegistry();
+    const native = await nativePermission(h);
+    await h.registry.noteHookAwaitingInput({ sessionId: 'pty-oc', agent: 'opencode', requestId: 'per_x' });
+    const card = h.registry.list().pending.find((r) => !r.native)!;
+    expect(card.hookRequestId).toBe('per_x');
+    expect(await h.registry.expireHookAwaiting('pty-oc', ['per_other'])).toBe(0);
+    expect(await h.registry.expireHookAwaiting('pty-oc', ['per_x', 'per_1'])).toBe(1);
+    expect(h.registry.list().pending.map((r) => r.id)).toEqual([native.id]);
+  });
+
+  it('an adapter that lost the answer after it left reports uncertain, not unavailable', async () => {
+    const h = makeRegistry();
+    const record = await nativePermission(h);
+    settle(h);
+    h.outcome.next = 'uncertain';
+    expect(await h.registry.resolve(v1Answer(record))).toMatchObject({ ok: false, reason: 'answer-uncertain' });
+    expect(h.registry.list().pending.map((r) => r.id)).toContain(record.id);
+  });
+
+  it('expireNativeRequests settles only the named requests of that pane, past the screen guard', async () => {
+    const h = makeRegistry();
+    const a = await nativePermission(h, 'per_a');
+    const b = await nativePermission(h, 'per_b');
+    const other = await nativePermission(h, 'per_c', 'pty-other');
+    h.registry.expireForSession('pty-oc', 'answered-locally');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.registry.list().pending.map((r) => r.id).sort()).toEqual([a.id, b.id, other.id].sort());
+    expect(await h.registry.expireNativeRequests('pty-oc', 'opencode', ['per_a', 'per_c'])).toBe(1);
+    expect(h.registry.list().pending.map((r) => r.id).sort()).toEqual([b.id, other.id].sort());
+    // Settled: a late re-notify of the same request does not bring it back.
+    expect(await h.registry.noteNativeDecision({ sessionId: 'pty-oc', agent: 'opencode', native: { adapter: 'opencode', requestId: 'per_a', nativeSessionId: 'ses_1' }, form: PERMISSION, question: 'Allow bash?' })).toBeNull();
   });
 
   describe('the phoneDecisions kill switch', () => {

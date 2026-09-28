@@ -54,7 +54,9 @@ const HOOK_TIMEOUT_MS = 2000;
 //   0.2.1 — session.idle dispatch detached from the OpenCode event loop.
 //   0.2.2 — safe legacy-daemon fallback and canonical main socket discovery.
 //   0.2.3 — consistent permission request/reply correlation.
-const BRIDGE_VERSION = '0.2.3';
+//   0.3.0 — questions and direct-child requests signal too, carrying `permId`;
+//           a signalled request's reply sends agent.input_answered.
+const BRIDGE_VERSION = '0.3.0';
 const CONNECT_RETRY_BACKOFFS_MS = [100, 250];
 const TRANSIENT_CONNECT_CODES = new Set([
   'EPERM', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EBUSY', 'EAGAIN',
@@ -277,6 +279,26 @@ export async function isChildSession(client, sessionID) {
   }
 }
 
+/**
+ * The session's parent: `{ ok: true, parent }` (`parent` undefined for a root
+ * or an unknown session id), or `{ ok: false }` when the lookup failed.
+ * NOT exported: OpenCode calls every exported function as a plugin, and one
+ * that resolves to undefined fails the whole plugin load.
+ */
+async function lookupParent(client, sessionID) {
+  if (!sessionID) return { ok: true, parent: undefined };
+  if (!client) return { ok: false };
+  try {
+    const res = await client.session.get({ path: { id: sessionID } });
+    if (res && typeof res === 'object' && 'error' in res && res.error) return { ok: false };
+    const session = res && typeof res === 'object' && 'data' in res ? res.data : res;
+    if (!session || typeof session !== 'object') return { ok: false };
+    return { ok: true, parent: nonEmptyStr(session.parentID) };
+  } catch {
+    return { ok: false };
+  }
+}
+
 // ----- RPC over named pipe (mirrors the Codex bridge) ----------------------
 
 function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
@@ -445,11 +467,17 @@ const PERMISSION_SETTLE_MS = 500;
 /**
  * The OpenCode plugin. Subscribes to the event stream and forwards:
  *   - session.idle                         → agent.stop
- *   - permission.asked / permission.updated → agent.awaiting_input,
+ *   - permission.asked / permission.updated
+ *     / question.asked                     → agent.awaiting_input {permId},
  *                                             debounced for auto-approval.
- * Child (sub-agent) sessions are suppressed so the orchestrator wakes on the
- * root session's turns, not every sub-agent turn. Every branch is guarded +
- * best-effort — an exception here must never disrupt the opencode session.
+ *   - permission.replied / question.replied
+ *     / question.rejected                  → agent.input_answered {permId},
+ *                                             only for a request signalled above.
+ * Child (sub-agent) idles are suppressed so the orchestrator wakes on the
+ * root session's turns, not every sub-agent turn. A direct child's request is
+ * signalled: the TUI draws it on the root's screen and the root's turn waits
+ * on it. A grandchild's is not. Every branch is guarded + best-effort — an
+ * exception here must never disrupt the opencode session.
  *
  * `client` (the OpenCode SDK client) resolves a session's parentID; `directory`
  * seeds the envelope cwd; the pane env (WMUX_PTY_ID etc.) does the routing.
@@ -457,9 +485,27 @@ const PERMISSION_SETTLE_MS = 500;
 export const WmuxBridge = async ({ directory, client } = {}) => {
   logEvent('loaded', { directory: nonEmptyStr(directory), hasClient: !!client });
   const cwd = nonEmptyStr(directory);
-  // permission request id → settle timer. A permission.replied for the same id
-  // before the timer fires cancels awaiting_input (the permission auto-resolved).
-  const pendingPermissions = new Map();
+  // request id → { timer, answered, signalled, chain }. Every step for one
+  // request runs on its own chain, so its awaiting_input always leaves before
+  // its input_answered, and a reply that lands while the asked step is still
+  // looking up the session stops that step instead of being lost. An entry
+  // goes away once its request is answered.
+  const requests = new Map();
+  const REQUESTS_MAX = 2048;
+  const track = (permId) => {
+    if (requests.size >= REQUESTS_MAX) {
+      // Only a finished entry (a request that raised nothing) goes; a live
+      // one is never pushed out, whatever the count.
+      for (const [id, entry] of requests) if (entry.done) { requests.delete(id); break; }
+    }
+    const entry = { timer: undefined, answered: false, signalled: false, done: false, chain: Promise.resolve() };
+    requests.set(permId, entry);
+    return entry;
+  };
+  const step = (entry, fn) => {
+    entry.chain = entry.chain.then(fn).catch((err) => logEvent('permission-signal-error', { error: String(err) }));
+    return entry.chain;
+  };
   const permissionRequestId = (properties = {}) => nonEmptyStr(properties.id)
     ?? nonEmptyStr(properties.requestID)
     ?? nonEmptyStr(properties.permissionID);
@@ -489,52 +535,68 @@ export const WmuxBridge = async ({ directory, client } = {}) => {
           return;
         }
 
-        if (event.type === 'permission.asked' || event.type === 'permission.updated') {
+        if (event.type === 'permission.asked' || event.type === 'permission.updated' || event.type === 'question.asked') {
           // Current permission.asked and legacy permission.updated both carry a
           // request-like object with id/sessionID; legacy builds may add title.
+          // question.asked carries the question request (id/sessionID).
           const perm = event?.properties ?? {};
           const permId = permissionRequestId(perm);
-          if (!permId || pendingPermissions.has(permId)) return;
+          if (!permId || requests.has(permId)) return;
           const sessionId = nonEmptyStr(perm.sessionID) ?? nonEmptyStr(perm.sessionId);
           const title = nonEmptyStr(perm.title);
-          const timer = setTimeout(() => {
-            pendingPermissions.delete(permId);
-            void (async () => {
-              try {
-                // Only the root session's approvals are the orchestrator's to
-                // handle (same child suppression as idle).
-                if (await isChildSession(client, sessionId)) {
-                  logEvent('skip-child-permission', { sessionId, permId });
-                  return;
-                }
-                await sendSignal(
-                  buildOpencodeEnvelope('agent.awaiting_input', {
-                    cwd,
-                    sessionId,
-                    payload: title ? { title } : {},
-                  }),
-                  'opencode-perm',
-                );
-              } catch (err) {
-                logEvent('permission-signal-error', { error: String(err) });
-              }
-            })();
+          const entry = track(permId);
+          entry.timer = setTimeout(() => {
+            entry.timer = undefined;
+            void step(entry, async () => {
+              // A root's request, or a direct child's (drawn on the root's
+              // screen). A grandchild's is nobody's to answer from here, and a
+              // lookup that failed proves neither: no signal then.
+              const own = await lookupParent(client, sessionId);
+              const grand = own.ok && own.parent ? await lookupParent(client, own.parent) : { ok: true, parent: undefined };
+              if (!own.ok || !grand.ok) { entry.done = true; logEvent('skip-permission-lookup-failed', { sessionId, permId }); return; }
+              if (grand.parent) { entry.done = true; logEvent('skip-child-permission', { sessionId, permId }); return; }
+              // Answered while the session was looked up: nothing to raise.
+              if (entry.answered) return;
+              entry.signalled = true;
+              await sendSignal(
+                buildOpencodeEnvelope('agent.awaiting_input', {
+                  cwd,
+                  sessionId,
+                  payload: title ? { title, permId } : { permId },
+                }),
+                'opencode-perm',
+              );
+            });
           }, PERMISSION_SETTLE_MS);
-          timer.unref?.();
-          pendingPermissions.set(permId, timer);
+          entry.timer.unref?.();
           return;
         }
 
-        if (event.type === 'permission.replied') {
+        if (event.type === 'permission.replied' || event.type === 'question.replied' || event.type === 'question.rejected') {
           // Current/legacy SDKs have used requestID, permissionID, and id.
           const reply = event?.properties ?? {};
           const permId = permissionRequestId(reply);
-          const timer = permId ? pendingPermissions.get(permId) : undefined;
-          if (timer) {
-            clearTimeout(timer);
-            pendingPermissions.delete(permId);
+          const entry = permId ? requests.get(permId) : undefined;
+          if (!entry) return;
+          if (entry.timer) {
+            clearTimeout(entry.timer);
+            requests.delete(permId);
             logEvent('permission-auto-resolved', { permId });
+            return;
           }
+          entry.answered = true;
+          // Answered in the TUI or through wmux: after its awaiting_input (if
+          // one left), the daemon re-reads which requests are still open.
+          // Detached like idle.
+          const sessionId = nonEmptyStr(reply.sessionID);
+          void step(entry, async () => {
+            requests.delete(permId);
+            if (!entry.signalled) return;
+            await sendSignal(
+              buildOpencodeEnvelope('agent.input_answered', { cwd, sessionId, payload: { permId } }),
+              'opencode-answered',
+            );
+          });
           return;
         }
       } catch (err) {

@@ -120,7 +120,7 @@ import {
 } from './types';
 import type { QuestionShape } from './askUserQuestion';
 import type { PhoneDecisionsConfig } from './decisionConfig';
-import { boundDecisionForm } from './decisionForm';
+import { boundDecisionForm, nativeV2Answer } from './decisionForm';
 
 /** The pane's state at one instant: output bytes, key-carrying input, the PTY incarnation. */
 export interface PromptScreenMark {
@@ -449,7 +449,7 @@ export interface ApprovalRegistryDeps {
    * plugin, the Codex relay). Must return `unavailable` only when nothing was
    * delivered. Absent ⇒ a native record cannot be answered from here.
    */
-  answerNative?: (native: NativeDecisionRef, reply: NativeDecisionReply) => Promise<NativeDecisionOutcome>;
+  answerNative?: (native: NativeDecisionRef, reply: NativeDecisionReply, sessionId: string) => Promise<NativeDecisionOutcome>;
   /** The `phoneDecisions` kill switch, read on every use. Absent ⇒ both on. */
   phoneDecisions?: () => PhoneDecisionsConfig;
   /** Upper bound on one `answerNative` call. Default NATIVE_ANSWER_TIMEOUT_MS. */
@@ -640,6 +640,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     options?: string[];
     choices?: Array<{ key: string; label: string }>;
     questionShape?: QuestionShape;
+    /** The agent's own request id behind this card (OpenCode `permId`). */
+    requestId?: string;
   }): Promise<void> {
     // Snapshot BEFORE queuing. `mutate` runs the body after the chain drains,
     // which can be seconds later (a resolve ahead of it is holding the chain
@@ -655,6 +657,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       options: input.options ? [...input.options] : undefined,
       choices: input.choices ? input.choices.map((c) => ({ ...c })) : undefined,
       questionShape: input.questionShape,
+      requestId: input.requestId,
     };
     return this.mutate(() => {
       // A Codex pane whose approval is already up as a native decision: the
@@ -687,6 +690,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         ...(snapshot.options && snapshot.options.length > 0 ? { options: [...snapshot.options] } : {}),
         ...(snapshot.choices && snapshot.choices.length > 0 ? { choices: snapshot.choices.map((c) => ({ ...c })) } : {}),
         ...(snapshot.questionShape ? { questionShape: snapshot.questionShape } : {}),
+        ...(snapshot.requestId ? { hookRequestId: snapshot.requestId } : {}),
         // Danger HINT for UI step-up, computed once at creation from the same
         // pattern list the PTY critical-action scanner uses. A miss or a false
         // positive changes nothing about whether this request can be answered.
@@ -787,8 +791,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * choices, anything else carries `questionShape`). A `plan` form is never
    * native. Resolves to the record id, or null when nothing was recorded.
    *
-   * No producer calls this yet (the OpenCode plugin and the Codex relay wire
-   * it up); it exists so the isolation rules above are pinned by tests.
+   * The OpenCode reconcile (openCodeDecisions.ts) produces these; the Codex
+   * relay does not yet.
    */
   noteNativeDecision(input: {
     sessionId: string;
@@ -823,8 +827,12 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // the answer) must not bring the card back.
       const settledAt = this.nativeSettled.get(nativeKey(native));
       if (settledAt !== undefined && this.now() - settledAt < NATIVE_SETTLED_MEMORY_MS) return { result: null };
+      // Everything the card shows, and the agent's own hash of the whole
+      // request: the same id asking something else is a different card.
       const formFingerprint = crypto.createHash('sha256')
-        .update(`${nativeKey(native)}|${canonicalJson(form)}`)
+        .update(`${nativeKey(native)}|${native.digest ?? ''}|${canonicalJson({
+          form, question, toolName: snapshot.toolName ?? null, summary: snapshot.summary ?? null,
+        })}`)
         .digest('hex')
         .slice(0, 32);
       const existing = this.requests.find((r) => r.state === 'pending' && r.sessionId === snapshot.sessionId
@@ -904,6 +912,48 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   private shadowsCodexDecision(sessionId: string, agent: string): boolean {
     return agent === 'codex' && this.requests.some((r) => r.state === 'pending' && r.sessionId === sessionId
       && r.native?.adapter === 'codex' && r.channel === 'native-rpc');
+  }
+
+  /**
+   * The agent's own server says these requests are no longer open (answered
+   * in its terminal, or gone): the reconcile's list form of `expireNative`,
+   * keyed by request id within one adapter. Unlike the screen-inferred
+   * reasons this is the agent's word about its own request, so it settles
+   * native records — and only those. Resolves to how many were expired.
+   */
+  expireNativeRequests(sessionId: string, adapter: NativeDecisionRef['adapter'], requestIds: readonly string[]): Promise<number> {
+    const ids = new Set(requestIds);
+    return this.mutate<number>(() => {
+      const events: ApprovalEvent[] = [];
+      for (const r of this.requests) {
+        if (r.state !== 'pending' || r.sessionId !== sessionId || r.native?.adapter !== adapter || !ids.has(r.native.requestId)) continue;
+        r.state = 'expired';
+        r.resolvedAt = this.now();
+        events.push({ type: 'expire', request: copyRequest(r) });
+      }
+      if (events.length > 0) {
+        this.deps.log?.('info', `[approvals] expired ${events.length} native request(s) the agent no longer holds on ${sessionId}`);
+      }
+      return { events, result: events.length };
+    });
+  }
+
+  /**
+   * Expire a pane's informational `awaiting_input` cards (never a native
+   * record) for these agent request ids — the agent answered them, or a native
+   * record now stands for them. `unkeyed` also takes cards that carry no id
+   * (an older bridge sent none). Resolves to how many were expired.
+   */
+  expireHookAwaiting(sessionId: string, requestIds: readonly string[], unkeyed = false): Promise<number> {
+    const ids = new Set(requestIds);
+    return this.mutate<number>(() => {
+      const events = this.expirePendingWhere(
+        (r) => r.sessionId === sessionId && r.kind === 'awaiting_input' && !isNative(r)
+          && (r.hookRequestId !== undefined ? ids.has(r.hookRequestId) : unkeyed),
+        'answered-locally',
+      );
+      return { events, result: events.length };
+    });
   }
 
   private decisionChannels(): PhoneDecisionsConfig {
@@ -2264,14 +2314,29 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
 
     let decision: ApprovalDecision;
     let choiceKey: string | undefined;
-    if (via === 'decline') {
+    let answers: Array<{ keys: string[]; other?: string }> | undefined;
+    let answerDigest: ApprovalRequest['answerDigest'];
+    if (via === 'v2') {
+      const answer = params.decisionAnswer;
+      if (!answer) return refuse('invalid-choice');
+      if (answer.formFingerprint !== record.formFingerprint) return refuse('prompt-changed');
+      const built = nativeV2Answer(form, answer);
+      if (!built) return refuse('invalid-choice');
+      ({ decision, answers } = built);
+      const typed = (answer.answers ?? []).flatMap((a) => (a.other !== undefined ? [a.other] : []));
+      if (answers && typed.length > 0) {
+        const joined = typed.join('\u0000');
+        answerDigest = {
+          textBytes: Buffer.byteLength(joined, 'utf8'),
+          textHash: crypto.createHash('sha256').update(joined).digest('hex'),
+        };
+      }
+    } else if (via === 'decline') {
       if (params.decision !== 'deny' || params.choiceKey !== undefined) return refuse('invalid-choice');
       if (params.promptFingerprint !== undefined && params.promptFingerprint !== record.formFingerprint) {
         return refuse('prompt-changed');
       }
       decision = 'deny';
-    } else if (via === 'v2') {
-      return inTerminal('unsupported-shape');
     } else if (form.kind === 'permission') {
       // The shipped phone's answer to a permission: its plain Yes or No.
       const choice = record.choices?.find((c) => c.key === params.choiceKey);
@@ -2293,6 +2358,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       if (!choice) return refuse('invalid-choice');
       decision = 'approve';
       choiceKey = choice.key;
+      answers = [{ keys: [choice.key] }];
     }
 
     const refusedEarly = await this.reauthorize(params, record);
@@ -2323,7 +2389,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
             formKind: form.kind,
             // A permission's Yes/No is the decision itself; a question names its option.
             ...(choiceKey && form.kind === 'questions' ? { choiceKey } : {}),
-          }),
+            ...(answers && decision === 'approve' && form.kind === 'questions'
+              ? { answers: answers.map((a) => ({ ...a, keys: [...a.keys] })) }
+              : {}),
+          }, record.sessionId),
           new Promise<'timeout'>((resolve) => {
             timer = setTimeout(() => resolve('timeout'), this.deps.nativeAnswerTimeoutMs ?? NATIVE_ANSWER_TIMEOUT_MS);
             timer.unref?.();
@@ -2340,6 +2409,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // Sent, never confirmed: it may have landed. The card stays up; the
       // agent's own event (or a later not-found) settles it.
       if (outcome === 'timeout' || outcome === 'uncertain') return refuse('answer-uncertain');
+      // Nothing changed at the agent, and the same answer would fare no better.
+      if (outcome === 'refused') return refuse('invalid-choice');
+      // The request asks something else now; the next reconcile replaces the card.
+      if (outcome === 'changed') return refuse('prompt-changed');
       const result = await this.mutate<ApprovalResolveResult>(() => {
         if (outcome === 'not-found') {
           // The agent no longer holds the request (answered at the terminal,
@@ -2360,6 +2433,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         record.resolvedBy = sanitizeResolvedBy(params.resolvedBy);
         record.resolvedAt = this.now();
         if (choiceKey) record.selectedChoiceKey = choiceKey;
+        if (answerDigest) record.answerDigest = answerDigest;
         return {
           events: [{ type: 'resolve', request: copyRequest(record) }],
           result: { ok: true, request: copyRequest(record), durable: true },

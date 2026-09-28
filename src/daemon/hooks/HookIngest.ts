@@ -264,6 +264,16 @@ export interface HookIngestDeps {
    * failure is non-fatal.
    */
   onInputAnswered?: (sessionId: string, answeredAt: number) => void;
+  /**
+   * OpenCode — bring the pane's native permission/question records in line
+   * with what the wmux TUI plugin lists. `native`: a native record now stands
+   * for this request (`requestId`, the hook's `permId`; without one, for what
+   * the plugin listed). Anything else — `missing` (not listed, no answerable
+   * form), a plugin that predates decisions, no answer — keeps the
+   * informational `awaiting_input` card, so a blocked pane always has one.
+   * Only the daemon supplies it; a rejection counts as `unavailable`.
+   */
+  openCodeDecisions?: (sessionId: string, requestId?: string) => Promise<'native' | 'missing' | 'unsupported' | 'unavailable'>;
 }
 
 /**
@@ -513,6 +523,12 @@ function eventShapeFor(
   }
 }
 
+/** OpenCode's request id on a bridge 0.3.0 signal (`payload.permId`), when well-formed. */
+function openCodeRequestId(signal: AgentSignal): string | undefined {
+  const raw = signal.payload?.['permId'];
+  return signal.agent === 'opencode' && typeof raw === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(raw) ? raw : undefined;
+}
+
 export class HookIngest {
   readonly router: HookSignalRouter;
   private readonly meter: SignalLatencyMeter;
@@ -534,6 +550,12 @@ export class HookIngest {
   private readonly leadTurnEnded = new Set<string>();
   /** Claimed ptyIds already logged as refused, so a closed pane logs once (#1523). */
   private readonly refusedClaims = new Set<string>();
+  /**
+   * OpenCode requests the agent reported answered (`pane|permId`), so a
+   * fallback card decided after that report is not raised for them. Bounded:
+   * the oldest go first; a request is answered once.
+   */
+  private readonly answeredRequests = new Set<string>();
   /** Every signal refused because its claimed pane is not live here. Never decremented. */
   private refusedClaimCount = 0;
   /** Gate ptyIds already logged as allowed-on-refusal (bounded, like refusedClaims). */
@@ -829,7 +851,21 @@ export class HookIngest {
     // window, and these kinds return before any other cue-feeding site below.
     this.alarm.observe(sessionId, signal.agent, normalizeHookCue(signal));
     if (signal.kind === 'agent.input_answered') {
-      this.deps.approvals?.expireForSession(sessionId, 'answered-locally', 'awaiting_input');
+      const permId = openCodeRequestId(signal);
+      if (permId && this.deps.approvals?.expireHookAwaiting) {
+        // One OpenCode request answered: only its own card goes, not a card
+        // another pending request on the pane still needs.
+        this.answeredRequests.add(`${sessionId}|${permId}`);
+        if (this.answeredRequests.size > 1024) this.answeredRequests.delete(this.answeredRequests.values().next().value as string);
+        void Promise.resolve(this.deps.approvals.expireHookAwaiting(sessionId, [permId])).catch(() => undefined);
+      } else {
+        this.deps.approvals?.expireForSession(sessionId, 'answered-locally', 'awaiting_input');
+      }
+      // A native request answered at the terminal: the plugin is the judge of
+      // which ones are gone (a screen-inferred expiry never touches them).
+      if (signal.agent === 'opencode' && this.deps.openCodeDecisions) {
+        void this.deps.openCodeDecisions(sessionId).catch(() => undefined);
+      }
       try {
         if (signal.ptyId === sessionId) this.deps.onInputAnswered?.(sessionId, signal.ts);
       } catch (err) {
@@ -1137,15 +1173,30 @@ export class HookIngest {
     // Total and non-throwing (see extractAskUserQuestion): an unusable payload
     // yields absent fields, never a skipped request.
     const asked = extractAskUserQuestion(signal.payload);
-    approvals.noteHookAwaitingInput({
+    const permId = signal.agent === 'opencode' ? openCodeRequestId(signal) : undefined;
+    const legacy = (): void => approvals.noteHookAwaitingInput({
       sessionId,
       agent: signal.agent,
       ...(workspaceId ? { workspaceId } : {}),
+      ...(permId ? { requestId: permId } : {}),
       ...(asked.question ? { question: asked.question } : {}),
       ...(asked.options ? { options: asked.options } : {}),
       ...(asked.choices ? { choices: asked.choices } : {}),
       ...(asked.questionShape ? { questionShape: asked.questionShape } : {}),
     });
+    // OpenCode's plugin, when it lists decisions, makes the records itself:
+    // the hook then only marks the pane blocked (the broadcast below).
+    if (signal.agent === 'opencode' && this.deps.openCodeDecisions) {
+      // Decided after the plugin round trip: a request answered meanwhile
+      // gets no card.
+      const fallback = (): void => { if (!permId || !this.answeredRequests.has(`${sessionId}|${permId}`)) legacy(); };
+      void this.deps.openCodeDecisions(sessionId, permId).then(
+        (outcome) => { if (outcome !== 'native') fallback(); },
+        fallback,
+      );
+      return;
+    }
+    legacy();
   }
 
   /** Count a refused claimed-pane signal; log it once per ptyId (bounded set). */

@@ -8,7 +8,7 @@ import { OPENCODE_REQUEST_MAX_BYTES, type ChatTurn } from '../chat/chatBridge';
 interface Owner { pid: number; incarnation: string }
 /** Why a read reached no conversation, from the read itself (feeds `/turns` `cause`). */
 export type TerminalChatFailure = 'no-record' | 'transport-refused' | 'invalid-record' | 'owner-mismatch' | 'error';
-type Exchange = { ok: true; body: Record<string, unknown> } | { ok: false; left: boolean; failure: TerminalChatFailure; unauthorized?: true };
+type Exchange = { ok: true; body: Record<string, unknown> } | { ok: false; left: boolean; failure: TerminalChatFailure; unauthorized?: true; status?: number };
 /** `turn`: the plugin's running episode; absent from a plugin that predates it. */
 interface NativeRead { status: TranscriptStatus; page: TranscriptPage; turn?: ChatTurn }
 export interface TerminalChatSendOutcome { result: ChatSendResult; reason?: 'receipts-full' | 'transport-lost' | 'too-large' | 'unauthorized' }
@@ -19,11 +19,61 @@ export interface TerminalChatAbortOutcome {
   reason?: 'transport-lost' | 'unauthorized';
   turn?: ChatTurn;
 }
+/** An OpenCode permission or question the TUI draws on its route (plugin `decisions.read`). */
+/**
+ * `digest`: the plugin's hash of the whole request, echoed with an answer so
+ * the plugin can refuse one given to what the request no longer asks.
+ * `truncated`: something did not fit the bounds; no answerable form is made.
+ */
+export type OpenCodeDecision = { requestId: string; sessionId: string; digest: string; truncated?: true } & (
+  | { kind: 'permission'; permission: string; patterns: string[] }
+  | { kind: 'question'; questions: Array<{ question: string; header: string; multiple: boolean; custom: boolean; options: Array<{ label: string }> }> });
+/**
+ * `unsupported`: the plugin predates `decisions` (it answers the way v1 did).
+ * `unavailable`: nothing usable was read this time. `gone`: of the `known`
+ * requests, the ones their own session no longer holds — route-independent.
+ */
+export type OpenCodeDecisionsRead =
+  | { state: 'ok'; routeSessionId: string; decisions: OpenCodeDecision[]; gone: string[] }
+  | { state: 'unsupported' | 'unavailable' };
+/**
+ * One answer to an OpenCode request. `always` does not exist here. A question
+ * is answered by option INDEX (plus a typed answer); the plugin maps indexes
+ * back to OpenCode's own labels.
+ */
+export type OpenCodeDecisionReply = { requestId: string; sessionId: string; digest: string } & (
+  | { kind: 'permission'; reply: 'once' | 'reject' }
+  | { kind: 'question'; answers: Array<{ options: number[]; other?: string }> }
+  | { kind: 'question'; reject: true });
+/**
+ * `unavailable`: provably nothing delivered. `uncertain`: it may have landed.
+ * `refused`: the plugin or OpenCode turned this answer down for good.
+ * `changed`: the request now asks something else than the card showed.
+ */
+export type OpenCodeDecisionOutcome = 'ok' | 'not-found' | 'unavailable' | 'uncertain' | 'refused' | 'changed';
+const OPENCODE_REQUEST_ID = /^(?:per|que)_[A-Za-z0-9]{1,120}$/;
+const OPENCODE_SESSION_ID = /^ses_[a-zA-Z0-9]{1,120}$/;
+const strings = (value: unknown, max: number, len: number): value is string[] =>
+  Array.isArray(value) && value.length <= max && value.every((item) => typeof item === 'string' && item.length <= len);
+function validDecision(value: unknown): value is OpenCodeDecision {
+  const d = object(value);
+  if (typeof d.digest !== 'string' || !/^[0-9a-f]{32}$/.test(d.digest) || d.truncated !== undefined && d.truncated !== true) return false;
+  if (typeof d.requestId !== 'string' || !OPENCODE_REQUEST_ID.test(d.requestId) || typeof d.sessionId !== 'string' || !OPENCODE_SESSION_ID.test(d.sessionId)) return false;
+  if (d.kind === 'permission') return typeof d.permission === 'string' && d.permission.length <= 64 && strings(d.patterns, 8, 400);
+  if (d.kind !== 'question' || !Array.isArray(d.questions) || d.questions.length === 0 || d.questions.length > 8) return false;
+  return d.questions.every((raw) => {
+    const q = object(raw);
+    return typeof q.question === 'string' && q.question.length <= 1000 && typeof q.header === 'string' && q.header.length <= 60 &&
+      typeof q.multiple === 'boolean' && typeof q.custom === 'boolean' && Array.isArray(q.options) && q.options.length <= 16 &&
+      q.options.every((o) => typeof object(o).label === 'string' && (object(o).label as string).length <= 200);
+  });
+}
 const TURN_ID = /^t1:[A-Za-z0-9._:-]{1,120}$/;
 const PHASES = ['complete', 'running', 'awaiting_input'];
 interface Watch { clients: Set<string>; timer: ReturnType<typeof setInterval>; busy: boolean; seq: number; digest?: string; epoch?: string; ids?: Set<string>; last?: NativeRead }
 export interface TerminalChatDependencies {
   directory: string;
+  log?(level: 'info' | 'warn', message: string): void;
   /** Fresh process attribution, never a persisted/hook-only agent label. */
   owner(id: string): Promise<Owner | undefined>;
   emit(id: string, data: TranscriptAppendData, clients: readonly string[]): void;
@@ -91,6 +141,48 @@ export class TerminalChatService {
       ? value as TerminalChatAbortOutcome['result'] : 'unavailable';
     const turn = this.turn(answer.body);
     return { result, ...(turn ? { turn } : {}) };
+  }
+
+  /**
+   * The permissions and questions the pane's TUI draws on its route (its own
+   * session's and its direct children's), plus which of `known` — requests
+   * the daemon already holds, by their own session — are gone. A plugin that
+   * predates `decisions` reads as `unsupported`: it refuses the action (400),
+   * or answers the stale-session refusal every v1 request got off a session
+   * route.
+   */
+  async readDecisions(id: string, known: ReadonlyArray<{ requestId: string; sessionId: string }> = []): Promise<OpenCodeDecisionsRead> {
+    const answer = await this.exchange(id, { action: 'decisions.read', known: known.slice(0, 64) });
+    if (!answer.ok) return { state: answer.status === 400 ? 'unsupported' : 'unavailable' };
+    const body = answer.body;
+    if (body.available === false) return { state: body.reason === 'not-ready' ? 'unavailable' : 'unsupported' };
+    const decisions = body.decisions;
+    if (typeof body.sessionId !== 'string' || body.sessionId !== '' && !OPENCODE_SESSION_ID.test(body.sessionId) ||
+        !Array.isArray(decisions) || decisions.length > 16 || !strings(body.gone, 64, 128)) return { state: 'unavailable' };
+    // One malformed entry costs only itself: the rest are still recorded.
+    const valid = decisions.filter(validDecision);
+    if (valid.length !== decisions.length) this.deps.log?.('warn', `[chat] OpenCode plugin listed ${decisions.length - valid.length} malformed decision(s) on ${id}; skipped`);
+    return { state: 'ok', routeSessionId: body.sessionId, decisions: valid, gone: body.gone };
+  }
+
+  /** Hand one answer to the plugin, which re-checks the request in its own session. */
+  async replyDecision(id: string, reply: OpenCodeDecisionReply): Promise<OpenCodeDecisionOutcome> {
+    const request = { action: 'decisions.reply', ...reply };
+    // The plugin destroys an oversize body mid-read: that would read as "may
+    // have landed" although nothing was delivered.
+    if (Buffer.byteLength(JSON.stringify(request)) > OPENCODE_REQUEST_MAX_BYTES) return 'unavailable';
+    const answer = await this.exchange(id, request);
+    if (!answer.ok) return answer.left ? 'uncertain' : 'unavailable';
+    switch (answer.body.result) {
+      case 'ok': return 'ok';
+      case 'not_found': return 'not-found';
+      case 'changed': return 'changed';
+      // Turned down for good: the same answer again would be too.
+      case 'refused': return 'refused';
+      // The plugin changed nothing and may take it later (not ready, malformed call).
+      case 'error': return 'unavailable';
+      default: return answer.body.available === false ? 'unavailable' : 'uncertain';
+    }
   }
 
   private turn(body: Record<string, unknown>): ChatTurn | undefined {
@@ -218,7 +310,7 @@ export class TerminalChatService {
         throw error;
       }
       // The plugin answers non-2xx only before dispatch (bad auth, unparsable body).
-      if (!response.ok) return { ok: false, left: false, failure: 'error' };
+      if (!response.ok) return { ok: false, left: false, failure: 'error', status: response.status };
       if (!response.body) return { ok: false, left, failure: 'error' };
       const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let bytes = 0;
       try {

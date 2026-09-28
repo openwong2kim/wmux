@@ -233,6 +233,12 @@ export interface ApprovalRequest {
    * `{index,total,status}` projection a `decision-v2` client gets.
    */
   step?: DecisionStep;
+  /**
+   * OpenCode's request id behind an informational `awaiting_input` card (the
+   * hook's `permId`), so the agent's own answer settles exactly that card.
+   * Daemon-internal.
+   */
+  hookRequestId?: string;
   /** Size and hash of a phone-typed answer text; the text itself is never stored. */
   answerDigest?: { textBytes: number; textHash: string };
   /** Who answered — free-form caller-supplied label ('web', an operator name). */
@@ -282,6 +288,12 @@ export interface NativeDecisionRef {
   relayId?: string;
   /** Codex ServerRequest method. */
   method?: string;
+  /**
+   * OpenCode: the plugin's hash of the whole request. Part of the record's
+   * fingerprint (the same id asking something else is a new card) and echoed
+   * with the answer, so a stale card is refused right before it is sent.
+   */
+  digest?: string;
 }
 
 /** The form kinds a daemon can produce; `/api/config` `decisionForms` lists them. */
@@ -337,15 +349,23 @@ export interface NativeDecisionReply {
   decision: ApprovalDecision;
   formKind: DecisionFormKind;
   choiceKey?: string;
+  /**
+   * `questions` approve only: one entry per question, in form order — the
+   * chosen options' form keys and any typed answer. The adapter maps keys to
+   * what its agent takes (OpenCode: option indexes, then its own labels).
+   */
+  answers?: Array<{ keys: string[]; other?: string }>;
 }
 
 /**
  * A native adapter's answer. `not-found`: the agent no longer has the
  * request (answered locally, or gone). `unavailable`: the agent's server could
- * not be reached — nothing was delivered. `uncertain`: sent, but the agent's
- * server never confirmed that this answer is the one that took.
+ * not be reached — nothing was delivered. `uncertain`: the answer left and
+ * its outcome was lost; it may have landed. `refused`: the agent turned this
+ * answer down for good. `changed`: the request no longer asks what the card
+ * showed.
  */
-export type NativeDecisionOutcome = 'ok' | 'not-found' | 'unavailable' | 'uncertain';
+export type NativeDecisionOutcome = 'ok' | 'not-found' | 'unavailable' | 'uncertain' | 'refused' | 'changed';
 
 /** Longest the registry waits on a native adapter before calling the answer uncertain. */
 export const NATIVE_ANSWER_TIMEOUT_MS = 10_000;
@@ -600,7 +620,15 @@ export interface ApprovalHookSink {
     /** Structured choices with key+label, extracted alongside options. */
     choices?: ApprovalChoice[];
     questionShape?: QuestionShape;
+    /** The agent's own request id behind the card (OpenCode `permId`). */
+    requestId?: string;
   }): void;
+  /**
+   * Expire a pane's informational `awaiting_input` cards for these agent
+   * request ids (`unkeyed`: also cards with none). Optional so a sink that
+   * predates it still type-checks.
+   */
+  expireHookAwaiting?(sessionId: string, requestIds: readonly string[], unkeyed?: boolean): void | Promise<unknown>;
   /**
    * #783 — create a pending permission-gate record. Returns the new record's id
    * SYNCHRONOUSLY (generated before the mutation is queued) so the caller can

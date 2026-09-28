@@ -899,6 +899,10 @@ Claude Code's own **permission dialog** ("Do you want to proceed?") is recorded
 as a `terminal_prompt` — see the next section for when it can be answered from
 the phone and when it cannot.
 
+**OpenCode** permissions and questions are answered through OpenCode's own
+server when its wmux TUI plugin lists decisions (see "OpenCode permissions and
+questions" under Decision forms).
+
 **Codex CLI, Kiro CLI, and other TUI-only agents** have no hook integration and
 no authoritative keystroke mapping. They report `unsupported-agent` (501). Their
 prompts are answered with the phone pane's terminal controls when `--allow-input`
@@ -1301,7 +1305,7 @@ v1 paths.
 
 | Key | Meaning |
 | --- | --- |
-| `decisionForms` | The form kinds this daemon produces now: any of `permission`, `plan`, `questions`. `["plan"]` while the daemon's `phoneDecisions.stepwise` switch is on (see Plan dialog), else empty. Offer a v2 answer only for a kind listed here |
+| `decisionForms` | The form kinds this daemon produces now: any of `permission`, `plan`, `questions`. `plan` while the daemon's `phoneDecisions.stepwise` switch is on (see Plan dialog); `permission` and `questions` (agent-native, OpenCode; see below) while `phoneDecisions.native` is on. Offer a v2 answer only for a kind listed here |
 | `chatCancel` | Whether this caller may use `POST /api/sessions/<id>/chat/cancel` (its input grant) |
 | `chatQueue` | Whether this caller's `chat-queue` sends are held by the daemon queue (its input grant, and a queue that loaded) |
 
@@ -1495,6 +1499,46 @@ typed to undo it; the record stays pending, answers `already-answered` (to
 `/decline` too) and settles when the dialog is answered at the terminal. A key typed at the terminal before the answer (or a
 changed dialog) is 409 `prompt-changed` with `effect: 'none'`, and the record
 is replaced by a fresh one — re-read the list.
+
+#### OpenCode permissions and questions
+
+With the wmux OpenCode TUI plugin that lists decisions (it advertises
+`decisions` in its actions; `wmux.js` 0.3.0 signals them), each pending
+OpenCode permission and question is its own agent-native record under the
+pane. A pane can hold several at once; answering one never touches another.
+
+- **Which requests.** The ones the desktop TUI draws on the session it shows:
+  that session's own requests and its direct sub-agents'. A request the TUI
+  would not draw (a sub-agent's sub-agent, or any request while the TUI shows
+  a sub-agent's own session) gets no record. A record stays up when the TUI
+  switches to another session: the answer goes to the request's own session,
+  whatever the TUI shows, and the pane reads `awaiting_input` while a
+  sub-agent's request is pending.
+- **Permission.** `form.kind: 'permission'`, actions `approve` (OpenCode's
+  "Allow once") and `deny` ("Reject"). OpenCode's "Allow always" is never
+  offered and the plugin refuses it. A shipped phone sees the plain Yes/No
+  `terminal_prompt` described above; `question` is `Allow <permission>?`,
+  `toolName` the permission, `summary` its patterns (the command).
+- **Question.** `form.kind: 'questions'`, one entry per OpenCode question with
+  numbered option keys, `multiSelect` from `multiple` and `allowOther` from
+  `custom` (on unless the agent turned it off). Answer with `answers` covering
+  every question (no `action`, or `submit`): the chosen `keys`, plus `other`
+  for a typed answer where `allowOther` is true; a single-select question takes
+  exactly one of them. `action: 'deny'` dismisses the whole question. `text`
+  is refused (400 `invalid-choice`), as is anything that does not fit the form.
+  A request too large to show whole (more than 8 questions or 16 options, an
+  option label over 200 characters, a long command) gets no form: it stays the
+  informational card below.
+- **Stale.** A request that now asks something else than the card showed is a
+  new card (new fingerprint); an answer to the old one is refused (409
+  `prompt-changed`, or `already-resolved` once it was replaced).
+- **Gone.** An answer in the terminal first, or a request OpenCode no longer
+  holds, expires the record (410 for a late answer). The daemon re-reads the
+  plugin when OpenCode reports an answer and on `GET /api/approvals`, so a
+  record can appear or leave shortly after the list that triggered it (SSE
+  carries the change).
+- **Older plugin.** A plugin without `decisions` keeps today's informational
+  card (501 `unsupported-agent`).
 
 #### `GET /api/approvals/<id>/answer/<clientAnswerId>`
 
