@@ -1286,9 +1286,10 @@ change: it is negotiated with a capability, and a client that declares none of
 the new tokens reads exactly the bytes it read before.
 
 **Capabilities.** `X-Wmux-Client-Caps` gains `decision-v2` (understands `form`
-records and answers them through `/answer`) and `chat-cancel` (shows
+records and answers them through `/answer`), `chat-cancel` (shows
 `capabilities.cancel` and `chat.turn` for `POST /api/sessions/<id>/chat/cancel`;
-see Chat cancel). Keep sending
+see Chat cancel) and `chat-queue` (a send carrying it may be held by the
+daemon queue; see Chat queue). Keep sending
 `terminal-prompt-answer` and `terminal-prompt-decline`; they still govern the
 v1 paths.
 

@@ -978,6 +978,28 @@ describe('daemon queue (chat-queue)', () => {
     expect(q.bridge.delivered('device:b', 'pane')).toEqual([]);
   });
 
+  it('the episode a delivery opens must be seen running before the next item goes', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    // As in the daemon: the Enter opens the next episode at once, while the
+    // status still reads idle until the agent's first bytes or hook.
+    const bridge = createChatBridge({ ...f.deps, queue: new ChatQueueStore(f.dir), queueTickMs: 3_600_000,
+      write: (id, data) => {
+        const ok = f.deps.write(id, data);
+        if (data === '\r') f.state.agent = { ...f.state.agent, turn: { id: 't1:n.2', state: 'idle', startedAt: 2 } };
+        return ok;
+      } });
+    const send = (text: string) => bridge.send(phoneSend(text, { queue: { authorized: allow } }));
+    await send('one'); await send('two');
+    idleTurn(f, 1);
+    await bridge.kickQueue('pane');
+    expect(f.state.agent.turn?.id).toBe('t1:n.2');
+    await bridge.kickQueue('pane');
+    expect(pastes(f)).toEqual(['\x1b[200~one\x1b[201~']);
+    runningTurn(f, 2); await bridge.kickQueue('pane');
+    idleTurn(f, 2); await bridge.kickQueue('pane');
+    expect(pastes(f)).toEqual(['\x1b[200~one\x1b[201~', '\x1b[200~two\x1b[201~']);
+  });
+
   it('a queued re-post replays the queue state and a different body conflicts', async () => {
     const f = fixture(); f.liveClaude(); runningTurn(f, 1);
     const q = queued(f);

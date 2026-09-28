@@ -543,7 +543,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   const memoKey = (owner: ChatOwner, clientMessageId: string) => `${owner}\n${clientMessageId.toLowerCase()}`;
   const draining = new Map<string, Promise<void>>();
   const rerun = new Set<string>();
-  const lastDelivered = new Map<string, { turnId?: string; at: number }>();
+  const lastDelivered = new Map<string, { turnId?: string; at: number; sawRunning: boolean }>();
   const deliveredLog = new Map<string, Array<ChatDeliveredMessage & { owner: ChatOwner }>>();
   let queueTick: ReturnType<typeof setInterval> | undefined;
 
@@ -566,9 +566,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   };
 
   /** Running for the queue's purpose: a dialog inside the turn counts. */
-  const turnRunning = (id: string, resolution: ChatResolution): boolean => {
+  const turnRunning = (id: string, resolution: ChatResolution, read?: ChatAgentState): boolean => {
     if (resolution.source === 'tui') return resolution.status.agentStatus !== 'complete';
-    const state = deps.chatAgentState(id);
+    const state = read ?? deps.chatAgentState(id);
     return state.turn?.state === 'running' || state.agentStatus === 'running' || state.agentStatus === 'awaiting_input';
   };
 
@@ -677,19 +677,26 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         continue;
       }
       if (sending.has(id)) return;
-      if (hasOpenApproval(id)) { memo.hold = blockedBy(id) === 'approval' ? 'prompt-active' : 'blocked'; return; }
-      if (turnRunning(id, resolution)) return;
-      let turnAtDelivery: string | undefined;
+      if (hasOpenApproval(id) || resolution.source === 'tui' && resolution.status.agentStatus === 'awaiting_input') {
+        memo.hold = resolution.source === 'tui' || blockedBy(id) === 'approval' ? 'prompt-active' : 'blocked';
+        return;
+      }
+      const live = resolution.source === 'file' ? deps.chatAgentState(id) : undefined;
       if (resolution.source === 'file') {
         if (!resolution.status.terminal?.capabilities.send) return;
-        // One item per ended turn: after a delivery, the turn it started has
-        // to begin (new id) and end before the next item goes, so a stale
-        // `complete` from the previous turn never delivers two in a row.
-        const turn = deps.chatAgentState(id).turn;
+        // One item per ended turn. The delivering Enter opens the next episode
+        // at once (new id) while the status may still read idle, so the turn
+        // a delivery started must be SEEN running before its idle counts: a
+        // stale `complete` never delivers two in a row. A turn that never
+        // shows as running (a prompt that started none) releases after a while.
         const last = lastDelivered.get(id);
-        if (last && turn && turn.id === last.turnId && now() - last.at < QUEUE_TURN_GATE_STALE_MS) return;
-        turnAtDelivery = turn?.id;
+        const turn = live?.turn;
+        if (last && turn && turn.id === last.turnId) {
+          if (turn.state === 'running') last.sawRunning = true;
+          if (!last.sawRunning && now() - last.at < QUEUE_TURN_GATE_STALE_MS) return;
+        }
       }
+      if (turnRunning(id, resolution, live)) return;
       if (!stillHead(id, head)) continue;
       // Synchronous from the head check: DELETE now answers delivery-in-progress.
       const delivering = queueStore.transition(head.owner, head.clientMessageId, 'delivering', undefined, { strict: true });
@@ -721,7 +728,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         deps.log('warn', `[chat] send receipt for queued ${id} not persisted`);
       }
       if (verdict.state === 'delivered') {
-        lastDelivered.set(id, { turnId: turnAtDelivery, at: now() });
+        // The episode this delivery opened (the Enter bumps it synchronously).
+        const opened = resolution.source === 'file' ? deps.chatAgentState(id).turn : undefined;
+        lastDelivered.set(id, { turnId: opened?.id, at: now(), sawRunning: opened?.state === 'running' });
         noteDelivered(id, head.owner, head.clientMessageId, text);
       }
       settle(head, verdict.state, verdict.reason);

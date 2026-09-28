@@ -1462,7 +1462,7 @@ describe('native chat routes (contract v0.3.1)', () => {
     });
 
     it('send: only a request carrying the cap opts into the queue, and a queued answer is 202 effect queued', async () => {
-      const info = await start();
+      await start();
       wireQueue();
       const seen: ChatSendRequest[] = [];
       chatBox.send = async (req) => {
@@ -1496,7 +1496,7 @@ describe('native chat routes (contract v0.3.1)', () => {
     });
 
     it('DELETE: every status code, owner-bound, input required', async () => {
-      const info = await start();
+      await start();
       const answers: Record<string, ChatDequeueResult> = {};
       const fns = wireQueue({ dequeue: (_owner, _id, cmid) => answers[cmid] ?? { ok: false, error: 'queue-item-not-found' } });
       const [queued, delivered, delivering, failed] = [freshId(), freshId(), freshId(), freshId()];
@@ -1531,7 +1531,7 @@ describe('native chat routes (contract v0.3.1)', () => {
     });
 
     it('SSE chat.queue goes live to the owner among the pane watchers only', async () => {
-      const info = await start();
+      await start();
       wireQueue();
       const mine = device('dev-1');
       const events = await openEvents(mine);
@@ -1555,8 +1555,7 @@ describe('native chat routes (contract v0.3.1)', () => {
     });
 
     it('unpairing or withdrawing input drops that device\'s queue; stopping the server drops every phone queue', async () => {
-      const info = await start();
-      void info;
+      await start();
       const fns = wireQueue();
       server.disconnectDevice('dev-7');
       const byDevice = fns.dropQueue.mock.calls[0][0];
