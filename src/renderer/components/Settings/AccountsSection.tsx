@@ -183,10 +183,10 @@ function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: 
     setBusy(true);
     try {
       const res = await api.onboardPrepare({ vendor, share });
-      onDone();
       // Opens the login tab, closes Settings and watches for the login; the
       // account is registered once the credential shows up.
       await startAccountLogin({ vendor, name: name.trim(), configDir: res.configDir, loginCommand: res.loginCommand });
+      onDone();
     } catch (e) {
       setError(String((e as { message?: string })?.message ?? e));
       setBusy(false);
@@ -217,6 +217,7 @@ function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: 
           <Checkbox checked={share} onCheckedChange={setShare} aria-label={t('accounts.copyDefaultSettings')} />
           {t('accounts.copyDefaultSettings')}
         </label>
+        {share && <div className="text-[11px] text-[var(--text-sub)]">{t('accounts.independentProfile')}</div>}
         <div className="text-[11px] text-[var(--text-sub)]">{t('accounts.loginHowItWorks')}</div>
         {error && <div className="text-[11px] text-[var(--accent-red)]">{error}</div>}
         <div className="flex justify-end gap-2">
