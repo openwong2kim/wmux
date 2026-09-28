@@ -1,5 +1,5 @@
 import { validTerminalLaunchMode } from '../../shared/transcript/terminalChat';
-import { execFile } from 'node:child_process';
+import { runCli } from '../../shared/runCli';
 import { stripWmuxNamespace } from '../web/webPaneEnv';
 
 /** Environment for the shared Codex runtime server. That server outlives the pane
@@ -34,8 +34,9 @@ export async function startNativeCodexRuntime(env: NodeJS.ProcessEnv): Promise<v
   if (startingAccounts.size >= 8) throw new Error('Too many runtime starts');
   const task = new Promise<void>((resolve, reject) => {
     // Stripped here too so no caller can seed wmux state into the shared server.
-    execFile('codex', ['app-server', 'daemon', 'start'], { env: codexRuntimeEnv(env), timeout: 15000, maxBuffer: 64000, windowsHide: true },
-      error => error ? reject(new Error('Native Codex runtime unavailable')) : resolve());
+    // runCli resolves an npm codex.cmd shim on Windows, which execFile cannot (#1619).
+    runCli('codex', ['app-server', 'daemon', 'start'], { env: codexRuntimeEnv(env), timeoutMs: 15000, maxBuffer: 64000 })
+      .then(() => resolve(), () => reject(new Error('Native Codex runtime unavailable')));
   });
   startingAccounts.set(key, task);
   try { await task; } finally { startingAccounts.delete(key); }

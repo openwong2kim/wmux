@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { runCli } from '../../shared/runCli';
 import { codexRuntimeEnv } from './terminalLaunch';
 
 /**
@@ -205,7 +205,8 @@ export type CodexSharedRuntime = ReturnType<typeof createCodexSharedRuntime>;
 /** `codex app-server daemon <sub>`, bounded like the existing runtime start. */
 export function runCodexDaemon(sub: 'version' | 'start', env: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile('codex', ['app-server', 'daemon', sub], { env, timeout: 15000, maxBuffer: 64000, windowsHide: true },
-      (error, stdout) => (error ? reject(new Error(`codex app-server daemon ${sub} failed`)) : resolve(String(stdout))));
+    // runCli resolves an npm codex.cmd shim on Windows, which execFile cannot (#1619).
+    runCli('codex', ['app-server', 'daemon', sub], { env, timeoutMs: 15000, maxBuffer: 64000 })
+      .then(resolve, () => reject(new Error(`codex app-server daemon ${sub} failed`)));
   });
 }

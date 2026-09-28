@@ -1,8 +1,8 @@
-import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { runCli } from '../../shared/runCli';
 
 export interface AgentLaunchChoice { agent: 'claude' | 'codex'; model?: string; effort?: string }
 export interface AgentLaunchOptions { agent: 'claude' | 'codex'; models: string[]; efforts: string[]; modelEfforts?: Record<string,string[]>; catalogState?: 'cached' | 'unavailable' }
@@ -50,8 +50,9 @@ async function codexOptions(env: NodeJS.ProcessEnv): Promise<AgentLaunchOptions>
 let helpCache: {at:number;claude:string;codex:string} | undefined;
 let helpLoading: Promise<{claude:string;codex:string}> | undefined;
 function help(command: string): Promise<string> {
-  return new Promise(resolve => execFile(command,['--help'],{timeout:3000,maxBuffer:128*1024,windowsHide:true},
-    (error,stdout) => resolve(error ? '' : stdout)));
+  // runCli, not execFile: on Windows an npm-installed codex is a .cmd shim that
+  // execFile cannot find, so it was reported as not installed (#1619).
+  return runCli(command, ['--help'], { timeoutMs: 3000, maxBuffer: 128 * 1024 }).catch(() => '');
 }
 async function installedHelp(): Promise<{claude:string;codex:string}> {
   if (helpCache && Date.now() - helpCache.at < 300000) return helpCache;
