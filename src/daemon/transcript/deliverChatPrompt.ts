@@ -40,6 +40,9 @@ export async function deliverChatPrompt(
   // empty composer on screen is permission for either (running stays 'busy').
   const claudeEmpty = initial.slug === 'claude' && claudeComposerEmpty(rows);
   if (initial.slug === 'claude' && initial.status === 'idle' && !claudeEmpty) return 'unconfirmed';
+  // A delayed (queued) message is typed with nobody watching: whatever the
+  // status reads, only an empty composer on screen is permission.
+  if (deps.idleOnly && initial.slug === 'claude' && !claudeEmpty) return 'unconfirmed';
   // Image paths become attachments only in Claude's composer, and only an
   // empty one: a failed earlier send may have left paths behind to duplicate.
   if (attachments.length && initial.slug !== 'claude') return 'unavailable';

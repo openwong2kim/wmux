@@ -35,7 +35,7 @@ export interface ChatQueueRecord {
   at: number;
 }
 
-export type ChatQueueInsert = 'inserted' | 'full' | 'persist-failed';
+export type ChatQueueInsert = 'inserted' | 'exists' | 'full' | 'persist-failed';
 
 /** Active items per pane and owner. */
 export const CHAT_QUEUE_MAX_ITEMS = 8;
@@ -66,6 +66,8 @@ function validRecord(value: unknown): value is ChatQueueRecord {
 
 export class ChatQueueStore {
   private records: ChatQueueRecord[] = [];
+  /** Called with each record pruning removed (the bridge drops its memory half). */
+  onDrop?: (record: Readonly<ChatQueueRecord>) => void;
   private readonly file: string;
   private readonly now: () => number;
   private readonly write: (file: string, data: unknown) => void;
@@ -119,13 +121,16 @@ export class ChatQueueStore {
 
   /** Durable before it returns `inserted`. */
   insert(owner: ChatOwner, paneId: string, clientMessageId: string): ChatQueueInsert {
+    // One record per owner and id, whatever its state: a duplicate would be
+    // delivered twice, and every lookup and transition keys on the pair.
+    if (this.get(owner, clientMessageId)) return 'exists';
     const active = this.records.filter((row) => row.paneId === paneId && row.owner === owner && isActiveQueueState(row.state));
     if (active.length >= CHAT_QUEUE_MAX_ITEMS) return 'full';
     const now = this.now();
     const next = this.pruned([...this.records, { clientMessageId: clientMessageId.toLowerCase(), owner, paneId, state: 'queued', queuedAt: now, at: now }]);
     if (next.length > MAX_ENTRIES) return 'full';
     try { this.save(next); } catch { return 'persist-failed'; }
-    this.records = next;
+    this.commit(next);
     return 'inserted';
   }
 
@@ -148,8 +153,18 @@ export class ChatQueueStore {
     try { this.save(pruned); } catch {
       if (opts.strict) return undefined;
     }
-    this.records = pruned;
+    this.commit(pruned);
     return row;
+  }
+
+  private commit(next: ChatQueueRecord[]): void {
+    const key = (row: ChatQueueRecord) => `${row.owner}\n${row.clientMessageId}`;
+    const kept = new Set(next.map(key));
+    const dropped = this.records.filter((row) => !kept.has(key(row)));
+    this.records = next;
+    for (const row of dropped) {
+      try { this.onDrop?.(row); } catch { /* bookkeeping only */ }
+    }
   }
 
   private pruned(records: ChatQueueRecord[]): ChatQueueRecord[] {

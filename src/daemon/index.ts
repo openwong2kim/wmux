@@ -3672,7 +3672,7 @@ function registerRpcHandlers(
         // off or nobody opened the pane's turn view.
         webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(sessionId, data, Date.now()));
         // A turn may have ended: the phone chat queue delivers its next item.
-        void nativeChatBridge?.kickQueue(sessionId);
+        nativeChatBridge?.nudgeQueue(sessionId);
         // Outbound notification sinks: the END of a turn, and only the real one.
         // `agent.subagent_stop` also reports `status:'complete'`, and a run with
         // a dozen subagents would fire a dozen pings for one turn — so this keys
@@ -3708,7 +3708,7 @@ function registerRpcHandlers(
         // replay (CRITICAL 3). Delivered only to devices watching this pane; a
         // no-op until one opens it, and harmless when the web server is off.
         webTerminalServer?.emitTranscriptNudge(sessionId);
-        void nativeChatBridge?.kickQueue(sessionId);
+        nativeChatBridge?.nudgeQueue(sessionId);
       },
       // CompletionAlarm — a held detector candidate confirms its window LATER,
       // after the `session:agent` handler that would have broadcast it has

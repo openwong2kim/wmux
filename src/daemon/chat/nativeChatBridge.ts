@@ -139,6 +139,8 @@ export interface NativeChatBridge extends Omit<ChatBridge, QueueMethods>, Requir
   desktopSkills(id: string, agent: unknown): Promise<ChatSkillCatalog>;
   /** Something that can end a turn happened on the pane: try its queue now (resolves when that pass ends). */
   kickQueue(id: string): Promise<void>;
+  /** The same, debounced, for the daemon's event bursts (transcript nudges, hook events). */
+  nudgeQueue(id: string): void;
   /** The pane is gone: its queued items are canceled{pane-closed}. */
   paneClosed(id: string): void;
 }
@@ -151,8 +153,12 @@ export const ESC_QUIET_MS = 300;
 export const OPENCODE_FENCE_RETRY_MS = 500;
 /** A queued message not delivered within this long fails (`expired`, or the hold that kept it). */
 export const CHAT_QUEUE_TTL_MS = 10 * 60_000;
-/** The queue's fallback poll while any pane holds an active item. */
-const CHAT_QUEUE_TICK_MS = 1_000;
+/** The queue's low-rate backup poll while any pane holds an active item (events drive it otherwise). */
+const CHAT_QUEUE_TICK_MS = 5_000;
+/** Transcript nudges and hook events arrive in bursts: one queue pass per burst. */
+const QUEUE_NUDGE_DEBOUNCE_MS = 250;
+/** Consecutive failures to persist `delivering` before the item fails instead of retrying. */
+const QUEUE_PERSIST_ATTEMPTS = 3;
 /**
  * After a delivery the next item waits for a NEW turn to end. If the turn id
  * never moves (a prompt that started no turn), this long of idle lets it go.
@@ -450,15 +456,12 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     // Deliberately ahead of binding resolution (a refinement of contract §6.2's
     // order): a re-post after the agent exited must still replay `sent`, not
     // answer no-conversation for a message that was delivered.
+    // A message the daemon queue holds (or held) is never dispatched again,
+    // and its replay is the queue's state, which the receipt lags.
+    const held = queueStore?.get(owner, clientMessageId);
+    if (held) return heldReplay(held, req.id, fingerprint, store?.lookup(owner, clientMessageId));
     const replayed = early(store?.lookup(owner, clientMessageId));
     if (replayed) return replayed;
-    // A message the daemon queue holds (or held) is never dispatched again.
-    const held = queueStore?.get(owner, clientMessageId);
-    if (held) {
-      const memo = queueMemo.get(memoKey(owner, clientMessageId));
-      if (memo && memo.fingerprint !== fingerprint) return refuse(clientMessageId, 'message-id-conflict');
-      return queueOutcome(held, true);
-    }
     if (typeof req.text !== 'string' || !req.text.trim()) return refuse(clientMessageId, 'invalid-chat-request', { result: 'error', detail: 'text' });
     if (req.text.length > CHAT_SEND_MAX_UNITS) return refuse(clientMessageId, 'text-too-long', { result: 'error', limit: 'units' });
     if (!req.agentSessionId) return refuse(clientMessageId, 'invalid-chat-request', { result: 'error', detail: 'agentSessionId' });
@@ -491,8 +494,15 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     // pane (any owner), holds the message for delivery after the turn ends.
     if (req.queue && queueStore && owner !== 'desktop' && (resolution.source === 'file' || resolution.source === 'tui') &&
         (turnRunning(req.id, resolution) || queueStore.hasActive(req.id))) {
+      // Synchronous with the insert: a concurrent same-id send that also
+      // passed the checks above (both awaited resolve) finds this one here.
+      const raced = early(store?.lookup(owner, clientMessageId));
+      if (raced) return raced;
       return enqueue(req, resolution.source, fingerprint);
     }
+    // Same for a same-id send that went to the queue while this one resolved.
+    const queuedMeanwhile = queueStore?.get(owner, clientMessageId);
+    if (queuedMeanwhile) return heldReplay(queuedMeanwhile, req.id, fingerprint, store?.lookup(owner, clientMessageId));
 
     if (store) {
       // Synchronous with the lookup: a concurrent same-id send that passed the
@@ -536,11 +546,18 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean>;
     /** Why the last attempt held it, if a dialog did: the failure reason at the TTL. */
     hold?: 'blocked' | 'prompt-active';
+    /** Since when it has waited at the head while the agent was not working (the TTL clock). */
+    idleSince?: number;
+    persistFailures?: number;
+    retryAt?: number;
   }
   const queueStore = deps.queue ?? null;
   const queueTtl = deps.queueTtlMs ?? CHAT_QUEUE_TTL_MS;
   const queueMemo = new Map<string, QueueMemo>();
   const memoKey = (owner: ChatOwner, clientMessageId: string) => `${owner}\n${clientMessageId.toLowerCase()}`;
+  // The memory half goes when the store prunes the record.
+  if (queueStore) queueStore.onDrop = (record) => { queueMemo.delete(memoKey(record.owner, record.clientMessageId)); };
+  const nudgeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const draining = new Map<string, Promise<void>>();
   const rerun = new Set<string>();
   const lastDelivered = new Map<string, { turnId?: string; at: number; sawRunning: boolean }>();
@@ -555,6 +572,24 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
 
   const queueOutcome = (record: Readonly<ChatQueueRecord>, replayed: boolean): ChatSendOutcome =>
     ({ clientMessageId: record.clientMessageId, replayed, queueState: record.state, ...(record.reason ? { queueReason: record.reason } : {}) });
+
+  /**
+   * A re-post of an id the queue knows. The body must match: by the memory
+   * fingerprint, else the send receipt's, else (after a restart, with
+   * neither) at least the pane; anything else is a conflict, never another
+   * pane's replay.
+   */
+  const heldReplay = (record: Readonly<ChatQueueRecord>, paneId: string, fingerprint: string,
+    receipt: { fingerprint: string } | undefined): ChatSendOutcome => {
+    const memo = queueMemo.get(memoKey(record.owner, record.clientMessageId));
+    const same = memo ? memo.fingerprint === fingerprint : receipt ? receipt.fingerprint === fingerprint : record.paneId === paneId;
+    return same && record.paneId === paneId ? queueOutcome(record, true) : refuse(record.clientMessageId, 'message-id-conflict');
+  };
+
+  /** The agent is visibly working (not merely blocked on a dialog): the cheap pre-check. */
+  const agentWorking = (state: ChatAgentState, source: 'file' | 'tui'): boolean =>
+    source === 'tui' ? state.agentStatus === 'running'
+      : state.agentStatus === 'running' || state.turn?.state === 'running' && state.agentStatus !== 'awaiting_input';
 
   const emitQueue = (record: Readonly<ChatQueueRecord>) => {
     try {
@@ -595,6 +630,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   const enqueue = (req: ChatSendRequest, source: 'file' | 'tui', fingerprint: string): ChatSendOutcome => {
     const { owner, id, clientMessageId } = req;
     const inserted = queueStore!.insert(owner, id, clientMessageId);
+    if (inserted === 'exists') return heldReplay(queueStore!.get(owner, clientMessageId)!, id, fingerprint, undefined);
     if (inserted === 'full') return refuse(clientMessageId, 'queue-full');
     if (inserted === 'persist-failed') return refuse(clientMessageId, 'chat-persist-failed');
     queueMemo.set(memoKey(owner, clientMessageId), {
@@ -621,6 +657,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   /** Where one delivery attempt leaves the item: final, or held for the next idle. */
   const queueVerdict = (outcome: StoredChatOutcome): { state: ChatQueueState; reason?: ChatQueueReason } | { hold: QueueMemo['hold'] | null } => {
     if (outcome.result === 'sent' && !outcome.error) return { state: 'delivered' };
+    // It may have been typed (a paste without its Enter, a plugin answer
+    // lost): never a state that invites the phone to send it again.
+    if (outcome.effect === 'uncertain') return { state: 'uncertain', reason: 'delivery-unconfirmed' };
     switch (outcome.error) {
       case 'chat-busy': return { hold: null };
       case 'chat-blocked': return { hold: outcome.blockedBy === 'approval' ? 'prompt-active' : 'blocked' };
@@ -656,7 +695,22 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       const text = memo.text;
       const pane = deps.pane(id);
       if (!pane) { cancelQueued((record) => record.paneId === id, 'pane-closed'); return; }
-      if (now() - head.queuedAt > queueTtl) { settle(head, 'failed', memo.hold ?? 'expired'); continue; }
+      if (memo.retryAt !== undefined && now() < memo.retryAt) return;
+      // Cheap checks first: while the agent works, no roster read, no binding
+      // resolve (a plugin read for OpenCode); the turn-end event kicks again.
+      if (sending.has(id)) return;
+      const cheap = memo.source === 'file' ? deps.chatAgentState(id) : deps.agentState(id);
+      if (agentWorking(cheap, memo.source)) {
+        // Seen running: the episode the last delivery opened now counts as started.
+        const last = lastDelivered.get(id);
+        if (last && (memo.source === 'tui' || cheap.turn?.id === last.turnId)) last.sawRunning = true;
+        delete memo.idleSince;
+        return;
+      }
+      // The lifetime counts only while the item waits on an agent that is not
+      // working (idle, or blocked on a dialog): a long turn never expires it.
+      memo.idleSince ??= now();
+      if (now() - memo.idleSince > queueTtl) { settle(head, 'failed', memo.hold ?? 'expired'); continue; }
       const authorize = memo.authorized;
       const incarnation = memo.incarnation;
       const authorized = async (stage: 'first-write' | 'submit') => {
@@ -682,25 +736,32 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         return;
       }
       const live = resolution.source === 'file' ? deps.chatAgentState(id) : undefined;
-      if (resolution.source === 'file') {
-        if (!resolution.status.terminal?.capabilities.send) return;
-        // One item per ended turn. The delivering Enter opens the next episode
-        // at once (new id) while the status may still read idle, so the turn
-        // a delivery started must be SEEN running before its idle counts: a
-        // stale `complete` never delivers two in a row. A turn that never
-        // shows as running (a prompt that started none) releases after a while.
-        const last = lastDelivered.get(id);
-        const turn = live?.turn;
-        if (last && turn && turn.id === last.turnId) {
-          if (turn.state === 'running') last.sawRunning = true;
-          if (!last.sawRunning && now() - last.at < QUEUE_TURN_GATE_STALE_MS) return;
-        }
+      if (resolution.source === 'file' && !resolution.status.terminal?.capabilities.send) return;
+      const running = turnRunning(id, resolution, live);
+      // One item per ended turn. The delivering Enter opens the next episode
+      // at once (new id) while the status may still read idle, and the
+      // OpenCode plugin can still read `complete`: the turn a delivery started
+      // must be SEEN running before its end counts, so a stale `complete`
+      // never delivers two in a row. A turn that never shows as running (a
+      // prompt that started none) releases after a while.
+      const last = lastDelivered.get(id);
+      if (last && (resolution.source === 'tui' || live?.turn?.id === last.turnId)) {
+        if (running) last.sawRunning = true;
+        if (!last.sawRunning && now() - last.at < QUEUE_TURN_GATE_STALE_MS) return;
       }
-      if (turnRunning(id, resolution, live)) return;
+      if (running) return;
       if (!stillHead(id, head)) continue;
       // Synchronous from the head check: DELETE now answers delivery-in-progress.
       const delivering = queueStore.transition(head.owner, head.clientMessageId, 'delivering', undefined, { strict: true });
-      if (!delivering) { deps.log('warn', `[chat] queue item for ${id} not persisted; holding`); return; }
+      if (!delivering) {
+        memo.persistFailures = (memo.persistFailures ?? 0) + 1;
+        deps.log('warn', `[chat] queue item for ${id} not persisted (${memo.persistFailures}/${QUEUE_PERSIST_ATTEMPTS})`);
+        if (memo.persistFailures >= QUEUE_PERSIST_ATTEMPTS) { settle(head, 'failed', 'delivery-unconfirmed'); continue; }
+        memo.retryAt = now() + 1_000 * 2 ** memo.persistFailures;
+        return;
+      }
+      delete memo.persistFailures;
+      delete memo.retryAt;
       emitQueue(delivering);
       const receipts = deps.receipts;
       const inserted = receipts?.insertPending(head.owner, head.clientMessageId, {
@@ -732,19 +793,32 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         const opened = resolution.source === 'file' ? deps.chatAgentState(id).turn : undefined;
         lastDelivered.set(id, { turnId: opened?.id, at: now(), sawRunning: opened?.state === 'running' });
         noteDelivered(id, head.owner, head.clientMessageId, text);
+        settle(head, verdict.state, verdict.reason);
+        // At most one delivery per pass: the next waits for this one's turn.
+        return;
       }
       settle(head, verdict.state, verdict.reason);
     }
   };
+
+  function nudgeQueue(id: string): void {
+    if (!queueStore?.hasActive(id) || nudgeTimers.has(id)) return;
+    const timer = setTimeout(() => { nudgeTimers.delete(id); void kickQueue(id); }, QUEUE_NUDGE_DEBOUNCE_MS);
+    timer.unref?.();
+    nudgeTimers.set(id, timer);
+  }
 
   /** One pass per pane at a time; a kick during a pass runs one more after it (the pass may have read stale state). */
   function kickQueue(id: string): Promise<void> {
     const running = draining.get(id);
     if (running) { rerun.add(id); return running; }
     if (!queueStore?.hasActive(id)) return Promise.resolve();
-    const pass = (async () => { do { rerun.delete(id); await drainQueue(id); } while (rerun.has(id)); })()
-      .catch((error: unknown) => deps.log('warn', `[chat] queue pass for ${id} failed: ${error instanceof Error ? error.message : String(error)}`))
-      .finally(() => { draining.delete(id); rerun.delete(id); });
+    const pass = (async () => {
+      try { do { rerun.delete(id); await drainQueue(id); } while (rerun.has(id)); }
+      catch (error) { deps.log('warn', `[chat] queue pass for ${id} failed: ${error instanceof Error ? error.message : String(error)}`); }
+      // In the same tick as the last `rerun` check, so no kick falls between the two.
+      finally { draining.delete(id); rerun.delete(id); }
+    })();
     draining.set(id, pass);
     return pass;
   }
@@ -1190,8 +1264,10 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     delivered: (owner, id) => (deliveredLog.get(id) ?? []).filter((entry) => entry.owner === owner)
       .map(({ clientMessageId, text, at }) => ({ clientMessageId, text, at })),
     kickQueue,
+    nudgeQueue,
     paneClosed: (id) => {
       lastDelivered.delete(id);
+      clearTimeout(nudgeTimers.get(id)); nudgeTimers.delete(id);
       deliveredLog.delete(id);
       cancelQueued((record) => record.paneId === id, 'pane-closed');
     },

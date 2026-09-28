@@ -17,6 +17,7 @@ describe('ChatQueueStore', () => {
     const ids = Array.from({ length: CHAT_QUEUE_MAX_ITEMS }, id);
     for (const cmid of ids) expect(store.insert('device:a', 'pane', cmid)).toBe('inserted');
     expect(store.insert('device:a', 'pane', id())).toBe('full');
+    expect(store.insert('device:a', 'pane', ids[1])).toBe('exists');
     // Another owner and another pane have their own cap.
     expect(store.insert('device:b', 'pane', id())).toBe('inserted');
     expect(store.insert('device:a', 'other', id())).toBe('inserted');

@@ -1476,18 +1476,26 @@ queue (`queued:true`), the others answer 409 `chat-busy`.
 
 **Semantics.** The daemon queue delivers **after the turn ends**, one item per
 ended turn: after a delivery, the next item waits until the turn that
-delivery started has begun (a new `chat.turn.id`) and ended. Claude's own
+delivery started has been seen running and has ended (for OpenCode, the
+plugin's phase leaving and returning to `complete`). A delivery that starts no
+visible turn releases the next item after 30 seconds. Claude's own
 composer queue instead folds a message into the running turn at a tool
 boundary; the daemon queue never does. It is FIFO per pane, and not ordered
-against desktop or raw terminal input. A cancel does not clear it. Each item
-has a 10-minute lifetime. Nothing is retried after a write: an item fails
-rather than being typed twice.
+against desktop or raw terminal input. A cancel does not clear it. An item
+may wait at the head of the queue for 10 minutes while the agent is not
+working (idle, or blocked on a dialog); time spent while a turn runs does not
+count, so a long turn never expires it. Nothing is retried after a write: an
+item that may have been typed ends `uncertain`, never in a state that invites
+a resend. A delivered message is typed only into an empty composer: a draft
+left there fails the item (`draft-present`) and stays as it was.
 
 **Send answer.** 202 `{state:"queued", replayed:false, clientMessageId,
 effect:"queued"}`. A repeat with the same id and body answers 200 with the
-item's current `state` (and `reason`), `replayed:true`; `effect` is `queued`
-while it waits, `submitted` once delivered, `uncertain` for `uncertain`, and
-`none` otherwise. The same id with another body is 409 `message-id-conflict`.
+item's current `state` (and `reason`), `replayed:true`, also after delivery
+started; `effect` is `queued` while it waits, `submitted` once delivered,
+`uncertain` for `uncertain`, and `none` otherwise. The same id with another
+body, or for another pane, is 409 `message-id-conflict`; two concurrent
+requests with one id make one item.
 429 `queue-full` when the caller already has 8 waiting items on the pane.
 
 **States and reasons** (closed set):
@@ -1497,15 +1505,19 @@ while it waits, `submitted` once delivered, `uncertain` for `uncertain`, and
 | `queued` | — |
 | `delivering` | — |
 | `delivered` | — |
-| `failed` | `draft-present` (text left in the composer), `blocked` (a dialog held it for its whole lifetime), `prompt-active` (an approval held it), `expired`, `delivery-unconfirmed` |
+| `failed` | `draft-present` (text left in the composer), `blocked` (a dialog held it for its whole lifetime), `prompt-active` (an approval held it), `expired`, `delivery-unconfirmed` (nothing was typed, but the daemon could not deliver it) |
 | `canceled` | `user`, `daemon-restart`, `authorization-revoked`, `pane-closed`, `session-changed` |
-| `uncertain` | `restart-uncertain` (the daemon restarted mid-delivery) |
+| `uncertain` | `restart-uncertain` (the daemon restarted mid-delivery), `delivery-unconfirmed` (it may have been typed: a paste whose Enter was refused, an OpenCode answer lost after the plugin took the request) |
+
+An `uncertain` item's receipt reads `uncertain` too, and its replay carries
+`effect:"uncertain"`: check the transcript before sending it again.
 
 **Authorization at delivery.** The daemon re-checks the owner right before
 the first write and again before Enter: the device must still be paired and
 hold input, the server must still run with `--allow-input` and
-`--allow-transcript`, and the pane must be the same incarnation. Any failure
-cancels the item (`authorization-revoked`). Unpairing a device, withdrawing
+`--allow-transcript`, and the pane must be the same incarnation. A failure
+before the first write cancels the item (`authorization-revoked`); one after
+the paste leaves it `uncertain` (`delivery-unconfirmed`). Unpairing a device, withdrawing
 its input grant or stopping the server cancels that owner's waiting items at
 once. A closed pane cancels its items (`pane-closed`); a new conversation in
 the pane cancels them at their turn (`session-changed`).
