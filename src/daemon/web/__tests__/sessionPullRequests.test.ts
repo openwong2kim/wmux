@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
 import { githubRepository, sessionPullRequests } from '../sessionPullRequests';
 import type { GitRunner } from '../sessionDiff';
 const git: GitRunner = async args => ({ok:true,stdout:args.includes('remote') ? 'git@github.com:team/project.git\n' : 'feature/test\n',stderr:''});
@@ -41,5 +44,41 @@ describe('phone PR status', () => {
   it('distinguishes no PR from missing CLI or authentication', async () => {
     expect(await sessionPullRequests('/repo', git, async () => [])).toEqual({state:'available',items:[]});
     expect(await sessionPullRequests('/repo', git, async () => { throw new Error('not signed in'); })).toEqual({state:'unavailable',items:[]});
+  });
+});
+
+// A Finder-launched daemon has launchd's PATH; gh is typically a Homebrew or
+// per-user install, so the real runner must search the exec fallbacks too.
+// The spawn is observed rather than run: a real gh elsewhere on the fallback
+// PATH (e.g. Homebrew's) would otherwise answer instead of the fixture.
+describe.skipIf(process.platform === 'win32')('phone PR status under a Finder-launched PATH', () => {
+  it('spawns gh with the per-user fallback dir on PATH and the sanitized env kept', async () => {
+    const saved = { PATH: process.env.PATH, HOME: process.env.HOME, GIT_DIR: process.env.GIT_DIR };
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-gh-path-'));
+    try {
+      vi.resetModules(); // getExecEnv caches per module instance
+      process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+      process.env.HOME = home;
+      process.env.GIT_DIR = '/elsewhere';
+      let seen: NodeJS.ProcessEnv | undefined;
+      vi.doMock('node:child_process', () => ({
+        execFile: (_file: string, _args: string[], options: { env: NodeJS.ProcessEnv }, callback: (error: Error | null, stdout: string) => void) => {
+          seen = options.env;
+          callback(null, '[]');
+        },
+      }));
+      const fresh = await import('../sessionPullRequests');
+      expect(await fresh.sessionPullRequests('/repo', git)).toEqual({ state: 'available', items: [] });
+      expect((seen?.PATH ?? '').split(':')).toContain(path.join(home, '.local', 'bin'));
+      expect(seen?.PATH?.startsWith('/usr/bin:/bin:/usr/sbin:/sbin')).toBe(true);
+      expect(seen?.GIT_DIR).toBeUndefined(); // still the buildGitEnv allowlist
+    } finally {
+      vi.doUnmock('node:child_process');
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });

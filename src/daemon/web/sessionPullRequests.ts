@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { buildGitEnv, createGitRunner, gitArgv, type GitRunner } from './sessionDiff';
+import { getExecEnv } from '../../shared/execEnv';
 
 export interface PhonePullRequest { number: number; title: string; state: string; url: string; isDraft: boolean }
 export interface PullRequestState { state: 'available' | 'unsupported' | 'unavailable'; items: PhonePullRequest[] }
@@ -11,7 +12,8 @@ export function githubRepository(remote: string): string | null {
 }
 
 const runGh: PullRequestRunner = (repo, branch) => new Promise((resolve, reject) => {
-  const env = buildGitEnv();
+  // gh is usually a Homebrew install; a Finder-launched daemon's launchd PATH lacks it.
+  const env = buildGitEnv(getExecEnv());
   // Only github.com is accepted. Never forward credentials to a host selected
   // by repository config, the phone, GH_HOST, or Git URL rewriting.
   for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_CONFIG_DIR']) {
