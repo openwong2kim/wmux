@@ -29,6 +29,20 @@ export interface UsageSnapshot {
   weeklyResetEpochSec: number;
   /** When we fetched. Unix epoch ms. */
   fetchedAtMs: number;
+  /** Per-model / per-scope weekly limits (e.g. an Opus-only weekly cap).
+   *  Absent when the source did not report any. */
+  scoped?: UsageScopedLimit[];
+}
+
+/** One scoped weekly limit. `pct` is 0–100; `resetEpochSec` is null when
+ *  the source did not say when it resets; `scope` names what it applies to
+ *  (null when unspecified). */
+export interface UsageScopedLimit {
+  kind: string;
+  group: string;
+  pct: number;
+  resetEpochSec: number | null;
+  scope: string | null;
 }
 
 /** Discriminated error union. The UI maps these to copy strings. */

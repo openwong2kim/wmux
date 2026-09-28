@@ -1215,6 +1215,13 @@ const electronAPI = {
           weeklyPct: number;
           weeklyResetEpochSec: number;
           fetchedAtMs: number;
+          scoped?: Array<{
+            kind: string;
+            group: string;
+            pct: number;
+            resetEpochSec: number | null;
+            scope: string | null;
+          }>;
         } | null;
         lastError: string | null;
         subscriptionType: string | null;
