@@ -2068,6 +2068,20 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
   // input.*
   // -------------------------------------------------------------------------
 
+  // input.sendTarget — how main's input.send should write to a pty (#1594):
+  // whether the foreground app enabled bracketed paste (null when the pane's
+  // terminal is not mounted) and the detected agent, whose submit profile sets
+  // the gap before Enter. Renderer-only, like
+  // fanout.resolveOrigin; never exposed on the pipe.
+  if (method === 'input.sendTarget') {
+    const ptyId = typeof params.ptyId === 'string' ? params.ptyId : '';
+    const modes = (terminalRegistry.get(ptyId) as unknown as { modes?: { bracketedPasteMode?: boolean } } | undefined)?.modes;
+    return {
+      bracketedPasteMode: modes ? !!modes.bracketedPasteMode : null,
+      agent: store.surfaceAgent[ptyId]?.name ?? null,
+    };
+  }
+
   // input.findOwnerWorkspace — returns the workspace that owns a given ptyId,
   // or null if no surface in any workspace is bound to that PTY. Main-side
   // validators use this to gate cross-workspace terminal access (defense

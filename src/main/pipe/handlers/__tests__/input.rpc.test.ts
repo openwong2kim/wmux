@@ -516,6 +516,63 @@ describe('input.send — submit sends text and Enter as two separate writes', ()
   });
 });
 
+// #1594 — a multi-line message typed raw was split by the TUI (Claude Code: a
+// placeholder plus typed text; Codex: text AND Enter absorbed by its paste
+// burst). It goes in as one bracketed paste when the app enabled the mode.
+describe('input.send — multi-line text is pasted, not typed (#1594)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function setupPaste(target: unknown): { router: RpcRouter; writeMock: ReturnType<typeof vi.fn> } {
+    const writeMock = vi.fn();
+    const pty = { get: vi.fn(() => ({ id: 'x' })), write: writeMock } as unknown as PTYManager;
+    const router = new RpcRouter();
+    registerInputRpc(router, pty, () => fakeWindow);
+    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
+      if (method === 'input.findOwnerWorkspace') return Promise.resolve({ workspaceId: 'ws-self' });
+      if (method === 'input.sendTarget') return Promise.resolve(target);
+      return Promise.resolve(null);
+    });
+    return { router, writeMock };
+  }
+
+  const LONG = '1. first item\r\n2. second item\n3. third item';
+
+  it('pastes the body in one bracketed write (LF separators), then a lone Enter once', async () => {
+    const { router, writeMock } = setupPaste({ bracketedPasteMode: true, agent: 'Claude Code' });
+    const res = await router.dispatch({
+      id: 'p1',
+      method: 'input.send',
+      params: { text: LONG, ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(res.ok).toBe(true);
+    expect(writeMock.mock.calls[0]).toEqual([
+      'pty-a',
+      '\x1b[200~1. first item\n2. second item\n3. third item\x1b[201~',
+    ]);
+    expect(writeMock.mock.calls[1]).toEqual(['pty-a', '\r']);
+    // The Enter is never doubled onto the paste.
+    expect(writeMock.mock.calls.some(([, d]) => d === '\r\r')).toBe(false);
+  });
+
+  it('types raw when the app did not enable bracketed paste, or for a raw write', async () => {
+    const off = setupPaste({ bracketedPasteMode: false, agent: null });
+    await off.router.dispatch({
+      id: 'p2',
+      method: 'input.send',
+      params: { text: 'a\nb', ptyId: 'pty-a', workspaceId: 'ws-self' },
+    });
+    expect(off.writeMock.mock.calls).toEqual([['pty-a', 'a\nb']]);
+
+    const raw = setupPaste({ bracketedPasteMode: true, agent: null });
+    await raw.router.dispatch({
+      id: 'p3',
+      method: 'input.send',
+      params: { text: 'a\nb', ptyId: 'pty-a', workspaceId: 'ws-self', raw: true },
+    });
+    expect(raw.writeMock.mock.calls).toEqual([['pty-a', 'a\nb']]);
+  });
+});
+
 // D2 — role→model enforcement at the input.send chokepoint. A submit of a bare
 // bound-agent launcher is transparently rewritten to carry the role's model;
 // an explicit --model, an unbound pane, a non-submit, a multi-line paste, and a
@@ -1094,6 +1151,43 @@ describe('input.send — submit receipt', () => {
     expect(rowFromBottom(COMPOSER, NEEDLE)).toBe(1);
     expect(rowFromBottom(SUBMITTED, NEEDLE)).toBe(8);
     expect(rowFromBottom(COMPOSER, 'nowhere')).toBe(-1);
+  });
+
+  // #1596 — at ~25 columns the 24-char needle never fit on one visual row, so a
+  // wrapped input was never seen in the composer and a real submit read as
+  // accepted:false. The same logical screen must give the same verdict at any
+  // width.
+  it('matches a needle wrapped across rows, the same as the unwrapped screen', () => {
+    const prompt = 'Reply with the single word pong, nothing else please';
+    const needle = submitNeedle(prompt);
+    const wideBefore = ['header', '', `› ${prompt}`, '', '  model · ~/dir'].join('\n');
+    const narrowBefore = [
+      'header',
+      '',
+      '› Reply with the single',
+      '  word pong, nothing',
+      '  else please',
+      '',
+      '  model · ~/dir',
+    ].join('\n');
+    const narrowAfter = [
+      '› Reply with the single',
+      '  word pong, nothing',
+      '  else please',
+      '• pong',
+      '',
+      '  10:29 AM',
+      '',
+      '› Ask Codex to do anythi',
+      '',
+      '  model · ~/dir',
+    ].join('\n');
+    expect(rowFromBottom(wideBefore, needle)).toBe(2);
+    expect(rowFromBottom(narrowBefore, needle)).toBe(2);
+    expect(needleInComposer(narrowBefore, needle)).toBe(true);
+    expect(composerCleared(narrowBefore, narrowAfter, needle)).toBe(true);
+    // Box-drawing composer borders are not part of the typed text either.
+    expect(rowFromBottom('│ > Reply with the single word pong, │\n│   nothing else please │\n╰──╯', needle)).toBe(1);
   });
 
   it('needleInComposer is the bottom region only', () => {
