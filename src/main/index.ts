@@ -41,6 +41,7 @@ process.on('uncaughtException', (err) => {
 // phase measurement by that import's eval cost.
 import { markBoot, emitBootSummary } from './util/bootTrace';
 import * as path from 'path';
+import * as os from 'os';
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import { checkUserDataIsolation } from './dataIsolation';
 import { createWindow, loadMainRenderer } from './window/createWindow';
@@ -63,6 +64,7 @@ import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
 import { revealStatsAggregator } from './perf/revealStatsAggregator';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
+import { registerUsageRpc } from './pipe/handlers/usage.rpc';
 import { CompletionAlarm } from '../shared/hooks/CompletionAlarm';
 import { UsagePoller } from './claude/UsagePoller';
 import { setUsageClientVersion } from './claude/UsageApi';
@@ -1107,6 +1109,19 @@ const disposeUsagePollerListener = usagePoller.onStateChange((state) => {
 // will deliver once it connects).
 ipcMain.on(IPC.LANLINK_RESYNC, () => {
   remoteInboxBridge?.resync();
+});
+
+// Live `rate_limits` pushed by the wmux statusline script. The account is the
+// one the pane actually runs on (its CLAUDE_CONFIG_DIR), not the workspace's
+// current binding, so this path is not subject to the routing limitation noted
+// at onClaudeTurnEnd above.
+registerUsageRpc(rpcRouter, {
+  listClaudeAccounts: () => getAccountStore().listAccounts()
+    .filter((a) => a.vendor === 'claude')
+    .map((a) => ({ id: a.id, configDir: a.configDir })),
+  defaultConfigDir: () => path.join(os.homedir(), '.claude'),
+  ingestDefault: (update) => usagePoller.ingestLive(update),
+  ingestAccount: (accountId, update) => accountUsageService.ingestLive(accountId, update),
 });
 
 ipcMain.on(IPC.USAGE_TOGGLE, (_event, enabled: unknown) => {

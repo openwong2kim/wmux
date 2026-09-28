@@ -368,6 +368,7 @@ The capability column below summarises the table. Three sentinels:
 | `company.*` | `wmux.internal` | — | — |
 | `notify` | `wmux.internal` | — | — |
 | `hooks.signal` | `wmux.internal` | — | — |
+| `usage.rateLimits` | `wmux.internal` | — | — |
 
 Methods marked **bold** are surfaced in the approval dialog with stronger user-facing language (spec §3.6 — terminal-content / terminal-input risk classes).
 

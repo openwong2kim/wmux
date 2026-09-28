@@ -554,6 +554,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // Internal channel from the wmux-bundled hook plugin. No external plugin
   // should fire these — `wmux.internal` keeps the gate closed.
   'hooks.signal': { capability: 'wmux.internal' },
+  // Live Claude Code rate limits from the bundled statusline script — the same
+  // internal caller class as hooks.signal.
+  'usage.rateLimits': { capability: 'wmux.internal' },
 };
 
 /**

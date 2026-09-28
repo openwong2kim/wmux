@@ -37,6 +37,7 @@
 import { loadClaudeCredential, type LoadResult } from '../claude/claudeCredential';
 import { fetchUsage, rateLimitBackoffMs, UsageApiException, type UsageSnapshot } from '../claude/UsageApi';
 import { getAccountStore } from './accountStore';
+import { mergeUsage, updateFromSnapshot, type UsageUpdate } from '../claude/usageMerge';
 
 export type AccountUsageStatus =
   /** Last probe succeeded — `snapshot` is fresh. */
@@ -99,6 +100,9 @@ export class AccountUsageService {
   private readonly rateLimited = new Map<string, { untilMs: number; count: number }>();
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private readonly staggerTimers = new Set<ReturnType<typeof setTimeout>>();
+  /** Per-account time of the last live statusline sample that changed the
+   *  snapshot. While younger than the refresh interval, automatic probes skip. */
+  private readonly liveAtMs = new Map<string, number>();
 
   private readonly now: () => number;
   private readonly cooldownMs: number;
@@ -203,6 +207,22 @@ export class AccountUsageService {
   drop(accountId: string): void {
     this.cache.delete(accountId);
     this.rateLimited.delete(accountId);
+    this.liveAtMs.delete(accountId);
+  }
+
+  /**
+   * Live `rate_limits` from a Claude Code statusline running on this account
+   * (`usage.rateLimits`, account resolved from the pane's CLAUDE_CONFIG_DIR).
+   * Merged by reset time, so a stale sample never overwrites a newer window.
+   * Stored even while the feature is off; listeners hear about it only while
+   * it is on (the Settings list still pulls it via getAll()).
+   */
+  ingestLive(accountId: string, update: UsageUpdate): void {
+    const prev = this.cache.get(accountId);
+    const merged = mergeUsage(prev?.snapshot ?? null, update, this.now());
+    if (!merged || merged === prev?.snapshot) return;
+    this.liveAtMs.set(accountId, this.now());
+    this.set(accountId, { status: 'ok', snapshot: merged, lastError: null }, this.enabled);
   }
 
   /**
@@ -219,6 +239,10 @@ export class AccountUsageService {
     const prev = this.cache.get(accountId);
     if (prev?.fetchedAtMs != null && this.now() - prev.fetchedAtMs < this.cooldownMs) {
       return;                                  // still fresh — don't re-spend
+    }
+    const liveAt = this.liveAtMs.get(accountId);
+    if (liveAt !== undefined && this.now() - liveAt < this.refreshIntervalMs) {
+      return;                                  // a live statusline is feeding it
     }
     await this.probe(accountId, true);
   }
@@ -257,8 +281,12 @@ export class AccountUsageService {
         return;
       }
       try {
-        const snapshot = await fetchUsage(cred.credential.accessToken, this.fetchImpl);
+        const fetched = await fetchUsage(cred.credential.accessToken, this.fetchImpl);
         this.rateLimited.delete(accountId);
+        // Merged against the current entry (not `prev`, read before the await):
+        // a live sample may have landed a newer window while this was in flight.
+        const current = this.cache.get(accountId)?.snapshot ?? null;
+        const snapshot = mergeUsage(current, updateFromSnapshot(fetched), this.now()) ?? fetched;
         this.set(accountId, { status: 'ok', snapshot, lastError: null });
       } catch (err) {
         if (err instanceof UsageApiException && err.detail.kind === 'unauthorized') {
@@ -296,9 +324,14 @@ export class AccountUsageService {
     }
   }
 
-  private set(accountId: string, patch: Omit<AccountUsageEntry, 'accountId' | 'fetchedAtMs'>): void {
+  private set(
+    accountId: string,
+    patch: Omit<AccountUsageEntry, 'accountId' | 'fetchedAtMs'>,
+    notify = true,
+  ): void {
     const entry: AccountUsageEntry = { accountId, fetchedAtMs: this.now(), ...patch };
     this.cache.set(accountId, entry);
+    if (!notify) return;
     for (const cb of this.listeners) {
       try { cb(entry); } catch { /* one bad subscriber must not block siblings */ }
     }

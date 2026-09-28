@@ -40,6 +40,7 @@
 
 import { loadClaudeCredential, type LoadResult } from './claudeCredential';
 import { fetchUsage, rateLimitBackoffMs, UsageApiException, type UsageSnapshot } from './UsageApi';
+import { mergeUsage, updateFromSnapshot, type UsageUpdate } from './usageMerge';
 
 export type PollerStatus =
   /** Toggle is off; nothing happening. */
@@ -164,6 +165,9 @@ export class UsagePoller {
   private windowVisible = true;
   private windowHiddenAtMs = 0;
   private disposed = false;
+  /** When the last live statusline sample changed the snapshot (Unix ms).
+   *  While it is younger than `intervalMs`, automatic ticks skip HTTP. */
+  private liveAtMs = 0;
 
   private readonly listeners = new Set<(state: PollerState) => void>();
 
@@ -291,6 +295,22 @@ export class UsagePoller {
     return this.state;
   }
 
+  /** Live `rate_limits` from a default-account Claude Code statusline
+   *  (`usage.rateLimits`). Merged by reset time, so a stale sample never
+   *  overwrites a newer window. While the meter is off the value is stored
+   *  without notifying anyone; `start()` publishes it. */
+  ingestLive(update: UsageUpdate): void {
+    if (this.disposed) return;
+    const merged = mergeUsage(this.state.snapshot, update, this.now());
+    if (!merged || merged === this.state.snapshot) return;
+    this.liveAtMs = this.now();
+    if (!this.timer) {
+      this.state = { ...this.state, snapshot: merged };
+      return;
+    }
+    this.setState({ status: 'ok', snapshot: merged, lastError: null });
+  }
+
   dispose(): void {
     this.disposed = true;
     this.stop();
@@ -364,6 +384,14 @@ export class UsagePoller {
     // 429 backoff — automatic ticks (interval, window-show kick) wait it
     // out; a manual refresh is an explicit ask and goes through.
     if (!opts.force && this.now() < this.rateLimitedUntilMs) return;
+    // A live statusline sample is fresher than anything HTTP would say, so
+    // automatic ticks spend nothing while one is recent — but a session that
+    // just started still has to publish what was stored while it was off.
+    if (!opts.force && this.liveAtMs > 0 && this.now() - this.liveAtMs < this.intervalMs
+        && this.state.snapshot) {
+      this.setState({ status: 'ok', lastError: null });
+      return;
+    }
     this.inflight = true;
     this.inflightGeneration = generation;
     const run = this.runTick(opts, generation);
@@ -447,9 +475,12 @@ export class UsagePoller {
     // the operative credential.
     this.clearRejection();
     try {
-      const snapshot = await fetchUsage(credential.accessToken, this.fetchImpl);
+      const fetched = await fetchUsage(credential.accessToken, this.fetchImpl);
       if (this.isStale(generation)) return;
       this.clearRateLimit();
+      // Merged by reset time rather than replaced: a live sample that landed
+      // while this request was in flight may already describe a newer window.
+      const snapshot = mergeUsage(this.state.snapshot, updateFromSnapshot(fetched), this.now()) ?? fetched;
       this.setState({
         status: 'ok',
         snapshot,
