@@ -3920,18 +3920,23 @@ describe('WebTerminalServer', () => {
     const info = await startRW();
     const auth = bearer(info.token as string);
     const git = gitRepo('repo');
+    // A base commit, then a staged edit on top of it: the phone's real flow is
+    // snapshot GET → commit with the head/tree/ref that snapshot reported.
+    git('add', 'phone.txt');
+    git('commit', '-q', '-m', 'base');
+    fs.writeFileSync(path.join(uploadsDir, 'repo', 'phone.txt'), 'reviewed again');
     git('add', 'phone.txt');
     const endpoint = `${base()}/api/sessions/s1/git`;
-    // No snapshot GET: on an unborn `main` HEAD is null and the ref is known, so
-    // the only value the phone would have read is the index tree.
-    const mutation = {requestId:crypto.randomUUID(),action:'commit',message:'From phone',expectedHead:null,expectedTree:git('write-tree'),expectedRef:'refs/heads/main'};
+    const staged = await (await fetch(endpoint, {headers:auth})).json();
+    expect(staged).toMatchObject({branch:'main',ref:'refs/heads/main',head:expect.stringMatching(/^[0-9a-f]{40}$/)});
+    const mutation = {requestId:crypto.randomUUID(),action:'commit',message:'From phone',expectedHead:staged.head,expectedTree:staged.tree,expectedRef:staged.ref};
     const send = () => fetch(endpoint, {method:'POST',headers:auth,body:JSON.stringify(mutation)});
     const result = await (await send()).json();
     expect(result).toMatchObject({applied:true});
     expect(await (await send()).json()).toEqual(result);
-    // One `rev-list` pins both facts: HEAD is the returned commit, and the
-    // replayed request did not commit a second time.
-    expect(result).toEqual({applied:true,commit:git('rev-list','HEAD')});
+    // One `rev-list` pins it all: HEAD is the returned commit, its parent is
+    // the head the snapshot reported, and the replay did not commit twice.
+    expect(git('rev-list','HEAD')).toBe(`${result.commit}\n${staged.head}`);
   });
 
   it('gates Git control on authentication, input grants and session visibility', async () => {
