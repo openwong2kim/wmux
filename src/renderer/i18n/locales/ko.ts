@@ -1988,6 +1988,8 @@ export const ko = {
   'schedules.hideOutput': "출력 숨기기",
   'schedules.firstRunBlockedHint': "터미널에서 이 폴더를 한 번 열어 {agent}에서 신뢰를 허용한 뒤 다시 실행하세요.",
   'schedules.navFailed': "실패 {count}",
+  'schedules.bypassDeclinedNew': "꺼진 상태로 저장했습니다. 바이패스는 부여되지 않았습니다. 나중에 예약에서 부여할 수 있습니다.",
+  'schedules.bypassDeclinedEdit': "바이패스가 부여되지 않았습니다. 예약은 현재 권한을 유지합니다.",
   'schedules.toast.awaiting': "응답 대기",
   'schedules.toast.failed': "실패",
   'schedules.toast.proposed': "검토할 초안",

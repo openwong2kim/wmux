@@ -2598,6 +2598,8 @@ export const en = {
   'schedules.hideOutput': "Hide output",
   'schedules.firstRunBlockedHint': "Open the folder once in a terminal and trust it in {agent}, then run again.",
   'schedules.navFailed': "{count} failed",
+  'schedules.bypassDeclinedNew': "Saved turned off — bypass was not granted. You can grant it later from the schedule.",
+  'schedules.bypassDeclinedEdit': "Bypass was not granted; the schedule keeps its current permission.",
   'schedules.toast.awaiting': "Needs your response",
   'schedules.toast.failed': "Failed",
   'schedules.toast.proposed': "Draft to review",

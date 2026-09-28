@@ -27,7 +27,7 @@ import {
   validateForm,
   type ScheduleForm,
 } from './scheduleModel';
-import { weekdayName } from './format';
+import { BYPASS_DECLINED, weekdayName } from './format';
 import type { AccountOption } from './useAccounts';
 
 type DayPreset = 'daily' | 'weekdays' | 'custom';
@@ -120,8 +120,8 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
     if (!api) return;
     setSaving(true);
     setError(null);
-    const fail = (message: string) => {
-      setError(message);
+    const fail = (message: string, raw = true) => {
+      setError(raw ? t('schedules.error', { error: message }) : message);
       void useStore.getState().refreshSchedules();
     };
     try {
@@ -143,6 +143,17 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
       }
       if (needsGrant) {
         const granted = await api.grant(id, form.mode, usesToolList(form) ? tools.tools : undefined);
+        if (!granted.ok && granted.error === BYPASS_DECLINED) {
+          // The human declined main's Bypass prompt. A new schedule stays
+          // saved and off; an edit keeps whatever permission it had.
+          if (!original) {
+            useStore.getState().pushToast({ level: 'info', message: t('schedules.bypassDeclinedNew') });
+            void useStore.getState().refreshSchedules();
+            onSaved(id);
+            return;
+          }
+          return fail(t('schedules.bypassDeclinedEdit'), false);
+        }
         if (!granted.ok) return fail(granted.error);
       }
       // A new schedule is saved to run; a reviewed draft is enabled by the
@@ -161,7 +172,7 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
   const testRun = async () => {
     if (!api || !original) return;
     const r = await api.runNow(original.id, 'test');
-    if (!r.ok) setError(r.error);
+    if (!r.ok) setError(t('schedules.error', { error: r.error }));
     else useStore.getState().pushToast({ level: 'info', message: t('schedules.testRunStarted') });
   };
 
@@ -179,7 +190,7 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
             below that one column, with the prompt height capped so the
             settings stay reachable. */}
         <div className="grid grid-cols-1 gap-6 min-[640px]:grid-cols-[minmax(0,1fr)_300px]">
-          <Field label={t('schedules.prompt')} description={t('schedules.promptHint', { max: AUTOMATION_DEFAULTS.maxPromptChars })} layout="stacked" className="min-h-0">
+          <Field label={t('schedules.prompt')} description={t('schedules.promptHint', { max: AUTOMATION_DEFAULTS.maxPromptChars })} layout="stacked" className="min-h-0 justify-start">
             <PromptArea value={form.prompt} onChange={(v) => set('prompt', v)} placeholder={t('schedules.promptPlaceholder')} />
           </Field>
           <div className="flex flex-col gap-3">
@@ -302,7 +313,7 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
         {warnReset && <p className="ui-note mt-3" role="status" data-schedule-reset-warning>{t('schedules.resetWarning')}</p>}
         {original && !review && <p className="ui-note mt-3">{t('schedules.testRunHint')}</p>}
         {problemText && <p className="ui-row-error mt-3" role="alert">{problemText}</p>}
-        {error && <p className="ui-row-error mt-3" role="alert">{t('schedules.error', { error })}</p>}
+        {error && <p className="ui-row-error mt-3" role="alert" data-schedule-error>{error}</p>}
       </DialogBody>
       <DialogFooter>
         {original && !review && (

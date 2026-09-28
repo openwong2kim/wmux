@@ -53,4 +53,17 @@ describe('ScheduleDetail output snapshot', () => {
     expect(container.querySelector('[data-run-first-run-hint]')!.textContent)
       .toBe('Open the folder once in a terminal and trust it in Claude, then run again.');
   });
+
+  it('says the permission is unchanged when Grant again is declined', async () => {
+    const grant = vi.fn(async () => ({ ok: false, error: 'cancelled' }));
+    vi.stubGlobal('electronAPI', { automation: { snapshot, grant, list: vi.fn(async () => ({ automations: [], available: false })), runs: vi.fn(async () => ({ runs: [] })) } });
+    useStore.setState({ toasts: [] });
+    const reset = automation({ permission: { mode: 'bypass', grantedRevision: 1 } });
+    await act(async () => root.render(<ScheduleDetail automation={reset} accounts={[]} onEdit={vi.fn()} />));
+    const button = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Grant again')!;
+    await act(async () => button.click());
+    expect(grant).toHaveBeenCalledWith('a1', 'bypass', undefined);
+    expect(useStore.getState().toasts.map((x) => x.message))
+      .toContain('Bypass was not granted; the schedule keeps its current permission.');
+  });
 });

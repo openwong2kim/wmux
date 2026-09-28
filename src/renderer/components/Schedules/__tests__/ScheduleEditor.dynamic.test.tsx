@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ScheduleEditor from '../ScheduleEditor';
+import { useStore } from '../../../stores';
 import { automation } from './fixtures';
 import type { Automation } from '../../../../shared/automation';
 
@@ -122,5 +123,32 @@ describe('ScheduleEditor', () => {
       <ScheduleEditor original={automation({ proposed: true, enabled: false })} review accounts={[]} onClose={vi.fn()} onSaved={vi.fn()} />,
     ));
     expect(q('[data-schedule-editor-test-run]')).toBeNull();
+  });
+
+  it('keeps a new schedule saved and off when Bypass is declined, with plain copy', async () => {
+    const created = automation({ id: 'new2', enabled: false });
+    api.create.mockResolvedValue({ ok: true, automation: created });
+    api.grant.mockResolvedValue({ ok: false, error: 'cancelled' });
+    const onSaved = mount(null);
+    act(() => type(q<HTMLInputElement>('[data-schedule-name]')!, 'Nightly'));
+    act(() => type(q<HTMLTextAreaElement>('[data-schedule-prompt]')!, 'Do it'));
+    act(() => type(q<HTMLInputElement>('[data-schedule-cwd]')!, '/w'));
+    act(() => radio('Bypass').click());
+    await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
+    expect(api.setEnabled).not.toHaveBeenCalled();
+    expect(onSaved).toHaveBeenCalledWith('new2');
+    expect(useStore.getState().toasts.some((x) => x.message.startsWith('Saved turned off'))).toBe(true);
+  });
+
+  it('says the permission is unchanged when Bypass is declined on an edit', async () => {
+    const a = automation();
+    api.update.mockResolvedValue({ ok: true, automation: a });
+    api.grant.mockResolvedValue({ ok: false, error: 'cancelled' });
+    const onSaved = mount(a);
+    act(() => radio('Bypass').click());
+    await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
+    expect(onSaved).not.toHaveBeenCalled();
+    expect(q('[data-schedule-error]')!.textContent)
+      .toBe('Bypass was not granted; the schedule keeps its current permission.');
   });
 });

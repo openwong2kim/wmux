@@ -2567,6 +2567,8 @@ export const pl = {
   'schedules.hideOutput': "Ukryj wynik",
   'schedules.firstRunBlockedHint': "Otwórz ten folder raz w terminalu i zaufaj mu w {agent}, a potem uruchom ponownie.",
   'schedules.navFailed': "nieudane {count}",
+  'schedules.bypassDeclinedNew': "Zapisano jako wyłączony — nie przyznano trybu Bypass. Możesz go przyznać później w harmonogramie.",
+  'schedules.bypassDeclinedEdit': "Nie przyznano trybu Bypass; harmonogram zachowuje obecne uprawnienia.",
   'schedules.toast.awaiting': "Czeka na odpowiedź",
   'schedules.toast.failed': "Niepowodzenie",
   'schedules.toast.proposed': "Szkic do przejrzenia",

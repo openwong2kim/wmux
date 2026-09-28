@@ -82,3 +82,6 @@ export function accountLabel(a: Automation, accounts: readonly AccountOption[]):
 export function agentLabel(agent: Automation['action']['agent']): string {
   return agent === 'codex' ? t('schedules.agentCodex') : t('schedules.agentClaude');
 }
+
+/** What main's grant handler answers when the native Bypass prompt is declined. */
+export const BYPASS_DECLINED = 'cancelled';

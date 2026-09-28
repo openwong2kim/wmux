@@ -10,12 +10,18 @@ import Switch from '../ui/Switch';
 import Dialog, { DialogFooter, DialogHeader } from '../ui/Dialog';
 import {
   accountLabel, agentLabel, describeTrigger, formatDuration, formatWhen, resumeCommand, runStateLabel,
+  BYPASS_DECLINED,
 } from './format';
 import { openAutomationRun } from './openRun';
 import type { AccountOption } from './useAccounts';
 
 function report(error: string | undefined, t: ReturnType<typeof useT>): void {
-  if (error) useStore.getState().pushToast({ level: 'error', message: t('schedules.error', { error }) });
+  if (!error) return;
+  if (error === BYPASS_DECLINED) {
+    useStore.getState().pushToast({ level: 'info', message: t('schedules.bypassDeclinedEdit') });
+    return;
+  }
+  useStore.getState().pushToast({ level: 'error', message: t('schedules.error', { error }) });
 }
 
 /** Selected schedule: what it runs, its policy, and its last runs. */
