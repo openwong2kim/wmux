@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,10 +17,20 @@ import {
 
 let dir: string;
 
+// Every roster write arms DeviceStore's 5 s debounced DACL re-harden timer
+// (unref'd, fire-and-forget). With real timers it fired after its test had
+// already deleted `dir`, so the re-harden failed and logged, sometimes after
+// the file's last test, and vitest then closed the worker RPC while those
+// console calls were still pending (EnvironmentTeardownError on windows-latest).
+// No test here asserts on the re-harden, so setTimeout is faked for the file
+// and whatever a test left scheduled is dropped when it ends.
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-devices-'));
 });
 afterEach(() => {
+  vi.clearAllTimers();
+  vi.useRealTimers();
   try {
     fs.rmSync(dir, { recursive: true, force: true });
   } catch {
