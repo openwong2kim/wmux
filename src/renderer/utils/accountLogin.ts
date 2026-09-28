@@ -243,8 +243,8 @@ async function readBaseline(req: AccountLoginRequest): Promise<Watch['baseline']
 
 /** Open a login tab for an account (new or existing) and watch for the login. */
 export async function startAccountLogin(req: AccountLoginRequest): Promise<void> {
-  if (watches.has(req.configDir)) {
-    const cur = watches.get(req.configDir)!;
+  const cur = watches.get(req.configDir);
+  if (cur) {
     if (cur.entry.phase !== 'starting') await reopenAccountLoginTab(req.configDir);
     return;
   }
@@ -277,8 +277,8 @@ export function checkAccountLoginAgain(configDir: string): void {
   if (w.entry.phase === 'error') {
     // The baseline was never read: start over from it.
     watches.delete(configDir);
-    const { phase: _phase, tabOpen: _tabOpen, ...req } = w.entry;
-    void startAccountLogin(req);
+    const { vendor, name, configDir: dir, loginCommand, accountId } = w.entry;
+    void startAccountLogin({ vendor, name, configDir: dir, loginCommand, accountId });
     return;
   }
   startPolling(w);
