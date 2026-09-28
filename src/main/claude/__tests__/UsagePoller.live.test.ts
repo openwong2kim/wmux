@@ -27,6 +27,11 @@ const LIVE = {
   weekly: { pct: 31, resetEpochSec: NOW_SEC + 90 * HOUR },
 };
 
+const LIVE_HIGHER = {
+  session: { pct: 60, resetEpochSec: NOW_SEC + 4 * HOUR },
+  weekly: { pct: 31, resetEpochSec: NOW_SEC + 90 * HOUR },
+};
+
 async function flush(): Promise<void> {
   await vi.advanceTimersByTimeAsync(0);
 }
@@ -40,48 +45,68 @@ describe('UsagePoller live ingest', () => {
     vi.useRealTimers();
   });
 
-  it('stores silently while off, then start() publishes it without an HTTP call', async () => {
-    const fetchImpl = httpFetch(50, NOW_SEC + HOUR);
+  it('stores silently while off; start() republishes it without HTTP when HTTP ran recently', async () => {
+    const fetchImpl = httpFetch(50, NOW_SEC + 4 * HOUR);
     const poller = new UsagePoller({ fetchImpl, loadCredential: async () => OK_CREDENTIAL });
+    poller.start();
+    await flush();
+    poller.stop();
     const seen: PollerState[] = [];
     poller.onStateChange((s) => seen.push(s));
 
-    poller.ingestLive(LIVE);
+    poller.ingestLive(LIVE_HIGHER);
     expect(seen).toHaveLength(0);
 
     poller.start();
     await flush();
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(seen.at(-1)?.status).toBe('ok');
-    expect(seen.at(-1)?.snapshot?.sessionPct).toBe(7);
+    expect(seen.at(-1)?.snapshot?.sessionPct).toBe(60);
     poller.dispose();
   });
 
-  it('skips interval ticks while a live sample is fresh, resumes after', async () => {
-    const fetchImpl = httpFetch(50, NOW_SEC + HOUR);
+  it('with a fresh live sample, HTTP slows to every third interval instead of stopping', async () => {
+    const fetchImpl = httpFetch(50, NOW_SEC + 4 * HOUR);
     const poller = new UsagePoller({ fetchImpl, loadCredential: async () => OK_CREDENTIAL });
     poller.start();
     await flush();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-
-    poller.ingestLive({ ...LIVE, session: { pct: 60, resetEpochSec: NOW_SEC + HOUR } });
-    await vi.advanceTimersByTimeAsync(INTERVAL - 1000);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-
-    await vi.advanceTimersByTimeAsync(INTERVAL);
+    for (let tick = 1; tick <= 3; tick++) {
+      await vi.advanceTimersByTimeAsync(INTERVAL - 1000);
+      poller.ingestLive({ session: { pct: 50 + tick, resetEpochSec: NOW_SEC + 4 * HOUR } });
+      await vi.advanceTimersByTimeAsync(1000);
+    }
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     poller.dispose();
   });
 
-  it('an HTTP answer for an older window does not overwrite a newer live one', async () => {
-    const fetchImpl = httpFetch(95, NOW_SEC + 60);
+  it('HTTP is authoritative: an ok result replaces a higher live value in the same window', async () => {
+    const fetchImpl = httpFetch(20, NOW_SEC + 4 * HOUR);
     const poller = new UsagePoller({ fetchImpl, loadCredential: async () => OK_CREDENTIAL });
     poller.start();
-    poller.ingestLive(LIVE);
+    poller.ingestLive(LIVE_HIGHER);
     await poller.refreshNow();
-    expect(fetchImpl).toHaveBeenCalled();
+    expect(poller.getState().snapshot?.sessionPct).toBe(20);
+    poller.dispose();
+  });
+
+  it('a live sample does not clear a credential verdict', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('', { status: 401 })) as unknown as typeof fetch;
+    const poller = new UsagePoller({ fetchImpl, loadCredential: async () => OK_CREDENTIAL });
+    poller.start();
+    await flush();
+    expect(poller.getState().status).toBe('unauthorized');
+    expect(poller.ingestLive(LIVE)).toBe(true);
+    expect(poller.getState().status).toBe('unauthorized');
     expect(poller.getState().snapshot?.sessionPct).toBe(7);
-    expect(poller.getState().snapshot?.sessionResetEpochSec).toBe(NOW_SEC + 4 * HOUR);
+    poller.dispose();
+  });
+
+  it('reports a partial sample with nothing to merge onto as not applied', () => {
+    const poller = new UsagePoller({ fetchImpl: vi.fn() as unknown as typeof fetch, loadCredential: async () => OK_CREDENTIAL });
+    expect(poller.ingestLive({ session: LIVE.session })).toBe(false);
+    expect(poller.ingestLive(LIVE)).toBe(true);
+    expect(poller.ingestLive(LIVE)).toBe(true); // unchanged still counts as accepted
     poller.dispose();
   });
 });

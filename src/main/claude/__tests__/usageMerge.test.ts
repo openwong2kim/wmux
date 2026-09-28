@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mergeUsage, mergeWindow, updateFromSnapshot } from '../usageMerge';
+import { mergeLive, mergeLiveWindow } from '../usageMerge';
 import type { UsageSnapshot } from '../UsageApi';
 
 const NOW_SEC = 1_800_000_000;
@@ -16,42 +16,45 @@ function snap(sessionPct: number, sessionReset: number, weeklyPct: number, weekl
   };
 }
 
-describe('mergeWindow', () => {
+const SCOPED: UsageSnapshot['scoped'] = [
+  { kind: 'weekly_scoped', group: 'weekly', pct: 33, resetEpochSec: null, scope: 'Opus' },
+];
+
+describe('mergeLiveWindow', () => {
   it('keeps the max within one window', () => {
     const prev = { pct: 40, resetEpochSec: NOW_SEC + HOUR };
-    expect(mergeWindow(prev, { pct: 55, resetEpochSec: NOW_SEC + HOUR }, NOW_SEC)).toEqual({ pct: 55, resetEpochSec: NOW_SEC + HOUR });
+    expect(mergeLiveWindow(prev, { pct: 55, resetEpochSec: NOW_SEC + HOUR }, NOW_SEC)).toEqual({ pct: 55, resetEpochSec: NOW_SEC + HOUR });
     // A lower reading of the same window changes nothing (same reference).
-    expect(mergeWindow(prev, { pct: 30, resetEpochSec: NOW_SEC + HOUR + 20 }, NOW_SEC)).toBe(prev);
+    expect(mergeLiveWindow(prev, { pct: 30, resetEpochSec: NOW_SEC + HOUR + 20 }, NOW_SEC)).toBe(prev);
   });
 
   it('replaces with a later window and ignores an older one', () => {
     const prev = { pct: 90, resetEpochSec: NOW_SEC + HOUR };
     const newer = { pct: 5, resetEpochSec: NOW_SEC + 6 * HOUR };
-    expect(mergeWindow(prev, newer, NOW_SEC)).toBe(newer);
-    expect(mergeWindow(newer, prev, NOW_SEC)).toBe(newer);
+    expect(mergeLiveWindow(prev, newer, NOW_SEC)).toBe(newer);
+    expect(mergeLiveWindow(newer, prev, NOW_SEC)).toBe(newer);
   });
 
   it('drops a window whose reset is already past', () => {
     const prev = { pct: 10, resetEpochSec: NOW_SEC + HOUR };
-    expect(mergeWindow(prev, { pct: 99, resetEpochSec: NOW_SEC - 10 }, NOW_SEC)).toBe(prev);
-    expect(mergeWindow(null, { pct: 99, resetEpochSec: NOW_SEC - 10 }, NOW_SEC)).toBeNull();
+    expect(mergeLiveWindow(prev, { pct: 99, resetEpochSec: NOW_SEC - 10 }, NOW_SEC)).toBe(prev);
+    expect(mergeLiveWindow(null, { pct: 99, resetEpochSec: NOW_SEC - 10 }, NOW_SEC)).toBeNull();
   });
 
-  it('treats a reset of 0 as unknown, not as 1970', () => {
-    const prev = { pct: 20, resetEpochSec: NOW_SEC + HOUR };
-    expect(mergeWindow(prev, { pct: 25, resetEpochSec: 0 }, NOW_SEC)).toEqual({ pct: 25, resetEpochSec: NOW_SEC + HOUR });
-    expect(mergeWindow(null, { pct: 25, resetEpochSec: 0 }, NOW_SEC)).toEqual({ pct: 25, resetEpochSec: 0 });
+  it('a known reset replaces an unknown one (0), even with a lower pct', () => {
+    const prev = { pct: 80, resetEpochSec: 0 };
+    const next = { pct: 25, resetEpochSec: NOW_SEC + HOUR };
+    expect(mergeLiveWindow(prev, next, NOW_SEC)).toBe(next);
   });
 });
 
-describe('mergeUsage', () => {
+describe('mergeLive', () => {
   it('a stale live sample from pane A does not overwrite pane B\'s newer window', () => {
-    // B already reported the new 5h window; A still renders the old one.
-    const fromB = mergeUsage(null, {
+    const fromB = mergeLive(null, {
       session: { pct: 3, resetEpochSec: NOW_SEC + 5 * HOUR },
       weekly: { pct: 40, resetEpochSec: NOW_SEC + 100 * HOUR },
     }, NOW_MS);
-    const afterA = mergeUsage(fromB, {
+    const afterA = mergeLive(fromB, {
       session: { pct: 97, resetEpochSec: NOW_SEC + 60 },
       weekly: { pct: 39, resetEpochSec: NOW_SEC + 100 * HOUR },
     }, NOW_MS);
@@ -59,28 +62,23 @@ describe('mergeUsage', () => {
     expect(afterA?.sessionPct).toBe(3);
   });
 
-  it('needs both windows when there is nothing to merge onto', () => {
-    expect(mergeUsage(null, { session: { pct: 5, resetEpochSec: NOW_SEC + HOUR } }, NOW_MS)).toBeNull();
+  it('a partial sample with nothing to merge onto is not applied', () => {
+    expect(mergeLive(null, { session: { pct: 5, resetEpochSec: NOW_SEC + HOUR } }, NOW_MS)).toBeNull();
   });
 
-  it('keeps HTTP scoped limits when a live sample (no scoped) is merged', () => {
-    const http: UsageSnapshot = {
-      ...snap(10, NOW_SEC + HOUR, 20, NOW_SEC + 50 * HOUR),
-      scoped: [{ kind: 'weekly_scoped', group: 'weekly', pct: 33, resetEpochSec: null, scope: 'Opus' }],
-    };
-    const merged = mergeUsage(http, { session: { pct: 12, resetEpochSec: NOW_SEC + HOUR } }, NOW_MS);
+  it('keeps scoped limits while the weekly window is unchanged', () => {
+    const http: UsageSnapshot = { ...snap(10, NOW_SEC + HOUR, 20, NOW_SEC + 50 * HOUR), scoped: SCOPED };
+    const merged = mergeLive(http, { session: { pct: 12, resetEpochSec: NOW_SEC + HOUR } }, NOW_MS);
     expect(merged?.sessionPct).toBe(12);
     expect(merged?.weeklyPct).toBe(20);
-    expect(merged?.scoped).toEqual(http.scoped);
+    expect(merged?.scoped).toEqual(SCOPED);
     expect(merged?.fetchedAtMs).toBe(NOW_MS);
   });
 
-  it('an HTTP response for an older window loses to a newer live one', () => {
-    const live = snap(4, NOW_SEC + 5 * HOUR, 41, NOW_SEC + 90 * HOUR);
-    const http = snap(88, NOW_SEC + 120, 40, NOW_SEC + 90 * HOUR);
-    const merged = mergeUsage(live, updateFromSnapshot(http), NOW_MS);
-    expect(merged?.sessionPct).toBe(4);
-    expect(merged?.sessionResetEpochSec).toBe(NOW_SEC + 5 * HOUR);
-    expect(merged?.weeklyPct).toBe(41);
+  it('drops scoped limits when the sample moves the weekly window on', () => {
+    const http: UsageSnapshot = { ...snap(10, NOW_SEC + HOUR, 90, NOW_SEC + 60), scoped: SCOPED };
+    const merged = mergeLive(http, { weekly: { pct: 1, resetEpochSec: NOW_SEC + 160 * HOUR } }, NOW_MS);
+    expect(merged?.weeklyPct).toBe(1);
+    expect(merged?.scoped).toBeUndefined();
   });
 });

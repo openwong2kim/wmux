@@ -21,10 +21,15 @@ export interface UsageRpcDeps {
   listClaudeAccounts: () => Array<{ id: string; configDir: string }>;
   /** The default profile's config dir (`~/.claude`). */
   defaultConfigDir: () => string;
-  ingestDefault: (update: UsageUpdate) => void;
-  ingestAccount: (accountId: string, update: UsageUpdate) => void;
+  /** Returns whether the sample was accepted (applied, or already reflected). */
+  ingestDefault: (update: UsageUpdate) => boolean;
+  ingestAccount: (accountId: string, update: UsageUpdate) => boolean;
   log?: (line: string) => void;
 }
+
+/** Budget for resolving the caller's config dir. Filesystem calls on a stalled
+ *  network mount can hang; past this the lexical path is used. */
+const REALPATH_TIMEOUT_MS = 200;
 
 const MAX_CONFIG_DIR_LEN = 4096;
 const MAX_PTY_ID_LEN = 128;
@@ -42,10 +47,11 @@ function readWindow(v: unknown): UsageWindow | undefined | null {
   if (v === undefined || v === null) return undefined;
   if (!isRecord(v)) return null;
   const { pct, resets_at: resetsAt } = v;
-  if (typeof pct !== 'number' || !Number.isFinite(pct) || pct < 0 || pct > 100) return null;
+  if (typeof pct !== 'number' || !Number.isFinite(pct) || pct < 0) return null;
   if (typeof resetsAt !== 'number' || !Number.isInteger(resetsAt)
       || resetsAt < MIN_EPOCH_SEC || resetsAt > MAX_EPOCH_SEC) return null;
-  return { pct: Math.round(pct), resetEpochSec: resetsAt };
+  // Over 100 is possible (usage can overshoot a limit); the meter caps at 100.
+  return { pct: Math.min(100, Math.round(pct)), resetEpochSec: resetsAt };
 }
 
 export interface RateLimitsParams {
@@ -77,16 +83,27 @@ export function validateRateLimitsParams(params: Record<string, unknown>): RateL
   };
 }
 
-/** Physical identity of a dir for comparison: realpath when it resolves,
- *  lexical otherwise; case-folded on Windows. */
-export function dirIdentity(p: string): string {
-  let r = path.resolve(p);
+function foldCase(p: string): string {
+  return process.platform === 'win32' ? p.toLowerCase() : p;
+}
+
+/** Physical identity of a caller-supplied dir: async realpath (never a sync
+ *  fs call on the main thread for caller input) with a short budget, lexical
+ *  when it does not resolve in time; case-folded on Windows. */
+export async function dirIdentity(p: string, timeoutMs = REALPATH_TIMEOUT_MS): Promise<string> {
+  const resolved = path.resolve(p);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    r = fs.realpathSync.native(r);
+    const real = await Promise.race([
+      fs.promises.realpath(resolved),
+      new Promise<string>((resolve) => { timer = setTimeout(() => resolve(resolved), timeoutMs); }),
+    ]);
+    return foldCase(real);
   } catch {
-    // Missing/inaccessible — compare lexically; it will simply not match.
+    return foldCase(resolved); // missing/inaccessible — it will simply not match
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  return process.platform === 'win32' ? r.toLowerCase() : r;
 }
 
 export interface ResolvedTarget {
@@ -96,28 +113,37 @@ export interface ResolvedTarget {
 
 /** Which usage entries a sample from `configDir` belongs to. Unset → the
  *  default profile. A dir that is neither the default nor a registered
- *  account resolves to nothing, and the sample is dropped. */
-export function resolveUsageTarget(configDir: string | null, deps: Pick<UsageRpcDeps, 'listClaudeAccounts' | 'defaultConfigDir'>): ResolvedTarget {
-  const defaultId = dirIdentity(deps.defaultConfigDir());
+ *  account resolves to nothing, and the sample is dropped. Registered
+ *  accounts are stored canonical (realpath at registration), so only the
+ *  caller's path and the default dir need resolving. */
+export async function resolveUsageTarget(
+  configDir: string | null,
+  deps: Pick<UsageRpcDeps, 'listClaudeAccounts' | 'defaultConfigDir'>,
+): Promise<ResolvedTarget> {
   if (configDir === null) return { isDefault: true, accountIds: [] };
-  const want = dirIdentity(configDir);
+  const [want, defaultId] = await Promise.all([dirIdentity(configDir), dirIdentity(deps.defaultConfigDir())]);
   const accountIds = deps.listClaudeAccounts()
-    .filter((a) => dirIdentity(a.configDir) === want)
+    .filter((a) => foldCase(a.configDir) === want)
     .map((a) => a.id);
   return { isDefault: want === defaultId, accountIds };
 }
 
 export function registerUsageRpc(router: RpcRouter, deps: UsageRpcDeps): void {
-  router.register('usage.rateLimits', (params) => {
+  // Result contract (the script records delivery only on `applied: true`):
+  //   { ok: true, applied: true }        accepted (applied, or already reflected)
+  //   { ok: false, reason: 'invalid' | 'unknown-account' | 'not-applied' }
+  router.register('usage.rateLimits', async (params) => {
     const parsed = validateRateLimitsParams(params);
-    if (!parsed) return Promise.resolve({ ok: false, reason: 'invalid' });
-    const target = resolveUsageTarget(parsed.configDir, deps);
+    if (!parsed) return { ok: false, reason: 'invalid' };
+    const target = await resolveUsageTarget(parsed.configDir, deps);
     if (!target.isDefault && target.accountIds.length === 0) {
       deps.log?.(`[usage.rateLimits] dropped: unknown config dir (pty ${parsed.ptyId ?? '-'})`);
-      return Promise.resolve({ ok: false, reason: 'unknown-account' });
+      return { ok: false, reason: 'unknown-account' };
     }
-    if (target.isDefault) deps.ingestDefault(parsed.update);
-    for (const id of target.accountIds) deps.ingestAccount(id, parsed.update);
-    return Promise.resolve({ ok: true });
+    let applied = false;
+    if (target.isDefault) applied = deps.ingestDefault(parsed.update) || applied;
+    for (const id of target.accountIds) applied = deps.ingestAccount(id, parsed.update) || applied;
+    // e.g. a single window with no earlier reading to merge it onto
+    return applied ? { ok: true, applied: true } : { ok: false, reason: 'not-applied' };
   });
 }

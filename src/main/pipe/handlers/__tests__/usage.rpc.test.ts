@@ -39,7 +39,6 @@ describe('validateRateLimitsParams', () => {
   });
 
   it.each([
-    ['pct above 100', { five_hour: { pct: 101, resets_at: RESET } }],
     ['negative pct', { five_hour: { pct: -1, resets_at: RESET } }],
     ['NaN-ish pct', { five_hour: { pct: 'x', resets_at: RESET } }],
     ['millisecond reset', { five_hour: { pct: 1, resets_at: RESET * 1000 } }],
@@ -48,6 +47,11 @@ describe('validateRateLimitsParams', () => {
     ['no windows', {}],
   ])('rejects %s', (_label, rateLimits) => {
     expect(validateRateLimitsParams(sample({ rateLimits }))).toBeNull();
+  });
+
+  it('clamps pct above 100 instead of rejecting', () => {
+    const v = validateRateLimitsParams(sample({ rateLimits: { five_hour: { pct: 104.2, resets_at: RESET } } }));
+    expect(v?.update.session?.pct).toBe(100);
   });
 
   it('rejects oversized or malformed identity strings', () => {
@@ -68,49 +72,49 @@ describe('resolveUsageTarget', () => {
     return d;
   }
 
-  it('unset config dir → default profile', () => {
-    const r = resolveUsageTarget(null, { listClaudeAccounts: () => [], defaultConfigDir: () => '/nowhere/.claude' });
+  it('unset config dir → default profile', async () => {
+    const r = await resolveUsageTarget(null, { listClaudeAccounts: () => [], defaultConfigDir: () => '/nowhere/.claude' });
     expect(r).toEqual({ isDefault: true, accountIds: [] });
   });
 
-  it('unmatched config dir → nothing', () => {
+  it('unmatched config dir → nothing', async () => {
     const acct = mkdir();
-    const r = resolveUsageTarget('/some/other/dir', {
+    const r = await resolveUsageTarget('/some/other/dir', {
       listClaudeAccounts: () => [{ id: 'A', configDir: acct }],
       defaultConfigDir: () => '/nowhere/.claude',
     });
     expect(r).toEqual({ isDefault: false, accountIds: [] });
   });
 
-  it('a symlinked spelling of a registered dir resolves to that account', () => {
+  it('a symlinked spelling of a registered dir resolves to that account', async () => {
     const root = mkdir();
     const real = path.join(root, 'real');
     fs.mkdirSync(real);
     const link = path.join(root, 'link');
     fs.symlinkSync(real, link, 'dir');
-    const r = resolveUsageTarget(`${link}${path.sep}`, {
+    const r = await resolveUsageTarget(`${link}${path.sep}`, {
       listClaudeAccounts: () => [{ id: 'A', configDir: real }, { id: 'B', configDir: root }],
       defaultConfigDir: () => '/nowhere/.claude',
     });
     expect(r).toEqual({ isDefault: false, accountIds: ['A'] });
   });
 
-  it('an explicit path equal to the default dir → default profile', () => {
+  it('an explicit path equal to the default dir → default profile', async () => {
     const home = mkdir();
-    const r = resolveUsageTarget(home, { listClaudeAccounts: () => [], defaultConfigDir: () => home });
+    const r = await resolveUsageTarget(home, { listClaudeAccounts: () => [], defaultConfigDir: () => home });
     expect(r.isDefault).toBe(true);
   });
 });
 
 describe('usage.rateLimits handler', () => {
-  function setup(accounts: Array<{ id: string; configDir: string }> = []) {
+  function setup(accounts: Array<{ id: string; configDir: string }> = [], applied = true) {
     let handler: ((p: Record<string, unknown>) => Promise<unknown>) | null = null;
     const router = { register: (_m: string, h: typeof handler) => { handler = h; } } as unknown as RpcRouter;
     const deps: UsageRpcDeps = {
       listClaudeAccounts: () => accounts,
       defaultConfigDir: () => '/nowhere/.claude',
-      ingestDefault: vi.fn(),
-      ingestAccount: vi.fn(),
+      ingestDefault: vi.fn(() => applied),
+      ingestAccount: vi.fn(() => applied),
     };
     registerUsageRpc(router, deps);
     return { call: (p: Record<string, unknown>) => (handler ? handler(p) : Promise.reject(new Error("not registered"))), deps };
@@ -118,7 +122,7 @@ describe('usage.rateLimits handler', () => {
 
   it('routes an unset config dir to the default poller', async () => {
     const { call, deps } = setup();
-    await expect(call(sample())).resolves.toEqual({ ok: true });
+    await expect(call(sample())).resolves.toEqual({ ok: true, applied: true });
     expect(deps.ingestDefault).toHaveBeenCalledTimes(1);
     expect(deps.ingestAccount).not.toHaveBeenCalled();
   });
@@ -129,6 +133,11 @@ describe('usage.rateLimits handler', () => {
     await expect(call(sample({ rateLimits: 'nope' }))).resolves.toEqual({ ok: false, reason: 'invalid' });
     expect(deps.ingestDefault).not.toHaveBeenCalled();
     expect(deps.ingestAccount).not.toHaveBeenCalled();
+  });
+
+  it('reports a sample no entry accepted as not applied', async () => {
+    const { call } = setup([], false);
+    await expect(call(sample())).resolves.toEqual({ ok: false, reason: 'not-applied' });
   });
 
   it('routes a registered config dir to that account', async () => {

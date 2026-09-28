@@ -40,7 +40,7 @@
 
 import { loadClaudeCredential, type LoadResult } from './claudeCredential';
 import { fetchUsage, rateLimitBackoffMs, UsageApiException, type UsageSnapshot } from './UsageApi';
-import { mergeUsage, updateFromSnapshot, type UsageUpdate } from './usageMerge';
+import { mergeLive, type UsageUpdate } from './usageMerge';
 
 export type PollerStatus =
   /** Toggle is off; nothing happening. */
@@ -106,6 +106,8 @@ export interface PollerOptions {
 const FIFTEEN_MIN_MS = 15 * 60 * 1000;
 const THIRTY_MIN_MS = 30 * 60 * 1000;
 const FIVE_MIN_MS = 5 * 60 * 1000;
+/** With a fresh live sample, HTTP still runs every this-many poll intervals. */
+const LIVE_HTTP_EVERY_TICKS = 3;
 
 /**
  * Owns a single in-process interval. The poller is created once and
@@ -165,9 +167,13 @@ export class UsagePoller {
   private windowVisible = true;
   private windowHiddenAtMs = 0;
   private disposed = false;
-  /** When the last live statusline sample changed the snapshot (Unix ms).
-   *  While it is younger than `intervalMs`, automatic ticks skip HTTP. */
+  /** When the last live statusline sample was accepted (Unix ms). While it
+   *  is younger than `intervalMs`, automatic ticks slow HTTP down. */
   private liveAtMs = 0;
+  /** When the last HTTP request was sent (Unix ms). Even with a fresh live
+   *  sample, one goes out every LIVE_HTTP_EVERY_TICKS intervals so scoped
+   *  limits and the credential status stay current. */
+  private httpAtMs = 0;
 
   private readonly listeners = new Set<(state: PollerState) => void>();
 
@@ -299,16 +305,23 @@ export class UsagePoller {
    *  (`usage.rateLimits`). Merged by reset time, so a stale sample never
    *  overwrites a newer window. While the meter is off the value is stored
    *  without notifying anyone; `start()` publishes it. */
-  ingestLive(update: UsageUpdate): void {
-    if (this.disposed) return;
-    const merged = mergeUsage(this.state.snapshot, update, this.now());
-    if (!merged || merged === this.state.snapshot) return;
+  ingestLive(update: UsageUpdate): boolean {
+    if (this.disposed) return false;
+    const merged = mergeLive(this.state.snapshot, update, this.now());
+    if (!merged) return false;
     this.liveAtMs = this.now();
+    if (merged === this.state.snapshot) return true;
     if (!this.timer) {
       this.state = { ...this.state, snapshot: merged };
-      return;
+      return true;
     }
-    this.setState({ status: 'ok', snapshot: merged, lastError: null });
+    // A credential verdict (token missing / refused) is HTTP's to clear; the
+    // live numbers still show underneath it.
+    const keepStatus = this.state.status === 'unauthorized' || this.state.status === 'token-missing';
+    this.setState(keepStatus
+      ? { snapshot: merged }
+      : { status: 'ok', snapshot: merged, lastError: null });
+    return true;
   }
 
   dispose(): void {
@@ -384,12 +397,17 @@ export class UsagePoller {
     // 429 backoff — automatic ticks (interval, window-show kick) wait it
     // out; a manual refresh is an explicit ask and goes through.
     if (!opts.force && this.now() < this.rateLimitedUntilMs) return;
-    // A live statusline sample is fresher than anything HTTP would say, so
-    // automatic ticks spend nothing while one is recent — but a session that
-    // just started still has to publish what was stored while it was off.
-    if (!opts.force && this.liveAtMs > 0 && this.now() - this.liveAtMs < this.intervalMs
-        && this.state.snapshot) {
-      this.setState({ status: 'ok', lastError: null });
+    // A live statusline sample is as fresh as anything HTTP would say, so
+    // while one is recent automatic ticks only fetch every few intervals (for
+    // scoped limits and the credential status). A session that just started
+    // still has to publish what was stored while it was off.
+    if (
+      !opts.force
+      && this.liveAtMs > 0 && this.now() - this.liveAtMs < this.intervalMs
+      && this.now() - this.httpAtMs < LIVE_HTTP_EVERY_TICKS * this.intervalMs
+      && this.state.snapshot
+    ) {
+      if (this.state.status === 'idle') this.setState({ status: 'ok', lastError: null });
       return;
     }
     this.inflight = true;
@@ -474,16 +492,15 @@ export class UsagePoller {
     // Past the skip, so whatever the pin was pointing at is no longer
     // the operative credential.
     this.clearRejection();
+    this.httpAtMs = this.now();
     try {
       const fetched = await fetchUsage(credential.accessToken, this.fetchImpl);
       if (this.isStale(generation)) return;
       this.clearRateLimit();
-      // Merged by reset time rather than replaced: a live sample that landed
-      // while this request was in flight may already describe a newer window.
-      const snapshot = mergeUsage(this.state.snapshot, updateFromSnapshot(fetched), this.now()) ?? fetched;
+      // HTTP is authoritative: it replaces whatever live samples built up.
       this.setState({
         status: 'ok',
-        snapshot,
+        snapshot: fetched,
         lastError: null,
         subscriptionType: credential.subscriptionType,
       });

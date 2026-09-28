@@ -19,6 +19,14 @@ const LIVE = {
   weekly: { pct: 31, resetEpochSec: NOW_SEC + 90 * HOUR },
 };
 
+function okFetch(sessionPct: number): typeof fetch {
+  const body = JSON.stringify({
+    five_hour: { utilization: sessionPct, resets_at: new Date((NOW_SEC + 4 * HOUR) * 1000).toISOString() },
+    seven_day: { utilization: 30, resets_at: new Date((NOW_SEC + 90 * HOUR) * 1000).toISOString() },
+  });
+  return vi.fn().mockImplementation(async () => new Response(body, { status: 200 })) as unknown as typeof fetch;
+}
+
 function make(now: () => number, fetchImpl: typeof fetch): AccountUsageService {
   return new AccountUsageService({
     now,
@@ -45,15 +53,46 @@ describe('AccountUsageService live ingest', () => {
     svc.dispose();
   });
 
-  it('a fresh live sample suppresses automatic probes past the cooldown', async () => {
+  it('a fresh live sample slows automatic probes to every third refresh interval', async () => {
     let now = NOW_MS;
-    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const fetchImpl = okFetch(10);
     const svc = make(() => now, fetchImpl);
     svc.setEnabled(true);
-    svc.ingestLive('A', LIVE);
-    now += 10 * 60 * 1000; // past the 5-min cooldown, inside the 15-min refresh
     await svc.maybeProbe('A');
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    for (let i = 1; i <= 2; i++) {
+      now += 15 * 60 * 1000;
+      svc.ingestLive('A', { session: { pct: 10 + i, resetEpochSec: NOW_SEC + 4 * HOUR } });
+      await svc.maybeProbe('A');
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    now += 15 * 60 * 1000;
+    svc.ingestLive('A', { session: { pct: 13, resetEpochSec: NOW_SEC + 4 * HOUR } });
+    await svc.maybeProbe('A');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    svc.dispose();
+  });
+
+  it('HTTP is authoritative: an ok result replaces a higher live value', async () => {
+    const svc = make(() => NOW_MS, okFetch(3));
+    svc.ingestLive('A', LIVE);
+    await svc.refreshNow('A');
+    expect(svc.getAll()[0]?.snapshot?.sessionPct).toBe(3);
+    svc.dispose();
+  });
+
+  it('an HTTP failure keeps a live snapshot that landed during the request', async () => {
+    let fail!: (r: Response) => void;
+    const fetchImpl = vi.fn().mockImplementation(() => new Promise<Response>((r) => { fail = r; })) as unknown as typeof fetch;
+    const svc = make(() => NOW_MS, fetchImpl);
+    const pending = svc.refreshNow('A');
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    svc.ingestLive('A', LIVE);
+    fail(new Response('', { status: 500 }));
+    await pending;
+    const entry = svc.getAll()[0];
+    expect(entry?.status).toBe('error');
+    expect(entry?.snapshot?.sessionPct).toBe(7);
     svc.dispose();
   });
 

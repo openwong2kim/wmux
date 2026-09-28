@@ -1,16 +1,22 @@
-// Merge rule for usage windows arriving from two sources: the OAuth usage
-// endpoint (HTTP, polled) and Claude Code's statusline `rate_limits` (live,
-// pushed by wmux-statusline.mjs through `usage.rateLimits`).
+// Merging a LIVE usage sample into existing usage state.
 //
-// Either source can be older than what is already on screen — a live sample
-// from a pane that has not rendered since the window rolled over, or an HTTP
-// response that was in flight while a fresher live sample landed. Arrival
-// order therefore decides nothing. Each window is keyed by its reset time:
-//   - reset already in the past  → the incoming window is over; drop it
+// Two sources feed the usage view: the OAuth usage endpoint (HTTP, polled)
+// and Claude Code's statusline `rate_limits` (live, pushed by
+// wmux-statusline.mjs through `usage.rateLimits`). HTTP is authoritative: an
+// ok HTTP result replaces the whole snapshot (see UsagePoller /
+// AccountUsageService), which is what corrects a mid-window adjustment, an
+// account switch on the default profile, or a bad live value.
+//
+// A live sample, by contrast, can come from any pane on the account, and a
+// pane that has not rendered since the window rolled over reports the old
+// window. Arrival order therefore decides nothing; each window is keyed by
+// its reset time:
+//   - reset already in the past  → that window is over; drop the sample
+//   - existing reset unknown (0) → the sample knows better; replace
 //   - same reset (within slack)  → same window; utilization only grows
 //                                  inside one window, so keep the max
 //   - later reset                → a newer window; replace
-//   - earlier reset              → an older window; drop it
+//   - earlier reset              → an older window; drop the sample
 // A reset of 0 means "unknown" (the HTTP parser's convention), never 1970.
 
 import type { UsageSnapshot } from './UsageApi';
@@ -21,13 +27,12 @@ export interface UsageWindow {
   resetEpochSec: number;
 }
 
-/** Windows to merge in. Either may be absent (the statusline contract allows
- *  each window to be missing independently). `scoped` is only ever carried by
- *  HTTP; when absent the previous snapshot's scoped limits are kept. */
+/** A live sample. Either window may be absent (the statusline contract allows
+ *  each to be missing independently). Live samples never carry scoped
+ *  (per-model weekly) limits. */
 export interface UsageUpdate {
   session?: UsageWindow;
   weekly?: UsageWindow;
-  scoped?: UsageSnapshot['scoped'];
 }
 
 /** Two resets this close apart describe the same window. The two sources
@@ -37,41 +42,33 @@ export interface UsageUpdate {
  *  outside this slack. */
 const SAME_WINDOW_SLACK_SEC = 5 * 60;
 
-/** Merge one window. Returns `prev` itself when the incoming one changes
+/** Merge one live window. Returns `prev` itself when the sample changes
  *  nothing, so callers can detect a no-op by reference. */
-export function mergeWindow(
+export function mergeLiveWindow(
   prev: UsageWindow | null,
   next: UsageWindow | undefined,
   nowSec: number,
 ): UsageWindow | null {
   if (!next) return prev;
-  const nextKnown = next.resetEpochSec > 0;
-  const prevLive = prev !== null && (prev.resetEpochSec === 0 || prev.resetEpochSec > nowSec);
-  if (nextKnown && next.resetEpochSec <= nowSec) {
-    // Already over. It only beats a previous window that is over too, and
-    // only when it is the later of the two — never a live one.
-    return prev && !prevLive && next.resetEpochSec > prev.resetEpochSec ? next : prev;
-  }
-  if (!prev || !prevLive) return next;
-  if (!nextKnown || prev.resetEpochSec === 0
-      || Math.abs(next.resetEpochSec - prev.resetEpochSec) <= SAME_WINDOW_SLACK_SEC) {
-    // Same window (or one side cannot tell): utilization only grows. Keep a
-    // known reset over an unknown one.
-    const pct = Math.max(prev.pct, next.pct);
-    const resetEpochSec = prev.resetEpochSec > 0 ? prev.resetEpochSec : next.resetEpochSec;
-    if (pct === prev.pct && resetEpochSec === prev.resetEpochSec) return prev;
-    return { pct, resetEpochSec };
+  if (next.resetEpochSec <= nowSec) return prev; // already over (or unknown)
+  if (!prev || prev.resetEpochSec === 0 || prev.resetEpochSec <= nowSec) return next;
+  if (Math.abs(next.resetEpochSec - prev.resetEpochSec) <= SAME_WINDOW_SLACK_SEC) {
+    return next.pct > prev.pct ? { pct: next.pct, resetEpochSec: prev.resetEpochSec } : prev;
   }
   return next.resetEpochSec > prev.resetEpochSec ? next : prev;
 }
 
 /**
- * Merge an update into a snapshot. Returns `prev` (same reference) when
+ * Merge a live sample into a snapshot. Returns `prev` (same reference) when
  * nothing observable changed, and null when there is no previous snapshot and
- * the update does not carry both windows (a snapshot with a made-up 0% would
- * read as real).
+ * the sample does not carry both windows (a snapshot with a made-up 0% would
+ * read as real) — the caller reports that as not applied.
+ *
+ * Scoped limits are per-week: they are kept while the weekly window stays the
+ * same and dropped when the sample moves the weekly window on, so an older
+ * week's per-model numbers never sit under a newer week.
  */
-export function mergeUsage(
+export function mergeLive(
   prev: UsageSnapshot | null,
   update: UsageUpdate,
   nowMs: number,
@@ -79,18 +76,10 @@ export function mergeUsage(
   const nowSec = Math.floor(nowMs / 1000);
   const prevSession = prev ? { pct: prev.sessionPct, resetEpochSec: prev.sessionResetEpochSec } : null;
   const prevWeekly = prev ? { pct: prev.weeklyPct, resetEpochSec: prev.weeklyResetEpochSec } : null;
-  const session = mergeWindow(prevSession, update.session, nowSec);
-  const weekly = mergeWindow(prevWeekly, update.weekly, nowSec);
+  const session = mergeLiveWindow(prevSession, update.session, nowSec);
+  const weekly = mergeLiveWindow(prevWeekly, update.weekly, nowSec);
   if (!session || !weekly) return prev;
-  const scoped = update.scoped ?? prev?.scoped;
-  if (
-    prev
-    && session === prevSession
-    && weekly === prevWeekly
-    && scoped === prev.scoped
-  ) {
-    return prev;
-  }
+  if (prev && session === prevSession && weekly === prevWeekly) return prev;
   const snapshot: UsageSnapshot = {
     sessionPct: session.pct,
     sessionResetEpochSec: session.resetEpochSec,
@@ -98,15 +87,7 @@ export function mergeUsage(
     weeklyResetEpochSec: weekly.resetEpochSec,
     fetchedAtMs: nowMs,
   };
-  if (scoped && scoped.length > 0) snapshot.scoped = scoped;
+  const sameWeek = prevWeekly !== null && weekly.resetEpochSec === prevWeekly.resetEpochSec;
+  if (sameWeek && prev?.scoped && prev.scoped.length > 0) snapshot.scoped = prev.scoped;
   return snapshot;
-}
-
-/** The windows of an HTTP snapshot, as an update. */
-export function updateFromSnapshot(s: UsageSnapshot): UsageUpdate {
-  return {
-    session: { pct: s.sessionPct, resetEpochSec: s.sessionResetEpochSec },
-    weekly: { pct: s.weeklyPct, resetEpochSec: s.weeklyResetEpochSec },
-    scoped: s.scoped ?? [],
-  };
 }
