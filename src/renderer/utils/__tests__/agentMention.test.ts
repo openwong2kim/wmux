@@ -8,6 +8,7 @@ import {
   filterMentionTargets,
   focusedMentionSource,
   HUMAN_SEND_PREFIX,
+  mentionKeyClaim,
   mentionSourceForKey,
   type MentionPaneTarget,
 } from '../agentMention';
@@ -93,6 +94,18 @@ describe('focusedMentionSource (the shortcut gate)', () => {
     expect(mentionSourceForKey(state(), host('pty-a'))).toMatchObject({ ptyId: 'pty-a' });
     // Outside any terminal (Chat composer, sidebar): the active pane's.
     expect(mentionSourceForKey(state(), document.createElement('input'))).toMatchObject({ ptyId: 'pty-a' });
+  });
+
+  it('mentionKeyClaim: opens on a source; without one, claims only a ⌘ chord on macOS', () => {
+    const shell = state({ surfaceAgent: {} });
+    const target = document.createElement('button');
+    expect(mentionKeyClaim(state(), { target, metaKey: true }, 'darwin')).toBe('open');
+    expect(mentionKeyClaim(state(), { target, metaKey: false }, 'win32')).toBe('open');
+    expect(mentionKeyClaim(shell, { target, metaKey: true }, 'darwin')).toBe('noSource');
+    // A rebound key without ⌘ (F2, Ctrl+Shift+2) stays the terminal's on a Mac too.
+    expect(mentionKeyClaim(shell, { target, metaKey: false }, 'darwin')).toBeNull();
+    expect(mentionKeyClaim(shell, { target, metaKey: false }, 'win32')).toBeNull();
+    expect(mentionKeyClaim(shell, { target, metaKey: true }, 'linux')).toBeNull();
   });
 
   it('accepts a pane in Chat view and marks it for the composer', () => {

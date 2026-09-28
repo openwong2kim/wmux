@@ -96,6 +96,31 @@ function redactUrlToken(s: string): string {
   return url.toString();
 }
 
+/**
+ * Credentials that ride INSIDE a string — a query `token=`/`code=` or the
+ * computer pairing link's `#wmux-desktop-code=` fragment — masked wherever
+ * they appear, whether or not the string parses as one URL (a pasted link
+ * with a space, an error message quoting a URL, a JSON-serialized payload).
+ */
+const INLINE_CREDENTIAL = /([?&#](?:token|code|wmux-desktop-code)=)(?!%5Bredacted%5D|\[redacted\])[^&#\s"'\\]+/gi;
+
+export function maskInlineCredentials(s: string): string {
+  return s.replace(INLINE_CREDENTIAL, '$1[redacted]');
+}
+
+/**
+ * Channels whose arguments are never summarized at all: clipboard text is
+ * whatever the operator copied, which includes pairing links and tokens.
+ */
+const NO_ARGS_SUMMARY_CHANNELS = new Set([
+  'clipboard:write',
+  'clipboard:read',
+  'clipboard:read-image',
+  'clipboard:has-image',
+  'clipboard:write-ephemeral',
+  'clipboard:keep-ephemeral',
+]);
+
 /** Heuristic classification of an unknown error into one of the known codes. */
 function classifyError(err: unknown): IpcErrorCode {
   // Preserve explicit `code` property on the error if it is one of our known codes.
@@ -207,6 +232,7 @@ export function buildArgsSummary(args: readonly unknown[]): string | undefined {
     }
   }
   if (raw === undefined) return undefined;
+  raw = maskInlineCredentials(raw);
   if (raw.length <= ARGS_SUMMARY_CAP) return raw;
   return raw.slice(0, ARGS_SUMMARY_CAP) + '...';
 }
@@ -276,7 +302,7 @@ export function wrapHandler<Args extends unknown[], Ret>(
 
       // Build args summary — skip the IpcMainInvokeEvent (args[0]).
       const userArgs = args.length > 0 ? args.slice(1) : [];
-      const summary = buildArgsSummary(userArgs);
+      const summary = NO_ARGS_SUMMARY_CHANNELS.has(channel) ? undefined : buildArgsSummary(userArgs);
 
       const entry: StructuredLogEntry = {
         ts: Date.now(),
@@ -284,7 +310,7 @@ export function wrapHandler<Args extends unknown[], Ret>(
         event: 'ipc_error',
         channel,
         error_code: code,
-        stack: err instanceof Error ? err.stack : undefined,
+        stack: err instanceof Error && err.stack ? maskInlineCredentials(err.stack) : undefined,
         args_summary: summary,
       };
       emit(entry);

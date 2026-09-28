@@ -1,5 +1,6 @@
 import type { Pane, PaneLeaf, Workspace } from '../../shared/types';
 import { getLeafPanes } from '../../shared/paneUtils';
+import { surfaceForegroundProgram, type SurfaceAgentNames, type SurfaceProgramLiveness } from './surfaceProgram';
 
 // MIME types for drag-and-drop payloads.
 // External AI chats (Claude Desktop, ChatGPT, Cursor) read text/plain.
@@ -46,6 +47,8 @@ function renderSurfaceLines(
   isActive: boolean,
   meta: Workspace['metadata'],
   out: string[],
+  surfaceAgent: SurfaceAgentNames,
+  liveness: SurfaceProgramLiveness,
 ): number {
   let idx = paneIndex;
   for (const s of leaf.surfaces) {
@@ -83,7 +86,7 @@ function renderSurfaceLines(
       // other machine's directory.
       if (s.cwd) out.push(`   - CWD (remote): ${s.cwd}`);
     } else {
-      out.push(`${idx}. ${activeTag}Terminal — ${s.shell || 'unknown'}`);
+      out.push(`${idx}. ${activeTag}Terminal — ${surfaceForegroundProgram(s, surfaceAgent, liveness) || s.shell || 'unknown'}`);
       out.push(`   - Surface ID: ${s.id}`);
       out.push(`   - PTY ID: ${s.ptyId}`);
       const cwd = meta?.cwd || s.cwd;
@@ -96,10 +99,8 @@ function renderSurfaceLines(
   return idx;
 }
 
-// Workspace-scoped markdown. Byte-identical to the legacy
-// handleCopySessionInfo output that the ⧉ button writes to the clipboard.
-// Regression-locked by sessionInfoMarkdown.test.ts.
-export function buildWorkspaceMarkdown(ws: Workspace): string {
+// Workspace-scoped markdown. Plain shells keep the legacy clipboard format.
+export function buildWorkspaceMarkdown(ws: Workspace, surfaceAgent: SurfaceAgentNames = {}, liveness: SurfaceProgramLiveness = {}): string {
   const leaves = collectLeaves(ws.rootPane);
   const meta = ws.metadata;
 
@@ -113,7 +114,7 @@ export function buildWorkspaceMarkdown(ws: Workspace): string {
   let paneIndex = 1;
   for (const leaf of leaves) {
     const isActive = leaf.id === ws.activePaneId;
-    paneIndex = renderSurfaceLines(leaf, paneIndex, isActive, meta, lines);
+    paneIndex = renderSurfaceLines(leaf, paneIndex, isActive, meta, lines, surfaceAgent, liveness);
   }
 
   lines.push(...MCP_CONTROL_LINES);
@@ -124,7 +125,7 @@ export function buildWorkspaceMarkdown(ws: Workspace): string {
 // Pane-scoped markdown. Same body shape as workspace export, narrowed to a
 // single leaf so an external LLM can reason about one terminal/browser
 // without the noise of sibling panes.
-export function buildPaneMarkdown(ws: Workspace, paneId: string): string {
+export function buildPaneMarkdown(ws: Workspace, paneId: string, surfaceAgent: SurfaceAgentNames = {}, liveness: SurfaceProgramLiveness = {}): string {
   const leaf = findLeaf(ws.rootPane, paneId);
   const meta = ws.metadata;
 
@@ -138,7 +139,7 @@ export function buildPaneMarkdown(ws: Workspace, paneId: string): string {
 
   if (leaf) {
     const isActive = leaf.id === ws.activePaneId;
-    renderSurfaceLines(leaf, 1, isActive, meta, lines);
+    renderSurfaceLines(leaf, 1, isActive, meta, lines, surfaceAgent, liveness);
   } else {
     lines.push('(pane not found)');
     lines.push('');

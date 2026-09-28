@@ -10,15 +10,19 @@
 //   - Everything else is top-level, in the order it came in.
 //
 // Children keep the input order, so whatever sort the list is in applies
-// inside a group too. Only one level: an owner that is itself a nested task
-// does not adopt children (fan-out is depth-1; this is the fallback if a
-// record ever says otherwise) — its tasks render top-level.
+// inside a group too. Only one level of WORKSPACE nesting: an owner that is
+// itself a nested task does not adopt children (fan-out is depth-1; this is
+// the fallback if a record ever says otherwise) — its tasks render top-level.
+// Inside an owner, `splitTasksByPane` then files each task under the pane
+// that requested it (2026-09-27).
 
 import type { AgentStatus } from '../../../shared/types';
 import type { TaskLink } from '../../utils/fanoutProvenance';
+import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
 import type { WorkTask } from '../../../shared/workTask';
 import type { TranslationKey } from '../../i18n/locales/en';
-import { ORPHAN_GROUP_KEY } from '../../utils/sidebarLayout';
+import { ORPHAN_GROUP_KEY, closedPaneFoldKey, paneTaskFoldKey } from '../../utils/sidebarLayout';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 
 export interface SidebarTreeNode {
   id: string;
@@ -91,7 +95,107 @@ export function buildSidebarTree(
   return { top, orphanTaskIds, taskIds: new Set(links.keys()) };
 }
 
-function needsYou(status: AgentStatus): boolean {
+/** One pane of the owner workspace — visible or stashed — and every surface
+ *  it holds. Tasks are matched on these stable ids, never the ptyId. */
+export interface OwnerPane {
+  paneId: string;
+  surfaceIds: readonly string[];
+}
+
+export interface PaneTaskSplit {
+  /** Pane id → the tasks that pane requested, in input order. */
+  byPane: Map<string, string[]>;
+  /** Tasks with no requesting pane left in the owner: the requesting surface
+   *  closed, the GUI or the orchestrator asked, or the stamp predates
+   *  origins. They render in one trailing group. */
+  closedPane: string[];
+}
+
+/**
+ * File an owner's tasks under the panes that requested them. An origin with a
+ * surfaceId files under whichever of the owner's panes holds that surface now
+ * (a stashed pane included); if none does, the requester is gone — even when
+ * its old pane still shows other tabs (the rule `resolveTaskRequester` uses).
+ * An origin recorded without a surfaceId files under its pane, if the owner
+ * still holds it.
+ */
+export function splitTasksByPane(
+  taskIds: readonly string[],
+  originOf: (id: string) => FanoutOrigin | undefined,
+  panes: readonly OwnerPane[],
+): PaneTaskSplit {
+  const paneOfSurface = new Map<string, string>();
+  const paneIds = new Set<string>();
+  for (const pane of panes) {
+    paneIds.add(pane.paneId);
+    for (const surfaceId of pane.surfaceIds) if (!paneOfSurface.has(surfaceId)) paneOfSurface.set(surfaceId, pane.paneId);
+  }
+  const byPane = new Map<string, string[]>();
+  const closedPane: string[] = [];
+  for (const id of taskIds) {
+    const origin = originOf(id);
+    let key: string | undefined;
+    if (origin?.kind === 'pane') {
+      if (origin.surfaceId) key = paneOfSurface.get(origin.surfaceId);
+      else if (origin.paneId && paneIds.has(origin.paneId)) key = origin.paneId;
+    }
+    if (key === undefined) {
+      closedPane.push(id);
+      continue;
+    }
+    const list = byPane.get(key);
+    if (list) list.push(id);
+    else byPane.set(key, [id]);
+  }
+  return { byPane, closedPane };
+}
+
+function sameSplit(a: PaneTaskSplit, b: PaneTaskSplit): boolean {
+  if (a.byPane.size !== b.byPane.size || !sameIds(a.closedPane, b.closedPane)) return false;
+  for (const [paneId, ids] of a.byPane) {
+    const other = b.byPane.get(paneId);
+    if (!other || !sameIds(ids, other)) return false;
+  }
+  return true;
+}
+
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+
+const EMPTY_SPLIT: PaneTaskSplit = { byPane: new Map(), closedPane: [] };
+const splitCache = new Map<string, { ws: unknown; origin: unknown; taskIds: readonly string[]; value: PaneTaskSplit }>();
+
+/**
+ * One owner's split, memoized per owner and shared by every consumer (the
+ * owner row, its roster, its closed-pane group). It reads the owner's layout
+ * and the origin stamps only — no roster projection — and keeps returning the
+ * same object while no task changes group, so layout churn (a title, a cwd)
+ * re-renders nothing.
+ */
+export function selectOwnerPaneTaskSplit(
+  state: {
+    workspaces: readonly { id: string; rootPane: unknown; stashedPanes?: unknown }[];
+    fanoutOrigin?: Record<string, FanoutOrigin | undefined>;
+  },
+  ownerId: string,
+  taskIds: readonly string[] | undefined,
+): PaneTaskSplit {
+  if (!taskIds || taskIds.length === 0) return EMPTY_SPLIT;
+  const ws = state.workspaces.find((w) => w.id === ownerId);
+  if (!ws) return EMPTY_SPLIT;
+  const cached = splitCache.get(ownerId);
+  if (cached && cached.ws === ws && cached.origin === state.fanoutOrigin && sameIds(cached.taskIds, taskIds)) return cached.value;
+  const panes = getWorkspaceLeafPanes(ws as Parameters<typeof getWorkspaceLeafPanes>[0])
+    .map((leaf) => ({ paneId: leaf.id, surfaceIds: leaf.surfaces.map((surface) => surface.id) }));
+  const next = splitTasksByPane(taskIds, (id) => state.fanoutOrigin?.[id], panes);
+  const value = cached && sameSplit(cached.value, next) ? cached.value : next;
+  splitCache.set(ownerId, { ws, origin: state.fanoutOrigin, taskIds: [...taskIds], value });
+  return value;
+}
+
+/** A task status that asks for the user (the rollup's "need you"). */
+export function taskNeedsYou(status: AgentStatus): boolean {
   return status === 'waiting' || status === 'awaiting_input';
 }
 
@@ -110,7 +214,7 @@ export function taskRollup(
   let needYou = 0;
   let toReview = 0;
   for (const id of taskIds) {
-    if (needsYou(statusOf(id))) needYou += 1;
+    if (taskNeedsYou(statusOf(id))) needYou += 1;
     if (readyOf(id)) toReview += 1;
   }
   return { tasks: taskIds.length, needYou, toReview };
@@ -195,4 +299,4 @@ export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-export { ORPHAN_GROUP_KEY };
+export { ORPHAN_GROUP_KEY, closedPaneFoldKey, paneTaskFoldKey };

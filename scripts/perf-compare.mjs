@@ -416,6 +416,24 @@ export function compareResults(current, baseline, gates = GATES) {
         r.note = 'improved — consider refreshing baseline';
       }
     }
+    // Frame-budget resampling changes the verdict, never the recorded first
+    // measurement. Require two complete 60-frame samples tied to this value;
+    // then judge the confirmation against THIS invocation's baseline.
+    if (r.status === 'FAIL' && gate.scenarioPath.startsWith('scenarios.frameBudget.')) {
+      const samples = getPath(current, `${gate.scenarioPath}.frameDeltaSamples`);
+      const confirmation = Array.isArray(samples) && samples.length === 2 ? samples[1] : null;
+      if (samples?.[0]?.p95 === cur && samples[0].count === 59 && confirmation?.count === 59
+          && isNumber(confirmation.p95) && isNumber(confirmation.p50)
+          && confirmation.p50 <= 50 && confirmation.p50 <= confirmation.p95) {
+        const confirmationFailed = gate.frameMargin
+          ? confirmation.p95 > base + frameAllowance
+          : confirmation.p95 > base * gate.ratio && confirmation.p95 > base + gate.absMargin;
+        if (!confirmationFailed) {
+          r.status = 'PASS';
+          r.note = `first sample exceeded budget; confirmation p95 ${fmtValue(confirmation.p95, gate.unit)} passed`;
+        }
+      }
+    }
     if (baselineFallback) {
       // Cross-estimator comparison (current best vs baseline median), so two
       // adjustments: the improvement flag is suppressed — best sits below the

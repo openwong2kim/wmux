@@ -30,6 +30,11 @@ function renderBody(overrides: Partial<WebPopoverBodyProps>): string {
     allowInput: false,
     expose: false,
     tailscale: false,
+    allowTranscript: false,
+    allowUpload: false,
+    allowDangerousLaunch: false,
+    advancedOpen: false,
+    onToggleAdvanced: vi.fn(),
     busy: false,
     copied: null,
     deviceName: '',
@@ -37,6 +42,9 @@ function renderBody(overrides: Partial<WebPopoverBodyProps>): string {
     onToggleAllowInput: vi.fn(),
     onToggleExpose: vi.fn(),
     onToggleTailscale: vi.fn(),
+    onToggleAllowTranscript: vi.fn(),
+    onToggleAllowUpload: vi.fn(),
+    onToggleAllowDangerousLaunch: vi.fn(),
     onDeviceNameChange: vi.fn(),
     onStartPairing: vi.fn(),
     onOpenLink: vi.fn(),
@@ -127,7 +135,7 @@ describe('WebPopoverBody — off state', () => {
   const html = renderBody({ info: { running: false } });
 
   it('shows the headline, both checkboxes and the Start primary', () => {
-    expect(html).toContain('web.headline');
+    expect(html).toContain('web.shareThisComputer');
     expect(html).toContain('web.allowInput');
     expect(html).toContain('web.expose');
     expect(html).toContain('web.start');
@@ -145,7 +153,8 @@ describe('WebPopoverBody — off state', () => {
 
   it('draws the options as token checkboxes, not native OS boxes', () => {
     expect(html).not.toContain('type="checkbox"');
-    expect(html.split('role="checkbox"').length - 1).toBe(3);
+    // Input, tailnet, expose, conversation access, photo upload.
+    expect(html.split('role="checkbox"').length - 1).toBe(5);
     expect(html).toContain('aria-checked="false"');
     expect(renderBody({ info: { running: false }, allowInput: true })).toContain('aria-checked="true"');
   });
@@ -222,7 +231,7 @@ describe('WebPopoverBody — on state', () => {
       info: { ...runningInfo, error: 'listener close failed' },
     });
     expect(html).toContain('listener close failed');
-    expect(html).toContain('text-[var(--accent-red)]');
+    expect(html).toContain('<p class="ui-row-error">listener close failed</p>');
     expect(html).toContain('web.stop');
   });
 
@@ -235,7 +244,7 @@ describe('WebPopoverBody — on state', () => {
 
   it('offers a way back when the pairing code is spent, instead of hiding the section', () => {
     const html = renderBody({ info: { ...runningInfo, pairCode: undefined } });
-    expect(html).toContain('web.onPhone');
+    expect(html).toContain('web.connectPhone');
     // A spent code lands back on the name field, which IS the way back: the
     // next device needs a name anyway, and minting from there gives it one.
     expect(html).toContain('web.showPairCode');
@@ -257,7 +266,8 @@ describe('WebPopoverBody — on state', () => {
 
   it('falls back to the address text when there is no QR', () => {
     const html = renderBody({ info: runningInfo, qr: null });
-    expect(html).not.toContain('<svg');
+    // The QR is the one labelled image; checkbox ticks are svg too.
+    expect(html).not.toContain('web.qrAlt');
     expect(html).toContain('/pair');
   });
 
@@ -303,7 +313,7 @@ describe('WebPopoverBody — on state', () => {
   it('offers both connection paths: an openable URL and a token-free pair address', () => {
     const html = renderBody({ info: runningInfo });
     expect(html).toContain('web.openHere');
-    expect(html).toContain('web.onPhone');
+    expect(html).toContain('web.connectPhone');
     // The phone address must not carry the token — that is the point of the code.
     expect(html).toContain('/pair');
   });
@@ -388,5 +398,60 @@ describe('WebPopoverBody — on state', () => {
     });
     expect(html).toContain('web.refusalNoFront');
     expect(html).not.toContain('web.refusalInsecure');
+  });
+});
+
+describe('WebPopoverBody — phone grants', () => {
+  const running: WebTerminalInfo = {
+    running: true,
+    host: '127.0.0.1',
+    port: 7681,
+    urls: ['http://127.0.0.1:7681/?token=t'],
+  };
+
+  it('offers conversation access and photo upload before a start', () => {
+    const html = renderBody({ allowTranscript: true });
+    expect(html).toContain('web.allowTranscript');
+    expect(html).toContain('web.allowTranscriptHint');
+    expect(html).toContain('web.allowUpload');
+    expect(html).toContain('web.allowUploadHint');
+  });
+
+  it('shows the running server\'s effective grants, not the next-start choice', () => {
+    const html = renderBody({
+      info: { ...running, allowTranscript: true, allowUpload: false },
+      // The local next-start state disagrees on purpose: status must win.
+      allowTranscript: false,
+      allowUpload: true,
+    });
+    expect(html).toContain('web.phoneAccess');
+    const checked = [...html.matchAll(/role="checkbox"[^>]*aria-checked="(true|false)"/g)].map((m) => m[1]);
+    // Order: pairAllowInput (name form), transcript, upload.
+    expect(checked.slice(-2)).toEqual(['true', 'false']);
+  });
+
+  it('never hides a dangerous launch that is on, even with the disclosure closed', () => {
+    const html = renderBody({ info: { ...running, allowDangerousLaunch: true }, advancedOpen: false });
+    expect(html).toContain('web.allowDangerousLaunchWarning');
+    expect(renderBody({ allowDangerousLaunch: true, advancedOpen: false })).toContain('web.allowDangerousLaunchWarning');
+  });
+
+  it('keeps dangerous launch behind a closed Advanced disclosure by default', () => {
+    const closed = renderBody({});
+    expect(closed).toContain('web.advanced');
+    expect(closed).toContain('aria-expanded="false"');
+    expect(closed).not.toContain('web.allowDangerousLaunch');
+  });
+
+  it('an open Advanced disclosure shows the toggle with its warning, bound to status while running', () => {
+    const html = renderBody({
+      info: { ...running, allowDangerousLaunch: true },
+      allowDangerousLaunch: false,
+      advancedOpen: true,
+    });
+    expect(html).toContain('web.allowDangerousLaunch');
+    expect(html).toContain('web.allowDangerousLaunchWarning');
+    const checked = [...html.matchAll(/role="checkbox"[^>]*aria-checked="(true|false)"/g)].map((m) => m[1]);
+    expect(checked[checked.length - 1]).toBe('true');
   });
 });

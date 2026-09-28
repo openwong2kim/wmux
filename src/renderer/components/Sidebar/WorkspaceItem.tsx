@@ -26,7 +26,10 @@ import WorkspaceAgentRoster, { WorkspaceRosterSummaryMemo, STASH_PULSE_MS } from
 import { displayPath } from '../../utils/displayPath';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 import { timeAgo } from '../../utils/timeAgo';
-import { displayWorkspaceName, provenanceCallerLabel, provenanceTooltip, resolveCallerPane } from '../../utils/fanoutProvenance';
+import { displayWorkspaceName, provenanceTooltip, requesterName, resolveTaskRequester } from '../../utils/fanoutProvenance';
+import { useShallow } from 'zustand/react/shallow';
+import { usePaneTaskSplit } from './SidebarTaskGroup';
+import { taskNeedsYou } from './sidebarTree';
 import { WORKSPACE_COLOR_IDS, WORKSPACE_COLOR_HEX, workspaceColorHex, workspaceColorLabelKey } from '../../../shared/workspaceColors';
 
 interface WorkspaceItemProps {
@@ -45,7 +48,8 @@ interface WorkspaceItemProps {
   onArchive: (id: string) => void;
   onCopyInfo: (id: string) => void;
   onDuplicate: (id: string) => void;
-  onReorder: (fromIndex: number, toIndex: number) => void;
+  /** `pin` is this (target) row's pin state: a drop beside it takes it on. */
+  onReorder: (fromIndex: number, toIndex: number, pin?: boolean) => void;
   /**
    * #1481 — this row is a fan-out task rendered under its owner (or in the
    * closed-owner group): shown without the `wtask: ` prefix, marked with the
@@ -53,6 +57,17 @@ interface WorkspaceItemProps {
    * the drop math assumes flat siblings, and a task's place is its owner's.
    */
   taskRow?: boolean;
+  /**
+   * 2026-09-27 — this workspace's fan-out tasks (owner rows only). Each one
+   * nests under the roster row of the pane that requested it; the rest are
+   * Sidebar's "From closed pane" group. Undefined for a row with no tasks,
+   * so memo still holds for the common row.
+   */
+  nestedTaskIds?: readonly string[];
+  /** Renders one nested task row. */
+  renderTask?: (id: string) => React.ReactNode;
+  /** Sidebar's workspace close, for a pane group's "Close finished tasks". */
+  onCloseTask?: (id: string) => void;
 }
 
 /**
@@ -278,6 +293,41 @@ const REST_HIDDEN =
 const REST_HIDDEN_GAP_ROW = '-ml-2 group-hover:ml-0 group-focus-within:ml-0';
 const REST_HIDDEN_GAP_NAME_LINE = '-ml-1 group-hover:ml-0 group-focus-within:ml-0';
 
+/**
+ * 2026-09-27 — a task row renders INSIDE its owner's row (under the pane that
+ * requested it). Tailwind's `group-hover` matches any `.group` ancestor, so
+ * with the plain names hovering the owner row would reveal every nested
+ * task's chrome. Task rows use their own group name. Literal strings, so
+ * Tailwind's scanner sees every class.
+ */
+const TASK_REST_HIDDEN =
+  'opacity-0 pointer-events-none max-w-0 overflow-hidden transition-opacity duration-150'
+  + ' group-hover/task:opacity-100 group-hover/task:pointer-events-auto group-hover/task:max-w-none group-hover/task:overflow-visible'
+  + ' group-focus-within/task:opacity-100 group-focus-within/task:pointer-events-auto group-focus-within/task:max-w-none group-focus-within/task:overflow-visible';
+const TASK_REST_HIDDEN_GAP_ROW = '-ml-2 group-hover/task:ml-0 group-focus-within/task:ml-0';
+const TASK_REST_HIDDEN_GAP_NAME_LINE = '-ml-1 group-hover/task:ml-0 group-focus-within/task:ml-0';
+
+/** The hover-revealed recipes for an owner row or a nested task row. */
+function hoverRecipes(taskRow: boolean) {
+  return taskRow
+    ? {
+      group: 'group/task',
+      restHidden: TASK_REST_HIDDEN,
+      gapRow: TASK_REST_HIDDEN_GAP_ROW,
+      gapNameLine: TASK_REST_HIDDEN_GAP_NAME_LINE,
+      hideOnHover: 'group-hover/task:hidden',
+      cluster: 'group-hover/task:opacity-100 group-hover/task:pointer-events-auto group-hover/task:max-w-none group-hover/task:overflow-visible',
+    }
+    : {
+      group: 'group',
+      restHidden: REST_HIDDEN,
+      gapRow: REST_HIDDEN_GAP_ROW,
+      gapNameLine: REST_HIDDEN_GAP_NAME_LINE,
+      hideOnHover: 'group-hover:hidden',
+      cluster: 'group-hover:opacity-100 group-hover:pointer-events-auto group-hover:max-w-none group-hover:overflow-visible',
+    };
+}
+
 function shortenPath(path: string, maxLen = 25): string {
   if (!path || path.length <= maxLen) return path;
   const parts = path.replace(/\\/g, '/').split('/');
@@ -285,7 +335,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, nestedTaskIds, renderTask, onCloseTask }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
   const workspace = useStore(selectWorkspaceById(workspaceId));
@@ -315,9 +365,13 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // stored order are untouched.
   // #1481 — any non-manual order ('attention' or 'recent') is display-only in
   // the same way, so reorder pauses for both; task rows never reorder.
+  // Pinned to top (2026-09-26): the pinned group shows in stored order in
+  // every mode, so inside it display and array positions agree and a pinned
+  // row can reorder among the other pinned rows even while the rest is sorted.
   const sortMode = useStore((s) => s.sidebarSortMode);
   const sortPaused = sortMode !== 'manual';
-  const reorderOff = sortPaused || taskRow;
+  const pinned = useStore((s) => s.sidebarPinnedIds.includes(workspaceId));
+  const reorderOff = taskRow || (sortPaused && !pinned);
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
   const metadata = workspace?.metadata;
@@ -345,7 +399,6 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // Glance board (2026-09-25): something here changed since it was last in
   // view, and it wants a look. Fleet's changed-dot rule: --text-main, never amber.
   const unseen = useStore((s) => !!selectSidebarUnseenWorkspaces(s)[workspaceId]);
-  const pinned = useStore((s) => s.sidebarPinnedIds.includes(workspaceId));
   const toggleSidebarPin = useStore((s) => s.toggleSidebarPin);
   // Name first. At rest the row shows the workspace name and the signals that
   // change on their own (status dot, unread, idle, "needs you"); the project
@@ -354,9 +407,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // the name's width to sit there. The ACTIVE row keeps them — it is the one
   // row you are working in. See REST_HIDDEN for why hiding is not enough on its
   // own: at rest the chrome must also give its WIDTH back to the name.
-  const restHidden = isActive ? '' : `${REST_HIDDEN} ${REST_HIDDEN_GAP_ROW}`;
+  const hover = hoverRecipes(taskRow);
+  const restHidden = isActive ? '' : `${hover.restHidden} ${hover.gapRow}`;
   /** The same, for chrome that sits inside the `gap-1` name line. */
-  const restHiddenNameLine = isActive ? '' : `${REST_HIDDEN} ${REST_HIDDEN_GAP_NAME_LINE}`;
+  const restHiddenNameLine = isActive ? '' : `${hover.restHidden} ${hover.gapNameLine}`;
   // #997 — the roster's expanded state. It lives here, not in the roster,
   // because the control that toggles it now sits on THIS row while the list it
   // reveals is rendered below; the two would otherwise need to agree across a
@@ -364,6 +418,24 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   // churn still does not rerender this component.
   const [rosterOpen, setRosterOpen] = useState(isActive);
   const toggleRoster = useCallback(() => setRosterOpen((value) => !value), []);
+  // 2026-09-27 — fan-out tasks nest under the roster row of the pane that
+  // requested them, so folding the roster folds them too. Two things must not
+  // hide there: the task you are working in (entering it makes this row
+  // inactive, which would fold the roster under you), and a task that needs
+  // you (it re-opens the roster, the way a stash pulse does — again for each
+  // further task that starts needing you). If the user folds it anyway, the
+  // folded chip counts them in red.
+  const paneTaskSplit = usePaneTaskSplit(workspaceId, renderTask ? nestedTaskIds : undefined);
+  const paneTaskIds = useMemo(() => [...paneTaskSplit.byPane.values()].flat(), [paneTaskSplit]);
+  const paneTaskActive = useStore((s) => !!s.activeWorkspaceId && paneTaskIds.includes(s.activeWorkspaceId));
+  const paneTaskNeedYou = useStore((s) => paneTaskIds.reduce((n, id) => n + (taskNeedsYou(selectWorkspaceAgentStatus(s, id)) ? 1 : 0), 0));
+  const prevNeedYouRef = useRef(paneTaskNeedYou);
+  useEffect(() => {
+    if (paneTaskNeedYou > prevNeedYouRef.current) setRosterOpen(true);
+    prevNeedYouRef.current = paneTaskNeedYou;
+  }, [paneTaskNeedYou]);
+  // Renaming keeps the nested tasks in view: the rename must not hide them.
+  const rosterShown = rosterOpen || paneTaskActive || (editing && paneTaskIds.length > 0);
   // Counts only — a reference-stable projection of two integers, so this does
   // not rerender the row on terminal output the way the full roster would.
   // #1481 — the chip projection: counts plus up to three agents for the
@@ -378,12 +450,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   /** Rows whose roster summary must not wait for the pointer — see its JSX.
    *  #1481 — the summary now names who is here and what they are doing, which
    *  is the reason to scan the list, so it no longer hides at rest. */
-  const rosterAlwaysShown = rosterOpen || hasRoster;
+  const rosterAlwaysShown = rosterShown || hasRoster || paneTaskIds.length > 0;
   // Newly selected workspaces reveal their agents automatically; workspaces
   // that move to the background collapse back to the count. The user can still
   // explicitly toggle either state until selection changes again.
+  // A row whose nested task needs you stays open when it moves to the
+  // background: folding it there would hide the one row asking for you.
+  const paneTaskNeedYouRef = useRef(paneTaskNeedYou);
+  paneTaskNeedYouRef.current = paneTaskNeedYou;
   useEffect(() => {
-    setRosterOpen(isActive);
+    setRosterOpen(isActive || paneTaskNeedYouRef.current > 0);
   }, [isActive]);
 
   // #977 — a pane that was just stashed disappeared from the layout. If the
@@ -432,6 +508,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const lineageOwner = useStore((s) => (taskRow ? s.fanoutLineage[workspaceId] : undefined));
   const taskOwnerId = taskRow ? childMission?.owner?.verifiedWorkspaceId ?? lineageOwner ?? spawnOwner : undefined;
   const taskOwnerName = useStore((s) => (taskOwnerId ? s.workspaces.find((w) => w.id === taskOwnerId)?.name : undefined));
+  // Who asked for this task — for the fan-out glyph's tooltip. The sidebar
+  // shows it by nesting the task under the requesting pane (2026-09-27).
+  const requester = useStore(useShallow((s) => (taskRow ? resolveTaskRequester(s, workspaceId) : undefined)));
 
   // Idle badge — how long since ANY of this workspace's surfaces last showed
   // life: agent activity (surfaceActivityAt, same stamps the fleet 'running'
@@ -566,13 +645,22 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDragStart = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!workspace || reorderOff) return;
+    // A row always drags its markdown out (dropping it on an agent's pane
+    // hands that agent this workspace to message). Only the reorder half
+    // depends on reorderOff: a sorted order used to cancel the whole drag,
+    // which silently killed the hand-off for every unpinned row. While
+    // renaming, a text drag in the input bubbles up here: let it stay a text
+    // drag instead of overwriting it with the workspace markdown.
+    if (!workspace || editing) return;
     // Roster controls live inside this draggable card. Chromium chooses the
     // nearest draggable ancestor as the native source, so `draggable={false}`
     // on a nested button is not enough. Reject a drag whose pointer originated
     // over the roster; clicks still handle disclosure and exact agent focus.
+    // Only THIS row's own roster counts: a task row nested in its owner's
+    // roster sits inside that roster, and must still drag itself.
     const pointerTarget = document.elementFromPoint(e.clientX, e.clientY);
-    if (pointerTarget?.closest('[data-workspace-agent-roster], [data-workspace-fanout]')) {
+    const control = pointerTarget?.closest('[data-workspace-agent-roster], [data-workspace-fanout]');
+    if (control && e.currentTarget.contains(control)) {
       e.preventDefault();
       return;
     }
@@ -582,14 +670,17 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     // stashed in zustand (cleared in dragend) — see uiSlice
     // setDraggedWorkspaceIndex. Mirrors what SurfaceTabs does for pane
     // export, where there is no internal-drop sibling at all.
-    const md = buildWorkspaceMarkdown(workspace);
+    const state = useStore.getState();
+    const md = buildWorkspaceMarkdown(workspace, state.surfaceAgent, state);
     e.dataTransfer.setData('text/plain', md);
     // copyMove (not copy): the sibling onDragOver below sets
     // dropEffect='move' for reorder, which is only valid against an
     // effectAllowed that includes 'move'. External chat composers
     // accept the 'copy' half of 'copyMove' just as well.
-    e.dataTransfer.effectAllowed = 'copyMove';
-    setDraggedWorkspaceIndex(index);
+    // A row that cannot reorder offers copy only and leaves no reorder
+    // source, so no sidebar row lights up as a drop target for it.
+    e.dataTransfer.effectAllowed = reorderOff ? 'copy' : 'copyMove';
+    if (!reorderOff) setDraggedWorkspaceIndex(index);
     setTerminalTextDropDragActive(true);
     // Apply the "being dragged" visual synchronously by mutating the
     // element's inline style. The previous setTimeout(setIsDragging) +
@@ -610,11 +701,29 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     setDraggedWorkspaceIndex(null);
   };
 
+  // The drag source and this row, resolved by id at the moment of use: a
+  // workspace closed mid-drag shifts every stored index after it. -1 when the
+  // drag is not an internal reorder or the source is gone.
+  const dragSourceIndex = () => {
+    const st = useStore.getState();
+    const id = st.draggedWorkspaceId;
+    return id === null ? -1 : st.workspaces.findIndex((w) => w.id === id);
+  };
+  const ownIndex = () => useStore.getState().workspaces.findIndex((w) => w.id === workspaceId);
+
+  const draggedRowPinned = (fromIndex: number) => {
+    const st = useStore.getState();
+    const id = st.workspaces[fromIndex]?.id;
+    return id !== undefined && st.sidebarPinnedIds.includes(id);
+  };
+
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     if (reorderOff) return;
+    // A drag with no reorder source (a copy-only hand-off, or text from
+    // outside) is not for this row: leave the drop unclaimed.
+    const reorderFrom = dragSourceIndex();
+    if (reorderFrom === -1) return;
     e.preventDefault();
-    const reorderFrom = useStore.getState().draggedWorkspaceIndex;
-    if (reorderFrom === null) return;
     // Codex P1: do NOT force dropEffect='move' on the source row itself.
     // While the pointer is still over the row that started the drag,
     // the operation must stay 'copy' (the effectAllowed='copyMove'
@@ -622,7 +731,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     // onto sees a clean copy text drag. Forcing 'move' here poisoned
     // every subsequent drop target into believing this was a reorder
     // and external text composers rejected it with 🚫.
-    if (reorderFrom === index) return;
+    if (reorderFrom === ownIndex()) return;
+    if (sortPaused && !draggedRowPinned(reorderFrom)) return;
     e.dataTransfer.dropEffect = 'move';
     const rect = e.currentTarget.getBoundingClientRect();
     const midY = rect.top + rect.height / 2;
@@ -638,14 +748,19 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     if (reorderOff) return;
-    e.preventDefault();
     setDropIndicator(null);
-    // Reorder source comes from the store, not dataTransfer. A null
-    // value means the drop originated from outside the sidebar (or the
-    // user dragged a workspace out and back in) — silently ignore so
-    // foreign markdown drops never reshuffle the list.
-    const fromIndex = useStore.getState().draggedWorkspaceIndex;
-    if (fromIndex === null || fromIndex === index) return;
+    // Reorder source comes from the store, not dataTransfer. No source
+    // means the drop originated from outside the sidebar (or a copy-only
+    // hand-off) — leave it unclaimed so foreign markdown never reshuffles
+    // the list. Both ends are resolved by id, so a workspace closed
+    // mid-drag cannot redirect the move.
+    const fromIndex = dragSourceIndex();
+    const index = ownIndex();
+    if (fromIndex === -1 || index === -1) return;
+    e.preventDefault();
+    if (fromIndex === index) return;
+    // A sorted order only accepts pinned-to-pinned drops.
+    if (sortPaused && !draggedRowPinned(fromIndex)) return;
 
     // 드롭 위치를 아이템 중간 기준으로 결정
     // 위 절반 → 현재 index 앞으로, 아래 절반 → 현재 index 뒤로
@@ -654,7 +769,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     const toIndex = e.clientY < midY
       ? (fromIndex < index ? index - 1 : index)
       : (fromIndex > index ? index + 1 : index);
-    onReorder(fromIndex, toIndex);
+    onReorder(fromIndex, toIndex, pinned);
   };
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -727,7 +842,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const provenanceTitle = taskRow
     ? provenanceTooltip({
       ownerName: taskOwnerName ? displayWorkspaceName(taskOwnerName, false) : undefined,
-      caller: provenanceCallerLabel(provenance, (ptyId) => resolveCallerPane(useStore.getState(), ptyId), t),
+      caller: requester && requesterName(requester, t),
       when: provenance?.at ?? childMission?.createdAt ? timeAgo(provenance?.at ?? childMission?.createdAt ?? 0) : undefined,
     }, t)
     : undefined;
@@ -771,9 +886,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       )}
 
       <div
-        draggable={!reorderOff}
+        // Not while renaming: a text drag inside the input must stay a text drag.
+        draggable={!!workspace && !editing}
         {...tokenAttrs('bgSurface', 'bg')}
-        className={`group sidebar-row px-3 py-1.5 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
+        className={`${hover.group} sidebar-row px-3 py-1.5 cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${
           isActive
             ? 'sidebar-row-active text-[var(--text-main)]'
             : 'text-[var(--text-sub)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-main)]'
@@ -854,7 +970,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     data-sidebar-unseen
                   />
                 )}
-                {pinned && sortMode === 'attention' && (
+                {pinned && !taskRow && (
                   <span className="flex-none text-[var(--text-muted)]" role="img" aria-label={t('sidebar.pinned')} title={t('sidebar.pinned')} data-sidebar-pinned>
                     <IconPin size={10} />
                   </span>
@@ -955,9 +1071,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
               workspaceId={workspaceId}
               agentCount={rosterCounts.agentCount}
               stashedCount={rosterCounts.stashedCount}
-              agents={rosterOpen ? undefined : rosterCounts.agents}
+              agents={rosterShown ? undefined : rosterCounts.agents}
               extra={rosterCounts.extra}
-              open={rosterOpen}
+              paneTaskCount={paneTaskIds.length}
+              paneTaskNeedYou={paneTaskNeedYou}
+              open={rosterShown}
               onToggle={toggleRoster}
             />
           </span>
@@ -972,7 +1090,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         {/* #1481 — not on a nested task row: its wash and red ring stay, and the
             owner's rollup line already says "N need you" for the group. */}
         {needsYou && !taskRow && (
-          <span className={`font-sans text-[10px] font-semibold text-[var(--accent-red)] flex-shrink-0 mt-0.5 ${isActive ? '' : 'group-hover:hidden'}`}>
+          <span className={`font-sans text-[10px] font-semibold text-[var(--accent-red)] flex-shrink-0 mt-0.5 ${isActive ? '' : hover.hideOnHover}`}>
             {t('workspace.needsYou')}
           </span>
         )}
@@ -985,8 +1103,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             of sequence with the rows around it, so it shows none. */}
         {/* Ctrl+N follows the stored (manual) order, which only Manual shows
             on screen; in the other orders a hint would name a shortcut out of
-            sequence with the rows around it, so none is drawn. */}
-        {!taskRow && !sortPaused && (
+            sequence with the rows around it, so none is drawn — except on a
+            pinned row: the pinned group leads the stored order and is shown
+            as stored, so its numbers match the screen. */}
+        {!taskRow && (!sortPaused || pinned) && (
           <span className={`text-[10px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5 ${restHidden}`}>
             {index < 9 ? `^${index + 1}` : ''}
           </span>
@@ -1016,7 +1136,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             (chromeHitArea.test.ts asserts it), so this one item keeps its gap. */}
         <div
           data-workspace-actions
-          className={`${HIT_TARGET_24_CLUSTER} flex-shrink-0 opacity-0 pointer-events-none max-w-0 overflow-hidden transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto group-hover:max-w-none group-hover:overflow-visible focus-within:opacity-100 focus-within:pointer-events-auto focus-within:max-w-none focus-within:overflow-visible`}
+          className={`${HIT_TARGET_24_CLUSTER} flex-shrink-0 opacity-0 pointer-events-none max-w-0 overflow-hidden transition-opacity duration-150 ${hover.cluster} focus-within:opacity-100 focus-within:pointer-events-auto focus-within:max-w-none focus-within:overflow-visible`}
         >
           {/* Folder icon — reveals this workspace's cwd in the OS file manager. */}
           <button
@@ -1057,8 +1177,15 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         </div>
         {/* Mounted only when expanded: a collapsed list would subscribe to the
             whole roster projection to render nothing. */}
-        {!editing && rosterOpen && (
-          <WorkspaceAgentRoster workspaceId={workspaceId} pulsingPaneId={pulsingPaneId} />
+        {(!editing || paneTaskIds.length > 0) && rosterShown && (
+          <WorkspaceAgentRoster
+            workspaceId={workspaceId}
+            pulsingPaneId={pulsingPaneId}
+            taskIds={nestedTaskIds}
+            renderTask={renderTask}
+            onCloseTask={onCloseTask}
+            ownerActive={isActive}
+          />
         )}
       </div>
 
@@ -1105,11 +1232,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           >
             {t('workspace.archive')}
           </button>
-          {/* Glance board: a pinned row keeps its manual place in the
-              Attention order instead of moving with its status. */}
-          {/* Pinning only does something in the Attention order, so it is only
-              offered there (a pinned row still shows its glyph elsewhere). */}
-          {sortMode === 'attention' && (
+          {/* Pinned to top (2026-09-26): offered in every order. A task row
+              renders under its owner, so it has no top to pin to. */}
+          {!taskRow && (
             <button
               className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
               style={{ color: 'var(--text-main)' }}

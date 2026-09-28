@@ -34,7 +34,8 @@ describe('#997 — roster summary sits on the workspace row', () => {
     // The list is mounted only while expanded — a collapsed list would still
     // subscribe to the whole roster projection to render nothing, and with
     // eleven collapsed workspaces that is eleven pointless subscriptions.
-    expect(itemSource).toMatch(/rosterOpen && \(\s*<WorkspaceAgentRoster/);
+    // rosterShown = rosterOpen, or held open while a nested task is active.
+    expect(itemSource).toMatch(/rosterShown && \(\s*<WorkspaceAgentRoster/);
   });
 
   it('the list renders no disclosure row of its own', () => {

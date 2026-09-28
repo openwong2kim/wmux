@@ -11,6 +11,8 @@ import { InputReceiptStore } from '../InputReceiptStore';
 import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, SessionAuthorizationExpiredError, type WebDeviceResolver } from '../WebTerminalServer';
+import { StreamResponseLimits } from '../StreamResponseLimits';
+import * as heartbeat from '../sseHeartbeat';
 import type { TranscriptProjector } from '../../transcript/TranscriptProjector';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import type { TranscriptStatus } from '../../../shared/transcript/turnEvents';
@@ -32,6 +34,7 @@ import type {
   ApprovalRequest,
   ApprovalResolveResult,
 } from '../../approvals/types';
+import { TERMINAL_PROMPT_WEB_ANSWER, TERMINAL_PROMPT_WEB_DECLINE, type TerminalPromptDetail } from '../../approvals/types';
 import type { DaemonSessionManager } from '../../DaemonSessionManager';
 
 // A minimal fake of exactly what WebTerminalServer touches: getSession() (for
@@ -266,11 +269,12 @@ function makeDevices() {
   const liveActivityRegistrations: Array<{ deviceId: string } & Record<string, unknown>> = [];
   /** Forces the store's answer, so the route's status mapping can be exercised. */
   const liveActivityBox: { reason: string } = { reason: '' };
-  const box = { mintThrows: false };
+  const box: { mintThrows: boolean; mintGate: Promise<void> | null } = { mintThrows: false, mintGate: null };
   let seq = 0;
   const devices: WebDeviceResolver = {
     async mint(params) {
       mintCalls.push({ ...params });
+      if (box.mintGate) await box.mintGate;
       if (box.mintThrows) throw new Error('roster write failed');
       seq += 1;
       const deviceId = `dev-${seq}`;
@@ -370,9 +374,15 @@ function makeApprovals() {
   const listeners = new Set<(e: ApprovalEvent) => void>();
   const records: ApprovalRequest[] = [];
   const resolveCalls: Array<{ id: string; decision: string; resolvedBy: string }> = [];
-  const box: { result: ApprovalResolveResult; listThrows: boolean; beforeAuthorize?: () => void } = {
+  const box: {
+    result: ApprovalResolveResult;
+    listThrows: boolean;
+    beforeAuthorize?: () => void;
+    details: Map<string, TerminalPromptDetail>;
+  } = {
     result: { ok: true, durable: true, request: mkApproval({ state: 'resolved', decision: 'approve', resolvedBy: 'web' }) },
     listThrows: false,
+    details: new Map(),
   };
   const approvals: ApprovalRegistryApi = {
     list: () => {
@@ -401,6 +411,10 @@ function makeApprovals() {
     onEvent: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    terminalPromptDetail: (id) => {
+      const pending = records.find((r) => r.id === id && r.state === 'pending');
+      return pending ? box.details.get(id) ?? null : null;
     },
   };
   const emitApproval = (type: ApprovalEvent['type'], request: ApprovalRequest) => {
@@ -442,7 +456,7 @@ describe('WebTerminalServer', () => {
   let resolveCalls: Array<{ id: string; decision: string; resolvedBy: string }>;
   let emitApproval: (type: ApprovalEvent['type'], request: ApprovalRequest) => void;
   let approvalListeners: Set<(e: ApprovalEvent) => void>;
-  let approvalBox: { result: ApprovalResolveResult; listThrows: boolean; beforeAuthorize?: () => void };
+  let approvalBox: ReturnType<typeof makeApprovals>['approvalBox'];
   let deviceRoster: Map<string, { secret: string; name?: string; revoked: boolean }>;
   let deviceMintCalls: Array<{ name?: string }>;
   let pushRegistrations: Array<{ deviceId: string; apnsToken: string; publicKey: string }>;
@@ -450,7 +464,7 @@ describe('WebTerminalServer', () => {
   let liveActivityBox: { reason: string };
   let liveActivityRegisteredCalls: number;
   let deviceTouchCalls: string[];
-  let deviceBox: { mintThrows: boolean };
+  let deviceBox: { mintThrows: boolean; mintGate: Promise<void> | null };
   let resizeCalls: Array<{ id: string; cols: number; rows: number }>;
   let resizeBox: ReturnType<typeof makeDeps>['resizeBox'];
   let lifecycleCalls: Array<{ op: 'create' | 'destroy'; arg: unknown }>;
@@ -2094,7 +2108,10 @@ describe('WebTerminalServer', () => {
       // A well-formed key that is not valid for this live request stays pending.
       { result: { ok: false, reason: 'invalid-choice-key' }, status: 422, body: { error: 'invalid-choice-key' } },
       // No keystroke map for this agent — the daemon refuses to guess bytes.
-      { result: { ok: false, reason: 'unsupported-agent' }, status: 501, body: { error: 'unsupported-agent' } },
+      { result: { ok: false, reason: 'unsupported-agent' }, status: 501, body: { error: 'unsupported-agent', reason: 'unsupported-agent' } },
+      // A multi-select / multi-question AskUserQuestion: one key cannot answer
+      // it. The error a v1 client already understands, plus why.
+      { result: { ok: false, reason: 'needs-v2' }, status: 501, body: { error: 'answer-in-terminal', reason: 'needs-v2' } },
       { result: { ok: false, reason: 'not-found' }, status: 404, body: { error: 'not-found' } },
     ];
 
@@ -2625,7 +2642,7 @@ describe('WebTerminalServer', () => {
     // UUIDs cannot be operated, so the name has to reach the store.
     // The grant rides with the name for the same reason: both are decided at
     // the desk, and the phone types only a code.
-    expect(deviceMintCalls).toEqual([{ name: 'Wife phone', allowInput: true }]);
+    expect(deviceMintCalls).toEqual([{ name: 'Wife phone', allowInput: true, kind: 'phone' }]);
 
     // A second pairing is a DIFFERENT device — that is the whole point.
     const second = await pairDevice('Tablet');
@@ -2917,6 +2934,62 @@ describe('WebTerminalServer', () => {
     // …and the daemon-side control surface is untouched by M3.
     expect(server.status().token).toBe(token);
     expect(server.refreshPairCode().pairCode).toMatch(pairCodePattern);
+  });
+
+  it('admits more than eight operator remote pane streams plus host events', async () => {
+    const info = await startWithTranscript();
+    const abort = new AbortController();
+    try {
+      const panes = await Promise.all(Array.from({ length: 10 }, () => fetch(`${base()}/api/stream?session=s1`, {
+        headers: bearer(info.token as string), signal: abort.signal,
+      })));
+      expect(panes.every((response) => response.status === 200)).toBe(true);
+      const events = await fetch(`${base()}/api/events`, { headers: { ...bearer(info.token as string), Accept: 'text/event-stream' }, signal: abort.signal });
+      expect(events.status).toBe(200);
+    } finally { abort.abort(); }
+  });
+
+  it('shares the stream ceiling across SSE and media, releases slots, and keeps quiet SSE alive', async () => {
+    const limits = new StreamResponseLimits(300, 2);
+    const acquire = StreamResponseLimits.prototype.acquire;
+    const admission = vi.spyOn(StreamResponseLimits.prototype, 'acquire')
+      .mockImplementation((key, response, options) => acquire.call(limits, key, response, options));
+    const startHeartbeat = heartbeat.startSseHeartbeat;
+    const pings = vi.spyOn(heartbeat, 'startSseHeartbeat')
+      .mockImplementation((response) => startHeartbeat(response, 25));
+    const abort = new AbortController();
+    try {
+      const info = await startWithTranscript();
+      const device = await pairDevice('Limited viewer');
+      const headers = bearer(device.token);
+      const pane = await fetch(`${base()}/api/stream?session=s1`, { headers, signal: abort.signal });
+      const events = await fetch(`${base()}/api/events`, {
+        headers: { ...headers, Accept: 'text/event-stream' }, signal: abort.signal,
+      });
+      expect(pane.status).toBe(200);
+      expect(events.status).toBe(200);
+      const media = await fetch(`${base()}/api/sessions/s1/turns/file?path=/missing`, { headers });
+      expect(media.status).toBe(429);
+      expect(await media.json()).toMatchObject({ error: 'too-many-streams' });
+      // Reading heartbeat comments keeps a quiet stream healthy past its idle limit.
+      const reader = events.body!.getReader();
+      const until = Date.now() + 400;
+      while (Date.now() < until) expect((await reader.read()).done).toBe(false);
+      const phone = await pairDevice('Other principal');
+      const other = await fetch(`${base()}/api/stream?session=s1`, {
+        headers: bearer(phone.token), signal: abort.signal,
+      });
+      expect(other.status).toBe(200);
+      await pane.body!.cancel();
+      await vi.waitFor(async () => {
+        const freed = await fetch(`${base()}/api/sessions/s1/turns/file?path=/missing`, { headers });
+        expect(freed.status).toBe(404);
+      });
+    } finally {
+      abort.abort();
+      pings.mockRestore();
+      admission.mockRestore();
+    }
   });
 
   it('★ 401s a revoked device with reason `revoked` AND kills its live streams at once', async () => {
@@ -3233,7 +3306,7 @@ describe('WebTerminalServer', () => {
     expect(paired.status).toBe(200);
     // `startPairing` was called with a name and no grant, so the device
     // registers read-only — an unstated grant is never read as "yes".
-    expect(deviceMintCalls).toEqual([{ name: 'Named phone', allowInput: false }]);
+    expect(deviceMintCalls).toEqual([{ name: 'Named phone', allowInput: false, kind: 'phone' }]);
 
     // Redeeming consumes the name AND the grant: the next device inherits
     // neither. A code minted without a fresh decision registers a read-only
@@ -3241,7 +3314,222 @@ describe('WebTerminalServer', () => {
     server.refreshPairCode();
     const next = server.status().pairCode as string;
     expect((await fetch(`${base()}/api/pair?code=${next}`)).status).toBe(200);
-    expect(deviceMintCalls[1]).toEqual({ name: undefined, allowInput: false });
+    expect(deviceMintCalls[1]).toEqual({ name: undefined, allowInput: false, kind: 'unknown' });
+  });
+
+  // ── phone / computer pairing flows (one code slot) ─────────────────────────
+
+  describe('phone and computer pairing share one code slot without mixing', () => {
+    /** Burn the attempt budget and let the server re-mint lazily (the expiry path). */
+    const burnAndReMint = async (): Promise<string> => {
+      for (let i = 0; i < 5; i++) await fetch(`${base()}/api/pair?code=ZZZZZZZZ`);
+      const realNow = Date.now();
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 31_000);
+      try {
+        await fetch(`${base()}/api/pair?code=ZZZZZZZZ`);
+        return server.status().pairCode as string;
+      } finally {
+        nowSpy.mockRestore();
+      }
+    };
+
+    it('refuses a computer start while a phone pairing is live, before touching the code', async () => {
+      await startRO();
+      const phone = server.startPairing({ name: 'Wife phone', allowInput: true, flow: 'phone' });
+      if (!phone.ok) throw new Error(phone.error);
+
+      const computer = server.startPairing({ name: 'Computer', allowInput: false, flow: 'computer' });
+      expect(computer).toMatchObject({ ok: false, reason: 'busy' });
+
+      // The phone's QR still encodes the same code, name and grant.
+      const status = server.status();
+      expect(status.pairCode).toBe(phone.code);
+      expect(status.pendingDeviceName).toBe('Wife phone');
+      expect(status.pendingDeviceAllowInput).toBe(true);
+      expect(status.pendingPairFlow).toBe('phone');
+
+      expect((await fetch(`${base()}/api/pair?code=${phone.code}`)).status).toBe(200);
+      expect(deviceMintCalls).toEqual([{ name: 'Wife phone', allowInput: true, kind: 'phone' }]);
+    });
+
+    it('keeps the computer name, grant and flow across the re-mint path, and never lends them to the phone', async () => {
+      await startRO();
+      const computer = server.startPairing({ name: 'Computer', allowInput: true, flow: 'computer' });
+      if (!computer.ok) throw new Error(computer.error);
+
+      const replacement = await burnAndReMint();
+      expect(replacement).toHaveLength(8);
+      expect(replacement).not.toBe(computer.code);
+      const status = server.status();
+      expect(status.pendingDeviceName).toBe('Computer');
+      expect(status.pendingDeviceAllowInput).toBe(true);
+      expect(status.pendingPairFlow).toBe('computer');
+
+      // The phone card cannot start over the live computer pairing…
+      expect(server.startPairing({ name: 'Phone', allowInput: false, flow: 'phone' })).toMatchObject({
+        ok: false,
+        reason: 'busy',
+      });
+      // …until the operator cancels it. Then the phone gets ITS name and grant.
+      const cancelled = server.cancelPairing();
+      expect(cancelled.pendingDeviceName).toBeUndefined();
+      expect(cancelled.pendingPairFlow).toBeUndefined();
+      expect(cancelled.pairCode).not.toBe(replacement);
+
+      const phone = server.startPairing({ name: 'Phone', allowInput: false, flow: 'phone' });
+      if (!phone.ok) throw new Error(phone.error);
+      expect(server.status()).toMatchObject({
+        pendingDeviceName: 'Phone',
+        pendingDeviceAllowInput: false,
+        pendingPairFlow: 'phone',
+      });
+      // The cancelled computer code no longer redeems anything.
+      expect((await fetch(`${base()}/api/pair?code=${replacement}`)).status).toBe(403);
+      expect((await fetch(`${base()}/api/pair?code=${phone.code}`)).status).toBe(200);
+      expect(deviceMintCalls).toEqual([{ name: 'Phone', allowInput: false, kind: 'phone' }]);
+    });
+
+    it('lets the other card start once the pending code has expired, replacing the whole triple', async () => {
+      await startRO();
+      const phone = server.startPairing({ name: 'Phone', allowInput: true, flow: 'phone' });
+      if (!phone.ok) throw new Error(phone.error);
+      const realNow = Date.now();
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 11 * 60_000);
+      try {
+        const computer = server.startPairing({ name: 'Computer', allowInput: false, flow: 'computer' });
+        expect(computer.ok).toBe(true);
+        expect(server.status()).toMatchObject({
+          pendingDeviceName: 'Computer',
+          pendingDeviceAllowInput: false,
+          pendingPairFlow: 'computer',
+        });
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it('re-minting the same flow ("New code") is allowed and keeps that flow', async () => {
+      await startRO();
+      const first = server.startPairing({ name: 'Computer', allowInput: false, flow: 'computer' });
+      const again = server.startPairing({ name: 'Computer', allowInput: false, flow: 'computer' });
+      expect(first.ok && again.ok).toBe(true);
+      if (first.ok && again.ok) expect(again.code).not.toBe(first.code);
+      expect(server.status().pendingPairFlow).toBe('computer');
+    });
+
+    it('records the kind the desktop client states, allowlisted; flow decides only when it says nothing', async () => {
+      await startRO();
+      const computer = server.startPairing({ name: 'Computer', flow: 'computer' });
+      if (!computer.ok) throw new Error(computer.error);
+      const res = await fetch(`${base()}/api/pair?code=${computer.code}`, {
+        headers: { 'X-Wmux-Device-Kind': ' Computer ' },
+      });
+      expect(res.status).toBe(200);
+
+      const phone = server.startPairing({ name: 'Phone', flow: 'phone' });
+      if (!phone.ok) throw new Error(phone.error);
+      // Not on the allowlist: never trusted, falls back to what the card said.
+      await fetch(`${base()}/api/pair?code=${phone.code}`, { headers: { 'X-Wmux-Device-Kind': 'admin' } });
+
+      const unlabelled = server.startPairing({ name: 'Typed by hand', flow: 'computer' });
+      if (!unlabelled.ok) throw new Error(unlabelled.error);
+      await fetch(`${base()}/api/pair?code=${unlabelled.code}`);
+
+      expect(deviceMintCalls.map((c) => (c as { kind?: string }).kind)).toEqual(['computer', 'phone', 'unknown']);
+    });
+
+    it('lists a device holding a live stream in liveDeviceIds, and drops it on disconnect', async () => {
+      await startRO();
+      const phone = await pairDevice('Watching phone');
+      expect(server.liveDeviceIds().size).toBe(0);
+      const ticket = await ticketFor(phone.token);
+      const ac = new AbortController();
+      const pane = await fetch(`${base()}/api/stream?session=s1&ticket=${encodeURIComponent(ticket)}`, {
+        signal: ac.signal,
+      });
+      expect(pane.status).toBe(200);
+      await new Promise((r) => setTimeout(r, 30));
+      expect([...server.liveDeviceIds()]).toEqual([phone.deviceId]);
+      server.disconnectDevice(phone.deviceId);
+      expect(server.liveDeviceIds().size).toBe(0);
+      ac.abort();
+    });
+
+    it('a pairing started for the other card during a slow mint is never burned by it', async () => {
+      await startRO();
+      const phone = server.startPairing({ name: 'Phone', allowInput: true, flow: 'phone' });
+      if (!phone.ok) throw new Error(phone.error);
+      let release: () => void = () => undefined;
+      deviceBox.mintGate = new Promise<void>((r) => { release = r; });
+      const redeeming = fetch(`${base()}/api/pair?code=${phone.code}`);
+      await new Promise((r) => setTimeout(r, 30));
+      // The phone code is already claimed: a second redemption loses, and the
+      // computer card may start while the mint is still in flight.
+      expect((await fetch(`${base()}/api/pair?code=${phone.code}`)).status).toBe(403);
+      const computer = server.startPairing({ name: 'Computer', allowInput: false, flow: 'computer' });
+      if (!computer.ok) throw new Error(computer.error);
+      release();
+      expect((await redeeming).status).toBe(200);
+      deviceBox.mintGate = null;
+      // The computer pairing survived the phone's redemption untouched.
+      expect(server.status()).toMatchObject({
+        pairCode: computer.code,
+        pendingDeviceName: 'Computer',
+        pendingDeviceAllowInput: false,
+        pendingPairFlow: 'computer',
+      });
+      expect(deviceMintCalls[0]).toEqual({ name: 'Phone', allowInput: true, kind: 'phone' });
+    });
+
+    it('a failed mint gives the code back only if the slot has not moved on', async () => {
+      await startRO();
+      const phone = server.startPairing({ name: 'Phone', flow: 'phone' });
+      if (!phone.ok) throw new Error(phone.error);
+      let release: () => void = () => undefined;
+      deviceBox.mintGate = new Promise<void>((r) => { release = r; });
+      deviceBox.mintThrows = true;
+      const redeeming = fetch(`${base()}/api/pair?code=${phone.code}`);
+      await new Promise((r) => setTimeout(r, 30));
+      const computer = server.startPairing({ name: 'Computer', flow: 'computer' });
+      if (!computer.ok) throw new Error(computer.error);
+      release();
+      expect((await redeeming).status).toBe(500);
+      deviceBox.mintGate = null;
+      deviceBox.mintThrows = false;
+      expect(server.status()).toMatchObject({ pairCode: computer.code, pendingPairFlow: 'computer' });
+    });
+
+    it('never writes a pairing code into the daemon log', async () => {
+      const lines: string[] = [];
+      const fresh = makeDeps();
+      const logged = new WebTerminalServer({
+        sessionManager: fresh.sessionManager,
+        devices: fresh.devices,
+        log: (_level, msg) => { lines.push(msg); },
+        assetsDir: os.tmpdir(),
+      });
+      const info = await logged.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
+      const at = `http://127.0.0.1:${info.port}`;
+      const codes = new Set<string>([info.pairCode as string]);
+      try {
+        const phone = logged.startPairing({ name: 'Phone', flow: 'phone' });
+        if (!phone.ok) throw new Error(phone.error);
+        codes.add(phone.code);
+        logged.status();
+        await fetch(`${at}/api/pair?code=ZZZZZZZZ`);
+        expect((await fetch(`${at}/api/pair?code=${phone.code}`)).status).toBe(200);
+        const computer = logged.startPairing({ name: 'Computer', flow: 'computer' });
+        if (!computer.ok) throw new Error(computer.error);
+        codes.add(computer.code);
+        const refused = logged.startPairing({ name: 'Phone', flow: 'phone' });
+        expect(refused.ok).toBe(false);
+        codes.add(logged.cancelPairing().pairCode as string);
+      } finally {
+        await logged.stop();
+      }
+      const joined = lines.join('\n');
+      for (const code of codes) expect(joined).not.toContain(code);
+    });
   });
 
   // ── stream tickets (B3) ────────────────────────────────────────────────────
@@ -3984,6 +4272,7 @@ describe('WebTerminalServer', () => {
     head: string,
     tail: string,
     withdraw: (record: { revoked: boolean; allowInput: boolean }) => void,
+    headers: Record<string, string> = {},
   ): Promise<number | undefined> => {
     let entered!: () => void;
     const authenticated = new Promise<void>((resolve) => { entered = resolve; });
@@ -3991,7 +4280,7 @@ describe('WebTerminalServer', () => {
     const spy = vi.spyOn(deviceRoster, 'get').mockImplementation((id: string) => { entered(); return lookup(id); });
     let request!: ReturnType<typeof httpReq>;
     const status = new Promise<number | undefined>((resolve, reject) => {
-      request = httpReq(url, { method: 'POST', headers: { ...bearer(phone.token), 'Content-Type': 'application/json' } }, (res) => {
+      request = httpReq(url, { method: 'POST', headers: { ...bearer(phone.token), 'Content-Type': 'application/json', ...headers } }, (res) => {
         res.resume(); res.on('end', () => resolve(res.statusCode));
       });
       request.on('error', reject);
@@ -4160,6 +4449,450 @@ describe('WebTerminalServer', () => {
     const refused = await postApproval(narrowed.token, 'ap-queued-gate', { decision: 'approve' });
     expect(refused.status).toBe(403);
     expect((await refused.json()).error).toMatch(/^read-only:/);
+  });
+
+  // ── terminal_prompt: the agent's own dialog, per-client ──────────────────
+  describe('terminal_prompt records', () => {
+    const CAPS = { 'X-Wmux-Client-Caps': 'terminal-prompt-answer' };
+    const FP = 'ab'.repeat(16);
+    const tp = (over: Partial<ApprovalRequest> = {}): ApprovalRequest => mkApproval({
+      id: 'ap-tp',
+      kind: 'terminal_prompt',
+      toolName: 'Bash',
+      summary: 'rm -rf build/cache · Remove the build cache',
+      risk: 'critical',
+      question: 'Do you want to proceed?',
+      reason: 'Permission rule Bash(rm -rf *) requires confirmation for this command.',
+      choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }],
+      promptFingerprint: FP,
+      // Daemon-internal: must never reach the web wire.
+      toolUseId: 'toolu_01',
+      dialogKey: 'k',
+      keyRevisionAtCreate: 3,
+      ...over,
+    });
+    const postTp = (token: string, body: unknown, headers: Record<string, string> = CAPS, id = 'ap-tp') =>
+      fetch(`${base()}/api/approvals/${id}`, {
+        method: 'POST',
+        headers: { ...bearer(token), 'Content-Type': 'application/json', ...headers },
+        body: JSON.stringify(body),
+      });
+    const answerBody = { decision: 'approve', choiceKey: '1', promptFingerprint: FP };
+
+    it('an older client sees the card only; a capable one sees the dialog', async () => {
+      const info = await startRW();
+      approvalRecords.push(tp(), tp({ id: 'ap-tp-info', question: undefined, reason: undefined, choices: undefined, promptFingerprint: undefined }));
+      const legacy = await (await fetch(`${base()}/api/approvals`, { headers: bearer(info.token as string) })).json();
+      expect(legacy.pending[0]).toEqual({
+        id: 'ap-tp', sessionId: 's1', agent: 'claude', kind: 'terminal_prompt', state: 'pending',
+        createdAt: 1_700_000_000_000, toolName: 'Bash', summary: 'rm -rf build/cache · Remove the build cache',
+        risk: 'critical',
+      });
+      const capable = await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(info.token as string), ...CAPS } })).json();
+      expect(capable.pending[0]).toMatchObject({
+        question: 'Do you want to proceed?',
+        reason: 'Permission rule Bash(rm -rf *) requires confirmation for this command.',
+        choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }],
+        promptFingerprint: FP,
+      });
+      // A record that is not answerable carries no dialog, whoever asks.
+      expect(capable.pending[1]).not.toHaveProperty('question');
+      expect(capable.pending[1]).not.toHaveProperty('choices');
+      expect(capable.pending[1]).not.toHaveProperty('promptFingerprint');
+      expect(capable.pending[0]).toMatchObject({ risk: 'critical' });
+      const wire = JSON.stringify([legacy, capable]);
+      for (const internal of ['screenTail', 'toolUseId', 'toolu_01', 'dialogKey', 'keyRevisionAtCreate']) {
+        expect(wire).not.toContain(internal);
+      }
+    });
+
+    it('once answered, the dialog stays readable but offers nothing to press', async () => {
+      const info = await startRW();
+      approvalRecords.push(tp({ pressedAt: 1_700_000_005_000, selectedChoiceKey: '1', decision: 'approve' }));
+      const capable = await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(info.token as string), ...CAPS } })).json();
+      expect(capable.pending[0]).toMatchObject({ question: 'Do you want to proceed?', pressedAt: 1_700_000_005_000, selectedChoiceKey: '1' });
+      expect(capable.pending[0]).not.toHaveProperty('choices');
+      expect(capable.pending[0]).not.toHaveProperty('promptFingerprint');
+    });
+
+    it('a capable client answering a record that is not answerable gets 501 before any body check', async () => {
+      const info = await startRW();
+      approvalRecords.push(tp({ question: undefined, reason: undefined, choices: undefined, promptFingerprint: undefined }));
+      // No fingerprint in the body at all: still 501, not 400.
+      const res = await postTp(info.token as string, { decision: 'approve', choiceKey: '1' });
+      expect(res.status).toBe(501);
+      expect(await res.json()).toEqual({ error: 'answer-in-terminal', reason: 'unsupported-shape' });
+      expect(resolveCalls).toEqual([]);
+    });
+
+    it('"No, …" is the deny option', async () => {
+      const info = await startRW();
+      approvalRecords.push(tp({ choices: [{ key: '1', label: 'Yes' }, { key: '3', label: 'No, and tell Claude what to do differently (esc)' }] }));
+      expect((await postTp(info.token as string, { decision: 'deny', choiceKey: '3', promptFingerprint: FP })).status).toBe(200);
+      expect((await postTp(info.token as string, { decision: 'approve', choiceKey: '3', promptFingerprint: FP })).status).toBe(400);
+    });
+
+    it('an older client is answered 501 answer-in-terminal, and nothing reaches the registry', async () => {
+      const info = await startRW();
+      approvalRecords.push(tp());
+      const res = await postTp(info.token as string, answerBody, {});
+      expect(res.status).toBe(501);
+      expect(await res.json()).toEqual({ error: 'answer-in-terminal', reason: 'no-capability' });
+      expect(resolveCalls).toEqual([]);
+    });
+
+    it('a capable answer reaches the registry with the fingerprint and the route\'s marker', async () => {
+      const info = await startRW();
+      approvalRecords.push(tp());
+      approvalBox.result = { ok: true, durable: true, request: tp({ pressedAt: 1_700_000_005_000, selectedChoiceKey: '1', decision: 'approve' }) };
+      const res = await postTp(info.token as string, answerBody);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ state: 'pending', pressedAt: 1_700_000_005_000, durable: true });
+      expect(resolveCalls).toHaveLength(1);
+      expect(resolveCalls[0]).toMatchObject({ id: 'ap-tp', decision: 'approve', choiceKey: '1', promptFingerprint: FP });
+      expect((resolveCalls[0] as Record<string, unknown>).terminalPromptAnswer).toBe(TERMINAL_PROMPT_WEB_ANSWER);
+      // A deny names the plain No.
+      const deny = await postTp(info.token as string, { decision: 'deny', choiceKey: '2', promptFingerprint: FP });
+      expect(deny.status).toBe(200);
+    });
+
+    it.each([
+      ['no fingerprint', { decision: 'approve', choiceKey: '1' }, 'invalid-prompt-fingerprint'],
+      ['a malformed fingerprint', { decision: 'approve', choiceKey: '1', promptFingerprint: 'nope' }, 'invalid-prompt-fingerprint'],
+      ['deny on the Yes option', { decision: 'deny', choiceKey: '1', promptFingerprint: FP }, 'invalid-choice'],
+      ['approve on the No option', { decision: 'approve', choiceKey: '2', promptFingerprint: FP }, 'invalid-choice'],
+      ['no choiceKey', { decision: 'approve', promptFingerprint: FP }, 'invalid-choice'],
+      ['a choiceKey outside the choices', { decision: 'approve', choiceKey: '3', promptFingerprint: FP }, 'invalid-choice'],
+    ])('400 for %s, before the registry', async (_label, body, error) => {
+      const info = await startRW();
+      approvalRecords.push(tp());
+      const res = await postTp(info.token as string, body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error });
+      expect(resolveCalls).toEqual([]);
+    });
+
+    it.each([
+      ['already-answered', 409],
+      ['prompt-changed', 409],
+      ['answer-too-soon', 425],
+      ['invalid-choice', 400],
+    ] as const)('maps the registry\'s %s to %i', async (reason, status) => {
+      const info = await startRW();
+      approvalRecords.push(tp());
+      approvalBox.result = { ok: false, reason, request: tp() };
+      const res = await postTp(info.token as string, answerBody);
+      expect(res.status).toBe(status);
+      expect(await res.json()).toEqual({ error: reason });
+    });
+
+    it('a registry answer-in-terminal carries its cause as the 501 reason', async () => {
+      const info = await startRW();
+      approvalRecords.push(tp());
+      approvalBox.result = { ok: false, reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape', request: tp() };
+      const res = await postTp(info.token as string, answerBody);
+      expect(res.status).toBe(501);
+      expect(await res.json()).toEqual({ error: 'answer-in-terminal', reason: 'unsupported-shape' });
+    });
+
+    it('a read-only caller is refused before the body (site 1)', async () => {
+      const ro = await startRO();
+      approvalRecords.push(tp());
+      expect((await postTp(ro.token as string, answerBody)).status).toBe(403);
+      await server.stop();
+      await startRW();
+      const phone = await pairDevice('Read-only phone', false);
+      expect((await postTp(phone.token, answerBody)).status).toBe(403);
+      expect(resolveCalls).toEqual([]);
+    });
+
+    it('a grant narrowed while the body is on the wire is refused (site 2)', async () => {
+      await startRW();
+      const phone = await pairDevice('Narrowing phone', true);
+      approvalRecords.push(tp());
+      const body = JSON.stringify(answerBody);
+      expect(await withdrawMidBody(`${base()}/api/approvals/ap-tp`, phone, body.slice(0, 8), body.slice(8), (r) => { r.allowInput = false; }, CAPS))
+        .toBe(403);
+      expect(resolveCalls).toEqual([]);
+    });
+
+    it('a grant narrowed inside the registry link is refused (site 3)', async () => {
+      await startRW();
+      const phone = await pairDevice('Queued tp phone', true);
+      approvalRecords.push(tp());
+      approvalBox.beforeAuthorize = () => {
+        (deviceRoster.get(phone.deviceId) as unknown as { allowInput: boolean }).allowInput = false;
+      };
+      const refused = await postTp(phone.token, answerBody);
+      expect(refused.status).toBe(403);
+      expect((await refused.json()).error).toMatch(/^read-only:/);
+    });
+
+    it('the SSE approval event carries the kind and no content', async () => {
+      const info = await startRO();
+      emitApproval('create', tp());
+      const { text: body } = await readEventStream(`${base()}/api/events`, /ap-tp/, bearer(info.token as string));
+      expect(body).toContain('event: approval');
+      expect(body).toContain('"kind":"terminal_prompt"');
+      expect(body).toContain('ap-tp');
+      expect(body).toContain('"risk":"critical"');
+      for (const content of ['rm -rf build/cache', 'Do you want to proceed', 'Permission rule', FP, '"toolName"', '"choices"', 'toolu_01']) {
+        expect(body).not.toContain(content);
+      }
+    });
+
+    describe('long commands: /detail, decline, the answered history', () => {
+      const DECLINE_CAPS = { 'X-Wmux-Client-Caps': 'terminal-prompt-answer, terminal-prompt-decline' };
+      const LONG = `rm -rf ${'x'.repeat(300)}/end`;
+      const detail = (id = 'ap-tp'): TerminalPromptDetail => ({
+        id, toolName: 'Bash', command: LONG, commandHash: crypto.createHash('sha256').update(LONG).digest('hex'),
+        commandBytes: LONG.length, truncated: false,
+      });
+      const postDecline = (token: string, body: unknown, headers: Record<string, string> = DECLINE_CAPS, id = 'ap-tp') =>
+        fetch(`${base()}/api/approvals/${id}/decline`, {
+          method: 'POST',
+          headers: { ...bearer(token), 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify(body),
+        });
+
+      it('/detail needs --allow-transcript and the dialog capability; the command is never on the list', async () => {
+        await startWithTranscript();
+        const phone = await pairDevice('Reader', false);
+        approvalRecords.push(tp());
+        approvalBox.details.set('ap-tp', detail());
+        const read = (headers: Record<string, string> = CAPS, id = 'ap-tp') =>
+          fetch(`${base()}/api/approvals/${id}/detail`, { headers: { ...bearer(phone.token), ...headers } });
+        const res = await read();
+        expect(res.status).toBe(200);
+        expect(res.headers.get('cache-control')).toBe('no-store');
+        expect(await res.json()).toEqual(detail());
+        const listed = await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(phone.token), ...CAPS } })).json();
+        expect(listed.pending[0]).toMatchObject({ hasDetail: true });
+        expect(JSON.stringify(listed)).not.toContain('/end');
+        // Without the capability that shows the dialog's question: 501.
+        expect((await read({})).status).toBe(501);
+        // Unauthenticated: 401. Unknown, informational or settled: 404.
+        expect((await fetch(`${base()}/api/approvals/ap-tp/detail`, { headers: CAPS })).status).toBe(401);
+        expect((await read(CAPS, 'nope')).status).toBe(404);
+        approvalBox.details.clear();
+        expect((await read()).status).toBe(404);
+        approvalBox.details.set('ap-tp', detail());
+        approvalRecords[0]!.state = 'resolved';
+        expect((await read()).status).toBe(404);
+      });
+
+      it('/detail is 403 on a server without --allow-transcript, and no record offers it', async () => {
+        const info = await startRW();
+        approvalRecords.push(tp());
+        approvalBox.details.set('ap-tp', detail());
+        const res = await fetch(`${base()}/api/approvals/ap-tp/detail`, { headers: { ...bearer(info.token as string), ...CAPS } });
+        expect(res.status).toBe(403);
+        expect(await res.text()).not.toContain('/end');
+        const listed = await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(info.token as string), ...CAPS } })).json();
+        expect(listed.pending[0]).not.toHaveProperty('hasDetail');
+      });
+
+      it('/api/config advertises detail (with --allow-transcript) and decline (with the input grant)', async () => {
+        await startRW();
+        const writer = await pairDevice('Writer', true);
+        const reader = await pairDevice('Reader', false);
+        const cfg = async (token: string) => (await fetch(`${base()}/api/config`, { headers: bearer(token) })).json();
+        expect(await cfg(writer.token)).toMatchObject({ terminalPromptDetail: false, terminalPromptDecline: true });
+        expect(await cfg(reader.token)).toMatchObject({ terminalPromptDetail: false, terminalPromptDecline: false });
+        await server.stop();
+        await startWithTranscript();
+        const later = await pairDevice('Transcript reader', false);
+        expect(await cfg(later.token)).toMatchObject({ terminalPromptDetail: true });
+      });
+
+      it('decline reaches the registry with the route\'s marker — on an informational record too', async () => {
+        await startRW();
+        const phone = await pairDevice('Decliner', true);
+        approvalRecords.push(tp({ question: undefined, reason: undefined, choices: undefined, promptFingerprint: undefined }));
+        approvalBox.result = { ok: true, durable: true, request: tp({ pressedAt: 1_700_000_005_000, decision: 'deny' }) };
+        const res = await postDecline(phone.token, {});
+        expect(res.status).toBe(200);
+        expect(await res.json()).toEqual({ state: 'pending', pressedAt: 1_700_000_005_000, via: 'escape', durable: true });
+        expect(resolveCalls).toHaveLength(1);
+        expect(resolveCalls[0]).toMatchObject({ id: 'ap-tp', decision: 'deny' });
+        expect(resolveCalls[0]).not.toHaveProperty('choiceKey');
+        expect((resolveCalls[0] as Record<string, unknown>).terminalPromptDecline).toBe(TERMINAL_PROMPT_WEB_DECLINE);
+        expect((resolveCalls[0] as Record<string, unknown>).terminalPromptAnswer).toBeUndefined();
+        // The fingerprint rides along when sent; the optional decision/via must say deny/escape.
+        await postDecline(phone.token, { decision: 'deny', via: 'escape', promptFingerprint: FP });
+        expect(resolveCalls[1]).toMatchObject({ promptFingerprint: FP });
+      });
+
+      it.each([
+        ['no decline capability', {}, { 'X-Wmux-Client-Caps': 'terminal-prompt-answer' }, 501],
+        ['a malformed fingerprint', { promptFingerprint: 'nope' }, undefined, 400],
+        ['an approve', { decision: 'approve' }, undefined, 400],
+        ['another key than Esc', { via: 'enter' }, undefined, 400],
+      ])('%s → %i, nothing reaches the registry', async (_label, body, headers, status) => {
+        await startRW();
+        const phone = await pairDevice('Bad decliner', true);
+        approvalRecords.push(tp());
+        expect((await postDecline(phone.token, body, headers)).status).toBe(status);
+        expect(resolveCalls).toEqual([]);
+      });
+
+      it('needs the input grant, before and after the body', async () => {
+        await startRW();
+        const reader = await pairDevice('Read-only decliner', false);
+        approvalRecords.push(tp());
+        expect((await postDecline(reader.token, {})).status).toBe(403);
+        const phone = await pairDevice('Narrowing decliner', true);
+        const body = JSON.stringify({});
+        expect(await withdrawMidBody(`${base()}/api/approvals/ap-tp/decline`, phone, body.slice(0, 1), body.slice(1), (r) => { r.allowInput = false; }, DECLINE_CAPS))
+          .toBe(403);
+        expect(resolveCalls).toEqual([]);
+      });
+
+      it.each([
+        ['already-resolved', 409],
+        ['already-answered', 409],
+        ['prompt-changed', 409],
+        ['prompt-unverified', 409],
+        ['answer-too-soon', 425],
+        ['expired', 410],
+      ] as const)('maps the registry\'s %s to %i and says nothing was written', async (reason, status) => {
+        await startRW();
+        const phone = await pairDevice('Late decliner', true);
+        approvalRecords.push(tp());
+        approvalBox.result = { ok: false, reason, request: tp() };
+        const res = await postDecline(phone.token, {});
+        expect(res.status).toBe(status);
+        expect(await res.json()).toMatchObject({ error: reason, effect: 'none' });
+      });
+
+      it('a settled record still reaches the registry (so the caller learns 409/410), another kind does not', async () => {
+        await startRW();
+        const phone = await pairDevice('After the fact', true);
+        approvalRecords.push(tp({ state: 'resolved', resolvedBy: 'device Other (d2)' }), mkApproval({ id: 'ap-q' }));
+        approvalBox.result = { ok: false, reason: 'already-resolved', resolvedBy: 'device Other (d2)', request: tp({ state: 'resolved' }) };
+        expect((await postDecline(phone.token, {})).status).toBe(409);
+        expect((await postDecline(phone.token, {}, DECLINE_CAPS, 'ap-q')).status).toBe(400);
+        expect(resolveCalls.map((c) => c.id)).toEqual(['ap-tp']);
+      });
+
+      it('recently answered lists a terminal_prompt only when a phone answered it', async () => {
+        const info = await startRW();
+        approvalRecords.push(
+          tp({ id: 'tp-answered', state: 'resolved', pressedAt: 1, decision: 'approve', selectedChoiceKey: '1', resolvedAt: 5 }),
+          tp({ id: 'tp-superseded', state: 'superseded', resolvedAt: 4 }),
+          tp({ id: 'tp-info-expired', state: 'expired', question: undefined, choices: undefined, promptFingerprint: undefined, resolvedAt: 3 }),
+          tp({ id: 'tp-answerable-expired', state: 'expired', resolvedAt: 2 }),
+          // Declined from a phone while it could not be answered Yes/No: no question, still an answer.
+          tp({
+            id: 'tp-declined-info', state: 'resolved', pressedAt: 2, decision: 'deny', resolvedAt: 2,
+            question: undefined, reason: undefined, choices: undefined, promptFingerprint: undefined,
+          }),
+          mkApproval({ id: 'ap-question', state: 'resolved', question: 'Pick one', resolvedAt: 1 }),
+        );
+        const expected = ['tp-answered', 'tp-declined-info', 'ap-question'];
+        const capable = await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(info.token as string), ...CAPS } })).json();
+        expect(capable.recentlyResolved.map((r: { id: string }) => r.id)).toEqual(expected);
+        expect(capable.recentlyResolved[0]).toMatchObject({ question: 'Do you want to proceed?', decision: 'approve' });
+        expect(capable.recentlyResolved[1]).toMatchObject({ toolName: 'Bash', summary: expect.any(String), decision: 'deny' });
+        // Decided from the record, not from what this caller is shown: an older
+        // client (no question on the wire) sees the same rows.
+        const legacy = await (await fetch(`${base()}/api/approvals`, { headers: bearer(info.token as string) })).json();
+        expect(legacy.recentlyResolved.map((r: { id: string }) => r.id)).toEqual(expected);
+      });
+    });
+
+    describe('raw input while the dialog is up', () => {
+      const typeInto = (token: string, body: string, headers: Record<string, string> = {}) =>
+        fetch(`${base()}/api/input?session=s1`, { method: 'POST', headers: { ...bearer(token), ...headers }, body });
+
+      it('refuses a typed answer, whether or not the record is answerable', async () => {
+        const info = await startRW();
+        const phone = await pairDevice('Reply from a notification', true);
+        for (const record of [tp(), tp({ choices: undefined, promptFingerprint: undefined })]) {
+          approvalRecords.splice(0, approvalRecords.length, record);
+          for (const token of [phone.token, info.token as string]) {
+            for (const body of ['1\r', '1', '\r', '\x1b\r', '\x1b[B', '\x1b[200~1\r\x1b[201~']) {
+              const res = await typeInto(token, body);
+              expect(res.status, JSON.stringify(body)).toBe(409);
+              expect(await res.json()).toEqual({ error: 'terminal-prompt-active', effect: 'none' });
+            }
+          }
+        }
+        expect(write).not.toHaveBeenCalled();
+      });
+
+      it('lets a lone Esc or a lone Ctrl-C through', async () => {
+        const info = await startRW();
+        approvalRecords.push(tp());
+        expect((await typeInto(info.token as string, '\x1b')).status).toBe(204);
+        expect((await typeInto(info.token as string, '\x03')).status).toBe(204);
+        expect(write.mock.calls).toEqual([['\x1b'], ['\x03']]);
+      });
+
+      it('only a terminal_prompt on THIS pane blocks it', async () => {
+        const info = await startRW();
+        approvalRecords.push(tp({ sessionId: 's2' }), mkApproval({ id: 'ap-gate', kind: 'awaiting_permission' }));
+        expect((await typeInto(info.token as string, '1\r')).status).toBe(204);
+        expect(write).toHaveBeenCalledWith('1\r');
+      });
+
+      it('flows again once the dialog is resolved', async () => {
+        const info = await startRW();
+        approvalRecords.push(tp());
+        expect((await typeInto(info.token as string, 'ls\r')).status).toBe(409);
+        approvalRecords[0].state = 'resolved';
+        expect((await typeInto(info.token as string, 'ls\r')).status).toBe(204);
+        expect(write).toHaveBeenCalledTimes(1);
+      });
+
+      it('a receipted input journals nothing when refused, and its retry is checked again', async () => {
+        const info = await startRW();
+        approvalRecords.push(tp());
+        const headers = {
+          'X-Wmux-Input-Request-ID': `${Date.now()}.${crypto.randomUUID()}`,
+          'X-Wmux-Pane-Incarnation': 'incarnation-1',
+        };
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const refused = await typeInto(info.token as string, '1\r', headers);
+          expect(refused.status).toBe(409);
+          expect(await refused.json()).toEqual({ error: 'terminal-prompt-active', effect: 'none' });
+        }
+        expect(write).not.toHaveBeenCalled();
+        approvalRecords[0].state = 'expired';
+        const written = await typeInto(info.token as string, '1\r', headers);
+        expect(written.status).toBe(200);
+        expect(await written.json()).toEqual({ status: 'written', replayed: false });
+        expect(write).toHaveBeenCalledTimes(1);
+      });
+
+      it('is decided when the body completes, not when the headers arrive', async () => {
+        await startRW();
+        const phone = await pairDevice('Slow typist', true);
+        let observed!: () => void;
+        const entered = new Promise<void>((resolve) => { observed = resolve; });
+        const original = sessionManager.getSession.bind(sessionManager);
+        const spy = vi.spyOn(sessionManager, 'getSession').mockImplementation((id) => {
+          const result = original(id);
+          if (id === 's1') observed();
+          return result;
+        });
+        let request: ReturnType<typeof httpReq>;
+        const response = new Promise<number | undefined>((resolve, reject) => {
+          request = httpReq(`${base()}/api/input?session=s1`, { method: 'POST', headers: bearer(phone.token) }, (res) => {
+            res.resume(); res.on('end', () => resolve(res.statusCode));
+          });
+          request.on('error', reject);
+          request.write('1');
+        });
+        try {
+          await entered;
+          approvalRecords.push(tp());
+          request!.end('\r');
+          expect(await response).toBe(409);
+          expect(write).not.toHaveBeenCalled();
+        } finally { spy.mockRestore(); request!.destroy(); }
+      });
+    });
   });
 
   it('answers 500 rather than hanging when the registry list throws after the body arrives', async () => {
@@ -5873,6 +6606,33 @@ describe('WebTerminalServer', () => {
     });
 
 
+    it('★ #1397 a device can neither read the detail of nor decline a brain pane terminal_prompt', async () => {
+      live.push({
+        id: 'brain-abc', cwd: '/b', cols: 80, rows: 24, state: 'attached',
+        agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+        env: { WMUX_BRAIN_PTY: '1' }, cmd: '/usr/local/bin/claude',
+      });
+      approvalRecords.push(mkApproval({ id: 'ap-brain-tp', sessionId: 'brain-abc', kind: 'terminal_prompt' }));
+      approvalBox.details.set('ap-brain-tp', {
+        id: 'ap-brain-tp', command: 'secret brain command', commandHash: 'h', commandBytes: 20, truncated: false,
+      });
+      const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: true });
+      const paired = await fetch(`${base()}/api/pair?code=${info.pairCode as string}`);
+      const deviceToken = ((await paired.json()) as { token: string }).token;
+      const asDevice = { Authorization: `Bearer ${deviceToken}`, 'X-Wmux-Client-Caps': 'terminal-prompt-answer, terminal-prompt-decline' };
+      const read = await fetch(`${base()}/api/approvals/ap-brain-tp/detail`, { headers: asDevice });
+      expect(read.status).toBe(404);
+      expect(await read.text()).not.toContain('secret');
+      const declined = await fetch(`${base()}/api/approvals/ap-brain-tp/decline`, {
+        method: 'POST', headers: { ...asDevice, 'Content-Type': 'application/json' }, body: '{}',
+      });
+      expect(declined.status).toBe(404);
+      expect(resolveCalls).toEqual([]);
+      // The operator keeps its view of the brain.
+      const asOperator = { ...bearer(info.token as string), 'X-Wmux-Client-Caps': 'terminal-prompt-answer' };
+      expect((await fetch(`${base()}/api/approvals/ap-brain-tp/detail`, { headers: asOperator })).status).toBe(200);
+    });
+
     it('★ #1315 pane-stream liveness refuses the brain pane and an invented session id', async () => {
       // `sessionId` arrives from the hook pipe, which is not a trusted producer,
       // and the orchestrator brain is not a worker pane a phone may learn
@@ -6745,6 +7505,36 @@ describe('WebTerminalServer', () => {
       }
     });
 
+    it("releases a stalled reader's file handle without a client disconnect", async () => {
+      const limits = new StreamResponseLimits(200);
+      const acquire = StreamResponseLimits.prototype.acquire;
+      const admission = vi.spyOn(StreamResponseLimits.prototype, 'acquire')
+        .mockImplementation((key, response, options) => acquire.call(limits, key, response, options));
+      const dir = tmpTree();
+      const file = sparse(dir, 'stalled.mp4', bmff('isom'), 32 * 1024 * 1024);
+      managed.meta.spawnCwd = dir;
+      const info = await startWithTranscript();
+      let closed = false;
+      const openSpy = interceptOpen(file, async (handle) => {
+        const close = handle.close.bind(handle);
+        handle.close = async () => { closed = true; return close(); };
+        return handle;
+      });
+      const ac = new AbortController();
+      try {
+        const response = await fetch(fileUrl('s1', file), {
+          headers: bearer(info.token as string), signal: ac.signal,
+        });
+        expect(response.status).toBe(200);
+        // Do not read or cancel: the server must end the stalled transfer itself.
+        await vi.waitFor(() => expect(closed).toBe(true), { timeout: 2000 });
+      } finally {
+        ac.abort();
+        openSpy.mockRestore();
+        admission.mockRestore();
+      }
+    });
+
     it('survives a client that walks away mid-download', async () => {
       // `pipe` unpipes on a closed response but never destroys its source, so
       // this is the path that would leak the FileHandle for the life of the
@@ -7614,6 +8404,86 @@ describe('WebTerminalServer', () => {
         expect(logs.filter((m) => m.includes('sidebar'))).toEqual(['[web] desktop sidebar fields left out: workspace.task×1']);
       } finally {
         await logged.stop();
+        live.splice(0, live.length, ...fixture);
+      }
+    });
+
+    it('files tasks under the requesting pane only when this reply lists it, and drops it all when stale', async () => {
+      const task = (id: string, extra: Record<string, unknown>) => ({ id, order: 9, pinned: false, task: { ownerWorkspaceId: OWNER, detached: false, nested: true, ...extra } });
+      const snapshot = {
+        activeWorkspaceId: OWNER,
+        workspaces: [
+          { id: PLAIN, order: 0, pinned: false },
+          { id: OWNER, order: 1, pinned: false },
+          task('t-live', { paneGroup: 'pane', requesterPaneId: 'pane-a' }),
+          task('t-closed', { paneGroup: 'closedPane' }),
+          // Requester alive on the desktop, but a pane of browser tabs: no session here.
+          task('t-browser', { paneGroup: 'pane', requesterPaneId: 'pane-browser' }),
+          // Names a pane this reply lists — under another workspace.
+          task('t-foreign', { paneGroup: 'pane', requesterPaneId: 'pane-plain' }),
+          task('t-detached', { detached: true, nested: false }),
+          { id: 't-orphan', order: 9, pinned: false, task: { ownerWorkspaceId: 'ws-gone', detached: false, nested: false } },
+        ],
+        panes: [
+          { ptyId: 'd-plain', workspaceId: PLAIN, paneId: 'pane-plain', paneName: 'w1-1' },
+          { ptyId: 'd-a', workspaceId: OWNER, paneId: 'pane-a', paneName: 'w2-1' },
+          { ptyId: 'd-b', workspaceId: OWNER, paneId: 'pane-b', paneName: 'w2-2' },
+          // The desktop places this session in OWNER; the daemon runs it in PLAIN.
+          { ptyId: 'd-mis', workspaceId: OWNER, paneId: 'pane-mis', paneName: 'w2-3' },
+          ...['t-live', 't-closed', 't-browser', 't-foreign', 't-detached', 't-orphan'].map((id) => ({ ptyId: `d-${id}`, workspaceId: id, paneId: `pane-${id}` })),
+        ],
+      };
+      const sessions = [['d-plain', PLAIN], ['d-a', OWNER], ['d-b', OWNER], ['d-mis', PLAIN], ...['t-live', 't-closed', 't-browser', 't-foreign', 't-detached', 't-orphan'].map((id) => [`d-${id}`, id])]
+        .map(([id, ws]) => ({
+          id, cwd: '/repo', cols: 80, rows: 24, state: 'attached',
+          agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
+          env: { WMUX_WORKSPACE_ID: ws, WMUX_WORKSPACE_NAME: ws }, cmd: '/bin/zsh',
+        }));
+      const fixture = live.splice(0, live.length, ...sessions);
+      try {
+        const desktop = manualDesktop();
+        const info = await startRO();
+        const token = info.token as string;
+        desktop.stub.autoReply = { workspaces: [], sidebar: snapshot };
+        const body = await getJson(token, '/api/workspaces');
+        desktop.stub.autoReply = undefined;
+        const rows = new Map((body.workspaces as Row[]).map((w) => [w.id as string, w]));
+        expect(rows.get('t-live')).toMatchObject({ nested: true, nestedUnder: 'pane', requesterPaneId: 'pane-a' });
+        expect(rows.get('t-closed')).toMatchObject({ nested: true, nestedUnder: 'closedPane' });
+        for (const id of ['t-browser', 't-foreign']) expect(rows.get(id)).toMatchObject({ nested: true });
+        for (const id of ['t-closed', 't-browser', 't-foreign', 't-detached', 't-orphan', OWNER, PLAIN]) {
+          expect(rows.get(id)).not.toHaveProperty('requesterPaneId');
+        }
+        for (const id of ['t-browser', 't-foreign', 't-detached', 't-orphan', OWNER, PLAIN]) expect(rows.get(id)).not.toHaveProperty('nestedUnder');
+        expect(rows.get('t-detached')).toMatchObject({ detached: true, nested: false });
+        expect(rows.get('t-orphan')).toMatchObject({ ownerWorkspaceId: 'ws-gone', nested: false });
+        // The requester is one of this reply's panes, under the owner.
+        expect(rows.get(OWNER)!.panes).toEqual([
+          expect.objectContaining({ sessionId: 'd-a', paneId: 'pane-a' }),
+          expect.objectContaining({ sessionId: 'd-b', paneId: 'pane-b' }),
+        ]);
+        const listed = (await getJson(token, '/api/sessions')).sessions as Row[];
+        expect(listed.find((r) => r.id === 'd-a')).toMatchObject({ paneId: 'pane-a', paneName: 'w2-1', workspaceId: OWNER });
+        expect(listed.find((r) => r.id === 'd-b')).toMatchObject({ paneId: 'pane-b' });
+        // Both routes expose the same pane ids: none where the workspaces disagree.
+        expect(listed.find((r) => r.id === 'd-mis')).toMatchObject({ paneName: 'w2-3' });
+        expect(listed.find((r) => r.id === 'd-mis')).not.toHaveProperty('paneId');
+        const routePaneIds = (body.workspaces as Row[]).flatMap((w) => (w.panes as Row[]).map((pane) => pane.paneId)).filter(Boolean).sort();
+        expect(listed.map((r) => r.paneId).filter(Boolean).sort()).toEqual(routePaneIds);
+        expect(JSON.stringify(body)).not.toContain('pane-browser');
+        // Stale past the bound: every desktop field goes, the new ones with them.
+        clockOffsetMs += 1500;
+        await getJson(token, '/api/workspaces');
+        desktop.fail(1, 'desktop-busy');
+        await flush();
+        clockOffsetMs += 9500;
+        const stale = await getJson(token, '/api/workspaces');
+        for (const w of stale.workspaces as Row[]) {
+          for (const key of ['order', 'nested', 'nestedUnder', 'requesterPaneId']) expect(w).not.toHaveProperty(key);
+          for (const pane of w.panes as Row[]) expect(pane).not.toHaveProperty('paneId');
+        }
+        for (const r of (await getJson(token, '/api/sessions')).sessions as Row[]) expect(r).not.toHaveProperty('paneId');
+      } finally {
         live.splice(0, live.length, ...fixture);
       }
     });

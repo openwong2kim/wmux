@@ -9,7 +9,15 @@ import {
 import { buildQrPath, type QrPath } from './qrPath';
 import { useT } from '../../hooks/useT';
 import { FOCUS_RING } from '../focusRing';
-import { IconBrowser, IconLock, IconRemoteDevices, IconWarning } from '../icons';
+import {
+  IconBrowser,
+  IconChevron,
+  IconComputer,
+  IconLock,
+  IconPhone,
+  IconRemoteDevices,
+  IconWarning,
+} from '../icons';
 import Popover, { PopoverSection } from '../ui/Popover';
 import Button from '../ui/Button';
 import Checkbox from '../ui/Checkbox';
@@ -18,8 +26,16 @@ import Input from '../ui/Input';
 import Badge from '../ui/Badge';
 import { DECK_ICON_BUTTON, deckIconTone } from '../Deck/deckIconStyles';
 import PairedDevicesModal from './PairedDevicesModal';
+import OtherComputersSection from './OtherComputersSection';
+import AttachRemoteModal from '../Sidebar/AttachRemoteModal';
+import { useStore } from '../../stores';
 import {
+  buildDesktopPairLink,
+  webComputerPairOrigin,
   webIsExposed,
+  type PairFlow,
+  type WebDeviceSummary,
+  type WebGrantArgs,
   type WebStartArgs,
   type WebTerminalInfo,
 } from '../../../shared/web';
@@ -47,7 +63,7 @@ const POLL_INTERVAL_MS = 10_000;
  * open-position math reserves below the button. The running body (QR + pair
  * code + Stop + paired devices) is the long one.
  */
-const POPOVER_MAX_HEIGHT = 440;
+const POPOVER_MAX_HEIGHT = 520;
 
 /**
  * Cap on the device name.
@@ -110,6 +126,9 @@ export function splitLinkedLine(line: string): { before: string; url: string; af
  * no-referrer` is already set server-side.
  */
 export function webQrPayload(info: WebTerminalInfo): string {
+  // A code minted by the computer card is not the phone's to scan: the QR
+  // would pair a phone under the computer's name and grant.
+  if (pendingPairFlow(info) === 'computer') return '';
   const pairUrl = webPairUrl(info);
   if (!pairUrl || !info.pairCode) return '';
   return `${pairUrl}?code=${encodeURIComponent(info.pairCode)}`;
@@ -139,6 +158,55 @@ export function webPairUrl(info: WebTerminalInfo): string {
   }
 }
 
+/**
+ * Which card owns the live code, or null when no named pairing is pending.
+ * A daemon that predates flows only ever had the phone card.
+ */
+export function pendingPairFlow(info: WebTerminalInfo): PairFlow | null {
+  if (!info.pairCode || !info.pendingDeviceName) return null;
+  return info.pendingPairFlow === 'computer' ? 'computer' : 'phone';
+}
+
+/**
+ * The link the "Connect another computer" card shows and copies, or '' when
+ * the live code is not the computer card's or there is no secure origin.
+ */
+export function webComputerLink(info: WebTerminalInfo, now: number = Date.now()): string {
+  if (pendingPairFlow(info) !== 'computer' || !info.pairCode) return '';
+  // Past its expiry the code redeems nothing: no dead link at 0:00.
+  if (typeof info.pairExpiresAt === 'number' && now > info.pairExpiresAt) return '';
+  const origin = webComputerPairOrigin(info);
+  return origin ? buildDesktopPairLink(origin, info.pairCode) : '';
+}
+
+/** `m:ss` for a remaining lifetime; never negative. */
+export function formatCountdown(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(total / 60);
+  const sec = total % 60;
+  return `${m}:${sec < 10 ? '0' : ''}${sec}`;
+}
+
+/** What the hub line says about the roster: live devices only. */
+export interface RosterSummary {
+  total: number;
+  active: number;
+  phones: number;
+  computers: number;
+  other: number;
+}
+
+export function summarizeRoster(devices: readonly WebDeviceSummary[]): RosterSummary {
+  const live = devices.filter((d) => d.revokedAt === undefined);
+  return {
+    total: live.length,
+    active: live.filter((d) => d.activeNow === true).length,
+    phones: live.filter((d) => d.kind === 'phone').length,
+    computers: live.filter((d) => d.kind === 'computer').length,
+    other: live.filter((d) => d.kind !== 'phone' && d.kind !== 'computer').length,
+  };
+}
+
 // ─── Presentational popover body (renderToStaticMarkup-testable) ───────────
 
 export interface WebPopoverBodyProps {
@@ -147,6 +215,18 @@ export interface WebPopoverBodyProps {
   expose: boolean;
   /** Put the server behind a `tailscale serve` HTTPS front. */
   tailscale: boolean;
+  /**
+   * Conversation access (the phone's Chat view) and photo upload for the NEXT
+   * start. While running, the rows show the server's own values from status
+   * instead, and a toggle applies to the running server.
+   */
+  allowTranscript: boolean;
+  allowUpload: boolean;
+  /** Advanced: let a phone launch agents with approvals or the sandbox off. */
+  allowDangerousLaunch: boolean;
+  /** Whether the Advanced disclosure is open. Owned by the parent. */
+  advancedOpen: boolean;
+  onToggleAdvanced: () => void;
   /** What the next paired device will be called. Required before a code shows. */
   deviceName: string;
   /**
@@ -162,6 +242,9 @@ export interface WebPopoverBodyProps {
   onToggleAllowInput: () => void;
   onToggleExpose: () => void;
   onToggleTailscale: () => void;
+  onToggleAllowTranscript: () => void;
+  onToggleAllowUpload: () => void;
+  onToggleAllowDangerousLaunch: () => void;
   onStart: () => void;
   onStop: () => void;
   onCopyUrl: () => void;
@@ -186,6 +269,23 @@ export interface WebPopoverBodyProps {
    * access?" is asked precisely when the server is off.
    */
   onOpenDevices: () => void;
+  /** Roster counts for the hub line. Null until the first read lands. */
+  roster?: RosterSummary | null;
+  /** Name for the NEXT computer. Owned by the parent, separate from the phone's. */
+  computerDeviceName?: string;
+  onComputerDeviceNameChange?: (value: string) => void;
+  /** Whether the next computer may type. Separate from the phone card's grant. */
+  computerAllowInput?: boolean;
+  onToggleComputerAllowInput?: () => void;
+  /** Name the computer, then mint its code as a computer link. */
+  onStartComputerPairing?: () => void;
+  /** End the pairing in progress, whichever card started it. */
+  onCancelPairing?: () => void;
+  onCopyComputerLink?: () => void;
+  /** Remaining lifetime of the live code in ms, ticked by the parent. */
+  pairRemainingMs?: number | null;
+  /** Which card a refused start came from, so its error lands under that card. */
+  pairErrorFlow?: PairFlow | null;
   t: (key: string) => string;
 }
 
@@ -193,7 +293,7 @@ export interface WebPopoverBodyProps {
 const WEB_LINK = `text-[11px] leading-4 text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`;
 
 /** Nothing copied, or the field whose copy button should read "Copied". */
-export type CopyTarget = null | 'url' | 'pairUrl' | 'pairCode';
+export type CopyTarget = null | 'url' | 'pairUrl' | 'pairCode' | 'computerLink';
 
 /**
  * The popover contents. Split from WebToggle so the node-env test suite can
@@ -206,11 +306,19 @@ export function WebPopoverBody({
   allowInput,
   expose,
   tailscale,
+  allowTranscript,
+  allowUpload,
+  allowDangerousLaunch,
+  advancedOpen,
+  onToggleAdvanced,
   busy,
   copied,
   onToggleAllowInput,
   onToggleExpose,
   onToggleTailscale,
+  onToggleAllowTranscript,
+  onToggleAllowUpload,
+  onToggleAllowDangerousLaunch,
   onStart,
   onStop,
   onCopyUrl,
@@ -226,24 +334,137 @@ export function WebPopoverBody({
   onTogglePairAllowInput,
   deviceName,
   qr,
+  roster = null,
+  computerDeviceName = '',
+  onComputerDeviceNameChange = () => undefined,
+  computerAllowInput = false,
+  onToggleComputerAllowInput = () => undefined,
+  onStartComputerPairing = () => undefined,
+  onCancelPairing = () => undefined,
+  onCopyComputerLink = () => undefined,
+  pairRemainingMs = null,
+  pairErrorFlow = null,
   t,
 }: WebPopoverBodyProps) {
   // Same control in both bodies below — declared once so the running and
-  // stopped branches cannot drift into different labels or styling.
+  // stopped branches cannot drift into different labels or styling. Once the
+  // roster has been read it doubles as the hub's device status: what is
+  // paired, by kind, and how much of it is here right now.
+  const summaryText = roster
+    ? `${t('web.devicesCount').replace('{count}', String(roster.total))} · ${t('web.devicesActive').replace('{count}', String(roster.active))}`
+    : '';
   const devicesLink = (
-    <button type="button" onClick={onOpenDevices} className={`${WEB_LINK} self-center`}>
-      {t('web.devicesLink')}
+    <button
+      type="button"
+      onClick={onOpenDevices}
+      aria-label={roster ? `${t('web.devicesLink')} ${summaryText}` : undefined}
+      data-testid="web-devices-summary"
+      className={`${WEB_LINK} flex min-w-0 items-center gap-1.5 self-center`}
+    >
+      {roster ? (
+        <>
+          {roster.phones > 0 ? (
+            <span className="inline-flex items-center gap-0.5 text-[var(--text-sub)]" aria-hidden="true">
+              <IconPhone size={12} />
+              {roster.phones}
+            </span>
+          ) : null}
+          {roster.computers > 0 ? (
+            <span className="inline-flex items-center gap-0.5 text-[var(--text-sub)]" aria-hidden="true">
+              <IconComputer size={12} />
+              {roster.computers}
+            </span>
+          ) : null}
+          {roster.active > 0 ? (
+            <span aria-hidden="true" className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--accent)]" />
+          ) : null}
+          <span className="truncate">{summaryText}</span>
+        </>
+      ) : (
+        t('web.devicesLink')
+      )}
     </button>
   );
+  // One code slot, two cards: while one card's pairing is live the other says
+  // so and offers to end it, rather than silently rotating the code under it.
+  const pending = pendingPairFlow(info);
+  const otherInProgress = (messageKey: string) => (
+    <>
+      <p className="ui-note">{t(messageKey)}</p>
+      <Button size="sm" onClick={onCancelPairing} disabled={busy} className="self-start">
+        {t('web.cancelPairing')}
+      </Button>
+    </>
+  );
+  // The phone grants, also declared once. Stopped, they are the choice for the
+  // next start; running, they read the server's effective values from status,
+  // so what the rows say is what a paired phone can actually do.
+  const grantRows = (transcript: boolean, upload: boolean, disabled: boolean) => (
+    <>
+      <Field label={t('web.allowTranscript')} description={t('web.allowTranscriptHint')} className="ui-row">
+        <Checkbox checked={transcript} disabled={disabled} onCheckedChange={() => onToggleAllowTranscript()} />
+      </Field>
+      <Field label={t('web.allowUpload')} description={t('web.allowUploadHint')} className="ui-row">
+        <Checkbox checked={upload} disabled={disabled} onCheckedChange={() => onToggleAllowUpload()} />
+      </Field>
+    </>
+  );
+  // Dangerous launch sits behind a disclosure, off by default: it lets a
+  // paired phone start Claude/Codex with approvals or the sandbox off. The
+  // parent opens the disclosure whenever the grant is on, so an active ceiling
+  // is never hidden.
+  const advanced = (dangerous: boolean, disabled: boolean) => {
+    // Never hidden while on, whatever the disclosure state says.
+    const shown = advancedOpen || dangerous;
+    return (
+    <div className="flex flex-col gap-2">
+      <button
+        type="button"
+        aria-expanded={shown}
+        onClick={onToggleAdvanced}
+        className={`ui-note flex items-center gap-1 self-start rounded-[6px] ${FOCUS_RING}`}
+      >
+        <span
+          aria-hidden="true"
+          className="inline-flex transition-transform"
+          style={{ transform: shown ? 'rotate(90deg)' : undefined }}
+        >
+          <IconChevron size={11} />
+        </span>
+        {t('web.advanced')}
+      </button>
+      {shown ? (
+        <>
+          <div className="ui-group">
+            <Field label={t('web.allowDangerousLaunch')} className="ui-row">
+              <Checkbox
+                checked={dangerous}
+                disabled={disabled}
+                onCheckedChange={() => onToggleAllowDangerousLaunch()}
+              />
+            </Field>
+          </div>
+          <p className="ui-note flex gap-1.5">
+            <span className="mt-0.5 shrink-0 text-[var(--accent-yellow)]" aria-hidden="true">
+              <IconWarning size={11} />
+            </span>
+            <span>{t('web.allowDangerousLaunchWarning')}</span>
+          </p>
+        </>
+      ) : null}
+    </div>
+  );
+  };
   if (!info.running) {
     return (
       <>
-        <PopoverSection title={t('web.headline')}>
+        <PopoverSection title={t('web.shareThisComputer')}>
           {info.error ? <p className="ui-note">{info.error}</p> : null}
           <div className="ui-group">
             <Field label={t('web.allowInput')} className="ui-row">
               <Checkbox checked={allowInput} onCheckedChange={() => onToggleAllowInput()} />
             </Field>
+            {grantRows(allowTranscript, allowUpload, false)}
             {/* The only transport a phone can actually pair over. Listed FIRST
                 of the transports because it is the one most operators opening
                 this popover want: a device credential never expires, so it is
@@ -256,6 +477,7 @@ export function WebPopoverBody({
               <Checkbox checked={expose} onCheckedChange={() => onToggleExpose()} />
             </Field>
           </div>
+          {advanced(allowDangerousLaunch, false)}
           {/* Say what --expose actually buys now. Since #616 it can serve panes
               to the LAN but cannot pair a phone, and a checkbox that silently
               means "watch only" is how someone ends up stuck at a 403. */}
@@ -304,6 +526,8 @@ export function WebPopoverBody({
 
   const url = primaryWebUrl(info);
   const pairUrl = webPairUrl(info);
+  const computerOrigin = webComputerPairOrigin(info);
+  const computerLink = webComputerLink(info);
   const exposed = webIsExposed(info);
   const viewers =
     typeof info.clients === 'number'
@@ -312,7 +536,7 @@ export function WebPopoverBody({
 
   return (
     <>
-      <PopoverSection>
+      <PopoverSection title={t('web.shareThisComputer')}>
         <div className="flex items-center gap-2">
           <span aria-hidden="true" className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--accent)]" />
           <span className="ui-code shrink-0">{webBindLabel(info)}</span>
@@ -350,7 +574,7 @@ export function WebPopoverBody({
       {/* Path 2 — another device. This is what the pairing code exists for:
           typing a 36-char token on a phone keyboard is miserable, so the phone
           opens a token-free /pair address and enters eight characters instead. */}
-      <PopoverSection title={t('web.onPhone')}>
+      <PopoverSection title={t('web.connectPhone')}>
         {info.pairRefusal ? (
           // The whole point of the refusal: this replaces the code rather than
           // sitting beside it. A code shown next to "pairing is unavailable" is
@@ -367,7 +591,9 @@ export function WebPopoverBody({
                 : t('web.refusalInsecureFix')}
             </p>
           </>
-        ) : info.pairCode && info.pendingDeviceName ? (
+        ) : pending === 'computer' ? (
+          otherInProgress('web.computerPairingInProgress')
+        ) : pending === 'phone' ? (
           <>
             {/* Which device this code will register. The operator typed it a
                 moment ago, but the code outlives that moment by ten minutes and
@@ -471,16 +697,111 @@ export function WebPopoverBody({
                 code appeared and nothing said why. The button guards the empty
                 name, so what lands here is the server refusing for its own
                 reason, which the operator cannot guess. */}
-            {info.pairStartError ? (
-              <p className="ui-note text-[var(--accent-red)]">{info.pairStartError}</p>
+            {info.pairStartError && pairErrorFlow !== 'computer' ? (
+              <p className="ui-row-error">{info.pairStartError}</p>
             ) : null}
           </>
         )}
       </PopoverSection>
 
+      {/* Path 3 — another computer running wmux. One link, pasted into that
+          computer's app: the code rides in the URL fragment under a marker the
+          browser page refuses to redeem, so the link pairs the app and never
+          the browser it might be opened in. HTTPS only, and never loopback. */}
+      <PopoverSection title={t('web.connectComputer')}>
+        {pending === 'phone' ? (
+          otherInProgress('web.phonePairingInProgress')
+        ) : pending === 'computer' && computerLink ? (
+          <>
+            <p className="ui-note">
+              {t('web.pairingAs').replace('{name}', info.pendingDeviceName ?? '')}
+            </p>
+            <p className="ui-note">{t('web.computerLinkHint')}</p>
+            <div className="flex items-center gap-2">
+              <span
+                data-testid="web-computer-link"
+                className="min-w-0 flex-1 truncate select-all font-mono text-[11px] text-[var(--text-sub)]"
+              >
+                {computerLink}
+              </span>
+              <Button size="sm" onClick={onCopyComputerLink} className="shrink-0">
+                {copied === 'computerLink' ? t('web.copied') : t('web.copyLink')}
+              </Button>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="ui-note" data-testid="web-computer-expiry">
+                {pairRemainingMs !== null
+                  ? t('web.computerLinkExpires').replace('{time}', formatCountdown(pairRemainingMs))
+                  : t('web.pairValidity')}
+              </span>
+              <Button variant="ghost" size="sm" onClick={onCancelPairing} disabled={busy} className="ml-auto shrink-0">
+                {t('web.cancel')}
+              </Button>
+            </div>
+          </>
+        ) : !computerOrigin ? (
+          // Disabled WITH its reason, inline: a greyed button alone is a
+          // puzzle, and the fix (HTTPS over Tailscale) is one checkbox away.
+          <>
+            <p className="ui-note" data-testid="web-computer-disabled-reason">
+              {info.pairRefusal
+                ? info.pairRefusal.reason === 'no-front'
+                  ? t('web.refusalNoFront')
+                  : t('web.refusalInsecure')
+                : t('web.computerNeedsHttps')}
+            </p>
+            <Button size="sm" disabled className="self-start">
+              {t('web.createComputerLink')}
+            </Button>
+          </>
+        ) : (
+          <>
+            <p className="ui-note">{t('web.computerNameHint')}</p>
+            <Input
+              type="text"
+              value={computerDeviceName}
+              onChange={(e) => onComputerDeviceNameChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && computerDeviceName.trim() && !busy) onStartComputerPairing();
+              }}
+              maxLength={DEVICE_NAME_MAX}
+              aria-label={t('web.computerNameHint')}
+              className="w-full text-[13px]"
+            />
+            <Field label={t('web.pairAllowInput')}>
+              <Checkbox checked={computerAllowInput} onCheckedChange={() => onToggleComputerAllowInput()} />
+            </Field>
+            <Button
+              size="sm"
+              onClick={onStartComputerPairing}
+              disabled={busy || computerDeviceName.trim().length === 0}
+              className="self-start"
+            >
+              {t('web.createComputerLink')}
+            </Button>
+            {info.pairStartError && pairErrorFlow === 'computer' ? (
+              <p className="ui-row-error">{info.pairStartError}</p>
+            ) : null}
+          </>
+        )}
+      </PopoverSection>
+
+      {/* Applied to the running server in place (same port, bind, token and
+          paired devices), so turning the Chat view on does not mean
+          Stop → Start — which would revoke every paired phone. */}
+      <PopoverSection title={t('web.phoneAccess')}>
+        <div className="ui-group">
+          <Field label={t('web.allowInput')} className="ui-row">
+            <Checkbox checked={info.allowInput === true} disabled={busy} onCheckedChange={() => onToggleAllowInput()} />
+          </Field>
+          {grantRows(info.allowTranscript === true, info.allowUpload === true, busy)}
+        </div>
+        {advanced(info.allowDangerousLaunch === true, busy)}
+      </PopoverSection>
+
       <PopoverSection>
         {exposed ? <p className="ui-note">{t('web.exposeWarning')}</p> : null}
-        {info.error ? <p className="ui-note text-[var(--accent-red)]">{info.error}</p> : null}
+        {info.error ? <p className="ui-row-error">{info.error}</p> : null}
         <div className="flex items-center justify-between gap-2">
           {devicesLink}
           <Button size="md" onClick={onStop} disabled={busy}>
@@ -507,9 +828,20 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   const [allowInput, setAllowInput] = useState(false);
   const [expose, setExpose] = useState(false);
   const [tailscale, setTailscale] = useState(false);
+  const [allowTranscript, setAllowTranscript] = useState(false);
+  const [allowUpload, setAllowUpload] = useState(false);
+  const [allowDangerousLaunch, setAllowDangerousLaunch] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [deviceName, setDeviceName] = useState('');
   const [devicesOpen, setDevicesOpen] = useState(false);
   const [pairAllowInput, setPairAllowInput] = useState(false);
+  /** The computer card's own name and grant — never shared with the phone card. */
+  const [computerDeviceName, setComputerDeviceName] = useState<string | null>(null);
+  const [computerAllowInput, setComputerAllowInput] = useState(false);
+  /** Which card the last refused start came from. */
+  const [pairErrorFlow, setPairErrorFlow] = useState<PairFlow | null>(null);
+  const [devices, setDevices] = useState<WebDeviceSummary[] | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   /**
    * Drop the grant once the code it belonged to has been redeemed.
    *
@@ -522,7 +854,12 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   const hadPendingName = useRef(false);
   useEffect(() => {
     const has = typeof info.pendingDeviceName === 'string' && info.pendingDeviceName !== '';
-    if (hadPendingName.current && !has) setPairAllowInput(false);
+    if (hadPendingName.current && !has) {
+      // Both cards' grants: whichever pairing just ended, the next one starts
+      // from a fresh decision.
+      setPairAllowInput(false);
+      setComputerAllowInput(false);
+    }
     hadPendingName.current = has;
   }, [info.pendingDeviceName]);
   const [busy, setBusy] = useState(false);
@@ -533,6 +870,9 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   const [anchorTop, setAnchorTop] = useState(40);
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
+  const othersRef = useRef<HTMLDivElement | null>(null);
+  /** A host handed from "Other computers" to the attach dialog. */
+  const [attachHostId, setAttachHostId] = useState<string | null>(null);
 
   const api = webApi();
 
@@ -541,19 +881,63 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
    * on deliberate moments — never from the 10s poll, which would spawn a
    * process six times a minute for a fact that changes when a human acts.
    */
+  /**
+   * Grants ticked in the stopped popover since the server was last seen.
+   * Only these are sent by Start; the rest are left to the daemon, which
+   * inherits them from a record that is still enabled and finds nothing after
+   * a stop (a stop clears it: "do not bring this back").
+   */
+  const touchedGrants = useRef(new Set<keyof WebGrantArgs>());
+  const wasRunning = useRef(false);
+
+  /**
+   * Take a status reply. A server that is no longer running — stopped here,
+   * by `wmux web --stop`, or anywhere else — resets every grant checkbox to
+   * off: seeding them from the server that WAS running would let the next
+   * Start send a revoked grant back as an explicit true.
+   */
+  const applyInfo = useCallback((next: WebTerminalInfo) => {
+    setInfo(next);
+    if (next.running) {
+      // Seed the transport checkbox from what is actually running, so a daemon
+      // restart cannot leave the box unchecked over a tailnet server — the
+      // operator's next Stop → Start would silently drop them onto loopback.
+      setTailscale(next.tailscale === true);
+      wasRunning.current = true;
+      touchedGrants.current.clear();
+    } else if (wasRunning.current) {
+      wasRunning.current = false;
+      touchedGrants.current.clear();
+      setAllowInput(false);
+      setAllowTranscript(false);
+      setAllowUpload(false);
+      setAllowDangerousLaunch(false);
+    }
+  }, []);
+
   const refresh = useCallback(async (verifyFront = false) => {
     const a = webApi();
     if (!a) return;
     try {
       const next = await a.status(verifyFront ? { verifyFront: true } : undefined);
-      setInfo(next);
-      // Seed the transport checkbox from what is actually running, so a daemon
-      // restart cannot leave the box unchecked over a tailnet server — the
-      // operator's next Stop → Start would silently drop them onto loopback.
-      if (next.running) setTailscale(next.tailscale === true);
+      applyInfo(next);
     } catch {
       // Handler resolves rather than rejects; a rejection here means the bridge
       // is missing entirely — leave the last known state untouched.
+    }
+  }, [applyInfo]);
+
+  /** The hub's device line. Read with the status while the popover is open. */
+  const refreshDevices = useCallback(async () => {
+    const a = webApi();
+    if (!a?.deviceList) return;
+    try {
+      const res = await a.deviceList();
+      // A failed read shows the plain "Paired devices…" link, never "0 devices":
+      // on a credential surface "we could not ask" must not read as "nobody".
+      setDevices(res.error ? null : res.devices);
+    } catch {
+      setDevices(null);
     }
   }, []);
 
@@ -568,9 +952,48 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   useEffect(() => {
     if (!open) return;
     void refresh(true);
-    const timer = setInterval(() => void refresh(), POLL_INTERVAL_MS);
+    void refreshDevices();
+    const timer = setInterval(() => {
+      void refresh();
+      void refreshDevices();
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [open, refresh]);
+  }, [open, refresh, refreshDevices]);
+
+  // The computer link's countdown. Ticks only while the popover is open and a
+  // computer code is live; at zero it re-reads status, which shows the
+  // re-minted link (or none) instead of a clock stuck at 0:00.
+  const computerPending = pendingPairFlow(info) === 'computer';
+  useEffect(() => {
+    if (!open || !computerPending) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [open, computerPending]);
+  const expiredRefreshFor = useRef(0);
+  useEffect(() => {
+    const at = info.pairExpiresAt ?? 0;
+    if (!open || !computerPending || at === 0 || now < at) return;
+    if (expiredRefreshFor.current === at) return;
+    expiredRefreshFor.current = at;
+    void refresh();
+  }, [open, computerPending, now, info.pairExpiresAt, refresh]);
+
+  /**
+   * The copied computer link lives in MAIN (`writeEphemeral`), which clears
+   * it at expiry and on quit, so a remount of this component (Sidebar ↔
+   * MiniSidebar) cannot orphan it. Here the popover only reports which link
+   * still pairs anything, so a consumed, cancelled or re-minted one comes off
+   * the clipboard at once. Main clears only if the clipboard still holds
+   * exactly that link. Reported only once a real status has arrived: the
+   * placeholder before the first read must not read as "nothing is pending".
+   */
+  const initialInfo = useRef(info);
+  const liveComputerLink = webComputerLink(info, now);
+  useEffect(() => {
+    if (info === initialInfo.current) return;
+    void window.clipboardAPI?.keepEphemeral?.(liveComputerLink)?.catch(() => undefined);
+  }, [info, liveComputerLink]);
 
   // Outside-click + ESC close (mirrors PresetPicker).
   useEffect(() => {
@@ -596,6 +1019,43 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
       document.removeEventListener('keydown', onKey);
     };
   }, [open]);
+
+  const anchorUnderButton = useCallback(() => {
+    const r = btnRef.current?.getBoundingClientRect();
+    const menuWidth = 288; // w-72
+    if (r) {
+      setAnchorLeft(Math.max(8, Math.min(r.left, window.innerWidth - menuWidth - 8)));
+      setAnchorTop(Math.max(8, Math.min(r.bottom + 4, window.innerHeight - 8 - POPOVER_MAX_HEIGHT)));
+    }
+  }, []);
+
+  // The sidebar's Remote button IS the remote hub: other surfaces (the +
+  // menu's "Attach remote workspace") ask it to open on "Other computers"
+  // rather than opening a dialog of their own.
+  const setRemoteHubMounted = useStore((s) => s.setRemoteHubMounted);
+  useEffect(() => {
+    // Only a hub that actually renders counts: without the web bridge this
+    // component draws nothing, and a request sent to it would land nowhere.
+    if (variant !== 'sidebar' || !webApi()) return;
+    setRemoteHubMounted(true);
+    return () => setRemoteHubMounted(false);
+  }, [variant, setRemoteHubMounted]);
+  const hubRequestSeq = useStore((s) => s.remoteHubRequestSeq);
+  const seenHubRequest = useRef(hubRequestSeq);
+  const [scrollToOthers, setScrollToOthers] = useState(false);
+  useEffect(() => {
+    if (hubRequestSeq === seenHubRequest.current) return;
+    seenHubRequest.current = hubRequestSeq;
+    if (variant !== 'sidebar') return;
+    anchorUnderButton();
+    setOpen(true);
+    setScrollToOthers(true);
+  }, [hubRequestSeq, variant, anchorUnderButton]);
+  useEffect(() => {
+    if (!open || !scrollToOthers) return;
+    setScrollToOthers(false);
+    othersRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [open, scrollToOthers]);
 
   const toggleOpen = useCallback(() => {
     // Measure + anchor OUTSIDE the setOpen updater: state updaters must stay
@@ -625,13 +1085,54 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
     if (!a) return;
     setBusy(true);
     try {
-      const args: WebStartArgs = { allowInput, expose, tailscale };
-      const next = await a.start(args);
-      setInfo(next);
+      // Look again first: the popover may be up to a poll behind. A server
+      // started (or stopped) elsewhere since then is not ours to restart.
+      const current = await a.status();
+      if (current.running) {
+        applyInfo(current);
+        return;
+      }
+      const values = { allowTranscript, allowUpload, allowDangerousLaunch };
+      const grants: WebGrantArgs = {};
+      for (const key of ['allowTranscript', 'allowUpload', 'allowDangerousLaunch'] as const) {
+        if (touchedGrants.current.has(key)) grants[key] = values[key];
+      }
+      const args: WebStartArgs = { allowInput, expose, tailscale, ...grants };
+      applyInfo(await a.start(args));
     } finally {
       setBusy(false);
     }
-  }, [allowInput, expose, tailscale]);
+  }, [allowInput, expose, tailscale, allowTranscript, allowUpload, allowDangerousLaunch, applyInfo]);
+
+  /**
+   * A grant row was toggled. Stopped, it only changes what the next Start
+   * sends. Running, it is applied to the server in place and the rows then
+   * show whatever the server reports back — never an optimistic value.
+   */
+  const handleToggleGrant = useCallback(
+    async (key: keyof WebGrantArgs) => {
+      if (!info.running) {
+        touchedGrants.current.add(key);
+        if (key === 'allowInput') setAllowInput((v) => !v);
+        else if (key === 'allowTranscript') setAllowTranscript((v) => !v);
+        else if (key === 'allowUpload') setAllowUpload((v) => !v);
+        else setAllowDangerousLaunch((v) => !v);
+        return;
+      }
+      const a = webApi();
+      if (!a?.setGrants) return;
+      const args: WebGrantArgs = { [key]: info[key] !== true };
+      setBusy(true);
+      try {
+        // The running rows read `info`; a stop that overtook this change
+        // comes back as running:false and resets the stopped-body grants.
+        applyInfo(await a.setGrants(args));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [info, applyInfo],
+  );
 
   // The two transports are alternatives, not additions: `tailscale serve`
   // proxies loopback, so a wildcard bind alongside it is a second, weaker way
@@ -656,12 +1157,11 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
     if (!a) return;
     setBusy(true);
     try {
-      const next = await a.stop();
-      setInfo(next);
+      applyInfo(await a.stop());
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [applyInfo]);
 
   const copyValue = useCallback(async (target: Exclude<CopyTarget, null>, value: string) => {
     if (!value) return;
@@ -686,6 +1186,19 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
     () => copyValue('pairCode', info.pairCode ?? ''),
     [copyValue, info],
   );
+  const handleCopyComputerLink = useCallback(async () => {
+    const link = webComputerLink(info);
+    const api = window.clipboardAPI;
+    if (!link || !api?.writeEphemeral) return;
+    const ttl = Math.max(0, (info.pairExpiresAt ?? Date.now()) - Date.now());
+    try {
+      await api.writeEphemeral(link, ttl);
+      setCopied('computerLink');
+      setTimeout(() => setCopied((c) => (c === 'computerLink' ? null : c)), 1500);
+    } catch {
+      /* clipboard lock — the link stays select-all for a manual copy */
+    }
+  }, [info]);
 
   /**
    * "New code" now goes through pairStart too, carrying the name the operator
@@ -701,7 +1214,9 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
       // The grant rides along. Without it the preload default (`false`)
       // overrode the ticked checkbox, so "New code" quietly registered a
       // read-only device while the UI said otherwise.
-      if (name && a.pairStart) setInfo(await a.pairStart(name, pairAllowInput));
+      // The phone card's flow rides along: a flow-less re-mint would be read
+      // as the phone card anyway, but saying so keeps the two cards explicit.
+      if (name && a.pairStart) setInfo(await a.pairStart(name, pairAllowInput, 'phone'));
       else if (a.pairRefresh) setInfo(await a.pairRefresh());
     } finally {
       setBusy(false);
@@ -727,11 +1242,37 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
     if (!a?.pairStart || !name) return;
     setBusy(true);
     try {
-      setInfo(await a.pairStart(name, pairAllowInput));
+      setPairErrorFlow('phone');
+      setInfo(await a.pairStart(name, pairAllowInput, 'phone'));
     } finally {
       setBusy(false);
     }
   }, [deviceName, pairAllowInput]);
+
+  const effectiveComputerName = computerDeviceName ?? t('web.computerDefaultName');
+  const handleStartComputerPairing = useCallback(async () => {
+    const a = webApi();
+    const name = effectiveComputerName.trim();
+    if (!a?.pairStart || !name) return;
+    setBusy(true);
+    try {
+      setPairErrorFlow('computer');
+      setInfo(await a.pairStart(name, computerAllowInput, 'computer'));
+    } finally {
+      setBusy(false);
+    }
+  }, [effectiveComputerName, computerAllowInput]);
+
+  const handleCancelPairing = useCallback(async () => {
+    const a = webApi();
+    if (!a?.pairCancel) return;
+    setBusy(true);
+    try {
+      setInfo(await a.pairCancel());
+    } finally {
+      setBusy(false);
+    }
+  }, []);
 
   // Close the popover as the roster opens. Both are dismiss-on-outside-click
   // surfaces, and leaving the 288px popover behind a 440px modal means the
@@ -757,6 +1298,9 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   // encoded changes only when a human mints a code.
   const qrPayload = webQrPayload(info);
   const qr = useMemo(() => buildQrPath(qrPayload), [qrPayload]);
+  const roster = useMemo(() => (devices ? summarizeRoster(devices) : null), [devices]);
+  const pairRemainingMs =
+    computerPending && typeof info.pairExpiresAt === 'number' ? info.pairExpiresAt - now : null;
 
   // The web bridge is absent entirely (e.g. under a stripped test harness) —
   // render nothing rather than a dead control.
@@ -806,16 +1350,33 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
           } as CSSProperties}
           className="fixed z-50 w-72 overflow-y-auto"
         >
+          {/* This machine → other computers first: the client half of the
+              hub, independent of whether this machine is sharing itself. */}
+          <OtherComputersSection
+            ref={othersRef}
+            onOpenHost={(hostId) => {
+              setOpen(false);
+              setAttachHostId(hostId);
+            }}
+          />
           <WebPopoverBody
             info={info}
             allowInput={allowInput}
             expose={expose}
             tailscale={tailscale}
+            allowTranscript={allowTranscript}
+            allowUpload={allowUpload}
+            allowDangerousLaunch={allowDangerousLaunch}
+            advancedOpen={advancedOpen}
+            onToggleAdvanced={() => setAdvancedOpen((v) => !v)}
             busy={busy}
             copied={copied}
-            onToggleAllowInput={() => setAllowInput((v) => !v)}
+            onToggleAllowInput={() => void handleToggleGrant('allowInput')}
             onToggleExpose={handleToggleExpose}
             onToggleTailscale={handleToggleTailscale}
+            onToggleAllowTranscript={() => void handleToggleGrant('allowTranscript')}
+            onToggleAllowUpload={() => void handleToggleGrant('allowUpload')}
+            onToggleAllowDangerousLaunch={() => void handleToggleGrant('allowDangerousLaunch')}
             onStart={handleStart}
             onStop={handleStop}
             onCopyUrl={handleCopyUrl}
@@ -831,6 +1392,16 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
             pairAllowInput={pairAllowInput}
             onTogglePairAllowInput={() => setPairAllowInput((v) => !v)}
             qr={qr}
+            roster={roster}
+            computerDeviceName={effectiveComputerName}
+            onComputerDeviceNameChange={(v) => setComputerDeviceName(v.slice(0, DEVICE_NAME_MAX))}
+            computerAllowInput={computerAllowInput}
+            onToggleComputerAllowInput={() => setComputerAllowInput((v) => !v)}
+            onStartComputerPairing={handleStartComputerPairing}
+            onCancelPairing={handleCancelPairing}
+            onCopyComputerLink={() => void handleCopyComputerLink()}
+            pairRemainingMs={pairRemainingMs}
+            pairErrorFlow={pairErrorFlow}
             t={t}
           />
         </Popover>
@@ -840,6 +1411,11 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
           popover (a 288px box has no room behind a 440px modal), and a modal
           nested inside a node that just unmounted would go with it. */}
       {devicesOpen ? <PairedDevicesModal onClose={() => setDevicesOpen(false)} /> : null}
+      {/* Same reason as the roster: a sibling, so closing the popover on the
+          way does not take the dialog with it. */}
+      {attachHostId ? (
+        <AttachRemoteModal key={attachHostId} initialHostId={attachHostId} onClose={() => setAttachHostId(null)} />
+      ) : null}
     </div>
   );
 }

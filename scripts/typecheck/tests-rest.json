@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.json",
+  "include": [
+    "../../src/**/__tests__/**/*",
+    "../../src/**/*.test.*",
+    "../../src/**/*.d.ts",
+    "../../forge.env.d.ts"
+  ],
+  "exclude": [
+    "../../src/renderer/**/__tests__/**",
+    "../../src/renderer/**/*.test.*",
+    "../../src/main/**/__tests__/**",
+    "../../src/main/**/*.test.*",
+    "../../src/daemon/**/__tests__/**",
+    "../../src/daemon/**/*.test.*"
+  ]
+}

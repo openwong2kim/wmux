@@ -26,14 +26,16 @@ import type {
   LanLinkPeersListResult,
 } from '../shared/lanlink';
 import type {
+  PairFlow,
   WebDeviceListError,
   WebDeviceRevokeResult,
   WebDeviceSetInputResult,
   WebDeviceSummary,
   WebStartArgs,
+  WebGrantArgs,
   WebTerminalInfo,
 } from '../shared/web';
-import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteHostPublic, RemoteWorkspaceSummary } from '../shared/remoteHosts';
+import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteHostStatus, RemoteWorkspaceSummary } from '../shared/remoteHosts';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -118,7 +120,7 @@ const electronAPI = {
     // wmux.json leaf — `exec` runs the command as the pane's ROOT process and
     // `supervision` arms the daemon's PaneSupervisor (daemon mode only; the
     // local branch ignores them with a one-time warning toast).
-    create: (options?: { shell?: string; cwd?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string }) =>
+    create: (options?: { shell?: string; cwd?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string; fanoutOrigin?: { kind: 'pane' | 'orchestrator' | 'gui'; paneId?: string; surfaceId?: string; label?: string } }) =>
       ipcRenderer.invoke(IPC.PTY_CREATE, options),
     write: (id: string, data: string) => {
       ipcRenderer.send(IPC.PTY_WRITE, id, data);
@@ -226,7 +228,7 @@ const electronAPI = {
     // fallback for cold-parked panes that have no renderer xterm buffer.
     readText: (id: string, opts?: { scrollback?: number }) =>
       ipcRenderer.invoke(IPC.PTY_READ_TEXT, id, opts) as Promise<
-        | { success: true; rows: Array<{ text: string; wrapped: boolean }>; truncated?: boolean }
+        | { success: true; rows: Array<{ text: string; wrapped: boolean }>; bufferType?: 'normal' | 'alternate'; rowsBelowCursor?: number; truncated?: boolean }
         | { success: false; code: string; reason?: string }
       >,
     onData: (callback: (id: string, data: string, replay: boolean) => void) => {
@@ -478,13 +480,19 @@ const electronAPI = {
     // channelLocal.handler.ts.
     mutateChannelLocal: (method: string, params: Record<string, unknown>) =>
       ipcRenderer.invoke(IPC.CHANNEL_MUTATE_LOCAL, method, params),
+    // Paste + submit a non-operator delivery through main's approval gate.
+    // Renderer-only; see IPC.GATED_SUBMIT.
+    gatedSubmit: (ptyId: string, text: string, agent?: string | null) =>
+      ipcRenderer.invoke(IPC.GATED_SUBMIT, ptyId, text, agent ?? null) as Promise<
+        import('../shared/ptyMessageDelivery').GatedSubmitResult
+      >,
   },
   // J1 fan-out — 프롬프트 1개 → N 격리 태스크. 렌더러 다이얼로그가 요청을 조립해
   // main의 FanOutService로 보낸다(renderer-trusted 신원, 파이프 미노출).
   fanout: {
     start: (req: Record<string, unknown>) => ipcRenderer.invoke(IPC.FANOUT_START, req),
     lineage: (workspaceIds: string[]) =>
-      ipcRenderer.invoke(IPC.FANOUT_LINEAGE, workspaceIds) as Promise<Record<string, { owner: string; at: number }>>,
+      ipcRenderer.invoke(IPC.FANOUT_LINEAGE, workspaceIds) as Promise<Record<string, { owner: string; at: number; origin?: import('../shared/fanoutOrigin').FanoutOrigin }>>,
     recentAudit: (limit: number) =>
       ipcRenderer.invoke(IPC.FANOUT_AUDIT_RECENT, limit) as Promise<
         import('../main/worktask/fanoutGuards').FanOutAuditRecord[]
@@ -1502,10 +1510,13 @@ document.addEventListener('DOMContentLoaded', () => {
   status: (args?: { verifyFront?: boolean }) =>
     ipcRenderer.invoke(IPC.WEB_STATUS, args ?? {}) as Promise<WebTerminalInfo>,
   pairRefresh: () => ipcRenderer.invoke(IPC.WEB_PAIR_REFRESH) as Promise<WebTerminalInfo>,
-  pairStart: (name: string, allowInput = false) =>
-    ipcRenderer.invoke(IPC.WEB_PAIR_START, { name, allowInput }) as Promise<WebTerminalInfo>,
+  pairStart: (name: string, allowInput = false, flow?: PairFlow) =>
+    ipcRenderer.invoke(IPC.WEB_PAIR_START, { name, allowInput, ...(flow ? { flow } : {}) }) as Promise<WebTerminalInfo>,
+  pairCancel: () => ipcRenderer.invoke(IPC.WEB_PAIR_CANCEL) as Promise<WebTerminalInfo>,
   start: (args: WebStartArgs) =>
     ipcRenderer.invoke(IPC.WEB_START, args) as Promise<WebTerminalInfo>,
+  setGrants: (args: WebGrantArgs) =>
+    ipcRenderer.invoke(IPC.WEB_SET_GRANTS, args) as Promise<WebTerminalInfo>,
   stop: () => ipcRenderer.invoke(IPC.WEB_STOP) as Promise<WebTerminalInfo>,
   // Roster surface. Unlike the calls above these do NOT resolve a
   // WebTerminalInfo: the device roster is owned by the store, not by a running
@@ -1528,23 +1539,27 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.invoke(IPC.REMOTE_HOSTS_ADD, rawUrl, label) as Promise<
       { ok: true; host: RemoteHostPublic } | { ok: false; error: string }
     >,
-  hostsPair: (origin: string, code: string, label?: string) =>
-    ipcRenderer.invoke(IPC.REMOTE_HOSTS_PAIR, origin, code, label) as Promise<
+  hostsPair: (origin: string, code: string, label?: string, replaceHostId?: string) =>
+    ipcRenderer.invoke(
+      IPC.REMOTE_HOSTS_PAIR, origin, code, label, ...(replaceHostId ? [replaceHostId] : []),
+    ) as Promise<
       | { ok: true; host: RemoteHostPublic }
       | { ok: false; reason: PairFailureReason; attemptsLeft?: number }
     >,
   hostsRemove: (id: string) => ipcRenderer.invoke(IPC.REMOTE_HOSTS_REMOVE, id) as Promise<boolean>,
+  hostsStatus: (force?: boolean) =>
+    ipcRenderer.invoke(IPC.REMOTE_HOSTS_STATUS, force === true) as Promise<Record<string, RemoteHostStatus>>,
   workspacesList: (hostId: string) =>
     ipcRenderer.invoke(IPC.REMOTE_WORKSPACES_LIST, hostId) as Promise<
-      { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string }
+      { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string; reason?: RemoteErrorReason }
     >,
   workspaceCreate: (hostId: string, workspaceId: string, cwd?: string) =>
     ipcRenderer.invoke(IPC.REMOTE_WORKSPACE_CREATE, hostId, workspaceId, cwd) as Promise<
-      { ok: true; sessionId: string } | { ok: false; error: string }
+      { ok: true; sessionId: string } | { ok: false; error: string; reason?: RemoteErrorReason }
     >,
   sessionClose: (hostId: string, sessionId: string) =>
     ipcRenderer.invoke(IPC.REMOTE_SESSION_CLOSE, hostId, sessionId) as Promise<
-      { ok: true } | { ok: false; error: string }
+      { ok: true } | { ok: false; error: string; reason?: RemoteErrorReason }
     >,
   attachmentsList: () =>
     ipcRenderer.invoke(IPC.REMOTE_ATTACHMENTS_LIST) as Promise<RemoteAttachmentDescriptor[]>,
@@ -1584,8 +1599,8 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.on(IPC.REMOTE_PANE_EXIT, listener);
     return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_EXIT, listener); };
   },
-  onPaneError: (callback: (e: { attachId: string; message: string }) => void) => {
-    const listener = (_event: unknown, payload: { attachId: string; message: string }) => callback(payload);
+  onPaneError: (callback: (e: { attachId: string; message: string; reason?: RemoteErrorReason }) => void) => {
+    const listener = (_event: unknown, payload: { attachId: string; message: string; reason?: RemoteErrorReason }) => callback(payload);
     ipcRenderer.on(IPC.REMOTE_PANE_ERROR, listener);
     return () => { ipcRenderer.removeListener(IPC.REMOTE_PANE_ERROR, listener); };
   },
@@ -1636,6 +1651,12 @@ contextBridge.exposeInMainWorld('clipboardAPI', {
    *  pane needs /mnt/...). Omit it and the host path is returned verbatim. */
   readImage: (ptyId?: string) => ipcRenderer.invoke(IPC.CLIPBOARD_READ_IMAGE, ptyId) as Promise<string | null>,
   hasImage: () => ipcRenderer.invoke(IPC.CLIPBOARD_HAS_IMAGE) as Promise<boolean>,
+  /** Write text main takes back off after `ttlMs` or on quit, if still there. */
+  writeEphemeral: (text: string, ttlMs: number) =>
+    ipcRenderer.invoke(IPC.CLIPBOARD_WRITE_EPHEMERAL, text, ttlMs) as Promise<void>,
+  /** Clear the ephemeral text now unless it is `stillValid` (`''` = nothing is). */
+  keepEphemeral: (stillValid: string) =>
+    ipcRenderer.invoke(IPC.CLIPBOARD_KEEP_EPHEMERAL, stillValid) as Promise<void>,
 });
 
 export type ElectronAPI = typeof electronAPI;

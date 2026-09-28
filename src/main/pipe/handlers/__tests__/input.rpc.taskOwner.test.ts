@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerInputRpc, taskPaneTextRefusal } from '../input.rpc';
-import { clearPressBlockLifts } from '../approvals.rpc';
 import { mintCommanderToken, __resetCommanderTrustForTesting } from '../../../deck/commanderTrust';
 import type { PTYManager } from '../../../pty/PTYManager';
 import type { TaskLedger } from '../../../../daemon/ledger/TaskLedger';
@@ -97,7 +96,6 @@ const asBrain = (w: Wiring, method: string, params: Record<string, unknown>): Pr
 
 beforeEach(() => {
   vi.clearAllMocks();
-  clearPressBlockLifts();
   sendToRendererMock.mockImplementation((_w: unknown, method: string, params: Record<string, unknown>) => {
     if (method === 'input.findOwnerWorkspace') {
       return Promise.resolve({ workspaceId: PANE_OWNERS[params['ptyId'] as string] ?? null });

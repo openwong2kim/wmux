@@ -35,6 +35,15 @@ export interface AttachedRemoteWorkspace {
    *  because a laptop slept would be silent data loss — it just renders
    *  disconnected until a refresh succeeds or the user detaches. */
   stale?: boolean;
+  /** The host answered 401: it no longer accepts this computer's credential.
+   *  Implies `stale`, but unlike a sleeping laptop it will not heal on its
+   *  own — the row says so and offers to pair again. Cleared by the next
+   *  successful fetch. */
+  authRejected?: boolean;
+  /** The host is on plain http to another machine, so its token is never
+   *  sent: nothing on this row can load until it is paired again over HTTPS.
+   *  Shown like `authRejected` (it will not heal on its own). */
+  insecureTransport?: boolean;
   /**
    * #1329 — this row exists ONLY to drive the per-host poll for a
    * remote-terminal SURFACE (the "New remote pane" / "Split right|down —
@@ -174,6 +183,27 @@ export interface RemoteWorkspacesSlice {
   setRemoteWorkspacePanes: (key: string, panes: RemotePaneSummary[], name?: string) => void;
   /** Marks the entry unreachable (or reachable again) without dropping it. */
   setRemoteWorkspaceStale: (key: string, stale: boolean) => void;
+  /** Flags (or clears) every row on `hostId` as refused by the host — see
+   *  `AttachedRemoteWorkspace.authRejected`. */
+  setRemoteHostAuthRejected: (hostId: string, rejected: boolean) => void;
+  /** Flags (or clears) every row on `hostId` as needing HTTPS — see
+   *  `AttachedRemoteWorkspace.insecureTransport`. */
+  setRemoteHostInsecure: (hostId: string, insecure: boolean) => void;
+  /** The host whose stale credential the user asked to replace from outside
+   *  the attach modal (a remote workspace's "Pair again"). AppLayout mounts
+   *  the modal for it: re-pairing removes the host, which unmounts every view
+   *  of that host — including the one the request came from. */
+  remoteRepairHostId: string | null;
+  requestRemoteRepair: (hostId: string | null) => void;
+  /** Bumped to ask the Remote hub (the sidebar's Remote popover) to open on
+   *  its "Other computers" section — the + menu's "Attach remote workspace". */
+  remoteHubRequestSeq: number;
+  openRemoteHub: () => void;
+  /** How many Remote hubs are mounted. Zero (the sidebar is not rendering
+   *  its nav) means a request has nowhere to land, and callers fall back to
+   *  the attach dialog. */
+  remoteHubMounted: number;
+  setRemoteHubMounted: (mounted: boolean) => void;
   /** #1086 — rename the row LOCALLY (the remote host owns the real name).
    *  Empty clears the alias; the remote snapshot name shows again. */
   renameRemoteWorkspace: (key: string, label: string | null) => void;
@@ -233,9 +263,26 @@ export function selectAttachedRemoteWorkspaces(state: {
     : state.remoteWorkspaces;
 }
 
+/** The name a remote workspace's sidebar row shows: the local alias, else the
+ *  host's name, else a workspace id prefix. Shared by the row and the search. */
+export function remoteWorkspaceDisplayName(rw: Pick<AttachedRemoteWorkspace, 'label' | 'name' | 'workspaceId'>): string {
+  return rw.label || rw.name || rw.workspaceId.slice(0, 8);
+}
+
 export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/immer', never]], [], RemoteWorkspacesSlice> = (set) => ({
   remoteWorkspaces: [],
   activeRemoteKey: null,
+  remoteRepairHostId: null,
+  remoteHubRequestSeq: 0,
+  remoteHubMounted: 0,
+
+  openRemoteHub: () => set((state: StoreState) => {
+    state.remoteHubRequestSeq += 1;
+  }),
+
+  setRemoteHubMounted: (mounted) => set((state: StoreState) => {
+    state.remoteHubMounted = Math.max(0, state.remoteHubMounted + (mounted ? 1 : -1));
+  }),
 
   attachRemoteWorkspace: (w) => {
     // Persist the MERGED entry, not `w`: a re-attach hands us a fresh snapshot
@@ -346,6 +393,7 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
       entry.stale = false;
       entry.attachEpoch = (entry.attachEpoch ?? 0) + 1;
     }
+    if (entry.authRejected) entry.authRejected = false;
   }),
 
   setRemoteWorkspaceStale: (key, stale) => set((state: StoreState) => {
@@ -358,6 +406,24 @@ export const createRemoteWorkspacesSlice: StateCreator<StoreState, [['zustand/im
     if (wasStale === stale) return;
     entry.stale = stale;
     if (!stale) entry.attachEpoch = (entry.attachEpoch ?? 0) + 1;
+  }),
+
+  setRemoteHostAuthRejected: (hostId, rejected) => set((state: StoreState) => {
+    for (const entry of state.remoteWorkspaces) {
+      if (entry.hostId !== hostId || (entry.authRejected === true) === rejected) continue;
+      entry.authRejected = rejected;
+    }
+  }),
+
+  setRemoteHostInsecure: (hostId, insecure) => set((state: StoreState) => {
+    for (const entry of state.remoteWorkspaces) {
+      if (entry.hostId !== hostId || (entry.insecureTransport === true) === insecure) continue;
+      entry.insecureTransport = insecure;
+    }
+  }),
+
+  requestRemoteRepair: (hostId) => set((state: StoreState) => {
+    state.remoteRepairHostId = hostId;
   }),
 
   renameRemoteWorkspace: (key, label) => {

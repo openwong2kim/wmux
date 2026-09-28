@@ -113,6 +113,29 @@ export class RemoteHostsStore {
     return { ok: true, host: toPublic(host) };
   }
 
+  /** Swaps the credential (and, if the operator typed a different address,
+   *  the origin) of an existing host IN PLACE — re-pairing a host that stopped
+   *  accepting the old token. The id is kept on purpose: every attachment
+   *  descriptor and sidebar row is keyed by it, so they all survive. Same
+   *  duplicate-origin refusal and persist-before-mutate discipline as add(). */
+  replaceCredential(
+    id: string,
+    origin: string,
+    token: string,
+    label?: string,
+  ): { ok: true; host: RemoteHostPublic } | { ok: false; error: string } {
+    const prev = this.hosts.find((h) => h.id === id);
+    if (!prev) return { ok: false, error: 'unknown host' };
+    if (this.hosts.some((h) => h.id !== id && h.origin === origin)) {
+      return { ok: false, error: 'already registered' };
+    }
+    const host: RemoteHost = { ...prev, origin, token, ...(label ? { label } : {}) };
+    const next = this.hosts.map((h) => (h.id === id ? host : h));
+    this.persist(next);
+    this.hosts = next;
+    return { ok: true, host: toPublic(host) };
+  }
+
   remove(id: string): boolean {
     const next = this.hosts.filter((h) => h.id !== id);
     if (next.length === this.hosts.length) return false;

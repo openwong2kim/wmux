@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  clearPressBlockLifts,
+  answerPolicyFor,
+  approvalOnScreen,
   parsePressParams,
   pickPendingForPty,
   pickPressTarget,
@@ -70,7 +71,6 @@ const press = (p: Record<string, unknown>, ctx: RpcContext | undefined = BRAIN):
 const OWNED: PendingRow = { id: 'ap-1', sessionId: 'pty-w', workspaceId: 'ws-task', createdAt: 5 };
 
 beforeEach(() => {
-  clearPressBlockLifts();
   wire({});
 });
 
@@ -298,5 +298,42 @@ describe('approval.press', () => {
   it('refuses when there is no daemon to hold the records', async () => {
     wire({ connected: false });
     await expect(press({ ptyId: 'pty-w', decision: 'approve' })).rejects.toThrow(/daemon not connected/);
+  });
+});
+
+describe('answerPolicyFor — may an automated caller answer approvals here', () => {
+  it('allows only a workspace with autonomy on AND approval press on', () => {
+    expect(answerPolicyFor('ws', { mode: 'danger', approvalPress: true })).toEqual({ allowed: true });
+    expect(answerPolicyFor('ws', { mode: 'assist', approvalPress: false })).toEqual({
+      allowed: false,
+      reason: 'press-capability-off',
+    });
+    expect(answerPolicyFor('ws', { mode: 'off', approvalPress: true })).toEqual({ allowed: false, reason: 'autonomy-off' });
+  });
+
+  it('reads a missing entry or workspace as not allowed', () => {
+    expect(answerPolicyFor('ws', undefined)).toEqual({ allowed: false, reason: 'autonomy-off' });
+    expect(answerPolicyFor(null, { mode: 'danger', approvalPress: true })).toEqual({
+      allowed: false,
+      reason: 'workspace-unknown',
+    });
+  });
+});
+
+describe('approvalOnScreen', () => {
+  it('sees a permission dialog even when a narrow pane wrapped its question', () => {
+    const narrow = [' Bash command', '   touch x', ' Do you want to', ' proceed?', ' ❯ 1. Yes', '   2. No'].join('\n');
+    expect(approvalOnScreen(narrow)).toBe(true);
+  });
+
+  it('sees a select under a cursor', () => {
+    expect(approvalOnScreen('Which runner?\n❯ 1. vitest\n  2. jest')).toBe(true);
+  });
+
+  it('does not see the idle composer, a plain question, or a numbered list with no cursor', () => {
+    expect(approvalOnScreen('──────────\n❯ ')).toBe(false);
+    expect(approvalOnScreen('⏺ Should I also update the README?\n\n──────────\n❯ ')).toBe(false);
+    expect(approvalOnScreen('Steps:\n1. build\n2. test\n──────────\n❯ ')).toBe(false);
+    expect(approvalOnScreen('')).toBe(false);
   });
 });

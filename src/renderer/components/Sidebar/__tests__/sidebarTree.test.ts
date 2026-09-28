@@ -1,6 +1,7 @@
 // #1481 — fan-out nesting, rollup, default expansion and "finished".
 import { describe, expect, it, vi } from 'vitest';
-import { buildSidebarTree, isTaskGroupExpanded, paneRowsFinished, revalidateTaskForClose, taskRollup, withTimeout, ORPHAN_GROUP_KEY } from '../sidebarTree';
+import { buildSidebarTree, closedPaneFoldKey, isTaskGroupExpanded, paneRowsFinished, paneTaskFoldKey, revalidateTaskForClose, selectOwnerPaneTaskSplit, splitTasksByPane, taskRollup, withTimeout, ORPHAN_GROUP_KEY } from '../sidebarTree';
+import type { FanoutOrigin } from '../../../../shared/fanoutOrigin';
 import type { WorkTask } from '../../../../shared/workTask';
 import type { TaskLink } from '../../../utils/fanoutProvenance';
 import type { AgentStatus } from '../../../../shared/types';
@@ -45,6 +46,106 @@ describe('buildSidebarTree', () => {
     expect(tree.top.map((n) => n.id)).toEqual(['t1']);
     // #1481 review B9 — it still renders as a task row.
     expect(tree.taskIds.has('t1')).toBe(true);
+  });
+});
+
+// 2026-09-27 — tasks nest under the pane that requested them.
+describe('splitTasksByPane', () => {
+  const origins = (map: Record<string, FanoutOrigin>) => (id: string) => map[id];
+  // Pane p1 holds two tabs (s1a, s1b); pane p2 one (s2); p3 is stashed with
+  // two real surfaces (s3a, s3b) — the roster lists it as one row.
+  const panes = [
+    { paneId: 'p1', surfaceIds: ['s1a', 's1b'] },
+    { paneId: 'p2', surfaceIds: ['s2'] },
+    { paneId: 'p3', surfaceIds: ['s3a', 's3b'] },
+  ];
+  const byPane = (split: ReturnType<typeof splitTasksByPane>) => Object.fromEntries(split.byPane);
+
+  it('files each task under the requesting pane, keeping list order (any tab of the pane)', () => {
+    const split = splitTasksByPane(['t3', 't1', 't2', 't4'], origins({
+      t1: { kind: 'pane', paneId: 'p1', surfaceId: 's1a' },
+      t2: { kind: 'pane', paneId: 'p2', surfaceId: 's2' },
+      t3: { kind: 'pane', paneId: 'p1', surfaceId: 's1a' },
+      t4: { kind: 'pane', paneId: 'p1', surfaceId: 's1b' },
+    }), panes);
+    expect(byPane(split)).toEqual({ p1: ['t3', 't1', 't4'], p2: ['t2'] });
+    expect(split.closedPane).toEqual([]);
+  });
+
+  it('files a task from any real surface of a stashed pane under that pane', () => {
+    const split = splitTasksByPane(['t1', 't2'], origins({
+      t1: { kind: 'pane', paneId: 'p3', surfaceId: 's3b' },
+      t2: { kind: 'pane', paneId: 'p3', surfaceId: 's3a' },
+    }), panes);
+    expect(byPane(split)).toEqual({ p3: ['t1', 't2'] });
+  });
+
+  it('follows the surface when it moved to another pane, and matches a pane-only origin by pane', () => {
+    const split = splitTasksByPane(['moved', 'paneOnly'], origins({
+      moved: { kind: 'pane', paneId: 'p-old', surfaceId: 's2' },
+      paneOnly: { kind: 'pane', paneId: 'p1' },
+    }), panes);
+    expect(byPane(split)).toEqual({ p2: ['moved'], p1: ['paneOnly'] });
+  });
+
+  it('sends a closed pane — or a closed tab of a pane still open — to the trailing group', () => {
+    const split = splitTasksByPane(['t1', 't2', 't3'], origins({
+      t1: { kind: 'pane', paneId: 'gone', surfaceId: 'gone-s', label: 'w1-9 · old' },
+      // The surface left; its pane's other tab did not ask.
+      t2: { kind: 'pane', paneId: 'p1', surfaceId: 's1-closed' },
+      t3: { kind: 'pane', paneId: 'p2', surfaceId: 's2' },
+    }), panes);
+    expect(split.closedPane).toEqual(['t1', 't2']);
+    expect(byPane(split)).toEqual({ p2: ['t3'] });
+  });
+
+  it('sends GUI, orchestrator and unknown requesters to the trailing group', () => {
+    const split = splitTasksByPane(['gui', 'orch', 'bare'], origins({
+      gui: { kind: 'gui' },
+      orch: { kind: 'orchestrator' },
+      bare: { kind: 'pane' },
+    }), panes);
+    expect(split.closedPane).toEqual(['gui', 'orch', 'bare']);
+    expect(split.byPane.size).toBe(0);
+  });
+
+  it('sends a legacy task with no origin stamp to the trailing group', () => {
+    const split = splitTasksByPane(['legacy'], origins({}), panes);
+    expect(split.closedPane).toEqual(['legacy']);
+  });
+
+  it('owner gone still lands in the workspace-level orphan group, not a pane group', () => {
+    // The pane split only ever sees an open owner's tasks: buildSidebarTree
+    // takes a task whose owner is gone out of every owner first.
+    const tree = buildSidebarTree(rows('a', 't1'), links({ t1: { ownerId: 'closed-ws', detached: false } }));
+    expect(tree.orphanTaskIds).toEqual(['t1']);
+    expect(tree.top.find((n) => n.id === 'a')?.taskIds).toEqual([]);
+  });
+
+  it('keys fold state per owner and requesting pane', () => {
+    expect(paneTaskFoldKey('ws1', 'p1')).not.toBe(paneTaskFoldKey('ws1', 'p2'));
+    expect(paneTaskFoldKey('ws1', 'p1')).not.toBe(paneTaskFoldKey('ws2', 'p1'));
+    expect(closedPaneFoldKey('ws1')).not.toBe('ws1');
+  });
+});
+
+describe('selectOwnerPaneTaskSplit (shared per-owner memo)', () => {
+  const leaf = (id: string, surfaces: string[]) => ({ id, type: 'leaf', surfaces: surfaces.map((sid) => ({ id: sid })), activeSurfaceId: surfaces[0] });
+  const ws = (title: string) => ({ id: 'memo-owner', title, rootPane: { id: 'b', type: 'branch', children: [leaf('p1', ['s1']), leaf('p2', ['s2'])] } });
+  const fanoutOrigin = { t1: { kind: 'pane' as const, surfaceId: 's1' }, t2: { kind: 'pane' as const, surfaceId: 's2' } };
+
+  it('returns the same object for the same inputs and across layout churn that moves no task', () => {
+    const a = selectOwnerPaneTaskSplit({ workspaces: [ws('a')], fanoutOrigin }, 'memo-owner', ['t1', 't2']);
+    expect(selectOwnerPaneTaskSplit({ workspaces: [ws('a')], fanoutOrigin }, 'memo-owner', ['t1', 't2'])).toBe(a);
+    expect(Object.fromEntries(a.byPane)).toEqual({ p1: ['t1'], p2: ['t2'] });
+  });
+
+  it('recomputes when a task changes group', () => {
+    const a = selectOwnerPaneTaskSplit({ workspaces: [ws('a')], fanoutOrigin }, 'memo-owner', ['t1', 't2']);
+    const closed = { id: 'memo-owner', rootPane: leaf('p1', ['s1']) };
+    const b = selectOwnerPaneTaskSplit({ workspaces: [closed], fanoutOrigin }, 'memo-owner', ['t1', 't2']);
+    expect(b).not.toBe(a);
+    expect(b.closedPane).toEqual(['t2']);
   });
 });
 

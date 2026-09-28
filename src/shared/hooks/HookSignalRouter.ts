@@ -163,6 +163,9 @@ export class HookSignalRouter {
    *  in it is frequently a different agent that must not inherit the previous
    *  one's open turn. See governsRunningState / noteAgentOnPane. */
   private readonly turnStart = new Map<string, { agent: string | null; at: number }>();
+  /** Submit receipts retain evidence separately from the running-state latch:
+   * the daemon-unreachable hook path must not claim lifecycle ownership. */
+  private readonly promptSubmitAt = new Map<string, number>();
   /** ptyId → the pending expiry for that pane's open turn latch. See
    *  `setTurnExpiryListener`. */
   private readonly turnExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -266,6 +269,23 @@ export class HookSignalRouter {
     // re-armed; arming one here would claim a running state no turn start
     // announced.
     if (this.turnStart.has(ptyId)) this.armTurnExpiry(ptyId);
+  }
+
+  /** Receipt evidence uses main's clock and an exact or uniquely resolved pane. */
+  notePromptSubmit(
+    ptyId: string,
+    signal: AgentSignal,
+    receivedAt = Date.now(),
+    uniqueFallback = false,
+  ): void {
+    if (signal.kind !== 'agent.user_prompt_submit') return;
+    if (signal.ptyId !== ptyId && !uniqueFallback) return;
+    this.promptSubmitAt.set(ptyId, receivedAt);
+  }
+
+  /** Latest observed prompt-submit hook, for input delivery receipts only. */
+  promptSubmitAtFor(ptyId: string): number | undefined {
+    return this.promptSubmitAt.get(ptyId);
   }
 
   /** Read side of the turn latch's owner — testing aid, not a contract. */
@@ -619,6 +639,7 @@ export class HookSignalRouter {
     // Authority rides the same lifecycle: a disposed PTY must return to
     // detector-backstop behavior immediately if the id is ever reused.
     this.authority.delete(ptyId);
+    this.promptSubmitAt.delete(ptyId);
     // Same rule for the turn-start latch: a reused id must not inherit the
     // dead pane's "the hook owns my running dot" claim, which would leave the
     // new pane's heuristic muted with no bridge to replace it.

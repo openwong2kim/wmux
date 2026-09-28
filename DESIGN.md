@@ -382,7 +382,11 @@ from the Dialogs & forms primitives plus `Settings/SettingsLayout.tsx`
 | 2026-09-25 | Sidebar agent monograms removed (owner: the one-letter frame read as cheap and repeated the same C on every row): Claude is unmarked, other agents are named in muted text, the collapsed summary counts per status group | Identity only matters as the exception; the default agent carrying a mark on every row was noise |
 | 2026-09-25 | Fleet gains a Ready to review section (finished, still-open fan-out tasks: title, owner, branch, change summary, PR, time since finished; Open diff / PR / Jump / Close) between Needs you and Running, and the owner's rollup adds `K to review`, both from one selector | After a fan-out every finished task had to be opened one by one to see what it produced. A section, not a tab, keeps Fleet one list; the sidebar link and the section read the same predicate, and nothing is drawn at zero |
 | 2026-09-25 | The sidebar becomes a glance board: Attention is the default order (needs you → finished → running → unconfirmed → idle, newest first, pins keep their slot, new workspaces hold the top, re-sorts wait for a 3 s settle or the pointer leaving); rows carry a --text-main "changed since you last looked" dot; the sidebar and Fleet read one attention classification | Owner call: with the roster in every row, the sidebar already was where the eye goes, and making it navigation only sent the user to Fleet for the one question the list could answer itself. Fleet keeps what a list of rows cannot hold — search, filters, bulk verbs, previews. Rows that jump while the pointer is on them destroy aim, so the order is applied only when nobody is reaching for a row |
+| 2026-09-26 | Pin means pinned to top (supersedes "a pin keeps its slot in the Attention order", 2026-09-25): offered in every sort order, the pinned group leads the list and the rail in its own order and never re-sorts; only the rows below it sort and settle. The group is the head of the stored order, so Ctrl+N, rail numbers and the phone's `order` follow it. Drag reorders inside the group in every order; in Manual a drop beside a pinned row pins, beside an unpinned row unpins. Saved pins load as pinned-to-top | Owner call: a pin that only held a slot did nothing in Manual and still let the row sit mid-list, so it answered "keep this where I put it" but not "keep this where I can see it". Keeping the group in the stored order instead of beside it means every surface already defined on that order — shortcuts, rail, phone — agrees without a second ordering. The slot rule is dropped rather than kept alongside: with the group at the top, a slot in the middle of a sorted list has no remaining use |
 | 2026-09-25 | Agent mention picker (⌘⇧2 / F2): the command-palette panel with a second footer row — a message field and one Send button that is the primary (warm) only while a message and a target are both there, otherwise secondary — and a one-line status slot under it that swaps the key hints for the send result (sent in `--text-main`, stored in `--text-sub`, refused in `--accent-red`). Rows are pane-level: status mark, agent name, muted tab title, workspace, mono coordinate; no agent logos. Sidebar roster rows get a hover/focus `@` that does the picker's Enter without the picker. Drag-and-drop stays | Addressing another agent by dragging a card pasted a whole markdown block and needed the mouse. A palette keeps one list and one grammar; the send result belongs next to the field that caused it, not in a toast that vanishes while the user reads it |
+| 2026-09-27 | Owner decision: the sidebar's Fleet shortcut carries the Fleet board's live counts as small trailing 11px text — `needs you N · running M`, each part hidden at zero, nothing at all when both are zero. Only the needs-you count is warm (`--accent`, one meaning-point); running is `--text-muted`; no chip or fill. The compact rail has no room for numbers, so it reuses its existing 5px warm dot, shown only while something needs you. The label always keeps its width: on a narrow sidebar running drops out first and needs you shrinks to its bare number (at the 220px minimum only the number shows). The accessible name (and the rail tooltip) is built from the same visible strings, so it contains what is shown: `Fleet, needs you 2, running 3`. The numbers are the lengths of the board's own Needs you and Running sections (`selectFleetBoard`), so finished and unconfirmed rows count as needs you, exactly as on the board | The shortcut is the Fleet destination's own rollup, not a third rendition of any one event: a row's red wash stays the evidence, the footer chip stays its own (narrower) count, and this says where to go. Counting the board's sections instead of re-deriving status means the shortcut and the board can never disagree. Running stays neutral so a busy fleet does not spend the amber budget on work that needs nothing |
+| 2026-09-27 | Owner decision: fan-out tasks nest under the pane that requested them, not in one block under the workspace — `Workspace › roster pane row (fold chevron + ⑂ count) › tasks`, plus one trailing `From closed pane` group for tasks whose requesting pane is gone or unknown (GUI, orchestrator, legacy stamps); the workspace-level `From closed workspace` group stays. Fold state, rollup and Close finished move to the pane; the task row's `by …` line and the roster's `N requested` count are removed; Fleet keeps its requester text. No new amber: the count is muted, needs-you is red only while folded | With two agent panes fanning out, one block under the workspace plus a `by …` line on every task made the eye join rows to panes by reading. The tree says it by position, costs no extra line per task, and Fleet — which has no tree — is the one place the text is still needed |
+| 2026-09-27 | Owner decision: attached remote workspaces join the one workspace list instead of a bordered section under it. In Attention they sort with the local rows by their most urgent agent pane on the same scale (a stale mirror counts as idle, its status is frozen); in Manual and Recent they follow the local rows in attach order. Never pinned, dragged or given a Ctrl+N hint. The host line leads with a muted server glyph (no new amber), a mirror whose agent needs you carries the local row's needs-you wash, red dot and label, a stale row is dimmed, and the header count and workspace search include remote rows | One glance board: a remote agent that needs you was invisible below every local row. The glyph says "another machine" without a host header, and dimming is already the convention for not live |
 
 ### Desktop conversation view
 
@@ -435,12 +439,35 @@ no empty reply row or reserved gap under the latest prompt.
   The name stays in the tooltip and accessible name. Never a vendor logo or
   favicon (trademarks; written permission required).
 - **Fan-out nesting:** a task workspace renders under the workspace that fanned
-  it out, indented on a hairline guide, with a fold chevron. A group is open
+  it out, and inside it under the roster row of the pane that requested it
+  (2026-09-27): `Workspace › pane row › tasks`, indented on a hairline guide.
+  The pane row itself carries the group's fold chevron and a muted mono
+  `⑂ N` count; folded with a task that needs you it reads `⑂ M/N` with M in
+  red (the only rendition while folded). Its ⋮ (revealed on hover or focus,
+  like the row's `@`, named for its pane) holds `Show K finished tasks
+  waiting for review` and `Close finished tasks (N)`. A pane with no tasks
+  renders as before; an open pane whose agent ended keeps a muted row (no
+  status mark) while it has tasks. Tasks are matched to the owner pane that
+  holds the origin's surface now — a stashed pane included — else, for an
+  origin without a surface, to its pane; never by pty id. Tasks with no such
+  pane — the requesting tab closed, the GUI or the orchestrator asked, or the
+  stamp predates origins — collect in one trailing `From closed pane` group
+  under the owner, with the rollup line below. Folding the roster folds its
+  pane groups, so a task that needs you must still show: the roster holds
+  open while one of its tasks is the active workspace, re-opens each time
+  one more starts needing you (and does not fold when its owner moves to the
+  background then), stays open while the workspace is being renamed, and its
+  collapsed summary adds a muted `⑂ N` — `⑂ M/N` with M red when M of them
+  need you (said in its accessible name too). Fold state is kept per owner
+  and pane and dropped when the pane or owner closes; the old per-owner key
+  is carried over once. Nested task rows use their own hover group, so
+  hovering the owner reveals none of their chrome. Pane rows keep layout
+  order; a task that needs you lifts its owner in the Attention order. A group is open
   while its owner is active or one of its tasks needs you, otherwise folded; a
   user toggle is remembered, and a group always opens while one of its own
   tasks is the active workspace. A task row carries no "Needs you" word (its
   wash and red ring stay; the rollup names the count) and shows its shortcut
-  hint only on hover — the indent leaves the name no width to spare. The owner's rollup line reads `N tasks · M need
+  hint only on hover — the indent leaves the name no width to spare. A rollup line (the "From closed pane" and "From closed workspace" groups) reads `N tasks · M need
   you` and draws nothing at zero; `· K to review` follows when K > 0 — a
   muted link (steel on hover) that opens Fleet with its first Ready to review
   row selected; "need you" is red only while the group is
@@ -457,6 +484,14 @@ no empty reply row or reserved gap under the latest prompt.
   reorder sources or targets and carry no Ctrl+N hint.
 - **Provenance:** a task row carries a muted fan-out glyph whose tooltip reads
   `Fanned out by <owner> · <you (GUI) | orchestrator | calling pane> · <time>`.
+  In the sidebar the tree itself says who asked (the task sits under the
+  requesting pane), so a task row carries no requester line and a roster row
+  no `N requested` count (both from #1575, removed 2026-09-27); an audit-log
+  pty id is never matched against today's layout. Fleet, which has no tree,
+  names the requester on a task's
+  row in every section, on an 11px muted line of its own under the meta
+  line: `by <coordinate · pane name> · <workspace>`, workspace last so it
+  truncates first. A closed requester keeps the same coordinate-first order.
   Inside a task workspace the titlebar's workspace name is followed by a muted
   `↰ <owner>` link (steel on hover) that jumps to the owner.
 - **Order:** Attention (default), Manual, or Recent activity — Settings ›
@@ -464,18 +499,31 @@ no empty reply row or reserved gap under the latest prompt.
   was not looked at) → running → unconfirmed → idle; within a class the most
   recent event first. Plain `waiting` with no question is idle here, as in
   Fleet, and draws no "Needs you" wash or label. A fan-out owner scores as its
-  most urgent nested task, so a task that needs you lifts its group. A pinned
-  workspace (row menu › Pin position, offered in Attention only; a muted pin
-  glyph) keeps its rank among the top-level workspaces above it in the stored
-  order — nested tasks take no slot. A workspace created in the last three
-  minutes holds the top. Rows never move under the pointer or keyboard focus:
-  a re-sort applies after the list has been quiet for 3 s (at most 10 s after
-  the first pending change), or at once when the pointer or focus leaves;
-  adds and removals land immediately. The non-manual orders are display-only:
+  most urgent nested task, so a task that needs you lifts its group. A
+  workspace created in the last three minutes holds the top of the unpinned
+  rows. Rows never move under the pointer or keyboard focus: a re-sort
+  applies after the list has been quiet for 3 s (at most 10 s after the first
+  pending change), or at once when the pointer or focus leaves; adds and
+  removals land immediately. The non-manual orders are display-only:
   drag-to-reorder pauses, and the `^N` shortcut hints are hidden because
-  Ctrl+N follows the stored order. Sessions that never chose an order move to
+  Ctrl+N follows the stored order — except in the pinned group, below.
+  Sessions that never chose an order move to
   Attention once, with a notice offering to keep the manual order; an explicit
   choice is kept.
+- **Pinned to top:** row menu › Pin to top / Unpin, in every order (not on a
+  nested task row). Nesting wins: a nested task cannot be pinned, and a pinned
+  workspace that becomes one leaves the group. Pinned workspaces lead the list and the rail in every
+  order, in the order the user gave them, and never re-sort; only the rows
+  below follow the chosen order. A pinned row carries a muted pin glyph
+  (`--text-muted`, never amber) and no group header or divider — the glyph
+  and the position are the signal. The group is the head of the stored order,
+  so `^N`, the rail numbers and the phone's `order` all read pinned-first, and
+  pinned rows show their `^N` hint in every order. Pin, unpin and reorders
+  inside the group apply at once (they are the user's own act, not a
+  re-sort). Drag reorders inside the group in every order; in Manual a drop
+  takes the target row's pin state, so dropping beside a pinned row pins and
+  beside an unpinned row unpins. Pinning lands the row at the end of the
+  group; unpinning at the top of the rest.
 - **Changed since you last looked:** a 6px `--text-main` dot (never amber —
   Fleet's rule) after the name, on the workspace row and on the agent row,
   when an agent tab's status or pending question changed (any number of
@@ -504,8 +552,12 @@ Fleet opens over the tools dock, at up to 720px wide, without adding a flex
 column or changing terminal dimensions. Mirror its anchoring when the sidebar
 moves right. Keep the covered tools dock mounted and inert so drafts survive
 and keyboard focus cannot enter covered controls. Fleet stays non-modal: visible
-workspace areas remain usable; close, Escape and selecting an agent retain their
-existing behavior. Fleet is an attention board (andon), not a map: one
+workspace areas remain usable. Selecting an agent closes Fleet by default. The
+header’s session-only “Keep open after jump” option retains Fleet and its filters
+for agent and review-task jumps while handing input focus to the destination.
+Closing later never restores the pre-jump pane. Close, Ctrl+Shift+A and Escape
+inside Fleet still dismiss it; Open diff and browser-help Jump always close it.
+Fleet is an attention board (andon), not a map: one
 single-column list in three sections — Needs you, Running, Idle — decided by one
 pure selector (`groupFleetPanes`) that other consumers reuse. Needs you holds
 input requests, errors, stopped supervision, unconfirmed (no report for 30m+)

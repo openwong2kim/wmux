@@ -1,7 +1,7 @@
 {
   "name": "wmux",
   "productName": "wmux",
-  "version": "3.61.0",
+  "version": "3.62.1",
   "description": "Workspace multiplexer for AI agents — run fleets of Claude Code, Codex & Gemini in parallel on Windows & macOS, with MCP browser automation built in",
   "private": true,
   "main": ".vite/build/index.js",
@@ -14,6 +14,7 @@
     "package": "npm run build:daemon && npm run build:mcp && npm run build:cli && electron-forge package",
     "make": "npm run build:daemon && npm run build:mcp && npm run build:cli && electron-forge make",
     "lint": "eslint --ext .ts,.tsx .",
+    "typecheck": "node scripts/typecheck.mjs",
     "build:daemon": "tsc -p tsconfig.daemon.json && esbuild dist/daemon/daemon/index.js --bundle --platform=node --outfile=dist/daemon-bundle/index.js --external:node-pty --external:koffi && npm run build:daemon-web",
     "build:daemon-web": "node scripts/build-daemon-web.mjs",
     "build:cli": "tsc -p tsconfig.cli.json && esbuild dist/cli/cli/index.js --bundle --platform=node --outfile=dist/cli-bundle/index.js && node scripts/copy-bridge.mjs",

@@ -5,6 +5,9 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { useStore } from '../../../stores';
 import SidebarNavigation from '../SidebarNavigation';
 import MiniSidebar from '../MiniSidebar';
+import { selectFleetBoard } from '../../../stores/selectors/fleet';
+import { seedFleetTriageStore } from '../../../utils/__tests__/fleetTriageFixture';
+import { setLocale } from '../../../i18n';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -89,4 +92,85 @@ describe('Sidebar global navigation', () => {
     expect(useStore.getState().agentToolbarEnabled).toBe(true);
   });
 
+});
+
+describe('Fleet shortcut counts', () => {
+  /** Visible text per part: the full needs-you string (the short number is the
+   *  narrow-width fallback), the running string without its separator. */
+  function counts() {
+    const out: Record<string, string> = {};
+    const needs = container.querySelector<HTMLElement>('[data-fleet-nav-count="needsYou"]');
+    if (needs) out.needsYou = needs.querySelector('.wmux-nav-count-full')?.textContent ?? '';
+    const running = container.querySelector<HTMLElement>('[data-fleet-nav-count="running"]');
+    if (running) out.running = (running.textContent ?? '').replace('·', '');
+    return out;
+  }
+  function seed(extra: Parameters<typeof seedFleetTriageStore>[1] = {}) {
+    act(() => seedFleetTriageStore(Date.now(), { locale: 'en', ...extra }));
+  }
+  function board() {
+    const { groups } = selectFleetBoard(useStore.getState(), { now: Date.now(), sortMode: 'attention' });
+    return { needsYou: groups.needsYou.length, running: groups.running.length };
+  }
+
+  it('shows the Fleet board\'s own Needs you and Running section sizes', () => {
+    seed();
+    act(() => root.render(<SidebarNavigation />));
+    // Fixture: two agents asking, one remote error; one running.
+    expect(board()).toEqual({ needsYou: 3, running: 1 });
+    expect(counts()).toEqual({ needsYou: 'needs you 3', running: 'running 1' });
+    expect(container.querySelector('.wmux-nav-count-short')?.textContent).toBe('3');
+    expect(container.querySelector('.wmux-nav-count')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('names the button with the same words it shows (label in name)', () => {
+    seed();
+    act(() => root.render(<SidebarNavigation />));
+    const name = button('fleet').getAttribute('aria-label') ?? '';
+    expect(name).toBe('Fleet, needs you 3, running 1');
+    for (const part of Object.values(counts())) expect(name).toContain(part);
+    try {
+      act(() => { setLocale('ko'); useStore.setState({ locale: 'ko' }); });
+      expect(button('fleet').getAttribute('aria-label')).toBe('Fleet, 확인 필요 3, 실행 중 1');
+      expect(container.querySelector('.wmux-nav-count-full')?.textContent).toBe('확인 필요 3');
+    } finally {
+      act(() => { setLocale('en'); useStore.setState({ locale: 'en' }); });
+    }
+  });
+
+  it('agrees with selectFleetBoard across states, and draws nothing at zero', () => {
+    seed();
+    act(() => root.render(<SidebarNavigation />));
+    const steps: Partial<ReturnType<typeof useStore.getState>>[] = [
+      { surfaceAgentStatus: {}, surfacePendingQuestion: {}, remoteWorkspaces: [] },
+      { surfaceAgentStatus: { 'pty-5': 'error', 'pty-4': 'complete' } },
+      { surfaceAgent: {}, surfaceTurnOpenAt: {} },
+      { surfaceAgentStatus: {} },
+      { surfaceAgentStatus: { 'pty-1': 'running', 'pty-5': 'running' }, surfaceAgent: { 'pty-1': { name: 'Claude Code', status: 'running' } } },
+    ];
+    for (const step of steps) {
+      act(() => useStore.setState(step));
+      const expected = board();
+      const shown = counts();
+      expect(shown.needsYou ?? '').toBe(expected.needsYou ? `needs you ${expected.needsYou}` : '');
+      expect(shown.running ?? '').toBe(expected.running ? `running ${expected.running}` : '');
+      if (expected.needsYou + expected.running === 0) {
+        expect(container.querySelector('.wmux-nav-count')).toBeNull();
+        expect(button('fleet').getAttribute('aria-label')).toBe('Fleet');
+      }
+    }
+  });
+
+  it('keeps only the needs-you dot on the compact rail, with the numbers in its name', () => {
+    seed();
+    act(() => root.render(<SidebarNavigation compact />));
+    expect(container.querySelectorAll('[data-fleet-nav-count]')).toHaveLength(1);
+    expect(container.querySelector('[data-fleet-nav-count="needsYou"]')?.textContent).toBe('');
+    expect(button('fleet').getAttribute('aria-label')).toBe('Fleet, needs you 3, running 1');
+    expect(button('fleet').title).toBe(button('fleet').getAttribute('aria-label'));
+
+    act(() => useStore.setState({ surfaceAgentStatus: {}, surfacePendingQuestion: {}, remoteWorkspaces: [] }));
+    expect(container.querySelectorAll('[data-fleet-nav-count]')).toHaveLength(0);
+    expect(button('fleet').getAttribute('aria-label')).toBe('Fleet, running 1');
+  });
 });

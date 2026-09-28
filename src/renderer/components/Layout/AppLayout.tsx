@@ -74,6 +74,7 @@ import { resolvePtyIdsToClear } from '../../hooks/reconcileWithReQuery';
 import { runWithProgressTimeout } from '../../hooks/reconcileProgressTimeout';
 import { createLateReconcileOnConnect } from '../../hooks/lateReconcileOnConnect';
 import ProjectConfigDialog from '../Project/ProjectConfigDialog';
+import AttachRemoteModal from '../Sidebar/AttachRemoteModal';
 import { probeProjectConfig, maybeAutoApplyProjectLayout, workspaceProbeCwd } from '../../utils/projectConfigProbe';
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
@@ -748,6 +749,8 @@ export default function AppLayout() {
   // Gate the cross-pane SearchResultsPanel mount at the layout level so its
   // 6-field zustand subscription doesn't run when the panel is closed (I3).
   const searchPanelOpen = useStore((s) => s.searchPanelOpen);
+  const remoteRepairHostId = useStore((s) => s.remoteRepairHostId);
+  const requestRemoteRepair = useStore((s) => s.requestRemoteRepair);
   // Mount-gate the Fleet View overlay so its store subscriptions + selector
   // only run while the cockpit is open (the open toggle lives in the global
   // keyboard handler, not inside FleetView, so gating the mount is safe).
@@ -2039,6 +2042,15 @@ export default function AppLayout() {
       {!inboxOwnsApprovals && <ExecuteApprovalDialog />}
       {!inboxOwnsApprovals && <PermissionApprovalDialogContainer />}
       <ProjectConfigDialog />
+      {/* "Pair again" from a remote workspace whose host rejected us. Lives
+          here because re-pairing removes that host's views. */}
+      {remoteRepairHostId && (
+        <AttachRemoteModal
+          key={remoteRepairHostId}
+          repairHostId={remoteRepairHostId}
+          onClose={() => requestRemoteRepair(null)}
+        />
+      )}
 
       {onboardingActive && (
         <OnboardingOverlay onComplete={() => { completeOnboarding(); }} />

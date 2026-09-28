@@ -21,7 +21,9 @@ import {
 } from '../../hooks/useNotificationListener';
 import { fleetChangedSinceSeen, type FleetSeenEntry, type FleetTab } from '../../stores/slices/uiSlice';
 import { tailForPty } from '../../utils/terminalTail';
-import { onTerminalRegistered } from '../../hooks/useTerminal';
+import { driveFocusToTerminal, resolveActivePanePtyId } from '../../hooks/useActivePaneFocus';
+import { findLeaf } from '../../../shared/paneUtils';
+import { terminalRegistry, onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
 import FleetReviewRow, { reviewBusyKind, reviewPrVerb, reviewRowKey, type ReviewEditorKind } from './FleetReviewRow';
 import { pruneReviewSummaries } from './reviewSummary';
@@ -53,6 +55,9 @@ const IDLE_TOGGLE_KEY = 'fleet:idle-toggle';
 export default function FleetView() {
   const t = useT();
   const setVisible = useStore((s) => s.setFleetViewVisible);
+  const keepOpenAfterJump = useStore((s) => s.fleetKeepOpenAfterJump);
+  const setKeepOpenAfterJump = useStore((s) => s.setFleetKeepOpenAfterJump);
+  const [jumpTarget, setJumpTarget] = useState<{ workspaceId: string; paneId: string; surfaceId: string; surfaceType?: string; ptyId: string | null } | null>(null);
   const workspaces = useStore((s) => s.workspaces);
   const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
   // Hook-driven per-pane activity line (fleet-activity-line-hook). Subscribed
@@ -334,7 +339,21 @@ export default function FleetView() {
     };
   }, [resourcePtyIdsKey]);
 
-  // Jump to a pane's workspace + pane + surface, then close the overlay.
+  const finishJump = useCallback(() => {
+    // Navigation supersedes the opener, including when Fleet is closed later.
+    restoreFocusRef.current = null;
+    if (!keepOpenAfterJump) { setVisible(false); return; }
+    const state = useStore.getState();
+    const workspace = state.workspaces.find((ws) => ws.id === state.activeWorkspaceId);
+    const pane = workspace && findLeaf(workspace.rootPane, workspace.activePaneId);
+    if (workspace && pane) setJumpTarget({
+      workspaceId: workspace.id, paneId: pane.id, surfaceId: pane.activeSurfaceId,
+      surfaceType: pane.surfaces.find((surface) => surface.id === pane.activeSurfaceId)?.surfaceType,
+      ptyId: resolveActivePanePtyId(state),
+    });
+  }, [keepOpenAfterJump, setVisible]);
+
+  // Jump to a pane, optionally retaining Fleet and its search/filter state.
   // Terminal panes resolve by their active-surface ptyId via the full
   // notification jump — which also marks that surface's notifications read and
   // clears its attention ring. That side effect is intentional here: jumping to
@@ -368,8 +387,8 @@ export default function FleetView() {
     } else {
       focusNotificationTarget(getState, { workspaceId: card.workspaceId });
     }
-    setVisible(false);
-  }, [setVisible]);
+    finishJump();
+  }, [finishJump]);
 
   // Same clamp for the inbox: a row resolving (or the A2A 30s auto-deny)
   // shrinks the list, so the focused index must never dangle past the end.
@@ -435,6 +454,7 @@ export default function FleetView() {
   }, []);
 
   const openReviewDiff = useCallback((entry: ReviewQueueEntry) => {
+    restoreFocusRef.current = null;
     // worktree:false task: nothing to diff — its result is the folder.
     if (entry.outputDir && !entry.branch) {
       void window.electronAPI.shell.openPath(entry.outputDir);
@@ -446,8 +466,8 @@ export default function FleetView() {
   }, [setVisible]);
   const jumpToReviewTask = useCallback((entry: ReviewQueueEntry) => {
     focusNotificationTarget(() => useStore.getState(), { workspaceId: entry.workspaceId });
-    setVisible(false);
-  }, [setVisible]);
+    finishJump();
+  }, [finishJump]);
   const openReviewEditor = useCallback((entry: ReviewQueueEntry, kind: ReviewEditorKind) => {
     // One close or PR at a time per task.
     if (reviewBusyKind(entry.workspaceId)) return;
@@ -525,6 +545,49 @@ export default function FleetView() {
     };
   }, []);
 
+  // Run after the workspace has rendered; jumping to the already-active pane
+  // must also transfer input focus (the global focus-key effect will not run).
+  useEffect(() => {
+    if (!jumpTarget) return;
+    let stop: (() => void) | undefined;
+    const raf = requestAnimationFrame(() => {
+      const rememberDestination = () => {
+        const active = document.activeElement;
+        if (active instanceof HTMLElement && active !== document.body && !panelRef.current?.contains(active)) {
+          restoreFocusRef.current = active;
+        }
+      };
+      const ptyId = jumpTarget.ptyId;
+      if (ptyId) {
+        stop = driveFocusToTerminal(ptyId, {
+          getTerminal: (id) => {
+            const terminal = terminalRegistry.get(id);
+            return terminal ? { focus: () => {
+              const state = useStore.getState();
+              const workspace = state.workspaces.find((ws) => ws.id === state.activeWorkspaceId);
+              const pane = workspace && findLeaf(workspace.rootPane, workspace.activePaneId);
+              if (workspace?.id !== jumpTarget.workspaceId || pane?.id !== jumpTarget.paneId || pane.activeSurfaceId !== jumpTarget.surfaceId) return;
+              terminal.focus();
+              rememberDestination();
+            } } : undefined;
+          },
+          onRegistered: onTerminalRegistered,
+          raf: requestAnimationFrame,
+          caf: cancelAnimationFrame,
+        });
+      } else {
+        const pane = Array.from(document.querySelectorAll<HTMLElement>('[data-pane-root]'))
+          .find((el) => el.dataset.paneRoot === jumpTarget.paneId && el.dataset.paneWorkspace === jumpTarget.workspaceId);
+        const candidates = pane?.querySelectorAll<HTMLElement>(
+          jumpTarget.surfaceType === 'browser' ? 'webview' : 'textarea, [contenteditable="true"], input',
+        );
+        Array.from(candidates ?? []).find((el) => el.getClientRects().length > 0)?.focus();
+        rememberDestination();
+      }
+    });
+    return () => { cancelAnimationFrame(raf); stop?.(); };
+  }, [jumpTarget]);
+
   // 로빙 포커스: 화살표 이동에 맞춰 DOM 포커스가 카드/행을 따라가고 보조기술이
   // 선택을 읽어주도록 한다. 단 상시 크롬이므로 포커스가 "이미 패널 안"일 때만
   // 이동한다 — 사용자가 다른 페인에서 타이핑 중일 때 리렌더가 포커스를 뺏으면
@@ -535,7 +598,10 @@ export default function FleetView() {
     if (!panel || !panel.contains(active)) return;
     // Search, filters and tabs retain focus while the results change.
     if (active !== panel && (!(active instanceof HTMLElement) || active.getAttribute('role') !== 'option')) return;
-    const raf = requestAnimationFrame(() => { focusActiveItem(); });
+    const raf = requestAnimationFrame(() => {
+      // A kept-open jump may have moved focus since this frame was queued.
+      if (panel.contains(document.activeElement)) focusActiveItem();
+    });
     return () => cancelAnimationFrame(raf);
   }, [focusActiveItem]);
 
@@ -731,6 +797,11 @@ export default function FleetView() {
           <div className="min-w-0">
             <h2 className="wmux-fleet-title">{t('fleet.title')}</h2>
             <p className="wmux-fleet-summary">{t('fleet.scope', { count: panes.length, projects: new Set(panes.map((p) => p.workspaceId)).size })}</p>
+            <label className="wmux-fleet-keep-open">
+              <input type="checkbox" checked={keepOpenAfterJump}
+                onChange={(event) => setKeepOpenAfterJump(event.target.checked)} />
+              {t('fleet.keepOpenAfterJump')}
+            </label>
           </div>
           <button type="button" onClick={() => setVisible(false)} className="wmux-fleet-close"
             title={t('fleet.close')} aria-label={t('fleet.close')}><IconX size={16} /></button>
@@ -790,7 +861,7 @@ export default function FleetView() {
           {tab === 'approvals' ? (
             <>
               {inbox.length > 0 ? (
-                <ApprovalInboxList items={inbox} focusedIdx={inboxIdx} onResolve={resolveInboxItem} />
+                <ApprovalInboxList items={inbox} focusedIdx={inboxIdx} onResolve={resolveInboxItem} onNavigate={() => { restoreFocusRef.current = null; }} />
               ) : (
                 <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
                   {t('fleet.approvals.empty')}

@@ -19,7 +19,12 @@ import { app, ipcMain } from 'electron';
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
-import { RemoteHostClient } from '../../remote/RemoteHostClient';
+import {
+  RemoteHostClient,
+  RemoteInsecureTransportError,
+  isRemoteAuthRejected,
+  isRemoteInsecureTransport,
+} from '../../remote/RemoteHostClient';
 import type { RemoteHostsStore } from '../../remote/RemoteHostsStore';
 import type { RemoteAttachmentsStore } from '../../remote/RemoteAttachmentsStore';
 import { RemoteAttentionSubscriber } from '../../remote/RemoteAttentionSubscriber';
@@ -28,11 +33,16 @@ import { isCategoryMuted } from '../../notification/mutedCategories';
 import { toastManager } from '../../notification/ToastManager';
 import { parseRemoteAttachmentKey, parseWebUrl, remoteAttachmentKey, REMOTE_POLL_INTERVAL_MS } from '../../../shared/remoteHosts';
 import { normalizeWorkspaceColor } from '../../../shared/workspaceColors';
+import { DEVICE_KIND_HEADER } from '../../../shared/web';
+import { HostStatusProber, combineHostStatus } from '../../remote/hostStatus';
+import { credentialOriginProblem, isCredentialSafeOriginString } from '../../../shared/remotePairInput';
 import type {
   PairFailureReason,
   RemoteAttachmentDescriptor,
+  RemoteErrorReason,
   RemoteHost,
   RemoteHostPublic,
+  RemoteHostStatus,
   RemoteWorkspaceSummary,
 } from '../../../shared/remoteHosts';
 
@@ -56,6 +66,8 @@ type ProbeResult =
   | { kind: 'ok'; allowInput: boolean }
   | { kind: 'unauthorized' }
   | { kind: 'unreachable' }
+  /** Plain http to another machine: never probed, the token would go in the clear. */
+  | { kind: 'needs-https' }
   | { kind: 'incompatible' };
 
 export interface RegisterRemoteHandlersDeps {
@@ -74,6 +86,8 @@ export interface RegisterRemoteHandlersDeps {
   /** Test seam: fetch implementation for the `/api/config` add-time probe
    *  (runs before any RemoteHostClient exists, so it needs its own seam). */
   fetchImpl?: typeof fetch;
+  /** Test seam: the hub's status prober (clock, TTL, concurrency). */
+  statusProber?: HostStatusProber;
 }
 
 interface AttachRecord {
@@ -82,6 +96,14 @@ interface AttachRecord {
   sessionId: string;
   senderId: number;
   sender: WebContents;
+}
+
+/** A failed client call as an IPC result. A rejected credential carries its
+ *  reason so the renderer can offer "pair again" instead of a raw message. */
+function failure(err: unknown): { ok: false; error: string; reason?: RemoteErrorReason } {
+  const error = err instanceof Error ? err.message : String(err);
+  if (isRemoteAuthRejected(err) || isRemoteInsecureTransport(err)) return { ok: false, error, reason: err.reason };
+  return { ok: false, error };
 }
 
 function assertString(v: unknown, field: string): string {
@@ -98,6 +120,8 @@ async function probeConfig(
   token: string,
   fetchImpl: typeof fetch,
 ): Promise<ProbeResult> {
+  // Never send the token to another machine over plain http.
+  if (!isCredentialSafeOriginString(origin)) return { kind: 'needs-https' };
   let res: Response;
   try {
     res = await fetchImpl(`${origin}/api/config`, {
@@ -129,12 +153,16 @@ async function probeConfig(
 /** Add-time error string for a probe failure — three distinct messages so a
  *  rejected token and an unreachable host aren't both misreported as "too
  *  old". */
+const NEEDS_HTTPS_MESSAGE = 'that host needs HTTPS — a token is never sent to another computer over plain http';
+
 function probeFailureMessage(probe: Exclude<ProbeResult, { kind: 'ok' }>): string {
   switch (probe.kind) {
     case 'unauthorized':
       return 'token rejected — re-run wmux web on the remote and paste the new URL';
     case 'unreachable':
       return 'could not reach that host';
+    case 'needs-https':
+      return NEEDS_HTTPS_MESSAGE;
     case 'incompatible':
       return "that machine's wmux is too old for remote attach";
   }
@@ -174,6 +202,9 @@ async function exchangePairCode(
       // pairing) but still a credential-minting request: never follow a
       // redirect, and don't let a hung remote hang the modal forever.
       redirect: 'error',
+      // Display only: the host's roster shows this device as a computer. The
+      // host allowlists the value and never authorizes on it.
+      headers: { [DEVICE_KIND_HEADER]: 'computer' },
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
     });
   } catch {
@@ -223,6 +254,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       new RemoteAttentionSubscriber({ host, onNotification, fetchImpl }));
   const fetchImpl: typeof fetch = deps.fetchImpl ?? fetch;
   const makeClient = deps.clientFactory ?? ((host: RemoteHost) => new RemoteHostClient(host, fetchImpl));
+  const statusProber = deps.statusProber ?? new HostStatusProber({ fetchImpl });
 
   const clients = new Map<string, RemoteHostClient>(); // hostId -> client, lazily built
   // RemoteHostsStore.add() has no allowInput param (Task 3 interface), so the
@@ -469,6 +501,23 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     sender.on('did-start-navigation', onNavigationListener);
   }
 
+  /** Every live connection to `hostId` was built on its old credential:
+   *  the cached client, its attaches, and the attention subscription. Drop
+   *  them so the next attach and the next sync open fresh ones. */
+  function dropHostConnections(hostId: string): void {
+    const client = clients.get(hostId);
+    if (client) {
+      client.detachAll();
+      clients.delete(hostId);
+    }
+    for (const [attachId, record] of [...attachRecords.entries()]) {
+      if (record.hostId === hostId) detachAttach(attachId);
+    }
+    attentionSubs.get(hostId)?.stop();
+    attentionSubs.delete(hostId);
+    syncAttentionSubs();
+  }
+
   function publicHost(host: RemoteHostPublic): RemoteHostPublic {
     const cached = allowInputCache.get(host.id);
     return cached === undefined ? host : { ...host, allowInput: cached };
@@ -478,6 +527,26 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
   ipcMain.handle(IPC.REMOTE_HOSTS_LIST, wrapHandler(IPC.REMOTE_HOSTS_LIST, async (): Promise<RemoteHostPublic[]> => {
     return store.list().map(publicHost);
   }));
+
+  ipcMain.removeHandler(IPC.REMOTE_HOSTS_STATUS);
+  ipcMain.handle(IPC.REMOTE_HOSTS_STATUS, wrapHandler(IPC.REMOTE_HOSTS_STATUS,
+    async (_e: IpcMainInvokeEvent, force?: unknown): Promise<Record<string, RemoteHostStatus>> => {
+      const hosts = store.list().map((h) => store.get(h.id)).filter((h): h is RemoteHost => h !== null);
+      let probed: Awaited<ReturnType<HostStatusProber['probe']>>;
+      try {
+        probed = await statusProber.probe(hosts, { force: force === true });
+      } catch {
+        // The prober never throws by contract; if it ever did, report every
+        // host as unreachable rather than rejecting a UI read.
+        probed = Object.fromEntries(hosts.map((h) => [h.id, 'unreachable' as const]));
+      }
+      const out: Record<string, RemoteHostStatus> = {};
+      for (const host of hosts) {
+        const status = combineHostStatus(probed[host.id], clients.get(host.id));
+        if (status) out[host.id] = status;
+      }
+      return out;
+    }));
 
   ipcMain.removeHandler(IPC.REMOTE_HOSTS_ADD);
   ipcMain.handle(IPC.REMOTE_HOSTS_ADD, wrapHandler(IPC.REMOTE_HOSTS_ADD,
@@ -491,6 +560,13 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
 
       const parsed = parseWebUrl(url);
       if (!parsed) return { ok: false, error: 'invalid wmux web URL' };
+      // The token never crosses to another machine in the clear, and the
+      // address the operator sees must be the one it connects to.
+      const problem = credentialOriginProblem(new URL(url.trim()));
+      if (problem === 'userinfo') return { ok: false, error: 'invalid wmux web URL' };
+      if (problem === 'insecure') {
+        return { ok: false, error: NEEDS_HTTPS_MESSAGE };
+      }
       if (store.list().some((h) => h.origin === parsed.origin)) {
         return { ok: false, error: 'already registered' };
       }
@@ -529,6 +605,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       rawOrigin: unknown,
       rawCode: unknown,
       label?: unknown,
+      replaceHostId?: unknown,
     ): Promise<
       | { ok: true; host: RemoteHostPublic }
       | { ok: false; reason: PairFailureReason; attemptsLeft?: number }
@@ -536,6 +613,10 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       const originInput = assertString(rawOrigin, 'origin');
       const code = assertString(rawCode, 'code').trim();
       const safeLabel = label === undefined ? undefined : assertString(label, 'label');
+      // Re-pairing a host that rejected its old credential: the new token
+      // replaces the old one on the SAME record, so its attachments survive.
+      const replacing = replaceHostId === undefined ? null : store.get(assertString(replaceHostId, 'replaceHostId'));
+      if (replaceHostId !== undefined && !replacing) return { ok: false, reason: 'pairing-failed' };
 
       let origin: string;
       try {
@@ -543,12 +624,21 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         if (u.protocol !== 'http:' && u.protocol !== 'https:') {
           return { ok: false, reason: 'invalid-origin' };
         }
+        // The minted credential never crosses to another machine in the
+        // clear, and `user@` would make the shown address a lie.
+        const problem = credentialOriginProblem(u);
+        if (problem === 'userinfo') return { ok: false, reason: 'invalid-origin' };
+        if (problem === 'insecure') return { ok: false, reason: 'insecure-transport' };
         origin = u.origin;
       } catch {
         return { ok: false, reason: 'invalid-origin' };
       }
 
-      if (store.list().some((h) => h.origin === origin)) {
+      // A re-pair renews THIS host's credential; it never rebinds the host to
+      // a different machine, whatever link was pasted.
+      if (replacing && replacing.origin !== origin) return { ok: false, reason: 'pairing-failed' };
+
+      if (store.list().some((h) => h.origin === origin && h.id !== replacing?.id)) {
         return { ok: false, reason: 'already-registered' };
       }
 
@@ -562,6 +652,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       // request — treated the same as 'incompatible' rather than inventing
       // a reason that would wrongly imply the CODE was wrong.
       const probe = await probeConfig(origin, exchange.token, fetchImpl);
+      if (probe.kind === 'needs-https') return { ok: false, reason: 'insecure-transport' };
       if (probe.kind !== 'ok') {
         return { ok: false, reason: 'incompatible' };
       }
@@ -572,11 +663,15 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       // still in scope as an in-flight local.
       let result: ReturnType<typeof store.addDirect>;
       try {
-        result = store.addDirect(origin, exchange.token, safeLabel);
+        result = replacing
+          ? store.replaceCredential(replacing.id, origin, exchange.token, safeLabel)
+          : store.addDirect(origin, exchange.token, safeLabel);
       } catch {
         return { ok: false, reason: 'pairing-failed' };
       }
       if (!result.ok) return { ok: false, reason: 'already-registered' };
+      if (replacing) dropHostConnections(replacing.id);
+      statusProber.invalidate(result.host.id);
 
       allowInputCache.set(result.host.id, probe.allowInput);
       return { ok: true, host: { ...result.host, allowInput: probe.allowInput } };
@@ -599,6 +694,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       } catch { /* see above — an orphan descriptor restores as a stale row */ }
       syncAttentionSubs();
       allowInputCache.delete(hostId);
+      statusProber.invalidate(hostId);
       const client = clients.get(hostId);
       if (client) {
         client.detachAll();
@@ -615,7 +711,9 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     async (
       _e: IpcMainInvokeEvent,
       hostId: unknown,
-    ): Promise<{ ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string }> => {
+    ): Promise<
+      { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string; reason?: RemoteErrorReason }
+    > => {
       const id = assertString(hostId, 'hostId');
       const host = store.get(id);
       if (!host) return { ok: false, error: 'unknown host' };
@@ -631,7 +729,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         const res = await client.listWorkspaces();
         return { ok: true, workspaces: res.workspaces };
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        return failure(err);
       }
     }));
 
@@ -642,7 +740,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       hostId: unknown,
       workspaceId: unknown,
       cwd?: unknown,
-    ): Promise<{ ok: true; sessionId: string } | { ok: false; error: string }> => {
+    ): Promise<{ ok: true; sessionId: string } | { ok: false; error: string; reason?: RemoteErrorReason }> => {
       const id = assertString(hostId, 'hostId');
       const wsId = assertString(workspaceId, 'workspaceId');
       const safeCwd = cwd === undefined ? undefined : assertString(cwd, 'cwd');
@@ -652,7 +750,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         const { sessionId } = await client.createWorkspace(wsId, safeCwd);
         return { ok: true, sessionId };
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        return failure(err);
       }
     }));
 
@@ -666,7 +764,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       _e: IpcMainInvokeEvent,
       hostId: unknown,
       sessionId: unknown,
-    ): Promise<{ ok: true } | { ok: false; error: string }> => {
+    ): Promise<{ ok: true } | { ok: false; error: string; reason?: RemoteErrorReason }> => {
       const id = assertString(hostId, 'hostId');
       const session = assertString(sessionId, 'sessionId');
       const client = getOrCreateClient(id);
@@ -681,7 +779,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       try {
         await client.closeSession(session);
       } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+        return failure(err);
       }
       // The session is gone. Drop every live attach on this (host, session) —
       // for any sender, since a session can legitimately be mirrored from
@@ -766,7 +864,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       event: IpcMainInvokeEvent,
       hostId: unknown,
       sessionId: unknown,
-    ): Promise<{ ok: true; attachId: string } | { ok: false; error: string }> => {
+    ): Promise<{ ok: true; attachId: string } | { ok: false; error: string; reason?: RemoteErrorReason }> => {
       const id = assertString(hostId, 'hostId');
       const session = assertString(sessionId, 'sessionId');
       const sender = event.sender;
@@ -776,10 +874,25 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
       // attachId rather than opening a second SSE stream.
       const key = attachKey(sender.id, id, session);
       const existingAttachId = attachByKey.get(key);
-      if (existingAttachId) return { ok: true, attachId: existingAttachId };
+      if (existingAttachId) {
+        // A second viewer joining the shared attach (the renderer orders its
+        // own detach-before-reattach, so this is not a remount). The first
+        // viewer already consumed the attach's meta; re-open the stream so the
+        // newcomer gets the grid and a snapshot too, instead of a blank
+        // terminal that never learns the remote's geometry.
+        const record = attachRecords.get(existingAttachId);
+        const existingClient = record ? clients.get(record.hostId) : undefined;
+        existingClient?.refresh(existingAttachId);
+        return { ok: true, attachId: existingAttachId };
+      }
 
       const client = getOrCreateClient(id);
       if (!client) return { ok: false, error: 'unknown host' };
+      // Answered HERE, synchronously with the attach request, not as a stream
+      // error a tick later: the mirror subscribes to stream errors only after
+      // this returns, so an event fired in between would be lost and a
+      // restored pane would sit blank with its input open.
+      if (client.isInsecure()) return failure(new RemoteInsecureTransportError('attach'));
 
       installSenderCleanup(sender);
       const attachId = client.attach(session);
@@ -885,6 +998,7 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_ADD);
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_PAIR);
     ipcMain.removeHandler(IPC.REMOTE_HOSTS_REMOVE);
+    ipcMain.removeHandler(IPC.REMOTE_HOSTS_STATUS);
     ipcMain.removeHandler(IPC.REMOTE_WORKSPACES_LIST);
     ipcMain.removeHandler(IPC.REMOTE_WORKSPACE_CREATE);
     ipcMain.removeHandler(IPC.REMOTE_SESSION_CLOSE);

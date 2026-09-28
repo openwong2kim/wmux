@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useT } from '../../hooks/useT';
+import { useStore } from '../../stores';
+import RemoteRepairNotice from './RemoteRepairNotice';
 import type { AttachedRemoteWorkspace } from '../../stores/slices/remoteWorkspacesSlice';
 import type { RemotePaneSummary } from '../../../shared/remoteHosts';
 import RemoteMirrorTerminal from './RemoteMirrorTerminal';
@@ -25,14 +27,16 @@ function gridStyle(count: number): CSSProperties {
  *  the SAME remote sessionIds, so nothing in the pane list changes and this
  *  effect would never fire again — the mirror would sit blank forever with no
  *  visible error. The epoch is bumped by the store whenever `stale` clears. */
-function PaneCell({ hostId, pane, readOnly, attachEpoch }: {
+function PaneCell({ hostId, hostLabel, pane, readOnly, attachEpoch }: {
   hostId: string;
+  hostLabel: string;
   pane: RemotePaneSummary;
   readOnly: boolean;
   attachEpoch: number | undefined;
 }) {
   const [attachId, setAttachId] = useState<string | null>(null);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [insecure, setInsecure] = useState(false);
   /** The previous run's detach. Main keys attach idempotency on
    *  (sender, host, session), so the old and the new attach are the SAME
    *  record: if the re-attach reached main first it would be handed the dying
@@ -46,6 +50,7 @@ function PaneCell({ hostId, pane, readOnly, attachEpoch }: {
     if (!remote) return;
     setAttachId(null);
     setError(undefined);
+    setInsecure(false);
     let openedId: string | null = null;
 
     const attaching = teardown.current
@@ -56,6 +61,12 @@ function PaneCell({ hostId, pane, readOnly, attachEpoch }: {
           if (!cancelled) setAttachId(res.attachId);
         } else if (!cancelled) {
           setError(res.error);
+          // Needs HTTPS is a standing state, not a transient failure: say so
+          // on this pane and on the host's rows, and keep input shut.
+          if (res.reason === 'insecure-transport') {
+            setInsecure(true);
+            useStore.getState().setRemoteHostInsecure(hostId, true);
+          }
         }
       })
       .catch((err: unknown) => {
@@ -86,7 +97,14 @@ function PaneCell({ hostId, pane, readOnly, attachEpoch }: {
         {pane.cwd ? ` — ${pane.cwd}` : ''}
       </div>
       <div className="flex-1 min-h-0">
-        <RemoteMirrorTerminal attachId={attachId} error={error} readOnly={readOnly} />
+        <RemoteMirrorTerminal
+          attachId={attachId}
+          error={error}
+          insecureTransport={insecure}
+          readOnly={readOnly}
+          hostLabel={hostLabel}
+          hostId={hostId}
+        />
       </div>
     </div>
   );
@@ -114,6 +132,7 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
   // at mount — the view stays mounted for the app session per the
   // hidden-but-alive rule above) is that probe.
   const [allowInput, setAllowInput] = useState<boolean | undefined>(undefined);
+  const requestRemoteRepair = useStore((s) => s.requestRemoteRepair);
 
   useEffect(() => {
     let cancelled = false;
@@ -132,6 +151,23 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
+      {/* The host refused this computer's credential: nothing here will
+          reconnect on its own, so say so above the (now frozen) panes. The
+          modal is mounted by AppLayout, not here — pairing again removes the
+          host and with it this view. */}
+      {workspace.insecureTransport && (
+        <div className="px-3 py-2 flex-shrink-0">
+          <RemoteRepairNotice insecure hostLabel={workspace.hostLabel || t('remote.hostFallback')} />
+        </div>
+      )}
+      {workspace.authRejected && !workspace.insecureTransport && (
+        <div className="px-3 py-2 flex-shrink-0">
+          <RemoteRepairNotice
+            hostLabel={workspace.hostLabel || t('remote.hostFallback')}
+            onRepair={() => requestRemoteRepair(workspace.hostId)}
+          />
+        </div>
+      )}
       {allowInput === false && (
         <div
           className="px-3 py-1.5 text-[11px] font-mono flex-shrink-0"
@@ -148,6 +184,7 @@ export default function RemoteWorkspaceView({ workspace }: { workspace: Attached
           <PaneCell
             key={pane.sessionId}
             hostId={workspace.hostId}
+            hostLabel={workspace.hostLabel}
             pane={pane}
             readOnly={allowInput === false}
             attachEpoch={workspace.attachEpoch}

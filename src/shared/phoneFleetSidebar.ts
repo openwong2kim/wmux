@@ -46,7 +46,20 @@ export interface PhoneSidebarTaskLink {
    * counts exactly the tasks the phone shows nested.
    */
   state?: PhoneSidebarTaskState;
+  /**
+   * Where inside the owner the desktop files this nested task (#1581's
+   * per-pane split): under the owner's pane that requested it, or in the
+   * owner's trailing "From closed pane" group. Present only on a nested task.
+   */
+  paneGroup?: PhoneSidebarPaneGroup;
+  /** Desktop pane id of the requesting pane; present iff `paneGroup` is 'pane'. */
+  requesterPaneId?: string;
 }
+
+export type PhoneSidebarPaneGroup = 'pane' | 'closedPane';
+
+/** Where the phone draws a nested task, as `/api/workspaces` states it. */
+export type PhoneTaskNestedUnder = 'pane' | 'closedPane';
 
 export interface PhoneSidebarTaskState {
   /** The task's agent is waiting on the user. */
@@ -70,8 +83,10 @@ export interface PhoneSidebarTaskSummary {
 
 export interface PhoneSidebarWorkspace {
   id: string;
-  /** Position in the desktop's manual (unsorted, unfiltered) workspace list. */
+  /** Position in the desktop's manual (unsorted, unfiltered) workspace list.
+   *  Pinned rows lead that list, so they carry the lowest values. */
   order: number;
+  /** Pinned to the top of the desktop sidebar. */
   pinned: boolean;
   color?: WorkspaceColorId;
   gitBranch?: string;
@@ -83,6 +98,8 @@ export interface PhoneSidebarWorkspace {
 export interface PhoneSidebarPane {
   ptyId: string;
   workspaceId: string;
+  /** Desktop pane id of the pane holding this surface (stable across PTY rebinds). */
+  paneId?: string;
   surfaceTitle?: string;
   paneName?: string;
 }
@@ -172,12 +189,28 @@ function parseTask(value: unknown, drop: SidebarDropReporter): PhoneSidebarTaskL
   const nested = value.nested && ownerWorkspaceId !== null;
   const state = nested ? parseTaskState(value.state) : undefined;
   if (nested && value.state !== undefined && !state) drop('workspace.task.state');
+  // The pane placement rides only on a nested task, and 'pane' only with the
+  // pane it names; anything else is dropped as a pair.
+  let paneGroup: PhoneSidebarPaneGroup | undefined;
+  let requesterPaneId: string | undefined;
+  if (nested && value.paneGroup === 'pane') {
+    requesterPaneId = idString(value.requesterPaneId);
+    if (requesterPaneId !== undefined) paneGroup = 'pane';
+  } else if (nested && value.paneGroup === 'closedPane' && value.requesterPaneId === undefined) {
+    paneGroup = 'closedPane';
+  }
+  if (paneGroup === undefined && (value.paneGroup !== undefined || value.requesterPaneId !== undefined)) {
+    requesterPaneId = undefined;
+    drop('workspace.task.paneGroup');
+  }
   return {
     ownerWorkspaceId,
     detached: value.detached,
     ...(createdAt !== undefined ? { createdAt } : {}),
     nested,
     ...(state ? { state } : {}),
+    ...(paneGroup ? { paneGroup } : {}),
+    ...(requesterPaneId !== undefined ? { requesterPaneId } : {}),
   };
 }
 
@@ -219,6 +252,9 @@ function parsePane(value: unknown, drop: SidebarDropReporter): PhoneSidebarPane 
   const workspaceId = idString(value.workspaceId);
   if (ptyId === undefined || workspaceId === undefined) return null;
   const row: PhoneSidebarPane = { ptyId, workspaceId };
+  const paneId = idString(value.paneId);
+  if (paneId !== undefined) row.paneId = paneId;
+  else if (value.paneId !== undefined) drop('pane.paneId');
   const surfaceTitle = boundedString(value.surfaceTitle, PHONE_SIDEBAR_LIMITS.surfaceTitle);
   if (surfaceTitle !== undefined) row.surfaceTitle = surfaceTitle;
   else if (value.surfaceTitle !== undefined) drop('pane.surfaceTitle');
@@ -310,9 +346,20 @@ export function clampSidebarString(value: string | undefined | null, max: number
 export function phoneTaskNesting(
   workspaces: readonly PhoneSidebarWorkspace[],
   listedIds: ReadonlySet<string>,
-): { nested: Map<string, boolean>; summaries: Map<string, PhoneSidebarTaskSummary> } {
+  /**
+   * Desktop pane id → the workspace the daemon lists it under, for the panes
+   * whose sessions this same reply lists. A task is drawn under a pane only
+   * when that pane is here and belongs to the task's owner.
+   */
+  listedPanes: ReadonlyMap<string, string> = new Map(),
+): {
+  nested: Map<string, boolean>;
+  summaries: Map<string, PhoneSidebarTaskSummary>;
+  placement: Map<string, { nestedUnder: PhoneTaskNestedUnder; requesterPaneId?: string }>;
+} {
   const nested = new Map<string, boolean>();
   const summaries = new Map<string, PhoneSidebarTaskSummary>();
+  const placement = new Map<string, { nestedUnder: PhoneTaskNestedUnder; requesterPaneId?: string }>();
   for (const row of workspaces) {
     const task = row.task;
     if (!task || !listedIds.has(row.id)) continue;
@@ -320,6 +367,15 @@ export function phoneTaskNesting(
     const isNested = task.nested && owner !== null && owner !== row.id && listedIds.has(owner);
     nested.set(row.id, isNested);
     if (!isNested || owner === null) continue;
+    // The desktop's pane split, narrowed to what this reply can show. A
+    // requesting pane the phone cannot see (no listed session of the owner's
+    // carries it — a pane of browser tabs only, or panes cut for size) states
+    // nothing, and neither does a desktop build without the split: the phone
+    // then draws the task at workspace level, as `nested` alone says.
+    if (task.paneGroup === 'closedPane') placement.set(row.id, { nestedUnder: 'closedPane' });
+    else if (task.paneGroup === 'pane' && task.requesterPaneId !== undefined && listedPanes.get(task.requesterPaneId) === owner) {
+      placement.set(row.id, { nestedUnder: 'pane', requesterPaneId: task.requesterPaneId });
+    }
     const summary = summaries.get(owner) ?? { tasks: 0, needYou: 0, toReview: 0, finished: 0 };
     summary.tasks += 1;
     if (task.state?.needYou) summary.needYou += 1;
@@ -327,5 +383,5 @@ export function phoneTaskNesting(
     if (task.state?.finished) summary.finished += 1;
     summaries.set(owner, summary);
   }
-  return { nested, summaries };
+  return { nested, summaries, placement };
 }

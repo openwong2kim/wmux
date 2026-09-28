@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { generateSnapshot, resolveRef, StaleRefError } from '../snapshot';
+import { generateSnapshot, resolveRef, StaleRefError, swappedTextEntryNote } from '../snapshot';
 import { formatSnapshotResult } from '../snapshotDiff';
 
 // Ref stability (dogfood, 2026-08-30). Refs used to be a running count over the
@@ -51,6 +51,8 @@ interface FakePage {
   currentUrl: string;
   /** Live count getByRole should report, keyed `role name`. */
   liveCounts: Map<string, number>;
+  /** Tag the element under `role name` evaluates as; unset = INPUT. */
+  liveTags: Map<string, string>;
   handles: string[];
 }
 
@@ -59,6 +61,7 @@ function makePage(nodes: CdpNode[], url = 'https://example.test/a') {
     nodes,
     currentUrl: url,
     liveCounts: new Map<string, number>(),
+    liveTags: new Map<string, string>(),
     handles: [] as string[],
     url() {
       return page.currentUrl;
@@ -79,6 +82,8 @@ function makePage(nodes: CdpNode[], url = 'https://example.test/a') {
       return {
         count: async () => count,
         nth: (i: number) => ({
+          evaluate: async (fn: (el: unknown) => unknown) =>
+            fn({ tagName: page.liveTags.get(key) ?? 'INPUT', isContentEditable: false }),
           elementHandle: async () => {
             const handle = `${key}#${i}`;
             page.handles.push(handle);
@@ -252,6 +257,85 @@ describe('resolveRef refuses a stale ref instead of substituting an element', ()
     (page as unknown as FakePage).liveCounts.set('button ', 4);
 
     expect(await resolveRef(page, '0', { strictCount: true })).toBe('button #0');
+  });
+
+  it('follows a search field the page swapped for a same-named combobox (#1466)', async () => {
+    // Wikipedia: focusing `searchbox "Search Wikipedia"` mounts the typeahead,
+    // which replaces it with `combobox "Search Wikipedia"`. A click on the ref
+    // followed by a fill on the same ref used to come back ref_not_found.
+    const page = makePage(tree([{ backendId: 88, role: 'searchbox', name: 'Search Wikipedia' }]));
+    await generateSnapshot(page, { format: 'ai' });
+    const live = (page as unknown as FakePage).liveCounts;
+    live.set('searchbox Search Wikipedia', 0);
+    live.set('textbox Search Wikipedia', 0);
+    live.set('combobox Search Wikipedia', 1);
+
+    // Off unless the caller opts in: a click or a replayed step keeps refusing.
+    expect(await resolveRef(page, '0')).toBeNull();
+
+    const notes: string[] = [];
+    expect(await resolveRef(page, '0', { notes, allowTextEntrySwap: true })).toBe(
+      'combobox Search Wikipedia#0',
+    );
+    expect(notes).toEqual([swappedTextEntryNote(0, 'searchbox', 'combobox', 'Search Wikipedia')]);
+  });
+
+  it('does not type into a native <select> that shares the name', async () => {
+    const page = makePage(tree([{ backendId: 90, role: 'searchbox', name: 'Sort' }]));
+    await generateSnapshot(page, { format: 'ai' });
+    const fake = page as unknown as FakePage;
+    fake.liveCounts.set('searchbox Sort', 0);
+    fake.liveCounts.set('textbox Sort', 0);
+    fake.liveCounts.set('combobox Sort', 1);
+    fake.liveTags.set('combobox Sort', 'SELECT');
+
+    expect(await resolveRef(page, '0', { allowTextEntrySwap: true })).toBeNull();
+    expect(fake.handles).toEqual([]);
+  });
+
+  it('does not hand the ref a same-named field that already existed beside it', async () => {
+    // A modal's search box closed; the page's own `combobox "Search"` was there
+    // all along. It is a different field, not the replacement.
+    const page = makePage(
+      tree([
+        { backendId: 91, role: 'searchbox', name: 'Search' },
+        { backendId: 92, role: 'combobox', name: 'Search' },
+      ]),
+    );
+    await generateSnapshot(page, { format: 'ai' });
+    const live = (page as unknown as FakePage).liveCounts;
+    live.set('searchbox Search', 0);
+    live.set('textbox Search', 0);
+    live.set('combobox Search', 1);
+
+    expect(await resolveRef(page, '0', { allowTextEntrySwap: true })).toBeNull();
+    expect((page as unknown as FakePage).handles).toEqual([]);
+  });
+
+  it('never swaps on the strictCount (replay) lane', async () => {
+    const page = makePage(tree([{ backendId: 93, role: 'searchbox', name: 'Find' }]));
+    await generateSnapshot(page, { format: 'ai' });
+    const live = (page as unknown as FakePage).liveCounts;
+    live.set('searchbox Find', 0);
+    live.set('textbox Find', 0);
+    live.set('combobox Find', 1);
+
+    expect(
+      await resolveRef(page, '0', { allowTextEntrySwap: true, strictCount: true }),
+    ).toBeNull();
+    expect((page as unknown as FakePage).handles).toEqual([]);
+  });
+
+  it('refuses the swap when more than one text field carries the name', async () => {
+    const page = makePage(tree([{ backendId: 89, role: 'searchbox', name: 'Search' }]));
+    await generateSnapshot(page, { format: 'ai' });
+    const live = (page as unknown as FakePage).liveCounts;
+    live.set('searchbox Search', 0);
+    live.set('textbox Search', 1);
+    live.set('combobox Search', 1);
+
+    expect(await resolveRef(page, '0', { allowTextEntrySwap: true })).toBeNull();
+    expect((page as unknown as FakePage).handles).toEqual([]);
   });
 
   it('still resolves the right instance while the page is unchanged', async () => {

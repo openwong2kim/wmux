@@ -90,6 +90,7 @@ describe('web.handler — forwarding', () => {
       allowInput: false,
       allowedHosts: [],
       tailscale: false,
+      inheritUnsetGrants: true,
     });
   });
 
@@ -102,6 +103,7 @@ describe('web.handler — forwarding', () => {
       allowInput: true,
       allowedHosts: [],
       tailscale: false,
+      inheritUnsetGrants: true,
     });
   });
 
@@ -114,6 +116,87 @@ describe('web.handler — forwarding', () => {
       allowInput: false,
       allowedHosts: [],
       tailscale: false,
+      inheritUnsetGrants: true,
+    });
+  });
+
+  it('start forwards every phone grant the popover decided', async () => {
+    installConnected({ running: true });
+    await getHandler(IPC.WEB_START)(fakeEvent, {
+      allowTranscript: true,
+      allowUpload: false,
+      allowDangerousLaunch: true,
+    });
+    const params = rpc.mock.calls.find((c) => c[0] === 'daemon.web.start')?.[1] as Record<string, unknown>;
+    expect(params).toMatchObject({
+      allowTranscript: true,
+      allowUpload: false,
+      allowDangerousLaunch: true,
+      inheritUnsetGrants: true,
+    });
+  });
+
+  it('start leaves a grant the renderer did not send for the daemon to inherit', async () => {
+    installConnected({ running: true });
+    await getHandler(IPC.WEB_START)(fakeEvent, { allowInput: true });
+    const params = rpc.mock.calls.find((c) => c[0] === 'daemon.web.start')?.[1] as Record<string, unknown>;
+    // Absent, not false: an explicit false would reset a grant the operator
+    // set through `wmux web --allow-transcript` / `--allow-upload`.
+    expect(params).not.toHaveProperty('allowTranscript');
+    expect(params).not.toHaveProperty('allowUpload');
+    expect(params).not.toHaveProperty('allowDangerousLaunch');
+    expect(params['inheritUnsetGrants']).toBe(true);
+  });
+
+  describe('setGrants (apply while running)', () => {
+    /** A daemon that answers status with `status` and echoes starts back as running. */
+    function installRouted(status: WebTerminalInfo): void {
+      rpc = vi.fn(async (method: string, params: Record<string, unknown>) =>
+        method === 'daemon.web.status' ? status : { ...status, ...params, running: true },
+      );
+      const dc = { rpc, isConnected: true } as unknown as DaemonClient;
+      registerWebHandlers(() => dc, execAbsent);
+    }
+
+    it('restarts in place with the running shape and only the changed grant', async () => {
+      installRouted({
+        running: true,
+        port: 8123,
+        host: '127.0.0.1',
+        allowInput: true,
+        allowUpload: false,
+        allowTranscript: false,
+        allowDangerousLaunch: true,
+        allowedHosts: ['box.example.ts.net'],
+        tailscale: true,
+      });
+      const res = (await getHandler(IPC.WEB_SET_GRANTS)(fakeEvent, { allowTranscript: true })) as WebTerminalInfo;
+      expect(rpc).toHaveBeenCalledWith('daemon.web.start', {
+        port: 8123,
+        host: '127.0.0.1',
+        allowedHosts: ['box.example.ts.net'],
+        tailscale: true,
+        allowInput: true,
+        allowTranscript: true,
+        inheritUnsetGrants: true,
+        // A stop that lands between the status read and this start must win.
+        onlyIfRunning: true,
+      });
+      expect(res.running).toBe(true);
+      expect(res.allowDangerousLaunch).toBe(true);
+    });
+
+    it('does not start a stopped server', async () => {
+      installRouted({ running: false });
+      const res = (await getHandler(IPC.WEB_SET_GRANTS)(fakeEvent, { allowUpload: true })) as WebTerminalInfo;
+      expect(rpc).not.toHaveBeenCalledWith('daemon.web.start', expect.anything());
+      expect(res.running).toBe(false);
+    });
+
+    it('ignores non-boolean grants instead of reading them as a decision', async () => {
+      installRouted({ running: true, port: 7681, host: '127.0.0.1', allowInput: false, allowedHosts: [], tailscale: false });
+      await getHandler(IPC.WEB_SET_GRANTS)(fakeEvent, { allowTranscript: 'on', allowUpload: 1 });
+      expect(rpc).not.toHaveBeenCalledWith('daemon.web.start', expect.anything());
     });
   });
 
@@ -349,6 +432,7 @@ describe('web.handler — forwarding', () => {
       allowInput: false,
       allowedHosts: ['box.tail1234.ts.net'],
       tailscale: true,
+      inheritUnsetGrants: true,
     });
     expect(sawBinding).toContain('serve');
   });
@@ -472,7 +556,60 @@ describe('web.handler — device roster', () => {
     installConnected({ devices: roster });
     const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as { devices: unknown[] };
     expect(rpc).toHaveBeenCalledWith('daemon.web.deviceList', {});
-    expect(res.devices).toEqual(roster);
+    // An older daemon sends neither kind nor activity: the roster is still
+    // complete, reading as an unknown, idle device.
+    expect(res.devices).toEqual([{ ...roster[0], kind: 'unknown', activeNow: false }]);
+  });
+
+  it('deviceList carries an allowlisted kind and the daemon activity verdict', async () => {
+    installConnected({
+      devices: [
+        { deviceId: 'd1', name: 'Laptop', createdAt: 1, lastSeenAt: 2, allowInput: true, kind: 'computer', activeNow: true },
+        { deviceId: 'd2', name: 'Odd', createdAt: 1, lastSeenAt: 2, allowInput: true, kind: 'toaster', activeNow: 'yes' },
+      ],
+    });
+    const res = (await getHandler(IPC.WEB_DEVICE_LIST)(fakeEvent)) as {
+      devices: { kind: string; activeNow: boolean }[];
+      error?: string;
+    };
+    expect(res.error).toBeUndefined();
+    expect(res.devices.map((d) => [d.kind, d.activeNow])).toEqual([
+      ['computer', true],
+      ['unknown', false],
+    ]);
+  });
+
+  it('pairStart forwards the card only when the renderer states it, and pairCancel reaches the daemon', async () => {
+    installConnected({ ok: true, running: true });
+    await getHandler(IPC.WEB_PAIR_START)(fakeEvent, { name: 'Computer', allowInput: false, flow: 'computer' });
+    expect(rpc).toHaveBeenCalledWith('daemon.web.pairStart', { name: 'Computer', allowInput: false, flow: 'computer' });
+    rpc.mockClear();
+    await getHandler(IPC.WEB_PAIR_START)(fakeEvent, { name: 'Phone', flow: 'tablet' });
+    expect(rpc).toHaveBeenCalledWith('daemon.web.pairStart', { name: 'Phone' });
+    rpc.mockClear();
+    await getHandler(IPC.WEB_PAIR_CANCEL)(fakeEvent);
+    expect(rpc).toHaveBeenCalledWith('daemon.web.pairCancel', {});
+  });
+
+  it('never writes a pairing code to the main-process log, even when pairing fails', async () => {
+    const code = 'K7QX2MNP';
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation(() => undefined),
+    );
+    try {
+      rpc = vi.fn(async (method: string) => {
+        if (method === 'daemon.web.pairStart') throw new Error('boom');
+        return { running: true, pairCode: code, pendingDeviceName: 'Computer', pendingPairFlow: 'computer' };
+      });
+      registerWebHandlers(() => ({ rpc, isConnected: true }) as unknown as DaemonClient, execAbsent);
+      await getHandler(IPC.WEB_PAIR_START)(fakeEvent, { name: 'Computer', flow: 'computer' });
+      await getHandler(IPC.WEB_STATUS)(fakeEvent);
+      await getHandler(IPC.WEB_PAIR_CANCEL)(fakeEvent);
+      const written = spies.flatMap((s) => s.mock.calls.map((c) => c.map(String).join(' '))).join('\n');
+      expect(written).not.toContain(code);
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
   });
 
   // A daemon too old to send the grant predates per-device grants entirely,

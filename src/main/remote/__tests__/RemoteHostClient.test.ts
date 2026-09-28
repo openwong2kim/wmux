@@ -667,6 +667,45 @@ describe('RemoteHostClient', () => {
     });
   });
 
+  describe('refresh', () => {
+    it('re-opens the stream for a fresh meta, and the superseded stream stays silent', async () => {
+      vi.useFakeTimers();
+      try {
+        const streams: string[][] = [
+          [META_SNAPSHOT],
+          ['event: meta\ndata: {"cols":120,"rows":40}\n\n' + 'event: snapshot\ndata: c25hcHNob3Q=\n\n'],
+        ];
+        const fetchImpl = vi.fn(async () => sseResponse(streams.shift() ?? []));
+        const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+        const received: string[] = [];
+        client.onMeta((e) => received.push(`meta:${e.cols}x${e.rows}`));
+        const attachId = client.attach('sess-1');
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.waitFor(() => expect(received).toEqual(['meta:80x24']));
+
+        client.refresh(attachId);
+        await vi.advanceTimersByTimeAsync(0);
+        await vi.waitFor(() => expect(received).toEqual(['meta:80x24', 'meta:120x40']));
+
+        // The aborted first stream must not schedule a reconnect of its own.
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('is a no-op for an unknown or detached attach', () => {
+      const fetchImpl = vi.fn(async () => sseResponse([]));
+      const client = new RemoteHostClient(host, fetchImpl as unknown as typeof fetch);
+      client.refresh('nope');
+      const id = client.attach('sess-1');
+      client.detach(id);
+      client.refresh(id);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('reconnect', () => {
     it('schedules a jittered backoff reconnect on stream error and re-emits meta+snapshot', async () => {
       vi.useFakeTimers();

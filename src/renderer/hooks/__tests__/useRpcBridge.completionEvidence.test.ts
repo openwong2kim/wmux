@@ -41,7 +41,7 @@ describe('useRpcBridge — a2a.task.update 완료증거 배선 (소스-구조)',
 
   it('정규화된 evidence 를 store.updateTaskStatus 로 전달한다', () => {
     const block = region("method === 'a2a\\.task\\.update'", "method === 'a2a\\.task\\.cancel'");
-    expect(block).toMatch(/store\.updateTaskStatus\(taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence\)/);
+    expect(block).toMatch(/store\.updateTaskStatus\(\s*taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence,/);
   });
 });
 

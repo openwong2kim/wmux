@@ -56,6 +56,9 @@ describe('the awaiting_input verdict', () => {
     expect(prompt).toContain('terminal_read this pane first');
     expect(prompt).toContain('approval_press({ ptyId: "pty-worker", decision: "approve" })');
     expect(prompt).toContain('detector-only');
+    // A refused press escalates; it never invites raw keys (#1541 review).
+    expect(prompt).toContain('raise it with deck_ask_decision');
+    expect(prompt).not.toContain('answer it by hand');
   });
 
   it('is unchanged when the workspace may not press: notify only, no tool named', () => {

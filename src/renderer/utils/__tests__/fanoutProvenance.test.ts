@@ -7,6 +7,10 @@ import {
   provenanceTooltip,
   resolveCallerPane,
   resolveTaskLink,
+  originFromCaller,
+  resolveTaskRequester,
+  requesterLine,
+  fleetRequesterText,
 } from '../fanoutProvenance';
 import type { WorkTask } from '../../../shared/workTask';
 import type { Workspace } from '../../../shared/types';
@@ -17,6 +21,11 @@ const en: Record<string, string> = {
   'sidebar.provenance.callerOrchestrator': 'orchestrator',
   'sidebar.provenance.callerPane': 'an agent pane',
   'sidebar.provenance.closedOwner': 'a closed workspace',
+  'sidebar.requester.by': 'by {name}',
+  'sidebar.requester.gui': 'Started by you',
+  'sidebar.requester.orchestrator': 'Orchestrator',
+  'sidebar.requester.unknown': 'Requester unknown',
+  'sidebar.requester.closedPane': '{name} · closed',
 };
 const t = ((key: string, vars?: Record<string, string | number>) =>
   (en[key] ?? key).replace(/\{(\w+)\}/g, (_, k) => String(vars?.[k] ?? ''))) as never;
@@ -92,5 +101,99 @@ describe('provenance tooltip', () => {
     expect(resolveCallerPane({ workspaces: [ws], paneLabel: { p: 'planner' }, surfaceAgent: { 'pty-1': { name: 'Claude Code' } } }, 'pty-1'))
       .toBe('planner (Claude Code)');
     expect(resolveCallerPane({ workspaces: [ws] }, 'gone')).toBeUndefined();
+  });
+});
+
+describe('requester origin (who asked for a task)', () => {
+  // One workspace (w115) with two agent panes: 62 and 74. Pane 74 holds two
+  // agent tabs (s74 and s74b).
+  const surface = (sid: string, ptyId: string) => ({ id: sid, ptyId, title: '', shell: 'zsh', cwd: '/' });
+  const leaf = (id: string, ordinal: number, surfaces: ReturnType<typeof surface>[]) =>
+    ({ id, type: 'leaf', ordinal, activeSurfaceId: surfaces[0].id, surfaces });
+  const ownerWith = (p74: ReturnType<typeof surface>[]) => ({
+    id: 'ws-owner', name: 'app', wsOrdinal: 115, activePaneId: 'p62',
+    rootPane: { id: 'split', type: 'branch', direction: 'horizontal', sizes: [50, 50],
+      children: [leaf('p62', 62, [surface('s62', 'pty-62')]), leaf('p74', 74, p74)] },
+  }) as unknown as Workspace;
+  const owner = ownerWith([surface('s74', 'pty-74'), surface('s74b', 'pty-74b')]);
+  const task = (id: string) => ({ id, name: `wtask: ${id}`, wsOrdinal: 200, activePaneId: 'x', rootPane: leaf(`${id}-p`, 1, [surface(`${id}-s`, `${id}-pty`)]) }) as unknown as Workspace;
+  const base = { workspaces: [owner], paneLabel: { p74: 'Compare' }, surfaceAgent: { 'pty-62': { name: 'Codex CLI' } } };
+
+  it('records a pane caller by its stable pane/surface ids and a name snapshot — coordinate first — never the ptyId', () => {
+    expect(originFromCaller(base, { kind: 'pane', ptyId: 'pty-74' }))
+      .toEqual({ kind: 'pane', paneId: 'p74', surfaceId: 's74', label: 'w115-74 · Compare' });
+    expect(originFromCaller(base, { kind: 'pane', ptyId: 'pty-62' }))
+      .toEqual({ kind: 'pane', paneId: 'p62', surfaceId: 's62', label: 'w115-62 · Codex CLI' });
+    expect(originFromCaller(base, { kind: 'orchestrator' })).toEqual({ kind: 'orchestrator' });
+    expect(originFromCaller(base, { kind: 'gui' })).toEqual({ kind: 'gui' });
+    // A pane nobody holds records nothing, rather than an id-less stamp.
+    expect(originFromCaller(base, { kind: 'pane', ptyId: 'gone' })).toBeUndefined();
+    expect(originFromCaller(base, undefined)).toBeUndefined();
+  });
+
+  it('records a pane requester only inside the fan-out\'s owning workspace', () => {
+    expect(originFromCaller(base, { kind: 'pane', ptyId: 'pty-74' }, 'ws-owner'))
+      .toEqual({ kind: 'pane', paneId: 'p74', surfaceId: 's74', label: 'w115-74 · Compare' });
+    // The pty lives in ws-owner, but the fan-out is owned by another workspace.
+    expect(originFromCaller(base, { kind: 'pane', ptyId: 'pty-74' }, 'ws-other')).toBeUndefined();
+  });
+
+  it('shows the live label for an open pane, and the snapshot marked closed once it is gone', () => {
+    const origin = { kind: 'pane' as const, paneId: 'p74', surfaceId: 's74', label: 'w115-74 · Compare' };
+    const live = resolveTaskRequester({ ...base, paneLabel: { p74: 'Renamed' }, fanoutOrigin: { t1: origin } }, 't1');
+    expect(live).toEqual({ kind: 'pane', live: true, label: 'w115-74 · Renamed', workspaceId: 'ws-owner', paneId: 'p74', surfaceId: 's74' });
+    expect(requesterLine(live, t)).toBe('by w115-74 · Renamed');
+
+    const gone = resolveTaskRequester({ workspaces: [], fanoutOrigin: { t1: origin } }, 't1');
+    expect(gone).toEqual({ kind: 'pane', live: false, label: 'w115-74 · Compare' });
+    expect(requesterLine(gone, t)).toBe('by w115-74 · Compare · closed');
+    // Older snapshots were joined name-first; the coordinate still leads.
+    expect(resolveTaskRequester({ workspaces: [], fanoutOrigin: { t1: { ...origin, label: 'Claude Code · w1-1' } } }, 't1'))
+      .toEqual({ kind: 'pane', live: false, label: 'w1-1 · Claude Code' });
+  });
+
+  it('a recorded surface that left its pane is closed — the pane\'s other (active) tab is not the requester', () => {
+    const origin = { kind: 'pane' as const, paneId: 'p74', surfaceId: 's74b', label: 'w115-74 · Compare' };
+    // s74b closed; s74 is still in p74 and is its active tab.
+    const state = { ...base, workspaces: [ownerWith([surface('s74', 'pty-74')])], fanoutOrigin: { t1: origin } };
+    expect(resolveTaskRequester(state, 't1')).toEqual({ kind: 'pane', live: false, label: 'w115-74 · Compare' });
+    // A surface moved to another pane is still found by its own id.
+    expect(resolveTaskRequester({ ...base, fanoutOrigin: { t1: { ...origin, paneId: 'p62' } } }, 't1'))
+      .toMatchObject({ live: true, paneId: 'p74', surfaceId: 's74b' });
+    // Only an origin without a surfaceId uses the pane's active tab.
+    expect(resolveTaskRequester({ ...base, fanoutOrigin: { t1: { kind: 'pane', paneId: 'p74' } } }, 't1'))
+      .toMatchObject({ live: true, surfaceId: 's74' });
+  });
+
+  it('prefers the origin, trusts only the audit caller KIND, and never resolves an audit ptyId', () => {
+    const state = {
+      ...base,
+      fanoutOrigin: { t1: { kind: 'gui' as const }, t2: { kind: 'orchestrator' as const } },
+      fanoutProvenance: {
+        t1: { ownerWorkspaceId: 'ws-owner', callerIdentity: 'pty' as const, callerPtyId: 'pty-62', at: 1 },
+        t3: { ownerWorkspaceId: 'ws-owner', callerIdentity: 'pty' as const, callerPtyId: 'pty-62', at: 1 },
+        t4: { ownerWorkspaceId: 'ws-owner', callerIdentity: 'gui' as const, at: 1 },
+        t6: { ownerWorkspaceId: 'ws-owner', callerIdentity: 'commander' as const, at: 1 },
+      },
+    };
+    expect(requesterLine(resolveTaskRequester(state, 't1'), t)).toBe('Started by you');
+    expect(requesterLine(resolveTaskRequester(state, 't2'), t)).toBe('by Orchestrator');
+    // pty-62 is open, but a PTY id may have been reused since: not a requester.
+    expect(resolveTaskRequester(state, 't3')).toEqual({ kind: 'unknown' });
+    expect(requesterLine(resolveTaskRequester(state, 't4'), t)).toBe('Started by you');
+    expect(requesterLine(resolveTaskRequester(state, 't6'), t)).toBe('by Orchestrator');
+    expect(requesterLine(resolveTaskRequester(state, 't5'), t)).toBe('Requester unknown');
+  });
+
+  it('fleet text folds in the owner only when the requester pane lives in the owner workspace', () => {
+    const origin = { kind: 'pane' as const, paneId: 'p74', surfaceId: 's74', label: 'w115-74 · Compare' };
+    const other = { id: 'ws-real', name: 'real-owner', wsOrdinal: 9, activePaneId: 'q', rootPane: leaf('q', 1, [surface('sq', 'pty-q')]) } as unknown as Workspace;
+    // Requester pane in the owner workspace: the owner is part of the text.
+    const same = fleetRequesterText({ ...base, workspaces: [owner, task('t1')], fanoutOrigin: { t1: origin }, fanoutLineage: { t1: 'ws-owner' } }, 't1', t);
+    expect(same).toEqual({ text: 'by w115-74 · Compare · app', includesOwner: true });
+    // Requester pane lives in another workspace than the task's owner: the
+    // row must keep showing the real owner.
+    const elsewhere = fleetRequesterText({ ...base, workspaces: [owner, other, task('t1')], fanoutOrigin: { t1: origin }, fanoutLineage: { t1: 'ws-real' } }, 't1', t);
+    expect(elsewhere).toEqual({ text: 'by w115-74 · Compare · app', includesOwner: false });
   });
 });

@@ -351,8 +351,9 @@ GET /api/events?since=<cursor>     (Bearer)
 
 ```
 GET /api/config    → {allowInput, allowUpload, allowTranscript, liveActivityPush?,
-                      gatedTools, gateEnabled?, fleetSidebar?, protocolVersion,
-                      minProtocolVersion, serverVersion}
+                      gatedTools, gateEnabled?, fleetSidebar?, terminalPromptDetail?,
+                      terminalPromptDecline?, protocolVersion, minProtocolVersion,
+                      serverVersion}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
                       workspace?, workspaceId?, shell?, lastDetectedAgent?, cwdLeaf?,
                       liveness?, lastAssistantText?, surfaceTitle?, paneName?}]}
@@ -412,10 +413,22 @@ gate is daemon-wide rather than per-device, so a change made from one phone
 applies to every device; see `gate.state` above for the push that keeps them in
 step, and re-read this route on reconnect for the authoritative value.
 
+`terminalPromptDetail: true` says `GET /api/approvals/<id>/detail` is open
+(the server runs with `--allow-transcript`);
+`terminalPromptDecline` says `POST /api/approvals/<id>/decline` exists and is
+`true` only when THIS caller holds the input grant (see
+[`terminal_prompt`](#terminal_prompt--the-agents-own-permission-dialog)). Both
+are omitted by a daemon that predates them; read a missing key as `false`.
+
 `POST /api/input` is **403 unless the server was started with `--allow-input`**.
 Check `/api/config` and hide the keyboard rather than letting a user type into a
 403. `fetch` resolves on 401 and 403 — a lone `.catch()` sees neither, which is a
 mistake the browser client made and shipped.
+
+It is **409 `{"error":"terminal-prompt-active","effect":"none"}`** while the pane
+shows the agent's own permission dialog (a pending `terminal_prompt` record),
+except for a lone Esc or a lone Ctrl-C — see
+[`terminal_prompt`](#terminal_prompt--the-agents-own-permission-dialog).
 
 Phone scrolling has two ownership modes. A terminal's normal buffer is local
 scrollback and must remain local (ordinary shells and Kiro use this path).
@@ -598,6 +611,13 @@ here is a category change rather than an increment. Gate the tab on
 after the colon may be reworded, the `transcript-disabled:` tag may not. A daemon
 predating this route has no `allowTranscript` key at all; read a missing key as
 `false` and fall back to the mirror without probing the route.
+
+Operators turn the grant on with `wmux web --allow-transcript` or, on the
+desktop, the **Conversation access** toggle in the Remote popover. Both apply
+to a running server in place (same port, token and paired devices), and a
+later restart from either keeps it on unless it is turned off explicitly
+(`--no-allow-transcript`, the toggle, or `wmux web --stop`). When telling a
+user how to enable the Chat view, point at that toggle.
 
 **Paging.** No `cursor` means "give me the latest": a snapshot of the tail.
 `dir=back` with a cursor pages further into the past from that cursor's head —
@@ -805,11 +825,19 @@ prompt, the daemon records a request any authenticated surface can answer.
 ```
 GET  /api/approvals          → {pending: [...], recentlyResolved: [...]}
 POST /api/approvals/<id>     body: {decision: 'approve' | 'deny', choiceKey?: string}
+GET  /api/approvals/<id>/detail    terminal_prompt only: the full command (see below)
+POST /api/approvals/<id>/decline   terminal_prompt only: one Esc (see below)
 ```
 
 Request fields: `id`, `sessionId`, `agent`, `kind`, `state`, `createdAt`, and
 optionally `workspaceId`, `question`, `options`, `choices`, `risk`, `screenTail`,
-`decision`, `resolvedBy`, `resolvedAt`, `selectedChoiceKey`.
+`decision`, `resolvedBy`, `resolvedAt`, `selectedChoiceKey`. A
+`kind: "terminal_prompt"` record has its own field set and rules — see
+[`terminal_prompt`](#terminal_prompt--the-agents-own-permission-dialog) below.
+
+`kind` is an open set: `awaiting_input` (an `AskUserQuestion`),
+`awaiting_permission` (a permission gate), `terminal_prompt` (the agent's own
+terminal dialog). Treat an unknown kind as a card you cannot answer.
 
 `question` and `options` are the agent's own text, sanitized and capped. Render
 them — a blind Approve button is not an informed answer.
@@ -853,13 +881,23 @@ request stays pending — no default option is pressed.
 
 ### Agent support — Claude native, others terminal-only
 
-Claude Code's `AskUserQuestion` prompt is natively supported: the daemon
-extracts the question, options, and structured choices from the hook payload and
-maps resolve decisions to precise TUI keystrokes.
+Claude Code's `AskUserQuestion` prompt is natively supported (for `claude` and
+its fork `openclaude`, which draws the same select): the daemon extracts the
+question, options, and structured choices from the hook payload and maps resolve
+decisions to precise TUI keystrokes.
 
-Claude Code's **permission prompts** (tool-approval gate, "Do you want to
-proceed?") have no hook — they are detector-only. Until Claude Code exposes an
-authoritative hook for permission prompts, the phone cannot answer them.
+One keystroke answers exactly one shape: a **single single-select question**.
+When the question is multi-select, or the tool call carries more than one
+question, an approve — with or without `choiceKey` — is refused with 501
+`{error:"answer-in-terminal", reason:"needs-v2"}` and nothing is typed (measured
+on Claude Code 2.1.283: a digit only toggles one checkbox of a multi-select, and
+on the first of several questions it answers that one and moves to the next
+tab, so the tool is still waiting). The record stays pending; deny (Esc) still
+cancels the whole question.
+
+Claude Code's own **permission dialog** ("Do you want to proceed?") is recorded
+as a `terminal_prompt` — see the next section for when it can be answered from
+the phone and when it cannot.
 
 **Codex CLI, Kiro CLI, and other TUI-only agents** have no hook integration and
 no authoritative keystroke mapping. They report `unsupported-agent` (501). Their
@@ -867,6 +905,290 @@ prompts are answered with the phone pane's terminal controls when `--allow-input
 is enabled, or at the desktop otherwise. Structured choice
 support for these agents will be added only after their respective projects
 expose authoritative approval hooks — the daemon does not guess keystrokes.
+
+### `terminal_prompt` — the agent's own permission dialog
+
+When a Claude Code pane (`claude` / `openclaude`) shows its own permission
+dialog — for example a `permissions.ask` rule hit in a `bypassPermissions`
+session — the daemon records `kind: "terminal_prompt"`. It appears when the
+PermissionRequest hook lands, or when the screen detector's awaiting-input
+reading survives its 1.5 s confirmation window, whichever comes first, and only
+when the pane has nothing else pending. The daemon reads the pane's screen and
+parses the dialog at that moment; when the hook landed before the dialog was
+drawn, it looks again and replaces the record with an answerable one (a new
+`id`, an `approval` event, no second push). The orchestrator brain's pane never gets one.
+
+**Capability.** Send `X-Wmux-Client-Caps: terminal-prompt-answer` (a
+comma-separated token list; unknown tokens are ignored) on `/api/approvals`,
+`POST /api/approvals/<id>`, `/turns` and `/api/events` if your client can answer
+this dialog. Without it you get the informational card only.
+
+What `/api/approvals` carries for this kind:
+
+| field | older client (no capability) | capable client |
+| --- | --- | --- |
+| `id`, `sessionId`, `agent`, `kind`, `state`, `createdAt`, `workspaceId?` | yes | yes |
+| `toolName` (when known), `summary` (the command, ≤200 chars + `…`, display only — the full command is at `/detail`) | yes | yes |
+| `risk` (`critical` when the command or rule reads as destructive — `rm -rf`, `sudo`, …) | yes | yes |
+| `question`, `reason` | never | only when the record is answerable |
+| `choices`, `promptFingerprint` | never | only when the record is answerable, pending and not yet answered |
+| `hasDetail: true` (`GET /api/approvals/<id>/detail` has the full command) | never | with `choices`, on a server started with `--allow-transcript` |
+| `pressedAt`, `decision`, `selectedChoiceKey`, `resolvedBy`, `resolvedAt` | when set | when set |
+
+Never `options` or `screenTail`. A record is **answerable** only when all of
+this holds when it is created:
+
+- the dialog is the ACTIVE one, it offers a plain `Yes`, and no row of it was
+  cut by the TUI (a row ending in `…`);
+- it is bound to the tool call the agent actually made, with the same tool and
+  exactly the command the dialog shows, however long — either
+  - by the pane's own Claude transcript: that call is its latest `tool_use`
+    with no result yet, BY ITS ID (and a PermissionRequest pending for the
+    pane, if any, names the same call), or
+  - by the PermissionRequest hook, since Claude Code 2.1.283 often writes the
+    `tool_use` only after the dialog is answered and its hook carries no
+    `tool_use_id`: the hook's `session_id` is the pane's own Claude session,
+    it is the ONLY PermissionRequest pending on the pane (two at once → not
+    answerable), it arrived after the pane's previous dialog settled, no key
+    reached the pane and the PTY is the same since it arrived, the dialog's
+    title names the hook's tool, and the rows spell the hook's whole command.
+    `prompt_id` is compared when present, never proof on its own. A transcript
+    call that appears later must be that same call; The rows are matched against the
+  call's WHOLE command, including where the TUI broke a row inside a word (a
+  long path) and the `│` gutter newer Claude Code builds draw left of it; a
+  wrapped option label is one option;
+- **either** the whole dialog is on screen (its top rule, a full-width rule row
+  at column 0, and its title), **or** its top scrolled off a short pane and
+  then: the PermissionRequest hook fired for exactly that call (an unanswered
+  `tool_use` is also what a RUNNING tool looks like, and its output can print a
+  look-alike dialog), it is provably the ONLY unanswered call (no parallel
+  calls, and the transcript window read shows where the batch starts), at
+  least one command row is still on screen and is the tail of that
+  call's command, and the question row and every option row down to the footer
+  are on screen. If the option row to press is off screen the dialog is not
+  active and the record is informational.
+
+There is no length limit any more: a command longer than the 200-character
+`summary` is answerable. The `summary` is still capped (it travels on SSE, the
+push and `approvals.json`); fetch the whole command from `/detail`.
+
+A dialog found only on the screen, with no pending call to bind to or a call
+whose command differs, is **informational for everyone**. `summary` and `risk`
+come from the call's own input.
+
+`choices` then holds only the plain `Yes` and a plain `No` (`No`, or `No, …`
+such as "No, and tell Claude what to do differently"). An option that writes a
+lasting rule — "Yes, and don't ask again for … commands", anything with
+"always" or "for this session" — is never a choice. A record that is not
+answerable carries none of the four fields for anyone; show it as "answer on
+the computer".
+
+`promptFingerprint` is a 32-hex hash of the whole dialog as drawn (title when
+visible, question, reason, every visible command line, every option), the tool
+call it is bound to (its `tool_use` id AND a hash of its whole input, so a
+command longer than anything the screen or the record shows is covered in
+full) and the pane's input epoch, independent of where the cursor is. The same
+dialog for the next, identical call is a different record with a different
+fingerprint; a call whose input changed after you read the record fails with
+409 `prompt-changed`. Whitespace runs in the dialog collapse to one space and
+are never dropped. A resize that moves where the TUI broke a long word
+changes the hash; the record is then refreshed once.
+
+**Every remote key is proved first.** Before writing `1` (answer) or Esc
+(decline) the daemon re-reads the screen and requires: the same transcript
+call id and whole-input hash still pending, the same PTY and no key or click
+in the pane since the record was CREATED, the same dialog text, and its rows
+still spelling that call's command. If any of it cannot be shown it writes
+nothing and refuses (409 `prompt-changed` / `prompt-unverified`, 410 when the
+record ended), with `effect: "none"`.
+
+**The full command** (servers started with `--allow-transcript`; capable clients):
+
+```http
+GET /api/approvals/<id>/detail
+```
+
+200 `{"id","toolName"?,"command","commandHash","commandBytes","truncated"}` —
+`command` is the call's full command (Bash) or path/url, up to 64 KiB
+(`truncated: true` past that, cut on a character boundary); `commandHash` is
+the lowercase hex sha256 of the FULL command's UTF-8 bytes and `commandBytes`
+its UTF-8 length, both over the whole text even when `command` was cut.
+`Cache-Control: no-store`. It is transcript content, so it needs what the
+transcript needs: 403 `transcript-disabled` on a server without
+`--allow-transcript`, and 501 `answer-in-terminal` without
+`terminal-prompt-answer` in `X-Wmux-Client-Caps` (the capability that shows
+the dialog's question). No input grant — it types nothing. 404 for an unknown id, a settled record, another
+kind, a record that is not bound to its call (informational), and — for a
+paired device — the orchestrator brain's pane. It is never on the record, so
+never on SSE, a push or `approvals.json`. Offer it when the record has
+`hasDetail: true`.
+
+**Answering** (capable clients only; `choiceKey` is authoritative, `decision`
+must agree with it):
+
+```http
+POST /api/approvals/<id>
+X-Wmux-Client-Caps: terminal-prompt-answer
+Content-Type: application/json
+
+{"decision":"approve","choiceKey":"1","promptFingerprint":"<hex>"}
+```
+
+`approve` goes with the plain `Yes` choice, `deny` with the `No` choice. It needs
+the device's input grant, like typing (403 `read-only: …` otherwise). The daemon
+then refuses unless all of these hold, and writes nothing when it refuses:
+
+- the record is at least 1.5 s old;
+- this record has not been answered already (one write per record, ever);
+- the call it is bound to is still the pane's pending one;
+- the pane's screen, re-read now, still shows the same dialog (same
+  fingerprint) as the ACTIVE one: exactly one option selected, the
+  `Esc to cancel…` footer directly under the options, nothing but blank rows
+  below it;
+- no key and no mouse click, release or wheel reached the pane since the record
+  appeared (pointer motion and focus reports do not count) — someone at the
+  terminal may be answering it;
+- no new PTY and no output between that read and the write. Output alone is
+  read again once, then it gives up.
+
+On success it writes exactly one byte — the digit, never Enter — and answers
+200 `{"state":"pending","pressedAt":<ms>,"durable":true}`. The record stays
+`pending` (with `pressedAt`) until the dialog is gone from the screen, then
+resolves. An SSE `approval` event with `phase: "press"` marks the write.
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 200 | `{state:"pending", pressedAt, durable}` | The key is in the pane |
+| 400 | `{error:"invalid-prompt-fingerprint"}` | `promptFingerprint` missing or not 32 hex |
+| 400 | `{error:"invalid-choice"}` | `choiceKey` missing, not one of `choices`, or `decision` disagrees with it |
+| 403 | `{error:"read-only: …"}` | No input grant |
+| 409 | `{error:"already-answered"}` | This record was answered from a phone already and is waiting for its dialog to close (`pressedAt` is set). Nothing typed |
+| 409 | `{error:"already-resolved", resolvedBy}` | The record already settled — its dialog was answered (anywhere) and has gone. Nothing typed |
+| 410 | `{error:"expired", state?}` | The record ended without an answer (turn ended, pane gone, replaced) |
+| 409 | `{error:"prompt-changed"}` | The screen is not the dialog you answered (changed, moved, not the active dialog, or a key or click reached the pane since your read). Nothing typed. When the dialog is still up, the record was superseded by a fresh one — re-read `/api/approvals` and confirm again |
+| 425 | `{error:"answer-too-soon"}` | Within 1.5 s of the record appearing. Ask again |
+| 501 | `{error:"answer-in-terminal", reason}` | Not answerable remotely: no capability header (`reason:"no-capability"`), or the record is not answerable (`reason:"unsupported-shape"`; checked before the body, so a record without a fingerprint is 501, not 400). Answer on the computer |
+
+Without the capability header every answer is 501 `answer-in-terminal`: show
+"wmux cannot answer this agent remotely. Open the pane on the computer."
+
+**Declining** (capability `terminal-prompt-decline`, advertised in
+`/api/config` as `terminalPromptDecline`):
+
+```http
+POST /api/approvals/<id>/decline
+X-Wmux-Client-Caps: terminal-prompt-answer, terminal-prompt-decline
+Content-Type: application/json
+
+{"promptFingerprint":"<hex>"}
+```
+
+The body may be `{}`; `promptFingerprint` is optional (when sent it must be
+the record's), and `decision` / `via`, if sent, must be `"deny"` /
+`"escape"`. The daemon writes exactly ONE Esc — the dialog's own cancel — and
+only when it can PROVE the dialog on screen is the one this record was made
+for (see "Every remote key is proved first" above): never "some dialog is
+active". It also waits out the same 1.5 s after the record appeared as an
+answer (425). The record must have been matched to its transcript call when
+it was created — its rows spelled that call's command — else 409
+`prompt-unverified`. That includes a matched record the phone cannot answer
+Yes/No (a row the TUI cut, no plain `Yes`): decline is then the one way to
+cancel it remotely. A card created before any dialog was drawn, or for a
+dialog that shows a different command, cannot be declined. It needs the input grant (403
+otherwise, checked before and after the body and again right before the
+write) and is audit-logged like an answer. On success: 200
+`{"state":"pending","pressedAt":<ms>,"via":"escape","durable":true}`; the record
+then resolves (with `decision: "deny"`, no `selectedChoiceKey`) once the
+dialog is seen gone. Claude Code treats Esc as "No, interrupt": the turn stops
+with "Interrupted · What should Claude do instead?".
+
+Every refusal writes nothing and carries `effect: "none"`:
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 409 | `{error:"already-resolved", resolvedBy?, effect}` | The record already settled (answered anywhere, dialog gone) |
+| 409 | `{error:"already-answered", effect}` | A phone already answered or declined it; waiting for the dialog to close |
+| 409 | `{error:"prompt-changed", effect}` | No active dialog on the pane now, a different one, another call pending, a key/click or a new PTY since the record was created, or a stale `promptFingerprint` |
+| 409 | `{error:"prompt-unverified", effect}` | The record was never matched to one transcript call on screen |
+| 425 | `{error:"answer-too-soon", effect}` | Within 1.5 s of the record appearing. Ask again |
+| 410 | `{error:"expired", state?, effect}` | The record ended without an answer (turn ended, pane gone, replaced) |
+| 400 | `{error:"invalid-prompt-fingerprint"}` / `{error:"decision must be 'deny'"}` / `{error:"via must be 'escape'"}` / `{error:"not-a-terminal-prompt"}` | Bad body, or the id is another kind |
+| 403 | `{error:"read-only: …"}` | No input grant |
+| 404 | `{error:"not-found"}` | Unknown id, or (device) the brain's pane |
+| 501 | `{error:"answer-in-terminal"}` | No `terminal-prompt-decline` in `X-Wmux-Client-Caps` |
+
+**Typing cannot answer it.** While the pane has a pending `terminal_prompt`
+record (answerable or not, answered-and-waiting included), `POST /api/input` to
+that pane is refused with 409 `{"error":"terminal-prompt-active","effect":"none"}`
+and nothing is written — a digit, Enter, a paste, a notification "Reply", any
+key sequence. The dialog is answered only through `POST /api/approvals/<id>`
+above, or at the computer. The one exception is the cancel direction: a body
+that is exactly one Esc (`\x1b`) or exactly one Ctrl-C (`\x03`) is written as
+usual. Esc followed by anything else (an arrow key, Enter) is refused. The check
+runs when the request body completes, immediately before the write, so a dialog
+that appeared while the body was in flight still refuses it. With a durable
+input receipt the refusal journals nothing: a retry with the same
+`X-Wmux-Input-Request-ID` is checked again and writes only once the dialog is
+gone. Input flows again as soon as the record leaves `pending` (see *It goes
+away* below). A native chat send to the pane is refused the same way, under the
+chat route's own code: 409 `chat-blocked` with `blockedBy: "terminal"` (see
+*Sending* under *Native chat*).
+
+**A key or click in the pane refreshes the record.** Someone at the terminal
+moving the selection (↓, ↑, a click) means what your user confirmed may not be
+what is selected, so it is never pressed through. Instead, once the input has
+been quiet for about 0.6 s (and at most once every 2 s per record), the daemon
+re-reads the dialog and, if it is still up, replaces the record: you get
+
+```
+event: approval   {"approvalId":"<old>","phase":"supersede","state":"superseded","kind":"terminal_prompt",…}
+event: approval   {"approvalId":"<new>","phase":"create","state":"pending","kind":"terminal_prompt",…}
+```
+
+and `/api/approvals` lists the new record with a new `id` and a new
+`promptFingerprint` (it also encodes the input epoch), answerable 1.5 s after it
+appeared. There is no second push. An answer that races the refresh gets 409
+`prompt-changed` and triggers the same replacement. A dialog the input
+dismissed is not refreshed into an answerable record; one still visible but no
+longer bound to the pending call is replaced by an informational record.
+
+**Push.** One push per awaiting episode per pane — a record replaced within the
+episode (a late parse, a changed dialog) carries the push over rather than
+sending another or losing it. The push is not sent the moment the dialog
+appears: the record must still be pending after a 12 s grace
+(`TERMINAL_PROMPT_PUSH_GRACE_MS`), so a dialog answered at the desk or gone on
+its own never reaches the phone. A record that ends after its push went out is
+followed by a retraction under the same collapse id (§7, "Retraction"). It is
+always in-app only (`requiresInAppChoice:
+true`, no lock-screen buttons, for any client) and carries
+`approvalKind: "terminal_prompt"`. The body names the tool and the command;
+`risk` is `critical` when the command or the permission rule reads as
+destructive (`rm -rf`, `sudo`, …). The outbound webhook (`notifySinks`) never
+carries the command.
+
+**The SSE `approval` event** for this kind carries `kind: "terminal_prompt"` and
+`risk` when set, and no content (no tool, summary, question or choices): re-read
+`/api/approvals`.
+
+**History.** `recentlyResolved` lists a `terminal_prompt` only when a phone
+answered or declined it (`pressedAt` set), decided from the record alone —
+the same rows for every client. A record the daemon replaced before anyone
+pressed (every key in the pane and every late parse mints one) and a card
+that expired when its dialog closed are not answers anyone gave from a phone,
+and are not listed. A row may carry no `question` (an older client is never
+shown it; a record declined without Yes/No choices has none): render
+`toolName — summary` then, never "no question".
+
+**It goes away** when the dialog is answered (a key in the pane, from anyone),
+when the daemon sees the dialog gone from the screen, when the turn ends, the
+session restarts or the pane closes, and on a daemon restart. After the screen
+check releases a pane, the same dialog is not raised again from the screen
+detector for 30 s; a different dialog, or the PermissionRequest hook, still is.
+
+**Awaiting state.** A pane at `awaiting_input` is also released when the daemon
+sees its dialog gone from the screen on two reads in a row — an answer typed in
+Terminal in a shape the key check does not recognise no longer leaves the pane
+"needs you" for the rest of the turn.
 
 ### `risk` — a hint, not a gate
 
@@ -902,12 +1224,41 @@ there before writing.
 | 200 | `{state, durable}` | Answered. `durable: false` means the keystroke landed but the record did not survive — the answer is real, the history will not show it. Do **not** retry |
 | 400 | `{error: 'invalid-choice-key'}` | A supplied choice key is malformed or was attached to `deny`. Nothing is sent |
 | 409 | `{error: 'already-resolved', resolvedBy}` | Another surface won. `resolvedBy` names it (`operator`, or `device <name> (<id>)`) |
-| 410 | `{error: 'expired' \| 'prompt-gone', state?}` | The request outlived its usefulness, or the prompt left the screen. Stop showing it |
+| 409 | `{error: 'prompt-changed'}` | The question is on screen but its options do not all read back, or the pane took a key, a click or a new PTY between the daemon's screen read and its write (or kept drawing through two reads). Nothing typed; still pending — ask again |
+| 410 | `{error: 'expired' \| 'prompt-gone', state?}` | The request outlived its usefulness, or its question left the screen (including a different dialog in its place). Stop showing it |
 | 422 | `{error: 'invalid-choice-key'}` | The `choiceKey` does not belong to this request's choices, or the option is not visible on screen. The request is still pending — retry with a valid key or omit `choiceKey` |
-| 501 | `{error: 'unsupported-agent'}` | No keystroke map for this agent. Still answerable at the desktop — do not expire it locally |
+| 501 | `{error: 'unsupported-agent', reason: 'unsupported-agent'}` | No keystroke map for this agent. Still answerable at the desktop — do not expire it locally |
+| 501 | `{error: 'answer-in-terminal', reason: 'needs-v2'}` | A multi-select or multi-question `AskUserQuestion`: one key cannot answer it, so nothing was typed. Still pending — answer it at the desktop, or deny |
+| 501 | `{error: 'answer-in-terminal', reason: 'unsupported-shape' \| 'screen-unreadable'}` | The request carries no question text or no choices, so its dialog cannot be identified on screen (`unsupported-shape`), or the daemon cannot read the pane together with its state (`screen-unreadable`). Nothing typed; still pending — answer it at the desktop |
 | 404 | `{error: 'not-found'}` | No such request |
 
-Only Claude Code is mapped today. Approve sends `1` (the first offered option),
+#### The 501 `reason`
+
+Every 501 from `POST /api/approvals/:id` carries a one-line `reason` next to
+its `error`. Status codes and `error` values are unchanged, so a client that
+ignores `reason` behaves exactly as before; one that reads it can say why.
+
+| `reason` | Emitted when |
+| --- | --- |
+| `no-capability` | The caller cannot answer this kind remotely: no `terminal-prompt-answer` capability header, or an automated resolver |
+| `unsupported-shape` | The dialog was not bound and parsed whole (no fingerprint or choices), or an `AskUserQuestion` request carries no question text or choices to identify it by |
+| `needs-v2` | The prompt needs more than one keystroke (multi-select, several questions) |
+| `unsupported-agent` | No keystroke map for this agent |
+| `screen-unreadable` | The daemon cannot read the pane together with its state, so it cannot prove where a key would land |
+| `secret-input` | Reserved — no route emits it yet |
+
+Treat an unknown `reason` like a missing one: the set may grow.
+
+Only the Claude Code family (`claude`, `openclaude`) is mapped today.
+
+**Every key is proven first — approve, `choiceKey` and deny alike.** Before
+writing, the daemon reads the pane and requires the request's OWN dialog: the
+question row, each option row in key order, and Claude's `Type something` row
+below them. It reads the pane's state (output, key input, PTY) at that moment
+and checks it again, synchronously, right before the write. A request whose
+question has gone (Esc sends no hook, so a card can outlive its question) is
+never pressed into whatever dialog came next: it answers 410 and expires.
+Anything short of the proof answers 409 or 501 and types nothing. Approve sends `1` (the first offered option),
 deny sends ESC. Neither is followed by a carriage return: on a select, the digit
 both moves and confirms, and a stray CR would press whatever the TUI renders
 next.
@@ -995,6 +1346,74 @@ Reject an envelope older than `PUSH_MAX_AGE_MS` (300 000 ms).
 
 If the extension does not run, the lock screen shows a fixed placeholder
 ("wmux — New activity"). That is the relay's ceiling, not a bug.
+
+### Retraction — an approval that ended after its push
+
+Every approval push goes out with APNs collapse id `ap-<sessionId>` (at most 64
+characters). When a `terminal_prompt` record whose push was delivered then ends
+without the phone answering it — answered in the pane, the dialog cleared, the
+turn ended, expired — the daemon sends ONE more push on the same `POST /push`
+relay route, with the **same collapse id**, so APNs replaces the banner instead
+of leaving "Approval needed" on the lock screen for something nobody is waiting
+on. Its sealed plaintext:
+
+```json
+{
+  "title": "Approval resolved",
+  "body": "No longer waiting — nothing to do.",
+  "sessionId": "<pane session id>",
+  "kind": "approval_retraction",
+  "retractsApprovalId": "<the approvalId of the push being replaced>",
+  "resolution": "expired"
+}
+```
+
+`retractsApprovalId` is the `approvalId` the delivered push carried. It can
+differ from the record that just ended: a record re-parsed within the same
+episode inherits its predecessor's delivered push, and a banner left by a
+record superseded by a different question is retracted by the next record in
+that pane (or, with none taking it over, by itself after 30 s).
+
+`resolution` is `"expired"` (the dialog was answered in the pane, cleared,
+superseded, or the turn ended — an answer typed at the computer lands here) or
+`"resolved"` (the body then reads "Answered — nothing to do."). There is
+**never an `approvalId`** on a retraction:
+an extension that sees one attaches the approval category, its buttons and the
+deep link, which would put Approve back on the lock screen for a record that no
+longer exists. No retraction is sent when the push never left (the record ended
+inside the grace, or while presence still held it, or the held push was
+dropped), when the record was answered through `press` (a phone answer, a
+desktop answer through the pipe, or the one-Esc decline — a press inside the
+grace also cancels the push), or when a later push — a gate or another
+approval — has since replaced the banner under the same collapse id. Gate
+records (`awaiting_input`, `awaiting_permission`) are not retracted.
+
+**Known limit: daemon restart.** Which pushes were delivered is held in memory
+only. A restart expires every pending record without events, so a banner
+delivered before the restart is not retracted; the phone's next
+`/api/approvals` read shows nothing pending.
+
+**Backward compatible by construction.** An extension that does not know
+`kind` renders a retraction as a plain notify-only banner ("Approval resolved")
+that replaces the original under its collapse id. The relay still sends every
+push as an `alert` with `sound: default`, so on such a build the replacement
+also makes a sound.
+
+**What a current extension should do** when the opened payload has
+`kind == "approval_retraction"`:
+
+- clear `sound` and set `interruptionLevel = .passive`, so the replacement is
+  silent;
+- set no category and no deep link (there is no `approvalId` to build one from);
+- optionally remove the replaced notification outright with
+  `UNUserNotificationCenter.removeDeliveredNotifications(withIdentifiers:)` —
+  for a push sent with a collapse id the delivered request's identifier is the
+  collapse id (confirm on a device);
+- in the app, drop any local card for `retractsApprovalId` and re-read
+  `/api/approvals`.
+
+Suppressing the replacement entirely needs Apple's notification-filtering
+entitlement; nothing here depends on it.
 
 ---
 
@@ -1118,7 +1537,9 @@ their home directory, so one never implies the other. Gate the button on
 `allowUpload` from `/api/config`, and match the 403 by **prefix** — the text
 after the colon is prose and may be reworded, the `uploads-disabled:` tag is
 not. A daemon predating this route has no `allowUpload` key at all; read a
-missing key as `false` and hide the button.
+missing key as `false` and hide the button. On the desktop the grant is the
+**Photo & file upload** toggle in the Remote popover; it persists the same way
+as Conversation access.
 
 **The bytes decide the format, not your header.** JPEG (`FF D8 FF`) and PNG
 (the 8-byte signature) only; anything else is 415, including an empty body.
@@ -1561,6 +1982,11 @@ orchestrator brain's pane and workspace stay excluded exactly as before.
   coordinate, even when the desktop hides coordinates in its own sidebar. At
   most 64 characters.
 - `workspaceId` — see above; daemon-side, always present when known.
+- `paneId` — the desktop pane that holds this session's tab. Sessions with the
+  same `paneId` are tabs of one pane; group them to draw the desktop's pane
+  rows. It is an opaque grouping key recomputed on every poll: it changes when
+  a tab moves to another pane or panes are split or merged, so cache by
+  `sessionId`, never by `paneId`. A session without it is a group of its own.
 
 `POST /api/sessions` answers a daemon-only row: it carries `workspaceId` but
 not the desktop fields.
@@ -1593,12 +2019,42 @@ not the desktop fields.
   closed workspace"), for a task whose owner is itself a nested task (nesting
   is one level deep), and for a task whose owner has no live pane and so is not
   listed here.
+- `nestedUnder`, `requesterPaneId` — present only on a `nested` task, with the
+  desktop's own per-pane split (the sidebar draws workspace › requesting pane ›
+  tasks):
+  - `nestedUnder: "pane"` with `requesterPaneId` — the desktop draws the task
+    under the owner's pane that asked for it. `requesterPaneId` is a desktop
+    pane id that one of this reply's sessions under `ownerWorkspaceId`
+    carries: the `ownerWorkspaceId` row's `panes[]` entries and
+    `GET /api/sessions` rows carry the same `paneId`. Draw the task row
+    indented under the owner's pane group with that `paneId`.
+  - `nestedUnder: "closedPane"` (no `requesterPaneId`) — the requesting pane is
+    gone, or no pane asked (the task came from the orchestrator or the
+    desktop's own UI). Draw it in a trailing "From closed pane" group under
+    the owner, after the owner's pane groups.
+  - Both absent on a `nested` task — draw it under the owner at workspace
+    level, as `nested` alone says. This happens when the requesting pane is
+    alive but has no session the phone lists (a pane of browser tabs only),
+    when the desktop is too old to say, and when the desktop's reply was over
+    its size budget: the pane placement (every `paneId`, `nestedUnder` and
+    `requesterPaneId`) is the first thing cut, before tab titles.
+
+  If no session you hold carries `requesterPaneId` (the two routes are
+  polled separately and can disagree for a poll), fall back the same way.
+  A task that needs you (the per-session status you already track for its
+  sessions, e.g. its `panes[].agentStatus`) should light the pane group it
+  sits under, the way it counts in the owner's `taskSummary.needYou`, so a
+  folded pane group still shows it.
 - `taskSummary` — on an owner row with at least one `nested` task only:
   `{tasks, needYou, toReview, finished}`, the sidebar's rollup line computed
   over exactly the rows of this reply that are `nested` under it. `needYou`
   counts tasks waiting on the user, `toReview` counts open tasks whose every
   agent pane reported complete (Fleet's "Ready to review"), and `finished`
   counts tasks whose every agent pane reported complete.
+
+Each `panes[]` entry of `GET /api/workspaces` also carries `paneId` (same
+value and rules as on `GET /api/sessions`) when the desktop places that
+session in a pane of that workspace.
 
 Top level of `GET /api/workspaces`: `activeWorkspaceId` — the workspace the
 desktop is showing, present only when it is one of the listed rows.
@@ -1646,6 +2102,8 @@ When config advertises `inputReceipts`, POST `/api/input?session=...` accepts
 when the PTY write returned and its receipt was persisted, or 409
 `{status:"uncertain",replayed:boolean}` when a write may have occurred but cannot
 be confirmed. Neither state proves the agent processed or executed the input.
+409 `{error:"terminal-prompt-active",effect:"none"}` means nothing was written
+and nothing was journaled; the same ID may be retried and is checked again.
 
 Receipts bind authenticated device/operator identity, pane incarnation and exact
 decoded input. Reusing an ID with different content, using an old incarnation,
@@ -1713,6 +2171,291 @@ foreground settings target. A loaded `systemError` thread can change settings fo
 its next turn; an `active` thread remains busy and `notLoaded` remains unavailable.
 Catalog pagination is bounded to four pages of 100 entries; incomplete or ambiguous
 catalogs are unavailable rather than silently truncated.
+
+## Host search
+
+`GET /api/search?q=<text>&scope=<list>&limit=<n>&cursor=<c>` searches this
+host's panes. It is a read: no input grant is involved.
+
+### Advertising
+
+`/api/config` carries `search: true` and `searchScopes` when at least one scope
+can answer this caller, and omits both otherwise (as a daemon predating the
+route does). `turns` and `sessions` are listed when the server runs with
+`--allow-transcript`. `scrollback` is listed when the daemon can read pane
+text, which needs only an authenticated caller, the same as `/api/stream`.
+
+### Request
+
+- `q`: trimmed, then 2–200 UTF-16 code units, with no NUL. Otherwise
+  `400 invalid-query`. Matching is a case-insensitive literal substring, never a
+  pattern. Case folding is locale-independent and per character, and it never
+  changes a string's length.
+- `scope`: a comma list of `turns`, `sessions`, `scrollback`. Duplicates are
+  ignored. Default `turns,sessions`. Anything else, including an empty value,
+  is `400 invalid-scope`.
+- `limit`: 1–100, default 50. Otherwise `400 invalid-limit`.
+- `cursor`: the previous response's `nextCursor`. A cursor from another query
+  or scope set, an edited one, or one minted before a daemon restart is
+  `400 invalid-cursor`. Start the search again without it. Re-casing the query
+  keeps the cursor valid. A cursor minted by a daemon before this cursor format
+  (version 2) is `400 invalid-cursor` too.
+
+Every response, error or not, is `Cache-Control: no-store`.
+
+### Response
+
+```json
+{ "results": [ { "kind": "turn", "sessionId": "…", "workspaceId": "…",
+                 "title": "wmux · Claude · repo", "surfaceTitle": "…", "alive": true,
+                 "snippet": "…", "matchRanges": [[12, 6]], "at": 1790000000000,
+                 "turnEventId": "…", "turnCursor": "…" } ],
+  "coverage": { "searchedSessions": 3,
+                "skippedSessions": [ { "sessionId": "…", "scope": "turns", "reason": "budget" } ] },
+  "truncated": false,
+  "nextCursor": null }
+```
+
+- `kind`: `turn` (a message in a conversation), `session` (pane metadata or a
+  run-history result), `scrollback` (a line of terminal text).
+- `title`: the daemon has no pane title, so it composes `workspace · agent ·
+  cwd leaf` and drops any missing part. When nothing is known, it is the
+  session id. For a run with no pane left, it is the run's workspace and agent.
+- `surfaceTitle`: the desktop tab title. Present only while the desktop is
+  attached and its sidebar snapshot is already cached. A search never asks the
+  desktop for it, so it can be missing on a search that follows a long idle.
+  Prefer it over `title` when present.
+- `alive`: `false` for a pane that is neither attached nor detached: a
+  dead-session tombstone (the daemon keeps one for up to 24 h after the shell
+  exits) or a suspended pane. Show that pane read-only. The field is
+  omitted on a run-history hit whose pane is gone.
+- `snippet` and `matchRanges`: about 160 code units around the first match,
+  widened only for a longer query. Control characters are spaces, so a snippet
+  is one line. A snippet edge never splits a surrogate pair. `matchRanges` are
+  `[start, length]` pairs in UTF-16 code units relative to `snippet`, which
+  `NSString`/`NSRange` use directly. There are at most 16 pairs, and every
+  occurrence is wholly inside the snippet.
+- `at`: epoch ms. For a turn it is the message timestamp, and for a run-history
+  hit it is the run's time. Pane-metadata and scrollback hits have no `at`.
+- `turnEventId`: the TurnEvent `id` `/turns` serves for that message.
+- `turnCursor` (transcript-file turns only): open the hit with
+  `GET /api/sessions/<id>/turns?dir=back&cursor=<turnCursor>`. That page ends
+  with the hit's transcript line. It is in the format `/turns` accepts right
+  now (a chat cursor when native chat is wired), so page on from its reply as
+  usual. It is absent for OpenCode and managed conversations, which `/turns`
+  serves as one page. If the conversation changed since the search, `/turns`
+  answers its usual reset snapshot.
+
+### Ordering and paging
+
+Hits with `at` come first, newest first. Hits without `at` follow, grouped by
+pane, newest pane (by when it was created) first. Ties break on session id,
+kind, and position (newest first). So a pane-metadata hit sorts after every
+timestamped hit. Every part of this order is fixed for the life of a hit:
+output in a pane does not move its hits.
+
+`nextCursor` is non-null when more hits may exist past this page. It is
+stateless: the next call runs the search again and continues after the last
+hit returned. A turn appended meanwhile sorts before that hit and is not
+repeated. Scrollback printed meanwhile in the cursor's own pane, or in a pane
+already paged past, is newer than the cursor and is not shown. A pane the
+paging has not reached yet shows what it holds when the page reaches it. Old
+scrollback lines leaving the ring, or a resize, do not shift the paging: the
+cursor remembers its line and as many lines above it as it takes to tell that
+place apart from any repeat, and finds it again. If it cannot find exactly one
+such place (the line left the ring, the screen was redrawn, or the output
+repeats too much), the rest of that pane is not searched on this page: the
+pane is listed in `skippedSessions` with reason `cursor-lost` and `truncated`
+is true. Paging goes on with the next pane. The daemon never guesses a place.
+
+A page can come back with `truncated: true` and a cursor. What that means
+depends on what the bounds left out:
+
+- A conversation cut at its per-session 4 MiB window, or a pane the 24 MiB
+  request-wide bound left unread, is cut at the same place on every page:
+  conversations are read in the order their hits sort, by pane creation. That
+  does not stop paging.
+- A scrollback pane left unread (its extraction did not fit in this request)
+  ends the page before that pane's hits, so the page can hold fewer than
+  `limit` hits and still carry a cursor. The next page reads that pane, from
+  the cache once the background extraction has finished.
+- A conversation the wall clock left unread, or read only partly, has hits
+  that could belong anywhere in the order. The page's hits are correct, but
+  `nextCursor` is null. To see more, search again later or narrow the query.
+- A cursor that lost its place in a pane (`cursor-lost`, above).
+
+A page can have no hits and still carry a cursor, when the first pane past the
+cursor could not be read yet. That cursor is the one you sent (or, on a first
+page, one that means "from the start"). Retry with it after a short wait
+(about a second); the pane's extraction finishes in the background meanwhile.
+So stop paging only when `nextCursor` is null, never because a page held fewer
+than `limit` hits.
+
+### Scopes, gates, and which panes
+
+| scope | grant | panes | reads |
+|---|---|---|---|
+| `turns` | `--allow-transcript` | as `/turns`: every pane the daemon holds, dead tombstones included, orchestrator brain panes excluded for every caller | the reader `/turns` would pick: the Claude/Codex transcript through the resume binding and its path check, or the OpenCode/managed page the chat bridge already holds. Matched: user messages and the assistant's replies. Thinking blocks and tool calls and results are not searched. |
+| `sessions` | `--allow-transcript` | same as `turns` | the composed title, desktop tab title, agent, workspace name and cwd (one hit per pane, the first field that matches), and each run-history result's summary, workspace and agent (the entries `/api/history` serves) |
+| `scrollback` | an authenticated caller (as `/api/stream`) | as `/api/stream`: a paired device never gets a brain pane; the operator token does | the pane's terminal text through the daemon's headless parse of the ring (the last 5,000 rows), soft-wrapped rows joined into one line |
+
+Without `--allow-transcript`, a request whose every scope needs it is
+`403 {"error":"transcript-disabled"}`. When another scope is also asked for,
+the answer is 200, and every pane is listed in `skippedSessions` for each gated
+scope with reason `transcript-disabled`.
+
+### Bounds
+
+- At most 2 searches run at once, daemon-wide, and at most 1 per caller (the
+  operator token is one caller, each paired device another). Past either, the
+  answer is `429 {"error":"search-busy"}` with `Retry-After: 1`.
+- Each caller may start 4 searches back to back, then one more every 2 s.
+  Past that, the answer is `429 {"error":"search-busy"}` with `Retry-After` set
+  to the whole seconds until the next search is allowed. A refused request does
+  not count.
+- One request runs for about 3 s of wall clock. Once that has passed, no new
+  pane is started.
+- `turns` reads each transcript newest first, up to its most recent 4 MiB
+  (16 of the projector's 256 KiB pages). One request reads at most 24 MiB
+  across all panes. The daemon yields between pages, so a search does not stall
+  other panes' streams.
+- `scrollback` extracts at most 6 panes' text per request, in the order their
+  hits sort (so the pane right after the cursor first). Extraction shares the one-at-a-time snapshot queue that attach and
+  resync use. Text is cached per pane until the pane writes more bytes, or its
+  size or incarnation changes, for up to 8 panes. A cached pane does not count
+  against the 6. An extraction still queued at the deadline finishes in the
+  background and fills the cache for the next search. A pane is never queued
+  for extraction twice: a search that reaches a pane already being extracted
+  waits for that extraction. At most 2 extractions are queued or running
+  daemon-wide, counting the ones left from searches that already answered. A
+  pane that would need a third is skipped as `budget` without being queued, so
+  searches cannot build up a backlog in front of attach and resync.
+
+Hitting any of these bounds sets `truncated: true`. Every pane a bound left
+unsearched, or only partly searched, is listed with reason `budget`. Hits from
+the part that was read are still returned. `searchedSessions` counts the panes
+searched fully or in part in at least one scope.
+
+### Skip reasons
+
+| reason | meaning |
+|---|---|
+| `transcript-disabled` | the scope needs `--allow-transcript` |
+| `budget` | a time, byte or pane bound stopped the search here (see above) |
+| `cursor-lost` | scrollback only: the cursor's line could not be found again in this pane, so the rest of it was not searched on this page (see Ordering and paging) |
+| `unavailable` | this daemon cannot read that source (scrollback: the ring could not be parsed; turns: no transcript reader, or an OpenCode pane with no readable conversation) |
+| `unreadable` | the transcript file could not be read, or stopped being readable partway |
+| `no-hook`, `stale-session`, `no-transcript-path`, `unsupported-agent`, `unsafe-transcript-path` | the `/turns` resolver's own reason, passed through unchanged |
+
+Treat an unknown reason as "not searched".
+
+## Device management
+
+`/api/config` carries `deviceManagement: {scope: "all" | "self"}` when this
+daemon serves the three routes below. The key is **omitted** (not `false`) when
+it does not; an older daemon serves the same shape. `scope` is per caller:
+
+- `all` — the operator token, or a device that may type (its own grant **and**
+  the server's `--allow-input`, the same rule as `allowInput`).
+- `self` — a read-only device.
+
+All three routes sit behind the normal Bearer gate and accept no stream ticket.
+
+### `GET /api/devices`
+
+```json
+{
+  "devices": [
+    {
+      "deviceId": "…", "name": "iPhone", "pairedAt": 1700000000000,
+      "lastSeenAt": 1700000500000, "grants": {"input": true},
+      "revoked": false, "current": true
+    }
+  ],
+  "serverGrants": {"input": true, "upload": false, "transcript": true},
+  "scope": "all"
+}
+```
+
+Sent with `Cache-Control: no-store`. `grants.input` is the device's **own**
+stored grant; `serverGrants` are the server flags (`--allow-input`,
+`--allow-upload`, `--allow-transcript`). Whether a device can actually type is
+both of them together. `revokedAt` is present only on a revoked row. `current`
+marks the requesting device and is always `false` for the operator.
+
+Visibility:
+
+| Caller | Sees |
+|---|---|
+| operator token | every device, including revoked tombstones |
+| device with scope `all` | every **active** device (no tombstones) |
+| device with scope `self` | only its own row |
+
+A device that may type already has a shell on the host and could read the
+roster file from it, so showing it the roster reveals nothing new. The roster
+is for **seeing** which devices exist and when each was last seen, so the owner
+can revoke a lost one from the desktop (or with the operator token). A device
+can revoke only itself. A read-only device learns nothing about the others: no
+names, no `lastSeenAt`.
+
+No secret material, push token or Live Activity token is ever on this wire.
+
+### `POST /api/devices/:id/revoke`
+
+No body. Revocation is permanent; a revoked device re-pairs to come back.
+
+### `PATCH /api/devices/:id/grants`
+
+Body is exactly `{"input": false}`. This route only **lowers** a grant. Raising
+one is desktop-only for every caller, the operator token included, the same way
+pairing codes are: the operator token travels in URLs and QR codes. Lowering
+your own grant needs no input permission. When the grant actually changes (or
+an earlier change that failed to persist is being retried), the server also
+closes that device's live streams, so it re-handshakes and picks up the smaller
+grant. A PATCH to a grant that is already `false` and on disk changes nothing
+and closes nothing.
+
+### Who may act on which id
+
+The operator token may act on any id. A **device may act only on its own id**:
+any other id gets `403 {"error":"not-permitted"}` before the roster is
+consulted, byte-identical whether or not that id exists.
+
+### Responses
+
+| Status | Body | When |
+|---|---|---|
+| 200 | `{ok:true, closed:N}` | revoke persisted; `N` live streams were closed. Revoking an already revoked device answers `{ok:true, closed:0}` |
+| 200 | `{ok:false, reason:"persist-failed", closed:N}` | revoke could not be written to disk. The device is blocked in memory now, but may come back after a daemon restart |
+| 200 | `{ok:true, grants:{input:false}}` | grant lowered |
+| 200 | `{ok:false, reason:"persist-failed", grants:{input:false}}` | grant lowered in memory but not written to disk. Retrying the same PATCH re-attempts the write and keeps answering this until it lands |
+| 400 | `{error:"invalid-grants"}` | PATCH body missing `input`, `input` not a boolean, or any other field present |
+| 403 | `{error:"not-permitted"}` | a device naming an id that is not its own |
+| 403 | `{error:"grant-escalation-desktop-only"}` | PATCH with `input:true`, from anyone. Nothing is written |
+| 404 | `{error:"device-not-found"}` | operator naming an unknown id. The roster keeps only the newest revoked tombstones, so a pruned one is also 404 |
+| 409 | `{error:"device-revoked"}` | PATCH on a revoked device, including one revoked from the desktop while the request body was still arriving |
+| 500 | `{error:"device-revoke-failed"}` | the revoke raised an unexpected error. Retry; revoking is idempotent |
+| 500 | `{error:"device-grant-failed"}` | the PATCH raised an unexpected error. Retry; lowering a grant is idempotent |
+| 500 | `{error:"device-list-failed"}` | `GET /api/devices` could not read the roster. Retry |
+| 503 | `{error:"device-management-unavailable"}` | this daemon's device store cannot manage devices (config omits `deviceManagement`) |
+
+### Revoking yourself
+
+A device may revoke itself with no input permission. The response is still
+delivered after the server closes that device's SSE streams and stream tickets;
+every later request answers `401 {reason:"revoked"}`.
+
+**After a self-revoke the phone discards its local credential whatever the
+response says**: `200 ok:true`, `200 ok:false persist-failed`, a network error
+or no response at all. On `persist-failed` the device is blocked on the running
+daemon but could be accepted again after a restart; a phone that has already
+thrown its credential away cannot use it either way.
+
+Every revoke and grant change is recorded in the daemon's device audit log with
+who made it: `desktop`, `operator-web` or `device-self`. A grant change first logged as
+`persist-failed` gets a `grant-persisted` line once a later write puts it on disk. That
+pending note lives in memory only: a daemon restart before the next successful write
+drops both the note and the unwritten grant, and the roster on disk stays authoritative.
 
 ## Native chat
 
@@ -1783,7 +2526,10 @@ transcript), then the Claude/Codex transcript file — and adds `chat` to every
   the phone (Stop is in Terminal). `queue:true` (live Claude) means a send
   during a running turn can be accepted and answered with `queued:true`.
 - **`blocked` is authoritative and computed at read time**: a pending approval
-  (`by:"approval"`), or `by:"terminal"` for a hook `awaiting_input`, an OpenCode
+  (`by:"approval"`), or `by:"terminal"` for a `terminal_prompt` record (as
+  `by:"approval"` with its `approvalId` only when you sent the
+  `terminal-prompt-answer` capability AND the record is answerable), a hook
+  `awaiting_input`, an OpenCode
   `awaiting_input` phase, or a dialog the send screen gate sees on the rendered
   screen (checked on every read of a Claude/Codex binding with `send`).
 - **`launch.reason`** is an open set: `ok`, `shell-busy`, `shell-not-empty`,
@@ -2091,7 +2837,9 @@ data: {"sessionId":"pty-7f3c","at":1758712399000}
 **Live-only**, like `transcript.nudge`: no `id:`, not in the backlog, never
 replayed, only for panes whose `/turns` you have read, never for the brain pane.
 `by` is `approval` (carries `approvalId`; dedupe with the `approval` event) or
-`terminal`; treat an unknown value as `terminal`. Only transitions emit: the
+`terminal`; treat an unknown value as `terminal`. A `terminal_prompt` reads as
+`approval` only on a stream opened with the `terminal-prompt-answer`
+capability header, and only while the record is answerable. Only transitions emit: the
 first `chat.blocked` value the server observes for a pane is recorded without
 an event (whoever read it just saw it in `/turns`). The server recomputes the
 value at most once a second per pane, when an approval opens or closes, the

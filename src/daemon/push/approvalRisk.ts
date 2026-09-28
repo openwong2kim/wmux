@@ -16,6 +16,8 @@
 import { hasElevatedRisk } from '../../shared/criticalPatterns';
 import type { ApprovalRequest } from '../approvals/types';
 
+const SUDO = /(?:^|[\s;&|(`])sudo\b/;
+
 /**
  * Does anything the agent wrote name a destructive action, at either tier?
  *
@@ -35,9 +37,25 @@ export function approvalHasElevatedRisk(request: ApprovalRequest): boolean {
   if (request.kind === 'awaiting_permission') {
     return hasElevatedRisk(request.toolName, request.toolInputSummary);
   }
+  // The agent's own terminal dialog: the record's creation-time verdict (it
+  // saw the call's full command), or the tool, summary and permission-rule line.
+  if (request.kind === 'terminal_prompt') {
+    return request.risk === 'critical' || terminalPromptTextRisk(request.toolName, request.summary, request.reason);
+  }
   return hasElevatedRisk(
     request.question,
     ...(request.options ?? []),
     ...(request.choices ?? []).map((c) => c.label),
   );
+}
+
+/**
+ * The danger verdict for a `terminal_prompt`'s text: the shared patterns at
+ * either tier, plus privilege escalation. A phone can answer this dialog, and
+ * `sudo` behind a one-word Yes is exactly the prompt that deserves the louder
+ * treatment. Kept local rather than added to the shared list, which also drives
+ * the PTY output scanner.
+ */
+export function terminalPromptTextRisk(...texts: Array<string | undefined>): boolean {
+  return hasElevatedRisk(...texts) || texts.some((text) => !!text && SUDO.test(text));
 }

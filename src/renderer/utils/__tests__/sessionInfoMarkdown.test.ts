@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createRemoteSurface } from '../../../shared/types';
 import type { Surface, PaneLeaf, PaneBranch, Workspace } from '../../../shared/types';
+import { surfaceForegroundProgram } from '../surfaceProgram';
 import {
   buildExportPayload,
   buildPaneMarkdown,
@@ -83,6 +84,41 @@ describe('sessionInfoMarkdown — profile must never leak into copy/export', () 
 });
 
 describe('sessionInfoMarkdown', () => {
+  it('names detected foreground agents per terminal in pane and workspace exports', () => {
+    const ws = makeWorkspace();
+    const leaf = (ws.rootPane as PaneBranch).children[0] as PaneLeaf;
+    leaf.surfaces[0].shell = 'Zsh';
+    leaf.surfaces.push({ ...makeTerminalSurface('srf-shell', 'pty-shell'), shell: 'Zsh' });
+    for (const name of ['Codex CLI', 'Claude Code', 'OpenCode']) {
+      const agents = { 'pty-1': { name } };
+      for (const markdown of [buildPaneMarkdown(ws, leaf.id, agents), buildWorkspaceMarkdown(ws, agents)]) {
+        expect(markdown).toContain(`1. [ACTIVE] Terminal — ${name}`);
+        expect(markdown).toContain('2. [ACTIVE] Terminal — Zsh');
+      }
+    }
+    // Clearing live detection after the agent exits restores the launch shell.
+    expect(buildPaneMarkdown(ws, leaf.id, {})).toContain('1. [ACTIVE] Terminal — Zsh');
+    const staleAgent = { 'pty-1': { name: 'Codex CLI' } };
+    for (const liveness of [
+      { agentAliveByPtyId: { 'pty-1': false } },
+      { commandRunningByPtyId: { 'pty-1': false } },
+    ]) {
+      expect(buildPaneMarkdown(ws, leaf.id, staleAgent, liveness)).toContain('1. [ACTIVE] Terminal — Zsh');
+      expect(buildWorkspaceMarkdown(ws, staleAgent, liveness)).not.toContain('Codex CLI');
+    }
+  });
+
+  it('resolves metadata from the addressed terminal only, without changing its shell or title', () => {
+    const terminal = { ...makeTerminalSurface('srf-1', 'pty-1'), shell: 'Zsh' };
+    const agents = { 'pty-1': { name: 'Codex CLI' } };
+    expect(surfaceForegroundProgram(terminal, agents)).toBe('Codex CLI');
+    expect(surfaceForegroundProgram({ ...terminal, ptyId: 'pty-shell' }, agents)).toBeNull();
+    expect(surfaceForegroundProgram(terminal, {})).toBeNull();
+    expect(surfaceForegroundProgram({ ...terminal, surfaceType: 'browser' }, agents)).toBeNull();
+    expect(surfaceForegroundProgram(undefined, agents)).toBeNull();
+    expect(terminal).toMatchObject({ title: 'Terminal', shell: 'Zsh' });
+  });
+
   // ─── Workspace export ─────────────────────────────────────────────────
   // Regression lock: the markdown body MUST match what Sidebar.handleCopy
   // SessionInfo wrote to the clipboard before the util was extracted.

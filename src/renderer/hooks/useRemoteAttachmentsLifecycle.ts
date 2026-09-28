@@ -114,11 +114,16 @@ const BACKOFF_MAX_MS = 5 * 60_000;
  *  it — during boot restore, that means descriptors that never restore at all. */
 type HostResult =
   | { ok: true; workspaces: RemoteWorkspaceSummary[] }
-  | { ok: false };
+  | { ok: false; authRejected?: boolean; insecure?: boolean };
 
 interface BackoffEntry {
   failures: number;
   nextAttemptAt: number;
+  /** The host rejected our credential. Returning to the window does not lift
+   *  this deadline: the answer cannot change until the user pairs again. */
+  authRejected?: boolean;
+  /** The host needs HTTPS; like a rejection, nothing heals it but pairing again. */
+  insecure?: boolean;
 }
 
 type RemoteApi = NonNullable<NonNullable<typeof window.electronAPI>['remote']>;
@@ -130,7 +135,11 @@ async function fetchHost(remote: RemoteApi, hostId: string): Promise<HostResult>
   } catch {
     return { ok: false };
   }
-  if (!res?.ok) return { ok: false };
+  if (!res?.ok) {
+    if (res?.reason === 'auth-rejected') return { ok: false, authRejected: true };
+    if (res?.reason === 'insecure-transport') return { ok: false, insecure: true };
+    return { ok: false };
+  }
   // Defensive even though RemoteHostClient normalises: this is a trust
   // boundary, and `.find()` on a non-array is a thrown TypeError.
   return { ok: true, workspaces: Array.isArray(res.workspaces) ? res.workspaces : [] };
@@ -140,6 +149,15 @@ async function fetchHost(remote: RemoteApi, hostId: string): Promise<HostResult>
  *  store fresh: an attach/detach may have landed while the request was in
  *  flight, and both actions no-op on a key that is no longer there. */
 function applyHostResult(hostId: string, result: HostResult): void {
+  // Host-level, BEFORE the per-row pass: a host that answers again must clear
+  // the flag on every row, including ones it no longer lists (those go stale
+  // below, which heals on its own — a lingering "pair again" would not).
+  if (result.ok) useStore.getState().setRemoteHostAuthRejected(hostId, false);
+  else if (result.authRejected) useStore.getState().setRemoteHostAuthRejected(hostId, true);
+  // Needs HTTPS: set on refusal, cleared by any answer. Never silent — the
+  // row says why nothing loads.
+  if (result.ok) useStore.getState().setRemoteHostInsecure(hostId, false);
+  else if (result.insecure) useStore.getState().setRemoteHostInsecure(hostId, true);
   const attached = useStore.getState().remoteWorkspaces.filter((w) => w.hostId === hostId);
   for (const w of attached) {
     const found = result.ok
@@ -160,14 +178,23 @@ function applyHostResult(hostId: string, result: HostResult): void {
   }
 }
 
-function noteHostResult(backoff: Map<string, BackoffEntry>, hostId: string, ok: boolean): void {
-  if (ok) {
+function noteHostResult(backoff: Map<string, BackoffEntry>, hostId: string, result: HostResult): void {
+  if (result.ok) {
     backoff.delete(hostId);
     return;
   }
   const failures = (backoff.get(hostId)?.failures ?? 0) + 1;
-  const delay = Math.min(REMOTE_POLL_INTERVAL_MS * 2 ** (failures - 1), BACKOFF_MAX_MS);
-  backoff.set(hostId, { failures, nextAttemptAt: Date.now() + delay });
+  // A host that rejected our credential keeps rejecting it until the user
+  // pairs again, so it goes straight to the slowest rung instead of climbing.
+  const delay = result.authRejected || result.insecure
+    ? BACKOFF_MAX_MS
+    : Math.min(REMOTE_POLL_INTERVAL_MS * 2 ** (failures - 1), BACKOFF_MAX_MS);
+  backoff.set(hostId, {
+    failures,
+    nextAttemptAt: Date.now() + delay,
+    ...(result.authRejected ? { authRejected: true } : {}),
+    ...(result.insecure ? { insecure: true } : {}),
+  });
 }
 
 /**
@@ -254,7 +281,7 @@ export function useRemoteAttachmentsLifecycle(): void {
         try {
           const result = await fetchHost(remote, hostId);
           if (unmounted.current) return;
-          noteHostResult(backoff.current, hostId, result.ok);
+          noteHostResult(backoff.current, hostId, result);
           applyHostResult(hostId, result);
         } catch {
           // One misbehaving host must never abort the round: the hosts queued
@@ -323,7 +350,9 @@ export function useRemoteAttachmentsLifecycle(): void {
     if (inFlight.current) return;
     if (Date.now() - lastForegroundRefreshAt.current < FOREGROUND_REFRESH_MIN_GAP_MS) return;
     lastForegroundRefreshAt.current = Date.now();
-    for (const entry of backoff.current.values()) entry.nextAttemptAt = 0;
+    for (const entry of backoff.current.values()) {
+      if (!entry.authRejected && !entry.insecure) entry.nextAttemptAt = 0;
+    }
     void refresh();
   }, [refresh]);
 
@@ -496,6 +525,26 @@ export function useRemoteAttachmentsLifecycle(): void {
   //
   //     Losing the tick must cost freshness, never the poll itself. Exactly one
   //     driver is ever live: arming the fallback tears the tick listener down.
+  // A host whose rejected flag was cleared from outside a poll — it was just
+  // paired again — has a slowest-rung deadline that is now meaningless. Drop
+  // it and ask at once, so the rows come back without a five-minute wait.
+  const rejectedHosts = useStore((s) => [
+    ...new Set(s.remoteWorkspaces.filter((w) => w.authRejected).map((w) => w.hostId)),
+  ].sort().join('\n'));
+  const prevRejectedHosts = useRef('');
+  useEffect(() => {
+    const before = prevRejectedHosts.current ? prevRejectedHosts.current.split('\n') : [];
+    prevRejectedHosts.current = rejectedHosts;
+    const now = new Set(rejectedHosts ? rejectedHosts.split('\n') : []);
+    let healed = false;
+    for (const hostId of before) {
+      if (now.has(hostId) || !backoff.current.get(hostId)?.authRejected) continue;
+      backoff.current.delete(hostId);
+      healed = true;
+    }
+    if (healed) void refresh();
+  }, [rejectedHosts, refresh]);
+
   const hasAttachments = useStore((s) => s.remoteWorkspaces.length > 0);
   useEffect(() => {
     if (!hasAttachments) return;

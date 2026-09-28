@@ -4,6 +4,7 @@ import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { createRemoteSurface, createSurface, generateId } from '../../../shared/types';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { dropStalePaneFoldKeys } from '../../utils/sidebarLayout';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
@@ -362,6 +363,13 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       }
     }
     });
+    // Closing a pane's last tab removes the pane: its task-group fold state goes too.
+    if (Object.keys(get().sidebarTaskGroupExpanded ?? {}).some((k) => k.startsWith('pane:'))) {
+      set((state: StoreState) => {
+        const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
+        if (ws) dropStalePaneFoldKeys(state.sidebarTaskGroupExpanded, ws.id, getWorkspaceLeafPanes(ws).map((leaf) => leaf.id));
+      });
+    }
     if (stashDropped) {
       const d = stashDropped as {
         wsId: string;

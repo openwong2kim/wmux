@@ -68,7 +68,8 @@ import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { panePrincipalId } from '../../shared/principals';
 import { publishA2aTask } from '../events/publisher';
 import { flushMentions, type FlushOpts } from './channelMentionFlush';
-import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
+import { gatedSubmitToPty } from '../utils/ptyMessageDelivery';
+import { noteAgentTurnEnd, sweepTurnEndReminders } from './a2aTurnEndReminder';
 import {
   createPasteGateState,
   isMentionPasteBusy,
@@ -310,7 +311,7 @@ export function useChannelsEventSubscription(): void {
           if (s.ptyId && st.surfaceAgent[s.ptyId]) agentPtys.add(s.ptyId);
         }
       }
-      flushMentions(wsId, selfLeaves, {
+      void flushMentions(wsId, selfLeaves, {
         getUndeliveredChannelMentionTasks: st.getUndeliveredChannelMentionTasks,
         agentPtys,
         // surfaceAgent (NOT surfaceAgentStatus) is the busy source: surfaceAgentStatus
@@ -342,10 +343,17 @@ export function useChannelsEventSubscription(): void {
         // paste-burst TUI (Codex) swallows an Enter written too soon after the
         // paste and strands the mention in its composer. Same slug the busy
         // gate above already reads, so this pane is named or it is nobody.
-        deliverNudge: (ptyId, text) =>
-          submitBracketedPasteToPty(ptyId, text, {
+        //
+        // A mention nudge is submitted on another agent's behalf, so it goes
+        // through main's approval gate: an Enter into a pane showing an
+        // approval would answer it. A refusal throws, leaving the mention
+        // unmarked for the next Stop.
+        deliverNudge: async (ptyId, text) => {
+          const result = await gatedSubmitToPty(ptyId, text, {
             agent: useStore.getState().surfaceAgent[ptyId]?.slug,
-          }),
+          });
+          if (!result.ok) throw new Error(`mention nudge not submitted (${result.reason}): ${result.detail}`);
+        },
         markDelivered: st.markChannelMentionDelivered,
         // 2f: rate cap unchanged; the first capped observation per window also
         // raises a one-shot user-visible toast (the cap itself only console-
@@ -662,6 +670,9 @@ export function useChannelsEventSubscription(): void {
               // pane — flush all local queues; only the pty's owner matches.
               if (ev.kind === 'agent.stop') {
                 runFlushAll({ onlyPtyId: ev.ptyId });
+                // Only a real turn boundary: an osc133 stop is a shell command
+                // ending, possibly under a still-running agent.
+                if (ev.source !== 'osc133') noteAgentTurnEnd(ev.ptyId);
               }
             } else if (event.type === 'channel.catalog') {
               // A1: a channel's catalog/membership changed (create/archive/join/
@@ -705,6 +716,8 @@ export function useChannelsEventSubscription(): void {
           // such mentions undelivered forever (GLM P2). The per-workspace
           // early-out in runFlush keeps an empty-queue tick cheap.
           runFlushAll({});
+          // A2A turn-end reminders: recorded stops whose pane is idle now.
+          void sweepTurnEndReminders();
           // A1: re-hydrate the catalog once per batch when any channel.catalog
           // event arrived. The six non-post mutations now emit this signal; the
           // receiver re-fetches list+members (daemon = source of truth), so a

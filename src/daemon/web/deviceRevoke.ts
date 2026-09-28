@@ -1,4 +1,5 @@
 import type { DeviceRevokeResult } from './DeviceStore';
+import type { DeviceActor } from './deviceAudit';
 
 /**
  * M3 — the ordering decision behind `daemon.web.deviceRevoke`, extracted from
@@ -20,7 +21,7 @@ export interface DeviceStreamHost {
 
 /** Just the roster verb this needs — a full DeviceStore satisfies it. */
 export interface DeviceRoster {
-  revoke(deviceId: string): DeviceRevokeResult;
+  revoke(deviceId: string, actor: DeviceActor): DeviceRevokeResult;
 }
 
 export interface DeviceRevokeRpcResult {
@@ -51,15 +52,20 @@ export interface DeviceRevokeRpcResult {
  * A throw from `disconnectDevice` is deliberately NOT caught. The revocation is
  * already durable at that point and `revoke` is idempotent, so a retry re-runs
  * the teardown; swallowing it would hide a real bug behind a success report.
+ *
+ * `actor` is REQUIRED here, unlike on the store: the desktop RPC and the phone
+ * routes both come through this function, and a default would let a new
+ * caller file its revocations under someone else's name in the audit log.
  */
 export function revokeDeviceAndDisconnect(
   deviceId: string,
   roster: DeviceRoster,
   streams: DeviceStreamHost,
+  actor: DeviceActor,
 ): DeviceRevokeRpcResult {
   if (!deviceId) return { ok: false, reason: 'not-found' };
 
-  const result = roster.revoke(deviceId);
+  const result = roster.revoke(deviceId, actor);
   if (result.reason === 'not-found') return result;
 
   const closed = streams.disconnectDevice(deviceId);

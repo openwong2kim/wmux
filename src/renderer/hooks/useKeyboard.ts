@@ -15,7 +15,7 @@ import {
   destroyWorkspaceRemoteSessions,
 } from '../utils/remoteSessionTeardown';
 import { disposePanePtys } from '../utils/paneTeardown';
-import { mentionSourceForKey } from '../utils/agentMention';
+import { mentionKeyClaim } from '../utils/agentMention';
 import { OPEN_MENTION_PICKER_EVENT } from '../utils/agentMentionInsert';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
@@ -715,12 +715,21 @@ export function useKeyboard() {
       // view) has focus — whatever key it is bound to — and only when the key
       // came from that pane. In a plain shell, a floating pane or a brain
       // embed, F2 belongs to mc / htop / vim, so it goes on to the terminal.
-      const declined = action === 'mentionAgent' && !mentionSourceForKey(store.getState(), e.target);
-      if (action && run && !declined) {
+      // A ⌘ chord on macOS is no terminal's: it is consumed with a toast
+      // instead of dying silently (see mentionKeyClaim).
+      const mentionClaim = action === 'mentionAgent'
+        ? mentionKeyClaim(store.getState(), e, window.electronAPI?.platform)
+        : undefined;
+      if (action && run && mentionClaim !== null) {
         e.preventDefault();
         if (STOP_PROPAGATION_ACTIONS.has(action)) e.stopImmediatePropagation();
         shortcutPressGuard.noteActed(e);
-        run();
+        if (mentionClaim === 'noSource') {
+          // Once per press: a held chord auto-repeats, and one toast is enough.
+          if (!e.repeat) store.getState().pushToast({ message: t('mention.noSource'), level: 'info' });
+        } else {
+          run();
+        }
         return;
       }
 

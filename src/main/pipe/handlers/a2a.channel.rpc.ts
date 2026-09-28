@@ -112,11 +112,16 @@ export function registerA2aChannelRpc(
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
 
-    const ws = await resolveCallerWorkspace(getWindow, params);
+    // The router validated this token and bound it to one workspace. A brain
+    // has no worker PTY; its binding outranks any caller-supplied pane hint.
+    const hasCommanderBinding = ctx?.commanderWorkspace !== undefined && ctx.commanderWorkspace !== null;
+    const ws = hasCommanderBinding ? ctx!.commanderWorkspace! : await resolveCallerWorkspace(getWindow, params);
     const base = (params && typeof params === 'object' ? { ...(params as Record<string, unknown>) } : {}) as Record<
       string,
       unknown
     >;
+
+    if (hasCommanderBinding) delete base.senderPtyId;
 
     // R2 review C1: principalId is a renderer-only field — if a pipe/MCP caller
     // asserts a principal coordinate on a member row, it could redirect the
@@ -324,14 +329,14 @@ export function registerA2aChannelRpc(
   // the same daemon handler, which additionally stamps headless callers
   // (channelCallerIdentity.ts). The cursor this advances (lastReadSeq) is the
   // durable-inbox consume signal: the wake worker stops re-nudging on ack.
-  router.register('a2a.channel.ack', (p) => forward('a2a.channel.ack', p, true));
+  router.register('a2a.channel.ack', (p, ctx) => forward('a2a.channel.ack', p, true, ctx));
 
   // Mutating — capability 'a2a.channel.send' (verifiable caller required)
-  router.register('a2a.channel.create', (p) => forward('a2a.channel.create', p, true));
-  router.register('a2a.channel.join', (p) => forward('a2a.channel.join', p, true));
-  router.register('a2a.channel.leave', (p) => forward('a2a.channel.leave', p, true));
-  router.register('a2a.channel.post', (p) => forward('a2a.channel.post', p, true));
-  router.register('a2a.channel.invite', (p) => forward('a2a.channel.invite', p, true));
+  router.register('a2a.channel.create', (p, ctx) => forward('a2a.channel.create', p, true, ctx));
+  router.register('a2a.channel.join', (p, ctx) => forward('a2a.channel.join', p, true, ctx));
+  router.register('a2a.channel.leave', (p, ctx) => forward('a2a.channel.leave', p, true, ctx));
+  router.register('a2a.channel.post', (p, ctx) => forward('a2a.channel.post', p, true, ctx));
+  router.register('a2a.channel.invite', (p, ctx) => forward('a2a.channel.invite', p, true, ctx));
 
   // Mission RPCs (J0 §3) — same forwarder, same D5 stamp discipline: mutating
   // start/close require a resolvable senderPtyId (fail-closed) and get a
@@ -339,8 +344,8 @@ export function registerA2aChannelRpc(
   // MUST be registered here or the MCP mission tools die with "Unknown method"
   // (J0 3-model review — Codex, conf 10: capability map + FIRST_PARTY had the
   // methods but the router forward was the missing link).
-  router.register('task.mission.start', (p) => forward('task.mission.start', p, true));
-  router.register('task.mission.close', (p) => forward('task.mission.close', p, true));
+  router.register('task.mission.start', (p, ctx) => forward('task.mission.start', p, true, ctx));
+  router.register('task.mission.close', (p, ctx) => forward('task.mission.close', p, true, ctx));
   // `list` is a read, but an OWNER-scoped one: it was registered as an ordinary
   // read, which left a caller-supplied verifiedWorkspaceId in place whenever no
   // senderPtyId resolved — so a wire caller could read another workspace's
@@ -355,7 +360,7 @@ export function registerA2aChannelRpc(
   // #113 same-machine 신원 위조 ceiling 하에서 owner-워크스페이스 에이전트가 자기
   // 태스크를 선점 물질화하는 것은 수용 잔여(단, 물질화 단조 게이트가 이중 물질화는
   // 차단하므로 피해는 자기 태스크 1회 선점에 한정된다).
-  router.register('task.mission.update', (p) => forward('task.mission.update', p, true));
+  router.register('task.mission.update', (p, ctx) => forward('task.mission.update', p, true, ctx));
 
   // NOTE: a2a.channel.archive and a2a.channel.kick are intentionally NOT registered
   // here. BOTH are HUMANS-ONLY actions (product decision): archiving tears a channel

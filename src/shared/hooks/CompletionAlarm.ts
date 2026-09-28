@@ -72,6 +72,27 @@ export type AlarmOutcome = 'hold' | 'drop';
  *  the needs-a-human alarm. */
 export type AlarmClass = 'done' | 'attention';
 
+/** What a stashed resume closure is told when its window confirms. `firm`
+ *  is the window's own flag: an attention window the agent's hook reported
+ *  (directly, or by an earlier report the window replaced). */
+export interface ConfirmedWindow {
+  cls: AlarmClass;
+  firm: boolean;
+}
+
+/**
+ * Window confirmation. `firm` is the confirmed window's flag; a caller that
+ * wants its stashed resume to know which window confirmed passes it on as
+ * `resume({ cls, firm })`. A resume that ignores it may be called bare.
+ */
+export type OnConfirmed = (
+  pane: string,
+  slug: string,
+  cls: AlarmClass,
+  resume: (confirmed?: ConfirmedWindow) => void,
+  firm: boolean,
+) => void;
+
 interface PaneState {
   /** Working evidence seen since the last confirmed completion / session
    *  start. The first gate a stop candidate must pass. */
@@ -91,7 +112,7 @@ interface PendingWindow {
   /** Cancels the scheduled confirmation timer. */
   cancel: () => void;
   /** Caller-supplied deferred side effects, handed back at confirmation. */
-  resume: () => void;
+  resume: (confirmed?: ConfirmedWindow) => void;
 }
 
 /**
@@ -106,7 +127,7 @@ export class CompletionAlarm {
   private readonly windowMs: number;
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, ms: number) => () => void;
-  private readonly onConfirmed: (pane: string, slug: string, cls: AlarmClass, resume: () => void) => void;
+  private readonly onConfirmed: OnConfirmed;
   private readonly log?: (level: 'debug' | 'info' | 'warn', message: string) => void;
   private readonly states = new Map<string, PaneState>();
 
@@ -114,7 +135,7 @@ export class CompletionAlarm {
     windowMs?: number;
     now?: () => number;
     schedule?: (fn: () => void, ms: number) => () => void;
-    onConfirmed: (pane: string, slug: string, cls: AlarmClass, resume: () => void) => void;
+    onConfirmed: OnConfirmed;
     log?: (level: 'debug' | 'info' | 'warn', message: string) => void;
   }) {
     this.windowMs = deps.windowMs ?? DEFAULT_ALARM_WINDOW_MS;
@@ -154,7 +175,7 @@ export class CompletionAlarm {
    * Window expiry (no rebuttal) fires `onConfirmed` with the stashed resume
    * closure, sets announced=true and seenWorking=false.
    */
-  observe(pane: string, slug: string, cue: AlarmCue, resume: () => void = noop): AlarmOutcome {
+  observe(pane: string, slug: string, cue: AlarmCue, resume: (confirmed?: ConfirmedWindow) => void = noop): AlarmOutcome {
     const key = `${slug}:${pane}`;
     const state = this.stateFor(key);
 
@@ -261,7 +282,7 @@ export class CompletionAlarm {
     pane: string,
     slug: string,
     cls: AlarmClass,
-    resume: () => void,
+    resume: (confirmed?: ConfirmedWindow) => void,
     firm = false,
   ): AlarmOutcome {
     const t0 = this.now();
@@ -283,7 +304,7 @@ export class CompletionAlarm {
       // call site covers both. State is already committed above, so a
       // throwing consumer cannot leave the gate mid-transition either.
       try {
-        this.onConfirmed(pane, slug, cls, resume);
+        this.onConfirmed(pane, slug, cls, resume, firm);
       } catch (err) {
         // console.warn is the FALLBACK, not a nicety: neither wiring site
         // passes `log` today, so `this.log?.()` alone would swallow the throw

@@ -917,7 +917,8 @@ export interface SessionData {
   sidebarSortMode?: string;
   /** The sort mode was chosen by the user (kept across the 2026-09-25 default flip). */
   sidebarSortModeChosen?: boolean;
-  /** Workspaces pinned to their manual position in the Attention order. */
+  /** Workspaces pinned to the top of the sidebar (2026-09-26; before that a pin
+   *  held a manual slot in the Attention order — same shape, loaded as pinned-to-top). */
   sidebarPinnedIds?: string[];
   /** #1481 — expanded sidebar width in px. Clamped on load. */
   sidebarWidth?: number;

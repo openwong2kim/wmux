@@ -1314,7 +1314,7 @@ function renderEventLine(
           ? '0 verified evidence items — UNVERIFIED CLAIM'
           : `${a2a.verifiedItemCount} verified evidence item${a2a.verifiedItemCount === 1 ? '' : 's'} reported`;
     verdict = mayDrive
-      ? `(A2A TASK CLAIMED COMPLETE; ${grade}. Call a2a_task_query for the canonical task and evidence, independently verify the artifact/reproduction command, then fix/review further or finalize with deck_complete_work. State alone is NOT proof.)`
+      ? `(A2A TASK CLAIMED COMPLETE; ${grade}. Call a2a_task_query with task_id for the canonical task and evidence, independently verify the artifact/reproduction command, then fix/review further or finalize with deck_complete_work. State alone is NOT proof.)`
       : `(A2A TASK CLAIMED COMPLETE; ${grade}. Query and report the evidence, but do not drive another worker in this mode.)`;
   } else if (e.kind === 'a2a.failed') {
     verdict = mayDrive
@@ -1417,7 +1417,8 @@ function awaitingVerdict(
     '(status=awaiting_input, regex-detected — VERIFY THEN PRESS: terminal_read this pane first; ' +
     `if a real approval prompt is on screen, you MAY press it with ${pressCall(target)}; ` +
     'if not, notify only. A press answered `detector-only` means wmux holds no hook record for ' +
-    "this prompt — that refusal lifts the pane's typing block, so answer it by hand then." +
+    'this prompt, so no tool presses it — raise it with deck_ask_decision; never answer it ' +
+    'with terminal_send or terminal_send_key.' +
     `${then})`
   );
 }

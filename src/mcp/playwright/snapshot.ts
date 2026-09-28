@@ -2883,6 +2883,13 @@ export interface ResolveRefOptions {
    * caller that does not care keeps its one-line call.
    */
   notes?: string[];
+  /**
+   * Let a text-entry ref follow a field the page replaced under a sibling
+   * text-entry role with the same name (#1466). Only the typing tools opt in:
+   * for them the replacement is the field the agent meant; a click, hover or
+   * replayed step keeps refusing rather than acting on a different element.
+   */
+  allowTextEntrySwap?: boolean;
 }
 
 /**
@@ -2912,6 +2919,7 @@ export async function resolveRef(
     options?.strictCount === true,
     options?.timeout,
     options?.notes,
+    options?.allowTextEntrySwap === true,
   );
   if (primary) return primary;
 
@@ -3036,6 +3044,7 @@ async function resolveRefViaAxMap(
   strictCount = false,
   timeout?: number,
   notes?: string[],
+  allowTextEntrySwap = false,
 ): Promise<ElementHandle | null> {
   const wanted = refNumber(ref);
   if (wanted === null) return null;
@@ -3113,8 +3122,9 @@ async function resolveRefViaAxMap(
 
   let count: number;
   let locator: ReturnType<Page['getByRole']>;
+  let root: Page | Frame | Locator;
   try {
-    const root = scopeSelector ? page.locator(scopeSelector).first() : frameRoot;
+    root = scopeSelector ? page.locator(scopeSelector).first() : frameRoot;
     locator = root.getByRole(target.role as any, {
       name: target.name || undefined,
       exact: true,
@@ -3124,7 +3134,16 @@ async function resolveRefViaAxMap(
     return null;
   }
 
-  if (count === 0) return null;
+  if (count === 0) {
+    // Never on the replay lane: strictCount exists to refuse a stand-in there.
+    if (!allowTextEntrySwap || strictCount) return null;
+    const swapped = await resolveSwappedTextEntry(root, target, refs, timeout);
+    if (swapped) {
+      if (recovered) notes?.push(recovered);
+      notes?.push(swappedTextEntryNote(wanted, target.role, swapped.role, target.name));
+    }
+    return swapped?.handle ?? null;
+  }
 
   // The nth-match below is only sound while the page still holds the elements
   // the snapshot numbered against. It used to clamp with Math.min(), which
@@ -3166,6 +3185,84 @@ async function resolveRefViaAxMap(
   } catch {
     return null;
   }
+}
+
+/**
+ * Roles a page swaps between when it upgrades a text field in place.
+ *
+ * Wikipedia's header search is a plain `<input type=search>` (searchbox) until
+ * it is focused; focus mounts the typeahead, which replaces it with a new
+ * `<input role=combobox>` carrying the same accessible name (#1466). The
+ * snapshot's ref still says `searchbox "Search Wikipedia"`, so a click on the
+ * ref followed by a fill on the same ref found nothing and the agent fell back
+ * to guessing a search URL.
+ */
+const TEXT_ENTRY_ROLES: readonly string[] = ['textbox', 'searchbox', 'combobox'];
+
+/**
+ * Find the field that replaced a text-entry ref under a sibling role.
+ *
+ * Only for a ref the snapshot saw ONE of (a named singleton), and only when
+ * exactly one element across the other text-entry roles carries that exact
+ * name: two candidates is a guess, and a guess is worse than a stale error.
+ * The candidate must also take typed text: a native `<select>` is a combobox
+ * too, and filling one is not what a search-box ref asked for.
+ *
+ * And it must be NEW: if the snapshot already listed a sibling-role field with
+ * that name in the same frame, that field existed alongside the ref's element,
+ * so it is a different field that survived — not the replacement — and typing
+ * into it would overwrite something the agent never named.
+ */
+async function resolveSwappedTextEntry(
+  root: Page | Frame | Locator,
+  target: RefEntry,
+  refs: readonly RefEntry[],
+  timeout?: number,
+): Promise<{ handle: ElementHandle; role: string } | null> {
+  if (!target.name || target.sameNameTotal !== 1 || !TEXT_ENTRY_ROLES.includes(target.role)) {
+    return null;
+  }
+  const coexisted = refs.some(
+    (entry) =>
+      entry !== target &&
+      entry.name === target.name &&
+      entry.frameKey === target.frameKey &&
+      TEXT_ENTRY_ROLES.includes(entry.role),
+  );
+  if (coexisted) return null;
+  try {
+    let found: { locator: Locator; role: string } | null = null;
+    for (const role of TEXT_ENTRY_ROLES) {
+      if (role === target.role) continue;
+      const locator = root.getByRole(role as any, { name: target.name, exact: true });
+      const count = await locator.count();
+      if (count === 0) continue;
+      if (count > 1 || found) return null;
+      found = { locator, role };
+    }
+    if (!found) return null;
+    const candidate = found.locator.nth(0);
+    const wait = timeout === undefined ? undefined : { timeout };
+    const editable = await candidate.evaluate(
+      (el) =>
+        el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || (el as HTMLElement).isContentEditable,
+      undefined,
+      wait,
+    );
+    if (!editable) return null;
+    const handle = await candidate.elementHandle(wait);
+    return handle ? { handle, role: found.role } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The note a ref resolved through a text-field swap is reported with. */
+export function swappedTextEntryNote(ref: number, was: string, now: string, name: string): string {
+  return (
+    `note=ref ${ref} was a ${was} "${name}"; the page replaced it with a ${now} of the same ` +
+    'name — resolved to that element'
+  );
 }
 
 // data-wmux-ref values are always non-negative integer strings, so anything

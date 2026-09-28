@@ -112,12 +112,12 @@ function leaf(id: string, surfaces: Surface[]): PaneLeaf {
  * inbox, then flush queued mentions to their panes. Returns the ptys that were
  * actually pasted into — the observable "did it land in an agent's prompt".
  */
-function deliverTo(
+async function deliverTo(
   message: ChannelMessage,
   selfWorkspaceId: string,
   leaves: PaneLeaf[],
   agentPtys: string[],
-): { pastedPtys: string[]; routedTaskIds: string[] } {
+): Promise<{ pastedPtys: string[]; routedTaskIds: string[] }> {
   const tasks = new Map<string, Task>();
   const handled = new Set<string>();
   const routedTaskIds = routeChannelMentionToInbox(message, selfWorkspaceId, leaves, {
@@ -153,11 +153,13 @@ function deliverTo(
   const deps: FlushMentionDeps = {
     getUndeliveredChannelMentionTasks: () => [...tasks.values()].filter((t) => !marked.has(t.id)),
     isBusy: () => false, // the worker is idle — the case the whole feature is for
-    deliverNudge: (ptyId) => pasted.push(ptyId),
+    deliverNudge: async (ptyId) => {
+      pasted.push(ptyId);
+    },
     markDelivered: (id) => marked.add(id),
     agentPtys: new Set(agentPtys),
   };
-  flushMentions(selfWorkspaceId, leaves, deps, {});
+  await flushMentions(selfWorkspaceId, leaves, deps, {});
   return { pastedPtys: pasted, routedTaskIds };
 }
 
@@ -194,7 +196,7 @@ describe('A1 — pane-pinned channel mentions', () => {
     ]);
 
     const leaves = [leaf('pane-1', [surface('s1', 'pty-1')]), leaf('pane-2', [surface('s2', 'pty-2')])];
-    const { pastedPtys } = deliverTo(post.message, 'ws-worker', leaves, ['pty-1', 'pty-2']);
+    const { pastedPtys } = await deliverTo(post.message, 'ws-worker', leaves, ['pty-1', 'pty-2']);
     // Landed in the prompt of the pinned agent — and only that one.
     expect(pastedPtys).toEqual(['pty-2']);
   });
@@ -219,7 +221,7 @@ describe('A1 — pane-pinned channel mentions', () => {
     expect(post.message.mentions).toEqual([{ workspaceId: 'ws-worker', name: 'worker' }]);
 
     const leaves = [leaf('pane-1', [surface('s1', 'pty-1')])];
-    const { routedTaskIds, pastedPtys } = deliverTo(post.message, 'ws-worker', leaves, ['pty-1']);
+    const { routedTaskIds, pastedPtys } = await deliverTo(post.message, 'ws-worker', leaves, ['pty-1']);
     // The task IS minted (the dock badge / a2a_task_query pull path)…
     expect(routedTaskIds).toHaveLength(1);
     // …but nothing is pasted into the sole live agent. Default behavior is
@@ -261,7 +263,7 @@ describe('A1 — pane-pinned channel mentions', () => {
     // The victim's own single live agent is NOT pasted into: the degraded
     // single-agent path keys on the pane pin, which no longer exists.
     const leaves = [leaf('pane-v', [surface('sv', 'pty-v')])];
-    const { pastedPtys } = deliverTo(post.message, 'ws-victim', leaves, ['pty-v']);
+    const { pastedPtys } = await deliverTo(post.message, 'ws-victim', leaves, ['pty-v']);
     expect(pastedPtys).toEqual([]);
   });
 

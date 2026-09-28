@@ -99,6 +99,7 @@ import { getFanOutGuards, promptDigest, type FanOutGuards } from '../../worktask
 import { loadFanoutRequireApproval, loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
 import { workerLaunchFlags, type FanoutWorkerPermissionMode } from '../../../shared/workerLaunch';
 import { loadFanoutPresets } from '../../worktask/fanoutPresets';
+import { sanitizeFanoutOrigin, type FanoutOrigin } from '../../../shared/fanoutOrigin';
 import {
   describeFanoutAgentChoice,
   fanoutPresetKey,
@@ -308,6 +309,36 @@ async function resolveCallerWorkspace(getWindow: GetWindow, senderPtyId: string)
   } catch {
     // Renderer unavailable (early boot / reload) — unresolvable, fail closed.
     return '';
+  }
+}
+
+/**
+ * Which pane asked (#1575): the caller's ptyId turned into the pane's stable
+ * ids and a snapshot of its name, by the renderer that owns the layout,
+ * scoped to the fan-out's owning workspace. Resolved ONCE per fan-out, at
+ * request time, and carried unchanged to every task's spawn — so a pane that
+ * closes (or whose ptyId is reused) before the tasks spawn cannot split the
+ * fan-out or hand its tasks to another pane. Display data only: any failure
+ * records no requester rather than refusing the fan-out.
+ *
+ * Trust: the ptyId is the caller-supplied senderPtyId — the same basis the
+ * fan-out's ownership rests on, no more.
+ */
+async function resolveCallerOrigin(
+  getWindow: GetWindow,
+  senderPtyId: string,
+  ownerWorkspaceId: string,
+): Promise<FanoutOrigin | undefined> {
+  if (!senderPtyId || !ownerWorkspaceId) return undefined;
+  try {
+    const res = await sendToRenderer(getWindow, 'fanout.resolveOrigin', {
+      ptyId: senderPtyId,
+      workspaceId: ownerWorkspaceId,
+    });
+    const origin = sanitizeFanoutOrigin((res as { origin?: unknown } | null)?.origin);
+    return origin?.kind === 'pane' ? origin : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -884,6 +915,13 @@ export function registerFanOutRpc(
     // here on a concurrent call on this key is a poll, not a second prompt.
     claim(key);
 
+    // ── Requester: resolved once, before approval / git / worktree work ──
+    // A brain is the orchestrator; a pane caller is looked up now, while the
+    // pane that asked is certainly still there (see resolveCallerOrigin).
+    const callerOrigin: FanoutOrigin | undefined = commanderWorkspaceId
+      ? { kind: 'orchestrator' }
+      : await resolveCallerOrigin(getWindow, senderPtyId, callerWorkspaceId);
+
     // ── R3: repo confinement ─────────────────────────────────────────────
     // A pane agent anchors on its OWN surface; a brain has none, so it anchors
     // on its workspace's active pane (resolved once — see the helper).
@@ -931,6 +969,9 @@ export function registerFanOutRpc(
         : { worktree: false, outputFolder: fanoutPresetOutputFolder((selection as { preset: FanoutPreset }).preset) }),
       verifiedWorkspaceId: callerWorkspaceId,
       workerPermissionMode: workerMode,
+      // Who asked, for each task's lineage stamp — resolved above, the same
+      // origin for every task. An unresolvable pane records no requester.
+      ...(callerOrigin ? { caller: callerOrigin } : {}),
     };
     const presetName = selection.kind === 'preset' ? selection.preset.name : undefined;
 

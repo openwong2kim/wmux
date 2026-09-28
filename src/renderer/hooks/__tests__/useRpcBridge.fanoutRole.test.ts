@@ -66,13 +66,13 @@ describe('useRpcBridge — fan-out task roles', () => {
 
   it('returns the launched command so a re-fire replays the bound one', () => {
     const block = fanoutSpawnBlock();
-    expect(block).toMatch(/return \{ workspaceId: newWsId, ptyId, initialCommand: launchCommand \}/);
+    expect(block).toMatch(/return \{ workspaceId: newWsId, ptyId, initialCommand: launchCommand, \.\.\.\(fanoutOrigin \? \{ fanoutOrigin \} : \{\}\) \}/);
     // …and that variable is read off the options the PTY was actually created
     // with, so the role rewrite, the marker decision and the workspace profile
     // are all already in it.
     expect(block).toMatch(/const launchCommand = createOptions\.initialCommand \?\? ''/);
-    // (Spread with only the lineage owner added — the command is unchanged.)
-    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf \} : createOptions,?\s*\)/);
+    // (Spread with only the lineage owner and origin added — the command is unchanged.)
+    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf, \.\.\.\(fanoutOrigin \? \{ fanoutOrigin \} : \{\}\) \} : createOptions,?\s*\)/);
   });
 
   it('applies the binding to the launch command via withRoleBinding', () => {
@@ -148,7 +148,12 @@ describe('useRpcBridge — fan-out task roles', () => {
 
   it('hands the lineage owner to pty.create (main stamps it inside the create), with no await before it', () => {
     const block = fanoutSpawnBlock();
-    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf \} : createOptions/);
+    expect(block).toMatch(/pty\.create\(\s*fanoutTaskOf \? \{ \.\.\.createOptions, fanoutTaskOf, \.\.\.\(fanoutOrigin \? \{ fanoutOrigin \} : \{\}\) \} : createOptions/);
+    // The requester arrives resolved (main resolved it once, at request
+    // time): the spawn only sanitizes it and never re-resolves a ptyId
+    // against the layout, which may have moved on since.
+    expect(block).toMatch(/const fanoutOrigin = sanitizeFanoutOrigin\(params\.fanoutOrigin\);/);
+    expect(block).not.toMatch(/originFromCaller|fanoutCaller/);
     // An await between addWorkspace and pty.create lets the empty-leaf funnel
     // spawn a plain shell into the new pane first.
     const end = block.indexOf('await window.electronAPI.pty.create(');

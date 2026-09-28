@@ -122,6 +122,22 @@ afterEach(() => {
 });
 
 describe('FleetView — Ready to review', () => {
+  it('keeps Fleet open for review-task Jump when enabled, but still closes for Open diff', async () => {
+    act(() => useStore.getState().setFleetKeepOpenAfterJump(true));
+    mount();
+    await settle();
+    const row = reviewRow('ws-t1')!;
+    act(() => row.focus());
+    key(row, 'j');
+    await settle();
+    expect(useStore.getState().activeWorkspaceId).toBe('ws-t1');
+    expect(useStore.getState().fleetViewVisible).toBe(true);
+    act(() => row.focus());
+    key(row, 'd');
+    expect(addDiffSurface).toHaveBeenCalled();
+    expect(useStore.getState().fleetViewVisible).toBe(false);
+  });
+
   it('lists the finished open task with owner, branch, change summary and elapsed time', async () => {
     mount();
     await settle();
@@ -138,6 +154,35 @@ describe('FleetView — Ready to review', () => {
     expect(row.querySelector('[data-fleet-review-changes]')?.getAttribute('data-fleet-review-changes')).toBe('2:3:1');
     expect(row.textContent).toContain('2 files changed');
     expect(row.querySelector('[data-fleet-elapsed]')?.textContent).toBe('5m');
+  });
+
+  it('names the requester: workspace › requesting pane, else who started it', async () => {
+    act(() => { useStore.setState({ fanoutOrigin: { 'ws-t1': { kind: 'pane', paneId: 'po', surfaceId: 's-po', label: 'w0-0' } } }); });
+    mount();
+    await settle();
+    const text = () => reviewRow('ws-t1')!.querySelector('[data-fleet-review-requester]')?.textContent;
+    expect(text()).toBe('by w0-0 · owner project');
+    act(() => { useStore.setState({ fanoutOrigin: { 'ws-t1': { kind: 'gui' } } }); });
+    expect(text()).toBe('Started by you');
+    expect(reviewRow('ws-t1')!.textContent).toContain('owner project');
+    act(() => { useStore.setState({ fanoutOrigin: {}, fanoutProvenance: {} }); });
+    expect(text()).toBe('Requester unknown');
+  });
+
+  it('names the requester on a task row in every section, not only Ready to review', async () => {
+    act(() => { useStore.setState({ fanoutOrigin: { 'ws-t2': { kind: 'pane', paneId: 'po', surfaceId: 's-po', label: 'w0-0' } } }); });
+    mount();
+    await settle();
+    // ws-t2 is running: an ordinary Fleet card, not a review row.
+    const card = container.querySelector('[data-fleet-card][data-workspace-id="ws-t2"]')!;
+    expect(card.querySelector('[data-fleet-requester]')?.textContent).toBe('by w0-0 · owner project');
+    // Its own line, not a segment of the meta line that would squeeze it.
+    expect(card.querySelector('[data-fleet-requester]')?.closest('.wmux-fleet-context')).toBeNull();
+    // A closed requester stamped in the old name-first order still leads with the coordinate.
+    act(() => { useStore.setState({ fanoutOrigin: { 'ws-t2': { kind: 'pane', paneId: 'gone', surfaceId: 's-gone', label: 'Claude Code · w1-1' } } }); });
+    expect(card.querySelector('[data-fleet-requester]')?.textContent).toBe('by w1-1 · Claude Code · closed · owner project');
+    // A workspace that is not a fan-out task carries none.
+    expect(container.querySelector('[data-fleet-card][data-workspace-id="ws-o"] [data-fleet-requester]')).toBeNull();
   });
 
   it('draws no section when nothing is ready (an agent still running)', async () => {

@@ -10,6 +10,7 @@
 // Type-only, and the one import this module has: `approvalKeystrokes` is
 // itself dependency-free, so the narrow-interface property above survives.
 import type { ApprovalPressRefusal } from './approvalKeystrokes';
+import type { QuestionShape } from './askUserQuestion';
 
 /** What the resolver asked for. Approve = affirmative, deny = reject. */
 export type ApprovalDecision = 'approve' | 'deny';
@@ -58,8 +59,19 @@ export interface ApprovalRequest {
    * `awaiting_input` — an AskUserQuestion prompt (keystroke resolution).
    * `awaiting_permission` — a PreToolUse gate on a high-risk tool (RPC-waiter
    *   resolution, no keystroke). #783
+   * `terminal_prompt` — the agent's OWN terminal dialog (Claude Code's "Do you
+   *   want to proceed?" permission prompt), as opposed to an AskUserQuestion
+   *   select. Created from the PermissionRequest hook or from confirmed
+   *   detector attention, and parsed off the screen at creation. ANSWERABLE
+   *   ONLY when the parse was whole and offers a plain Yes, only by a web
+   *   caller that declared the `terminal-prompt-answer` capability, only with
+   *   a plain Yes/No `choiceKey`, and only while the live screen still shows
+   *   the same dialog (`promptFingerprint`) — see ApprovalRegistry.resolve.
+   *   Otherwise informational: `question`, `reason`, `choices` and
+   *   `promptFingerprint` are absent and `resolve` refuses with
+   *   `answer-in-terminal`. Never carries `options` or `screenTail`.
    */
-  kind: 'awaiting_input' | 'awaiting_permission';
+  kind: 'awaiting_input' | 'awaiting_permission' | 'terminal_prompt';
   /**
    * A4 — WHAT is being asked, extracted from the hook envelope's `tool_input`
    * at creation time (see askUserQuestion.ts).
@@ -95,6 +107,14 @@ export interface ApprovalRequest {
    * deterministic key. Absent (not empty) when no choices could be extracted.
    */
   choices?: ApprovalChoice[];
+  /**
+   * `awaiting_input` only: present when the AskUserQuestion is NOT one
+   * single-select question (see askUserQuestion.ts `QuestionShape`). One
+   * keystroke cannot answer such a prompt, so an approve refuses with
+   * `needs-v2` instead of pressing a digit that only toggles a checkbox or
+   * advances a tab. Daemon-internal: not on the web wire (`approvalWire`).
+   */
+  questionShape?: QuestionShape;
   /**
    * A HINT that the question names a destructive action — set at creation when
    * `question`/`options` match the daemon's existing critical-action patterns
@@ -147,6 +167,46 @@ export interface ApprovalRequest {
    * command" / "what file" without a second round trip.
    */
   toolInputSummary?: string;
+  /**
+   * What the dialog is about, sanitized and capped at 200 characters. Present
+   * only on `kind:'terminal_prompt'` records, and only when known (the command
+   * rows of the parsed dialog, else a permission hook's tool input). Display
+   * only: nothing is decided from it.
+   * Agent-authored text: render it as text, never as markup.
+   */
+  summary?: string;
+  /**
+   * The permission-rule line of a `terminal_prompt` dialog ("Permission rule
+   * Bash(rm -rf *) requires confirmation for this command."), capped. Present
+   * only on an answerable record. Agent-authored text.
+   */
+  reason?: string;
+  /**
+   * Hash of the whole `terminal_prompt` dialog as parsed at creation (see
+   * terminalPromptParse.ts). Present only on an answerable record. An answer
+   * must echo it, and the live screen must still hash to it, before a key is
+   * written.
+   */
+  promptFingerprint?: string;
+  /**
+   * When the one remote answer to a `terminal_prompt` was written into the
+   * pane. The record stays `pending` until the dialog is seen gone (the screen
+   * verifier, or the bridge's answered path), then resolves; another answer is
+   * refused as `already-answered` meanwhile.
+   */
+  pressedAt?: number;
+  /**
+   * DAEMON-INTERNAL `terminal_prompt` fields — never on the web wire
+   * (`approvalWire` is an allowlist), not persisted meaningfully.
+   *   - `toolUseId`: the transcript `tool_use` this dialog is bound to.
+   *   - `dialogKey`: which dialog this is (screen hash + tool_use id), for the
+   *     per-dialog creation cooldown.
+   *   - `keyRevisionAtCreate`: the pane's fence input revision when the dialog
+   *     was read; any key or click since means a human is at the terminal.
+   */
+  toolUseId?: string;
+  dialogKey?: string;
+  keyRevisionAtCreate?: number;
   /** Who answered — free-form caller-supplied label ('web', an operator name). */
   resolvedBy?: string;
   resolvedAt?: number;
@@ -206,7 +266,54 @@ export type ApprovalResolveFailure =
   | 'input-revoked'
   // The caller's `authorize` did not settle in time. Fail closed, but this is
   // not a verdict on the credential: the caller may retry.
-  | 'authorization-unconfirmed';
+  | 'authorization-unconfirmed'
+  // A `terminal_prompt` this caller may not answer: the record is not
+  // answerable, the caller is not a capable web client, or the resolver is
+  // automated. NOT an expiry: the record stays pending until the dialog closes.
+  // The web layer maps it to 501.
+  | 'answer-in-terminal'
+  // The one remote answer to this `terminal_prompt` was already written.
+  | 'already-answered'
+  // The dialog on screen is not the one the answer was for: it changed, is no
+  // longer the active dialog at the bottom, or the pane moved under the answer.
+  // Nothing was written.
+  | 'prompt-changed'
+  // A `terminal_prompt` answer too soon after the record appeared.
+  | 'answer-too-soon'
+  // A `terminal_prompt` decline (or answer) for a record the daemon cannot tie
+  // to one tool call on screen: it was never matched to its transcript call.
+  // Nothing is written; the record stays pending.
+  | 'prompt-unverified'
+  // A `terminal_prompt` answer whose `decision` does not match the option its
+  // `choiceKey` names (approve ↔ plain Yes, deny ↔ plain No), or whose
+  // `choiceKey` / `promptFingerprint` is missing.
+  | 'invalid-choice'
+  // An approve on an `awaiting_input` record whose `questionShape` one key
+  // cannot answer (multi-select, or several questions). NOT an expiry: the
+  // record stays pending, deny (Esc) still works, and a human answers the rest
+  // in the pane. The web layer maps it to 501 with `reason: 'needs-v2'`.
+  | 'needs-v2';
+
+/**
+ * The one-line `reason` a 501 carries on the web wire, next to its unchanged
+ * `error`: WHY the phone cannot answer, so a client can say more than "open
+ * the computer". Closed set, documented in docs/phone-client-contract.md.
+ *   no-capability      the caller cannot answer this kind remotely (no
+ *                      capability header, or an automated resolver)
+ *   unsupported-shape  the dialog was not bound and parsed whole, or a
+ *                      question record has nothing to identify it by
+ *   screen-unreadable  the pane cannot be read together with its state
+ *   secret-input       reserved — no 501 path emits it yet
+ *   needs-v2           answerable only by the stepwise v2 answer path
+ *   unsupported-agent  no keystroke map for this agent
+ */
+export type AnswerRefusalReason =
+  | 'no-capability'
+  | 'unsupported-shape'
+  | 'screen-unreadable'
+  | 'secret-input'
+  | 'needs-v2'
+  | 'unsupported-agent';
 
 export type ApprovalResolveResult =
   | {
@@ -231,7 +338,7 @@ export type ApprovalResolveResult =
     }
   | {
       ok: false;
-      reason: ApprovalResolveFailure;
+      reason: Exclude<ApprovalResolveFailure, 'answer-in-terminal'>;
       /**
        * Present ONLY with `reason: 'out-of-scope'` — the concrete condition
        * `decideApprovalPress` refused on (`press-capability-off`,
@@ -249,14 +356,34 @@ export type ApprovalResolveResult =
       resolvedBy?: string;
       /** Absent only for 'not-found'. */
       request?: ApprovalRequest;
+    }
+  | {
+      ok: false;
+      reason: 'answer-in-terminal';
+      /**
+       * REQUIRED: why the phone cannot answer. The web layer sends it as the
+       * 501's `reason`; a refusal that cannot name its cause does not compile.
+       */
+      answerRefusal: AnswerRefusalReason;
+      request?: ApprovalRequest;
+      /** Never set on this variant; declared so callers can read it off any refusal. */
+      pressRefusal?: undefined;
+      resolvedBy?: undefined;
     };
 
-export type ApprovalEventType = 'create' | 'resolve' | 'expire' | 'supersede';
+/** `press`: a remote answer to a `terminal_prompt` was written; still pending. */
+export type ApprovalEventType = 'create' | 'resolve' | 'expire' | 'supersede' | 'press';
 
 /** One lifecycle transition. The record carries its post-transition state. */
 export interface ApprovalEvent {
   type: ApprovalEventType;
   request: ApprovalRequest;
+  /**
+   * On a `create`: the id of the record this one replaces within the SAME
+   * awaiting episode (a `terminal_prompt` re-parsed after its dialog changed).
+   * Push does not fire again for it — one push per episode.
+   */
+  replaces?: string;
 }
 
 /** Why a pending request was expired. Log/diagnostic only, never persisted. */
@@ -267,9 +394,34 @@ export type ApprovalExpiryReason =
   | 'pane-gone'
   | 'prompt-gone'
   | 'answered-locally'
+  // The user submitted a new prompt: the input box is back, so the question
+  // it would answer is no longer on screen (Esc sends no hook of its own).
+  | 'prompt-submitted'
   // #783 — the gate self-deferred before the harness deadline (phone did not
   // answer in time). The record is expired so a late phone tap gets a 410.
-  | 'gate-timed-out';
+  | 'gate-timed-out'
+  // The awaiting-state verifier found the dialog gone from the pane's screen.
+  // Also starts the `terminal_prompt` creation cooldown for that pane.
+  | 'screen-cleared';
+
+/** What HookIngest knows when it asks for a `terminal_prompt` record. */
+export interface TerminalPromptNote {
+  sessionId: string;
+  agent: string;
+  workspaceId?: string;
+  toolName?: string;
+  summary?: string;
+  /** The PermissionRequest hook's `tool_input` — a binding when the transcript has none. */
+  toolInput?: Record<string, unknown>;
+  /** The hook's `tool_use_id`, when it carried one. */
+  toolUseId?: string;
+  /** The hook's Claude `session_id`: must be the pane's own agent session. */
+  hookSessionId?: string;
+  /** The hook's `prompt_id` (the user turn): an extra discriminator, never proof alone. */
+  promptId?: string;
+  /** `hook` (PermissionRequest) or `detector` (confirmed screen attention). */
+  source: 'hook' | 'detector';
+}
 
 /**
  * The half of the registry HookIngest drives. Separate from the read/resolve
@@ -287,6 +439,7 @@ export interface ApprovalHookSink {
     options?: string[];
     /** Structured choices with key+label, extracted alongside options. */
     choices?: ApprovalChoice[];
+    questionShape?: QuestionShape;
   }): void;
   /**
    * #783 — create a pending permission-gate record. Returns the new record's id
@@ -303,12 +456,26 @@ export interface ApprovalHookSink {
     toolName: string;
     toolInputSummary?: string;
   }): string;
+  /**
+   * Record the agent's own terminal dialog as a `kind:'terminal_prompt'`
+   * record, parsed off the pane's screen. A no-op when the pane already has any
+   * pending record, the agent is not Claude-family, or the pane is inside the
+   * cooldown that follows a `screen-cleared` expiry. It never supersedes
+   * anything. Optional so a sink that predates the kind still type-checks.
+   */
+  noteTerminalPrompt?(input: TerminalPromptNote): void | Promise<void>;
   /** `kind` narrows the sweep to one record kind; omitted ⇒ every kind. */
   expireForSession(
     sessionId: string,
     reason: ApprovalExpiryReason,
     kind?: ApprovalRequest['kind'],
   ): void;
+  /**
+   * The agent is starting another tool: retire the pane's pending
+   * AskUserQuestion record if a screen read shows its question is gone.
+   * Optional so a sink without a screen (tests) can omit it.
+   */
+  retireStaleQuestion?(sessionId: string): void;
 }
 
 export interface ApprovalListResult {
@@ -358,7 +525,56 @@ export interface ApprovalResolveParams {
    * renderer and the operator's own pipe callers).
    */
   authorize?: (record: ApprovalRequest) => Promise<'ok' | 'expired' | 'read-only'>;
+  /**
+   * `terminal_prompt` only: the dialog hash the answering client was shown.
+   * Must equal the record's, and the live screen's.
+   */
+  promptFingerprint?: string;
+  /**
+   * `terminal_prompt` only: set by the web route, and only for a caller that
+   * declared the `terminal-prompt-answer` capability. A Symbol, so JSON params
+   * (the pipe RPC, MCP `approval_press`) can never carry it.
+   */
+  terminalPromptAnswer?: typeof TERMINAL_PROMPT_WEB_ANSWER;
+  /**
+   * `terminal_prompt` only: set by the web decline route for a caller that
+   * declared `terminal-prompt-decline`. The answer is then ONE Esc, written
+   * only while the record is pending and its dialog is on screen; `decision`
+   * must be 'deny' and `choiceKey` absent.
+   */
+  terminalPromptDecline?: typeof TERMINAL_PROMPT_WEB_DECLINE;
 }
+
+/** The web route's marker for a capable `terminal_prompt` answer (see above). */
+export const TERMINAL_PROMPT_WEB_ANSWER: unique symbol = Symbol('terminal-prompt-web-answer');
+
+/**
+ * The web decline route's marker (`POST /api/approvals/:id/decline`): cancel a
+ * `terminal_prompt` dialog with ONE Esc. A Symbol for the same reason as the
+ * answer marker — JSON callers can never carry it.
+ */
+export const TERMINAL_PROMPT_WEB_DECLINE: unique symbol = Symbol('terminal-prompt-web-decline');
+
+/**
+ * `GET /api/approvals/:id/detail` — the full text a pending, bound
+ * `terminal_prompt` is about. Kept in daemon memory only: never on the record,
+ * so never in approvals.json, an SSE event or a push.
+ */
+export interface TerminalPromptDetail {
+  id: string;
+  toolName?: string;
+  /** The call's full command (Bash) or path/url, up to TERMINAL_PROMPT_DETAIL_MAX_BYTES. */
+  command: string;
+  /** sha256 (hex) of the FULL command's UTF-8 bytes, even when `command` was capped. */
+  commandHash: string;
+  /** UTF-8 byte length of the full command. */
+  commandBytes: number;
+  /** `command` was capped at TERMINAL_PROMPT_DETAIL_MAX_BYTES. */
+  truncated: boolean;
+}
+
+/** Most bytes of a command `/detail` returns. */
+export const TERMINAL_PROMPT_DETAIL_MAX_BYTES = 64 * 1024;
 
 /**
  * The whole surface a consumer (the web server, the daemon RPCs) needs. The
@@ -377,4 +593,10 @@ export interface ApprovalRegistryApi {
   resolve(params: ApprovalResolveParams): Promise<ApprovalResolveResult>;
   /** Subscribe to lifecycle transitions. Returns the unsubscribe function. */
   onEvent(listener: (event: ApprovalEvent) => void): () => void;
+  /**
+   * The full command of a PENDING `terminal_prompt` bound to its tool call,
+   * or null (unknown id, settled, another kind, or never bound). Optional so
+   * a registry that predates it still type-checks.
+   */
+  terminalPromptDetail?(id: string): TerminalPromptDetail | null;
 }

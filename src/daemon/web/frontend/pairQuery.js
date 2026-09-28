@@ -63,5 +63,38 @@
     return (pathname || '/pair') + (rest ? '?' + rest : '');
   }
 
-  root.pairQuery = { readPairCode: readPairCode, urlWithoutCode: urlWithoutCode };
+  /**
+   * Fragment key of a COMPUTER pairing link (`/pair#wmux-desktop-code=…`).
+   * Mirrors DESKTOP_PAIR_FRAGMENT_KEY in src/shared/web.ts; a test keeps the
+   * two equal, since this file is inlined without a bundler.
+   */
+  var DESKTOP_FRAGMENT_KEY = 'wmux-desktop-code';
+
+  /**
+   * Whether the address carries a computer pairing link.
+   *
+   * That link is for the wmux app on another computer, not for this browser:
+   * a browser that opened it must neither redeem the code nor put it in the
+   * form, or pasting the link into the wrong window would pair the wrong
+   * thing. Only presence matters here — the code itself is never read.
+   */
+  function hasDesktopCode(hash) {
+    if (typeof hash !== 'string' || hash === '') return false;
+    var body = hash.charAt(0) === '#' ? hash.slice(1) : hash;
+    var parts = body.split('&');
+    for (var i = 0; i < parts.length; i++) {
+      var key = parts[i].split('=')[0];
+      var decoded = key;
+      try { decoded = decodeURIComponent(key); } catch (e) { /* keep raw */ }
+      if (decoded.trim().toLowerCase() === DESKTOP_FRAGMENT_KEY) return true;
+    }
+    return false;
+  }
+
+  root.pairQuery = {
+    readPairCode: readPairCode,
+    urlWithoutCode: urlWithoutCode,
+    hasDesktopCode: hasDesktopCode,
+    DESKTOP_FRAGMENT_KEY: DESKTOP_FRAGMENT_KEY,
+  };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

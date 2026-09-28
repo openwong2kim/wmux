@@ -27,6 +27,7 @@ vi.mock('../../account/accountStore', () => ({
   }),
 }));
 
+import { COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../../../shared/commanderSurface';
 import {
   ClaudePtyBrainAdapter,
   scrubBrainSpawnEnv,
@@ -1396,4 +1397,10 @@ describe('a session id learned from a foreign Stop', () => {
     expect(reported).toEqual(['sess-tui']);
     adapter.dispose();
   });
+});
+
+it('allows every commander surface tool in the PTY runtime and settings profile', () => {
+  for (const tool of [...COMMANDER_TOOL_SURFACE, ...COMMANDER_ONLY_TOOLS]) {
+    expect(BRAIN_PTY_ALLOWED_TOOLS).toContain(`mcp__wmux__${tool}`);
+  }
 });

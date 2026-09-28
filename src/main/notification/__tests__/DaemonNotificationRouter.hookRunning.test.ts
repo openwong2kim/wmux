@@ -9,6 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { DaemonClient } from '../../DaemonClient';
 import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
+import type { WorkspaceListEntry } from '../../workspace/WorkspaceMirror';
 
 vi.mock('electron', () => ({ BrowserWindow: class {} }));
 
@@ -70,6 +71,7 @@ interface Captured {
 function stubHookRouter(runningGoverned: boolean): HookSignalRouter {
   return {
     noteHookTurnStart: vi.fn(),
+    notePromptSubmit: vi.fn(),
     releaseHookTurnStart: vi.fn(),
     governsRunningState: vi.fn().mockReturnValue(runningGoverned),
     noteAgentOnPane: vi.fn(),
@@ -80,7 +82,12 @@ function stubHookRouter(runningGoverned: boolean): HookSignalRouter {
   } as unknown as HookSignalRouter;
 }
 
-function makeRouter(hookRouter?: HookSignalRouter) {
+function makeRouter(
+  hookRouter?: HookSignalRouter,
+  entries: WorkspaceListEntry[] = [],
+  ageMs = 0,
+  now: () => number = Date.now,
+) {
   const captured: Captured = {};
   const fakeDaemon = {
     on: vi.fn((event: string, cb: (payload: never) => void) => {
@@ -96,6 +103,8 @@ function makeRouter(hookRouter?: HookSignalRouter) {
     fakeDaemon,
     () => null,
     hookRouter ? () => hookRouter : undefined,
+    now,
+    () => ({ peek: () => ({ entries, ageMs }) }),
   );
   router.start();
   return { router, captured };
@@ -121,7 +130,7 @@ function metadataEvent(hookKind: string, agent = 'Claude Code') {
       source: 'hook',
       hookKind,
       decision: 'activity',
-      signal: { kind: hookKind, agent: 'claude', cwd: '/repo', payload: {}, ts: 1 },
+      signal: { kind: hookKind, agent: 'claude', ptyId: PTY, cwd: '/repo', payload: {}, ts: 1 },
     },
   };
 }
@@ -181,13 +190,41 @@ describe('DaemonNotificationRouter — the byte heuristic stands down on a hook-
     metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
   });
 
+  it('warns once when prompt receipt evidence arrives before the hook router', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { router, captured } = makeRouter();
+    try {
+      captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+      captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('receipt evidence unavailable'));
+    } finally {
+      router.stop();
+      warn.mockRestore();
+    }
+  });
+
   it('claims the running dot for the hook when the turn start lands', () => {
     const hookRouter = stubHookRouter(false);
-    const { router, captured } = makeRouter(hookRouter);
+    const { router, captured } = makeRouter(hookRouter, [], 0, () => 5000);
     captured.agent?.(metadataEvent('agent.user_prompt_submit'));
     // The latch records WHICH agent opened the turn (F4): a different agent
     // launched in the same shell must not inherit this one's claim.
     expect(hookRouter.noteHookTurnStart).toHaveBeenCalledWith(PTY, expect.any(Number), 'claude');
+    expect(hookRouter.notePromptSubmit).toHaveBeenCalledWith(PTY,
+      expect.objectContaining({ kind: 'agent.user_prompt_submit', ptyId: PTY, ts: 1 }), 5000, false);
+    for (const [ptyIds, ageMs, unique] of [
+      [[PTY], 0, true], [[PTY, 'other'], 0, false], [[PTY], 10_000, false],
+    ] as const) {
+      const replay = makeRouter(hookRouter, [{
+        id: 'w1', name: 'one', metadata: { cwd: '/repo' }, activePtyId: PTY, ptyIds: [...ptyIds],
+      }], ageMs, () => 5000);
+      const event = metadataEvent('agent.user_prompt_submit');
+      const { ptyId: _ptyId, ...signal } = event.event.signal;
+      replay.captured.agent?.({ ...event, event: { ...event.event, signal } });
+      expect(hookRouter.notePromptSubmit).toHaveBeenLastCalledWith(PTY, signal, 5000, unique);
+      replay.router.stop();
+    }
     router.stop();
   });
 
@@ -389,6 +426,7 @@ describe('DaemonNotificationRouter — a settle is marked, and survives its own 
     let governed = true;
     return {
       noteHookTurnStart: vi.fn(() => { governed = true; }),
+      notePromptSubmit: vi.fn(),
       releaseHookTurnStart: vi.fn(() => { governed = false; }),
       governsRunningState: vi.fn(() => governed),
       noteAgentOnPane: vi.fn(),

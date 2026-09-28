@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 
 import {
   APPROVAL_PUSH_FALLBACK_BODY,
+  APPROVAL_RETRACTION_KIND,
   approvalPushCollapseId,
   buildApprovalPushPayload,
+  buildApprovalRetractionPayload,
 } from '../approvalPushPayload';
 import { PUSH_RISK_NORMAL } from '../../../shared/push/pushEnvelope';
 import type { ApprovalRequest } from '../../approvals/types';
@@ -182,5 +184,37 @@ describe('approvalPushCollapseId', () => {
   it('stays inside the APNs collapse-id limit', () => {
     const id = approvalPushCollapseId(request({ sessionId: 's'.repeat(200) }));
     expect(id.length).toBe(64);
+  });
+});
+
+describe('buildApprovalRetractionPayload', () => {
+  it('carries no approvalId, so a shipped extension cannot put buttons back on it', () => {
+    const p = buildApprovalRetractionPayload(request({ kind: 'terminal_prompt', state: 'resolved' }), 'a');
+    expect(p).not.toHaveProperty('approvalId');
+    expect(p).not.toHaveProperty('requiresInAppChoice');
+    expect(p.kind).toBe(APPROVAL_RETRACTION_KIND);
+    expect(p.resolution).toBe('resolved');
+    expect(typeof p.title).toBe('string');
+    expect(typeof p.body).toBe('string');
+  });
+
+  it('names the push it retracts and threads under the same pane', () => {
+    const r = request({ kind: 'terminal_prompt', state: 'expired' });
+    const p = buildApprovalRetractionPayload(r, r.id);
+    expect(p.retractsApprovalId).toBe(r.id);
+    expect(p.sessionId).toBe(r.sessionId);
+    expect(p.resolution).toBe('expired');
+  });
+
+  it('names the approval id that was delivered, not the record that ended', () => {
+    const r = request({ kind: 'terminal_prompt', state: 'resolved' });
+    const p = buildApprovalRetractionPayload(r, 'delivered-earlier');
+    expect(p.retractsApprovalId).toBe('delivered-earlier');
+  });
+
+  it('never calls a superseded record answered', () => {
+    const p = buildApprovalRetractionPayload(request({ kind: 'terminal_prompt', state: 'superseded' }), 'x');
+    expect(p.resolution).toBe('expired');
+    expect(p.body).not.toMatch(/Answered/);
   });
 });

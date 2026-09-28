@@ -215,7 +215,7 @@ export const ja = {
   'settings.sidebarPosition': 'サイドバー位置',
   'settings.sidebarPositionDesc': 'ターミナルエリアの左右',
   'settings.sidebarAttentionFirst': 'あなた待ちの行を上に',
-  'settings.sidebarAttentionFirstDesc': 'エージェントがあなたの応答を待っているワークスペースをサイドバーの最上部に固定します。既定はオフ：行はドラッグした位置のままです。 オンの間、ドラッグでの並べ替えは停止します。',
+  'settings.sidebarAttentionFirstDesc': 'エージェントがあなたの応答を待っているワークスペースをサイドバーの最上部に移動します。既定はオフ：行はドラッグした位置のままです。 オンの間、ドラッグでの並べ替えは停止します。',
   'settings.sidebarShowPaneCoordinates': 'ペイン座標を表示',
   'settings.sidebarShowPaneCoordinatesDesc': 'ラベルを付けていないペインについて、エージェント一覧に自動生成された w1-2 形式の座標を表示します。既定はオン。名前を変更したペインは、この設定に関係なく常にそのラベルを表示します。',
   'settings.sidebarLeft': '左',

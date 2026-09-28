@@ -96,6 +96,27 @@ describe('Sidebar — Attention order (render)', () => {
     expect(waitRow?.textContent).not.toContain('Needs you');
   });
 
+  // Attached remote workspaces share the one list: sorted by attention with
+  // the local rows, and found by the workspace search on name or host.
+  it('interleaves a remote row that needs you, and filters remote rows by host', () => {
+    const remote = (workspaceId: string, agentStatus: string, hostLabel: string) => ({
+      key: `h:${workspaceId}`, hostId: 'h', hostLabel, workspaceId, name: workspaceId,
+      panes: [{ sessionId: `s-${workspaceId}`, agentName: 'Claude Code', agentStatus }],
+    });
+    seed({ run: 'running', idle: 'idle', done: 'complete' }, {
+      remoteWorkspaces: [remote('far', 'awaiting_input', 'Mini'), remote('cold', 'idle', 'Studio')],
+      activeRemoteKey: null,
+    });
+    act(() => root.render(<Sidebar />));
+    expect(shown()).toEqual(['far', 'done', 'run', 'idle', 'cold']);
+    const input = container.querySelector('input[type="text"]') as HTMLInputElement;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'studio');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(shown()).toEqual(['cold']);
+  });
+
   // Review #9 — Ctrl+N hints only in Manual.
   it('draws no Ctrl+N hints outside Manual', () => {
     seed({ a: 'idle', b: 'idle' });

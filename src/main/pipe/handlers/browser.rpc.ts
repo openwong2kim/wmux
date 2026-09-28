@@ -2959,7 +2959,7 @@ export function registerBrowserRpc(
     const cdpPort = webviewCdpManager.getCdpPort();
     if (cdpPort <= 0) {
       throw new Error(
-        'CDP remote debugging is disabled — browser automation is unavailable. ' +
+        'CDP remote debugging is unavailable: ' + (webviewCdpManager.getCdpFailureReason?.() ?? 'disabled') + '. ' +
           'Enable it via ~/.wmux/config.json (browser.cdp.enabled = true) and restart wmux, ' +
           'or unset the WMUX_DISABLE_CDP environment variable.',
       );

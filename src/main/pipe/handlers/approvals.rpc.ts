@@ -36,13 +36,15 @@
 //      prompt still on screen.
 //
 // A refusal comes back with its reason so the caller can act on it rather than
-// guess (see the deadlock note below).
+// guess (see the policy-refusal note below).
 
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
 import type { DaemonClient } from '../../DaemonClient';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
 import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
+import { looksLikeApprovalPrompt } from '../../../daemon/approvals/approvalKeystrokes';
+import { parseTerminalPrompt } from '../../../daemon/approvals/terminalPromptParse';
 
 /** The daemon's approval list, narrowed to what target resolution needs. */
 export interface PendingApproval {
@@ -161,131 +163,86 @@ export const PRESS_REFUSAL_HINTS: Readonly<Record<string, string>> = {
   'not-a-task-workspace':
     'this pane is not a delegated fan-out worker — a human owns it, so ask them with deck_ask_decision',
   'autonomy-off':
-    "this worker's workspace has autonomy off; the operator has to turn it on before a press can land",
+    "this worker's workspace has autonomy off — do not type or send keys at the prompt; raise it with deck_ask_decision",
   'press-capability-off':
     'approval-press is off for this worker (its owner runs in assist, or a loop narrowed the capability) — raise it with deck_ask_decision',
   'detector-only':
     'this prompt was only guessed at from the screen, not reported by a hook, so it will not be pressed',
   'prompt-gone': 'the prompt is no longer on screen — read the pane again before deciding',
+  'prompt-changed':
+    'the pane changed between the screen check and the press (a key, new output, or options that no longer read back) — nothing was typed; read the pane again',
   'scope-unavailable':
     'the daemon has no workspace facts to judge this pane by; the desktop app may have just started',
+  'answer-in-terminal':
+    "this is the agent's own terminal dialog: a human answers it, in the pane or from a paired phone. " +
+    'No automated press reaches it — raise it with deck_ask_decision if the operator is needed',
+  'needs-v2':
+    'this question is multi-select or has several questions, and one key press cannot answer it — ' +
+    'deny cancels it; otherwise a human answers it in the pane, so raise it with deck_ask_decision',
 };
 
-// ─── The deadlock guard ─────────────────────────────────────────────────────
+// ─── Policy refusals escalate; raw input follows live state ────────────────
 //
-// `terminal_send` is blocked on a pane holding an approval record, because
-// typing at an approval prompt is the thing this tool replaces. But a block
-// plus a press that POLICY refuses is a brain with no move at all: it cannot
-// press, it cannot type, and it will burn its turn retrying.
+// `terminal_send` / `terminal_send_key` are blocked on a pane holding an
+// approval record, because typing at an approval prompt is the thing
+// `approval_press` replaces. When the OPERATOR'S POLICY refuses the press
+// (autonomy off, approval pressing off), the answer is the operator's to give:
+// the caller escalates with `deck_ask_decision`. A refusal unlocks nothing.
 //
-// So a press refused for a POLICY reason lifts the block on that pane. The
-// brain gets the refusal reason back from `approval.press`, and its next
-// `terminal_send` goes through to the old typed path — worse, but not stuck.
-// The lift is logged, is per-pane, and expires, so the block is the default
-// state and fail-open is the exception that had to be earned.
-//
-// TRANSIENT refusals do NOT lift: `prompt-gone` and `not-found` mean the press
-// was right and the world moved, and typing into a pane whose prompt just
-// vanished is exactly the misfire the block exists for.
-//
-// NEITHER DO REFUSALS THAT MEAN "THIS IS NOT YOUR WORKER" OR "WE DO NOT KNOW".
-// The first draft lifted on `not-a-task-workspace`, `workspace-unknown`,
-// `scope-unavailable` and `detector-only` too, which inverted the guard: those
-// are exactly the panes a brain must not be typing digits into — a HUMAN's
-// pane, a pane the daemon cannot classify, a daemon with no fact table yet, and
-// a prompt nobody's hook ever reported. "The press was refused" would have been
-// enough to open the typed path on any of them, and the easiest of the four to
-// produce is a main process that has not published its table yet, i.e. the
-// first seconds after a restart.
-//
-// So the lift needs BOTH halves and gets neither for free:
-//   - the pane is a task workspace THIS caller owns (checked in the handler,
-//     before the press is even attempted — an unowned pane is refused outright
-//     and never reaches this set), and
-//   - the refusal is one of the two the operator can actually resolve.
+// A record is not the only sign of an approval. A gate record expires when the
+// gate defers to the agent's own dialog, and that dialog can be on screen with
+// no record at all. So the raw-input guard also asks, at the moment of the
+// write, whether the pane's workspace policy lets an automated caller answer
+// approvals, and — only when it does not — whether an approval dialog is on
+// the pane's screen right now. That is live state, not an event: when the
+// human answers the dialog it leaves the screen and typing works again at once.
 
-/** Policy refusals — the operator has decided, and no retry changes it. */
-export const PRESS_DEADLOCK_REASONS: ReadonlySet<string> = new Set([
+/** Policy refusals — the operator has decided, and only the operator can change it. */
+export const PRESS_POLICY_REFUSALS: ReadonlySet<string> = new Set([
   'autonomy-off',
   'press-capability-off',
 ]);
 
-/**
- * How long a lift lasts. Long enough to cover the brain's next turn (it may
- * have to read the screen and think), short enough that the pane is protected
- * again well before it is reused for another task.
- */
-export const PRESS_BLOCK_LIFT_MS = 10 * 60_000;
-
-const pressBlockLifts = new Map<string, { until: number; reason: string; byWorkspace?: string }>();
+/** Whether a workspace's live policy lets an automated caller answer approvals. */
+export type AnswerPolicy =
+  | { allowed: true }
+  | { allowed: false; reason: 'autonomy-off' | 'press-capability-off' | 'workspace-unknown' };
 
 /**
- * Hard ceiling on the map. Reached only by something pathological (a brain
- * looping presses across thousands of dead panes); past it the oldest entries
- * go, because a lift is a temporary exception and losing one only restores the
- * default — the block.
+ * The policy for a pane's workspace, from its stored (effective) autonomy
+ * entry. No workspace, or no entry, reads as not allowed: the product default
+ * is autonomy off, and a missing fact must never read as permission.
  */
-export const PRESS_BLOCK_LIFT_MAX = 256;
+export function answerPolicyFor(
+  workspaceId: string | null,
+  entry: { mode?: string; approvalPress?: boolean } | undefined,
+): AnswerPolicy {
+  if (!workspaceId) return { allowed: false, reason: 'workspace-unknown' };
+  if (!entry?.mode || entry.mode === 'off') return { allowed: false, reason: 'autonomy-off' };
+  if (entry.approvalPress !== true) return { allowed: false, reason: 'press-capability-off' };
+  return { allowed: true };
+}
 
 /**
- * Record that this pane's press was refused by policy, so typing is allowed.
- * `byWorkspace` is the brain whose press was refused: the lift is that brain's
- * way out of a deadlock, not a licence for every caller to type at the pane.
+ * Is an approval dialog on this screen right now? Either shape counts: an
+ * option row under a selection cursor (a select, or the permission dialog's
+ * "❯ 1. Yes"), or a whole permission dialog the parser recognises. Only the
+ * tail is looked at — the live dialog is at the bottom of the grid.
  */
-export function liftPressBlock(
-  ptyId: string,
-  reason: string,
-  now = Date.now(),
-  byWorkspace?: string,
-): void {
-  if (!ptyId) return;
-  // Sweep on write. `pressBlockLift` only ever drops the entry it was asked
-  // about, so a pane that is pressed once and then closed left its lift in the
-  // map for the life of the process — this map is module state in a desktop app
-  // that runs for days. Insertion order is Map order, so the oldest-first slice
-  // below is the eviction the ceiling wants.
-  for (const [pty, entry] of pressBlockLifts) {
-    if (entry.until <= now) pressBlockLifts.delete(pty);
-  }
-  pressBlockLifts.delete(ptyId);
-  while (pressBlockLifts.size >= PRESS_BLOCK_LIFT_MAX) {
-    const oldest = pressBlockLifts.keys().next();
-    if (oldest.done) break;
-    pressBlockLifts.delete(oldest.value);
-  }
-  pressBlockLifts.set(ptyId, {
-    until: now + PRESS_BLOCK_LIFT_MS,
-    reason,
-    ...(byWorkspace ? { byWorkspace } : {}),
-  });
-  console.warn(
-    `[approval.press] press refused (${reason}) on pane ${ptyId} — ` +
-      'lifting the terminal_send approval block for it so the brain is not deadlocked',
+export function approvalOnScreen(screenText: string): boolean {
+  const rows = screenText.split('\n').slice(-60);
+  if (rows.length === 0) return false;
+  return looksLikeApprovalPrompt(rows) || parseTerminalPrompt(rows) !== null;
+}
+
+/** The refusal raw input gets when an approval is on screen and policy is off. */
+export function approvalGateMessage(op: string, ptyId: string, reason: string): string {
+  return (
+    `${op}: pane "${ptyId}" is showing an approval prompt, and this workspace's policy ` +
+    `(${reason}) does not let an automated caller answer it — refusing raw input. ` +
+    'A human answers it in the pane; raise it with deck_ask_decision. ' +
+    'ctrl+c and escape still stop the worker.'
   );
-}
-
-/** The live lift for a pane, or null. Expired entries are dropped on read. */
-export function pressBlockLift(
-  ptyId: string,
-  now = Date.now(),
-): { reason: string; byWorkspace?: string } | null {
-  const entry = pressBlockLifts.get(ptyId);
-  if (!entry) return null;
-  if (entry.until <= now) {
-    pressBlockLifts.delete(ptyId);
-    return null;
-  }
-  return { reason: entry.reason, ...(entry.byWorkspace ? { byWorkspace: entry.byWorkspace } : {}) };
-}
-
-/** Test-only: the lift map is module state shared by two handlers. */
-export function clearPressBlockLifts(): void {
-  pressBlockLifts.clear();
-}
-
-/** Test-only: how many lifts are held right now. */
-export function pressBlockLiftCount(): number {
-  return pressBlockLifts.size;
 }
 
 /**
@@ -344,6 +301,17 @@ export async function pendingApprovalOnPane(
  * one line.
  */
 export function approvalBlockMessage(op: string, ptyId: string, record: PendingApproval): string {
+  // The agent's own terminal dialog is a human's to answer; approval_press is
+  // refused on it too (`answer-in-terminal`), so do not point the caller there.
+  if (record.kind === 'terminal_prompt') {
+    const tool = safeRecordText(record.toolName ?? '', 40);
+    return (
+      `${op}: pane "${ptyId}" is showing the agent's own permission dialog` +
+      `${tool ? ` for tool "${tool}"` : ''} — refusing to type at it. A human answers this ` +
+      'in the pane (or from a paired phone); no tool presses it. Raise it with ' +
+      'deck_ask_decision if you need the operator.'
+    );
+  }
   const toolName = safeRecordText(record.toolName ?? '', 40);
   const question = safeRecordText(record.question ?? '');
   const what = toolName
@@ -355,8 +323,8 @@ export function approvalBlockMessage(op: string, ptyId: string, record: PendingA
     `${op}: pane "${ptyId}" is waiting on ${what} — refusing to type at an approval prompt. ` +
     `Answer it with approval_press({ ptyId: "${ptyId}", decision: "approve" | "deny" }), which ` +
     'resolves the approval record and presses the option that record specifies. ' +
-    'If the press comes back refused because the operator has autonomy or ' +
-    'approval-press off for this worker, this block lifts and you may type again.'
+    'If the press is refused because the operator has autonomy or approval-press off ' +
+    'for this worker, the block stays — raise it with deck_ask_decision.'
   );
 }
 
@@ -447,7 +415,7 @@ export function registerApprovalsRpc(
 
     const approvalId = record.id;
     // The pane the press lands on — from the RECORD, so a press by approvalId
-    // knows it too (the deadlock lift below is per-pane).
+    // knows it too.
     const targetPtyId = record.sessionId;
 
     // ── Delegation: is this MY worker? ──────────────────────────────────────
@@ -508,29 +476,18 @@ export function registerApprovalsRpc(
     // The CONCRETE condition, not the bucket. The daemon answers every press
     // -scope refusal with the wire reason 'out-of-scope' — one value for eight
     // conditions — and carries the condition itself in `pressRefusal`. Keying
-    // the hints and the deadlock lift on the bucket meant neither ever fired in
-    // production, however carefully both were written.
+    // the hints on the bucket meant they never fired in production.
     const reason = result?.pressRefusal ?? result?.reason ?? 'not-found';
 
-    // The deadlock guard. A press the OPERATOR'S POLICY refused leaves the brain
-    // with no move while terminal_send is blocked on the same pane, so the block
-    // is lifted for it. Transient refusals do not lift, and neither does a pane
-    // this caller does not own — that one never reaches here. See the header.
-    if (PRESS_DEADLOCK_REASONS.has(reason)) liftPressBlock(targetPtyId, reason, Date.now(), callerWs);
-
+    // A policy refusal is the operator's call: nothing is unlocked, and the
+    // caller is pointed at the escalation path.
     return {
       ok: false,
       reason,
       approvalId,
       ptyId: targetPtyId,
       ...(PRESS_REFUSAL_HINTS[reason] ? { note: PRESS_REFUSAL_HINTS[reason] } : {}),
-      ...(PRESS_DEADLOCK_REASONS.has(reason)
-        ? {
-            typedFallback:
-              'the approval block on this pane is lifted — you may terminal_send at it, ' +
-              'or raise the decision with deck_ask_decision instead',
-          }
-        : {}),
+      ...(PRESS_POLICY_REFUSALS.has(reason) ? { escalate: 'deck_ask_decision' } : {}),
     };
   });
 }

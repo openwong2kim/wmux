@@ -18,7 +18,8 @@ import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import PaneActionsMenu, { type PaneActionItem } from '../Pane/PaneActionsMenu';
 import { IconCheck, IconChevron, IconChevronDir, IconExternalLink, IconReview, IconX } from '../icons';
 import { disposeWorkspacePtys } from '../../utils/paneTeardown';
-import { displayWorkspaceName } from '../../utils/fanoutProvenance';
+import { displayWorkspaceName, fleetRequesterText } from '../../utils/fanoutProvenance';
+import { useShallow } from 'zustand/react/shallow';
 import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
 
 export type ReviewEditorKind = 'close' | 'pr';
@@ -216,6 +217,9 @@ function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEd
   const elapsedMs = entry.completedAt !== undefined ? Math.max(0, now - entry.completedAt) : undefined;
   const elapsed = elapsedMs !== undefined && elapsedMs >= IDLE_SHOW_AFTER_MS ? formatIdle(elapsedMs) : undefined;
   const owner = entry.ownerName ?? t('sidebar.tasks.orphanGroup');
+  // Which pane asked for the task (workspace › pane), or who else did.
+  const requester = useStore(useShallow((s) => fleetRequesterText(s, entry.workspaceId, t)))
+    ?? { text: '', includesOwner: false };
   const changeText = summary
     ? summary.files === 0
       ? t('fleet.review.noChanges')
@@ -225,7 +229,7 @@ function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEd
   const prText = entry.pr
     ? t('fleet.review.prState', { number: entry.pr.number, state: t(PR_STATE_KEY[entry.pr.state]) })
     : prUrl ? t('fleet.review.prLinked') : undefined;
-  const label = [entry.title, t('fleet.review.statusLabel'), owner, entry.branch,
+  const label = [entry.title, t('fleet.review.statusLabel'), requester.includesOwner ? undefined : owner, requester.text, entry.branch,
     changeText && summary && summary.files > 0 ? `${changeText}, +${summary.additions} −${summary.deletions}` : changeText,
     prText, busyText, entry.outputDir && !entry.branch ? t('fleet.review.openFolder') : t('fleet.review.openDiff')].filter(Boolean).join(', ');
 
@@ -273,10 +277,16 @@ function FleetReviewRow({ entry, focused, now, onFocus, onOpenDiff, onJump, onEd
         </span>
         <span className="wmux-fleet-identity">
           <span className="wmux-fleet-name" title={entry.title}>{entry.title}</span>
-          <span className="wmux-fleet-context" title={entry.branch ? `${owner} · ${entry.branch}` : owner}>
-            <span>{owner}</span>
+          <span
+            className="wmux-fleet-context"
+            title={[requester.includesOwner ? undefined : owner, entry.branch].filter(Boolean).join(' · ')}
+          >
+            {!requester.includesOwner && <span>{owner}</span>}
             {entry.branch && <span className="font-mono" data-fleet-review-branch>{entry.branch}</span>}
           </span>
+          {requester.text && (
+            <span className="wmux-fleet-requester" data-fleet-review-requester title={requester.text}>{requester.text}</span>
+          )}
         </span>
         <span className="wmux-fleet-progress">
           {/* Nothing is drawn until the read lands (no placeholder gauge). */}

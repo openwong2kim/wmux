@@ -430,3 +430,42 @@ describe('a2a.task.send — commander binding is stamped, never trusted from the
     expect(forwarded.commanderWorkspaceId).toBe('ws-brain');
   });
 });
+
+// The renderer gates every A2A pane write on the approval guard unless main
+// says the call came from the human operator's own surface. That flag must be
+// main's to set: a pipe caller naming it would skip the gate.
+describe('a2a delivery methods — operator origin is stamped, never trusted from the wire', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function capture(method: string): TaskSendHandler {
+    let handler: TaskSendHandler | undefined;
+    const capturing = {
+      register: (m: string, fn: TaskSendHandler) => {
+        if (m === method) handler = fn;
+      },
+    };
+    registerA2aRpc(capturing as unknown as RpcRouter, () => fakeWindow, makeWorker());
+    if (!handler) throw new Error(`${method} handler was not registered`);
+    return handler;
+  }
+
+  const CASES: Array<[string, Record<string, unknown>]> = [
+    ['a2a.task.send', { workspaceId: 'ws-a', to: 'ws-b', message: 'hi' }],
+    ['a2a.task.update', { workspaceId: 'ws-a', taskId: 't-1', message: 'hi' }],
+    ['a2a.broadcast', { workspaceId: 'ws-a', message: 'hi' }],
+  ];
+
+  it.each(CASES)('%s drops a caller-supplied operatorOrigin', async (method, params) => {
+    sendToRendererMock.mockResolvedValueOnce({ ok: true });
+    await capture(method)({ ...params, operatorOrigin: true }, { origin: 'local' } as unknown as RpcContext);
+    const forwarded = sendToRendererMock.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(forwarded).not.toHaveProperty('operatorOrigin');
+  });
+
+  it.each(CASES)('%s stamps operatorOrigin for the operator surface', async (method, params) => {
+    sendToRendererMock.mockResolvedValueOnce({ ok: true });
+    await capture(method)(params, { origin: 'local', operator: true } as unknown as RpcContext);
+    const forwarded = sendToRendererMock.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(forwarded.operatorOrigin).toBe(true);
+  });
+});

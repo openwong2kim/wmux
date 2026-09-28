@@ -21,6 +21,7 @@ import {
   HOOK_RUNNING_TTL_MS,
   UNVERIFIABLE_AFTER_MS,
 } from '../fleet';
+import { selectWorkspaceAgentRoster } from '../workspaceAgentRoster';
 import type { AgentStatus, Pane, Surface, Workspace } from '../../../../shared/types';
 
 const NOW = 1_700_000_000_000;
@@ -83,6 +84,7 @@ beforeEach(() => {
     surfaceAgentStatus: {},
     surfaceActivityAt: {},
     surfaceTurnOpenAt: {},
+    surfaceTurnEndAt: {},
     surfaceAgent: { [PTY]: { name: 'Claude Code', status: 'running' } },
     surfacePendingQuestion: {},
     commandRunningByPtyId: {},
@@ -142,6 +144,43 @@ describe('hook turn latch — the pane stays running while the turn is open', ()
     useStore.getState().setSurfaceAgentStatus(PTY, null);
     advance(6 * 60_000);
     expect(pane().agentStatus).toBe('idle');
+  });
+
+  it('#1463 — a seen Stop is not repainted running by the leftover activity stamp', () => {
+    applyMetadata({ agentStatus: 'running', hookKind: 'agent.user_prompt_submit' });
+    // A tool ran 30 s before the turn ended: the stamp is well inside its TTL.
+    advance(30_000);
+    applyMetadata({ agentStatus: 'running' });
+    applyMetadata({ agentStatus: 'complete' });
+    useStore.getState().setSurfaceAgent(PTY, undefined, 'complete');
+    useStore.getState().setSurfaceAgentStatus(PTY, null);
+    // Fleet and the sidebar roster read the same pane the same way: not running.
+    expect(pane().agentStatus).not.toBe('running');
+    const row = selectWorkspaceAgentRoster(useStore.getState(), 'ws').rows.find((r) => r.ptyId === PTY);
+    expect(row?.status).not.toBe('running');
+    // The stamp itself survives for the idle clocks; only its running claim ends.
+    expect(useStore.getState().surfaceActivityAt[PTY]).toBe(NOW + 30_000);
+    // New work after the end is evidence again.
+    advance(1_000);
+    applyMetadata({ agentStatus: 'running' });
+    expect(pane().agentStatus).toBe('running');
+  });
+
+  it('#1463 — a turn that ended on error is not repainted running either', () => {
+    applyMetadata({ agentStatus: 'running', hookKind: 'agent.user_prompt_submit' });
+    advance(30_000);
+    applyMetadata({ agentStatus: 'running' });
+    applyMetadata({ agentStatus: 'error' });
+    useStore.getState().setSurfaceAgentStatus(PTY, null);
+    expect(pane().agentStatus).not.toBe('running');
+  });
+
+  it('a question closes the latch, so a settle main withholds cannot strand it', () => {
+    // main does not broadcast idle over an unread awaiting_input (the F5 rule),
+    // so the renderer must not be holding a latch only that idle would close.
+    applyMetadata({ agentStatus: 'running', hookKind: 'agent.user_prompt_submit' });
+    applyMetadata({ agentStatus: 'awaiting_input' });
+    expect(useStore.getState().surfaceTurnOpenAt[PTY]).toBeUndefined();
   });
 
   it('an idle broadcast (process death, or main’s turn expiry) closes it too', () => {

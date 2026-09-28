@@ -33,6 +33,7 @@ const CHROME_FILES = [
   'Sidebar/WorkspaceAgentRoster.tsx',
   'Sidebar/MissionsSection.tsx',
   'Sidebar/MiniSidebar.tsx',
+  'Sidebar/SidebarNavigation.tsx',
   'Sidebar/CompanyPanel.tsx',
   'Sidebar/PresetPicker.tsx',
   'Sidebar/WorkspaceProfileModal.tsx',

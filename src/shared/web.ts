@@ -40,6 +40,18 @@ export interface WebTerminalInfo {
   port?: number;
   host?: string;
   allowInput?: boolean;
+  /** Whether paired devices may upload files (`--allow-upload`). */
+  allowUpload?: boolean;
+  /**
+   * Whether paired devices may read agent transcripts — the phone's Chat view
+   * (`--allow-transcript`). Without it `/turns` answers 403.
+   */
+  allowTranscript?: boolean;
+  /**
+   * Whether a chat launch may start an agent with approvals or the sandbox off
+   * (`--allow-dangerous-launch`, or the popover's Advanced option).
+   */
+  allowDangerousLaunch?: boolean;
   /** True when the daemon itself terminates HTTPS (not a Tailscale front). */
   tls?: boolean;
   token?: string;
@@ -100,6 +112,8 @@ export interface WebTerminalInfo {
   pendingDeviceName?: string;
   /** The input grant the pending code will register the device with. */
   pendingDeviceAllowInput?: boolean;
+  /** Which card the pending code belongs to. Present exactly when the name is. */
+  pendingPairFlow?: PairFlow;
   /**
    * Why the transport could not be brought up, when a start asked for one it
    * could not get (tailscale absent, logged out, someone else serving on :443).
@@ -178,6 +192,13 @@ export interface WebDeviceSummary {
   allowInput: boolean;
   /** Set once and never cleared — revocation is permanent; a device re-pairs to return. */
   revokedAt?: number;
+  /** What the device said it was when it paired. Display only. */
+  kind?: DeviceKind;
+  /**
+   * Seen within `DEVICE_ACTIVE_WINDOW_MS`, or holding a live stream right now.
+   * Computed by the daemon at list time; never true for a revoked device.
+   */
+  activeNow?: boolean;
 }
 
 /** Result of changing one device's input grant. Fail-closed, like the revoke. */
@@ -238,6 +259,31 @@ export interface WebStartArgs {
    * (and weaker) transport, not an addition to this one.
    */
   tailscale?: boolean;
+  /**
+   * Let paired devices read agent transcripts (the phone's Chat view). Absent
+   * means "not the popover's decision": the daemon keeps the running or
+   * persisted value rather than resetting it.
+   */
+  allowTranscript?: boolean;
+  /** Let paired devices upload photos and files. Absent behaves as above. */
+  allowUpload?: boolean;
+  /**
+   * Let a phone start Claude/Codex with approvals or the sandbox off. The
+   * popover's Advanced option; absent behaves as above.
+   */
+  allowDangerousLaunch?: boolean;
+}
+
+/**
+ * Grants the popover changes on a RUNNING server. Only the fields present are
+ * changed; the server keeps its port, bind, allowed hosts, transport, token
+ * and paired devices.
+ */
+export interface WebGrantArgs {
+  allowInput?: boolean;
+  allowTranscript?: boolean;
+  allowUpload?: boolean;
+  allowDangerousLaunch?: boolean;
 }
 
 /**
@@ -248,15 +294,47 @@ export function webBindHost(expose: boolean | undefined): string {
   return expose ? WEB_EXPOSE_HOST : WEB_LOOPBACK_HOST;
 }
 
-/** Whether a bind host is confined to this machine. */
+/** A dotted-quad IPv4 literal (each octet 0-255, no leading junk). */
+function ipv4Octets(s: string): number[] | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+  if (!m) return null;
+  const octets = m.slice(1).map(Number);
+  return octets.every((o) => o <= 255) ? octets : null;
+}
+
+/**
+ * Whether a host is confined to this machine — and therefore whether a
+ * credential may go to it over plain http.
+ *
+ * STRICT on purpose: a hostname is not an address. `127.0.0.1.nip.io` or
+ * `127.evil.example` START with "127." but resolve wherever their owner says,
+ * so only these count:
+ *
+ *   - an IPv4 literal in 127.0.0.0/8
+ *   - exactly `localhost` (a trailing root dot is tolerated)
+ *   - `::1`, bracketed or not
+ *   - an IPv4-mapped IPv6 address whose IPv4 is in 127.0.0.0/8, in either
+ *     the dotted (`::ffff:127.0.0.1`) or hex (`::ffff:7f00:1`) spelling
+ *
+ * Everything else — including `0.0.0.0`, which binds EVERY interface — is not.
+ */
 export function webHostIsLoopback(host: string): boolean {
-  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
-  return (
-    normalized === 'localhost' ||
-    normalized === '::1' ||
-    normalized === WEB_LOOPBACK_HOST ||
-    normalized.startsWith('127.')
-  );
+  let h = host.trim().toLowerCase();
+  if (h.startsWith('[') && h.endsWith(']')) h = h.slice(1, -1);
+  if (h.endsWith('.') && !h.endsWith('..')) h = h.slice(0, -1);
+  if (h === 'localhost') return true;
+  if (h === '::1' || h === '0:0:0:0:0:0:0:1') return true;
+  const v4 = ipv4Octets(h);
+  if (v4) return v4[0] === 127;
+  const mapped = /^(?:0{0,4}:){0,4}:?:ffff:(.+)$/.exec(h);
+  if (mapped) {
+    const tail = mapped[1];
+    const dotted = ipv4Octets(tail);
+    if (dotted) return dotted[0] === 127;
+    const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(tail);
+    if (hex) return (parseInt(hex[1], 16) >> 8) === 127;
+  }
+  return false;
 }
 
 /** Whether an info's bind host is a loopback address (not phone-reachable). */
@@ -268,3 +346,73 @@ export function webIsLoopback(info: WebTerminalInfo): boolean {
 export function webIsExposed(info: WebTerminalInfo): boolean {
   return info.host === WEB_EXPOSE_HOST || info.host === '::';
 }
+
+// ─── Pairing flows, device kinds and the computer pairing link ─────────────
+
+/**
+ * Which card minted the current pairing code. The server has ONE code slot, so
+ * the two flows are mutually exclusive: the pending name, input grant and flow
+ * are held together and replaced together, never mixed.
+ */
+export type PairFlow = 'phone' | 'computer';
+
+/**
+ * What a paired device says it is. DISPLAY ONLY: it picks an icon in the
+ * roster and is never read by an authorization decision. `unknown` covers
+ * every record written before the field existed and any value outside the
+ * allowlist.
+ */
+export type DeviceKind = 'phone' | 'computer' | 'unknown';
+
+/** Request header the desktop client sends on `GET /api/pair`. */
+export const DEVICE_KIND_HEADER = 'x-wmux-device-kind';
+
+/** Allowlist a claimed device kind. Anything else is `unknown`. */
+export function normalizeDeviceKind(raw: unknown): DeviceKind {
+  if (typeof raw !== 'string') return 'unknown';
+  const value = raw.trim().toLowerCase();
+  return value === 'phone' || value === 'computer' ? value : 'unknown';
+}
+
+/**
+ * Fragment key of a computer pairing link: `<origin>/pair#wmux-desktop-code=X`.
+ *
+ * The code rides in the FRAGMENT so it never reaches a server log or a
+ * Referer, and under a key the browser page recognises and refuses to redeem:
+ * a computer link opened in a browser must not pair that browser. The same
+ * string is duplicated in `daemon/web/frontend/pairQuery.js` (no bundler
+ * there); a test keeps the two equal.
+ */
+export const DESKTOP_PAIR_FRAGMENT_KEY = 'wmux-desktop-code';
+
+/** Build the computer pairing link for a pair origin (`https://host[:port]`). */
+export function buildDesktopPairLink(origin: string, code: string): string {
+  return `${origin}/pair#${DESKTOP_PAIR_FRAGMENT_KEY}=${encodeURIComponent(code)}`;
+}
+
+/**
+ * The origin a computer pairing link may point at, or '' when none qualifies.
+ *
+ * Only an HTTPS address that another machine can reach: a Tailscale front or
+ * the daemon's own TLS listener. A plaintext or loopback origin is never
+ * offered — a device credential never expires, so it is not handed over in
+ * the clear, and 127.0.0.1 means nothing on another computer.
+ */
+export function webComputerPairOrigin(info: WebTerminalInfo): string {
+  if (!info.running || info.pairRefusal) return '';
+  for (const raw of info.urls ?? []) {
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      continue;
+    }
+    if (url.protocol !== 'https:') continue;
+    if (webHostIsLoopback(url.hostname)) continue;
+    return url.origin;
+  }
+  return '';
+}
+
+/** A device is "active now" when it was seen within this window. */
+export const DEVICE_ACTIVE_WINDOW_MS = 120_000;

@@ -6,7 +6,7 @@ import { useStore } from '../../renderer/stores';
 import type { Company, TeamMember } from '../types';
 import { validateMessage } from '../../shared/types';
 import { formatMessage, formatBroadcast } from '../core/messageTemplates';
-import { submitBracketedPasteToPty } from '../../renderer/utils/ptyMessageDelivery';
+import { gatedSubmitToPty, submitBracketedPasteToPty } from '../../renderer/utils/ptyMessageDelivery';
 import { spawnCompany, spawnMember } from './provisioner';
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 
@@ -19,10 +19,47 @@ type Store = ReturnType<typeof useStore.getState>;
  * composer, unsubmitted. The agent is read from the per-ptyId surfaceAgent map
  * at write time, so it always describes the pane the bytes go to.
  */
-function submitToMemberPty(ptyId: string, text: string): void {
-  submitBracketedPasteToPty(ptyId, text, {
-    agent: useStore.getState().surfaceAgent[ptyId]?.name,
-  });
+/** A member pane write the approval gate withheld, reported to the caller. */
+interface WithheldDelivery {
+  ptyId: string;
+  reason: string;
+  detail: string;
+}
+
+/**
+ * Every company message is pasted and submitted with Enter. Unless main
+ * stamped the call as the operator's own (`operatorOrigin`), the write goes
+ * through main's approval gate (IPC.GATED_SUBMIT): an Enter into a member pane
+ * showing an approval would answer it. Returns whether it was submitted; a
+ * refusal is appended to `withheld` and the caller keeps the message queued.
+ */
+async function submitToMemberPty(
+  ptyId: string,
+  text: string,
+  operator: boolean,
+  withheld: WithheldDelivery[],
+): Promise<boolean> {
+  const agent = useStore.getState().surfaceAgent[ptyId]?.name;
+  if (operator) {
+    submitBracketedPasteToPty(ptyId, text, { agent });
+    return true;
+  }
+  const result = await gatedSubmitToPty(ptyId, text, { agent });
+  if (result.ok) return true;
+  withheld.push({ ptyId, reason: result.reason, detail: result.detail });
+  return false;
+}
+
+/** Response fields for withheld member writes (none when nothing was withheld). */
+function withheldFields(withheld: WithheldDelivery[]): Record<string, unknown> {
+  return withheld.length > 0
+    ? {
+      withheld,
+      hint:
+        'Some member panes were not written to (see `withheld`): an approval was in front of them, or the ' +
+        'gate could not check them. Those messages stay queued; send again once the approvals are answered.',
+    }
+    : {};
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +108,13 @@ function getCompanyActorName(company: Company, workspaceId: string): string | nu
   return null;
 }
 
-function deliverToCeo(store: Store, from: string, message: string): void {
+async function deliverToCeo(
+  store: Store,
+  from: string,
+  message: string,
+  operator: boolean,
+  withheld: WithheldDelivery[],
+): Promise<void> {
   const c = store.company;
   if (!c?.ceoWorkspaceId) return;
   const ws = store.workspaces.find((w) => w.id === c.ceoWorkspaceId);
@@ -84,7 +127,7 @@ function deliverToCeo(store: Store, from: string, message: string): void {
     const surface = leaf.surfaces.find((s) => s.surfaceType !== 'browser' && s.ptyId);
     if (surface) {
       const formatted = formatMessage(from, 'CEO', message);
-      submitToMemberPty(surface.ptyId, formatted);
+      await submitToMemberPty(surface.ptyId, formatted, operator, withheld);
       break;
     }
   }
@@ -102,6 +145,10 @@ export async function handleCompanyRpc(
   params: Record<string, unknown>,
   store: Store,
 ): Promise<unknown | null> {
+  // Stamped by main at the router for the operator's own surface only
+  // (company.rpc.ts); never forwarded from a caller.
+  const operator = params.operatorOrigin === true;
+  const withheld: WithheldDelivery[] = [];
   // company.create
   if (method === 'company.create') {
     const name = typeof params.name === 'string' ? params.name.trim() : '';
@@ -189,15 +236,14 @@ export async function handleCompanyRpc(
     let sentImmediate = 0; let queued = 0;
     for (const member of c.departments.flatMap((d) => d.members)) {
       if (!member.ptyId) continue;
-      if (member.status === 'idle') {
-        submitToMemberPty(member.ptyId, formatBroadcast(from, message));
+      if (member.status === 'idle' && await submitToMemberPty(member.ptyId, formatBroadcast(from, message), operator, withheld)) {
         sentImmediate++;
       } else {
         store.enqueueMessage(member.id, member.ptyId, member.name, message, from, true);
         queued++;
       }
     }
-    return { ok: true, sentImmediate, queued };
+    return { ok: true, sentImmediate, queued, ...withheldFields(withheld) };
   }
 
   if (method === 'company.sendDept') {
@@ -216,15 +262,14 @@ export async function handleCompanyRpc(
     let sentImmediate = 0; let queued = 0;
     for (const member of dept.members) {
       if (!member.ptyId) continue;
-      if (member.status === 'idle') {
-        submitToMemberPty(member.ptyId, formatMessage(from, member.name, message));
+      if (member.status === 'idle' && await submitToMemberPty(member.ptyId, formatMessage(from, member.name, message), operator, withheld)) {
         sentImmediate++;
       } else {
         store.enqueueMessage(member.id, member.ptyId, member.name, message, from, false);
         queued++;
       }
     }
-    return { ok: true, sentImmediate, queued };
+    return { ok: true, sentImmediate, queued, ...withheldFields(withheld) };
   }
 
   if (method === 'company.sendMember') {
@@ -243,12 +288,11 @@ export async function handleCompanyRpc(
     if (!dept) return { error: `dept not found` };
     const member = dept.members.find((m) => m.id === memberId);
     if (!member?.ptyId) return { error: `member not found or no PTY` };
-    if (member.status === 'idle') {
-      submitToMemberPty(member.ptyId, formatMessage(from, member.name, message));
+    if (member.status === 'idle' && await submitToMemberPty(member.ptyId, formatMessage(from, member.name, message), operator, withheld)) {
       return { ok: true, sentImmediate: 1, queued: 0 };
     } else {
       store.enqueueMessage(member.id, member.ptyId, member.name, message, from, false);
-      return { ok: true, sentImmediate: 0, queued: 1 };
+      return { ok: true, sentImmediate: 0, queued: 1, ...withheldFields(withheld) };
     }
   }
 
@@ -270,32 +314,28 @@ export async function handleCompanyRpc(
       let sent = 0;
       for (const member of c.departments.flatMap((d) => d.members)) {
         if (!member.ptyId) continue;
-        if (member.status === 'idle') {
-          submitToMemberPty(member.ptyId, formatBroadcast(from, message));
-        } else {
+        if (member.status !== 'idle' || !await submitToMemberPty(member.ptyId, formatBroadcast(from, message), operator, withheld)) {
           store.enqueueMessage(member.id, member.ptyId, member.name, message, from, true);
         }
         sent++;
       }
-      if (c.ceoWorkspaceId) deliverToCeo(store, from, message);
-      return { ok: true, sent };
+      if (c.ceoWorkspaceId) await deliverToCeo(store, from, message, operator, withheld);
+      return { ok: true, sent, ...withheldFields(withheld) };
     }
     if (to.trim().toLowerCase() === 'ceo' && c.ceoWorkspaceId) {
-      deliverToCeo(store, from, message);
-      return { ok: true, sent: 1 };
+      await deliverToCeo(store, from, message, operator, withheld);
+      return { ok: true, sent: 1, ...withheldFields(withheld) };
     }
     const targets = resolveTargetMembers(c, to);
     let sent = 0;
     for (const member of targets) {
       if (!member.ptyId) continue;
-      if (member.status === 'idle') {
-        submitToMemberPty(member.ptyId, formatMessage(from, member.name, message));
-      } else {
+      if (member.status !== 'idle' || !await submitToMemberPty(member.ptyId, formatMessage(from, member.name, message), operator, withheld)) {
         store.enqueueMessage(member.id, member.ptyId, member.name, message, from, false);
       }
       sent++;
     }
-    return { ok: true, sent };
+    return { ok: true, sent, ...withheldFields(withheld) };
   }
 
   // -- A2A structured communication --
@@ -330,23 +370,24 @@ export async function handleCompanyRpc(
     if (!from) return { error: `no company sender for workspace ${workspaceId}` };
     store.addFeedEntry({ from, to, message, tag: 'message' });
     if (to.trim().toLowerCase() === 'ceo' && c.ceoWorkspaceId) {
-      deliverToCeo(store, from, message);
-      return { ok: true, delivered: 1, queued: 0 };
+      await deliverToCeo(store, from, message, operator, withheld);
+      return withheld.length > 0
+        ? { ok: true, delivered: 0, queued: 0, ...withheldFields(withheld) }
+        : { ok: true, delivered: 1, queued: 0 };
     }
     const targets = resolveTargetMembers(c, to);
     let delivered = 0; let queued = 0;
     for (const member of targets) {
       store.addToInbox(member.id, { from, to: member.name, message, priority });
       if (!member.ptyId) continue;
-      if (member.status === 'idle') {
-        submitToMemberPty(member.ptyId, formatMessage(from, member.name, message, priority as MessagePriority));
+      if (member.status === 'idle' && await submitToMemberPty(member.ptyId, formatMessage(from, member.name, message, priority as MessagePriority), operator, withheld)) {
         delivered++;
       } else {
         store.enqueueMessage(member.id, member.ptyId, member.name, message, from, false);
         queued++;
       }
     }
-    return { ok: true, delivered, queued, targetCount: targets.length };
+    return { ok: true, delivered, queued, targetCount: targets.length, ...withheldFields(withheld) };
   }
 
   if (method === 'company.a2a.broadcast') {
@@ -367,15 +408,13 @@ export async function handleCompanyRpc(
     for (const member of c.departments.flatMap((d) => d.members)) {
       store.addToInbox(member.id, { from, to: 'All', message, priority });
       if (!member.ptyId) continue;
-      if (member.status === 'idle') {
-        submitToMemberPty(member.ptyId, formatBroadcast(from, message, priority as MessagePriority));
-      } else {
+      if (member.status !== 'idle' || !await submitToMemberPty(member.ptyId, formatBroadcast(from, message, priority as MessagePriority), operator, withheld)) {
         store.enqueueMessage(member.id, member.ptyId, member.name, message, from, true);
       }
       sent++;
     }
-    if (c.ceoWorkspaceId) deliverToCeo(store, from, message);
-    return { ok: true, sent };
+    if (c.ceoWorkspaceId) await deliverToCeo(store, from, message, operator, withheld);
+    return { ok: true, sent, ...withheldFields(withheld) };
   }
 
   if (method === 'company.a2a.inbox') {

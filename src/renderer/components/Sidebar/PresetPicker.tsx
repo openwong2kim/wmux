@@ -25,6 +25,25 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   // backdrop dismissal, and the whole thing closes via the same onClose the
   // picker itself uses once the modal is done.
   const [attachRemoteOpen, setAttachRemoteOpen] = useState(false);
+  // A "Pair again" opens AppLayout's own copy of the attach dialog; two
+  // stacked copies would fight over focus and Escape, so this one yields.
+  const remoteRepairHostId = useStore((s) => s.remoteRepairHostId);
+  // The sidebar's Remote hub owns "Other computers"; this entry opens it
+  // there. Only when no hub is mounted (the sidebar nav is not rendered) does
+  // the attach dialog open here instead, so the entry never goes dead.
+  const remoteHubMounted = useStore((s) => s.remoteHubMounted > 0);
+  const openRemoteHub = useStore((s) => s.openRemoteHub);
+  const handleAttachRemote = useCallback(() => {
+    if (remoteHubMounted) {
+      openRemoteHub();
+      onClose();
+    } else {
+      setAttachRemoteOpen(true);
+    }
+  }, [remoteHubMounted, openRemoteHub, onClose]);
+  useEffect(() => {
+    if (remoteRepairHostId) onClose();
+  }, [remoteRepairHostId, onClose]);
 
   const handleSelect = useCallback((presetId: string | null) => {
     if (presetId === null) {
@@ -122,11 +141,12 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
 
       <div className="border-t border-[var(--bg-surface)] my-0.5" />
 
-      {/* Remote Workspace Attach entry — opens AttachRemoteModal in place of
-          this dropdown (see attachRemoteOpen above). */}
+      {/* Remote Workspace Attach entry — opens the Remote hub on "Other
+          computers" (or, with no hub mounted, AttachRemoteModal in place of
+          this dropdown; see attachRemoteOpen above). */}
       <button
         className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
-        onClick={() => setAttachRemoteOpen(true)}
+        onClick={handleAttachRemote}
       >
         <div className="font-semibold">{t('remote.attachTitle')}…</div>
         <div className="text-[var(--text-sub)] text-[11px]">{t('remote.mirrorDescription')}</div>

@@ -213,7 +213,7 @@ export const vi = {
   'settings.sidebarPosition': 'Vị trí thanh bên',
   'settings.sidebarPositionDesc': 'Trái hoặc phải vùng terminal',
   'settings.sidebarAttentionFirst': 'Hàng đang chờ bạn lên đầu',
-  'settings.sidebarAttentionFirstDesc': 'Ghim các không gian làm việc có tác nhân đang chờ bạn lên đầu thanh bên. Mặc định tắt: các hàng vẫn ở nơi bạn đã kéo. Khi bật, việc kéo để sắp xếp lại sẽ tạm dừng.',
+  'settings.sidebarAttentionFirstDesc': 'Đưa lên đầu thanh bên các không gian làm việc có tác nhân đang chờ bạn. Mặc định tắt: các hàng vẫn ở nơi bạn đã kéo. Khi bật, việc kéo để sắp xếp lại sẽ tạm dừng.',
   'settings.sidebarShowPaneCoordinates': 'Hiển thị tọa độ khung',
   'settings.sidebarShowPaneCoordinatesDesc': 'Hiển thị tọa độ dạng w1-2 được tạo tự động trong danh sách tác nhân cho những khung bạn chưa đặt tên. Mặc định bật. Khung đã được đổi tên luôn hiển thị tên của nó dù cài đặt này thế nào.',
   'settings.sidebarLeft': 'Trái',

@@ -22,7 +22,9 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { WorkTask } from '../../../shared/workTask';
 import { unwrapRpc } from '../../utils/unwrapRpc';
+import { unpinNestedTasks } from '../../utils/sidebarLayout';
 import { provenanceFromAudit, sameProvenance, type FanoutAuditLike, type FanoutProvenance } from '../../utils/fanoutProvenance';
+import { sameFanoutOrigin, sanitizeFanoutOrigin, type FanoutOrigin } from '../../../shared/fanoutOrigin';
 
 /** The mission bridge useRpcBridge installs (reads + the close used for workspace-lifetime binding). */
 interface MissionRpcBridge {
@@ -124,7 +126,14 @@ export interface WorkTaskSlice {
    * Session-only.
    */
   fanoutSpawnOwner: Record<string, string>;
-  noteFanoutSpawn: (workspaceId: string, ownerWorkspaceId: string) => void;
+  noteFanoutSpawn: (workspaceId: string, ownerWorkspaceId: string, origin?: FanoutOrigin) => void;
+  /**
+   * Task workspace id → who asked for it (pane ids + a name snapshot, the
+   * orchestrator, or the GUI), from the lineage stamp's `origin`. Seeded by
+   * the spawn itself, then answered by the durable stamp. Preferred over the
+   * audit-derived caller in `fanoutProvenance`.
+   */
+  fanoutOrigin: Record<string, FanoutOrigin>;
   /**
    * #1481 — task workspace id → owner id from main's durable lineage stamps
    * (`fanout-lineage.json`, written before the task's agent launches). With
@@ -191,6 +200,7 @@ export const createWorkTaskSlice: StateCreator<
   departedPaneGroups: {},
   fanoutProvenance: {},
   fanoutSpawnOwner: {},
+  fanoutOrigin: {},
   fanoutLineage: {},
   fanoutRefreshSettled: false,
 
@@ -205,12 +215,15 @@ export const createWorkTaskSlice: StateCreator<
       delete state.fanoutSpawnOwner[workspaceId];
       delete state.fanoutLineage[workspaceId];
       delete state.fanoutProvenance[workspaceId];
+      delete state.fanoutOrigin[workspaceId];
     }),
 
-  noteFanoutSpawn: (workspaceId, ownerWorkspaceId) =>
+  noteFanoutSpawn: (workspaceId, ownerWorkspaceId, origin) =>
     set((state: StoreState) => {
       if (!workspaceId || !ownerWorkspaceId) return;
       state.fanoutSpawnOwner[workspaceId] = ownerWorkspaceId;
+      if (origin) state.fanoutOrigin[workspaceId] = origin;
+      unpinNestedTasks(state);
     }),
 
   refreshFanoutProvenance: async (opts = { audit: true }) => {
@@ -223,13 +236,17 @@ export const createWorkTaskSlice: StateCreator<
     if (!api) return;
     const liveIds = get().workspaces.map((w) => w.id);
     let lineage: Record<string, string> | null = null;
+    let origins: Record<string, FanoutOrigin> | null = null;
     if (api.lineage) {
       try {
         const raw = await api.lineage(liveIds);
         if (raw && typeof raw === 'object') {
           lineage = {};
-          for (const [id, stamp] of Object.entries(raw as Record<string, { owner?: unknown }>)) {
+          origins = {};
+          for (const [id, stamp] of Object.entries(raw as Record<string, { owner?: unknown; origin?: unknown }>)) {
             if (typeof stamp?.owner === 'string' && stamp.owner) lineage[id] = stamp.owner;
+            const origin = sanitizeFanoutOrigin(stamp?.origin);
+            if (origin) origins[id] = origin;
           }
         }
       } catch {
@@ -248,6 +265,16 @@ export const createWorkTaskSlice: StateCreator<
     set((state: StoreState) => {
       const live = new Set(state.workspaces.map((w) => w.id));
       if (lineage && JSON.stringify(lineage) !== JSON.stringify(state.fanoutLineage)) state.fanoutLineage = lineage;
+      if (origins) {
+        // The durable stamp answers; a spawn-seeded origin the stamp does not
+        // carry (yet) stays while its workspace is open.
+        for (const id of Object.keys(state.fanoutOrigin)) {
+          if (!live.has(id)) delete state.fanoutOrigin[id];
+        }
+        for (const [id, origin] of Object.entries(origins)) {
+          if (live.has(id) && !sameFanoutOrigin(state.fanoutOrigin[id], origin)) state.fanoutOrigin[id] = origin;
+        }
+      }
       if (provenance) {
         // Keep only open workspaces: the audit tail names closed ones too.
         const kept: Record<string, FanoutProvenance> = {};
@@ -260,6 +287,8 @@ export const createWorkTaskSlice: StateCreator<
           delete state.fanoutSpawnOwner[id];
         }
       }
+      // Lineage can nest a workspace that was pinned before it resolved.
+      unpinNestedTasks(state);
     });
   },
 
@@ -296,6 +325,7 @@ export const createWorkTaskSlice: StateCreator<
       if (sameMissionList(state.missionsByWorkspace[parentWorkspaceId], tasks)) return;
       state.missionsByWorkspace[parentWorkspaceId] = tasks;
       state.missionByPaneGroup = rebuildPaneGroupIndex(state.missionsByWorkspace);
+      unpinNestedTasks(state);
     }),
 
   clearMissionsFor: (parentWorkspaceId) =>

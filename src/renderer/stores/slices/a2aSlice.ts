@@ -124,7 +124,7 @@ export interface A2aSlice {
   // 렌더러-로컬 생성 태스크(채널멘션 chmention-* 등, 데몬에 시드되지 않음)와 데몬
   // degrade 창의 전이는 여전히 여기로 온다 — 제거하지 않는다. 데몬이 커밋한 전이는
   // applyDaemonTaskUpdate(verbatim)로만 적용된다.
-  updateTaskStatus: (taskId: string, state: TaskState, callerWorkspaceId: string, callerAddr?: PaneAddress | null, statusMessage?: Message, evidence?: CompletionEvidence) => { ok: boolean; error?: string };
+  updateTaskStatus: (taskId: string, state: TaskState, callerWorkspaceId: string, callerAddr?: PaneAddress | null, statusMessage?: Message, evidence?: CompletionEvidence, requirePaneIdentity?: boolean) => { ok: boolean; error?: string };
   /**
    * 데몬 커밋 결과의 캐시 verbatim 적용(envelope PR4 §5 D11, §6.M 설계 C6).
    *
@@ -134,6 +134,12 @@ export interface A2aSlice {
    * 난다. 정본은 데몬 로그, 이 스토어는 캐시다(30분 GC는 캐시 GC로 의미 재정의).
    */
   applyDaemonTaskUpdate: (committed: Task) => void;
+  /**
+   * Send an ended task (completed/failed/canceled) back to `submitted` because
+   * its sender wrote to it again. Returns whether it reopened; a task that has
+   * not ended is left as it is.
+   */
+  reopenTask: (taskId: string) => boolean;
   addTaskArtifact: (taskId: string, artifact: Artifact) => void;
   cancelTask: (taskId: string, callerWorkspaceId: string) => { ok: boolean; error?: string };
   queryTasks: (
@@ -250,7 +256,7 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     }
   }),
 
-  updateTaskStatus: (taskId, newState, callerWorkspaceId, callerAddr, statusMessage, evidence) => {
+  updateTaskStatus: (taskId, newState, callerWorkspaceId, callerAddr, statusMessage, evidence, requirePaneIdentity) => {
     const task = get().a2aTasks[taskId];
     if (!task) {
       return { ok: false, error: `Task not found: ${taskId}` };
@@ -270,6 +276,11 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     // callerAddr ⇒ ws-authz, unconditionally.
     if (callerAddr && task.metadata.to.paneId && task.metadata.to.paneId !== callerAddr.paneId) {
       return { ok: false, error: `Permission denied: caller pane is not the addressed receiver pane` };
+    }
+    // Same rule as the daemon: an external caller must prove its pane to move a
+    // pane-pinned task. Omitting senderPtyId must not buy workspace authz.
+    if (requirePaneIdentity && !callerAddr && task.metadata.to.paneId) {
+      return { ok: false, error: 'this task is pinned to a pane; only that pane can update it (no verified pane identity)' };
     }
     // Validate state transition. On rejection, surface the allowed next states
     // (read from VALID_TRANSITIONS — the static graph only, never task payload)
@@ -325,6 +336,9 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     // C6 verbatim: authz·validateTransition·evidence 어느 것도 재실행하지 않는다.
     // 데몬 A2aTaskService가 이미 게이트를 통과시킨 커밋이다(재검증 = split-brain).
     const existing = state.a2aTasks[committed.id];
+    // A snapshot older than the cached status (e.g. a completion that arrives
+    // after a later reopen was applied) must not roll the task back.
+    if (existing && committed.status.timestamp < existing.status.timestamp) return;
     if (existing) {
       // 상태·updatedAt만 데몬 커밋 그대로 반영. history/artifacts는 렌더러가 보유한
       // 상위집합을 보존한다(데몬 projection은 생성 시점 히스토리만 내구화 — 증분
@@ -336,6 +350,20 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
       state.a2aTasks[committed.id] = committed;
     }
   }),
+
+  reopenTask: (taskId) => {
+    const task = get().a2aTasks[taskId];
+    if (!task || !(TERMINAL_STATES as readonly string[]).includes(task.status.state)) return false;
+    set((state: StoreState) => {
+      const t = state.a2aTasks[taskId];
+      if (t) {
+        const now = isoNow();
+        t.status = { state: 'submitted', timestamp: now };
+        t.metadata.updatedAt = now;
+      }
+    });
+    return true;
+  },
 
   addTaskArtifact: (taskId, artifact) => set((state: StoreState) => {
     const task = state.a2aTasks[taskId];

@@ -37,6 +37,7 @@ const BTN_SECONDARY_RAISED =
 // this renders nothing.
 
 interface ApprovalInboxListProps {
+  onNavigate?: () => void;
   items: InboxItem[];
   focusedIdx: number;
   onResolve: (item: InboxItem, approved: boolean) => void;
@@ -53,7 +54,7 @@ function severityAccent(severity: RiskClassCopy['severity']): string {
   }
 }
 
-export default function ApprovalInboxList({ items, focusedIdx, onResolve }: ApprovalInboxListProps) {
+export default function ApprovalInboxList({ items, focusedIdx, onResolve, onNavigate }: ApprovalInboxListProps) {
   const t = useT();
 
   // Resolve A2A sender/receiver workspace IDs to display names (mirrors
@@ -123,6 +124,7 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
   // through — rather than a second focus path. Closing the cockpit matches what
   // FleetView's card jump does: the operator asked to be taken to the pane.
   const jumpToHelpSurface = (surfaceId: string) => {
+    onNavigate?.();
     focusNotificationTarget(() => useStore.getState(), { surfaceId });
     useStore.getState().setFleetViewVisible(false);
   };

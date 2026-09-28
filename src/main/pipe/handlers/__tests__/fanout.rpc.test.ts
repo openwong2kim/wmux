@@ -90,6 +90,10 @@ interface Harness {
   /** Answer a prompt that was left hanging — the "the user took their time"
    *  case the approval-time repo re-derivation is about. */
   approveHungPrompt: () => void;
+  /** Every renderer method called, in order. */
+  rendererCalls: () => string[];
+  /** Params of each fanout.resolveOrigin call. */
+  resolveOriginParams: () => Array<Record<string, unknown>>;
 }
 
 function setup(opts?: {
@@ -107,6 +111,9 @@ function setup(opts?: {
   requireApproval?: boolean;
   /** Operator presets. Defaults to none. */
   presets?: FanoutPreset[];
+  /** What the renderer answers to fanout.resolveOrigin. Defaults to pane
+   *  p1/s1 of the caller's workspace; 'throw' models a renderer miss. */
+  resolveOrigin?: unknown | 'throw';
 }): Harness {
   const commanderAnchorPtyId =
     opts?.commanderAnchorPtyId === undefined ? 'pty-1' : opts.commanderAnchorPtyId;
@@ -148,8 +155,19 @@ function setup(opts?: {
   let lastPreview = '';
   let lastRequireApproval: unknown;
   let releaseApproval: ((v: unknown) => void) | null = null;
+  const rendererCalls: string[] = [];
+  const resolveOriginParams: Array<Record<string, unknown>> = [];
+  const resolveOriginAnswer = opts && 'resolveOrigin' in opts
+    ? opts.resolveOrigin
+    : { origin: { kind: 'pane', paneId: 'p1', surfaceId: 's1', label: 'w1-1 · Claude Code' } };
 
   vi.mocked(sendToRenderer).mockImplementation(async (_win, method: string, p?: unknown) => {
+    rendererCalls.push(method);
+    if (method === 'fanout.resolveOrigin') {
+      resolveOriginParams.push({ ...(p as Record<string, unknown>) });
+      if (resolveOriginAnswer === 'throw') throw new Error('renderer unavailable');
+      return resolveOriginAnswer;
+    }
     if (method === 'input.findOwnerWorkspace') return ownerWs ? { workspaceId: ownerWs } : {};
     // A brain has no pty of its own, so it anchors on its workspace's ACTIVE
     // pane — which is what workspace.list reports as activePtyId. 'pty-1' here
@@ -228,6 +246,8 @@ function setup(opts?: {
     requireApprovalSent: () => lastRequireApproval,
     forgetResult: (callerKey) => state.delete(`${ownerWs}::${callerKey}`),
     approveHungPrompt: () => releaseApproval?.({ approved: true, outcome: 'approved' }),
+    rendererCalls: () => [...rendererCalls],
+    resolveOriginParams: () => [...resolveOriginParams],
   };
 }
 
@@ -306,6 +326,7 @@ describe('a commander brain is a verifiable caller without a pty', () => {
     await h.flush();
     expect(h.start).toHaveBeenCalledTimes(1);
     expect(h.request().verifiedWorkspaceId).toBe(CALLER_WS);
+    expect(h.request().caller).toEqual({ kind: 'orchestrator' });
   });
 
   it('ignores a senderPtyId a commander states — the token outranks it', async () => {
@@ -781,6 +802,45 @@ describe('R2 — the caller workspace is derived, not asserted', () => {
     await h.call(goodParams());
     await h.flush();
     expect(h.request().verifiedWorkspaceId).toBe(CALLER_WS);
+    // …and which pane asked, already resolved to its stable ids and name.
+    expect(h.request().caller).toEqual({ kind: 'pane', paneId: 'p1', surfaceId: 's1', label: 'w1-1 · Claude Code' });
+  });
+
+  // #1575 review — the requester is resolved ONCE, at request time, scoped to
+  // the owning workspace, before the approval prompt and any git work; the
+  // service then carries that origin to every spawn unchanged.
+  it('resolves the requesting pane once, in the owner workspace, before approval and git', async () => {
+    const h = setup();
+    await h.call(goodParams());
+    await h.flush();
+    expect(h.resolveOriginParams()).toEqual([{ ptyId: 'pty-1', workspaceId: CALLER_WS }]);
+    const calls = h.rendererCalls();
+    expect(calls.indexOf('fanout.resolveOrigin')).toBeGreaterThan(-1);
+    expect(calls.indexOf('fanout.resolveOrigin')).toBeLessThan(calls.indexOf('fanout.requestApproval'));
+    expect(calls.indexOf('fanout.resolveOrigin')).toBeLessThan(calls.indexOf('surface.list'));
+    // A poll on the same key never resolves again.
+    await h.call(goodParams());
+    expect(h.resolveOriginParams()).toHaveLength(1);
+  });
+
+  it('records no requester when the pane is not in the owner workspace, or the renderer cannot say', async () => {
+    // The renderer answers null for a ptyId whose pane lives elsewhere.
+    const elsewhere = setup({ resolveOrigin: { origin: null } });
+    await elsewhere.call(goodParams());
+    await elsewhere.flush();
+    expect(elsewhere.start).toHaveBeenCalledTimes(1);
+    expect(elsewhere.request().caller).toBeUndefined();
+    // A malformed or non-pane answer is not a pane requester either.
+    const forged = setup({ resolveOrigin: { origin: { kind: 'gui' } } });
+    await forged.call(goodParams());
+    await forged.flush();
+    expect(forged.request().caller).toBeUndefined();
+    // Display data only: a renderer miss never refuses the fan-out.
+    const miss = setup({ resolveOrigin: 'throw' });
+    await miss.call(goodParams());
+    await miss.flush();
+    expect(miss.start).toHaveBeenCalledTimes(1);
+    expect(miss.request().caller).toBeUndefined();
   });
 
   it('rejects a caller-supplied memberId', async () => {

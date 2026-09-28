@@ -34,18 +34,52 @@ export interface ChatLaunchPreview {
   maxPromptUnits: number;
 }
 
-export interface ChatBlocked { by: 'approval' | 'terminal'; approvalId?: string }
+export interface ChatBlocked {
+  by: 'approval' | 'terminal';
+  approvalId?: string;
+  /**
+   * INTERNAL, never serialized as is: the pane is blocked on a
+   * `terminal_prompt` record. It reads as `by:'terminal'` unless the caller
+   * declared the `terminal-prompt-answer` capability AND the record is
+   * answerable — see `projectChatBlocked`.
+   */
+  terminalPrompt?: { approvalId: string; answerable: boolean };
+}
+
+/** Per-caller view of `ChatBlocked` (the capability decides a `terminal_prompt`). */
+export function projectChatBlocked(
+  blocked: ChatBlocked | undefined,
+  caps: { terminalPromptAnswer: boolean },
+): ChatBlocked | undefined {
+  if (!blocked) return undefined;
+  const { terminalPrompt, ...rest } = blocked;
+  if (terminalPrompt?.answerable && caps.terminalPromptAnswer) {
+    return { by: 'approval', approvalId: terminalPrompt.approvalId };
+  }
+  return rest;
+}
 
 /**
  * One pane's chat binding, computed from fresh daemon state on every call.
  * `rawEpoch` (OpenCode) is loopback-token material and must never leave the
  * daemon; only `epoch` (the `t1:` hash) may be serialized.
  */
+/**
+ * Why a pane has no readable conversation, when the daemon can tell. Sent on
+ * `/turns` as `cause` beside the unchanged `reason`; a client treats an
+ * unknown or absent value as plain "unavailable".
+ * - `opencode-plugin-missing`: OpenCode runs in the pane and no wmux TUI plugin
+ *   record exists for it (plugin not installed or not loaded).
+ * - `opencode-plugin-unreachable`: the pane's plugin record is valid, but its port refused the connection.
+ * Any other failure (stale or invalid record, owner change, a bad answer) sends no `cause`.
+ */
+export type ChatUnavailableCause = 'opencode-plugin-missing' | 'opencode-plugin-unreachable';
+
 export type ChatResolution =
   | { source: 'tui'; status: TranscriptStatus; page: TranscriptPage; epoch: string; rawEpoch: string }
   | { source: 'managed'; status: TranscriptStatus; epoch: string }
   | { source: 'file'; status: TranscriptStatus; epoch?: string }
-  | { source: 'none'; status: TranscriptStatus; launch: ChatLaunchPreview };
+  | { source: 'none'; status: TranscriptStatus; launch: ChatLaunchPreview; cause?: ChatUnavailableCause };
 
 export interface ChatSendRequest {
   owner: ChatOwner;

@@ -15,9 +15,9 @@ const start = SRC.indexOf('attachCustomKeyEventHandler');
 const HANDLER = SRC.slice(start, SRC.indexOf('// Right-click behavior', start));
 
 describe('mentionAgent pane gate', () => {
-  it('bubbles only when the focused pane is a mention source', () => {
+  it('bubbles only when the shared gate claims the key (a source, or ⌘ on macOS)', () => {
     expect(HANDLER).toMatch(
-      /\} else if \(shortcut === 'mentionAgent'\) \{[\s\S]{0,300}?if \(mentionSourceForKey\(useStore\.getState\(\), e\.target\)\) return false;\r?\n {6}\} else if \(shortcut !== null\) \{/,
+      /\} else if \(shortcut === 'mentionAgent'\) \{[\s\S]{0,600}?if \(mentionKeyClaim\(useStore\.getState\(\), e, window\.electronAPI\?\.platform\) !== null\) return false;\r?\n {6}\} else if \(shortcut !== null\) \{/,
     );
   });
 

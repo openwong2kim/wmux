@@ -218,6 +218,46 @@ export class TranscriptProjector {
   }
 
   /**
+   * One raw page for the phone's host search (`GET /api/search`): the same
+   * binding resolution and containment check as `snapshot`, WITHOUT the A3
+   * budget. These events never cross the control pipe — they are matched
+   * in-process and only short snippets leave — so shrinking the window to fit
+   * a wire budget would only cost more reads for the same bytes.
+   *
+   * `lineEnds[i]` is the byte offset just past the line `page.events[i]` came
+   * from: the next line's start, or the page's tail for the last line. That
+   * is a line boundary, so it is a valid `before` for `snapshot` — the page it
+   * returns ends with that event. Taken from the scanner's own offsets rather
+   * than re-measured from the decoded text, which invalid UTF-8 would skew.
+   */
+  searchPage(
+    sessionId: string,
+    before?: number,
+  ): { ok: true; page: TranscriptPage; lineEnds: number[] } | { ok: false; reason: string } {
+    const resolved = this.resolvePath(sessionId);
+    if (!resolved.ok) return { ok: false, reason: resolved.reason };
+    const starts: number[] = [];
+    const counts: number[] = [];
+    const page = readTranscriptPage(resolved.transcriptPath, {
+      ...(before !== undefined ? { before } : {}),
+      maxBytes: TAIL_BYTES,
+      parseLine: (line, offset) => {
+        const events = resolved.parse(line, offset).events;
+        starts.push(offset);
+        counts.push(events.length);
+        return events;
+      },
+    });
+    if (!page) return { ok: false, reason: 'unreadable' };
+    const lineEnds: number[] = [];
+    starts.forEach((_, i) => {
+      const end = i + 1 < starts.length ? starts[i + 1] : page.cursor.tailOffset;
+      for (let n = 0; n < counts[i]; n++) lineEnds.push(end);
+    });
+    return { ok: true, page, lineEnds };
+  }
+
+  /**
    * Forward delta the phone reads after its snapshot. STATELESS by contract
    * (#782): unlike `subscribe()`, this never touches the shared `WatchState`,
    * because a late subscriber's force-reset would scramble every desktop Chat

@@ -12,9 +12,11 @@ import {
   isMultilinePtyPayload,
   sanitizeBracketedPastePayload,
   submitProfileForAgent,
+  type GatedSubmitResult,
 } from '../../shared/ptyMessageDelivery';
 
 export { formatBracketedPastePayload, sanitizeBracketedPastePayload };
+export type { GatedSubmitResult };
 
 export interface SubmitBracketedPasteOptions {
   /**
@@ -42,3 +44,36 @@ export function submitBracketedPasteToPty(
   }, submitProfileForAgent(options.agent).submitDelayMs);
 }
 
+
+/**
+ * Paste `text` into `ptyId` and submit it through main's approval gate
+ * (IPC.GATED_SUBMIT). For every delivery made on a non-operator's behalf —
+ * agent-to-agent tasks, company messages, channel mention nudges: an Enter into
+ * a pane showing an approval would answer it. Main runs the gate before the
+ * paste and again before the Enter. Never throws; a bridge that is missing or
+ * fails is `gate_unavailable` (nothing is written from here either way).
+ */
+export async function gatedSubmitToPty(
+  ptyId: string,
+  text: string,
+  options: { agent?: string | null } = {},
+): Promise<GatedSubmitResult> {
+  const submit = (window.electronAPI?.rpc as { gatedSubmit?: unknown } | undefined)?.gatedSubmit as
+    | ((id: string, body: string, agent?: string | null) => Promise<GatedSubmitResult>)
+    | undefined;
+  if (typeof submit !== 'function') {
+    return { ok: false, reason: 'gate_unavailable', detail: 'delivery: approval gate unavailable' };
+  }
+  try {
+    const result = await submit(ptyId, text, options.agent ?? null);
+    return result && typeof result === 'object' && 'ok' in result
+      ? result
+      : { ok: false, reason: 'gate_unavailable', detail: 'delivery: approval gate returned no answer' };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: 'gate_unavailable',
+      detail: `delivery: approval gate failed (${err instanceof Error ? err.message : String(err)})`,
+    };
+  }
+}

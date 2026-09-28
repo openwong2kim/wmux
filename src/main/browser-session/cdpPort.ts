@@ -20,7 +20,7 @@ import crypto from 'node:crypto';
 //                 the reported collision, and it is the one we can prevent
 //                 rather than merely report.
 //   probeCdpEndpoint  asks the port itself, after Chromium has had its chance
-//                 to bind, whether anything is actually listening. This catches
+//                 to bind, whether this instance owns the endpoint. This catches
 //                 everything the claim cannot see — a non-wmux process on the
 //                 port, a Chromium that refused it for its own reasons — and it
 //                 is what the "enabled" log line is allowed to depend on.
@@ -39,16 +39,11 @@ export const CDP_PORT_MIN = 18800;
 /** How many ports the range holds (18800–18899). */
 export const CDP_PORT_COUNT = 100;
 
-/**
- * Where claim files live.
- *
- * The system temp directory, NOT `~/.wmux{suffix}` — the whole point is to be
- * visible to an instance running under a DIFFERENT data suffix, which is the
- * configuration the collision was found in. A per-instance directory would
- * leave the two instances unable to see each other, which is the bug.
- */
-function claimDir(): string {
-  return os.tmpdir();
+/** Shared across Dock/shell launches and data suffixes, independent of TMPDIR. */
+export function claimDir(home = os.homedir()): string {
+  const dir = path.join(home, '.cache', 'wmux-cdp');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
 }
 
 function claimPath(dir: string, port: number): string {
@@ -69,7 +64,7 @@ function defaultIsAlive(pid: number): boolean {
 }
 
 export interface ClaimCdpPortDeps {
-  /** Directory for claim files. Defaults to the system temp directory. */
+  /** Directory for claim files. Defaults to the user-stable cache directory. */
   dir?: string;
   /** This process's id, written into the claim. */
   pid?: number;
@@ -106,7 +101,10 @@ export interface CdpPortClaim {
  * handler runs.
  */
 export function claimCdpPort(deps: ClaimCdpPortDeps = {}): CdpPortClaim {
-  const dir = deps.dir ?? claimDir();
+  let dir: string;
+  try { dir = deps.dir ?? claimDir(); } catch {
+    return { port: CDP_PORT_MIN + ((deps.firstOffset ?? crypto.randomInt(CDP_PORT_COUNT)) % CDP_PORT_COUNT), claimed: false };
+  }
   const pid = deps.pid ?? process.pid;
   const isAlive = deps.isAlive ?? defaultIsAlive;
   const start = deps.firstOffset ?? crypto.randomInt(CDP_PORT_COUNT);
@@ -178,26 +176,10 @@ export type CdpProbeResult =
   | { ok: true; browser: string }
   | { ok: false; reason: string };
 
-/**
- * Ask the CDP port whether anything is actually listening on it.
- *
- * `/json/version` is the cheapest endpoint that proves a real DevTools
- * HTTP server rather than any socket that happens to accept a connection —
- * WebviewCdpManager already talks to `/json` on this same port, so this is the
- * same surface the feature depends on, not a proxy for it.
- *
- * Known residual, found while dogfooding this: the probe asks whether ANYTHING
- * is listening, not whether it is OURS. If another wmux held the port and we
- * failed to bind, its CDP would answer 200 and we would report "listening"
- * about a browser that is not ours. The claim above is what covers that case —
- * a live wmux's port is never drawn — so the two together are only defeated by
- * a claim file deleted out from under a running instance. Distinguishing the
- * two CDP servers from the outside needs socket-to-pid ownership (netstat /
- * GetExtendedTcpTable per boot), which is a great deal of machinery for a case
- * the claim already prevents.
- */
+/** Verify the endpoint contains a target identified through Electron's local debugger. */
 export async function probeCdpEndpoint(
   port: number,
+  expectedTargetId: string,
   deps: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
 ): Promise<CdpProbeResult> {
   const fetchImpl = deps.fetchImpl ?? fetch;
@@ -211,10 +193,31 @@ export async function probeCdpEndpoint(
     if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
     const body = (await res.json()) as { Browser?: unknown };
     const browser = typeof body?.Browser === 'string' ? body.Browser : 'unknown';
+    if (!expectedTargetId) return { ok: false, reason: 'local target identity unavailable' };
+    const targetsRes = await fetchImpl(`http://127.0.0.1:${port}/json/list`, { signal: controller.signal });
+    if (!targetsRes.ok) return { ok: false, reason: `target list HTTP ${targetsRes.status}` };
+    const targets: unknown = await targetsRes.json();
+    if (!Array.isArray(targets) || !targets.some((target) => target?.id === expectedTargetId)) {
+      return { ok: false, reason: 'local target is not yet present in the endpoint' };
+    }
     return { ok: true, browser };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Retry target-list lag. Absence is not proof of foreign ownership. */
+export async function probeCdpEndpointWithRetry(
+  port: number, expectedTargetId: string,
+  deps: { fetchImpl?: typeof fetch; timeoutMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<CdpProbeResult> {
+  let result: CdpProbeResult = { ok: false, reason: 'verification pending' };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await (deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(100 * 3 ** (attempt - 1));
+    result = await probeCdpEndpoint(port, expectedTargetId, deps);
+    if (result.ok) return result;
+  }
+  return result;
 }

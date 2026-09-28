@@ -66,6 +66,10 @@ WEB ACCESS (browser / PWA)
   web                               Serve wmux panes to a browser (read-only,
                                     LOCAL-ONLY by default). NOTE: even read-only
                                     exposes a pane's FULL scrollback to viewers.
+                                    Re-running it on a running server keeps
+                                    every option not given (port, scope, allowed
+                                    hosts, TLS, allow-* grants); turn one off
+                                    with --no-allow-<x>, --loopback or --no-tls
         [--port <n>]                Listen port (default 7681)
         [--expose]                  Bind all interfaces (0.0.0.0) for phone
                                     access. Off by default (loopback only).
@@ -78,9 +82,13 @@ WEB ACCESS (browser / PWA)
                                     native HTTPS (requires --tls-key)
         [--tls-key <path>]          Matching PEM private key (requires
                                     --tls-cert; incompatible with --tailscale)
-                                    Re-supply both TLS paths when re-running
-                                    'wmux web' to change other CLI options
+        [--no-tls]                  Drop native HTTPS on a re-run (revokes
+                                    every paired device)
+        [--loopback]                Drop --expose / --host / --tailscale /
+                                    --allow-host on a re-run: loopback only
         [--allow-input]             Enable keyboard input (off by default)
+        [--no-allow-<x>]            Turn a grant off on a re-run: input,
+                                    upload, transcript, dangerous-launch
         [--allow-upload]            Enable photo upload from a paired phone
                                     (JPEG/PNG, 10 MB cap, files kept 24h in
                                     ~/.wmux/uploads/phone). Off by default

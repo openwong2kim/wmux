@@ -1167,6 +1167,95 @@ describe('useRemoteAttachmentsLifecycle — main-driven poll cadence (#1391)', (
     expect(api.workspacesList).not.toHaveBeenCalled();
   });
 
+  // A host that rejected our credential keeps rejecting it until the user pairs
+  // again: flag the rows, and let neither the heartbeat nor a return to the
+  // window ask again until the slowest rung comes round.
+  it('a host that rejects the credential is flagged and not retried on focus', async () => {
+    vi.useFakeTimers();
+    installElectronApi({
+      mainTick: true,
+      listImpl: async () => ({ ok: false, error: 'rejected', reason: 'auth-rejected' }),
+    });
+    mount();
+    seedAttached([{ sessionId: 'a' }]);
+    await settle();
+    await act(async () => { tickCb?.(); await Promise.resolve(); });
+    await settle();
+    expect(useStore.getState().remoteWorkspaces.every((w) => w.authRejected)).toBe(true);
+    api.workspacesList.mockClear();
+
+    for (let i = 0; i < 6; i++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      await act(async () => { window.dispatchEvent(new Event('focus')); tickCb?.(); await Promise.resolve(); });
+      await settle();
+    }
+    expect(api.workspacesList).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('a host that needs HTTPS is flagged on every row (not silent) and not retried', async () => {
+    vi.useFakeTimers();
+    installElectronApi({
+      mainTick: true,
+      listImpl: async () => ({ ok: false, error: 'listWorkspaces refused: this host needs HTTPS', reason: 'insecure-transport' }),
+    });
+    mount();
+    seedAttached([{ sessionId: 'a' }]);
+    await settle();
+    await act(async () => { tickCb?.(); await Promise.resolve(); });
+    await settle();
+    const rows = useStore.getState().remoteWorkspaces;
+    expect(rows.every((w) => w.insecureTransport)).toBe(true);
+    expect(rows.some((w) => w.authRejected)).toBe(false);
+    api.workspacesList.mockClear();
+    for (let i = 0; i < 6; i++) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      await act(async () => { window.dispatchEvent(new Event('focus')); tickCb?.(); await Promise.resolve(); });
+      await settle();
+    }
+    expect(api.workspacesList).not.toHaveBeenCalled();
+    act(() => { useStore.getState().setRemoteHostInsecure('h1', false); });
+    unmount();
+  });
+
+  it('a host that answers again clears the flag on every row, even one it no longer lists', async () => {
+    vi.useFakeTimers();
+    installElectronApi({ mainTick: true, workspaces: [] });
+    mount();
+    seedAttached([{ sessionId: 'a' }]);
+    act(() => { useStore.getState().setRemoteHostAuthRejected('h1', true); });
+    await settle();
+    await act(async () => { tickCb?.(); await Promise.resolve(); });
+    await settle();
+    expect(useStore.getState().remoteWorkspaces.some((w) => w.authRejected)).toBe(false);
+    unmount();
+  });
+
+  it('clearing the flag (the host was paired again) polls that host at once', async () => {
+    vi.useFakeTimers();
+    let rejected = true;
+    installElectronApi({
+      mainTick: true,
+      listImpl: async () => (rejected
+        ? { ok: false, error: 'rejected', reason: 'auth-rejected' }
+        : { ok: true, workspaces: [] }),
+    });
+    mount();
+    seedAttached([{ sessionId: 'a' }]);
+    await settle();
+    await act(async () => { tickCb?.(); await Promise.resolve(); });
+    await settle();
+    api.workspacesList.mockClear();
+
+    rejected = false;
+    act(() => { useStore.getState().setRemoteHostAuthRejected('h1', false); });
+    await settle();
+    await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    await settle();
+    expect(api.workspacesList).toHaveBeenCalled();
+    unmount();
+  });
+
   // A tick is a HEARTBEAT: it carries no information, so one that lands during
   // a round must be dropped, not queued. One round against a sleeping host can
   // take 20s (config probe timeout + workspaces timeout) while ticks keep

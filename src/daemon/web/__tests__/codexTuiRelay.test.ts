@@ -5,11 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import WebSocket,{WebSocketServer} from 'ws';
 import {describe,it,expect} from 'vitest';
-import {createCodexTuiRelay,CodexRelayUnavailableError} from '../codexTuiRelay';
+import {createCodexTuiRelay,CodexRelayUnavailableError,type CodexRelayPolicy} from '../codexTuiRelay';
+import {threadIdentityEnv} from '../codexRelayPolicy';
 const threadId='01234567-89ab-4cde-8123-456789abcdef';
 const systemThreadId='11111111-89ab-4cde-8123-456789abcdef';
 const otherThreadId='22222222-89ab-4cde-8123-456789abcdef';
-async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpstreamRequest?:(request:{id?:unknown;method?:unknown})=>void}={}) {
+async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpstreamRequest?:(request:{id?:unknown;method?:unknown;params?:Record<string,unknown>},raw:string)=>void; policy?:CodexRelayPolicy; respond?:(request:{id?:unknown;method?:unknown;params?:Record<string,unknown>})=>unknown}={}) {
   // macOS's per-user tmpdir is too long for a Unix socket path (sun_path is
   // 104 bytes there); /tmp keeps the fixture sockets addressable.
   const home=await mkdtemp(path.join(process.platform === 'darwin' ? '/tmp' : os.tmpdir(),'wmux-relay-test-'));
@@ -24,7 +25,10 @@ async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpst
     if(ready)live=socket;
     socket.on('message',bytes=>{
       const request=JSON.parse(bytes.toString());
-      if(ready)options.onUpstreamRequest?.(request);
+      if(ready)options.onUpstreamRequest?.(request,bytes.toString());
+      if(request.id===undefined||request.method===undefined)return;
+      const custom=ready?options.respond?.(request):undefined;
+      if(custom!==undefined){socket.send(JSON.stringify({id:request.id,...(custom as object)}));return;}
       const system=request.params?.threadSource==='system';
       socket.send(JSON.stringify({id:request.id,result:{thread:{id:system?systemThreadId:threadId,cwd:'/repo'}}}));
     });
@@ -32,7 +36,7 @@ async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpst
   const actualPath = options.linked ? path.join(home, 'actual.sock') : upstreamPath;
   await new Promise<void>(resolve=>server.listen(actualPath,resolve));
   if (options.linked) await symlink(actualPath, upstreamPath);
-  const relay=await createCodexTuiRelay({codeHome:home,onStateChange:options.onStateChange});
+  const relay=await createCodexTuiRelay({codeHome:home,onStateChange:options.onStateChange,policy:options.policy});
   ready=true;
   const connect=async(origin?:string)=>{
     const socket=new WebSocket(relay.url.replace('unix://','ws+unix://')+':/rpc',{origin});
@@ -225,5 +229,266 @@ describe.skipIf(process.platform === 'win32')('pane-owned Codex Unix relay',()=>
       expect(forwarded).toBe(0);
       expect(f.relay.current()).toBeUndefined();
     } finally {await f.cleanup();expect(calls).toBe(2);}
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('relay request policy',()=>{
+  type Req={id?:unknown;method?:unknown;params?:Record<string,unknown>};
+  const ID=threadIdentityEnv({id:'pty-a',env:{WMUX_WORKSPACE_ID:'ws-a'}},{});
+  const reply=(client:WebSocket)=>new Promise<Record<string,unknown>>(resolve=>client.once('message',b=>resolve(JSON.parse(b.toString()))));
+  const WITH_WMUX={result:{config:{mcp_servers:{wmux:{command:'node'}}}}};
+  function policy(over:Partial<CodexRelayPolicy>={}):CodexRelayPolicy & {owners:Map<string,string>; refusals:string[]} {
+    const owners=new Map<string,string>();const refusals:string[]=[];
+    return {paneId:'pty-a',identity:()=>ID,serverProven:()=>true,
+      owner:(t)=>owners.has(t)?{paneId:owners.get(t)!,live:true}:undefined,
+      recordOwner:(t)=>{owners.set(t,'pty-a');},refused:(r)=>refusals.push(r),owners,refusals,...over};
+  }
+  const respondWith=(loaded:string[]=[])=>(r:Req)=>r.method==='config/read'?WITH_WMUX:r.method==='thread/loaded/list'?{result:{data:loaded,nextCursor:null}}:undefined;
+
+  it('injects identity on start/resume/fork (title threads too), overwrites forged keys, and records ownership', async () => {
+    const seen:Req[]=[];const p=policy();
+    const f=await fixture({policy:p,respond:respondWith(),onUpstreamRequest:r=>seen.push(r)});
+    try {
+      const client=await f.connect();
+      for (const [i,frame] of [
+        {method:'thread/start',params:{config:{model:'x','shell_environment_policy.set.WMUX_PTY_ID':'forged',shell_environment_policy:{set:{WMUX_WORKSPACE_ID:'forged'}},'mcp_servers.wmux.env':{WMUX_PTY_ID:'forged'}}}},
+        {method:'thread/start',params:{ephemeral:true,threadSource:'system'}},
+        {method:'thread/resume',params:{threadId}},
+        {method:'thread/fork',params:{threadId}},
+      ].entries()) { const got=reply(client);client.send(JSON.stringify({id:i+1,...frame}));await got; }
+      const cfgs=seen.filter(r=>typeof r.method==='string'&&/^thread\//.test(r.method)).map(r=>(r.params as {config:Record<string,unknown>}).config);
+      expect(cfgs).toHaveLength(4);
+      for (const c of cfgs) {
+        expect(c).toMatchObject({'shell_environment_policy.set.WMUX_PTY_ID':'pty-a','shell_environment_policy.set.WMUX_WORKSPACE_ID':'ws-a','mcp_servers.wmux.env.WMUX_PTY_ID':'pty-a','shell_environment_policy.set.WMUX_AUTH_TOKEN':''});
+        expect(JSON.stringify(c)).not.toContain('forged');
+      }
+      expect(cfgs[0].model).toBe('x');
+      expect(p.owners.get(threadId)).toBe('pty-a');
+      client.terminate();
+    } finally { await f.cleanup(); }
+  });
+
+  it('command/exec: WMUX_* in env replaced by the pane identity', async () => {
+    const seen:Req[]=[];
+    const f=await fixture({policy:policy(),onUpstreamRequest:r=>seen.push(r),respond:(r)=>r.method==='command/exec'?{result:{exitCode:0}}:undefined});
+    try {
+      const client=await f.connect();const got=reply(client);
+      client.send(JSON.stringify({id:1,method:'command/exec',params:{command:['env'],env:{WMUX_PTY_ID:'forged',FOO:'1'}}}));
+      await got;
+      const env=(seen.find(r=>r.method==='command/exec')!.params as {env:Record<string,unknown>}).env;
+      expect(env).toMatchObject({FOO:'1',WMUX_PTY_ID:'pty-a',WMUX_WORKSPACE_ID:'ws-a',WMUX_AUTH_TOKEN:null});
+      client.terminate();
+    } finally { await f.cleanup(); }
+  });
+
+  it('refuses batches, unknown methods, and turns on a thread this pane does not own', async () => {
+    const seen:Req[]=[];const p=policy();
+    const f=await fixture({policy:p,onUpstreamRequest:r=>seen.push(r)});
+    try {
+      const client=await f.connect();
+      let got=reply(client);client.send(JSON.stringify([{id:1,method:'thread/list'}]));
+      await new Promise(r=>setTimeout(r,100));
+      got=reply(client);client.send(JSON.stringify({id:2,method:'thread/secretNewThing',params:{}}));
+      expect(await got).toMatchObject({id:2,error:{}});
+      got=reply(client);client.send(JSON.stringify({id:3,method:'turn/start',params:{threadId:otherThreadId,input:[]}}));
+      expect(await got).toMatchObject({id:3,error:{}});
+      expect(seen.filter(r=>r.method!=='initialize')).toEqual([]);
+      expect(p.refusals).toHaveLength(3);
+      client.terminate();
+    } finally { await f.cleanup(); }
+  });
+
+  it('refuses a resume of a thread owned by another live pane, or already loaded elsewhere', async () => {
+    const seen:Req[]=[];const p=policy();p.owners.set(otherThreadId,'pty-b');
+    const f=await fixture({policy:p,respond:respondWith([systemThreadId]),onUpstreamRequest:r=>seen.push(r)});
+    try {
+      const client=await f.connect();
+      let got=reply(client);client.send(JSON.stringify({id:1,method:'thread/resume',params:{threadId:otherThreadId}}));
+      expect(await got).toMatchObject({id:1,error:{}});
+      got=reply(client);client.send(JSON.stringify({id:2,method:'thread/resume',params:{threadId:systemThreadId}}));
+      expect(await got).toMatchObject({id:2,error:{}});
+      expect(seen.some(r=>r.method==='thread/resume')).toBe(false);
+      client.terminate();
+    } finally { await f.cleanup(); }
+  });
+
+  it('on an unproven server, refuses when the MCP config or thread ownership cannot be determined', async () => {
+    const seen:Req[]=[];
+    const f=await fixture({policy:policy({serverProven:()=>false}),respond:(r)=>r.method==='config/read'||r.method==='thread/loaded/list'?{error:{message:'nope'}}:undefined,onUpstreamRequest:r=>seen.push(r)});
+    try {
+      const client=await f.connect();
+      let got=reply(client);client.send(JSON.stringify({id:1,method:'thread/start',params:{}}));
+      expect(await got).toMatchObject({id:1,error:{}});
+      got=reply(client);client.send(JSON.stringify({id:2,method:'config/mcpServer/reload',params:{}}));
+      expect(await got).toMatchObject({id:2,error:{}});
+      expect(seen.some(r=>r.method==='thread/start'||r.method==='config/mcpServer/reload')).toBe(false);
+      client.terminate();
+    } finally { await f.cleanup(); }
+  });
+
+  it('tears the relay down when the pane never commits, instead of holding frames', async () => {
+    const seen:Req[]=[];
+    const f=await fixture({policy:policy({identity:()=>undefined}),onUpstreamRequest:r=>seen.push(r)});
+    try {
+      const client=await f.connect();
+      const got=reply(client);
+      client.send(JSON.stringify({id:1,method:'thread/start',params:{}}));
+      expect(await got).toMatchObject({id:1,error:{}});
+      await new Promise(r=>setTimeout(r,50));
+      expect(f.relay.retired()).toBe(true);
+      expect(seen.some(r=>r.method==='thread/start')).toBe(false);
+    } finally { await f.cleanup(); }
+  }, 10000);
+
+  it('drops the connection when held frames exceed the bound', async () => {
+    let release!:(v:Record<string,string>)=>void;
+    let identity:Record<string,string>|undefined;
+    void new Promise<Record<string,string>>(r=>{release=r;}).then(v=>{identity=v;});
+    const f=await fixture({policy:policy({identity:()=>identity})});
+    try {
+      const client=await f.connect();
+      client.send(JSON.stringify({id:0,method:'thread/start',params:{}}));
+      for (let i=1;i<=70;i++) client.send(JSON.stringify({id:i,method:'model/list',params:{}}));
+      await new Promise(r=>setTimeout(r,200));
+      expect(f.relay.retired()).toBe(true);
+      release(ID);
+    } finally { await f.cleanup(); }
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('relay client responses',()=>{
+  type Frame={id?:unknown;method?:unknown;params?:Record<string,unknown>;result?:unknown};
+  // Frames measured against codex-cli 0.157.1: a server request, the TUI's answer, and the resolution notice.
+  const approval=(id:number)=>({method:'item/commandExecution/requestApproval',id,params:{threadId,turnId:'turn-1',itemId:`call_${id}`}});
+  const resolved=(id:number)=>({method:'serverRequest/resolved',params:{threadId,requestId:id}});
+  const ID=threadIdentityEnv({id:'pty-a',env:{}},{});
+  async function open(o:{unmatched?:number[];refusals?:string[];raw?:string[];identity?:()=>Record<string,string>|undefined}={}) {
+    const answers:Frame[]=[];
+    const policy:CodexRelayPolicy={paneId:'pty-a',identity:o.identity ?? (()=>ID),serverProven:()=>true,
+      owner:()=>undefined,recordOwner:()=>{/* not exercised here */},
+      refused:(reason)=>{o.refusals?.push(reason);},unmatchedResponse:(count)=>{o.unmatched?.push(count);}};
+    const f=await fixture({policy,onUpstreamRequest:(r,raw)=>{o.raw?.push(raw);if(r.method===undefined)answers.push(r as Frame);}});
+    const client=await f.connect();
+    const deliver=async(frame:object)=>{
+      const got=new Promise<void>(resolve=>client.once('message',()=>resolve()));
+      up.send(JSON.stringify(frame));await got;
+    };
+    // A round trip through the relay: every client frame sent before it has been handled.
+    const settle=async()=>{
+      const got=new Promise<void>(resolve=>client.once('message',()=>resolve()));
+      client.send(JSON.stringify({id:101,method:'model/list',params:{}}));await got;
+    };
+    await settle();
+    // The relay's own upstream link; an identity request later opens a side query connection.
+    const up=f.upstream()!;
+    return {f,client,answers,deliver,settle,up};
+  }
+
+  it('forwards the TUI answer to a server request delivered on this connection', async () => {
+    const {f,client,answers,deliver,settle}=await open();
+    try {
+      await deliver(approval(0));
+      client.send(JSON.stringify({id:0,result:{decision:'accept'}}));
+      await deliver(approval(3));
+      client.send(JSON.stringify({id:3,error:{code:-32000,message:'cancelled'}}));
+      await settle();
+      expect(answers).toEqual([{id:0,result:{decision:'accept'}},{id:3,error:{code:-32000,message:'cancelled'}}]);
+      expect(f.relay.retired()).toBe(false);
+    } finally { client.terminate();await f.cleanup(); }
+  });
+
+  it('does not forward a response whose id has no pending server request, and sends nothing back', async () => {
+    const unmatched:number[]=[];
+    const {f,client,answers,deliver,settle}=await open({unmatched});
+    try {
+      await deliver(approval(1));
+      const replies:unknown[]=[];client.on('message',b=>replies.push(JSON.parse(b.toString())));
+      client.send(JSON.stringify({id:7,result:{decision:'accept'}}));
+      client.send(JSON.stringify({id:'1',result:{decision:'accept'}}));
+      await settle();
+      expect(answers).toEqual([]);
+      expect(unmatched).toEqual([1,2]);
+      expect(replies.filter(r=>(r as Frame).id!==101)).toEqual([]);
+      expect(f.relay.retired()).toBe(false);
+    } finally { client.terminate();await f.cleanup(); }
+  });
+
+  it('forwards only the first response to a server request', async () => {
+    const {f,client,answers,deliver,settle}=await open();
+    try {
+      await deliver(approval(4));
+      client.send(JSON.stringify({id:4,result:{decision:'cancel'}}));
+      client.send(JSON.stringify({id:4,result:{decision:'accept'}}));
+      await settle();
+      expect(answers).toEqual([{id:4,result:{decision:'cancel'}}]);
+    } finally { client.terminate();await f.cleanup(); }
+  });
+
+  it('stops expecting an answer once the server reports the request resolved', async () => {
+    const {f,client,answers,deliver,settle}=await open();
+    try {
+      await deliver(approval(2));
+      await deliver(resolved(2));
+      client.send(JSON.stringify({id:2,result:{decision:'accept'}}));
+      await settle();
+      expect(answers).toEqual([]);
+    } finally { client.terminate();await f.cleanup(); }
+  });
+
+  it('forwards a normalized frame upstream', async () => {
+    const raw:string[]=[];
+    const {f,client,settle}=await open({raw});
+    try {
+      raw.length=0;
+      client.send('{ "id": 7, "params": {"x": 1}, "method": "thread/list", "params": {} }');
+      await settle();
+      expect(raw[0]).toBe('{"id":7,"params":{},"method":"thread/list"}');
+    } finally { client.terminate();await f.cleanup(); }
+  });
+
+  it('forwards an answer received while an earlier request waits, even if the request resolves meanwhile', async () => {
+    let identity:Record<string,string>|undefined;
+    const {f,client,answers,deliver}=await open({identity:()=>identity});
+    try {
+      const started=new Promise<void>(resolve=>client.on('message',b=>{if(JSON.parse(b.toString()).id===8)resolve();}));
+      client.send(JSON.stringify({id:8,method:'thread/start',params:{}}));
+      await deliver(approval(5));
+      client.send(JSON.stringify({id:5,result:{decision:'accept'}}));
+      await new Promise(r=>setTimeout(r,50));
+      await deliver(resolved(5));
+      identity=ID;
+      await started;
+      await new Promise(r=>setTimeout(r,50));
+      expect(answers).toEqual([{id:5,result:{decision:'accept'}}]);
+    } finally { client.terminate();await f.cleanup(); }
+  });
+
+  it('stops expecting answers for a thread once its turn completes', async () => {
+    const {f,client,answers,deliver,settle}=await open();
+    try {
+      await deliver(approval(6));
+      await deliver({method:'turn/completed',params:{threadId,turn:{id:'turn-1'}}});
+      client.send(JSON.stringify({id:6,result:{decision:'accept'}}));
+      await settle();
+      expect(answers).toEqual([]);
+    } finally { client.terminate();await f.cleanup(); }
+  });
+
+  it('closes the connection with a notice when too many requests await an answer', async () => {
+    const refusals:string[]=[];
+    const {f,client,up}=await open({refusals});
+    try {
+      let received=0;
+      const all=new Promise<void>(resolve=>client.on('message',()=>{if(++received===257)resolve();}));
+      for (let i=0;i<256;i++) up.send(JSON.stringify(approval(i)));
+      up.send(JSON.stringify(approval(0)));
+      await all;
+      expect(f.relay.retired()).toBe(false);
+      const closed=new Promise<void>(resolve=>client.once('close',()=>resolve()));
+      up.send(JSON.stringify(approval(256)));
+      await closed;
+      expect(f.relay.retired()).toBe(true);
+      expect(refusals).toHaveLength(1);
+    } finally { client.terminate();await f.cleanup(); }
   });
 });

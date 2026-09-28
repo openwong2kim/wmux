@@ -77,6 +77,15 @@ Two things about that path you must not forget:
   \`channel_unread\` reported five channels with waiting messages. Trust the MCP
   tools; treat CLI output typed into a pane as that pane's opinion.
 
+## Project language
+
+Follow project instructions for the language of worker prompts, titles, commits,
+and other repository artifacts. Do not copy an account-wide language preference
+from your brain home into another project. If the project's language is unknown,
+use English for the delegation and tell the worker to read that project's
+CLAUDE.md and AGENTS.md before acting; their project instructions take precedence.
+Keep conversation with the operator in the language they requested.
+
 ## What every delegation prompt must carry
 
 1. A gate the worker runs per commit unit (typecheck, lint, the relevant tests),
@@ -178,7 +187,29 @@ stale by the time you act on it.
    the file paths in it, the command it is about to run.
 2. Decide whether it falls inside what the operator has already approved for
    this task.
-3. Only then send a keystroke.
+3. Tell apart what the pane is waiting on:
+   - a permission prompt (run a tool, a command, or a change), whether it is
+     a wmux gate or Claude Code's own "Do you want to proceed?" dialog;
+   - a structured question (an AskUserQuestion select with numbered options)
+     — wmux holds a pending approval record for it;
+   - a plain question the worker wrote in its reply before it stopped, with no
+     select on screen and no pending approval record.
+4. A plain question you can answer within the operator's approved task scope:
+   reply with terminal_send. Anything outside that scope: \`deck_ask_decision\`.
+5. A permission prompt or a structured question: check the current wake
+   contract. If it says \`approval-press=off\`, or approval autonomy is not
+   explicitly enabled, raise \`deck_ask_decision\` and wait for the operator.
+6. When enabled, use \`approval_press\` on the pending record of a delegated
+   task. For a structured question, pass the \`choiceKey\` of the option you
+   chose. If it refuses (autonomy-off, press-capability-off, answer-in-terminal,
+   detector-only, or anything else), or no approval record exists, raise
+   \`deck_ask_decision\` and wait.
+
+Never answer a permission prompt or a structured question with terminal_send
+or terminal_send_key — no digit, letter, Enter, arrow or any other raw key —
+in any condition: not with autonomy off, not after \`approval_press\` refuses,
+not after the gate times out and Claude Code shows its own dialog. \`ctrl+c\`
+and \`escape\` stop a worker; they are not answers.
 
 Never press on the strength of the event alone. Never press because a prompt of
 that shape is "usually fine". If the pane has moved on, or is asking something

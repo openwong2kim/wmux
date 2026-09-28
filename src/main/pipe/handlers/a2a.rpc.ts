@@ -1,5 +1,7 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
+import type { RpcContext } from '../../../shared/rpc';
+import { isHostedCaller } from '../../../shared/rpc';
 import { sendToRenderer } from './_bridge';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import type { ClaudeWorker } from '../../a2a/ClaudeWorker';
@@ -8,6 +10,7 @@ import * as fs from 'fs';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage } from '../../../shared/types';
 import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../shared/executeApprovalBounds';
+import { isPagedTaskQuery, pagedTaskId, shapeTaskQueryResult, summarizeTask } from '../../../shared/a2aTaskQueryView';
 import { defaultSnapshot } from '../../pty/portWatch';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
@@ -35,6 +38,35 @@ type DaemonTaskGate =
 const A2A_DAEMON_SOFT_ERRORS = ['task log unavailable', 'task not found', 'pane-authz deferred'];
 
 
+const INTERNAL_RENDERER_FIELDS = [
+  'daemonCommitted',
+  'committedTask',
+  'daemonReopenedTask',
+  'localReopen',
+  'reopenPreflight',
+  'requirePaneIdentity',
+] as const;
+
+/**
+ * Params for a renderer delivery method, with `operatorOrigin` stamped from
+ * the router context and never taken from the wire. The renderer writes A2A
+ * deliveries into panes and, unless this is set, first asks main whether an
+ * approval is in front of the target (IPC.A2A_DELIVERY_GATE). Only the human
+ * operator's in-process surface is exempt, exactly as for `input.send`.
+ */
+function withOperatorOrigin(
+  params: Record<string, unknown>,
+  ctx: RpcContext | undefined,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...params };
+  delete out.operatorOrigin;
+  // Fields only main may set on the way to the renderer. Taken from the wire,
+  // they would let a caller apply a forged task snapshot or skip a check.
+  for (const k of INTERNAL_RENDERER_FIELDS) delete out[k];
+  if (ctx?.operator) out.operatorOrigin = true;
+  return out;
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
@@ -45,15 +77,19 @@ function taskUpdatedAt(t: Record<string, unknown>): string {
   return typeof meta?.updatedAt === 'string' ? meta.updatedAt : '';
 }
 
+/** Daemon deadline for a paged a2a.task.query (see the handler). */
+const PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS = 3_000;
+
 async function daemonTaskRpc(
   getDaemonClient: (() => DaemonClient | null) | undefined,
   method: string,
   params: Record<string, unknown>,
+  opts: { timeoutMs?: number } = {},
 ): Promise<DaemonTaskGate> {
   const dc = getDaemonClient?.();
   if (!dc) return { kind: 'unavailable' };
   try {
-    const res = await dc.rpc(method, params);
+    const res = await dc.rpc(method, params, opts);
     if (isRecord(res) && res.ok === true) return { kind: 'ok', result: res };
     const error = isRecord(res) && typeof res.error === 'string' ? res.error : `${method}: daemon rejected`;
     if (A2A_DAEMON_SOFT_ERRORS.some((s) => error.includes(s))) return { kind: 'unavailable' };
@@ -62,6 +98,41 @@ async function daemonTaskRpc(
     // 파이프 단절/타임아웃 — 렌더러 폴백(soft).
     return { kind: 'unavailable' };
   }
+}
+
+type CallerPane =
+  | { kind: 'resolved'; paneId: string }
+  /** No senderPtyId, or one that is not a terminal in the caller's own workspace. */
+  | { kind: 'absent' }
+  /** The pane tree could not be read: keep the daemon's deferral to the renderer. */
+  | { kind: 'unknown' };
+
+/**
+ * Map the caller's senderPtyId to its pane inside the caller's OWN workspace,
+ * the same resolution the renderer's update path makes (stashed panes count, a
+ * ptyId the workspace does not own is treated as absent).
+ */
+async function resolveCallerPane(
+  getWindow: () => BrowserWindow | null,
+  workspaceId: unknown,
+  senderPtyId: unknown,
+): Promise<CallerPane> {
+  if (typeof senderPtyId !== 'string' || !senderPtyId || typeof workspaceId !== 'string' || !workspaceId) {
+    return { kind: 'absent' };
+  }
+  let panes: unknown;
+  try {
+    panes = await sendToRenderer(getWindow, 'pane.list', { workspaceId, includeStashed: true });
+  } catch {
+    return { kind: 'unknown' };
+  }
+  if (!Array.isArray(panes)) return { kind: 'unknown' };
+  for (const pane of panes) {
+    if (!isRecord(pane) || typeof pane.id !== 'string') continue;
+    const ptys = Array.isArray(pane.surfacePtyIds) ? pane.surfacePtyIds : [];
+    if (ptys.includes(senderPtyId)) return { kind: 'resolved', paneId: pane.id };
+  }
+  return { kind: 'absent' };
 }
 
 /** Validate an RPC-supplied caller pid. Anything non-positive / non-integer is
@@ -289,10 +360,56 @@ export function registerA2aRpc(
     return { mappings, entries, resolved };
   });
 
+  /**
+   * A message from a task's verified sender reopens it when it has ended. The
+   * reopen is committed in the daemon FIRST, then the renderer applies the
+   * daemon's snapshot while it stores the message, so the durable copy and the
+   * cache never disagree about it:
+   *   1. preflight: the renderer runs the call's checks and says whether this
+   *      message would reopen the task (no mutation);
+   *   2. daemon `a2a.task.reopen` (the daemon re-checks the sender itself);
+   *   3. the real call, carrying `daemonReopenedTask`.
+   * A task the daemon does not hold (renderer-local tasks, no daemon) reopens
+   * in the cache alone (`localReopen`). Any other daemon failure refuses the
+   * whole call: nothing is stored, and the sender gets the error to retry.
+   *
+   * Returns the params for the real call, or a response to return as is.
+   */
+  async function prepareReopen(
+    method: 'a2a.task.send' | 'a2a.task.update',
+    params: Record<string, unknown>,
+  ): Promise<{ params: Record<string, unknown> } | { response: unknown }> {
+    const preflight = await sendToRenderer(getWindow, method, { ...params, reopenPreflight: true });
+    if (!isRecord(preflight) || !isRecord(preflight.preflight)) return { response: preflight };
+    if (preflight.preflight.reopen !== true) return { params };
+    const dc = getDaemonClient?.();
+    if (!dc) return { params: { ...params, localReopen: true } };
+    const callerPane = await resolveCallerPane(getWindow, params.workspaceId, params.senderPtyId);
+    let res: unknown;
+    try {
+      res = await dc.rpc('a2a.task.reopen', {
+        taskId: params.taskId,
+        workspaceId: params.workspaceId,
+        ...(callerPane.kind === 'resolved' ? { callerPaneId: callerPane.paneId } : {}),
+      });
+    } catch (err) {
+      return { response: { error: `${method}: could not reopen the ended task (${err instanceof Error ? err.message : String(err)}); nothing was stored, retry` } };
+    }
+    if (isRecord(res) && res.ok === true && isRecord(res.task)) {
+      return { params: { ...params, daemonReopenedTask: res.task } };
+    }
+    const error = isRecord(res) && typeof res.error === 'string' ? res.error : 'daemon rejected';
+    if (error.includes('task not found') || error.includes('task log unavailable')) {
+      return { params: { ...params, localReopen: true } };
+    }
+    return { response: { error: `${method}: could not reopen the ended task (${error}); nothing was stored` } };
+  }
+
   // A2A protocol — whoami/discover/broadcast/skills는 렌더러 소유 그대로.
   router.register('a2a.whoami', (params) => sendToRenderer(getWindow, 'a2a.whoami', params));
   router.register('a2a.discover', (params) => sendToRenderer(getWindow, 'a2a.discover', params));
-  router.register('a2a.broadcast', (params) => sendToRenderer(getWindow, 'a2a.broadcast', params));
+  router.register('a2a.broadcast', (params, ctx) =>
+    sendToRenderer(getWindow, 'a2a.broadcast', withOperatorOrigin(params, ctx)));
   router.register('meta.setSkills', (params) => sendToRenderer(getWindow, 'meta.setSkills', params));
 
   // task.query — 데몬 정본 + 렌더러 캐시 병합(envelope PR4).
@@ -305,6 +422,29 @@ export function registerA2aRpc(
   // artifacts)은 보존한다(§6.F — 증분 히스토리는 아직 데몬 비내구). 데몬-only
   // id(재시작 생존분)는 추가. 데몬 미가용이면 현행 렌더러-only와 동일.
   router.register('a2a.task.query', async (params) => {
+    // view: 'page' (a2a_task_query): each source returns summaries (or the one
+    // named task), and the merged result is paged here — see a2aTaskQueryView.
+    const paged = isPagedTaskQuery(params);
+    const taskId = pagedTaskId(params);
+    const summaries = paged && !taskId;
+    const shape = (result: unknown): unknown => (paged
+      ? shapeTaskQueryResult(filterByStatus(result), {
+        taskId,
+        messageId: typeof params.messageId === 'string' && params.messageId ? params.messageId : undefined,
+        limit: typeof params.limit === 'number' ? params.limit : undefined,
+        cursor: typeof params.cursor === 'string' && params.cursor ? params.cursor : undefined,
+      })
+      : result);
+    const stateOf = (t: Record<string, unknown>): unknown =>
+      (summaries ? t.state : isRecord(t.status) ? t.status.state : undefined);
+    const updatedAtOf = (t: Record<string, unknown>): string =>
+      (summaries ? (typeof t.updatedAt === 'string' ? t.updatedAt : '') : taskUpdatedAt(t));
+    const statusFilter = typeof params.status === 'string' ? params.status : undefined;
+    // A daemon-only answer carries tasks the renderer never filtered.
+    const filterByStatus = (result: unknown): unknown => (
+      statusFilter && isRecord(result) && Array.isArray(result.tasks)
+        ? { ...result, tasks: (result.tasks as Array<Record<string, unknown>>).filter((t) => stateOf(t) === statusFilter) }
+        : result);
     let rendererRes: unknown = null;
     try {
       rendererRes = await sendToRenderer(getWindow, 'a2a.task.query', params);
@@ -327,16 +467,27 @@ export function registerA2aRpc(
     // 태스크를 빼버려 same-id override가 불가능해진다. 데몬은 status 무필터로 받아
     // 병합해 정본을 덮은 뒤, 최종 merged에 status 필터를 적용한다. role(불변)·
     // updatedSince(커서)는 override 문제가 없어 데몬 조회에 유지.
+    // A paged call gets a short daemon deadline: a daemon from before the paged
+    // view answers with every full task, which can outgrow the 1 MiB control
+    // line and be dropped, and waiting out the default 10 s would time out the
+    // caller too. The renderer answer stands in, as for any unavailable daemon.
     const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.query', {
       workspaceId: params.workspaceId,
       ...(typeof params.role === 'string' ? { role: params.role } : {}),
       ...(updatedSince ? { updatedSince } : {}),
-    });
-    if (gate.kind !== 'ok') return rendererRes;
-    const daemonTasks = Array.isArray(gate.result.tasks) ? (gate.result.tasks as Array<Record<string, unknown>>) : [];
+      ...(paged ? { view: 'page', ...(taskId ? { taskId } : {}) } : {}),
+    }, paged ? { timeoutMs: PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS } : {});
+    if (gate.kind !== 'ok') return shape(rendererRes);
+    const rawDaemonTasks = Array.isArray(gate.result.tasks) ? (gate.result.tasks as Array<Record<string, unknown>>) : [];
+    // A daemon from before the paged view ignores it and sends full tasks
+    // (they carry metadata; a summary row does not): summarize them here so
+    // one list never mixes the two shapes.
+    const daemonTasks = summaries
+      ? rawDaemonTasks.map((t) => (isRecord(t.metadata) ? summarizeTask(t) : t))
+      : rawDaemonTasks;
     const rendererOk = isRecord(rendererRes) && Array.isArray(rendererRes.tasks);
     if (!rendererOk) {
-      return { workspaceId: params.workspaceId, tasks: daemonTasks };
+      return shape({ workspaceId: params.workspaceId, tasks: daemonTasks });
     }
     const rendererTasks = (rendererRes as { tasks: Array<Record<string, unknown>> }).tasks;
     const daemonById = new Map(daemonTasks.map((t) => [t.id, t]));
@@ -345,7 +496,8 @@ export function registerA2aRpc(
       if (!dt) return rt;
       // 데몬 정본이 렌더러 캐시보다 최신이면(렌더러가 daemonCommitted 미적용) status/
       // updatedAt을 데몬 값으로 덮되 렌더러 전용 증분(history·artifacts)은 보존.
-      if (taskUpdatedAt(dt) > taskUpdatedAt(rt)) {
+      if (updatedAtOf(dt) > updatedAtOf(rt)) {
+        if (summaries) return { ...rt, state: dt.state, updatedAt: dt.updatedAt };
         const rtMeta = isRecord(rt.metadata) ? rt.metadata : {};
         const dtMeta = isRecord(dt.metadata) ? dt.metadata : {};
         return { ...rt, status: dt.status, metadata: { ...rtMeta, updatedAt: dtMeta.updatedAt } };
@@ -357,18 +509,16 @@ export function registerA2aRpc(
     // 데몬 무필터 조회분(override·append)에 최종 status 필터를 적용한다 —
     // 렌더러는 이미 status로 걸렀지만, 데몬 override로 상태가 바뀐 태스크(stale
     // working→canonical completed)와 데몬-only 추가분은 여기서 걸러져야 한다.
-    const statusFilter = typeof params.status === 'string' ? params.status : undefined;
-    const finalTasks = statusFilter
-      ? merged.filter((t) => (isRecord(t.status) ? t.status.state : undefined) === statusFilter)
-      : merged;
-    return { ...(rendererRes as Record<string, unknown>), tasks: finalTasks };
+    const finalTasks = statusFilter ? merged.filter((t) => stateOf(t) === statusFilter) : merged;
+    return shape({ ...(rendererRes as Record<string, unknown>), tasks: finalTasks });
   });
 
   // task.update — 데몬 정본 게이트 선행(envelope PR4 C12 대칭 경로).
   // 데몬 ok → 렌더러에 daemonCommitted 마커 + committedTask로 verbatim 캐시 적용 +
   // 메시지 배달/이벤트 방출(렌더러 UI 반응성 로직 보존). 데몬 reject → 렌더러
   // 미접촉 반환(재판정 금지). 데몬 unavailable → 현행 렌더러-검증 경로 폴백.
-  router.register('a2a.task.update', async (params) => {
+  router.register('a2a.task.update', async (rawParams, ctx) => {
+    const params = withOperatorOrigin(rawParams, ctx);
     // 메시지 선검증(shared validateMessage — 렌더러와 동일 계약): 데몬 커밋 후
     // 렌더러가 메시지를 거부해 캐시-데몬이 갈라지는 창을 닫는다.
     if (typeof params.message === 'string') {
@@ -376,14 +526,26 @@ export function registerA2aRpc(
         return { error: `a2a.task.update: ${e instanceof Error ? e.message : 'invalid'}` };
       }
     }
+    // External callers must prove their pane to move a pane-pinned task; the
+    // human operator and in-process first-party lanes are trusted as before.
+    const trustedLane = ctx?.operator === true || (ctx?.firstParty === true && !isHostedCaller(ctx));
+    params.requirePaneIdentity = !trustedLane;
     if (typeof params.status === 'string') {
+      const callerPane = await resolveCallerPane(getWindow, params.workspaceId, params.senderPtyId);
       const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.update', {
         taskId: params.taskId,
         workspaceId: params.workspaceId,
         status: params.status,
-        // S-C2: 페인 신원 주장 여부를 데몬에 전달 — 페인 핀 태스크는 soft-defer로
-        // 렌더러 페인 게이트에 판정을 되돌린다(ptyId→pane 해석은 렌더러 소유).
-        ...(typeof params.senderPtyId === 'string' ? { senderPtyId: params.senderPtyId } : {}),
+        // S-C2: the daemon cannot map a ptyId to a pane, so main resolves it here
+        // and the daemon runs the pane gate itself. Without this, every update
+        // from an MCP agent on a pane-pinned task was deferred to the renderer
+        // cache only, and the durable copy stayed `submitted`.
+        ...(callerPane.kind === 'resolved'
+          ? { senderPtyId: params.senderPtyId, callerPaneId: callerPane.paneId }
+          : callerPane.kind === 'unknown' && typeof params.senderPtyId === 'string'
+            ? { senderPtyId: params.senderPtyId }
+            : {}),
+        ...(callerPane.kind === 'absent' && !trustedLane ? { requirePaneIdentity: true } : {}),
         ...(params.evidence !== undefined ? { evidence: params.evidence } : {}),
         // §4 멱등(리뷰 codex): 파이프 호출자의 키를 데몬까지 전달한다 — 없으면 커밋 후
         // 응답 유실 재시도가 캐시 미스 → invalid transition(completed->completed)으로 변질.
@@ -398,6 +560,13 @@ export function registerA2aRpc(
         });
       }
       // unavailable → 폴백(아래 공통 경로)
+      return sendToRenderer(getWindow, 'a2a.task.update', params);
+    }
+    // Message-only update: may reopen an ended task (daemon first).
+    if (typeof params.message === 'string') {
+      const prepared = await prepareReopen('a2a.task.update', params);
+      if ('response' in prepared) return prepared.response;
+      return sendToRenderer(getWindow, 'a2a.task.update', prepared.params);
     }
     return sendToRenderer(getWindow, 'a2a.task.update', params);
   });
@@ -419,7 +588,7 @@ export function registerA2aRpc(
     // its confinement: the relaxation is keyed on the binding naming the
     // caller's own workspace, so a brain that could still name a different
     // `workspaceId` on the wire would carry its privilege into someone else's.
-    const sendParams: Record<string, unknown> = { ...params };
+    let sendParams: Record<string, unknown> = withOperatorOrigin(params, ctx);
     delete sendParams.commanderWorkspaceId;
     if (ctx?.commanderWorkspace) {
       sendParams.commanderWorkspaceId = ctx.commanderWorkspace;
@@ -431,6 +600,12 @@ export function registerA2aRpc(
     // answers first. Plain sends keep the default: nothing in them waits on a
     // person.
     const awaitsApproval = params.execute === true && !params.taskId;
+    // A reply may reopen an ended task: commit that in the daemon first.
+    if (params.taskId && params.execute !== true) {
+      const prepared = await prepareReopen('a2a.task.send', sendParams);
+      if ('response' in prepared) return prepared.response;
+      sendParams = prepared.params;
+    }
     const result = awaitsApproval
       ? await sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: EXECUTE_SEND_MAIN_TIMEOUT_MS })
       : await sendToRenderer(getWindow, 'a2a.task.send', sendParams);

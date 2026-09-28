@@ -23,12 +23,14 @@
 
 import * as crypto from 'crypto';
 import type {
+  RemoteErrorReason,
   RemoteHost,
   RemotePaneSummary,
   RemoteWorkspaceSummary,
   RemoteWorkspacesResponse,
 } from '../../shared/remoteHosts';
 import { isRemoteAgentStatus, parseRemoteResumeInfo } from '../../shared/remoteHosts';
+import { isCredentialSafeOriginString } from '../../shared/remotePairInput';
 
 export interface RemoteMetaEvent {
   attachId: string;
@@ -63,6 +65,76 @@ export interface RemoteExitEvent {
 export interface RemoteErrorEvent {
   attachId: string;
   message: string;
+  /** Set when the stream ended because the host rejected the credential —
+   *  the renderer offers "pair again" instead of a generic disconnect. */
+  reason?: RemoteErrorReason;
+}
+
+/**
+ * The host answered 401 with one of its own credential errors: it no longer
+ * accepts this computer's credential — an unknown or revoked device
+ * (`{ error: 'unauthorized', reason }`) or a grant that expired mid-request
+ * (`{ error: 'authorization-expired' }`). A 401 WITHOUT that body came from
+ * something in front of the host (a proxy, a captive portal) and stays an
+ * ordinary, retryable error. The host's 403s are feature gates
+ * (`--allow-input`, transcript access, host allowlist) and are never this:
+ * "this host is read-only" must not read as "pair again".
+ */
+export class RemoteAuthRejectedError extends Error {
+  readonly reason = 'auth-rejected' as const;
+  constructor(operation: string) {
+    super(`${operation} failed: the host no longer accepts this computer's credential`);
+    this.name = 'RemoteAuthRejectedError';
+  }
+}
+
+export function isRemoteAuthRejected(err: unknown): err is RemoteAuthRejectedError {
+  return err instanceof RemoteAuthRejectedError;
+}
+
+/**
+ * The host was registered over plain http to ANOTHER machine (before pairing
+ * required HTTPS). Its bearer token would cross the network in the clear, so
+ * no request carrying it is sent — fail closed, before any I/O. Never
+ * auto-upgraded to https: that is a different origin, and the credential was
+ * issued for this one. The way back is to pair again over HTTPS.
+ */
+export class RemoteInsecureTransportError extends Error {
+  readonly reason = 'insecure-transport' as const;
+  constructor(operation: string) {
+    super(`${operation} refused: this host needs HTTPS — re-pair over HTTPS`);
+    this.name = 'RemoteInsecureTransportError';
+  }
+}
+
+export function isRemoteInsecureTransport(err: unknown): err is RemoteInsecureTransportError {
+  return err instanceof RemoteInsecureTransportError;
+}
+
+/** The `error` values the host's web server puts on a credential 401. */
+const HOST_CREDENTIAL_ERRORS: ReadonlySet<string> = new Set(['unauthorized', 'authorization-expired']);
+
+type ErrorBody = { error?: unknown; detail?: unknown } | null;
+
+/** Reads a failed response's JSON body once; null when it is not JSON. */
+async function readErrorBody(res: Response): Promise<ErrorBody> {
+  try {
+    const body = (await res.json()) as unknown;
+    return typeof body === 'object' && body !== null ? (body as ErrorBody) : null;
+  } catch {
+    return null;
+  }
+}
+
+function isCredentialRejection(status: number, body: ErrorBody): boolean {
+  return status === 401 && typeof body?.error === 'string' && HOST_CREDENTIAL_ERRORS.has(body.error);
+}
+
+/** The host's own wording for a failure, else `fallback`. */
+function errorMessage(body: ErrorBody, fallback: string): string {
+  if (typeof body?.detail === 'string' && body.detail) return body.detail;
+  if (typeof body?.error === 'string' && body.error) return body.error;
+  return fallback;
 }
 
 export interface RemotePaneEvents {
@@ -112,6 +184,13 @@ interface Attachment {
   reconnectAttempt: number;
   reconnectTimer: ReturnType<typeof setTimeout> | null;
   detached: boolean;
+  /** Bumped by `refresh`: a stream opened under an older generation is
+   *  superseded, so its late frames and its end must not act on the attach. */
+  generation: number;
+  /** onError already told this mirror the host rejected the credential. */
+  authRejectedReported?: boolean;
+  /** An SSE response is open and being read right now (not reconnecting). */
+  streamOpen?: boolean;
 }
 
 interface WriteQueueState {
@@ -209,10 +288,26 @@ export class RemoteHostClient implements RemotePaneEvents {
   private dataCbs: Array<(e: RemoteDataEvent) => void> = [];
   private exitCbs: Array<(e: RemoteExitEvent) => void> = [];
   private errorCbs: Array<(e: RemoteErrorEvent) => void> = [];
+  /** Set once the host refuses this credential; see `rejected`. */
+  private authRejected = false;
+
+  /** Credentials may not be sent to this origin (see RemoteInsecureTransportError). */
+  private readonly insecure: boolean;
 
   constructor(host: RemoteHost, fetchImpl: typeof fetch = fetch) {
     this.host = host;
     this.fetchImpl = fetchImpl;
+    this.insecure = !isCredentialSafeOriginString(host.origin);
+  }
+
+  /** Whether every token-carrying call to this host is refused. */
+  isInsecure(): boolean {
+    return this.insecure;
+  }
+
+  /** Throws before any I/O when the token may not be sent to this host. */
+  private assertSecure(operation: string): void {
+    if (this.insecure) throw new RemoteInsecureTransportError(operation);
   }
 
   onMeta(cb: (e: RemoteMetaEvent) => void): void {
@@ -248,6 +343,7 @@ export class RemoteHostClient implements RemotePaneEvents {
    * it the same way `REMOTE_PANE_ATTACH` attaches to any other remote pane.
    */
   async createWorkspace(workspaceId: string, cwd?: string): Promise<{ sessionId: string }> {
+    this.assertSecure('createWorkspace');
     const res = await this.fetchImpl(`${this.host.origin}/api/sessions`, {
       method: 'POST',
       headers: { ...this.authHeaders(), 'Content-Type': 'application/json' },
@@ -256,15 +352,9 @@ export class RemoteHostClient implements RemotePaneEvents {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!res.ok) {
-      let message = `createWorkspace failed: HTTP ${res.status}`;
-      try {
-        const parsed = (await res.json()) as { error?: string; detail?: string };
-        if (parsed?.detail) message = parsed.detail;
-        else if (parsed?.error) message = parsed.error;
-      } catch {
-        /* body wasn't JSON — fall back to the generic message */
-      }
-      throw new Error(message);
+      const body = await readErrorBody(res);
+      if (isCredentialRejection(res.status, body)) throw this.rejected('createWorkspace');
+      throw new Error(errorMessage(body, `createWorkspace failed: HTTP ${res.status}`));
     }
     let body: unknown;
     try {
@@ -296,6 +386,7 @@ export class RemoteHostClient implements RemotePaneEvents {
    * typing is.
    */
   async closeSession(sessionId: string): Promise<void> {
+    this.assertSecure('closeSession');
     const res = await this.fetchImpl(
       `${this.host.origin}/api/sessions/${encodeURIComponent(sessionId)}`,
       {
@@ -306,15 +397,9 @@ export class RemoteHostClient implements RemotePaneEvents {
       },
     );
     if (res.ok || res.status === 404) return;
-    let message = `closeSession failed: HTTP ${res.status}`;
-    try {
-      const parsed = (await res.json()) as { error?: string; detail?: string };
-      if (parsed?.detail) message = parsed.detail;
-      else if (parsed?.error) message = parsed.error;
-    } catch {
-      /* body wasn't JSON — fall back to the generic message */
-    }
-    throw new Error(message);
+    const body = await readErrorBody(res);
+    if (isCredentialRejection(res.status, body)) throw this.rejected('closeSession');
+    throw new Error(errorMessage(body, `closeSession failed: HTTP ${res.status}`));
   }
 
   /**
@@ -341,6 +426,7 @@ export class RemoteHostClient implements RemotePaneEvents {
     cols: number,
     rows: number,
   ): Promise<{ ok: true; cols: number; rows: number } | { ok: false; reason: string }> {
+    if (this.insecure) return { ok: false, reason: 'insecure-transport' };
     let res: Response;
     try {
       res = await this.fetchImpl(
@@ -362,6 +448,10 @@ export class RemoteHostClient implements RemotePaneEvents {
     } catch {
       body = null;
     }
+    if (isCredentialRejection(res.status, body as ErrorBody)) {
+      this.rejected('resizeSession');
+      return { ok: false, reason: 'auth-rejected' };
+    }
     if (!res.ok) {
       const parsed = body as { error?: string; detail?: string } | null;
       return { ok: false, reason: parsed?.error ?? parsed?.detail ?? `HTTP ${res.status}` };
@@ -374,6 +464,7 @@ export class RemoteHostClient implements RemotePaneEvents {
   }
 
   async listWorkspaces(): Promise<RemoteWorkspacesResponse> {
+    this.assertSecure('listWorkspaces');
     const res = await this.fetchImpl(`${this.host.origin}/api/workspaces`, {
       headers: this.authHeaders(),
       // Bearer-credentialed request: never silently follow a redirect —
@@ -383,7 +474,10 @@ export class RemoteHostClient implements RemotePaneEvents {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!res.ok) {
-      throw new Error(`listWorkspaces failed: HTTP ${res.status}`);
+      // The host's own wording when it gives one, like the other calls here.
+      const body = await readErrorBody(res);
+      if (isCredentialRejection(res.status, body)) throw this.rejected('listWorkspaces');
+      throw new Error(errorMessage(body, `listWorkspaces failed: HTTP ${res.status}`));
     }
     let body: unknown;
     try {
@@ -404,6 +498,7 @@ export class RemoteHostClient implements RemotePaneEvents {
       reconnectAttempt: 0,
       reconnectTimer: null,
       detached: false,
+      generation: 0,
     };
     this.attachments.set(attachId, attachment);
     this.openStream(attachment);
@@ -422,6 +517,44 @@ export class RemoteHostClient implements RemotePaneEvents {
     this.attachments.delete(attachId);
   }
 
+  /**
+   * Re-open the attach's stream so the host sends a fresh meta + snapshot.
+   *
+   * For a second viewer that joins an existing attach in the same renderer
+   * (the attach is shared per host + session): the first viewer already
+   * consumed the attach's meta, so without a fresh one the newcomer never
+   * learns the grid or sees what is on screen. Every viewer of the attach
+   * repaints from the new snapshot, which is the price of sharing one stream.
+   */
+  refresh(attachId: string): void {
+    const attachment = this.attachments.get(attachId);
+    if (!attachment || attachment.detached) return;
+    if (attachment.reconnectTimer) {
+      clearTimeout(attachment.reconnectTimer);
+      attachment.reconnectTimer = null;
+    }
+    attachment.generation += 1;
+    attachment.controller.abort();
+    attachment.controller = new AbortController();
+    attachment.reconnectAttempt = 0;
+    this.openStream(attachment);
+  }
+
+  /** Streams that are open and being read right now — what makes the hub
+   *  say "connected". An attachment waiting to reconnect does not count. */
+  liveAttachmentCount(): number {
+    let n = 0;
+    for (const attachment of this.attachments.values()) {
+      if (!attachment.detached && attachment.streamOpen === true) n += 1;
+    }
+    return n;
+  }
+
+  /** Whether the host has refused this credential (the latch `rejected` sets). */
+  isAuthRejected(): boolean {
+    return this.authRejected;
+  }
+
   detachAll(): void {
     for (const id of [...this.attachments.keys()]) {
       this.detach(id);
@@ -429,6 +562,10 @@ export class RemoteHostClient implements RemotePaneEvents {
   }
 
   write(attachId: string, utf8: string): Promise<void> {
+    // The host has refused this credential: nothing typed can reach it until
+    // the host is paired again (which builds a fresh client).
+    if (this.authRejected) return Promise.reject(new RemoteAuthRejectedError('write'));
+    if (this.insecure) return Promise.reject(new RemoteInsecureTransportError('write'));
     const attachment = this.attachments.get(attachId);
     const sessionId = attachment ? attachment.sessionId : attachId;
     let queue = this.writeQueues.get(sessionId);
@@ -468,14 +605,17 @@ export class RemoteHostClient implements RemotePaneEvents {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       if (!res.ok) {
-        let message = `write failed: HTTP ${res.status}`;
-        try {
-          const parsed = (await res.json()) as { error?: string };
-          if (parsed?.error) message = parsed.error;
-        } catch {
-          /* body wasn't JSON — fall back to the generic message */
+        const body = await readErrorBody(res);
+        if (isCredentialRejection(res.status, body)) {
+          const err = this.rejected('write');
+          // Drop what queued up behind this POST too: none of it can land.
+          const queued = queue.waiters;
+          queue.pending = [];
+          queue.waiters = [];
+          for (const w of [...waiters, ...queued]) w.reject(err);
+          return;
         }
-        const err = new Error(message);
+        const err = new Error(typeof body?.error === 'string' && body.error ? body.error : `write failed: HTTP ${res.status}`);
         for (const w of waiters) w.reject(err);
         return;
       }
@@ -486,9 +626,29 @@ export class RemoteHostClient implements RemotePaneEvents {
     } finally {
       queue.inFlight = false;
       // More writes may have accumulated while this POST was in flight.
-      if (queue.pending.length > 0) {
+      if (queue.pending.length > 0 && !this.authRejected) {
         this.scheduleWriteFlush(sessionId, queue);
       }
+    }
+  }
+
+  /**
+   * Latch the host's refusal of this credential and tell every attached
+   * mirror once. Returns the error for the caller to throw or report. A
+   * re-pair replaces the whole client, which is what clears the latch.
+   */
+  private rejected(operation: string): RemoteAuthRejectedError {
+    const err = new RemoteAuthRejectedError(operation);
+    this.authRejected = true;
+    for (const attachment of this.attachments.values()) this.reportAuthRejected(attachment, err);
+    return err;
+  }
+
+  private reportAuthRejected(attachment: Attachment, err: RemoteAuthRejectedError): void {
+    if (attachment.authRejectedReported || attachment.detached) return;
+    attachment.authRejectedReported = true;
+    for (const cb of this.errorCbs) {
+      cb({ attachId: attachment.attachId, message: err.message, reason: err.reason });
     }
   }
 
@@ -502,6 +662,19 @@ export class RemoteHostClient implements RemotePaneEvents {
   }
 
   private async runStream(attachment: Attachment): Promise<void> {
+    const generation = attachment.generation;
+    const superseded = (): boolean => attachment.detached || attachment.generation !== generation;
+    if (this.insecure) {
+      // No stream, no reconnect loop: report it once and leave the attachment
+      // idle until it is detached or the host is paired again over HTTPS.
+      // Deferred a tick so a caller that subscribes right after attach()
+      // still hears it.
+      await Promise.resolve();
+      if (superseded()) return;
+      const err = new RemoteInsecureTransportError('stream');
+      for (const cb of this.errorCbs) cb({ attachId: attachment.attachId, message: err.message, reason: err.reason });
+      return;
+    }
     let res: Response;
     try {
       res = await this.fetchImpl(
@@ -512,35 +685,57 @@ export class RemoteHostClient implements RemotePaneEvents {
         { headers: this.authHeaders(), redirect: 'error', signal: attachment.controller.signal },
       );
     } catch (err) {
+      if (superseded()) return;
       this.scheduleReconnect(attachment, err);
       return;
     }
-    if (attachment.detached) return;
+    if (superseded()) return;
+    if (res.status === 401) {
+      const body = await readErrorBody(res);
+      if (superseded()) return;
+      if (isCredentialRejection(res.status, body)) {
+        // The host has said no to this credential. Retrying cannot change
+        // that answer, so no backoff loop: report it once, now, and leave the
+        // attachment idle until it is detached or the host is paired again.
+        this.rejected('stream');
+        this.reportAuthRejected(attachment, new RemoteAuthRejectedError('stream'));
+        return;
+      }
+      this.scheduleReconnect(attachment, new Error('stream failed: HTTP 401'));
+      return;
+    }
     if (!res.ok || !res.body) {
       this.scheduleReconnect(attachment, new Error(`stream failed: HTTP ${res.status}`));
       return;
     }
 
+    attachment.streamOpen = true;
     try {
-      await this.pumpStream(attachment, res.body);
-      if (attachment.detached) return;
+      await this.pumpStream(attachment, res.body, superseded);
+      attachment.streamOpen = false;
+      if (superseded()) return;
       // The stream ended without an explicit abort — treat as a drop and
       // reconnect the same as a network error.
       this.scheduleReconnect(attachment, new Error('stream closed'));
     } catch (err) {
-      if (attachment.detached) return;
+      attachment.streamOpen = false;
+      if (superseded()) return;
       this.scheduleReconnect(attachment, err);
     }
   }
 
-  private async pumpStream(attachment: Attachment, body: ReadableStream<Uint8Array>): Promise<void> {
+  private async pumpStream(
+    attachment: Attachment,
+    body: ReadableStream<Uint8Array>,
+    superseded: () => boolean,
+  ): Promise<void> {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     try {
       for (;;) {
         const { done, value } = await reader.read();
-        if (done) return;
+        if (done || superseded()) return;
         // Reset the backoff schedule only once a frame has actually
         // arrived — resetting it right after headers (connect-only, no
         // data) would let a server that accepts the request then drops
@@ -553,7 +748,7 @@ export class RemoteHostClient implements RemotePaneEvents {
           const rawFrame = buffer.slice(0, sepIndex);
           buffer = buffer.slice(sepIndex + 2);
           this.handleFrame(attachment, rawFrame);
-          if (attachment.detached) return;
+          if (superseded()) return;
         }
       }
     } finally {

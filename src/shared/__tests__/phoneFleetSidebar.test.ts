@@ -99,6 +99,72 @@ describe('parsePhoneSidebarSnapshot', () => {
     expect(summaries.get('owner')!.tasks).toBe(nestedUnderOwner);
   });
 
+  it('parses the pane placement pairwise and drops only a bad paneId or placement', () => {
+    const task = (extra: Record<string, unknown>, nested = true) => ({ ownerWorkspaceId: 'ws-1', detached: false, nested, ...extra });
+    const drops = createSidebarDropLog();
+    const parsed = parsePhoneSidebarSnapshot({
+      activeWorkspaceId: null,
+      workspaces: [
+        { id: 'a', order: 0, pinned: false, task: task({ paneGroup: 'pane', requesterPaneId: 'pane-1' }) },
+        { id: 'b', order: 1, pinned: false, task: task({ paneGroup: 'closedPane' }) },
+        // 'pane' without the pane it names, a reserved id, an unknown group, a non-nested task.
+        { id: 'c', order: 2, pinned: false, task: task({ paneGroup: 'pane' }) },
+        { id: 'd', order: 3, pinned: false, task: task({ paneGroup: 'pane', requesterPaneId: '__proto__' }) },
+        { id: 'e', order: 4, pinned: false, task: task({ paneGroup: 'workspace' }) },
+        { id: 'f', order: 5, pinned: false, task: task({ paneGroup: 'pane', requesterPaneId: 'pane-1' }, false) },
+      ],
+      panes: [
+        { ptyId: 'pty-1', workspaceId: 'ws-1', paneId: 'pane-1' },
+        { ptyId: 'pty-2', workspaceId: 'ws-1', paneId: 'x'.repeat(PHONE_SIDEBAR_LIMITS.id + 1), paneName: 'w1-2' },
+        { ptyId: 'pty-3', workspaceId: 'ws-1', paneId: 'constructor' },
+      ],
+    }, drops.report)!;
+    const byId = new Map(parsed.workspaces.map((w) => [w.id, w.task]));
+    expect(byId.get('a')).toMatchObject({ paneGroup: 'pane', requesterPaneId: 'pane-1' });
+    expect(byId.get('b')).toMatchObject({ paneGroup: 'closedPane' });
+    for (const id of ['c', 'd', 'e', 'f']) {
+      expect(byId.get(id)).toBeDefined();
+      expect(byId.get(id)).not.toHaveProperty('paneGroup');
+      expect(byId.get(id)).not.toHaveProperty('requesterPaneId');
+    }
+    expect(parsed.panes).toEqual([
+      { ptyId: 'pty-1', workspaceId: 'ws-1', paneId: 'pane-1' },
+      { ptyId: 'pty-2', workspaceId: 'ws-1', paneName: 'w1-2' },
+      { ptyId: 'pty-3', workspaceId: 'ws-1' },
+    ]);
+    expect(drops.summary()).toBe('pane.paneId×2, workspace.task.paneGroup×4');
+  });
+
+  it('phoneTaskNesting files a task under a pane only when a listed session of its owner carries that pane', () => {
+    const task = (paneGroup?: string, requesterPaneId?: string, owner = 'owner', nested = true) => ({
+      ownerWorkspaceId: owner, detached: false, nested,
+      ...(paneGroup ? { paneGroup } : {}), ...(requesterPaneId ? { requesterPaneId } : {}),
+    });
+    const rows = [
+      { id: 'owner', order: 0, pinned: false },
+      { id: 'other', order: 1, pinned: false },
+      { id: 'live', order: 2, pinned: false, task: task('pane', 'pane-a') },
+      { id: 'closed', order: 3, pinned: false, task: task('closedPane') },
+      // The requesting pane lives on the desktop but has no listed session (browser tabs only).
+      { id: 'unlisted', order: 4, pinned: false, task: task('pane', 'pane-browser') },
+      // Names a pane the reply lists, but under another workspace.
+      { id: 'foreign', order: 5, pinned: false, task: task('pane', 'pane-other') },
+      // A desktop build without the split.
+      { id: 'old', order: 6, pinned: false, task: task() },
+      { id: 'detached', order: 7, pinned: false, task: { ...task('pane', 'pane-a'), detached: true, nested: false } },
+      { id: 'orphan', order: 8, pinned: false, task: task('pane', 'pane-a', 'gone-owner') },
+    ] as Parameters<typeof phoneTaskNesting>[0];
+    const listed = new Set(rows.map((r) => r.id));
+    const panes = new Map([['pane-a', 'owner'], ['pane-other', 'other']]);
+    const { placement } = phoneTaskNesting(rows, listed, panes);
+    expect(Object.fromEntries(placement)).toEqual({
+      live: { nestedUnder: 'pane', requesterPaneId: 'pane-a' },
+      closed: { nestedUnder: 'closedPane' },
+    });
+    // No pane map at all (panes cut for size): only the closed-pane verdict survives.
+    expect(Object.fromEntries(phoneTaskNesting(rows, listed).placement)).toEqual({ closed: { nestedUnder: 'closedPane' } });
+  });
+
   it('caps the row counts', () => {
     const many = Array.from({ length: PHONE_SIDEBAR_LIMITS.panes + 10 }, (_, i) => ({ ptyId: `p${i}`, workspaceId: 'w' }));
     expect(parsePhoneSidebarSnapshot({ activeWorkspaceId: null, workspaces: [], panes: many })?.panes).toHaveLength(PHONE_SIDEBAR_LIMITS.panes);

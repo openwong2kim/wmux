@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 // Aliased: the Escape-key effect below binds a DOM listener and needs the
 // global KeyboardEvent, so React's must not shadow it.
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
@@ -6,18 +7,20 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
-import Dialog, { DialogBody, DialogHeader } from '../ui/Dialog';
+import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import SegmentedControl from '../ui/SegmentedControl';
 import { FOCUS_RING } from '../focusRing';
-import { IconPlus, IconX } from '../icons';
+import { IconCheck, IconPlus, IconX } from '../icons';
+import RemoteRepairNotice from '../Remote/RemoteRepairNotice';
 import { remoteAttachmentKey } from '../../../shared/remoteHosts';
 import type { PairFailureReason, RemoteHostPublic, RemoteWorkspaceSummary } from '../../../shared/remoteHosts';
 
 type AddHostMode = 'pair' | 'url';
 
 /** Maps a REMOTE_HOSTS_PAIR failure reason to its translated message —
- *  i18n lives here, renderer-side, not in main. */
-function pairReasonMessage(t: ReturnType<typeof useT>, reason: PairFailureReason, attemptsLeft?: number): string {
+ *  i18n lives here, renderer-side, not in main. Shared with the Remote hub's
+ *  pairing field so the two surfaces cannot word a failure differently. */
+export function pairReasonMessage(t: ReturnType<typeof useT>, reason: PairFailureReason, attemptsLeft?: number): string {
   switch (reason) {
     case 'invalid-origin': return t('remote.pairInvalidOrigin');
     case 'already-registered': return t('remote.pairAlreadyRegistered');
@@ -33,7 +36,16 @@ function pairReasonMessage(t: ReturnType<typeof useT>, reason: PairFailureReason
 
 interface AttachRemoteModalProps {
   onClose: () => void;
+  /** Open straight into re-pairing this host: its credential was rejected
+   *  and the user already chose "Pair again" somewhere else. */
+  repairHostId?: string;
+  /** Open with this host already selected — the Remote hub hands a clicked
+   *  host over here to list and attach its workspaces. */
+  initialHostId?: string;
 }
+
+/** How long the "Attached <name>" confirmation stays under the list. */
+const ATTACHED_CONFIRM_MS = 2500;
 
 /**
  * Left: registered hosts + an "Add host" row. Right: the selected host's
@@ -41,9 +53,17 @@ interface AttachRemoteModalProps {
  * field — the URL embeds the bearer token, so it must never be echoed
  * anywhere (this input, toasts, or error strings).
  */
-export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
+export default function AttachRemoteModal({ onClose, repairHostId, initialHostId }: AttachRemoteModalProps) {
   const t = useT();
   const attachRemoteWorkspace = useStore((s) => s.attachRemoteWorkspace);
+  // Every row the store holds for a (host, workspace) — including the
+  // invisible one a remote-terminal pane keeps (#1329): attaching over it
+  // would open a second mirror of streams that are already open.
+  const attachedKeyList = useStore(useShallow((s) => s.remoteWorkspaces.map((w) => w.key)));
+  const attachedKeys = useMemo(() => new Set(attachedKeyList), [attachedKeyList]);
+  const [attachedConfirm, setAttachedConfirm] = useState<string | null>(null);
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (confirmTimer.current) clearTimeout(confirmTimer.current); }, []);
 
   const [hosts, setHosts] = useState<RemoteHostPublic[]>([]);
   const [loadingHosts, setLoadingHosts] = useState(true);
@@ -58,6 +78,13 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
   const [workspaces, setWorkspaces] = useState<RemoteWorkspaceSummary[]>([]);
   const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);
   const [workspacesError, setWorkspacesError] = useState<string | null>(null);
+  /** The host that answered 401 — shown as a re-pair notice, not an error.
+   *  Keyed by host so a late answer about one host can never flag another. */
+  const [authRejectedHostId, setAuthRejectedHostId] = useState<string | null>(null);
+  /** The host whose credential the pair form will replace, once a code works. */
+  const [repairTarget, setRepairTarget] = useState<RemoteHostPublic | null>(null);
+  /** Bumped to focus the code field after the pair form has rendered. */
+  const [focusCodeSeq, setFocusCodeSeq] = useState(0);
 
   const [addMode, setAddMode] = useState<AddHostMode>('pair');
 
@@ -105,6 +132,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     setSelectedHostId(hostId);
     setWorkspaces([]);
     setWorkspacesError(null);
+    setAuthRejectedHostId(null);
     setCreateWorkspaceError(null);
     setLoadingWorkspaces(true);
     const remote = window.electronAPI?.remote;
@@ -118,6 +146,9 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
         // workspacesList call IS that probe, so refetch hosts here to pick up
         // the freshened flag before deciding the read-only tag below.
         await refreshHosts();
+      } else if (res.reason === 'auth-rejected') {
+        setAuthRejectedHostId(hostId);
+        useStore.getState().setRemoteHostAuthRejected(hostId, true);
       } else {
         setWorkspacesError(res.error);
       }
@@ -185,14 +216,29 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     if (!remote || !pairOrigin.trim() || !pairCode.trim()) return;
     setPairing(true);
     setPairError(null);
+    // A re-pair replaces the rejected host's credential in place, so its id —
+    // and every attachment keyed by it — survives. Nothing was removed before
+    // this point: closing the dialog or a wrong code leaves the host as it was.
+    const replacing = repairTarget;
     try {
-      const res = await remote.hostsPair(pairOrigin.trim(), pairCode.trim(), pairLabel.trim() || undefined);
+      const res = await remote.hostsPair(
+        pairOrigin.trim(), pairCode.trim(), pairLabel.trim() || undefined,
+        ...(replacing ? [replacing.id] : []),
+      );
       if (res.ok) {
         setPairOrigin('');
         setPairCode('');
         setPairLabel('');
         await refreshHosts();
-        autoSelect(res.host.id);
+        if (replacing) {
+          setRepairTarget(null);
+          // The rows come back on their own: clearing the flag re-polls the
+          // host now, and the fresh answer re-attaches its mirrors.
+          useStore.getState().setRemoteHostAuthRejected(res.host.id, false);
+          void selectHost(res.host.id);
+        } else {
+          autoSelect(res.host.id);
+        }
       } else {
         setPairError(pairReasonMessage(t, res.reason, res.attemptsLeft));
       }
@@ -204,7 +250,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     } finally {
       setPairing(false);
     }
-  }, [pairOrigin, pairCode, pairLabel, refreshHosts, autoSelect, t]);
+  }, [pairOrigin, pairCode, pairLabel, repairTarget, refreshHosts, autoSelect, selectHost, t]);
 
   const handleRemoveHost = useCallback(async (hostId: string) => {
     const remote = window.electronAPI?.remote;
@@ -226,6 +272,51 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     }
   }, [refreshHosts, selectedHostId]);
 
+  const pairCodeRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (focusCodeSeq > 0) pairCodeRef.current?.focus();
+  }, [focusCodeSeq]);
+
+  /**
+   * Start replacing a credential the host no longer accepts: land on "Pair
+   * with code" with its address and name filled in, so the only thing left to
+   * type is the code from the other machine. Nothing is removed here — the
+   * old credential is replaced only once a new pairing succeeds.
+   */
+  const handleRepair = useCallback((host: RemoteHostPublic) => {
+    setRepairTarget(host);
+    setAddMode('pair');
+    setPairOrigin(host.origin);
+    setPairLabel(host.label);
+    setPairCode('');
+    setPairError(null);
+    setFocusCodeSeq((n) => n + 1);
+  }, []);
+
+  // Opened for a repair: select that host and pre-fill, once. AppLayout keys
+  // this dialog by the host id, so a different host starts from a clean mount.
+  const repairStarted = useRef(false);
+  useEffect(() => {
+    if (!repairHostId || loadingHosts || repairStarted.current) return;
+    const host = hosts.find((h) => h.id === repairHostId);
+    if (!host) return;
+    repairStarted.current = true;
+    void selectHost(host.id);
+    handleRepair(host);
+  }, [repairHostId, loadingHosts, hosts, handleRepair, selectHost]);
+
+  // Opened from the Remote hub on a host: show its workspaces straight away.
+  const initialSelected = useRef(false);
+  useEffect(() => {
+    if (!initialHostId || repairHostId || loadingHosts || initialSelected.current) return;
+    if (!hosts.some((h) => h.id === initialHostId)) return;
+    initialSelected.current = true;
+    void selectHost(initialHostId);
+  }, [initialHostId, repairHostId, loadingHosts, hosts, selectHost]);
+
+  // Attaching keeps the modal open: attaching several workspaces used to mean
+  // reopening it for each one. The row flips to "Attached" in place and a
+  // short confirmation says which one landed; the user closes it when done.
   const handleAttach = useCallback((ws: RemoteWorkspaceSummary) => {
     const host = hosts.find((h) => h.id === selectedHostId);
     if (!host) return;
@@ -237,8 +328,10 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
       name: ws.name,
       panes: ws.panes,
     });
-    onClose();
-  }, [hosts, selectedHostId, attachRemoteWorkspace, onClose]);
+    setAttachedConfirm(ws.name || ws.id.slice(0, 8));
+    if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    confirmTimer.current = setTimeout(() => setAttachedConfirm(null), ATTACHED_CONFIRM_MS);
+  }, [hosts, selectedHostId, attachRemoteWorkspace]);
 
   /**
    * Bootstraps the FIRST pane of a brand-new workspace on the selected host
@@ -255,6 +348,11 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
     try {
       const workspaceId = crypto.randomUUID();
       const res = await remote.workspaceCreate(host.id, workspaceId);
+      if (!res.ok && res.reason === 'auth-rejected') {
+        useStore.getState().setRemoteHostAuthRejected(host.id, true);
+        setAuthRejectedHostId(host.id);
+        return;
+      }
       if (!res.ok) {
         setCreateWorkspaceError(t('remote.createWorkspaceFailed', { error: res.error }));
         return;
@@ -276,6 +374,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
   }, [hosts, selectedHostId, attachRemoteWorkspace, onClose, t]);
 
   const selectedHost = hosts.find((h) => h.id === selectedHostId) ?? null;
+  const authRejected = selectedHost !== null && authRejectedHostId === selectedHost.id;
 
   // Single source for "can this form submit". The Enter guard and the button's
   // disabled prop read the same const so they cannot drift into Enter firing a
@@ -370,6 +469,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                     code, and it is already displayed openly on the remote
                     screen, unlike a long-lived bearer token. */}
                 <Input
+                  ref={pairCodeRef}
                   type="text"
                   placeholder={t('remote.pairCode')}
                   value={pairCode}
@@ -446,7 +546,14 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
               {hosts.length === 0 ? t('remote.noHostsHint') : t('remote.selectHostHint')}
             </p>
           )}
-          {selectedHostId && (
+          {selectedHost && authRejected && (
+            <RemoteRepairNotice
+              hostLabel={selectedHost.label || t('remote.hostFallback')}
+              busy={repairTarget?.id === selectedHost.id}
+              onRepair={() => handleRepair(selectedHost)}
+            />
+          )}
+          {selectedHostId && !authRejected && (
             <div className="flex flex-col gap-1">
               <Button
                 size="md"
@@ -467,7 +574,7 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
               would otherwise render as a blank pane with no explanation —
               the workspace list is derived from live panes, not a saved
               registry, so "empty" is a normal state that needs saying. */}
-          {selectedHostId && !loadingWorkspaces && !workspacesError && workspaces.length === 0 && (
+          {selectedHostId && !loadingWorkspaces && !workspacesError && !authRejected && workspaces.length === 0 && (
             <p className={muted}>{t('remote.noWorkspaces')}</p>
           )}
           {selectedHostId && !loadingWorkspaces && !workspacesError && workspaces.length > 0 && (
@@ -479,7 +586,9 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                       {ws.name || ws.id.slice(0, 8)}
                     </p>
                     <p className="ui-row-detail">
-                      {t('remote.paneCount', { count: ws.panes.length })}
+                      {ws.panes.length === 1
+                        ? t('remote.paneCountOne')
+                        : t('remote.paneCount', { count: ws.panes.length })}
                     </p>
                     {selectedHost?.allowInput === false && (
                       <p className="ui-row-detail" style={{ color: 'var(--accent-yellow)' }}>
@@ -487,15 +596,30 @@ export default function AttachRemoteModal({ onClose }: AttachRemoteModalProps) {
                       </p>
                     )}
                   </div>
-                  <Button size="sm" variant="secondary" className="flex-shrink-0" onClick={() => handleAttach(ws)}>
-                    {t('remote.attach')}
-                  </Button>
+                  {selectedHost && attachedKeys.has(remoteAttachmentKey(selectedHost.id, ws.id)) ? (
+                    <span className="flex-shrink-0 inline-flex items-center gap-1 text-[12px] text-[var(--text-muted)]">
+                      <IconCheck size={12} />
+                      {t('remote.attached')}
+                    </span>
+                  ) : (
+                    <Button size="sm" variant="secondary" className="flex-shrink-0" onClick={() => handleAttach(ws)}>
+                      {t('remote.attach')}
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>
           )}
+          <p role="status" className="m-0 min-h-4 text-[11px] leading-4 text-[var(--text-sub)]">
+            {attachedConfirm ? t('remote.attachedConfirm', { name: attachedConfirm }) : ''}
+          </p>
         </div>
       </DialogBody>
+      <DialogFooter className="!pt-4">
+        <Button size="md" variant="secondary" onClick={onClose}>
+          {t('common.done')}
+        </Button>
+      </DialogFooter>
     </Dialog>
   );
 }

@@ -14,6 +14,7 @@ import { workspaceAccountEnv } from './phone/workspaceAccountEnv';
 import { DesktopPhoneBridge } from './phone/DesktopPhoneBridge';
 import { RunHistoryStore } from './history/RunHistoryStore';
 import { InputReceiptStore } from './web/InputReceiptStore';
+import { SCROLLBACK_ROWS } from './web/hostSearch';
 import { recoveryCwd, isWslShell, isWslCwdMissingError } from '../shared/wsl';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -41,10 +42,17 @@ import {
   coerceWebTlsConfig,
 } from './web/webStateStore';
 import { stopWebServerDurably } from './web/webStop';
-import { decideWebStartPolicy } from './web/webStartPolicy';
+import { decideWebStartPolicy, resolveWebStartGrants } from './web/webStartPolicy';
 import { scheduleTokenFileReHarden } from '../shared/security';
+import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import type { WebTlsConfig } from '../shared/web';
-import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
+import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
+import { readSessionTextReplay } from './sessionTextReplay';
+import { AwaitingScreenVerifier, renderPaneScreen } from './AwaitingScreenVerifier';
+import { screenShowsAgentDialog } from './transcript/chatScreenGate';
+import { ApprovalPushRouter } from './push/approvalPushRouter';
+import { readPendingToolUse } from './transcript/pendingToolUse';
+import { isClaudeFamilyAgent } from './approvals/terminalPrompt';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
 import { LanLinkInbox } from './lanlink/inbox';
@@ -52,7 +60,7 @@ import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
-import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
+import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
 import { AppendOnlyLog } from './eventlog/AppendOnlyLog';
 import { SnapshotStore, SNAPSHOT_DIRNAME } from './eventlog/SnapshotStore';
 import { manifestFileExists, pingFormatVersionField } from './eventlog/EventLogManifest';
@@ -108,7 +116,11 @@ import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/Transcript
 import { PushSender } from './push/PushSender';
 import { RelayTransport } from './push/RelayTransport';
 import { LiveActivityPusher, type LiveActivityCounts } from './push/LiveActivityPusher';
-import { approvalPushCollapseId, buildApprovalPushPayload } from './push/approvalPushPayload';
+import {
+  approvalPushCollapseId,
+  buildApprovalPushPayload,
+  buildApprovalRetractionPayload,
+} from './push/approvalPushPayload';
 import { WebhookSink } from './push/WebhookSink';
 import { buildApprovalNotifyPayload, buildAttentionNotifyPayload } from './push/notifyPayload';
 import {
@@ -126,6 +138,7 @@ import { GateBroker } from './approvals/GateBroker';
 import { coerceGate } from './approvals/gateConfig';
 import { DeviceStore, type DeviceBatchRevocationCause } from './web/DeviceStore';
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
+import { withActivity } from './web/deviceActivity';
 import { buildWebPaneEnv } from './web/webPaneEnv';
 import type { ApprovalDecision } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
@@ -133,7 +146,7 @@ import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
 import { chatAgentStatus } from './transcript/chatAgentStatus';
-import { startNativeCodexRuntime } from './transcript/terminalLaunch';
+import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
 import { interruptChatTurn } from './transcript/interruptChatTurn';
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
 import { ChatSessionService } from './chat/ChatSessionService';
@@ -211,8 +224,36 @@ let deviceStore: DeviceStore | null = null;
 // registerRpcHandlers runs, which is before either site.
 let sessionLifecycle: WebSessionLifecycle | null = null;
 let persistCodexRelayState: ((id:string,owner:ManagedSession)=>void) | undefined;
+// Late-bound: the pipe server that carries notices exists only after boot.
+let notifyCodexIdentityRefused: ((id:string,reason:string)=>void) | undefined;
+const codexRefusalNoticedAt = new Map<string,number>();
+let broadcastCodexNotice: ((paneId:string|undefined,title:string,body:string)=>void) | undefined;
+// Every wmux Codex launch goes through a pane relay; before each, the shared
+// account server is started with no WMUX_* variable (never stopped/restarted).
+const codexSharedRuntime = createCodexSharedRuntime({
+  runDaemon: runCodexDaemon,
+  stateDir: path.join(os.homedir(), '.wmux-codex-runtime'),
+  notice: (paneId, title, body) => broadcastCodexNotice?.(paneId, title, body),
+  log: (level, message) => log(level, message),
+});
 const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Codex relay cleanup failed'),
-  (id,owner)=>persistCodexRelayState?.(id,owner));
+  (id,owner)=>persistCodexRelayState?.(id,owner),
+  {
+    ensureRuntime: async (id,codeHome)=>{ await codexSharedRuntime.ensureStarted(id,{...process.env,...(codeHome ? {CODEX_HOME:codeHome} : {})}); },
+    serverProven: (codeHome)=>codexSharedRuntime.state(codeHome)?.kind === 'clean',
+    refused: (id,reason)=>{
+      log('warn',`[codex-relay] refused a Codex request in ${id}: ${reason}`);
+      // One notice per pane per minute: a TUI can retry a refused request in a loop.
+      const now = Date.now();
+      if ((codexRefusalNoticedAt.get(id) ?? 0) + 60_000 > now) return;
+      if (codexRefusalNoticedAt.size > 1024) codexRefusalNoticedAt.clear();
+      codexRefusalNoticedAt.set(id,now);
+      notifyCodexIdentityRefused?.(id,reason);
+    },
+    unmatchedResponse: (id,count)=>{
+      log('debug',`[codex-relay] did not forward a client response with no pending server request in ${id} (${count} on this connection)`);
+    },
+  });
 
 /**
  * #919 — canonical pane-agent identity for one pane, right now. Folds the
@@ -300,6 +341,42 @@ let gateBroker: GateBroker | null = null;
 let gateRuntimeOff = false;
 
 /**
+ * A plain-text parse of a session's ring on the shared concurrency-1 snapshot
+ * queue. The ring is copied only when the job's turn comes, so a job waiting
+ * behind attach snapshots pins no ring copy; the session is looked up then
+ * too, so a pane closed meanwhile reads as gone.
+ */
+function queuedTextSnapshot(sessionManager: DaemonSessionManager, sessionId: string, scrollback: number): Promise<TextSnapshotOutcome | null> {
+  return enqueueSnapshotJob(async () => {
+    const managed = sessionManager.getSession(sessionId);
+    if (!managed) return null;
+    return generateTextSnapshotUnqueued({
+      // Dims backstop parity with the attach flush (?? 80 / ?? 24): a recovered
+      // session may not have real dims yet, and a 0-wide headless terminal would
+      // fail soft instead of reading.
+      cols: managed.meta.cols ?? 80,
+      rows: managed.meta.rows ?? 24,
+      scrollback,
+      initial: readSessionTextReplay(managed.ringBuffer, managed.bridge.outputModes),
+    });
+  });
+}
+
+/**
+ * The phone's scrollback search (`GET /api/search`) reads a pane through the
+ * same headless parse `daemon.readSessionText` runs, on the same shared
+ * concurrency-1 queue, keeping as many rows as that RPC does by default. The
+ * web server caches the extracted text per pane, so a pane nobody wrote to
+ * since the last search is not parsed again.
+ */
+function sessionTextReader(sessionManager: DaemonSessionManager) {
+  return async (sessionId: string) => {
+    const outcome = await queuedTextSnapshot(sessionManager, sessionId, SCROLLBACK_ROWS);
+    return outcome?.ok ? outcome.rows : null;
+  };
+}
+
+/**
  * Build the registry. Split out of main() only so the two dependencies that
  * need a live sessionManager can be closures over it.
  *
@@ -334,6 +411,45 @@ function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalR
       managed.ptyProcess.write(data);
       managed.bridge.noteInput(data, true);
       return true;
+    },
+    // terminal_prompt — the visible grid at the live geometry, and the pane's
+    // state (output bytes, key-carrying input, incarnation) at the instant the
+    // ring was read. renderPaneScreen reads the ring synchronously before its
+    // first await, so the revision and incarnation below are the same instant.
+    readPromptScreen: async (sessionId) => {
+      const managed = sessionManager.getSession(sessionId);
+      if (!managed) return null;
+      const keyInputRevision = managed.bridge.getKeyInputRevision();
+      const incarnation = managed.meta.incarnationId ?? null;
+      const cols = managed.ptyProcess.cols ?? managed.meta.cols;
+      const frame = await renderPaneScreen(() => sessionManager.getSession(sessionId), generateTextSnapshot);
+      if (!frame) return null;
+      return {
+        rows: frame.rows,
+        mark: { bytes: frame.mark, keyInputRevision, incarnation },
+        ...(typeof cols === 'number' ? { cols } : {}),
+      };
+    },
+    // The pane's own Claude transcript (the projector's containment-checked
+    // path): its latest tool call still waiting for a result.
+    pendingToolUse: (sessionId) => {
+      const transcriptPath = transcriptProjector?.transcriptPath(sessionId) ?? null;
+      return transcriptPath ? readPendingToolUse(transcriptPath) : null;
+    },
+    // The pane's own Claude session: its bound transcript's basename.
+    agentSessionId: (sessionId) => {
+      const transcriptPath = transcriptProjector?.transcriptPath(sessionId) ?? null;
+      const base = transcriptPath ? path.basename(transcriptPath) : '';
+      return base.endsWith('.jsonl') ? base.slice(0, -'.jsonl'.length) : null;
+    },
+    promptScreenMark: (sessionId) => {
+      const managed = sessionManager.getSession(sessionId);
+      if (!managed) return null;
+      return {
+        bytes: managed.ringBuffer.totalBytesWritten,
+        keyInputRevision: managed.bridge.getKeyInputRevision(),
+        incarnation: managed.meta.incarnationId ?? null,
+      };
     },
     // #783 — wake the GateBroker waiter when a gate record is resolved by the
     // phone. The broker holds the bridge RPC open; this call closes it.
@@ -453,6 +569,8 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         agentState: (id) => readAgentStateForWeb?.(id),
         // #1342 — resume state for the same route, same lazy indirection.
         resumeState: (id) => readResumeStateForWeb?.(id),
+        // The scrollback scope of GET /api/search.
+        sessionText: sessionTextReader(sessionManager),
         // M3 — without this, /pair degrades to handing out the shared operator
         // token and nothing is individually revocable. Injected at BOTH
         // construction sites: a restored server serves paired phones on their
@@ -2360,15 +2478,8 @@ function registerRpcHandlers(
       throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
     }
     const scrollback = Math.min(typeof p.scrollback === 'number' ? p.scrollback : 5000, MAX_SCROLLBACK);
-    const outcome = await generateTextSnapshot({
-      // Dims backstop parity with the attach flush (?? 80 / ?? 24): a recovered
-      // session may not have real dims yet, and a 0-wide headless terminal would
-      // fail soft instead of reading.
-      cols: managed.meta.cols ?? 80,
-      rows: managed.meta.rows ?? 24,
-      scrollback,
-      initial: managed.ringBuffer.readAll(),
-    });
+    const outcome = await queuedTextSnapshot(sessionManager, p.id, scrollback);
+    if (!outcome) throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
     if (!outcome.ok) {
       log('info', `[readText] session=${p.id} unavailable reason=${outcome.reason}`);
       return { ok: true, mode: 'unavailable', reason: outcome.reason };
@@ -2382,7 +2493,7 @@ function registerRpcHandlers(
     if (capped.truncated) {
       log('info', `[readText] session=${p.id} response truncated to fit frame budget (${outcome.rows.length} rows)`);
     }
-    return { ok: true, mode: 'rows', rows: capped.rows, truncated: capped.truncated };
+    return { ok: true, mode: 'rows', rows: capped.rows, bufferType: outcome.bufferType, rowsBelowCursor: outcome.rowsBelowCursor, truncated: capped.truncated };
   });
 
   // daemon.listSessions
@@ -2694,6 +2805,8 @@ function registerRpcHandlers(
       agentState: (id) => readAgentStateForWeb?.(id),
       // #1342 — see the restore path.
       resumeState: (id) => readResumeStateForWeb?.(id),
+      // See the restore path.
+      sessionText: sessionTextReader(sessionManager),
       // M3 — see the restore path for why the roster is injected at both sites.
       devices: getDeviceStore(),
       runHistory: getRunHistory,
@@ -2737,6 +2850,9 @@ function registerRpcHandlers(
   const afterRestore = async (): Promise<void> => {
     if (webRestore) await webRestore;
   };
+  // Bumped by every operator stop. An in-place grant change
+  // (`onlyIfRunning`) that a stop overtook must not bring the server back.
+  let webStopGeneration = 0;
   pipeServer.onRpc('daemon.web.start', async (params) => {
     await afterRestore();
     const p = params as {
@@ -2746,6 +2862,8 @@ function registerRpcHandlers(
       allowUpload?: boolean;
       allowTranscript?: boolean;
       allowDangerousLaunch?: boolean;
+      inheritUnsetGrants?: boolean;
+      onlyIfRunning?: boolean;
       allowedHosts?: unknown;
       newToken?: boolean;
       tailscale?: boolean;
@@ -2756,14 +2874,6 @@ function registerRpcHandlers(
     // Safe default: bind loopback only. Network exposure is an explicit
     // caller decision (the CLI `--expose` flag sends host '0.0.0.0').
     const host = typeof p.host === 'string' && p.host ? p.host : '127.0.0.1';
-    const allowInput = p.allowInput === true;
-    // Separate opt-in from `allowInput`, and fail-closed the same way: a caller
-    // that says nothing gets a server that cannot write files.
-    const allowUpload = p.allowUpload === true;
-    // Its own opt-in like upload, fail-closed when the caller says nothing.
-    const allowTranscript = p.allowTranscript === true;
-    // The chat dangerous-launch ceiling (contract §3.4), fail-closed the same way.
-    const allowDangerousLaunch = p.allowDangerousLaunch === true;
     // Extra Host-header names for reverse-proxy fronts (`tailscale serve`
     // forwards the MagicDNS name). Strings only; anything else is dropped.
     const allowedHosts = Array.isArray(p.allowedHosts)
@@ -2771,7 +2881,23 @@ function registerRpcHandlers(
       : [];
     const requestedTls = parseWebTlsConfig(p.tls);
     const tailscale = p.tailscale === true;
+    // The desktop's in-place grant change restarts a RUNNING server. A stop
+    // that landed after it read status wins: nothing is started, and the
+    // record the stop cleared is not written back.
+    const onlyIfRunning = p.onlyIfRunning === true;
+    const stopGeneration = webStopGeneration;
+    if (onlyIfRunning && !webServer.currentStartState) return webServer.status();
     const loadedPrevious = loadWebStateWithDiagnostics(wmuxDir);
+    // Each grant is its own opt-in and fail-closed: a caller that says nothing
+    // gets a read-only server that cannot write files, read transcripts, or
+    // launch agents with approvals off (contract §3.4). The one exception is a
+    // caller that asks to inherit what it does not send (the desktop popover,
+    // which has no control for every grant) — see resolveWebStartGrants.
+    const { allowInput, allowUpload, allowTranscript, allowDangerousLaunch } = resolveWebStartGrants(
+      p,
+      webServer.currentStartState,
+      loadedPrevious.state,
+    );
     const { tls, token, rotateCredentials } = decideWebStartPolicy({
       requestedTls,
       live: webServer.currentStartState,
@@ -2793,6 +2919,10 @@ function registerRpcHandlers(
       ...(tls ? { tls } : {}),
       token,
     });
+    if (onlyIfRunning && stopGeneration !== webStopGeneration) {
+      await webServer.stop();
+      return webServer.status();
+    }
     if (rotateCredentials) {
       // A device authenticates with its own durable `deviceId.secret`, so
       // rotating only the operator token is not a credential rotation. Do
@@ -2831,6 +2961,7 @@ function registerRpcHandlers(
     // a teardown of a server the operator still wants and therefore preserves
     // both the persisted listener and its paired devices.
     await afterRestore();
+    webStopGeneration += 1;
     // #783 — the answering surface is going away, so every gate still holding a
     // bridge open is now unanswerable. Defer them here instead of making each
     // one wait out its own deadline in front of a blocked agent.
@@ -2884,15 +3015,27 @@ function registerRpcHandlers(
     // device paired by a client that predates this parameter — including the
     // CLI, which has no way to state it.
     const allowInput = params['allowInput'];
+    // Which card is pairing. Absent is the phone card — the only one a caller
+    // predating this field could have meant.
+    const flow = params['flow'] === 'computer' ? 'computer' : 'phone';
     return webServer.startPairing({
       name,
+      flow,
       ...(typeof allowInput === 'boolean' ? { allowInput } : {}),
     });
   });
 
+  // End the pairing in progress, whichever card started it.
+  pipeServer.onRpc('daemon.web.pairCancel', async () => {
+    await afterRestore();
+    return webServer.cancelPairing();
+  });
+
   pipeServer.onRpc('daemon.web.deviceList', async () => {
     await afterRestore();
-    return { devices: getDeviceStore().list() };
+    // `activeNow` is computed here, at list time, from the store's in-memory
+    // `lastSeenAt` and the server's live streams. Never persisted.
+    return { devices: withActivity(getDeviceStore().list(), webServer.liveDeviceIds(), Date.now()) };
   });
 
   pipeServer.onRpc('daemon.web.deviceSetInput', async (params) => {
@@ -2903,7 +3046,7 @@ function registerRpcHandlers(
     // call silently revoke or hand out a typing grant.
     if (typeof params['allowInput'] !== 'boolean') return { ok: false, reason: 'not-found' };
     const allowInput = params['allowInput'];
-    const result = getDeviceStore().setInput(deviceId, allowInput);
+    const result = getDeviceStore().setInput(deviceId, allowInput, 'desktop');
     // Taking input away has a live half, exactly like revoke: a device holding
     // an open SSE stream keeps receiving pane bytes, and while the WRITE routes
     // re-check the roster per request (so typing stops immediately either way),
@@ -2924,7 +3067,7 @@ function registerRpcHandlers(
     // live streams — and cut them even when the write failed, because an
     // established SSE never re-authenticates). Extracted so the three branches
     // are unit-testable without a daemon; see its tests.
-    return revokeDeviceAndDisconnect(deviceId, getDeviceStore(), webServer);
+    return revokeDeviceAndDisconnect(deviceId, getDeviceStore(), webServer, 'desktop');
   });
 
   // X8 supervision control — renderer-only surface (main IPC → daemon).
@@ -3303,7 +3446,18 @@ function registerRpcHandlers(
     terminalChat: () => terminalChat,
     managed: () => chatSessions,
     approvals: () => approvalRegistry ? {
-      pendingFor: (id) => approvalRegistry?.list().pending.find((request) => request.sessionId === id)?.id,
+      pendingFor: (id) => {
+        const pending = approvalRegistry?.list().pending.find((request) => request.sessionId === id);
+        return pending
+          ? {
+            id: pending.id,
+            kind: pending.kind,
+            // Answerable = a whole parse AND not answered yet (a pressed record
+            // would only 409 already-answered).
+            answerable: !!pending.promptFingerprint && !!pending.choices?.length && pending.pressedAt === undefined,
+          }
+          : undefined;
+      },
     } : null,
     readScreen: async (id) => {
       const managed = sessionManager.getSession(id);
@@ -3344,7 +3498,10 @@ function registerRpcHandlers(
       unavailable: (error) => (error as NodeJS.ErrnoException)?.code === 'ENOENT' || error instanceof CodexRelayUnavailableError,
       selection: (id, pane) => codexPaneRelays.selection(id, pane),
     },
-    startCodexRuntime: (env) => startNativeCodexRuntime(env),
+    startCodexRuntime: async (env) => {
+      const state = await codexSharedRuntime.ensureStarted(undefined, env);
+      if (state.kind === 'failed') throw new Error(state.reason);
+    },
     loadSkills: (agent, cwd, env) => loadChatSkills(agent, cwd, env),
     log: (level, message) => log(level, message),
     // Main shows `source:'security'` as an always-on toast. Straight onto the
@@ -3353,6 +3510,12 @@ function registerRpcHandlers(
       data: { source: 'security', title, body, ts: Date.now() } }),
   });
   chatBridge = bridge;
+  broadcastCodexNotice = (paneId, title, body) => pipeServer.broadcast({ type: 'notification.event',
+    ...(paneId ? { sessionId: paneId } : {}), data: { source: 'security', title, body, ts: Date.now() } });
+  notifyCodexIdentityRefused = (paneId, reason) => pipeServer.broadcast({ type: 'notification.event', sessionId: paneId,
+    data: { source: 'security', title: 'Codex request not sent',
+      body: `wmux did not send a Codex request from this pane (${reason}).`,
+      ts: Date.now() } });
 
   pipeServer.onRpc('daemon.chat.skills', async (params, ctx) => {
     if (!firstPartyOnly(ctx.clientId, 'skills') || typeof params.id !== 'string') return { skills: [], state: 'unavailable' };
@@ -3435,7 +3598,13 @@ function registerRpcHandlers(
         // Hook Stop/awaiting-input is authoritative inside the same daemon that
         // owns byte activity. Settle the bridge before broadcasting so a later
         // idle repaint cannot race the renderer back to stale running.
-        sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status, true);
+        // #1463 — an AskUserQuestion is marked as one (by its hook fire time),
+        // so only its own answer signal can release it.
+        const questionAt = data.signal.kind === 'agent.awaiting_input'
+          && data.signal.payload?.['tool_name'] === 'AskUserQuestion'
+          ? data.signal.ts
+          : undefined;
+        sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status, true, questionAt);
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
         // Phone liveness header. The desktop reads pane state off this same
@@ -3490,11 +3659,13 @@ function registerRpcHandlers(
         // completion contradicted by the pane's tier-1/2 identity must not
         // broadcast (or drive phone liveness) when its window expires either.
         const screenSlug = agentDisplayToSlug(data.agent);
-        if (detectorSuppressedBy(canonicalIdentityFor(agentProcessTracker, sessionId, screenSlug), screenSlug)) return;
+        // `false` also tells HookIngest not to record a terminal_prompt for it.
+        if (detectorSuppressedBy(canonicalIdentityFor(agentProcessTracker, sessionId, screenSlug), screenSlug)) return false;
         sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status as AgentEventStatus);
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
         webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(sessionId, data, Date.now()));
+        return true;
       },
       // #919 (Codex #8) — every resolved hook signal proves the bridge is
       // alive on this pane RIGHT NOW, banner or not. Arming here means a quiet
@@ -3505,6 +3676,13 @@ function registerRpcHandlers(
       onAuthorityTouched: (sessionId) => {
         const managed = sessionManager.getSession(sessionId);
         if (managed) agentProcessTracker.arm(sessionId, managed.meta.pid);
+      },
+      // #1463 — the agent's own "question answered" signal takes the same
+      // release path an answer key does (the `answered` → `session:answered`
+      // running broadcast). A no-op unless the pane is blocked on a question
+      // asked no later than the answer.
+      onInputAnswered: (sessionId, answeredAt) => {
+        sessionManager.getSession(sessionId)?.bridge.clearAnsweredQuestion(answeredAt);
       },
     });
   }
@@ -3875,7 +4053,8 @@ function registerRpcHandlers(
     if (bridge.sendInFlight(id)) return { result: 'blocked' };
     const result = await interruptChatTurn(agentSessionId, {
       getTranscriptSessionId: () => projector.status(id).agentSessionId,
-      hasOpenApproval: () => !approvalRegistry || approvalRegistry.list().pending.some((r) => r.sessionId === id),
+      // The chat write fence: any pending record, whatever its kind.
+      hasOpenApproval: () => bridge.hasOpenApproval(id),
       readScreen: async () => {
         const managed = sessionManager.getSession(id);
         if (!managed) return null;
@@ -4603,6 +4782,12 @@ function registerRpcHandlers(
       // S-C2: 페인 신원 주장 여부 — 페인 핀 태스크면 서비스가 soft-defer해 main이
       // 렌더러 페인 게이트(오늘의 판정 지점)로 폴백한다(ptyId→pane 해석은 렌더러 소유).
       callerHasPaneIdentity: typeof p.senderPtyId === 'string' && p.senderPtyId.trim() !== '',
+      // Main resolves the caller's pane from its pane tree; with it the service
+      // runs the pane gate here instead of deferring (a deferral never reached
+      // the durable log, so the task stayed `submitted` here). A claimed pane
+      // can only narrow the workspace-level authz, never widen it.
+      ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerAddr: { paneId: p.callerPaneId } } : {}),
+      ...(p.requirePaneIdentity === true ? { requirePaneIdentity: true } : {}),
       // evidence는 서비스가 normalizeCompletionEvidenceWire로 재검증(sanitize)한 뒤
       // 완료증거 게이트(PR-B)로 판정한다 — completed/failed는 구조화 증거 강제(거부는
       // completion_evidence_* 사유코드로 호출자에 포워딩).
@@ -4624,6 +4809,19 @@ function registerRpcHandlers(
     });
   });
 
+  pipeServer.onRpc('a2a.task.reopen', async (rawParams) => {
+    if (!a2aTaskService) return { ok: false, error: 'a2a.task.reopen: task log unavailable' };
+    const p = rawParams as Record<string, unknown>;
+    const taskId = typeof p.taskId === 'string' ? p.taskId : '';
+    const workspaceId = typeof p.workspaceId === 'string' ? p.workspaceId : '';
+    if (!taskId || !workspaceId) return { ok: false, error: 'a2a.task.reopen: taskId and workspaceId are required' };
+    return a2aTaskService.reopenTask({
+      taskId,
+      callerWorkspaceId: workspaceId,
+      ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerPaneId: p.callerPaneId } : {}),
+    });
+  });
+
   pipeServer.onRpc('a2a.task.query', async (rawParams) => {
     if (!a2aTaskService) return { ok: false, error: 'a2a.task.query: task log unavailable' };
     const p = rawParams as Record<string, unknown>;
@@ -4634,7 +4832,9 @@ function registerRpcHandlers(
       ...(p.role === 'user' || p.role === 'agent' ? { role: p.role } : {}),
       ...(typeof p.updatedSince === 'string' && p.updatedSince ? { updatedSince: p.updatedSince } : {}),
     });
-    return { ok: true, workspaceId, tasks };
+    // view: 'page' → summaries, or the one named task in full: a list reply
+    // must stay far below the 1 MiB control-line cap of DaemonClient.
+    return { ok: true, workspaceId, tasks: applyTaskQueryView(tasks, p) };
   });
 
   // ── WorkTask 미션 채널 (J0 §3) ──────────────────────────────────────
@@ -4908,6 +5108,29 @@ function wireEvents(
   agentProcessTracker: AgentProcessTracker,
   sessionDataListeners: Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>,
 ): void {
+  // Awaiting-state screen verifier: releases a Claude-family pane stuck at
+  // awaiting_input once its dialog is gone from the screen (two dialog-free
+  // reads in a row). Renders only for awaiting panes, one at a time per pane,
+  // on the shared snapshot queue. See AwaitingScreenVerifier.ts.
+  const paneAgentSlug = (id: string): string | undefined => {
+    const managed = sessionManager.getSession(id);
+    const screenAgent = managed?.bridge.getLastAgent() ?? null;
+    return (screenAgent ? agentDisplayToSlug(screenAgent) : undefined) ?? managed?.meta.lastDetectedAgent;
+  };
+  const awaitingVerifier = new AwaitingScreenVerifier({
+    isAwaiting: (id) => sessionManager.getSession(id)?.bridge.isAwaitingHuman() === true,
+    eligible: (id) => isClaudeFamilyAgent(paneAgentSlug(id)),
+    outputMark: (id) => sessionManager.getSession(id)?.ringBuffer.totalBytesWritten ?? null,
+    render: (id) => renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot),
+    clear: (id) => { sessionManager.getSession(id)?.bridge.clearAwaiting('screen-cleared'); },
+    holdsPrompt: (id) => approvalRegistry?.list().pending
+      .some((request) => request.sessionId === id && request.kind === 'terminal_prompt') === true,
+    log: (level, message) => log(level, message),
+  });
+  const forgetAwaiting = (payload: { id: string }): void => awaitingVerifier.forget(payload.id);
+  sessionManager.on('session:died', forgetAwaiting);
+  sessionManager.on('session:destroyed', forgetAwaiting);
+
   // Names an agent from process truth when neither a hook nor its banner did
   // (see commandStartAgentProbe.ts). Exec units have no shell and emit no
   // OSC 133, so only interactive panes reach it.
@@ -5220,6 +5443,9 @@ function wireEvents(
   });
 
   sessionManager.on('session:active', (payload: { sessionId: string; agentName?: string; likelyRepaint?: boolean }) => {
+    // An output burst on an awaiting pane may be its dialog closing. A no-op
+    // for every pane that is not awaiting.
+    awaitingVerifier.trigger(payload.sessionId, 'output');
     // CompletionAlarm byte-activity feed (brief rule 4 / D3): any PTY output
     // — the user typing the next prompt, a background build chattering —
     // rebuts an open completion window and arms the turn gate. The detected
@@ -5372,7 +5598,38 @@ function wireEvents(
   // hook-governed pane nothing else would, because main mutes the byte
   // heuristic while the hook's turn latch is held — and cancel a still-held
   // awaiting window, which would otherwise re-mark the pane when it confirms.
-  sessionManager.on('session:answered', (payload: { sessionId: string }) => {
+  // Input that reached a pane blocked on a human. Logged by size only — never
+  // the text — so a dogfood log shows whether an answer arrived in a shape the
+  // lone-key check did not recognise (glued to mouse reports, for instance).
+  sessionManager.on('session:awaitingActivity', (payload: {
+    sessionId: string; cause: 'input' | 'output'; bytes?: number; nonKeyBytes?: number; answered?: boolean;
+  }) => {
+    if (payload.cause === 'input') {
+      log('debug', `[awaiting] input on ${payload.sessionId} while awaiting: ${payload.bytes ?? 0} byte(s), ` +
+        `${payload.nonKeyBytes ?? 0} non-key, answered=${payload.answered === true}`);
+    }
+    if (payload.answered !== true) awaitingVerifier.trigger(payload.sessionId, payload.cause);
+  });
+
+  // A key or click reached a pane: a pending remote terminal-prompt answer it
+  // overtook is refreshed once the input settles, so the phone re-confirms the
+  // dialog as it is now instead of a stale record answering 409 forever.
+  sessionManager.on('session:fenceInput', (payload: { sessionId: string }) => {
+    approvalRegistry?.noteFenceInput(payload.sessionId);
+  });
+
+  sessionManager.on('session:answered', (payload: { sessionId: string; reason?: 'input' | 'screen-cleared' }) => {
+    awaitingVerifier.forget(payload.sessionId);
+    // The dialog is closed, so its terminal_prompt record is done too (a record
+    // a phone already answered resolves rather than expires). Before any early
+    // return below: a pane with no detected agent name would otherwise keep its
+    // card. A screen-cleared release also starts the registry's per-dialog
+    // creation cooldown for the pane.
+    approvalRegistry?.expireForSession(
+      payload.sessionId,
+      payload.reason === 'screen-cleared' ? 'screen-cleared' : 'answered-locally',
+      'terminal_prompt',
+    ).catch((err: unknown) => log('warn', `[approvals] answered sweep failed for ${payload.sessionId}: ${String(err)}`));
     const managed = sessionManager.getSession(payload.sessionId);
     const screenAgent = managed?.bridge.getLastAgent() ?? null;
     const slug = (screenAgent ? agentDisplayToSlug(screenAgent) : undefined) ?? managed?.meta.lastDetectedAgent;
@@ -6000,6 +6257,10 @@ async function main(): Promise<void> {
   // the pane's banner rather than stacking a second one.
   const deferredPush = new DeferredPushQueue({
     send: (payload, opts) => pushSender.notify(payload, opts),
+    // Whether a held push went out or was evicted unsent decides whether its
+    // record may later retract it. Only called on a release or an eviction,
+    // both of which happen after the router below exists.
+    onOutcome: (id, outcome, collapseId) => approvalPushRouter.onParkedOutcome(id, outcome, collapseId),
     isPresent: desktopIsPresent,
     staleAfterMs: () => presenceConfig().staleAfterMs,
     log: (level, msg) => log(level, msg),
@@ -6078,41 +6339,47 @@ async function main(): Promise<void> {
     daemonName: () => os.hostname() || undefined,
     log: (level, msg) => log(level, msg),
   });
+  // One push per awaiting episode: send or park on `create`, drop a parked one
+  // once its approval is moot, and carry it over when a record is replaced
+  // within the same episode (see ApprovalPushRouter). A `terminal_prompt`
+  // waits out a grace period first and is retracted if it ends after its push
+  // went out.
+  const approvalPushRouter = new ApprovalPushRouter({
+    build: (r) => buildApprovalPushPayload(r),
+    buildRetraction: (r, deliveredId) => buildApprovalRetractionPayload(r, deliveredId),
+    collapseId: (r) => approvalPushCollapseId(r),
+    suppress: (payload) => shouldSuppressPush({
+      state: desktopPresence.snapshot(),
+      now: Date.now(),
+      config: presenceConfig(),
+      ...(payload.risk !== undefined ? { risk: payload.risk } : {}),
+    }),
+    send: (payload, opts) => pushSender.notify(payload, opts),
+    park: (id, payload, collapseId) => deferredPush.park(id, payload, collapseId),
+    forget: (id) => deferredPush.forget(id),
+    log: (level, msg) => log(level, msg),
+  });
   approvalRegistry.onEvent((event) => {
     // Every transition moves at least one of the three numbers the lock screen
     // fires on, so this is subscribed to all of them, not just `create`.
     liveActivityPusher?.onApprovalsChanged();
-    // A resolve/expire/supersede is the thing the notification was asking for.
-    // If one is still parked, it is now moot — drop it rather than buzzing a
-    // phone about a question that has already been answered.
-    if (event.type !== 'create') {
-      deferredPush.forget(event.request.id);
-      return;
-    }
-    const r = event.request;
-    const payload = buildApprovalPushPayload(r);
     // The outbound sink is a separate channel from the phone, and presence says
     // nothing about it: an operator who put a URL in `notifySinks` asked for
-    // every approval, focused desktop or not. Only the APNs push below is held.
-    webhookSink?.notify(
-      buildApprovalNotifyPayload(r, { id: randomUUID(), now: Date.now() }),
-    );
-    if (
-      shouldSuppressPush({
-        state: desktopPresence.snapshot(),
-        now: Date.now(),
-        config: presenceConfig(),
-        ...(payload.risk !== undefined ? { risk: payload.risk } : {}),
-      })
-    ) {
-      // The approval id only — never the question, the choices, or anything
-      // else the payload carries.
-      log('info', `[push] held for ${r.id}: desktop is present`);
-      deferredPush.park(r.id, payload, approvalPushCollapseId(r));
-      return;
+    // every approval, focused desktop or not. A record that replaces another in
+    // the same episode is not a new approval to it.
+    if (event.type === 'create' && event.replaces === undefined) {
+      webhookSink?.notify(
+        buildApprovalNotifyPayload(event.request, { id: randomUUID(), now: Date.now() }),
+      );
     }
-    pushSender.notify(payload, { collapseId: approvalPushCollapseId(r) });
+    approvalPushRouter.onEvent(event);
   });
+  // Anything that became pending before the subscription above: a
+  // `terminal_prompt` gets its grace re-armed from `createdAt`. At boot the
+  // registry has already expired every persisted pending record, so this is
+  // normally empty — and a banner delivered before a restart is not retracted,
+  // because which pushes were delivered is not persisted.
+  approvalPushRouter.adopt(approvalRegistry.list().pending);
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   // Desktop presence, reported by the Electron main process on every
   // focus/blur transition. Registered here rather than in `registerRpcHandlers`
@@ -6540,7 +6807,16 @@ async function main(): Promise<void> {
     listLiveSessions: () =>
       sessionManager.listLiveSessions().map((meta) => ({
         id: meta.id,
-        ...(meta.lastDetectedAgent !== undefined ? { lastDetectedAgent: meta.lastDetectedAgent as string } : {}),
+        // A pane whose agent returned to the shell is a shell, whatever it
+        // last ran — see wakeAgentSlug for the marker/process precedence.
+        ...(() => {
+          const agent = wakeAgentSlug(
+            meta.lastDetectedAgent as string | undefined,
+            sessionManager.getSession(meta.id)?.promptLog.commandRunningIfKnown(),
+            agentProcessTracker.identityFor(meta.id),
+          );
+          return agent !== undefined ? { lastDetectedAgent: agent } : {};
+        })(),
         // Fail SAFE on a broken/missing timestamp (GLM review): a NaN getTime()
         // must not become 0, which reads as "quiet since the epoch" and makes
         // the pane permanently pass the quiet gate (perpetual nudge candidate).
@@ -6592,6 +6868,17 @@ async function main(): Promise<void> {
     },
     log: (level, message) => log(level, message),
     now: () => Date.now(),
+    // A nudge ends with an Enter; an approval waiting on a human is quiet, so
+    // the quiet gate alone would press it. Hold on a pending approval record,
+    // a pane blocked on a human, or a dialog on the visible screen.
+    approvalBlocked: (id) =>
+      sessionManager.getSession(id)?.bridge.isAwaitingHuman() === true
+      || approvalRegistry?.list().pending.some((request) => request.sessionId === id) === true,
+    screenShowsApproval: async (id) => {
+      const frame = await renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot);
+      if (!frame || frame.rows.every((row) => !row.trim())) return null;
+      return screenShowsAgentDialog(frame.rows);
+    },
   });
   // app-weight P1-1: cadence from config (default 15 s; clamped 5–120 s).
   const processMonitor = new ProcessMonitor((config.daemon.livenessIntervalSec ?? 15) * 1000);

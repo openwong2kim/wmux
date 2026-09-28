@@ -52,6 +52,7 @@ import { wslDistroArgs, isWslDistroSpawnArgs } from '../../../shared/wslDistro';
 import { getDefaultWslDistro } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
 import { stampFanoutTaskPane } from '../../worktask/fanoutGuards';
+import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
 import {
   removeSessionPromptSchedulesForPty,
 } from '../../pty/sessionPromptScheduleStore';
@@ -121,6 +122,8 @@ type PtyCreateOptions = {
   spawnKind?: SpawnKind;
   /** Fan-out task pane: the owner workspace this one's lineage stamp names. */
   fanoutTaskOf?: string;
+  /** Fan-out task pane: who asked, stamped with the owner (sanitized there). */
+  fanoutOrigin?: FanoutOrigin;
 };
 
 
@@ -1356,11 +1359,13 @@ export function registerPTYHandlers(
       const res = await daemonClient.rpc('daemon.readSessionText', { id, scrollback }, { timeoutMs: DAEMON_RESYNC_RPC_TIMEOUT_MS }) as {
         mode: 'rows' | 'unavailable';
         rows?: Array<{ text: string; wrapped: boolean }>;
+        bufferType?: 'normal' | 'alternate';
+        rowsBelowCursor?: number;
         truncated?: boolean;
         reason?: string;
       };
       if (res.mode === 'rows') {
-        return { success: true, rows: res.rows ?? [], truncated: res.truncated === true };
+        return { success: true, rows: res.rows ?? [], bufferType: res.bufferType, rowsBelowCursor: res.rowsBelowCursor, truncated: res.truncated === true };
       }
       return { success: false, code: 'unavailable', reason: res.reason };
     } catch (err) {

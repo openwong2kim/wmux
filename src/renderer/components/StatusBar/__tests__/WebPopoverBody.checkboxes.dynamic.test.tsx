@@ -34,12 +34,21 @@ function Harness({ running = false }: { running?: boolean }) {
   const [tailscale, setTailscale] = useState(false);
   const [expose, setExpose] = useState(false);
   const [pairAllowInput, setPairAllowInput] = useState(false);
+  const [allowTranscript, setAllowTranscript] = useState(false);
+  const [allowUpload, setAllowUpload] = useState(false);
+  const [allowDangerousLaunch, setAllowDangerousLaunch] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const noop = vi.fn();
   const props: WebPopoverBodyProps = {
     info: running ? { running: true, host: '127.0.0.1', port: 7681, urls: ['http://127.0.0.1:7681/'] } : { running: false },
     allowInput,
     expose,
     tailscale,
+    allowTranscript,
+    allowUpload,
+    allowDangerousLaunch,
+    advancedOpen,
+    onToggleAdvanced: () => setAdvancedOpen((v) => !v),
     busy: false,
     copied: null,
     deviceName: '',
@@ -47,6 +56,9 @@ function Harness({ running = false }: { running?: boolean }) {
     onToggleAllowInput: () => setAllowInput((v) => !v),
     onToggleExpose: () => setExpose((v) => !v),
     onToggleTailscale: () => setTailscale((v) => !v),
+    onToggleAllowTranscript: () => setAllowTranscript((v) => !v),
+    onToggleAllowUpload: () => setAllowUpload((v) => !v),
+    onToggleAllowDangerousLaunch: () => setAllowDangerousLaunch((v) => !v),
     onStart: noop,
     onStop: noop,
     onCopyUrl: noop,
@@ -80,7 +92,7 @@ function press(el: Element, key: string) {
 }
 
 describe('Remote popover options', () => {
-  it.each(['web.allowInput', 'web.tailscale', 'web.expose'])('%s toggles from its label text', (key) => {
+  it.each(['web.allowInput', 'web.tailscale', 'web.expose', 'web.allowTranscript', 'web.allowUpload'])('%s toggles from its label text', (key) => {
     act(() => root.render(createElement(Harness)));
     const { label, box } = checkboxFor(key);
     expect(box.getAttribute('aria-checked')).toBe('false');
@@ -88,6 +100,19 @@ describe('Remote popover options', () => {
     expect(box.getAttribute('aria-checked')).toBe('true');
     act(() => label.click());
     expect(box.getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('Dangerous launch is reached through the Advanced disclosure and starts off', () => {
+    act(() => root.render(createElement(Harness)));
+    expect(Array.from(container.querySelectorAll('label')).some((l) => l.textContent === 'web.allowDangerousLaunch')).toBe(false);
+    const disclosure = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'web.advanced');
+    if (!disclosure) throw new Error('no Advanced disclosure');
+    act(() => disclosure.click());
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+    const { label, box } = checkboxFor('web.allowDangerousLaunch');
+    expect(box.getAttribute('aria-checked')).toBe('false');
+    act(() => label.click());
+    expect(box.getAttribute('aria-checked')).toBe('true');
   });
 
   it('toggles on Space and ignores Enter, like the native checkbox it replaced', () => {

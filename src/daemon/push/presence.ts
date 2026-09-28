@@ -256,6 +256,12 @@ interface ParkedPush {
 export interface DeferredPushQueueDeps {
   /** Hand a payload to the sender. Same collapseId as the original attempt. */
   send: (payload: PushPayload, opts: { collapseId?: string }) => void;
+  /**
+   * What finally happened to a held push: handed to `send` on release
+   * (`delivered`), or evicted past {@link DEFERRED_PUSH_CAP} and never sent
+   * (`dropped`). A `forget` is the caller's own decision and is not reported.
+   */
+  onOutcome?: (approvalId: string, outcome: 'delivered' | 'dropped', collapseId: string | undefined) => void;
   /** Ask the predicate whether the desktop is present RIGHT NOW. */
   isPresent: () => boolean;
   /** The freshness window in force, for sizing the re-check timer. */
@@ -306,11 +312,20 @@ export class DeferredPushQueue {
   /** Hold a push that presence suppressed, and arm the expiry re-check. */
   park(approvalId: string, payload: PushPayload, collapseId?: string): void {
     if (!this.parked.has(approvalId) && this.parked.size >= DEFERRED_PUSH_CAP) {
-      const oldest = this.parked.keys().next();
-      if (!oldest.done) this.parked.delete(oldest.value);
+      const oldest = this.parked.entries().next();
+      if (!oldest.done) {
+        const [droppedId, dropped] = oldest.value;
+        this.parked.delete(droppedId);
+        this.deps.onOutcome?.(droppedId, 'dropped', dropped.collapseId);
+      }
     }
     this.parked.set(approvalId, { payload, ...(collapseId ? { collapseId } : {}) });
     this.arm();
+  }
+
+  /** Is this approval's push still held (not yet released or forgotten)? */
+  has(approvalId: string): boolean {
+    return this.parked.has(approvalId);
   }
 
   /** The approval was answered, expired, or superseded — the push is moot. */
@@ -346,6 +361,7 @@ export class DeferredPushQueue {
       // The approval id only — never the question or the choices.
       this.deps.log?.('info', `[push] desktop went away, delivering held push for ${approvalId}`);
       this.deps.send(item.payload, item.collapseId ? { collapseId: item.collapseId } : {});
+      this.deps.onOutcome?.(approvalId, 'delivered', item.collapseId);
     }
   }
 

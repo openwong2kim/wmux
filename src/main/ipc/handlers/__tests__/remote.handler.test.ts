@@ -107,12 +107,16 @@ function fakeClient(host: RemoteHost) {
     host,
     attach: vi.fn((_sessionId: string) => `attach-${host.id}-${nextAttachId++}`),
     detach: vi.fn(),
+    refresh: vi.fn(),
     detachAll: vi.fn(),
     write: vi.fn(async () => undefined),
     listWorkspaces: vi.fn(async (): Promise<RemoteWorkspacesResponse> => ({ workspaces: [] })),
     createWorkspace: vi.fn(async (): Promise<{ sessionId: string }> => ({ sessionId: 'web-1' })),
     closeSession: vi.fn(async (): Promise<void> => undefined),
     resizeSession: vi.fn(async (): Promise<{ ok: true; cols: number; rows: number }> => ({ ok: true, cols: 100, rows: 30 })),
+    isAuthRejected: vi.fn(() => false),
+    isInsecure: vi.fn(() => false),
+    liveAttachmentCount: vi.fn(() => 0),
     onMeta: vi.fn((cb: (e: RemoteMetaEvent) => void) => { metaCbs.push(cb); }),
     onResize: vi.fn((cb: (e: RemoteResizeEvent) => void) => { resizeCbs.push(cb); }),
     onData: vi.fn((cb: (e: RemoteDataEvent) => void) => { dataCbs.push(cb); }),
@@ -161,6 +165,14 @@ function fakeStore(hosts: RemoteHost[] = []) {
       return { ok: true as const, host: pub };
     }),
     remove: vi.fn((id: string) => byId.delete(id)),
+    replaceCredential: vi.fn((id: string, origin: string, token: string, label?: string) => {
+      const prev = byId.get(id);
+      if (!prev) return { ok: false as const, error: 'unknown host' };
+      const host: RemoteHost = { ...prev, origin, token, ...(label ? { label } : {}) };
+      byId.set(id, host);
+      const { token: _t, ...pub } = host;
+      return { ok: true as const, host: pub };
+    }),
     addDirect: vi.fn((origin: string, token: string, label?: string) => {
       if ([...byId.values()].some((h) => h.origin === origin)) {
         return { ok: false as const, error: 'already registered' };
@@ -328,6 +340,34 @@ describe('remote.handler — hostsPair', () => {
     expect(pairUrl).toBe('https://box:9600/api/pair?code=ABCD1234');
     expect(pairInit?.redirect).toBe('error');
     expect(pairInit?.signal).toBeInstanceOf(AbortSignal);
+    // So the host's roster shows this desktop as a computer (display only).
+    expect(pairInit?.headers).toEqual({ 'x-wmux-device-kind': 'computer' });
+  });
+
+  it('never writes the pairing code to the main-process log on any outcome', async () => {
+    const code = 'K7QX2MNP';
+    const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation(() => undefined),
+    );
+    try {
+      const outcomes = [
+        async () => { throw new Error(`connect ECONNREFUSED /api/pair?code=${code}`); },
+        async () => jsonResponse({ error: 'invalid code', attemptsLeft: 4 }, false, 403),
+        async () => jsonResponse({ token: 'd1.s1' }),
+      ];
+      for (const outcome of outcomes) {
+        const fetchImpl = vi.fn(async (url: string) => {
+          if (String(url).includes('/api/pair')) return outcome();
+          return jsonResponse({ allowInput: false });
+        });
+        registerRemoteHandlers({ store: fakeStore() as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+        await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', code);
+      }
+      const written = spies.flatMap((s) => s.mock.calls.map((c) => c.map(String).join(' '))).join('\n');
+      expect(written).not.toContain(code);
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
   });
 
   it('strips a trailing path/slash down to the bare origin', async () => {
@@ -450,6 +490,64 @@ describe('remote.handler — hostsPair', () => {
     await expect(
       getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE'),
     ).resolves.toEqual({ ok: false, reason: 'pairing-failed' });
+  });
+});
+
+describe('remote.handler — hostsPair replacing a rejected credential', () => {
+  const STALE: RemoteHost = { id: 'host-1', label: 'box', origin: 'https://box:9600', token: 'stale', addedAt: 0 };
+
+  function setup() {
+    const store = fakeStore([{ ...STALE }]);
+    const attachments = fakeAttachments([
+      { key: 'host-1:ws-1', hostId: 'host-1', hostLabel: 'box', workspaceId: 'ws-1', name: 'one' },
+    ]);
+    const clients: Array<ReturnType<typeof fakeClient>> = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).includes('/api/pair')) return jsonResponse({ token: 'fresh' });
+      return jsonResponse({ allowInput: true });
+    });
+    registerRemoteHandlers({
+      store: store as never,
+      attachments: attachments as never,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      clientFactory: (h) => { const c = fakeClient(h); clients.push(c); return c; },
+    });
+    return { store, attachments, clients };
+  }
+
+  it('keeps the host id and its attachments, and swaps only the credential', async () => {
+    const { store, attachments } = setup();
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE', undefined, 'host-1') as { ok: boolean; host?: RemoteHostPublic };
+
+    expect(res).toMatchObject({ ok: true, host: { id: 'host-1' } });
+    expect(store.get('host-1')?.token).toBe('fresh');
+    expect(store.addDirect).not.toHaveBeenCalled();
+    expect(store.remove).not.toHaveBeenCalled();
+    expect(attachments.list()).toHaveLength(1);
+  });
+
+  it('drops the client built on the stale token so the next attach uses the new one', async () => {
+    const { clients } = setup();
+    const sender = fakeSender(1);
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'host-1', 'sess-1');
+    expect(clients).toHaveLength(1);
+
+    await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'CODE', undefined, 'host-1');
+    expect(clients[0].detachAll).toHaveBeenCalled();
+
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'host-1', 'sess-1');
+    expect(clients).toHaveLength(2);
+    expect((clients[1] as unknown as { host: RemoteHost }).host.token).toBe('fresh');
+  });
+
+  it('a failed exchange leaves the stale host untouched', async () => {
+    const store = fakeStore([{ ...STALE }]);
+    const fetchImpl = vi.fn(async () => jsonResponse({ error: 'invalid code', attemptsLeft: 2 }, false, 403));
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://box:9600', 'WRONG', undefined, 'host-1') as { ok: boolean };
+    expect(res.ok).toBe(false);
+    expect(store.get('host-1')?.token).toBe('stale');
   });
 });
 
@@ -667,6 +765,9 @@ describe('remote.handler — pane attach/detach/write push routing', () => {
 
     expect(second.attachId).toBe(first.attachId);
     expect(client.attach).toHaveBeenCalledTimes(1);
+    // The second viewer gets its own meta + snapshot through a fresh stream.
+    expect((client as unknown as { refresh: ReturnType<typeof vi.fn> }).refresh)
+      .toHaveBeenCalledWith(first.attachId);
   });
 
   it('a different session on the same sender opens a distinct attach', async () => {
@@ -1338,5 +1439,144 @@ describe('remote.handler — liveness poll tick (#1391)', () => {
 
     appListeners.get('will-quit')?.();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+
+describe('remote.handler — hostsStatus (the Remote hub)', () => {
+  const h = (id: string): RemoteHost => ({ id, label: id, origin: `https://${id}.ts.net`, token: `t-${id}`, addedAt: 0 });
+
+  it('reports each host by what it answered, and connected only with live streams', async () => {
+    const store = fakeStore([h('live'), h('idle'), h('off'), h('revoked')]);
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.startsWith('https://off.')) throw new TypeError('fetch failed');
+      if (url.startsWith('https://revoked.')) return jsonResponse({ error: 'unauthorized' }, false, 401);
+      return jsonResponse({ allowInput: true });
+    });
+    const made: Array<ReturnType<typeof fakeClient>> = [];
+    registerRemoteHandlers({
+      store: store as never,
+      attachments: fakeAttachments() as never,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      clientFactory: (host) => { const c = fakeClient(host); made.push(c); return c; },
+    });
+    const sender = { id: 1, isDestroyed: () => false, send: vi.fn(), on: vi.fn(), once: vi.fn(), removeListener: vi.fn() };
+    await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'live', 'sess-1');
+    (made[0] as unknown as { liveAttachmentCount: ReturnType<typeof vi.fn> }).liveAttachmentCount.mockReturnValue(1);
+
+    const statuses = await getHandler(IPC.REMOTE_HOSTS_STATUS)({}, false);
+    expect(statuses).toEqual({ live: 'connected', idle: 'reachable', off: 'unreachable', revoked: 'needs-repair' });
+  });
+
+  it('never rejects and never suggests re-pairing for a host that did not answer', async () => {
+    const store = fakeStore([h('off')]);
+    const fetchImpl = vi.fn(async () => { throw new Error('ETIMEDOUT'); });
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    await expect(getHandler(IPC.REMOTE_HOSTS_STATUS)({}, true)).resolves.toEqual({ off: 'unreachable' });
+  });
+});
+
+
+describe('remote.handler — credentials only over HTTPS, and no rebinding', () => {
+  const h = (id: string, origin: string): RemoteHost => ({ id, label: id, origin, token: `t-${id}`, addedAt: 0 });
+
+  it('hostsPair refuses plain http to another machine and user@ origins without fetching', async () => {
+    const fetchImpl = vi.fn();
+    registerRemoteHandlers({ store: fakeStore() as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    await expect(getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'http://192.168.1.5:7681', 'QWXZ7K9M')).resolves.toEqual({
+      ok: false,
+      reason: 'insecure-transport',
+    });
+    await expect(getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://a@evil.example', 'QWXZ7K9M')).resolves.toEqual({
+      ok: false,
+      reason: 'invalid-origin',
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('hostsPair still allows plain http to this same machine', async () => {
+    const fetchImpl = vi.fn(async (url: string) =>
+      String(url).includes('/api/pair') ? jsonResponse({ token: 't' }) : jsonResponse({ allowInput: false }),
+    );
+    registerRemoteHandlers({ store: fakeStore() as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const res = (await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'http://127.0.0.1:7681', 'QWXZ7K9M')) as { ok: boolean };
+    expect(res.ok).toBe(true);
+  });
+
+  it('hostsAdd refuses a plain-http token URL to another machine without fetching', async () => {
+    const fetchImpl = vi.fn();
+    const store = fakeStore();
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const res = (await getHandler(IPC.REMOTE_HOSTS_ADD)({}, 'http://box.lan:7681/?token=abc')) as { ok: boolean; error?: string };
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('HTTPS');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.add).not.toHaveBeenCalled();
+  });
+
+  it('a re-pair whose origin differs from the host being replaced fails and changes nothing', async () => {
+    const store = fakeStore([h('office', 'https://office.ts.net')]);
+    const fetchImpl = vi.fn();
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const res = await getHandler(IPC.REMOTE_HOSTS_PAIR)({}, 'https://elsewhere.ts.net', 'QWXZ7K9M', undefined, 'office');
+    expect(res).toEqual({ ok: false, reason: 'pairing-failed' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.replaceCredential).not.toHaveBeenCalled();
+  });
+
+  it('hostsStatus never sends the token to a plain-http host on another machine', async () => {
+    const store = fakeStore([h('lan', 'http://192.168.1.5:7681'), h('local', 'http://127.0.0.1:7681')]);
+    const fetchImpl = vi.fn(async () => jsonResponse({}));
+    registerRemoteHandlers({ store: store as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const res = await getHandler(IPC.REMOTE_HOSTS_STATUS)({}, true);
+    expect(res).toEqual({ lan: 'insecure', local: 'reachable' });
+    expect(fetchImpl.mock.calls.map((c) => String((c as unknown[])[0]))).toEqual(['http://127.0.0.1:7681/api/config']);
+  });
+});
+
+describe('remote.handler — a plain-http host to another machine never gets its token', () => {
+  const lanHost: RemoteHost = { id: 'lan', label: 'lan', origin: 'http://192.168.1.5:7681', token: 'T0K3N', addedAt: 0 };
+
+  it('workspacesList and workspaceCreate fail closed with insecure-transport and no fetch at all', async () => {
+    const fetchImpl = vi.fn();
+    registerRemoteHandlers({ store: fakeStore([lanHost]) as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const list = (await getHandler(IPC.REMOTE_WORKSPACES_LIST)({}, 'lan')) as { ok: boolean; reason?: string; error?: string };
+    expect(list).toMatchObject({ ok: false, reason: 'insecure-transport' });
+    expect(list.error).toContain('needs HTTPS');
+    const created = (await getHandler(IPC.REMOTE_WORKSPACE_CREATE)({}, 'lan', 'ws-1')) as { ok: boolean; reason?: string };
+    expect(created).toMatchObject({ ok: false, reason: 'insecure-transport' });
+    const closed = (await getHandler(IPC.REMOTE_SESSION_CLOSE)({}, 'lan', 'web-1')) as { ok: boolean; reason?: string };
+    expect(closed).toMatchObject({ ok: false, reason: 'insecure-transport' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('remote.handler — paneAttach refuses a needs-HTTPS host up front', () => {
+  it('answers insecure-transport from the attach itself, opens nothing, and fetches nothing', async () => {
+    const lanHost: RemoteHost = { id: 'lan', label: 'lan', origin: 'http://127.0.0.1.nip.io:7681', token: 'T0K3N', addedAt: 0 };
+    const fetchImpl = vi.fn();
+    registerRemoteHandlers({ store: fakeStore([lanHost]) as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const sender = { id: 1, isDestroyed: () => false, send: vi.fn(), on: vi.fn(), once: vi.fn(), removeListener: vi.fn() };
+    const res = await getHandler(IPC.REMOTE_PANE_ATTACH)({ sender }, 'lan', 's1');
+    expect(res).toMatchObject({ ok: false, reason: 'insecure-transport' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(sender.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('remote.handler — hostsAdd names needs-HTTPS, never "could not reach"', () => {
+  it.each([
+    'http://192.168.1.5:7681/?token=abc',
+    'http://127.0.0.1.nip.io:7681/?token=abc',
+    'http://127.evil.example/?token=abc',
+  ])('%s', async (url) => {
+    const fetchImpl = vi.fn();
+    registerRemoteHandlers({ store: fakeStore() as never, attachments: fakeAttachments() as never, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const res = (await getHandler(IPC.REMOTE_HOSTS_ADD)({}, url)) as { ok: boolean; error?: string };
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('needs HTTPS');
+    expect(res.error).not.toContain('could not reach');
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

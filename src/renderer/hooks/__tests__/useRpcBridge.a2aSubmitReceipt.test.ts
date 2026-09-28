@@ -45,7 +45,11 @@ describe('useRpcBridge — A2A submit receipt wiring', () => {
     // Exactly one raw call in this file: the one inside submitToPty itself.
     expect(rawCalls(bridge)).toHaveLength(1);
     // ...and a2a.broadcast is one of the callers (it used to be missed).
-    expect(bridge).toMatch(/submitToPty\(ptyId, formatA2aBroadcast\(fromName, message, undefined, a2aFormatOptionsFor\(ptyId\)\)\)/);
+    expect(bridge).toMatch(/deliverA2aText\(\s*ptyId,\s*formatA2aBroadcast\(fromName, message, undefined, a2aFormatOptionsFor\(ptyId\)\)/);
+    // Every A2A write passes the approval gate: the only submitToPty call is
+    // the operator branch inside deliverA2aText.
+    const submitCalls = bridge.split('\n').filter((l) => /(?<![A-Za-z])submitToPty\(/.test(l) && !/function submitToPty/.test(l));
+    expect(submitCalls).toHaveLength(1);
   });
 
   it('computes the receipt from the pty that was actually written to', () => {
@@ -53,19 +57,21 @@ describe('useRpcBridge — A2A submit receipt wiring', () => {
     const receipts = bridge.match(/submitReceiptFields\(ptyAgent\(wrotePty\)\)/g) ?? [];
     expect(receipts).toHaveLength(2);
     // The old boolean return would silently re-enable a caller-supplied agent.
-    expect(bridge).toMatch(/function deliverPtyNudge\([\s\S]*?\): string \| null/);
-    expect(bridge).toMatch(/function deliverPtyNotification\([\s\S]*?\): string \| null/);
+    expect(bridge).toMatch(/function deliverPtyNudge\([\s\S]*?\): Promise<A2aPtyWrite>/);
+    expect(bridge).toMatch(/function deliverPtyNotification\([\s\S]*?\): Promise<A2aPtyWrite>/);
   });
 
   it('channel @-mention nudges name the receiving agent', () => {
-    expect(rawCalls(channels)).toHaveLength(1);
+    // Mention nudges go through main's gated submit, never a raw paste.
+    expect(rawCalls(channels)).toHaveLength(0);
+    expect(channels).toMatch(/gatedSubmitToPty\(ptyId, text, \{/);
     expect(channels).toMatch(/agent: useStore\.getState\(\)\.surfaceAgent\[ptyId\]\?\.slug/);
   });
 
   it('company-mode delivery routes through one agent-aware helper', () => {
     // One raw call (inside the helper); every member/CEO write uses the helper.
     expect(rawCalls(company)).toHaveLength(1);
-    expect(company).toMatch(/function submitToMemberPty\(ptyId: string, text: string\)/);
+    expect(company).toMatch(/function submitToMemberPty\(\s*ptyId: string,\s*text: string,/);
     expect(company).toMatch(/surfaceAgent\[ptyId\]\?\.name/);
     expect(company.match(/submitToMemberPty\(/g)?.length ?? 0).toBeGreaterThanOrEqual(9);
   });

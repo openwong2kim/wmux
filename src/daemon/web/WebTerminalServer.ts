@@ -8,10 +8,28 @@ import { sessionPullRequests } from './sessionPullRequests';
 import { SessionGitController, SessionGitError } from './sessionGit';
 import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
 import { listFolders, FolderBrowseError, homeIsBrowsable } from './phoneFolders';
+import {
+  createSearchCursorCodec,
+  joinWrappedRows,
+  MAX_CONCURRENT_SEARCHES,
+  parseSearchRequest,
+  runSearch,
+  ScrollbackExtractions,
+  ScrollbackTextCache,
+  SearchAdmission,
+  SearchError,
+  searchForbidden,
+  type SearchPane,
+  type SearchRequest,
+  type SearchScope,
+  type SearchAfter,
+  type TurnPage,
+  type TurnSource,
+} from './hostSearch';
 import http from 'node:http';
 import type { AgentStatus } from '../../shared/types';
 import { isRemoteAgentStatus } from '../../shared/remoteHosts';
-import { createSidebarDropLog, parsePhoneSidebarSnapshot, phoneTaskNesting, type PhoneSidebarSnapshot, type PhoneSidebarTaskSummary, type PhoneSidebarWorkspace } from '../../shared/phoneFleetSidebar';
+import { createSidebarDropLog, parsePhoneSidebarSnapshot, phoneTaskNesting, type PhoneSidebarSnapshot, type PhoneSidebarTaskSummary, type PhoneSidebarWorkspace, type PhoneTaskNestedUnder } from '../../shared/phoneFleetSidebar';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -19,6 +37,7 @@ import fs from 'node:fs';
 import { expandTilde } from '../../shared/expandTilde';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { Readable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import type { DaemonSessionManager, ManagedSession } from '../DaemonSessionManager';
 // Types only — the registry implementation, its persistence and its
@@ -26,6 +45,8 @@ import type { DaemonSessionManager, ManagedSession } from '../DaemonSessionManag
 // a CONSUMER: it lists, it resolves, it republishes lifecycle events. It never
 // constructs a request, and it never decides what bytes a decision means.
 import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
+import { TERMINAL_PROMPT_WEB_ANSWER, TERMINAL_PROMPT_WEB_DECLINE } from '../approvals/types';
+import { decisionForChoiceLabel } from '../approvals/terminalPromptParse';
 // Type only — the projector's implementation (transcript parsing, watch state,
 // fs watching) stays out of this module. The web server is a STATELESS consumer
 // of its `delta()` for the phone turn view (#782); it must never `subscribe()`.
@@ -50,11 +71,21 @@ import {
   type SkillCatalogEntry,
 } from '../../main/deck/skillCatalogScan';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
-import { webHostIsLoopback, type PairRefusal, type WebTlsConfig } from '../../shared/web';
+import {
+  DEVICE_KIND_HEADER,
+  normalizeDeviceKind,
+  webHostIsLoopback,
+  type DeviceKind,
+  type PairFlow,
+  type PairRefusal,
+  type WebTlsConfig,
+} from '../../shared/web';
 import type { RemotePaneSummary, RemoteResumeInfo } from '../../shared/remoteHosts';
 import { normalizeResumeCwd, type ResumeBinding } from '../../shared/agentResume';
 import { assistantPreview } from '../../shared/assistantPreview';
 import { capSnapshot } from './snapshotWindow';
+import { revokeDeviceAndDisconnect } from './deviceRevoke';
+import type { DeviceActor } from './deviceAudit';
 import {
   collectSessionDiff,
   createGitRunner,
@@ -67,13 +98,16 @@ import {
   PHONE_PROTOCOL_VERSION,
 } from './protocolVersion';
 import { startSseHeartbeat } from './sseHeartbeat';
+import { StreamResponseLimits } from './StreamResponseLimits';
 import {
   CHAT_LAUNCH_RETENTION_MS,
   checkChatId,
+  projectChatBlocked,
   type ChatBlocked,
   type ChatBridge,
   type ChatOwner,
   type ChatResolution,
+  type ChatUnavailableCause,
 } from '../chat/chatBridge';
 import type { TranscriptCursor } from '../../shared/transcript/turnEvents';
 import { cursorMatches, decodeChatCursor, encodeChatCursor, type ReadSource } from './chatCursor';
@@ -171,9 +205,14 @@ function decodeTurnCursor(
  *                              device's own credential (refused over plaintext
  *                              off-machine transports — see mintRefusal)
  *   POST /api/live-activity-registration  push-to-start / activity tokens (merges)
+ *   GET  /api/devices          paired-device roster, scoped to the caller
+ *   POST /api/devices/:id/revoke   remove a device (a device: only itself)
+ *   PATCH /api/devices/:id/grants  lower a device's input grant (never raise)
  *   GET  /api/config           allowInput + allowUpload flags, plus the phone
  *                              protocol handshake (see protocolVersion.ts)
  *   GET  /api/sessions         pane list
+ *   GET  /api/search?q=        search turns, pane metadata + run history and
+ *                              scrollback across this host (hostSearch.ts)
  *   POST /api/sessions         spawn a pane — 403 unless `--allow-input`
  *   DELETE /api/sessions/:id   close a pane — 403 unless `--allow-input`
  *   GET  /api/sessions/:id/diff  what this pane's repo has changed (read-only git)
@@ -188,11 +227,18 @@ function decodeTurnCursor(
  *   GET  /api/stream?session=  SSE pane bytes (`?token=`/`?ticket=` — EventSource)
  *   GET  /api/events           attention + approval channel; SSE (`?token=`
  *                              allowed) or JSON backlog (Bearer only)
- *   POST /api/input?session=   free-form bytes — 403 unless `--allow-input`
+ *   POST /api/input?session=   free-form bytes — 403 unless `--allow-input`;
+ *                              409 `terminal-prompt-active` while the pane
+ *                              shows a `terminal_prompt` dialog (lone Esc /
+ *                              Ctrl-C excepted)
  *   POST /api/upload           raw JPEG/PNG bytes → a path on disk — 403
  *                              unless `--allow-upload` (its own grant)
  *   GET  /api/approvals        pending + recently resolved approval requests
  *   POST /api/approvals/:id    resolve one — ALLOWED on a read-only server
+ *   GET  /api/approvals/:id/detail   the full command of a pending, bound
+ *                              `terminal_prompt` (≤64 KB) + its hash
+ *   POST /api/approvals/:id/decline  cancel a `terminal_prompt` dialog with one
+ *                              Esc, only while it is pending and on screen
  */
 
 export interface WebTerminalStartOptions {
@@ -306,6 +352,10 @@ export interface WebTerminalInfo {
    * refusal shape is a fourth thing to forget.
    */
   pairRefusal?: PairRefusal;
+  /** Name, grant and flow of the pending pairing; present only with a live code. */
+  pendingDeviceName?: string;
+  pendingDeviceAllowInput?: boolean;
+  pendingPairFlow?: PairFlow;
   /** Which transport this server was started on. Reported, never acted on. */
   tailscale?: boolean;
   /**
@@ -361,7 +411,7 @@ export type DeviceAuthResult =
  */
 export interface WebDeviceResolver {
   resolve(deviceId: string, secret: string): Promise<DeviceAuthResult> | DeviceAuthResult;
-  mint(params: { name?: string; allowInput?: boolean }): Promise<{ deviceId: string; deviceSecret: string }>;
+  mint(params: { name?: string; allowInput?: boolean; kind?: DeviceKind }): Promise<{ deviceId: string; deviceSecret: string }>;
   /**
    * Record a successful auth. Optional because it is bookkeeping, not
    * authorization: a store that does not track `lastSeenAt` is still a valid
@@ -389,6 +439,45 @@ export interface WebDeviceResolver {
     deviceId: string,
     input: { hostID?: unknown; pushToStartToken?: unknown; activityToken?: unknown; apnsEnvironment?: unknown },
   ): { ok: boolean; reason?: string };
+  /**
+   * Device management from the phone (`/api/devices`). The three verbs are ONE
+   * capability: a resolver missing any of them gets 503 on all three routes
+   * and no `deviceManagement` key in `/api/config`, so a phone never shows a
+   * roster it cannot act on. Shapes mirror DeviceStore's, which is what the
+   * daemon injects here.
+   */
+  list?(): WebDeviceSummary[];
+  revoke?(deviceId: string, actor: DeviceActor): { ok: boolean; reason?: 'not-found' | 'persist-failed' };
+  setInput?(
+    deviceId: string,
+    allowInput: boolean,
+    actor: DeviceActor,
+  ): WebDeviceSetInputResult;
+}
+
+/**
+ * What `setInput` answers. `changed` is true only when the call changed the
+ * grant; `retried` when it re-attempted the write of an earlier change that
+ * had not reached disk.
+ */
+export interface WebDeviceSetInputResult {
+  ok: boolean;
+  reason?: 'not-found' | 'revoked' | 'persist-failed';
+  changed: boolean;
+  retried?: boolean;
+}
+
+/** One roster row as the resolver reports it. Carries no secret material. */
+export interface WebDeviceSummary {
+  deviceId: string;
+  name: string;
+  createdAt: number;
+  lastSeenAt: number;
+  /** The device's own resolved grant; the server flag is applied separately. */
+  allowInput: boolean;
+  revokedAt?: number;
+  /** Display-only self-description from pairing. Never used for authorization. */
+  kind?: DeviceKind;
 }
 
 /**
@@ -415,7 +504,7 @@ type AuthOutcome = { ok: true; principal: WebPrincipal } | { ok: false; reason: 
  */
 export type WebPairStartResult =
   | { ok: true; code: string; expiresAt: number }
-  | { ok: false; error: string };
+  | { ok: false; error: string; reason?: 'busy' };
 
 /**
  * Pane lifecycle as far as the HTTP surface is concerned.
@@ -614,6 +703,13 @@ interface WebTerminalServerDeps {
     commandRunning?: boolean;
     agentProcessAlive?: boolean;
   } | undefined;
+  /**
+   * A pane's ring as plain-text rows — the `daemon.readSessionText` parse, on
+   * the daemon's shared concurrency-1 snapshot queue — for the scrollback
+   * scope of `GET /api/search`. Optional: without it that scope answers
+   * `unavailable` for every pane and `/api/config` does not advertise it.
+   */
+  sessionText?: (sessionId: string) => Promise<ReadonlyArray<{ text: string; wrapped: boolean }> | null>;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
@@ -984,6 +1080,8 @@ interface EventClient {
   res: http.ServerResponse;
   detach: () => void;
   principal: WebPrincipal;
+  /** What the client declared it understands (`X-Wmux-Client-Caps`). */
+  caps: ClientCaps;
 }
 
 /**
@@ -1111,6 +1209,12 @@ export class WebTerminalServer {
   private phoneGitRequests = 0;
   private readonly agentSettingsRequests = new Set<string>();
   private readonly pendingLiveness = new Map<string, AgentLivenessBody>();
+  /** `GET /api/search`: the cursor key lives and dies with this server. */
+  private readonly searchCursors = createSearchCursorCodec(crypto.randomBytes(32));
+  private readonly scrollbackText = new ScrollbackTextCache();
+  private readonly scrollbackExtractions = new ScrollbackExtractions();
+  private readonly searchAdmission = new SearchAdmission(() => this.now());
+  private searchesInFlight = 0;
   /** Last GOOD desktop sidebar snapshot and when it was taken. */
   private desktopSidebarCache: { at: number; value: PhoneSidebarSnapshot } | null = null;
   /** The one background refresh in flight, and when it started. */
@@ -1219,6 +1323,20 @@ export class WebTerminalServer {
    * unticked checkbox still means read-only on an input-enabled server.
    */
   private pendingDeviceAllowInput = false;
+  /**
+   * Which card the pending name and grant belong to. Held, replaced and
+   * cleared together with them, so a re-mint on expiry or a burned attempt
+   * budget can never carry the phone card's name onto a computer link (or the
+   * other way round). Absent exactly when `pendingDeviceName` is.
+   */
+  private pendingPairFlow: PairFlow | undefined;
+  /**
+   * Bumped whenever the code slot changes hands (a mint or a burn). A
+   * redemption records it before its await, so a slot re-minted meanwhile —
+   * the other card starting — is never burned or restored by the request
+   * that belonged to the old code.
+   */
+  private pairGeneration = 0;
 
   /**
    * The grant a pairing code carries when nobody said. Typing `--allow-input`
@@ -1236,6 +1354,8 @@ export class WebTerminalServer {
    * stream against THIS running server, so there is nothing to carry across a
    * restart — the client asks for another one, which costs it one request.
    */
+  private readonly streamResponses = new StreamResponseLimits();
+
   private readonly streamTickets = new Map<string, StreamTicket>();
 
   // Bound so on()/off() reference the SAME listener across start()/stop().
@@ -1357,6 +1477,10 @@ export class WebTerminalServer {
     tailscale: boolean;
     host: string;
     token: string;
+    allowInput: boolean;
+    allowUpload: boolean;
+    allowTranscript: boolean;
+    allowDangerousLaunch: boolean;
   } | undefined {
     if (!this.server || !this.opts) return undefined;
     return {
@@ -1364,6 +1488,11 @@ export class WebTerminalServer {
       tailscale: this.opts.tailscale === true,
       host: this.opts.host,
       token: this.token,
+      // What a start that inherits unsent grants keeps (resolveWebStartGrants).
+      allowInput: this.opts.allowInput === true,
+      allowUpload: this.opts.allowUpload === true,
+      allowTranscript: this.opts.allowTranscript === true,
+      allowDangerousLaunch: this.opts.allowDangerousLaunch === true,
     };
   }
 
@@ -1397,6 +1526,7 @@ export class WebTerminalServer {
     this.token = options.token || crypto.randomUUID();
     this.opts = options;
     this.pendingDeviceName = undefined;
+    this.pendingPairFlow = undefined;
     // AFTER `this.opts` is set — the default reads the flag from it.
     this.pendingDeviceAllowInput = this.defaultPendingGrant();
     this.generatePairCode();
@@ -1421,6 +1551,7 @@ export class WebTerminalServer {
         this.pairExpiresAt = 0;
         this.pairAttempts = 0;
         this.pendingDeviceName = undefined;
+        this.pendingPairFlow = undefined;
         this.pendingDeviceAllowInput = false;
         reject(err);
       };
@@ -1512,6 +1643,7 @@ export class WebTerminalServer {
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
     this.pendingDeviceName = undefined;
+    this.pendingPairFlow = undefined;
     this.pendingDeviceAllowInput = false;
     // Capabilities against a server that is going away. Nothing to preserve.
     this.streamTickets.clear();
@@ -1614,18 +1746,65 @@ export class WebTerminalServer {
    * walks to the phone, types it, and only then learns the server would never
    * have minted anything.
    */
-  startPairing(params: { name?: string; allowInput?: boolean } = {}): WebPairStartResult {
+  startPairing(
+    params: { name?: string; allowInput?: boolean; flow?: PairFlow } = {},
+  ): WebPairStartResult {
     if (!this.server) return { ok: false, error: 'the web server is not running — start it first' };
     const refusal = this.mintRefusal();
     if (refusal) return { ok: false, error: refusal };
+    // A caller that predates flows is the phone card, which is all there was.
+    const flow: PairFlow = params.flow === 'computer' ? 'computer' : 'phone';
+    // One code slot, two cards. Refuse BEFORE minting: minting first would
+    // rotate the code under the other card's QR or link on every refused
+    // click. The operator ends the other pairing explicitly (`cancelPairing`).
+    if (this.pendingPairFlow !== undefined && this.pendingPairFlow !== flow && this.pairIsLive()) {
+      return {
+        ok: false,
+        reason: 'busy',
+        error: 'another pairing is in progress — cancel it first',
+      };
+    }
     const label = typeof params.name === 'string' ? params.name.trim() : '';
     this.generatePairCode();
     this.pendingDeviceName = label || undefined;
+    this.pendingPairFlow = label ? flow : undefined;
     // `??`, not `===`: an omitted grant inherits the server's, an explicit
     // `false` stays false. Collapsing those two would either mute the GUI's
     // unticked box or mute every headless pairing.
     this.pendingDeviceAllowInput = params.allowInput ?? this.defaultPendingGrant();
     return { ok: true, code: this.pairCode, expiresAt: this.pairExpiresAt };
+  }
+
+  /**
+   * `daemon.web.pairCancel` — end the pairing in progress, whichever card
+   * started it. Burns the code with its name, grant and flow, so nothing the
+   * operator was about to hand out survives the cancel.
+   */
+  cancelPairing(): WebTerminalInfo {
+    if (!this.server) return { running: false };
+    this.burnPairCode();
+    return this.status();
+  }
+
+  /** Whether a named pairing is still redeemable (a live code with a name). */
+  private pairIsLive(): boolean {
+    return this.pendingDeviceName !== undefined && this.pairCode !== '' && Date.now() <= this.pairExpiresAt;
+  }
+
+  /**
+   * Devices holding a live stream right now. One half of "active now": a
+   * stream is opened with a ticket and never re-authenticates, so a phone
+   * watching a pane for an hour has a stale `lastSeenAt` while plainly present.
+   */
+  liveDeviceIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const client of this.clients) {
+      if (client.principal.kind === 'device') ids.add(client.principal.deviceId);
+    }
+    for (const client of this.eventClients) {
+      if (client.principal.kind === 'device') ids.add(client.principal.deviceId);
+    }
+    return ids;
   }
 
   /**
@@ -1858,6 +2037,7 @@ export class WebTerminalServer {
         ? {
             pendingDeviceName: this.pendingDeviceName,
             pendingDeviceAllowInput: this.pendingDeviceAllowInput,
+            pendingPairFlow: this.pendingPairFlow ?? 'phone',
           }
         : {}),
     };
@@ -1960,7 +2140,7 @@ export class WebTerminalServer {
       if (req.headers['sec-fetch-site'] === 'cross-site') {
         return this.json(res, 403, { error: 'cross-site request refused' });
       }
-      this.handlePair(res, url).catch((err: unknown) => this.failRequest(res, err));
+      this.handlePair(req, res, url).catch((err: unknown) => this.failRequest(res, err));
       return;
     }
 
@@ -2016,6 +2196,18 @@ export class WebTerminalServer {
       return this.json(res, 401, { error: 'unauthorized', reason: auth.reason });
     }
     const principal = auth.principal;
+    // Admit before opening a file or registering any long-lived listeners.
+    const streamsResponse = isStream || (req.method === 'GET'
+      && /^\/api\/sessions\/[^/]+\/turns\/(file|image)$/.test(p));
+    if (streamsResponse && !this.streamResponses.acquire(this.watcherKey(principal), res, {
+      exemptCeiling: principal.kind === 'operator',
+      maxQueuedBytes: p === '/api/stream' ? 16 * 1024 * 1024 : undefined,
+      log: (reason) => this.deps.log('warn', `[web] stream closed: ${reason}`),
+    })) {
+      res.setHeader('Retry-After', '1');
+      return this.json(res, 429, { error: 'too-many-streams' });
+    }
+
     // #1316 — one stamp for the whole authenticated surface. Placed after the
     // gate and before the route table so no route can forget it, and so a
     // failed credential never counts as someone using the daemon.
@@ -2075,6 +2267,9 @@ export class WebTerminalServer {
         desktopAccounts: this.opts?.allowTranscript === true && desktopAvailable,
         gitControl: this.mayInput(principal),
         runHistory: this.opts?.allowTranscript === true && this.deps.runHistory !== undefined,
+        // `GET /api/search`, and which of its scopes can answer. OMITTED, not
+        // false, when none can — the shape a daemon predating the route serves.
+        ...this.searchConfig(),
         // Native chat (contract §4). OMITTED, not false, when the bridge is not
         // wired: that is the shape a daemon predating the routes serves, and a
         // phone reads both as "no native chat here".
@@ -2112,6 +2307,21 @@ export class WebTerminalServer {
         // that they are present now: each field is omitted while the desktop
         // is away. Omitted without a bridge, and by an older daemon.
         ...(this.deps.desktop ? { fleetSidebar: true } : {}),
+        // Whether `/api/devices` answers here, and how much of the roster this
+        // caller may see and act on (see handleDeviceList). OMITTED, not
+        // false, when the device store cannot list, revoke and set grants —
+        // the shape an older daemon serves.
+        ...(this.deviceManagement() ? { deviceManagement: { scope: this.deviceScope(principal) } } : {}),
+        // `terminal_prompt` extras: `GET /api/approvals/:id/detail` (the full
+        // command) and `POST /api/approvals/:id/decline` (one Esc). OMITTED,
+        // not false, when approvals are not wired — the shape an older daemon
+        // serves. Decline, like every write, only with this caller's input grant.
+        ...(this.deps.approvals
+          ? {
+              terminalPromptDetail: this.opts?.allowTranscript === true,
+              terminalPromptDecline: this.mayInput(principal),
+            }
+          : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
         minProtocolVersion: MIN_PHONE_PROTOCOL_VERSION,
         serverVersion: daemonServerVersion(),
@@ -2127,6 +2337,9 @@ export class WebTerminalServer {
       if (!Number.isSafeInteger(offset) || offset < 0 || offset > 1000) return this.json(res, 400, {error:'invalid-offset'});
       try { return this.json(res, 200, this.deps.runHistory().list(offset), {'Cache-Control':'no-store'}); }
       catch { return this.json(res, 503, {error:'history-unavailable'}); }
+    }
+    if (req.method === 'GET' && p === '/api/search') {
+      return this.handleSearch(res, url, principal);
     }
     if (req.method === 'GET' && p === '/api/workspaces') {
       return this.handleWorkspacesList(res);
@@ -2242,6 +2455,13 @@ export class WebTerminalServer {
     if (req.method === 'POST' && p === '/api/live-activity-registration') {
       return this.handleLiveActivityRegistration(req, res, principal);
     }
+    const deviceRoute = /^\/api\/devices(?:\/([^/]+)\/(revoke|grants))?$/.exec(p);
+    if (deviceRoute) {
+      const [, rawId = '', verb] = deviceRoute;
+      if (req.method === 'GET' && !verb) return this.handleDeviceList(res, principal);
+      if (req.method === 'POST' && verb === 'revoke') return this.handleDeviceRevoke(res, rawId, principal);
+      if (req.method === 'PATCH' && verb === 'grants') return this.handleDeviceGrants(req, res, rawId, principal);
+    }
     if (req.method === 'POST' && p === '/api/input') {
       return this.handleInput(req, res, url, principal);
     }
@@ -2256,7 +2476,16 @@ export class WebTerminalServer {
       return this.handleUpload(req, res, extension.toLowerCase());
     }
     if (req.method === 'GET' && p === '/api/approvals') {
-      return this.handleApprovalsList(res, principal);
+      return this.handleApprovalsList(res, principal, {
+        ...clientCaps(req),
+        terminalPromptDetail: this.opts?.allowTranscript === true,
+      });
+    }
+    if (req.method === 'GET' && p.startsWith('/api/approvals/') && p.endsWith('/detail')) {
+      return this.handleApprovalDetail(req, res, p.slice('/api/approvals/'.length, -'/detail'.length), principal);
+    }
+    if (req.method === 'POST' && p.startsWith('/api/approvals/') && p.endsWith('/decline')) {
+      return this.handleApprovalDecline(req, res, p.slice('/api/approvals/'.length, -'/decline'.length), principal, url);
     }
     if (req.method === 'POST' && p.startsWith('/api/approvals/')) {
       return this.handleApprovalResolve(req, res, p.slice('/api/approvals/'.length), principal, url);
@@ -2629,10 +2858,27 @@ export class WebTerminalServer {
     // Merged onto the daemon's own rows only: a workspace still exists here iff
     // a live, non-brain pane runs in it, and the desktop cannot add one.
     const fields = new Map(sidebar.workspaces.map((w) => [w.id, w]));
-    const nesting = phoneTaskNesting(sidebar.workspaces, new Set(byId.keys()));
+    // Desktop pane ids of the sessions this reply lists, each under the
+    // workspace both sides agree it runs in: the only panes a task may be
+    // filed under.
+    const sidebarPanes = new Map(sidebar.panes.map((p) => [p.ptyId, p]));
+    const listedPanes = new Map<string, string>();
+    for (const w of workspaces) {
+      for (const pane of w.panes) {
+        const label = sidebarPanes.get(pane.sessionId);
+        if (label?.paneId !== undefined && label.workspaceId === w.id) listedPanes.set(label.paneId, w.id);
+      }
+    }
+    const nesting = phoneTaskNesting(sidebar.workspaces, new Set(byId.keys()), listedPanes);
     const merged = workspaces.map((w) => {
       const extra = fields.get(w.id);
-      return extra ? { ...w, ...sidebarWorkspaceFields(extra, nesting.nested.get(w.id), nesting.summaries.get(w.id)) } : w;
+      const panes = w.panes.map((pane) => {
+        const label = sidebarPanes.get(pane.sessionId);
+        return label?.paneId !== undefined && label.workspaceId === w.id ? { ...pane, paneId: label.paneId } : pane;
+      });
+      return extra
+        ? { ...w, panes, ...sidebarWorkspaceFields(extra, nesting.nested.get(w.id), nesting.summaries.get(w.id), nesting.placement.get(w.id)) }
+        : { ...w, panes };
     });
     // Only an id this reply lists, so the active workspace cannot name one the
     // phone is not allowed to see (a brain-only workspace, for one).
@@ -2660,6 +2906,9 @@ export class WebTerminalServer {
         if (!pane) return s;
         return {
           ...s,
+          // Same rule as /api/workspaces: a pane id only where the desktop and
+          // this daemon agree which workspace the session runs in.
+          ...(pane.paneId !== undefined && pane.workspaceId === s.workspaceId ? { paneId: pane.paneId } : {}),
           ...(pane.surfaceTitle !== undefined ? { surfaceTitle: pane.surfaceTitle } : {}),
           ...(pane.paneName !== undefined ? { paneName: pane.paneName } : {}),
         };
@@ -2756,6 +3005,206 @@ export class WebTerminalServer {
         if (this.desktopSidebarInFlight === entry) this.desktopSidebarInFlight = null;
       });
     this.desktopSidebarInFlight = entry;
+  }
+
+  // --- host search -----------------------------------------------------------
+
+  /**
+   * The scopes `GET /api/search` can answer for any caller. Transcript scopes
+   * ride `--allow-transcript`, exactly as `/turns` and `/api/history` do.
+   * Scrollback is the `/api/stream` grant — every authenticated caller holds
+   * it — plus the daemon's text reader. A read, so input is never asked for.
+   */
+  private searchConfig(): { search?: true; searchScopes?: SearchScope[] } {
+    const scopes: SearchScope[] = [
+      ...(this.opts?.allowTranscript === true ? ['turns', 'sessions'] as const : []),
+      ...(this.deps.sessionText ? ['scrollback'] as const : []),
+    ];
+    return scopes.length > 0 ? { search: true, searchScopes: scopes } : {};
+  }
+
+  /**
+   * `GET /api/search?q=&scope=&limit=&cursor=` — see hostSearch.ts for the
+   * matching, the ordering and every bound. Each pane is read through the
+   * predicate its own route uses: turns and pane metadata through
+   * `readableSession` (as `/turns`: no brain pane for anyone), scrollback
+   * through `attachableSession` (as `/api/stream`). Both reach dead-session
+   * tombstones, which come back `alive: false`.
+   *
+   * Only the transcript grant can refuse the whole request, and only when
+   * every requested scope needs it; otherwise a gated scope reports its panes
+   * as `transcript-disabled` and the rest still answers.
+   */
+  private handleSearch(res: http.ServerResponse, url: URL, principal: WebPrincipal): void {
+    const noStore = { 'Cache-Control': 'no-store' };
+    let request: SearchRequest;
+    let after: SearchAfter | null;
+    try {
+      request = parseSearchRequest(url.searchParams);
+      after = request.cursor === null ? null : this.searchCursors.decode(request, request.cursor);
+    } catch (error) {
+      if (error instanceof SearchError) return this.json(res, error.status, { error: error.tag }, noStore);
+      throw error;
+    }
+    const allowTranscript = this.opts?.allowTranscript === true;
+    if (searchForbidden(request.scopes, allowTranscript)) return this.json(res, 403, { error: 'transcript-disabled' }, noStore);
+    if (this.searchesInFlight >= MAX_CONCURRENT_SEARCHES) {
+      return this.json(res, 429, { error: 'search-busy' }, { ...noStore, 'Retry-After': '1' });
+    }
+    // Take the slots only after the synchronous pane listing: a throw there
+    // must not leak a slot that only the promise's finally gives back.
+    const { readable, attachable } = this.searchPanes(principal);
+    // One caller runs one search at a time within a small burst, so a single
+    // device cannot hold both daemon-wide slots.
+    const caller = principal.kind === 'operator' ? 'operator' : `device:${principal.deviceId}`;
+    const admitted = this.searchAdmission.admit(caller);
+    if (!admitted.ok) {
+      return this.json(res, 429, { error: 'search-busy' }, { ...noStore, 'Retry-After': String(admitted.retryAfterSec) });
+    }
+    this.searchesInFlight += 1;
+    // Before the answer, a close means the phone gave up: stop reading.
+    let gone = false;
+    res.on('close', () => { gone = true; });
+    const runHistory = this.deps.runHistory;
+    const sessionText = this.deps.sessionText;
+    void runSearch(request, after, {
+      panes: readable,
+      scrollbackPanes: attachable,
+      allowTranscript,
+      ...(runHistory ? { history: () => runHistory().list(0, 1000).entries } : {}),
+      turns: (id) => this.searchTurnSource(id),
+      ...(sessionText ? {
+        scrollback: {
+          cached: (id: string) => {
+            const managed = this.attachableSession(principal, id);
+            return managed ? this.scrollbackText.get(id, scrollbackKey(managed)) : undefined;
+          },
+          read: async (id: string) => {
+            const managed = this.attachableSession(principal, id);
+            if (!managed) return null;
+            // One extraction per pane at a time, and a daemon-wide cap that
+            // counts the ones a timed-out search left behind.
+            const job = this.scrollbackExtractions.run(id, async () => {
+              // Keyed BEFORE the read: bytes that land meanwhile make the entry
+              // stale on the next search rather than silently current.
+              const key = scrollbackKey(managed);
+              const rows = await sessionText(id);
+              // The queued job looks the pane up again when it runs: text from
+              // an incarnation that replaced this one under the same id is not
+              // this pane's, so it is neither cached nor returned.
+              if (!rows || this.deps.sessionManager.getSession(id) !== managed) return null;
+              const lines = joinWrappedRows(rows);
+              this.scrollbackText.set(id, key, lines);
+              return lines;
+            });
+            return job ?? 'busy';
+          },
+        },
+      } : {}),
+      now: () => this.now(),
+      stopped: () => gone,
+    }, this.searchCursors)
+      .then((body) => { if (!gone) this.json(res, 200, body, noStore); })
+      .catch((err: unknown) => this.failRequest(res, err))
+      .finally(() => {
+        this.searchesInFlight -= 1;
+        this.searchAdmission.release(caller);
+      });
+  }
+
+  /**
+   * Every pane the session manager still holds — live ones and dead-session
+   * tombstones — split by the two read predicates, most recently active first.
+   * `surfaceTitle` comes from the sidebar snapshot already cached, never a
+   * fresh desktop request: a search must not add a round trip to the desktop.
+   */
+  private searchPanes(principal: WebPrincipal): { readable: SearchPane[]; attachable: SearchPane[] } {
+    const sidebar = this.cachedDesktopSidebar();
+    const titles = new Map((sidebar?.panes ?? []).map((pane) => [pane.ptyId, pane.surfaceTitle]));
+    const readable: SearchPane[] = [];
+    const attachable: SearchPane[] = [];
+    const held = new Set<string>();
+    for (const managed of this.deps.sessionManager.listManagedSessions()) {
+      const meta = managed.meta;
+      held.add(meta.id);
+      const agent = meta.agent?.displayName ?? meta.lastDetectedAgent;
+      const surfaceTitle = titles.get(meta.id);
+      const recency = Date.parse(meta.lastActivity);
+      const createdAt = Date.parse(meta.createdAt);
+      const pane: SearchPane = {
+        sessionId: meta.id,
+        ...workspaceIdOf(meta.env),
+        ...workspaceLabelOf(meta.env),
+        ...(agent ? { agent } : {}),
+        ...(meta.cwd ? { cwd: meta.cwd } : {}),
+        ...cwdLeafOf(meta.cwd),
+        ...(surfaceTitle ? { surfaceTitle } : {}),
+        alive: meta.state === 'attached' || meta.state === 'detached',
+        recency: Number.isFinite(recency) ? recency : 0,
+        createdAt: Number.isFinite(createdAt) ? createdAt : 0,
+      };
+      if (this.readableSession(meta.id) === managed) readable.push(pane);
+      if (this.attachableSession(principal, meta.id) === managed) attachable.push(pane);
+    }
+    this.scrollbackText.retain(held);
+    const newestFirst = (a: SearchPane, b: SearchPane) => b.recency - a.recency || (a.sessionId < b.sessionId ? -1 : 1);
+    return { readable: readable.sort(newestFirst), attachable: attachable.sort(newestFirst) };
+  }
+
+  /** The sidebar snapshot already held, or null. Never starts a refresh. */
+  private cachedDesktopSidebar(): PhoneSidebarSnapshot | null {
+    const cached = this.desktopSidebarCache;
+    if (!cached || this.availableDesktop() === null) return null;
+    return this.now() - cached.at <= DESKTOP_SIDEBAR_MAX_STALE_MS ? cached.value : null;
+  }
+
+  /**
+   * Where the `turns` scope reads a pane's conversation: the reader `/turns`
+   * would pick. With the chat bridge wired, its resolution decides — an
+   * OpenCode or managed page it already holds is searched as is, a transcript
+   * file is paged backward through the projector. The page a hit opens on is
+   * named by `turnCursor`, in the cursor format `/turns` reads right now.
+   */
+  private async searchTurnSource(sessionId: string): Promise<TurnSource> {
+    const chat = this.deps.chat?.() ?? null;
+    let cursorFor: (head: number, fileSize: number) => string;
+    if (chat) {
+      const resolution = await chat.resolve(sessionId);
+      if (resolution.source === 'none') return { kind: 'skip', reason: resolution.status.reason || 'unavailable' };
+      if (resolution.source === 'tui') return { kind: 'page', events: resolution.page.events };
+      if (resolution.source === 'managed') {
+        const page = chat.managedSnapshot(sessionId);
+        return page ? { kind: 'page', events: page.events } : { kind: 'skip', reason: 'unreadable' };
+      }
+      const a = resolutionAgentSessionId(resolution) ?? '';
+      const e = resolutionEpoch(resolution) ?? '';
+      cursorFor = (head, fileSize) => encodeChatCursor({ v: 2, src: 'file', a, e, head, fileSize });
+    } else {
+      cursorFor = (head, fileSize) => encodeTurnCursor({ headOffset: head, tailOffset: head, fileSize });
+    }
+    const projector = this.deps.projector?.() ?? null;
+    if (!projector) return { kind: 'skip', reason: 'unavailable' };
+    // The first page is read here so an unresolvable pane is skipped with the
+    // resolver's own reason, not a generic one.
+    const first = projector.searchPage(sessionId);
+    if (!first.ok) return { kind: 'skip', reason: first.reason };
+    const fileSize = first.page.cursor.fileSize;
+    let pending: typeof first | null = first;
+    let before = fileSize;
+    return {
+      kind: 'file',
+      next: (): TurnPage | null => {
+        const read = pending ?? projector.searchPage(sessionId, before);
+        pending = null;
+        if (!read.ok) return null;
+        const { page, lineEnds } = read;
+        const bytes = Math.max(0, before - page.cursor.headOffset);
+        before = page.cursor.headOffset;
+        return { events: page.events, lineEnds, bytes, done: page.cursor.headOffset <= 0 };
+      },
+      // `dir=back` from here answers the window ending just past the hit's line.
+      cursorFor: (lineEnd) => cursorFor(lineEnd, fileSize),
+    };
   }
 
   // --- pane diff (read-only git) -------------------------------------------
@@ -3342,7 +3791,7 @@ export class WebTerminalServer {
     const blocked = await this.readChatBlocked(chat, sessionId, resolution);
     if (res.destroyed || res.writableEnded) return;
     this.noteChatBlocked(sessionId, resolution, blocked);
-    this.json(res, 200, { ...body, chat: buildChatObject(resolution, blocked) });
+    this.json(res, 200, { ...body, chat: buildChatObject(resolution, projectChatBlocked(blocked, clientCaps(req))) });
   }
 
   /** The `/turns` page for a resolved binding, read synchronously; undefined once answered (503). */
@@ -3359,11 +3808,11 @@ export class WebTerminalServer {
     const reply = (body: Record<string, unknown>) => body;
     // No `cursor` on purpose: a client that had a conversation drops its rows
     // and reads again from nothing.
-    const unavailable = (reason: string) =>
-      reply({ available: false, reason, ...(carried ? { reset: true, events: [] } : {}) });
+    const unavailable = (reason: string, cause?: ChatUnavailableCause) =>
+      reply({ available: false, reason, ...(cause ? { cause } : {}), ...(carried ? { reset: true, events: [] } : {}) });
 
     if (resolution.source === 'none' || !hasConversation(resolution)) {
-      return unavailable(resolution.status.reason);
+      return unavailable(resolution.status.reason, resolution.source === 'none' ? resolution.cause : undefined);
     }
     const src: ReadSource = resolution.source;
     const agentSessionId = resolutionAgentSessionId(resolution) ?? '';
@@ -3467,21 +3916,34 @@ export class WebTerminalServer {
    */
   private noteChatBlocked(sessionId: string, resolution: ChatResolution, blocked: ChatBlocked | undefined): void {
     if (this.isBrainApproval(sessionId)) return;
-    const key = blocked ? JSON.stringify([blocked.by, blocked.approvalId ?? null]) : '';
+    // Two views of one state: a capable client may see a `terminal_prompt` as
+    // an approval, an older one sees the terminal. A transition in either view
+    // is an event; each watcher gets its own view.
+    const views = {
+      legacy: projectChatBlocked(blocked, { terminalPromptAnswer: false }),
+      capable: projectChatBlocked(blocked, { terminalPromptAnswer: true }),
+    };
+    const keyOf = (b: ChatBlocked | undefined): string => (b ? JSON.stringify([b.by, b.approvalId ?? null]) : '');
+    const key = blocked ? JSON.stringify([keyOf(views.legacy), keyOf(views.capable)]) : '';
     const previous = this.chatBlockedState.get(sessionId);
     this.chatBlockedState.set(sessionId, key);
     if (previous === undefined || previous === key) return;
     const agent = resolution.status.terminal?.agent;
-    const body = blocked
-      ? {
-          sessionId,
-          by: blocked.by,
-          ...(blocked.approvalId ? { approvalId: blocked.approvalId } : {}),
-          ...(agent ? { agent } : {}),
-          at: this.now(),
-        }
-      : { sessionId, at: this.now() };
-    this.deliverChatEvent(sessionId, blocked ? 'chat.blocked' : 'chat.unblocked', JSON.stringify(body));
+    const bodyOf = (view: ChatBlocked | undefined): { event: 'chat.blocked' | 'chat.unblocked'; body: string } => ({
+      event: view ? 'chat.blocked' : 'chat.unblocked',
+      body: JSON.stringify(view
+        ? {
+            sessionId,
+            by: view.by,
+            ...(view.approvalId ? { approvalId: view.approvalId } : {}),
+            ...(agent ? { agent } : {}),
+            at: this.now(),
+          }
+        : { sessionId, at: this.now() }),
+    });
+    const legacy = bodyOf(views.legacy);
+    const capable = bodyOf(views.capable);
+    this.deliverChatEvent(sessionId, (caps) => (caps.terminalPromptAnswer ? capable : legacy));
   }
 
   /**
@@ -3491,12 +3953,16 @@ export class WebTerminalServer {
    * phone replaying after a reconnect would clear a badge while a human is
    * still being waited on. `/turns` is the authoritative state.
    */
-  private deliverChatEvent(sessionId: string, event: 'chat.blocked' | 'chat.unblocked', body: string): void {
+  private deliverChatEvent(
+    sessionId: string,
+    viewFor: (caps: ClientCaps) => { event: 'chat.blocked' | 'chat.unblocked'; body: string },
+  ): void {
     const watchers = this.transcriptWatchers.get(sessionId);
     if (!watchers || watchers.size === 0) return;
     for (const client of this.eventClients) {
       if (!watchers.has(this.watcherKey(client.principal))) continue;
       try {
+        const { event, body } = viewFor(client.caps);
         writeSse(client.res, event, body);
       } catch {
         /* client stream broken — its own 'close' handler cleans up */
@@ -4218,7 +4684,12 @@ export class WebTerminalServer {
         ...this.securityHeaders(),
         'Content-Length': String(body.length),
       });
-      res.end(body);
+      // Respect response backpressure instead of ending with an 8 MB chunk.
+      const source = Readable.from((function* () {
+        for (let offset = 0; offset < body.length; offset += 64 * 1024) yield body.subarray(offset, offset + 64 * 1024);
+      })());
+      res.once('close', () => source.destroy());
+      source.pipe(res);
     } catch {
       // A read that fails after the handle opened (permissions, a device that
       // went away) is the same answer as a file that was never there. Unless
@@ -4958,6 +5429,29 @@ export class WebTerminalServer {
 
   // --- input (opt-in) -----------------------------------------------------
 
+  /**
+   * Whether raw input must be refused because the pane shows the agent's own
+   * permission dialog (a pending `terminal_prompt` record, answered or not).
+   *
+   * A digit and Enter typed here would answer that dialog while skipping every
+   * fence `POST /api/approvals/:id` applies (capability, fingerprint, the
+   * reflex delay, one write per record, the re-read before the write), and
+   * would let a phone that cannot show the dialog approve it. So the dialog is
+   * answered through the approvals route or at the desk, never through raw
+   * input. The one carve-out is the cancel direction: a lone Esc or a lone
+   * Ctrl-C only abandons what the pane is doing, the same two keys the MCP
+   * approval block exempts.
+   *
+   * Scoped to web principals by construction: the desktop types through the
+   * pipe, never through this server.
+   */
+  private terminalPromptBlocksInput(sessionId: string, body: string): boolean {
+    if (body === '\x1b' || body === '\x03') return false;
+    const approvals = this.deps.approvals;
+    if (!approvals) return false;
+    return approvals.list().pending.some((r) => r.kind === 'terminal_prompt' && r.sessionId === sessionId);
+  }
+
   private handleInput(
     req: http.IncomingMessage,
     res: http.ServerResponse,
@@ -5011,6 +5505,10 @@ export class WebTerminalServer {
         if (this.attachableSession(fresh.principal,sessionId) !== managed || managed.meta.incarnationId !== incarnation) {
           return this.json(res,409,{error:'pane-incarnation-changed'});
         }
+        // Decided in the same synchronous run as the write, never earlier: the
+        // dialog can appear while the body is on the wire.
+        const promptActive = () => this.terminalPromptBlocksInput(sessionId, body);
+        const refusePrompt = () => this.json(res,409,{error:'terminal-prompt-active',effect:'none'});
         const write = () => {
           managed.ptyProcess.write(body);
         // A phone can paste drafts containing newlines; bridge.noteInput keeps
@@ -5023,12 +5521,20 @@ export class WebTerminalServer {
           if (!this.deps.inputReceipts) return this.json(res,503,{error:'input-receipts-unavailable'});
           const owner = fresh.principal.kind === 'device' ? `device:${fresh.principal.deviceId}` : 'operator';
           let receipt;
+          // In the precondition, not in `write`: a refusal there journals
+          // nothing, so a retry with the same id is checked again rather than
+          // replayed as uncertain or written later without the check.
+          let promptRefused = false;
           try {
             receipt = this.deps.inputReceipts().execute(owner,requestID,JSON.stringify([sessionId,incarnation,afterInput ?? null]),body,write,
-              () => afterInput === undefined || afterInput === `${this.inputEpoch}:${managed.bridge.getInputRevision?.()}`);
-          } catch { return this.json(res,409,{error:'input-request-rejected'}); }
+              () => {
+                if (promptActive()) { promptRefused = true; return false; }
+                return afterInput === undefined || afterInput === `${this.inputEpoch}:${managed.bridge.getInputRevision?.()}`;
+              });
+          } catch { return promptRefused ? refusePrompt() : this.json(res,409,{error:'input-request-rejected'}); }
           return this.json(res,receipt.status === 'written' ? 200 : 409,receipt);
         }
+        if (promptActive()) return refusePrompt();
         write();
       } catch (err) {
         return this.json(res, 500, { error: `write failed: ${errMsg(err)}` });
@@ -5313,6 +5819,181 @@ export class WebTerminalServer {
   }
 
   /**
+   * The device store's management verbs, or null when any is missing. One
+   * capability, not three: see `WebDeviceResolver.list`.
+   */
+  private deviceManagement(): (WebDeviceResolver & Required<Pick<WebDeviceResolver, 'list' | 'revoke' | 'setInput'>>) | null {
+    const devices = this.deps.devices;
+    if (!devices?.list || !devices.revoke || !devices.setInput) return null;
+    return devices as WebDeviceResolver & Required<Pick<WebDeviceResolver, 'list' | 'revoke' | 'setInput'>>;
+  }
+
+  /**
+   * How much of the roster this caller sees: `all` for the operator and for a
+   * device that may type, `self` for a read-only device.
+   *
+   * A device that may type already has a shell on this machine and can read
+   * `devices.json` from it, so showing it the roster exposes nothing new. The
+   * roster is for SEEING which devices exist and when each was last seen, so
+   * the owner can revoke a lost one from the desktop (or with the operator
+   * token); a device can revoke only itself. A read-only device has no such
+   * reach, so it sees its own row and nothing about the others, not even their
+   * names.
+   */
+  private deviceScope(principal: WebPrincipal): 'all' | 'self' {
+    return principal.kind === 'operator' || this.mayInput(principal) ? 'all' : 'self';
+  }
+
+  /**
+   * `GET /api/devices` — the paired-device roster, filtered by `deviceScope`.
+   *
+   * The operator also sees revoked tombstones (the desk's history); a device
+   * with `all` scope sees only active devices, because a tombstone is nothing
+   * it can act on. Rows are built from an explicit field list, never a spread
+   * of the store's row, so nothing the store grows later (hashes, salts, push
+   * tokens) can ride along by accident.
+   */
+  private handleDeviceList(res: http.ServerResponse, principal: WebPrincipal): void {
+    const devices = this.deviceManagement();
+    if (!devices) return this.json(res, 503, { error: 'device-management-unavailable' });
+    const scope = this.deviceScope(principal);
+    let rows: WebDeviceSummary[];
+    try {
+      rows = devices.list();
+    } catch (err) {
+      this.deps.log('warn', `[web] device list failed: ${errMsg(err)}`);
+      return this.json(res, 500, { error: 'device-list-failed' });
+    }
+    const self = principal.kind === 'device' ? principal.deviceId : null;
+    const visible = rows.filter((d) => {
+      if (principal.kind === 'operator') return true;
+      if (scope === 'all') return d.revokedAt === undefined;
+      return d.deviceId === self;
+    });
+    return this.json(
+      res,
+      200,
+      {
+        devices: visible.map((d) => ({
+          deviceId: d.deviceId,
+          name: d.name,
+          pairedAt: d.createdAt,
+          lastSeenAt: d.lastSeenAt,
+          // The device's OWN stored grant. The server ceiling is reported once,
+          // in `serverGrants`, so the phone can say which of the two said no.
+          grants: { input: d.allowInput === true },
+          revoked: d.revokedAt !== undefined,
+          ...(d.revokedAt !== undefined ? { revokedAt: d.revokedAt } : {}),
+          current: d.deviceId === self,
+        })),
+        serverGrants: {
+          input: this.opts?.allowInput === true,
+          upload: this.opts?.allowUpload === true,
+          transcript: this.opts?.allowTranscript === true,
+        },
+        scope,
+      },
+      { 'Cache-Control': 'no-store' },
+    );
+  }
+
+  /**
+   * `POST /api/devices/:id/revoke` — remove a device.
+   *
+   * A device may revoke only ITSELF, and needs no input grant for it: giving
+   * up your own access is never an escalation. Any other id is refused before
+   * the roster is consulted, with one fixed body, so a device cannot learn
+   * which ids exist by probing. The operator may revoke anyone.
+   *
+   * Same ordering as the desktop RPC (persist, then cut the device's streams
+   * and tickets, then answer). On a self-revoke the response still arrives:
+   * this request is a plain HTTP exchange, not one of the SSE streams
+   * `disconnectDevice` ends.
+   */
+  private handleDeviceRevoke(res: http.ServerResponse, rawId: string, principal: WebPrincipal): void {
+    const devices = this.deviceManagement();
+    if (!devices) return this.json(res, 503, { error: 'device-management-unavailable' });
+    const deviceId = decodePathSegment(rawId) ?? '';
+    if (principal.kind === 'device' && deviceId !== principal.deviceId) {
+      return this.json(res, 403, { error: 'not-permitted' });
+    }
+    const actor: DeviceActor = principal.kind === 'operator' ? 'operator-web' : 'device-self';
+    let result: ReturnType<typeof revokeDeviceAndDisconnect>;
+    try {
+      result = revokeDeviceAndDisconnect(deviceId, devices, this, actor);
+    } catch (err) {
+      this.deps.log('warn', `[web] device revoke failed: ${errMsg(err)}`);
+      return this.json(res, 500, { error: 'device-revoke-failed' });
+    }
+    if (result.reason === 'not-found') return this.json(res, 404, { error: 'device-not-found' });
+    const closed = result.closed ?? 0;
+    return this.json(res, 200, result.ok ? { ok: true, closed } : { ok: false, reason: 'persist-failed', closed });
+  }
+
+  /**
+   * `PATCH /api/devices/:id/grants` — LOWER a device's input grant.
+   *
+   * Same caller rule as revoke (a device only on itself, refused before any
+   * lookup), and likewise no input grant needed to give one up.
+   *
+   * The answer comes from what `setInput` returns, never from the principal
+   * authenticated at the top: the body arrives over later macrotasks, and the
+   * desktop can revoke the device in between.
+   */
+  private handleDeviceGrants(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+    principal: WebPrincipal,
+  ): void {
+    const devices = this.deviceManagement();
+    if (!devices) return this.json(res, 503, { error: 'device-management-unavailable' });
+    const deviceId = decodePathSegment(rawId) ?? '';
+    if (principal.kind === 'device' && deviceId !== principal.deviceId) {
+      return this.json(res, 403, { error: 'not-permitted' });
+    }
+    const actor: DeviceActor = principal.kind === 'operator' ? 'operator-web' : 'device-self';
+    this.readJsonBody(req, res, (body) => {
+      const b = body as Record<string, unknown> | null;
+      if (
+        typeof body !== 'object' ||
+        body === null ||
+        Array.isArray(body) ||
+        Object.keys(body).length !== 1 ||
+        typeof b?.['input'] !== 'boolean'
+      ) {
+        return this.json(res, 400, { error: 'invalid-grants' });
+      }
+      // RAISING a grant is desktop-only, for the operator token too. Pairing
+      // codes are desktop-only for the same reason: the operator token travels
+      // in URLs and QR codes, a far wider leak surface than the daemon pipe the
+      // desktop uses. On a server started without --allow-input this is a real
+      // boundary; with it, it is policy — either way nothing is written.
+      if (b['input'] === true) return this.json(res, 403, { error: 'grant-escalation-desktop-only' });
+      let result: WebDeviceSetInputResult;
+      try {
+        result = devices.setInput(deviceId, false, actor);
+      } catch (err) {
+        this.deps.log('warn', `[web] device grant change failed: ${errMsg(err)}`);
+        return this.json(res, 500, { error: 'device-grant-failed' });
+      }
+      if (result.reason === 'not-found') return this.json(res, 404, { error: 'device-not-found' });
+      if (result.reason === 'revoked') return this.json(res, 409, { error: 'device-revoked' });
+      // Cut the device's streams only when its grant actually changed (whether
+      // or not the write landed — it is read-only in memory either way), or
+      // when this call retried a change that had not reached disk. A no-op
+      // PATCH must not be a way to cut a device's streams over and over
+      // without leaving an audit line.
+      if (result.changed || result.retried) this.disconnectDevice(deviceId);
+      return this.json(
+        res,
+        200,
+        result.ok ? { ok: true, grants: { input: false } } : { ok: false, reason: 'persist-failed', grants: { input: false } },
+      );
+    });
+  }
+
+  /**
    * `GET /api/approvals` — what a client needs the moment it connects: the
    * requests still waiting on a human, plus the recently settled tail.
    *
@@ -5320,7 +6001,7 @@ export class WebTerminalServer {
    * pending approval on two devices; the loser of that race gets a 409, and
    * without the settled record there is nothing to render but an error code.
    */
-  private handleApprovalsList(res: http.ServerResponse, principal: WebPrincipal): void {
+  private handleApprovalsList(res: http.ServerResponse, principal: WebPrincipal, caps: ClientCaps): void {
     const approvals = this.deps.approvals;
     if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
     let listed: { pending: ApprovalRequest[]; recentlyResolved: ApprovalRequest[] };
@@ -5346,9 +6027,17 @@ export class WebTerminalServer {
     // `attachableSession`: the operator's own surfaces keep the full list.
     const visible = (r: ApprovalRequest): boolean =>
       principal.kind === 'operator' || !this.isBrainApproval(r.sessionId);
+    // A settled `terminal_prompt` is history only when a phone ANSWERED it
+    // (`pressedAt`: approved or declined remotely), decided from the record
+    // alone — whatever this caller is shown of it (an older client sees no
+    // question; it renders `toolName — summary`). A record the daemon
+    // replaced before anyone pressed (every key in the pane and every late
+    // parse mints one) and a card that expired when its dialog closed are not
+    // answers anyone gave from here, and filled the list with empty rows.
+    const answeredHere = (r: ApprovalRequest): boolean => r.kind !== 'terminal_prompt' || r.pressedAt !== undefined;
     return this.json(res, 200, {
-      pending: listed.pending.filter(visible).map(approvalWire),
-      recentlyResolved: listed.recentlyResolved.filter(visible).map(approvalWire),
+      pending: listed.pending.filter(visible).map((r) => approvalWire(r, caps)),
+      recentlyResolved: listed.recentlyResolved.filter(visible).filter(answeredHere).map((r) => approvalWire(r, caps)),
     });
   }
 
@@ -5425,11 +6114,32 @@ export class WebTerminalServer {
     if (record && principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
       return this.json(res, 404, { error: 'not-found' });
     }
-    if (record?.kind === 'awaiting_permission' && !this.mayInput(principal)) {
+    // The agent's own terminal dialog is answerable only by a client that
+    // declared it understands one. An older client (the shipped iOS app among
+    // them) maps 501 to "open the pane on the computer".
+    const caps = clientCaps(req);
+    // Not answerable remotely for THIS caller: no capability, or a record that
+    // was never bound and parsed whole (no fingerprint to answer against). Said
+    // before any body validation, so a capable client learns it is 501 rather
+    // than being told its (necessarily absent) fingerprint is malformed.
+    if (
+      record?.kind === 'terminal_prompt'
+      && (!caps.terminalPromptAnswer || !record.promptFingerprint || !record.choices?.length)
+    ) {
+      return this.json(res, 501, {
+        error: 'answer-in-terminal',
+        reason: caps.terminalPromptAnswer ? 'unsupported-shape' : 'no-capability',
+      });
+    }
+    // A gate approval runs the tool; a terminal-prompt answer types a key into
+    // the pane. Both need the same grant as typing.
+    if ((record?.kind === 'awaiting_permission' || record?.kind === 'terminal_prompt') && !this.mayInput(principal)) {
       return this.refuseInput(
         res,
         principal,
-        'approving a tool permission runs the tool — it needs the same grant as typing',
+        record.kind === 'terminal_prompt'
+          ? 'answering a terminal prompt types into the pane — it needs the same grant as typing'
+          : 'approving a tool permission runs the tool — it needs the same grant as typing',
       );
     }
 
@@ -5447,14 +6157,33 @@ export class WebTerminalServer {
         && !Array.isArray(parsedBody)
         && Object.prototype.hasOwnProperty.call(parsedBody, 'choiceKey');
       const rawChoiceKey = hasChoiceKey ? parsedBody?.['choiceKey'] : undefined;
+      const terminalPrompt = record?.kind === 'terminal_prompt';
       if (hasChoiceKey && (
-        decision !== 'approve'
+        // A terminal prompt names its option with either decision; the check
+        // that the two agree is below.
+        (decision !== 'approve' && !terminalPrompt)
         || typeof rawChoiceKey !== 'string'
         || !/^\d{1,2}$/.test(rawChoiceKey)
       )) {
         return this.json(res, 400, { error: 'invalid-choice-key' });
       }
       const choiceKey = hasChoiceKey ? rawChoiceKey as string : undefined;
+      // A terminal prompt answer: `choiceKey` is authoritative, `decision` must
+      // agree with the option it names (approve ↔ plain Yes, deny ↔ plain No),
+      // and the dialog fingerprint the client was shown must ride along. The
+      // registry re-checks all of it inside its mutation link.
+      const rawFingerprint = parsedBody?.['promptFingerprint'];
+      let promptFingerprint: string | undefined;
+      if (terminalPrompt) {
+        if (typeof rawFingerprint !== 'string' || !/^[0-9a-f]{32}$/.test(rawFingerprint)) {
+          return this.json(res, 400, { error: 'invalid-prompt-fingerprint' });
+        }
+        promptFingerprint = rawFingerprint;
+        const option = record.choices?.find((c) => c.key === choiceKey);
+        if (!option || decisionForChoiceLabel(option.label) !== decision) {
+          return this.json(res, 400, { error: 'invalid-choice' });
+        }
+      }
       // The brain exclusion and the permission-gate check before the body saw
       // the credential as it was when the HEADERS arrived. A device revoked or
       // narrowed while the body was on the wire must not answer, so both are
@@ -5469,7 +6198,7 @@ export class WebTerminalServer {
       if (current && fresh.principal.kind === 'device' && this.isBrainApproval(current.sessionId)) {
         return this.json(res, 404, { error: 'not-found' });
       }
-      if (current?.kind === 'awaiting_permission' && !this.mayInput(fresh.principal)) {
+      if ((current?.kind === 'awaiting_permission' || current?.kind === 'terminal_prompt') && !this.mayInput(fresh.principal)) {
         return this.refuseInput(res, fresh.principal, 'Input permission changed');
       }
       // And once more from inside the registry's mutation link, which can queue
@@ -5479,7 +6208,9 @@ export class WebTerminalServer {
       const authorize = async (record: ApprovalRequest): Promise<'ok' | 'expired' | 'read-only'> => {
         const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
         if (!now.ok || !sameCaller(now.principal)) return 'expired';
-        if (record.kind === 'awaiting_permission' && !this.mayInput(now.principal)) return 'read-only';
+        if ((record.kind === 'awaiting_permission' || record.kind === 'terminal_prompt') && !this.mayInput(now.principal)) {
+          return 'read-only';
+        }
         return 'ok';
       };
       approvals
@@ -5488,6 +6219,9 @@ export class WebTerminalServer {
           decision,
           resolvedBy: describePrincipal(fresh.principal),
           ...(choiceKey !== undefined ? { choiceKey } : {}),
+          ...(promptFingerprint !== undefined ? { promptFingerprint } : {}),
+          // Set HERE, for a capable caller only — never read from the body.
+          ...(caps.terminalPromptAnswer ? { terminalPromptAnswer: TERMINAL_PROMPT_WEB_ANSWER } : {}),
           authorize,
         })
         .then((result) => {
@@ -5497,7 +6231,13 @@ export class WebTerminalServer {
             // What did not land is the record of it — after a restart the
             // history will not show this decision or who made it. The client
             // says so instead of the daemon knowing it privately.
-            return this.json(res, 200, { state: result.request.state, durable: result.durable });
+            return this.json(res, 200, {
+              state: result.request.state,
+              // A terminal prompt answer: the key is in the pane, and the record
+              // stays pending until the dialog is seen gone.
+              ...(typeof result.request.pressedAt === 'number' ? { pressedAt: result.request.pressedAt } : {}),
+              durable: result.durable,
+            });
           }
           switch (result.reason) {
             // Someone else got there first — hand back WHO, so the loser's UI
@@ -5519,7 +6259,32 @@ export class WebTerminalServer {
             // The daemon has no keystroke map for this agent, so it refuses to
             // guess bytes. Not the caller's fault: 501, not 4xx.
             case 'unsupported-agent':
-              return this.json(res, 501, { error: 'unsupported-agent' });
+              return this.json(res, 501, { error: 'unsupported-agent', reason: 'unsupported-agent' });
+            // A terminal prompt this caller may not answer (see the registry).
+            case 'answer-in-terminal':
+              return this.json(res, 501, {
+                error: 'answer-in-terminal',
+                reason: result.answerRefusal,
+              });
+            // A multi-select or multi-question AskUserQuestion: one key cannot
+            // answer it, so nothing was typed. Same `error` a v1 client already
+            // maps to "answer on the computer"; `reason` says why.
+            case 'needs-v2':
+              return this.json(res, 501, { error: 'answer-in-terminal', reason: 'needs-v2' });
+            // The one remote answer to this terminal prompt was already typed.
+            case 'already-answered':
+              return this.json(res, 409, { error: 'already-answered' });
+            // The dialog on screen is not the one the client answered. The
+            // record may have been superseded by a fresh parse (an SSE
+            // `approval` event follows); nothing was typed.
+            case 'prompt-changed':
+              return this.json(res, 409, { error: 'prompt-changed' });
+            case 'answer-too-soon':
+              return this.json(res, 425, { error: 'answer-too-soon' });
+            case 'prompt-unverified':
+              return this.json(res, 409, { error: 'prompt-unverified', effect: 'none' });
+            case 'invalid-choice':
+              return this.json(res, 400, { error: 'invalid-choice' });
             // The choiceKey does not belong to this request or the option is not
             // visible on screen. The request is still pending — the caller can
             // retry with a valid key or use the default approve/deny.
@@ -5557,6 +6322,190 @@ export class WebTerminalServer {
         });
       })().catch((err: unknown) => {
         this.deps.log('warn', `[web] approval resolve failed: ${errMsg(err)}`);
+        try {
+          this.json(res, 500, { error: 'approvals unavailable' });
+        } catch {
+          /* socket already gone */
+        }
+      });
+    });
+  }
+
+  /**
+   * `GET /api/approvals/:id/detail` — the FULL command of a pending
+   * `terminal_prompt` bound to its tool call. The record carries a 200-char
+   * `summary` only: it is replicated to SSE, the push payload and
+   * approvals.json, and a command can be arbitrarily long. The phone fetches
+   * the rest here, when the user opens the card.
+   *
+   * The full command is transcript content, so it needs what reading the
+   * transcript needs — the server's `--allow-transcript` — AND what seeing
+   * the dialog's question needs — the `terminal-prompt-answer` capability.
+   * No input grant: this reads, it types nothing. The orchestrator brain's
+   * pane is a 404 for a device, like an unknown id. 404 too for a record that
+   * is settled, another kind, or was never bound (informational).
+   */
+  private handleApprovalDetail(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+    principal: WebPrincipal,
+  ): void {
+    const approvals = this.deps.approvals;
+    if (!approvals?.terminalPromptDetail) return this.json(res, 503, { error: 'approvals unavailable' });
+    if (this.opts?.allowTranscript !== true) return this.json(res, 403, { error: 'transcript-disabled' });
+    if (!clientCaps(req).terminalPromptAnswer) return this.json(res, 501, { error: 'answer-in-terminal' });
+    let id: string;
+    try {
+      id = decodeURIComponent(rawId);
+    } catch {
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    if (!id || id.includes('/')) return this.json(res, 404, { error: 'not-found' });
+    const record = approvals.list().pending.find((r) => r.id === id);
+    if (!record || record.kind !== 'terminal_prompt') return this.json(res, 404, { error: 'not-found' });
+    if (principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    const detail = approvals.terminalPromptDetail(id);
+    if (!detail) return this.json(res, 404, { error: 'not-found' });
+    return this.json(res, 200, detail, { 'Cache-Control': 'no-store' });
+  }
+
+  /**
+   * `POST /api/approvals/:id/decline` — cancel a `terminal_prompt` dialog with
+   * ONE Esc. Declining is the safe direction, so it is open for an
+   * informational record too (one the phone cannot answer Yes/No), but it is
+   * as atomic as an answer: the registry writes the Esc only while the record
+   * is still pending and a dialog is still active on the pane at write time,
+   * and writes nothing otherwise (409/410).
+   *
+   * Only for a client that declared `terminal-prompt-decline`, and only with
+   * the device's input grant (it types into the pane), re-checked after the
+   * body and again from inside the registry right before the write. The
+   * orchestrator brain's pane is a 404 for a device. Body: `{}` or
+   * `{"promptFingerprint":"<hex>"}` (when present it must be the record's);
+   * `decision` / `via`, if sent, must be `"deny"` / `"escape"`.
+   */
+  private handleApprovalDecline(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+    principal: WebPrincipal,
+    url: URL,
+  ): void {
+    const approvals = this.deps.approvals;
+    if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
+    let id: string;
+    try {
+      id = decodeURIComponent(rawId);
+    } catch {
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    if (!id || id.includes('/')) return this.json(res, 404, { error: 'not-found' });
+    const find = (): ApprovalRequest | undefined => {
+      const listed = approvals.list();
+      return listed.pending.find((r) => r.id === id) ?? listed.recentlyResolved.find((r) => r.id === id);
+    };
+    const record = find();
+    if (!record || (principal.kind === 'device' && this.isBrainApproval(record.sessionId))) {
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    if (record.kind !== 'terminal_prompt') return this.json(res, 400, { error: 'not-a-terminal-prompt' });
+    if (!clientCaps(req).terminalPromptDecline) {
+      return this.json(res, 501, { error: 'answer-in-terminal', reason: 'no-capability' });
+    }
+    if (!this.mayInput(principal)) {
+      return this.refuseInput(res, principal, 'declining a terminal prompt types into the pane — it needs the same grant as typing');
+    }
+    this.readJsonBody(req, res, (body) => {
+      void (async () => {
+        const parsedBody = (body ?? {}) as Record<string, unknown>;
+        if (typeof parsedBody !== 'object' || Array.isArray(parsedBody)) {
+          return this.json(res, 400, { error: 'invalid-body' });
+        }
+        if (parsedBody['decision'] !== undefined && parsedBody['decision'] !== 'deny') {
+          return this.json(res, 400, { error: "decision must be 'deny'" });
+        }
+        if (parsedBody['via'] !== undefined && parsedBody['via'] !== 'escape') {
+          return this.json(res, 400, { error: "via must be 'escape'" });
+        }
+        const rawFingerprint = parsedBody['promptFingerprint'];
+        if (rawFingerprint !== undefined && (typeof rawFingerprint !== 'string' || !/^[0-9a-f]{32}$/.test(rawFingerprint))) {
+          return this.json(res, 400, { error: 'invalid-prompt-fingerprint' });
+        }
+        const sameCaller = (now: WebPrincipal): boolean =>
+          now.kind === 'operator'
+            ? principal.kind === 'operator'
+            : principal.kind === 'device' && now.deviceId === principal.deviceId;
+        const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+        if (!fresh.ok || !sameCaller(fresh.principal)) return this.json(res, 401, { error: 'authorization-expired' });
+        const current = find();
+        if (!current || (fresh.principal.kind === 'device' && this.isBrainApproval(current.sessionId))) {
+          return this.json(res, 404, { error: 'not-found' });
+        }
+        if (!this.mayInput(fresh.principal)) return this.refuseInput(res, fresh.principal, 'Input permission changed');
+        const authorize = async (): Promise<'ok' | 'expired' | 'read-only'> => {
+          const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+          if (!now.ok || !sameCaller(now.principal)) return 'expired';
+          return this.mayInput(now.principal) ? 'ok' : 'read-only';
+        };
+        const result = await approvals.resolve({
+          id,
+          decision: 'deny',
+          resolvedBy: describePrincipal(fresh.principal),
+          ...(typeof rawFingerprint === 'string' ? { promptFingerprint: rawFingerprint } : {}),
+          // Set HERE, for a client that declared the capability — never read from the body.
+          terminalPromptDecline: TERMINAL_PROMPT_WEB_DECLINE,
+          authorize,
+        });
+        if (result.ok) {
+          return this.json(res, 200, {
+            state: result.request.state,
+            ...(typeof result.request.pressedAt === 'number' ? { pressedAt: result.request.pressedAt } : {}),
+            via: 'escape',
+            durable: result.durable,
+          });
+        }
+        // Every refusal wrote nothing.
+        switch (result.reason) {
+          case 'already-resolved':
+            return this.json(res, 409, { error: 'already-resolved', resolvedBy: result.resolvedBy, effect: 'none' });
+          case 'already-answered':
+            return this.json(res, 409, { error: 'already-answered', effect: 'none' });
+          case 'prompt-changed':
+            return this.json(res, 409, { error: 'prompt-changed', effect: 'none' });
+          case 'prompt-unverified':
+            return this.json(res, 409, { error: 'prompt-unverified', effect: 'none' });
+          case 'answer-too-soon':
+            return this.json(res, 425, { error: 'answer-too-soon', effect: 'none' });
+          case 'expired':
+          case 'prompt-gone':
+            return this.json(res, 410, {
+              error: result.reason,
+              ...(result.request ? { state: result.request.state } : {}),
+              effect: 'none',
+            });
+          case 'answer-in-terminal':
+            return this.json(res, 501, { error: 'answer-in-terminal', reason: result.answerRefusal });
+          case 'invalid-choice':
+            return this.json(res, 400, { error: 'invalid-choice' });
+          case 'not-found':
+            return this.json(res, 404, { error: 'not-found' });
+          case 'unauthorized':
+            return this.json(res, 401, { error: 'authorization-expired' });
+          case 'input-revoked':
+            return this.refuseInput(res, fresh.principal, 'Input permission changed');
+          case 'authorization-unconfirmed':
+            return this.json(res, 503, { error: 'authorization-unconfirmed' });
+          default: {
+            const reason = String(result.reason);
+            this.deps.log('warn', `[web] approval decline returned unknown reason: ${reason}`);
+            return this.json(res, 500, { error: reason });
+          }
+        }
+      })().catch((err: unknown) => {
+        this.deps.log('warn', `[web] approval decline failed: ${errMsg(err)}`);
         try {
           this.json(res, 500, { error: 'approvals unavailable' });
         } catch {
@@ -5664,8 +6613,11 @@ export class WebTerminalServer {
       ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
       // #783 — gate-card fields so the phone can render what tool and what input.
       ...(r.kind === 'awaiting_permission' ? { kind: r.kind } : {}),
-      ...(r.toolName ? { toolName: r.toolName } : {}),
+      ...(r.kind !== 'terminal_prompt' && r.toolName ? { toolName: r.toolName } : {}),
       ...(r.toolInputSummary ? { toolInputSummary: r.toolInputSummary } : {}),
+      // The agent's own terminal dialog: the kind and nothing else. The nudge
+      // carries no content; the capability-aware list is where the dialog is.
+      ...(r.kind === 'terminal_prompt' ? { kind: r.kind } : {}),
     });
   }
 
@@ -6164,7 +7116,7 @@ export class WebTerminalServer {
     }
 
     const detach = startSseHeartbeat(res);
-    const client: EventClient = { res, detach, principal };
+    const client: EventClient = { res, detach, principal, caps: clientCaps(req) };
     this.eventClients.add(client);
 
     req.on('close', () => {
@@ -6202,6 +7154,7 @@ export class WebTerminalServer {
     this.pairCode = code;
     this.pairExpiresAt = Date.now() + PAIR_TTL_MS;
     this.pairAttempts = PAIR_MAX_ATTEMPTS;
+    this.pairGeneration += 1;
     // Deliberately does NOT clear `pendingDeviceName`. A replacement minted
     // after a burned attempt budget is still the same operator pairing the same
     // device, so the name has to survive it — see the test that burns five
@@ -6224,7 +7177,7 @@ export class WebTerminalServer {
    * store, and the pairing screen keeps working unchanged — but it is now a
    * per-device credential, not the operator's.
    */
-  private async handlePair(res: http.ServerResponse, url: URL): Promise<void> {
+  private async handlePair(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
     const supplied = (url.searchParams.get('code') ?? '').trim().toUpperCase();
 
     if (!this.pairCode || Date.now() > this.pairExpiresAt) {
@@ -6275,22 +7228,45 @@ export class WebTerminalServer {
       return this.json(res, 200, { token: this.token });
     }
 
+    // Claim the slot BEFORE the await: the mint is async, and in that window
+    // a second redemption of the same code, or the other card starting a
+    // new pairing, must not see (or burn) this one. Everything the device is
+    // minted with is read now, from the pairing this code belonged to.
+    const claimed = {
+      code: this.pairCode,
+      expiresAt: this.pairExpiresAt,
+      attempts: this.pairAttempts,
+      name: this.pendingDeviceName,
+      allowInput: this.pendingDeviceAllowInput,
+      flow: this.pendingPairFlow,
+      kind: this.redeemingDeviceKind(req),
+    };
+    this.burnPairCode();
+    const claimedGeneration = this.pairGeneration;
+
     let minted: { deviceId: string; deviceSecret: string };
     try {
-      minted = await devices.mint({
-        name: this.pendingDeviceName,
-        allowInput: this.pendingDeviceAllowInput,
-      });
+      minted = await devices.mint({ name: claimed.name, allowInput: claimed.allowInput, kind: claimed.kind });
     } catch (err) {
-      // The roster could not be persisted. Do NOT burn the code and do NOT
-      // fall back to the shared token: a credential the daemon cannot
-      // remember is one the operator can never revoke.
+      // The roster could not be persisted. Do NOT fall back to the shared
+      // token: a credential the daemon cannot remember is one the operator
+      // can never revoke. Give the code back so the operator can retry —
+      // unless the slot has moved on since, in which case the newer pairing
+      // stays exactly as it is.
+      if (this.pairGeneration === claimedGeneration && this.server) {
+        this.pairCode = claimed.code;
+        this.pairExpiresAt = claimed.expiresAt;
+        this.pairAttempts = claimed.attempts;
+        this.pendingDeviceName = claimed.name;
+        this.pendingDeviceAllowInput = claimed.allowInput;
+        this.pendingPairFlow = claimed.flow;
+        this.pairGeneration += 1;
+      }
       this.deps.log('error', `[web] device mint failed: ${errMsg(err)}`);
       return this.json(res, 500, { error: 'pairing failed' });
     }
 
-    // Success: hand the credential over exactly once, then burn the code.
-    this.burnPairCode();
+    // Success: the code was consumed when it was claimed above.
     return this.json(res, 200, {
       deviceId: minted.deviceId,
       deviceSecret: minted.deviceSecret,
@@ -6298,12 +7274,29 @@ export class WebTerminalServer {
     });
   }
 
+  /**
+   * What the redeeming device is, for the roster icon only.
+   *
+   * The desktop client says so in a header. Without one, a code minted by the
+   * phone card was redeemed by what the operator called a phone (the web page
+   * or the phone app, neither of which sends the header); anything else is
+   * `unknown`. Never read by an authorization decision — the header is
+   * caller-written and only picks an icon.
+   */
+  private redeemingDeviceKind(req: http.IncomingMessage): DeviceKind {
+    const claimed = normalizeDeviceKind(req.headers[DEVICE_KIND_HEADER]);
+    if (claimed !== 'unknown') return claimed;
+    return this.pendingPairFlow === 'phone' ? 'phone' : 'unknown';
+  }
+
   /** Consume the active pairing code (single use) and its pending name. */
   private burnPairCode(): void {
     this.pairCode = '';
     this.pairExpiresAt = 0;
     this.pairAttempts = 0;
+    this.pairGeneration += 1;
     this.pendingDeviceName = undefined;
+    this.pendingPairFlow = undefined;
     // Back to the server's default rather than to `false`: a redeemed code
     // must not leave the NEXT device on this host worse off than the first.
     this.pendingDeviceAllowInput = this.defaultPendingGrant();
@@ -6671,13 +7664,15 @@ function sameCaller(original: WebPrincipal, now: WebPrincipal): boolean {
  * A sidebar workspace row as `/api/workspaces` carries it: the task link is
  * flattened onto the row (`ownerWorkspaceId`, `detached`, `createdAt`,
  * `nested`), present only on a fan-out task workspace; `taskSummary` only on
- * an owner row with nested tasks. `nested` and the summary are the phone-list
- * view from `phoneTaskNesting`; the per-task state bits stay internal.
+ * an owner row with nested tasks. `nested`, the summary and the pane placement
+ * (`nestedUnder`, `requesterPaneId`) are the phone-list view from
+ * `phoneTaskNesting`; the per-task state bits stay internal.
  */
 function sidebarWorkspaceFields(
   row: PhoneSidebarWorkspace,
   nested: boolean | undefined,
   taskSummary: PhoneSidebarTaskSummary | undefined,
+  placement: { nestedUnder: PhoneTaskNestedUnder; requesterPaneId?: string } | undefined,
 ): Record<string, unknown> {
   const { task } = row;
   return {
@@ -6694,9 +7689,20 @@ function sidebarWorkspaceFields(
           detached: task.detached,
           ...(task.createdAt !== undefined ? { createdAt: task.createdAt } : {}),
           nested: nested === true,
+          ...(nested === true && placement
+            ? {
+                nestedUnder: placement.nestedUnder,
+                ...(placement.requesterPaneId !== undefined ? { requesterPaneId: placement.requesterPaneId } : {}),
+              }
+            : {}),
         }
       : {}),
   };
+}
+
+/** A pane's extracted scrollback is current while nothing was written and the geometry held. */
+function scrollbackKey(managed: ManagedSession): string {
+  return `${managed.meta.incarnationId ?? ''}\0${managed.ringBuffer.totalBytesWritten}\0${managed.meta.cols}x${managed.meta.rows}`;
 }
 
 /** The pane's workspace id from its spawn env, bounded like every id on the wire. */
@@ -6790,7 +7796,74 @@ function cwdLeafOf(cwd: string | undefined): { cwdLeaf?: string } {
  * anything security-relevant may key on — the keystroke map, not this list,
  * decides what a decision sends.
  */
-function approvalWire(r: ApprovalRequest): Record<string, unknown> {
+/**
+ * What a client declared it understands, from `X-Wmux-Client-Caps` — a
+ * comma-separated token list. Unknown tokens are ignored; no header means an
+ * older client.
+ */
+export interface ClientCaps {
+  /** Understands (and can answer) a `terminal_prompt` record's dialog. */
+  terminalPromptAnswer: boolean;
+  /** Can decline a `terminal_prompt` dialog (`POST /api/approvals/:id/decline`). */
+  terminalPromptDecline?: boolean;
+  /** Set by the server, not the client: `/detail` is open to this caller (`--allow-transcript`). */
+  terminalPromptDetail?: boolean;
+}
+
+export const CLIENT_CAPS_HEADER = 'x-wmux-client-caps';
+export const CLIENT_CAP_TERMINAL_PROMPT_ANSWER = 'terminal-prompt-answer';
+export const CLIENT_CAP_TERMINAL_PROMPT_DECLINE = 'terminal-prompt-decline';
+
+export function clientCaps(req: http.IncomingMessage): ClientCaps {
+  const raw = req.headers[CLIENT_CAPS_HEADER];
+  const joined = Array.isArray(raw) ? raw.join(',') : raw ?? '';
+  const tokens = new Set(joined.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean));
+  return {
+    terminalPromptAnswer: tokens.has(CLIENT_CAP_TERMINAL_PROMPT_ANSWER),
+    terminalPromptDecline: tokens.has(CLIENT_CAP_TERMINAL_PROMPT_DECLINE),
+  };
+}
+
+function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAnswer: false }): Record<string, unknown> {
+  // The agent's own terminal dialog, projected per caller. An older client (no
+  // capability) gets the informational card only — kind, tool, summary — so it
+  // can never render controls for a dialog it cannot answer. A capable client
+  // gets the parsed dialog when the record is answerable.
+  if (r.kind === 'terminal_prompt') {
+    const parsed = caps.terminalPromptAnswer && !!r.promptFingerprint && !!r.choices?.length;
+    // Once the one answer is in (`pressedAt`), or the record is settled, the
+    // dialog stays readable but there is nothing left to press.
+    const answerable = parsed && r.pressedAt === undefined && r.state === 'pending';
+    return {
+      id: r.id,
+      sessionId: r.sessionId,
+      agent: r.agent,
+      kind: r.kind,
+      state: r.state,
+      createdAt: r.createdAt,
+      ...(r.workspaceId ? { workspaceId: r.workspaceId } : {}),
+      ...(r.toolName ? { toolName: r.toolName } : {}),
+      ...(r.summary ? { summary: r.summary } : {}),
+      // A hint for the client's own confirm step — computed at creation from the
+      // call's full command. Never a permission.
+      ...(r.risk ? { risk: r.risk } : {}),
+      ...(parsed
+        ? {
+            ...(r.question ? { question: r.question } : {}),
+            ...(r.reason ? { reason: r.reason } : {}),
+          }
+        : {}),
+      ...(answerable ? { choices: r.choices, promptFingerprint: r.promptFingerprint } : {}),
+      // The full command is at `GET /api/approvals/:id/detail` (an answerable
+      // record is always bound to its call, so it always has one).
+      ...(answerable && caps.terminalPromptDetail ? { hasDetail: true } : {}),
+      ...(typeof r.pressedAt === 'number' ? { pressedAt: r.pressedAt } : {}),
+      ...(r.decision ? { decision: r.decision } : {}),
+      ...(r.selectedChoiceKey ? { selectedChoiceKey: r.selectedChoiceKey } : {}),
+      ...(r.resolvedBy ? { resolvedBy: r.resolvedBy } : {}),
+      ...(typeof r.resolvedAt === 'number' ? { resolvedAt: r.resolvedAt } : {}),
+    };
+  }
   return {
     id: r.id,
     sessionId: r.sessionId,

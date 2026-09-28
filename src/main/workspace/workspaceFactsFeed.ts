@@ -121,6 +121,21 @@ function readAutonomyCached(): AutonomyMap {
   return autonomyCache;
 }
 
+/**
+ * One workspace's stored autonomy entry, read through the same cache the feed
+ * uses (invalidated on every autonomy write, so it is current). Undefined when
+ * the workspace has no entry or the store cannot be read.
+ */
+export function readWorkspaceAutonomyEntry(
+  workspaceId: string,
+): Partial<WorkspaceAutonomy> | undefined {
+  try {
+    return readAutonomyCached()[workspaceId];
+  } catch {
+    return undefined;
+  }
+}
+
 /** Drop the cached autonomy map (call from `onAutonomyWritten`). */
 export function invalidateAutonomyCache(): void {
   autonomyCache = null;

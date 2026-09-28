@@ -31,6 +31,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { RpcRouter } from '../../RpcRouter';
+import { mintCommanderToken, revokeCommanderToken } from '../../../deck/commanderTrust';
 import { registerA2aChannelRpc } from '../a2a.channel.rpc';
 import { METHOD_CAPABILITY, CAPABILITY_RISK_CLASS } from '../../../mcp/methodCapabilityMap';
 import { listKnownCapabilities } from '../../../mcp/permissionGrammar';
@@ -127,6 +128,39 @@ function setupHandlerRouter(daemon: DaemonClient): RpcRouter {
   registerA2aChannelRpc(router, () => daemon, () => ({}) as unknown as never);
   return router;
 }
+
+describe('workspace-bound commander channel identity', () => {
+  it('uses the validated token for create/post and never a claimed pane or workspace', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const daemon = makeFakeDaemon((_method, params) => {
+      calls.push(params as Record<string, unknown>);
+      return { ok: true };
+    });
+    const router = setupHandlerRouter(daemon);
+    const token = mintCommanderToken(SENDER_WS);
+    try {
+      for (const method of ['a2a.channel.create', 'a2a.channel.post', 'task.mission.start', 'task.mission.close', 'task.mission.update', 'a2a.channel.unread', 'a2a.channel.getMessages', 'task.mission.list'] as const) {
+        const response = await router.dispatch({
+          id: method, method, commanderToken: token,
+          params: { verifiedWorkspaceId: THIRD_WS,
+            ...(method === 'a2a.channel.create' ? { senderPtyId: 'other-pane' } : {}) },
+        });
+        expect(response.ok && (response.result as { ok: boolean }).ok).toBe(true);
+        expect(calls.at(-1)).toMatchObject({ verifiedWorkspaceId: SENDER_WS });
+        expect(calls.at(-1)).not.toHaveProperty('senderPtyId');
+      }
+      const unbound = await router.dispatch({ id: 'unbound', method: 'a2a.channel.post',
+        params: { commanderWorkspace: SENDER_WS, verifiedWorkspaceId: SENDER_WS } });
+      expect(unbound.ok && (unbound.result as { ok: boolean }).ok).toBe(false);
+      revokeCommanderToken(token);
+      const stale = await router.dispatch({ id: 'stale', method: 'a2a.channel.post', commanderToken: token, params: {} });
+      expect(stale.ok).toBe(false);
+      expect(calls).toHaveLength(8);
+    } finally {
+      revokeCommanderToken(token);
+    }
+  });
+});
 
 // =========================================================================
 // 1. Routing — read methods dispatch to channel.<method> on the daemon

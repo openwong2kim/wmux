@@ -11,15 +11,17 @@ import type {
   LanLinkPeersListResult,
 } from './lanlink';
 import type {
+  PairFlow,
   WebDeviceListError,
   WebDeviceRevokeResult,
   WebDeviceSetInputResult,
   WebDeviceSummary,
   WebStartArgs,
+  WebGrantArgs,
   WebTerminalInfo,
 } from './web';
 import type { BrowserHelpOutcome, BrowserHelpRequestInfo } from './browserHelp';
-import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteHostPublic, RemoteWorkspaceSummary } from './remoteHosts';
+import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteHostStatus, RemoteWorkspaceSummary } from './remoteHosts';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -157,6 +159,11 @@ declare global {
         status: (args?: { verifyFront?: boolean }) => Promise<WebTerminalInfo>;
         /** Start the server. `allowInput`/`expose` default false (read-only + loopback). */
         start: (args: WebStartArgs) => Promise<WebTerminalInfo>;
+        /**
+         * Change transcript / upload access on the RUNNING server in place.
+         * Resolves the current status untouched when the server is stopped.
+         */
+        setGrants: (args: WebGrantArgs) => Promise<WebTerminalInfo>;
         /** Stop the server. Resolves the post-stop state (`running:false`). */
         stop: () => Promise<WebTerminalInfo>;
         /**
@@ -174,7 +181,9 @@ declare global {
          * rows cannot be operated — "which of these three do I revoke?" has no
          * answer six months later.
          */
-        pairStart: (name: string, allowInput?: boolean) => Promise<WebTerminalInfo>;
+        pairStart: (name: string, allowInput?: boolean, flow?: PairFlow) => Promise<WebTerminalInfo>;
+        /** End the pairing in progress, whichever card started it. */
+        pairCancel?: () => Promise<WebTerminalInfo>;
         /**
          * The paired-device roster.
          *
@@ -222,14 +231,21 @@ declare global {
          *  unauthenticated `GET /api/pair` route, then registers the host —
          *  the credential-in-clipboard-free alternative to hostsAdd's
          *  paste-URL flow. `reason` is machine-readable; the caller
-         *  translates it. */
-        hostsPair: (origin: string, code: string, label?: string) => Promise<
+         *  translates it. With `replaceHostId` the new credential replaces
+         *  that host's rejected one in place (same id, so its attachments
+         *  survive) instead of registering a new host. */
+        hostsPair: (origin: string, code: string, label?: string, replaceHostId?: string) => Promise<
           | { ok: true; host: RemoteHostPublic }
           | { ok: false; reason: PairFailureReason; attemptsLeft?: number }
         >;
         hostsRemove: (id: string) => Promise<boolean>;
+        /** Status per paired host for the Remote hub (hostId → status).
+         *  Probes are cached 60 s unless `force`; never rejects, and a host
+         *  that did not answer is `unreachable`, never `needs-repair`. */
+        hostsStatus?: (force?: boolean) => Promise<Record<string, RemoteHostStatus>>;
         workspacesList: (hostId: string) => Promise<
-          { ok: true; workspaces: RemoteWorkspaceSummary[] } | { ok: false; error: string }
+          | { ok: true; workspaces: RemoteWorkspaceSummary[] }
+          | { ok: false; error: string; reason?: RemoteErrorReason }
         >;
         /** Bootstraps the FIRST pane of a NEW workspace on `hostId` (#1001).
          *  The caller mints `workspaceId` — the daemon has no registry of its
@@ -238,7 +254,7 @@ declare global {
          *  unreachable host, a rejected token, or the remote's own daemon
          *  refusing the create. */
         workspaceCreate: (hostId: string, workspaceId: string, cwd?: string) => Promise<
-          { ok: true; sessionId: string } | { ok: false; error: string }
+          { ok: true; sessionId: string } | { ok: false; error: string; reason?: RemoteErrorReason }
         >;
         /** Destroy a session on `hostId` — the teardown twin of
          *  `workspaceCreate` (#1129). Detaches every live stream on that
@@ -248,7 +264,7 @@ declare global {
          *  own wording otherwise — notably on a host running without
          *  `--allow-input`, which refuses a close. Never rejects. */
         sessionClose: (hostId: string, sessionId: string) => Promise<
-          { ok: true } | { ok: false; error: string }
+          { ok: true } | { ok: false; error: string; reason?: RemoteErrorReason }
         >;
         /** Persisted attach descriptors — read on renderer boot to restore
          *  the attachments a reload/restart wiped out of the memory-only
@@ -264,7 +280,7 @@ declare global {
          *  (e.g. React StrictMode's double-effect) returns the SAME attachId
          *  rather than opening a second SSE stream on the remote. */
         paneAttach: (hostId: string, sessionId: string) => Promise<
-          { ok: true; attachId: string } | { ok: false; error: string }
+          { ok: true; attachId: string } | { ok: false; error: string; reason?: RemoteErrorReason }
         >;
         paneDetach: (attachId: string) => Promise<void>;
         paneWrite: (attachId: string, data: string) => void;
@@ -291,8 +307,12 @@ declare global {
         onPaneData: (callback: (e: { attachId: string; dataB64: string }) => void) => () => void;
         onPaneExit: (callback: (e: { attachId: string }) => void) => () => void;
         /** Fires once reconnection gives up after too many consecutive
-         *  failures — the stream is dead until a fresh attach. */
-        onPaneError: (callback: (e: { attachId: string; message: string }) => void) => () => void;
+         *  failures — the stream is dead until a fresh attach. With
+         *  `reason: 'auth-rejected'` it fires at once instead: the host
+         *  answered 401, so no retry was attempted and only re-pairing helps. */
+        onPaneError: (
+          callback: (e: { attachId: string; message: string; reason?: RemoteErrorReason }) => void,
+        ) => () => void;
         /**
          * #1391 — ask MAIN to drive the `/api/workspaces` liveness cadence.
          *
@@ -324,6 +344,10 @@ declare global {
       readText: () => Promise<string>;
       readImage: (ptyId?: string) => Promise<string | null>;
       hasImage: () => Promise<boolean>;
+      /** Write text main takes back off after `ttlMs` or on quit, if still there. */
+      writeEphemeral?: (text: string, ttlMs: number) => Promise<void>;
+      /** Clear the ephemeral text now unless it is `stillValid` (`''` = nothing is). */
+      keepEphemeral?: (stillValid: string) => Promise<void>;
     };
   }
 }

@@ -133,6 +133,11 @@ export const IPC = {
   // workspace, sound by the Electron process boundary) and forwards to the
   // daemon, whose authz gates run against it. See channelLocal.handler.ts.
   CHANNEL_MUTATE_LOCAL: 'channels:mutate-local',
+  // Renderer → main: paste a message into a pty and submit it, gated by the
+  // raw-input approval guard `input.send` applies, re-checked before the Enter
+  // (input.rpc.ts `gatedPasteSubmit`). Used for every non-operator delivery
+  // (A2A, company, channel mention nudges). Renderer-only, not on the pipe.
+  GATED_SUBMIT: 'pty:gated-submit',
   // J1 fan-out — renderer(다이얼로그) → main: 프롬프트 1개 → N 격리 태스크 스폰.
   // main의 FanOutService가 데몬 RPC(mission.start/update/invite)와 렌더러 spawn을
   // 조립한다. 렌더러 신뢰 신원(verifiedWorkspaceId)은 channelLocal과 동일 trust
@@ -356,6 +361,10 @@ export const IPC = {
   CLIPBOARD_READ: 'clipboard:read',
   CLIPBOARD_READ_IMAGE: 'clipboard:read-image',
   CLIPBOARD_HAS_IMAGE: 'clipboard:has-image',
+  /** Write text that main takes back off the clipboard at its expiry or on quit. */
+  CLIPBOARD_WRITE_EPHEMERAL: 'clipboard:write-ephemeral',
+  /** Clear the ephemeral text unless it equals the still-valid value passed. */
+  CLIPBOARD_KEEP_EPHEMERAL: 'clipboard:keep-ephemeral',
   SYSTEM_BUILTIN_DISPLAY: 'system:builtin-display',
   // Fired by main's powerMonitor 'resume' so the renderer can rebuild GPU
   // state that sleep may have invalidated (shared glyph atlas — see
@@ -568,12 +577,16 @@ export const IPC = {
   WEB_PAIR_REFRESH: 'web:pairRefresh',
   /** Name a device, THEN mint its code. The daemon refuses a blank name. */
   WEB_PAIR_START: 'web:pairStart',
+  /** End the pairing in progress (either card), burning its code and name. */
+  WEB_PAIR_CANCEL: 'web:pairCancel',
   /** The operator's paired-device roster. Carries no secret material. */
   WEB_DEVICE_LIST: 'web:deviceList',
   /** Revoke one device permanently and cut its live streams. */
   WEB_DEVICE_REVOKE: 'web:deviceRevoke',
   /** Grant or withdraw one device's permission to type. */
   WEB_DEVICE_SET_INPUT: 'web:deviceSetInput',
+  /** Change the phone grants (transcript / upload) of the running server in place. */
+  WEB_SET_GRANTS: 'web:setGrants',
   // First-run wizard (Plan 1.15) — magical-moment onboarding flow
   FIRST_RUN_CHECK: 'first-run:check',
   FIRST_RUN_COMPLETE: 'first-run:complete',
@@ -611,6 +624,9 @@ export const IPC = {
   // pasting the full wmux-web URL with the token embedded.
   REMOTE_HOSTS_PAIR: 'remote:hosts:pair',
   REMOTE_HOSTS_REMOVE: 'remote:hosts:remove',
+  // Per-host status for the Remote hub: `/api/config` probed with a short
+  // timeout, cached 60 s, combined with this app's live streams.
+  REMOTE_HOSTS_STATUS: 'remote:hosts:status',
   REMOTE_WORKSPACES_LIST: 'remote:workspaces:list',
   // Bootstrap the FIRST pane of a NEW workspace on a remote host (#1001):
   // the desktop mints the workspace id and hands it to `POST /api/sessions`

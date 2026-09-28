@@ -4,9 +4,22 @@ import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import Button from '../ui/Button';
 import Checkbox from '../ui/Checkbox';
 import Badge from '../ui/Badge';
-import { IconWarning } from '../icons';
+import { IconComputer, IconPhone, IconRemoteDevices, IconWarning } from '../icons';
 import { timeAgo } from '../../utils/timeAgo';
-import type { WebDeviceListError, WebDeviceSummary } from '../../../shared/web';
+import type { DeviceKind, WebDeviceListError, WebDeviceSummary } from '../../../shared/web';
+
+/** The roster's kind glyph: own monograms, never a vendor's mark. */
+function KindIcon({ kind }: { kind: DeviceKind | undefined }) {
+  if (kind === 'phone') return <IconPhone size={14} />;
+  if (kind === 'computer') return <IconComputer size={14} />;
+  return <IconRemoteDevices size={14} />;
+}
+
+const KIND_LABEL: Record<DeviceKind, string> = {
+  phone: 'web.deviceKindPhone',
+  computer: 'web.deviceKindComputer',
+  unknown: 'web.deviceKindUnknown',
+};
 
 /**
  * The operator's paired-device roster, and the only surface that can revoke one.
@@ -183,6 +196,7 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
     return ar !== br ? ar - br : b.lastSeenAt - a.lastSeenAt;
   });
   const liveCount = devices.filter((d) => d.revokedAt === undefined).length;
+  const activeCount = devices.filter((d) => d.revokedAt === undefined && d.activeNow === true).length;
 
   /**
    * Focus lands in the dialog and stays there (ui/Dialog traps it).
@@ -232,6 +246,14 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
               return (
                 <div key={d.deviceId} className="px-3.5 py-2.5" style={{ opacity: revoked ? 0.6 : 1 }}>
                   <div className="flex items-center gap-3">
+                    <span
+                      role="img"
+                      aria-label={t(KIND_LABEL[d.kind ?? 'unknown'])}
+                      title={t(KIND_LABEL[d.kind ?? 'unknown'])}
+                      className="flex-shrink-0 text-[var(--text-sub)]"
+                    >
+                      <KindIcon kind={d.kind} />
+                    </span>
                     <div className="min-w-0 flex-1">
                       <p className="ui-row-title flex items-center gap-2 min-w-0">
                         {/* A device paired before naming was required has no
@@ -239,8 +261,18 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
                         <span className="truncate">{d.name || t('web.deviceUnnamed')}</span>
                         {revoked && <Badge tone="danger">{t('web.deviceRevoked')}</Badge>}
                       </p>
-                      <p className="ui-row-detail">
-                        {revoked
+                      <p className="ui-row-detail flex items-center gap-1.5">
+                        {/* Status = dot + text. Active is "alive", so it takes
+                            the warm dot; everything else stays a timestamp. */}
+                        {!revoked && d.activeNow ? (
+                          <>
+                            <span
+                              aria-hidden="true"
+                              className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--accent)]"
+                            />
+                            {t('web.deviceActiveNow')}
+                          </>
+                        ) : revoked
                           ? t('web.deviceRevokedAt', { when: timeAgo(d.revokedAt as number) })
                           : t('web.deviceLastSeen', { when: timeAgo(d.lastSeenAt) })}
                       </p>
@@ -315,7 +347,9 @@ export default function PairedDevicesModal({ onClose }: { onClose: () => void })
             the read failed there is no such number, and printing "0 active"
             would be the same fail-open the empty-state above avoids. */}
         <span className="mr-auto text-[11px] text-[var(--text-sub)]">
-          {listError ? t('web.devicesCountUnknown') : t('web.devicesLiveCount', { count: liveCount })}
+          {listError
+            ? t('web.devicesCountUnknown')
+            : `${t('web.devicesCount', { count: liveCount })} · ${t('web.devicesActive', { count: activeCount })}`}
         </span>
         {/* Same rule as Escape and the backdrop: a destructive call the
             operator confirmed must not be dismissable before its verdict has

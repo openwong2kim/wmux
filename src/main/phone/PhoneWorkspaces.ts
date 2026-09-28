@@ -74,9 +74,12 @@ export async function handlePhoneWorkspaces(command: string, payload: Record<str
 /**
  * The daemon drops a reply over its per-request byte cap without answering,
  * which would turn every list call into a timeout, so the sidebar must fit.
- * It degrades in steps, cheapest loss first: tab titles go, then pane names
- * (a pane row without either carries nothing, so the pane list empties), and
- * only then the whole sidebar. The workspace list itself is never cut.
+ * It degrades in steps, cheapest loss first. The pane placement (every pane
+ * id and every task's pane group) goes before anything the reply carried
+ * before it existed, so a sidebar that fit without it still arrives whole;
+ * then tab titles, then the pane rows, and only then the whole sidebar. With
+ * the placement gone a nested task keeps only its workspace-level `nested`.
+ * The workspace list itself is never cut.
  */
 export function fitSidebarToBudget(
   base: { workspaces: unknown[] },
@@ -86,10 +89,21 @@ export function fitSidebarToBudget(
 ): PhoneSidebarSnapshot | null {
   const fits = (candidate: PhoneSidebarSnapshot) => Buffer.byteLength(JSON.stringify({ ...base, sidebar: candidate })) <= budget;
   if (fits(sidebar)) return sidebar;
+  onDrop('budget.panePlacement');
+  const withoutPlacement: PhoneSidebarSnapshot = {
+    ...sidebar,
+    workspaces: sidebar.workspaces.map((row) => {
+      if (row.task?.paneGroup === undefined && row.task?.requesterPaneId === undefined) return row;
+      const { paneGroup: _paneGroup, requesterPaneId: _requesterPaneId, ...task } = row.task;
+      return { ...row, task };
+    }),
+    panes: sidebar.panes.map(({ paneId: _paneId, ...pane }) => pane),
+  };
+  if (fits(withoutPlacement)) return withoutPlacement;
   onDrop('budget.surfaceTitles');
   const withoutTitles: PhoneSidebarSnapshot = {
-    ...sidebar,
-    panes: sidebar.panes.map((pane) => ({
+    ...withoutPlacement,
+    panes: withoutPlacement.panes.map((pane) => ({
       ptyId: pane.ptyId,
       workspaceId: pane.workspaceId,
       ...(pane.paneName !== undefined ? { paneName: pane.paneName } : {}),
@@ -97,7 +111,7 @@ export function fitSidebarToBudget(
   };
   if (fits(withoutTitles)) return withoutTitles;
   onDrop('budget.panes');
-  const withoutPanes: PhoneSidebarSnapshot = { ...sidebar, panes: [] };
+  const withoutPanes: PhoneSidebarSnapshot = { ...withoutPlacement, panes: [] };
   if (fits(withoutPanes)) return withoutPanes;
   onDrop('budget.sidebar');
   return null;

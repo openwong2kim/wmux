@@ -33,9 +33,13 @@ export default function MiniSidebar() {
   // Needs-you-first ordering (attentionOrder.ts) — display only, same setting
   // and same roll-up as the full sidebar so the two surfaces never disagree.
   // #1481 — the same three-way order as the full sidebar; reorder pauses for
-  // any non-manual mode (the drop is judged in display order).
+  // any non-manual mode (the drop is judged in display order), except among
+  // pinned rows.
   const sidebarSortMode = useStore((s) => s.sidebarSortMode);
   const sidebarAttentionFirst = sidebarSortMode !== 'manual';
+  // Pinned to top: the pinned group shows as stored in every order, so its
+  // rows stay draggable among themselves while the rest is sorted.
+  const pinnedIds = useStore((s) => s.sidebarPinnedIds);
   // Same glance-board order and settle rule as the full sidebar.
   const { ordered: orderedWorkspaces, onPointerEnter: onRailPointerEnter, onPointerLeave: onRailPointerLeave, onFocusCapture: onRailFocus, onBlurCapture: onRailBlur } =
     useGlanceBoardOrder(workspaces);
@@ -75,6 +79,10 @@ export default function MiniSidebar() {
 
   // Drag state per render — refs avoid re-render on every dragover tick.
   const dragStartTimeRef = useRef<number>(0);
+  // Id of the rail row being dragged; null when no rail drag is in flight.
+  // Only such a drag may drop here: dataTransfer text is anything dragged in
+  // from outside, and an id (not an index) survives a close mid-drag.
+  const dragIdRef = useRef<string | null>(null);
   const [draggingIndex, setDraggingIndex] = useState<number | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ index: number; side: 'above' | 'below' } | null>(null);
 
@@ -110,6 +118,11 @@ export default function MiniSidebar() {
           const isActive = ws.id === activeWorkspaceId;
           const isMultiview = multiviewIds.includes(ws.id);
           const isDragging = draggingIndex === i;
+          const isPinned = pinnedIds.includes(ws.id);
+          const reorderOff = sidebarAttentionFirst && !isPinned;
+          // A sorted rail only takes pinned-to-pinned drops.
+          const dropAllowed = (fromId: string) =>
+            !sidebarAttentionFirst || (isPinned && pinnedIds.includes(fromId));
           const unreadCount = notifications.filter((n) => !n.read && n.workspaceId === ws.id).length;
           const agentStatus = agentStatusById[ws.id] ?? 'idle';
           const agentIcon = agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
@@ -137,20 +150,28 @@ export default function MiniSidebar() {
           };
 
           const handleDragStart = (e: React.DragEvent<HTMLButtonElement>) => {
-            if (sidebarAttentionFirst) return;
+            if (reorderOff) return;
             dragStartTimeRef.current = Date.now();
             e.dataTransfer.setData('text/plain', String(railIndex));
+            dragIdRef.current = ws.id;
             e.dataTransfer.effectAllowed = 'move';
             setDraggingIndex(i);
           };
 
           const handleDragEnd = () => {
+            dragIdRef.current = null;
             setDraggingIndex(null);
             setDropIndicator(null);
           };
 
           const handleDragOver = (e: React.DragEvent<HTMLButtonElement>) => {
-            if (sidebarAttentionFirst) return;
+            // Not a rail drag (external text, a full-sidebar row): no drop
+            // target and no indicator, rather than a promise the drop breaks.
+            // A row closed mid-drag may never get its dragend, so also check
+            // the source still exists.
+            const fromId = dragIdRef.current;
+            if (reorderOff || fromId === null || !dropAllowed(fromId)) return;
+            if (!useStore.getState().workspaces.some((w) => w.id === fromId)) return;
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
             const rect = e.currentTarget.getBoundingClientRect();
@@ -165,17 +186,21 @@ export default function MiniSidebar() {
           };
 
           const handleDrop = (e: React.DragEvent<HTMLButtonElement>) => {
-            if (sidebarAttentionFirst) return;
+            const fromId = dragIdRef.current;
+            if (reorderOff || fromId === null) return;
             e.preventDefault();
             setDropIndicator(null);
-            const fromIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
-            if (isNaN(fromIndex) || fromIndex === railIndex) return;
+            // Resolve both ends now, by id: a close mid-drag shifts indexes.
+            const all = useStore.getState().workspaces;
+            const fromIndex = all.findIndex((w) => w.id === fromId);
+            const railIndex = all.findIndex((w) => w.id === ws.id);
+            if (fromIndex === -1 || railIndex === -1 || fromIndex === railIndex || !dropAllowed(fromId)) return;
             const rect = e.currentTarget.getBoundingClientRect();
             const midY = rect.top + rect.height / 2;
             const toIndex = e.clientY < midY
               ? (fromIndex < railIndex ? railIndex - 1 : railIndex)
               : (fromIndex > railIndex ? railIndex + 1 : railIndex);
-            reorderWorkspace(fromIndex, toIndex);
+            reorderWorkspace(fromIndex, toIndex, isPinned);
           };
 
           const showIndicator = dropIndicator?.index === i;
@@ -198,7 +223,8 @@ export default function MiniSidebar() {
               <button
                 // Paused while needs-you-first ordering is on: the rail's drop
                 // is judged in display order but reorders the array position.
-                draggable={!sidebarAttentionFirst}
+                // Pinned rows are exempt — the group is shown as stored.
+                draggable={!reorderOff}
                 className={`relative w-8 h-8 rounded-md flex items-center justify-center text-[10px] font-bold font-mono select-none transition-colors ${
                   isActive
                     ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'

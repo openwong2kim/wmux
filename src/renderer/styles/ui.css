@@ -69,14 +69,34 @@
 }
 .wmux-nav-icon { flex-shrink: 0; color: var(--text-subtle); }
 .wmux-nav-button[aria-pressed="true"] .wmux-nav-icon { color: var(--text-main); }
+/* Fleet shortcut's trailing counts: plain meta text, no chip. Only the
+ * needs-you count is warm (the attention signal); running stays muted. */
+.wmux-sidebar-nav { container: wmux-nav / inline-size; }
+/* The label keeps its width; the counts take what is left. A part that does
+ * not fit wraps onto a clipped second line, Running first (it comes last). */
+.wmux-nav-button[data-sidebar-nav="fleet"] .wmux-nav-label { flex: 1 0 auto; }
 .wmux-nav-count {
-  min-width: 20px;
-  padding: 0 5px;
-  border-radius: 5px;
-  background: var(--bg-surface);
-  color: var(--text-sub2);
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  column-gap: 4px;
+  min-width: 0;
+  height: 20px;
+  overflow: hidden;
+  color: var(--text-muted);
   font-size: 11px;
+  font-weight: 400;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.wmux-nav-count-needs { color: var(--accent); font-weight: 500; }
+.wmux-nav-count-running { display: flex; column-gap: 4px; }
+.wmux-nav-count-short { display: none; }
+/* Narrow sidebar (the 220px minimum): the needs-you number alone. */
+@container wmux-nav (max-width: 239px) {
+  .wmux-nav-count-full, .wmux-nav-count-running { display: none; }
+  .wmux-nav-count-short { display: inline; }
 }
 .wmux-sidebar-section {
   display: flex;
@@ -536,6 +556,8 @@
 .wmux-fleet-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 20px; flex-shrink: 0; }
 .wmux-fleet-header > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
 .wmux-fleet-summary { margin-top: 3px; font-size: 12px; color: var(--text-sub); }
+.wmux-fleet-keep-open { display: flex; align-items: center; gap: 6px; width: 100%; font-size: 12px; color: var(--text-sub); cursor: pointer; }
+.wmux-fleet-keep-open input { accent-color: var(--accent-blue); }
 .wmux-fleet-close { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 5px; color: var(--text-sub); }
 .wmux-fleet-close:hover { background: var(--bg-surface); color: var(--text-main); }
 .wmux-fleet-tabs { display: flex; gap: 20px; padding: 0 20px; border-bottom: 1px solid var(--border-soft); flex-shrink: 0; }
@@ -579,6 +601,9 @@
 .wmux-fleet-dot[data-shape="cross"] { background: transparent; font-size: 14px; }
 .wmux-fleet-identity, .wmux-fleet-progress { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .wmux-fleet-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; line-height: 18px; font-weight: 600; color: var(--text-main); }
+/* A fan-out task's requester, on a line of its own so the pane coordinate it
+ * leads with is never squeezed out by the meta line. */
+.wmux-fleet-requester { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; line-height: 14px; color: var(--text-muted); }
 .wmux-fleet-context { display: flex; align-items: center; gap: 6px; overflow: hidden; font-size: 11px; line-height: 14px; color: var(--text-sub); }
 .wmux-fleet-context > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmux-fleet-context > span + span::before { content: '·'; margin-right: 6px; color: var(--text-muted); }

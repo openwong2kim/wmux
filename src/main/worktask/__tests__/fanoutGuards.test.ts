@@ -232,6 +232,74 @@ describe('stampFanoutTaskPane (the pty.create half)', () => {
   });
 });
 
+describe('requester origin on the lineage stamp', () => {
+  it('records pane, orchestrator and gui origins and reads them back after a restart', () => {
+    const dir = tmpDir();
+    const g = guards(dir);
+    stampFanoutTaskPane({
+      workspaceId: 'ws-a',
+      fanoutTaskOf: 'ws-owner',
+      fanoutOrigin: { kind: 'pane', paneId: 'pane-74', surfaceId: 'surf-1', label: 'Compare · w115-74', ptyId: 'pty-9' },
+    }, g);
+    stampFanoutTaskPane({ workspaceId: 'ws-b', fanoutTaskOf: 'ws-owner', fanoutOrigin: { kind: 'orchestrator' } }, g);
+    g.markTask('ws-c', 'ws-owner', { kind: 'gui' });
+    const read = guards(dir).lineageFor(['ws-a', 'ws-b', 'ws-c']);
+    // Stable ids only: a ptyId handed over with the origin is not persisted.
+    expect(read['ws-a'].origin).toEqual({ kind: 'pane', paneId: 'pane-74', surfaceId: 'surf-1', label: 'Compare · w115-74' });
+    expect(read['ws-b'].origin).toEqual({ kind: 'orchestrator' });
+    expect(read['ws-c'].origin).toEqual({ kind: 'gui' });
+    expect(read['ws-a'].owner).toBe('ws-owner');
+  });
+
+  it('loads a legacy store without origins, and drops only a malformed origin', () => {
+    const dir = tmpDir();
+    fs.writeFileSync(path.join(dir, FANOUT_LINEAGE_FILENAME), JSON.stringify({
+      version: 1,
+      tasks: {
+        'ws-old': { owner: 'ws-owner', at: 5 },
+        'ws-bad': { owner: 'ws-owner', at: 6, origin: { kind: 'someone-else', paneId: 'p' } },
+        // A pane origin with no ids can never name its pane: dropped.
+        'ws-idless': { owner: 'ws-owner', at: 7, origin: { kind: 'pane', label: 'w1-1' } },
+      },
+    }), 'utf8');
+    const g = guards(dir);
+    expect(g.fanoutOwnerOf('ws-old')).toBe('ws-owner');
+    expect(g.lineageFor(['ws-old', 'ws-bad', 'ws-idless'])).toEqual({
+      'ws-old': { owner: 'ws-owner', at: 5 },
+      'ws-bad': { owner: 'ws-owner', at: 6 },
+      'ws-idless': { owner: 'ws-owner', at: 7 },
+    });
+  });
+
+  it('keeps the old reader shape: a stamp written with an origin still has owner and at', () => {
+    const dir = tmpDir();
+    guards(dir).markTask('ws-a', 'ws-owner', { kind: 'pane', paneId: 'p1', label: 'w1-2' });
+    const raw = JSON.parse(fs.readFileSync(path.join(dir, FANOUT_LINEAGE_FILENAME), 'utf8')) as {
+      version: number; tasks: Record<string, { owner: string; at: number }>;
+    };
+    expect(raw.version).toBe(1);
+    expect(raw.tasks['ws-a'].owner).toBe('ws-owner');
+    expect(typeof raw.tasks['ws-a'].at).toBe('number');
+  });
+
+  it('a re-mark by the same owner never erases the origin, and can add a missing one', () => {
+    const dir = tmpDir();
+    let clock = 100;
+    const g = guards(dir, { now: () => clock });
+    g.markTask('ws-a', 'ws-owner', { kind: 'pane', paneId: 'p1', surfaceId: 's1', label: 'w1-2' });
+    clock = 200;
+    // FanOutService's idempotent second write carries no pane origin.
+    g.markTask('ws-a', 'ws-owner');
+    g.markTask('ws-a', 'ws-owner', { kind: 'gui' });
+    expect(guards(dir).lineageFor(['ws-a'])['ws-a']).toEqual({
+      owner: 'ws-owner', at: 100, origin: { kind: 'pane', paneId: 'p1', surfaceId: 's1', label: 'w1-2' },
+    });
+    g.markTask('ws-b', 'ws-owner');
+    g.markTask('ws-b', 'ws-owner', { kind: 'orchestrator' });
+    expect(guards(dir).lineageFor(['ws-b'])['ws-b']).toEqual({ owner: 'ws-owner', at: 200, origin: { kind: 'orchestrator' } });
+  });
+});
+
 describe('FanOutGuards.refundStart', () => {
   it('gives back the hour for tasks that never got a workspace, on disk too', () => {
     const d = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-guards-refund-'));

@@ -10,6 +10,8 @@ import { t } from '../../i18n';
 import { useStore } from '../../stores';
 import { IconCheck, IconChevronDir, IconExternalLink } from '../icons';
 import { fleetTitle } from './fleetPresentation';
+import { fleetRequesterText } from '../../utils/fanoutProvenance';
+import { useShallow } from 'zustand/react/shallow';
 import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
 
 interface FleetCardProps {
@@ -128,6 +130,9 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
     selectLatestCompletionEvidenceTask(s.a2aTasks, card.workspaceId, card.paneId, card.isActivePane),
   );
   const displayName = fleetTitle(card, mission);
+  // A fan-out task names who asked for it in every section, not only once it
+  // is ready to review. Undefined for a workspace that is not a task.
+  const requester = useStore(useShallow((s) => fleetRequesterText(s, card.workspaceId, t)));
   const agentName = card.agentName || (card.surfaceType === 'terminal' ? card.title : card.surfaceType);
   const supervision = card.supervision;
   const supervisionStopped = supervision?.status === 'stopped';
@@ -163,7 +168,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
       type="button"
       role="option"
       aria-selected={focused}
-      aria-label={`${displayName}, ${statusLabel}, ${card.workspaceName}${card.remote ? `, ${card.remote.hostLabel}` : ''}${supervision ? `, ${supervisionLabel}` : ''}${changed ? `, ${t('fleet.changedSinceSeen')}` : ''}, ${detail}, ${action}`}
+      aria-label={`${displayName}, ${statusLabel}, ${card.workspaceName}${requester ? `, ${requester.text}` : ''}${card.remote ? `, ${card.remote.hostLabel}` : ''}${supervision ? `, ${supervisionLabel}` : ''}${changed ? `, ${t('fleet.changedSinceSeen')}` : ''}, ${detail}, ${action}`}
       tabIndex={focused ? 0 : -1}
       onFocus={onFocus}
       onClick={() => onJump(card)}
@@ -220,6 +225,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
             </span>
           )}
         </span>
+        {requester && <span className="wmux-fleet-requester" data-fleet-requester title={requester.text}>{requester.text}</span>}
       </span>
       <span className="wmux-fleet-progress">
         <span className={`wmux-fleet-detail${showActivity ? ' is-activity' : ''}`}

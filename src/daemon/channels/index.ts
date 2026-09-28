@@ -37,6 +37,7 @@ export {
 export {
   ChannelWakeWorker,
   pickTarget,
+  wakeAgentSlug,
   WAKE_TICK_MS,
   WAKE_QUIET_MS,
   MENTION_NUDGE_BACKOFF_MS,

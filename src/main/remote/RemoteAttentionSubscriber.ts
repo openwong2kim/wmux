@@ -15,6 +15,7 @@
 // pane state, and must keep retrying for as long as the host is attached.
 
 import type { RemoteHost } from '../../shared/remoteHosts';
+import { isCredentialSafeOriginString } from '../../shared/remotePairInput';
 import { RemoteAttentionGate, type RemoteAttentionNotification } from './remoteAttention';
 
 // Reconnect backoff, +/-30% jitter so several hosts dropped by one tailnet
@@ -132,6 +133,9 @@ export class RemoteAttentionSubscriber {
 
   private async run(gen: number): Promise<void> {
     if (!this.current(gen)) return;
+    // A host on plain http to another machine never gets this token: no
+    // stream and no retry loop (the hub and the rows say why).
+    if (!isCredentialSafeOriginString(this.deps.host.origin)) return;
     const controller = new AbortController();
     this.controller = controller;
     // No cursor on purpose — see RemoteAttentionGate: every connect replays

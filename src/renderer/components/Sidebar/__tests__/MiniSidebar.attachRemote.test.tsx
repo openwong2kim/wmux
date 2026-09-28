@@ -101,4 +101,16 @@ describe('collapsed rail + reaches Attach remote workspace (#1284)', () => {
     expect(hostsList).toHaveBeenCalled();
     expect(findAttachRow(container)).toBeUndefined();
   });
+
+  it('closes when a repair opens the app-level attach dialog, so only one is mounted', async () => {
+    const container = render();
+    act(() => railPlus(container).click());
+    act(() => findAttachRow(container)?.click());
+    await act(async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); });
+    expect(container.querySelector('.ui-dialog')).not.toBeNull();
+
+    act(() => { useStore.getState().requestRemoteRepair('host-1'); });
+    expect(container.querySelector('.ui-dialog')).toBeNull();
+    act(() => { useStore.getState().requestRemoteRepair(null); });
+  });
 });

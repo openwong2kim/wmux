@@ -1,4 +1,5 @@
 import type { StateCreator } from 'zustand';
+import { paneTaskFoldKey } from '../../utils/sidebarLayout';
 import type { StoreState } from '../index';
 import type { Pane, PaneBranch, StashedPane, Workspace, AgentStatus } from '../../../shared/types';
 import type { AgentSlug } from '../../../shared/events';
@@ -289,8 +290,8 @@ export interface PaneSlice {
   // otherwise cross the 120 s TTL and read as idle mid-turn, which is the
   // exact bug the hook was installed to fix.
   surfaceTurnOpenAt: Record<string, number>;
-  // When each pty's turn last ended as `complete` (stamped on the transition
-  // into complete, not on repeats). Fleet's Ready to review ages and orders
+  // When each pty's turn last ended — complete, waiting or error (stamped on
+  // the first turn-ending status, not on repeats). Fleet's Ready to review ages and orders
   // finished tasks by it; output stamps move with every TUI redraw.
   surfaceTurnEndAt: Record<string, number>;
   markSurfaceTurnOpen: (ptyId: string) => void;
@@ -353,6 +354,15 @@ const TURN_CLOSING_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
   'awaiting_input',
   'error',
   'idle',
+]);
+
+// The statuses that stamp `surfaceTurnEndAt`: a turn that ended, whatever it
+// ended on. Not 'awaiting_input' (a question pauses a turn) and not 'idle'
+// (byte silence proves nothing; a settled idle drops the activity stamp itself).
+const TURN_END_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
+  'complete',
+  'waiting',
+  'error',
 ]);
 
 /** Normalized leaf rectangle in a 0–100 coordinate space (both axes). */
@@ -633,10 +643,12 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // Store only attention-worthy statuses; everything else (running, idle,
     // null) clears the entry so the blink stops as soon as the agent
     // resumes, goes idle, or the PTY exits.
-    // Turn-end stamp: set on the first `complete` after a turn opened, kept
-    // through repeats and through the focus clear (null), withdrawn when the
-    // agent runs again.
-    if (status === 'complete' && state.surfaceTurnEndAt[ptyId] === undefined) {
+    // Turn-end stamp: set on the first turn-ending status after a turn opened,
+    // kept through repeats and through the focus clear (null), withdrawn when
+    // the agent runs again. #1463 — `waiting` and `error` end a turn as surely
+    // as `complete`, and `isHookRunning` reads activity older than this stamp
+    // as the finished turn's.
+    if (TURN_END_STATUSES.has(status as AgentStatus) && state.surfaceTurnEndAt[ptyId] === undefined) {
       state.surfaceTurnEndAt[ptyId] = Date.now();
     } else if (status === 'running') {
       delete state.surfaceTurnEndAt[ptyId];
@@ -1037,6 +1049,8 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
         delete state.paneLabel[leaf.id];
         // Drop the orchestrator-role mirror on the same teardown (mirrors label).
         delete state.paneRole[leaf.id];
+        // The sidebar's fold state for the tasks this pane requested.
+        if (state.sidebarTaskGroupExpanded) delete state.sidebarTaskGroupExpanded[paneTaskFoldKey(ws.id, leaf.id)];
         for (const s of leaf.surfaces) {
           if (s.ptyId) {
             delete state.surfaceAgent[s.ptyId];

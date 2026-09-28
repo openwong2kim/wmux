@@ -141,6 +141,10 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
    *  `surfaceActivityAt`, which is evidence and decays at HOOK_RUNNING_TTL_MS.
    *  Optional so existing fixtures stay terse. */
   surfaceTurnOpenAt?: StoreState['surfaceTurnOpenAt'];
+  /** #1463 — ptyId → when its last turn ended (complete/waiting/error). Activity evidence
+   *  older than this belongs to the finished turn (see isHookRunning).
+   *  Optional so existing fixtures stay terse. */
+  surfaceTurnEndAt?: StoreState['surfaceTurnEndAt'];
   /**
    * PRECOMPUTED hook-'running' verdicts, ptyId → true. Supplied instead of
    * `agentClockMs` by a consumer that must not re-run on every clock tick: the
@@ -234,9 +238,16 @@ export function isHookRunning(args: {
   turnOpenAt: number | undefined;
   /** The reactive decay clock (`state.agentClockMs`). */
   agentClockMs: number | undefined;
+  /** `surfaceTurnEndAt[ptyId]` — when the last turn ended (complete/waiting/error). */
+  turnEndAt?: number;
 }): boolean {
-  const { activityAt, turnOpenAt, agentClockMs } = args;
+  const { activityAt, turnOpenAt, agentClockMs, turnEndAt } = args;
   if (turnOpenAt !== undefined && turnOpenAt > 0) return true;
+  // #1463 — evidence from BEFORE the turn's own end is about the finished
+  // turn. Counting it repainted a seen, finished pane 'running' for the rest
+  // of the TTL in Fleet while the roster showed it finished. Any new running
+  // edge drops `turnEndAt` (setSurfaceAgentStatus), so fresh work still counts.
+  if (turnEndAt !== undefined && activityAt !== undefined && activityAt <= turnEndAt) return false;
   return (
     activityAt !== undefined
     && activityAt > 0
@@ -447,6 +458,7 @@ export function selectHookRunningByPtyId(state: FleetSelectorState): Record<stri
       activityAt: activity[ptyId],
       turnOpenAt: turnOpen[ptyId],
       agentClockMs: state.agentClockMs,
+      turnEndAt: state.surfaceTurnEndAt?.[ptyId],
     })) {
       // Only TRUE entries are kept: a shallow compare over a map that also
       // carried `false` would change identity for every pane that ever ran.
@@ -589,7 +601,12 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       const turnOpen = turnOpenAt !== undefined && turnOpenAt > 0;
       const hookRunning = state.hookRunningByPtyId
         ? (!!ptyId && state.hookRunningByPtyId[ptyId] === true)
-        : isHookRunning({ activityAt, turnOpenAt, agentClockMs: state.agentClockMs });
+        : isHookRunning({
+          activityAt,
+          turnOpenAt,
+          agentClockMs: state.agentClockMs,
+          turnEndAt: ptyId ? state.surfaceTurnEndAt?.[ptyId] : undefined,
+        });
       // #1168 — a stashed pane whose every terminal surface has lost its pty is
       // a session the daemon has confirmed gone. The roster reports that as
       // `error` / needs-you and offers recovery; this pass had no liveness
@@ -1091,6 +1108,36 @@ export function attentionScore(rank: number, atMinute: number): number {
   return rank * 1e9 + (1e9 - 1 - Math.max(0, Math.min(atMinute, 1e9 - 1)));
 }
 
+/**
+ * An attached remote workspace's Attention score, on the same scale as
+ * selectWorkspaceAttentionScores: the most urgent class among its agent panes.
+ * Only panes that name an agent count (resolveRemoteAgent's rule), and there
+ * is no pending question from the host, so plain `waiting` is idle — as it is
+ * for a local remote-terminal tab. A stale (or refused) mirror scores as idle:
+ * its statuses are frozen at the last successful poll. The host sends no
+ * stamps, so a remote row sorts after local rows of the same class.
+ */
+export function remoteWorkspaceAttentionClass(
+  rw: Pick<AttachedRemoteWorkspace, 'panes' | 'stale' | 'authRejected' | 'insecureTransport'>,
+): FleetAttentionClass {
+  let best: FleetAttentionClass = 'idle';
+  if (!rw.stale && !rw.authRejected && !rw.insecureTransport) {
+    for (const p of rw.panes) {
+      if (!p.agentName) continue;
+      const c = fleetAttentionClass({ agentStatus: p.agentStatus ?? 'idle', unverifiable: false });
+      if (ATTENTION_CLASS_RANK[c] < ATTENTION_CLASS_RANK[best]) best = c;
+    }
+  }
+  return best;
+}
+
+/** The class above as a score, so the row sorts by what it shows. */
+export function remoteWorkspaceAttentionScore(
+  rw: Pick<AttachedRemoteWorkspace, 'panes' | 'stale' | 'authRejected' | 'insecureTransport'>,
+): number {
+  return attentionScore(ATTENTION_CLASS_RANK[remoteWorkspaceAttentionClass(rw)], 0);
+}
+
 /** One row's section and detail — `groupFleetPanes` without the grouping. */
 export function fleetRow(pane: FleetPane, ctx: FleetGroupContext = {}): FleetRow {
   const target = fleetTargetPtyId(pane);
@@ -1224,11 +1271,34 @@ export function selectFleetBoard(
   state: FleetBoardState,
   opts: { now: number; sortMode: FleetSortMode },
 ): FleetBoard {
-  const unverifiable = state.unverifiablePaneMinutes ?? selectUnverifiablePaneMinutes(state);
+  const panes = fleetBoardPanes(
+    state,
+    state.hookRunningByPtyId ?? selectHookRunningByPtyId(state),
+    state.unverifiablePaneMinutes ?? selectUnverifiablePaneMinutes(state),
+  );
+  const groups = groupFleetPanes(panes, {
+    now: opts.now,
+    surfaceActivityAt: state.surfaceActivityAt,
+    surfaceOutputAt: state.surfaceOutputAt,
+    surfaceTurnOpenAt: state.surfaceTurnOpenAt,
+    surfacePendingQuestion: state.surfacePendingQuestion,
+    surfaceLastMessage: state.surfaceLastMessage,
+    sortMode: opts.sortMode,
+  });
+  return { panes, groups };
+}
+
+/** The board's rows before grouping — shared by the board and its counts so
+ *  both read the same panes with the same liveness inputs. */
+function fleetBoardPanes(
+  state: FleetBoardState,
+  hookRunningByPtyId: Record<string, boolean>,
+  unverifiable: Record<string, number>,
+): FleetPane[] {
   const surfaceAgent = state.surfaceAgent ?? {};
   // Use the same turn/liveness inputs as the sidebar and Deck roster. Missing
   // these optional inputs silently classified active hook-driven turns as idle.
-  const panes = selectFleetPanes({
+  return selectFleetPanes({
     workspaces: state.workspaces,
     surfaceAgentStatus: state.surfaceAgentStatus,
     surfaceActivity: state.surfaceActivity,
@@ -1240,23 +1310,67 @@ export function selectFleetBoard(
     surfaceTurnOpenAt: state.surfaceTurnOpenAt,
     commandRunningByPtyId: state.commandRunningByPtyId,
     agentAliveByPtyId: state.agentAliveByPtyId,
-    hookRunningByPtyId: state.hookRunningByPtyId ?? selectHookRunningByPtyId(state),
+    hookRunningByPtyId,
     remoteWorkspaces: state.remoteWorkspaces,
   }).map((pane) => ({
     ...pane,
     agentName: surfaceAgent[pane.ptyId]?.name || pane.agentName,
     unverifiable: !!unverifiable[pane.ptyId],
   }));
-  const groups = groupFleetPanes(panes, {
-    now: opts.now,
-    surfaceActivityAt: state.surfaceActivityAt,
-    surfaceOutputAt: state.surfaceOutputAt,
-    surfaceTurnOpenAt: state.surfaceTurnOpenAt,
-    surfacePendingQuestion: state.surfacePendingQuestion,
-    surfaceLastMessage: state.surfaceLastMessage,
-    sortMode: opts.sortMode,
-  });
-  return { panes, groups };
+}
+
+export interface FleetSectionCounts {
+  needsYou: number;
+  running: number;
+}
+
+function sameKeys(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const ak = Object.keys(a);
+  if (ak.length !== Object.keys(b).length) return false;
+  return ak.every((k) => Object.is(a[k], b[k]));
+}
+
+// One slot: the live store is the only caller that cares about the hit rate.
+let sectionCountsMemo: { inputs: unknown[]; hook: Record<string, boolean>; unverifiable: Record<string, number>; out: FleetSectionCounts } | undefined;
+
+/**
+ * How many rows the Fleet board has in Needs you and Running — the sidebar's
+ * Fleet shortcut shows these. Same panes as the board (fleetBoardPanes) and the
+ * same per-row section rule as `fleetRow`, but counted only: no detail text,
+ * no grouping, no sort. Needs you includes finished and unconfirmed rows, as
+ * on the board.
+ *
+ * The sidebar is always mounted and the store changes on every output chunk,
+ * so the pass is memoized on the inputs that can move a section — not on the
+ * root state. Output stamps and last messages never move one; the decay clock
+ * reaches a section only through the two derived maps, compared shallowly.
+ */
+export function selectFleetSectionCounts(state: FleetBoardState): FleetSectionCounts {
+  const hook = state.hookRunningByPtyId ?? selectHookRunningByPtyId(state);
+  const unverifiable = state.unverifiablePaneMinutes ?? selectUnverifiablePaneMinutes(state);
+  const inputs = [
+    state.workspaces, state.surfaceAgentStatus, state.surfaceActivity, state.paneLabel,
+    state.supervisionByPtyId, state.surfaceAgent, state.surfacePendingQuestion, state.surfaceActivityAt,
+    state.surfaceTurnOpenAt, state.commandRunningByPtyId, state.agentAliveByPtyId, state.remoteWorkspaces,
+  ];
+  const memo = sectionCountsMemo;
+  if (memo && inputs.every((value, i) => Object.is(value, memo.inputs[i]))
+      && sameKeys(hook, memo.hook) && sameKeys(unverifiable, memo.unverifiable)) {
+    return memo.out;
+  }
+  const out: FleetSectionCounts = { needsYou: 0, running: 0 };
+  for (const pane of fleetBoardPanes(state, hook, unverifiable)) {
+    const target = fleetTargetPtyId(pane);
+    const question = target ? state.surfacePendingQuestion?.[target]?.trim() || undefined : undefined;
+    const section = sectionOfAttentionClass(fleetAttentionClass(pane, question));
+    if (section === 'needsYou') out.needsYou++;
+    else if (section === 'running') out.running++;
+  }
+  // Keep the previous object when nothing changed, so a shallow subscriber
+  // never re-renders on an equal count.
+  const kept = memo && memo.out.needsYou === out.needsYou && memo.out.running === out.running ? memo.out : out;
+  sectionCountsMemo = { inputs, hook, unverifiable, out: kept };
+  return kept;
 }
 
 /**

@@ -28,7 +28,7 @@ If your work touches multiple areas, split it into separate PRs.
 
 ### PR Checklist
 
-- [ ] `npx tsc --noEmit` passes
+- [ ] `npm run typecheck` passes
 - [ ] `npm test` passes
 - [ ] New code has tests
 - [ ] Commit messages are clear and descriptive
