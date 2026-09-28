@@ -113,10 +113,13 @@ function startMenuShortcutExists(appData: string): boolean {
   }
 }
 
-function desktopShortcutExists(): boolean {
-  const profile = process.env.USERPROFILE;
-  if (!profile) return true; // unknown: never create what we cannot check for
-  return fs.existsSync(path.join(profile, 'Desktop', 'wmux.lnk'));
+/**
+ * `desktopDir` comes from app.getPath('desktop') so a Desktop redirected by
+ * OneDrive is checked where Squirrel actually writes the link.
+ */
+function desktopShortcutExists(desktopDir: string | undefined): boolean {
+  if (!desktopDir) return true; // unknown: never create what we cannot check for
+  return fs.existsSync(path.join(desktopDir, 'wmux.lnk'));
 }
 
 function createShortcuts(execPath: string, root: string, locations: ShortcutLocation[]): void {
@@ -145,6 +148,7 @@ export interface ReconcileOptions {
   execPath: string;
   firstRun: boolean;
   freshInstall: boolean;
+  desktopDir?: string;
 }
 
 /**
@@ -166,7 +170,7 @@ export async function runPostInstallReconcile(opts: ReconcileOptions): Promise<R
       shimExists: fs.existsSync(path.join(root, 'bin', 'wmux.cmd')),
       autostartTarget: target,
       autostartTargetExists: target !== null && fs.existsSync(target),
-      desktopShortcutExists: desktopShortcutExists(),
+      desktopShortcutExists: desktopShortcutExists(opts.desktopDir),
       startMenuShortcutExists: startMenuShortcutExists(appData),
     });
     if (isEmptyPlan(plan)) return plan;

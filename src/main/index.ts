@@ -1403,7 +1403,12 @@ app.on('ready', async () => {
     const firstRun = process.argv.includes('--squirrel-firstrun');
     const freshInstall = isFreshProfile(app.getPath('userData'));
     const reconcileTimer = setTimeout(() => {
-      void runPostInstallReconcile({ execPath: process.execPath, firstRun, freshInstall });
+      void runPostInstallReconcile({
+        execPath: process.execPath,
+        firstRun,
+        freshInstall,
+        desktopDir: app.getPath('desktop'),
+      });
     }, 5000);
     reconcileTimer.unref();
   }

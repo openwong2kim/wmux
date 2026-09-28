@@ -196,7 +196,9 @@ try {
 # Setup.exe deletes the existing install folder before anything else and does
 # not stop a running wmux first. A running copy keeps its files locked, the
 # delete fails halfway, and the install is left broken (#502). Check first and
-# let the user quit wmux themselves: killing it here would end their sessions.
+# let the user shut wmux down themselves: killing it here would end their
+# sessions without asking. The session daemon also runs as wmux.exe from the
+# install folder, so it counts as running.
 function Test-WmuxRunning {
     $root = Join-Path $env:LOCALAPPDATA 'wmux'
     $procs = Get-CimInstance Win32_Process -Filter "Name='wmux.exe'" -ErrorAction SilentlyContinue |
@@ -206,7 +208,9 @@ function Test-WmuxRunning {
 
 function Write-QuitWmuxFirst([string]$setupPath) {
     Write-Host "  [!] wmux is running. The installer cannot replace it while it is open." -ForegroundColor Yellow
-    Write-Host "      Quit wmux from its tray icon (right-click -> Quit), then run:" -ForegroundColor Yellow
+    Write-Host "      Right-click the wmux tray icon -> 'Shut down wmux (close all sessions)'." -ForegroundColor Yellow
+    Write-Host "      Plain 'Quit' keeps the session daemon running, which still blocks Setup." -ForegroundColor Yellow
+    Write-Host "      Then run:" -ForegroundColor Yellow
     Write-Host "      $setupPath" -ForegroundColor White
 }
 
