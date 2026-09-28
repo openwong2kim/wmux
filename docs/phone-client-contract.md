@@ -905,6 +905,9 @@ prompts are answered with the phone pane's terminal controls when `--allow-input
 is enabled, or at the desktop otherwise. Structured choice
 support for these agents will be added only after their respective projects
 expose authoritative approval hooks — the daemon does not guess keystrokes.
+A Codex pane that wmux launched is the exception: its command and file-change
+approvals are answered through Codex's own server (see "Codex approvals"
+under Decision forms).
 
 ### `terminal_prompt` — the agent's own permission dialog
 
@@ -1359,6 +1362,36 @@ again for that request. With the daemon's `phoneDecisions.native` switch off,
 a native decision is an informational card (no `choices`, no `form`): it
 cannot be answered or declined from a phone even after the switch is turned
 back on, and it still never blocks typing into its pane.
+
+#### Codex approvals
+
+A Codex pane that wmux launched with a relay (`POST /api/sessions
+{agentLaunch}` or chat launch) talks to Codex's account server through that
+per-pane relay. The relay turns two of Codex's approval requests into native
+permission decisions (`agent: 'codex'`, `kind: 'terminal_prompt'`):
+
+| Codex request | `question` | `summary` | `toolName` |
+| --- | --- | --- | --- |
+| `item/commandExecution/requestApproval` | Codex's `reason`, else `Run this command?` | the command | `command` |
+| `item/fileChange/requestApproval` | Codex's `reason`, else `Allow these file changes?` | `grantRoot`, when Codex names one | `file change` |
+
+- **Yes** is Codex's `accept`. **No** (`choiceKey` `2`, or `/decline`) is
+  Codex's `cancel`: the same answer as Esc in the Codex TUI, and like Esc it
+  **interrupts the whole turn**. Say so on the No button.
+- Only a request whose own `availableDecisions` include both `accept` and
+  `cancel` becomes a decision. Choices that grant lasting permission
+  (`acceptForSession`, `acceptWithExecpolicyAmendment`) are never offered.
+  MCP elicitation, `requestUserInput` and other Codex requests stay in the
+  terminal: no card.
+- The request must belong to a thread this pane started, resumed or forked.
+  Another pane subscribed to the same thread gets no card for it.
+- The Codex overlay in the pane closes by itself once the phone answers.
+- The card expires when the request is answered anywhere else (the Codex TUI,
+  another client), when its turn ends, or when the pane's relay goes away
+  (for example the account server restarted). A phone answer after that is
+  410 `prompt-gone` / `expired`.
+- A Codex started by typing `codex` in a shell (no relay) produces no native
+  decision; its prompts are answered in the terminal as before.
 
 #### `POST /api/approvals/<id>/answer`
 
