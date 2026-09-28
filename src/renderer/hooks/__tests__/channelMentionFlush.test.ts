@@ -86,7 +86,7 @@ describe('buildChannelMentionNudge', () => {
     // fix appends a reply-gate that forbids greeting/ack replies — no forced
     // "+ reply". Without seq metadata the ack falls back to the unread form.)
     expect(n).toBe(
-      '[wmux-channel] mention in #general — read: a2a_task_query role:agent, then ack: wmux channel unread. Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.',
+      '[wmux-channel] mention in #general — read: a2a_task_query task_id:chmention-ch-1-5, then ack: wmux channel unread. Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.',
     );
     expect(n).not.toContain('to read + reply'); // never force a reflex reply (loop cause)
     expect(n).not.toMatch(/[\r\n]/);
@@ -104,17 +104,17 @@ describe('buildChannelMentionNudge', () => {
     expect(n).not.toContain('rm -rf');
     expect(n).not.toContain('IGNORE');
     expect(n).toBe(
-      '[wmux-channel] mention in #general — read: a2a_task_query role:agent, then ack: wmux channel unread. Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.',
+      '[wmux-channel] mention in #general — read: a2a_task_query task_id:chmention-ch-1-7, then ack: wmux channel unread. Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.',
     );
   });
 
-  it('multiple mentions → count + query instruction (no task ids — a2a_task_query takes none)', async () => {
+  it('multiple mentions → count + listing instruction, then task_id per mention', async () => {
     const n = buildChannelMentionNudge([
       { id: 'chmention-ch-1-5', metadata: { title: 'a' } },
       { id: 'chmention-ch-1-6', metadata: { title: 'b' } },
     ]);
     expect(n).toBe(
-      '[wmux-channel] 2 channel mentions — read: a2a_task_query role:agent, then ack: wmux channel unread. Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.',
+      '[wmux-channel] 2 channel mentions — read: a2a_task_query role:agent, then task_id:<id> for each full body, then ack: wmux channel unread. Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.',
     );
   });
 

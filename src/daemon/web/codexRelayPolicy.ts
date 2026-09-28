@@ -292,6 +292,7 @@ export function classify(message: unknown): MethodClass | 'response' | 'notifica
   if (!m) return { refuse: 'malformed request' };
   if (typeof m.method !== 'string') return 'id' in m ? 'response' : { refuse: 'malformed request' };
   if (!('id' in m)) return CLIENT_NOTIFICATIONS.has(m.method) ? 'notification' : { refuse: `unsupported notification ${m.method}` };
+  if (typeof m.id !== 'string' && !Number.isSafeInteger(m.id)) return { refuse: 'malformed request id' };
   return CLIENT_REQUEST_CLASSES[m.method] ?? { refuse: `unsupported request ${m.method}` };
 }
 

@@ -43,6 +43,7 @@ import {
 import { stopWebServerDurably } from './web/webStop';
 import { decideWebStartPolicy, resolveWebStartGrants } from './web/webStartPolicy';
 import { scheduleTokenFileReHarden } from '../shared/security';
+import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { readSessionTextReplay } from './sessionTextReplay';
@@ -247,6 +248,9 @@ const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Co
       if (codexRefusalNoticedAt.size > 1024) codexRefusalNoticedAt.clear();
       codexRefusalNoticedAt.set(id,now);
       notifyCodexIdentityRefused?.(id,reason);
+    },
+    unmatchedResponse: (id,count)=>{
+      log('debug',`[codex-relay] did not forward a client response with no pending server request in ${id} (${count} on this connection)`);
     },
   });
 
@@ -2488,7 +2492,7 @@ function registerRpcHandlers(
     if (capped.truncated) {
       log('info', `[readText] session=${p.id} response truncated to fit frame budget (${outcome.rows.length} rows)`);
     }
-    return { ok: true, mode: 'rows', rows: capped.rows, bufferType: outcome.bufferType, truncated: capped.truncated };
+    return { ok: true, mode: 'rows', rows: capped.rows, bufferType: outcome.bufferType, rowsBelowCursor: outcome.rowsBelowCursor, truncated: capped.truncated };
   });
 
   // daemon.listSessions
@@ -4811,7 +4815,9 @@ function registerRpcHandlers(
       ...(p.role === 'user' || p.role === 'agent' ? { role: p.role } : {}),
       ...(typeof p.updatedSince === 'string' && p.updatedSince ? { updatedSince: p.updatedSince } : {}),
     });
-    return { ok: true, workspaceId, tasks };
+    // view: 'page' → summaries, or the one named task in full: a list reply
+    // must stay far below the 1 MiB control-line cap of DaemonClient.
+    return { ok: true, workspaceId, tasks: applyTaskQueryView(tasks, p) };
   });
 
   // ── WorkTask 미션 채널 (J0 §3) ──────────────────────────────────────

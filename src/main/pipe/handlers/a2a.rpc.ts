@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage } from '../../../shared/types';
 import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../shared/executeApprovalBounds';
+import { isPagedTaskQuery, pagedTaskId, shapeTaskQueryResult, summarizeTask } from '../../../shared/a2aTaskQueryView';
 import { defaultSnapshot } from '../../pty/portWatch';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
@@ -76,15 +77,19 @@ function taskUpdatedAt(t: Record<string, unknown>): string {
   return typeof meta?.updatedAt === 'string' ? meta.updatedAt : '';
 }
 
+/** Daemon deadline for a paged a2a.task.query (see the handler). */
+const PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS = 3_000;
+
 async function daemonTaskRpc(
   getDaemonClient: (() => DaemonClient | null) | undefined,
   method: string,
   params: Record<string, unknown>,
+  opts: { timeoutMs?: number } = {},
 ): Promise<DaemonTaskGate> {
   const dc = getDaemonClient?.();
   if (!dc) return { kind: 'unavailable' };
   try {
-    const res = await dc.rpc(method, params);
+    const res = await dc.rpc(method, params, opts);
     if (isRecord(res) && res.ok === true) return { kind: 'ok', result: res };
     const error = isRecord(res) && typeof res.error === 'string' ? res.error : `${method}: daemon rejected`;
     if (A2A_DAEMON_SOFT_ERRORS.some((s) => error.includes(s))) return { kind: 'unavailable' };
@@ -417,6 +422,29 @@ export function registerA2aRpc(
   // artifacts)은 보존한다(§6.F — 증분 히스토리는 아직 데몬 비내구). 데몬-only
   // id(재시작 생존분)는 추가. 데몬 미가용이면 현행 렌더러-only와 동일.
   router.register('a2a.task.query', async (params) => {
+    // view: 'page' (a2a_task_query): each source returns summaries (or the one
+    // named task), and the merged result is paged here — see a2aTaskQueryView.
+    const paged = isPagedTaskQuery(params);
+    const taskId = pagedTaskId(params);
+    const summaries = paged && !taskId;
+    const shape = (result: unknown): unknown => (paged
+      ? shapeTaskQueryResult(filterByStatus(result), {
+        taskId,
+        messageId: typeof params.messageId === 'string' && params.messageId ? params.messageId : undefined,
+        limit: typeof params.limit === 'number' ? params.limit : undefined,
+        cursor: typeof params.cursor === 'string' && params.cursor ? params.cursor : undefined,
+      })
+      : result);
+    const stateOf = (t: Record<string, unknown>): unknown =>
+      (summaries ? t.state : isRecord(t.status) ? t.status.state : undefined);
+    const updatedAtOf = (t: Record<string, unknown>): string =>
+      (summaries ? (typeof t.updatedAt === 'string' ? t.updatedAt : '') : taskUpdatedAt(t));
+    const statusFilter = typeof params.status === 'string' ? params.status : undefined;
+    // A daemon-only answer carries tasks the renderer never filtered.
+    const filterByStatus = (result: unknown): unknown => (
+      statusFilter && isRecord(result) && Array.isArray(result.tasks)
+        ? { ...result, tasks: (result.tasks as Array<Record<string, unknown>>).filter((t) => stateOf(t) === statusFilter) }
+        : result);
     let rendererRes: unknown = null;
     try {
       rendererRes = await sendToRenderer(getWindow, 'a2a.task.query', params);
@@ -439,16 +467,27 @@ export function registerA2aRpc(
     // 태스크를 빼버려 same-id override가 불가능해진다. 데몬은 status 무필터로 받아
     // 병합해 정본을 덮은 뒤, 최종 merged에 status 필터를 적용한다. role(불변)·
     // updatedSince(커서)는 override 문제가 없어 데몬 조회에 유지.
+    // A paged call gets a short daemon deadline: a daemon from before the paged
+    // view answers with every full task, which can outgrow the 1 MiB control
+    // line and be dropped, and waiting out the default 10 s would time out the
+    // caller too. The renderer answer stands in, as for any unavailable daemon.
     const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.query', {
       workspaceId: params.workspaceId,
       ...(typeof params.role === 'string' ? { role: params.role } : {}),
       ...(updatedSince ? { updatedSince } : {}),
-    });
-    if (gate.kind !== 'ok') return rendererRes;
-    const daemonTasks = Array.isArray(gate.result.tasks) ? (gate.result.tasks as Array<Record<string, unknown>>) : [];
+      ...(paged ? { view: 'page', ...(taskId ? { taskId } : {}) } : {}),
+    }, paged ? { timeoutMs: PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS } : {});
+    if (gate.kind !== 'ok') return shape(rendererRes);
+    const rawDaemonTasks = Array.isArray(gate.result.tasks) ? (gate.result.tasks as Array<Record<string, unknown>>) : [];
+    // A daemon from before the paged view ignores it and sends full tasks
+    // (they carry metadata; a summary row does not): summarize them here so
+    // one list never mixes the two shapes.
+    const daemonTasks = summaries
+      ? rawDaemonTasks.map((t) => (isRecord(t.metadata) ? summarizeTask(t) : t))
+      : rawDaemonTasks;
     const rendererOk = isRecord(rendererRes) && Array.isArray(rendererRes.tasks);
     if (!rendererOk) {
-      return { workspaceId: params.workspaceId, tasks: daemonTasks };
+      return shape({ workspaceId: params.workspaceId, tasks: daemonTasks });
     }
     const rendererTasks = (rendererRes as { tasks: Array<Record<string, unknown>> }).tasks;
     const daemonById = new Map(daemonTasks.map((t) => [t.id, t]));
@@ -457,7 +496,8 @@ export function registerA2aRpc(
       if (!dt) return rt;
       // 데몬 정본이 렌더러 캐시보다 최신이면(렌더러가 daemonCommitted 미적용) status/
       // updatedAt을 데몬 값으로 덮되 렌더러 전용 증분(history·artifacts)은 보존.
-      if (taskUpdatedAt(dt) > taskUpdatedAt(rt)) {
+      if (updatedAtOf(dt) > updatedAtOf(rt)) {
+        if (summaries) return { ...rt, state: dt.state, updatedAt: dt.updatedAt };
         const rtMeta = isRecord(rt.metadata) ? rt.metadata : {};
         const dtMeta = isRecord(dt.metadata) ? dt.metadata : {};
         return { ...rt, status: dt.status, metadata: { ...rtMeta, updatedAt: dtMeta.updatedAt } };
@@ -469,11 +509,8 @@ export function registerA2aRpc(
     // 데몬 무필터 조회분(override·append)에 최종 status 필터를 적용한다 —
     // 렌더러는 이미 status로 걸렀지만, 데몬 override로 상태가 바뀐 태스크(stale
     // working→canonical completed)와 데몬-only 추가분은 여기서 걸러져야 한다.
-    const statusFilter = typeof params.status === 'string' ? params.status : undefined;
-    const finalTasks = statusFilter
-      ? merged.filter((t) => (isRecord(t.status) ? t.status.state : undefined) === statusFilter)
-      : merged;
-    return { ...(rendererRes as Record<string, unknown>), tasks: finalTasks };
+    const finalTasks = statusFilter ? merged.filter((t) => stateOf(t) === statusFilter) : merged;
+    return shape({ ...(rendererRes as Record<string, unknown>), tasks: finalTasks });
   });
 
   // task.update — 데몬 정본 게이트 선행(envelope PR4 C12 대칭 경로).

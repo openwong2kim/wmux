@@ -15,6 +15,8 @@ export interface CodexPaneRelayHooks {
   serverProven?:(codeHome?:string)=>boolean;
   /** A Codex request in pane `id` was refused. */
   refused?:(id:string,reason:string)=>void;
+  /** A client response in pane `id` was not forwarded (no matching pending server request). */
+  unmatchedResponse?:(id:string,count:number)=>void;
 }
 /** Remembered thread owners; the oldest is forgotten past this (forgotten = unknown owner). */
 const MAX_THREAD_OWNERS = 4096;
@@ -68,6 +70,7 @@ export class CodexPaneRelays {
         owner:(threadId)=>this.ownerOf(threadId),
         recordOwner:(threadId)=>{ if (!entry.retired && this.entries.get(id) === entry) this.recordOwner(threadId,id); },
         refused:(reason)=>this.hooks.refused?.(id,reason),
+        unmatchedResponse:(count)=>this.hooks.unmatchedResponse?.(id,count),
       }});
       this.creating.add(creation);
       const relay = await creation;

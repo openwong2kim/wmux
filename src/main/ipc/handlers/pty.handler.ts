@@ -1360,11 +1360,12 @@ export function registerPTYHandlers(
         mode: 'rows' | 'unavailable';
         rows?: Array<{ text: string; wrapped: boolean }>;
         bufferType?: 'normal' | 'alternate';
+        rowsBelowCursor?: number;
         truncated?: boolean;
         reason?: string;
       };
       if (res.mode === 'rows') {
-        return { success: true, rows: res.rows ?? [], bufferType: res.bufferType, truncated: res.truncated === true };
+        return { success: true, rows: res.rows ?? [], bufferType: res.bufferType, rowsBelowCursor: res.rowsBelowCursor, truncated: res.truncated === true };
       }
       return { success: false, code: 'unavailable', reason: res.reason };
     } catch (err) {

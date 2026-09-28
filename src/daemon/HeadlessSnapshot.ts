@@ -122,7 +122,7 @@ export interface TextSnapshotRow {
 }
 
 export type TextSnapshotOutcome =
-  | { ok: true; rows: TextSnapshotRow[]; bufferType: 'normal' | 'alternate'; bytesIn: number; durationMs: number }
+  | { ok: true; rows: TextSnapshotRow[]; bufferType: 'normal' | 'alternate'; rowsBelowCursor: number; bytesIn: number; durationMs: number }
   | { ok: false; reason: SnapshotFallbackReason; detail?: string };
 
 /**
@@ -274,7 +274,10 @@ async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutc
     // never returns — including them would make readScreen tail_lines come back
     // as blank lines.
     while (rows.length > 0 && rows[rows.length - 1].text === '') rows.pop();
-    return { ok: true, rows, bufferType: buffer.type, bytesIn, durationMs: Date.now() - started };
+    // Rows below the cursor that survived the pop (#1595) — counted from the
+    // bottom, so it stays valid when a reader keeps only the last N rows.
+    const rowsBelowCursor = Math.max(0, rows.length - 1 - (buffer.baseY + buffer.cursorY));
+    return { ok: true, rows, bufferType: buffer.type, rowsBelowCursor, bytesIn, durationMs: Date.now() - started };
   } catch (err) {
     return { ok: false, reason: 'error', detail: err instanceof Error ? err.message : String(err) };
   } finally {

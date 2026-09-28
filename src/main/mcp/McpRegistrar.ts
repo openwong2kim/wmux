@@ -1,4 +1,4 @@
-import { openCodeTerminalChatIntegration } from '../../shared/openCodeTerminalChatIntegration';
+import { installOpenCodeTerminalChat, OPENCODE_PROBE_RETRY_MS, OPENCODE_PROBE_TIMEOUT_MS, type OpenCodeTerminalChatInstall } from '../../shared/openCodeTerminalChatIntegration';
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
@@ -459,11 +459,25 @@ export class McpRegistrar {
       );
       return;
     }
-    const chat = openCodeTerminalChatIntegration({ configRoot, startDir: app.getAppPath(), install: true,
-      ...(app.isPackaged ? { sourcePath: path.join(process.resourcesPath, 'cli-bundle', 'wmux-chat-tui.mjs') } : {}) });
-    if (chat.state !== 'current') console.warn(`[McpRegistrar] OpenCode terminal chat: ${chat.state}; add ${chat.pluginUrl} to ${chat.configPath} plugin list`);
+    // Not awaited: the version probe must never hold up startup.
+    void installOpenCodeTerminalChat({ configRoot, startDir: app.getAppPath(),
+      ...(app.isPackaged ? { sourcePath: path.join(process.resourcesPath, 'cli-bundle', 'wmux-chat-tui.mjs') } : {}) }, {
+      onRetry: () => console.warn(`[McpRegistrar] OpenCode terminal chat: \`opencode --version\` timed out after ${OPENCODE_PROBE_TIMEOUT_MS / 1000}s; retrying in ${OPENCODE_PROBE_RETRY_MS / 1000}s`),
+    }).then(chat => { const message = describeTerminalChat(chat); if (message) console.warn(`[McpRegistrar] OpenCode terminal chat: ${message}`); },
+      err => console.error('[McpRegistrar] OpenCode terminal chat installation failed:', err));
     if (installed.action !== 'none') {
       console.log(`[McpRegistrar] OpenCode lifecycle plugin ${installed.action} → ${dest}`);
     }
+  }
+}
+
+/** What happened, in the log's words; the manual-edit hint only where it applies. */
+function describeTerminalChat(chat: OpenCodeTerminalChatInstall): string | null {
+  switch (chat.state) {
+    case 'current': return null;
+    case 'not-found': return `opencode not found on PATH; not installed (${chat.error})`;
+    case 'timeout': return `\`opencode --version\` timed out again after ${OPENCODE_PROBE_TIMEOUT_MS / 1000}s; not installed this session`;
+    case 'manual-config': return `wmux will not rewrite ${chat.configPath} (JSONC or an unexpected plugin key); add ${chat.pluginUrl} to its plugin list`;
+    default: return `${chat.state}; not installed${chat.error ? ` (${chat.error})` : ''}`;
   }
 }

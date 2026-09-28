@@ -471,6 +471,14 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(body.chat.launch).toMatchObject({ ready: false, reason: 'agent-running' });
     });
 
+    it('binding none: an OpenCode pane carries its cause beside the unchanged reason', async () => {
+      const info = await start();
+      chatBox.resolution = { source: 'none', status: { available: false, reason: 'unavailable' }, cause: 'opencode-plugin-missing',
+        launch: { ready: false, reason: 'agent-running', agents: [], maxPromptUnits: 2000 } };
+      const { body } = await turns(bearer(info.token as string));
+      expect(body).toMatchObject({ available: false, reason: 'unavailable', cause: 'opencode-plugin-missing' });
+    });
+
     it('reads the file page before the blocked await, so a binding that moves meanwhile never leaks in', async () => {
       const info = await start();
       chat.blocked.mockImplementationOnce(async () => {

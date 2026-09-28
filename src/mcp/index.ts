@@ -116,7 +116,7 @@ const BROWSER_SESSION_START_SHAPE = {
 
 const TERMINAL_READ_SHAPE = {
   ptyId: z.string().optional().describe('Target a specific terminal by PTY ID (surface_list()). Omit for the active terminal.'),
-  tail_lines: z.number().int().positive().optional().describe(`Return only the last N lines. Omit for the default (${DEFAULT_READ_TAIL_LINES}). Capped at 20000. Read cost is O(N), so a small N is both cheaper and fewer tokens.`),
+  tail_lines: z.number().int().positive().optional().describe(`Return only the last N lines, ending at the last non-empty screen row (may be below the cursor). Omit for the default (${DEFAULT_READ_TAIL_LINES}). Capped at 20000. Read cost is O(N), so a small N is both cheaper and fewer tokens.`),
   full_scrollback: z.boolean().optional().describe('Return the ENTIRE terminal backlog (up to the scrollback limit, ~10k lines) instead of a bounded tail. Expensive — walks the whole buffer. Use only when the recent tail is genuinely insufficient.'),
   maxBytes: maxBytesParam,
 };
@@ -263,7 +263,11 @@ const WMUX_EVENTS_POLL_SHAPE = {
 const A2A_TASK_QUERY_SHAPE = {
   status: z.enum(['submitted', 'working', 'input-required', 'completed', 'failed', 'canceled']).optional().describe('Filter by task status'),
   role: z.enum(['user', 'agent']).optional().describe('Filter: "user" = tasks you sent, "agent" = tasks assigned to you'),
-  updated_since: z.string().optional().describe('ISO-8601 timestamp; return only tasks whose metadata.updatedAt is strictly later (incremental cursor for polling).'),
+  updated_since: z.string().optional().describe('ISO-8601; only tasks updated strictly later.'),
+  task_id: z.string().optional().describe('Return this task in full (history, artifacts, evidence).'),
+  message_id: z.string().optional().describe('With task_id: return just this message.'),
+  limit: z.number().int().min(1).max(100).optional().describe('Summaries per page (default 20).'),
+  cursor: z.string().optional().describe('nextCursor from the previous page (with task_id: older messages).'),
 };
 
 const A2A_TASK_UPDATE_SHAPE = {
@@ -1176,7 +1180,7 @@ function addCallerPtyId(params: Record<string, unknown>): void {
 
 server.tool(
   'terminal_read',
-  `Read the recent text from a terminal: by default the last ${DEFAULT_READ_TAIL_LINES} lines, which is the recent screen plus enough history to judge an agent's latest turn. Omit ptyId for the active terminal. The bound is deliberate — escalate on purpose, not by reflex: widen with tail_lines (e.g. 800), and only as a last resort pull the whole backlog with full_scrollback. For structured command boundaries / exit codes use terminal_read_events instead.`,
+  `Read the recent text from a terminal: by default the last ${DEFAULT_READ_TAIL_LINES} lines, which is the recent screen plus enough history to judge an agent's latest turn. Omit ptyId for the active terminal. The bound is deliberate — escalate on purpose, not by reflex: widen with tail_lines (e.g. 800), and only as a last resort pull the whole backlog with full_scrollback. rowsBelowCursor counts returned lines below the cursor; if the app has exited they may be stale. For structured command boundaries / exit codes use terminal_read_events instead.`,
   TERMINAL_READ_SHAPE,
   async ({ ptyId, tail_lines, full_scrollback }) => {
     const route = await resolveTerminalRouteBound(ptyId);
@@ -1657,11 +1661,16 @@ server.tool(
 // 4. a2a_task_query — Query tasks by status/role
 server.tool(
   'a2a_task_query',
-  'Query tasks assigned to you or sent by you, filtered by status and role. For incremental polling pass updated_since (e.g. a previous result\'s metadata.updatedAt) — cheaper than re-pulling the whole list.',
+  'Tasks assigned to you or sent by you: compact summaries, newest first, paged by nextCursor. Pass task_id for the full task.',
   A2A_TASK_QUERY_SHAPE,
-  async ({ status, role, updated_since }) => {
+  async ({ status, role, updated_since, task_id, message_id, limit, cursor }) => {
     const wsId = await requireWorkspaceId();
-    return callRpc('a2a.task.query', { workspaceId: wsId, status, role, updatedSince: updated_since });
+    // view: 'page' has main (and each task source) page and summarize, so a
+    // list never carries full histories over any hop.
+    return callRpc('a2a.task.query', {
+      workspaceId: wsId, status, role, updatedSince: updated_since,
+      view: 'page', taskId: task_id, messageId: message_id, limit, cursor,
+    });
   },
 );
 
