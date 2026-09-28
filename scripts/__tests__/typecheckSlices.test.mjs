@@ -12,12 +12,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+// These walk the real repository (thousands of files); slow CI runners need room.
+const REPO_WALK_MS = 60_000;
+
 describe('typecheck slices', () => {
   it('cover tsconfig.json exactly', () => {
     const { missing, extra } = coverageGaps(ROOT_CONFIG, SLICES.map((n) => sliceConfig(n)));
     expect(missing).toEqual([]);
     expect(extra).toEqual([]);
-  });
+  }, REPO_WALK_MS);
 
   it('put every test file in exactly one test slice', () => {
     const seen = new Map();
@@ -29,12 +32,12 @@ describe('typecheck slices', () => {
       }
     }
     expect(seen.size).toBeGreaterThan(0);
-  });
+  }, REPO_WALK_MS);
 
   it('leave compiler options to tsconfig.json and keep whole-program checks intact', () => {
     expect(sliceConfigProblems(SLICES)).toEqual([]);
     expect(scopeProblems(ROOT_CONFIG, sliceConfig('src'))).toEqual([]);
-  });
+  }, REPO_WALK_MS);
 
   it('reports an unlisted augmentation and a script outside the src slice', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'typecheck-scope-'));

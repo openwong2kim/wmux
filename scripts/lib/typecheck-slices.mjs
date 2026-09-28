@@ -87,7 +87,9 @@ export function scopeProblems(rootConfig, srcSliceConfig, root = ROOT) {
     if (AUGMENTS.test(text) && !AUGMENTING_FILES.has(rel)) {
       problems.push(`${rel} declares a global or module augmentation — move it to a .d.ts or list it in AUGMENTING_FILES and the slices that need it`);
     }
-    if (!src.has(file)) {
+    // A top-level import/export line already makes the file a module, so only
+    // the rare file without one pays for a full parse (slow on CI runners).
+    if (!src.has(file) && !/^\s*(?:import|export)\b/m.test(text)) {
       const kind = /\.[jt]sx$/.test(file) ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
       if (!ts.isExternalModule(ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, kind))) {
         problems.push(`${rel} is a script (no import/export); outside the src slice its globals are not checked against the rest`);
