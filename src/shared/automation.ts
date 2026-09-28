@@ -48,6 +48,8 @@ export interface AutomationPermission {
    * claude scoped only: bare tool names (AUTOMATION_TOOL_NAME_RE). codex has no
    * per-tool allow-list: codex `scoped` means the workspace-write sandbox with
    * no approval prompts, and a grant carrying tools for codex is refused.
+   * `approval` pins claude to `--permission-mode default`; codex approval runs
+   * use the user's own codex approval configuration unchanged.
    */
   allowedTools?: string[];
   /** Revision the human granted `mode` at. Daemon-written only. */

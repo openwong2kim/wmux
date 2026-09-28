@@ -107,6 +107,23 @@ describe('resolveAgentSlug', () => {
 describe('selectAgentProcess', () => {
   const SHELL = 100;
 
+  it('exec-rooted pane: the PTY root itself is the agent, not its MCP node child', () => {
+    const table = [
+      entry(SHELL, 1, '/Users/me/.local/bin/claude', 'claude --permission-mode default'),
+      entry(101, SHELL, 'node', 'node /tmp/mcp-server.js'),
+    ];
+    expect(selectAgentProcess(table, SHELL)).toEqual({ pid: SHELL, slug: 'claude' });
+  });
+
+  it('a plain shell root is never the pick (interactive panes unchanged)', () => {
+    const table = [
+      entry(SHELL, 1, '-zsh', '-zsh'),
+      entry(201, SHELL, 'claude'),
+      entry(301, 201, 'node', 'node /tmp/mcp-server.js'),
+    ];
+    expect(selectAgentProcess(table, SHELL)).toEqual({ pid: 201, slug: 'claude' });
+  });
+
   it('picks a native agent binary among descendants (over its MCP node children)', () => {
     const table = [
       entry(SHELL, 1, 'pwsh.exe'),

@@ -30,6 +30,13 @@ describe('scheduled-run command line through the three wrapper shells', () => {
     ]);
   });
 
+  it('approval mode pins claude to its default permission mode in every wrapper', () => {
+    const approval = buildAutomationCommand('claude --model opus', 'claude', 'approval', undefined);
+    expect(buildExecArgs('/bin/zsh', approval)).toEqual(['-lc', 'claude --model opus --permission-mode default']);
+    expect(buildExecArgs('pwsh', approval)?.[3]).toBe(`claude --model opus --permission-mode default${PWSH_EXIT_TAIL}`);
+    expect(buildExecArgs('cmd.exe', approval)).toEqual(['/d', '/s', '/c', 'claude --model opus --permission-mode default']);
+  });
+
   it('cmd /c', () => {
     expect(buildExecArgs('C:\\Windows\\System32\\cmd.exe', scoped)).toEqual([
       '/d',
@@ -40,7 +47,7 @@ describe('scheduled-run command line through the three wrapper shells', () => {
   });
 
   it('fixed flag map for every agent × mode', () => {
-    expect(buildAutomationCommand('claude', 'claude', 'approval', undefined)).toBe('claude');
+    expect(buildAutomationCommand('claude', 'claude', 'approval', undefined)).toBe('claude --permission-mode default');
     expect(buildAutomationCommand('claude', 'claude', 'bypass', ['Read'])).toBe('claude --dangerously-skip-permissions');
     expect(buildAutomationCommand('codex', 'codex', 'approval', undefined)).toBe('codex');
     expect(buildAutomationCommand('codex -c model_reasoning_effort=high', 'codex', 'scoped', ['Read']))

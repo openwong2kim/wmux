@@ -107,7 +107,7 @@ describe('AutomationEngine — revision & grants', () => {
     const res = await h.engine.runNow(a.automation.id, 'test');
     expect(res.ok && res.run.effectiveMode).toBe('approval');
     await settle();
-    expect(h.created[0].command).toBe('claude');
+    expect(h.created[0].command).toBe('claude --permission-mode default');
   });
 
   it('a raised grant queues an attention item', async () => {
@@ -493,5 +493,19 @@ describe('AutomationEngine — review regressions', () => {
     await settle();
     expect(h.created).toHaveLength(1);
     expect(h.engine.list().automations).toEqual([]);
+  });
+});
+
+describe('AutomationEngine — readiness diagnostics', () => {
+  it('logs why a launch never became ready, without prompt text', async () => {
+    const logs: string[] = [];
+    const h = harness({ ports: { log: (_l, m) => { logs.push(m); } } });
+    h.state.agent = { ...h.state.agent, verified: false, slug: null };
+    const run = await startedRun(h);
+    expect(run).toMatchObject({ state: 'failed', reason: 'launch_failed' });
+    const line = logs.find((m) => m.includes('not ready after'));
+    expect(line).toContain('everVerified=false');
+    expect(line).toContain('"verified":false');
+    expect(line).not.toContain('do the thing');
   });
 });

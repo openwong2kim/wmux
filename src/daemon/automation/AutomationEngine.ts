@@ -672,6 +672,7 @@ export class AutomationEngine {
     let stable = 0;
     let lastArm = -Infinity;
     let everVerified = false;
+    let lastView: AutomationAgentView | null = null;
     while (this.now() - started < READY_DEADLINE_MS) {
       if (isFinalRunState(run.state) || live.phase !== 'launching') return { ok: false, reason: 'cancelled' };
       if (this.ports.sessionPid(live.ptyId) === null) return { ok: false, reason: 'launch_failed' };
@@ -701,6 +702,7 @@ export class AutomationEngine {
         return { ok: false, reason: 'first_run_blocked' };
       }
       const view = this.ports.readAgent(live.ptyId);
+      lastView = view;
       if (view.verified && view.slug === agent) everVerified = true;
       const incarnationId = view.incarnationId;
       const ready = view.verified && view.slug === agent && view.inputQuiet && !!incarnationId &&
@@ -719,7 +721,13 @@ export class AutomationEngine {
       }
       await this.sleep(READY_POLL_MS);
     }
-    return { ok: false, reason: everVerified ? 'first_run_blocked' : 'launch_failed' };
+    const reason: AutomationRunReason = everVerified ? 'first_run_blocked' : 'launch_failed';
+    this.ports.log('warn', `[automation] run ${run.id} not ready after ${READY_DEADLINE_MS / 1000}s: ` +
+      `reason=${reason} everVerified=${everVerified} last=${lastView ? JSON.stringify({
+        slug: lastView.slug, verified: lastView.verified, status: lastView.status,
+        inputQuiet: lastView.inputQuiet, incarnation: lastView.incarnationId !== null,
+      }) : 'none'}`);
+    return { ok: false, reason };
   }
 
   private async deliver(

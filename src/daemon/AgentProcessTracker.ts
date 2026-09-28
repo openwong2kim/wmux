@@ -304,6 +304,12 @@ export interface AgentProcessPick {
  *      the foreground command, so its death is the same edge,
  *   4. undefined — nothing attributable (the caller stays undecided).
  *
+ * Depth 0 comes first: when the ROOT itself resolves to an agent it is the
+ * pick. Exec-rooted panes (`bash -lc <agent>`) have the shell exec-replace
+ * itself, so the PTY root IS the agent and its children are MCP servers and
+ * tools; searching descendants only would name one of those instead. A plain
+ * shell root (zsh/bash) never resolves, so interactive panes are unaffected.
+ *
  * An exact-depth tie between two DIFFERENT slugs is ambiguous (two agents at
  * equal depth) → the pick keeps the pid for the death edge but drops the slug
  * rather than guessing. BFS with a visited set: Windows PPIDs can be
@@ -319,6 +325,16 @@ export function selectAgentProcess(
     if (list) list.push(e);
     else byParent.set(e.ppid, [e]);
   }
+  const slugOf = (entry: ProcessTreeEntry): AgentSlug | undefined => {
+    const stem = imageStem(entry.name);
+    return AGENT_SLUG_SET.has(stem)
+      ? (stem as AgentSlug)
+      : NATIVE_STEM_TO_SLUG.get(stem) ??
+        (RUNTIME_STEMS.has(stem) ? resolveAgentSlug(entry.cmdline) : undefined);
+  };
+  const root = entries.find((e) => e.pid === shellPid);
+  const rootSlug = root ? slugOf(root) : undefined;
+  if (rootSlug) return { pid: shellPid, slug: rootSlug };
   let attributed: { pid: number; depth: number; slug: AgentSlug } | undefined;
   let ambiguous = false;
   let sluglessRuntime: { pid: number; depth: number } | undefined;
@@ -333,10 +349,7 @@ export function selectAgentProcess(
       const childDepth = depth + 1;
       if (childDepth === 1 && directChild === undefined) directChild = child.pid;
       const stem = imageStem(child.name);
-      const slug = AGENT_SLUG_SET.has(stem)
-        ? (stem as AgentSlug)
-        : NATIVE_STEM_TO_SLUG.get(stem) ??
-          (RUNTIME_STEMS.has(stem) ? resolveAgentSlug(child.cmdline) : undefined);
+      const slug = slugOf(child);
       if (slug) {
         if (!attributed || childDepth < attributed.depth) {
           attributed = { pid: child.pid, depth: childDepth, slug };

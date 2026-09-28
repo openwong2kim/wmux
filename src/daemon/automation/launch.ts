@@ -26,11 +26,14 @@ import { buildWebPaneEnv } from '../web/webPaneEnv';
  */
 const PERMISSION_FLAGS: Record<AutomationAgent, Record<AutomationPermissionMode, readonly string[]>> = {
   claude: {
-    approval: [],
+    // Pinned: without it the run inherits the user's configured default mode
+    // (which may auto-approve), and an approval run would never ask.
+    approval: ['--permission-mode', 'default'],
     scoped: ['--allowedTools'],
     bypass: ['--dangerously-skip-permissions'],
   },
   codex: {
+    // No pin: codex approval runs use the user's own codex approval config.
     approval: [],
     scoped: ['--sandbox', 'workspace-write', '--ask-for-approval', 'never'],
     bypass: ['--dangerously-bypass-approvals-and-sandbox'],

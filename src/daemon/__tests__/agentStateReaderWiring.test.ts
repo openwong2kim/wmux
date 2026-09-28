@@ -70,11 +70,19 @@ describe('readDaemonAgentState wiring (#1303)', () => {
     expect(body).toMatch(/const agentVerified =/);
   });
 
+  // The delivery deps live in the named helper the V2 handler (and scheduled
+  // runs) call; the body under test spans the helper through the handler.
   function promptV2Body(): string {
-    const at = src.indexOf("pipeServer.onRpc('daemon.deliverScheduledPromptV2'");
-    if (at < 0) throw new Error('daemon.deliverScheduledPromptV2 handler not found');
-    const end = src.indexOf('\n  });', at);
-    return src.slice(at, end > 0 ? end : src.length);
+    const handler = src.indexOf("pipeServer.onRpc('daemon.deliverScheduledPromptV2'");
+    if (handler < 0) throw new Error('daemon.deliverScheduledPromptV2 handler not found');
+    const at = src.indexOf('const deliverPromptToSession = ');
+    if (at < 0 || at > handler) throw new Error('deliverPromptToSession helper not found before the handler');
+    const end = src.indexOf('\n  });', handler);
+    const body = src.slice(at, end > 0 ? end : src.length);
+    if (!body.includes('await deliverPromptToSession(id, agentSlug, incarnationId, prompt)')) {
+      throw new Error('handler does not deliver through the helper');
+    }
+    return body;
   }
 
   it('requires agentVerified before treating the pane as a live agent', () => {
