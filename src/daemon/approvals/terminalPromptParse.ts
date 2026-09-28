@@ -91,6 +91,27 @@ export interface ParsedTerminalPrompt {
   cut: boolean;
   /** One cursor, the footer right under the options, blank rows after it. */
   active: boolean;
+  /** Set only by `parsePlanPrompt`: the ExitPlanMode dialog's own rows. */
+  plan?: PlanDialogRows;
+}
+
+/** What `parsePlanPrompt` read off the ExitPlanMode dialog ("Would you like to proceed?"). */
+export interface PlanDialogRows {
+  /** The "Yes, manually approve edits" row. Absent when no such row is drawn. */
+  approve?: { key: string; label: string };
+  /**
+   * The row whose inline text field carries the feedback (the option drawn
+   * right above the "shift+tab to approve with this feedback" hint). Its
+   * label is the field's text once something is typed there.
+   */
+  feedback?: { key: string; label: string };
+  /** An option would switch the session to bypass permissions. */
+  bypass: boolean;
+  /**
+   * Hash of the dialog with the feedback row's text left out: stays the same
+   * while only the feedback field changes (a stepwise answer typing into it).
+   */
+  frameFingerprint: string;
 }
 
 /** Display caps, so a huge dialog cannot put an unbounded record on the wire. */
@@ -277,6 +298,172 @@ export function parseTerminalPrompt(
     truncated,
     cut,
     active,
+  };
+}
+
+// ── ExitPlanMode ────────────────────────────────────────────────────────────
+//
+// Claude Code 2.1.283 draws the plan approval unboxed, below the plan itself:
+//
+//      ────────────────────────────────────────────
+//       Claude has written up a plan and is ready to execute. Would you like to proceed?
+//
+//       ❯ 1. Yes, and use auto mode
+//         2. Yes, manually approve edits
+//         3. Tell Claude what to change
+//            shift+tab to approve with this feedback
+//
+//       ctrl+g to edit in Vim · ~/.claude/plans/plan-….md
+//
+// It has no "Esc to cancel" footer and its rule is indented, so the permission
+// parser above never reads it. Option 3 is an inline text field: its label is
+// the typed feedback once there is some, which is why the feedback row is found
+// by the hint drawn under it, not by its label. Keys and labels are whatever
+// the screen says (see KEYS.md); nothing is assumed about their numbers.
+
+const PLAN_QUESTION = /\bWould you like to proceed\?$/i;
+const PLAN_FEEDBACK_HINT = /^shift\+tab to approve with this feedback$/i;
+const PLAN_FOOTER = /^ctrl\+g to edit\b/i;
+const PLAN_APPROVE = /\bmanually approve\b/i;
+const PLAN_BYPASS = /\bbypass permissions\b/i;
+/** Options that change the session's permission mode: display only. */
+const PLAN_MODE_SWITCH = /\bauto mode\b|\bbypass permissions\b|\baccept edits\b/i;
+const PLAN_RULE = /^[─━═╌╍┄┅▔]+$/;
+/** Rows the question may take once the TUI wraps it. */
+const PLAN_QUESTION_MAX_ROWS = 3;
+/** The end of the footer's plan path. */
+const PLAN_FOOTER_END = /\.md\s*$/;
+
+const hashParts = (parts: unknown): string => crypto
+  .createHash('sha256')
+  .update(JSON.stringify(parts))
+  .digest('hex')
+  .slice(0, PROMPT_FINGERPRINT_HEX);
+
+/**
+ * The ExitPlanMode dialog on this grid, or null. Same bias as the permission
+ * parser: numbered rows 1..n right under the question, at most one cursor, or
+ * nothing. ACTIVE when exactly one row carries the cursor and nothing but the
+ * `ctrl+g to edit` footer and blank rows follows the options.
+ */
+export function parsePlanPrompt(
+  rows: readonly PromptRow[],
+  _opts: { cols?: number } = {},
+): ParsedTerminalPrompt | null {
+  const lines = logicalRows(rows);
+  // The LAST row ending the question is the live dialog. The TUI may wrap the
+  // sentence, so the question is read from the rows above it too.
+  let q = -1;
+  let questionStart = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (!/proceed\?\s*$/i.test(lines[i]!)) continue;
+    // The sentence's rows: this one and the prose rows at its indent above it.
+    let start = i;
+    while (start > 0 && start > i - PLAN_QUESTION_MAX_ROWS + 1) {
+      const prev = lines[start - 1]!;
+      if (!prev.trim() || PLAN_RULE.test(prev.trim()) || indentOf(prev) !== indentOf(lines[i]!)) break;
+      start--;
+    }
+    if (PLAN_QUESTION.test(normalizePromptText(lines.slice(start, i + 1).join(' ')))) {
+      q = i;
+      questionStart = start;
+    }
+  }
+  if (q < 0) return null;
+  const fullQuestion = normalizePromptText(lines.slice(questionStart, q + 1).join(' '));
+
+  let cut = false;
+  const fullOptions: Array<{ key: string; label: string; selected: boolean }> = [];
+  let feedbackIndex = -1;
+  let after = q + 1;
+  // One blank row separates the question from its options.
+  if (after < lines.length && !lines[after]!.trim()) after++;
+  let digitColumn = -1;
+  for (; after < lines.length; after++) {
+    const line = lines[after]!;
+    const text = line.trim();
+    const match = OPTION_ROW.exec(text);
+    if (match) {
+      if (Number(match[2]) !== fullOptions.length + 1) return null;
+      if (CUT_ROW.test(line)) cut = true;
+      digitColumn = line.indexOf(match[2]!, indentOf(line));
+      fullOptions.push({ key: match[2]!, label: normalizePromptText(match[3]!), selected: match[1] !== undefined });
+      continue;
+    }
+    const last = fullOptions[fullOptions.length - 1];
+    if (!last || !text) break;
+    if (PLAN_FEEDBACK_HINT.test(text)) {
+      if (feedbackIndex >= 0) return null;
+      feedbackIndex = fullOptions.length - 1;
+      continue;
+    }
+    if (indentOf(line) <= digitColumn) break;
+    // A label (or the typed feedback) the TUI wrapped onto the next row.
+    if (CUT_ROW.test(line)) cut = true;
+    last.label = normalizePromptText(`${last.label} ${text}`);
+  }
+  if (fullOptions.length === 0 || fullOptions.length > PROMPT_MAX_OPTIONS) return null;
+  const selectedCount = fullOptions.filter((o) => o.selected).length;
+  if (selectedCount > 1) return null;
+
+  // ACTIVE: after the options, blank rows, at most the footer (which a long
+  // plan path may wrap), and blank rows to the bottom.
+  const tail = lines.slice(after).filter((line) => line.trim());
+  // A footer the TUI wrapped ends its plan path on the next row.
+  const tailClean = tail.length === 0
+    || (PLAN_FOOTER.test(tail[0]!.trim()) && (tail.length === 1
+      || (tail.length === 2 && !PLAN_FOOTER_END.test(tail[0]!) && PLAN_FOOTER_END.test(tail[1]!))));
+  const active = selectedCount === 1 && tailClean;
+
+  // The dialog's own rule (indented, unlike a permission dialog's) above it.
+  let topRuleFound = false;
+  for (let i = questionStart - 1; i >= 0; i--) {
+    const text = lines[i]!.trim();
+    if (!text) continue;
+    topRuleFound = PLAN_RULE.test(text);
+    break;
+  }
+
+  const labels = fullOptions.map((o) => [o.key, o.label]);
+  const fingerprint = hashParts(['plan', fullQuestion, labels]);
+  const frameFingerprint = hashParts([
+    'plan-frame',
+    fullQuestion,
+    labels.map(([key, label], i) => [key, i === feedbackIndex ? '' : label]),
+    feedbackIndex,
+  ]);
+
+  let truncated = false;
+  const cap = (text: string): string => {
+    if (text.length <= PROMPT_MAX_LINE_CHARS) return text;
+    truncated = true;
+    return `${text.slice(0, PROMPT_MAX_LINE_CHARS)}…`;
+  };
+  const feedbackRow = feedbackIndex >= 0 ? fullOptions[feedbackIndex] : undefined;
+  const approveRow = fullOptions.find((o, i) => i !== feedbackIndex
+    && PLAN_APPROVE.test(o.label) && !PLAN_MODE_SWITCH.test(o.label) && !LASTING_RULE.test(o.label));
+  const plan: PlanDialogRows = {
+    ...(approveRow ? { approve: { key: approveRow.key, label: approveRow.label } } : {}),
+    ...(feedbackRow ? { feedback: { key: feedbackRow.key, label: feedbackRow.label } } : {}),
+    bypass: fullOptions.some((o) => PLAN_BYPASS.test(o.label)),
+    frameFingerprint,
+  };
+  const question = cap(fullQuestion);
+  const options = fullOptions.map((o) => ({ ...o, label: cap(o.label) }));
+  return {
+    commandLines: [],
+    commandRows: [],
+    descriptionRows: [],
+    commandText: '',
+    commandFull: '',
+    question,
+    options,
+    fingerprint,
+    topRuleFound,
+    truncated,
+    cut,
+    active,
+    plan,
   };
 }
 

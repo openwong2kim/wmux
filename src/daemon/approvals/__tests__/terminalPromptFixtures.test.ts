@@ -86,7 +86,8 @@ const EXPECTED: Record<string, { looksLikePrompt: boolean; parsed: Parsed | null
     looksLikePrompt: true,
     parsed: { options: 3, active: true, topRuleFound: true, answerable: true },
   },
-  // ExitPlanMode ("Would you like to proceed?", indented, unboxed): unparsed.
+  // ExitPlanMode ("Would you like to proceed?", indented, unboxed): not a
+  // permission dialog. parsePlanPrompt reads it (planPromptParse.test.ts).
   'claude-plan-01-initial.json': { looksLikePrompt: true, parsed: null },
   'claude-plan-02-after-digit3.json': { looksLikePrompt: true, parsed: null },
   'claude-plan-03-feedback-typed.json': { looksLikePrompt: true, parsed: null },
