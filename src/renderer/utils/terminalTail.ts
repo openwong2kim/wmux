@@ -1,5 +1,55 @@
 import { terminalRegistry } from '../hooks/useTerminal';
 
+type ReadableBuffer = {
+  length: number;
+  baseY: number;
+  cursorY: number;
+  getLine(idx: number): { translateToString(trimRight?: boolean): string } | undefined;
+};
+
+/** Where a screen read ends. `endAtCursor` keeps the pre-#1595 cursor-anchored
+ *  end for a caller that locates something relative to the cursor row. */
+export interface ScreenReadOptions {
+  endAtCursor?: boolean;
+}
+
+/**
+ * The last buffer row a screen read must cover: the cursor row, or the lowest
+ * non-empty viewport row below it (#1595). A TUI draws below the cursor — an
+ * option picker parks the cursor on the highlighted choice while the other
+ * choices and the footer sit underneath — so ending at the cursor dropped them.
+ * Blank rows below the cursor are still excluded, so a tail window is not spent
+ * on viewport padding. The scan is bounded by the viewport height
+ * (buffer.length - 1 is the viewport's last row).
+ *
+ * Known limit: "non-empty" means text after trimming, so a row drawn only with
+ * background-coloured spaces (a filled bar, a blank highlighted line) counts as
+ * empty and does not extend the read.
+ */
+function lastScreenRow(buffer: ReadableBuffer, opts?: ScreenReadOptions): number {
+  const cursorLine = Math.min(buffer.baseY + buffer.cursorY, buffer.length - 1);
+  if (opts?.endAtCursor) return cursorLine;
+  for (let i = buffer.length - 1; i > cursorLine; i--) {
+    const line = buffer.getLine(i);
+    if (line && line.translateToString(true) !== '') return i;
+  }
+  return cursorLine;
+}
+
+/**
+ * How many of the last `returned` lines of a read (as produced by the readers
+ * below) sit below the cursor row. On a live TUI those rows are part of what it
+ * drew; after the program exits or crashes they can be leftovers of an earlier
+ * frame, so a caller can tell the two cases apart.
+ */
+export function rowsBelowCursor(ptyId: string, returned: number): number {
+  const terminal = terminalRegistry.get(ptyId);
+  if (!terminal) return 0;
+  const buffer = terminal.buffer.active;
+  const cursorLine = Math.min(buffer.baseY + buffer.cursorY, buffer.length - 1);
+  return Math.max(0, Math.min(lastScreenRow(buffer) - cursorLine, returned));
+}
+
 /**
  * Read a pane's live xterm buffer to plaintext lines (trailing empty lines
  * popped). This is the SINGLE buffer-read path shared by the MCP
@@ -14,36 +64,11 @@ import { terminalRegistry } from '../hooks/useTerminal';
  * regardless of whether the element is laid out, so we read unconditionally,
  * gated only on the ptyId being present in the registry.
  */
-type ReadableBuffer = {
-  length: number;
-  baseY: number;
-  cursorY: number;
-  getLine(idx: number): { translateToString(trimRight?: boolean): string } | undefined;
-};
-
-/**
- * The last buffer row a screen read must cover: the cursor row, or the lowest
- * non-empty viewport row below it (#1595). A TUI draws below the cursor — an
- * option picker parks the cursor on the highlighted choice while the other
- * choices and the footer sit underneath — so ending at the cursor dropped them.
- * Blank rows below the cursor are still excluded, so a tail window is not spent
- * on viewport padding. The scan is bounded by the viewport height
- * (buffer.length - 1 is the viewport's last row).
- */
-function lastScreenRow(buffer: ReadableBuffer): number {
-  const cursorLine = Math.min(buffer.baseY + buffer.cursorY, buffer.length - 1);
-  for (let i = buffer.length - 1; i > cursorLine; i--) {
-    const line = buffer.getLine(i);
-    if (line && line.translateToString(true) !== '') return i;
-  }
-  return cursorLine;
-}
-
-export function readPtyBufferLines(ptyId: string): string[] {
+export function readPtyBufferLines(ptyId: string, opts?: ScreenReadOptions): string[] {
   const terminal = terminalRegistry.get(ptyId);
   if (!terminal) return [];
   const buffer = terminal.buffer.active;
-  const lastLine = lastScreenRow(buffer);
+  const lastLine = lastScreenRow(buffer, opts);
   const lines: string[] = [];
   for (let i = 0; i <= lastLine && i < buffer.length; i++) {
     const line = buffer.getLine(i);
@@ -79,12 +104,12 @@ export const DEFAULT_READ_TAIL_LINES = 300;
  * yields a short/empty result — the same bounded-scan trade-off tailForPty
  * accepts; a caller that needs exactness reads with full_scrollback.
  */
-export function readPtyBufferTail(ptyId: string, maxLines: number): string[] {
+export function readPtyBufferTail(ptyId: string, maxLines: number, opts?: ScreenReadOptions): string[] {
   const terminal = terminalRegistry.get(ptyId);
   if (!terminal) return [];
   if (maxLines <= 0) return [];
   const buffer = terminal.buffer.active;
-  const lastLine = lastScreenRow(buffer);
+  const lastLine = lastScreenRow(buffer, opts);
   if (lastLine < 0) return [];
   const start = Math.max(0, lastLine - maxLines + 1);
   const lines: string[] = [];
@@ -103,8 +128,9 @@ export function readPtyBufferTail(ptyId: string, maxLines: number): string[] {
  * Unlike `readPtyBufferLines` (which walks the WHOLE buffer for the exact
  * `input.readScreen` read), this reads only a bounded window near the bottom so
  * the 750ms Fleet poll is O(SCAN_BOUND) per pane per tick, NOT O(scrollback).
- * We scan UP from the cursor line to find the last non-empty row, but cap the
- * upward walk at `SCAN_BOUND` rows. Once the content end is found, we collect
+ * We scan UP from the last screen row (lastScreenRow, the same end the
+ * readScreen readers use) to find the last non-empty row, but cap the upward
+ * walk at `SCAN_BOUND` rows. Once the content end is found, we collect
  * `lines[start..end]` (start = end - n + 1), which PRESERVES interior empty
  * lines between content — matching the full-read's `slice(-n)` semantics for
  * the common case.
@@ -131,10 +157,10 @@ export function tailForPty(ptyId: string, n = 3): string[] {
     return lines;
   }
 
-  const lastLine = Math.min(buffer.baseY + buffer.cursorY, buffer.length - 1);
+  const lastLine = lastScreenRow(buffer);
   if (lastLine < 0) return [];
 
-  // Walk UP from the cursor line to the last non-empty row, bounded.
+  // Walk UP from the last screen row to the last non-empty row, bounded.
   const floor = Math.max(0, lastLine - SCAN_BOUND + 1);
   let end = -1;
   for (let i = lastLine; i >= floor; i--) {

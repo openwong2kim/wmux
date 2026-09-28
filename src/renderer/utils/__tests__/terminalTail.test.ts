@@ -20,7 +20,7 @@ vi.mock('../../hooks/useTerminal', () => ({
 }));
 
 import { terminalRegistry } from '../../hooks/useTerminal';
-import { readPtyBufferLines, readPtyBufferTail, tailForPty, DEFAULT_READ_TAIL_LINES } from '../terminalTail';
+import { readPtyBufferLines, readPtyBufferTail, rowsBelowCursor, tailForPty, DEFAULT_READ_TAIL_LINES } from '../terminalTail';
 
 /** Build a fake Terminal whose buffer yields `lines` (+ optional trailing
  *  empties). `elementOffsetWidth` / `elementConnected` model a display:none
@@ -162,6 +162,12 @@ describe('readPtyBufferTail', () => {
     (terminalRegistry as Map<string, unknown>).set('picker', term);
     expect(readPtyBufferTail('picker', 2)).toEqual(['  2. Green', 'footer']);
     expect(readPtyBufferLines('picker')).toEqual(['q', '❯ 1. Red', '  2. Green', 'footer']);
+    expect(rowsBelowCursor('picker', 4)).toBe(2);
+    expect(rowsBelowCursor('picker', 1)).toBe(1);
+    // The Fleet tail ends at the same row as the screen read.
+    expect(tailForPty('picker', 2)).toEqual(['  2. Green', 'footer']);
+    // The cursor-anchored read (submit probe) still ends at the cursor row.
+    expect(readPtyBufferTail('picker', 5, { endAtCursor: true })).toEqual(['q', '❯ 1. Red']);
   });
 
   it('still reads a display:none / offsetWidth-0 background pane', () => {
