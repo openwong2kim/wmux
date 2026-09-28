@@ -2211,7 +2211,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     const coverage = terminalReadCoverage(terminal.buffer.active.type);
     const fullScrollback = raw.full_scrollback === true;
     if (fullScrollback) {
-      // Explicit opt-in to the exact, unbounded read (walk 0..baseY+cursorY).
+      // Explicit opt-in to the exact, unbounded read (walk 0..last screen row).
       const lines = readPtyBufferLines(ptyId);
       return { ptyId, text: lines.join('\n'), ...coverage };
     }

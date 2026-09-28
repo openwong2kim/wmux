@@ -56,3 +56,58 @@ it('returns honest coverage for live and parked reads, including full_scrollback
     useStore.setState({ paneGate: previousGate });
   }
 });
+
+it('returns the rows a TUI draws below the cursor, live and parked (#1595)', async () => {
+  const ptyId = 'pty-read-picker';
+  const picker = [
+    'Which color?',
+    '',
+    '❯ 1. Red',
+    '  2. Green',
+    '  3. Blue',
+    '  4. Type something.',
+    '',
+    'Enter to select · ↑/↓ to navigate · Esc to cancel',
+  ];
+  // Both renderers park the cursor on the highlighted option, above the rest.
+  const variants = [
+    { raw: `earlier output\r\n${picker.join('\r\n')}\x1b[5A\r`, top: ['earlier output'] },
+    { raw: `\x1b[?1049h\x1b[H\x1b[J${picker.join('\r\n')}\x1b[3;3H`, top: [] },
+  ];
+  const previousAPI = window.electronAPI;
+  const previousGate = useStore.getState().paneGate;
+  useStore.setState({ paneGate: 'ready' });
+  const readText = vi.fn();
+  (window as unknown as { electronAPI: unknown }).electronAPI = { pty: { readText } };
+  try {
+    for (const { raw, top } of variants) {
+      const terminal = new Terminal({ cols: 60, rows: 14, scrollback: 100, allowProposedApi: true });
+      const snapshot = await generateTextSnapshot({ cols: 60, rows: 14, scrollback: 100, initial: Buffer.from(raw) });
+      if (!snapshot.ok) throw new Error('snapshot unavailable');
+      try {
+        await new Promise<void>((resolve) => terminal.write(raw, resolve));
+        expect(terminal.buffer.active.cursorY).toBe(top.length + 2);
+        const cases: Array<[Record<string, unknown>, string[]]> = [
+          [{}, [...top, ...picker]],
+          [{ full_scrollback: true }, [...top, ...picker]],
+          [{ tail_lines: 3 }, picker.slice(-3)],
+        ];
+        for (const [options, expected] of cases) {
+          (terminalRegistry as Map<string, unknown>).set(ptyId, terminal);
+          const live = await handleRpcMethod('input.readScreen', { ptyId, ...options });
+          terminalRegistry.delete(ptyId);
+          readText.mockResolvedValue({ success: true, rows: snapshot.rows, bufferType: snapshot.bufferType });
+          const parked = await handleRpcMethod('input.readScreen', { ptyId, ...options });
+          expect(live).toMatchObject({ ptyId, text: expected.join('\n') });
+          expect(parked).toEqual(live);
+        }
+      } finally {
+        terminalRegistry.delete(ptyId);
+        terminal.dispose();
+      }
+    }
+  } finally {
+    window.electronAPI = previousAPI;
+    useStore.setState({ paneGate: previousGate });
+  }
+});

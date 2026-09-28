@@ -156,6 +156,14 @@ describe('readPtyBufferTail', () => {
     expect(calls.length).toBeLessThan(10000);
   });
 
+  it('covers content below the cursor but not blank padding below it (#1595)', () => {
+    const term = makeTerminal({ lines: ['q', '❯ 1. Red', '  2. Green', 'footer'], trailingEmpty: 6 });
+    term.buffer.active.cursorY = 1; // cursor parked on the highlighted option
+    (terminalRegistry as Map<string, unknown>).set('picker', term);
+    expect(readPtyBufferTail('picker', 2)).toEqual(['  2. Green', 'footer']);
+    expect(readPtyBufferLines('picker')).toEqual(['q', '❯ 1. Red', '  2. Green', 'footer']);
+  });
+
   it('still reads a display:none / offsetWidth-0 background pane', () => {
     (terminalRegistry as Map<string, unknown>).set(
       'bg',

@@ -14,11 +14,36 @@ import { terminalRegistry } from '../hooks/useTerminal';
  * regardless of whether the element is laid out, so we read unconditionally,
  * gated only on the ptyId being present in the registry.
  */
+type ReadableBuffer = {
+  length: number;
+  baseY: number;
+  cursorY: number;
+  getLine(idx: number): { translateToString(trimRight?: boolean): string } | undefined;
+};
+
+/**
+ * The last buffer row a screen read must cover: the cursor row, or the lowest
+ * non-empty viewport row below it (#1595). A TUI draws below the cursor — an
+ * option picker parks the cursor on the highlighted choice while the other
+ * choices and the footer sit underneath — so ending at the cursor dropped them.
+ * Blank rows below the cursor are still excluded, so a tail window is not spent
+ * on viewport padding. The scan is bounded by the viewport height
+ * (buffer.length - 1 is the viewport's last row).
+ */
+function lastScreenRow(buffer: ReadableBuffer): number {
+  const cursorLine = Math.min(buffer.baseY + buffer.cursorY, buffer.length - 1);
+  for (let i = buffer.length - 1; i > cursorLine; i--) {
+    const line = buffer.getLine(i);
+    if (line && line.translateToString(true) !== '') return i;
+  }
+  return cursorLine;
+}
+
 export function readPtyBufferLines(ptyId: string): string[] {
   const terminal = terminalRegistry.get(ptyId);
   if (!terminal) return [];
   const buffer = terminal.buffer.active;
-  const lastLine = buffer.baseY + buffer.cursorY;
+  const lastLine = lastScreenRow(buffer);
   const lines: string[] = [];
   for (let i = 0; i <= lastLine && i < buffer.length; i++) {
     const line = buffer.getLine(i);
@@ -46,7 +71,7 @@ export const DEFAULT_READ_TAIL_LINES = 300;
  * The last `maxLines` buffer rows of a pane, trailing empty lines popped —
  * O(maxLines), NOT O(scrollback). This is the bounded read path behind
  * `input.readScreen`'s default (and its explicit `tail_lines`): we read only a
- * window ending at the cursor line rather than walking the whole buffer, so a
+ * window ending at the last screen row rather than walking the whole buffer, so a
  * burst of reads (an orchestrator observing its fleet) cannot pin the renderer
  * thread parsing 10k-row backlogs. Interior empty lines between content are
  * preserved (matching the full read's semantics for the last N rows). A pane
@@ -59,7 +84,7 @@ export function readPtyBufferTail(ptyId: string, maxLines: number): string[] {
   if (!terminal) return [];
   if (maxLines <= 0) return [];
   const buffer = terminal.buffer.active;
-  const lastLine = Math.min(buffer.baseY + buffer.cursorY, buffer.length - 1);
+  const lastLine = lastScreenRow(buffer);
   if (lastLine < 0) return [];
   const start = Math.max(0, lastLine - maxLines + 1);
   const lines: string[] = [];
