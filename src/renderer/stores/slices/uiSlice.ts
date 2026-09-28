@@ -370,6 +370,11 @@ export interface UISlice {
   coldParkEnabled: boolean;
   setColdParkEnabled: (enabled: boolean) => void;
 
+  // #1641: draw sixel / iTerm2 (OSC 1337) images inline (default ON). Off
+  // disposes the image addon on every terminal.
+  inlineImagesEnabled: boolean;
+  setInlineImagesEnabled: (enabled: boolean) => void;
+
   // #517 browser lightweight mode (default OFF while dogfooding): CPU-throttle
   // embedded browser guests that are effectively invisible (hidden workspace /
   // zoom-hidden / minimized window) and not under automation. CPU-only — does
@@ -1316,6 +1321,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setColdParkEnabled: (enabled) => set((state) => {
     state.coldParkEnabled = enabled;
+  }),
+
+  inlineImagesEnabled: true,
+
+  setInlineImagesEnabled: (enabled) => set((state) => {
+    state.inlineImagesEnabled = enabled;
   }),
 
   setHiddenPaneRetentionEnabled: (enabled) => set((state) => {

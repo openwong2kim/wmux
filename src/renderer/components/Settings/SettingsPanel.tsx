@@ -2105,6 +2105,8 @@ function TabTerminal() {
   const setHiddenPaneRetentionEnabled = useStore((s) => s.setHiddenPaneRetentionEnabled);
   const coldParkEnabled = useStore((s) => s.coldParkEnabled);
   const setColdParkEnabled = useStore((s) => s.setColdParkEnabled);
+  const inlineImagesEnabled = useStore((s) => s.inlineImagesEnabled);
+  const setInlineImagesEnabled = useStore((s) => s.setInlineImagesEnabled);
   const startupDirectory = useStore((s) => s.startupDirectory);
   const setStartupDirectory = useStore((s) => s.setStartupDirectory);
   const [detectedShells, setDetectedShells] = useState<ShellInfo[]>([]);
@@ -2227,6 +2229,13 @@ function TabTerminal() {
             checked={coldParkEnabled}
             onChange={setColdParkEnabled}
             label={t('settings.coldPark')}
+          />
+        </SettingRow>
+        <SettingRow id="inlineimages" label={t('settings.inlineImages')} description={t('settings.inlineImagesDesc')}>
+          <Toggle
+            checked={inlineImagesEnabled}
+            onChange={setInlineImagesEnabled}
+            label={t('settings.inlineImages')}
           />
         </SettingRow>
       </SettingsSection>

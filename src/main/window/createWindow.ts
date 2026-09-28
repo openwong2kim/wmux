@@ -21,9 +21,13 @@ import {
 const iconExt = platformChoice<string>({ win: 'ico', mac: 'icns', linux: 'png', default: 'png' });
 const iconFile = `icon.${iconExt}`;
 
+// 'wasm-unsafe-eval' (#1641): the inline-image addon decodes sixel and the
+// iTerm2 image protocol's base64 with bundled WebAssembly, and Chromium
+// refuses to compile WebAssembly under a bare `script-src 'self'`. It allows
+// WebAssembly compilation only — eval() and new Function() stay blocked.
 export const MAIN_WINDOW_PRODUCTION_CSP = [
   "default-src 'self'",
-  "script-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "connect-src 'self'",

@@ -403,6 +403,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,
     hiddenPaneRetentionEnabled: state.hiddenPaneRetentionEnabled,
     coldParkEnabled: state.coldParkEnabled,
+    inlineImagesEnabled: state.inlineImagesEnabled,
     browserLightweightMode: state.browserLightweightMode,
     browserDiscardHidden: state.browserDiscardHidden,
     siteMemoryEnabled: state.siteMemoryEnabled,

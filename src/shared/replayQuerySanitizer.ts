@@ -50,6 +50,13 @@ const REPLAY_QUERY_SEQUENCES = new RegExp(
     '\\x1b\\](?:4|5|1[0-9])(?:;[0-9]*)*;\\?(?:\\x07|\\x1b\\\\)',
     // DCS queries — DECRQSS (DCS $ q .. ST) and XTGETTCAP (DCS + q .. ST)
     '\\x1bP[$+]q[^\\x1b]*\\x1b\\\\',
+    // XTWINOPS size reports — CSI 14/16/18 t (text area / cell / grid size).
+    // The inline-image addon (#1641) enables these. Only the query forms:
+    // 22/23 t are title push/pop and >= 24 t is DECSLPP, both display state.
+    '\\x1b\\[(?:14|16|18)(?:;[0-9]*)?t',
+    // XTSMGRAPHICS — CSI ? Pi ; Pa ; Pv S (sixel palette / geometry query,
+    // #1641). The `?` prefix keeps plain CSI Ps S (scroll up) untouched.
+    '\\x1b\\[\\?[0-9;]*S',
     // ENQ — answerback query
     '\\x05',
   ].join('|'),

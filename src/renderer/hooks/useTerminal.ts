@@ -43,6 +43,7 @@ import { attachImeStormGuard } from '../terminal/imeStormGuard';
 import { attachCompositionCommitGate } from '../terminal/compositionCommitGate';
 import { webglContextPool } from '../terminal/webglContextPool';
 import { teardownWebglAddon } from '../terminal/webglTeardown';
+import { syncInlineImages } from '../terminal/inlineImages';
 import { forceCharSizeMeasure, onCharSizeChange } from '../terminal/charSizeRefit';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { atlasGuard } from '../terminal/atlasGuard';
@@ -788,6 +789,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const terminalFontFamily = useStore((s) => s.terminalFontFamily);
   const terminalCursorStyle = useStore((s) => s.terminalCursorStyle);
   const scrollbackLines = useStore((s) => s.scrollbackLines);
+  const inlineImagesEnabled = useStore((s) => s.inlineImagesEnabled);
   const theme = useStore((s) => s.theme) as ThemeId;
   const customThemeColors = useStore((s) => s.customThemeColors);
   const xtermTheme = theme === 'custom' && customThemeColors
@@ -1215,6 +1217,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
     terminal.loadAddon(webLinksAddon);
+    // #1641: sixel / iTerm2 inline images. Bound to the terminal instance (an
+    // adopted terminal keeps its addon and images), attached here — before the
+    // replay below is parsed — and re-synced by the setting effect.
+    syncInlineImages(terminal, useStore.getState().inlineImagesEnabled);
     // Path link provider — Ctrl+click an absolute filesystem path to open
     // it in Explorer / Finder. Coexists with WebLinksAddon (URLs); the two
     // detect disjoint token shapes so a single span never claims both.
@@ -3280,6 +3286,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const findPrevious = useCallback((text: string, useRegex = false) => {
     searchAddonRef.current?.findPrevious(text, { decorations: getSearchDecorations(), regex: useRegex });
   }, [getSearchDecorations]);
+
+  // #1641: the Settings toggle. Off disposes the addon (canvas, image store,
+  // decoder) on every live terminal; on attaches it — idempotent per instance.
+  useEffect(() => {
+    if (terminalInstance) syncInlineImages(terminalInstance, inlineImagesEnabled);
+  }, [terminalInstance, inlineImagesEnabled]);
 
   const clearSearch = useCallback(() => {
     searchAddonRef.current?.clearDecorations();

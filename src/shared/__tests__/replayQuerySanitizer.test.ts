@@ -43,6 +43,21 @@ describe('stripReplayQuerySequences', () => {
     expect(strip('\x1bP$qm\x1b\\\x1bP+q544e\x1b\\\x05')).toBe('');
   });
 
+  // #1641: the inline-image addon answers these, so a replayed query would
+  // type its answer into whatever shell owns the pty now.
+  it('strips XTWINOPS size queries and XTSMGRAPHICS, keeps their display look-alikes', () => {
+    expect(strip('\x1b[14t\x1b[14;2t\x1b[16t\x1b[18t')).toBe('');
+    expect(strip('\x1b[?2;1;0S\x1b[?1;4S')).toBe('');
+    // Title push/pop, DECSLPP and plain scroll-up are display state.
+    expect(strip('\x1b[22;0t\x1b[23;0t\x1b[24t\x1b[3S')).toBe('\x1b[22;0t\x1b[23;0t\x1b[24t\x1b[3S');
+  });
+
+  it('keeps sixel and iTerm2 image payloads so a raw replay redraws them', () => {
+    const sixel = '\x1bPq#0;2;100;0;0#0~~~~\x1b\\';
+    const iip = '\x1b]1337;File=inline=1;size=4:AAAA\x07';
+    expect(strip(sixel + iip)).toBe(sixel + iip);
+  });
+
   it('preserves display sequences and multi-byte text byte-exactly', () => {
     const display =
       '\x1b[1m\x1b[38;5;196m한글 텍스트\x1b[0m\x1b[40;3H\x1b[K' +

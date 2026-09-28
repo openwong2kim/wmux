@@ -97,6 +97,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'ime', tab: 'terminal', labelKey: 'settings.imeResidueGuard', descKey: 'settings.imeResidueGuardDesc', synonyms: 'ime korean cjk hangul 한글 입력' },
   { id: 'retention', tab: 'terminal', labelKey: 'settings.hiddenPaneRetention', descKey: 'settings.hiddenPaneRetentionDesc', synonyms: 'hidden render cpu park' },
   { id: 'coldpark', tab: 'terminal', labelKey: 'settings.coldPark', descKey: 'settings.coldParkDesc', synonyms: 'memory ram park idle unmount' },
+  { id: 'inlineimages', tab: 'terminal', labelKey: 'settings.inlineImages', descKey: 'settings.inlineImagesDesc', synonyms: 'image sixel iterm2 osc 1337 picture graphics inline 이미지 画像' },
   { id: 'scrollback', tab: 'terminal', labelKey: 'settings.scrollbackLines', descKey: 'settings.scrollbackDesc', synonyms: 'history buffer lines scroll' },
   { id: 'restore', tab: 'terminal', labelKey: 'settings.scrollbackRestore', descKey: 'settings.scrollbackRestoreDesc', synonyms: 'restore persist reboot' },
   { id: 'imagepaste', tab: 'terminal', labelKey: 'settings.imagePaste', descKey: 'settings.imagePasteDesc', synonyms: 'image paste screenshot clipboard png inline native wsl 이미지 붙여넣기 스크린샷 클립보드' },

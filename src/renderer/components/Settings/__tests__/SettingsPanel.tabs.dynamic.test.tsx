@@ -237,6 +237,7 @@ describe('retired tab ids', () => {
 describe('settings persist across tabs', () => {
   it.each([
     ['terminal', 'splitcwd', 'splitInheritsCwd'],
+    ['terminal', 'inlineimages', 'inlineImagesEnabled'],
     ['appearance', 'sidebarpanecoordinates', 'sidebarShowPaneCoordinates'],
     ['roles', 'a2a', 'a2aAutoApproveExecute'],
     ['browser', 'sitememory', 'siteMemoryEnabled'],

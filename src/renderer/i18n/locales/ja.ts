@@ -194,6 +194,8 @@ export const ja = {
   'settings.scrollbackDesc': 'ターミナルバッファに保持する行数',
   'settings.scrollbackRestore': '起動時に復元',
   'settings.scrollbackRestoreDesc': '再起動後に前のセッション出力を再接続。オフにすると毎回すべてのペインが新規状態で起動。',
+  'settings.inlineImages': 'インライン画像',
+  'settings.inlineImagesDesc': 'ターミナルのプログラムが sixel または iTerm2 画像プロトコル (OSC 1337) で出力した画像をペイン内に描画します。画像はペインごとに最大 64 MB まで保持し、古いものはプレースホルダーに置き換わります。オフにすると画像出力を無視し、そのメモリを解放します。',
   'settings.updates': 'アップデート',
   'settings.wmuxUpdates': 'wmux アップデート',
   'settings.updateFailed': 'アップデート確認に失敗しました',

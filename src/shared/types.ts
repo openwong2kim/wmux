@@ -856,6 +856,8 @@ export interface SessionData {
    * snapshot). Default true; this persists an explicit opt-out.
    */
   coldParkEnabled?: boolean;
+  /** #1641: draw sixel / iTerm2 inline images (default true). */
+  inlineImagesEnabled?: boolean;
   /**
    * #517 browser lightweight mode: CPU-throttle effectively-invisible embedded
    * browser guests (automation-leased guests stay full-speed). Default false.

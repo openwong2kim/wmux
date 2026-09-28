@@ -18,9 +18,12 @@ describe('main-window production CSP', () => {
 
     expect(directives.get('frame-src')).toContain(pluginSource);
 
-    for (const directive of ['default-src', 'script-src', 'connect-src']) {
+    for (const directive of ['default-src', 'connect-src']) {
       expect(directives.get(directive), `${directive} must remain self-only`).toEqual(["'self'"]);
     }
+    // #1641: WebAssembly compilation for the inline-image decoders, nothing
+    // more — no 'unsafe-eval', no extra script origins.
+    expect(directives.get('script-src')).toEqual(["'self'", "'wasm-unsafe-eval'"]);
 
     for (const [directive, sources] of directives) {
       if (directive !== 'frame-src') {
