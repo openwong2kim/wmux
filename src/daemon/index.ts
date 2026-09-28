@@ -4753,7 +4753,7 @@ function registerRpcHandlers(
     });
   });
 
-  pipeServer.onRpc('a2a.task.update', async (rawParams) => {
+  pipeServer.onRpc('a2a.task.update', async (rawParams, ctx) => {
     if (!a2aTaskService) return { ok: false, error: 'a2a.task.update: task log unavailable' };
     const p = rawParams as Record<string, unknown>;
     const taskId = typeof p.taskId === 'string' ? p.taskId : '';
@@ -4765,7 +4765,9 @@ function registerRpcHandlers(
     // 'canceled' is allowed here as the RECEIVER's drop (#1598): same authz and
     // state machine as any transition, with a reason (evidence.summary).
     if (!isTaskState(status)) return { ok: false, error: `a2a.task.update: invalid status "${status}"` };
-    const livePaneIds = normalizeLivePaneIds(p.livePaneIds);
+    // Only the app's main process reads the pane tree; take the list from it
+    // alone. Anything else leaves it unknown (no relaxation).
+    const livePaneIds = pipeServer.isFirstParty(ctx.clientId) ? normalizeLivePaneIds(p.livePaneIds) : undefined;
     return a2aTaskService.transition({
       taskId,
       to: status,
