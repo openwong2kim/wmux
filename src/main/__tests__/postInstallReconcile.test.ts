@@ -14,6 +14,7 @@ import {
   planPostInstallReconcile,
   isEmptyPlan,
   autostartTargetAlive,
+  isOnPath,
   type ReconcileProbe,
 } from '../postInstallReconcile';
 import { parseRunValue } from '../autostart';
@@ -27,6 +28,7 @@ function probe(over: Partial<ReconcileProbe> = {}): ReconcileProbe {
     firstRun: false,
     freshInstall: false,
     shimExists: true,
+    binOnPath: true,
     autostartTarget: CUR,
     autostartTargetExists: true,
     desktopShortcutExists: true,
@@ -44,6 +46,11 @@ describe('planPostInstallReconcile', () => {
   it('reinstalls a missing CLI shim on any boot', () => {
     expect(planPostInstallReconcile(probe({ shimExists: false })).installCliShim).toBe(true);
     expect(planPostInstallReconcile(probe({ shimExists: false, firstRun: true })).installCliShim).toBe(true);
+  });
+
+  it('redoes the PATH edit when the shim exists but bin is not on PATH', () => {
+    // The hook can be cancelled between writing wmux.cmd and editing PATH.
+    expect(planPostInstallReconcile(probe({ binOnPath: false })).installCliShim).toBe(true);
   });
 
   it('retargets a Run value whose versioned exe was deleted by the install', () => {
@@ -82,6 +89,20 @@ describe('planPostInstallReconcile', () => {
     expect(planPostInstallReconcile(probe({ firstRun: true, desktopShortcutExists: false })).shortcuts).toEqual([]);
     // Ordinary boot.
     expect(planPostInstallReconcile(probe({ freshInstall: true, desktopShortcutExists: false })).shortcuts).toEqual([]);
+  });
+});
+
+describe('isOnPath', () => {
+  const BIN = 'C:\\Users\\u\\AppData\\Local\\wmux\\bin';
+
+  it('matches case-insensitively and ignores a trailing separator', () => {
+    expect(isOnPath(BIN, 'C:\\Windows;c:\\users\\U\\appdata\\local\\WMUX\\bin\\;C:\\x')).toBe(true);
+  });
+
+  it('does not match a prefix, a sibling, or an empty PATH', () => {
+    expect(isOnPath(BIN, `${BIN}2;C:\\Windows`)).toBe(false);
+    expect(isOnPath(BIN, 'C:\\Users\\u\\AppData\\Local\\wmux')).toBe(false);
+    expect(isOnPath(BIN, undefined)).toBe(false);
   });
 });
 

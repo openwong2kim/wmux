@@ -17,10 +17,11 @@
  * just happened. The normal app boot (firstrun or not) runs this reconcile
  * after the window is up, and it redoes whatever is missing:
  *
- *   - CLI shim: whenever `<root>\bin\wmux.cmd` is missing. The installer
- *     wipes the whole root, `bin\` included, so a missing shim means the hook
- *     never reached it. Uninstall removes the shim too, but no app is running
- *     after an uninstall.
+ *   - CLI shim: whenever `<root>\bin\wmux.cmd` is missing or `<root>\bin` is
+ *     not on PATH. The installer wipes the whole root, `bin\` included, so a
+ *     missing shim means the hook never reached it; a present shim without the
+ *     PATH entry means it stopped in between. Uninstall removes both, but no
+ *     app is running after an uninstall.
  *   - Autostart: a Run value whose target no longer exists (it names the
  *     versioned `app-X.Y.Z\wmux.exe`, which the next install deletes) is
  *     pointed at the running exe. A MISSING value is only created on the
@@ -52,6 +53,8 @@ export interface ReconcileProbe {
   freshInstall: boolean;
   /** `<root>\bin\wmux.cmd` exists. */
   shimExists: boolean;
+  /** `<root>\bin` is on this process's PATH (the hook can stop between writing the shim and editing PATH). */
+  binOnPath: boolean;
   /** Target of the Run value, or null when there is no value. */
   autostartTarget: string | null;
   /** Whether `autostartTarget` exists on disk (ignored when the target is null). */
@@ -84,7 +87,7 @@ export function planPostInstallReconcile(probe: ReconcileProbe): ReconcilePlan {
     if (!probe.startMenuShortcutExists) shortcuts.push('StartMenu');
   }
 
-  return { installCliShim: !probe.shimExists, autostart: autostartAction, shortcuts };
+  return { installCliShim: !probe.shimExists || !probe.binOnPath, autostart: autostartAction, shortcuts };
 }
 
 /**
@@ -99,6 +102,18 @@ export function autostartTargetAlive(target: string, root: string): boolean {
   const m = /[\\/](app-[^\\/]+)[\\/]wmux\.exe$/i.exec(target);
   if (!m) return true;
   return fs.existsSync(path.join(root, m[1], 'wmux.exe'));
+}
+
+/**
+ * Whether `binDir` is an entry of a Windows PATH string (case-insensitive,
+ * trailing separators ignored). The app inherits PATH from Explorer, which
+ * picks up the hook's edit through its WM_SETTINGCHANGE broadcast. A stale
+ * Explorer only costs one no-op PATH edit per boot until the next sign-in:
+ * the edit script exits without writing when the entry is already there.
+ */
+export function isOnPath(binDir: string, pathValue: string | undefined): boolean {
+  const want = binDir.replace(/[\\/]+$/, '').toLowerCase();
+  return (pathValue ?? '').split(';').some((p) => p.trim().replace(/[\\/]+$/, '').toLowerCase() === want);
 }
 
 export function isEmptyPlan(plan: ReconcilePlan): boolean {
@@ -182,6 +197,7 @@ export async function runPostInstallReconcile(opts: ReconcileOptions): Promise<R
       firstRun: opts.firstRun,
       freshInstall: opts.freshInstall,
       shimExists: fs.existsSync(path.join(root, 'bin', 'wmux.cmd')),
+      binOnPath: isOnPath(path.join(root, 'bin'), process.env.PATH ?? process.env.Path),
       autostartTarget: target,
       autostartTargetExists: target !== null && autostartTargetAlive(target, root),
       desktopShortcutExists: desktopShortcutExists(opts.desktopDir),

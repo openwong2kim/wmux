@@ -201,19 +201,21 @@ try {
 # install folder, so it counts as running.
 function Test-WmuxRunning {
     $root = Join-Path $env:LOCALAPPDATA 'wmux'
-    # The script runs with $ErrorActionPreference = 'Stop'; a broken WMI must
-    # not abort the install after the download, so a failed query means "not running".
+    # The script runs with $ErrorActionPreference = 'Stop', so a broken WMI is
+    # caught here rather than aborting the script. An unknown state is treated
+    # as running: launching Setup.exe against a running wmux breaks the install.
     try {
         $procs = Get-CimInstance Win32_Process -Filter "Name='wmux.exe'" -ErrorAction Stop |
             Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$root\", [System.StringComparison]::OrdinalIgnoreCase) }
     } catch {
-        return $false
+        Write-Host "  [!] Could not check whether wmux is running ($($_.Exception.Message))." -ForegroundColor Yellow
+        return $true
     }
     return [bool]$procs
 }
 
 function Write-QuitWmuxFirst([string]$setupPath) {
-    Write-Host "  [!] wmux is running. The installer cannot replace it while it is open." -ForegroundColor Yellow
+    Write-Host "  [!] wmux may be running. The installer cannot replace it while it is open." -ForegroundColor Yellow
     Write-Host "      Right-click the wmux tray icon -> 'Shut down wmux (close all sessions)'." -ForegroundColor Yellow
     Write-Host "      Plain 'Quit' keeps the session daemon running, which still blocks Setup." -ForegroundColor Yellow
     Write-Host "      Then run:" -ForegroundColor Yellow
@@ -461,6 +463,12 @@ if (-not $hasVCTools) {
 # ---------------------------------------------------------------------------
 # Clone + build
 # ---------------------------------------------------------------------------
+
+if (Test-WmuxRunning) {
+    # The clone below deletes $installDir, which is also the install root.
+    Write-QuitWmuxFirst "pwsh -File install.ps1 -FromSource"
+    return
+}
 
 Write-Host "  [1/5] Cloning repository..." -ForegroundColor DarkGray
 

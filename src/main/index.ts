@@ -1402,12 +1402,16 @@ app.on('ready', async () => {
   if (process.platform === 'win32' && app.isPackaged) {
     const firstRun = process.argv.includes('--squirrel-firstrun');
     const freshInstall = isFreshProfile(app.getPath('userData'));
+    // getPath throws when the shell folder cannot be resolved; unknown means
+    // "do not create a Desktop shortcut", never "stop booting".
+    let desktopDir: string | undefined;
+    try { desktopDir = app.getPath('desktop'); } catch { desktopDir = undefined; }
     const reconcileTimer = setTimeout(() => {
       void runPostInstallReconcile({
         execPath: process.execPath,
         firstRun,
         freshInstall,
-        desktopDir: app.getPath('desktop'),
+        desktopDir,
       });
     }, 5000);
     reconcileTimer.unref();
