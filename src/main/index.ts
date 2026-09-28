@@ -152,6 +152,7 @@ import { terminateRunningAppInstances } from './squirrelTeardown';
 import * as autostart from './autostart';
 import * as cliShim from './cliShim';
 import * as shortcutHygiene from './shortcutHygiene';
+import { isFreshProfile, runPostInstallReconcile } from './postInstallReconcile';
 import {
   refreshStatuslineScript,
   defaultPaths as defaultStatuslinePaths,
@@ -1393,6 +1394,18 @@ app.on('ready', async () => {
       }
     }, 3000);
     shimTimer.unref();
+  }
+
+  // Windows: redo whatever a cancelled Squirrel install hook left undone (CLI
+  // shim, autostart, shortcuts). See postInstallReconcile.ts. `freshInstall`
+  // must be read here, before this boot's first session save creates the file.
+  if (process.platform === 'win32' && app.isPackaged) {
+    const firstRun = process.argv.includes('--squirrel-firstrun');
+    const freshInstall = isFreshProfile(app.getPath('userData'));
+    const reconcileTimer = setTimeout(() => {
+      void runPostInstallReconcile({ execPath: process.execPath, firstRun, freshInstall });
+    }, 5000);
+    reconcileTimer.unref();
   }
 
   // ~/.wmux/hooks/의 설치본 스크립트(statusline·hook bridge)를 번들 버전에 맞춘다.

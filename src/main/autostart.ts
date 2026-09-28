@@ -88,6 +88,41 @@ export function isAutostartEnabled(): boolean {
   }
 }
 
+/**
+ * Parse `reg query <RunKey> /v wmux` output into the exe path it names, or
+ * null when no wmux value line is present. The value is written quoted
+ * (`"<exe>"`); the quotes are stripped. Pure, exported for tests.
+ */
+export function parseRunValue(stdout: string): string | null {
+  for (const line of stdout.split(/\r?\n/)) {
+    const m = /^\s+wmux\s+REG_(?:EXPAND_)?SZ\s+(.*)$/i.exec(line);
+    if (!m) continue;
+    const raw = m[1].trim();
+    const quoted = /^"([^"]*)"/.exec(raw);
+    const value = quoted ? quoted[1] : raw;
+    return value.length > 0 ? value : null;
+  }
+  return null;
+}
+
+/**
+ * The exe path the Run value points at, or null when there is no value (or
+ * on any non-win32 platform, or when reg.exe fails).
+ */
+export function readAutostartTarget(): string | null {
+  if (process.platform !== 'win32') return null;
+  try {
+    const out = execFileSync(regExe(), ['query', RUN_KEY, '/v', VALUE_NAME], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: REG_TIMEOUT_MS,
+    });
+    return parseRunValue(out);
+  } catch {
+    return null;
+  }
+}
+
 /** Write the Run value pointing at `exePath` (defaults to this process). */
 export function enableAutostart(exePath: string = process.execPath): void {
   if (process.platform === 'darwin') {

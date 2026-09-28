@@ -50,7 +50,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { execFileSync } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 
 /**
  * Batch shim content. Uses `%~dp0` (the shim's own directory, `<squirrelRoot>/bin`)
@@ -234,24 +234,48 @@ export function explainPathEditExit(code: number, binDir: string): string | null
   }
 }
 
+/**
+ * Shared failure handling for both PATH edit runners. execFileSync reports the
+ * exit code as `status`; async execFile reports it as a numeric `code`.
+ */
+function handlePathEditError(err: unknown, binDir: string, op: 'add' | 'remove'): void {
+  const e = err as { status?: unknown; code?: unknown };
+  const code = typeof e.status === 'number' ? e.status : typeof e.code === 'number' ? e.code : undefined;
+  const explained = code !== undefined ? explainPathEditExit(code, binDir) : null;
+  // A deliberate bail-out is a warning, not a failure: the registry is intact
+  // and the only cost is that the CLI is not on PATH yet.
+  if (explained) {
+    console.warn(`[cliShim] PATH ${op} skipped — ${explained}`);
+    return;
+  }
+  throw err;
+}
+
+function pathEditArgs(binDir: string, op: 'add' | 'remove'): string[] {
+  return ['-NoProfile', '-NonInteractive', '-Command', buildPathEditScript(binDir, op)];
+}
+
 function runPathEdit(binDir: string, op: 'add' | 'remove'): void {
   try {
-    execFileSync(
-      powershellExe(),
-      ['-NoProfile', '-NonInteractive', '-Command', buildPathEditScript(binDir, op)],
-      { encoding: 'utf8', windowsHide: true, timeout: 20000 },
-    );
+    execFileSync(powershellExe(), pathEditArgs(binDir, op), { encoding: 'utf8', windowsHide: true, timeout: 20000 });
   } catch (err) {
-    const code = (err as { status?: number }).status;
-    const explained = typeof code === 'number' ? explainPathEditExit(code, binDir) : null;
-    // A deliberate bail-out is a warning, not a failure: the registry is intact
-    // and the only cost is that the CLI is not on PATH yet.
-    if (explained) {
-      console.warn(`[cliShim] PATH ${op} skipped — ${explained}`);
-      return;
-    }
-    throw err;
+    handlePathEditError(err, binDir, op);
   }
+}
+
+/** Same edit as runPathEdit, without blocking the caller's event loop. */
+function runPathEditAsync(binDir: string, op: 'add' | 'remove'): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(powershellExe(), pathEditArgs(binDir, op), { encoding: 'utf8', windowsHide: true, timeout: 20000 }, (err) => {
+      if (!err) return resolve();
+      try {
+        handlePathEditError(err, binDir, op);
+        resolve();
+      } catch (rethrown) {
+        reject(rethrown);
+      }
+    });
+  });
 }
 
 export interface ShimPaths {
@@ -283,17 +307,37 @@ export function deriveShimPaths(execPath: string): ShimPaths {
  */
 export function installCliShim(execPath: string): void {
   try {
-    const { binDir, cliJsPath } = deriveShimPaths(execPath);
-    if (!fs.existsSync(cliJsPath)) {
-      console.warn(`[cliShim] cli-bundle missing at ${cliJsPath} — skipping shim install`);
-      return;
-    }
-    fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(path.join(binDir, 'wmux.cmd'), buildShimCmd(), 'utf8');
-    runPathEdit(binDir, 'add');
+    const binDir = writeShimFile(execPath);
+    if (binDir) runPathEdit(binDir, 'add');
   } catch (err) {
     console.warn('[cliShim] shim install failed (non-fatal):', err);
   }
+}
+
+/**
+ * installCliShim for callers on the main process's event loop (the boot-time
+ * post-install reconcile): the PATH edit is a PowerShell run of 0.5 s or more
+ * and must not freeze the UI. Never rejects.
+ */
+export async function installCliShimAsync(execPath: string): Promise<void> {
+  try {
+    const binDir = writeShimFile(execPath);
+    if (binDir) await runPathEditAsync(binDir, 'add');
+  } catch (err) {
+    console.warn('[cliShim] shim install failed (non-fatal):', err);
+  }
+}
+
+/** Write `<root>\bin\wmux.cmd`; returns the bin dir, or null when there is no cli-bundle to point at. */
+function writeShimFile(execPath: string): string | null {
+  const { binDir, cliJsPath } = deriveShimPaths(execPath);
+  if (!fs.existsSync(cliJsPath)) {
+    console.warn(`[cliShim] cli-bundle missing at ${cliJsPath} — skipping shim install`);
+    return null;
+  }
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(path.join(binDir, 'wmux.cmd'), buildShimCmd(), 'utf8');
+  return binDir;
 }
 
 // ─── macOS (darwin) CLI shim ─────────────────────────────────────────────────

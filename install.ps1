@@ -193,6 +193,23 @@ try {
     $version = 'main'
 }
 
+# Setup.exe deletes the existing install folder before anything else and does
+# not stop a running wmux first. A running copy keeps its files locked, the
+# delete fails halfway, and the install is left broken (#502). Check first and
+# let the user quit wmux themselves: killing it here would end their sessions.
+function Test-WmuxRunning {
+    $root = Join-Path $env:LOCALAPPDATA 'wmux'
+    $procs = Get-CimInstance Win32_Process -Filter "Name='wmux.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith("$root\", [System.StringComparison]::OrdinalIgnoreCase) }
+    return [bool]$procs
+}
+
+function Write-QuitWmuxFirst([string]$setupPath) {
+    Write-Host "  [!] wmux is running. The installer cannot replace it while it is open." -ForegroundColor Yellow
+    Write-Host "      Quit wmux from its tray icon (right-click -> Quit), then run:" -ForegroundColor Yellow
+    Write-Host "      $setupPath" -ForegroundColor White
+}
+
 # ===========================================================================
 # DEFAULT PATH — download the prebuilt Setup.exe and verify its SHA-256
 # ===========================================================================
@@ -256,6 +273,10 @@ if (-not $FromSource) {
     }
     Write-Host "  [2/3] Verified SHA-256" -ForegroundColor Green
 
+    if (Test-WmuxRunning) {
+        Write-QuitWmuxFirst $tempExe
+        return
+    }
     Write-Host "  [3/3] Launching installer..." -ForegroundColor Green
     Start-Process -FilePath $tempExe
     Write-Host ""
@@ -533,7 +554,9 @@ $builtSetupExe = Get-ChildItem "$installDir\out\make\squirrel.windows\x64" -Filt
     Where-Object { $_.Name -match 'Setup' } |
     Select-Object -First 1
 
-if ($builtSetupExe) {
+if ($builtSetupExe -and (Test-WmuxRunning)) {
+    Write-QuitWmuxFirst $builtSetupExe.FullName
+} elseif ($builtSetupExe) {
     Write-Host "  [5/5] Launching installer: $($builtSetupExe.Name)..." -ForegroundColor Green
     Start-Process -FilePath $builtSetupExe.FullName
 } else {
