@@ -202,6 +202,22 @@ describe('X6 ② reboot-survival durability', () => {
     expect(body).toMatch(/checkNativeTranscriptPath\(vetted\.agent,/);
   });
 
+  it('#1624: Codex is admitted before any search; Claude still searches BEFORE the provisional guard', () => {
+    const src = fs.readFileSync(daemonIndexPath, 'utf-8');
+    const idx = src.indexOf('const applyResumeBinding =');
+    const body = src.slice(idx, src.indexOf("pipeServer.onRpc('daemon.setResumeBinding'", idx));
+    const admit = body.indexOf('admitCodexCapture(');
+    const claudeStart = body.indexOf("p.resumeBinding.agent === 'claude'");
+    const search = body.indexOf('transcriptDiscovery?.start(', claudeStart);
+    const guard = body.indexOf('isProvisionalCapture(prev, p.resumeBinding)');
+    expect(admit).toBeGreaterThan(-1);
+    expect(admit).toBeLessThan(claudeStart);
+    expect(claudeStart).toBeLessThan(search);
+    expect(search).toBeLessThan(guard);
+    // The only unconditional search start is the Claude branch.
+    expect(body.split('transcriptDiscovery?.start(').length).toBe(2);
+  });
+
   it('Rung 0: the daemon stamps WMUX_PTY_ID into each pane env (per-pane routing key)', () => {
     // surfaceId is never injected (the renderer mints a surface after pty.create),
     // so the daemon's own session id is the one reliable per-pane key the hook

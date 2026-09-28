@@ -118,6 +118,7 @@ import { agentSlugToDisplay, isAgentSignal, type AgentSignal } from '../shared/h
 import { checkNativeTranscriptPath } from './transcript/providers';
 import { TranscriptProjector } from './transcript/TranscriptProjector';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
+import { admitCodexCapture } from './transcript/codexCapture';
 import { PushSender } from './push/PushSender';
 import { RelayTransport } from './push/RelayTransport';
 import { LiveActivityPusher, type LiveActivityCounts } from './push/LiveActivityPusher';
@@ -3163,11 +3164,17 @@ function registerRpcHandlers(
     // start a search for a session that has moved on) and BEFORE the
     // provisional-capture guard below, which drops the SessionStart outright on
     // a reused pane — the `/clear` case where discovery matters most.
-    if (p.resumeBinding.transcriptPath) {
+    if (p.resumeBinding.agent === 'codex') {
+      // #1624: Codex decides admission BEFORE any search starts, so a title
+      // thread with no rollout can neither bind nor displace a pending search.
+      const decision = admitCodexCapture(id, prev, p.resumeBinding, managed.meta.env, transcriptDiscovery);
+      if (!decision.apply) return true;
+      p.resumeBinding = decision.binding;
+    } else if (p.resumeBinding.transcriptPath) {
       // The hook is authoritative. Once it has delivered a real path there is
       // nothing left to discover.
       transcriptDiscovery?.cancel(id);
-    } else if (p.resumeBinding.agent === 'claude' || p.resumeBinding.agent === 'codex') {
+    } else if (p.resumeBinding.agent === 'claude') {
       transcriptDiscovery?.start(id, p.resumeBinding.sessionId, p.resumeBinding.cwd, p.resumeBinding.agent);
     }
     // codex P2: a SessionStart fired before its transcript exists (F9) sends the
@@ -3175,8 +3182,6 @@ function registerRpcHandlers(
     // Don't let that provisional capture overwrite an existing transcript-derived
     // (authoritative) binding for a DIFFERENT session — a reboot in between would
     // then `--resume <wrong id>`.
-    // #1624: the same holds for Codex's first-turn title-generation thread,
-    // which completes a turn (and fires notify) but never writes a rollout.
     if (isProvisionalCapture(prev, p.resumeBinding)) {
       return true;
     }
