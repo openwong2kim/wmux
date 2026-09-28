@@ -3886,22 +3886,26 @@ describe('WebTerminalServer', () => {
     expect((await fetch(`${base()}/api/history?offset=-1`, {headers})).status).toBe(400);
   });
 
-  it('stages and commits through the authenticated Git API using spawnCwd', async () => {
-    const info = await startRW();
-    const auth = bearer(info.token as string);
-    const root = path.join(uploadsDir, 'repo');
+  // Stage and commit are two cases on purpose: every git process costs 100ms+
+  // on the Windows runner and the route spawns ~13 per snapshot, so one case
+  // doing both sat right at the 5s limit. Test-side spawns are kept minimal too:
+  // identity is appended to the config `init` wrote instead of `git config` calls.
+  const gitRepo = (name: string) => {
+    const root = path.join(uploadsDir, name);
     fs.mkdirSync(root);
     const git = (...args: string[]) => execFileSync('git', args, {cwd:root,encoding:'utf8'}).trim();
-    // Every git process costs 100ms+ on the Windows runner and the route itself
-    // spawns ~13 per snapshot, so the test keeps its own spawns to a minimum:
-    // identity is appended to the config `init` wrote instead of two `git config`
-    // calls, and the post-stage tree comes from one `write-tree` rather than a
-    // second full snapshot GET.
     git('init', '-b', 'main');
     fs.appendFileSync(path.join(root, '.git', 'config'), '[user]\n\tname = HTTP Test\n\temail = http@example.invalid\n');
     fs.writeFileSync(path.join(root, 'phone.txt'), 'reviewed');
     managed.meta.spawnCwd = root;
     managed.meta.cwd = '/untrusted-osc-path';
+    return git;
+  };
+
+  it('stages through the authenticated Git API using spawnCwd', async () => {
+    const info = await startRW();
+    const auth = bearer(info.token as string);
+    const git = gitRepo('repo');
     const endpoint = `${base()}/api/sessions/s1/git`;
     const beforeResponse = await fetch(endpoint, {headers:auth});
     expect(beforeResponse.headers.get('cache-control')).toBe('no-store');
@@ -3909,8 +3913,18 @@ describe('WebTerminalServer', () => {
     expect(before).toMatchObject({branch:'main',ref:'refs/heads/main',head:null,files:[{path:'phone.txt',status:'??'}]});
     const stage = await fetch(endpoint, {method:'POST',headers:auth,body:JSON.stringify({requestId:crypto.randomUUID(),action:'stage',paths:['phone.txt'],expectedHead:before.head,expectedTree:before.tree,expectedRef:before.ref})});
     expect(await stage.json()).toEqual({applied:true});
-    // Staging moves only the index tree; HEAD (unborn) and the ref are unchanged.
-    const mutation = {requestId:crypto.randomUUID(),action:'commit',message:'From phone',expectedHead:before.head,expectedTree:git('write-tree'),expectedRef:before.ref};
+    expect(git('ls-files')).toBe('phone.txt');
+  });
+
+  it('commits through the authenticated Git API using spawnCwd', async () => {
+    const info = await startRW();
+    const auth = bearer(info.token as string);
+    const git = gitRepo('repo');
+    git('add', 'phone.txt');
+    const endpoint = `${base()}/api/sessions/s1/git`;
+    // No snapshot GET: on an unborn `main` HEAD is null and the ref is known, so
+    // the only value the phone would have read is the index tree.
+    const mutation = {requestId:crypto.randomUUID(),action:'commit',message:'From phone',expectedHead:null,expectedTree:git('write-tree'),expectedRef:'refs/heads/main'};
     const send = () => fetch(endpoint, {method:'POST',headers:auth,body:JSON.stringify(mutation)});
     const result = await (await send()).json();
     expect(result).toMatchObject({applied:true});
