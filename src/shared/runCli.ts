@@ -53,9 +53,18 @@ export function runCli(command: string, args: readonly string[], opts: RunCliOpt
  * injection path for data a later caller forgets to vet.
  */
 const WINDOWS_SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:=/@+-]*$|^--?[A-Za-z0-9][A-Za-z0-9._:=/@+-]*$/;
+/**
+ * The command may also be an absolute Windows path (a caller that pinned the
+ * binary it resolved, as #1608 does on POSIX). Backslashes and spaces are
+ * fine there because cross-spawn quotes the command as a whole; the cmd
+ * metacharacters are still refused.
+ */
+const WINDOWS_SAFE_COMMAND_PATH = /^[A-Za-z]:\\[^"%^&|<>!\r\n]*$/;
 
 function runOnWindows(command: string, args: readonly string[], opts: RunCliOptions): Promise<string> {
-  const unsafe = [command, ...args].find((token) => !WINDOWS_SAFE_TOKEN.test(token));
+  const unsafe = WINDOWS_SAFE_TOKEN.test(command) || WINDOWS_SAFE_COMMAND_PATH.test(command)
+    ? args.find((token) => !WINDOWS_SAFE_TOKEN.test(token))
+    : command;
   if (unsafe !== undefined) {
     return Promise.reject(new Error(`runCli: refusing a token that is not safe through a Windows .cmd shim: ${JSON.stringify(unsafe)}`));
   }

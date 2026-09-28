@@ -50,6 +50,22 @@ describe.runIf(isWin)('runCli on Windows — real .cmd shims', () => {
     expect(out.trim()).toBe(`FAKE ${JSON.stringify(args)}`);
   });
 
+  it('accepts an absolute command path, including a directory with a space', async () => {
+    const spaced = path.join(dir, 'with space');
+    fs.mkdirSync(spaced, { recursive: true });
+    fs.copyFileSync(path.join(dir, 'wmuxfake.cmd'), path.join(spaced, 'wmuxfake.cmd'));
+    const out = await runCli(path.join(spaced, 'wmuxfake.cmd'), ['--help'], { env, timeoutMs: 10_000, maxBuffer: 64_000 });
+    expect(out.trim()).toBe('FAKE ["--help"]');
+  });
+
+  it.each(['C:\\a&b\\codex.cmd', 'C:\\100%PATH%\\codex.cmd', '..\\codex.cmd', '\\\\server\\share\\codex.cmd'])(
+    'refuses the command %j',
+    async (command) => {
+      await expect(runCli(command, ['--help'], { env, timeoutMs: 10_000, maxBuffer: 64_000 }))
+        .rejects.toThrow('not safe through a Windows .cmd shim');
+    },
+  );
+
   // Why the helper refuses these instead of escaping them: through a global npm
   // shim, cross-spawn's escaping is single, the shim's `%*` parses a second
   // time, and `car^et` arrives as `caret` (observed while writing this test).
