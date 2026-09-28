@@ -486,7 +486,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
    * the once-per-turn check.
    */
   const interruptLocked = async (id: string, agentSessionId: string,
-    opts: { turnId?: string; authorized?: () => Promise<boolean>; beforeWrite?: () => boolean } = {}): Promise<ChatInterruptVerdict | 'busy'> => {
+    opts: { turnId?: string; authorized?: () => Promise<boolean>; beforeWrite?: (turn: { id: string; startedAt: number }) => boolean } = {},
+  ): Promise<ChatInterruptVerdict | 'busy'> => {
     if (sending.has(id)) return 'busy';
     sending.add(id);
     try {
@@ -499,7 +500,14 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
           const slug = slugOf(current);
           return slug && current.agentVerified ? { slug, status: current.agentStatus, ...(current.turn ? { turn: current.turn } : {}) } : null;
         },
-        write: (data) => deps.write(id, data),
+        write: (data) => {
+          try { return deps.write(id, data); } catch (error) {
+            // The ESC may have reached the PTY: latch it anyway, so no other
+            // Stop in this turn (or within the cooldown) presses a second one.
+            try { deps.pane(id)?.bridge.noteInput(data); } catch { /* best effort */ }
+            throw error;
+          }
+        },
         lastEscAt: () => lastEscAt(id),
         readTitle: () => deps.pane(id)?.bridge.getTitle() ?? null,
         now,
@@ -548,9 +556,12 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
 
     // The receipt is written only once the ESC is decided: synchronously, as
     // the last step before the write, under the pane lock. A refusal leaves
-    // nothing on disk; a crash after it reads as uncertain.
+    // nothing on disk; a crash after it reads as uncertain. The receipt names
+    // the turn the ESC was aimed at, captured before the write.
     let inserted: ReturnType<ChatCancelReceiptStore['insertPending']> | undefined;
-    const beforeWrite = (): boolean => {
+    let aimed: string | undefined;
+    const beforeWrite = (target: { id: string }): boolean => {
+      aimed = target.id;
       inserted = store.insertPending(owner, clientCancelId, { paneId: id, fingerprint });
       return inserted === 'inserted';
     };
@@ -558,23 +569,27 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     try {
       verdict = await interruptLocked(id, req.agentSessionId, { ...(req.turnId !== undefined ? { turnId: req.turnId } : {}),
         ...(req.authorized ? { authorized: req.authorized } : {}), beforeWrite });
-    } catch { verdict = inserted === 'inserted' ? 'error' : 'unavailable'; }
+    } catch (error) {
+      // Nothing that throws out of here runs after the write (the write's own
+      // failure is the `error` verdict), so the id is freed for a retry. Only
+      // this request, under the pane lock, can have left this id pending.
+      store.discard(owner, clientCancelId);
+      deps.log('warn', `[chat] cancel for ${id} threw: ${error instanceof Error ? error.message : String(error)}`);
+      return refuse('cancel-failed');
+    }
     if (verdict === 'write_refused') {
       if (inserted === 'exists') return early() ?? refuse('cancel-id-conflict');
       return refuse(inserted === 'full' ? 'message-history-full' : 'chat-persist-failed');
     }
-    const turn = turnNow();
-    if (verdict === 'sent' || verdict === 'error' && inserted === 'inserted') {
+    if (inserted === 'inserted' && (verdict === 'sent' || verdict === 'error')) {
       // `error` = the write threw: the ESC may have reached the pane.
-      const outcome = verdict === 'sent'
-        ? { effect: 'interrupt-requested' as const, ...(turn ? { turnId: turn.id } : {}) }
-        : { effect: 'uncertain' as const };
+      const outcome = { effect: verdict === 'sent' ? 'interrupt-requested' as const : 'uncertain' as const, ...(aimed ? { turnId: aimed } : {}) };
       if (!store.complete(owner, clientCancelId, outcome)) deps.log('warn', `[chat] cancel receipt for ${id} not persisted`);
-      return verdict === 'sent' ? { clientCancelId, replayed: false, ...outcome }
-        : { clientCancelId, replayed: false, effect: 'uncertain', error: 'cancel-failed' };
+      return { clientCancelId, replayed: false, ...outcome, ...(verdict === 'error' ? { error: 'cancel-failed' as const } : {}) };
     }
     // `unavailable` after the receipt: the pane was gone, nothing was written.
     if (inserted === 'inserted') store.discard(owner, clientCancelId);
+    const turn = turnNow();
     switch (verdict) {
       case 'busy': return refuse('chat-busy');
       case 'session_changed': return refuse('session-changed', identityOf(await resolve(id)));
@@ -597,11 +612,15 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     }
   };
 
-  /** The desktop's enum: its Stop shows `not_running` / `blocked` notices and treats the rest as failed. */
+  /**
+   * The desktop's enum: its Stop shows notices for `not_running` and `blocked`
+   * (a prompt to answer) and treats the rest as failed. A cooldown means a
+   * Stop is already under way, so it reads as `not_running`, never `blocked`.
+   */
   const DESKTOP_INTERRUPT: Record<ChatInterruptVerdict | 'busy', ChatInterruptResult> = {
     sent: 'sent', not_running: 'not_running', blocked: 'blocked', session_changed: 'session_changed',
     unavailable: 'unavailable', error: 'error', turn_mismatch: 'not_running', already_interrupted: 'not_running',
-    cooldown: 'blocked', unauthorized: 'unavailable', write_refused: 'unavailable', busy: 'blocked',
+    cooldown: 'not_running', unauthorized: 'unavailable', write_refused: 'unavailable', busy: 'blocked',
   };
 
   const desktopInterrupt = async (id: string, agentSessionId: string): Promise<ChatInterruptResult> => {

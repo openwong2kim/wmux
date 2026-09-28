@@ -1418,17 +1418,26 @@ a caller that sends the `chat-cancel` capability; every other client keeps
 Body `{agentSessionId, clientCancelId, turnId?, historyEpoch?}`; it is gated
 like a send. 202 `{result:"sent", turnId, clientCancelId,
 effect:"interrupt-requested"}` means one Esc was written; whether the agent
-stopped shows later on `chat.turn`. A repeat with the same `clientCancelId`
-and body is 200 `replayed:true`. Refusals are 409 `turn-not-running` `{turn}`,
-`prompt-active` `{by, approvalId?}`, `session-changed`, `chat-busy`,
-`cancel-cooldown` `{retryAfterMs}`, `turn-already-interrupted` `{turnId}` or
-`cancel-id-conflict`, 422 `cancel-unsupported`, and 404 `pane-not-found`. The
+stopped shows later on `chat.turn`. `turnId` and `historyEpoch` are either
+omitted or non-empty; an empty string is 400 `invalid-chat-request`. A repeat
+with the same `clientCancelId` and body replays the first answer with
+`replayed:true`: 200 for a sent Esc, and the original status for a failure
+(500 `cancel-failed` with `effect:"uncertain"` when the write may or may not
+have landed). Refusals are 409 `turn-not-running` `{turn}`, `prompt-active`
+`{by, approvalId?}`, `session-changed`, `chat-busy`, `cancel-cooldown`
+`{retryAfterMs}`, `turn-already-interrupted` `{turnId}` or
+`cancel-id-conflict`; 422 `cancel-unsupported`; 404 `pane-not-found`; 507
+`message-history-full` when the receipt store is full. The
 daemon writes the Esc only on positive evidence that the agent is working
 right now. That means either its working row on screen (Claude's spinner row
 with its counter, Codex's `esc to interrupt` row) or its running spinner in
 the window title, refreshed within the last 3 seconds (Claude `◐`/`◑`, Codex
 a braille frame). The title is what remains while answer text streams. A
-refused cancel stores no receipt, so the same `clientCancelId` may be retried.
+turn that has just ended is refused as `turn-not-running`, even while its
+row is still drawn. That covers a recorded end or interrupt in the
+transcript, an idle title the agent set during the turn (Claude `✳`, Codex
+without a spinner), and Claude's Stop-hook row. A refused cancel stores no
+receipt, so the same `clientCancelId` may be retried.
 
 ---
 

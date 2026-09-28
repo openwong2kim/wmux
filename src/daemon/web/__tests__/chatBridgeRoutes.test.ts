@@ -859,7 +859,8 @@ describe('native chat routes (contract v0.3.1)', () => {
       let res = await postJson(url(), h, body);
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({ error: 'invalid-chat-request', effect: 'none', clientCancelId: body.clientCancelId });
-      for (const bad of [cancelBody({ agentSessionId: 1 }), cancelBody({ turnId: 3 }), cancelBody({ clientCancelId: undefined }), '[1]']) {
+      for (const bad of [cancelBody({ agentSessionId: 1 }), cancelBody({ turnId: 3 }), cancelBody({ turnId: '' }), cancelBody({ historyEpoch: '' }),
+        cancelBody({ clientCancelId: undefined }), '[1]']) {
         res = await postJson(url(), h, bad);
         expect(res.status).toBe(400);
       }
@@ -910,6 +911,7 @@ describe('native chat routes (contract v0.3.1)', () => {
         [{ error: 'invalid-chat-request', detail: 'clientCancelId' }, 400, { error: 'invalid-chat-request', detail: 'clientCancelId' }],
         [{ error: 'message-id-expired' }, 400, { error: 'message-id-expired' }],
         [{ error: 'chat-persist-failed' }, 500, { error: 'chat-persist-failed' }],
+        [{ error: 'message-history-full' }, 507, { error: 'message-history-full' }],
         [{ error: 'cancel-failed', effect: 'uncertain' }, 500, { error: 'cancel-failed', effect: 'uncertain' }],
       ];
       for (const [outcome, status, body] of rows) {
@@ -931,6 +933,15 @@ describe('native chat routes (contract v0.3.1)', () => {
       const res = await postJson(url(), device('dev-1'), body);
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({ result: 'sent', replayed: true, turnId: 't1:abc.3', clientCancelId: body.clientCancelId, effect: 'interrupt-requested' });
+    });
+
+    it('a replayed uncertain cancel keeps its 500 and only gains replayed:true', async () => {
+      await start();
+      chatBox.cancel = async (req) => ({ clientCancelId: req.clientCancelId, replayed: true, effect: 'uncertain', error: 'cancel-failed', turnId: 't1:abc.3' });
+      const body = cancelBody();
+      const res = await postJson(url(), device('dev-1'), body);
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: 'cancel-failed', turnId: 't1:abc.3', effect: 'uncertain', clientCancelId: body.clientCancelId, replayed: true });
     });
 
     it('a bridge that throws is a 500 without effect', async () => {

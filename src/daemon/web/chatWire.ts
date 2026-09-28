@@ -352,8 +352,9 @@ export function parseCancelBody(body: unknown): { ok: true; value: CancelBody } 
     if (typeof o[key] !== 'string') return { ok: false, detail: `${key} must be a string`, clientCancelId: ccid };
   }
   for (const key of CANCEL_OPTIONAL) {
-    if (o[key] !== undefined && (typeof o[key] !== 'string' || (o[key] as string).length > 256)) {
-      return { ok: false, detail: `${key} must be a string`, clientCancelId: ccid };
+    // Empty is refused, not read as absent: the receipt fingerprint could not tell them apart.
+    if (o[key] !== undefined && (typeof o[key] !== 'string' || !(o[key] as string) || (o[key] as string).length > 256)) {
+      return { ok: false, detail: `${key} must be a non-empty string when present`, clientCancelId: ccid };
     }
   }
   return {
@@ -373,6 +374,7 @@ function cancelStatus(tag: ChatCancelTag): number {
     case 'invalid-chat-request':
     case 'message-id-expired': return 400;
     case 'cancel-unsupported': return 422;
+    case 'message-history-full': return 507;
     case 'chat-persist-failed':
     case 'cancel-failed': return 500;
     default: return 409;
@@ -407,5 +409,8 @@ export function cancelResponse(outcome: ChatCancelOutcome): WireResponse {
       },
     };
   }
-  return outcome.replayed ? { status: 200, body: { ...response.body, replayed: true } } : response;
+  // A replayed success is 200; a replayed failure keeps its status (an
+  // uncertain ESC stays 500) and only gains `replayed:true`.
+  if (!outcome.replayed) return response;
+  return { status: outcome.error ? response.status : 200, body: { ...response.body, replayed: true } };
 }

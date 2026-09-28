@@ -75,6 +75,32 @@ export function titleShowsRunningTurn(title: { title: string; at: number } | nul
   return !!spinner && spinner.test(title.title);
 }
 
+const CLAUDE_IDLE_TITLE = /^✳\s/;
+
+/**
+ * Does the latest title, set during the turn (`at >= since`), say the turn is
+ * over? Claude swaps its spinner for `✳`; Codex drops the braille frame. A
+ * title from before the turn says nothing about it.
+ */
+export function titleShowsFinishedTurn(title: { title: string; at: number } | null | undefined, slug: string, since: number): boolean {
+  if (!title || title.at <= 0 || title.at < since) return false;
+  if (slug === 'claude') return CLAUDE_IDLE_TITLE.test(title.title);
+  if (slug === 'codex') return !CODEX_RUNNING_TITLE.test(title.title);
+  return false;
+}
+
+/**
+ * Claude Code runs its Stop hooks after the answer is complete, still under
+ * the spinner row and title (`Musing… (running Stop hooks… 0/2 · 2s)`,
+ * ~180 ms in the capture before the title turns `✳`). The turn is over by
+ * then; an ESC would only cut the hooks short.
+ */
+const CLAUDE_STOP_HOOK_ROW = /\brunning Stop hooks?\b/;
+
+export function screenShowsTurnEnding(rows: readonly string[] | null, slug: string): boolean {
+  return slug === 'claude' && !!rows && rows.some((row) => CLAUDE_STOP_HOOK_ROW.test(row));
+}
+
 /** The question line of Claude Code's permission dialog. */
 const PROCEED_QUESTION_ROW = /\bDo you want to proceed\b/i;
 

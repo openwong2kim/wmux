@@ -116,12 +116,20 @@ describe('chat Stop interrupts only a running turn', () => {
     const none = fixture(); none.show(frames['claude-streaming']);
     expect(await interruptChatTurn('conversation-1', none.deps)).toBe('not_running');
   });
-  it('reads the title after the last await, right before the write', async () => {
+  it('authorizes before the screen read, and reads the title after it, right before the write', async () => {
+    const order: string[] = [];
     const f = fixture(); f.frame('claude-streaming');
-    let freshAtRead = true;
-    f.deps.authorized = async () => { f.setTitle({ title: '✳ English number words 1-200', at: f.state.now }); freshAtRead = false; return true; };
+    f.deps.authorized = async () => { order.push('auth'); return true; };
+    const read = f.deps.readScreen;
+    f.deps.readScreen = async () => {
+      order.push('screen');
+      // The turn ends while the screen is read: the title set now wins.
+      f.setTitle({ title: '✳ English number words 1-200', at: f.state.now });
+      return read();
+    };
     expect(await interruptChatTurn('conversation-1', f.deps)).toBe('not_running');
-    expect(freshAtRead).toBe(false);
+    expect(order).toEqual(['auth', 'screen']);
+    expect(f.write).not.toHaveBeenCalled();
     const refused = fixture();
     expect(await interruptChatTurn('conversation-1', { ...refused.deps, beforeWrite: () => false })).toBe('write_refused');
     expect(refused.write).not.toHaveBeenCalled();
@@ -146,12 +154,32 @@ describe('chat Stop interrupts only a running turn', () => {
     expect(await interruptChatTurn('conversation-1', { ...f.deps, expectedTurnId: 't1:n.0' })).toBe('turn_mismatch');
     f.state.turn = undefined;
     expect(await interruptChatTurn('conversation-1', { ...f.deps, expectedTurnId: 't1:n.1' })).toBe('turn_mismatch');
+    // No episode, or one without a start, cannot hold the once-per-turn latch.
+    expect(await interruptChatTurn('conversation-1', f.deps)).toBe('not_running');
+    f.state.turn = { id: 't1:n.1', state: 'running' };
+    expect(await interruptChatTurn('conversation-1', f.deps)).toBe('not_running');
     const idle = fixture(); idle.state.turn = { id: 't1:n.1', state: 'idle', startedAt: 1_000 };
     expect(await interruptChatTurn('conversation-1', { ...idle.deps, expectedTurnId: 't1:n.1' })).toBe('not_running');
     expect(f.write).not.toHaveBeenCalled();
     expect(idle.write).not.toHaveBeenCalled();
     const match = fixture();
     expect(await interruptChatTurn('conversation-1', { ...match.deps, expectedTurnId: 't1:n.1' })).toBe('sent');
+  });
+  it('a turn that just ended is refused even with its running row still drawn', async () => {
+    // Claude's idle title set during this turn outranks the row.
+    const claude = fixture(); claude.setTitle({ title: '✳ Sleep command test', at: claude.state.now - 100 });
+    expect(await interruptChatTurn('conversation-1', claude.deps)).toBe('not_running');
+    // Codex dropped its spinner during this turn.
+    const codex = fixture(); codex.frame('codex-working'); codex.setTitle({ title: 'List numbers | cwd-codex', at: codex.state.now - 100 });
+    expect(await interruptChatTurn('conversation-1', codex.deps)).toBe('not_running');
+    // Claude's Stop hooks run under the spinner after the answer is complete.
+    const hooks = fixture(); hooks.show(['⏺ ok', '', '✻ Musing… (running Stop hooks… 0/2 · 2s)', '❯ ']);
+    hooks.setTitle({ title: '◐ Single word ok', at: hooks.state.now });
+    expect(await interruptChatTurn('conversation-1', hooks.deps)).toBe('not_running');
+    for (const x of [claude, codex, hooks]) expect(x.write).not.toHaveBeenCalled();
+    // An idle title from before the turn says nothing about it.
+    const before = fixture(); before.setTitle({ title: '✳ Claude Code', at: 500 });
+    expect(await interruptChatTurn('conversation-1', before.deps)).toBe('sent');
   });
   it('one ESC per turn and a 2 s cooldown per pane, whatever wrote the last ESC', async () => {
     const f = fixture();

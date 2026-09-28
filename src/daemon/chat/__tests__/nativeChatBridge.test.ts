@@ -29,7 +29,7 @@ function fixture() {
   const pane: ChatPane = {
     meta: { id: 'pane', state: 'attached', pid: 100, cwd: '/live', env: {}, spawnCwd: '/spawn', incarnationId: 'inc' },
     bridge: { isEmptyShellPrompt: () => shell.empty, getInputRevision: () => shell.revision,
-      noteInput: () => { shell.revision++; shell.empty = false; }, getLastEscAt: () => shell.escAt, getTitle: () => shell.title },
+      noteInput: (data: string) => { shell.revision++; shell.empty = false; if (data === '\x1b') shell.escAt = Date.now(); }, getLastEscAt: () => shell.escAt, getTitle: () => shell.title },
     promptLog: { size: 3, isCommandRunning: () => false },
     ptyProcess: { write: (data) => { typed.push(data); } },
   };
@@ -642,6 +642,52 @@ describe('cancel', () => {
     f.shell.title = { title: '✳ English number words 1-200', at: Date.now() };
     expect(await f.bridge.cancel(phoneCancel())).toMatchObject({ error: 'turn-not-running' });
     expect(f.written).toEqual([]);
+  });
+
+  it('a write that throws is uncertain, latches the turn, and replays with its 500 kept', async () => {
+    const f = running();
+    const bridge = createChatBridge({ ...f.deps, write: () => { throw new Error('EIO'); } });
+    const req = phoneCancel();
+    expect(await bridge.cancel(req)).toEqual({ clientCancelId: req.clientCancelId, replayed: false, effect: 'uncertain', turnId: 't1:n.3', error: 'cancel-failed' });
+    expect(await bridge.cancel(req)).toMatchObject({ replayed: true, effect: 'uncertain', error: 'cancel-failed' });
+    // The maybe-written ESC holds the latch: no second ESC this turn, from anyone.
+    expect(await bridge.cancel(phoneCancel())).toMatchObject({ error: 'turn-already-interrupted' });
+    expect(await bridge.desktopInterrupt('pane', 'conv')).toBe('not_running');
+  });
+
+  it('names the turn it aimed at, even if a new one opens during the write', async () => {
+    const f = running();
+    const bridge = createChatBridge({ ...f.deps, write: (id, data) => {
+      f.state.agent.turn = { id: 't1:n.4', state: 'running', startedAt: Date.now() };
+      return f.deps.write(id, data);
+    } });
+    const req = phoneCancel();
+    expect(await bridge.cancel(req)).toMatchObject({ effect: 'interrupt-requested', turnId: 't1:n.3' });
+    expect(await bridge.cancel(req)).toMatchObject({ replayed: true, turnId: 't1:n.3' });
+  });
+
+  it('a throw after the receipt frees the id for a retry', async () => {
+    const f = running();
+    const store = new ChatCancelReceiptStore(f.dir);
+    const insert = store.insertPending.bind(store);
+    let fail = true;
+    vi.spyOn(store, 'insertPending').mockImplementation((...args) => {
+      const inserted = insert(...args);
+      if (fail) { fail = false; throw new Error('late failure'); }
+      return inserted;
+    });
+    const bridge = createChatBridge({ ...f.deps, cancelReceipts: store });
+    const req = phoneCancel();
+    expect(await bridge.cancel(req)).toMatchObject({ error: 'cancel-failed', effect: 'none' });
+    expect(f.written).toEqual([]);
+    expect(await bridge.cancel(req)).toMatchObject({ effect: 'interrupt-requested', replayed: false });
+  });
+
+  it('desktop cooldown reads as not_running, never the prompt notice', async () => {
+    const f = running();
+    f.shell.escAt = Date.now() - 500;
+    f.state.agent.turn = { id: 't1:n.3', state: 'running', startedAt: f.shell.escAt + 100 };
+    expect(await f.bridge.desktopInterrupt('pane', 'conv')).toBe('not_running');
   });
 
   it('a receipt that cannot be stored refuses before the ESC', async () => {
