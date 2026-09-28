@@ -802,9 +802,12 @@ export class DaemonClient extends EventEmitter {
           });
           break;
         }
-        case 'activity.idle':
-          this.emit('session:idle', { sessionId: event.sessionId });
+        case 'activity.idle': {
+          // #1463 — a daemon that knows the silence came before any turn says so.
+          const preTurn = (event.data as { preTurn?: unknown } | null)?.preTurn === true;
+          this.emit('session:idle', { sessionId: event.sessionId, ...(preTurn ? { preTurn } : {}) });
           break;
+        }
         case 'activity.active':
           // data에 실린 gate 확정 agentName(없으면 null)을 함께 전달.
           this.emit('session:active', {

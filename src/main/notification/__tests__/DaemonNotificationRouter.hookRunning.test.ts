@@ -21,14 +21,20 @@ const metadataHandlerMocks = vi.hoisted(() => {
   // Same faithful stand-in as DaemonNotificationRouter.statusClear.test.ts:
   // the funnel records the last broadcast status, which the idle clear reads.
   const lastBroadcastAgentStatus = new Map<string, string>();
+  // #1463 — the funnel's outstanding running-claim record, same rule.
+  const runningClaim = new Set<string>();
   const broadcastMetadataUpdate = vi.fn(
-    (_win: unknown, payload: { ptyId?: string; agentStatus?: string }) => {
+    (_win: unknown, payload: { ptyId?: string; agentStatus?: string; activity?: string; settled?: boolean }) => {
       if (payload.ptyId && payload.agentStatus !== undefined) {
         lastBroadcastAgentStatus.set(payload.ptyId, payload.agentStatus);
       }
+      if (payload.ptyId) {
+        if (payload.settled === true) runningClaim.delete(payload.ptyId);
+        else if (payload.agentStatus === 'running' || payload.activity) runningClaim.add(payload.ptyId);
+      }
     },
   );
-  return { broadcastMetadataUpdate, lastBroadcastAgentStatus };
+  return { broadcastMetadataUpdate, lastBroadcastAgentStatus, runningClaim };
 });
 
 vi.mock('../../ipc/handlers/metadata.handler', () => ({
@@ -37,7 +43,9 @@ vi.mock('../../ipc/handlers/metadata.handler', () => ({
     metadataHandlerMocks.lastBroadcastAgentStatus.get(ptyId),
   clearLastBroadcastAgentStatus: (ptyId: string) => {
     metadataHandlerMocks.lastBroadcastAgentStatus.delete(ptyId);
+    metadataHandlerMocks.runningClaim.delete(ptyId);
   },
+  hasOutstandingRunningClaim: (ptyId: string) => metadataHandlerMocks.runningClaim.has(ptyId),
 }));
 
 vi.mock('../dispatchNotification', () => ({
@@ -56,7 +64,7 @@ const broadcastMetadataUpdateMock = metadataHandlerMocks.broadcastMetadataUpdate
 const PTY = 'daemon-worker-pane';
 
 interface Captured {
-  idle?: (payload: { sessionId: string }) => void;
+  idle?: (payload: { sessionId: string; preTurn?: boolean }) => void;
   agent?: (payload: { sessionId: string; event: unknown }) => void;
   active?: (payload: { sessionId: string; agentName?: string }) => void;
   processExit?: (payload: { sessionId: string; slug: string | null }) => void;
@@ -139,6 +147,7 @@ describe('DaemonNotificationRouter — turn start lights the pane', () => {
   beforeEach(() => {
     broadcastMetadataUpdateMock.mockClear();
     metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+    metadataHandlerMocks.runningClaim.delete(PTY);
   });
 
   it('broadcasts running on agent.user_prompt_submit, with no byte threshold', () => {
@@ -188,6 +197,7 @@ describe('DaemonNotificationRouter — the byte heuristic stands down on a hook-
   beforeEach(() => {
     broadcastMetadataUpdateMock.mockClear();
     metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+    metadataHandlerMocks.runningClaim.delete(PTY);
   });
 
   it('warns once when prompt receipt evidence arrives before the hook router', () => {
@@ -265,6 +275,7 @@ describe('DaemonNotificationRouter — an agent that died without a Stop settles
   beforeEach(() => {
     broadcastMetadataUpdateMock.mockClear();
     metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+    metadataHandlerMocks.runningClaim.delete(PTY);
   });
 
   it('clears the pane to idle on the process death edge', () => {
@@ -347,6 +358,7 @@ describe('DaemonNotificationRouter — OSC 133 back-at-prompt closes the turn', 
   beforeEach(() => {
     broadcastMetadataUpdateMock.mockClear();
     metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+    metadataHandlerMocks.runningClaim.delete(PTY);
   });
 
   const promptEvent = (type: string) => ({
@@ -370,6 +382,7 @@ describe('DaemonNotificationRouter — OSC 133 back-at-prompt closes the turn', 
     for (const marker of ['prompt_start', 'prompt_end']) {
       broadcastMetadataUpdateMock.mockClear();
       metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+      metadataHandlerMocks.runningClaim.delete(PTY);
       const { router, captured } = makeRouter(stubHookRouter(true));
       captured.prompt?.(promptEvent(marker));
       expect(lastStatus()).toBe('idle');
@@ -450,6 +463,7 @@ describe('DaemonNotificationRouter — a settle is marked, and survives its own 
     vi.useFakeTimers();
     broadcastMetadataUpdateMock.mockClear();
     metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+    metadataHandlerMocks.runningClaim.delete(PTY);
     clearSuppression(PTY);
   });
 
@@ -496,6 +510,70 @@ describe('DaemonNotificationRouter — a settle is marked, and survives its own 
     captured.active?.({ sessionId: PTY });
 
     expect(runningBroadcasts()).toBe(1);
+    router.stop();
+  });
+});
+
+/**
+ * #1463 — the renderer keeps a byte/activity 'running' stamp for 120 s through
+ * an UNMARKED idle. Live: a fresh idle Claude pane read Running after its boot
+ * burst, and a Codex pane ended with Ctrl+C kept "Turn in progress" in Fleet
+ * for 60-120 s. Each case needs a MARKED idle, so the renderer drops the stamp.
+ */
+describe('DaemonNotificationRouter — #1463 withdraws an unlatched running stamp', () => {
+  beforeEach(() => {
+    broadcastMetadataUpdateMock.mockClear();
+    metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+    metadataHandlerMocks.runningClaim.delete(PTY);
+    clearSuppression(PTY);
+  });
+
+  const lastPatch = () => broadcastMetadataUpdateMock.mock.calls.at(-1)?.[1] as
+    { agentStatus?: string; settled?: boolean } | undefined;
+
+  it('marks the silence after a boot burst with no turn since as a settle', () => {
+    const { router, captured } = makeRouter(stubHookRouter(false));
+    captured.active?.({ sessionId: PTY, agentName: 'Claude Code' });
+    captured.idle?.({ sessionId: PTY, preTurn: true });
+    expect(lastPatch()).toMatchObject({ agentStatus: 'idle', settled: true });
+    router.stop();
+  });
+
+  it('leaves ordinary byte silence unmarked — a quiet turn is not a turn end', () => {
+    const { router, captured } = makeRouter(stubHookRouter(false));
+    captured.active?.({ sessionId: PTY, agentName: 'Codex' });
+    captured.idle?.({ sessionId: PTY });
+    expect(lastPatch()?.agentStatus).toBe('idle');
+    expect(lastPatch()?.settled).toBeUndefined();
+    router.stop();
+  });
+
+  it('settles an unlatched, byte-idle pane when its shell is back at the prompt', () => {
+    // Codex ran (byte 'running'), went quiet (unmarked idle), then Ctrl+C
+    // ended it and the shell drew its prompt.
+    const { router, captured } = makeRouter(stubHookRouter(false));
+    captured.active?.({ sessionId: PTY, agentName: 'Codex' });
+    captured.idle?.({ sessionId: PTY });
+    broadcastMetadataUpdateMock.mockClear();
+
+    captured.prompt?.({ sessionId: PTY, event: { type: 'command_end', ts: 1, byteOffset: 10, exitCode: 130 } });
+    expect(lastPatch()).toMatchObject({ agentStatus: 'idle', settled: true });
+
+    // Once withdrawn there is nothing left to settle: the next prompt is quiet.
+    broadcastMetadataUpdateMock.mockClear();
+    captured.prompt?.({ sessionId: PTY, event: { type: 'prompt_start', ts: 2, byteOffset: 20 } });
+    expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+    router.stop();
+  });
+
+  it('settles an unlatched, byte-idle pane on its agent process exit', () => {
+    const { router, captured } = makeRouter(stubHookRouter(false));
+    captured.active?.({ sessionId: PTY, agentName: 'Codex' });
+    captured.idle?.({ sessionId: PTY });
+    broadcastMetadataUpdateMock.mockClear();
+
+    captured.processExit?.({ sessionId: PTY, slug: 'codex' });
+    expect(lastPatch()).toMatchObject({ agentStatus: 'idle', settled: true });
     router.stop();
   });
 });

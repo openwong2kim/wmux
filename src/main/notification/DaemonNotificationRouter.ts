@@ -6,6 +6,7 @@ import { dispatchNotification } from './dispatchNotification';
 import { toastManager } from './ToastManager';
 import {
   clearPty as clearSuppression,
+  markSettled,
   recentlySettled,
   SETTLE_REDRAW_GUARD_MS,
 } from './idleSuppression';
@@ -14,7 +15,7 @@ import {
   getLastBroadcastAgentStatus,
   clearLastBroadcastAgentStatus,
 } from '../ipc/handlers/metadata.handler';
-import { settleHookTurnToIdle, broadcastSettledIdle } from './turnSettle';
+import { settleHookTurnToIdle, broadcastSettledIdle, holdsUnsettledRunningClaim } from './turnSettle';
 import { eventBus } from '../events/EventBus';
 import {
   findWorkspaceIdForPty,
@@ -1070,12 +1071,18 @@ export class DaemonNotificationRouter {
      * is proof the turn is over either way.
      */
     const settleAtShellPrompt = (ptyId: string) => {
-      settleHookTurnToIdle(
+      const latched = settleHookTurnToIdle(
         ptyId,
         this.getHookRouter?.() ?? null,
         this.getWindow(),
         this.now(),
       );
+      // #1463 — an unlatched pane (a byte-heuristic agent, or a hook agent
+      // between turns) can still hold the renderer's 120 s running stamp. A
+      // shell back at its prompt proves that agent is gone, so withdraw it.
+      if (!latched && holdsUnsettledRunningClaim(ptyId)) {
+        broadcastSettledIdle(ptyId, this.getWindow(), this.now());
+      }
     };
 
     // OSC 133 D markers from daemon mode. Mirror of PTYBridge.OscParser
@@ -1187,7 +1194,7 @@ export class DaemonNotificationRouter {
       }
     };
 
-    const onIdle = (payload: { sessionId: string }) => {
+    const onIdle = (payload: { sessionId: string; preTurn?: boolean }) => {
       const now = Date.now();
       // Daemon-mode twin of the PTYBridge.onActiveToIdle gate: byte silence on
       // a hook-governed pane is not a turn end (quiet reasoning, a long tool
@@ -1226,10 +1233,15 @@ export class DaemonNotificationRouter {
         // mid-turn and on plain shells). Precise completions still come from the
         // Stop/awaiting_input hook + detector paths. See
         // plans/agent-status-dot-quiet-notifications-2026-07-12.md.
+        // #1463 — silence after a SessionStart with no turn since is a TUI
+        // boot settling, not a quiet turn. Marked as a settle so the renderer
+        // drops the boot burst's running stamp instead of holding it 120 s.
+        if (payload.preTurn === true) markSettled(payload.sessionId, this.now());
         broadcastMetadataUpdate(win, {
           ptyId: payload.sessionId,
           agentStatus: 'idle',
           agentName: '',
+          ...(payload.preTurn === true ? { settled: true } : {}),
         });
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:idle error:', err);
@@ -1279,7 +1291,9 @@ export class DaemonNotificationRouter {
         if (paneSlug && paneSlug !== payload.slug) return;
         const router = this.getHookRouter?.() ?? null;
         const latchOpen = router?.governsRunningState(payload.sessionId, this.now()) === true;
-        if (!latchOpen && getLastBroadcastAgentStatus(payload.sessionId) !== 'running') return;
+        // #1463 — also a pane already byte-idle whose running stamp the
+        // renderer still holds (an unmarked idle does not withdraw it).
+        if (!latchOpen && !holdsUnsettledRunningClaim(payload.sessionId)) return;
         router?.releaseHookTurnStart(payload.sessionId);
         broadcastSettledIdle(payload.sessionId, this.getWindow(), this.now());
       } catch (err) {

@@ -3599,7 +3599,10 @@ function registerRpcHandlers(
           && data.signal.payload?.['tool_name'] === 'AskUserQuestion'
           ? data.signal.ts
           : undefined;
-        sessionManager.getSession(sessionId)?.bridge.noteAgentStatus(data.status, true, questionAt);
+        const hookBridge = sessionManager.getSession(sessionId)?.bridge;
+        hookBridge?.noteAgentStatus(data.status, true, questionAt);
+        // #1463 — after the edge above, so the session start is the newer stamp.
+        if (data.signal.kind === 'agent.session_start') hookBridge?.noteSessionStart();
         const event: DaemonEvent = { type: 'agent.event', sessionId, data };
         pipeServer.broadcast(event);
         // Phone liveness header. The desktop reads pane state off this same
@@ -5402,11 +5405,12 @@ function wireEvents(
   // Bridge-level events: forward agent/critical/idle/active from all sessions
   // to clients (main process). These are emitted by DaemonSessionManager
   // which re-emits bridge events.
-  sessionManager.on('session:idle', (payload: { sessionId: string }) => {
+  sessionManager.on('session:idle', (payload: { sessionId: string; preTurn?: boolean }) => {
     const event: DaemonEvent = {
       type: 'activity.idle',
       sessionId: payload.sessionId,
-      data: null,
+      // #1463 — silence before any turn (a TUI boot): main settles it.
+      data: payload.preTurn ? { preTurn: true } : null,
     };
     pipeServer.broadcast(event);
   });

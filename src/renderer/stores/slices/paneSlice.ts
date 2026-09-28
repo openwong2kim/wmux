@@ -693,6 +693,11 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   clearSurfaceAgent: (ptyId) => set((state: StoreState) => {
     if (!ptyId) return;
     delete state.surfaceAgent[ptyId];
+    // #1463 — the agent is gone, so is its turn. Fleet rows are per pane, not
+    // per agent: a leftover running stamp kept "Turn in progress" there for up
+    // to 120 s after the roster row had already dropped.
+    delete state.surfaceTurnOpenAt[ptyId];
+    delete state.surfaceActivityAt[ptyId];
   }),
 
   paneLabel: {},

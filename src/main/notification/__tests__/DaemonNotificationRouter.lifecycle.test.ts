@@ -29,6 +29,7 @@ vi.mock('../../ipc/handlers/metadata.handler', () => ({
   // no-op stubs are enough to keep the import from throwing.
   getLastBroadcastAgentStatus: () => undefined,
   clearLastBroadcastAgentStatus: () => { /* no-op stub */ },
+  hasOutstandingRunningClaim: () => false,
 }));
 
 vi.mock('../sendNotification', () => ({

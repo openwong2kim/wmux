@@ -26,7 +26,9 @@ import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
  *  - 'active'   → { sessionId, agentName?, likelyRepaint? } — onActive cycle
  *                 start; likelyRepaint marks a passive burst inside the
  *                 resize-redraw guard window (alarm feeds must ignore it)
- *  - 'idle'     → { sessionId: string }                — onActiveToIdle
+ *  - 'idle'     → { sessionId, preTurn? }              — onActiveToIdle;
+ *                 preTurn marks silence after a SessionStart with no turn
+ *                 started since (see isPreTurn)
  *  - 'exit'     → { sessionId: string, exitCode, signal }
  *  - 'answered' → { sessionId, reason: 'input' | 'screen-cleared' } — the
  *                 dialog the pane was blocked on closed
@@ -114,6 +116,8 @@ export class DaemonPTYBridge extends EventEmitter {
   private explicitTerminalStatus = false;
   private submittedTurnPending = false;
   private lastTurnStartedAt = 0;
+  /** #1463 — when the agent's SessionStart hook last landed (see isPreTurn). */
+  private sessionStartedAt = 0;
 
   /**
    * Which terminal status settled the pane, while one has. Read only to keep
@@ -437,6 +441,26 @@ export class DaemonPTYBridge extends EventEmitter {
     return this.lastTurnStartedAt;
   }
 
+  /**
+   * #1463 — the agent's SessionStart hook landed. Called after the hook's own
+   * `running` edge has stamped `lastTurnStartedAt`, so the session start is
+   * never older than it.
+   */
+  noteSessionStart(): void {
+    this.sessionStartedAt = Date.now();
+  }
+
+  /**
+   * #1463 — a session started and no turn has started since: no submitted
+   * input, no answer, no hook work. Output in this state is the TUI booting
+   * (or redrawing after `/clear`), so the silence after it ends nothing and
+   * main may settle it. The Enter that launched the agent came before its
+   * SessionStart, so it does not count as a turn.
+   */
+  isPreTurn(): boolean {
+    return this.sessionStartedAt > 0 && this.sessionStartedAt >= this.lastTurnStartedAt;
+  }
+
   private scanSubmittedInput(data: string): boolean {
     let remaining = data;
     let submitted = false;
@@ -519,7 +543,7 @@ export class DaemonPTYBridge extends EventEmitter {
     // explicit waiting/complete state five seconds later.
     this.idleUnsubscribe = activityMonitor.onActiveToIdle((ptyId) => {
       if (this.explicitTerminalStatus) return;
-      this.emit('idle', { sessionId: ptyId });
+      this.emit('idle', { sessionId: ptyId, ...(this.isPreTurn() ? { preTurn: true } : {}) });
     });
     // Activity → active notification. A submitted turn is re-armed by
     // beginTurn(), so its very first output emits running even for a short
@@ -906,6 +930,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.completedShellCommand = false;
     this.settledStatus = null;
     this.settledAtMs = 0;
+    this.sessionStartedAt = 0;
     this.awaitingHuman = false;
     this.oscParser = null;
     this.modeTracker = null;
