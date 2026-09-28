@@ -1,5 +1,6 @@
 import { loadChatSkills } from './transcript/chatSkills';
 import { TerminalChatService } from './transcript/TerminalChatService';
+import { settleOpenCodeOnIdle } from './transcript/openCodeIdleSettle';
 import type { ChatBridge, ChatLaunchRequest } from './chat/chatBridge';
 import { ChatSendReceiptStore } from './chat/ChatSendReceiptStore';
 import { ChatCancelReceiptStore } from './chat/ChatCancelReceiptStore';
@@ -206,6 +207,8 @@ let chatCancelReceipts: ChatCancelReceiptStore | null | undefined;
 let chatQueue: ChatQueueStore | null | undefined;
 let chatSessions: ChatSessionService | null = null;
 let terminalChat: TerminalChatService | null = null;
+/** #1621 — per pane, the transcript tail an OpenCode idle settle already reported. */
+const openCodeIdleSettled = new Map<string, string>();
 const chatSubscribers = new Map<string, Set<string>>();
 const chatPushTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const chatPushSeq = new Map<string, number>();
@@ -5457,6 +5460,7 @@ function wireEvents(
   sessionManager.on('session:destroyed', (payload: { id: string }) => {
     void codexPaneRelays.retire(payload.id);
     nativeChatBridge?.paneClosed(payload.id);
+    openCodeIdleSettled.delete(payload.id);
     recordHistory(store => store.interrupted(payload.id));
     const t = interruptedTimers.get(payload.id);
     if (t) {
@@ -5488,6 +5492,19 @@ function wireEvents(
       data: payload.preTurn ? { preTurn: true } : null,
     };
     pipeServer.broadcast(event);
+    // #1621 — an OpenCode turn with no lifecycle `agent.stop` ends here, on
+    // silence. The chat plugin's phase says whether the turn is really over.
+    const idleBridge = sessionManager.getSession(payload.sessionId)?.bridge;
+    if (payload.preTurn || !idleBridge || !terminalChat) return;
+    const chat = terminalChat;
+    const screenAgent = idleBridge.getLastAgent();
+    const idleSlug = canonicalIdentityFor(agentProcessTracker, payload.sessionId, screenAgent ? agentDisplayToSlug(screenAgent) : undefined)?.slug;
+    void settleOpenCodeOnIdle(payload.sessionId, idleSlug, idleBridge, () => chat.read(payload.sessionId), data => {
+      log('info', `[opencode] ${payload.sessionId} turn ended without a lifecycle stop; settled from the chat plugin phase`);
+      pipeServer.broadcast({ type: 'agent.event', sessionId: payload.sessionId, data });
+      webTerminalServer?.emitAgentLiveness(deriveAgentLiveness(payload.sessionId, data, Date.now()));
+      nativeChatBridge?.nudgeQueue(payload.sessionId);
+    }, openCodeIdleSettled).catch((err: unknown) => log('warn', `[opencode] idle settle failed for ${payload.sessionId}: ${String(err)}`));
   });
 
   sessionManager.on('session:active', (payload: { sessionId: string; agentName?: string; likelyRepaint?: boolean }) => {
