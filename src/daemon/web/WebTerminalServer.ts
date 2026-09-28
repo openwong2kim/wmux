@@ -119,6 +119,7 @@ import {
   type ChatBlocked,
   type ChatBridge,
   type ChatOwner,
+  type ChatQueueEvent,
   type ChatResolution,
   type ChatUnavailableCause,
 } from '../chat/chatBridge';
@@ -128,6 +129,7 @@ import { ChatLaunchReceiptStore, type LaunchReceiptState } from './chatLaunchRec
 import {
   buildChatObject,
   cancelResponse,
+  dequeueResponse,
   hasConversation,
   launchResponse,
   parseCancelBody,
@@ -866,6 +868,8 @@ const CHAT_SEND_MAX_BODY_BYTES = 96 * 1024;
 const CHAT_LAUNCH_MAX_BODY_BYTES = 16 * 1024;
 /** Chat cancel body cap: four short strings. */
 const CHAT_CANCEL_MAX_BODY_BYTES = 4 * 1024;
+/** A transcript row may carry a timestamp slightly before the daemon noted the delivery. */
+const CHAT_DELIVERY_SKEW_MS = 5_000;
 /** Same 1 Hz floor as the nudge: a blocked badge must be right, not instant. */
 const CHAT_BLOCKED_COALESCE_MS = 1000;
 /**
@@ -1729,6 +1733,9 @@ export class WebTerminalServer {
     this.server = null;
     this.opts = null;
     this.token = '';
+    // A policy change restarts the server: nothing a phone queued under the
+    // old one may be typed. The desktop never queues.
+    this.dropChatQueue((owner) => owner !== 'desktop');
 
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
@@ -1878,7 +1885,18 @@ export class WebTerminalServer {
     if (closed > 0) {
       this.deps.log('info', `[web] revoked device ${deviceId}: closed ${closed} live stream(s)`);
     }
+    // Revoke and a withdrawn input grant both land here: the device's queued
+    // chat messages go with its streams, before any of them could be typed.
+    this.dropChatQueue((owner) => owner === `device:${deviceId}`);
     return closed;
+  }
+
+  private dropChatQueue(match: (owner: ChatOwner) => boolean): void {
+    try {
+      this.deps.chat?.()?.dropQueue?.(match, 'authorization-revoked');
+    } catch (err) {
+      this.deps.log('warn', `[web] chat queue drop failed: ${errMsg(err)}`);
+    }
   }
 
   /**
@@ -2348,6 +2366,8 @@ export class WebTerminalServer {
               // answer — and whether this caller may use `/chat/cancel`.
               decisionForms: [],
               chatCancel: this.mayInput(principal),
+              // Whether this caller's `chat-queue` sends are held by the daemon.
+              chatQueue: this.mayInput(principal) && this.deps.chat?.()?.queueEnabled?.() === true,
             }
           : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
@@ -2379,17 +2399,19 @@ export class WebTerminalServer {
       const rest = p.slice('/api/sessions/'.length);
       // Native chat writes and their receipts nest under the pane (contract
       // §3.2), so the pane is resolved and checked before any body is read.
-      const chatRoute = /^([^/]+)\/chat\/(messages|launch|cancel)(?:\/([^/]+))?$/.exec(rest);
+      const chatRoute = /^([^/]+)\/chat\/(messages|launch|cancel|queue)(?:\/([^/]+))?$/.exec(rest);
       if (chatRoute) {
         const [, rawId, kind, rawReceipt] = chatRoute;
-        if (kind === 'cancel') {
+        if (kind === 'queue') {
+          if (req.method === 'DELETE' && rawReceipt !== undefined) return this.handleChatDequeue(res, rawId, rawReceipt, principal);
+        } else if (kind === 'cancel') {
           if (req.method === 'POST' && rawReceipt === undefined) return this.handleChatCancel(req, res, rawId, url, principal);
         } else if (req.method === 'POST' && rawReceipt === undefined) {
           return kind === 'messages'
             ? this.handleChatSend(req, res, rawId, url, principal)
             : this.handleChatLaunch(req, res, rawId, url, principal);
         }
-        if (kind !== 'cancel' && req.method === 'GET' && rawReceipt !== undefined) {
+        if ((kind === 'messages' || kind === 'launch') && req.method === 'GET' && rawReceipt !== undefined) {
           return kind === 'messages'
             ? this.handleChatSendReceipt(res, rawId, rawReceipt, principal)
             : this.handleChatLaunchReceipt(res, rawId, rawReceipt, principal);
@@ -3836,8 +3858,32 @@ export class WebTerminalServer {
     const wantsTurn = caps.chatCancel === true || caps.chatQueue === true;
     const turn = !wantsTurn ? undefined : resolution.source === 'file' ? chat.turn(sessionId)
       : resolution.source === 'tui' ? resolution.turn : undefined;
-    this.json(res, 200, { ...body, chat: buildChatObject(resolution, projectChatBlocked(blocked, caps),
-      { ...(turn ? { turn } : {}), chatCancel: caps.chatCancel === true }) });
+    const owner = chatOwner(principal);
+    const queue = caps.chatQueue === true && chat.queueEnabled?.() === true ? chat.queue?.(owner, sessionId) ?? [] : undefined;
+    const events = queue !== undefined ? this.tagDeliveredRows(chat, sessionId, owner, body.events) : body.events;
+    this.json(res, 200, { ...body, ...(events !== undefined ? { events } : {}), chat: buildChatObject(resolution, projectChatBlocked(blocked, caps),
+      { ...(turn ? { turn } : {}), chatCancel: caps.chatCancel === true, ...(queue ? { queue } : {}) }) });
+  }
+
+  /**
+   * Best effort: a user row whose text is a message the daemon typed for this
+   * caller carries its `clientMessageId`. Each delivery tags at most one row,
+   * the first matching one at or after it was typed. Rows are copied, never
+   * mutated (the projector may hand out shared objects).
+   */
+  private tagDeliveredRows(chat: ChatBridge, sessionId: string, owner: ChatOwner, events: unknown): unknown {
+    const delivered = chat.delivered?.(owner, sessionId) ?? [];
+    if (!Array.isArray(events) || delivered.length === 0) return events;
+    const unused = [...delivered];
+    return events.map((event: Record<string, unknown>) => {
+      if (event?.kind !== 'user_text' || typeof event.text !== 'string') return event;
+      const text = event.text.trim();
+      const ts = typeof event.ts === 'number' ? event.ts : undefined;
+      const index = unused.findIndex((m) => m.text.trim() === text && (ts === undefined || ts >= m.at - CHAT_DELIVERY_SKEW_MS));
+      if (index < 0) return event;
+      const [match] = unused.splice(index, 1);
+      return { ...event, clientMessageId: match.clientMessageId };
+    });
   }
 
   /** The `/turns` page for a resolved binding, read synchronously; undefined once answered (503). */
@@ -4001,12 +4047,14 @@ export class WebTerminalServer {
    */
   private deliverChatEvent(
     sessionId: string,
-    viewFor: (caps: ClientCaps) => { event: 'chat.blocked' | 'chat.unblocked'; body: string },
+    viewFor: (caps: ClientCaps) => { event: 'chat.blocked' | 'chat.unblocked' | 'chat.queue'; body: string },
+    only?: (principal: WebPrincipal) => boolean,
   ): void {
     const watchers = this.transcriptWatchers.get(sessionId);
     if (!watchers || watchers.size === 0) return;
     for (const client of this.eventClients) {
       if (!watchers.has(this.watcherKey(client.principal))) continue;
+      if (only && !only(client.principal)) continue;
       try {
         const { event, body } = viewFor(client.caps);
         writeSse(client.res, event, body);
@@ -4197,6 +4245,49 @@ export class WebTerminalServer {
   }
 
   /**
+   * The same predicate for a message the daemon queue delivers later, when
+   * the request that queued it is long gone: nothing to re-authenticate, so
+   * the owner is checked against the live roster instead. The server must
+   * still run with the same policy object, the device must still be paired
+   * and hold input, and the pane must be the same incarnation.
+   */
+  private queuedChatAuthorizer(
+    principal: WebPrincipal,
+    id: string,
+    pane: ManagedSession,
+    incarnation: string | undefined,
+  ): (stage?: 'first-write' | 'submit') => Promise<boolean> {
+    const opts = this.opts;
+    return async () => {
+      if (!this.server || !opts || this.opts !== opts || opts.allowTranscript !== true || opts.allowInput !== true) return false;
+      if (principal.kind === 'device') {
+        let row: WebDeviceSummary | undefined;
+        try { row = this.deps.devices?.list?.().find((d) => d.deviceId === principal.deviceId); } catch { return false; }
+        if (!row || row.revokedAt !== undefined || !row.allowInput) return false;
+      }
+      return this.readableSession(id) === pane && pane.meta.incarnationId === incarnation;
+    };
+  }
+
+  /**
+   * `DELETE /api/sessions/:id/chat/queue/:clientMessageId`: take back a
+   * queued message. Needs input, like the send that queued it; the owner is
+   * the caller, so another device's item reads as not found.
+   */
+  private handleChatDequeue(res: http.ServerResponse, rawId: string, rawMessageId: string, principal: WebPrincipal): void {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+    if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Canceling a queued message changes what is typed into this pane');
+    const id = decodePathSegment(rawId);
+    if (id === null || !this.readableSession(id)) return this.json(res, 404, { error: 'pane-not-found' });
+    const chat = this.deps.chat?.() ?? null;
+    if (!chat?.dequeue) return this.json(res, 503, { error: 'chat-unavailable' });
+    const clientMessageId = decodePathSegment(rawMessageId) ?? '';
+    const wire = dequeueResponse(chat.dequeue(chatOwner(principal), id, clientMessageId), clientMessageId);
+    return this.json(res, wire.status, wire.body);
+  }
+
+  /**
    * `POST /api/sessions/:id/chat/messages` (N4). The route adds the principal
    * gates and the wire mapping; binding, identity, receipts and the guarded
    * write are the daemon's shared send path, the same one the desktop uses.
@@ -4234,12 +4325,16 @@ export class WebTerminalServer {
         const { clientMessageId } = parsed.value;
         let outcome;
         try {
+          // The cap on THIS request opts it into the daemon queue.
+          const queue = clientCaps(req).chatQueue === true && chat.queueEnabled?.() === true
+            ? { authorized: this.queuedChatAuthorizer(fresh, id, pane, incarnation) } : undefined;
           outcome = await chat.send({
             owner: chatOwner(fresh),
             id,
             ...parsed.value,
             managedReadOnly: true,
             authorized: this.chatWriteAuthorizer(req, res, url, principal, id, pane, incarnation),
+            ...(queue ? { queue } : {}),
           });
         } catch (err) {
           // No `effect`: the write stage is unknown, and the client's rule for a
@@ -4326,6 +4421,7 @@ export class WebTerminalServer {
       ...(view.result ? { result: view.result } : {}),
       ...(view.error ? { error: view.error } : {}),
       ...(view.queued ? { queued: true } : {}),
+      ...(view.queue ? { queue: { ...view.queue } } : {}),
       ...(view.agentSessionId ? { agentSessionId: view.agentSessionId } : {}),
       ...(view.historyEpoch ? { historyEpoch: view.historyEpoch } : {}),
       ...(typeof view.at === 'number' ? { at: view.at } : {}),
@@ -7048,6 +7144,18 @@ export class WebTerminalServer {
    * phone calls `delta()` and lets the cursor checks (fileSize/boundary)
    * decide whether to append or re-snapshot, instead of the server guessing.
    */
+  /**
+   * SSE `chat.queue`: a daemon queue item changed state. Live-only like
+   * `chat.blocked`, and only to the item's owner among the pane's watchers.
+   * `/turns` `chat.queue[]` stays the authoritative state.
+   */
+  emitChatQueue(event: ChatQueueEvent): void {
+    if (!this.server || this.opts?.allowTranscript !== true) return;
+    const body = JSON.stringify({ sessionId: event.sessionId, clientMessageId: event.clientMessageId, state: event.state,
+      ...(event.reason ? { reason: event.reason } : {}), at: event.at });
+    this.deliverChatEvent(event.sessionId, () => ({ event: 'chat.queue', body }), (principal) => chatOwner(principal) === event.owner);
+  }
+
   emitTranscriptNudge(sessionId: string): void {
     if (this.eventClients.size === 0) return;
     // N3 — a new transcript row can open or close an OpenCode dialog.
@@ -8135,7 +8243,7 @@ export interface ClientCaps {
   decisionV2?: boolean;
   /** Uses `POST /api/sessions/:id/chat/cancel` (no route yet). Today it only adds `chat.turn` to `/turns`. */
   chatCancel?: boolean;
-  /** Uses the daemon-held chat queue (not served yet). Today it only adds `chat.turn` to `/turns`. */
+  /** Uses the daemon-held chat queue: a send carrying it is queued during a turn; `/turns` adds `chat.turn` and `chat.queue`. */
   chatQueue?: boolean;
 }
 

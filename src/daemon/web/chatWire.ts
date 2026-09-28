@@ -5,6 +5,8 @@ import {
   type ChatBlocked,
   type ChatCancelOutcome,
   type ChatCancelTag,
+  type ChatDequeueResult,
+  type ChatQueueItemView,
   type ChatLaunchOutcome,
   type ChatResolution,
   type ChatSendOutcome,
@@ -76,7 +78,7 @@ function skillsAgent(agent: string | undefined): boolean {
 export function buildChatObject(
   resolution: ChatResolution,
   blocked: ChatBlocked | undefined,
-  opts: { turn?: ChatTurn; chatCancel?: boolean } = {},
+  opts: { turn?: ChatTurn; chatCancel?: boolean; queue?: ChatQueueItemView[] } = {},
 ): Record<string, unknown> {
   const { status } = resolution;
   const liveness = {
@@ -131,6 +133,11 @@ export function buildChatObject(
 
   const terminal = status.terminal;
   const agent = terminal?.agent;
+  // `queue` is passed only for a `chat-queue` caller on a daemon whose queue
+  // loaded: all three agents then queue in the daemon, so `send` stays open
+  // while a turn runs. Without it the capabilities are today's, byte for byte.
+  const queueing = opts.queue !== undefined && status.agentAlive === true && !!agent && QUEUE_AGENTS.includes(agent);
+  const capabilities = terminal ? phoneTerminalCapabilities(terminal.capabilities, opts.chatCancel === true) : closed;
   return {
     binding: 'terminal',
     ...(agent ? { agent } : {}),
@@ -142,7 +149,8 @@ export function buildChatObject(
     // `chat-cancel` or `chat-queue`, so an older client's object is unchanged.
     ...(opts.turn ? { turn: { ...opts.turn } } : {}),
     capabilities: {
-      ...(terminal ? phoneTerminalCapabilities(terminal.capabilities, opts.chatCancel === true) : closed),
+      ...capabilities,
+      ...(opts.queue !== undefined ? { queue: queueing, send: capabilities.send || queueing } : {}),
       // Rollout and JSONL rows land per record, not per token. OpenCode part
       // streaming is unverified, so its key is omitted (= unknown).
       ...(resolution.source === 'file' ? { streaming: false } : {}),
@@ -150,8 +158,12 @@ export function buildChatObject(
       skills: skillsAgent(agent),
     },
     ...blockedField,
+    ...(opts.queue !== undefined ? { queue: opts.queue.map((item) => ({ ...item })) } : {}),
   };
 }
+
+/** The agents whose sends the daemon queue can hold. */
+const QUEUE_AGENTS: readonly string[] = ['claude', 'codex', 'opencode'];
 
 /**
  * The desktop's terminal capabilities, minus what the phone has no route for:
@@ -201,8 +213,19 @@ function sendStatus(tag: ChatSendTag): number {
     case 'invalid-chat-request':
     case 'message-id-expired': return 400;
     case 'chat-persist-failed': return 500;
+    case 'queue-full': return 429;
     default: return 409;
   }
+}
+
+/** `DELETE /api/sessions/:id/chat/queue/:clientMessageId`. */
+export function dequeueResponse(result: ChatDequeueResult, clientMessageId: string): WireResponse {
+  if (result.ok) return { status: 200, body: { state: 'canceled', clientMessageId } };
+  if (result.error === 'queue-item-not-found') return { status: 404, body: { error: result.error, clientMessageId } };
+  return {
+    status: 409,
+    body: { error: result.error, ...(result.state ? { state: result.state } : {}), ...(result.reason ? { reason: result.reason } : {}), clientMessageId },
+  };
 }
 
 /**
@@ -210,6 +233,17 @@ function sendStatus(tag: ChatSendTag): number {
  * the desktop's verbatim enum so `unconfirmed` keeps the desktop meaning.
  */
 export function sendResponse(outcome: ChatSendOutcome, clientMessageId: string): WireResponse {
+  if (outcome.queueState) {
+    // The daemon queue holds (or held) the message: `effect` says what that
+    // did to the pane so far. A replay answers 200 with the current state.
+    const state = outcome.queueState;
+    const effect = state === 'queued' || state === 'delivering' ? 'queued'
+      : state === 'delivered' ? 'submitted' : state === 'uncertain' ? 'uncertain' : 'none';
+    return {
+      status: outcome.replayed ? 200 : 202,
+      body: { state, ...(outcome.queueReason ? { reason: outcome.queueReason } : {}), replayed: outcome.replayed, clientMessageId, effect },
+    };
+  }
   if (outcome.pending) {
     // The one non-final answer: no effect, the client polls the receipt.
     return { status: 202, body: { state: 'pending', replayed: true, clientMessageId } };
