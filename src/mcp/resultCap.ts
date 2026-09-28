@@ -132,19 +132,91 @@ function capJsonArray(
       null,
       2,
     );
+  const shown = largestFittingPrefix(parsed.length - 1, render, capBytes);
+  return shown === null ? null : render(shown);
+}
+
+/**
+ * Largest item count in [0, maxItems] whose render fits the cap, or null when
+ * not even zero items fit. Items vary in size, so this is a search, not an
+ * average — one huge record must not evict every small one after it.
+ */
+function largestFittingPrefix(
+  maxItems: number,
+  render: (shownItems: number) => string,
+  capBytes: number,
+): number | null {
   const fits = (shownItems: number): boolean =>
     Buffer.byteLength(render(shownItems), 'utf8') <= capBytes;
   if (!fits(0)) return null;
-  // Largest prefix that still fits. Items vary in size, so this is a search,
-  // not an average — one huge record must not evict every small one after it.
   let low = 0;
-  let high = parsed.length - 1;
+  let high = maxItems;
   while (low < high) {
     const mid = Math.ceil((low + high) / 2);
     if (fits(mid)) low = mid;
     else high = mid - 1;
   }
-  return render(low);
+  return low;
+}
+
+/**
+ * Cap a result that is a single top-level JSON OBJECT carrying an array
+ * property (`{workspaceId, tasks: [...]}` and the like) — the object
+ * counterpart of capJsonArray. The largest array property loses trailing
+ * items until the document fits; every other property is kept, and the cut
+ * is stated IN the data as `truncated: true` plus a `_truncated` descriptor
+ * naming the field. Returns null when the text is not such a document, or
+ * when the object does not fit even with that array emptied — both fall back
+ * to the head+tail cut.
+ */
+function capJsonObject(
+  text: string,
+  capBytes: number,
+  totalBytes: number,
+  declaresMaxBytes: boolean,
+): string | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  let field: string | null = null;
+  let fieldBytes = -1;
+  for (const [key, value] of Object.entries(record)) {
+    if (!Array.isArray(value) || value.length === 0) continue;
+    const bytes = Buffer.byteLength(JSON.stringify(value), 'utf8');
+    if (bytes > fieldBytes) {
+      field = key;
+      fieldBytes = bytes;
+    }
+  }
+  if (field === null) return null;
+  const items = record[field] as unknown[];
+  const render = (shownItems: number): string =>
+    JSON.stringify(
+      {
+        // Spread first: the capped array keeps its original key position.
+        ...record,
+        [field as string]: items.slice(0, shownItems),
+        truncated: true,
+        _truncated: {
+          field,
+          shownItems,
+          totalItems: items.length,
+          totalBytes,
+          ...(declaresMaxBytes && { raise: `pass maxBytes up to ${MAX_RESULT_CAP_BYTES}` }),
+        },
+      },
+      null,
+      2,
+    );
+  const shown = largestFittingPrefix(items.length - 1, render, capBytes);
+  return shown === null ? null : render(shown);
 }
 
 /**
@@ -160,6 +232,8 @@ export function capText(text: string, capBytes: number, options?: ResultCapOptio
   const declaresMaxBytes = options?.declaresMaxBytes === true;
   const asJson = capJsonArray(text, capBytes, totalBytes, declaresMaxBytes);
   if (asJson !== null) return asJson;
+  const asJsonObject = capJsonObject(text, capBytes, totalBytes, declaresMaxBytes);
+  if (asJsonObject !== null) return asJsonObject;
   const marker = toolResultMarker(totalBytes, declaresMaxBytes);
   // Reserve room for the marker, truncate, then verify the postcondition:
   // the marker embeds digit counts that shift by a byte or two when the

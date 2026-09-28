@@ -1314,7 +1314,7 @@ function renderEventLine(
           ? '0 verified evidence items — UNVERIFIED CLAIM'
           : `${a2a.verifiedItemCount} verified evidence item${a2a.verifiedItemCount === 1 ? '' : 's'} reported`;
     verdict = mayDrive
-      ? `(A2A TASK CLAIMED COMPLETE; ${grade}. Call a2a_task_query for the canonical task and evidence, independently verify the artifact/reproduction command, then fix/review further or finalize with deck_complete_work. State alone is NOT proof.)`
+      ? `(A2A TASK CLAIMED COMPLETE; ${grade}. Call a2a_task_query with task_id for the canonical task and evidence, independently verify the artifact/reproduction command, then fix/review further or finalize with deck_complete_work. State alone is NOT proof.)`
       : `(A2A TASK CLAIMED COMPLETE; ${grade}. Query and report the evidence, but do not drive another worker in this mode.)`;
   } else if (e.kind === 'a2a.failed') {
     verdict = mayDrive

@@ -38,6 +38,7 @@ import { registerPaneLifecycleTools } from './paneLifecycle';
 import { registerFleetTriageTools } from './fleetTriage';
 import { registerReplTools } from './repl/tools';
 import { inputSchemaDeclaresMaxBytes, wrapHandlerWithResultCap } from './resultCap';
+import { shapeTaskQueryResult } from './a2aTaskQueryView';
 import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
 import { unlistToolsFromListing } from './listFilter';
 import { UNLISTED_TOOLS_SET } from '../shared/unlistedTools';
@@ -263,7 +264,11 @@ const WMUX_EVENTS_POLL_SHAPE = {
 const A2A_TASK_QUERY_SHAPE = {
   status: z.enum(['submitted', 'working', 'input-required', 'completed', 'failed', 'canceled']).optional().describe('Filter by task status'),
   role: z.enum(['user', 'agent']).optional().describe('Filter: "user" = tasks you sent, "agent" = tasks assigned to you'),
-  updated_since: z.string().optional().describe('ISO-8601 timestamp; return only tasks whose metadata.updatedAt is strictly later (incremental cursor for polling).'),
+  updated_since: z.string().optional().describe('ISO-8601; only tasks updated strictly later.'),
+  task_id: z.string().optional().describe('Return this task in full (history, artifacts, evidence).'),
+  message_id: z.string().optional().describe('With task_id: return just this message.'),
+  limit: z.number().int().min(1).max(100).optional().describe('Summaries per page (default 20).'),
+  cursor: z.string().optional().describe('nextCursor from the previous page.'),
 };
 
 const A2A_TASK_UPDATE_SHAPE = {
@@ -1657,11 +1662,16 @@ server.tool(
 // 4. a2a_task_query — Query tasks by status/role
 server.tool(
   'a2a_task_query',
-  'Query tasks assigned to you or sent by you, filtered by status and role. For incremental polling pass updated_since (e.g. a previous result\'s metadata.updatedAt) — cheaper than re-pulling the whole list.',
+  'Tasks assigned to you or sent by you: compact summaries, newest first, paged by nextCursor. Pass task_id for the full task.',
   A2A_TASK_QUERY_SHAPE,
-  async ({ status, role, updated_since }) => {
+  async ({ status, role, updated_since, task_id, message_id, limit, cursor }) => {
     const wsId = await requireWorkspaceId();
-    return callRpc('a2a.task.query', { workspaceId: wsId, status, role, updatedSince: updated_since });
+    let raw: unknown;
+    await callRpc('a2a.task.query', { workspaceId: wsId, status, role, updatedSince: updated_since }, undefined, (result) => {
+      raw = result;
+    });
+    const shaped = shapeTaskQueryResult(raw, { taskId: task_id, messageId: message_id, limit, cursor });
+    return { content: [{ type: 'text', text: typeof shaped === 'string' ? shaped : JSON.stringify(shaped, null, 2) }] };
   },
 );
 

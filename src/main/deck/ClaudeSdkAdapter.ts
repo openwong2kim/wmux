@@ -501,7 +501,7 @@ export function buildCommanderSystemPrompt(
     '- You are WOKEN AUTOMATICALLY when an agent finishes a turn, pauses for input,',
     '  or a tracked A2A task completes, fails, is canceled, or needs input. A',
     '  [pane-events] block opens the turn and names exactly which pane/task changed.',
-    '  For an A2A receipt, call a2a_task_query once for canonical state and evidence',
+    '  For an A2A receipt, call a2a_task_query with task_id for canonical evidence',
     '  before acting; the event is a pointer, not proof. Rely on these signals — do',
     '  NOT poll terminal_read or a2a_task_query in a loop to check whether work is',
     '  "still running". Reading a terminal is EXPENSIVE, and a burst of reads',

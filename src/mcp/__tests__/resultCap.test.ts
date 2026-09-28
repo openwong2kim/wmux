@@ -155,6 +155,39 @@ describe('JSON-aware truncation', () => {
     const capped = capText(object, DEFAULT_RESULT_CAP_BYTES);
     expect(capped).toMatch(/\[truncated: \d+ of \d+ bytes shown\]/);
   });
+
+  it('keeps a capped JSON object parseable by trimming its largest array', () => {
+    const envelope = JSON.stringify(
+      { workspaceId: 'ws-1', notes: ['small'], tasks: records },
+      null,
+      2,
+    );
+    const capped = capText(envelope, DEFAULT_RESULT_CAP_BYTES);
+    expect(Buffer.byteLength(capped, 'utf8')).toBeLessThanOrEqual(DEFAULT_RESULT_CAP_BYTES);
+    const parsed = JSON.parse(capped) as Record<string, unknown>;
+    // Every other property survives; only the largest array lost its tail.
+    expect(parsed['workspaceId']).toBe('ws-1');
+    expect(parsed['notes']).toEqual(['small']);
+    expect(Object.keys(parsed).slice(0, 3)).toEqual(['workspaceId', 'notes', 'tasks']);
+    const tasks = parsed['tasks'] as unknown[];
+    expect(tasks[0]).toEqual(records[0]);
+    expect(parsed['truncated']).toBe(true);
+    expect(parsed['_truncated']).toEqual({
+      field: 'tasks',
+      shownItems: tasks.length,
+      totalItems: records.length,
+      totalBytes: Buffer.byteLength(envelope, 'utf8'),
+    });
+    expect(tasks.length).toBeGreaterThan(0);
+    expect(tasks.length).toBeLessThan(records.length);
+    expect(capText(capped, DEFAULT_RESULT_CAP_BYTES)).toBe(capped);
+  });
+
+  it('falls back to the head+tail cut when the object does not fit with its array emptied', () => {
+    const object = JSON.stringify({ body: 'z'.repeat(200_000), items: [1, 2, 3] });
+    const capped = capText(object, DEFAULT_RESULT_CAP_BYTES);
+    expect(capped).toMatch(/\[truncated: \d+ of \d+ bytes shown\]/);
+  });
 });
 
 describe('idempotency', () => {
