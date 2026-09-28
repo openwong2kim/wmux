@@ -176,15 +176,27 @@ describe('DaemonPTYBridge — #1463 pre-turn silence', () => {
 
   describe('#1610 — Codex boot (no SessionStart before the first turn)', () => {
     const BANNER = '\x1b[9;1H│ >_ OpenAI Codex (v0.149.1)            │\r\n';
+    // What zsh prints on Enter (bracketed paste off, OSC 133 C), then Codex's
+    // first frame: it turns bracketed paste back on before it paints.
+    const LAUNCH_OUTPUT = '\x1b[?2004l\x1b]133;C\x07';
+    const CODEX_MODES = '\x1b[?2004h\x1b[?1049h';
     const turn = () => bridge.getTurn(bridge.getAgentStatus());
     const internals = () => bridge as unknown as { hookSeen: boolean; turnOpen: boolean };
 
     /** Launch Enter, then the TUI boot paint carrying the banner, then silence. */
     function bootCodex(): void {
       bridge.noteInput('codex --no-daemon\r');
+      feed(LAUNCH_OUTPUT);
       vi.advanceTimersByTime(300);
-      feed(BANNER + BIG);
+      feed(CODEX_MODES + BANNER + BIG);
       vi.advanceTimersByTime(5000);
+    }
+
+    /** A submitted prompt and its first output: the pane is mid-turn. */
+    function startTurn(): void {
+      bridge.noteInput('fix the tests\r');
+      vi.advanceTimersByTime(100);
+      feed(BIG);
     }
 
     it('marks the boot silence pre-turn, and the first prompt runs as a normal turn', () => {
@@ -193,37 +205,80 @@ describe('DaemonPTYBridge — #1463 pre-turn silence', () => {
       bootCodex();
       expect(idle).toEqual([{ sessionId: 'sess-1', preTurn: true }]);
 
-      bridge.noteInput('fix the tests\r');
-      expect(bridge.isPreTurn()).toBe(false);
       const before = active.length;
-      vi.advanceTimersByTime(100);
-      feed(BIG);
+      startTurn();
+      expect(bridge.isPreTurn()).toBe(false);
       expect(active.length).toBe(before + 1); // Running on the first output
       expect(turn().state).toBe('running');
       vi.advanceTimersByTime(5000);
       expect(idle.at(-1)).toEqual({ sessionId: 'sess-1' });
     });
 
+    it('marks a chat launch: the pane spawns straight into Codex, with no shell', () => {
+      feed(CODEX_MODES + BANNER + BIG);
+      vi.advanceTimersByTime(5000);
+      expect(idle).toEqual([{ sessionId: 'sess-1', preTurn: true }]);
+    });
+
     it('marks every launch in the pane, not only the one that opened the gate', () => {
       bootCodex();
-      bridge.noteInput('fix the tests\r');
-      vi.advanceTimersByTime(3100);
-      feed(BIG);
+      startTurn();
       vi.advanceTimersByTime(5000);
       expect(idle.at(-1)).toEqual({ sessionId: 'sess-1' });
 
       // Ctrl+C, shell prompt back, Codex launched again in the same pane.
-      feed('\x1b]133;D;0\x07\x1b]133;A\x07% ');
+      feed('\x1b[?1049l\x1b[?2004l\x1b]133;D;0\x07\x1b]133;A\x07% \x1b[?2004h');
       bootCodex();
       expect(idle.at(-1)).toEqual({ sessionId: 'sess-1', preTurn: true });
     });
 
+    it('finds a banner row split across two PTY chunks', () => {
+      bridge.noteInput('codex --no-daemon\r');
+      feed(LAUNCH_OUTPUT);
+      vi.advanceTimersByTime(300);
+      feed(CODEX_MODES + '\x1b[9;1H│ >_ Open');
+      feed('AI Codex (v0.149.1)            │\r\n' + BIG);
+      expect(bridge.isPreTurn()).toBe(true);
+    });
+
+    it('ignores a banner redrawn mid-turn (a resize repaint), and the turn keeps running', () => {
+      bootCodex();
+      startTurn();
+      const running = turn();
+      bridge.noteResize();
+      feed(BANNER + BIG);
+      expect(bridge.isPreTurn()).toBe(false);
+      vi.advanceTimersByTime(5000);
+      expect(idle.at(-1)).toEqual({ sessionId: 'sess-1' }); // an unmarked idle, not a settle
+      expect(turn().id).toBe(running.id);
+    });
+
+    it('ignores a banner row in Codex output after a hook reported', () => {
+      bootCodex();
+      bridge.noteAgentStatus('running', true); // a hook: the turn is under way
+      feed('• the banner reads\r\n>_ OpenAI Codex (v0.149.1)\r\n' + BIG);
+      expect(bridge.isPreTurn()).toBe(false);
+    });
+
+    it('ignores a banner-shaped line a shell command prints after Codex exited', () => {
+      bootCodex();
+      startTurn();
+      feed('\x1b[?1049l\x1b[?2004l\x1b]133;D;0\x07\x1b]133;A\x07% \x1b[?2004h');
+      bridge.noteInput('cat notes.txt\r');
+      feed(LAUNCH_OUTPUT);
+      feed(BANNER + BIG);
+      expect(bridge.isPreTurn()).toBe(false);
+      vi.advanceTimersByTime(5000);
+      expect(idle.at(-1)).toEqual({ sessionId: 'sess-1' });
+    });
+
     it('leaves the running episode and hook state alone (#1615)', () => {
       bridge.noteInput('codex --no-daemon\r');
-      feed('\x1b]133;C\x07'); // shell integration: the launch ran, its episode ended
+      feed(LAUNCH_OUTPUT); // shell integration: the launch ran, its episode ended
       const launch = turn();
       vi.advanceTimersByTime(300);
-      feed(BANNER + BIG);
+      feed(CODEX_MODES + BANNER + BIG);
+      expect(bridge.isPreTurn()).toBe(true);
       expect(turn().id).toBe(launch.id);
       expect(internals().hookSeen).toBe(false);
 
@@ -242,12 +297,11 @@ describe('DaemonPTYBridge — #1463 pre-turn silence', () => {
 
     it('ignores the banner row printed by another agent', () => {
       feed('Claude Code v2.1.172\n  bypass permissions on\n'); // Claude owns the pane
-      bridge.noteInput('show the codex banner\r');
+      feed(CODEX_MODES);
       vi.advanceTimersByTime(300);
+      // Boot window open (pane spawn) and bracketed paste on: only the owner check stops it.
       feed('\r\x1b[5C\x1b[1B>_ OpenAI Codex (v0.149.1) and\r' + BIG);
       expect(bridge.isPreTurn()).toBe(false);
-      vi.advanceTimersByTime(5000);
-      expect(idle.at(-1)).toEqual({ sessionId: 'sess-1' });
     });
   });
 });
