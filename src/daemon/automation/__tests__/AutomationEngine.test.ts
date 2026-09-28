@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AutomationEvent, AutomationRun } from '../../../shared/automation';
 import type { SessionPromptScheduleResult } from '../../../shared/sessionPromptSchedule';
 import { AutomationEngine, type AutomationAgentView, type AutomationEnginePorts } from '../AutomationEngine';
@@ -75,13 +75,20 @@ const settle = async (): Promise<void> => {
   for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
 };
 
+/** Launch awaits real file writes, which slow CI runners finish after `settle`; wait on the state instead. */
+const settleLaunch = async (h: Harness): Promise<void> => {
+  await vi.waitFor(() => {
+    expect(h.engine.listRuns().some((r) => r.state === 'launching')).toBe(false);
+  }, { timeout: 5000, interval: 5 });
+};
+
 async function startedRun(h: Harness, over: Record<string, unknown> = {}): Promise<AutomationRun> {
   await h.engine.start({ timers: false });
   const created = await h.engine.create(draft(over));
   if (!created.ok) throw new Error(created.error);
   const res = await h.engine.runNow(created.automation.id, 'manual');
   if (!res.ok) throw new Error(res.error);
-  await settle();
+  await settleLaunch(h);
   return h.engine.listRuns()[0];
 }
 
@@ -228,7 +235,7 @@ describe('AutomationEngine — launch & readiness', () => {
     // Created at 09:00 → next is tomorrow 08:30; jump there plus 10 minutes.
     h.clock.t = a.automation.nextRunAt! + 10 * MIN;
     h.engine.tick();
-    await settle();
+    await settleLaunch(h);
     const [run] = h.engine.listRuns();
     expect(run).toMatchObject({ trigger: 'scheduled', scheduledFor: a.automation.nextRunAt, state: 'running' });
   });
