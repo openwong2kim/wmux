@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
-import { buildA2aNudge, handleRpcMethod } from '../useRpcBridge';
+import { buildA2aNudge, handleRpcMethod, nudgeTitlePreview } from '../useRpcBridge';
 import { formatBracketedPastePayload } from '../../../shared/ptyMessageDelivery';
 
 const PTY_A = 'pty-1573-a';
@@ -82,21 +82,28 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
   it('a pane_id-addressed send nudges only the addressed pane', async () => {
     const sent = await sendAtoB();
     expect(sent.delivery).toMatchObject({ notified: true, mode: 'nudge' });
-    expect(writesTo(PTY_B)).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared: please review — a2a_task_query`);
+    expect(writesTo(PTY_B)).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared — title: "please review" — a2a_task_query task_id:${sent.taskId}`);
     expect(writesTo(PTY_A)).toBe('');
   });
 
-  it('a new-task nudge previews title and body as one line with no shell metacharacters', () => {
-    const line = buildA2aNudge('task-12345678-rest', 'Ops', 'new', {
-      title: 'Fix login',
-      message: 'run $(rm x) and `id`\nsecond line\r\x1b[31m',
-    });
-    expect(line).toBe('[wmux] new A2A task 12345678 from Ops: Fix login — run (rm x) and id — a2a_task_query');
-    const long = buildA2aNudge('task-12345678', 'Ops', 'new', { message: 'y'.repeat(5000) });
-    expect(long.length).toBeLessThan(300);
-    // A default title is the body's own head: it is not repeated.
-    expect(buildA2aNudge('task-1', 'Ops', 'new', { title: 'hello', message: 'hello world' }))
-      .toBe('[wmux] new A2A task 1 from Ops: hello world — a2a_task_query');
+  it('a new-task nudge carries an allowlisted title and the full task id, never the body', () => {
+    const line = buildA2aNudge('task-12345678-rest', 'Ops', 'new', 'Fix login; printf INJECTION_REACHED; # @src/x');
+    expect(line).toBe(
+      '[wmux] new A2A task 12345678 from Ops — title: "Fix login printf INJECTION_REACHED src/x" — a2a_task_query task_id:task-12345678-rest',
+    );
+    // Shell metacharacters, quotes, @, C0/C1 controls, bidi and zero-width marks all become spaces.
+    expect(nudgeTitlePreview('a$(b)`c`|d&e<f>g"h\'i\\j@k\u0000l\u0085m\u202en\u200bo')).toBe('a b c d e f g h i j k l m n o');
+    // Letters of any script survive; the cut is by code point, never inside a surrogate pair.
+    expect(nudgeTitlePreview('한글 제목')).toBe('한글 제목');
+    const astral = nudgeTitlePreview('\u{20000}'.repeat(100));
+    expect(Array.from(astral.replace(/\.\.\.$/, ''))).toHaveLength(60);
+    expect(astral).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
+  });
+
+  it('a new-task nudge omits the title when the target agent has exited', async () => {
+    useStore.getState().hydrateAgentAlive({ [PTY_A]: true, [PTY_B]: false });
+    await sendAtoB();
+    expect(writesTo(PTY_B)).not.toContain('please review');
   });
 
   it("the receiver's reply reaches the sender labeled as a reply, not a new task", async () => {

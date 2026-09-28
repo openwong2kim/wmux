@@ -33,7 +33,6 @@ import {
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { t } from '../i18n';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName, type A2aFormatOptions } from '../utils/a2aFormat';
-import { bodyPreview } from '../../shared/nudgePreview';
 import type { A2aPriority } from '../utils/a2aFormat';
 import { findPendingExecuteRequest, requestExecuteApproval, requestFanOutApproval, requestTaskApproval } from '../utils/executeApprovalGate';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
@@ -585,7 +584,8 @@ export async function deliverPtyNotification(
 // Resolves like deliverPtyNotification — see there.
 async function deliverPtyNudge(
   targetWs: { rootPane: Pane; activePaneId: string; stashedPanes?: Workspace['stashedPanes'] },
-  nudge: string,
+  // A function builds the line for the pane actually chosen, at write time.
+  nudge: string | ((ptyId: string) => string),
   explicitPtyId?: string,
   operator = false,
 ): Promise<A2aPtyWrite> {
@@ -594,7 +594,7 @@ async function deliverPtyNudge(
   // pane only catches the message when nothing visible can take it, which beats
   // dropping it.
   const ptyId = explicitPtyId ?? activePaneTerminalPty(getWorkspaceLeafPanes(targetWs), targetWs.activePaneId);
-  if (ptyId) return deliverA2aText(ptyId, nudge, operator);
+  if (ptyId) return deliverA2aText(ptyId, typeof nudge === 'function' ? nudge(ptyId) : nudge, operator);
   return { ptyId: null };
 }
 
@@ -690,25 +690,39 @@ function applySenderReopen(taskId: string, params: RpcParams): boolean {
 // existing one (#1573). Both parties of a same-workspace task share the
 // workspace name, so a reply labeled "new task" reads, in the sender's pane,
 // exactly like its own send's nudge landing there too.
-// A new task also carries its title and body as a one-line preview, so the
-// receiver knows what arrived without a query.
-export function buildA2aNudge(
-  taskId: string,
-  senderName: string,
-  kind: 'new' | 'reply',
-  about?: { title?: string; message?: string },
-): string {
+/** Longest task title a nudge carries, in code points. */
+const NUDGE_TITLE_MAX_CHARS = 60;
+
+/**
+ * A task title reduced to text that is inert wherever the nudge lands. The
+ * line is typed and submitted into a pane another workspace chose; if that
+ * pane is really a shell, or the agent reads `@` as a file mention, anything
+ * beyond words is an instruction. So this is an allowlist, not a blocklist:
+ * Unicode letters, digits, space and `. , : - _ /`; everything else (quotes,
+ * `;|&<>()#$`, `@`, control, bidi and zero-width characters, emoji) becomes a
+ * space. Cut by code point so a surrogate pair is never split.
+ */
+export function nudgeTitlePreview(title: string): string {
+  const clean = title.replace(/[^\p{L}\p{N} .,:_/-]/gu, ' ').replace(/ +/g, ' ').trim();
+  const chars = Array.from(clean);
+  return chars.length <= NUDGE_TITLE_MAX_CHARS
+    ? clean
+    : `${chars.slice(0, NUDGE_TITLE_MAX_CHARS).join('').trimEnd()}...`;
+}
+
+// A new task names its title (never its body) so the receiver knows what
+// arrived; `title` is passed only when the pane is re-checked as a live agent
+// at write time. The full id lets the receiver fetch the task directly.
+export function buildA2aNudge(taskId: string, senderName: string, kind: 'new' | 'reply', title?: string): string {
   const id8 = taskId.replace(/^task[-_]?/, '').slice(0, 8);
   const what = kind === 'new' ? 'new A2A task' : 'reply on A2A task';
-  // The default title is the message's own head; repeating it adds nothing.
-  const title = about?.title && !about.message?.startsWith(about.title) ? about.title : '';
-  // Another workspace's text TYPED into a live agent prompt: bodyPreview keeps
-  // it one bounded line with no control or shell-substitution characters.
-  const preview = bodyPreview([title, about?.message ?? ''].filter(Boolean).join(' — '));
+  const preview = kind === 'new' && title ? nudgeTitlePreview(title) : '';
+  const about = preview ? ` — title: "${preview}"` : '';
+  const safeId = taskId.replace(/[^A-Za-z0-9_-]/g, '');
   // Sanitize the user-editable workspace name: a CR/LF in it would otherwise
   // split this "single line" into a multi-line bracketed paste (submitted with
   // `\r\r`) and inject text into the very live-agent prompt this path protects.
-  return `[wmux] ${what} ${id8} from ${sanitizeA2aName(senderName)}${preview ? `: ${preview}` : ''} — a2a_task_query`;
+  return `[wmux] ${what} ${id8} from ${sanitizeA2aName(senderName)}${about} — a2a_task_query task_id:${safeId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -3017,7 +3031,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         // onto the EventBus below, so the receiver can still poll it.
         mode = 'no-agent-pane';
       } else if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
-        write = await deliverPtyNudge(target, buildA2aNudge(newTaskId, fromName, 'new', { title, message }), explicitPty, operator);
+        write = await deliverPtyNudge(target, (pty) => buildA2aNudge(newTaskId, fromName, 'new', a2aFormatOptionsFor(pty).multiline ? title || message : undefined), explicitPty, operator);
       } else {
         write = await deliverPtyNotification(target, fromName, message, explicitPty, operator);
         mode = 'notification';

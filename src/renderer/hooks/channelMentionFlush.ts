@@ -48,9 +48,10 @@ function singleLine(s: string): string {
 /**
  * Build the one-line nudge for one or more pending mentions to the SAME pane.
  * Carries the task title (channel + sender, from `channelMentionInbox`) and
- * tells the agent to run `a2a_task_query role:agent` to read the queued
- * mention(s). a2a_task_query filters by status/role and does NOT accept a task
- * id (codex R7), so the nudge points at the query — not an id. Several mentions
+ * tells the agent how to read the queued mention(s): one mention names its
+ * task id (`a2a_task_query task_id:<id>` returns the full body; the default
+ * listing only carries short previews), several point at the `role:agent`
+ * listing and then task_id per mention. Several mentions
  * to one pane collapse into ONE nudge (one paste) so a Stop never floods the
  * prompt with N lines.
  *
@@ -131,12 +132,13 @@ export function buildChannelMentionNudge(
   const replyGate =
     'Reply via channel_post ONLY if it needs an answer (a question or task); do NOT reply to greetings or acknowledgements.';
   if (tasks.length === 1) {
+    const taskId = tasks[0].id.replace(/[^A-Za-z0-9_-]/g, '');
     return singleLine(
-      `[wmux-channel] mention in ${channelLabel} — read: a2a_task_query role:agent, ${ackHint}. ${replyGate}`,
+      `[wmux-channel] mention in ${channelLabel} — read: a2a_task_query task_id:${taskId}, ${ackHint}. ${replyGate}`,
     );
   }
   return singleLine(
-    `[wmux-channel] ${tasks.length} channel mentions — read: a2a_task_query role:agent, ${ackHint}. ${replyGate}`,
+    `[wmux-channel] ${tasks.length} channel mentions — read: a2a_task_query role:agent, then task_id:<id> for each full body, ${ackHint}. ${replyGate}`,
   );
 }
 

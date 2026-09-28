@@ -268,7 +268,7 @@ const A2A_TASK_QUERY_SHAPE = {
   task_id: z.string().optional().describe('Return this task in full (history, artifacts, evidence).'),
   message_id: z.string().optional().describe('With task_id: return just this message.'),
   limit: z.number().int().min(1).max(100).optional().describe('Summaries per page (default 20).'),
-  cursor: z.string().optional().describe('nextCursor from the previous page.'),
+  cursor: z.string().optional().describe('nextCursor from the previous page (with task_id: older messages).'),
 };
 
 const A2A_TASK_UPDATE_SHAPE = {

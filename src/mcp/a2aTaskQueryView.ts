@@ -4,9 +4,10 @@
  * The RPC returns every matching task with its full history, which grows
  * without bound (20+ tasks came back at ~74 KB and blew the 64 KiB result
  * cap). The tool therefore lists compact summaries, newest first, one page at
- * a time, and returns the full task only when the caller names it. The RPC
- * contract is untouched: the brain and other RPC callers still read full
- * tasks.
+ * a time, and returns the full task only when the caller names it — itself
+ * bounded, newest messages first. Every shape here fits the result cap on its
+ * own, so the generic cap never has to cut it. The RPC contract is untouched:
+ * the brain and other RPC callers still read full tasks.
  */
 import { DEFAULT_RESULT_CAP_BYTES } from './resultCap';
 
@@ -14,13 +15,16 @@ export const DEFAULT_TASK_PAGE_LIMIT = 20;
 export const MAX_TASK_PAGE_LIMIT = 100;
 /** Characters of the last message kept in a summary. */
 export const TASK_PREVIEW_CHARS = 300;
+/** Byte bounds for the free-text fields of a summary. */
+const TITLE_MAX_BYTES = 400;
+const NAME_MAX_BYTES = 200;
 
 export interface TaskQueryViewOptions {
   readonly taskId?: string;
   readonly messageId?: string;
   readonly limit?: number;
   readonly cursor?: string;
-  /** Byte budget for a summary page; the page shrinks and pages on past it. */
+  /** Byte budget for one result; the view pages on rather than exceed it. */
   readonly capBytes?: number;
 }
 
@@ -32,6 +36,29 @@ function isRec(value: unknown): value is Rec {
 
 function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function bytesOf(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value, null, 2), 'utf8');
+}
+
+/** Cut to at most `maxBytes` of UTF-8 on a code-point boundary, marking the cut. */
+function clipBytes(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  let out = '';
+  let used = 0;
+  for (const char of text) {
+    const size = Buffer.byteLength(char, 'utf8');
+    if (used + size > maxBytes - 3) break;
+    out += char;
+    used += size;
+  }
+  return `${out}…`;
+}
+
+function createdAtOf(task: Rec): string {
+  const meta = isRec(task.metadata) ? task.metadata : {};
+  return str(meta.createdAt) ?? '';
 }
 
 function updatedAtOf(task: Rec): string {
@@ -62,11 +89,14 @@ export function summarizeTask(task: Rec): Rec {
   // message is then the latest thing said.
   const history = Array.isArray(task.history) ? task.history : [];
   const last = history.length > 0 ? history[history.length - 1] : status.message;
-  const party = (side: unknown): string | undefined => (isRec(side) ? str(side.name) : undefined);
+  const party = (side: unknown): string | undefined => {
+    const name = isRec(side) ? str(side.name) : undefined;
+    return name === undefined ? undefined : clipBytes(name, NAME_MAX_BYTES);
+  };
   return {
     id: task.id,
     state: status.state,
-    title: str(meta.title) ?? '',
+    title: clipBytes(str(meta.title) ?? '', TITLE_MAX_BYTES),
     from: party(meta.from),
     to: party(meta.to),
     createdAt: meta.createdAt,
@@ -81,15 +111,21 @@ export function summarizeTask(task: Rec): Rec {
   };
 }
 
-function encodeCursor(task: Rec): string {
-  return Buffer.from(JSON.stringify([updatedAtOf(task), String(task.id)]), 'utf8').toString('base64url');
+function encodeCursor(parts: string[]): string {
+  return Buffer.from(JSON.stringify(parts), 'utf8').toString('base64url');
 }
 
-function decodeCursor(cursor: string): [string, string] | null {
+/** Decode a cursor of the given kind ('l' = task list, 'h' = task history). */
+function decodeCursor(cursor: string, kind: 'l' | 'h', arity: number): string[] | null {
   try {
     const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown;
-    if (Array.isArray(decoded) && decoded.length === 2 && decoded.every((part) => typeof part === 'string')) {
-      return decoded as [string, string];
+    if (
+      Array.isArray(decoded) &&
+      decoded.length === arity &&
+      decoded[0] === kind &&
+      decoded.every((part) => typeof part === 'string')
+    ) {
+      return decoded as string[];
     }
   } catch {
     // fall through
@@ -97,13 +133,65 @@ function decodeCursor(cursor: string): [string, string] | null {
   return null;
 }
 
-/** Newest first; id breaks ties so the keyset cursor is total. */
+const BAD_CURSOR = { error: 'a2a_task_query: cursor is not a value this tool returned for this query' };
+
+/**
+ * Newest first by CREATION time, id breaking ties: an immutable key, so a task
+ * updated while the caller pages cannot jump across the cursor and vanish.
+ */
 function compareNewestFirst(a: Rec, b: Rec): number {
-  // Plain code-unit order, the same order the cursor filter uses.
-  const keyA = [updatedAtOf(a), String(a.id)];
-  const keyB = [updatedAtOf(b), String(b.id)];
+  const keyA = [createdAtOf(a), String(a.id)];
+  const keyB = [createdAtOf(b), String(b.id)];
   if (keyA[0] !== keyB[0]) return keyA[0] < keyB[0] ? 1 : -1;
   return keyA[1] === keyB[1] ? 0 : keyA[1] < keyB[1] ? 1 : -1;
+}
+
+function detailView(envelope: Rec, task: Rec, cursor: string | undefined, capBytes: number): unknown {
+  const history = Array.isArray(task.history) ? task.history : [];
+  let end = history.length;
+  if (cursor) {
+    const decoded = decodeCursor(cursor, 'h', 2);
+    const index = decoded ? history.findIndex((m) => isRec(m) && m.messageId === decoded[1]) : -1;
+    if (index < 0) return BAD_CURSOR;
+    end = index;
+  }
+  const artifacts = Array.isArray(task.artifacts) ? task.artifacts : [];
+  const render = (shown: number, summarizeArtifacts: boolean): Rec => {
+    const start = end - shown;
+    const olderId = start > 0 && isRec(history[start]) ? str(history[start].messageId) : undefined;
+    return {
+      ...envelope,
+      task: {
+        ...task,
+        history: history.slice(start, end),
+        ...(summarizeArtifacts && {
+          artifacts: artifacts.map((artifact) => ({
+            ...(isRec(artifact) && str(artifact.name) !== undefined && { name: clipBytes(str(artifact.name)!, NAME_MAX_BYTES) }),
+            parts: isRec(artifact) && Array.isArray(artifact.parts) ? artifact.parts.length : 0,
+            bytes: bytesOf(artifact),
+          })),
+        }),
+      },
+      ...(summarizeArtifacts && { artifactsSummarized: true }),
+      ...(shown < history.length && { historyTruncated: { shownMessages: shown, totalMessages: history.length } }),
+      ...(olderId !== undefined && { nextCursor: encodeCursor(['h', olderId]) }),
+    };
+  };
+  const fits = (view: Rec): boolean => bytesOf(view) <= capBytes;
+  if (fits(render(end, false))) return render(end, false);
+  // Artifacts go first (their size is stated), then the oldest messages: the
+  // most recent messages that fit, found by search since sizes vary.
+  if (!fits(render(0, true))) {
+    return { error: 'a2a_task_query: this task does not fit one result even without its history; fetch messages with message_id' };
+  }
+  let low = 0;
+  let high = end;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (fits(render(mid, true))) low = mid;
+    else high = mid - 1;
+  }
+  return render(low, true);
 }
 
 /**
@@ -115,43 +203,53 @@ export function shapeTaskQueryResult(result: unknown, options: TaskQueryViewOpti
   const envelope: Rec = { ...result };
   delete envelope.tasks;
   const tasks = (result.tasks as unknown[]).filter(isRec);
+  const capBytes = options.capBytes ?? DEFAULT_RESULT_CAP_BYTES;
 
   if (options.taskId) {
     const task = tasks.find((candidate) => candidate.id === options.taskId);
     if (!task) return { error: `a2a_task_query: task ${options.taskId} not found (or filtered out by status/role/updated_since)` };
-    if (!options.messageId) return { ...envelope, task };
+    if (!options.messageId) return detailView(envelope, task, options.cursor, capBytes);
     const history = Array.isArray(task.history) ? task.history : [];
     const message = [...history, isRec(task.status) ? task.status.message : undefined].find(
       (candidate) => isRec(candidate) && candidate.messageId === options.messageId,
     );
     if (!message) return { error: `a2a_task_query: message ${options.messageId} not found in task ${options.taskId}` };
-    return { ...envelope, taskId: task.id, message };
+    const view = { ...envelope, taskId: task.id, message };
+    return bytesOf(view) <= capBytes ? view : { error: `a2a_task_query: message ${options.messageId} is larger than one result` };
   }
   if (options.messageId) return { error: 'a2a_task_query: message_id needs task_id' };
 
   const limit = Math.min(Math.max(Math.floor(options.limit ?? DEFAULT_TASK_PAGE_LIMIT), 1), MAX_TASK_PAGE_LIMIT);
-  let ordered = [...tasks].sort(compareNewestFirst);
+  const ordered = [...tasks].sort(compareNewestFirst);
+  // Snapshot of the newest update when paging began, carried in the cursor so
+  // every page reports the same value: polling from it with updated_since
+  // catches whatever changed while the caller paged.
+  let snapshot = ordered.reduce((max, task) => (updatedAtOf(task) > max ? updatedAtOf(task) : max), '');
+  let rest = ordered;
   if (options.cursor) {
-    const after = decodeCursor(options.cursor);
-    if (!after) return { error: 'a2a_task_query: cursor is not a value this tool returned' };
-    const [afterTime, afterId] = after;
-    ordered = ordered.filter((task) => {
-      const time = updatedAtOf(task);
-      return time < afterTime || (time === afterTime && String(task.id) < afterId);
+    const after = decodeCursor(options.cursor, 'l', 4);
+    if (!after) return BAD_CURSOR;
+    const [, afterCreated, afterId, carried] = after;
+    snapshot = carried;
+    rest = ordered.filter((task) => {
+      const created = createdAtOf(task);
+      return created < afterCreated || (created === afterCreated && String(task.id) < afterId);
     });
   }
   const render = (count: number): Rec => ({
     ...envelope,
     total: ordered.length,
-    tasks: ordered.slice(0, count).map(summarizeTask),
-    ...(count < ordered.length && count > 0 && { nextCursor: encodeCursor(ordered[count - 1]) }),
+    remaining: rest.length - count,
+    tasks: rest.slice(0, count).map(summarizeTask),
+    ...(snapshot && { nextUpdatedSince: snapshot }),
+    ...(count < rest.length && count > 0 && {
+      nextCursor: encodeCursor(['l', createdAtOf(rest[count - 1]), String(rest[count - 1].id), snapshot]),
+    }),
   });
-  // Summaries are bounded per task, but a page must still fit the result cap
-  // whole: shrink it and page on rather than let the generic cap cut it.
-  const capBytes = options.capBytes ?? DEFAULT_RESULT_CAP_BYTES;
-  let count = Math.min(limit, ordered.length);
-  while (count > 1 && Buffer.byteLength(JSON.stringify(render(count), null, 2), 'utf8') > capBytes) {
-    count -= 1;
+  let count = Math.min(limit, rest.length);
+  while (count > 0 && bytesOf(render(count)) > capBytes) count -= 1;
+  if (count === 0 && rest.length > 0) {
+    return { error: 'a2a_task_query: not even one task summary fits one result' };
   }
   return render(count);
 }
