@@ -108,7 +108,7 @@ import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { randomUUID } from 'node:crypto';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
-import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalizeResumeCwd } from '../shared/agentResume';
+import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, normalizeResumeCwd } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
@@ -3175,8 +3175,9 @@ function registerRpcHandlers(
     // Don't let that provisional capture overwrite an existing transcript-derived
     // (authoritative) binding for a DIFFERENT session — a reboot in between would
     // then `--resume <wrong id>`.
-    if (prev && prev.agent === 'claude' && p.resumeBinding.agent === 'claude' && prev.transcriptPath && !p.resumeBinding.transcriptPath
-        && prev.sessionId !== p.resumeBinding.sessionId) {
+    // #1624: the same holds for Codex's first-turn title-generation thread,
+    // which completes a turn (and fires notify) but never writes a rollout.
+    if (isProvisionalCapture(prev, p.resumeBinding)) {
       return true;
     }
     // Sticky-merge: a capture that couldn't read permissionMode (transcript tail

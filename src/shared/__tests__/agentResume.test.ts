@@ -5,6 +5,7 @@ import {
   resumeOfferForRecovered,
   permissionFlagFor,
   mergeResumeBinding,
+  isProvisionalCapture,
   normalizeResumeCwd,
   resumeGrammarFor,
   PERMISSION_FLAG,
@@ -404,5 +405,37 @@ describe('resumeGrammarFor (#1342 — slugs now arrive from another machine)', (
     expect(resumeGrammarFor('toString')).toBeUndefined();
     expect(resumeGrammarFor('__proto__')).toBeUndefined();
     expect(resumeGrammarFor('gemini')).toBeUndefined();
+  });
+});
+
+describe('isProvisionalCapture (#1624 — Codex first-turn title thread)', () => {
+  const REAL = '01a0e712-ff3d-77f3-834b-4854dcc549f1';
+  const TITLE = '01a0e713-2a61-7593-9d58-782daa920c8d';
+  const rollout = `/h/.codex/sessions/2026/09/28/rollout-2026-09-28T17-12-57-${REAL}.jsonl`;
+  const real = binding({ agent: 'codex', sessionId: REAL, transcriptPath: rollout });
+
+  it('keeps the bound rollout when a second id with no rollout arrives in the same pane', () => {
+    expect(isProvisionalCapture(real, binding({ agent: 'codex', sessionId: TITLE, ts: 2 }))).toBe(true);
+  });
+
+  it("rebinds a real session switch once discovery supplies the new id's rollout", () => {
+    const next = binding({ agent: 'codex', sessionId: TITLE, transcriptPath: rollout.replace(REAL, TITLE), ts: 2 });
+    expect(isProvisionalCapture(real, next)).toBe(false);
+  });
+
+  it('does not hold back when nothing transcript-backed is bound yet (title thread finished first)', () => {
+    const title = binding({ agent: 'codex', sessionId: TITLE });
+    expect(isProvisionalCapture(title, binding({ agent: 'codex', sessionId: REAL, ts: 2 }))).toBe(false);
+    expect(isProvisionalCapture(undefined, title)).toBe(false);
+  });
+
+  it('never holds back an agent switch or the same session re-reporting', () => {
+    expect(isProvisionalCapture(real, binding({ agent: 'claude', sessionId: TITLE }))).toBe(false);
+    expect(isProvisionalCapture(real, binding({ agent: 'codex', sessionId: REAL, ts: 2 }))).toBe(false);
+  });
+
+  it('keeps the existing Claude SessionStart rule', () => {
+    const prev = binding({ transcriptPath: '/p/abc-123.jsonl' });
+    expect(isProvisionalCapture(prev, binding({ sessionId: 'new-456' }))).toBe(true);
   });
 });
