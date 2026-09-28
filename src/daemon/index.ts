@@ -6,7 +6,7 @@ import { ChatCancelReceiptStore } from './chat/ChatCancelReceiptStore';
 import { ChatQueueStore } from './chat/ChatQueue';
 import { createChatBridge, type NativeChatBridge } from './chat/nativeChatBridge';
 import {captureCodexRelayResume, codexRelayResumeCommand} from './web/codexRelayResume';
-import { recoverCodexPane } from './web/recoverCodexPane';
+import { recoverCodexPane, withCodexRemote } from './web/recoverCodexPane';
 import { CodexRelayUnavailableError } from './web/codexTuiRelay';
 import { paneCodexSettings } from './web/paneCodexSettings';
 import { CodexPaneRelays } from './web/codexPaneRelays';
@@ -2222,7 +2222,7 @@ function registerRpcHandlers(
           // the home directory the same way.
           ...(cwd ? { cwd } : {}),
           env,
-        }, relay ? {execLaunchCommand:`${agentCommand} --remote ${relay.url}`} : undefined);
+        }, relay && agentCommand ? {execLaunchCommand:withCodexRemote(agentCommand,relay.url)} : undefined);
         if (relay) {
           const managed = sessionManager.getSession(id);
           if (!managed || !relay.commit(managed)) {

@@ -416,7 +416,13 @@ describe('launch', () => {
   it('routes Codex through the relay', async () => {
     const f = fixture();
     expect(await f.bridge.launch({ id: 'pane', agent: 'codex', prompt: 'go', mode: 'yolo' })).toMatchObject({ ok: true });
-    expect(f.typed).toEqual(["codex --remote unix:///tmp/relay.sock --dangerously-bypass-approvals-and-sandbox -- 'go'\r"]);
+    expect(f.typed).toEqual(["codex --remote unix:///tmp/relay.sock --cd \"$PWD\" --dangerously-bypass-approvals-and-sandbox -- 'go'\r"]);
+  });
+
+  it('starts a default-mode Codex launch in the pane shell directory', async () => {
+    const f = fixture();
+    expect(await f.bridge.launch({ id: 'pane', agent: 'codex', prompt: 'go' })).toMatchObject({ ok: true });
+    expect(f.typed).toEqual(["codex --remote unix:///tmp/relay.sock --cd \"$PWD\" -- 'go'\r"]);
   });
 
   it('names each refusal', async () => {

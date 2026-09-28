@@ -16,8 +16,9 @@ describe('phone Codex recovery launch',()=>{
     const f=fixture();
     const result=await recoverCodexPane(f.manager,f.relays,f.params,'darwin');
     expect(f.relays.prepare).toHaveBeenCalledWith(id,'/account');
-    expect(f.manager.createSessionAsync).toHaveBeenCalledWith({...f.params,execLaunchCommand:`${f.params.execLaunchCommand} --remote ${f.lease.url}`});
+    expect(f.manager.createSessionAsync).toHaveBeenCalledWith({...f.params,execLaunchCommand:`${f.params.execLaunchCommand} --remote ${f.lease.url} --cd "$PWD"`});
     expect(f.params.exec?.command).not.toContain('--remote');
+    expect(f.params.exec?.command).not.toContain('--cd');
     expect(f.lease.commit).toHaveBeenCalledWith(f.owner);
     expect(result.pid).toBe(123);
     expect(f.lease.close).not.toHaveBeenCalled();

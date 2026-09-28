@@ -1203,7 +1203,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
           catch { return fail('agent-runtime-unavailable'); }
         }
         if (!RELAY_URL.test(relay.url)) return fail('launch-unconfirmed');
-        command = command.replace(/^codex /, `codex --remote ${relay.url} `);
+        // A remote TUI does not send its own cwd; without --cd a new thread starts in the
+        // shared app-server's directory. "$PWD" is a fixed literal the pane shell expands.
+        command = command.replace(/^codex /, `codex --remote ${relay.url} --cd "$PWD" `);
       }
       const secondIdle = await idle();
       if (secondIdle) return secondIdle;

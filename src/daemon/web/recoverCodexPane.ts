@@ -13,6 +13,10 @@ const original = new RegExp(`^codex${flags}$`);
 export function isPhoneCodexSession(session:{id:string;exec?:{command:string};cmd?:string;wslTarget?:unknown}):boolean {
   return new RegExp(`^web-${uuid}$`, 'i').test(session.id) && !!session.exec && original.test(session.exec.command) && !session.wslTarget && !isWslShell(session.cmd);
 }
+/** Attach a fixed launcher to a relay. A remote TUI does not send its own cwd, so
+ * without --cd a thread would run in the shared app-server's directory; "$PWD" is a
+ * fixed literal the pane's wrapper shell expands to its spawn directory. */
+export const withCodexRemote = (command:string, url:string) => `${command} --remote ${url} --cd "$PWD"`;
 const replay = new RegExp(`^codex(?: resume (?:--last|${uuid}))?${flags}$`, 'i');
 
 /** Rebuild ephemeral relay ownership when replaying a phone-created Codex pane.
@@ -34,7 +38,7 @@ export async function recoverCodexPane(manager:Manager, relays:Pick<CodexPaneRel
   }
   try {
     if (!/^unix:\/\/\/[A-Za-z0-9_./-]+$/.test(lease.url)) throw new Error('Unsupported Codex relay path');
-    const result = await manager.createSessionAsync({...params,execLaunchCommand:`${command} --remote ${lease.url}`});
+    const result = await manager.createSessionAsync({...params,execLaunchCommand:withCodexRemote(command,lease.url)});
     const owner = manager.getSession(params.id);
     const matchesSpawn = owner?.meta.id === result.id && owner.meta.pid === result.pid &&
       owner.meta.incarnationId === result.incarnationId;
