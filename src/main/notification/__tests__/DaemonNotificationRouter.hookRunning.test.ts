@@ -601,3 +601,65 @@ describe('DaemonNotificationRouter — #1463 withdraws an unlatched running stam
     router.stop();
   });
 });
+
+/**
+ * #1463 live dogfood — `/clear` typed during a turn runs right after the Stop.
+ * Its SessionStart(clear) reaches the daemon ~60 ms after the Stop, inside the
+ * completion alarm's 1.5 s verdict window, and the session boundary cancels
+ * the held Stop: no turn end is ever broadcast. The latch the turn's prompt
+ * submit opened then held the pane Running (sidebar, Fleet, pane_list) until
+ * its 30-minute expiry. What reaches main is exactly: prompt submit, then
+ * SessionStart(clear).
+ */
+describe('DaemonNotificationRouter — #1463 a fresh session closes the turn it follows', () => {
+  function latchedRouter(): HookSignalRouter {
+    let governed = false;
+    return {
+      noteHookTurnStart: vi.fn(() => { governed = true; }),
+      notePromptSubmit: vi.fn(),
+      releaseHookTurnStart: vi.fn(() => { governed = false; }),
+      governsRunningState: vi.fn(() => governed),
+      noteAgentOnPane: vi.fn(),
+      isGovernedFor: vi.fn().mockReturnValue(false),
+      governsDetectorStatus: vi.fn().mockReturnValue(false),
+      recordDetector: vi.fn().mockReturnValue('emit'),
+      dropPty: vi.fn(),
+    } as unknown as HookSignalRouter;
+  }
+
+  const sessionStart = (source?: string) => {
+    const e = metadataEvent('agent.session_start');
+    (e.event.signal as { payload: Record<string, unknown> }).payload = source ? { source } : {};
+    return e;
+  };
+
+  beforeEach(() => {
+    broadcastMetadataUpdateMock.mockClear();
+    metadataHandlerMocks.lastBroadcastAgentStatus.delete(PTY);
+    clearSuppression(PTY);
+  });
+
+  it('settles the pane when SessionStart(clear) follows a turn whose Stop never arrived', () => {
+    const hookRouter = latchedRouter();
+    const { router, captured } = makeRouter(hookRouter);
+    captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+    expect(lastStatus()).toBe('running');
+
+    captured.agent?.(sessionStart('clear'));
+    expect(hookRouter.releaseHookTurnStart).toHaveBeenCalledWith(PTY);
+    const patch = broadcastMetadataUpdateMock.mock.calls.at(-1)?.[1] as { agentStatus?: string; settled?: boolean };
+    expect(patch).toMatchObject({ agentStatus: 'idle', settled: true });
+    router.stop();
+  });
+
+  it('never closes a live turn on a mid-turn auto-compact or source-less SessionStart', () => {
+    const hookRouter = latchedRouter();
+    const { router, captured } = makeRouter(hookRouter);
+    captured.agent?.(metadataEvent('agent.user_prompt_submit'));
+    captured.agent?.(sessionStart('compact'));
+    captured.agent?.(sessionStart());
+    expect(hookRouter.releaseHookTurnStart).not.toHaveBeenCalled();
+    expect(metadataHandlerMocks.lastBroadcastAgentStatus.get(PTY)).toBe('running');
+    router.stop();
+  });
+});

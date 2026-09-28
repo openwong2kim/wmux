@@ -27,7 +27,7 @@ import {
   VETO_TRACE_THROTTLE_MS,
   readStopMessage,
 } from '../pipe/handlers/hooks.rpc';
-import type { AgentSignal } from '../../shared/hooks/signal-types';
+import { isFreshSessionSource, type AgentSignal } from '../../shared/hooks/signal-types';
 import type { AgentLastMessage } from '../../shared/events';
 import { getWorkspaceMirror, type WorkspaceMirror } from '../workspace/WorkspaceMirror';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
@@ -747,6 +747,15 @@ export class DaemonNotificationRouter {
               pendingQuestion: '',
               lastMessage: '',
             });
+            // #1463 — a fresh session (startup, resume, `/clear`) means the
+            // turn before it is over. `/clear` typed mid-turn runs right after
+            // the Stop, and its SessionStart cancels the Stop still held in the
+            // daemon's verdict window, so no turn end ever arrives: the prompt
+            // submit's latch held the pane Running until its 30-minute expiry.
+            // Never on `compact` (mid-turn auto-compaction) or an unknown source.
+            if (isFreshSessionSource(ev.signal?.payload?.['source'])) {
+              settleHookTurnToIdle(payload.sessionId, this.getHookRouter?.() ?? null, win, this.now());
+            }
           } else if (metadataKind === 'agent.user_prompt_submit') {
             const hookRouter = this.getHookRouter?.();
             if (ev.signal && hookRouter) {

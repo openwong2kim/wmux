@@ -1211,3 +1211,20 @@ describe('resolveSessionIdForSignal', () => {
     expect(resolveSessionIdForSignal(makeSignal({ cwd: '/repo' }), tied)).toBe('pty-new');
   });
 });
+
+describe('HookIngest — #1463 /clear queued behind a turn', () => {
+  it('a SessionStart inside the verdict window swallows the held Stop (why main must close the turn)', () => {
+    vi.useFakeTimers();
+    const f = makeDeps();
+    const i = new HookIngest(f.deps);
+    i.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+    i.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.activity', payload: { tool_name: 'Bash' } }));
+    i.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop' }));
+    f.advance(60);
+    i.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.session_start', payload: { source: 'clear' } }));
+    vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS * 2);
+    expect(f.emitted.map((e) => e.data.hookKind)).not.toContain('agent.stop');
+    expect(f.emitted.at(-1)?.data).toMatchObject({ hookKind: 'agent.session_start' });
+    vi.useRealTimers();
+  });
+});

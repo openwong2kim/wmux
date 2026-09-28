@@ -142,6 +142,17 @@ describe('DaemonPTYBridge — #1463 pre-turn silence', () => {
     expect(bootSilence()).toEqual([{ sessionId: 'sess-1' }]);
   });
 
+  it('a /clear queued behind a turn (its Stop swallowed) leaves the pane pre-turn', () => {
+    bridge.noteAgentStatus('running', true); // UserPromptSubmit
+    vi.advanceTimersByTime(10_000);
+    bridge.noteAgentStatus('running', true); // tool activity
+    vi.advanceTimersByTime(2_000);
+    // The Stop is cancelled in the verdict window; SessionStart(clear) fires after it.
+    sessionStart('clear');
+    expect(bridge.isPreTurn()).toBe(true);
+    expect(bootSilence()).toEqual([{ sessionId: 'sess-1', preTurn: true }]);
+  });
+
   it('a hook arriving in the same millisecond after SessionStart still ends pre-turn', () => {
     sessionStart();
     bridge.noteAgentStatus('running', true); // UserPromptSubmit, same ms

@@ -12,6 +12,7 @@ import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
 import { OutputModeTracker } from './util/outputModeTracker';
 import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
+import { isFreshSessionSource } from '../shared/hooks/signal-types';
 
 /**
  * Daemon version of PTYBridge.
@@ -122,9 +123,6 @@ export class DaemonPTYBridge extends EventEmitter {
    *  answer, or any hook other than SessionStart. A SessionStart that FIRED
    *  before it (a late or retried delivery) says nothing about now. */
   private turnEvidenceAt = 0;
-  /** #1463 — the SessionStart sources that begin a session with no turn.
-   *  `compact` fires mid-turn (auto-compact) and must never count. */
-  private static readonly PRE_TURN_SOURCES: ReadonlySet<string> = new Set(['startup', 'resume', 'clear']);
 
   /**
    * Which terminal status settled the pane, while one has. Read only to keep
@@ -473,7 +471,7 @@ export class DaemonPTYBridge extends EventEmitter {
     // it must neither clear nor re-set the state the first one left.
     this.preTurn = preTurn;
     this.turnEvidenceAt = turnEvidenceAt;
-    if (typeof source !== 'string' || !DaemonPTYBridge.PRE_TURN_SOURCES.has(source)) {
+    if (!isFreshSessionSource(source)) {
       this.preTurn = false;
       return;
     }
