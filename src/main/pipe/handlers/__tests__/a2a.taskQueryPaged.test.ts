@@ -206,6 +206,18 @@ describe('a2a.task.query view: page — #1598 orphaned tasks', () => {
     expect(one.task.orphaned).toBe(true);
   });
 
+  it('does not flag an ended task whose receiver pane is gone', async () => {
+    const ended = { ...gone, status: { ...gone.status, state: 'completed' } };
+    sendToRendererMock.mockImplementation(async (_w: unknown, method: string, params: Rec) => (method === 'pane.list'
+      ? [{ id: 'pane-live', surfacePtyIds: ['pty-1'] }]
+      : { workspaceId: WS, tasks: applyTaskQueryView([live], params) }));
+    const dc = { rpc: async (_m: string, params: Rec) => ({ ok: true, workspaceId: WS, tasks: applyTaskQueryView([live, ended], params) }) } as unknown as DaemonClient;
+    const router = new RpcRouter();
+    registerA2aRpc(router, () => ({}) as BrowserWindow, {} as ClaudeWorker, { getDaemonClient: () => dc });
+    const list = await query(router, { view: 'page' });
+    expect(list.tasks.find((t: Rec) => t.id === ended.id)?.orphaned).toBeUndefined();
+  });
+
   it('flags nothing when the workspace is not in the pane tree yet (empty pane list)', async () => {
     const router = setupPanes([]);
     const list = await query(router, { view: 'page' });
