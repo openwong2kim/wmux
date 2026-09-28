@@ -258,13 +258,15 @@ describe('workerLaunchCommand (F15)', { timeout: SHELL_SPAWN_TIMEOUT_MS }, () =>
     const cmd = workerLaunchCommand('claude', undefined, POSIX).command;
     expect(cmd.startsWith('env ')).toBe(false);
     expect(cmd).toContain('unset ANTHROPIC_MODEL; ');
+  });
+
+  // POSIX-only: this is the POSIX launch form, which a Windows pane never runs,
+  // and spawning `bash` on windows-latest blew even a 30 s budget without saying
+  // anything about the command. The string assertions above run everywhere.
+  it.skipIf(process.platform === 'win32')('an alias-expanding bash runs the aliased claude', () => {
     // The alias-carrying shell really does expand the word after the `;` — an
     // `env -u` form would have looked for a BINARY that is not on PATH at all.
-    // POSIX-only: this is the POSIX launch form, which a Windows pane never
-    // runs, and spawning `bash` on windows-latest blew even a 30 s budget
-    // without saying anything about the command. The string assertions above
-    // still run on every platform.
-    if (process.platform === 'win32') return;
+    const cmd = workerLaunchCommand('claude', undefined, POSIX).command;
     const script = ['shopt -s expand_aliases', "alias claude='printf ALIASED'", cmd].join('\n');
     expect(execFileSync('bash', ['-c', script], { encoding: 'utf8' })).toBe('ALIASED');
   });
