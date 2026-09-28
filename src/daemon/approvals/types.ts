@@ -207,6 +207,34 @@ export interface ApprovalRequest {
   toolUseId?: string;
   dialogKey?: string;
   keyRevisionAtCreate?: number;
+  /**
+   * How an answer reaches the agent (see DecisionChannel). Absent means the
+   * channel follows from `kind`, which is every record that predates it.
+   * Daemon-internal: `approvalWire` is an allowlist and never copies it.
+   */
+  channel?: DecisionChannel;
+  /**
+   * `channel: 'native-rpc'` only: the agent's own request this record mirrors.
+   * An answer goes back to the agent's server under `requestId`, never into
+   * the pane as keys. Daemon-internal.
+   */
+  native?: NativeDecisionRef;
+  /**
+   * The structured decision a `decision-v2` client renders and answers through
+   * `POST /api/approvals/:id/answer`. Agent-authored text inside: render it as
+   * text, never as markup.
+   */
+  form?: DecisionForm;
+  /** 32 hex. An answer must echo it (see DecisionForm). */
+  formFingerprint?: string;
+  /**
+   * A multi-key answer's progress (stepwise driver). Separate from `pressedAt`:
+   * a stepwise answer never sets it. Daemon-internal apart from the
+   * `{index,total,status}` projection a `decision-v2` client gets.
+   */
+  step?: DecisionStep;
+  /** Size and hash of a phone-typed answer text; the text itself is never stored. */
+  answerDigest?: { textBytes: number; textHash: string };
   /** Who answered — free-form caller-supplied label ('web', an operator name). */
   resolvedBy?: string;
   resolvedAt?: number;
@@ -229,6 +257,103 @@ export interface ApprovalRequest {
    * headless-terminal parse on the hook bridge's 2 s budget.
    */
   screenTail?: string;
+}
+
+/**
+ * How a decision's answer is delivered.
+ *   hook-verdict  a held PreToolUse gate, woken through the GateBroker
+ *   native-rpc    the agent's own server (OpenCode TUI plugin, Codex relay)
+ *                 answers its own request; nothing is typed into the pane
+ *   fenced-keys   keys typed into the pane behind the screen/revision fences
+ *   none          informational: answered at the terminal (decline aside)
+ */
+export type DecisionChannel = 'hook-verdict' | 'native-rpc' | 'fenced-keys' | 'none';
+
+/** The agent-side identity of a `native-rpc` decision. */
+export interface NativeDecisionRef {
+  adapter: 'opencode' | 'codex';
+  /** OpenCode requestID / Codex JSON-RPC server request id. */
+  requestId: string;
+  /** OpenCode sessionID. */
+  nativeSessionId?: string;
+  /** Codex thread id. */
+  threadId?: string;
+  /** Codex relay id. */
+  relayId?: string;
+  /** Codex ServerRequest method. */
+  method?: string;
+}
+
+/** The form kinds a daemon can produce; `/api/config` `decisionForms` lists them. */
+export type DecisionFormKind = 'permission' | 'plan' | 'questions';
+
+/**
+ * A structured decision (`decision-v2`). Options that would widen what the
+ * agent may do without asking again (a lasting rule, auto/bypass modes,
+ * OpenCode `always`, Codex accept-for-session) are never listed in `actions`.
+ */
+export interface DecisionForm {
+  v: 1;
+  kind: DecisionFormKind;
+  questions?: Array<{
+    /** 'q0', 'q1', … */
+    id: string;
+    header?: string;
+    text: string;
+    multiSelect: boolean;
+    allowOther: boolean;
+    options: Array<{ key: string; label: string }>;
+  }>;
+  actions: Array<{ id: string; label: string; needsText?: true }>;
+}
+
+/** A stepwise (multi-key) answer's progress on a record. */
+export interface DecisionStep {
+  answerId: string;
+  index: number;
+  total: number;
+  expectedRevision: number;
+  incarnation: string;
+  status: 'running' | 'partial' | 'done';
+  startedAt: number;
+}
+
+/** A validated `POST /api/approvals/:id/answer` body (see web/decisionAnswer.ts). */
+export interface DecisionAnswer {
+  formFingerprint: string;
+  clientAnswerId: string;
+  action?: string;
+  answers?: Array<{ questionId: string; keys: string[]; other?: string }>;
+  text?: string;
+}
+
+/** What the daemon asks a native adapter to do with one request. */
+export interface NativeDecisionReply {
+  decision: ApprovalDecision;
+}
+
+/**
+ * A native adapter's answer. `not-found`: the agent no longer has the
+ * request (answered locally, or gone). `unavailable`: the agent's server could
+ * not be reached — nothing was delivered.
+ */
+export type NativeDecisionOutcome = 'ok' | 'not-found' | 'unavailable';
+
+/**
+ * Who must hold the device's input grant to act on this record. True for a
+ * permission gate or a terminal dialog (either one lets a tool run), for any
+ * native decision (the agent's server acts on it), and for every v2 answer
+ * (stepwise keys or phone-typed text). The one read-only exception left is
+ * the single-key approve of a screen-backed, non-native `awaiting_input`.
+ */
+export function needsInputGrant(
+  record: Pick<ApprovalRequest, 'kind' | 'channel'>,
+  via: 'resolve' | 'decline' | 'answer' = 'resolve',
+): boolean {
+  if (via !== 'resolve') return true;
+  return record.kind === 'awaiting_permission'
+    || record.kind === 'terminal_prompt'
+    || record.channel === 'native-rpc';
 }
 
 /**
@@ -543,6 +668,14 @@ export interface ApprovalResolveParams {
    * must be 'deny' and `choiceKey` absent.
    */
   terminalPromptDecline?: typeof TERMINAL_PROMPT_WEB_DECLINE;
+  /**
+   * Set by the web answer route (`POST /api/approvals/:id/answer`) for a
+   * caller that declared `decision-v2`. Same Symbol discipline as the markers
+   * above: a JSON caller can never carry it.
+   */
+  decisionV2Answer?: typeof DECISION_V2_WEB_ANSWER;
+  /** The validated v2 answer body; only honoured together with `decisionV2Answer`. */
+  decisionAnswer?: DecisionAnswer;
 }
 
 /** The web route's marker for a capable `terminal_prompt` answer (see above). */
@@ -554,6 +687,13 @@ export const TERMINAL_PROMPT_WEB_ANSWER: unique symbol = Symbol('terminal-prompt
  * answer marker — JSON callers can never carry it.
  */
 export const TERMINAL_PROMPT_WEB_DECLINE: unique symbol = Symbol('terminal-prompt-web-decline');
+
+/**
+ * The web answer route's marker for a `decision-v2` answer. A native or
+ * stepwise resolve requires one of the three web markers, so the pipe RPC
+ * (`daemon.approvals.resolve`) and MCP `approval_press` can never answer one.
+ */
+export const DECISION_V2_WEB_ANSWER: unique symbol = Symbol('decision-v2-web-answer');
 
 /**
  * `GET /api/approvals/:id/detail` — the full text a pending, bound

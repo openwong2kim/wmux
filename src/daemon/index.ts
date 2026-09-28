@@ -13,6 +13,8 @@ import { workspaceAccountEnv } from './phone/workspaceAccountEnv';
 import { DesktopPhoneBridge } from './phone/DesktopPhoneBridge';
 import { RunHistoryStore } from './history/RunHistoryStore';
 import { InputReceiptStore } from './web/InputReceiptStore';
+import { AnswerReceiptStore } from './approvals/AnswerReceiptStore';
+import { coercePhoneDecisions } from './approvals/decisionConfig';
 import { SCROLLBACK_ROWS } from './web/hostSearch';
 import { recoveryCwd, isWslShell, isWslCwdMissingError } from '../shared/wsl';
 import fs from 'node:fs';
@@ -168,6 +170,10 @@ let runHistory: RunHistoryStore | null = null;
 let inputReceipts: InputReceiptStore | null = null;
 function getInputReceipts(): InputReceiptStore {
   return inputReceipts ??= new InputReceiptStore(getWmuxDir());
+}
+let answerReceipts: AnswerReceiptStore | null = null;
+function getAnswerReceipts(): AnswerReceiptStore {
+  return answerReceipts ??= new AnswerReceiptStore(getWmuxDir());
 }
 function getRunHistory(): RunHistoryStore {
   return runHistory ??= new RunHistoryStore(getWmuxDir());
@@ -388,6 +394,10 @@ function sessionTextReader(sessionManager: DaemonSessionManager) {
 function createApprovalRegistry(sessionManager: DaemonSessionManager): ApprovalRegistry {
   return new ApprovalRegistry({
     wmuxDir,
+    // The `phoneDecisions` kill switch, read on every use like `gate`. No
+    // native adapter is wired yet (`answerNative`), so a native record could
+    // not be answered from a phone even with the switch on.
+    phoneDecisions: () => coercePhoneDecisions(loadConfig().phoneDecisions),
     readScreenTail: async (sessionId) => {
       const managed = sessionManager.getSession(sessionId);
       if (!managed) return null;
@@ -573,6 +583,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
         devices: getDeviceStore(),
         runHistory: getRunHistory,
         inputReceipts: getInputReceipts,
+        answerReceipts: getAnswerReceipts,
         desktop: () => desktopPhoneBridge,
         agentLaunchOptions: installedAgentLaunchOptions,
         agentSettings: (id,authorized,choice)=>paneCodexSettings({
@@ -2806,6 +2817,7 @@ function registerRpcHandlers(
       devices: getDeviceStore(),
       runHistory: getRunHistory,
       inputReceipts: getInputReceipts,
+      answerReceipts: getAnswerReceipts,
         desktop: () => desktopPhoneBridge,
         agentLaunchOptions: installedAgentLaunchOptions,
         agentSettings: (id,authorized,choice)=>paneCodexSettings({

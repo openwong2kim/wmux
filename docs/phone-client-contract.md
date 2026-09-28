@@ -1278,6 +1278,118 @@ picking the first. The daemon sends exactly that digit — no CR. This removes t
 Fetch `/api/approvals` on connect and on any `approval` event; the SSE is a
 nudge, not the source of truth.
 
+### Decision forms (v2)
+
+An additive wire for decisions one key cannot answer (a plan's feedback, a
+multi-select, an agent's own permission request). `protocolVersion` does not
+change: it is negotiated with a capability, and a client that declares none of
+the new tokens reads exactly the bytes it read before.
+
+**Capabilities.** `X-Wmux-Client-Caps` gains `decision-v2` (understands `form`
+records and answers them through `/answer`) and `chat-cancel` (reserved for
+`POST /api/sessions/<id>/chat/cancel`, which does not exist yet). Keep sending
+`terminal-prompt-answer` and `terminal-prompt-decline`; they still govern the
+v1 paths.
+
+**`/api/config`.** Next to `terminalPromptDetail` / `terminalPromptDecline`
+(so only when approvals are wired):
+
+| Key | Meaning |
+| --- | --- |
+| `decisionForms` | The form kinds this daemon produces: any of `permission`, `plan`, `questions`. **Empty today** — offer no v2 answer while it is |
+| `chatCancel` | Whether the chat cancel route exists. `false` today |
+
+**The record.** For a `decision-v2` caller, a record that can still be
+answered may carry:
+
+```json
+{
+  "form": {
+    "v": 1,
+    "kind": "permission" | "plan" | "questions",
+    "questions": [{ "id": "q0", "header": "…", "text": "…", "multiSelect": false,
+                    "allowOther": true, "options": [{ "key": "1", "label": "…" }] }],
+    "actions": [{ "id": "approve", "label": "…" }, { "id": "feedback", "label": "…", "needsText": true }]
+  },
+  "formFingerprint": "<32 hex>",
+  "step": { "index": 2, "total": 5, "status": "running" | "partial" | "done" }
+}
+```
+
+Every string inside `form` is agent-authored: render it as text. Options that
+would widen what the agent may do without asking again (a lasting rule,
+auto/bypass modes, "always") are never offered as `actions`. The SSE
+`approval` event does **not** carry the form — it stays a content-free nudge
+in the shared replay window; read the form from `/api/approvals`.
+
+**Agent-native decisions.** Some agents hold a permission request on their own
+server (OpenCode, Codex). The daemon answers those through that server, never
+by typing into the pane. To a client without `decision-v2`, such a permission
+is a `terminal_prompt` whose `choices` are exactly
+`[{"key":"1","label":"Yes"},{"key":"2","label":"No"}]` and whose
+`promptFingerprint` is the form's, so the v1 answer path works unchanged. Its
+200 is `{state: 'resolved', durable}` with **no** `pressedAt` (nothing was
+typed). It has no `hasDetail`, and `/detail` is 404 for it. `/decline`
+rejects it through the agent's server — no Esc — and answers
+`via: 'native'`; a native question (`awaiting_input`) can be declined too, and
+a `decision-v2` caller may decline one without `terminal-prompt-decline`. Raw
+`POST /api/input` to its pane is not refused with `terminal-prompt-active`.
+Every native decision needs the input grant, on every route (403 otherwise).
+Only a phone or browser can answer one: the desktop answers it in the agent's
+own terminal.
+
+#### `POST /api/approvals/<id>/answer`
+
+Requires `decision-v2` (else 501 `no-capability`) and the input grant (403),
+re-checked after the body and immediately before the answer takes effect. The
+orchestrator brain's pane is a 404 for a device. Body — unknown fields are 400:
+
+```json
+{ "formFingerprint": "<32 hex>", "clientAnswerId": "<16-128 of [A-Za-z0-9-]>",
+  "action": "<actions[].id>",
+  "answers": [{ "questionId": "q0", "keys": ["1", "3"], "other": "text" }],
+  "text": "feedback text" }
+```
+
+At least one of `action` / `answers`. `text` and `other` refuse every C0
+control character (newline included — it would submit a dialog field early)
+and DEL, whitespace-only text, and more than 2,000 UTF-16 units. The daemon
+never stores the text itself.
+
+| Status | Body | Meaning |
+| --- | --- | --- |
+| 200 | `{state, effect: 'complete', durable}` | Done |
+| 202 | `{state: 'pending', replayed: true}` | The same `clientAnswerId` is still running — poll the receipt |
+| 400 | `{error: 'invalid-body' \| 'invalid-text' \| 'invalid-choice' \| 'invalid-prompt-fingerprint'}` | Nothing happened |
+| 401 | `{error: 'authorization-expired'}` | |
+| 403 | read-only | No input grant |
+| 404 | `{error: 'not-found'}` | No such request (or a brain pane) |
+| 409 | `{error: 'already-resolved' \| 'already-answered' \| 'prompt-changed', effect: 'none' \| 'partial', step?}` | Someone else answered, or the screen moved (`partial`: some keys of a stepwise answer were typed; the record stays pending and answers `already-answered` from then on) |
+| 409 | `{error: 'answer-id-reused', effect: 'none'}` | This `clientAnswerId` was used for another body |
+| 409 | `{error: 'answer-uncertain', effect: 'uncertain'}` | It was running when the daemon stopped; it may or may not have landed and is never re-run |
+| 410 | `{error: 'expired' \| 'prompt-gone', effect: 'none'}` | The request is gone (an agent that no longer holds it included) |
+| 425 | `{error: 'answer-too-soon', effect: 'none'}` | Within 1.5 s of the request appearing |
+| 429 | `{error: 'answer-receipts-full', effect: 'none'}` | 512 live receipts for this caller |
+| 501 | `{error: 'answer-in-terminal', reason}` | `reason` as for the v1 route. **Every answer is `unsupported-shape` today** (no form producer yet) |
+| 503 | `{error: 'authorization-unconfirmed' \| 'approvals unavailable' \| 'answer-receipts-unavailable'}` | Retry |
+
+A final response is kept for 24 hours under `(caller, clientAnswerId)`: the
+same id and body again returns it with `replayed: true`. A response you may
+retry past (401, 403, 425, 5xx) is not kept, so the retry is checked afresh.
+
+#### `GET /api/approvals/<id>/answer/<clientAnswerId>`
+
+The caller's own receipt (another device's is a 404):
+`{clientAnswerId, approvalId, state: 'inFlight' | 'done' | 'partial' | 'refused' | 'uncertain', effect?, status?, result?}`,
+where `status` / `result` are the stored final response.
+
+### Chat cancel
+
+Reserved: the `chat-cancel` capability is parsed and `/api/config` reports
+`chatCancel: false`. `POST /api/sessions/<id>/chat/cancel` and
+`capabilities.cancel: true` on the chat object are not served yet; the chat
+object keeps `cancel: false` for every client.
+
 ---
 
 ## 7. Push

@@ -44,8 +44,15 @@ import type { DaemonSessionManager, ManagedSession } from '../DaemonSessionManag
 // headless-terminal dependency chain stay out of this module. The web server is
 // a CONSUMER: it lists, it resolves, it republishes lifecycle events. It never
 // constructs a request, and it never decides what bytes a decision means.
-import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest } from '../approvals/types';
-import { TERMINAL_PROMPT_WEB_ANSWER, TERMINAL_PROMPT_WEB_DECLINE } from '../approvals/types';
+import type { ApprovalEvent, ApprovalRegistryApi, ApprovalRequest, ApprovalResolveResult } from '../approvals/types';
+import {
+  DECISION_V2_WEB_ANSWER,
+  TERMINAL_PROMPT_WEB_ANSWER,
+  TERMINAL_PROMPT_WEB_DECLINE,
+  needsInputGrant,
+} from '../approvals/types';
+import { receiptHash, type AnswerReceiptResponse, type AnswerReceiptStore } from '../approvals/AnswerReceiptStore';
+import { parseDecisionAnswerBody } from './decisionAnswer';
 import { decisionForChoiceLabel } from '../approvals/terminalPromptParse';
 // Type only — the projector's implementation (transcript parsing, watch state,
 // fs watching) stays out of this module. The web server is a STATELESS consumer
@@ -237,7 +244,11 @@ function decodeTurnCursor(
  *   GET  /api/approvals/:id/detail   the full command of a pending, bound
  *                              `terminal_prompt` (≤64 KB) + its hash
  *   POST /api/approvals/:id/decline  cancel a `terminal_prompt` dialog with one
- *                              Esc, only while it is pending and on screen
+ *                              Esc, only while it is pending and on screen (a
+ *                              native decision: rejected by the agent's server)
+ *   POST /api/approvals/:id/answer   a `decision-v2` answer, journaled under the
+ *                              client's `clientAnswerId`; input grant required
+ *   GET  /api/approvals/:id/answer/:clientAnswerId   the caller's own receipt
  */
 
 export interface WebTerminalStartOptions {
@@ -552,6 +563,8 @@ interface WebTerminalServerDeps {
   desktop?: () => DesktopPhoneBridge | null;
   runHistory?: () => RunHistoryStore;
   inputReceipts?: () => InputReceiptStore;
+  /** Receipts for `POST /api/approvals/:id/answer`. Absent ⇒ that route is 503. */
+  answerReceipts?: () => AnswerReceiptStore;
   sessionManager: DaemonSessionManager;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /**
@@ -2319,6 +2332,11 @@ export class WebTerminalServer {
           ? {
               terminalPromptDetail: this.opts?.allowTranscript === true,
               terminalPromptDecline: this.mayInput(principal),
+              // decision-v2 (docs/phone-client-contract.md): the form kinds
+              // this daemon produces — none yet, so a client offers no v2
+              // answer — and whether `/chat/cancel` exists (not yet).
+              decisionForms: [],
+              chatCancel: false,
             }
           : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
@@ -2479,6 +2497,15 @@ export class WebTerminalServer {
         ...clientCaps(req),
         terminalPromptDetail: this.opts?.allowTranscript === true,
       });
+    }
+    // Before the `/api/approvals/:id` catch-all below, which would read
+    // `:id/answer` as an id with a slash in it.
+    const answerRoute = /^\/api\/approvals\/([^/]+)\/answer(?:\/([^/]+))?$/.exec(p);
+    if (answerRoute && req.method === 'POST' && answerRoute[2] === undefined) {
+      return this.handleApprovalAnswer(req, res, answerRoute[1]!, principal, url);
+    }
+    if (answerRoute && req.method === 'GET' && answerRoute[2] !== undefined) {
+      return this.handleAnswerReceipt(res, answerRoute[1]!, answerRoute[2], principal);
     }
     if (req.method === 'GET' && p.startsWith('/api/approvals/') && p.endsWith('/detail')) {
       return this.handleApprovalDetail(req, res, p.slice('/api/approvals/'.length, -'/detail'.length), principal);
@@ -5448,7 +5475,11 @@ export class WebTerminalServer {
     if (body === '\x1b' || body === '\x03') return false;
     const approvals = this.deps.approvals;
     if (!approvals) return false;
-    return approvals.list().pending.some((r) => r.kind === 'terminal_prompt' && r.sessionId === sessionId);
+    // A native decision is not a dialog typed keys can answer behind the
+    // fences: the agent's server judges its own input, as it does today.
+    return approvals.list().pending.some(
+      (r) => r.kind === 'terminal_prompt' && r.sessionId === sessionId && r.channel !== 'native-rpc',
+    );
   }
 
   private handleInput(
@@ -6033,7 +6064,10 @@ export class WebTerminalServer {
     // replaced before anyone pressed (every key in the pane and every late
     // parse mints one) and a card that expired when its dialog closed are not
     // answers anyone gave from here, and filled the list with empty rows.
-    const answeredHere = (r: ApprovalRequest): boolean => r.kind !== 'terminal_prompt' || r.pressedAt !== undefined;
+    // A native decision is answered through the agent's server, with no
+    // `pressedAt`: resolved is the answer.
+    const answeredHere = (r: ApprovalRequest): boolean => r.kind !== 'terminal_prompt' || r.pressedAt !== undefined
+      || (r.channel === 'native-rpc' && r.state === 'resolved');
     return this.json(res, 200, {
       pending: listed.pending.filter(visible).map((r) => approvalWire(r, caps)),
       recentlyResolved: listed.recentlyResolved.filter(visible).filter(answeredHere).map((r) => approvalWire(r, caps)),
@@ -6132,13 +6166,16 @@ export class WebTerminalServer {
     }
     // A gate approval runs the tool; a terminal-prompt answer types a key into
     // the pane. Both need the same grant as typing.
-    if ((record?.kind === 'awaiting_permission' || record?.kind === 'terminal_prompt') && !this.mayInput(principal)) {
+    // A native decision is acted on by the agent's own server: same grant.
+    if (record && needsInputGrant(record) && !this.mayInput(principal)) {
       return this.refuseInput(
         res,
         principal,
-        record.kind === 'terminal_prompt'
-          ? 'answering a terminal prompt types into the pane — it needs the same grant as typing'
-          : 'approving a tool permission runs the tool — it needs the same grant as typing',
+        record.channel === 'native-rpc'
+          ? 'answering an agent\'s own prompt acts on the agent — it needs the same grant as typing'
+          : record.kind === 'terminal_prompt'
+            ? 'answering a terminal prompt types into the pane — it needs the same grant as typing'
+            : 'approving a tool permission runs the tool — it needs the same grant as typing',
       );
     }
 
@@ -6197,7 +6234,7 @@ export class WebTerminalServer {
       if (current && fresh.principal.kind === 'device' && this.isBrainApproval(current.sessionId)) {
         return this.json(res, 404, { error: 'not-found' });
       }
-      if ((current?.kind === 'awaiting_permission' || current?.kind === 'terminal_prompt') && !this.mayInput(fresh.principal)) {
+      if (current && needsInputGrant(current) && !this.mayInput(fresh.principal)) {
         return this.refuseInput(res, fresh.principal, 'Input permission changed');
       }
       // And once more from inside the registry's mutation link, which can queue
@@ -6207,7 +6244,7 @@ export class WebTerminalServer {
       const authorize = async (record: ApprovalRequest): Promise<'ok' | 'expired' | 'read-only'> => {
         const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
         if (!now.ok || !sameCaller(now.principal)) return 'expired';
-        if ((record.kind === 'awaiting_permission' || record.kind === 'terminal_prompt') && !this.mayInput(now.principal)) {
+        if (needsInputGrant(record) && !this.mayInput(now.principal)) {
           return 'read-only';
         }
         return 'ok';
@@ -6362,7 +6399,9 @@ export class WebTerminalServer {
     }
     if (!id || id.includes('/')) return this.json(res, 404, { error: 'not-found' });
     const record = approvals.list().pending.find((r) => r.id === id);
-    if (!record || record.kind !== 'terminal_prompt') return this.json(res, 404, { error: 'not-found' });
+    if (!record || record.kind !== 'terminal_prompt' || record.channel === 'native-rpc') {
+      return this.json(res, 404, { error: 'not-found' });
+    }
     if (principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
       return this.json(res, 404, { error: 'not-found' });
     }
@@ -6410,8 +6449,12 @@ export class WebTerminalServer {
     if (!record || (principal.kind === 'device' && this.isBrainApproval(record.sessionId))) {
       return this.json(res, 404, { error: 'not-found' });
     }
-    if (record.kind !== 'terminal_prompt') return this.json(res, 400, { error: 'not-a-terminal-prompt' });
-    if (!clientCaps(req).terminalPromptDecline) {
+    // A native decision (a permission or a question) is declined by the
+    // agent's own server — never an Esc — so a decision-v2 client may too.
+    const native = record.channel === 'native-rpc';
+    if (record.kind !== 'terminal_prompt' && !native) return this.json(res, 400, { error: 'not-a-terminal-prompt' });
+    const declineCaps = clientCaps(req);
+    if (!declineCaps.terminalPromptDecline && !(native && declineCaps.decisionV2)) {
       return this.json(res, 501, { error: 'answer-in-terminal', reason: 'no-capability' });
     }
     if (!this.mayInput(principal)) {
@@ -6462,7 +6505,7 @@ export class WebTerminalServer {
           return this.json(res, 200, {
             state: result.request.state,
             ...(typeof result.request.pressedAt === 'number' ? { pressedAt: result.request.pressedAt } : {}),
-            via: 'escape',
+            via: result.request.channel === 'native-rpc' ? 'native' : 'escape',
             durable: result.durable,
           });
         }
@@ -6512,6 +6555,190 @@ export class WebTerminalServer {
         }
       });
     });
+  }
+
+  /**
+   * `POST /api/approvals/:id/answer` — a `decision-v2` answer: the form's
+   * fingerprint, the client's own `clientAnswerId`, and an action, answers or
+   * text (see decisionAnswer.ts; unknown fields are 400).
+   *
+   * Only for a client that declared `decision-v2`, always with the input
+   * grant (a v2 answer can type several keys or text), re-checked after the
+   * body and from inside the registry. The orchestrator brain's pane is a 404
+   * for a device. Every answer is journaled under `(caller, clientAnswerId)`:
+   * a retry while it runs is 202, after it the same final response again, a
+   * different body under the same id 409 `answer-id-reused`, and one that was
+   * running when the daemon stopped 409 `answer-uncertain` — never re-run.
+   *
+   * No form producer exists yet, so the registry refuses every answer with
+   * 501 `answer-in-terminal` / `unsupported-shape` after its lifecycle checks.
+   */
+  private handleApprovalAnswer(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    rawId: string,
+    principal: WebPrincipal,
+    url: URL,
+  ): void {
+    const approvals = this.deps.approvals;
+    if (!approvals) return this.json(res, 503, { error: 'approvals unavailable' });
+    let id: string;
+    try {
+      id = decodeURIComponent(rawId);
+    } catch {
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    if (!id || id.includes('/')) return this.json(res, 404, { error: 'not-found' });
+    const find = (): ApprovalRequest | undefined => {
+      const listed = approvals.list();
+      return listed.pending.find((r) => r.id === id) ?? listed.recentlyResolved.find((r) => r.id === id);
+    };
+    const record = find();
+    if (!record || (principal.kind === 'device' && this.isBrainApproval(record.sessionId))) {
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    if (!clientCaps(req).decisionV2) {
+      return this.json(res, 501, { error: 'answer-in-terminal', reason: 'no-capability' });
+    }
+    if (needsInputGrant(record, 'answer') && !this.mayInput(principal)) {
+      return this.refuseInput(res, principal, 'answering a decision acts on the agent — it needs the same grant as typing');
+    }
+    this.readJsonBody(req, res, (body) => {
+      void (async () => {
+        const parsed = parseDecisionAnswerBody(body);
+        if (!parsed.ok) return this.json(res, 400, { error: parsed.error });
+        const answer = parsed.answer;
+        const sameCaller = (now: WebPrincipal): boolean =>
+          now.kind === 'operator'
+            ? principal.kind === 'operator'
+            : principal.kind === 'device' && now.deviceId === principal.deviceId;
+        const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+        if (!fresh.ok || !sameCaller(fresh.principal)) return this.json(res, 401, { error: 'authorization-expired' });
+        const current = find();
+        if (!current || (fresh.principal.kind === 'device' && this.isBrainApproval(current.sessionId))) {
+          return this.json(res, 404, { error: 'not-found' });
+        }
+        if (needsInputGrant(current, 'answer') && !this.mayInput(fresh.principal)) {
+          return this.refuseInput(res, fresh.principal, 'Input permission changed');
+        }
+        let receipts: AnswerReceiptStore;
+        try {
+          if (!this.deps.answerReceipts) return this.json(res, 503, { error: 'answer-receipts-unavailable' });
+          receipts = this.deps.answerReceipts();
+        } catch (err) {
+          this.deps.log('warn', `[web] answer receipts unavailable: ${errMsg(err)}`);
+          return this.json(res, 503, { error: 'answer-receipts-unavailable' });
+        }
+        const owner = answerOwner(fresh.principal);
+        let begun;
+        try {
+          begun = await receipts.begin(owner, answer.clientAnswerId, id, receiptHash([id, answer]));
+        } catch (err) {
+          this.deps.log('warn', `[web] answer receipt write failed: ${errMsg(err)}`);
+          return this.json(res, 503, { error: 'answer-receipts-unavailable' });
+        }
+        switch (begun.kind) {
+          case 'in-flight':
+            return this.json(res, 202, { state: 'pending', replayed: true });
+          case 'replay':
+            return this.json(res, begun.response.status, { ...begun.response.body, replayed: true });
+          case 'reused':
+            return this.json(res, 409, { error: 'answer-id-reused', effect: 'none' });
+          case 'uncertain':
+            return this.json(res, 409, { error: 'answer-uncertain', effect: 'uncertain' });
+          case 'full':
+            return this.json(res, 429, { error: 'answer-receipts-full', effect: 'none' });
+          case 'new':
+            break;
+        }
+        const authorize = async (r: ApprovalRequest): Promise<'ok' | 'expired' | 'read-only'> => {
+          const now = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+          if (!now.ok || !sameCaller(now.principal)) return 'expired';
+          return needsInputGrant(r, 'answer') && !this.mayInput(now.principal) ? 'read-only' : 'ok';
+        };
+        let response: AnswerReceiptResponse;
+        try {
+          const result = await approvals.resolve({
+            id,
+            // Not read on the v2 path: the answer's action decides.
+            decision: 'approve',
+            resolvedBy: describePrincipal(fresh.principal),
+            // Set HERE, for a client that declared the capability — never read from the body.
+            decisionV2Answer: DECISION_V2_WEB_ANSWER,
+            decisionAnswer: answer,
+            authorize,
+          });
+          response = decisionAnswerResponse(result);
+        } catch (err) {
+          this.deps.log('warn', `[web] decision answer threw: ${errMsg(err)}`);
+          response = { status: 500, body: { error: 'approvals unavailable' } };
+        }
+        // Only a final outcome is kept; one the caller may retry past is released.
+        if (ANSWER_RETRYABLE_STATUSES.has(response.status)) {
+          await receipts.release(owner, answer.clientAnswerId);
+        } else {
+          await receipts.finish(
+            owner,
+            answer.clientAnswerId,
+            response.status === 200 ? 'done' : response.body['effect'] === 'partial' ? 'partial' : 'refused',
+            response,
+          );
+        }
+        if (response.status === 403) return this.refuseInput(res, fresh.principal, 'Input permission changed');
+        return this.json(res, response.status, response.body);
+      })().catch((err: unknown) => {
+        this.deps.log('warn', `[web] decision answer failed: ${errMsg(err)}`);
+        try {
+          this.json(res, 500, { error: 'approvals unavailable' });
+        } catch {
+          /* socket already gone */
+        }
+      });
+    });
+  }
+
+  /**
+   * `GET /api/approvals/:id/answer/:clientAnswerId` — the caller's OWN receipt
+   * for a v2 answer (another device's is a 404, as is an unknown id). A phone
+   * that lost the POST's response reads the outcome here instead of guessing.
+   */
+  private handleAnswerReceipt(
+    res: http.ServerResponse,
+    rawId: string,
+    rawAnswerId: string,
+    principal: WebPrincipal,
+  ): void {
+    const approvals = this.deps.approvals;
+    if (!approvals || !this.deps.answerReceipts) return this.json(res, 503, { error: 'approvals unavailable' });
+    let id: string;
+    let clientAnswerId: string;
+    try {
+      id = decodeURIComponent(rawId);
+      clientAnswerId = decodeURIComponent(rawAnswerId);
+    } catch {
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    if (!id || !/^[A-Za-z0-9-]{16,128}$/.test(clientAnswerId)) return this.json(res, 404, { error: 'not-found' });
+    const listed = approvals.list();
+    const record = listed.pending.find((r) => r.id === id) ?? listed.recentlyResolved.find((r) => r.id === id);
+    if (record && principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
+      return this.json(res, 404, { error: 'not-found' });
+    }
+    let receipt;
+    try {
+      receipt = this.deps.answerReceipts().lookup(answerOwner(principal), clientAnswerId);
+    } catch (err) {
+      this.deps.log('warn', `[web] answer receipts unavailable: ${errMsg(err)}`);
+      return this.json(res, 503, { error: 'answer-receipts-unavailable' });
+    }
+    if (!receipt || receipt.approvalId !== id) return this.json(res, 404, { error: 'not-found' });
+    return this.json(res, 200, {
+      clientAnswerId,
+      approvalId: id,
+      state: receipt.state,
+      ...(receipt.state === 'uncertain' ? { effect: 'uncertain' } : {}),
+      ...(receipt.result ? { status: receipt.result.status, result: receipt.result.body } : {}),
+    }, { 'Cache-Control': 'no-store' });
   }
 
   /**
@@ -7807,11 +8034,17 @@ export interface ClientCaps {
   terminalPromptDecline?: boolean;
   /** Set by the server, not the client: `/detail` is open to this caller (`--allow-transcript`). */
   terminalPromptDetail?: boolean;
+  /** Understands `form` records and answers them through `POST /api/approvals/:id/answer`. */
+  decisionV2?: boolean;
+  /** Uses `POST /api/sessions/:id/chat/cancel` (no route yet: parsed, not acted on). */
+  chatCancel?: boolean;
 }
 
 export const CLIENT_CAPS_HEADER = 'x-wmux-client-caps';
 export const CLIENT_CAP_TERMINAL_PROMPT_ANSWER = 'terminal-prompt-answer';
 export const CLIENT_CAP_TERMINAL_PROMPT_DECLINE = 'terminal-prompt-decline';
+export const CLIENT_CAP_DECISION_V2 = 'decision-v2';
+export const CLIENT_CAP_CHAT_CANCEL = 'chat-cancel';
 
 export function clientCaps(req: http.IncomingMessage): ClientCaps {
   const raw = req.headers[CLIENT_CAPS_HEADER];
@@ -7820,6 +8053,69 @@ export function clientCaps(req: http.IncomingMessage): ClientCaps {
   return {
     terminalPromptAnswer: tokens.has(CLIENT_CAP_TERMINAL_PROMPT_ANSWER),
     terminalPromptDecline: tokens.has(CLIENT_CAP_TERMINAL_PROMPT_DECLINE),
+    decisionV2: tokens.has(CLIENT_CAP_DECISION_V2),
+    chatCancel: tokens.has(CLIENT_CAP_CHAT_CANCEL),
+  };
+}
+
+/** Who a v2 answer receipt belongs to. */
+function answerOwner(principal: WebPrincipal): string {
+  return principal.kind === 'device' ? `device:${principal.deviceId}` : 'operator';
+}
+
+/** Statuses a caller may retry past: their answer receipt is released, not kept. */
+const ANSWER_RETRYABLE_STATUSES: ReadonlySet<number> = new Set([401, 403, 425, 500, 503]);
+
+/** A v2 answer's registry result as the HTTP response it is journaled and replayed as. */
+function decisionAnswerResponse(result: ApprovalResolveResult): AnswerReceiptResponse {
+  if (result.ok) {
+    return { status: 200, body: { state: result.request.state, effect: 'complete', durable: result.durable } };
+  }
+  switch (result.reason) {
+    case 'already-resolved':
+      return { status: 409, body: { error: 'already-resolved', ...(result.resolvedBy ? { resolvedBy: result.resolvedBy } : {}), effect: 'none' } };
+    case 'already-answered':
+    case 'prompt-changed':
+    case 'prompt-unverified':
+      return { status: 409, body: { error: result.reason, effect: 'none' } };
+    case 'expired':
+    case 'prompt-gone':
+      return { status: 410, body: { error: result.reason, ...(result.request ? { state: result.request.state } : {}), effect: 'none' } };
+    case 'answer-too-soon':
+      return { status: 425, body: { error: 'answer-too-soon', effect: 'none' } };
+    case 'answer-in-terminal':
+      return { status: 501, body: { error: 'answer-in-terminal', reason: result.answerRefusal } };
+    case 'needs-v2':
+    case 'unsupported-agent':
+      return { status: 501, body: { error: 'answer-in-terminal', reason: result.reason } };
+    case 'invalid-choice':
+    case 'invalid-choice-key':
+      return { status: 400, body: { error: 'invalid-choice' } };
+    case 'not-found':
+      return { status: 404, body: { error: 'not-found' } };
+    case 'unauthorized':
+      return { status: 401, body: { error: 'authorization-expired' } };
+    case 'input-revoked':
+      return { status: 403, body: { error: 'input-revoked' } };
+    case 'authorization-unconfirmed':
+      return { status: 503, body: { error: 'authorization-unconfirmed' } };
+    default:
+      return { status: 500, body: { error: String(result.reason) } };
+  }
+}
+
+/**
+ * The `decision-v2` projection of a record: its form and fingerprint while it
+ * can still be answered, and a stepwise answer's progress. Nothing for a
+ * client that did not declare `decision-v2`, so every older client's bytes are
+ * unchanged.
+ */
+function decisionV2Wire(r: ApprovalRequest, caps: ClientCaps): Record<string, unknown> {
+  if (!caps.decisionV2) return {};
+  const open = r.state === 'pending' && r.pressedAt === undefined && !!r.form && !!r.formFingerprint;
+  return {
+    ...(open ? { form: r.form, formFingerprint: r.formFingerprint } : {}),
+    ...(r.step ? { step: { index: r.step.index, total: r.step.total, status: r.step.status } } : {}),
   };
 }
 
@@ -7854,8 +8150,10 @@ function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAns
         : {}),
       ...(answerable ? { choices: r.choices, promptFingerprint: r.promptFingerprint } : {}),
       // The full command is at `GET /api/approvals/:id/detail` (an answerable
-      // record is always bound to its call, so it always has one).
-      ...(answerable && caps.terminalPromptDetail ? { hasDetail: true } : {}),
+      // record is always bound to its call, so it always has one). A native
+      // decision has no screen dialog and so no detail.
+      ...(answerable && caps.terminalPromptDetail && r.channel !== 'native-rpc' ? { hasDetail: true } : {}),
+      ...decisionV2Wire(r, caps),
       ...(typeof r.pressedAt === 'number' ? { pressedAt: r.pressedAt } : {}),
       ...(r.decision ? { decision: r.decision } : {}),
       ...(r.selectedChoiceKey ? { selectedChoiceKey: r.selectedChoiceKey } : {}),
@@ -7894,6 +8192,7 @@ function approvalWire(r: ApprovalRequest, caps: ClientCaps = { terminalPromptAns
     // shell command with nothing on screen saying which one.
     ...(r.toolName ? { toolName: r.toolName } : {}),
     ...(r.toolInputSummary ? { toolInputSummary: r.toolInputSummary } : {}),
+    ...decisionV2Wire(r, caps),
   };
 }
 

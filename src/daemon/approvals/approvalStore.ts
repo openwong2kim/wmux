@@ -144,6 +144,9 @@ function coerceRequest(raw: unknown): ApprovalRequest | null {
     out.promptFingerprint = o['promptFingerprint'];
   }
   if (typeof o['pressedAt'] === 'number' && Number.isFinite(o['pressedAt'])) out.pressedAt = o['pressedAt'];
+  // Kept so a native answer given before a restart still reads as one in the
+  // history (it has no `pressedAt`). A closed set, like `kind`.
+  if (o['channel'] === 'native-rpc' || o['channel'] === 'none') out.channel = o['channel'];
   return out;
 }
 

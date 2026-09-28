@@ -6,6 +6,7 @@ import type { AgentSlug } from '../shared/events';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { LanLinkConfig } from '../shared/lanlink';
 import type { GateConfig } from './approvals/gateConfig';
+import type { PhoneDecisionsConfig } from './approvals/decisionConfig';
 import type { NotifySinkConfig } from './push/WebhookSink';
 import type { PushPresenceSuppressionConfig } from './push/presence';
 
@@ -292,6 +293,11 @@ export interface DaemonConfig {
    * entirely (same as `WMUX_GATE=0`, but durable).
    */
   gate?: GateConfig;
+  /**
+   * Kill switch for the phone decision channels. Absent ⇒ both on; only an
+   * explicit `false` turns one off (see approvals/decisionConfig.ts).
+   */
+  phoneDecisions?: Partial<PhoneDecisionsConfig>;
   /**
    * Outbound notification sinks — a webhook or ntfy URL that gets a small
    * plaintext ping when an approval is raised or an agent turn ends. For people

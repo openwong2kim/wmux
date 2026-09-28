@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import { DesktopPhoneBridge, DesktopPhoneError } from '../../phone/DesktopPhoneBridge';
 import { RunHistoryStore } from '../../history/RunHistoryStore';
 import { InputReceiptStore } from '../InputReceiptStore';
+import { AnswerReceiptStore } from '../../approvals/AnswerReceiptStore';
 import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, SessionAuthorizationExpiredError, type WebDeviceResolver } from '../WebTerminalServer';
@@ -34,7 +35,7 @@ import type {
   ApprovalRequest,
   ApprovalResolveResult,
 } from '../../approvals/types';
-import { TERMINAL_PROMPT_WEB_ANSWER, TERMINAL_PROMPT_WEB_DECLINE, type TerminalPromptDetail } from '../../approvals/types';
+import { DECISION_V2_WEB_ANSWER, TERMINAL_PROMPT_WEB_ANSWER, TERMINAL_PROMPT_WEB_DECLINE, type TerminalPromptDetail } from '../../approvals/types';
 import type { DaemonSessionManager } from '../../DaemonSessionManager';
 
 // A minimal fake of exactly what WebTerminalServer touches: getSession() (for
@@ -378,6 +379,8 @@ function makeApprovals() {
     result: ApprovalResolveResult;
     listThrows: boolean;
     beforeAuthorize?: () => void;
+    /** Held open by a test to keep a resolve in flight. */
+    hold?: Promise<void>;
     details: Map<string, TerminalPromptDetail>;
   } = {
     result: { ok: true, durable: true, request: mkApproval({ state: 'resolved', decision: 'approve', resolvedBy: 'web' }) },
@@ -399,6 +402,7 @@ function makeApprovals() {
       // against the pending record, with the same two refusals.
       const { authorize, ...recorded } = params;
       resolveCalls.push(recorded);
+      if (box.hold) await box.hold;
       const pending = records.find((r) => r.id === params.id && r.state === 'pending');
       if (authorize && pending) {
         box.beforeAuthorize?.();
@@ -458,6 +462,7 @@ describe('WebTerminalServer', () => {
   let approvalListeners: Set<(e: ApprovalEvent) => void>;
   let approvalBox: ReturnType<typeof makeApprovals>['approvalBox'];
   let deviceRoster: Map<string, { secret: string; name?: string; revoked: boolean }>;
+  let answerReceiptStore: AnswerReceiptStore;
   let deviceMintCalls: Array<{ name?: string }>;
   let pushRegistrations: Array<{ deviceId: string; apnsToken: string; publicKey: string }>;
   let liveActivityRegistrations: Array<{ deviceId: string } & Record<string, unknown>>;
@@ -538,6 +543,7 @@ describe('WebTerminalServer', () => {
     live = deps.live;
     uploadsDir = deps.uploadsDir;
     projectorMock = deps.projectorMock;
+    answerReceiptStore = new AnswerReceiptStore(deps.uploadsDir);
     server = new WebTerminalServer({
       sessionManager: deps.sessionManager,
       approvals: deps.approvals,
@@ -547,6 +553,7 @@ describe('WebTerminalServer', () => {
       uploadsDir: deps.uploadsDir,
       runHistory: () => new RunHistoryStore(deps.uploadsDir),
       inputReceipts: () => new InputReceiptStore(deps.uploadsDir),
+      answerReceipts: () => answerReceiptStore,
       desktop: () => desktopBridge,
       agentLaunchOptions: async env => { agentLaunchEnv = env; return [{agent:'claude',models:['opus','sonnet'],efforts:['low','high']}]; },
       agentSettings: async (id,authorized,choice)=>{
@@ -4891,6 +4898,303 @@ describe('WebTerminalServer', () => {
           expect(await response).toBe(409);
           expect(write).not.toHaveBeenCalled();
         } finally { spy.mockRestore(); request!.destroy(); }
+      });
+    });
+  });
+
+  describe('phone decision wire (decision-v2)', () => {
+    const FP = 'ab'.repeat(16);
+    const OLD_IOS = { 'X-Wmux-Client-Caps': 'terminal-prompt-answer, terminal-prompt-decline' };
+    const legacyRecords = (): ApprovalRequest[] => [
+      mkApproval({
+        id: 'g-tp', kind: 'terminal_prompt', toolName: 'Bash', summary: 'rm -rf build', risk: 'critical',
+        question: 'Do you want to proceed?', reason: 'Permission rule Bash(rm -rf *) requires confirmation.',
+        choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }], promptFingerprint: FP,
+        toolUseId: 'toolu_01', dialogKey: 'k', keyRevisionAtCreate: 3,
+      }),
+      mkApproval({ id: 'g-tp-info', kind: 'terminal_prompt', toolName: 'Edit', summary: 'src/a.ts', createdAt: 1_700_000_000_001 }),
+      mkApproval({
+        id: 'g-q', sessionId: 's2', question: 'Pick one', options: ['A', 'B'],
+        choices: [{ key: '1', label: 'A' }, { key: '2', label: 'B' }], createdAt: 1_700_000_000_002,
+      }),
+      mkApproval({ id: 'g-gate', sessionId: 's3', kind: 'awaiting_permission', toolName: 'Bash', toolInputSummary: 'ls', createdAt: 1_700_000_000_003 }),
+      mkApproval({
+        id: 'g-tp-done', kind: 'terminal_prompt', toolName: 'Bash', summary: 'ls', state: 'resolved', pressedAt: 1_700_000_000_010,
+        decision: 'approve', selectedChoiceKey: '1', resolvedBy: 'device Phone (d1)', resolvedAt: 1_700_000_000_011,
+        question: 'Do you want to proceed?', choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }], promptFingerprint: FP,
+      }),
+      mkApproval({ id: 'g-q-done', state: 'resolved', decision: 'deny', resolvedBy: 'web', resolvedAt: 1_700_000_000_009, question: 'Q?' }),
+    ];
+    // Captured from the tree BEFORE the decision-v2 wire existed: a client that
+    // declares none of the new capabilities must keep reading exactly this.
+    const GOLDEN_NO_CAPS =
+      '{"pending":[{"id":"g-tp","sessionId":"s1","agent":"claude","kind":"terminal_prompt","state":"pending","createdAt":1700000000000,"toolName":"Bash","summary":"rm -rf build","risk":"critical"},{"id":"g-tp-info","sessionId":"s1","agent":"claude","kind":"terminal_prompt","state":"pending","createdAt":1700000000001,"toolName":"Edit","summary":"src/a.ts"},{"id":"g-q","sessionId":"s2","agent":"claude","kind":"awaiting_input","state":"pending","createdAt":1700000000002,"question":"Pick one","options":["A","B"],"choices":[{"key":"1","label":"A"},{"key":"2","label":"B"}]},{"id":"g-gate","sessionId":"s3","agent":"claude","kind":"awaiting_permission","state":"pending","createdAt":1700000000003,"toolName":"Bash","toolInputSummary":"ls"}],"recentlyResolved":[{"id":"g-tp-done","sessionId":"s1","agent":"claude","kind":"terminal_prompt","state":"resolved","createdAt":1700000000000,"toolName":"Bash","summary":"ls","pressedAt":1700000000010,"decision":"approve","selectedChoiceKey":"1","resolvedBy":"device Phone (d1)","resolvedAt":1700000000011},{"id":"g-q-done","sessionId":"s1","agent":"claude","kind":"awaiting_input","state":"resolved","createdAt":1700000000000,"question":"Q?","decision":"deny","resolvedBy":"web","resolvedAt":1700000000009}]}';
+    const GOLDEN_OLD_IOS =
+      '{"pending":[{"id":"g-tp","sessionId":"s1","agent":"claude","kind":"terminal_prompt","state":"pending","createdAt":1700000000000,"toolName":"Bash","summary":"rm -rf build","risk":"critical","question":"Do you want to proceed?","reason":"Permission rule Bash(rm -rf *) requires confirmation.","choices":[{"key":"1","label":"Yes"},{"key":"2","label":"No"}],"promptFingerprint":"abababababababababababababababab"},{"id":"g-tp-info","sessionId":"s1","agent":"claude","kind":"terminal_prompt","state":"pending","createdAt":1700000000001,"toolName":"Edit","summary":"src/a.ts"},{"id":"g-q","sessionId":"s2","agent":"claude","kind":"awaiting_input","state":"pending","createdAt":1700000000002,"question":"Pick one","options":["A","B"],"choices":[{"key":"1","label":"A"},{"key":"2","label":"B"}]},{"id":"g-gate","sessionId":"s3","agent":"claude","kind":"awaiting_permission","state":"pending","createdAt":1700000000003,"toolName":"Bash","toolInputSummary":"ls"}],"recentlyResolved":[{"id":"g-tp-done","sessionId":"s1","agent":"claude","kind":"terminal_prompt","state":"resolved","createdAt":1700000000000,"toolName":"Bash","summary":"ls","question":"Do you want to proceed?","pressedAt":1700000000010,"decision":"approve","selectedChoiceKey":"1","resolvedBy":"device Phone (d1)","resolvedAt":1700000000011},{"id":"g-q-done","sessionId":"s1","agent":"claude","kind":"awaiting_input","state":"resolved","createdAt":1700000000000,"question":"Q?","decision":"deny","resolvedBy":"web","resolvedAt":1700000000009}]}';
+    const GOLDEN_SSE =
+      '[{"sessionId":"s1","approvalId":"g-tp","phase":"create","state":"pending","agent":"claude","createdAt":1700000000000,"risk":"critical","kind":"approval","tier":"act","id":1},{"sessionId":"s1","approvalId":"g-tp-info","phase":"create","state":"pending","agent":"claude","createdAt":1700000000001,"kind":"approval","tier":"act","id":2},{"sessionId":"s2","approvalId":"g-q","phase":"create","state":"pending","agent":"claude","createdAt":1700000000002,"tier":"act","id":3,"kind":"approval"},{"sessionId":"s3","approvalId":"g-gate","phase":"create","state":"pending","agent":"claude","createdAt":1700000000003,"kind":"approval","toolName":"Bash","toolInputSummary":"ls","tier":"act","id":4},{"sessionId":"s1","approvalId":"g-tp-done","phase":"resolve","state":"resolved","agent":"claude","createdAt":1700000000000,"decision":"approve","resolvedBy":"device Phone (d1)","resolvedAt":1700000000011,"kind":"approval","tier":"info","id":5},{"sessionId":"s1","approvalId":"g-q-done","phase":"resolve","state":"resolved","agent":"claude","createdAt":1700000000000,"decision":"deny","resolvedBy":"web","resolvedAt":1700000000009,"tier":"info","id":6,"kind":"approval"}]';
+
+    it('/api/approvals is byte-identical without the new capabilities (no header, and the shipped iOS header)', async () => {
+      const info = await startRW();
+      approvalRecords.push(...legacyRecords());
+      const read = async (headers: Record<string, string>) =>
+        (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(info.token as string), ...headers } })).text();
+      expect(await read({})).toBe(GOLDEN_NO_CAPS);
+      expect(await read(OLD_IOS)).toBe(GOLDEN_OLD_IOS);
+    });
+
+    it('the SSE approval nudges are byte-identical (minus the per-run epoch)', async () => {
+      const info = await startRO();
+      for (const r of legacyRecords()) emitApproval(r.state === 'pending' ? 'create' : 'resolve', r);
+      const body = await (await fetch(`${base()}/api/events`, { headers: bearer(info.token as string) })).json() as { events: Array<Record<string, unknown>> };
+      const stripped = body.events.map(({ epoch: _epoch, at: _at, ...rest }) => rest);
+      expect(JSON.stringify(stripped)).toBe(GOLDEN_SSE);
+    });
+
+    it('/api/config advertises the decision-v2 keys the same way with or without the new capabilities', async () => {
+      const info = await startRW();
+      const cfg = async (headers: Record<string, string>) =>
+        (await fetch(`${base()}/api/config`, { headers: { ...bearer(info.token as string), ...headers } })).json();
+      const plain = await cfg({});
+      expect(plain).toMatchObject({ decisionForms: [], chatCancel: false });
+      expect(await cfg(OLD_IOS)).toEqual(plain);
+      expect(await cfg({ 'X-Wmux-Client-Caps': 'terminal-prompt-answer, decision-v2, chat-cancel' })).toEqual(plain);
+    });
+
+    const V2 = { 'X-Wmux-Client-Caps': 'terminal-prompt-answer, terminal-prompt-decline, decision-v2' };
+    const FORM = { v: 1 as const, kind: 'permission' as const, actions: [{ id: 'approve', label: 'Allow once' }, { id: 'deny', label: 'Reject' }] };
+    const nativeTp = (over: Partial<ApprovalRequest> = {}): ApprovalRequest => mkApproval({
+      id: 'ap-native',
+      agent: 'opencode',
+      kind: 'terminal_prompt',
+      channel: 'native-rpc',
+      native: { adapter: 'opencode', requestId: 'per_secret_1', nativeSessionId: 'ses_1' },
+      form: FORM,
+      formFingerprint: FP,
+      question: 'Allow bash: npm test?',
+      toolName: 'bash',
+      choices: [{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }],
+      promptFingerprint: FP,
+      ...over,
+    });
+    const nativeQuestion = (over: Partial<ApprovalRequest> = {}): ApprovalRequest => nativeTp({
+      id: 'ap-native-q',
+      kind: 'awaiting_input',
+      form: { v: 1, kind: 'questions', actions: [], questions: [{ id: 'q0', text: 'Which env?', multiSelect: true, allowOther: false, options: [{ key: '1', label: 'dev' }] }] },
+      question: 'Which env?',
+      choices: undefined,
+      promptFingerprint: undefined,
+      questionShape: 'multi-select',
+      ...over,
+    });
+    const answerBody = (over: Record<string, unknown> = {}) => ({ formFingerprint: FP, clientAnswerId: 'phone-answer-0001', action: 'approve', ...over });
+    const postAnswer = (token: string, body: unknown, headers: Record<string, string> = V2, id = 'ap-native') =>
+      fetch(`${base()}/api/approvals/${id}/answer`, {
+        method: 'POST',
+        headers: { ...bearer(token), 'Content-Type': 'application/json', ...headers },
+        body: typeof body === 'string' ? body : JSON.stringify(body),
+      });
+
+    it('a native permission reads to the shipped iOS app as a plain Yes/No dialog; v2 adds the form; nothing internal leaks', async () => {
+      await startWithTranscript();
+      const phone = await pairDevice('Old phone', false);
+      approvalRecords.push(nativeTp());
+      approvalBox.details.set('ap-native', { id: 'ap-native', command: 'npm test', commandHash: 'x', commandBytes: 8, truncated: false });
+      const list = async (headers: Record<string, string>) =>
+        (await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(phone.token), ...headers } })).json()).pending[0];
+      const old = await list(OLD_IOS);
+      expect(old).toMatchObject({ kind: 'terminal_prompt', question: 'Allow bash: npm test?', promptFingerprint: FP });
+      expect(old.choices).toEqual([{ key: '1', label: 'Yes' }, { key: '2', label: 'No' }]);
+      expect(old).not.toHaveProperty('hasDetail');
+      expect(old).not.toHaveProperty('form');
+      const v2 = await list(V2);
+      expect(v2).toMatchObject({ form: FORM, formFingerprint: FP });
+      expect(v2).not.toHaveProperty('hasDetail');
+      const wire = JSON.stringify([old, v2, await list({})]);
+      for (const internal of ['per_secret_1', 'ses_1', '"native"', '"channel"', 'native-rpc']) expect(wire).not.toContain(internal);
+      // No screen dialog, so no detail.
+      expect((await fetch(`${base()}/api/approvals/ap-native/detail`, { headers: { ...bearer(phone.token), ...OLD_IOS } })).status).toBe(404);
+    });
+
+    it('a native answer from the shipped app reaches the registry with its marker; 200 carries no pressedAt', async () => {
+      await startRW();
+      const phone = await pairDevice('Old phone', true);
+      approvalRecords.push(nativeTp());
+      approvalBox.result = { ok: true, durable: true, request: nativeTp({ state: 'resolved', decision: 'approve', selectedChoiceKey: '1' }) };
+      const res = await fetch(`${base()}/api/approvals/ap-native`, {
+        method: 'POST',
+        headers: { ...bearer(phone.token), 'Content-Type': 'application/json', ...OLD_IOS },
+        body: JSON.stringify({ decision: 'approve', choiceKey: '1', promptFingerprint: FP }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ state: 'resolved', durable: true });
+      expect((resolveCalls[0] as Record<string, unknown>).terminalPromptAnswer).toBe(TERMINAL_PROMPT_WEB_ANSWER);
+      // The offline queue replaying it meets the registry's CAS.
+      approvalBox.result = { ok: false, reason: 'already-resolved', resolvedBy: 'device Old phone', request: nativeTp({ state: 'resolved' }) };
+      approvalRecords[0]!.state = 'resolved';
+      const replay = await fetch(`${base()}/api/approvals/ap-native`, {
+        method: 'POST',
+        headers: { ...bearer(phone.token), 'Content-Type': 'application/json', ...OLD_IOS },
+        body: JSON.stringify({ decision: 'approve', choiceKey: '1', promptFingerprint: FP }),
+      });
+      expect(replay.status).toBe(409);
+      // Answered through the agent: listed as history though it has no pressedAt.
+      const listed = await (await fetch(`${base()}/api/approvals`, { headers: { ...bearer(phone.token), ...OLD_IOS } })).json();
+      expect(listed.recentlyResolved.map((r: { id: string }) => r.id)).toEqual(['ap-native']);
+    });
+
+    it('declining a native decision (a question too) goes to the registry with the decline marker, never refused as another kind', async () => {
+      await startRW();
+      const phone = await pairDevice('Decliner', true);
+      approvalRecords.push(nativeQuestion());
+      approvalBox.result = { ok: true, durable: true, request: nativeQuestion({ state: 'resolved', decision: 'deny' }) };
+      const res = await fetch(`${base()}/api/approvals/ap-native-q/decline`, {
+        method: 'POST',
+        headers: { ...bearer(phone.token), 'Content-Type': 'application/json', 'X-Wmux-Client-Caps': 'decision-v2' },
+        body: '{}',
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ state: 'resolved', via: 'native', durable: true });
+      expect((resolveCalls[0] as Record<string, unknown>).terminalPromptDecline).toBe(TERMINAL_PROMPT_WEB_DECLINE);
+    });
+
+    it('typing into a pane with a native decision pending is not refused (the agent judges its own input)', async () => {
+      const info = await startRW();
+      approvalRecords.push(nativeTp());
+      const res = await fetch(`${base()}/api/input?session=s1`, { method: 'POST', headers: bearer(info.token as string), body: '1\r' });
+      expect(res.status).toBe(204);
+      expect(write).toHaveBeenCalledWith('1\r');
+    });
+
+    it('a read-only device may not approve, decline or answer a native question', async () => {
+      await startRW();
+      const reader = await pairDevice('Read-only', false);
+      approvalRecords.push(nativeQuestion());
+      const approve = await fetch(`${base()}/api/approvals/ap-native-q`, {
+        method: 'POST', headers: { ...bearer(reader.token), 'Content-Type': 'application/json', ...V2 }, body: JSON.stringify({ decision: 'approve' }),
+      });
+      expect(approve.status).toBe(403);
+      const decline = await fetch(`${base()}/api/approvals/ap-native-q/decline`, {
+        method: 'POST', headers: { ...bearer(reader.token), 'Content-Type': 'application/json', ...V2 }, body: '{}',
+      });
+      expect(decline.status).toBe(403);
+      expect((await postAnswer(reader.token, answerBody(), V2, 'ap-native-q')).status).toBe(403);
+      expect(resolveCalls).toEqual([]);
+      // The single-key question that is not native stays answerable read-only.
+      approvalRecords.push(mkApproval({ id: 'ap-plain-q' }));
+      const plain = await fetch(`${base()}/api/approvals/ap-plain-q`, {
+        method: 'POST', headers: { ...bearer(reader.token), 'Content-Type': 'application/json' }, body: JSON.stringify({ decision: 'approve' }),
+      });
+      expect(plain.status).toBe(200);
+    });
+
+    it('a grant narrowed while the answer body is on the wire, or inside the registry link, is refused', async () => {
+      await startRW();
+      const phone = await pairDevice('Narrowing', true);
+      approvalRecords.push(nativeQuestion());
+      const body = JSON.stringify(answerBody());
+      expect(await withdrawMidBody(`${base()}/api/approvals/ap-native-q/answer`, phone, body.slice(0, 8), body.slice(8), (r) => { r.allowInput = false; }, V2))
+        .toBe(403);
+      expect(resolveCalls).toEqual([]);
+      (deviceRoster.get(phone.deviceId) as unknown as { allowInput: boolean }).allowInput = true;
+      approvalBox.beforeAuthorize = () => {
+        (deviceRoster.get(phone.deviceId) as unknown as { allowInput: boolean }).allowInput = false;
+      };
+      const refused = await postAnswer(phone.token, answerBody({ clientAnswerId: 'phone-answer-0002' }), V2, 'ap-native-q');
+      expect(refused.status).toBe(403);
+      expect((await refused.json()).error).toMatch(/^read-only:/);
+      // A refusal the caller can retry past is not journaled.
+      expect(answerReceiptStore.lookup(`device:${phone.deviceId}`, 'phone-answer-0002')).toBeNull();
+    });
+
+    describe('POST /api/approvals/:id/answer', () => {
+      it('needs the decision-v2 capability; nothing reaches the registry without it', async () => {
+        const info = await startRW();
+        approvalRecords.push(nativeTp());
+        const res = await postAnswer(info.token as string, answerBody(), OLD_IOS);
+        expect(res.status).toBe(501);
+        expect(await res.json()).toEqual({ error: 'answer-in-terminal', reason: 'no-capability' });
+        expect(resolveCalls).toEqual([]);
+      });
+
+      it.each([
+        ['an unknown field', answerBody({ decision: 'approve' }), 'invalid-body'],
+        ['a newline in the text', answerBody({ action: 'feedback', text: 'a\nb' }), 'invalid-text'],
+        ['text over 2000 units', answerBody({ action: 'feedback', text: 'x'.repeat(2001) }), 'invalid-text'],
+        ['a malformed fingerprint', answerBody({ formFingerprint: 'nope' }), 'invalid-prompt-fingerprint'],
+        ['a malformed answer id', answerBody({ clientAnswerId: 'x' }), 'invalid-body'],
+      ])('400 for %s, before the registry and the journal', async (_label, body, error) => {
+        const info = await startRW();
+        approvalRecords.push(nativeTp());
+        const res = await postAnswer(info.token as string, body);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error });
+        expect(resolveCalls).toEqual([]);
+      });
+
+      it('reaches the registry with its marker and is refused 501 unsupported-shape for now; the receipt replays it', async () => {
+        await startRW();
+        const phone = await pairDevice('V2 phone', true);
+        approvalRecords.push(nativeTp());
+        approvalBox.result = { ok: false, reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape', request: nativeTp() };
+        const first = await postAnswer(phone.token, answerBody());
+        expect(first.status).toBe(501);
+        expect(await first.json()).toEqual({ error: 'answer-in-terminal', reason: 'unsupported-shape' });
+        expect(resolveCalls).toHaveLength(1);
+        const call = resolveCalls[0] as Record<string, unknown>;
+        expect(call.decisionV2Answer).toBe(DECISION_V2_WEB_ANSWER);
+        expect(call.decisionAnswer).toEqual(answerBody());
+        expect(call.terminalPromptAnswer).toBeUndefined();
+        // The same id and body: the stored answer, not a second run.
+        const again = await postAnswer(phone.token, answerBody());
+        expect(again.status).toBe(501);
+        expect(await again.json()).toEqual({ error: 'answer-in-terminal', reason: 'unsupported-shape', replayed: true });
+        expect(resolveCalls).toHaveLength(1);
+        // The same id with another body.
+        const reused = await postAnswer(phone.token, answerBody({ action: 'deny' }));
+        expect(reused.status).toBe(409);
+        expect(await reused.json()).toEqual({ error: 'answer-id-reused', effect: 'none' });
+        // The owner reads the receipt; another caller cannot.
+        const receipt = await fetch(`${base()}/api/approvals/ap-native/answer/phone-answer-0001`, { headers: bearer(phone.token) });
+        expect(receipt.status).toBe(200);
+        expect(await receipt.json()).toEqual({
+          clientAnswerId: 'phone-answer-0001', approvalId: 'ap-native', state: 'refused', status: 501,
+          result: { error: 'answer-in-terminal', reason: 'unsupported-shape' },
+        });
+        const other = await pairDevice('Other phone', true);
+        expect((await fetch(`${base()}/api/approvals/ap-native/answer/phone-answer-0001`, { headers: bearer(other.token) })).status).toBe(404);
+        expect((await fetch(`${base()}/api/approvals/ap-other/answer/phone-answer-0001`, { headers: bearer(phone.token) })).status).toBe(404);
+      });
+
+      it('a retry while the answer runs is 202; one running when the daemon stopped is 409 uncertain and never re-run', async () => {
+        await startRW();
+        const phone = await pairDevice('Retrying phone', true);
+        approvalRecords.push(nativeTp());
+        let release!: () => void;
+        approvalBox.hold = new Promise<void>((resolve) => { release = resolve; });
+        approvalBox.result = { ok: true, durable: true, request: nativeTp({ state: 'resolved' }) };
+        const running = postAnswer(phone.token, answerBody());
+        await vi.waitFor(() => expect(resolveCalls).toHaveLength(1));
+        const retry = await postAnswer(phone.token, answerBody());
+        expect(retry.status).toBe(202);
+        expect(await retry.json()).toEqual({ state: 'pending', replayed: true });
+        // A restart while it runs: the reloaded journal cannot know whether it landed.
+        answerReceiptStore = new AnswerReceiptStore(uploadsDir);
+        const afterRestart = await postAnswer(phone.token, answerBody());
+        expect(afterRestart.status).toBe(409);
+        expect(await afterRestart.json()).toEqual({ error: 'answer-uncertain', effect: 'uncertain' });
+        release();
+        expect((await running).status).toBe(200);
+        expect(resolveCalls).toHaveLength(1);
+      });
+
+      it('a device may not answer or read a receipt for the brain pane', async () => {
+        await startRW();
+        const phone = await pairDevice('Brain prober', true);
+        approvalRecords.push(nativeTp({ sessionId: 'brain-9' }));
+        expect((await postAnswer(phone.token, answerBody())).status).toBe(404);
+        expect((await fetch(`${base()}/api/approvals/ap-native/answer/phone-answer-0001`, { headers: bearer(phone.token) })).status).toBe(404);
+        expect(resolveCalls).toEqual([]);
       });
     });
   });
