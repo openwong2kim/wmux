@@ -15,7 +15,7 @@ import type { TerminalChatFailure, TerminalChatService } from '../transcript/Ter
 import type { ChatSessionService } from './ChatSessionService';
 import { ChatSendReceiptStore, type StoredChatOutcome } from './ChatSendReceiptStore';
 import { ChatCancelReceiptStore } from './ChatCancelReceiptStore';
-import type { ChatQueueReason, ChatQueueRecord, ChatQueueState, ChatQueueStore } from './ChatQueue';
+import { isActiveQueueState, type ChatQueueReason, type ChatQueueRecord, type ChatQueueState, type ChatQueueStore } from './ChatQueue';
 import {
   CHAT_LAUNCH_MAX_UNITS, CHAT_MESSAGE_RETENTION_MS, CHAT_SEND_MAX_UNITS, OPENCODE_MAX_SEND_BYTES, OPENCODE_REQUEST_MAX_BYTES,
   checkChatId, fileHistoryEpoch, openCodeSendBytes, tuiHistoryEpoch,
@@ -27,6 +27,8 @@ import {
 
 /** Synthetic TerminalChatService client key for the phone's OpenCode watch. */
 export const WEB_BRIDGE_CLIENT = 'web:bridge';
+/** The queue's own OpenCode watch: the plugin's phase changes nudge the queue. */
+export const QUEUE_WATCH_CLIENT = 'web:queue';
 
 /** The parts of a daemon pane the bridge reads. `ManagedSession` satisfies it. */
 export interface ChatPane {
@@ -586,10 +588,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     return same && record.paneId === paneId ? queueOutcome(record, true) : refuse(record.clientMessageId, 'message-id-conflict');
   };
 
-  /** The agent is visibly working (not merely blocked on a dialog): the cheap pre-check. */
-  const agentWorking = (state: ChatAgentState, source: 'file' | 'tui'): boolean =>
-    source === 'tui' ? state.agentStatus === 'running'
-      : state.agentStatus === 'running' || state.turn?.state === 'running' && state.agentStatus !== 'awaiting_input';
+  /** A file-bound agent is visibly working (not merely blocked on a dialog): the cheap pre-check. */
+  const agentWorking = (state: ChatAgentState): boolean =>
+    state.agentStatus === 'running' || state.turn?.state === 'running' && state.agentStatus !== 'awaiting_input';
 
   const emitQueue = (record: Readonly<ChatQueueRecord>) => {
     try {
@@ -607,14 +608,40 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     return state.turn?.state === 'running' || state.agentStatus === 'running' || state.agentStatus === 'awaiting_input';
   };
 
-  const settle = (record: Readonly<ChatQueueRecord>, state: ChatQueueState, reason?: ChatQueueReason) => {
+  /** `silent`: an item held back to `queued` after `delivering` never shows that flip on SSE. */
+  const settle = (record: Readonly<ChatQueueRecord>, state: ChatQueueState, reason?: ChatQueueReason, silent = false) => {
     const next = queueStore?.transition(record.owner, record.clientMessageId, state, reason);
     if (!next) return;
     if (state !== 'queued' && state !== 'delivering') {
       const memo = queueMemo.get(memoKey(record.owner, record.clientMessageId));
       if (memo) { delete memo.text; delete memo.authorized; }
     }
-    emitQueue(next);
+    if (!silent) emitQueue(next);
+    syncQueueWatch(record.paneId);
+  };
+
+  /**
+   * While an OpenCode item waits, the queue holds its own plugin watch: its
+   * 1 s poll reports the phase flipping back to `complete`, which nudges the
+   * queue (index.ts) instead of leaving it to the backup poll.
+   */
+  const queueWatched = new Set<string>();
+  function syncQueueWatch(id: string): void {
+    const want = !!queueStore?.list(id).some((record) => isActiveQueueState(record.state) &&
+      queueMemo.get(memoKey(record.owner, record.clientMessageId))?.source === 'tui');
+    if (want === queueWatched.has(id)) return;
+    try {
+      if (want) { queueWatched.add(id); deps.terminalChat()?.subscribe(QUEUE_WATCH_CLIENT, id); }
+      else { queueWatched.delete(id); deps.terminalChat()?.unsubscribe(QUEUE_WATCH_CLIENT, id); }
+    } catch (error) {
+      deps.log('warn', `[chat] queue watch for ${id} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** The episode the last delivery opened has been seen running. */
+  const markRunning = (id: string, turnId: string | undefined, tui: boolean) => {
+    const last = lastDelivered.get(id);
+    if (last && (tui || turnId === last.turnId)) last.sawRunning = true;
   };
 
   const startQueueTick = () => {
@@ -640,6 +667,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     });
     const record = queueStore!.get(owner, clientMessageId)!;
     emitQueue(record);
+    syncQueueWatch(id);
     startQueueTick();
     void kickQueue(id);
     return queueOutcome(record, false);
@@ -696,21 +724,24 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       const pane = deps.pane(id);
       if (!pane) { cancelQueued((record) => record.paneId === id, 'pane-closed'); return; }
       if (memo.retryAt !== undefined && now() < memo.retryAt) return;
-      // Cheap checks first: while the agent works, no roster read, no binding
-      // resolve (a plugin read for OpenCode); the turn-end event kicks again.
       if (sending.has(id)) return;
-      const cheap = memo.source === 'file' ? deps.chatAgentState(id) : deps.agentState(id);
-      if (agentWorking(cheap, memo.source)) {
-        // Seen running: the episode the last delivery opened now counts as started.
-        const last = lastDelivered.get(id);
-        if (last && (memo.source === 'tui' || cheap.turn?.id === last.turnId)) last.sawRunning = true;
-        delete memo.idleSince;
-        return;
-      }
       // The lifetime counts only while the item waits on an agent that is not
       // working (idle, or blocked on a dialog): a long turn never expires it.
-      memo.idleSince ??= now();
-      if (now() - memo.idleSince > queueTtl) { settle(head, 'failed', memo.hold ?? 'expired'); continue; }
+      const expired = () => {
+        memo.idleSince ??= now();
+        if (now() - memo.idleSince <= queueTtl) return false;
+        settle(head, 'failed', memo.hold ?? 'expired');
+        return true;
+      };
+      // Cheap check first for a file binding: while the agent works, no
+      // roster read and no resolve; the turn-end event kicks again. OpenCode's
+      // only reliable signal is the plugin's own phase, read below (the
+      // queue's watch nudges when it changes).
+      if (memo.source === 'file') {
+        const cheap = deps.chatAgentState(id);
+        if (agentWorking(cheap)) { markRunning(id, cheap.turn?.id, false); delete memo.idleSince; return; }
+        if (expired()) continue;
+      }
       const authorize = memo.authorized;
       const incarnation = memo.incarnation;
       const authorized = async (stage: 'first-write' | 'submit') => {
@@ -723,6 +754,14 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       }
       const resolution = await resolve(id);
       if (!stillHead(id, head)) continue;
+      if (memo.source === 'tui') {
+        if (resolution.source === 'tui' && resolution.status.agentStatus === 'running') {
+          markRunning(id, undefined, true);
+          delete memo.idleSince;
+          return;
+        }
+        if (expired()) continue;
+      }
       // The agent may be between two readable states: wait (the TTL bounds it).
       if (resolution.source === 'none') return;
       if (resolution.source !== memo.source || resolution.status.agentSessionId !== memo.agentSessionId ||
@@ -762,7 +801,15 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       }
       delete memo.persistFailures;
       delete memo.retryAt;
-      emitQueue(delivering);
+      // Announced only once the first write is authorized, the last step before
+      // it: a hold found earlier returns the item to `queued` without the phone
+      // ever seeing it flip.
+      let announced = false;
+      const announce = () => {
+        if (announced) return;
+        announced = true;
+        emitQueue(queueStore.get(head.owner, head.clientMessageId) ?? delivering);
+      };
       const receipts = deps.receipts;
       const inserted = receipts?.insertPending(head.owner, head.clientMessageId, {
         paneId: id, fingerprint: memo.fingerprint, agentSessionId: memo.agentSessionId,
@@ -771,7 +818,11 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       if (inserted === 'exists') { settle(head, 'failed', 'delivery-unconfirmed'); continue; }
       const req: ChatSendRequest = { owner: head.owner, id, agentSessionId: memo.agentSessionId,
         ...(memo.historyEpoch !== undefined ? { historyEpoch: memo.historyEpoch } : {}),
-        text, clientMessageId: head.clientMessageId, authorized: (stage) => authorized(stage ?? 'first-write') };
+        text, clientMessageId: head.clientMessageId, authorized: async (stage) => {
+          const ok = await authorized(stage ?? 'first-write');
+          if (ok) announce();
+          return ok;
+        } };
       let outcome: StoredChatOutcome;
       try {
         outcome = resolution.source === 'tui' ? await dispatchTui(req, resolution) : await dispatchFile(req, { idleOnly: true });
@@ -782,7 +833,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       if ('hold' in verdict) {
         if (inserted === 'inserted') receipts?.discard(head.owner, head.clientMessageId);
         if (verdict.hold) memo.hold = verdict.hold;
-        settle(head, 'queued');
+        settle(head, 'queued', undefined, true);
         return;
       }
       if (inserted === 'inserted' && !receipts?.complete(head.owner, head.clientMessageId, outcome)) {
@@ -1266,6 +1317,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     kickQueue,
     nudgeQueue,
     paneClosed: (id) => {
+      if (queueWatched.delete(id)) {
+        try { deps.terminalChat()?.unsubscribe(QUEUE_WATCH_CLIENT, id); } catch { /* the watch dies with the pane */ }
+      }
       lastDelivered.delete(id);
       clearTimeout(nudgeTimers.get(id)); nudgeTimers.delete(id);
       deliveredLog.delete(id);

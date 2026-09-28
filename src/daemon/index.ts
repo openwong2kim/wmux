@@ -3439,6 +3439,8 @@ function registerRpcHandlers(
         return { pid, incarnation: pane.meta.incarnationId };
       },
       emit: (id, data, clients) => {
+        // An OpenCode phase change may be the turn end the phone chat queue waits for.
+        nativeChatBridge?.nudgeQueue(id);
         for (const client of clients) {
           // The phone bridge's watch carries no content: a live-only nudge makes
           // watching phones re-read /turns, and it is never dropped for backpressure.
@@ -5969,7 +5971,8 @@ async function shutdown(
       // listener up that nothing owns. Never rejects, and the bind is local, so
       // this cannot outlast the hard shutdown timeout below.
       if (webRestore) await webRestore;
-      await webTerminalServer.stop();
+      // A shutdown: queued phone chat messages read `daemon-restart`, not revoked.
+      await webTerminalServer.stop({ shutdown: true });
     } catch {
       /* ignore — never block shutdown on the optional web server */
     }

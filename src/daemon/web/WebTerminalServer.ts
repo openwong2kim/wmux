@@ -1659,7 +1659,7 @@ export class WebTerminalServer {
   }
 
   /** Stop the server, end every SSE stream, and drop all bridge listeners. */
-  async stop(): Promise<{ stopped: boolean }> {
+  async stop(opts: { shutdown?: boolean } = {}): Promise<{ stopped: boolean }> {
     if (!this.server) return { stopped: false };
 
     this.deps.sessionManager.off('session:critical', this.onSessionCritical);
@@ -1734,8 +1734,9 @@ export class WebTerminalServer {
     this.opts = null;
     this.token = '';
     // A policy change restarts the server: nothing a phone queued under the
-    // old one may be typed. The desktop never queues.
-    this.dropChatQueue((owner) => owner !== 'desktop');
+    // old one may be typed. The desktop never queues. A daemon shutdown is a
+    // restart, not a revocation, and reads as one.
+    this.dropChatQueue((owner) => owner !== 'desktop', opts.shutdown ? 'daemon-restart' : 'authorization-revoked');
 
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
@@ -1887,13 +1888,13 @@ export class WebTerminalServer {
     }
     // Revoke and a withdrawn input grant both land here: the device's queued
     // chat messages go with its streams, before any of them could be typed.
-    this.dropChatQueue((owner) => owner === `device:${deviceId}`);
+    this.dropChatQueue((owner) => owner === `device:${deviceId}`, 'authorization-revoked');
     return closed;
   }
 
-  private dropChatQueue(match: (owner: ChatOwner) => boolean): void {
+  private dropChatQueue(match: (owner: ChatOwner) => boolean, reason: 'authorization-revoked' | 'daemon-restart'): void {
     try {
-      this.deps.chat?.()?.dropQueue?.(match, 'authorization-revoked');
+      this.deps.chat?.()?.dropQueue?.(match, reason);
     } catch (err) {
       this.deps.log('warn', `[web] chat queue drop failed: ${errMsg(err)}`);
     }

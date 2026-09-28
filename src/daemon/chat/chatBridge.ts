@@ -311,8 +311,12 @@ export interface ChatBridge {
   queue?(owner: ChatOwner, id: string): ChatQueueItemView[];
   /** `DELETE .../chat/queue/:clientMessageId`: owner-bound; a canceled item answers ok again. */
   dequeue?(owner: ChatOwner, id: string, clientMessageId: string): ChatDequeueResult;
-  /** Cancel every queued item whose owner matches (device unpaired, grant withdrawn, server stopped). */
-  dropQueue?(match: (owner: ChatOwner) => boolean, reason: 'authorization-revoked'): void;
+  /**
+   * Cancel every queued item whose owner matches: `authorization-revoked`
+   * (device unpaired, grant withdrawn, server stopped by the operator) or
+   * `daemon-restart` (the daemon is shutting down).
+   */
+  dropQueue?(match: (owner: ChatOwner) => boolean, reason: 'authorization-revoked' | 'daemon-restart'): void;
   /** Messages the daemon typed for this owner on the pane, newest last. */
   delivered?(owner: ChatOwner, id: string): ChatDeliveredMessage[];
 }

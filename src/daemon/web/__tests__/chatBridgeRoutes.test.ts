@@ -1558,11 +1558,17 @@ describe('native chat routes (contract v0.3.1)', () => {
       await start();
       const fns = wireQueue();
       server.disconnectDevice('dev-7');
-      const byDevice = fns.dropQueue.mock.calls[0][0];
+      const [byDevice, revoked] = fns.dropQueue.mock.calls[0];
       expect([byDevice('device:dev-7'), byDevice('device:dev-8'), byDevice('operator')]).toEqual([true, false, false]);
+      expect(revoked).toBe('authorization-revoked');
       await server.stop();
-      const all = fns.dropQueue.mock.calls[1][0];
+      const [all, stopped] = fns.dropQueue.mock.calls[1];
       expect([all('device:dev-8'), all('operator'), all('desktop')]).toEqual([true, true, false]);
+      expect(stopped).toBe('authorization-revoked');
+      // A daemon shutdown is a restart, not a revocation.
+      await start();
+      await server.stop({ shutdown: true });
+      expect(fns.dropQueue.mock.calls[2][1]).toBe('daemon-restart');
     });
 
     it('/api/config advertises chatQueue per caller, and only with a loaded queue', async () => {

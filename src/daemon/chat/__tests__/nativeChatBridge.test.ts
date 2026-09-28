@@ -7,7 +7,7 @@ import type { TranscriptPage, TranscriptStatus } from '../../../shared/transcrip
 import { ChatSendReceiptStore } from '../ChatSendReceiptStore';
 import { ChatCancelReceiptStore } from '../ChatCancelReceiptStore';
 import { ChatQueueStore } from '../ChatQueue';
-import { createChatBridge, WEB_BRIDGE_CLIENT, type ChatAgentState, type ChatPane, type NativeChatBridgeDeps } from '../nativeChatBridge';
+import { createChatBridge, QUEUE_WATCH_CLIENT, WEB_BRIDGE_CLIENT, type ChatAgentState, type ChatPane, type NativeChatBridgeDeps } from '../nativeChatBridge';
 import type { TerminalChatAbortOutcome } from '../../transcript/TerminalChatService';
 import { cancelResponse } from '../../web/chatWire';
 import { OPENCODE_MAX_SEND_BYTES, fileHistoryEpoch, projectChatBlocked, tuiHistoryEpoch, type ChatQueueEvent } from '../chatBridge';
@@ -1111,6 +1111,50 @@ describe('daemon queue (chat-queue)', () => {
     await pass;
     expect(f.written).toEqual([]);
     expect(slow.queue('device:a', 'pane')[0]).toMatchObject({ state: 'canceled', reason: 'user' });
+  });
+
+  it('a screen with no composer (a usage view) holds the item, then fails it as blocked, never draft-present', async () => {
+    let clock = Date.now();
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f, { ttl: 60_000, now: () => clock });
+    const { clientMessageId } = await q.send('one');
+    idleTurn(f, 1);
+    f.state.screen = ['  Total cost: $0.12', '  Total duration: 3m', '', '  Press any key to continue'];
+    await q.bridge.kickQueue('pane');
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ clientMessageId, state: 'queued' });
+    clock += 61_000;
+    await q.bridge.kickQueue('pane');
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ state: 'failed', reason: 'blocked' });
+    expect(f.written).toEqual([]);
+  });
+
+  it('a hold never shows as delivering then queued on the live events', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    const { clientMessageId } = await q.send('one');
+    idleTurn(f, 1);
+    f.state.agent = { ...f.state.agent, inputQuiet: false };
+    await q.bridge.kickQueue('pane');
+    const states = () => q.events.filter((e) => e.clientMessageId === clientMessageId).map((e) => e.state);
+    expect(states()).toEqual(['queued']);
+    f.state.agent = { ...f.state.agent, inputQuiet: true };
+    await q.bridge.kickQueue('pane');
+    expect(states()).toEqual(['queued', 'delivering', 'delivered']);
+  });
+
+  it('OpenCode: the queue watches the plugin while an item waits, and ignores the daemon detector', async () => {
+    const f = fixture();
+    f.state.native = { status: { ...TUI_STATUS, agentStatus: 'running' }, page: page('raw:ses_one') };
+    const q = queued(f);
+    await q.bridge.send({ owner: 'device:a', id: 'pane', agentSessionId: 'ses_one', historyEpoch: tuiHistoryEpoch('raw:ses_one'),
+      clientMessageId: msgId(), text: 'tui', managedReadOnly: true, queue: { authorized: allow } });
+    expect(f.subscribe).toHaveBeenCalledWith(QUEUE_WATCH_CLIENT, 'pane');
+    // The pane's detector may still read running; the plugin says the turn ended.
+    f.state.agent = { ...f.state.agent, agentName: 'OpenCode', agentStatus: 'running' };
+    f.state.native = { status: TUI_STATUS, page: page('raw:ses_one') };
+    await q.bridge.kickQueue('pane');
+    expect(f.tuiSend).toHaveBeenCalledTimes(1);
+    expect(f.unsubscribe).toHaveBeenCalledWith(QUEUE_WATCH_CLIENT, 'pane');
   });
 
   it('a draft in a complete (not idle) Claude composer still fails the item', async () => {

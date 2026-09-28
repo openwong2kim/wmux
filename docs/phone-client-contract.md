@@ -1487,7 +1487,9 @@ working (idle, or blocked on a dialog); time spent while a turn runs does not
 count, so a long turn never expires it. Nothing is retried after a write: an
 item that may have been typed ends `uncertain`, never in a state that invites
 a resend. A delivered message is typed only into an empty composer: a draft
-left there fails the item (`draft-present`) and stays as it was.
+left there fails the item (`draft-present`) and stays as it was. A screen
+without the composer (a dialog, a usage view) holds the item like any other
+dialog, and fails it as `blocked` only when its time runs out.
 
 **Send answer.** 202 `{state:"queued", replayed:false, clientMessageId,
 effect:"queued"}`. A repeat with the same id and body answers 200 with the
@@ -1519,7 +1521,8 @@ hold input, the server must still run with `--allow-input` and
 before the first write cancels the item (`authorization-revoked`); one after
 the paste leaves it `uncertain` (`delivery-unconfirmed`). Unpairing a device, withdrawing
 its input grant or stopping the server cancels that owner's waiting items at
-once. A closed pane cancels its items (`pane-closed`); a new conversation in
+once (`authorization-revoked`); a daemon shutdown cancels them as
+`daemon-restart`. A closed pane cancels its items (`pane-closed`); a new conversation in
 the pane cancels them at their turn (`session-changed`).
 
 **Restart.** The prompt text is never written to disk. After a daemon restart
@@ -1555,7 +1558,9 @@ A 404 without one of these two `error` values means the route is missing (an
 older daemon).
 
 **SSE `chat.queue`.** `{sessionId, clientMessageId, state, reason?, at}` on
-every state change, live-only like `chat.blocked` (no `id:`, never replayed),
+every state change. `delivering` is sent only once the first write
+is about to happen; an item the daemon holds back before that never shows
+`delivering` then `queued`. Live-only like `chat.blocked` (no `id:`, never replayed),
 and only to the item's owner among the pane's `/turns` watchers. `/turns` is
 the authoritative state after a reconnect.
 
