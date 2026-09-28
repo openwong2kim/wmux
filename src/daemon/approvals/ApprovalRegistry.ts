@@ -1325,7 +1325,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       ...(note.workspaceId ? { workspaceId: note.workspaceId } : {}),
       agent: note.agent,
       kind: 'terminal_prompt',
-      toolName: binding?.name ?? note.toolName ?? 'ExitPlanMode',
+      // The screen is a plan dialog, whatever call it failed to bind to.
+      toolName: 'ExitPlanMode',
       ...(summary ? { summary } : {}),
       ...(answerable && fingerprint
         ? {
