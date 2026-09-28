@@ -3937,6 +3937,14 @@ function registerRpcHandlers(
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     return readDaemonAgentState(id);
   });
+  // #1594 — what main's terminal_send needs to paste into a session: the agent
+  // and DECSET 2004 from the live output stream. A hidden pane's renderer xterm
+  // may not have seen the bytes that set or cleared the mode; this stream has.
+  pipeServer.onRpc('daemon.getSendTarget', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const bracketedPaste = sessionManager.getSession(id)?.bridge.outputModes?.isSet(2004) ?? null;
+    return { agentName: readDaemonAgentState(id).agentName, bracketedPaste };
+  });
   const readChatAgentState = (id: string) => {
     const live = readDaemonAgentState(id);
     const bridge = sessionManager.getSession(id)?.bridge;

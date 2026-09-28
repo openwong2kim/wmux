@@ -13,11 +13,13 @@ import {
   isTurnStart,
   rowFromBottom,
   submitNeedle,
+  pasteSubmitDelayMs,
   type SubmitProbe,
   type RoleBindingResolver,
 } from '../input.rpc';
 import { noteGateVerdict, resetGateVerdicts } from '../../../deck/stopGateState';
 import type { PTYManager } from '../../../pty/PTYManager';
+import type { DaemonClient } from '../../../DaemonClient';
 import type { RoleBinding } from '../../../../shared/orchestratorRole';
 
 // Mock the renderer bridge so we can drive input.findOwnerWorkspace (the
@@ -518,27 +520,45 @@ describe('input.send — submit sends text and Enter as two separate writes', ()
 
 // #1594 — a multi-line message typed raw was split by the TUI (Claude Code: a
 // placeholder plus typed text; Codex: text AND Enter absorbed by its paste
-// burst). It goes in as one bracketed paste when the app enabled the mode.
-describe('input.send — multi-line text is pasted, not typed (#1594)', () => {
+// burst). An agent pane whose app enabled bracketed paste gets one paste; a
+// shell keeps typed input, where each newline is the Enter that runs a line.
+describe('input.send — multi-line text to an agent is pasted, not typed (#1594)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  function setupPaste(target: unknown): { router: RpcRouter; writeMock: ReturnType<typeof vi.fn> } {
-    const writeMock = vi.fn();
-    const pty = { get: vi.fn(() => ({ id: 'x' })), write: writeMock } as unknown as PTYManager;
+  /** A daemon-backed pty (not in the local PTYManager). `screens` are the
+   *  successive viewport reads the submit receipt makes. */
+  function setupPaste(
+    target: { agent: string | null; bracketedPaste: boolean | null } | null,
+    screens: string[] = [],
+  ): { router: RpcRouter; writeMock: ReturnType<typeof vi.fn> } {
+    const writeMock = vi.fn((_id: string, _data: string) => true);
+    const pty = { get: vi.fn(() => undefined), write: vi.fn() } as unknown as PTYManager;
+    const dc = {
+      isConnected: true,
+      writeToSession: (id: string, data: string) => writeMock(id, data),
+      getSendTarget: vi.fn(() => Promise.resolve(target)),
+    } as unknown as DaemonClient;
     const router = new RpcRouter();
-    registerInputRpc(router, pty, () => fakeWindow);
-    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
+    registerInputRpc(router, pty, () => fakeWindow, () => dc);
+    let read = 0;
+    sendToRendererMock.mockImplementation((_w: unknown, method: string, params?: { tail_lines?: number }) => {
       if (method === 'input.findOwnerWorkspace') return Promise.resolve({ workspaceId: 'ws-self' });
-      if (method === 'input.sendTarget') return Promise.resolve(target);
+      // Only the receipt probe's bounded reads advance the sequence; the
+      // approval gate's full read before the write is not one of them.
+      if (method === 'input.readScreen' && params?.tail_lines !== undefined) {
+        const text = screens[Math.min(read++, screens.length - 1)] ?? '';
+        return Promise.resolve({ ptyId: 'pty-a', text });
+      }
       return Promise.resolve(null);
     });
     return { router, writeMock };
   }
 
   const LONG = '1. first item\r\n2. second item\n3. third item';
+  const CLAUDE = { agent: 'Claude Code', bracketedPaste: true };
 
   it('pastes the body in one bracketed write (LF separators), then a lone Enter once', async () => {
-    const { router, writeMock } = setupPaste({ bracketedPasteMode: true, agent: 'Claude Code' });
+    const { router, writeMock } = setupPaste(CLAUDE);
     const res = await router.dispatch({
       id: 'p1',
       method: 'input.send',
@@ -554,22 +574,72 @@ describe('input.send — multi-line text is pasted, not typed (#1594)', () => {
     expect(writeMock.mock.calls.some(([, d]) => d === '\r\r')).toBe(false);
   });
 
-  it('types raw when the app did not enable bracketed paste, or for a raw write', async () => {
-    const off = setupPaste({ bracketedPasteMode: false, agent: null });
-    await off.router.dispatch({
-      id: 'p2',
-      method: 'input.send',
-      params: { text: 'a\nb', ptyId: 'pty-a', workspaceId: 'ws-self' },
-    });
-    expect(off.writeMock.mock.calls).toEqual([['pty-a', 'a\nb']]);
+  it('keeps typing into a shell even though its readline enabled bracketed paste', async () => {
+    const { router, writeMock } = setupPaste({ agent: null, bracketedPaste: true });
+    for (const text of ['npm test\n', 'cd /tmp\nls -la\n']) {
+      await router.dispatch({ id: 's', method: 'input.send', params: { text, ptyId: 'pty-a', workspaceId: 'ws-self' } });
+    }
+    // Each newline stays the Enter that runs its line.
+    expect(writeMock.mock.calls).toEqual([
+      ['pty-a', 'npm test\n'],
+      ['pty-a', 'cd /tmp\nls -la\n'],
+    ]);
+  });
 
-    const raw = setupPaste({ bracketedPasteMode: true, agent: null });
-    await raw.router.dispatch({
-      id: 'p3',
+  it('decides on the daemon mode, not the renderer — a hidden pane is not guessed', async () => {
+    // A hidden pane's xterm can miss the app turning 2004 off; the daemon saw it.
+    const off = setupPaste({ agent: 'Claude Code', bracketedPaste: false });
+    await off.router.dispatch({ id: 'h', method: 'input.send', params: { text: 'a\nb', ptyId: 'pty-a', workspaceId: 'ws-self' } });
+    expect(off.writeMock.mock.calls).toEqual([['pty-a', 'a\nb']]);
+    expect(sendToRendererMock).not.toHaveBeenCalledWith(expect.anything(), 'input.sendTarget', expect.anything());
+
+    // An older daemon that cannot say: typed, as before.
+    const unknown = setupPaste({ agent: 'Claude Code', bracketedPaste: null });
+    await unknown.router.dispatch({ id: 'u', method: 'input.send', params: { text: 'a\nb', ptyId: 'pty-a', workspaceId: 'ws-self' } });
+    expect(unknown.writeMock.mock.calls).toEqual([['pty-a', 'a\nb']]);
+  });
+
+  it('a trailing newline on a submit is the Enter, not a second line', async () => {
+    const { router, writeMock } = setupPaste(CLAUDE);
+    await router.dispatch({
+      id: 't',
       method: 'input.send',
-      params: { text: 'a\nb', ptyId: 'pty-a', workspaceId: 'ws-self', raw: true },
+      params: { text: 'make a calculator\n', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
     });
-    expect(raw.writeMock.mock.calls).toEqual([['pty-a', 'a\nb']]);
+    expect(writeMock.mock.calls.slice(0, 2)).toEqual([
+      ['pty-a', 'make a calculator'],
+      ['pty-a', '\r'],
+    ]);
+  });
+
+  it('accepts a collapsed paste when its placeholder leaves the composer', async () => {
+    const before = ['● earlier turn', '', '────', '❯ [Pasted text #1 +2 lines]', '────', '  footer'].join('\n');
+    const after = ['● earlier turn', '', '● working', '', '────', '❯ ', '────', '  footer'].join('\n');
+    const { router } = setupPaste(CLAUDE, [before, after]);
+    const res = await router.dispatch({
+      id: 'c',
+      method: 'input.send',
+      params: { text: LONG, ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.result).toMatchObject({ accepted: true, receiptSignal: 'composer_cleared' });
+  });
+
+  it('an unconfirmed paste says not to re-send, never a plain accepted:false', async () => {
+    const { router } = setupPaste(CLAUDE, ['']);
+    const res = await router.dispatch({
+      id: 'n',
+      method: 'input.send',
+      params: { text: LONG, ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    if (!res.ok) throw new Error(res.error);
+    expect(res.result).toMatchObject({ accepted: false, receiptSignal: 'paste_unconfirmed', enterRetried: false });
+    expect((res.result as { note?: string }).note).toMatch(/Do not re-send/);
+  });
+
+  it('waits longer before Enter as the pasted body grows, within a cap', () => {
+    expect(pasteSubmitDelayMs('Claude Code', 100)).toBeLessThan(pasteSubmitDelayMs('Claude Code', 32 * 1024));
+    expect(pasteSubmitDelayMs('Codex CLI', 10_000_000)).toBeLessThanOrEqual(500 + 1_500);
   });
 });
 
@@ -1188,6 +1258,14 @@ describe('input.send — submit receipt', () => {
     expect(composerCleared(narrowBefore, narrowAfter, needle)).toBe(true);
     // Box-drawing composer borders are not part of the typed text either.
     expect(rowFromBottom('│ > Reply with the single word pong, │\n│   nothing else please │\n╰──╯', needle)).toBe(1);
+  });
+
+  it('does not stitch a needle across a blank row (echo above, composer below)', () => {
+    const needle = submitNeedle('run the migration now please');
+    // The echo ends "...now" and an unrelated composer line below starts
+    // "please": joined across the gap they would fake the needle in the composer.
+    const screen = ['› run the migration now', '', '› please wait…', '  footer'].join('\n');
+    expect(rowFromBottom(screen, needle)).toBe(-1);
   });
 
   it('needleInComposer is the bottom region only', () => {

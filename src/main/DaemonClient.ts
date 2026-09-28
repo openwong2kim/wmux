@@ -626,6 +626,30 @@ export class DaemonClient extends EventEmitter {
     }
   }
 
+  /**
+   * What `input.send` needs to paste and submit into a session (#1594): the
+   * detected agent and whether the app enabled bracketed paste, both from the
+   * daemon's live streams. Null on any failure, including a daemon that
+   * predates the method — the caller then types, as before.
+   */
+  async getSendTarget(
+    sessionId: string,
+  ): Promise<{ agent: string | null; bracketedPaste: boolean | null } | null> {
+    try {
+      const r = (await this.rpc('daemon.getSendTarget', { id: sessionId }, { timeoutMs: 500 })) as {
+        agentName?: unknown;
+        bracketedPaste?: unknown;
+      } | null;
+      if (!r || typeof r !== 'object') return null;
+      return {
+        agent: typeof r.agentName === 'string' && r.agentName ? r.agentName : null,
+        bracketedPaste: typeof r.bracketedPaste === 'boolean' ? r.bracketedPaste : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   /** Daemon-owned identity/input-atomic scheduled prompt delivery. */
   async deliverScheduledPrompt(args: {
     id: string;
