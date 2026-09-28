@@ -84,6 +84,16 @@ describe('automation RPC boundary', () => {
     expect(granted.ok && granted.automation.permission).toEqual({ mode: 'bypass', grantedRevision: 1 });
   });
 
+  it('create can start disabled atomically; default stays enabled; propose ignores enabled', async () => {
+    const { call } = await setup();
+    const off = (await call(AUTOMATION_RPC.create, { draft, enabled: false }, 'desktop')) as AutomationMutationResult;
+    expect(off.ok && off.automation).toMatchObject({ enabled: false, nextRunAt: null });
+    const on = (await call(AUTOMATION_RPC.create, { draft }, 'desktop')) as AutomationMutationResult;
+    expect(on.ok && on.automation.enabled).toBe(true);
+    const proposed = (await call(AUTOMATION_RPC.propose, { draft, enabled: true }, 'desktop')) as AutomationMutationResult;
+    expect(proposed.ok && proposed.automation.enabled).toBe(false);
+  });
+
   it('a non-first-party list gets no prompt, folder or account', async () => {
     const { call } = await setup();
     await call(AUTOMATION_RPC.create, {

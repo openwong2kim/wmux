@@ -293,16 +293,16 @@ export class AutomationEngine {
 
   // ── Mutations (first-party only; the RPC layer enforces it) ───────────────
 
-  async create(rawDraft: unknown): Promise<AutomationMutationResult> {
-    return this.insert(rawDraft, 'desktop-ui');
+  async create(rawDraft: unknown, enabled?: unknown): Promise<AutomationMutationResult> {
+    return this.insert(rawDraft, 'desktop-ui', enabled !== false);
   }
 
   /** MCP draft path: always disabled, proposed, approval mode. */
   async propose(rawDraft: unknown): Promise<AutomationMutationResult> {
-    return this.insert(rawDraft, 'mcp-proposal');
+    return this.insert(rawDraft, 'mcp-proposal', false);
   }
 
-  private async insert(rawDraft: unknown, createdBy: Automation['createdBy']): Promise<AutomationMutationResult> {
+  private async insert(rawDraft: unknown, createdBy: Automation['createdBy'], wantEnabled: boolean): Promise<AutomationMutationResult> {
     const draft = validateDraft(rawDraft);
     if (!draft.ok) return { ok: false, error: draft.error };
     if (this.automations.length >= AUTOMATION_DEFAULTS.maxAutomations) {
@@ -310,17 +310,19 @@ export class AutomationEngine {
     }
     const now = this.now();
     const proposal = createdBy === 'mcp-proposal';
+    // A proposal is always disabled, whatever was asked.
+    const enabled = !proposal && wantEnabled;
     const automation: Automation = {
       id: this.newId(),
       name: draft.value.name,
-      enabled: !proposal,
+      enabled,
       ...(proposal ? { proposed: true } : {}),
       revision: 1,
       trigger: draft.value.trigger,
       action: draft.value.action,
       permission: { mode: 'approval' },
       policy: { overlap: 'skip_if_active', ...draft.value.policy },
-      nextRunAt: proposal ? null : nextOccurrenceAfter(draft.value.trigger, now),
+      nextRunAt: enabled ? nextOccurrenceAfter(draft.value.trigger, now) : null,
       createdAt: now,
       updatedAt: now,
       createdBy,

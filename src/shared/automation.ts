@@ -201,7 +201,11 @@ export interface AutomationRunsParams { automationId?: string }
 export interface AutomationRunsResult { runs: AutomationRun[] }
 export interface AutomationSnapshotParams { runId: string }
 export interface AutomationSnapshotResult { text: string | null }
-export interface AutomationCreateParams { draft: AutomationDraft }
+export interface AutomationCreateParams {
+  draft: AutomationDraft;
+  /** Create in this state atomically. Absent = enabled (the original behaviour). */
+  enabled?: boolean;
+}
 export interface AutomationUpdateParams { id: string; draft: AutomationDraft }
 export interface AutomationRemoveParams { id: string }
 export interface AutomationSetEnabledParams { id: string; enabled: boolean }

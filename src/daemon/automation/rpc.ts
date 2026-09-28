@@ -71,7 +71,7 @@ export function registerAutomationRpc(
       : null,
   }));
 
-  gated(AUTOMATION_RPC.create, (p) => engine.create(p['draft']));
+  gated(AUTOMATION_RPC.create, (p) => engine.create(p['draft'], p['enabled']));
   gated(AUTOMATION_RPC.update, (p) => engine.update(p['id'], p['draft']));
   gated(AUTOMATION_RPC.remove, (p) => engine.remove(p['id']));
   gated(AUTOMATION_RPC.setEnabled, (p) => engine.setEnabled(p['id'], p['enabled']));
