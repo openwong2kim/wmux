@@ -63,21 +63,31 @@ export interface CredentialStatus {
   subscriptionType?: string | null;
   /** why not logged in / unsupported, for the UI. */
   detail?: string;
+  /** Non-secret marker that changes when the credential is rewritten (claude:
+   *  token expiry; codex: auth.json mtime). Lets a re-login detect a FRESH
+   *  login instead of passing on the stale credential it is replacing. */
+  stamp?: number | null;
 }
 
 /** Resolve login status + tier for one account's config dir. */
 async function credentialStatus(vendor: Vendor, configDir: string): Promise<CredentialStatus> {
   if (vendor === 'codex') {
     // Codex has no public usage API in v1; login = auth.json presence in CODEX_HOME.
-    return { loggedIn: fs.existsSync(path.join(configDir, 'auth.json')) };
+    let mtimeMs: number | null = null;
+    try { mtimeMs = fs.statSync(path.join(configDir, 'auth.json')).mtimeMs; } catch { /* absent */ }
+    return { loggedIn: mtimeMs !== null, stamp: mtimeMs };
   }
   const res = await loadClaudeCredential(configDir);
-  if (res.ok) return { loggedIn: true, subscriptionType: res.credential.subscriptionType };
+  if (res.ok) {
+    return { loggedIn: true, subscriptionType: res.credential.subscriptionType, stamp: res.credential.expiresAtMs };
+  }
   return { loggedIn: false, detail: res.reason };
 }
 
 export interface AccountRow extends Account {
   status: CredentialStatus;
+  /** Copy-able fallback for users who log in from their own terminal. */
+  loginCommand: string;
 }
 
 /** Build the platform-correct, properly-escaped, process-scoped login command
@@ -92,14 +102,14 @@ function buildLoginCommand(vendor: Vendor, configDir: string): string {
     const p = configDir.replace(/'/g, "''");
     return vendor === 'codex'
       ? `$env:CODEX_HOME='${p}'; codex login`
-      : `$env:CLAUDE_CONFIG_DIR='${p}'; claude`;
+      : `$env:CLAUDE_CONFIG_DIR='${p}'; claude auth login`;
   }
   // POSIX: inline VAR=... prefix scopes the var to just this command. Escape '
   // by closing/reopening the quote.
   const p = configDir.replace(/'/g, `'\\''`);
   return vendor === 'codex'
     ? `CODEX_HOME='${p}' codex login`
-    : `CLAUDE_CONFIG_DIR='${p}' claude`;
+    : `CLAUDE_CONFIG_DIR='${p}' claude auth login`;
 }
 
 export interface OnboardPrepareResult {
@@ -107,8 +117,6 @@ export interface OnboardPrepareResult {
   linked: string[];
   copied: string[];
   loginCommand: string;
-  /** claude credential-read is unsupported on macOS (keychain keys on username). */
-  credentialReadSupported: boolean;
 }
 
 export function registerAccountHandlers(): () => void {
@@ -131,7 +139,11 @@ export function registerAccountHandlers(): () => void {
     const store = getAccountStore();
     const accounts = store.listAccounts();
     const rows: AccountRow[] = await Promise.all(
-      accounts.map(async (a) => ({ ...a, status: await credentialStatus(a.vendor, a.configDir) })),
+      accounts.map(async (a) => ({
+        ...a,
+        status: await credentialStatus(a.vendor, a.configDir),
+        loginCommand: buildLoginCommand(a.vendor, a.configDir),
+      })),
     );
     return { accounts: rows, bindings: store.getBindings() };
   }));
@@ -148,9 +160,6 @@ export function registerAccountHandlers(): () => void {
       return {
         ...result,
         loginCommand: buildLoginCommand(args.vendor, result.configDir),
-        // macOS can't partition claude credentials by config dir → the poller
-        // would spin forever. The wizard uses this to show a manual-confirm path.
-        credentialReadSupported: !(args.vendor === 'claude' && process.platform === 'darwin'),
       };
     }));
 
