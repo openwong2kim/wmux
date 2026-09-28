@@ -211,8 +211,8 @@ Backed by **no RPC method**: the sessions are child processes of the MCP server 
 | `a2a_discover` | `a2a.discover` | Lists known workspaces and their advertised skills. |
 | `a2a_set_skills` | `meta.setSkills` | Registers the calling agent's skill tags. |
 | `a2a_task_send` | `a2a.task.send` | Sends a structured task to another workspace. Unlisted literal alias of `send_message` — same handler and shape, still callable via `tools/call`; use `send_message` in new prompts. |
-| `a2a_task_query` | `a2a.task.query` | Pulls tasks by id / status / role (sender or receiver). |
-| `a2a_task_update` | `a2a.task.update` | Transitions a task to working / completed / failed / input-required. |
+| `a2a_task_query` | `a2a.task.query` | Pulls tasks by id / status / role (sender or receiver); flags `orphaned: true` when the addressed receiver pane is gone. |
+| `a2a_task_update` | `a2a.task.update` | Transitions a task to working / completed / failed / input-required, or canceled by the receiver (with a reason). |
 | `a2a_task_cancel` | `a2a.task.cancel` | Cancels a task you sent (sender-only). |
 | `a2a_broadcast` | `a2a.broadcast` | Broadcasts an announcement to every workspace. |
 | `channel_list` | `a2a.channel.list` | Lists channels in the caller's company. |
