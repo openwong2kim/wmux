@@ -3892,8 +3892,13 @@ describe('WebTerminalServer', () => {
     const root = path.join(uploadsDir, 'repo');
     fs.mkdirSync(root);
     const git = (...args: string[]) => execFileSync('git', args, {cwd:root,encoding:'utf8'}).trim();
+    // Every git process costs 100ms+ on the Windows runner and the route itself
+    // spawns ~13 per snapshot, so the test keeps its own spawns to a minimum:
+    // identity is appended to the config `init` wrote instead of two `git config`
+    // calls, and the post-stage tree comes from one `write-tree` rather than a
+    // second full snapshot GET.
     git('init', '-b', 'main');
-    git('config', 'user.name', 'HTTP Test'); git('config', 'user.email', 'http@example.invalid');
+    fs.appendFileSync(path.join(root, '.git', 'config'), '[user]\n\tname = HTTP Test\n\temail = http@example.invalid\n');
     fs.writeFileSync(path.join(root, 'phone.txt'), 'reviewed');
     managed.meta.spawnCwd = root;
     managed.meta.cwd = '/untrusted-osc-path';
@@ -3904,13 +3909,15 @@ describe('WebTerminalServer', () => {
     expect(before).toMatchObject({branch:'main',ref:'refs/heads/main',head:null,files:[{path:'phone.txt',status:'??'}]});
     const stage = await fetch(endpoint, {method:'POST',headers:auth,body:JSON.stringify({requestId:crypto.randomUUID(),action:'stage',paths:['phone.txt'],expectedHead:before.head,expectedTree:before.tree,expectedRef:before.ref})});
     expect(await stage.json()).toEqual({applied:true});
-    const staged = await (await fetch(endpoint, {headers:auth})).json();
-    const mutation = {requestId:crypto.randomUUID(),action:'commit',message:'From phone',expectedHead:staged.head,expectedTree:staged.tree,expectedRef:staged.ref};
+    // Staging moves only the index tree; HEAD (unborn) and the ref are unchanged.
+    const mutation = {requestId:crypto.randomUUID(),action:'commit',message:'From phone',expectedHead:before.head,expectedTree:git('write-tree'),expectedRef:before.ref};
     const send = () => fetch(endpoint, {method:'POST',headers:auth,body:JSON.stringify(mutation)});
     const result = await (await send()).json();
-    expect(result).toEqual({applied:true,commit:git('rev-parse','HEAD')});
+    expect(result).toMatchObject({applied:true});
     expect(await (await send()).json()).toEqual(result);
-    expect(git('rev-list','--count','HEAD')).toBe('1');
+    // One `rev-list` pins both facts: HEAD is the returned commit, and the
+    // replayed request did not commit a second time.
+    expect(result).toEqual({applied:true,commit:git('rev-list','HEAD')});
   });
 
   it('gates Git control on authentication, input grants and session visibility', async () => {
