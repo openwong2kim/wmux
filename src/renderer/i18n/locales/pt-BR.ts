@@ -358,7 +358,7 @@ export const ptBR = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Medidor de uso da Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Lê seu token OAuth do Claude Code do armazenamento local e sonda a Anthropic com uma requisição Haiku de 1-token para ler os cabeçalhos de limite de taxa. A sondagem é cobrada da sua própria cota (≈ insignificante). O token nunca é gravado de volta, nunca é registrado, apenas enviado para api.anthropic.com.',
+    'Lê seu uso no endpoint de uso da Anthropic a cada 15 minutos com o seu login do Claude Code (o token OAuth do armazenamento local). Apenas lê o uso — nenhuma requisição ao modelo é enviada e nenhuma cota é consumida. O token nunca é gravado de volta, nunca é registrado, apenas enviado para api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Mostrar utilização de 5h / 7d na barra de status',
   'claudeIntegration.usage.refreshButton': 'Atualizar agora',
   'claudeIntegration.usage.refreshCooldown': 'Atualização disponível em {seconds}s',

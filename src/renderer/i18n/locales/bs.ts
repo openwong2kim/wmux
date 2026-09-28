@@ -358,7 +358,7 @@ export const bs = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Mjerač korištenja Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Čita tvoj Claude Code OAuth token iz lokalnog spremišta i ispituje Anthropic s 1-token Haiku zahtjevom kako bi pročitao zaglavlja ograničenja brzine. Ispitivanje se naplaćuje s tvoje vlastite kvote (≈ zanemarivo). Token se nikada ne upisuje natrag, nikada se ne bilježi, šalje se samo na api.anthropic.com.',
+    'Svakih 15 minuta čita tvoju potrošnju s Anthropic endpointa za potrošnju pomoću tvoje Claude Code prijave (OAuth token iz lokalnog spremišta). Samo čita potrošnju — ne šalje se nikakav zahtjev modelu i ne troši se kvota. Token se nikada ne upisuje natrag, nikada se ne bilježi, šalje se samo na api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Prikaži iskorištenost 5h / 7d u statusnoj traci',
   'claudeIntegration.usage.refreshButton': 'Osvježi sada',
   'claudeIntegration.usage.refreshCooldown': 'Osvježavanje dostupno za {seconds}s',

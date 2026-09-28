@@ -358,7 +358,7 @@ export const fr = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Indicateur d\'utilisation Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Lit votre jeton OAuth Claude Code depuis le stockage local et interroge Anthropic avec une requête Haiku à 1-token pour lire les en-têtes de limite de débit. La sonde est facturée sur votre propre quota (≈ négligeable). Le jeton n\'est jamais réécrit, jamais journalisé, et envoyé uniquement à api.anthropic.com.',
+    'Lit votre utilisation depuis le point de terminaison d\'utilisation d\'Anthropic toutes les 15 minutes avec votre connexion Claude Code (le jeton OAuth du stockage local). Il ne fait que lire l\'utilisation : aucune requête au modèle n\'est envoyée et aucun quota n\'est consommé. Le jeton n\'est jamais réécrit, jamais journalisé, et envoyé uniquement à api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Afficher l\'utilisation 5h / 7d dans la barre d\'état',
   'claudeIntegration.usage.refreshButton': 'Actualiser maintenant',
   'claudeIntegration.usage.refreshCooldown': 'Actualisation possible dans {seconds}s',

@@ -357,7 +357,7 @@ export const da = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Anthropic-forbrugsmåler (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Læser dit Claude Code OAuth-token fra lokal lagring og prober Anthropic med en 1-token Haiku-forespørgsel for at læse rate-limit-headerne. Proben afregnes på din egen kvote (≈ ubetydeligt). Tokenet skrives aldrig tilbage, logges aldrig og sendes kun til api.anthropic.com.',
+    'Læser dit forbrug fra Anthropics forbrugsendpoint hvert 15. minut med dit Claude Code-login (OAuth-tokenet i lokal lagring). Det læser kun forbrug — der sendes ingen modelforespørgsel, og der bruges ingen kvote. Tokenet skrives aldrig tilbage, logges aldrig og sendes kun til api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Vis 5h / 7d-udnyttelse i statuslinjen',
   'claudeIntegration.usage.refreshButton': 'Opdater nu',
   'claudeIntegration.usage.refreshCooldown': 'Opdatering tilgængelig om {seconds}s',

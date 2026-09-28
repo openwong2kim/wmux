@@ -357,7 +357,7 @@ export const hi = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Anthropic उपयोग मीटर (5h / 7d)',
   'claudeIntegration.usage.description':
-    'लोकल स्टोरेज से आपका Claude Code OAuth टोकन पढ़ता है और रेट-लिमिट हेडर पढ़ने के लिए 1-token Haiku अनुरोध भेजकर Anthropic की जाँच करता है। यह जाँच आपके अपने कोटे से बिल होती है (≈ नगण्य)। टोकन कभी वापस नहीं लिखा जाता, कभी लॉग नहीं होता, केवल api.anthropic.com को भेजा जाता है।',
+    'हर 15 मिनट में आपके Claude Code लॉगिन (लोकल स्टोरेज का OAuth टोकन) से Anthropic के उपयोग एंडपॉइंट से आपका उपयोग पढ़ता है। यह केवल उपयोग पढ़ता है — कोई मॉडल अनुरोध नहीं भेजा जाता और कोई कोटा खर्च नहीं होता। टोकन कभी वापस नहीं लिखा जाता, कभी लॉग नहीं होता, केवल api.anthropic.com को भेजा जाता है।',
   'claudeIntegration.usage.enableLabel': 'स्टेटस बार में 5h / 7d उपयोग दिखाएँ',
   'claudeIntegration.usage.refreshButton': 'अभी रिफ्रेश करें',
   'claudeIntegration.usage.refreshCooldown': 'रिफ्रेश {seconds}s में उपलब्ध होगा',

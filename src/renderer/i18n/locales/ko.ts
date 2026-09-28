@@ -1285,7 +1285,7 @@ export const ko = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Anthropic 사용량 표기 (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Claude Code의 OAuth 토큰을 로컬에서 읽어 Anthropic에 1토큰 Haiku 더미 요청을 보내고 rate-limit 헤더를 파싱합니다. 본인 quota에서 차감됩니다 (사실상 무료 수준). 토큰은 디스크에 다시 쓰지 않고, 로그에 남기지 않으며, api.anthropic.com으로만 전송됩니다.',
+    '15분마다 Claude Code 로그인(로컬에 저장된 OAuth 토큰)으로 Anthropic 사용량 엔드포인트에서 사용량을 읽어 옵니다. 사용량 조회만 하므로 모델 요청을 보내지 않고 quota도 차감되지 않습니다. 토큰은 디스크에 다시 쓰지 않고, 로그에 남기지 않으며, api.anthropic.com으로만 전송됩니다.',
   'claudeIntegration.usage.enableLabel': '상태 표시줄에 5h / 7d 사용률 표기',
   'claudeIntegration.usage.refreshButton': '지금 새로고침',
   'claudeIntegration.usage.refreshCooldown': '{seconds}초 후 새로고침 가능',

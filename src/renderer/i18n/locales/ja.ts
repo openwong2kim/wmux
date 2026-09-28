@@ -400,7 +400,7 @@ export const ja = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Anthropic 使用量メーター (5h / 7d)',
   'claudeIntegration.usage.description':
-    'ローカルストレージから Claude Code の OAuth トークンを読み取り、1-token の Haiku リクエストで Anthropic にプローブしてレート制限ヘッダーを取得します。プローブの料金はご自身のクォータに課金されます (≈ ごくわずか)。トークンは書き戻されることもログに記録されることもなく、api.anthropic.com にのみ送信されます。',
+    '15 分ごとに Claude Code のログイン (ローカルストレージの OAuth トークン) を使って Anthropic の使用量エンドポイントから使用量を読み取ります。使用量を読むだけなので、モデルへのリクエストは送信されず、クォータも消費しません。トークンは書き戻されることもログに記録されることもなく、api.anthropic.com にのみ送信されます。',
   'claudeIntegration.usage.enableLabel': 'ステータスバーに 5h / 7d の使用率を表示',
   'claudeIntegration.usage.refreshButton': '今すぐ更新',
   'claudeIntegration.usage.refreshCooldown': '{seconds} 秒後に更新できます',

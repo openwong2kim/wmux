@@ -680,7 +680,7 @@ export const zh = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Anthropic 用量表（5h / 7d）',
   'claudeIntegration.usage.description':
-    '从本地存储读取你的 Claude Code OAuth 令牌，并以 1-token 的 Haiku 请求探测 Anthropic，以读取速率限制响应头。该探测会计入你自己的配额（≈ 可忽略不计）。令牌绝不会被写回、绝不会被记录，仅发送至 api.anthropic.com。',
+    '每 15 分钟使用你的 Claude Code 登录（本地存储中的 OAuth 令牌）从 Anthropic 的用量端点读取你的用量。仅读取用量——不会发送任何模型请求，也不会消耗配额。令牌绝不会被写回、绝不会被记录，仅发送至 api.anthropic.com。',
   'claudeIntegration.usage.enableLabel': '在状态栏显示 5h / 7d 用量',
   'claudeIntegration.usage.refreshButton': '立即刷新',
   'claudeIntegration.usage.refreshCooldown': '{seconds} 秒后可刷新',

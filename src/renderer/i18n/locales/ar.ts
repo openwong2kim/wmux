@@ -358,7 +358,7 @@ export const ar = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'عدّاد استخدام Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'يقرأ رمز OAuth الخاص بـ Claude Code من التخزين المحلي، ويفحص Anthropic بطلب Haiku بحجم 1-token لقراءة ترويسات حد المعدل. يُحتسب الفحص على حصتك الخاصة (≈ لا يُذكر). لا يُعاد كتابة الرمز أبداً، ولا يُسجَّل أبداً، ويُرسَل فقط إلى api.anthropic.com.',
+    'يقرأ استخدامك من نقطة نهاية الاستخدام في Anthropic كل 15 دقيقة باستخدام تسجيل دخولك إلى Claude Code (رمز OAuth في التخزين المحلي). إنه يقرأ الاستخدام فقط — لا يُرسَل أي طلب إلى النموذج ولا تُستهلك أي حصة. لا يُعاد كتابة الرمز أبداً، ولا يُسجَّل أبداً، ويُرسَل فقط إلى api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'عرض استخدام 5h / 7d في شريط الحالة',
   'claudeIntegration.usage.refreshButton': 'تحديث الآن',
   'claudeIntegration.usage.refreshCooldown': 'التحديث متاح خلال {seconds} ث',

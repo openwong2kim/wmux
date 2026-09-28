@@ -19,8 +19,8 @@ type AccountRow = Account & { status: CredentialStatus };
 // ─── M2 — per-account usage (hook-gated) ─────────────────────────────────────
 // The 5h/7d numbers are populated in the background when a claude turn ends in a
 // pane bound to this account (and the usage toggle is on). The ↻ button forces a
-// manual probe regardless of the toggle — an explicit user action spends one
-// 1-token request against that account's quota.
+// manual probe regardless of the toggle — an explicit user action that reads
+// that account's usage endpoint (no model request, no quota spent).
 
 function fmtAge(fetchedAtMs: number | null): string {
   if (fetchedAtMs == null) return '';

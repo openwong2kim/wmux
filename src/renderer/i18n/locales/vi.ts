@@ -357,7 +357,7 @@ export const vi = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Đồng hồ sử dụng Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Đọc token OAuth Claude Code của bạn từ bộ nhớ cục bộ và thăm dò Anthropic bằng một yêu cầu Haiku 1-token để đọc các header giới hạn tốc độ. Lần thăm dò được tính vào hạn mức của chính bạn (≈ không đáng kể). Token không bao giờ được ghi ngược lại, không bao giờ được ghi log, chỉ gửi tới api.anthropic.com.',
+    'Đọc mức sử dụng của bạn từ endpoint sử dụng của Anthropic mỗi 15 phút bằng thông tin đăng nhập Claude Code của bạn (token OAuth trong bộ nhớ cục bộ). Chỉ đọc mức sử dụng — không gửi yêu cầu nào tới mô hình và không tiêu tốn hạn mức. Token không bao giờ được ghi ngược lại, không bao giờ được ghi log, chỉ gửi tới api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Hiện mức sử dụng 5h / 7d trên thanh trạng thái',
   'claudeIntegration.usage.refreshButton': 'Làm mới ngay',
   'claudeIntegration.usage.refreshCooldown': 'Có thể làm mới sau {seconds}s',

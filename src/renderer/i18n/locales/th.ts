@@ -357,7 +357,7 @@ export const th = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'มาตรวัดการใช้งาน Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'อ่านโทเค็น OAuth ของ Claude Code จากที่จัดเก็บภายในเครื่อง แล้วส่งคำขอ Haiku แบบ 1-token ไปยัง Anthropic เพื่ออ่านส่วนหัวขีดจำกัดอัตรา การส่งคำขอนี้จะคิดค่าใช้จ่ายจากโควตาของคุณเอง (≈ น้อยมาก) โทเค็นจะไม่ถูกเขียนกลับ ไม่ถูกบันทึก และส่งไปยัง api.anthropic.com เท่านั้น',
+    'อ่านการใช้งานของคุณจากปลายทางการใช้งานของ Anthropic ทุก 15 นาทีด้วยการล็อกอิน Claude Code ของคุณ (โทเค็น OAuth ในที่จัดเก็บภายในเครื่อง) เป็นการอ่านการใช้งานเท่านั้น ไม่มีการส่งคำขอไปยังโมเดลและไม่ใช้โควตา โทเค็นจะไม่ถูกเขียนกลับ ไม่ถูกบันทึก และส่งไปยัง api.anthropic.com เท่านั้น',
   'claudeIntegration.usage.enableLabel': 'แสดงการใช้งาน 5h / 7d ในแถบสถานะ',
   'claudeIntegration.usage.refreshButton': 'รีเฟรชเดี๋ยวนี้',
   'claudeIntegration.usage.refreshCooldown': 'รีเฟรชได้ในอีก {seconds} วินาที',

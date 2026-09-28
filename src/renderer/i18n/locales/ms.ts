@@ -358,7 +358,7 @@ export const ms = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Meter penggunaan Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Membaca token OAuth Claude Code anda daripada storan tempatan dan menguji Anthropic dengan permintaan Haiku 1-token untuk membaca pengepala had kadar. Ujian ini dicajkan kepada kuota anda sendiri (≈ boleh diabaikan). Token tidak pernah ditulis semula, tidak pernah dilog, hanya dihantar ke api.anthropic.com.',
+    'Membaca penggunaan anda daripada titik akhir penggunaan Anthropic setiap 15 minit dengan log masuk Claude Code anda (token OAuth dalam storan tempatan). Ia hanya membaca penggunaan — tiada permintaan model dihantar dan tiada kuota digunakan. Token tidak pernah ditulis semula, tidak pernah dilog, hanya dihantar ke api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Tunjukkan penggunaan 5h / 7d dalam bar status',
   'claudeIntegration.usage.refreshButton': 'Segar semula sekarang',
   'claudeIntegration.usage.refreshCooldown': 'Segar semula tersedia dalam {seconds}s',

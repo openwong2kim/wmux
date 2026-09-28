@@ -358,7 +358,7 @@ export const tr = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Anthropic kullanım ölçer (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Claude Code OAuth jetonunuzu yerel depolamadan okur ve hız sınırı başlıklarını okumak için Anthropic\'i 1-token Haiku isteğiyle yoklar. Yoklama kendi kotanıza faturalanır (≈ ihmal edilebilir). Jeton asla geri yazılmaz, asla günlüğe kaydedilmez, yalnızca api.anthropic.com adresine gönderilir.',
+    'Claude Code oturumunuzla (yerel depolamadaki OAuth jetonu) her 15 dakikada bir Anthropic\'in kullanım uç noktasından kullanımınızı okur. Yalnızca kullanımı okur — modele istek gönderilmez ve kota harcanmaz. Jeton asla geri yazılmaz, asla günlüğe kaydedilmez, yalnızca api.anthropic.com adresine gönderilir.',
   'claudeIntegration.usage.enableLabel': 'Durum çubuğunda 5h / 7d kullanımını göster',
   'claudeIntegration.usage.refreshButton': 'Şimdi yenile',
   'claudeIntegration.usage.refreshCooldown': 'Yenileme {seconds}sn içinde kullanılabilir',

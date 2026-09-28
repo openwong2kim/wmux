@@ -986,7 +986,7 @@ export function useNotificationListener() {
     });
 
     // Phase 2 — Anthropic 5h/7d usage meter. Main pushes a PollerState
-    // snapshot on initial fetch, hourly tick, manual refresh, and on
+    // snapshot on initial fetch, 15-minute tick, manual refresh, and on
     // error transitions. Renderer treats the payload as opaque.
     const unsubUsage = window.electronAPI.usage.onUpdate((state) => {
       useStore.getState().setAnthropicUsage(state);

@@ -358,7 +358,7 @@ export const id = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Pengukur penggunaan Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Membaca token OAuth Claude Code Anda dari penyimpanan lokal dan mengirim probe ke Anthropic dengan permintaan Haiku 1-token untuk membaca header batas laju. Probe ditagihkan ke kuota Anda sendiri (≈ dapat diabaikan). Token tidak pernah ditulis kembali, tidak pernah dicatat, hanya dikirim ke api.anthropic.com.',
+    'Membaca penggunaan Anda dari endpoint penggunaan Anthropic setiap 15 menit dengan login Claude Code Anda (token OAuth di penyimpanan lokal). Hanya membaca penggunaan — tidak ada permintaan model yang dikirim dan tidak ada kuota yang terpakai. Token tidak pernah ditulis kembali, tidak pernah dicatat, hanya dikirim ke api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Tampilkan utilisasi 5h / 7d di bilah status',
   'claudeIntegration.usage.refreshButton': 'Segarkan sekarang',
   'claudeIntegration.usage.refreshCooldown': 'Penyegaran tersedia dalam {seconds} dtk',
