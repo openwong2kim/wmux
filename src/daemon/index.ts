@@ -15,6 +15,10 @@ import { buildAgentLaunch, installedAgentLaunchOptions } from './web/agentLaunch
 import { workspaceAccountEnv } from './phone/workspaceAccountEnv';
 import { DesktopPhoneBridge } from './phone/DesktopPhoneBridge';
 import { RunHistoryStore } from './history/RunHistoryStore';
+import { AutomationEngine } from './automation/AutomationEngine';
+import { assertExternalSessionId, registerAutomationRpc } from './automation/rpc';
+import { killProcessTree } from './automation/treeKill';
+import { AUTOMATION_EVENT, AUTOMATION_PTY_PREFIX } from '../shared/automation';
 import { InputReceiptStore } from './web/InputReceiptStore';
 import { AnswerReceiptStore } from './approvals/AnswerReceiptStore';
 import { coercePhoneDecisions } from './approvals/decisionConfig';
@@ -200,6 +204,8 @@ function recordHistory(work: (store: RunHistoryStore) => void): void {
   catch (error) { log('warn', 'Phone run history could not be saved:', error); }
 }
 let hookIngest: HookIngest | null = null;
+/** Scheduled runs. Built in registerRpcHandlers once the session RPCs exist. */
+let automationEngine: AutomationEngine | null = null;
 // Outbound webhook/ntfy notifications. Module-scoped for the same reason
 // `webTerminalServer` is: the hook-event site that fires attention pings is
 // registered before the boot path that constructs this, so both sides read the
@@ -1602,6 +1608,19 @@ async function recoverSessions(
       }
       continue;
     }
+    // Scheduled runs are never replayed: a relaunch would paste nothing and a
+    // resumed agent would run unattended outside its run record (the engine
+    // marks that run unknown). Reap a same-boot survivor, then tombstone it.
+    if (session.id.startsWith(AUTOMATION_PTY_PREFIX)) {
+      if (!rebooted && await ProcessMonitor.isAlive(session.pid) && await isOurShellProcess(session.pid, session.cmd)) {
+        await killProcessTree(session.pid);
+      }
+      session.state = 'dead';
+      session.exitCode = null;
+      changed = true;
+      log('info', `[recovery] scheduled-run session ${session.id} not recovered`);
+      continue;
+    }
     // Publish every WSL placeholder, including cap-skipped panes. Boot must
     // publish RPC/panes without
     // waiting for a cold distro, and one unavailable target must not lose its
@@ -2171,7 +2190,12 @@ function registerRpcHandlers(
     // 응답에서 자격증명 값 제거(main은 pid 등만 사용). fresh env 교체 — live meta 불변.
     return { ...session, env: stripCredentialValues(session.env) };
   };
-  pipeServer.onRpc('daemon.createSession', params => createSessionRpc(params));
+  // `auto-` ids belong to scheduled runs, which create through createSessionRpc
+  // directly; an external caller may not mint one.
+  pipeServer.onRpc('daemon.createSession', params => {
+    assertExternalSessionId(params);
+    return createSessionRpc(params);
+  });
 
   // daemon.destroySession
   //
@@ -3744,7 +3768,16 @@ function registerRpcHandlers(
       listLiveSessions: () => sessionManager.listLiveSessions(),
       emitAgentEvent: (sessionId, data) => {
         const historySession = sessionManager.getSession(sessionId);
-        if (historySession) recordHistory(store => store.ingest(sessionId, historySession.meta.env, data));
+        // Scheduled runs keep their own history; they are not phone runs.
+        const automationPane = automationEngine?.ownsPane(sessionId) === true;
+        if (historySession && !automationPane) recordHistory(store => store.ingest(sessionId, historySession.meta.env, data));
+        if (automationPane) {
+          void automationEngine?.onAgentEvent(sessionId, {
+            kind: data.signal.kind,
+            status: data.status,
+            ...(data.signal.agentSessionId ? { agentSessionId: data.signal.agentSessionId } : {}),
+          });
+        }
         // Hook Stop/awaiting-input is authoritative inside the same daemon that
         // owns byte activity. Settle the bridge before broadcasting so a later
         // idle repaint cannot race the renderer back to stale running.
@@ -3798,6 +3831,7 @@ function registerRpcHandlers(
       },
       applyResumeBinding: (id, binding) => { applyResumeBinding(id, binding); },
       log: (level, message) => log(level, message),
+      isAutomationPane: (id) => automationEngine?.ownsPane(id) === true,
       // M2 — hook-sourced awaiting_input is the ONLY thing that mints an
       // approval request. Wired here, on the daemon-internal path, because this
       // is where provenance and the dedup decision are both already known.
@@ -4143,18 +4177,9 @@ function registerRpcHandlers(
   // Versioned method name is a rolling-upgrade safety boundary. An older
   // daemon's v1 handler would ignore the additive incarnationId parameter and
   // write anyway; v2 makes mixed versions fail with Unknown method pre-write.
-  pipeServer.onRpc('daemon.deliverScheduledPromptV2', async (params) => {
-    const id = typeof params['id'] === 'string' ? params['id'] : '';
-    const agentSlug = isAgentSlug(params['agentSlug']) ? params['agentSlug'] : null;
-    const incarnationId = typeof params['incarnationId'] === 'string'
-      ? params['incarnationId']
-      : '';
-    const prompt = typeof params['prompt'] === 'string' ? params['prompt'] : '';
-    if (!id || !agentSlug || !incarnationId || incarnationId.length > 128 ||
-      !prompt.trim() || prompt.length > 16_000) {
-      return { result: 'error' as const };
-    }
-    const result = await deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
+  // Named so scheduled runs (automation engine) paste through the same proof.
+  const deliverPromptToSession = (id: string, agentSlug: AgentSlug, incarnationId: string, prompt: string) =>
+    deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
       getAgentState: () => {
         const current = readDaemonAgentState(id);
         const slug = current.agentName ? agentDisplayToSlug(current.agentName) : undefined;
@@ -4189,8 +4214,81 @@ function registerRpcHandlers(
         return true;
       },
     });
+  pipeServer.onRpc('daemon.deliverScheduledPromptV2', async (params) => {
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    const agentSlug = isAgentSlug(params['agentSlug']) ? params['agentSlug'] : null;
+    const incarnationId = typeof params['incarnationId'] === 'string'
+      ? params['incarnationId']
+      : '';
+    const prompt = typeof params['prompt'] === 'string' ? params['prompt'] : '';
+    if (!id || !agentSlug || !incarnationId || incarnationId.length > 128 ||
+      !prompt.trim() || prompt.length > 16_000) {
+      return { result: 'error' as const };
+    }
+    const result = await deliverPromptToSession(id, agentSlug, incarnationId, prompt);
     return { result };
   });
+
+  // Scheduled runs. Every effect goes through the same session RPCs and
+  // readers a GUI pane uses; the engine owns only its store and run state.
+  const liveManaged = (id: string) => {
+    const managed = sessionManager.getSession(id);
+    return managed && (managed.meta.state === 'attached' || managed.meta.state === 'detached') ? managed : undefined;
+  };
+  automationEngine = new AutomationEngine({
+    wmuxDir: getWmuxDir(),
+    parentEnv: process.env,
+    log: (level, message) => log(level, message),
+    emit: (event) => pipeServer.broadcast({ type: AUTOMATION_EVENT, sessionId: '', data: event }),
+    buildBaseCommand: async (choice, env) => buildAgentLaunch(choice, await installedAgentLaunchOptions(env)),
+    createSession: async ({ id, cwd, env, command }) => {
+      await createSessionRpc({ id, cwd, env, exec: { command } });
+    },
+    sessionPid: (id) => liveManaged(id)?.meta.pid ?? null,
+    isAttached: (id) => sessionManager.getSession(id)?.meta.state === 'attached',
+    destroySession: async (id) => { await destroySessionRpc({ id }); },
+    readScreen: async (id) => {
+      const managed = sessionManager.getSession(id);
+      if (!managed) return '';
+      const outcome = await generateTextSnapshot({
+        cols: managed.meta.cols ?? 80,
+        rows: managed.meta.rows ?? 24,
+        scrollback: 0,
+        initial: managed.ringBuffer.readAll(),
+      });
+      return outcome.ok ? outcome.rows.map((r) => r.text).join('\n') : '';
+    },
+    sendKey: async (id, sequence) => {
+      const managed = liveManaged(id);
+      if (!managed) throw new Error('session gone');
+      managed.ptyProcess.write(sequence);
+      managed.bridge.noteInput(sequence, true);
+    },
+    readAgent: (id) => {
+      const state = readDaemonAgentState(id);
+      return {
+        slug: state.agentName ? agentDisplayToSlug(state.agentName) ?? null : null,
+        verified: state.agentVerified,
+        status: state.agentStatus,
+        inputQuiet: state.inputQuiet,
+        incarnationId: state.incarnationId,
+      };
+    },
+    armAgentTracker: (id) => {
+      const managed = liveManaged(id);
+      if (managed) agentProcessTracker.arm(id, managed.meta.pid);
+    },
+    deliverPrompt: (id, slug, incarnationId, prompt) => deliverPromptToSession(id, slug, incarnationId, prompt),
+    hasPendingApproval: (id) => approvalRegistry?.list().pending.some((r) => r.sessionId === id) ?? false,
+    transcriptTurnEndAt: (id) => transcriptTurnEnd(projector.snapshot(id)?.events, 0)?.at,
+    snapshotText: async (id) => {
+      const outcome = await queuedTextSnapshot(sessionManager, id, 2000);
+      return outcome?.ok ? outcome.rows.map((r) => r.text).join('\n') : null;
+    },
+    killTree: (pid) => killProcessTree(pid),
+  });
+  registerAutomationRpc((method, handler) => pipeServer.onRpc(method, handler), automationEngine, firstPartyOnly);
+  void automationEngine.start().catch((err) => log('error', '[automation] engine start failed:', err));
 
   // Human chat input shares the scheduler's input-revision/identity guards,
   // with the displayed conversation and approval state checked at both writes.
@@ -7081,6 +7179,7 @@ async function main(): Promise<void> {
   // activity.active / getAgentName on the next output burst.
   agentProcessTracker.setStateChangeListener((sessionId, state) => {
     if (!state.alive) hookIngest?.expireAuthorityFor(sessionId, state.slug);
+    if (!state.alive) automationEngine?.onAgentProcessExit(sessionId);
     // A pane whose status the HOOK owns has exactly two settle paths: the Stop
     // hook, and this edge. An agent killed mid-turn (double Ctrl+C, /exit, a
     // crash) sends no Stop, and byte silence no longer clears a hook-governed
@@ -7299,6 +7398,8 @@ async function main(): Promise<void> {
   // The supervisor's own restarts bypass destroySession (removeTombstone),
   // so neither hook ever fires for a supervised restart itself.
   sessionManager.on('session:died', (payload: { id: string; exitCode: number | null; signal?: number }) => {
+    void automationEngine?.onSessionDied(payload.id, payload.exitCode)
+      .catch((err) => log('warn', `[automation] session-died handling failed for ${payload.id}:`, err));
     try {
       paneSupervisor.onSessionDied({ id: payload.id, exitCode: payload.exitCode, signal: payload.signal });
     } catch (err) {
@@ -7427,6 +7528,7 @@ async function main(): Promise<void> {
         webTerminalServer?.getLastActivityAt() ?? null,
       ),
       pendingApprovals: approvalRegistry?.pendingCount() ?? 0,
+      automations: automationEngine?.holdsDaemon() ? 1 : 0,
     }),
     // Idle self-terminate. Routes through the same shutdown() path used
     // by SIGTERM / SIGINT / daemon.shutdown RPC — the `shuttingDown`

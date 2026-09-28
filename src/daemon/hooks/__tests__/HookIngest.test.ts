@@ -957,6 +957,28 @@ describe('HookIngest', () => {
       expect(emitted.at(-1)?.data.hookKind).toBe('agent.tool_started');
     });
 
+    it('opens no gate for a pane in the scheduled-run registry (and still gates others)', () => {
+      const base = makeDeps();
+      let gatesOpened = 0;
+      const ingestWithGate = new HookIngest({
+        ...base.deps,
+        gateConfig: () => ({ gatedTools: ['Bash'] }),
+        isAutomationPane: (id) => id === 'pty-a',
+        approvals: {
+          ...base.deps.approvals,
+          noteGateAwaiting: () => {
+            gatesOpened += 1;
+            return 'gate-id';
+          },
+        },
+      });
+      const result = ingestWithGate.handlePermissionGate(gateSignal());
+      expect(result.ok).toBe(true);
+      expect(result.gateId).toBeUndefined();
+      expect(gatesOpened).toBe(0);
+      expect(base.emitted.at(-1)?.data.hookKind).toBe('agent.tool_started');
+    });
+
     it('still gates the same tool when the session prompts (acceptEdits / default / absent)', () => {
       // acceptEdits auto-approves edits but still prompts for Bash, so its gate
       // stays meaningful — only bypassPermissions is a declared opt-out.

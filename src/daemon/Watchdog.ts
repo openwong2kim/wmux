@@ -23,12 +23,15 @@ export interface WatchdogCallbacks {
    *   the phone app watching a pane) deliberately does NOT appear anywhere
    *   in this signal set — per the M4 native-app decision, a viewer must
    *   not keep the daemon alive. A pending approval must.
+   * - `automations`: enabled schedules plus live scheduled runs (optional,
+   *   0 when omitted). A schedule can only fire while the daemon is up.
    */
   onIdleCheck?: () => {
     connections: number;
     sessions: number;
     lastDisconnectAt: number | null;
     pendingApprovals?: number;
+    automations?: number;
   };
   /**
    * Fired when the watchdog determines the daemon has been idle long
@@ -197,10 +200,11 @@ export class Watchdog {
     const traceIdle = this.checkCount > 0 && this.checkCount % 5 === 0;
 
     const pendingApprovals = info.pendingApprovals ?? 0;
-    if (info.connections > 0 || info.sessions > 0 || pendingApprovals > 0) {
+    const automations = info.automations ?? 0;
+    if (info.connections > 0 || info.sessions > 0 || pendingApprovals > 0 || automations > 0) {
       if (traceIdle) {
         console.log(
-          `[Watchdog] idle-eval: held alive by connections=${info.connections} liveSessions=${info.sessions} pendingApprovals=${pendingApprovals} (pid=${process.pid})`,
+          `[Watchdog] idle-eval: held alive by connections=${info.connections} liveSessions=${info.sessions} pendingApprovals=${pendingApprovals} automations=${automations} (pid=${process.pid})`,
         );
       }
       return;

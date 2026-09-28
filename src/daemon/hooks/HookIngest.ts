@@ -274,6 +274,14 @@ export interface HookIngestDeps {
    * Only the daemon supplies it; a rejection counts as `unavailable`.
    */
   openCodeDecisions?: (sessionId: string, requestId?: string) => Promise<'native' | 'missing' | 'unsupported' | 'unavailable'>;
+  /**
+   * Scheduled runs — is this pane a live run in the automation engine's
+   * registry? Such a pane raises no #783 gate: nobody is at a phone for an
+   * unattended run, so a gate would only stall it until the deadline. Its
+   * permission boundary is the launch mode (and the agent's own prompt in
+   * approval mode). Registry membership, never the id prefix.
+   */
+  isAutomationPane?: (sessionId: string) => boolean;
 }
 
 /**
@@ -745,7 +753,8 @@ export class HookIngest {
       id: sessionId,
       env: sessions.find((s) => s.id === sessionId)?.env,
     });
-    const isGated = !bypassing && !isBrain && toolName !== null && gatedTools.includes(toolName);
+    const isAutomation = this.deps.isAutomationPane?.(sessionId) === true;
+    const isGated = !bypassing && !isBrain && !isAutomation && toolName !== null && gatedTools.includes(toolName);
 
     if (!isGated) {
       // Non-gated tool (or a bypass session) — emit tool_started for the phone
