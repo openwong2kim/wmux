@@ -11,6 +11,8 @@ export interface ChatDeliveryDeps extends ScheduledPromptDeliveryDeps {
   hasOpenApproval: () => boolean;
   /** The pane's visible grid, parsed; null when it cannot be read. */
   readScreen: () => Promise<ChatScreenRows | null>;
+  /** Never type into a running turn (the daemon queue delivers after the turn ends). */
+  idleOnly?: boolean;
 }
 
 /** Keep transcript identity and approval checks inside the daemon, including
@@ -52,7 +54,7 @@ export async function deliverChatPrompt(
     // double-Enter behavior is retained by the scheduler's default.
     ...(initial.slug === 'codex' ? { submitKeys: '\r' } : {}),
     // Claude queues a prompt submitted mid-turn, exactly as typed in Terminal.
-    ...(claudeEmpty ? { acceptRunning: true } : {}),
+    ...(claudeEmpty && !deps.idleOnly ? { acceptRunning: true } : {}),
     ...(attachments.length ? { leadingPastes: attachments.map(quoteImagePathForPty) } : {}),
     delay: async (ms) => {
       await (deps.delay ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))))(ms);

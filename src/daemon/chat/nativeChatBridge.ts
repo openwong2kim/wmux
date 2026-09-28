@@ -15,12 +15,14 @@ import type { TerminalChatFailure, TerminalChatService } from '../transcript/Ter
 import type { ChatSessionService } from './ChatSessionService';
 import { ChatSendReceiptStore, type StoredChatOutcome } from './ChatSendReceiptStore';
 import { ChatCancelReceiptStore } from './ChatCancelReceiptStore';
+import type { ChatQueueReason, ChatQueueRecord, ChatQueueState, ChatQueueStore } from './ChatQueue';
 import {
   CHAT_LAUNCH_MAX_UNITS, CHAT_MESSAGE_RETENTION_MS, CHAT_SEND_MAX_UNITS, OPENCODE_MAX_SEND_BYTES, OPENCODE_REQUEST_MAX_BYTES,
   checkChatId, fileHistoryEpoch, openCodeSendBytes, tuiHistoryEpoch,
   type ChatBlocked, type ChatBridge, type ChatCancelOutcome, type ChatCancelRequest, type ChatCancelTag, type ChatEffect, type ChatLaunchOutcome, type ChatLaunchPreview, type ChatLaunchReason,
   type ChatLaunchRequest, type ChatLaunchTag, type ChatOwner, type ChatResolution, type ChatSendOutcome, type ChatSendRequest,
   type ChatSendTag, type ChatTurn, type DangerousLaunchTrace,
+  type ChatDeliveredMessage, type ChatDequeueResult, type ChatQueueEvent, type ChatQueueItemView, type ChatSendReceiptView,
 } from './chatBridge';
 
 /** Synthetic TerminalChatService client key for the phone's OpenCode watch. */
@@ -78,6 +80,13 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   receipts: ChatSendReceiptStore | null;
   /** Null when the store could not be loaded: phone cancels are refused. */
   cancelReceipts: ChatCancelReceiptStore | null;
+  /** The daemon-held phone queue. Absent or null: a `chat-queue` send takes today's path. */
+  queue?: ChatQueueStore | null;
+  /** Every queue transition (the web server fans it out as SSE `chat.queue`). */
+  onQueueEvent?: (event: ChatQueueEvent) => void;
+  /** Queue overrides (tests). */
+  queueTtlMs?: number;
+  queueTickMs?: number;
   idleShell(pid: number, env: NodeJS.ProcessEnv): Promise<{ ok: true } | { ok: false; reason: 'missing' | 'unsupported-shell' | 'shell-has-children' }>;
   installedAgents(env: NodeJS.ProcessEnv): Promise<AgentLaunchOptions[]>;
   relays: {
@@ -98,12 +107,14 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   delay?: (ms: number) => Promise<void>;
 }
 
+type QueueMethods = 'queueEnabled' | 'queue' | 'dequeue' | 'dropQueue' | 'delivered';
+
 /** How the desktop RPCs dispatch a pane (contract §2.1). */
 export type ChatRoute =
   | { kind: 'native'; read: NonNullable<Awaited<ReturnType<TerminalChatService['read']>>> }
   | { kind: 'opencode'; failure?: TerminalChatFailure } | { kind: 'managed' } | { kind: 'file' };
 
-export interface NativeChatBridge extends ChatBridge {
+export interface NativeChatBridge extends Omit<ChatBridge, QueueMethods>, Required<Pick<ChatBridge, QueueMethods>> {
   route(id: string): Promise<ChatRoute>;
   /** `daemon.transcript.status`, byte-identical to the pre-bridge answer. */
   status(id: string): Promise<TranscriptStatus>;
@@ -126,6 +137,10 @@ export interface NativeChatBridge extends ChatBridge {
   hasOpenApproval(id: string): boolean;
   /** `daemon.chat.skills`: the desktop keeps its live-cwd fallback. */
   desktopSkills(id: string, agent: unknown): Promise<ChatSkillCatalog>;
+  /** Something that can end a turn happened on the pane: try its queue now (resolves when that pass ends). */
+  kickQueue(id: string): Promise<void>;
+  /** The pane is gone: its queued items are canceled{pane-closed}. */
+  paneClosed(id: string): void;
 }
 
 const UNAVAILABLE_SKILLS: ChatSkillCatalog = { skills: [], state: 'unavailable' };
@@ -134,6 +149,17 @@ const RELAY_URL = /^unix:\/\/\/[A-Za-z0-9_./-]+$/;
 export const ESC_QUIET_MS = 300;
 /** `cancel-cooldown` retry hint while OpenCode admits a just-sent prompt. */
 export const OPENCODE_FENCE_RETRY_MS = 500;
+/** A queued message not delivered within this long fails (`expired`, or the hold that kept it). */
+export const CHAT_QUEUE_TTL_MS = 10 * 60_000;
+/** The queue's fallback poll while any pane holds an active item. */
+const CHAT_QUEUE_TICK_MS = 1_000;
+/**
+ * After a delivery the next item waits for a NEW turn to end. If the turn id
+ * never moves (a prompt that started no turn), this long of idle lets it go.
+ */
+const QUEUE_TURN_GATE_STALE_MS = 30_000;
+const QUEUE_PREVIEW_CHARS = 80;
+const DELIVERED_KEEP = 32;
 const slugOf = (state: ChatAgentState) => agentDisplayToSlug(state.agentName ?? '');
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const liveState = (pane: ChatPane) => ['attached', 'detached'].includes(pane.meta.state);
@@ -326,7 +352,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   };
 
   /** File binding (Claude/Codex): guarded bracketed paste, then Enter. */
-  const dispatchFile = async (req: ChatSendRequest): Promise<StoredChatOutcome> => {
+  const dispatchFile = async (req: ChatSendRequest, opts: { idleOnly?: boolean } = {}): Promise<StoredChatOutcome> => {
     const { id } = req;
     if (!deps.approvals()) return { result: 'unavailable', effect: 'none', error: 'chat-unavailable' };
     if (sending.has(id)) return { result: 'busy', effect: 'none', error: 'chat-busy' };
@@ -356,6 +382,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         },
         write: (data) => deps.write(id, data),
         ...(deps.delay ? { delay: deps.delay } : {}),
+        ...(opts.idleOnly ? { idleOnly: true } : {}),
         ...(authorize ? { authorized: async (stage: 'first-write' | 'submit') => {
           let ok = false;
           try { ok = await authorize(stage); } catch { /* a failed check is a refusal */ }
@@ -425,6 +452,13 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     // answer no-conversation for a message that was delivered.
     const replayed = early(store?.lookup(owner, clientMessageId));
     if (replayed) return replayed;
+    // A message the daemon queue holds (or held) is never dispatched again.
+    const held = queueStore?.get(owner, clientMessageId);
+    if (held) {
+      const memo = queueMemo.get(memoKey(owner, clientMessageId));
+      if (memo && memo.fingerprint !== fingerprint) return refuse(clientMessageId, 'message-id-conflict');
+      return queueOutcome(held, true);
+    }
     if (typeof req.text !== 'string' || !req.text.trim()) return refuse(clientMessageId, 'invalid-chat-request', { result: 'error', detail: 'text' });
     if (req.text.length > CHAT_SEND_MAX_UNITS) return refuse(clientMessageId, 'text-too-long', { result: 'error', limit: 'units' });
     if (!req.agentSessionId) return refuse(clientMessageId, 'invalid-chat-request', { result: 'error', detail: 'agentSessionId' });
@@ -453,6 +487,12 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         openCodeSendBytes(req.agentSessionId, resolution.rawEpoch, req.text, clientMessageId) > OPENCODE_REQUEST_MAX_BYTES) {
       return refuse(clientMessageId, 'text-too-long', { result: 'error', limit: 'bytes', maxSendBytes: OPENCODE_MAX_SEND_BYTES });
     }
+    // The daemon queue: a running turn, or anything already waiting on the
+    // pane (any owner), holds the message for delivery after the turn ends.
+    if (req.queue && queueStore && owner !== 'desktop' && (resolution.source === 'file' || resolution.source === 'tui') &&
+        (turnRunning(req.id, resolution) || queueStore.hasActive(req.id))) {
+      return enqueue(req, resolution.source, fingerprint);
+    }
 
     if (store) {
       // Synchronous with the lookup: a concurrent same-id send that passed the
@@ -476,7 +516,262 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       outcome = { result: 'unconfirmed', effect: 'uncertain', error: 'delivery-unconfirmed' };
     }
     if (store && !store.complete(owner, clientMessageId, outcome)) deps.log('warn', `[chat] send receipt for ${req.id} not persisted`);
+    if (outcome.result === 'sent' && !outcome.error && owner !== 'desktop') noteDelivered(req.id, owner, clientMessageId, req.text);
     return { clientMessageId, replayed: false, ...outcome };
+  };
+
+  // ---------------------------------------------------------------------------
+  // Daemon-held queue (phone, `chat-queue`)
+
+  /** Memory half of a queue record: the text never reaches the disk. */
+  interface QueueMemo {
+    fingerprint: string;
+    preview: string;
+    /** Dropped once the record is final. */
+    text?: string;
+    agentSessionId: string;
+    historyEpoch?: string;
+    source: 'file' | 'tui';
+    incarnation?: string;
+    authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean>;
+    /** Why the last attempt held it, if a dialog did: the failure reason at the TTL. */
+    hold?: 'blocked' | 'prompt-active';
+  }
+  const queueStore = deps.queue ?? null;
+  const queueTtl = deps.queueTtlMs ?? CHAT_QUEUE_TTL_MS;
+  const queueMemo = new Map<string, QueueMemo>();
+  const memoKey = (owner: ChatOwner, clientMessageId: string) => `${owner}\n${clientMessageId.toLowerCase()}`;
+  const draining = new Map<string, Promise<void>>();
+  const rerun = new Set<string>();
+  const lastDelivered = new Map<string, { turnId?: string; at: number }>();
+  const deliveredLog = new Map<string, Array<ChatDeliveredMessage & { owner: ChatOwner }>>();
+  let queueTick: ReturnType<typeof setInterval> | undefined;
+
+  const noteDelivered = (id: string, owner: ChatOwner, clientMessageId: string, text: string) => {
+    const list = deliveredLog.get(id) ?? [];
+    list.push({ owner, clientMessageId, text, at: now() });
+    deliveredLog.set(id, list.slice(-DELIVERED_KEEP));
+  };
+
+  const queueOutcome = (record: Readonly<ChatQueueRecord>, replayed: boolean): ChatSendOutcome =>
+    ({ clientMessageId: record.clientMessageId, replayed, queueState: record.state, ...(record.reason ? { queueReason: record.reason } : {}) });
+
+  const emitQueue = (record: Readonly<ChatQueueRecord>) => {
+    try {
+      deps.onQueueEvent?.({ sessionId: record.paneId, owner: record.owner, clientMessageId: record.clientMessageId,
+        state: record.state, ...(record.reason ? { reason: record.reason } : {}), at: record.at });
+    } catch (error) {
+      deps.log('warn', `[chat] queue event failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  /** Running for the queue's purpose: a dialog inside the turn counts. */
+  const turnRunning = (id: string, resolution: ChatResolution): boolean => {
+    if (resolution.source === 'tui') return resolution.status.agentStatus !== 'complete';
+    const state = deps.chatAgentState(id);
+    return state.turn?.state === 'running' || state.agentStatus === 'running' || state.agentStatus === 'awaiting_input';
+  };
+
+  const settle = (record: Readonly<ChatQueueRecord>, state: ChatQueueState, reason?: ChatQueueReason) => {
+    const next = queueStore?.transition(record.owner, record.clientMessageId, state, reason);
+    if (!next) return;
+    if (state !== 'queued' && state !== 'delivering') {
+      const memo = queueMemo.get(memoKey(record.owner, record.clientMessageId));
+      if (memo) { delete memo.text; delete memo.authorized; }
+    }
+    emitQueue(next);
+  };
+
+  const startQueueTick = () => {
+    if (queueTick || !queueStore) return;
+    queueTick = setInterval(() => {
+      const panes = queueStore.activePanes();
+      if (!panes.length) { clearInterval(queueTick); queueTick = undefined; return; }
+      for (const id of panes) void kickQueue(id);
+    }, deps.queueTickMs ?? CHAT_QUEUE_TICK_MS);
+    queueTick.unref?.();
+  };
+
+  const enqueue = (req: ChatSendRequest, source: 'file' | 'tui', fingerprint: string): ChatSendOutcome => {
+    const { owner, id, clientMessageId } = req;
+    const inserted = queueStore!.insert(owner, id, clientMessageId);
+    if (inserted === 'full') return refuse(clientMessageId, 'queue-full');
+    if (inserted === 'persist-failed') return refuse(clientMessageId, 'chat-persist-failed');
+    queueMemo.set(memoKey(owner, clientMessageId), {
+      fingerprint, preview: Array.from(req.text).slice(0, QUEUE_PREVIEW_CHARS).join(''), text: req.text,
+      agentSessionId: req.agentSessionId, ...(req.historyEpoch !== undefined ? { historyEpoch: req.historyEpoch } : {}),
+      source, incarnation: deps.pane(id)?.meta.incarnationId, authorized: req.queue!.authorized,
+    });
+    const record = queueStore!.get(owner, clientMessageId)!;
+    emitQueue(record);
+    startQueueTick();
+    void kickQueue(id);
+    return queueOutcome(record, false);
+  };
+
+  const cancelQueued = (match: (record: Readonly<ChatQueueRecord>) => boolean, reason: ChatQueueReason) => {
+    if (!queueStore) return;
+    for (const id of queueStore.activePanes()) {
+      for (const record of queueStore.list(id)) {
+        if (record.state === 'queued' && match(record)) settle(record, 'canceled', reason);
+      }
+    }
+  };
+
+  /** Where one delivery attempt leaves the item: final, or held for the next idle. */
+  const queueVerdict = (outcome: StoredChatOutcome): { state: ChatQueueState; reason?: ChatQueueReason } | { hold: QueueMemo['hold'] | null } => {
+    if (outcome.result === 'sent' && !outcome.error) return { state: 'delivered' };
+    switch (outcome.error) {
+      case 'chat-busy': return { hold: null };
+      case 'chat-blocked': return { hold: outcome.blockedBy === 'approval' ? 'prompt-active' : 'blocked' };
+      case 'chat-unavailable':
+      case 'opencode-receipts-full':
+        if (outcome.effect === 'none') return { hold: null };
+        break;
+      case 'session-changed': return { state: 'canceled', reason: 'session-changed' };
+      case 'input-not-provably-empty': return { state: 'failed', reason: 'draft-present' };
+      case 'authorization-expired': return { state: 'canceled', reason: 'authorization-revoked' };
+    }
+    return { state: 'failed', reason: 'delivery-unconfirmed' };
+  };
+
+  const stillHead = (id: string, record: Readonly<ChatQueueRecord>) => {
+    const head = queueStore?.head(id);
+    return !!head && head.owner === record.owner && head.clientMessageId === record.clientMessageId;
+  };
+
+  /**
+   * One pass over a pane's queue: deliver the head when the turn is over,
+   * one item per ended turn, through the same guarded dispatch as a direct
+   * send. Holds (running, busy, a dialog) leave the item queued for the next
+   * pass; nothing is retried after a write.
+   */
+  const drainQueue = async (id: string): Promise<void> => {
+    if (!queueStore) return;
+    for (;;) {
+      const head = queueStore.head(id);
+      if (!head) return;
+      const memo = queueMemo.get(memoKey(head.owner, head.clientMessageId));
+      if (!memo?.text || !memo.authorized) { settle(head, 'canceled', 'daemon-restart'); continue; }
+      const text = memo.text;
+      const pane = deps.pane(id);
+      if (!pane) { cancelQueued((record) => record.paneId === id, 'pane-closed'); return; }
+      if (now() - head.queuedAt > queueTtl) { settle(head, 'failed', memo.hold ?? 'expired'); continue; }
+      const authorize = memo.authorized;
+      const incarnation = memo.incarnation;
+      const authorized = async (stage: 'first-write' | 'submit') => {
+        if (deps.pane(id)?.meta.incarnationId !== incarnation) return false;
+        try { return await authorize(stage); } catch { return false; }
+      };
+      if (pane.meta.incarnationId !== memo.incarnation || !await authorized('first-write')) {
+        if (stillHead(id, head)) settle(head, 'canceled', 'authorization-revoked');
+        continue;
+      }
+      const resolution = await resolve(id);
+      if (!stillHead(id, head)) continue;
+      // The agent may be between two readable states: wait (the TTL bounds it).
+      if (resolution.source === 'none') return;
+      if (resolution.source !== memo.source || resolution.status.agentSessionId !== memo.agentSessionId ||
+          memo.historyEpoch !== undefined && memo.historyEpoch !== resolution.epoch) {
+        settle(head, 'canceled', 'session-changed');
+        continue;
+      }
+      if (sending.has(id)) return;
+      if (hasOpenApproval(id)) { memo.hold = blockedBy(id) === 'approval' ? 'prompt-active' : 'blocked'; return; }
+      if (turnRunning(id, resolution)) return;
+      let turnAtDelivery: string | undefined;
+      if (resolution.source === 'file') {
+        if (!resolution.status.terminal?.capabilities.send) return;
+        // One item per ended turn: after a delivery, the turn it started has
+        // to begin (new id) and end before the next item goes, so a stale
+        // `complete` from the previous turn never delivers two in a row.
+        const turn = deps.chatAgentState(id).turn;
+        const last = lastDelivered.get(id);
+        if (last && turn && turn.id === last.turnId && now() - last.at < QUEUE_TURN_GATE_STALE_MS) return;
+        turnAtDelivery = turn?.id;
+      }
+      if (!stillHead(id, head)) continue;
+      // Synchronous from the head check: DELETE now answers delivery-in-progress.
+      const delivering = queueStore.transition(head.owner, head.clientMessageId, 'delivering', undefined, { strict: true });
+      if (!delivering) { deps.log('warn', `[chat] queue item for ${id} not persisted; holding`); return; }
+      emitQueue(delivering);
+      const receipts = deps.receipts;
+      const inserted = receipts?.insertPending(head.owner, head.clientMessageId, {
+        paneId: id, fingerprint: memo.fingerprint, agentSessionId: memo.agentSessionId,
+        ...(memo.historyEpoch !== undefined ? { historyEpoch: memo.historyEpoch } : {}),
+      });
+      if (inserted === 'exists') { settle(head, 'failed', 'delivery-unconfirmed'); continue; }
+      const req: ChatSendRequest = { owner: head.owner, id, agentSessionId: memo.agentSessionId,
+        ...(memo.historyEpoch !== undefined ? { historyEpoch: memo.historyEpoch } : {}),
+        text, clientMessageId: head.clientMessageId, authorized: (stage) => authorized(stage ?? 'first-write') };
+      let outcome: StoredChatOutcome;
+      try {
+        outcome = resolution.source === 'tui' ? await dispatchTui(req, resolution) : await dispatchFile(req, { idleOnly: true });
+      } catch {
+        outcome = { result: 'unconfirmed', effect: 'uncertain', error: 'delivery-unconfirmed' };
+      }
+      const verdict = queueVerdict(outcome);
+      if ('hold' in verdict) {
+        if (inserted === 'inserted') receipts?.discard(head.owner, head.clientMessageId);
+        if (verdict.hold) memo.hold = verdict.hold;
+        settle(head, 'queued');
+        return;
+      }
+      if (inserted === 'inserted' && !receipts?.complete(head.owner, head.clientMessageId, outcome)) {
+        deps.log('warn', `[chat] send receipt for queued ${id} not persisted`);
+      }
+      if (verdict.state === 'delivered') {
+        lastDelivered.set(id, { turnId: turnAtDelivery, at: now() });
+        noteDelivered(id, head.owner, head.clientMessageId, text);
+      }
+      settle(head, verdict.state, verdict.reason);
+    }
+  };
+
+  /** One pass per pane at a time; a kick during a pass runs one more after it (the pass may have read stale state). */
+  function kickQueue(id: string): Promise<void> {
+    const running = draining.get(id);
+    if (running) { rerun.add(id); return running; }
+    if (!queueStore?.hasActive(id)) return Promise.resolve();
+    const pass = (async () => { do { rerun.delete(id); await drainQueue(id); } while (rerun.has(id)); })()
+      .catch((error: unknown) => deps.log('warn', `[chat] queue pass for ${id} failed: ${error instanceof Error ? error.message : String(error)}`))
+      .finally(() => { draining.delete(id); rerun.delete(id); });
+    draining.set(id, pass);
+    return pass;
+  }
+
+  const queueView = (owner: ChatOwner, id: string): ChatQueueItemView[] => {
+    if (!queueStore) return [];
+    return queueStore.list(id).filter((record) => record.owner === owner).map((record) => {
+      const memo = queueMemo.get(memoKey(owner, record.clientMessageId));
+      return { clientMessageId: record.clientMessageId, state: record.state, ...(record.reason ? { reason: record.reason } : {}),
+        queuedAt: record.queuedAt, at: record.at, ...(memo ? { preview: memo.preview } : {}) };
+    });
+  };
+
+  const dequeue = (owner: ChatOwner, id: string, clientMessageId: string): ChatDequeueResult => {
+    const record = queueStore?.get(owner, clientMessageId);
+    if (!record || record.paneId !== id) return { ok: false, error: 'queue-item-not-found' };
+    const final = { state: record.state, ...(record.reason ? { reason: record.reason } : {}) };
+    switch (record.state) {
+      case 'queued': settle(record, 'canceled', 'user'); return { ok: true };
+      case 'canceled': return { ok: true };
+      case 'delivered': return { ok: false, error: 'already-delivered', ...final };
+      case 'delivering': return { ok: false, error: 'delivery-in-progress', ...final };
+      default: return { ok: false, error: 'queue-item-final', ...final };
+    }
+  };
+
+  /** The send receipt, with the queue's record laid over it for a queued message. */
+  const receiptView = (owner: ChatOwner, id: string, clientMessageId: string): ChatSendReceiptView => {
+    const view: ChatSendReceiptView = deps.receipts?.view(owner, id, clientMessageId) ?? { clientMessageId, state: 'unknown' };
+    const record = queueStore?.get(owner, clientMessageId);
+    if (!record || record.paneId !== id) return view;
+    const queue = { state: record.state, ...(record.reason ? { reason: record.reason } : {}) };
+    if (view.state !== 'unknown') return { ...view, queue };
+    const state = record.state === 'queued' || record.state === 'delivering' ? 'queued' as const
+      : record.state === 'delivered' ? 'submitted' as const : record.state === 'uncertain' ? 'uncertain' as const : 'refused' as const;
+    return { clientMessageId, state, at: record.queuedAt, queue };
   };
 
   // ---------------------------------------------------------------------------
@@ -834,8 +1129,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     blocked,
     send: (req) => sendWith(req, true),
     cancel,
-    receipt: (owner: ChatOwner, id: string, clientMessageId: string) =>
-      deps.receipts?.view(owner, id, clientMessageId) ?? { clientMessageId, state: 'unknown' },
+    receipt: receiptView,
     launch,
     skills: (id, agent) => skillsWith(id, agent, 'spawnCwd'),
     watch: (id) => deps.terminalChat()?.subscribe(WEB_BRIDGE_CLIENT, id),
@@ -880,5 +1174,17 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     sendInFlight: (id) => sending.has(id),
     hasOpenApproval,
     desktopSkills: (id, agent) => skillsWith(id, agent, 'cwd'),
+    queueEnabled: () => !!queueStore,
+    queue: queueView,
+    dequeue,
+    dropQueue: (match, reason) => cancelQueued((record) => match(record.owner), reason),
+    delivered: (owner, id) => (deliveredLog.get(id) ?? []).filter((entry) => entry.owner === owner)
+      .map(({ clientMessageId, text, at }) => ({ clientMessageId, text, at })),
+    kickQueue,
+    paneClosed: (id) => {
+      lastDelivered.delete(id);
+      deliveredLog.delete(id);
+      cancelQueued((record) => record.paneId === id, 'pane-closed');
+    },
   };
 }

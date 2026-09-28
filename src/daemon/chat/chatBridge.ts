@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { ChatSendResult, TranscriptPage, TranscriptStatus } from '../../shared/transcript/turnEvents';
 import type { ChatSkillCatalog } from '../../shared/transcript/chatSkills';
 import type { TerminalLaunchAgent, TerminalLaunchMode } from '../../shared/transcript/terminalChat';
+import type { ChatQueueReason, ChatQueueState } from './ChatQueue';
 
 /**
  * Phone native chat bridge (contract v0.3.1, N1-N19): the daemon-side seam the
@@ -113,6 +114,13 @@ export interface ChatSendRequest {
   authorized?: (stage?: 'first-write' | 'submit') => Promise<boolean>;
   /** Desktop only: absolute image paths pasted ahead of the text (file binding, Claude). */
   attachments?: readonly string[];
+  /**
+   * Phone only, when the request declared `chat-queue`: a send into a running
+   * turn (or behind a non-empty pane queue) is held by the daemon and
+   * delivered after the turn ends. `authorized` is the deferred
+   * re-authorization, run before each write long after this request ended.
+   */
+  queue?: { authorized: (stage?: 'first-write' | 'submit') => Promise<boolean> };
 }
 
 /** HTTP-facing error tags a send can end in (contract §6.2 table). */
@@ -120,7 +128,9 @@ export type ChatSendTag =
   | 'chat-busy' | 'chat-blocked' | 'session-changed' | 'chat-unavailable' | 'input-not-provably-empty'
   | 'send-interrupted' | 'delivery-unconfirmed' | 'authorization-expired' | 'invalid-chat-request'
   | 'text-too-long' | 'message-id-expired' | 'message-id-conflict' | 'message-history-full'
-  | 'opencode-receipts-full' | 'no-conversation' | 'managed-read-only' | 'chat-persist-failed';
+  | 'opencode-receipts-full' | 'no-conversation' | 'managed-read-only' | 'chat-persist-failed'
+  // Never stored in a send receipt: refused before one exists.
+  | 'queue-full';
 
 export interface ChatSendOutcome {
   clientMessageId: string;
@@ -142,9 +152,13 @@ export interface ChatSendOutcome {
   historyEpoch?: string;
   /** `sent` while the agent's turn ran: its composer queued the prompt. Absent otherwise. */
   queued?: true;
+  /** The daemon queue holds (or held) this message; the outcome has no `effect` of its own. */
+  queueState?: ChatQueueState;
+  queueReason?: ChatQueueReason;
 }
 
-export type ChatReceiptState = 'pending' | 'submitted' | 'refused' | 'uncertain' | 'unknown';
+/** `queued`: the daemon queue holds the message (only for a `chat-queue` sender). */
+export type ChatReceiptState = 'pending' | 'queued' | 'submitted' | 'refused' | 'uncertain' | 'unknown';
 
 export interface ChatSendReceiptView {
   clientMessageId: string;
@@ -157,6 +171,40 @@ export interface ChatSendReceiptView {
   at?: number;
   /** A `submitted` send the agent queued behind its running turn. */
   queued?: true;
+  /** The daemon queue's record of this message, when it went through the queue. */
+  queue?: { state: ChatQueueState; reason?: ChatQueueReason };
+}
+
+/** One `/turns` `chat.queue[]` entry. `preview` is memory-only (absent after a restart). */
+export interface ChatQueueItemView {
+  clientMessageId: string;
+  state: ChatQueueState;
+  reason?: ChatQueueReason;
+  queuedAt: number;
+  at: number;
+  preview?: string;
+}
+
+/** A queue transition, for the owner's live `chat.queue` SSE event. */
+export interface ChatQueueEvent {
+  sessionId: string;
+  owner: ChatOwner;
+  clientMessageId: string;
+  state: ChatQueueState;
+  reason?: ChatQueueReason;
+  at: number;
+}
+
+export type ChatDequeueResult =
+  | { ok: true }
+  | { ok: false; error: 'queue-item-not-found' | 'already-delivered' | 'delivery-in-progress' | 'queue-item-final';
+      state?: ChatQueueState; reason?: ChatQueueReason };
+
+/** A user message the daemon typed for a phone, for tagging its transcript row. Memory-only. */
+export interface ChatDeliveredMessage {
+  clientMessageId: string;
+  text: string;
+  at: number;
 }
 
 export interface ChatLaunchRequest {
@@ -257,6 +305,16 @@ export interface ChatBridge {
   unwatch(id: string): void;
   /** Audit record in the daemon log; desktop notification when the launch reached typing. */
   traceDangerousLaunch(trace: DangerousLaunchTrace): void;
+  /** Whether the daemon queue loaded (a `chat-queue` send falls back to today's path when not). */
+  queueEnabled?(): boolean;
+  /** The owner's most recent queue items on the pane, in enqueue order. */
+  queue?(owner: ChatOwner, id: string): ChatQueueItemView[];
+  /** `DELETE .../chat/queue/:clientMessageId`: owner-bound; a canceled item answers ok again. */
+  dequeue?(owner: ChatOwner, id: string, clientMessageId: string): ChatDequeueResult;
+  /** Cancel every queued item whose owner matches (device unpaired, grant withdrawn, server stopped). */
+  dropQueue?(match: (owner: ChatOwner) => boolean, reason: 'authorization-revoked'): void;
+  /** Messages the daemon typed for this owner on the pane, newest last. */
+  delivered?(owner: ChatOwner, id: string): ChatDeliveredMessage[];
 }
 
 // ---------------------------------------------------------------------------
