@@ -169,9 +169,27 @@ export const AUTOMATION_RPC = {
   runNow: 'automation.runNow',
   cancelRun: 'automation.cancelRun',
   propose: 'automation.propose',
+  ackAttention: 'automation.ackAttention',
 } as const;
 
-export interface AutomationListResult { automations: Automation[] }
+/**
+ * A queued `attention` event. The daemon keeps these until a first-party
+ * client acknowledges them, so a desktop that was not connected when a draft
+ * arrived (or a grant was raised) still surfaces it on its next `list`.
+ */
+export interface AutomationAttention {
+  id: string;
+  automationId: string;
+  automationName: string;
+  kind: 'proposed' | 'grant-raised';
+  at: number;
+}
+
+export interface AutomationListResult {
+  automations: Automation[];
+  /** Unacknowledged attention items, oldest first. */
+  pendingAttention?: AutomationAttention[];
+}
 export interface AutomationRunsParams { automationId?: string }
 export interface AutomationRunsResult { runs: AutomationRun[] }
 export interface AutomationSnapshotParams { runId: string }
@@ -191,6 +209,14 @@ export interface AutomationRunNowParams { id: string; kind: 'manual' | 'test' }
 export interface AutomationCancelRunParams { runId: string }
 /** MCP draft path: always stored disabled, proposed, approval mode. */
 export interface AutomationProposeParams { draft: AutomationDraft }
+
+export interface AutomationAckAttentionParams { ids: string[] }
+
+export type AutomationRunNowResult =
+  | { ok: true; run: AutomationRun }
+  | { ok: false; error: string };
+
+export type AutomationOkResult = { ok: true } | { ok: false; error: string };
 
 export type AutomationMutationResult =
   | { ok: true; automation: Automation }

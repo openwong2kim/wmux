@@ -842,7 +842,10 @@ export interface DaemonEvent {
     // to the sockets that called `daemon.transcript.subscribe` (see
     // DaemonPipeServer.sendTo). `data.reset` means the file rotated or a new
     // session started and the consumer must REPLACE its rows, not append them.
-    | 'transcript.appended';
+    | 'transcript.appended'
+    // Scheduled runs — `data` is an AutomationEvent (src/shared/automation.ts),
+    // `sessionId` is ''. Carries names and states only, never prompts or output.
+    | 'automation.event';
   sessionId: string;
   data: unknown;
 }
