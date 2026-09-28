@@ -55,8 +55,14 @@ export function createTlsTestFixture(): TlsTestFixture {
     [
       'req',
       '-x509',
+      // EC P-256, not RSA-2048: RSA key generation is a random prime search
+      // whose run time has a long tail, and on a loaded Windows runner it pushed
+      // the handshake test past its 5 s limit. P-256 generation is effectively
+      // constant time, and TLS termination is exercised the same either way.
       '-newkey',
-      'rsa:2048',
+      'ec',
+      '-pkeyopt',
+      'ec_paramgen_curve:prime256v1',
       '-sha256',
       '-nodes',
       '-keyout',
