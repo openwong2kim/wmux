@@ -45,6 +45,8 @@ interface Watch {
   baseline: { stamp: string | null } | undefined;
   poll: ReturnType<typeof setInterval> | null;
   timeout: ReturnType<typeof setTimeout> | null;
+  /** The persistent "no login detected" toast, dismissed once it is stale. */
+  timeoutToast: string | null;
 }
 
 export const LOGIN_POLL_INTERVAL_MS = 2000;
@@ -168,9 +170,18 @@ function stopTimers(w: Watch): void {
   if (w.timeout) { clearTimeout(w.timeout); w.timeout = null; }
 }
 
+/** The timeout toast offers "Check again"; once detection restarts or the
+ *  watch ends, that offer is stale and the toast would otherwise persist. */
+function dismissTimeoutToast(w: Watch): void {
+  if (!w.timeoutToast) return;
+  useStore.getState().dismissToast(w.timeoutToast);
+  w.timeoutToast = null;
+}
+
 async function onLoggedIn(w: Watch): Promise<void> {
   const api = window.electronAPI?.accounts;
   const { entry } = w;
+  dismissTimeoutToast(w);
   try {
     if (entry.accountId) {
       api?.usageRefresh?.(entry.accountId);
@@ -199,6 +210,7 @@ function startPolling(w: Watch): void {
   const api = window.electronAPI?.accounts;
   if (!api) return;
   stopTimers(w);
+  dismissTimeoutToast(w);
   w.entry = { ...w.entry, phase: 'waiting' };
   emit();
   let inflight = false;
@@ -217,7 +229,7 @@ function startPolling(w: Watch): void {
     if (watches.get(w.entry.configDir) !== w) return;
     w.entry = { ...w.entry, phase: 'timed-out' };
     emit();
-    useStore.getState().pushToast({
+    w.timeoutToast = useStore.getState().pushToast({
       level: 'warn',
       persist: true,
       message: t('accounts.loginTimedOut', { name: w.entry.name }),
@@ -250,7 +262,7 @@ export async function startAccountLogin(req: AccountLoginRequest): Promise<void>
   }
   // Register synchronously, before any await, so a double click can't start a
   // second watch (and a second tab) for the same dir.
-  const w: Watch = { entry: { ...req, phase: 'starting', tabOpen: false }, tab: null, baseline: undefined, poll: null, timeout: null };
+  const w: Watch = { entry: { ...req, phase: 'starting', tabOpen: false }, tab: null, baseline: undefined, poll: null, timeout: null, timeoutToast: null };
   watches.set(req.configDir, w);
   emit();
   const baseline = await readBaseline(req);
@@ -305,6 +317,7 @@ export function cancelAccountLogin(configDir: string): void {
   const w = watches.get(configDir);
   if (!w) return;
   stopTimers(w);
+  dismissTimeoutToast(w);
   watches.delete(configDir);
   emit();
   if (!w.entry.accountId) closeLoginTab(w.tab);

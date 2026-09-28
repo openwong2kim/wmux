@@ -9,9 +9,12 @@ import {
   checkAccountLoginAgain,
   getPendingAccountLogins,
   LOGIN_POLL_INTERVAL_MS,
+  LOGIN_TIMEOUT_MS,
 } from '../accountLogin';
 
 type Status = { loggedIn: boolean; stamp?: string | null };
+
+let toastSeq = 0;
 
 function setup(profileEnv?: Record<string, string>) {
   const surfaces: Array<{ id: string; ptyId: string }> = [];
@@ -43,7 +46,8 @@ function setup(profileEnv?: Record<string, string>) {
     setSettingsPanelVisible: vi.fn(),
     closeSurface: vi.fn(),
     closePane: vi.fn(),
-    pushToast: vi.fn(),
+    pushToast: vi.fn(() => `toast-${++toastSeq}`),
+    dismissToast: vi.fn(),
   };
   (globalThis as unknown as { window: unknown }).window = { electronAPI: { accounts: api, pty } };
   return { api, pty, statuses, ws, state: store.state as Record<string, ReturnType<typeof vi.fn>> };
@@ -146,6 +150,31 @@ describe('startAccountLogin', () => {
     checkAccountLoginAgain('/acc/claude-1');
     await vi.advanceTimersByTimeAsync(0);
     expect(pty.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('dismisses the persistent timeout toast once detection restarts or the watch ends', async () => {
+    const { statuses, state } = setup();
+    await startAccountLogin({ vendor: 'claude', name: 'Work', configDir: '/acc/claude-1', loginCommand: 'x' });
+    await vi.advanceTimersByTimeAsync(LOGIN_TIMEOUT_MS);
+    expect(getPendingAccountLogins()[0].phase).toBe('timed-out');
+    const timeoutToast = state.pushToast.mock.results.at(-1)?.value as string;
+    expect(state.pushToast).toHaveBeenLastCalledWith(expect.objectContaining({ persist: true }));
+    expect(state.dismissToast).not.toHaveBeenCalled();
+
+    checkAccountLoginAgain('/acc/claude-1');
+    expect(state.dismissToast).toHaveBeenCalledWith(timeoutToast);
+    statuses.push({ loggedIn: true, stamp: 's1' });
+    await vi.advanceTimersByTimeAsync(LOGIN_POLL_INTERVAL_MS);
+    expect(getPendingAccountLogins()).toEqual([]);
+    expect(state.dismissToast).toHaveBeenCalledTimes(1);
+
+    // Cancelling after a timeout clears it too.
+    const again = setup();
+    await startAccountLogin({ vendor: 'claude', name: 'Work', configDir: '/acc/claude-2', loginCommand: 'x' });
+    await vi.advanceTimersByTimeAsync(LOGIN_TIMEOUT_MS);
+    const second = again.state.pushToast.mock.results.at(-1)?.value as string;
+    cancelAccountLogin('/acc/claude-2');
+    expect(again.state.dismissToast).toHaveBeenCalledWith(second);
   });
 
   it('cancelling a NEW-account login closes its tab; a re-login keeps it', async () => {
