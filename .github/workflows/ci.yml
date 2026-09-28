@@ -7,10 +7,11 @@ on:
       - 'security-*'
   pull_request:
 
-# A newer push to the same PR supersedes the run in flight; runs on main and
-# security-* branches always finish.
+# A newer push to the same PR supersedes the run in flight. A push to main or
+# security-* gets a group of its own (its SHA): one shared group would still
+# drop a queued run whenever a third push arrived, leaving that commit unchecked.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
