@@ -109,6 +109,12 @@ describe('reviewClientFrame', () => {
       ctx({ owner: () => ({ paneId: 'pty-b', live: true }) }));
     expect(other.kind).toBe('refuse');
   });
+  it('forwards the TUI\'s answers to server requests unchanged, even without identity (phone-decision PR0)', async () => {
+    // Measured TUI answers: Enter -> accept, Esc -> cancel (fixtures/codex-server-requests.json).
+    for (const answer of [{ id: 0, result: { decision: 'accept' } }, { id: 3, result: { decision: 'cancel' } }]) {
+      expect(await reviewClientFrame(answer, ctx({ identity: undefined }))).toEqual({ kind: 'forward' });
+    }
+  });
   it('a resume by path (no thread id) on an unproven server is refused; allowed once proven', async () => {
     const msg = { id: 1, method: 'thread/resume', params: { path: '/x.jsonl' } };
     expect((await reviewClientFrame(msg, ctx())).kind).toBe('refuse');

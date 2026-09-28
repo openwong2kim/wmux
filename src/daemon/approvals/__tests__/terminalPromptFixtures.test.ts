@@ -108,6 +108,11 @@ const EXPECTED: Record<string, { looksLikePrompt: boolean; parsed: Parsed | null
     parsed: { options: 3, active: true, topRuleFound: true, answerable: false },
   },
   'claude-write-03-no-rejected.json': { looksLikePrompt: false, parsed: null },
+  // Codex approval overlays (phone-decision PR0). Reference only: Codex
+  // approvals are answered over the app-server protocol (native channel),
+  // never by keys, so these must stay unparsed.
+  'codex-approval-exec-01.json': { looksLikePrompt: true, parsed: null },
+  'codex-approval-patch-01.json': { looksLikePrompt: true, parsed: null },
   // A false positive of the cursor-row check: Codex's `> 1.` sign-in menu.
   'codex-login-menu.json': { looksLikePrompt: true, parsed: null },
   // OpenCode's permission buttons are horizontal and selected by colour only.

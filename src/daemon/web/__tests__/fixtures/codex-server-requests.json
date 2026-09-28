@@ -1,0 +1,484 @@
+{
+ "$comment": "Codex app-server ServerRequests measured for phone-decision PR0 (docs/internal/phone-decision-pr0-findings.md). Captured live against codex app-server with a loopback fixture model provider; paths rewritten to /private/tmp/demo/proj. Reference data: nothing imports it yet.",
+ "version": "codex-cli 0.157.1",
+ "captured": "2026-09-28",
+ "setup": {
+  "transport": "app-server --listen unix://; TUI attached with --remote through createCodexTuiRelay (policy on) and a logging proxy",
+  "approvalPolicy": "on-request",
+  "sandbox": "read-only",
+  "note": "approval_policy \"untrusted\" is rejected by 0.157.1 (\"no longer supported\"); command approvals were reached with exec_command sandbox_permissions=require_escalated"
+ },
+ "serverRequests": {
+  "item/commandExecution/requestApproval": {
+   "observed": true,
+   "request": {
+    "method": "item/commandExecution/requestApproval",
+    "id": 0,
+    "params": {
+     "kind": "command",
+     "threadId": "01a0e5e9-89e9-7320-a273-c32e965d4b62",
+     "turnId": "01a0e5e9-8a28-7ef1-bb22-75a29ccb9482",
+     "itemId": "call_1",
+     "startedAtMs": 1790563682939,
+     "environmentId": "local",
+     "reason": "Create out.txt in the project?",
+     "command": "/bin/zsh -lc 'touch out.txt'",
+     "cwd": "/private/tmp/demo/proj",
+     "commandActions": [
+      {
+       "type": "unknown",
+       "command": "touch out.txt"
+      }
+     ],
+     "proposedExecpolicyAmendment": [
+      "touch",
+      "out.txt"
+     ],
+     "availableDecisions": [
+      "accept",
+      {
+       "acceptWithExecpolicyAmendment": {
+        "execpolicy_amendment": [
+         "touch",
+         "out.txt"
+        ]
+       }
+      },
+      "cancel"
+     ]
+    }
+   },
+   "responses": {
+    "tuiEnter": {
+     "decision": "accept"
+    },
+    "tuiEsc": {
+     "decision": "cancel"
+    },
+    "injectedAccept": {
+     "decision": "accept"
+    }
+   },
+   "note": "availableDecisions lists what this request accepts; for an escalation it had no \"decline\" and no \"acceptForSession\". \"cancel\" (what the TUI sends for No/esc) interrupts the turn."
+  },
+  "item/fileChange/requestApproval": {
+   "observed": true,
+   "request": {
+    "method": "item/fileChange/requestApproval",
+    "id": 1,
+    "params": {
+     "threadId": "01a0e5e9-89e9-7320-a273-c32e965d4b62",
+     "turnId": "01a0e5e9-abd7-7ba0-8564-c1dbcf6d6220",
+     "itemId": "call_2",
+     "startedAtMs": 1790563691504,
+     "reason": null,
+     "grantRoot": null
+    }
+   },
+   "responses": {
+    "tuiEsc": {
+     "decision": "cancel"
+    },
+    "injectedDecline": {
+     "decision": "decline"
+    }
+   },
+   "note": "No availableDecisions field; the params carry no diff (the patch arrives as item/started fileChange). Injected \"decline\" was accepted: file not written, turn continued. TUI \"No\" (esc) sends \"cancel\" and interrupts the turn."
+  },
+  "item/tool/requestUserInput": {
+   "observed": true,
+   "request": {
+    "method": "item/tool/requestUserInput",
+    "id": 2,
+    "params": {
+     "threadId": "01a0e5e9-89e9-7320-a273-c32e965d4b62",
+     "turnId": "01a0e5e9-c577-7c70-98bc-a75f301722fa",
+     "itemId": "call_3",
+     "questions": [
+      {
+       "id": "color",
+       "header": "Color",
+       "question": "Which color?",
+       "isOther": true,
+       "isSecret": false,
+       "options": [
+        {
+         "label": "Red (Recommended)",
+         "description": "warm"
+        },
+        {
+         "label": "Blue",
+         "description": "cool"
+        }
+       ]
+      }
+     ],
+     "isBlocking": false,
+     "autoResolutionMs": null
+    }
+   },
+   "response": {
+    "answers": {
+     "color": {
+      "answers": [
+       "Red (Recommended)"
+      ]
+     }
+    }
+   },
+   "note": "In Default mode it was sent only with features.default_mode_request_user_input=true (under development, off by default); without it the tool call produced no request. Plan mode was not measured. isOther is set by the server."
+  },
+  "mcpServer/elicitation/request": {
+   "observed": true,
+   "request": {
+    "method": "mcpServer/elicitation/request",
+    "id": 0,
+    "params": {
+     "threadId": "01a0e5ec-ff2f-7553-83bc-42631e72fe62",
+     "turnId": "01a0e5ed-0af1-76b0-96b2-096ef75a2f2f",
+     "serverName": "pr0",
+     "mode": "form",
+     "_meta": null,
+     "message": "What name should I use?",
+     "requestedSchema": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "title": "Name"
+       }
+      },
+      "required": [
+       "name"
+      ]
+     }
+    }
+   },
+   "response": {
+    "action": "accept",
+    "content": {
+     "name": "Ada"
+    },
+    "_meta": null
+   },
+   "mcpToolApproval": {
+    "request": {
+     "method": "mcpServer/elicitation/request",
+     "id": 1,
+     "params": {
+      "threadId": "01a0e5ec-ff2f-7553-83bc-42631e72fe62",
+      "turnId": "01a0e5ed-0b59-7672-8634-1aff16070113",
+      "serverName": "pr0",
+      "mode": "form",
+      "_meta": {
+       "codex_approval_kind": "mcp_tool_call",
+       "persist": [
+        "session",
+        "always"
+       ],
+       "tool_description": "A tool with side effects",
+       "tool_params": {},
+       "tool_params_display": []
+      },
+      "message": "Allow the pr0 MCP server to run tool \"write\"?",
+      "requestedSchema": {
+       "type": "object",
+       "properties": {}
+      }
+     }
+    },
+    "response": {
+     "action": "accept",
+     "content": null,
+     "_meta": null
+    }
+   },
+   "note": "MCP tool-call approvals arrive as form elicitations with _meta.codex_approval_kind=\"mcp_tool_call\" and persist [\"session\",\"always\"] (lasting choices)."
+  },
+  "item/permissions/requestApproval": {
+   "observed": true,
+   "request": {
+    "method": "item/permissions/requestApproval",
+    "id": 2,
+    "params": {
+     "threadId": "01a0e5ec-ff2f-7553-83bc-42631e72fe62",
+     "turnId": "01a0e5ed-0bc0-7301-83f8-3f729e29673d",
+     "itemId": "call_x3",
+     "environmentId": "local",
+     "startedAtMs": 1790563912655,
+     "cwd": "/private/tmp/demo/proj",
+     "reason": "Need to write the granted dir",
+     "permissions": {
+      "network": null,
+      "fileSystem": {
+       "read": null,
+       "write": [
+        "/private/tmp/demo/proj/granted"
+       ],
+       "entries": [
+        {
+         "path": {
+          "type": "path",
+          "path": "/private/tmp/demo/proj/granted"
+         },
+         "access": "write"
+        }
+       ]
+      }
+     }
+    }
+   },
+   "response": {
+    "permissions": {
+     "fileSystem": {
+      "read": null,
+      "write": [
+       "/private/tmp/demo/proj/granted"
+      ],
+      "entries": [
+       {
+        "path": {
+         "type": "path",
+         "path": "/private/tmp/demo/proj/granted"
+        },
+        "access": "write"
+       }
+      ]
+     }
+    },
+    "scope": "turn"
+   },
+   "note": "Only with features.request_permissions_tool=true (under development). Response grants a subset; scope \"turn\" | \"session\"."
+  },
+  "item/tool/call": {
+   "observed": false,
+   "note": "Dynamic tools registered by the client; not a user decision."
+  },
+  "account/chatgptAuthTokens/refresh": {
+   "observed": false,
+   "note": "Auth plumbing; not a user decision."
+  },
+  "attestation/generate": {
+   "observed": false,
+   "note": "Not a user decision."
+  },
+  "currentTime/read": {
+   "observed": false,
+   "note": "Not a user decision."
+  },
+  "applyPatchApproval": {
+   "observed": false,
+   "note": "Legacy v1 API; v2 threads use item/fileChange/requestApproval."
+  },
+  "execCommandApproval": {
+   "observed": false,
+   "note": "Legacy v1 API; v2 threads use item/commandExecution/requestApproval."
+  }
+ },
+ "resolvedNotification": {
+  "method": "serverRequest/resolved",
+  "params": {
+   "threadId": "<thread id>",
+   "requestId": 0
+  },
+  "note": "Sent to every connection subscribed to the thread after any answer (TUI, injected on the TUI connection, or another connection)."
+ },
+ "facts": {
+  "requestIds": "Numbers from one server-wide sequence (0, 1, 2, …) shared by every connection; they restart with the app-server process.",
+  "fanout": {
+   "subscribedConnection": [
+    {
+     "id": 1,
+     "method": "item/fileChange/requestApproval"
+    }
+   ],
+   "unsubscribedConnection": [],
+   "note": "A connection that ran thread/resume received the same request with the same id; an initialize-only connection received none."
+  },
+  "crossConnectionAnswer": {
+   "answeredBy": "B(foreign id)",
+   "commandRan": true,
+   "resolvedTo": [
+    "A"
+   ],
+   "note": "An initialize-only connection that never received the request answered it by id and the server accepted it."
+  },
+  "duplicateAnswer": {
+   "effect": [],
+   "note": "A second answer for an already resolved id produced no frame at all (no error, server alive)."
+  },
+  "injectedAnswerClosesTuiOverlay": {
+   "observed": true,
+   "lateTuiAnswers": [],
+   "note": "After a response injected upstream on the TUI connection, the server sent serverRequest/resolved, the TUI closed the overlay, and Enter pressed afterwards sent nothing. The TUI adds no \"You approved/declined\" history line for an answer it did not give."
+  },
+  "relayPassesTuiAnswers": {
+   "frames": [
+    {
+     "id": 0,
+     "result": {
+      "decision": "accept"
+     }
+    }
+   ],
+   "note": "The TUI answer (method-less response) crossed createCodexTuiRelay with its policy on (codexRelayPolicy classify -> \"response\" -> forward)."
+  }
+ },
+ "tuiConnectionSequence": [
+  {
+   "dir": "server->client",
+   "frame": {
+    "method": "item/commandExecution/requestApproval",
+    "id": 0,
+    "params": {
+     "threadId": "01a0e5ea-e3dd-73b0-8fb8-5a10ab31a378",
+     "…": "…"
+    }
+   }
+  },
+  {
+   "dir": "client->server",
+   "frame": {
+    "id": 0,
+    "result": {
+     "decision": "accept"
+    }
+   }
+  },
+  {
+   "dir": "server->client",
+   "frame": {
+    "method": "serverRequest/resolved",
+    "params": {
+     "threadId": "01a0e5ea-e3dd-73b0-8fb8-5a10ab31a378",
+     "requestId": 0
+    },
+    "emittedAtMs": 1790563779925
+   }
+  },
+  {
+   "dir": "server->client",
+   "frame": {
+    "method": "item/fileChange/requestApproval",
+    "id": 1,
+    "params": {
+     "threadId": "01a0e5ea-e3dd-73b0-8fb8-5a10ab31a378",
+     "…": "…"
+    }
+   }
+  },
+  {
+   "dir": "injected->server",
+   "frame": {
+    "id": 1,
+    "result": {
+     "decision": "decline"
+    }
+   }
+  },
+  {
+   "dir": "server->client",
+   "frame": {
+    "method": "serverRequest/resolved",
+    "params": {
+     "threadId": "01a0e5ea-e3dd-73b0-8fb8-5a10ab31a378",
+     "requestId": 1
+    },
+    "emittedAtMs": 1790563786738
+   }
+  },
+  {
+   "dir": "server->client",
+   "frame": {
+    "method": "item/commandExecution/requestApproval",
+    "id": 2,
+    "params": {
+     "threadId": "01a0e5ea-e3dd-73b0-8fb8-5a10ab31a378",
+     "…": "…"
+    }
+   }
+  },
+  {
+   "dir": "injected->server",
+   "frame": {
+    "id": 2,
+    "result": {
+     "decision": "accept"
+    }
+   }
+  },
+  {
+   "dir": "server->client",
+   "frame": {
+    "method": "serverRequest/resolved",
+    "params": {
+     "threadId": "01a0e5ea-e3dd-73b0-8fb8-5a10ab31a378",
+     "requestId": 2
+    },
+    "emittedAtMs": 1790563795087
+   }
+  },
+  {
+   "dir": "server->client",
+   "frame": {
+    "method": "item/commandExecution/requestApproval",
+    "id": 3,
+    "params": {
+     "threadId": "01a0e5ea-e3dd-73b0-8fb8-5a10ab31a378",
+     "…": "…"
+    }
+   }
+  },
+  {
+   "dir": "client->server",
+   "frame": {
+    "id": 3,
+    "result": {
+     "decision": "cancel"
+    }
+   }
+  },
+  {
+   "dir": "server->client",
+   "frame": {
+    "method": "serverRequest/resolved",
+    "params": {
+     "threadId": "01a0e5ea-e3dd-73b0-8fb8-5a10ab31a378",
+     "requestId": 3
+    },
+    "emittedAtMs": 1790563805005
+   }
+  },
+  {
+   "dir": "server->client",
+   "frame": {
+    "method": "item/fileChange/requestApproval",
+    "id": 4,
+    "params": {
+     "threadId": "01a0e5ea-e3dd-73b0-8fb8-5a10ab31a378",
+     "…": "…"
+    }
+   }
+  },
+  {
+   "dir": "client->server",
+   "frame": {
+    "id": 4,
+    "result": {
+     "decision": "cancel"
+    }
+   }
+  },
+  {
+   "dir": "server->client",
+   "frame": {
+    "method": "serverRequest/resolved",
+    "params": {
+     "threadId": "01a0e5ea-e3dd-73b0-8fb8-5a10ab31a378",
+     "requestId": 4
+    },
+    "emittedAtMs": 1790563811416
+   }
+  }
+ ]
+}

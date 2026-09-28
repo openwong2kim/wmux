@@ -67,10 +67,29 @@ mode set is not reliable (the first launch had typed text land on it).
 
 ## Codex CLI
 
-The isolated HOME has no Codex login, so the approval dialog and the
-"trust this directory" prompt could not be reached; credentials were not copied
-in. Only the first-run sign-in menu was captured: a `>` cursor on numbered rows,
+The isolated HOME has no Codex login, so the first capture reached only the
+first-run sign-in menu (`codex-login-menu.json`): a `>` cursor on numbered rows,
 `↓` moves it.
+
+The approval overlays were captured on 2026-09-28 (phone-decision PR0) without
+any login: `codex app-server --listen unix://…` in a scratch `CODEX_HOME` with a
+loopback fixture model provider, the TUI attached with `--remote` through
+`createCodexTuiRelay`, `approval_policy = "on-request"`, `sandbox_mode =
+"read-only"` (0.157.1 rejects `"untrusted"`). The project was pre-trusted in
+config, so the trust prompt was not shown.
+
+| Overlay | Options drawn | Key | What the TUI sends |
+| --- | --- | --- | --- |
+| Command (`codex-approval-exec-01.json`) | `› 1. Yes, proceed (y)`, `2. Yes, and don't ask again for commands that start with …` (p), `3. No, and tell Codex what to do differently (esc)` | `Enter` on row 1 | `{"decision":"accept"}` |
+| | | `Esc` | `{"decision":"cancel"}`; the turn is interrupted |
+| File change (`codex-approval-patch-01.json`) | `› 1. Yes, proceed (y)`, `2. Yes, and don't ask again for these files (a)`, `3. No, and tell Codex what to do differently (esc)` | `Esc` | `{"decision":"cancel"}`; the turn is interrupted |
+
+The `y`/`p`/`a` letters are drawn but were not exercised. Codex approvals are
+answered over the app-server protocol, never by keys: when any client answers
+the request, the server sends `serverRequest/resolved` and the TUI closes the
+overlay by itself (measured with an answer injected on the TUI's own upstream
+connection). Both fixtures are reference only and must stay unparsed. Request
+and response shapes: `src/daemon/web/__tests__/fixtures/codex-server-requests.json`.
 
 ## OpenCode
 
