@@ -10,7 +10,7 @@ import {
   LOGIN_POLL_INTERVAL_MS,
 } from '../accountLogin';
 
-type Status = { loggedIn: boolean; stamp?: number | null };
+type Status = { loggedIn: boolean; stamp?: string | null };
 
 function setup(profileEnv?: Record<string, string>) {
   const surfaces: Array<{ id: string; ptyId: string }> = [];
@@ -76,7 +76,7 @@ describe('startAccountLogin', () => {
   it('registers a new account and closes the tab once the login lands', async () => {
     const { api, pty, statuses, state } = setup();
     await startAccountLogin({ vendor: 'claude', name: 'Work', configDir: '/acc/claude-1', loginCommand: 'x' });
-    statuses.push({ loggedIn: false }, { loggedIn: true, stamp: 1 });
+    statuses.push({ loggedIn: false }, { loggedIn: true, stamp: "s1" });
     await vi.advanceTimersByTimeAsync(LOGIN_POLL_INTERVAL_MS * 2);
     expect(api.add).toHaveBeenCalledWith({ name: 'Work', vendor: 'claude', configDir: '/acc/claude-1' });
     expect(getPendingAccountLogins()).toEqual([]);
@@ -87,13 +87,13 @@ describe('startAccountLogin', () => {
 
   it('a re-login waits for a NEW credential, not the stale one it replaces', async () => {
     const { api, statuses } = setup();
-    statuses.push({ loggedIn: true, stamp: 100 }); // baseline read
+    statuses.push({ loggedIn: true, stamp: "old" }); // baseline read
     await startAccountLogin({ vendor: 'claude', name: 'Work', configDir: '/acc/claude-1', loginCommand: 'x', accountId: 'a1' });
-    statuses.push({ loggedIn: true, stamp: 100 });
+    statuses.push({ loggedIn: true, stamp: "old" });
     await vi.advanceTimersByTimeAsync(LOGIN_POLL_INTERVAL_MS);
     expect(api.usageRefresh).not.toHaveBeenCalled();
     expect(getPendingAccountLogins()).toHaveLength(1);
-    statuses.push({ loggedIn: true, stamp: 200 });
+    statuses.push({ loggedIn: true, stamp: "new" });
     await vi.advanceTimersByTimeAsync(LOGIN_POLL_INTERVAL_MS);
     expect(api.usageRefresh).toHaveBeenCalledWith('a1');
     expect(api.add).not.toHaveBeenCalled();

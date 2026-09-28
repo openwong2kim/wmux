@@ -40,7 +40,7 @@ interface Watch {
   entry: PendingLogin;
   tab: LoginTab | null;
   /** Credential stamp before login started; undefined = was not logged in. */
-  baseline: { stamp: number | null } | undefined;
+  baseline: { stamp: string | null } | undefined;
   poll: ReturnType<typeof setInterval> | null;
   timeout: ReturnType<typeof setTimeout> | null;
 }

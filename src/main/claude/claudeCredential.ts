@@ -51,6 +51,11 @@ export interface ClaudeCredential {
   /** Token expiry, milliseconds since Unix epoch. null when unknown
    *  (raw-token storage form has no expiry metadata). */
   expiresAtMs: number | null;
+  /** Non-secret identity of the stored blob (first 16 hex of its sha256). It
+   *  changes whenever the credential is rewritten, so a re-login can tell a
+   *  fresh login from the stale credential it replaces. Safe to send to the
+   *  renderer; never derive anything else from the blob for the UI. */
+  fingerprint?: string;
 }
 
 export type LoadResult =
@@ -104,7 +109,8 @@ export async function loadClaudeCredential(configDir?: string): Promise<LoadResu
 export function macKeychainServiceName(configDir?: string): string {
   const base = 'Claude Code-credentials';
   if (!configDir) return base;
-  return `${base}-${createHash('sha256').update(configDir).digest('hex').slice(0, 8)}`;
+  // NFC: macOS APIs hand back composed paths; a no-op for ASCII paths.
+  return `${base}-${createHash('sha256').update(configDir.normalize('NFC')).digest('hex').slice(0, 8)}`;
 }
 
 async function loadFromMacKeychain(service: string): Promise<LoadResult> {
@@ -243,7 +249,14 @@ export function extractCredentialMetadata(blob: string): {
 
 function buildCredentialFromBlob(accessToken: string, blob: string): ClaudeCredential {
   const { subscriptionType, rateLimitTier, expiresAtMs } = extractCredentialMetadata(blob);
-  return { accessToken, subscriptionType, rateLimitTier, expiresAtMs };
+  return { accessToken, subscriptionType, rateLimitTier, expiresAtMs, fingerprint: credentialFingerprint(blob) };
+}
+
+/** First 16 hex chars of sha256 over a stored credential blob (trimmed). A
+ *  one-way digest: it identifies a credential version without revealing it.
+ *  Exported for account.handler (codex auth.json) and unit tests. */
+export function credentialFingerprint(blob: string): string {
+  return createHash('sha256').update(blob.trim()).digest('hex').slice(0, 16);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

@@ -32,6 +32,7 @@ import {
   extractCredentialMetadata,
   loadClaudeCredential,
   macKeychainServiceName,
+  credentialFingerprint,
 } from '../claudeCredential';
 
 describe('extractAccessToken', () => {
@@ -198,7 +199,11 @@ describe('loadClaudeCredential on macOS', () => {
     };
     const res = await loadClaudeCredential('/Users/wong2kim/.wmux/accounts/claude-3fa125fe');
     expect(res.ok).toBe(true);
-    if (res.ok) expect(res.credential.subscriptionType).toBe('max');
+    if (res.ok) {
+      expect(res.credential.subscriptionType).toBe('max');
+      expect(res.credential.fingerprint).toMatch(/^[0-9a-f]{16}$/);
+      expect(res.credential.fingerprint).toBe(credentialFingerprint(String((securityMock.result as { stdout: string }).stdout)));
+    }
     const args = securityMock.calls[0];
     expect(args[args.indexOf('-s') + 1]).toBe('Claude Code-credentials-6ec7cbda');
   });
@@ -215,5 +220,27 @@ describe('loadClaudeCredential on macOS', () => {
     securityMock.result = Object.assign(new Error('item not found'), { code: 44 });
     const res = await loadClaudeCredential('/Users/x/.wmux/accounts/claude-new');
     expect(res).toEqual({ ok: false, reason: 'not-found' });
+  });
+});
+
+describe('credentialFingerprint', () => {
+  it('is a 16-hex digest that changes with the blob and never echoes it', () => {
+    const a = credentialFingerprint('{"claudeAiOauth":{"accessToken":"sk-ant-aaaaaaaaaaaaaaaaaaaa"}}');
+    const b = credentialFingerprint('{"claudeAiOauth":{"accessToken":"sk-ant-bbbbbbbbbbbbbbbbbbbb"}}');
+    expect(a).toMatch(/^[0-9a-f]{16}$/);
+    expect(a).not.toBe(b);
+    expect(a).not.toContain('sk-ant');
+  });
+
+  it('ignores surrounding whitespace (security -w appends a newline)', () => {
+    expect(credentialFingerprint('tok\n')).toBe(credentialFingerprint('tok'));
+  });
+});
+
+describe('macKeychainServiceName NFC', () => {
+  it('hashes the NFC form so composed and decomposed paths agree', () => {
+    const composed = '/Users/x/.wmux/accounts/caf\u00e9';
+    const decomposed = '/Users/x/.wmux/accounts/cafe\u0301';
+    expect(macKeychainServiceName(decomposed)).toBe(macKeychainServiceName(composed));
   });
 });
