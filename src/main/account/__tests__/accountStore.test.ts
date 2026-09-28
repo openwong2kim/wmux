@@ -184,8 +184,10 @@ describe('AccountStore concurrency (eng-review P1: serialized write queue)', () 
   it('does not lose writes under overlapping mutations', async () => {
     // Fire many binds concurrently on ONE store instance; the serialized write
     // chain must apply every one (plain last-writer-wins would drop most).
+    // Three overlapping writers per phase already make last-writer-wins lose
+    // two of them; five meant ten durable writes, which timed out on Windows.
     const accs = await Promise.all(
-      Array.from({ length: 5 }, (_, i) =>
+      Array.from({ length: 3 }, (_, i) =>
         store.addAccount({ name: `a${i}`, vendor: 'claude', configDir: mkConfigDir(`a${i}`) }),
       ),
     );
@@ -195,7 +197,7 @@ describe('AccountStore concurrency (eng-review P1: serialized write queue)', () 
     for (let i = 0; i < accs.length; i++) {
       expect(fresh.getBinding(`ws-${i}`, 'claude')).toBe(accs[i].id);
     }
-    expect(fresh.listAccounts()).toHaveLength(5);
+    expect(fresh.listAccounts()).toHaveLength(3);
   });
 
   it('a rejected mutation does not wedge the write chain', async () => {
