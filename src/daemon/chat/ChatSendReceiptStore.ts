@@ -154,6 +154,20 @@ export class ChatSendReceiptStore {
     try { this.save(next); return true; } catch { return false; }
   }
 
+  /**
+   * Drop a `pending` receipt whose dispatch wrote nothing (a queued message
+   * the dispatcher holds for a later idle). A failed save leaves `pending` on
+   * disk, which reads as uncertain after a restart: it only over-reports.
+   */
+  discard(owner: ChatOwner, clientMessageId: string): void {
+    const key = this.key(owner, clientMessageId);
+    if (this.entries[key]?.state !== 'pending') return;
+    const { [key]: _dropped, ...next } = this.entries;
+    void _dropped;
+    this.entries = next;
+    try { this.save(next); } catch { /* see above */ }
+  }
+
   view(owner: ChatOwner, paneId: string, clientMessageId: string): ChatSendReceiptView {
     const entry = this.lookup(owner, clientMessageId);
     if (!entry || entry.paneId !== paneId) return { clientMessageId, state: 'unknown' };
