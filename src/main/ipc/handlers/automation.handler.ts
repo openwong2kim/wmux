@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron';
+import { BrowserWindow, dialog, ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { DaemonClient } from '../../DaemonClient';
@@ -12,7 +12,8 @@ import type {
   AutomationRun,
 } from '../../../shared/automation';
 import { AutomationClient } from '../../automation/AutomationClient';
-import { setAutomationToastLabels } from '../../automation/AutomationBridge';
+import { getAutomationUiLocale, setAutomationUiLocale } from '../../automation/AutomationBridge';
+import { bypassConfirmCopy } from '../../automation/toastText';
 
 const NO_DAEMON = 'daemon unavailable';
 const MODES: readonly AutomationPermissionMode[] = ['approval', 'scoped', 'bypass'];
@@ -37,7 +38,32 @@ function isDraft(value: unknown): value is AutomationDraft {
  * draft may contain lives daemon-side; this only rejects malformed shapes.
  * `automation.propose` is deliberately absent — that is the MCP path.
  */
-export function registerAutomationHandlers(getClient: () => DaemonClient | null): () => void {
+/**
+ * Native confirmation for a Bypass grant, owned by main so no renderer path
+ * (editor, "Grant again", a direct IPC call) can raise a schedule to Bypass
+ * without the human seeing it. Resolves true only on an explicit confirm.
+ */
+export type BypassConfirmFn = (win: BrowserWindow | null, automationName: string) => Promise<boolean>;
+
+export const confirmBypassNatively: BypassConfirmFn = async (win, automationName) => {
+  const copy = bypassConfirmCopy(getAutomationUiLocale(), automationName);
+  const opts = {
+    type: 'question' as const,
+    buttons: [copy.cancel, copy.confirm],
+    defaultId: 0,
+    cancelId: 0,
+    message: copy.message,
+    detail: copy.detail,
+    noLink: true,
+  };
+  const r = win && !win.isDestroyed() ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+  return r.response === 1;
+};
+
+export function registerAutomationHandlers(
+  getClient: () => DaemonClient | null,
+  confirmBypass: BypassConfirmFn = confirmBypassNatively,
+): () => void {
   const api = (): AutomationClient | null => {
     const client = getClient();
     return client && client.isConnected ? new AutomationClient(client) : null;
@@ -49,14 +75,17 @@ export function registerAutomationHandlers(getClient: () => DaemonClient | null)
     ipcMain.handle(channel, wrapHandler(channel, async (_event, ...args: unknown[]) => fn(...(args as A))));
   };
 
-  handle(IPC.AUTOMATION_LIST, async (): Promise<{ automations: Automation[]; available: boolean }> => {
+  handle(IPC.AUTOMATION_LIST, async (): Promise<{ automations: Automation[]; available: boolean; error?: string }> => {
     const a = api();
     if (!a) return { automations: [], available: false };
     try {
       return { automations: (await a.list()).automations, available: true };
-    } catch {
-      // Older daemon (Unknown method) — the feature is simply not there.
-      return { automations: [], available: false };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      // Only an older daemon (Unknown method) means the feature is not there;
+      // a timeout or a blip must not make the sidebar row vanish.
+      if (message.includes('Unknown method')) return { automations: [], available: false };
+      return { automations: [], available: true, error: message };
     }
   });
 
@@ -64,7 +93,9 @@ export function registerAutomationHandlers(getClient: () => DaemonClient | null)
     const a = api();
     if (!a) return { runs: [] };
     try {
-      return { runs: await a.runs(isId(automationId) ? automationId : undefined) };
+      // Absent = every run; present but malformed must not widen to "all".
+      if (automationId !== undefined && !isId(automationId)) return { runs: [] };
+      return { runs: await a.runs(automationId) };
     } catch {
       return { runs: [] };
     }
@@ -108,18 +139,33 @@ export function registerAutomationHandlers(getClient: () => DaemonClient | null)
     return a.setEnabled({ id, enabled });
   });
 
-  handle(
+  // Registered by hand: the Bypass prompt is parented to the invoking window.
+  ipcMain.removeHandler(IPC.AUTOMATION_GRANT);
+  ipcMain.handle(IPC.AUTOMATION_GRANT, wrapHandler(
     IPC.AUTOMATION_GRANT,
-    async (id: unknown, mode: unknown, allowedTools: unknown): Promise<AutomationMutationResult> => {
+    async (
+      event: Electron.IpcMainInvokeEvent,
+      id: unknown,
+      mode: unknown,
+      allowedTools: unknown,
+    ): Promise<AutomationMutationResult> => {
       const a = api();
       if (!a) return refuse();
       if (!isId(id) || !MODES.includes(mode as AutomationPermissionMode)) return refuse('invalid request');
+      if (mode === 'bypass') {
+        const win = event?.sender ? BrowserWindow.fromWebContents(event.sender) : null;
+        let name = '';
+        try {
+          name = (await a.list()).automations.find((x) => x.id === id)?.name ?? '';
+        } catch { /* the name only labels the prompt */ }
+        if (!(await confirmBypass(win, name))) return refuse('cancelled');
+      }
       const tools = Array.isArray(allowedTools) && allowedTools.every((t) => typeof t === 'string')
         ? (allowedTools as string[])
         : undefined;
       return a.grant({ id, mode: mode as AutomationPermissionMode, ...(tools ? { allowedTools: tools } : {}) });
     },
-  );
+  ));
 
   handle(IPC.AUTOMATION_RUN_NOW, async (id: unknown, kind: unknown): Promise<AutomationRunNowResult> => {
     const a = api();
@@ -136,7 +182,7 @@ export function registerAutomationHandlers(getClient: () => DaemonClient | null)
   });
 
   const onLabels = (_event: Electron.IpcMainEvent, input: unknown): void => {
-    setAutomationToastLabels(input);
+    setAutomationUiLocale(input);
   };
   ipcMain.removeAllListeners(IPC.AUTOMATION_TOAST_LABELS);
   ipcMain.on(IPC.AUTOMATION_TOAST_LABELS, onLabels);

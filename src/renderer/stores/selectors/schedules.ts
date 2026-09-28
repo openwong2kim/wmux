@@ -30,17 +30,20 @@ export function latestRunByAutomation(runs: readonly AutomationRun[]): Map<strin
 }
 
 export interface ScheduleNavSummary {
-  /** Runs awaiting a human + schedules whose latest run failed. */
+  /** Runs awaiting a human's response — the only amber signal. */
   needs: number;
+  /** Enabled schedules whose latest run failed (muted text, not attention). */
+  failed: number;
   /** Earliest upcoming occurrence across enabled schedules (ms epoch). */
   nextRunAt: number | null;
 }
 
 /**
- * The sidebar's Schedules row. "Needs" counts every run awaiting a response
- * plus every schedule whose LATEST run failed — the contract has no ack for a
- * failure, so it clears itself on the next run's outcome or on disabling the
- * schedule rather than lingering forever. Numbers only; the row calls t().
+ * The sidebar's Schedules row. "Needs" is runs awaiting a response only — a
+ * failure is not waiting on anyone, and keeping it amber for days would spend
+ * the attention budget on history. Failures count separately: every enabled
+ * schedule whose LATEST run failed (no ack exists, so it clears on the next
+ * outcome or on disabling). Numbers only; the row calls t().
  */
 export function selectScheduleNavSummary(state: SchedulesState): ScheduleNavSummary {
   const known = new Set(state.automations.map((a) => a.id));
@@ -49,14 +52,15 @@ export function selectScheduleNavSummary(state: SchedulesState): ScheduleNavSumm
     if (run.state === 'awaiting' && known.has(run.automationId)) needs += 1;
   }
   const latest = latestRunByAutomation(state.automationRuns);
+  let failed = 0;
   let nextRunAt: number | null = null;
   for (const a of state.automations) {
-    if (a.enabled && latest.get(a.id)?.state === 'failed') needs += 1;
+    if (a.enabled && latest.get(a.id)?.state === 'failed') failed += 1;
     if (a.enabled && a.nextRunAt !== null && (nextRunAt === null || a.nextRunAt < nextRunAt)) {
       nextRunAt = a.nextRunAt;
     }
   }
-  return { needs, nextRunAt };
+  return { needs, failed, nextRunAt };
 }
 
 /** A non-approval mode the daemon will downgrade: the grant predates an edit. */

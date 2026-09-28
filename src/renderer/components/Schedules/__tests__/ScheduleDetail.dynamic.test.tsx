@@ -40,4 +40,17 @@ describe('ScheduleDetail output snapshot', () => {
     expect(container.querySelector('[data-run-output]')!.textContent).toContain('example.com');
     expect(toggle.textContent).toBe('Hide output');
   });
+
+  it('never offers a test run for an unreviewed draft', async () => {
+    const draft = automation({ proposed: true, enabled: false });
+    await act(async () => root.render(<ScheduleDetail automation={draft} accounts={[]} onEdit={vi.fn()} />));
+    expect(container.querySelector('[data-schedule-test-run]')).toBeNull();
+  });
+
+  it('explains how to recover from a blocked first-run screen', async () => {
+    useStore.setState({ automationRuns: [run({ id: 'r2', state: 'failed', reason: 'first_run_blocked' })] });
+    await act(async () => root.render(<ScheduleDetail automation={automation()} accounts={[]} onEdit={vi.fn()} />));
+    expect(container.querySelector('[data-run-first-run-hint]')!.textContent)
+      .toBe('Open the folder once in a terminal and trust it in Claude, then run again.');
+  });
 });

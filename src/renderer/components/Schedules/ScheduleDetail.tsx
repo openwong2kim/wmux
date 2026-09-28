@@ -75,16 +75,19 @@ export default function ScheduleDetail({ automation: a, accounts, onEdit }: {
         <Button variant="secondary" size="sm" onClick={onEdit}>
           {a.proposed ? t('schedules.actionReview') : t('schedules.edit')}
         </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          disabled={busy || !api}
-          title={t('schedules.testRunHint')}
-          onClick={() => void act((x) => x.runNow(a.id, 'test'))}
-          data-schedule-test-run
-        >
-          {t('schedules.testRun')}
-        </Button>
+        {/* An unreviewed draft never runs — not even as a test. */}
+        {!a.proposed && (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={busy || !api}
+            title={t('schedules.testRunHint')}
+            onClick={() => void act((x) => x.runNow(a.id, 'test'))}
+            data-schedule-test-run
+          >
+            {t('schedules.testRun')}
+          </Button>
+        )}
         <Button variant="destructive" size="sm" disabled={busy} onClick={() => setConfirmDelete(true)}>
           {t('schedules.delete')}
         </Button>
@@ -205,6 +208,11 @@ function RunRow({ run, automation, showingOutput, onToggleOutput, onCancel }: {
           </Button>
         )}
       </div>
+      {run.reason === 'first_run_blocked' && (
+        <p className="ui-note px-[14px] pb-3" data-run-first-run-hint>
+          {t('schedules.firstRunBlockedHint', { agent: agentLabel(automation.action.agent) })}
+        </p>
+      )}
       {showingOutput && <RunOutput run={run} automation={automation} />}
     </li>
   );

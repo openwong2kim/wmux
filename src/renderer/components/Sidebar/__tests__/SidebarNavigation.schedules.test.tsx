@@ -64,4 +64,18 @@ describe('Sidebar Schedules row', () => {
     expect(row()!.textContent).toBe('');
     expect(row()!.title).toBe('Schedules, needs you 1');
   });
+
+  it('shows a failure as muted text, never the amber needs count', async () => {
+    useStore.setState({ schedulesAvailable: true, automations: [automation()], automationRuns: [run({ state: 'failed' })] });
+    await act(async () => root.render(<SidebarNavigation />));
+    expect(row()!.querySelector('.wmux-nav-count-needs')).toBeNull();
+    expect(row()!.querySelector('.wmux-nav-count-running')!.textContent).toBe('1 failed');
+  });
+
+  it('hides a next-run time that is already in the past', async () => {
+    useStore.setState({ schedulesAvailable: true, automations: [automation({ nextRunAt: Date.now() - 60_000 })] });
+    await act(async () => root.render(<SidebarNavigation />));
+    expect(row()!.querySelector('.wmux-nav-count-running')).toBeNull();
+    expect(row()!.getAttribute('aria-label')).toBe('Schedules');
+  });
 });

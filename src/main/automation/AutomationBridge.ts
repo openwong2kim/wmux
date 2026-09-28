@@ -10,16 +10,18 @@ import {
 import { AutomationClient, type AutomationRpcTransport } from './AutomationClient';
 import {
   automationToastText,
-  coerceToastLabels,
-  DEFAULT_AUTOMATION_TOAST_LABELS,
+  coerceUiLocale,
+  toastLabelsFor,
   type AutomationToastKind,
-  type AutomationToastLabels,
+  type AutomationUiLocale,
 } from './toastText';
 
 /** What main pushes to the renderer on IPC.AUTOMATION_PUSH. */
 export type AutomationPush =
   | { kind: 'event'; event: AutomationEvent }
-  | { kind: 'snapshot'; automations: Automation[]; runs: AutomationRun[] };
+  | { kind: 'snapshot'; automations: Automation[]; runs: AutomationRun[] }
+  /** Queued attention no OS toast could show: surface it in-app instead. */
+  | { kind: 'attention'; items: AutomationAttention[] };
 
 /** What a toast click asks the renderer to open. */
 export interface AutomationOpenRequest {
@@ -38,25 +40,45 @@ export type AutomationToastFn = (
   text: string,
   onClick: () => void,
   opts: { ignoreToastSetting: boolean },
-) => void;
+) => boolean;
 
 // Module scope, like RemoteInboxBridge's cursor: the bridge is re-created on
 // every daemon (re)connect, but a run that already toasted must not toast
 // again because the pipe blipped. A full app restart clears it on purpose —
 // that is when a still-pending run should be surfaced once more.
+// Capped: a long-running app sees a run key per state change, forever.
+const TOASTED_MAX = 500;
 const toasted = new Set<string>();
-let labels: AutomationToastLabels = DEFAULT_AUTOMATION_TOAST_LABELS;
+let locale: AutomationUiLocale = 'en';
 
-/** Renderer → main: its locale's status words. Ignores malformed input. */
-export function setAutomationToastLabels(input: unknown): void {
-  const next = coerceToastLabels(input);
-  if (next) labels = next;
+function remember(key: string): void {
+  toasted.delete(key);
+  toasted.add(key);
+  while (toasted.size > TOASTED_MAX) {
+    const oldest = toasted.values().next().value;
+    if (oldest === undefined) break;
+    toasted.delete(oldest);
+  }
+}
+
+/** Test-only view of the dedupe set's size. */
+export function __toastedSizeForTest(): number {
+  return toasted.size;
+}
+
+/** Renderer → main: its UI locale id. Main picks the words (en / ko). */
+export function setAutomationUiLocale(input: unknown): void {
+  locale = coerceUiLocale(input);
+}
+
+export function getAutomationUiLocale(): AutomationUiLocale {
+  return locale;
 }
 
 /** Test-only reset of the module-scope state. */
 export function __resetAutomationBridgeForTest(): void {
   toasted.clear();
-  labels = DEFAULT_AUTOMATION_TOAST_LABELS;
+  locale = 'en';
 }
 
 const RUN_STATES = new Set(['launching', 'running', 'awaiting', 'completed', 'failed', 'skipped', 'unknown']);
@@ -161,15 +183,19 @@ export class AutomationBridge {
    */
   private async surfaceAttention(api: AutomationClient, items: AutomationAttention[]): Promise<void> {
     const shown: string[] = [];
+    const inApp: AutomationAttention[] = [];
     for (const item of items) {
       if (!item || typeof item.id !== 'string' || typeof item.automationId !== 'string') continue;
       if (item.kind !== 'proposed' && item.kind !== 'grant-raised') continue;
-      shown.push(item.id);
       const key = `attention:${item.id}`;
       if (toasted.has(key)) continue;
-      toasted.add(key);
-      this.toastAttention(item.automationId, item.automationName ?? '', item.kind);
+      remember(key);
+      if (this.toastAttention(item.automationId, item.automationName ?? '', item.kind)) shown.push(item.id);
+      else inApp.push(item);
     }
+    // No OS toast (unsupported platform, window-less): keep it queued so a
+    // later launch can still toast it, and show it in the app now.
+    if (inApp.length > 0) this.send({ kind: 'attention', items: inApp });
     if (shown.length === 0) return;
     // Refused or failed: the items stay queued and resurface on the next
     // connect; the per-process key set keeps this process from repeating them.
@@ -209,17 +235,17 @@ export class AutomationBridge {
     if (!kind) return;
     const key = `${run.id}:${run.state}`;
     if (toasted.has(key)) return;
-    toasted.add(key);
+    remember(key);
     const request: AutomationOpenRequest = { automationId: run.automationId, runId: run.id };
-    this.toast(automationToastText(name, kind, labels), () => this.open(request), { ignoreToastSetting: false });
+    this.toast(automationToastText(name, kind, toastLabelsFor(locale)), () => this.open(request), { ignoreToastSetting: false });
   }
 
-  private toastAttention(automationId: string, name: string, kind: 'proposed' | 'grant-raised'): void {
+  private toastAttention(automationId: string, name: string, kind: 'proposed' | 'grant-raised'): boolean {
     // Detection is the control for drafts and raised grants (anyone holding the
     // daemon token could write them), so these ignore the toast toggle — the
     // same exemption the daemon's security notices get.
-    this.toast(
-      automationToastText(name, kind === 'proposed' ? 'proposed' : 'grantRaised', labels),
+    return this.toast(
+      automationToastText(name, kind === 'proposed' ? 'proposed' : 'grantRaised', toastLabelsFor(locale)),
       () => this.open({ automationId }),
       { ignoreToastSetting: true },
     );

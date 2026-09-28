@@ -1,19 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from '../../stores';
-import { t } from '../../i18n';
+import { getLocale } from '../../i18n';
 import { ErrorBoundary } from '../ErrorBoundary';
 import SchedulesView from './SchedulesView';
 import { openAutomationRun } from './openRun';
-
-/** The localized words main puts after "<name> · " in a scheduled-run toast. */
-export function toastLabels() {
-  return {
-    awaiting: t('schedules.toast.awaiting'),
-    failed: t('schedules.toast.failed'),
-    proposed: t('schedules.toast.proposed'),
-    grantRaised: t('schedules.toast.grantRaised'),
-  };
-}
 
 /**
  * Wires the renderer to main's scheduled-run feed (pushes, toast clicks,
@@ -29,7 +19,7 @@ export function useAutomationBridge(): void {
     const st = useStore.getState;
     const offPush = api.onPush((push) => st().applyAutomationPush(push));
     const offOpen = api.onOpenRun((request) => {
-      if (request.runId) void openAutomationRun(request.runId);
+      if (request.runId) void openAutomationRun(request.runId, request.automationId);
       else st().openSchedulesView(request.automationId);
     });
     const offConnected = window.electronAPI?.daemon?.onConnected?.(() => { void st().refreshSchedules(); });
@@ -41,7 +31,7 @@ export function useAutomationBridge(): void {
     };
   }, []);
   useEffect(() => {
-    window.electronAPI?.automation?.setToastLabels(toastLabels());
+    window.electronAPI?.automation?.setUiLocale(getLocale());
   }, [locale]);
 }
 

@@ -1,4 +1,4 @@
-import { Fragment } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import WebToggle from '../StatusBar/WebToggle';
 import { useStore } from '../../stores';
@@ -26,12 +26,24 @@ export default function SidebarNavigation({ compact = false }: { compact?: boole
   const schedulesAvailable = useStore((s) => s.schedulesAvailable);
   const schedulesOpen = useStore((s) => s.schedulesViewOpen);
   const schedules = useStore(useShallow(selectScheduleNavSummary));
+  // A next-run time that has passed (the daemon advances it after the run)
+  // must not linger: re-read the clock each minute while one is shown.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (schedules.nextRunAt === null) return undefined;
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, [schedules.nextRunAt]);
+  const upcoming = schedules.nextRunAt !== null && schedules.nextRunAt > now ? schedules.nextRunAt : null;
   const schedulesNeedsText = schedules.needs > 0 ? t('sidebar.fleetNeedsYou', { count: schedules.needs }) : '';
-  const schedulesNextText = schedules.needs === 0 && schedules.nextRunAt !== null ? formatNextShort(schedules.nextRunAt) : '';
+  // Muted trailing text: failures first (they want a look), else the next run.
+  const schedulesFailedText = schedules.failed > 0 ? t('schedules.navFailed', { count: schedules.failed }) : '';
+  const schedulesNextText = schedules.needs === 0 && upcoming !== null ? formatNextShort(upcoming) : '';
+  const schedulesMutedText = schedulesFailedText || schedulesNextText;
   const schedulesName = [
     t('schedules.title'),
     schedulesNeedsText,
-    schedulesNextText ? t('schedules.navNext', { time: schedulesNextText }) : '',
+    schedulesFailedText || (schedulesNextText ? t('schedules.navNext', { time: schedulesNextText }) : ''),
   ].filter(Boolean).join(', ');
   const entries = [
     {
@@ -67,7 +79,7 @@ export default function SidebarNavigation({ compact = false }: { compact?: boole
             <span className="wmux-nav-icon" aria-hidden="true">{icon}</span>
             {!compact && <span className="wmux-nav-label min-w-0 flex-1 truncate text-left">{label}</span>}
             {id === 'fleet' && <FleetCounts compact={compact} needsYou={fleetCounts.needsYou} needsText={needsText} runningText={runningText} />}
-            {id === 'schedules' && <FleetCounts compact={compact} needsYou={schedules.needs} needsText={schedulesNeedsText} runningText={schedulesNextText} />}
+            {id === 'schedules' && <FleetCounts compact={compact} needsYou={schedules.needs} needsText={schedulesNeedsText} runningText={schedulesMutedText} />}
           </button>{id === 'search' && <WebToggle variant="sidebar" compact={compact} />}</Fragment>
         );
       })}

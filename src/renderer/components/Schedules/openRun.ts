@@ -19,11 +19,17 @@ export type OpenRunOutcome = 'focused' | 'adopted' | 'gone' | 'details';
  *
  * A finished run, or one whose session is gone, opens its details instead.
  */
-export async function openAutomationRun(runId: string): Promise<OpenRunOutcome> {
+export async function openAutomationRun(runId: string, automationId?: string): Promise<OpenRunOutcome> {
+  // A toast click can outrun the renderer's copy (fresh launch, reload):
+  // pull once before deciding the run is unknown.
+  if (!useStore.getState().automationRuns.some((r) => r.id === runId)) {
+    await useStore.getState().refreshSchedules();
+  }
   const st = useStore.getState();
   const run = st.automationRuns.find((r) => r.id === runId);
   const showDetails = (): OpenRunOutcome => {
-    if (run) useStore.getState().openSchedulesView(run.automationId);
+    const target = run?.automationId ?? automationId;
+    if (target) useStore.getState().openSchedulesView(target);
     return 'details';
   };
   if (!run || !run.ptyId || !isLiveRun(run)) return showDetails();

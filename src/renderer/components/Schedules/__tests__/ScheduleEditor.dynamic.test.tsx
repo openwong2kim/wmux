@@ -64,14 +64,12 @@ describe('ScheduleEditor', () => {
     expect(api.update).not.toHaveBeenCalled();
   });
 
-  it('asks before Bypass, then grants after the update at the new revision', async () => {
+  it('grants Bypass after the update at the new revision (main confirms it natively)', async () => {
     const a = automation();
     api.update.mockResolvedValue({ ok: true, automation: { ...a, revision: 4 } });
     api.grant.mockResolvedValue({ ok: true, automation: a });
     const onSaved = mount(a);
     act(() => radio('Bypass').click());
-    expect(radio('Bypass').getAttribute('aria-checked')).toBe('false');
-    act(() => q<HTMLButtonElement>('[data-schedule-bypass-confirm]')!.click());
     expect(radio('Bypass').getAttribute('aria-checked')).toBe('true');
     await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
     expect(api.update).toHaveBeenCalledTimes(1);
@@ -91,5 +89,38 @@ describe('ScheduleEditor', () => {
     expect(document.body.textContent).toContain('tool list applies to Claude only');
     await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
     expect(api.grant).toHaveBeenCalledWith('a1', 'scoped', undefined);
+  });
+
+  it('creates a scoped schedule disabled, grants, then enables — and a retry never creates twice', async () => {
+    const created = automation({ id: 'new1' });
+    api.create.mockResolvedValue({ ok: true, automation: created });
+    api.setEnabled.mockResolvedValue({ ok: true, automation: created });
+    api.grant.mockResolvedValueOnce({ ok: false, error: 'boom' }).mockResolvedValue({ ok: true, automation: created });
+    api.update.mockResolvedValue({ ok: true, automation: created });
+    const onSaved = mount(null);
+    act(() => type(q<HTMLInputElement>('[data-schedule-name]')!, 'Nightly'));
+    act(() => type(q<HTMLTextAreaElement>('[data-schedule-prompt]')!, 'Do it'));
+    act(() => type(q<HTMLInputElement>('[data-schedule-cwd]')!, '/w'));
+    act(() => radio('Scoped').click());
+    act(() => type(q<HTMLInputElement>('[data-schedule-tools]')!, 'Read'));
+    await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
+    expect(api.create).toHaveBeenCalledTimes(1);
+    expect(api.setEnabled).toHaveBeenCalledWith('new1', false);
+    expect(api.setEnabled).not.toHaveBeenCalledWith('new1', true);
+    expect(onSaved).not.toHaveBeenCalled();
+
+    await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
+    expect(api.create).toHaveBeenCalledTimes(1);
+    expect(api.update).toHaveBeenCalledWith('new1', expect.anything());
+    expect(api.grant).toHaveBeenLastCalledWith('new1', 'scoped', ['Read']);
+    expect(api.setEnabled).toHaveBeenLastCalledWith('new1', true);
+    expect(onSaved).toHaveBeenCalledWith('new1');
+  });
+
+  it('offers no test run while reviewing a draft', () => {
+    act(() => root.render(
+      <ScheduleEditor original={automation({ proposed: true, enabled: false })} review accounts={[]} onClose={vi.fn()} onSaved={vi.fn()} />,
+    ));
+    expect(q('[data-schedule-editor-test-run]')).toBeNull();
   });
 });

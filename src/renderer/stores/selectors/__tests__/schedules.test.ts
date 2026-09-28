@@ -12,10 +12,10 @@ describe('selectScheduleNavSummary', () => {
       ],
       automationRuns: [run({ automationId: 'a1', state: 'completed' })],
     });
-    expect(summary).toEqual({ needs: 0, nextRunAt: 3_000 });
+    expect(summary).toEqual({ needs: 0, failed: 0, nextRunAt: 3_000 });
   });
 
-  it('counts awaiting runs and schedules whose latest run failed', () => {
+  it('counts awaiting runs as needs, and latest-run failures separately', () => {
     const summary = selectScheduleNavSummary({
       automations: [automation({ id: 'a1' }), automation({ id: 'a2' }), automation({ id: 'a3' })],
       automationRuns: [
@@ -26,7 +26,8 @@ describe('selectScheduleNavSummary', () => {
         run({ id: 'r4', automationId: 'a3', state: 'completed', startedAt: 20 }),
       ],
     });
-    expect(summary.needs).toBe(2);
+    expect(summary.needs).toBe(1);
+    expect(summary.failed).toBe(1);
   });
 
   it('ignores runs of schedules that no longer exist', () => {
@@ -34,7 +35,7 @@ describe('selectScheduleNavSummary', () => {
       automations: [],
       automationRuns: [run({ state: 'awaiting' })],
     });
-    expect(summary).toEqual({ needs: 0, nextRunAt: null });
+    expect(summary).toEqual({ needs: 0, failed: 0, nextRunAt: null });
   });
 });
 

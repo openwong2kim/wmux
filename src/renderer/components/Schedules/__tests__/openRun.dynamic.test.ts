@@ -55,7 +55,55 @@ describe('openAutomationRun', () => {
   });
 });
 
+describe('openAutomationRun for a run the store has not seen', () => {
+  it('refreshes, then falls back to the schedule named by the toast', async () => {
+    const runs = vi.fn(async () => ({ runs: [] }));
+    vi.stubGlobal('electronAPI', {
+      pty: { list },
+      automation: { list: vi.fn(async () => ({ automations: [automation()], available: true })), runs },
+    });
+    useStore.setState({ schedulesViewOpen: false });
+    await expect(openAutomationRun('unknown-run', 'a1')).resolves.toBe('details');
+    expect(runs).toHaveBeenCalled();
+    expect(useStore.getState().schedulesViewOpen).toBe(true);
+    expect(useStore.getState().schedulesSelectedId).toBe('a1');
+  });
+});
+
 describe('schedules slice pushes', () => {
+  it('drops a stale refresh and keeps runs that changed while it was in flight', async () => {
+    let release!: (v: { runs: ReturnType<typeof run>[] }) => void;
+    vi.stubGlobal('electronAPI', {
+      automation: {
+        list: vi.fn(async () => ({ automations: [automation()], available: true })),
+        runs: vi.fn(() => new Promise((r) => { release = r; })),
+      },
+    });
+    useStore.setState({ automationRuns: [] });
+    const pending = useStore.getState().refreshSchedules();
+    await Promise.resolve();
+    useStore.getState().applyAutomationPush({
+      kind: 'event', event: { type: 'run-changed', run: run({ id: 'r1', state: 'completed' }), automationName: 'x' },
+    });
+    release({ runs: [run({ id: 'r1', state: 'running' })] });
+    await pending;
+    expect(useStore.getState().automationRuns.map((r) => r.state)).toEqual(['completed']);
+  });
+
+  it('keeps what is shown when the list read fails transiently', async () => {
+    vi.stubGlobal('electronAPI', {
+      automation: {
+        list: vi.fn(async () => ({ automations: [], available: true, error: 'timeout' })),
+        runs: vi.fn(async () => ({ runs: [] })),
+      },
+    });
+    useStore.setState({ automations: [automation()], schedulesAvailable: true, schedulesError: false });
+    await useStore.getState().refreshSchedules();
+    expect(useStore.getState().automations).toHaveLength(1);
+    expect(useStore.getState().schedulesAvailable).toBe(true);
+    expect(useStore.getState().schedulesError).toBe(true);
+  });
+
   it('upserts a run from run-changed and replaces everything on a snapshot', () => {
     const st = useStore.getState();
     st.applyAutomationPush({ kind: 'event', event: { type: 'run-changed', run: run({ id: 'r1', state: 'completed' }), automationName: 'x' } });

@@ -20,6 +20,9 @@ export interface ScheduleForm {
   effort: string;
   graceMinutes: string;
   awaitTimeoutMinutes: string;
+  /** Not editable in v1, but carried through an edit: the daemon replaces the
+   *  whole policy on update, so dropping it would reset it to the default. */
+  maxRunMinutes: string;
   mode: AutomationPermissionMode;
   toolsText: string;
 }
@@ -32,7 +35,7 @@ export function emptyForm(): ScheduleForm {
   return {
     name: '', prompt: '', cwd: '', agent: 'claude', accountId: '',
     weekdays: WEEKDAYS.slice(), time: '09:00', model: '', effort: '',
-    graceMinutes: String(AUTOMATION_DEFAULTS.graceMinutes), awaitTimeoutMinutes: '',
+    graceMinutes: String(AUTOMATION_DEFAULTS.graceMinutes), awaitTimeoutMinutes: '', maxRunMinutes: '',
     mode: 'approval', toolsText: '',
   };
 }
@@ -50,6 +53,7 @@ export function formFromAutomation(a: Automation): ScheduleForm {
     effort: a.action.effort ?? '',
     graceMinutes: String(a.trigger.graceMinutes),
     awaitTimeoutMinutes: a.policy.awaitTimeoutMinutes !== undefined ? String(a.policy.awaitTimeoutMinutes) : '',
+    maxRunMinutes: a.policy.maxRunMinutes !== undefined ? String(a.policy.maxRunMinutes) : '',
     mode: a.permission.mode,
     toolsText: (a.permission.allowedTools ?? []).join(', '),
   };
@@ -118,7 +122,12 @@ export function draftFromForm(form: ScheduleForm): AutomationDraft {
       ...(effort ? { effort } : {}),
       prompt: form.prompt,
     },
-    ...(form.awaitTimeoutMinutes ? { policy: { awaitTimeoutMinutes: Number(form.awaitTimeoutMinutes) } } : {}),
+    ...(form.awaitTimeoutMinutes || form.maxRunMinutes ? {
+      policy: {
+        ...(form.awaitTimeoutMinutes ? { awaitTimeoutMinutes: Number(form.awaitTimeoutMinutes) } : {}),
+        ...(form.maxRunMinutes ? { maxRunMinutes: Number(form.maxRunMinutes) } : {}),
+      },
+    } : {}),
   };
 }
 

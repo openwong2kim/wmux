@@ -26,8 +26,8 @@ export function WorkspaceCenter() {
   // drops activeRemoteKey in the store (activateLocalWorkspace), so the local
   // tree comes back on the FIRST click.
   const remoteVisible = useStore(isRemoteMirrorVisible);
-  // Scheduled runs open over the pane grid; the grid stays mounted (no PTY
-  // resize) but unreachable by keyboard while covered.
+  // Scheduled runs open over the pane grid; the grid and every remote mirror
+  // stay mounted (no PTY resize) but are unreachable while covered.
   const schedulesOpen = useStore((s) => s.schedulesViewOpen);
 
   return (
@@ -52,6 +52,7 @@ export function WorkspaceCenter() {
           key={rw.key}
           className="absolute inset-0 flex flex-col"
           style={{ display: remoteVisible && rw.key === activeRemoteKey ? 'flex' : 'none' }}
+          inert={schedulesOpen}
         >
           <RemoteWorkspaceView workspace={rw} />
         </div>

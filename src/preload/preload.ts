@@ -588,6 +588,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.AUTOMATION_LIST) as Promise<{
         automations: import('../shared/automation').Automation[];
         available: boolean;
+        /** Set on a transient failure: keep what is shown. */
+        error?: string;
       }>,
     runs: (automationId?: string) =>
       ipcRenderer.invoke(IPC.AUTOMATION_RUNS, automationId) as Promise<{
@@ -617,8 +619,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.AUTOMATION_RUN_NOW, id, kind) as Promise<import('../shared/automation').AutomationRunNowResult>,
     cancelRun: (runId: string) =>
       ipcRenderer.invoke(IPC.AUTOMATION_CANCEL_RUN, runId) as Promise<import('../shared/automation').AutomationOkResult>,
-    setToastLabels: (labels: import('../main/automation/toastText').AutomationToastLabels) =>
-      ipcRenderer.send(IPC.AUTOMATION_TOAST_LABELS, labels),
+    // The UI locale id only; main owns the toast words.
+    setUiLocale: (locale: string) => ipcRenderer.send(IPC.AUTOMATION_TOAST_LABELS, locale),
     onPush: (callback: (push: import('../main/automation/AutomationBridge').AutomationPush) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,

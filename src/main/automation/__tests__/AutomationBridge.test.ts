@@ -5,10 +5,11 @@ import { AUTOMATION_EVENT, AUTOMATION_RPC, type Automation, type AutomationAtten
 import {
   AutomationBridge,
   __resetAutomationBridgeForTest,
-  setAutomationToastLabels,
+  setAutomationUiLocale,
+  __toastedSizeForTest,
   type AutomationToastFn,
 } from '../AutomationBridge';
-import { automationToastText } from '../toastText';
+import { automationToastText, coerceUiLocale, toastLabelsFor } from '../toastText';
 
 const PROMPT = 'Summarize the secret quarterly numbers in ~/finance';
 
@@ -57,7 +58,7 @@ class FakeClient extends EventEmitter {
 function setup() {
   const send = vi.fn();
   const win = { isDestroyed: () => false, webContents: { isDestroyed: () => false, send } };
-  const toast = vi.fn<AutomationToastFn>();
+  const toast = vi.fn<AutomationToastFn>(() => true);
   const bridge = new AutomationBridge(() => win as never, toast);
   const client = new FakeClient();
   return { send, toast, bridge, client };
@@ -71,6 +72,19 @@ describe('automationToastText', () => {
   it('is exactly "<name> · <status>" and flattens control characters', () => {
     expect(automationToastText('Morning report', 'awaiting')).toBe('Morning report · Needs your response');
     expect(automationToastText('a\nb\u0007c', 'failed')).toBe('a b c · Failed');
+  });
+
+  it('truncates by code point, never splitting a surrogate pair', () => {
+    const text = automationToastText('😀'.repeat(100), 'failed');
+    const name = text.split(' · ')[0];
+    expect(Array.from(name)).toHaveLength(80);
+    expect(name.endsWith('…')).toBe(true);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(name)).toBe(false);
+  });
+
+  it('takes only a locale id from the renderer; unknown ids fall back to English', async () => {
+    setAutomationUiLocale({ awaiting: 'pwned' });
+    expect(automationToastText('x', 'awaiting', toastLabelsFor(coerceUiLocale('de')))).toBe('x · Needs your response');
   });
 });
 
@@ -160,7 +174,7 @@ describe('AutomationBridge', () => {
 
   it('opens the run from a toast click and uses the renderer-supplied labels', async () => {
     const { send, toast, bridge, client } = setup();
-    setAutomationToastLabels({ awaiting: '응답 대기', failed: '실패', proposed: '검토할 초안', grantRaised: '권한 상승' });
+    setAutomationUiLocale('ko');
     bridge.start(client);
     await flush();
     client.emit('event', { type: AUTOMATION_EVENT, data: { type: 'run-changed', run: run({ state: 'awaiting' }), automationName: '리포트' } });
@@ -177,5 +191,27 @@ describe('AutomationBridge', () => {
     await flush();
     expect(send).not.toHaveBeenCalled();
     expect(toast).not.toHaveBeenCalled();
+  });
+
+  it('acks only attention an OS toast showed; the rest stays queued and goes in-app', async () => {
+    const { send, toast, bridge, client } = setup();
+    toast.mockImplementation(() => false);
+    client.attention = [{ id: 'at1', automationId: 'a2', automationName: 'Draft', kind: 'proposed', at: 1 }];
+    bridge.start(client);
+    await flush();
+    await flush();
+    expect(client.rpc).not.toHaveBeenCalledWith(AUTOMATION_RPC.ackAttention, expect.anything());
+    expect(client.attention).toHaveLength(1);
+    expect(send).toHaveBeenCalledWith(IPC.AUTOMATION_PUSH, { kind: 'attention', items: client.attention });
+  });
+
+  it('caps the toast dedupe set', async () => {
+    const { bridge, client } = setup();
+    bridge.start(client);
+    await flush();
+    for (let i = 0; i < 700; i++) {
+      client.emit('event', { type: AUTOMATION_EVENT, data: { type: 'run-changed', run: run({ id: `r${i}`, state: 'failed' }), automationName: 'x' } });
+    }
+    expect(__toastedSizeForTest()).toBeLessThanOrEqual(500);
   });
 });

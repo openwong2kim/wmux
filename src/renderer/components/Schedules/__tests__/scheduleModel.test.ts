@@ -65,4 +65,10 @@ describe('draftFromForm', () => {
     expect(draft.action).toEqual(a.action);
     expect(draft.trigger).toEqual(a.trigger);
   });
+
+  it('keeps the run limit and response timeout through an edit', () => {
+    const a = automation({ policy: { overlap: 'skip_if_active', maxRunMinutes: 30, awaitTimeoutMinutes: 15 } });
+    expect(draftFromForm({ ...formFromAutomation(a), prompt: 'changed' }).policy)
+      .toEqual({ maxRunMinutes: 30, awaitTimeoutMinutes: 15 });
+  });
 });

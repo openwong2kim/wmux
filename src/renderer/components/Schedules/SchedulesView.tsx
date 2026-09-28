@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -36,6 +36,19 @@ export default function SchedulesView() {
   })));
   const [editor, setEditor] = useState<EditorState>(null);
   const accounts = useAccounts();
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  // Focus moves in on open and goes back where it came from on close (the
+  // sidebar row, normally), so keyboard users are never left in covered panes.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    headingRef.current?.focus();
+    return () => {
+      const back = opener?.isConnected
+        ? opener
+        : document.querySelector<HTMLElement>('[data-sidebar-nav="schedules"]');
+      back?.focus();
+    };
+  }, []);
   const ordered = useMemo(() => orderSchedules(automations), [automations]);
   const latest = useMemo(() => latestRunByAutomation(runs), [runs]);
   const selected = ordered.find((a) => a.id === selectedId) ?? null;
@@ -59,7 +72,7 @@ export default function SchedulesView() {
       }}
     >
       <header className="flex h-9 shrink-0 items-center gap-2 border-b border-[var(--surface-hairline)] px-4">
-        <h2 className="flex-1 text-[14px] font-semibold">{t('schedules.title')}</h2>
+        <h2 ref={headingRef} tabIndex={-1} className="flex-1 text-[14px] font-semibold outline-none">{t('schedules.title')}</h2>
         <Button variant="primary" size="sm" onClick={() => setEditor({ mode: 'new' })} data-schedules-new>
           <IconPlus size={12} /> {t('schedules.new')}
         </Button>

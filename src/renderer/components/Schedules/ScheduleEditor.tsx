@@ -45,7 +45,7 @@ function PromptArea({ value, onChange, placeholder }: { value: string; onChange:
     <textarea
       id={wiring.id}
       aria-describedby={wiring['aria-describedby']}
-      className="ui-input min-h-[360px] flex-1 resize-none text-[13px] leading-5"
+      className="ui-input h-[30vh] min-h-[120px] flex-1 resize-none text-[13px] leading-5 min-[640px]:h-auto min-[640px]:min-h-[360px]"
       value={value}
       maxLength={AUTOMATION_DEFAULTS.maxPromptChars}
       placeholder={placeholder}
@@ -72,7 +72,9 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
   const t = useT();
   const [form, setForm] = useState<ScheduleForm>(() => (original ? formFromAutomation(original) : emptyForm()));
   const [permissionTouched, setPermissionTouched] = useState(false);
-  const [confirmBypass, setConfirmBypass] = useState(false);
+  // Set once create succeeded: a failed grant/enable retry must update this
+  // schedule, never create a second one.
+  const [created, setCreated] = useState<Automation | null>(null);
   const [advanced, setAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,11 +93,9 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
   }, [form, original, permissionTouched]);
   const vendorAccounts = accounts.filter((a) => a.vendor === form.agent);
 
+  // Bypass is confirmed by main at grant time (a native prompt no renderer
+  // path can skip), so picking it here only records the choice.
   const pickMode = (mode: AutomationPermissionMode) => {
-    if (mode === 'bypass' && form.mode !== 'bypass') {
-      setConfirmBypass(true);
-      return;
-    }
     setPermissionTouched(true);
     set('mode', mode);
   };
@@ -120,31 +120,40 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
     if (!api) return;
     setSaving(true);
     setError(null);
+    const fail = (message: string) => {
+      setError(message);
+      void useStore.getState().refreshSchedules();
+    };
     try {
       const draft = draftFromForm(form);
-      const saved = original ? await api.update(original.id, draft) : await api.create(draft);
-      if (!saved.ok) {
-        setError(saved.error);
-        return;
-      }
-      const id = saved.automation.id;
-      if (grantNeeded(original, form, permissionTouched)) {
-        const granted = await api.grant(id, form.mode, usesToolList(form) ? tools.tools : undefined);
-        if (!granted.ok) {
-          setError(granted.error);
-          void useStore.getState().refreshSchedules();
-          return;
+      const base = original ?? created;
+      const needsGrant = grantNeeded(base, form, permissionTouched);
+      let id: string;
+      if (base) {
+        const saved = await api.update(base.id, draft);
+        if (!saved.ok) return fail(saved.error);
+        id = saved.automation.id;
+      } else {
+        const saved = await api.create(draft);
+        if (!saved.ok) return fail(saved.error);
+        id = saved.automation.id;
+        setCreated(saved.automation);
+        // The daemon enables on create; a schedule that still needs its grant
+        // must not be able to fire in approval mode meanwhile.
+        if (needsGrant) {
+          const off = await api.setEnabled(id, false);
+          if (!off.ok) return fail(off.error);
         }
+      }
+      if (needsGrant) {
+        const granted = await api.grant(id, form.mode, usesToolList(form) ? tools.tools : undefined);
+        if (!granted.ok) return fail(granted.error);
       }
       // A new schedule is saved to run; a reviewed draft is enabled by the
       // human here, which is what clears its proposed mark.
       if (!original || review) {
         const enabled = await api.setEnabled(id, true);
-        if (!enabled.ok) {
-          setError(enabled.error);
-          void useStore.getState().refreshSchedules();
-          return;
-        }
+        if (!enabled.ok) return fail(enabled.error);
       }
       void useStore.getState().refreshSchedules();
       onSaved(id);
@@ -170,7 +179,10 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
     <Dialog onClose={onClose} width={880} data-testid="schedule-editor">
       <DialogHeader title={title} closeLabel={t('schedules.cancel')} closeDisabled={saving} />
       <DialogBody>
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,1fr)_340px]">
+        {/* Two columns from 640px (the dialog fits them at a 725px window);
+            below that one column, with the prompt height capped so the
+            settings stay reachable. */}
+        <div className="grid grid-cols-1 gap-6 min-[640px]:grid-cols-[minmax(0,1fr)_300px]">
           <Field label={t('schedules.prompt')} description={t('schedules.promptHint', { max: AUTOMATION_DEFAULTS.maxPromptChars })} layout="stacked" className="min-h-0">
             <PromptArea value={form.prompt} onChange={(v) => set('prompt', v)} placeholder={t('schedules.promptPlaceholder')} />
           </Field>
@@ -292,12 +304,12 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
           </div>
         </div>
         {warnReset && <p className="ui-note mt-3" role="status" data-schedule-reset-warning>{t('schedules.resetWarning')}</p>}
-        {original && <p className="ui-note mt-3">{t('schedules.testRunHint')}</p>}
+        {original && !review && <p className="ui-note mt-3">{t('schedules.testRunHint')}</p>}
         {problemText && <p className="ui-row-error mt-3" role="alert">{problemText}</p>}
         {error && <p className="ui-row-error mt-3" role="alert">{t('schedules.error', { error })}</p>}
       </DialogBody>
       <DialogFooter>
-        {original && (
+        {original && !review && (
           <Button
             variant="secondary"
             className="mr-auto"
@@ -315,28 +327,6 @@ export default function ScheduleEditor({ original, review, accounts, onClose, on
         </Button>
       </DialogFooter>
     </Dialog>
-      {confirmBypass && (
-        <Dialog role="alertdialog" width={440} onClose={() => setConfirmBypass(false)}>
-          <DialogHeader
-            title={t('schedules.bypassConfirmTitle')}
-            description={t('schedules.bypassConfirmBody', { name: form.name.trim() || t('schedules.title') })}
-          />
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setConfirmBypass(false)}>{t('schedules.cancel')}</Button>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setConfirmBypass(false);
-                setPermissionTouched(true);
-                set('mode', 'bypass');
-              }}
-              data-schedule-bypass-confirm
-            >
-              {t('schedules.bypassConfirm')}
-            </Button>
-          </DialogFooter>
-        </Dialog>
-      )}
     </>,
     document.body,
   );
