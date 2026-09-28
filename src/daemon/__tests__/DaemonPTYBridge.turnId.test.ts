@@ -283,6 +283,33 @@ describe('DaemonPTYBridge — running-episode turn id', () => {
     expect(turn().id).not.toBe(codexTurn.id);
   });
 
+  it('an unconfirmed (provisional) hook stop mid-turn does not split the id; the rollout end does end it', () => {
+    const osc133 = (c: string) => feed(`\x1b]133;${c}\x07`);
+    bridge.noteInput('codex\r');
+    osc133('C');
+    vi.advanceTimersByTime(17_000);
+    bridge.noteInput('explain the tests\r'); // no rollout binding yet
+    const codexTurn = turn();
+    vi.advanceTimersByTime(100);
+    feed(BIG);
+    vi.advanceTimersByTime(8_000);
+    // The notify chain fires a stop between tool calls; nothing confirms it.
+    bridge.noteAgentStatus('complete', true, undefined, true);
+    expect(turn()).toEqual({ ...codexTurn, state: 'idle' });
+    vi.advanceTimersByTime(6_100);
+    feed(BIG); // the turn goes on: byte promotion
+    expect(turn()).toEqual({ ...codexTurn, state: 'running' });
+    vi.advanceTimersByTime(3_000);
+    bridge.noteTranscriptTurnEnd(Date.now()); // task_complete
+    expect(turn()).toEqual({ ...codexTurn, state: 'idle' });
+    vi.advanceTimersByTime(5_000);
+    bridge.noteAgentStatus('complete', true, undefined, true); // the late duplicate stop
+    expect(turn()).toEqual({ ...codexTurn, state: 'idle' });
+    vi.advanceTimersByTime(1_000);
+    bridge.noteInput('next\r');
+    expect(turn().id).not.toBe(codexTurn.id);
+  });
+
   it('an agent that ends without a Stop (process exit) closes its episode', () => {
     bridge.noteInput('go\r');
     bridge.noteAgentStatus('running', true);

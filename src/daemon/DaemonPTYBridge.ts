@@ -427,7 +427,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * Terminal states settle the turn and block later byte-only redraws;
    * explicit running activity opens the gate again for autonomous work.
    */
-  noteAgentStatus(status: AgentEventStatus, authoritative = false, questionAt?: number): void {
+  noteAgentStatus(status: AgentEventStatus, authoritative = false, questionAt?: number, provisional = false): void {
     // #1463 — any hook is turn evidence. SessionStart re-sets `preTurn` after
     // its own edge (noteSessionStart); detector statuses are not evidence.
     if (authoritative) {
@@ -476,7 +476,9 @@ export class DaemonPTYBridge extends EventEmitter {
     // a pane with hooks only the hook's own settle (Stop / StopFailure) counts:
     // the detector's `complete` / `waiting` also match footers mid-turn.
     if (authoritative) this.hookSeen = true;
-    if (!this.awaitingHuman && (authoritative || !this.hookSeen)) this.closeTurn(!authoritative);
+    // `provisional`: a hook settle the transcript has not confirmed (see the
+    // daemon's Codex stop handling) closes like a detector settle does.
+    if (!this.awaitingHuman && (authoritative || !this.hookSeen)) this.closeTurn(!authoritative || provisional);
     this.settledAtMs = Date.now();
     this.submittedTurnPending = false;
     if (this.resizeGuardTimer) {

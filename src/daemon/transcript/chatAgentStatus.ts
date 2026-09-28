@@ -24,15 +24,33 @@ function isNewerWork(event: TurnEvent): boolean {
  * queued prompt, a status note) do not hide it; work recorded after it does.
  * Only an end recorded at or after `turnStartedAt` counts.
  */
-export function transcriptTurnEnd(events: readonly TurnEvent[] | undefined, turnStartedAt: number): { status: AgentStatus; at: number } | undefined {
+export function transcriptTurnEnd(
+  events: readonly TurnEvent[] | undefined,
+  turnStartedAt: number,
+): { status: AgentStatus; at: number; turnId?: string } | undefined {
   if (!events) return undefined;
   for (let i = events.length - 1; i >= Math.max(0, events.length - END_SCAN_LIMIT); i--) {
     const event = events[i];
     const status = turnEndStatus(event);
-    if (status) return event.ts !== undefined && event.ts >= turnStartedAt ? { status, at: event.ts } : undefined;
+    if (status) {
+      if (event.ts === undefined || event.ts < turnStartedAt) return undefined;
+      return { status, at: event.ts, ...(event.turnId ? { turnId: event.turnId } : {}) };
+    }
     if (isNewerWork(event)) return undefined;
   }
   return undefined;
+}
+
+/**
+ * When the transcript confirms the turn a stop hook reports as ended: the
+ * latest recorded end, and — when both name a turn — the same turn. Undefined
+ * when nothing confirms it (no transcript yet, no end yet, another turn).
+ */
+export function confirmedStopAt(events: readonly TurnEvent[] | undefined, hookTurnId: unknown): number | undefined {
+  const ended = transcriptTurnEnd(events, 0);
+  if (!ended) return undefined;
+  if (typeof hookTurnId === 'string' && ended.turnId && ended.turnId !== hookTurnId) return undefined;
+  return ended.at;
 }
 
 /** A saved end_turn or interrupt can rebut byte-only activity, never newer work or a gate. */

@@ -148,7 +148,7 @@ import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 import { deliverScheduledPrompt } from './sessionPromptDelivery';
-import { chatAgentStatus, transcriptTurnEnd } from './transcript/chatAgentStatus';
+import { chatAgentStatus, confirmedStopAt, transcriptTurnEnd } from './transcript/chatAgentStatus';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
 import { interruptChatTurn } from './transcript/interruptChatTurn';
@@ -3626,6 +3626,15 @@ function registerRpcHandlers(
         // #1463 — SessionStart applies the same edge, then may mark the pane pre-turn.
         if (data.signal.kind === 'agent.session_start') {
           hookBridge?.noteSessionStart(data.signal.ts, data.signal.payload?.['source']);
+        } else if (hookBridge && data.signal.agent === 'codex' && data.signal.kind === 'agent.stop' && data.status !== 'running') {
+          // A Codex stop arrives through the notify chain, and a wrapper in it
+          // can fire one between tool calls. The status settles as always, but
+          // the running episode ends only once the rollout records that turn's
+          // end (matching the hook's turn id when it names one); otherwise the
+          // next running edge resumes the same episode.
+          hookBridge.noteAgentStatus(data.status, true, questionAt, true);
+          const endedAt = confirmedStopAt(projector.snapshot(sessionId)?.events, data.signal.payload?.['turn-id']);
+          if (endedAt !== undefined) hookBridge.noteTranscriptTurnEnd(endedAt);
         } else {
           hookBridge?.noteAgentStatus(data.status, true, questionAt);
         }
