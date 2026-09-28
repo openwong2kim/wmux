@@ -7,6 +7,7 @@ import type { TerminalLaunchAgent } from '../../shared/transcript/terminalChat';
 import type { ChatInterruptResult, ChatSendResult, TranscriptPage, TranscriptStatus } from '../../shared/transcript/turnEvents';
 import type { AgentLaunchOptions } from '../web/agentLaunch';
 import { buildAgentLaunch } from '../web/agentLaunch';
+import { codexCdOperand, withCodexRemote } from '../web/recoverCodexPane';
 import { screenBlocksChatSend } from '../transcript/chatScreenGate';
 import { deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { INTERRUPT_COOLDOWN_MS, interruptChatTurn, type ChatInterruptVerdict } from '../transcript/interruptChatTurn';
@@ -1203,9 +1204,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
           catch { return fail('agent-runtime-unavailable'); }
         }
         if (!RELAY_URL.test(relay.url)) return fail('launch-unconfirmed');
-        // A remote TUI does not send its own cwd; without --cd a new thread starts in the
-        // shared app-server's directory. "$PWD" is a fixed literal the pane shell expands.
-        command = command.replace(/^codex /, `codex --remote ${relay.url} --cd "$PWD" `);
+        // Typed into an idle zsh/bash/sh prompt (idleShell refuses anything else), so the
+        // shell's own "$PWD" is the directory Codex should start in; a tracked cwd can only lag it.
+        command = withCodexRemote(command, relay.url, codexCdOperand());
       }
       const secondIdle = await idle();
       if (secondIdle) return secondIdle;
