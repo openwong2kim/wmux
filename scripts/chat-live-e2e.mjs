@@ -4,13 +4,38 @@
  * WMUX_CHAT_E2E_CDP=http://127.0.0.1:<port> WMUX_CHAT_E2E_PTY=daemon-... node scripts/chat-live-e2e.mjs
  * Optional WMUX_CHAT_E2E_FAULT_PID=<isolated daemon pid>: briefly suspend/resume
  * only a daemon verified to own ~/.wmux-chat-e2e/daemon.sock. Never a user profile.
+ *
+ * Phone mode (`--agent claude|codex|opencode`): drives the phone chat routes
+ * (cancel, daemon queue, DELETE, no-cap golden) over HTTP against a real agent.
+ * Manual/local only, never CI; it consumes API tokens. Requirements:
+ * - An isolated instance: WMUX_DATA_SUFFIX set (e.g. -chat-e2e) for the app and
+ *   for this script, with its web server running with input and transcript
+ *   (`WMUX_DATA_SUFFIX=-chat-e2e wmux web --allow-input --allow-transcript`).
+ *   The script refuses to run without the suffix and never touches another profile.
+ * - One fresh pane in it running the agent, spawned from a scrubbed environment
+ *   (no CLAUDE*, ANTHROPIC*, AI_AGENT or outer WMUX_* variables), with one prompt
+ *   already answered so its conversation exists. The agent must run
+ *   `python3 -c ...` without a permission prompt, for example:
+ *     claude --allowedTools "Bash(python3:*)"
+ *     codex (in an already-trusted directory; never accept a trust prompt here)
+ *     opencode (scratch XDG dirs, permission.bash "allow", wmux chat plugin, any model)
+ * The script pairs a throwaway phone device over the isolated daemon socket and
+ * revokes it at the end. The report holds statuses and states only, no screen text.
+ *   WMUX_DATA_SUFFIX=-chat-e2e node scripts/chat-live-e2e.mjs --agent claude --pty daemon-...
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright-core';
+
+const argValue = name => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : undefined; };
+const INTERRUPTION_PROMPT = 'For an interruption test, write a numbered list of 400 fictional planet names, one per line. Do not use tools or change files.';
+const phoneAgent = argValue('--agent');
+if (phoneAgent) process.exit(await runPhone(phoneAgent, argValue('--pty') || process.env.WMUX_CHAT_E2E_PTY));
 
 const endpoint = process.env.WMUX_CHAT_E2E_CDP;
 const pty = process.env.WMUX_CHAT_E2E_PTY;
@@ -73,7 +98,7 @@ try {
   await page.screenshot({ path: path.join(out, 'complete.png') });
 
   const preInterrupt = new Set((await snapshot()).events.map(e => e.id));
-  const interruptionPrompt = 'For an interruption test, write a numbered list of 400 fictional planet names, one per line. Do not use tools or change files.';
+  const interruptionPrompt = INTERRUPTION_PROMPT;
   await send(interruptionPrompt);
   await until(async () => (await snapshot()).events.some(e => !preInterrupt.has(e.id) && e.kind === 'user_text' && e.text.includes(interruptionPrompt)));
   await until(async () => (await state()) === 'working');
@@ -115,4 +140,211 @@ try {
   await fs.writeFile(path.join(out, 'report.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
   await browser.close();
+}
+
+/** Phone routes against a real agent in an isolated instance; returns the exit code. */
+async function runPhone(agent, pty) {
+  assert(['claude', 'codex', 'opencode'].includes(agent), '--agent must be claude, codex or opencode');
+  assert(pty && /^[\w-]{1,64}$/.test(pty), '--pty <pane id> (or WMUX_CHAT_E2E_PTY) is required');
+  const suffix = process.env.WMUX_DATA_SUFFIX;
+  assert(suffix && /^-[\w-]+$/.test(suffix), 'WMUX_DATA_SUFFIX (e.g. -chat-e2e) is required: phone mode runs only against an isolated instance');
+  const dir = path.join(os.homedir(), `.wmux${suffix}`);
+  const token = (await fs.readFile(path.join(dir, 'daemon-auth-token'), 'utf8')).trim();
+  const web = JSON.parse(await fs.readFile(path.join(dir, 'web-state.json'), 'utf8'));
+  assert(web.enabled && web.allowInput && web.allowTranscript, 'Start the isolated web server with --allow-input --allow-transcript');
+  const base = `http://127.0.0.1:${web.port}`;
+  const CANCEL = 'chat-cancel', QUEUE = 'chat-cancel,chat-queue';
+  const report = { agent, startedAt: new Date().toISOString(), checks: [], observations: [] };
+  const check = name => { report.checks.push(name); console.log(`PASS ${name}`); };
+  const note = (name, value) => { report.observations.push({ name, value }); console.log(`NOTE ${name}: ${JSON.stringify(value)}`); };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const newId = () => `${Date.now()}-${randomUUID()}`;
+  const rpc = (method, params) => new Promise((resolve, reject) => {
+    const socket = net.connect(path.join(dir, 'daemon.sock'));
+    let buf = '';
+    socket.setTimeout(20000, () => { socket.destroy(); reject(new Error(`${method} timed out`)); });
+    socket.on('connect', () => socket.write(`${JSON.stringify({ id: '1', method, params, token })}\n`));
+    socket.on('data', d => {
+      buf += d;
+      if (!buf.includes('\n')) return;
+      socket.end();
+      const r = JSON.parse(buf.slice(0, buf.indexOf('\n')));
+      if (r.ok) resolve(r.result); else reject(new Error(`${method}: ${JSON.stringify(r.error)}`));
+    });
+    socket.on('error', reject);
+  });
+  let device;
+  const http = async (method, route, body, caps) => {
+    const headers = { Authorization: `Bearer ${device.token}`, ...(body ? { 'Content-Type': 'application/json' } : {}), ...(caps ? { 'x-wmux-client-caps': caps } : {}) };
+    const r = await fetch(base + route, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const text = await r.text();
+    try { return { status: r.status, body: JSON.parse(text) }; } catch { return { status: r.status, body: text }; }
+  };
+  const read = async (caps = CANCEL) => {
+    const r = await http('GET', `/api/sessions/${pty}/turns`, undefined, caps);
+    assert.equal(r.status, 200, `/turns answered ${r.status}`);
+    return { chat: r.body.chat ?? {}, events: r.body.events ?? [] };
+  };
+  const until = async (label, predicate, timeout = 60000) => {
+    const end = Date.now() + timeout;
+    for (;;) {
+      const value = await predicate();
+      if (value) return value;
+      if (Date.now() > end) throw new Error(`Timed out after ${timeout}ms: ${label}`);
+      await sleep(400);
+    }
+  };
+  const send = async (text, caps) => {
+    const { chat } = await read(caps);
+    const clientMessageId = newId();
+    const r = await http('POST', `/api/sessions/${pty}/chat/messages`, { agentSessionId: chat.agentSessionId, historyEpoch: chat.historyEpoch, clientMessageId, text }, caps);
+    return { ...r, clientMessageId };
+  };
+  // Right after an Esc or a turn end the pane's input-quiet fence answers chat-busy for a few seconds.
+  const sendWhenReady = async (text, caps) => {
+    for (let attempt = 0; ; attempt++) {
+      const r = await send(text, caps);
+      if (r.status !== 409 || r.body?.error !== 'chat-busy' || attempt >= 15) return r;
+      await sleep(1000);
+    }
+  };
+  const hasUserRow = (events, text) => events.some(e => e.kind === 'user_text' && String(e.text).includes(text));
+  const idleAndDrained = () => until('idle pane with an empty queue', async () => {
+    const { chat } = await read(QUEUE);
+    return chat.turn?.state === 'idle' && !(chat.queue ?? []).some(i => i.state === 'queued' || i.state === 'delivering');
+  }, 180000);
+  // One foreground command, long enough to catch the turn mid-tool.
+  const toolPrompt = (word, seconds) => `Run exactly this shell command in the foreground and wait for it to finish: python3 -c "import time; time.sleep(${seconds}); print(1)" . Then reply with the single word ${word}.`;
+  const startTurn = async text => {
+    const before = await read();
+    const r = await sendWhenReady(text, CANCEL);
+    assert.equal(r.status, 202, `turn-starting send answered ${r.status} ${JSON.stringify(r.body)}`);
+    const { chat } = await until('turn running', async () => { const now = await read(); return now.chat.turn?.state === 'running' && now.chat.turn.id !== before.chat.turn?.id && now; });
+    return { turnId: chat.turn.id, seen: new Set(before.events.map(e => e.id)) };
+  };
+  // The daemon writes the Esc only on positive evidence in the screen it reads, which can be mid-redraw.
+  const cancelRunning = async () => {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const { chat } = await read();
+      const r = await http('POST', `/api/sessions/${pty}/chat/cancel`, { agentSessionId: chat.agentSessionId, clientCancelId: newId(), ...(chat.turn?.id ? { turnId: chat.turn.id } : {}) }, CANCEL);
+      if (r.status === 202) return { ...r, attempts: attempt + 1 };
+      const retry = r.body?.error === 'cancel-cooldown' ? (r.body.retryAfterMs ?? 500) + 50
+        : r.body?.error === 'turn-not-running' && chat.turn?.state === 'running' ? 700 : 0;
+      if (!retry) throw new Error(`cancel answered ${r.status} ${JSON.stringify(r.body)}`);
+      await sleep(retry);
+    }
+    throw new Error('cancel never reached 202');
+  };
+  let code = 0;
+  try {
+    const paired = await rpc('daemon.web.pairStart', { name: `chat-e2e-${agent}`, allowInput: true });
+    const pairing = await fetch(`${base}/api/pair?code=${encodeURIComponent(paired.code)}`);
+    assert.equal(pairing.status, 200, 'pairing failed');
+    device = await pairing.json();
+    const first = await read();
+    assert.equal(first.chat.binding, 'terminal', 'The pane needs a live agent conversation (answer one prompt first)');
+    assert.equal(first.chat.agent, agent, `The pane runs ${first.chat.agent}, not ${agent}`);
+    await idleAndDrained();
+
+    // Golden: a client that declares no capability reads the chat object it always read.
+    const golden = (await http('GET', `/api/sessions/${pty}/turns`)).body.chat;
+    assert(!('turn' in golden) && !('queue' in golden), 'no-cap /turns must not carry turn or queue');
+    assert.equal(golden.capabilities.cancel, false);
+    assert.equal(golden.capabilities.queue === true, agent === 'claude', 'no-cap queue is Claude-only (native)');
+    check('No capability: /turns chat object unchanged (no turn, no queue, cancel:false)');
+
+    // Cancel while a tool is running -> 202, then the turn settles idle.
+    const long = await startTurn(toolPrompt('LONGCANCEL', 45));
+    const tool = await until('tool row for the running turn', async () => (await read()).events.some(e => !long.seen.has(e.id) && e.kind === 'tool_use'), 30000).catch(() => false);
+    note('tool row seen before cancel', tool);
+    const canceled = await cancelRunning();
+    assert.equal(canceled.body.effect, 'interrupt-requested');
+    note('cancel attempts', canceled.attempts);
+    const sentAt = Date.now();
+    await until('idle after cancel', async () => (await read()).chat.turn?.state === 'idle', 30000);
+    note('ms from cancel to idle', Date.now() - sentAt);
+    check('Cancel while a tool runs answers 202 and the turn goes idle');
+
+    // Cancel right after a turn ended -> 409 turn-not-running.
+    await idleAndDrained();
+    await sleep(2100); // past the per-pane Esc cooldown, so only the turn state decides
+    const before = await read();
+    const word = `DONE${Date.now() % 100000}`;
+    const short = await sendWhenReady(`Reply with exactly the single word ${word}`, CANCEL);
+    assert.equal(short.status, 202, `short send answered ${short.status} ${JSON.stringify(short.body)}`);
+    const ended = await until('short turn ended', async () => {
+      const now = await read();
+      return now.chat.turn?.id !== before.chat.turn?.id && now.chat.turn?.state === 'idle' &&
+        now.events.some(e => e.kind === 'assistant_text' && String(e.text).includes(word)) && now;
+    }, 120000);
+    const late = await http('POST', `/api/sessions/${pty}/chat/cancel`, { agentSessionId: ended.chat.agentSessionId, clientCancelId: newId(), turnId: ended.chat.turn.id }, CANCEL);
+    assert.equal(late.status, 409, `late cancel answered ${late.status} ${JSON.stringify(late.body)}`);
+    assert.equal(late.body.error, 'turn-not-running');
+    assert.equal(late.body.turn?.state, 'idle');
+    check('Cancel right after the turn ended answers 409 turn-not-running');
+
+    // Queue: two items held while a turn runs, delivered in order as separate turns; a third is taken back.
+    await idleAndDrained();
+    const held = await startTurn(toolPrompt('LONGQUEUE', 15));
+    const tag = Date.now() % 100000;
+    const items = [];
+    for (const w of [`ALPHA${tag}`, `BRAVO${tag}`, `CHARLIE${tag}`]) {
+      const r = await send(`Reply with exactly the single word ${w}`, QUEUE);
+      assert.equal(r.status, 202, `queue send answered ${r.status} ${JSON.stringify(r.body)}`);
+      assert.equal(r.body.state, 'queued');
+      items.push({ word: w, id: r.clientMessageId });
+    }
+    const [a, b, c] = items;
+    const dropped = await http('DELETE', `/api/sessions/${pty}/chat/queue/${c.id}`, undefined, QUEUE);
+    assert.equal(dropped.status, 200, `DELETE answered ${dropped.status} ${JSON.stringify(dropped.body)}`);
+    assert.equal(dropped.body.state, 'canceled');
+    assert.equal((await http('DELETE', `/api/sessions/${pty}/chat/queue/${c.id}`, undefined, QUEUE)).status, 200);
+    check('Queue: items held while running (202 queued); DELETE takes one back (200, also on repeat)');
+    const turnIds = new Set();
+    const done = await until('both queued items delivered and answered', async () => {
+      const now = await read(QUEUE);
+      if (now.chat.turn?.state === 'running' && now.chat.turn.id !== held.turnId) turnIds.add(now.chat.turn.id);
+      const state = id => now.chat.queue.find(i => i.clientMessageId === id)?.state;
+      return state(a.id) === 'delivered' && state(b.id) === 'delivered' && now.chat.turn?.state === 'idle' &&
+        now.events.some(e => e.kind === 'assistant_text' && String(e.text).includes(b.word)) && now;
+    }, 240000);
+    note('queued item states', done.chat.queue.filter(i => items.some(x => x.id === i.clientMessageId)).map(i => i.state + (i.reason ? `:${i.reason}` : '')));
+    note('running turns observed after the held turn', turnIds.size);
+    const rows = done.events.filter(e => e.kind === 'user_text' || e.kind === 'assistant_text');
+    const at = (kind, w) => rows.findIndex(e => e.kind === kind && String(e.text).includes(w));
+    const order = [at('user_text', a.word), at('assistant_text', a.word), at('user_text', b.word), at('assistant_text', b.word)];
+    assert(order.every((v, i) => v >= 0 && (i === 0 || v > order[i - 1])), `expected user A, reply A, user B, reply B in order; got ${order}`);
+    assert(!hasUserRow(done.events, c.word), 'the taken-back item must never reach the agent');
+    check('Queue: delivered in order as separate turns (a reply between them); the taken-back item never arrived');
+
+    if (agent === 'claude') {
+      // Claude's own composer queue (no chat-queue cap) + phone cancel. Observed agent behavior, not a wmux guarantee.
+      await idleAndDrained();
+      await sleep(2100);
+      const stream = await startTurn(INTERRUPTION_PROMPT);
+      await until('answer streaming', async () => (await read()).events.some(e => !stream.seen.has(e.id) && e.kind === 'assistant_text'), 30000).catch(() => false);
+      const nativeWord = `NATIVE${Date.now() % 100000}`;
+      const native = await send(`Reply with exactly the single word ${nativeWord}`, CANCEL);
+      assert.equal(native.status, 202, `native mid-turn send answered ${native.status} ${JSON.stringify(native.body)}`);
+      assert.equal(native.body.queued, true);
+      await cancelRunning();
+      const ran = await until('native-queued message ran', async () => hasUserRow((await read()).events, nativeWord), 45000).catch(() => false);
+      const receipt = await http('GET', `/api/sessions/${pty}/chat/messages/${native.clientMessageId}`, undefined, CANCEL);
+      note('native-queued message after cancel', ran ? 'ran as the next turn' : 'did not run (back in the composer, or dropped)');
+      note('native receipt', { state: receipt.body.state, queued: receipt.body.queued === true });
+      assert(ran, 'the native-queued message did not run after the cancel');
+      check('Claude native queue + cancel: the queued message runs as the next turn; receipt stays submitted queued:true');
+    }
+  } catch (error) {
+    report.failure = String(error.stack || error);
+    console.error(`FAIL ${error.message}`);
+    code = 1;
+  } finally {
+    if (device?.deviceId) await rpc('daemon.web.deviceRevoke', { deviceId: device.deviceId }).catch(e => report.observations.push({ name: 'revoke failed', value: String(e) }));
+    report.finishedAt = new Date().toISOString();
+    const out = process.env.WMUX_CHAT_E2E_OUTPUT || '/tmp/wmux-chat-e2e';
+    await fs.mkdir(out, { recursive: true });
+    await fs.writeFile(path.join(out, `phone-${agent}.json`), JSON.stringify(report, null, 2));
+  }
+  return code;
 }

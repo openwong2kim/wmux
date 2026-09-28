@@ -1442,6 +1442,16 @@ transcript, an idle title the agent set during the turn (Claude `✳`, Codex
 without a spinner), and Claude's Stop-hook row. A refused cancel stores no
 receipt, so the same `clientCancelId` may be retried.
 
+**Cancel and Claude's own queue.** A send made without `chat-queue` during a
+running Claude turn goes into Claude's composer queue (`queued:true`). A cancel
+of that turn does not bring the message back into the composer: measured with
+Claude Code 2.1.283, the Esc interrupts the turn and Claude immediately runs
+the queued message as the next turn, so its receipt (`submitted`,
+`queued:true`) stays accurate and the cancel answer carries no warning. This
+is the agent's behavior, not a wmux guarantee; read the outcome from `/turns`.
+A second such send in the same turn was refused with `chat-busy`, so a phone
+has at most one message in Claude's queue per turn.
+
 **OpenCode.** An OpenCode chat has no Esc: the cancel asks the wmux plugin
 inside the running TUI to abort the selected session. `capabilities.cancel`
 is true only when the plugin advertises `abort` and answers reads; an older
