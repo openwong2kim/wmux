@@ -165,7 +165,10 @@ describe('statusline live-usage push', () => {
     const server = net.createServer((sock) => { sockets.add(sock); });
     await new Promise<void>((r) => server.listen(pipe, r));
     try {
-      const baseline = await run(input(40), socketPathFor('absent'));
+      // Best of two, so one slow node startup cannot make the budget look spent.
+      const a = await run(input(40), socketPathFor('absent'));
+      const b = await run(input(40), socketPathFor('absent'));
+      const baseline = a.ms <= b.ms ? a : b;
       clearState();
       const r = await run(input(40), pipe);
       expect(r).toMatchObject({ code: 0, stderr: '', stdout: baseline.stdout });

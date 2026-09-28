@@ -1122,6 +1122,7 @@ registerUsageRpc(rpcRouter, {
   defaultConfigDir: () => path.join(os.homedir(), '.claude'),
   ingestDefault: (update) => usagePoller.ingestLive(update),
   ingestAccount: (accountId, update) => accountUsageService.ingestLive(accountId, update),
+  log: (line) => console.warn(line),
 });
 
 ipcMain.on(IPC.USAGE_TOGGLE, (_event, enabled: unknown) => {
