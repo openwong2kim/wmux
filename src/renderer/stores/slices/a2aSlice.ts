@@ -6,6 +6,8 @@ import { validateCompletionEvidence, normalizeCompletionEvidenceWire } from '../
 import type { PaneAddress } from '../../hooks/a2aAddressing';
 import { isChannelMentionTask } from '../../hooks/channelMentionFlush';
 import { recordApprovalRemoval } from './approvalInboxSlice';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { isReceiverPaneGone } from '../../../shared/a2aOrphanedTask';
 
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 const GC_MAX_TASKS = 500;
@@ -35,6 +37,8 @@ function evidenceGateHint(code: string): string {
       return 'evidence.files must be repo-relative paths (no absolute, drive, ADS, url-scheme, or ".." segments)';
     case 'failure_reason_missing':
       return "status 'failed' requires an evidence summary (the failure reason)";
+    case 'cancel_reason_missing':
+      return "status 'canceled' requires an evidence summary (why the task is dropped)";
     default:
       return 'attach valid completion evidence and retry';
   }
@@ -274,8 +278,14 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     // stored for pane-addressed tasks; gating on to.paneId would reject the
     // worker's completion and hang the task in `working` forever. Absent
     // callerAddr ⇒ ws-authz, unconditionally.
+    // #1598: unless that pane is gone from the receiver workspace — then any
+    // verified pane of that workspace may move the task (same rule as the daemon).
     if (callerAddr && task.metadata.to.paneId && task.metadata.to.paneId !== callerAddr.paneId) {
-      return { ok: false, error: `Permission denied: caller pane is not the addressed receiver pane` };
+      const receiverWs = get().workspaces.find((w) => w.id === callerWorkspaceId);
+      const livePaneIds = receiverWs ? getWorkspaceLeafPanes(receiverWs).map((p) => p.id) : undefined;
+      if (!isReceiverPaneGone(task.metadata.to, callerWorkspaceId, livePaneIds)) {
+        return { ok: false, error: `Permission denied: caller pane is not the addressed receiver pane` };
+      }
     }
     // Same rule as the daemon: an external caller must prove its pane to move a
     // pane-pinned task. Omitting senderPtyId must not buy workspace authz.
@@ -314,7 +324,7 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     // 앞서므로(위) 게이트는 합법 전이에만 도달한다. 데몬 커밋의 verbatim 적용
     // (applyDaemonTaskUpdate)은 **절대 게이트하지 않는다**(C6 — force-fail 커밋 거부 =
     // split-brain). 브릿지(useRpcBridge)가 'a2a.task.update: ' 접두를 붙이므로 코드:힌트만 반환.
-    if (newState === 'completed' || newState === 'failed') {
+    if (newState === 'completed' || newState === 'failed' || newState === 'canceled') {
       const verdict = validateCompletionEvidence(newState, normalizedEvidence);
       if (!verdict.ok) {
         return { ok: false, error: `${verdict.code}: ${evidenceGateHint(verdict.code)}` };

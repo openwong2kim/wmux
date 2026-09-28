@@ -44,6 +44,7 @@ import { stopWebServerDurably } from './web/webStop';
 import { decideWebStartPolicy, resolveWebStartGrants } from './web/webStartPolicy';
 import { scheduleTokenFileReHarden } from '../shared/security';
 import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
+import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import type { WebTlsConfig } from '../shared/web';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, capTextRowsToFrameBudget, MAX_SCROLLBACK, type TextSnapshotOutcome } from './HeadlessSnapshot';
 import { readSessionTextReplay } from './sessionTextReplay';
@@ -4761,9 +4762,10 @@ function registerRpcHandlers(
     if (!taskId || !workspaceId || !status) {
       return { ok: false, error: 'a2a.task.update: taskId, workspaceId, and status are required' };
     }
-    // 'canceled'는 a2a.task.cancel 전용(a2aSlice 현행 계약과 동형).
-    if (status === 'canceled') return { ok: false, error: 'a2a.task.update: use a2a.task.cancel instead' };
+    // 'canceled' is allowed here as the RECEIVER's drop (#1598): same authz and
+    // state machine as any transition, with a reason (evidence.summary).
     if (!isTaskState(status)) return { ok: false, error: `a2a.task.update: invalid status "${status}"` };
+    const livePaneIds = normalizeLivePaneIds(p.livePaneIds);
     return a2aTaskService.transition({
       taskId,
       to: status,
@@ -4777,6 +4779,9 @@ function registerRpcHandlers(
       // can only narrow the workspace-level authz, never widen it.
       ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerAddr: { paneId: p.callerPaneId } } : {}),
       ...(p.requirePaneIdentity === true ? { requirePaneIdentity: true } : {}),
+      // #1598: main's read of the caller workspace's panes (same read as
+      // callerPaneId); lets a verified pane adopt a task whose pane is gone.
+      ...(livePaneIds ? { livePaneIds } : {}),
       // evidence는 서비스가 normalizeCompletionEvidenceWire로 재검증(sanitize)한 뒤
       // 완료증거 게이트(PR-B)로 판정한다 — completed/failed는 구조화 증거 강제(거부는
       // completion_evidence_* 사유코드로 호출자에 포워딩).

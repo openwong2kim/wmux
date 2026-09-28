@@ -46,6 +46,7 @@ import {
   validateCompletionEvidence,
 } from '../../shared/completionEvidence';
 import { isVerifiedTaskSender } from '../../shared/a2aReopen';
+import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
 import type {
   A2aTaskCancelPayload,
   A2aTaskCreatePayload,
@@ -80,6 +81,8 @@ function evidenceGateHint(code: string): string {
       return 'evidence.files must be repo-relative paths (no absolute, drive, ADS, url-scheme, or ".." segments)';
     case 'failure_reason_missing':
       return "status 'failed' requires an evidence summary (the failure reason)";
+    case 'cancel_reason_missing':
+      return "status 'canceled' requires an evidence summary (why the task is dropped)";
     default:
       return 'attach valid completion evidence and retry';
   }
@@ -135,6 +138,14 @@ export interface TransitionInput {
    * lanes and the headless ClaudeWorker do not set it.
    */
   requirePaneIdentity?: boolean;
+  /**
+   * Live pane ids of the caller's workspace (stashed included), resolved by
+   * main from the pane tree in the same read as `callerAddr` — so it carries
+   * the same trust as `callerAddr`. When it is known and lacks the task's
+   * `to.paneId`, the addressed pane is gone and a verified pane of the receiver
+   * workspace may move the task (#1598). Absent = unknown: no relaxation.
+   */
+  livePaneIds?: readonly string[];
   /** 사람용 상태 메시지(있을 때만). */
   message?: Message;
   /** §6.M 완료증거(raw). 서비스가 재정규화(sanitize)해 저장 — 게이트 없음. */
@@ -325,7 +336,13 @@ export class A2aTaskService {
       // pane-granular authz(S-C2): 호출자 페인이 알려졌고(callerAddr) 태스크가 특정
       // 수신 페인에 핀됐으면(to.paneId) 그 페인이어야 한다. callerAddr 부재(헤드리스
       // ClaudeWorker)면 ws-authz — 이 불변식이 워커 완료 전이를 막지 않게 한다.
-      if (input.callerAddr && task.metadata.to.paneId && task.metadata.to.paneId !== input.callerAddr.paneId) {
+      // #1598: a pinned task whose receiver pane no longer exists is adopted by
+      // any verified pane of the receiver workspace (checked above), instead of
+      // being stuck forever. A live receiver pane keeps the rule.
+      if (
+        input.callerAddr && task.metadata.to.paneId && task.metadata.to.paneId !== input.callerAddr.paneId
+        && !isReceiverPaneGone(task.metadata.to, input.callerWorkspaceId, input.livePaneIds)
+      ) {
         return { ok: false, error: 'a2a.task.update: caller pane is not the addressed receiver pane' };
       }
       // S-C2 soft-defer: 페인 핀 태스크 + 페인 신원 주장 호출자인데 callerAddr가
@@ -376,7 +393,8 @@ export class A2aTaskService {
       // 강제한다. pane-authz·불법 전이 거부(위)가 게이트보다 먼저라 게이트는 합법 전이에만
       // 도달한다(기존 에러 메시지·도그푸드 어서션 보존). verified≥1은 게이트가 아니라
       // 등급(E9) — verdict가 verifiedItemCount를 정직 산출한다(0 허용).
-      if (input.to === 'completed' || input.to === 'failed') {
+      // A receiver's cancel needs a reason (evidence.summary), like failed.
+      if (input.to === 'completed' || input.to === 'failed' || input.to === 'canceled') {
         const verdict = validateCompletionEvidence(input.to, evidence);
         if (!verdict.ok) {
           return { ok: false, error: `a2a.task.update: ${verdict.code}: ${evidenceGateHint(verdict.code)}` };

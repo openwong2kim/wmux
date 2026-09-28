@@ -819,3 +819,89 @@ describe('PR-B 완료증거 게이트', () => {
     expect(!r.ok && r.error).toContain('invalid transition');
   });
 });
+
+// ── #1598: orphaned tasks (receiver pane gone) + receiver cancel ─────────
+
+describe('#1598 orphaned receiver pane', () => {
+  async function seedPinned(svc: A2aTaskService, id = 'task-o'): Promise<void> {
+    const created = await svc.createTask({
+      id,
+      title: 'T',
+      from: { workspaceId: 'ws-receiver', name: 'R-old' },
+      to: { workspaceId: 'ws-receiver', name: 'R', paneId: 'pane-old' },
+    });
+    expect(created.ok).toBe(true);
+  }
+  const verified = { callerWorkspaceId: 'ws-receiver', callerAddr: { paneId: 'pane-new' }, requirePaneIdentity: true } as const;
+
+  it('a verified pane of the receiver workspace moves a task whose pane is gone', async () => {
+    const svc = newService(newLog());
+    await seedPinned(svc);
+    const r = await svc.transition({ taskId: 'task-o', to: 'working', ...verified, livePaneIds: ['pane-new', 'pane-other'] });
+    expect(r.ok).toBe(true);
+    expect(svc.getTask('task-o')?.status.state).toBe('working');
+  });
+
+  it('keeps the receiver-pane rule while the addressed pane is live', async () => {
+    const svc = newService(newLog());
+    await seedPinned(svc);
+    const r = await svc.transition({ taskId: 'task-o', to: 'working', ...verified, livePaneIds: ['pane-new', 'pane-old'] });
+    expect(!r.ok && r.error).toContain('caller pane is not the addressed receiver pane');
+  });
+
+  it('does not relax when the live pane list is unknown', async () => {
+    const svc = newService(newLog());
+    await seedPinned(svc);
+    const r = await svc.transition({ taskId: 'task-o', to: 'working', ...verified });
+    expect(!r.ok && r.error).toContain('caller pane is not the addressed receiver pane');
+  });
+
+  it('a pane of another workspace can never adopt it', async () => {
+    const svc = newService(newLog());
+    await seedPinned(svc);
+    const r = await svc.transition({
+      taskId: 'task-o', to: 'working', callerWorkspaceId: 'ws-other', callerAddr: { paneId: 'pane-x' }, livePaneIds: ['pane-x'],
+    });
+    expect(!r.ok && r.error).toContain('is not the receiver');
+  });
+
+  it('an unverified external caller still has to prove a pane', async () => {
+    const svc = newService(newLog());
+    await seedPinned(svc);
+    const r = await svc.transition({
+      taskId: 'task-o', to: 'working', callerWorkspaceId: 'ws-receiver', requirePaneIdentity: true, livePaneIds: [],
+    });
+    expect(!r.ok && r.error).toContain('no verified pane identity');
+  });
+});
+
+describe('#1598 receiver cancel through transition', () => {
+  it('cancels a submitted task with a reason and logs it as a transition', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await svc.createTask({ id: 'task-c', title: 'T', from: { workspaceId: 'ws-sender', name: 'S' }, to: { workspaceId: 'ws-receiver', name: 'R' } });
+    const r = await svc.transition({
+      taskId: 'task-c', to: 'canceled', callerWorkspaceId: 'ws-receiver', evidence: { summary: 'superseded by task-d', items: [] },
+    });
+    expect(r.ok).toBe(true);
+    expect(svc.getTask('task-c')?.status.state).toBe('canceled');
+    expect(transitionRecords(log, 'task-c').at(-1)?.evidence?.summary).toBe('superseded by task-d');
+  });
+
+  it('refuses a cancel without a reason', async () => {
+    const svc = newService(newLog());
+    const id = await seedWorkingTask(svc, 'task-c2');
+    const r = await svc.transition({ taskId: id, to: 'canceled', callerWorkspaceId: 'ws-receiver' });
+    expect(!r.ok && r.error).toContain('cancel_reason_missing');
+  });
+
+  it('refuses a cancel by the sender and a cancel of an ended task', async () => {
+    const svc = newService(newLog());
+    const id = await seedWorkingTask(svc, 'task-c3');
+    const bySender = await svc.transition({ taskId: id, to: 'canceled', callerWorkspaceId: 'ws-sender', evidence: { summary: 'x', items: [] } });
+    expect(!bySender.ok && bySender.error).toContain('is not the receiver');
+    await svc.transition({ taskId: id, to: 'failed', callerWorkspaceId: 'ws-receiver', evidence: { summary: 'broke', items: [] } });
+    const late = await svc.transition({ taskId: id, to: 'canceled', callerWorkspaceId: 'ws-receiver', evidence: { summary: 'x', items: [] } });
+    expect(!late.ok && late.error).toContain('invalid transition failed -> canceled');
+  });
+});

@@ -3142,12 +3142,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // pointer for a half-applied task).
     let nextState: TaskState | undefined;
     if (typeof params.status === 'string') {
-      // Block 'canceled' — must use a2a.task.cancel instead
-      if (params.status === 'canceled') {
-        return { error: 'a2a.task.update: use a2a.task.cancel instead' };
-      }
-      // Validate status value
-      const validStatuses = ['working', 'completed', 'failed', 'input-required'];
+      // Validate status value. 'canceled' is the receiver dropping the task
+      // (#1598); it needs a reason, like 'failed'.
+      const validStatuses = ['working', 'completed', 'failed', 'input-required', 'canceled'];
       if (!validStatuses.includes(params.status)) {
         return { error: `a2a.task.update: invalid status "${params.status}"` };
       }
@@ -3352,7 +3349,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // fire last.
     if (transitioned && nextState) {
       const updatedTask = store.getTask(taskId);
-      if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated', nextState);
+      if (updatedTask) emitA2aTaskEvent(updatedTask, nextState === 'canceled' ? 'cancelled' : 'updated', nextState);
     } else if (updateWrite.refused || updateReopened) {
       // The message is stored but its push was withheld: tee the pointer so a
       // receiver polling wmux_events_poll still learns the thread moved (the

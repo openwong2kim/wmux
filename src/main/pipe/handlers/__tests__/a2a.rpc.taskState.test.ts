@@ -297,3 +297,67 @@ describe('a2a.task.update — pane-pinned tasks need a verified pane from extern
     expect(rendererUpdateCalls()[0].requirePaneIdentity).toBe(false);
   });
 });
+
+describe('a2a.task.update — #1598 orphaned tasks and receiver cancel', () => {
+  beforeEach(() => {
+    sendToRendererMock.mockReset();
+    vi.mocked(worker.cancel).mockClear();
+  });
+
+  const okDaemon = (calls: DaemonCall[]) => async (method: string, params: Record<string, unknown>) => {
+    calls.push({ method, params });
+    return { ok: true, task: { id: 't1', status: { state: params.status, timestamp: 'x' }, metadata: { updatedAt: 'x' } } };
+  };
+
+  it('hands the daemon the live panes of the same read, never a wire-supplied list', async () => {
+    const calls: DaemonCall[] = [];
+    rendererWithPanes([
+      { id: 'pane-a', surfacePtyIds: ['pty-a'] },
+      { id: 'pane-b', surfacePtyIds: ['pty-b'] },
+    ]);
+    const router = setup(okDaemon(calls));
+    await router.dispatch({
+      id: 'o1',
+      method: 'a2a.task.update',
+      params: { taskId: 't1', workspaceId: 'ws-b', status: 'working', senderPtyId: 'pty-b', livePaneIds: ['forged'] },
+    });
+    expect(calls[0].params.livePaneIds).toEqual(['pane-a', 'pane-b']);
+    expect(rendererUpdateCalls()[0]).not.toHaveProperty('livePaneIds');
+  });
+
+  it('a pane-less caller sends no pane list, so nothing can look orphaned', async () => {
+    const calls: DaemonCall[] = [];
+    rendererWithPanes([{ id: 'pane-b', surfacePtyIds: ['pty-b'] }]);
+    const router = setup(okDaemon(calls));
+    await router.dispatch({
+      id: 'o2',
+      method: 'a2a.task.update',
+      params: { taskId: 't1', workspaceId: 'ws-b', status: 'working', livePaneIds: [] },
+    });
+    expect(calls[0].params).not.toHaveProperty('livePaneIds');
+  });
+
+  it('a committed receiver cancel stops the background worker', async () => {
+    const calls: DaemonCall[] = [];
+    rendererWithPanes([{ id: 'pane-b', surfacePtyIds: ['pty-b'] }]);
+    const router = setup(okDaemon(calls));
+    await router.dispatch({
+      id: 'o3',
+      method: 'a2a.task.update',
+      params: { taskId: 't1', workspaceId: 'ws-b', status: 'canceled', evidence: { summary: 'superseded', items: [] } },
+    });
+    expect(calls[0].params.status).toBe('canceled');
+    expect(worker.cancel).toHaveBeenCalledWith('t1');
+  });
+
+  it('a refused cancel leaves the worker running', async () => {
+    rendererWithPanes([{ id: 'pane-b', surfacePtyIds: ['pty-b'] }]);
+    const router = setup(async () => ({ ok: false, error: 'a2a.task.update: cancel_reason_missing: x' }));
+    await router.dispatch({
+      id: 'o4',
+      method: 'a2a.task.update',
+      params: { taskId: 't1', workspaceId: 'ws-b', status: 'canceled' },
+    });
+    expect(worker.cancel).not.toHaveBeenCalled();
+  });
+});

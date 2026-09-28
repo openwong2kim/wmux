@@ -273,14 +273,14 @@ const A2A_TASK_QUERY_SHAPE = {
 const A2A_TASK_UPDATE_SHAPE = {
   task_id: z.string().describe('Task ID to update'),
   status: z
-    .enum(['working', 'completed', 'failed', 'input-required'])
-    .describe('New status. Allowed transitions: submitted->working; working->completed|failed|input-required; input-required->working.'),
+    .enum(['working', 'completed', 'failed', 'input-required', 'canceled'])
+    .describe('New status. Allowed transitions: submitted->working; working->completed|failed|input-required; input-required->working; any open state->canceled (drop a superseded task).'),
   message: z.string().optional().describe('Optional status message'),
   artifact_name: z.string().optional().describe('Artifact name (for completed tasks)'),
   artifact_data: z.record(z.string(), z.unknown()).optional().describe('Artifact data payload'),
   evidence: z
     .object({
-      summary: z.string().describe('Non-empty. The completion summary, or for failed the failure reason.'),
+      summary: z.string().describe('Non-empty. The completion summary, or for failed/canceled the reason.'),
       // kind별 discriminated union — normalize 계약과 1:1 (command는 command 필수 +
       // passed|failed, inspection/artifact는 verified|unverified). zod가 통과시킨
       // 아이템이 normalize에서 malformed로 죽는 조합을 스키마 단계에서 제거한다.
@@ -318,7 +318,7 @@ const A2A_TASK_UPDATE_SHAPE = {
     // Rejections come back as completion_evidence_* / failure_reason_missing
     // reason codes, each paired with an action hint by the daemon
     // (A2aTaskService.evidenceGateHint), so they are not listed on the wire.
-    .describe('Completion evidence. Required for completed (summary + >=1 item) and for failed (summary = the failure reason).'),
+    .describe('Completion evidence. Required for completed (summary + >=1 item) and for failed/canceled (summary = the reason).'),
 };
 
 const A2A_TASK_CANCEL_SHAPE = {
@@ -1677,7 +1677,7 @@ server.tool(
 // 5. a2a_task_update — Update task status
 server.tool(
   'a2a_task_update',
-  'Update a task\'s status. Only the receiver workspace can change it. Transitions follow a state machine (see `status`): completed/failed/canceled are final, and a rejected transition names the allowed next states. `evidence` is required for both completed and failed; a rejection names what to attach. A completion with no verified item (command+passed, or inspection/artifact+verified) is still accepted but graded unverified (verifiedItemCount=0). Optionally attach an artifact on completion.',
+  'Update a task\'s status. Only the receiver workspace can change it; a pane-pinned task only from that pane, or from any pane of the workspace once it is closed (orphaned: true in a2a_task_query). Transitions follow a state machine (see `status`): completed/failed/canceled are final, and a rejected transition names the allowed next states. `evidence` is required for both completed and failed; a rejection names what to attach. A completion with no verified item (command+passed, or inspection/artifact+verified) is still accepted but graded unverified (verifiedItemCount=0). Optionally attach an artifact on completion.',
   A2A_TASK_UPDATE_SHAPE,
   async ({ task_id, status, message, artifact_name, artifact_data, evidence }) => {
     const wsId = await requireWorkspaceId();

@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage } from '../../../shared/types';
 import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../shared/executeApprovalBounds';
-import { isPagedTaskQuery, pagedTaskId, shapeTaskQueryResult, summarizeTask } from '../../../shared/a2aTaskQueryView';
+import { flagOrphanedTask, isPagedTaskQuery, pagedTaskId, shapeTaskQueryResult, summarizeTask } from '../../../shared/a2aTaskQueryView';
 import { defaultSnapshot } from '../../pty/portWatch';
 import type { PortSnapshot, SnapshotFn } from '../../pty/portWatch';
 import { walkToOwningAnchor } from '../../pty/serverSidePidWalk';
@@ -45,6 +45,7 @@ const INTERNAL_RENDERER_FIELDS = [
   'localReopen',
   'reopenPreflight',
   'requirePaneIdentity',
+  'livePaneIds',
 ] as const;
 
 /**
@@ -101,7 +102,8 @@ async function daemonTaskRpc(
 }
 
 type CallerPane =
-  | { kind: 'resolved'; paneId: string }
+  /** `livePaneIds`: every pane of the caller's workspace, from the same read. */
+  | { kind: 'resolved'; paneId: string; livePaneIds: string[] }
   /** No senderPtyId, or one that is not a terminal in the caller's own workspace. */
   | { kind: 'absent' }
   /** The pane tree could not be read: keep the daemon's deferral to the renderer. */
@@ -120,19 +122,29 @@ async function resolveCallerPane(
   if (typeof senderPtyId !== 'string' || !senderPtyId || typeof workspaceId !== 'string' || !workspaceId) {
     return { kind: 'absent' };
   }
+  const panes = await readWorkspacePanes(getWindow, workspaceId);
+  if (!panes) return { kind: 'unknown' };
+  const livePaneIds = panes.map((pane) => pane.id as string);
+  for (const pane of panes) {
+    const ptys = Array.isArray(pane.surfacePtyIds) ? pane.surfacePtyIds : [];
+    if (ptys.includes(senderPtyId)) return { kind: 'resolved', paneId: pane.id as string, livePaneIds };
+  }
+  return { kind: 'absent' };
+}
+
+/** A workspace's panes, stashed ones included; null when the tree is unreadable. */
+async function readWorkspacePanes(
+  getWindow: () => BrowserWindow | null,
+  workspaceId: string,
+): Promise<Array<Record<string, unknown>> | null> {
   let panes: unknown;
   try {
     panes = await sendToRenderer(getWindow, 'pane.list', { workspaceId, includeStashed: true });
   } catch {
-    return { kind: 'unknown' };
+    return null;
   }
-  if (!Array.isArray(panes)) return { kind: 'unknown' };
-  for (const pane of panes) {
-    if (!isRecord(pane) || typeof pane.id !== 'string') continue;
-    const ptys = Array.isArray(pane.surfacePtyIds) ? pane.surfacePtyIds : [];
-    if (ptys.includes(senderPtyId)) return { kind: 'resolved', paneId: pane.id };
-  }
-  return { kind: 'absent' };
+  if (!Array.isArray(panes)) return null;
+  return panes.filter((pane): pane is Record<string, unknown> => isRecord(pane) && typeof pane.id === 'string');
 }
 
 /** Validate an RPC-supplied caller pid. Anything non-positive / non-integer is
@@ -421,10 +433,18 @@ export function registerA2aRpc(
   // 더 최신이면 status/updatedAt만 데몬 값으로 덮고, 렌더러 전용 증분(history·
   // artifacts)은 보존한다(§6.F — 증분 히스토리는 아직 데몬 비내구). 데몬-only
   // id(재시작 생존분)는 추가. 데몬 미가용이면 현행 렌더러-only와 동일.
-  router.register('a2a.task.query', async (params) => {
+  router.register('a2a.task.query', async (rawParams) => {
     // view: 'page' (a2a_task_query): each source returns summaries (or the one
     // named task), and the merged result is paged here — see a2aTaskQueryView.
-    const paged = isPagedTaskQuery(params);
+    const paged = isPagedTaskQuery(rawParams);
+    // #1598: both sources flag tasks whose receiver pane is gone, from the live
+    // pane list main reads here. Never taken from the wire.
+    const params: Record<string, unknown> = { ...rawParams };
+    delete params.livePaneIds;
+    if (paged && typeof params.workspaceId === 'string' && params.workspaceId) {
+      const panes = await readWorkspacePanes(getWindow, params.workspaceId);
+      if (panes) params.livePaneIds = panes.map((pane) => pane.id as string);
+    }
     const taskId = pagedTaskId(params);
     const summaries = paged && !taskId;
     const shape = (result: unknown): unknown => (paged
@@ -476,6 +496,7 @@ export function registerA2aRpc(
       ...(typeof params.role === 'string' ? { role: params.role } : {}),
       ...(updatedSince ? { updatedSince } : {}),
       ...(paged ? { view: 'page', ...(taskId ? { taskId } : {}) } : {}),
+      ...(params.livePaneIds ? { livePaneIds: params.livePaneIds } : {}),
     }, paged ? { timeoutMs: PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS } : {});
     if (gate.kind !== 'ok') return shape(rendererRes);
     const rawDaemonTasks = Array.isArray(gate.result.tasks) ? (gate.result.tasks as Array<Record<string, unknown>>) : [];
@@ -483,7 +504,7 @@ export function registerA2aRpc(
     // (they carry metadata; a summary row does not): summarize them here so
     // one list never mixes the two shapes.
     const daemonTasks = summaries
-      ? rawDaemonTasks.map((t) => (isRecord(t.metadata) ? summarizeTask(t) : t))
+      ? rawDaemonTasks.map((t) => (isRecord(t.metadata) ? flagOrphanedTask(summarizeTask(t), t, params) : t))
       : rawDaemonTasks;
     const rendererOk = isRecord(rendererRes) && Array.isArray(rendererRes.tasks);
     if (!rendererOk) {
@@ -540,8 +561,10 @@ export function registerA2aRpc(
         // and the daemon runs the pane gate itself. Without this, every update
         // from an MCP agent on a pane-pinned task was deferred to the renderer
         // cache only, and the durable copy stayed `submitted`.
+        // #1598: the same read's pane list lets the daemon tell a gone
+        // receiver pane (adoptable by this workspace) from a live one.
         ...(callerPane.kind === 'resolved'
-          ? { senderPtyId: params.senderPtyId, callerPaneId: callerPane.paneId }
+          ? { senderPtyId: params.senderPtyId, callerPaneId: callerPane.paneId, livePaneIds: callerPane.livePaneIds }
           : callerPane.kind === 'unknown' && typeof params.senderPtyId === 'string'
             ? { senderPtyId: params.senderPtyId }
             : {}),
@@ -552,15 +575,17 @@ export function registerA2aRpc(
         ...(typeof params.idempotencyKey === 'string' ? { idempotencyKey: params.idempotencyKey } : {}),
       });
       if (gate.kind === 'reject') return { error: gate.error };
-      if (gate.kind === 'ok') {
-        return sendToRenderer(getWindow, 'a2a.task.update', {
-          ...params,
-          daemonCommitted: true,
-          committedTask: gate.result.task,
-        });
+      // ok → the renderer applies the daemon commit verbatim; unavailable →
+      // the renderer's own checked writer (fallback).
+      const res = await sendToRenderer(getWindow, 'a2a.task.update', gate.kind === 'ok'
+        ? { ...params, daemonCommitted: true, committedTask: gate.result.task }
+        : params);
+      // A receiver's cancel also stops a background worker running the task.
+      const committed = gate.kind === 'ok' || !(isRecord(res) && typeof res.error === 'string');
+      if (params.status === 'canceled' && typeof params.taskId === 'string' && committed) {
+        claudeWorker.cancel(params.taskId);
       }
-      // unavailable → 폴백(아래 공통 경로)
-      return sendToRenderer(getWindow, 'a2a.task.update', params);
+      return res;
     }
     // Message-only update: may reopen an ended task (daemon first).
     if (typeof params.message === 'string') {
