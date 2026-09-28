@@ -1298,7 +1298,7 @@ v1 paths.
 
 | Key | Meaning |
 | --- | --- |
-| `decisionForms` | The form kinds this daemon produces: any of `permission`, `plan`, `questions`. **Empty today** — offer no v2 answer while it is |
+| `decisionForms` | The form kinds this daemon produces now: any of `permission`, `plan`, `questions`. `["plan"]` while the daemon's `phoneDecisions.stepwise` switch is on (see Plan dialog), else empty. Offer a v2 answer only for a kind listed here |
 | `chatCancel` | Whether this caller may use `POST /api/sessions/<id>/chat/cancel` (its input grant) |
 | `chatQueue` | Whether this caller's `chat-queue` sends are held by the daemon queue (its input grant, and a queue that loaded) |
 
@@ -1392,7 +1392,7 @@ and more than 2,000 UTF-16 units. The daemon never stores the text itself.
 | 410 | `{error: 'expired' \| 'prompt-gone', effect: 'none'}` | The request is gone (an agent that no longer holds it included) |
 | 425 | `{error: 'answer-too-soon', effect: 'none'}` | Within 1.5 s of the request appearing |
 | 429 | `{error: 'answer-receipts-full', effect: 'none'}` | 512 live receipts for this caller |
-| 501 | `{error: 'answer-in-terminal', reason}` | `reason` as for the v1 route. **Every answer is `unsupported-shape` today** (no form producer yet) |
+| 501 | `{error: 'answer-in-terminal', reason}` | `reason` as for the v1 route. `unsupported-shape` for every record whose form kind is not in `decisionForms` |
 | 500 | `{error: 'internal-error' \| 'approvals unavailable'}` | Retry |
 | 503 | `{error: 'authorization-unconfirmed' \| 'agent-unavailable' \| 'approvals unavailable' \| 'answer-receipts-unavailable'}` | Retry |
 
@@ -1404,6 +1404,50 @@ request). Not kept, so a retry with the same id is checked afresh: 401, 403,
 Everything else is final, including 409 `answer-uncertain`. A 400 is never
 journaled (the body is refused before the receipt), and neither is a 404 for a
 request that no longer exists when there is no receipt for it.
+
+#### Plan dialog (`form.kind: 'plan'`)
+
+Claude Code's ExitPlanMode dialog ("Would you like to proceed?") is a
+`terminal_prompt` record with `toolName: 'ExitPlanMode'` and a `summary` taken
+from the plan's first line. It never carries `choices`: a client without
+`decision-v2` shows it as an informational card, and `/decline` (one Esc)
+rejects the plan exactly as Esc at the terminal does — Claude ends the turn and
+stays in plan mode.
+
+For a `decision-v2` caller the pending record also carries `question` (the
+dialog's own sentence), `hasDetail: true` when the transcript grant is on
+(`GET /api/approvals/<id>/detail` returns the whole plan as `command`), and:
+
+```json
+{ "form": { "v": 1, "kind": "plan", "actions": [
+    { "id": "approve-manual", "label": "Yes, manually approve edits" },
+    { "id": "feedback", "label": "Tell Claude what to change", "needsText": true } ] },
+  "formFingerprint": "<32 hex>" }
+```
+
+Labels are the dialog's own, read off the screen. The rows that switch the
+session's permission mode ("Yes, and use auto mode") are never actions, and a
+dialog that offers bypass permissions (Claude started with
+`--allow-dangerously-skip-permissions`) gets no form at all.
+
+- `{action: 'approve-manual'}` — one key, the row's own number. 200
+  `{state: 'pending', effect: 'complete'}`; the record resolves when the dialog
+  closes, like a v1 answer. No `text`.
+- `{action: 'feedback', text?}` — rejects the plan with the text, and Claude
+  plans again (a new record). The daemon types the row's number, the text as
+  one bracketed paste, checks the text is echoed in the field, then Enter.
+  Without `text` it rejects the plan with no feedback. 200
+  `{state: 'resolved', effect: 'complete'}`.
+
+Once a feedback answer has typed its first key, the record carries `step` and
+no longer carries `form`. A key typed at the terminal meanwhile (or a screen
+that does not show what the last key should have drawn within 1.5 s) stops it:
+409 `{error: 'prompt-changed', effect: 'partial', step: {index, total,
+status: 'partial'}}`. Nothing is typed to undo it; the record stays pending,
+answers `already-answered` (to `/decline` too) and settles when the dialog is
+answered at the terminal. A key typed at the terminal before the answer (or a
+changed dialog) is 409 `prompt-changed` with `effect: 'none'`, and the record
+is replaced by a fresh one — re-read the list.
 
 #### `GET /api/approvals/<id>/answer/<clientAnswerId>`
 

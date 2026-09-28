@@ -50,6 +50,7 @@ There is no "No, keep planning" row in this build.
 | text / bracketed paste, then `Enter` | Rejects the plan with that feedback; Claude re-plans and asks again |
 | `3`, `Enter` with no text | Rejects the plan, ends the turn, stays in plan mode (text is optional) |
 | `shift+tab` on row 3 | Approves with the typed feedback (hint shown, not exercised) |
+| `Esc` | Rejects the plan ("User rejected Claude's plan"), ends the turn, stays in plan mode (measured through the phone `/decline`, 2026-09-28) |
 
 ## Claude Code — permission dialogs (Bash, Edit, Write)
 
