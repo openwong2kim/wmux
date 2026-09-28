@@ -5,7 +5,7 @@
 // token, or with a pipe that never answers. Spawned exactly the way Claude
 // Code runs it, with a fully scrubbed env so nothing can reach a real wmux.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
@@ -23,14 +23,25 @@ let tmp: string;
 
 beforeAll(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'wsp-'));
-  home = path.join(root, 'h');
   tmp = path.join(root, 't');
-  fs.mkdirSync(home);
   fs.mkdirSync(tmp);
 });
 
+// Each test gets its own home. A detached `--push` child outlives the test that
+// spawned it and can still write its state record (tmp file, then rename) after
+// the next test has started; sharing one state dir made that test's cleanup
+// fail with ENOTEMPTY and could leak the stale record into its assertions. The
+// child's home is fixed by its env at spawn, so a late write lands in the old
+// test's directory.
+beforeEach(() => {
+  home = fs.mkdtempSync(path.join(root, 'h-'));
+});
+
 afterAll(() => {
-  fs.rmSync(root, { recursive: true, force: true });
+  // Best effort: the last test's push child may still be writing.
+  try {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  } catch { /* temp dir, left for the OS */ }
 });
 
 function input(fivePct: number): Record<string, unknown> {
@@ -100,11 +111,7 @@ function removeToken(): void {
 }
 
 function clearState(): void {
-  // A detached `--push` child from the previous test can still be writing its
-  // state here (tmp file, then rename). On Windows a file created after rmSync
-  // listed the directory makes the final rmdir fail with ENOTEMPTY (seen on
-  // windows-latest CI and 2 of 8 local runs). rmSync retries on exactly that.
-  fs.rmSync(stateDir(), { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  fs.rmSync(stateDir(), { recursive: true, force: true });
 }
 
 function readStates(): Array<{ sig: string; ok: boolean; at: number }> {
@@ -127,6 +134,9 @@ async function fakeMain(pipe: string, result: unknown): Promise<{ received: Arra
   const received: Array<Record<string, unknown>> = [];
   const server = net.createServer((sock) => {
     let buf = '';
+    // A push child that hit its own time cap has already hung up; the reply's
+    // EPIPE is expected then and must not surface as an unhandled error.
+    sock.on('error', () => { /* expected, see above */ });
     sock.on('data', (c) => {
       buf += c.toString('utf8');
       const nl = buf.indexOf('\n');
