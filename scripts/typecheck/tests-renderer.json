@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "include": [
+    "../../src/renderer/**/__tests__/**/*",
+    "../../src/renderer/**/*.test.*",
+    "../../src/**/*.d.ts",
+    "../../forge.env.d.ts",
+    "../../src/renderer/components/Browser/BrowserPanel.tsx"
+  ]
+}

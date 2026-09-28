@@ -4,6 +4,7 @@ import { useStore } from '../stores';
 import { resolveStartupCwd, shellDisplayName, withDefaultShell, withRoleBinding, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
+import { paneForegroundProgram, surfaceForegroundProgram } from '../utils/surfaceProgram';
 import { originFromCaller } from '../utils/fanoutProvenance';
 import { sanitizeFanoutOrigin } from '../../shared/fanoutOrigin';
 import { validateMessage } from '../../shared/types';
@@ -42,6 +43,7 @@ import {
 } from '../utils/browserTabs';
 import { terminalRegistry, hydrateTerminalForRead } from './useTerminal';
 import { readPtyBufferLines, readPtyBufferTail, DEFAULT_READ_TAIL_LINES } from '../utils/terminalTail';
+import { terminalReadCoverage } from '../../shared/terminalReadCoverage';
 import {
   searchInBuffer,
   normalizeSearchTailLines,
@@ -113,7 +115,7 @@ function describeFanOutRoles(lines: string[]): string {
 }
 
 interface DaemonTextRow { text: string; wrapped: boolean }
-interface ParkedPaneRead { rows: DaemonTextRow[]; truncated: boolean }
+interface ParkedPaneRead { rows: DaemonTextRow[]; bufferType?: 'normal' | 'alternate'; truncated: boolean }
 
 /** Fetch a parked pane's grid from the daemon as plain-text rows, or null.
  *  `truncated` is true when the daemon dropped oldest rows to fit the RPC frame
@@ -123,7 +125,7 @@ async function fetchParkedPaneRows(ptyId: string, scrollback?: number): Promise<
   if (!api || typeof api.readText !== 'function') return null; // stale preload
   try {
     const res = await api.readText(ptyId, scrollback !== undefined ? { scrollback } : undefined);
-    return res?.success ? { rows: res.rows, truncated: res.truncated === true } : null;
+    return res?.success ? { rows: res.rows, bufferType: res.bufferType, truncated: res.truncated === true } : null;
   } catch {
     return null;
   }
@@ -1262,6 +1264,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
           ptyId: s.ptyId,
           title: s.title,
           shell: s.shell,
+          foregroundProgram: surfaceForegroundProgram(s, store.surfaceAgent, store),
           cwd: s.cwd || liveCwd,
           gitBranch: liveGitBranch,
           surfaceType: s.surfaceType || 'terminal',
@@ -1271,7 +1274,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
           // activeSurfaceId as `isActive: true` would tell a client that a
           // surface nobody can see is the focused one.
           isActive: !stashedIds.has(leaf.id) && s.id === leaf.activeSurfaceId,
-          agentName: agent?.name ?? null,
+          agentName: surfaceForegroundProgram(s, store.surfaceAgent, store),
           agentStatus: agent?.status ?? null,
           // Always a boolean, never omitted: "key absent" and "false" must not
           // be the same wire shape, or a client has to guess whether it is
@@ -1540,6 +1543,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       return {
         id: l.id,
         surfaceCount: l.surfaces.length,
+        foregroundProgram: paneForegroundProgram(l, store.surfaceAgent, store),
         active: !isStashed && l.id === ws.activePaneId,
         // Explicit boolean on every row — see surface.list.
         stashed: isStashed,
@@ -1606,7 +1610,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
           return [{
             ptyId: s.ptyId,
             surfaceId: s.id,
-            agentName: a?.name ?? null,
+            agentName: surfaceForegroundProgram(s, store.surfaceAgent, store),
             agentStatus: a?.status ?? null,
             ...(q ? { pendingQuestion: q } : {}),
           }];
@@ -2181,11 +2185,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         // oldest rows to fit the RPC frame, surface truncated so the caller
         // doesn't read partial history as complete (callRpc serializes the whole
         // result object, so the field reaches the agent).
-        return { ptyId, text: texts.join('\n'), ...(read.truncated && { truncated: true }) };
+        return { ptyId, text: texts.join('\n'), ...terminalReadCoverage(read.bufferType), ...(read.truncated && { truncated: true }) };
       }
       // Bounded tail read: only the last capP rows were requested, so older
       // history missing is by design, not a truncation to report.
-      return { ptyId, text: texts.slice(-capP).join('\n') };
+      return { ptyId, text: texts.slice(-capP).join('\n'), ...terminalReadCoverage(read.bufferType) };
     }
 
     // Phase 3 hydrate-before-read — see pane.search above. Agents reading a
@@ -2204,11 +2208,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     //   - neither              → the last DEFAULT rows, read in O(DEFAULT).
     // The bounded reader never walks past its window, so a 10k-row backlog costs
     // the same as a fresh pane.
+    const coverage = terminalReadCoverage(terminal.buffer.active.type);
     const fullScrollback = raw.full_scrollback === true;
     if (fullScrollback) {
       // Explicit opt-in to the exact, unbounded read (walk 0..baseY+cursorY).
       const lines = readPtyBufferLines(ptyId);
-      return { ptyId, text: lines.join('\n') };
+      return { ptyId, text: lines.join('\n'), ...coverage };
     }
     const rawTail = raw.tail_lines;
     const cap =
@@ -2216,7 +2221,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         ? Math.floor(rawTail)
         : DEFAULT_READ_TAIL_LINES;
     const lines = readPtyBufferTail(ptyId, cap);
-    return { ptyId, text: lines.join('\n') };
+    return { ptyId, text: lines.join('\n'), ...coverage };
   }
 
   if (method === 'input.getActivePtyId') {

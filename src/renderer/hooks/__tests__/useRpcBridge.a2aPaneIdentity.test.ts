@@ -22,6 +22,7 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     expect(block).toMatch(/store\.surfaceAgent\[s\.ptyId\]/);
     expect(block).toMatch(/agentName:/);
     expect(block).toMatch(/agentStatus:/);
+    expect(block).toContain('foregroundProgram: surfaceForegroundProgram(s, store.surfaceAgent, store)');
   });
 
   it('pane.list exposes per-leaf agents derived from surfaceAgent', () => {
@@ -30,6 +31,7 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     const mapBody = region("method === 'pane\\.list'", 'pane\\.focus');
     expect(mapBody).toMatch(/agents:\s*l\.surfaces\.flatMap/);
     expect(mapBody).toMatch(/store\.surfaceAgent\[s\.ptyId\]/);
+    expect(mapBody).toContain('foregroundProgram: paneForegroundProgram(l, store.surfaceAgent, store)');
     void block;
   });
 
@@ -59,7 +61,7 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     // and it reaches the wire (omitted when absent, so old readers are unaffected)
     expect(mapBody).toMatch(/\.\.\.\(q \? \{ pendingQuestion: q \} : \{\}\)/);
     // the agent fields stay nullable — a question-only pane still lists
-    expect(mapBody).toMatch(/agentName: a\?\.name \?\? null/);
+    expect(mapBody).toContain('agentName: surfaceForegroundProgram(s, store.surfaceAgent, store)');
     expect(mapBody).toMatch(/agentStatus: a\?\.status \?\? null/);
   });
 

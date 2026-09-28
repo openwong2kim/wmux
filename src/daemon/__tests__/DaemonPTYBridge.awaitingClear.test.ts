@@ -94,6 +94,28 @@ describe('DaemonPTYBridge — shared answered path', () => {
     expect(h.answered).toEqual([]);
   });
 
+  it('#1463 — the agent\'s answer releases only the question it answers', () => {
+    // Blocked on an AskUserQuestion asked at t=100: its answer (t=150) releases it.
+    const asked = fresh();
+    asked.bridge.noteAgentStatus('awaiting_input', true, 100);
+    expect(asked.bridge.clearAnsweredQuestion(150)).toBe(true);
+    expect(asked.bridge.isAwaitingHuman()).toBe(false);
+    expect(asked.answered).toEqual([{ sessionId: 'sess-1', reason: 'input' }]);
+
+    // A late answer to an EARLIER question leaves the newer one standing.
+    const newer = fresh();
+    newer.bridge.noteAgentStatus('awaiting_input', true, 200);
+    expect(newer.bridge.clearAnsweredQuestion(150)).toBe(false);
+    expect(newer.bridge.isAwaitingHuman()).toBe(true);
+
+    // A permission dialog (no question mark) is never released by it.
+    const permission = fresh();
+    permission.bridge.noteAgentStatus('awaiting_input', true);
+    expect(permission.bridge.clearAnsweredQuestion(10_000)).toBe(false);
+    expect(permission.bridge.isAwaitingHuman()).toBe(true);
+    expect([...newer.answered, ...permission.answered]).toEqual([]);
+  });
+
   it.each([
     ['before', `${MOUSE}${MOUSE}1`],
     ['after', `1${MOUSE}`],

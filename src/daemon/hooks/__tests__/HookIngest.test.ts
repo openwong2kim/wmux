@@ -148,6 +148,27 @@ describe('HookIngest', () => {
       expect(data.signal.kind).toBe('agent.stop');
     });
 
+    it('#1463 — a SubagentStop after the turn ended does not reopen it', () => {
+      // Live dogfood (Claude Code 2.1.281): every Stop was followed ~6 s later
+      // by a background SubagentStop, whose `running` repainted the finished
+      // pane Running for two minutes.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.subagent_stop' }));
+      // Inside the turn it is still the turn's work.
+      expect(fixture.emitted.at(-1)?.data).toMatchObject({ status: 'running', hookKind: 'agent.subagent_stop' });
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.stop' }));
+      vi.advanceTimersByTime(DEFAULT_ALARM_WINDOW_MS);
+      expect(fixture.emitted.at(-1)?.data).toMatchObject({ status: 'complete', hookKind: 'agent.stop' });
+      const count = fixture.emitted.length;
+      vi.advanceTimersByTime(6_000);
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.subagent_stop' }));
+      expect(fixture.emitted).toHaveLength(count);
+      // The next turn start reopens it, and its subagents count again.
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.user_prompt_submit' }));
+      ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.subagent_stop' }));
+      expect(fixture.emitted.at(-1)?.data).toMatchObject({ status: 'running', hookKind: 'agent.subagent_stop' });
+    });
+
     it('maps subagent_stop and awaiting_input to their own shapes', () => {
       ingest.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.subagent_stop' }));
       // A subagent stop is never a lead-turn end: status-only, immediate, and
@@ -339,6 +360,29 @@ describe('HookIngest', () => {
         { sessionId: 'pty-a', reason: 'answered-locally', kind: 'awaiting_input' },
       ]);
       // Not a turn boundary or even a metadata ping: nothing fans out.
+      expect(fixture.emitted).toHaveLength(0);
+    });
+
+    it('#1463 — hands the answer to the daemon so the pane leaves Needs you now', () => {
+      // The key check cannot see every answer (a mouse click on an option), so
+      // the agent's own "answered" signal is the release path of last resort.
+      // A permission gate answer is not a question answer and stays out.
+      const answered: Array<[string, number]> = [];
+      const withHook = new HookIngest({
+        ...fixture.deps,
+        onInputAnswered: (id: string, at: number) => { answered.push([id, at]); },
+      });
+      withHook.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.permission_answered' }));
+      expect(answered).toEqual([]);
+      // Routed only by cwd/workspace: a guess, which could be a sibling pane's
+      // agent answering its own question — never released on that.
+      withHook.handle(makeSignal({ kind: 'agent.input_answered', workspaceId: 'ws-1' }));
+      // It DID resolve to pty-a (the card sweep ran) — only the release is withheld.
+      expect(fixture.approvalsCalls.at(-1)).toEqual({ sessionId: 'pty-a', reason: 'answered-locally', kind: 'awaiting_input' });
+      expect(answered).toEqual([]);
+      withHook.handle(makeSignal({ ptyId: 'pty-a', kind: 'agent.input_answered', ts: 2_000 }));
+      expect(answered).toEqual([['pty-a', 2_000]]);
+      // The status still travels on the daemon's `answered` broadcast, never here.
       expect(fixture.emitted).toHaveLength(0);
     });
 

@@ -45,7 +45,7 @@ jobs:
           git diff --exit-code package-lock.json
 
       - name: Type check
-        run: node_modules/.bin/tsc --noEmit
+        run: npm run typecheck
 
       - name: Build and probe MCP protocol
         run: npm run build:mcp && npm run probe:mcp
@@ -53,7 +53,7 @@ jobs:
       # The push relay is a separate Cloudflare Worker deployment with its own
       # tsconfig (WebWorker libs, no @types/node — node-only code must not
       # typecheck here and then fail at the edge), so the root project's
-      # `tsc --noEmit` above never sees it.
+      # `npm run typecheck` above never sees it.
       - name: Type check push relay
         run: node_modules/.bin/tsc --noEmit -p relay/tsconfig.json
 

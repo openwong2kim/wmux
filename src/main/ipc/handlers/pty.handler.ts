@@ -1359,11 +1359,12 @@ export function registerPTYHandlers(
       const res = await daemonClient.rpc('daemon.readSessionText', { id, scrollback }, { timeoutMs: DAEMON_RESYNC_RPC_TIMEOUT_MS }) as {
         mode: 'rows' | 'unavailable';
         rows?: Array<{ text: string; wrapped: boolean }>;
+        bufferType?: 'normal' | 'alternate';
         truncated?: boolean;
         reason?: string;
       };
       if (res.mode === 'rows') {
-        return { success: true, rows: res.rows ?? [], truncated: res.truncated === true };
+        return { success: true, rows: res.rows ?? [], bufferType: res.bufferType, truncated: res.truncated === true };
       }
       return { success: false, code: 'unavailable', reason: res.reason };
     } catch (err) {

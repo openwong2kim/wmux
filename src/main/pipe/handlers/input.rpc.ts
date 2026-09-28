@@ -67,8 +67,8 @@ const delay = (ms: number): Promise<void> =>
 // cursor, so bytes flow whether or not anything was committed.
 //
 // Two signals are accepted, both of which require the pane to have MOVED:
-//   (a) turn start — the pane's agentStatus goes to `running`, from a status
-//       that was not a turn, reported by a mirror snapshot taken AFTER our \r.
+//   (a) turn start — a prompt-submit hook received AFTER our \r, with a
+//       running status. A freshly built mirror snapshot alone is not evidence.
 //   (b) composer cleared — the text we just typed has LEFT the composer area
 //       at the bottom of the screen. Positional (see `rowFromBottom`), because
 //       a TUI like Claude Code re-renders the submitted prompt into its
@@ -78,8 +78,8 @@ const delay = (ms: number): Promise<void> =>
 //   - `running → awaiting_input` is NOT a turn start. It is what a PREVIOUS
 //     turn ending inside our window looks like.
 //   - agentStatus is byte-promoted (#935), so the pane's own echo of our text
-//     can flip it to running before anything was submitted. That is why the
-//     snapshot has to be newer than the \r, not merely different.
+//     can flip it to running before anything was submitted. A snapshot built
+//     after the \r can still carry that echo promotion; require the hook too.
 //   - "the needle moved up one row" is NOT acceptance. That is precisely the
 //     soft-newline failure this whole change exists to catch (the composer
 //     grew a line and pushed our text up), and background output does it too.
@@ -117,15 +117,6 @@ const SUBMIT_RECEIPT_TAIL_LINES = 10;
  * true bottom; anything further up is transcript, not composer.
  */
 export const COMPOSER_AREA_ROWS = 6;
-
-/** Statuses that are NOT a turn — a move from one of these into `running` is a
- *  turn starting. `running → awaiting_input` is the previous turn ending. */
-const NON_TURN_STATUSES: ReadonlySet<string> = new Set([
-  'idle',
-  'waiting',
-  'complete',
-  'error',
-]);
 
 /** Length of the trailing slice of the submitted text used to locate the
  *  composer line. Long enough to be unique in a viewport, short enough that a
@@ -185,17 +176,11 @@ export function composerCleared(before: string, after: string, needle: string): 
   return !needleInComposer(after, needle);
 }
 
-/**
- * True when the pane's agent status moved INTO a turn.
- *
- * Narrow on purpose. `running → awaiting_input` is a PREVIOUS turn ending
- * inside our window, not ours beginning, so only `running` is an arrival, and
- * only from a status that was not already a turn.
- */
-export function isTurnStart(before: string | null, after: string | null): boolean {
-  if (after !== 'running') return false;
-  if (before === null) return true;
-  return NON_TURN_STATUSES.has(before);
+/** A running snapshot needs a fresh prompt-submit hook to prove a turn started. */
+export function isTurnStart(reading: AgentStatusReading, enterAt: number): boolean {
+  return reading.status === 'running'
+    && reading.turnStartedAt !== undefined
+    && reading.turnStartedAt >= enterAt;
 }
 
 /** Last `count` non-empty-trailing lines of a screen capture. */
@@ -205,12 +190,13 @@ export function screenTail(screen: string, count = SUBMIT_RECEIPT_TAIL_LINES): s
   return lines.slice(-count).join('\n');
 }
 
-/** One agent-status observation: the value, and WHEN the snapshot carrying it
- *  was taken. The timestamp is load-bearing — see `awaitSubmitReceipt`. */
+/** Agent status plus submit evidence received on main's clock. */
 export interface AgentStatusReading {
   status: string;
-  /** Epoch ms the snapshot was built (renderer push time). */
+  /** Renderer snapshot time, informational only; never compared with main time. */
   ts: number;
+  /** Epoch ms main received a prompt-submit hook; never inferred from bytes. */
+  turnStartedAt?: number;
 }
 
 /** What `awaitSubmitReceipt` needs to observe a pane. Injected so the wait is
@@ -225,9 +211,10 @@ export interface SubmitReceipt {
   agentStatusAfter: string | null;
   /** The Enter was sent a second time because the first produced no receipt. */
   retried: boolean;
-  /** Why we accepted; 'none' when we watched and nothing moved, 'unobservable'
+  /** 'running_unconfirmed' means running was observed without submit evidence.
+   *  Otherwise why we accepted; 'none' when nothing moved, 'unobservable'
    *  when neither signal was available to watch in the first place. */
-  signal: 'turn_start' | 'composer_cleared' | 'none' | 'unobservable';
+  signal: 'turn_start' | 'composer_cleared' | 'running_unconfirmed' | 'none' | 'unobservable';
   /** Present only when `accepted` is false. */
   screenTail?: string;
 }
@@ -243,26 +230,24 @@ export interface SubmitReceipt {
  *
  * Two things that look like over-caution and are not:
  *
- *   - A status reading is only evidence when its snapshot was taken AFTER the
- *     \r. agentStatus is byte-promoted (#935), so the pane echoing our own
- *     text flips it to `running` — a snapshot from before the Enter would let
- *     our own keystrokes sign for their own delivery.
+ *   - A running status needs a prompt-submit hook received AFTER the \r.
+ *     Echo/redraw byte promotion can reach the mirror after Enter, so neither
+ *     a status transition nor the snapshot's timestamp proves submission.
  *   - We re-send the Enter ONLY when the needle was in the composer to begin
- *     with. Otherwise the pane might be showing a confirmation dialog, and a
- *     blind second Enter presses its default.
+ *     with, and no running status has been observed. Running alone cannot
+ *     prove submission, but another Enter could double-submit a real turn.
  */
 export async function awaitSubmitReceipt(
   probe: SubmitProbe,
   needle: string,
-  before: { screen: string; agentStatus: string | null },
+  before: { screen: string; agentStatus: string | null; turnStartedAt?: number },
   resendEnter: () => void,
   opts: {
     windowMs?: number;
     pollMs?: number;
     maxTotalMs?: number;
     sleep?: (ms: number) => Promise<void>;
-    /** Epoch ms the \r was written. A status snapshot older than this is our
-     *  own echo, not a turn. */
+    /** Epoch ms main wrote the \r, compared only with main hook receive time. */
     enterAt?: number;
     now?: () => number;
   } = {},
@@ -286,6 +271,7 @@ export async function awaitSubmitReceipt(
   }
 
   let status = before.agentStatus;
+  let runningObserved = status === 'running';
   let screen = before.screen;
   let retried = false;
   const hardDeadline = enterAt + maxTotalMs;
@@ -294,9 +280,11 @@ export async function awaitSubmitReceipt(
    *  (expensive) screen read — a hook-fast turn start should not wait on IPC. */
   const pollStatus = async (): Promise<boolean> => {
     const reading = await probe.readAgentStatus();
-    if (!reading || reading.ts < enterAt) return false;
-    const started = isTurnStart(status, reading.status);
+    if (!reading) return false;
+    const started = isTurnStart(reading, enterAt)
+      && reading.turnStartedAt !== before.turnStartedAt;
     status = reading.status;
+    if (status === 'running') runningObserved = true;
     return started;
   };
 
@@ -321,7 +309,7 @@ export async function awaitSubmitReceipt(
         }
       }
     }
-    if (attempt === 0 && attempts === 2 && now() < hardDeadline) {
+    if (attempt === 0 && attempts === 2 && !runningObserved && now() < hardDeadline) {
       retried = true;
       try {
         resendEnter();
@@ -338,7 +326,7 @@ export async function awaitSubmitReceipt(
     accepted: false,
     agentStatusAfter: status,
     retried,
-    signal: composerUsable ? 'none' : 'unobservable',
+    signal: runningObserved ? 'running_unconfirmed' : composerUsable ? 'none' : 'unobservable',
     ...(screen ? { screenTail: screenTail(screen) } : {}),
   };
 }
@@ -442,6 +430,7 @@ function makeSubmitProbe(
   getWindow: GetWindow,
   ptyId: string,
   workspaceId: string | undefined,
+  readTurnStartedAt?: (ptyId: string) => number | undefined,
 ): SubmitProbe {
   return {
     readScreen: async (): Promise<string> => {
@@ -468,9 +457,11 @@ function makeSubmitProbe(
       const snapshot = getWorkspaceMirror().getFleetSnapshot(workspaceId);
       const pane = snapshot?.panes.find((p) => p.ptyId === ptyId);
       if (!snapshot || !pane?.agentStatus) return Promise.resolve(null);
-      // The snapshot's own build time rides along: a status from BEFORE our \r
-      // cannot testify about it (byte promotion means our echo moves it).
-      return Promise.resolve({ status: pane.agentStatus, ts: snapshot.ts });
+      return Promise.resolve({
+        status: pane.agentStatus,
+        ts: snapshot.ts,
+        turnStartedAt: readTurnStartedAt?.(ptyId),
+      });
     },
   };
 }
@@ -705,6 +696,8 @@ export function taskPaneTextRefusal(text: string, raw: boolean): string | null {
 }
 
 export interface InputRpcDeps {
+  /** Receipt evidence from prompt-submit hooks, independent of byte activity. */
+  readTurnStartedAt?: (ptyId: string) => number | undefined;
   /** Injected in tests; defaults to the main-hosted task ledger. */
   getLedger?: () => TaskLedger;
   /** Injected in tests; defaults to the pane's workspace autonomy entry. */
@@ -939,7 +932,7 @@ export function registerInputRpc(
           : (callerWs ??
             (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ??
             undefined);
-      const probe = makeSubmitProbe(getWindow, ptyId, receiptWs);
+      const probe = makeSubmitProbe(getWindow, ptyId, receiptWs, deps.readTurnStartedAt);
 
       if (bodyText) writeChunk(bodyText);
       await delay(SUBMIT_ENTER_DELAY_MS);
@@ -949,6 +942,7 @@ export function registerInputRpc(
       const before = {
         screen: await probe.readScreen(),
         agentStatus: beforeReading?.status ?? null,
+        turnStartedAt: beforeReading?.turnStartedAt,
       };
       writeChunk('\r');
       const enterAt = Date.now();

@@ -23,6 +23,23 @@ describe('HookSignalRouter', () => {
     router = new HookSignalRouter({ latencyMeter: meter });
   });
 
+  it('uses main receipt time for exact or uniquely resolved prompt hooks', () => {
+    const signal = makeSignal({ kind: 'agent.user_prompt_submit', ptyId: 'p1', ts: 1 });
+    router.notePromptSubmit('p2', signal, 1100);
+    expect(router.promptSubmitAtFor('p2')).toBeUndefined();
+    router.notePromptSubmit('p1', { ...signal, ptyId: undefined }, 1100);
+    expect(router.promptSubmitAtFor('p1')).toBeUndefined();
+    router.notePromptSubmit('p1', { ...signal, kind: 'agent.activity' }, 1100);
+    expect(router.promptSubmitAtFor('p1')).toBeUndefined();
+    router.notePromptSubmit('p1', signal, 1100);
+    expect(router.promptSubmitAtFor('p1')).toBe(1100);
+    expect(router.governsRunningState('p1', 1200)).toBe(false);
+    router.notePromptSubmit('p1', { ...signal, ptyId: undefined, ts: 90_000 }, 1200, true);
+    expect(router.promptSubmitAtFor('p1')).toBe(1200);
+    router.dropPty('p1');
+    expect(router.promptSubmitAtFor('p1')).toBeUndefined();
+  });
+
   describe('dedup matrix', () => {
     it('hook-then-detector (same kind, within window): detector deduped', () => {
       const ptyId = 'p1';
