@@ -57,8 +57,10 @@ describe('buildSpawnInjection — zsh', () => {
 // a process-scoped RemoteSigned; pwsh 7 (ships RemoteSigned) and any machine
 // with an explicit policy get nothing extra.
 describe('buildSpawnInjection — PowerShell execution policy (#1620)', () => {
-  const PS51 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-  const PS7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+  // Bare names, like classifyShell's own tests: classifyShell uses
+  // path.basename, which does not split a Windows path on POSIX CI runners.
+  const PS51 = 'powershell.exe';
+  const PS7 = 'pwsh.exe';
   afterEach(() => __setPolicyProbeForTests(null));
 
   function dotSource(args: string[] | undefined): string {

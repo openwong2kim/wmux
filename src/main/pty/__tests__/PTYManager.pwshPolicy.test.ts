@@ -50,7 +50,8 @@ describe('local-mode PowerShell hook — execution policy (#1620)', () => {
     expect(args).not.toContain('-ExecutionPolicy');
   });
 
-  it('create() hands the real shell path to the hook builder, not just the family', () => {
+  // Local mode spawns a real Windows shell path; only meaningful on Windows.
+  it.runIf(process.platform === 'win32')('create() hands the real shell path to the hook builder, not just the family', () => {
     const spy = vi.spyOn(manager, 'buildHookInjection').mockReturnValue({ args: [], env: {} });
     manager.create({ shell: PS51 });
     expect(spy).toHaveBeenCalledWith('powershell', expect.any(Object), PS51);
