@@ -113,18 +113,21 @@ export interface ResolvedTarget {
 
 /** Which usage entries a sample from `configDir` belongs to. Unset → the
  *  default profile. A dir that is neither the default nor a registered
- *  account resolves to nothing, and the sample is dropped. Registered
- *  accounts are stored canonical (realpath at registration), so only the
- *  caller's path and the default dir need resolving. */
+ *  account resolves to nothing, and the sample is dropped. */
 export async function resolveUsageTarget(
   configDir: string | null,
   deps: Pick<UsageRpcDeps, 'listClaudeAccounts' | 'defaultConfigDir'>,
 ): Promise<ResolvedTarget> {
   if (configDir === null) return { isDefault: true, accountIds: [] };
-  const [want, defaultId] = await Promise.all([dirIdentity(configDir), dirIdentity(deps.defaultConfigDir())]);
-  const accountIds = deps.listClaudeAccounts()
-    .filter((a) => foldCase(a.configDir) === want)
-    .map((a) => a.id);
+  // Both sides go through the same identity function, so a registered dir and
+  // the same dir as the script reports it compare equal on every platform.
+  const accounts = deps.listClaudeAccounts();
+  const [want, defaultId, ...accountIdentities] = await Promise.all([
+    dirIdentity(configDir),
+    dirIdentity(deps.defaultConfigDir()),
+    ...accounts.map((a) => dirIdentity(a.configDir)),
+  ]);
+  const accountIds = accounts.filter((_a, i) => accountIdentities[i] === want).map((a) => a.id);
   return { isDefault: want === defaultId, accountIds };
 }
 

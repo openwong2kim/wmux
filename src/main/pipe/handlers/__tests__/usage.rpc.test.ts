@@ -11,6 +11,9 @@ import {
 } from '../usage.rpc';
 
 const RESET = 1_900_000_000;
+// Platform-neutral fixtures: absolute on POSIX and Windows alike.
+const ACCT_A = path.resolve('/acct/a');
+const NOWHERE = path.resolve('/nowhere/.claude');
 
 function sample(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -73,15 +76,15 @@ describe('resolveUsageTarget', () => {
   }
 
   it('unset config dir → default profile', async () => {
-    const r = await resolveUsageTarget(null, { listClaudeAccounts: () => [], defaultConfigDir: () => '/nowhere/.claude' });
+    const r = await resolveUsageTarget(null, { listClaudeAccounts: () => [], defaultConfigDir: () => NOWHERE });
     expect(r).toEqual({ isDefault: true, accountIds: [] });
   });
 
   it('unmatched config dir → nothing', async () => {
     const acct = mkdir();
-    const r = await resolveUsageTarget('/some/other/dir', {
+    const r = await resolveUsageTarget(path.resolve('/some/other/dir'), {
       listClaudeAccounts: () => [{ id: 'A', configDir: acct }],
-      defaultConfigDir: () => '/nowhere/.claude',
+      defaultConfigDir: () => NOWHERE,
     });
     expect(r).toEqual({ isDefault: false, accountIds: [] });
   });
@@ -91,10 +94,10 @@ describe('resolveUsageTarget', () => {
     const real = path.join(root, 'real');
     fs.mkdirSync(real);
     const link = path.join(root, 'link');
-    fs.symlinkSync(real, link, 'dir');
+    fs.symlinkSync(real, link, 'junction'); // 'junction' needs no privilege on Windows; ignored elsewhere
     const r = await resolveUsageTarget(`${link}${path.sep}`, {
       listClaudeAccounts: () => [{ id: 'A', configDir: real }, { id: 'B', configDir: root }],
-      defaultConfigDir: () => '/nowhere/.claude',
+      defaultConfigDir: () => NOWHERE,
     });
     expect(r).toEqual({ isDefault: false, accountIds: ['A'] });
   });
@@ -112,7 +115,7 @@ describe('usage.rateLimits handler', () => {
     const router = { register: (_m: string, h: typeof handler) => { handler = h; } } as unknown as RpcRouter;
     const deps: UsageRpcDeps = {
       listClaudeAccounts: () => accounts,
-      defaultConfigDir: () => '/nowhere/.claude',
+      defaultConfigDir: () => NOWHERE,
       ingestDefault: vi.fn(() => applied),
       ingestAccount: vi.fn(() => applied),
     };
@@ -128,8 +131,8 @@ describe('usage.rateLimits handler', () => {
   });
 
   it('drops an unknown config dir and an invalid payload without ingesting', async () => {
-    const { call, deps } = setup([{ id: 'A', configDir: '/acct/a' }]);
-    await expect(call(sample({ configDir: '/acct/zzz' }))).resolves.toEqual({ ok: false, reason: 'unknown-account' });
+    const { call, deps } = setup([{ id: 'A', configDir: ACCT_A }]);
+    await expect(call(sample({ configDir: path.resolve('/acct/zzz') }))).resolves.toEqual({ ok: false, reason: 'unknown-account' });
     await expect(call(sample({ rateLimits: 'nope' }))).resolves.toEqual({ ok: false, reason: 'invalid' });
     expect(deps.ingestDefault).not.toHaveBeenCalled();
     expect(deps.ingestAccount).not.toHaveBeenCalled();
@@ -140,9 +143,16 @@ describe('usage.rateLimits handler', () => {
     await expect(call(sample())).resolves.toEqual({ ok: false, reason: 'not-applied' });
   });
 
+  it('matches a registered dir however the caller spells it (trailing separator, case on Windows)', async () => {
+    const { call, deps } = setup([{ id: 'A', configDir: ACCT_A }]);
+    const spelled = process.platform === 'win32' ? `${ACCT_A.toUpperCase()}\\` : `${ACCT_A}/`;
+    await call(sample({ configDir: spelled }));
+    expect(deps.ingestAccount).toHaveBeenCalledWith('A', expect.anything());
+  });
+
   it('routes a registered config dir to that account', async () => {
-    const { call, deps } = setup([{ id: 'A', configDir: '/acct/a' }]);
-    await call(sample({ configDir: '/acct/a' }));
+    const { call, deps } = setup([{ id: 'A', configDir: ACCT_A }]);
+    await call(sample({ configDir: ACCT_A }));
     expect(deps.ingestAccount).toHaveBeenCalledWith('A', expect.objectContaining({ session: { pct: 13, resetEpochSec: RESET } }));
   });
 });
