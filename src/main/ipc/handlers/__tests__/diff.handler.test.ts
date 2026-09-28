@@ -217,6 +217,9 @@ describe('diff:read — T3 task base from the task.json stamp', { timeout: GIT_P
     templateBase = makeTemplateDir();
     templateRepo = join(templateBase, 'repo');
     initTemplateRepo(templateRepo, IDENTITY_CONFIG + NO_AUTOCRLF_CONFIG, { 'a.txt': 'a1\n' });
+  });
+  // A separate hook so no single hook's 10 s budget has to cover every spawn.
+  beforeAll(() => {
     // "origin/main" moved on: an upstream commit the owner's main does not have.
     g(templateRepo, ['checkout', '-q', '-b', 'upstream']);
     writeFileSync(join(templateRepo, 'up.txt'), 'upstream\n');

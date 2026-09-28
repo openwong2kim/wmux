@@ -92,10 +92,11 @@ describe('detectConflicts — conflict detection (not exit code)', { timeout: GI
   let tpl: ReturnType<typeof makeTemplate>;
   let featOid: string;
   let baseOid: string;
+  // Separate hooks so no single hook's 10 s budget has to cover every spawn.
+  beforeAll(() => (tpl = makeTemplate()));
+  // Set up a main2 vs feat conflict.
+  beforeAll(() => (featOid = addFeat(tpl.repo, 'FEAT\n')));
   beforeAll(() => {
-    tpl = makeTemplate();
-    // Set up a main2 vs feat conflict.
-    featOid = addFeat(tpl.repo, 'FEAT\n');
     writeFileSync(join(tpl.repo, 'f.txt'), 'MAIN\n');
     g(tpl.repo, ['commit', '-q', '-a', '-m', 'main2']);
     baseOid = g(tpl.repo, ['rev-parse', 'HEAD']).trim();
@@ -288,8 +289,9 @@ describe('clean merge → Land round-trip', { timeout: GIT_PROCESS_TIMEOUT_MS },
   let tpl: ReturnType<typeof makeTemplate>;
   let featOid: string;
   let baseOid: string;
+  // Separate hooks so no single hook's 10 s budget has to cover every spawn.
+  beforeAll(() => (tpl = makeTemplate()));
   beforeAll(() => {
-    tpl = makeTemplate();
     featOid = addFeat(tpl.repo, 'a\nfeat\n'); // A change that does not conflict with main.
     baseOid = g(tpl.repo, ['rev-parse', 'HEAD']).trim();
   });

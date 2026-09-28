@@ -40,6 +40,9 @@ function buildTemplates(): void {
   writeFileSync(join(templateRepo, 'a.txt'), 'a\n');
   g(templateRepo, ['add', '-A']);
   g(templateRepo, ['commit', '-q', '-m', 'base']);
+}
+
+function buildTemplateRemote(): void {
   // Mimics an origin that has feat/remote at main's commit. Tests only fetch
   // from it, so one shared bare repo is safe.
   templateRemote = join(templateBase, 'remote.git');
@@ -62,7 +65,9 @@ type MutRes = { ok: boolean; worktreePath?: string; error?: string };
 
 describe('worktree.handler — list/add/remove 왕복', () => {
   let scn: ReturnType<typeof makeRepo>;
+  // Separate hooks so no single hook's 10 s budget has to cover every spawn.
   beforeAll(buildTemplates);
+  beforeAll(buildTemplateRemote);
   afterAll(() => rmSync(templateBase, { recursive: true, force: true }));
   beforeEach(() => {
     captured.clear();
