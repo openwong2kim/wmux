@@ -115,6 +115,7 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
     useStore.getState().hydrateAgentAlive({ [PTY_A]: true, [PTY_B]: false });
     await sendAtoB('review the login fix');
     expect(writesTo(PTY_B)).not.toContain('review the login fix');
+    expect(writesTo(PTY_B)).not.toContain('please review');
   });
 
   it("the receiver's reply reaches the sender labeled as a reply, not a new task", async () => {
