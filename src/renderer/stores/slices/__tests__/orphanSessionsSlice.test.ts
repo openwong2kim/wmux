@@ -74,6 +74,14 @@ describe('orphanSessionsSlice', () => {
     expect(ids).not.toContain('pty-dead'); // dead tombstones are not adoptable
   });
 
+  it('never lists a scheduled run\'s session (auto- prefix) — it has its own view', () => {
+    store.getState().setDaemonSessionInventory([
+      { id: 'auto-run-1', shell: '/bin/zsh', state: 'detached' },
+      { id: 'pty-other', shell: '/bin/zsh', state: 'detached' },
+    ]);
+    expect(store.getState().orphanSessions.map((o) => o.id)).toEqual(['pty-other']);
+  });
+
   it('prefers the daemon-derived agent name over the shell label', () => {
     store.getState().setDaemonSessionInventory([
       { id: 'pty-agent', shell: '/bin/zsh', state: 'detached', agentName: 'Claude Code' },

@@ -24,6 +24,7 @@ import { activateLocalWorkspace } from './workspaceSlice';
 import { publishPaneCreated, publishPaneFocused } from '../../events/publisher';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { t } from '../../i18n';
+import { AUTOMATION_PTY_PREFIX } from '../../../shared/automation';
 
 export interface OrphanSession {
   /** Daemon session id — the address for adopt (surface.ptyId) and dispose. */
@@ -124,6 +125,9 @@ function computeOrphans(state: StoreState, sessions: DaemonSessionInventoryEntry
     // (PTYs die with their panes) — a state-less listing is the local
     // branch and contributes nothing.
     .filter((s) => s.state === 'detached')
+    // Scheduled runs live detached by design and have their own view (and
+    // their own cancel); an orphan row's kill button must not reach them.
+    .filter((s) => !s.id.startsWith(AUTOMATION_PTY_PREFIX))
     .filter((s) => !ownedPtys.has(s.id))
     .filter((s) => !(s.surfaceId && ownedSurfaces.has(s.surfaceId)))
     .map((s) => ({

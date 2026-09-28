@@ -22,8 +22,9 @@ import { createWorkTaskSlice, type WorkTaskSlice } from './slices/workTaskSlice'
 import { createDeckSlice, type DeckSlice } from './slices/deckSlice';
 import { createRemoteWorkspacesSlice, type RemoteWorkspacesSlice } from './slices/remoteWorkspacesSlice';
 import { createOrphanSessionsSlice, type OrphanSessionsSlice } from './slices/orphanSessionsSlice';
+import { createSchedulesSlice, type SchedulesSlice } from './slices/schedulesSlice';
 
-export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & BrowserHelpSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & ChromePresetSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & DeckSlice & RemoteWorkspacesSlice & OrphanSessionsSlice;
+export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & BrowserHelpSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & ChromePresetSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & DeckSlice & RemoteWorkspacesSlice & OrphanSessionsSlice & SchedulesSlice;
 
 export const useStore = create<StoreState>()(
   immer((...args) => ({
@@ -49,5 +50,6 @@ export const useStore = create<StoreState>()(
     ...createDeckSlice(...args),
     ...createRemoteWorkspacesSlice(...args),
     ...createOrphanSessionsSlice(...args),
+    ...createSchedulesSlice(...args),
   }))
 );

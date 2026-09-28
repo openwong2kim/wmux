@@ -3,8 +3,10 @@ import { useShallow } from 'zustand/react/shallow';
 import WebToggle from '../StatusBar/WebToggle';
 import { useStore } from '../../stores';
 import { selectFleetSectionCounts } from '../../stores/selectors/fleet';
+import { selectScheduleNavSummary } from '../../stores/selectors/schedules';
+import { formatNextShort } from '../Schedules/format';
 import { useT } from '../../hooks/useT';
-import { Icon, IconUsers } from '../icons';
+import { Icon, IconClock, IconUsers } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 
 /** Global destinations stay separate from workspace rows and their PTY state. */
@@ -18,6 +20,19 @@ export default function SidebarNavigation({ compact = false }: { compact?: boole
   const runningText = fleetCounts.running > 0 ? t('sidebar.fleetRunning', { count: fleetCounts.running }) : '';
   // Built from the visible strings, so the spoken name contains what is shown.
   const fleetName = [t('fleet.title'), needsText, runningText].filter(Boolean).join(', ');
+  // Scheduled runs: shown once a daemon answers automation.list. Needs you =
+  // runs awaiting a response + schedules whose last run failed; otherwise the
+  // next run time, muted. Scheduled runs never appear in Fleet itself.
+  const schedulesAvailable = useStore((s) => s.schedulesAvailable);
+  const schedulesOpen = useStore((s) => s.schedulesViewOpen);
+  const schedules = useStore(useShallow(selectScheduleNavSummary));
+  const schedulesNeedsText = schedules.needs > 0 ? t('sidebar.fleetNeedsYou', { count: schedules.needs }) : '';
+  const schedulesNextText = schedules.needs === 0 && schedules.nextRunAt !== null ? formatNextShort(schedules.nextRunAt) : '';
+  const schedulesName = [
+    t('schedules.title'),
+    schedulesNeedsText,
+    schedulesNextText ? t('schedules.navNext', { time: schedulesNextText }) : '',
+  ].filter(Boolean).join(', ');
   const entries = [
     {
       id: 'search', label: t('sidebar.search'), name: t('sidebar.search'), active: paletteOpen,
@@ -29,6 +44,11 @@ export default function SidebarNavigation({ compact = false }: { compact?: boole
       icon: <IconUsers size={16} />,
       onClick: () => useStore.getState().toggleFleetView(),
     },
+    ...(schedulesAvailable ? [{
+      id: 'schedules', label: t('schedules.title'), name: schedulesName, active: schedulesOpen,
+      icon: <IconClock size={16} />,
+      onClick: () => useStore.getState().toggleSchedulesView(),
+    }] : []),
   ];
 
   return (
@@ -47,6 +67,7 @@ export default function SidebarNavigation({ compact = false }: { compact?: boole
             <span className="wmux-nav-icon" aria-hidden="true">{icon}</span>
             {!compact && <span className="wmux-nav-label min-w-0 flex-1 truncate text-left">{label}</span>}
             {id === 'fleet' && <FleetCounts compact={compact} needsYou={fleetCounts.needsYou} needsText={needsText} runningText={runningText} />}
+            {id === 'schedules' && <FleetCounts compact={compact} needsYou={schedules.needs} needsText={schedulesNeedsText} runningText={schedulesNextText} />}
           </button>{id === 'search' && <WebToggle variant="sidebar" compact={compact} />}</Fragment>
         );
       })}
