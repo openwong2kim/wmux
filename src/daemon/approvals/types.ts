@@ -442,7 +442,10 @@ export type ApprovalResolveFailure =
   | 'agent-unavailable'
   // A native decision whose agent server did not answer in time: the answer
   // may or may not have landed. Never retried by the daemon (409).
-  | 'answer-uncertain';
+  | 'answer-uncertain'
+  // A phone-typed answer text the dialog cannot take as it is: a control
+  // character, or longer than the pane can show. Nothing was written (400).
+  | 'invalid-text';
 
 /**
  * The one-line `reason` a 501 carries on the web wire, next to its unchanged
@@ -502,6 +505,11 @@ export type ApprovalResolveResult =
        * that ignores this field behaves exactly as before.
        */
       pressRefusal?: ApprovalPressRefusal;
+      /**
+       * `partial`: a stepwise answer stopped after typing some of its keys
+       * (`request.step` says how far), whatever `reason` stopped it.
+       */
+      effect?: 'partial';
       /** Present on 'already-resolved' — the 409 UX names who got there first. */
       resolvedBy?: string;
       /** Absent only for 'not-found'. */
@@ -518,6 +526,7 @@ export type ApprovalResolveResult =
       request?: ApprovalRequest;
       /** Never set on this variant; declared so callers can read it off any refusal. */
       pressRefusal?: undefined;
+      effect?: undefined;
       resolvedBy?: undefined;
     };
 

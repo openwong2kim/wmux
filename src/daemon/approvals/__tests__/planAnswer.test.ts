@@ -8,7 +8,10 @@ import os from 'node:os';
 import {
   ApprovalRegistry,
   STEP_RENDER_WAIT_MS,
+  STEP_RENDER_WAIT_PER_100_MS,
   TERMINAL_PROMPT_MIN_ANSWER_AGE_MS,
+  planFeedbackMaxWidth,
+  textWidth,
   type ApprovalRegistryDeps,
 } from '../ApprovalRegistry';
 import {
@@ -20,6 +23,8 @@ import {
   type DecisionAnswer,
 } from '../types';
 import type { PendingToolUse } from '../../transcript/pendingToolUse';
+import { coerceApprovalState } from '../approvalStore';
+import { parseDecisionAnswerBody } from '../../web/decisionAnswer';
 
 const DIR = path.join(__dirname, 'fixtures', 'terminal-prompts');
 // Read with fs, not a JSON import: a JSON import breaks the daemon build.
@@ -46,6 +51,7 @@ interface Pane {
   pending: PendingToolUse | null;
   /** Whether the fake TUI draws what a key should draw. */
   echoes: boolean;
+  cols: number;
 }
 
 interface Harness {
@@ -58,6 +64,8 @@ interface Harness {
   clock: { now: number };
   /** Runs right after each driver key lands (a human, a sweep, …). */
   afterStepKey: { fn: ((index: number) => void) | null };
+  /** Runs after each wait the registry takes. */
+  afterDelay: { fn: (() => void) | null };
 }
 
 let tmpDir: string;
@@ -65,13 +73,14 @@ let tmpDir: string;
 function makeRegistry(overrides: Partial<ApprovalRegistryDeps> = {}): Harness {
   const h: Harness = {
     registry: null as unknown as ApprovalRegistry,
-    pane: { rows: INITIAL, bytes: 100, keyInputRevision: 3, incarnation: 'inc-1', pending: PLAN_CALL, echoes: true },
+    pane: { rows: INITIAL, bytes: 100, keyInputRevision: 3, incarnation: 'inc-1', pending: PLAN_CALL, echoes: true, cols: 100 },
     stepKeys: [],
     writes: [],
     submitted: 0,
     events: [],
     clock: { now: 10_000 },
     afterStepKey: { fn: null },
+    afterDelay: { fn: null },
   };
   // The fake TUI: a key moves the pane's revision by one and redraws.
   const draw = (data: string): void => {
@@ -102,12 +111,12 @@ function makeRegistry(overrides: Partial<ApprovalRegistryDeps> = {}): Harness {
     readPromptScreen: async () => {
       const rows = h.pane.rows;
       const mark = { bytes: h.pane.bytes, keyInputRevision: h.pane.keyInputRevision, incarnation: h.pane.incarnation };
-      return rows ? { rows, mark, cols: 100 } : null;
+      return rows ? { rows, mark, cols: h.pane.cols } : null;
     },
     promptScreenMark: () => ({ bytes: h.pane.bytes, keyInputRevision: h.pane.keyInputRevision, incarnation: h.pane.incarnation }),
     pendingToolUse: () => h.pane.pending,
     // Waiting advances the fake clock, so the driver's time bounds are exercised.
-    promptReadDelay: async (ms) => { h.clock.now += ms; },
+    promptReadDelay: async (ms) => { h.clock.now += ms; h.afterDelay.fn?.(); },
     schedule: () => () => undefined,
     now: () => h.clock.now,
     newId: () => `req-${next++}`,
@@ -357,5 +366,137 @@ describe('what a plan answer refuses', () => {
     expect(await answer(h, record)).toMatchObject({ ok: false, reason: 'prompt-changed' });
     expect(h.stepKeys).toEqual([]);
     expect(h.events.map((e) => e.type)).toContain('supersede');
+  });
+});
+
+describe('review fixes: the feedback text and where a stopped answer leaves the record', () => {
+  it('refuses a text that could end the paste early, before any key (defence behind the route parser)', async () => {
+    for (const text of ['\x1b[201~1\r', 'a\rb', 'a\nb', 'a\x7fb', 'a\u009bb']) {
+      const h = makeRegistry();
+      const record = await create(h);
+      expect(await answer(h, record, { text }), JSON.stringify(text)).toMatchObject({ ok: false, reason: 'invalid-text' });
+      expect(h.stepKeys).toEqual([]);
+      expect(h.writes).toEqual([]);
+      expect(stored(h, record.id).step).toBeUndefined();
+    }
+  });
+
+  it('refuses a text wider than the field the pane can show, before any key', async () => {
+    expect(planFeedbackMaxWidth(100, 40)).toBe(2000);
+    expect(planFeedbackMaxWidth(40, 40)).toBe(28 * 26);
+    expect(textWidth('한글ab')).toBe(6);
+    const h = makeRegistry();
+    h.pane.cols = 40;
+    const record = await create(h);
+    expect(await answer(h, record, { text: 'x'.repeat(28 * 26 + 1) })).toMatchObject({ ok: false, reason: 'invalid-text' });
+    // Wide characters count twice.
+    expect(await answer(h, record, { text: '가'.repeat(28 * 13 + 1) })).toMatchObject({ ok: false, reason: 'invalid-text' });
+    expect(h.stepKeys).toEqual([]);
+    expect(await answer(h, record, { text: 'x'.repeat(28 * 26) })).toMatchObject({ ok: true });
+  });
+
+  it('takes one more look before calling a slow echo a timeout', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    const text = 'use bye instead';
+    let pasted = -1;
+    h.afterStepKey.fn = (index) => {
+      if (index === 1) { h.pane.echoes = false; pasted = h.clock.now; }
+    };
+    h.afterDelay.fn = () => {
+      if (pasted >= 0 && h.clock.now - pasted > STEP_RENDER_WAIT_MS + STEP_RENDER_WAIT_PER_100_MS) {
+        h.pane.rows = typed(text);
+        h.pane.echoes = true;
+      }
+    };
+    expect(await answer(h, record, { text })).toMatchObject({ ok: true, request: { state: 'resolved' } });
+  });
+
+  it('empty or whitespace-only feedback is no feedback: the row key and Enter', async () => {
+    for (const text of ['', '   ']) {
+      const h = makeRegistry();
+      const record = await create(h);
+      expect(await answer(h, record, { text })).toMatchObject({ ok: true });
+      expect(h.stepKeys).toEqual(['3', '\r']);
+    }
+  });
+
+  it('a grant lost after the first key is reported as partial', async () => {
+    let calls = 0;
+    const h = makeRegistry();
+    const record = await create(h);
+    const result = await h.registry.resolve({
+      id: record.id,
+      decision: 'approve',
+      resolvedBy: 'phone',
+      decisionV2Answer: DECISION_V2_WEB_ANSWER,
+      decisionAnswer: { formFingerprint: record.formFingerprint!, clientAnswerId: 'answer-revoked-001', action: 'feedback', text: 'x' },
+      // The early check, the first key's, then revoked before the second.
+      authorize: async () => (++calls >= 3 ? 'read-only' : 'ok'),
+    });
+    expect(result).toMatchObject({ ok: false, reason: 'input-revoked', effect: 'partial', request: { step: { index: 1, status: 'partial' } } });
+    expect(h.stepKeys).toEqual(['3']);
+  });
+
+  it('a record the turn\'s end settled mid-answer is reported as partial', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    h.afterStepKey.fn = (index) => { if (index === 0) void h.registry.expireForSession('pty-a', 'turn-ended'); };
+    const result = await answer(h, record, { text: 'x' });
+    expect(result).toMatchObject({ ok: false, reason: 'expired', effect: 'partial', request: { state: 'expired', step: { status: 'partial' } } });
+    expect(h.stepKeys).toEqual(['3']);
+  });
+
+  it('a local answer held while the step ran settles the record once it stops partial', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    h.afterStepKey.fn = (index) => {
+      if (index !== 0) return;
+      // A human answered at the terminal: their key, then the pane's "answered".
+      h.pane.keyInputRevision += 1;
+      void h.registry.expireForSession('pty-a', 'answered-locally', 'terminal_prompt');
+    };
+    const result = await answer(h, record, { text: 'x' });
+    expect(result).toMatchObject({ ok: false, reason: 'prompt-changed', effect: 'partial' });
+    expect(stored(h, record.id)).toMatchObject({ state: 'expired', step: { status: 'partial' } });
+    // No card left blocking the next dialog.
+    expect(h.registry.list().pending).toEqual([]);
+  });
+
+  it('every delivered key is on disk before the next; a restart turns a running step partial', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    let onDisk: ApprovalRequest | undefined;
+    h.afterStepKey.fn = (index) => {
+      if (index !== 2) return;
+      const file = JSON.parse(fs.readFileSync(path.join(tmpDir, 'approvals.json'), 'utf8')) as { requests: ApprovalRequest[] };
+      onDisk = file.requests.find((r) => r.id === record.id);
+    };
+    await answer(h, record, { text: 'x' });
+    expect(onDisk?.step).toMatchObject({ index: 2, status: 'running' });
+    // A daemon that died right there.
+    const file = JSON.parse(fs.readFileSync(path.join(tmpDir, 'approvals.json'), 'utf8')) as { version: 1; requests: ApprovalRequest[] };
+    file.requests = file.requests.map((r) => (r.id === record.id ? { ...onDisk! } : r));
+    fs.writeFileSync(path.join(tmpDir, 'approvals.json'), JSON.stringify(file));
+    const restarted = makeRegistry();
+    expect(stored(restarted, record.id)).toMatchObject({ state: 'expired', step: { index: 2, status: 'partial' } });
+  });
+
+  it('a stored step needs whole, non-negative numbers', () => {
+    const step = { answerId: 'a', index: 1, total: 3, expectedRevision: 4, incarnation: 'i', status: 'partial', startedAt: 5 };
+    const load = (over: Record<string, unknown>) => coerceApprovalState({
+      version: 1,
+      requests: [{ id: 'r', sessionId: 's', agent: 'claude', kind: 'terminal_prompt', createdAt: 1, state: 'expired', step: { ...step, ...over } }],
+    }).requests[0]!.step;
+    expect(load({})).toEqual(step);
+    expect(load({ expectedRevision: 4.5 })).toBeUndefined();
+    expect(load({ startedAt: -1 })).toBeUndefined();
+    expect(load({ expectedRevision: Infinity })).toBeUndefined();
+  });
+
+  it('the route parser already refuses a paste terminator (400 invalid-text)', () => {
+    expect(parseDecisionAnswerBody({
+      formFingerprint: 'a'.repeat(32), clientAnswerId: 'answer-0000000001', action: 'feedback', text: '\x1b[201~1\r',
+    })).toEqual({ ok: false, error: 'invalid-text' });
   });
 });

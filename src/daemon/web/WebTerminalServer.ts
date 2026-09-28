@@ -6238,7 +6238,9 @@ export class WebTerminalServer {
     // A native decision is answered through the agent's server, with no
     // `pressedAt`: resolved is the answer.
     const answeredHere = (r: ApprovalRequest): boolean => r.kind !== 'terminal_prompt' || r.pressedAt !== undefined
-      || (r.channel === 'native-rpc' && r.state === 'resolved');
+      || (r.channel === 'native-rpc' && r.state === 'resolved')
+      // A plan answered with feedback (stepwise keys, no `pressedAt`).
+      || (r.step?.status === 'done' && r.state === 'resolved');
     return this.json(res, 200, {
       pending: listed.pending.filter(visible).map((r) => approvalWire(r, caps)),
       recentlyResolved: listed.recentlyResolved.filter(visible).filter(answeredHere).map((r) => approvalWire(r, caps)),
@@ -6572,7 +6574,8 @@ export class WebTerminalServer {
     const approvals = this.deps.approvals;
     if (!approvals?.terminalPromptDetail) return this.json(res, 503, { error: 'approvals unavailable' });
     if (this.opts?.allowTranscript !== true) return this.json(res, 403, { error: 'transcript-disabled' });
-    if (!clientCaps(req).terminalPromptAnswer) return this.json(res, 501, { error: 'answer-in-terminal' });
+    const caps = clientCaps(req);
+    if (!caps.terminalPromptAnswer && !caps.decisionV2) return this.json(res, 501, { error: 'answer-in-terminal' });
     let id: string;
     try {
       id = decodeURIComponent(rawId);
@@ -6586,6 +6589,10 @@ export class WebTerminalServer {
     }
     if (principal.kind === 'device' && this.isBrainApproval(record.sessionId)) {
       return this.json(res, 404, { error: 'not-found' });
+    }
+    // `decision-v2` alone opens the plan dialog's detail (its record says `hasDetail`).
+    if (!caps.terminalPromptAnswer && record.form?.kind !== 'plan') {
+      return this.json(res, 501, { error: 'answer-in-terminal' });
     }
     const detail = approvals.terminalPromptDetail(id);
     if (!detail) return this.json(res, 404, { error: 'not-found' });
@@ -6879,17 +6886,18 @@ export class WebTerminalServer {
           response = { status: 500, body: { error: 'internal-error' } };
         }
         // Only a final outcome is kept; one the caller may retry past is released.
-        if (answerIsRetryable(response)) {
+        const partial = response.body['effect'] === 'partial';
+        if (answerIsRetryable(response) && !partial) {
           await receipts.release(owner, answer.clientAnswerId);
         } else {
           await receipts.finish(
             owner,
             answer.clientAnswerId,
-            response.status === 200 ? 'done' : response.body['effect'] === 'partial' ? 'partial' : 'refused',
+            response.status === 200 ? 'done' : partial ? 'partial' : 'refused',
             response,
           );
         }
-        if (response.status === 403) return this.refuseInput(res, fresh.principal, 'Input permission changed');
+        if (response.status === 403 && !partial) return this.refuseInput(res, fresh.principal, 'Input permission changed');
         return this.json(res, response.status, response.body);
       })().catch((err: unknown) => {
         this.deps.log('warn', `[web] decision answer failed: ${errMsg(err)}`);
@@ -8299,6 +8307,17 @@ function answerIsRetryable(response: AnswerReceiptResponse): boolean {
 
 /** A v2 answer's registry result as the HTTP response it is journaled and replayed as. */
 function decisionAnswerResponse(result: ApprovalResolveResult): AnswerReceiptResponse {
+  const response = decisionAnswerOutcome(result);
+  // A stepwise answer that typed some of its keys before it stopped says so,
+  // whatever stopped it.
+  if (!result.ok && result.effect === 'partial' && result.request?.step) {
+    const { index, total, status } = result.request.step;
+    return { status: response.status, body: { ...response.body, effect: 'partial', step: { index, total, status } } };
+  }
+  return response;
+}
+
+function decisionAnswerOutcome(result: ApprovalResolveResult): AnswerReceiptResponse {
   if (result.ok) {
     return { status: 200, body: { state: result.request.state, effect: 'complete', durable: result.durable } };
   }
@@ -8306,12 +8325,6 @@ function decisionAnswerResponse(result: ApprovalResolveResult): AnswerReceiptRes
     case 'already-resolved':
       return { status: 409, body: { error: 'already-resolved', ...(result.resolvedBy ? { resolvedBy: result.resolvedBy } : {}), effect: 'none' } };
     case 'prompt-changed':
-      // A stepwise answer stopped after some of its keys: say how far it got.
-      if (result.request?.step?.status === 'partial') {
-        const { index, total, status } = result.request.step;
-        return { status: 409, body: { error: 'prompt-changed', effect: 'partial', step: { index, total, status } } };
-      }
-      return { status: 409, body: { error: result.reason, effect: 'none' } };
     case 'already-answered':
     case 'prompt-unverified':
       return { status: 409, body: { error: result.reason, effect: 'none' } };
@@ -8332,6 +8345,8 @@ function decisionAnswerResponse(result: ApprovalResolveResult): AnswerReceiptRes
     case 'invalid-choice':
     case 'invalid-choice-key':
       return { status: 400, body: { error: 'invalid-choice' } };
+    case 'invalid-text':
+      return { status: 400, body: { error: 'invalid-text' } };
     case 'not-found':
       return { status: 404, body: { error: 'not-found' } };
     case 'unauthorized':

@@ -152,10 +152,11 @@ function coerceRequest(raw: unknown): ApprovalRequest | null {
   if (step && typeof step === 'object' && !Array.isArray(step)) {
     const s = step as Record<string, unknown>;
     const count = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= 64;
+    const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
     if ((s['status'] === 'running' || s['status'] === 'partial' || s['status'] === 'done')
       && count(s['index']) && count(s['total']) && typeof s['answerId'] === 'string'
       && typeof s['incarnation'] === 'string'
-      && Number.isFinite(s['expectedRevision']) && Number.isFinite(s['startedAt'])) {
+      && isCount(s['expectedRevision']) && isCount(s['startedAt'])) {
       out.step = {
         answerId: s['answerId'].slice(0, 128),
         index: s['index'],

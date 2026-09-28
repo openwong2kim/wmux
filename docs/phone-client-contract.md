@@ -1416,7 +1416,8 @@ stays in plan mode.
 
 For a `decision-v2` caller the pending record also carries `question` (the
 dialog's own sentence), `hasDetail: true` when the transcript grant is on
-(`GET /api/approvals/<id>/detail` returns the whole plan as `command`), and:
+(`GET /api/approvals/<id>/detail` returns the whole plan as `command`; for a
+plan, `decision-v2` alone opens it), and:
 
 ```json
 { "form": { "v": 1, "kind": "plan", "actions": [
@@ -1437,15 +1438,20 @@ dialog that offers bypass permissions (Claude started with
   plans again (a new record). The daemon types the row's number, the text as
   one bracketed paste, checks the text is echoed in the field, then Enter.
   Without `text` it rejects the plan with no feedback. 200
-  `{state: 'resolved', effect: 'complete'}`.
+  `{state: 'resolved', effect: 'complete'}`. The text must fit the field the
+  pane can show whole: at most `(cols - 12) × (rows - 14)` columns (a wide
+  character counts two), capped at 2,000. A longer one is 400
+  `invalid-text` with nothing typed.
 
 Once a feedback answer has typed its first key, the record carries `step` and
 no longer carries `form`. A key typed at the terminal meanwhile (or a screen
-that does not show what the last key should have drawn within 1.5 s) stops it:
+that does not show what the last key should have drawn in time) stops it:
 409 `{error: 'prompt-changed', effect: 'partial', step: {index, total,
-status: 'partial'}}`. Nothing is typed to undo it; the record stays pending,
-answers `already-answered` (to `/decline` too) and settles when the dialog is
-answered at the terminal. A key typed at the terminal before the answer (or a
+status: 'partial'}}`. Whatever stops an answer after its first key — a lost
+grant (401/403), the turn ending (410) — the response carries `effect:
+'partial'` and `step` too, and its receipt is kept as `partial`. Nothing is
+typed to undo it; the record stays pending, answers `already-answered` (to
+`/decline` too) and settles when the dialog is answered at the terminal. A key typed at the terminal before the answer (or a
 changed dialog) is 409 `prompt-changed` with `effect: 'none'`, and the record
 is replaced by a fresh one — re-read the list.
 

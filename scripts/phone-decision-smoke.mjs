@@ -4,6 +4,8 @@
 // ANTHROPIC*, AI_AGENT or WMUX_* variable of the caller leaks into it).
 //
 // It drives ExitPlanMode three times through the phone routes:
+//   0. refusals that must type nothing: a text carrying the bracketed-paste
+//      terminator, and (on a 60x30 pane) a text wider than the field can show.
 //   1. `feedback` with a long text — the stepwise driver (feedback row, one
 //      bracketed paste, echo check, Enter). Claude must re-plan.
 //   2. `/decline` (one Esc) — what Esc does on this dialog is recorded.
@@ -119,6 +121,19 @@ try{
   const detail=await (await fetch(`${base}/api/approvals/${first.id}/detail`,{headers})).json();
   report.detailBytes=detail.commandBytes;
   await delay(1600);
+  // 0. Refused before any key.
+  const terminator=await answer(first,{action:'feedback',text:'x\x1b[201~1\r'});
+  report.terminator=terminator;
+  assert.equal(terminator.status,400);assert.equal(terminator.body.error,'invalid-text');
+  await rpc('daemon.resizeSession',{id:pane,cols:60,rows:30});
+  await delay(2000);
+  const tooWide=await answer(first,{action:'feedback',text:'word '.repeat(180).trim()});
+  report.tooWide=tooWide;
+  assert.equal(tooWide.status,400,JSON.stringify(tooWide.body));assert.equal(tooWide.body.error,'invalid-text');
+  await rpc('daemon.resizeSession',{id:pane,cols:COLS,rows:ROWS});
+  await delay(2000);
+  assert(/Tell Claude what to change/.test(await screenText()),'the feedback field was typed into');
+  assert(!daemonLog.includes('step=1/'),'a refused answer typed a key');
   const feedback='Please name the file greeting.txt instead of hello.txt, and put the word hello in it rather than hi. '.repeat(3).trim();
   const fb=await answer(first,{action:'feedback',text:feedback});
   report.feedback={status:fb.status,body:fb.body,textChars:feedback.length};

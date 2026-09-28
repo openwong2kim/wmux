@@ -172,6 +172,41 @@ export const STEP_RENDER_WAIT_MS = 1_500;
 export const STEP_POLL_MS = 100;
 export const STEP_TOTAL_MS = 20_000;
 export const STEP_MAX_KEYS = 40;
+/** Extra render wait per 100 columns of pasted text. */
+export const STEP_RENDER_WAIT_PER_100_MS = 200;
+/** The feedback width allowed when the pane's width is unknown (measured to fit at 100x40). */
+export const PLAN_FEEDBACK_FALLBACK_WIDTH = 300;
+
+/**
+ * Columns a text takes on screen: 2 for a wide (East Asian / emoji) code
+ * point, 1 otherwise. An approximation that errs wide.
+ */
+export function textWidth(text: string): number {
+  let width = 0;
+  for (const ch of text) width += (ch.codePointAt(0) ?? 0) >= 0x1100 ? 2 : 1;
+  return width;
+}
+
+/**
+ * The widest feedback the plan dialog's field can show whole on a
+ * `cols`x`rows` pane, so the driver can read it back before Enter: the
+ * field's rows (the grid less the question, options, hint and footer) times
+ * its width (the grid less the option indent). Capped by the answer limit.
+ */
+export function planFeedbackMaxWidth(cols: number | undefined, rows: number | undefined): number {
+  if (!cols || !rows) return PLAN_FEEDBACK_FALLBACK_WIDTH;
+  return Math.min(2000, Math.max(0, cols - 12) * Math.max(0, rows - 14));
+}
+
+/**
+ * Text that can go inside one bracketed paste and stay text: no C0 control
+ * (ESC, CR and LF included), no DEL, no C1 control, no Unicode line or
+ * paragraph separator.
+ */
+export function isPasteSafeText(text: string): boolean {
+  // eslint-disable-next-line no-control-regex -- refusing them is the point
+  return !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(text);
+}
 /** The ExitPlanMode dialog's form actions. */
 export const PLAN_ACTION_APPROVE = 'approve-manual';
 export const PLAN_ACTION_FEEDBACK = 'feedback';
@@ -184,6 +219,9 @@ export const TERMINAL_PROMPT_REFRESH_MIN_GAP_MS = 2_000;
 interface DialogRead {
   parsed: ParsedTerminalPrompt;
   mark: PromptScreenMark;
+  /** The grid's width and height at the read, when known. */
+  cols?: number;
+  height?: number;
 }
 
 /** The tool call a dialog is bound to (transcript, or the PermissionRequest hook). */
@@ -457,6 +495,12 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * records for one request can never both reply. In memory only.
    */
   private readonly nativeClaims = new Set<string>();
+  /**
+   * A sweep that reached a record while its stepwise answer was running: held
+   * (the driver's own keys make the screen look answered) and applied if the
+   * answer stops partway. Record id → the sweep's reason. In memory only.
+   */
+  private readonly deferredExpiry = new Map<string, ApprovalExpiryReason>();
   /** Native requests that left `pending` recently (`adapter|requestId` → when). */
   private readonly nativeSettled = new Map<string, number>();
 
@@ -488,7 +532,13 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         if (r.step) deps.log?.('info', `[approvals] expired ${r.id} with its answer at step ${r.step.index}/${r.step.total} (partial-at-restart)`);
         // A terminal_prompt whose answer was already written counts as
         // resolved: the key reached the old PTY.
-        return { ...r, state: r.pressedAt !== undefined ? 'resolved' as const : 'expired' as const, resolvedAt: this.now() };
+        return {
+          ...r,
+          // A step the restart cut off mid-run: some keys may have landed.
+          ...(r.step?.status === 'running' ? { step: { ...r.step, status: 'partial' as const } } : {}),
+          state: r.pressedAt !== undefined ? 'resolved' as const : 'expired' as const,
+          resolvedAt: this.now(),
+        };
       }),
     );
     if (invalidated > 0) {
@@ -1188,10 +1238,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     if (!screen) return null;
     const opts = screen.cols ? { cols: screen.cols } : {};
     const parsed = parseTerminalPrompt(screen.rows, opts);
-    if (parsed && parsed.active) return { parsed, mark: screen.mark };
+    const geometry = { ...(screen.cols ? { cols: screen.cols } : {}), height: screen.rows.length };
+    if (parsed && parsed.active) return { parsed, mark: screen.mark, ...geometry };
     // Claude's ExitPlanMode dialog has a shape of its own (see parsePlanPrompt).
     const plan = parsePlanPrompt(screen.rows, opts);
-    return plan && plan.active ? { parsed: plan, mark: screen.mark } : null;
+    return plan && plan.active ? { parsed: plan, mark: screen.mark, ...geometry } : null;
   }
 
   /** A fresh `terminal_prompt` record from what was read and what it binds to. */
@@ -2439,7 +2490,25 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   ): Promise<ApprovalResolveResult> {
     const writeStepKey = this.deps.writeStepKey!;
     const sessionId = record.sessionId;
-    const text = answer.text;
+    // Empty or whitespace-only feedback is no feedback: the row key and Enter.
+    const text = answer.text !== undefined && answer.text.trim() !== '' ? answer.text : undefined;
+    const changed = (): ApprovalResolveResult => ({ ok: false, reason: 'prompt-changed', request: copyRequest(record) });
+    if (text !== undefined) {
+      // Checked here as well as by the route's parser: the text goes into a
+      // bracketed paste, and a control character (ESC ending the paste early,
+      // CR/LF submitting it) would turn the rest of it into keys.
+      if (!isPasteSafeText(text)) {
+        audit('invalid-text:control');
+        return { ok: false, reason: 'invalid-text', request: copyRequest(record) };
+      }
+      // The echo check reads the whole text back off the screen, so it must
+      // fit in the field the pane can show.
+      const max = planFeedbackMaxWidth(first.cols, first.height);
+      if (textWidth(text) > max) {
+        audit(`invalid-text:width>${max}`);
+        return { ok: false, reason: 'invalid-text', request: copyRequest(record) };
+      }
+    }
     const keys = [feedbackKey, ...(text !== undefined ? [`\x1b[200~${text}\x1b[201~`] : []), '\r'];
     if (keys.length > STEP_MAX_KEYS) return this.answerInTerminal(record, 'unsupported-shape');
     const plan = first.parsed.plan!;
@@ -2453,20 +2522,43 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       const label = p.plan!.feedback!.label;
       return index === 1 ? label === placeholder : compact(label) === compact(text ?? '');
     };
+    // A longer paste takes the TUI longer to draw.
+    const renderWait = (index: number): number => STEP_RENDER_WAIT_MS
+      + (index === 2 && text !== undefined ? Math.ceil(textWidth(text) / 100) * STEP_RENDER_WAIT_PER_100_MS : 0);
     const delay = this.deps.promptReadDelay
       ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms).unref?.(); }));
     const deadline = this.now() + STEP_TOTAL_MS;
-    const changed = (): ApprovalResolveResult => ({ ok: false, reason: 'prompt-changed', request: copyRequest(record) });
 
-    /** Stop after the first key: the record stays pending, marked `partial`. */
-    const partial = async (why: string): Promise<ApprovalResolveResult> => {
-      const result = await this.mutate<ApprovalResolveResult>(() => {
-        if (record.state !== 'pending' || record.step?.status !== 'running') return { result: changed() };
-        record.step.status = 'partial';
-        return { events: [{ type: 'press', request: copyRequest(record) }], result: changed() };
+    /**
+     * Stop after the first key, whatever stopped it: the step is left
+     * `partial` (never undone), the answer says so (`effect: 'partial'`), and a
+     * sweep that arrived while the step was running is applied now.
+     */
+    const stop = async (result: ApprovalResolveResult, why: string): Promise<ApprovalResolveResult> => {
+      const failure = result.ok ? changed() : result;
+      const out = await this.mutate<ApprovalResolveResult>(() => {
+        const step = record.step;
+        if (!step || step.answerId !== answer.clientAnswerId) return { result: failure };
+        if (step.status === 'running') step.status = 'partial';
+        const events: ApprovalEvent[] = [];
+        const held = this.deferredExpiry.get(record.id);
+        this.deferredExpiry.delete(record.id);
+        if (record.state === 'pending' && held) {
+          record.state = 'expired';
+          record.resolvedAt = this.now();
+          events.push({ type: 'expire', request: copyRequest(record) });
+          this.deps.log?.('info', `[approvals] expired ${record.id} on ${sessionId} (${held}, held while its answer ran)`);
+        } else if (record.state === 'pending') {
+          events.push({ type: 'press', request: copyRequest(record) });
+        }
+        return {
+          events,
+          persist: true,
+          result: { ...failure, effect: 'partial' as const, request: copyRequest(record) } as ApprovalResolveResult,
+        };
       });
-      audit(`prompt-changed:partial:${why}`);
-      return result;
+      audit(`${out.ok ? 'ok' : out.reason}:partial:${why}`);
+      return out;
     };
     const unwritten = (why: string): ApprovalResolveResult => {
       audit(`prompt-changed:${why}`);
@@ -2475,8 +2567,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
 
     /** Poll the screen until it shows what key `index` needs, or say why not. */
     const awaitScreen = async (index: number): Promise<DialogRead | 'moved' | 'timeout' | 'gone'> => {
-      const until = Math.min(this.now() + STEP_RENDER_WAIT_MS, deadline);
+      const until = Math.min(this.now() + renderWait(index), deadline);
       const want = expected(index);
+      let lastLook = false;
       for (;;) {
         let screen: Awaited<ReturnType<NonNullable<ApprovalRegistryDeps['readPromptScreen']>>> = null;
         try {
@@ -2493,7 +2586,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         if (parsed?.active && parsed.plan?.frameFingerprint === plan.frameFingerprint && want(parsed)) {
           return { parsed, mark: screen.mark };
         }
-        if (this.now() >= until) return 'timeout';
+        if (lastLook) return 'timeout';
+        // Out of time: one more look after a last pause, then give up.
+        if (this.now() >= until) lastLook = true;
         await delay(STEP_POLL_MS);
       }
     };
@@ -2502,16 +2597,16 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     for (let index = 0; index < keys.length;) {
       if (index > 0) {
         const seen = await awaitScreen(index);
-        if (typeof seen === 'string') return partial(seen);
+        if (typeof seen === 'string') return stop(changed(), seen);
         read = seen;
       }
       const refused = await this.reauthorize(params, record);
       if (refused) {
-        if (index > 0) await partial('authorize');
+        if (index > 0) return stop(refused, 'authorize');
         audit(refused.ok ? 'ok' : refused.reason);
         return refused;
       }
-      if (this.now() > deadline) return index > 0 ? partial('deadline') : unwritten('deadline');
+      if (this.now() > deadline) return index > 0 ? stop(changed(), 'deadline') : unwritten('deadline');
       const at = index;
       const outcome = await this.mutate<'retry' | 'written' | 'moved' | ApprovalResolveResult>(() => {
         // ── Synchronous from here to the write: nothing can move in between. ──
@@ -2552,10 +2647,12 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           step!.index = at + 1;
           step!.expectedRevision = written;
         }
-        if (at < keys.length - 1) return { events, result: 'written' };
+        // Every delivered key is on disk before the next one.
+        if (at < keys.length - 1) return { events, persist: true, result: 'written' };
         // The last key: the plan is rejected with the feedback. The record is
         // closed here, before the pane's turn resumes (noteSubmitted), so the
         // pane's "answered" finds nothing left to sweep.
+        this.deferredExpiry.delete(record.id);
         record.step!.status = 'done';
         record.state = 'resolved';
         record.decision = 'deny';
@@ -2589,10 +2686,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           if (!again || this.provenDialog(record, again) !== 'ok') return unwritten('retry');
           read = again;
         }
-        if (this.now() > deadline) return at > 0 ? partial('deadline') : unwritten('deadline');
+        if (this.now() > deadline) return at > 0 ? stop(changed(), 'deadline') : unwritten('deadline');
         continue;
       }
-      if (outcome === 'moved') return at === 0 ? unwritten('input') : partial('input');
+      if (outcome === 'moved') return at === 0 ? unwritten('input') : stop(changed(), 'input');
+      if (!outcome.ok && at > 0) return stop(outcome, 'settled');
       audit(outcome.ok ? 'answered' : outcome.reason);
       return outcome;
     }
@@ -2665,8 +2763,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * `this.requests` outside a `mutate` body.
    */
   private mutate<R = void>(
-    body: () => ApprovalEvent[] | { events?: ApprovalEvent[]; result: R } | Promise<
-      ApprovalEvent[] | { events?: ApprovalEvent[]; result: R }
+    body: () => ApprovalEvent[] | { events?: ApprovalEvent[]; result: R; persist?: boolean } | Promise<
+      ApprovalEvent[] | { events?: ApprovalEvent[]; result: R; persist?: boolean }
     >,
     /**
      * Last look at the result, once the write outcome is known. The body cannot
@@ -2681,7 +2779,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       const result = Array.isArray(out) ? (undefined as unknown as R) : out.result;
       // No events means nothing changed, so nothing had to be written.
       let durable = true;
-      if (events.length > 0) {
+      // `persist`: a change no event announces (a stepwise answer's progress).
+      if (events.length > 0 || (!Array.isArray(out) && out.persist === true)) {
         for (const event of events) {
           if (event.request.native && event.request.state !== 'pending' && event.type !== 'supersede') {
             this.rememberNativeSettled(event.request.native);
@@ -2728,7 +2827,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // A stepwise answer in progress: its own keys move the screen (and the
       // pane's "answered"), so nothing the screen suggests settles it. The
       // driver closes it, or leaves it `partial` for the sweep to settle.
-      if (r.step?.status === 'running' && SCREEN_INFERRED_EXPIRY.has(reason)) continue;
+      if (r.step?.status === 'running' && SCREEN_INFERRED_EXPIRY.has(reason)) {
+        if (!this.deferredExpiry.has(r.id)) this.deferredExpiry.set(r.id, reason);
+        continue;
+      }
       // A terminal_prompt whose remote answer was written RESOLVES when its
       // dialog is gone (the answered path, the screen check, the turn's end).
       if (r.pressedAt !== undefined) {

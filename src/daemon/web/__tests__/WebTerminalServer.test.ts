@@ -5048,6 +5048,29 @@ describe('WebTerminalServer', () => {
       expect(partial).not.toHaveProperty('hasDetail');
     });
 
+    it('a decision-v2 client may read a plan\'s detail without terminal-prompt-answer; other records still need it', async () => {
+      const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: true, allowUpload: false, allowTranscript: true });
+      approvalRecords.push(planTp(), mkApproval({ id: 'ap-bash', kind: 'terminal_prompt', toolName: 'Bash', promptFingerprint: FP }));
+      const plan = { id: 'ap-plan', toolName: 'ExitPlanMode', command: '# Plan', commandHash: 'h', commandBytes: 6, truncated: false };
+      approvalBox.details.set('ap-plan', plan);
+      approvalBox.details.set('ap-bash', { ...plan, id: 'ap-bash', toolName: 'Bash' });
+      const get = (id: string) => fetch(`${base()}/api/approvals/${id}/detail`, { headers: { ...bearer(info.token as string), 'X-Wmux-Client-Caps': 'decision-v2' } });
+      const res = await get('ap-plan');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(plan);
+      expect((await get('ap-bash')).status).toBe(501);
+    });
+
+    it('a plan answered with feedback (stepwise, no pressedAt) is listed as answered here', async () => {
+      const info = await startRW();
+      approvalRecords.push(planTp({
+        state: 'resolved', decision: 'deny', resolvedAt: 1_700_000_000_050,
+        step: { answerId: 'phone-answer-0001', index: 3, total: 3, expectedRevision: 6, incarnation: 'inc', status: 'done', startedAt: 1 },
+      }), planTp({ id: 'ap-plan-gone', state: 'expired' }));
+      const list = await (await fetch(`${base()}/api/approvals`, { headers: bearer(info.token as string) })).json();
+      expect(list.recentlyResolved.map((r: { id: string }) => r.id)).toEqual(['ap-plan']);
+    });
+
     it('a native permission reads to the shipped iOS app as a plain Yes/No dialog; v2 adds the form; nothing internal leaks', async () => {
       await startWithTranscript();
       const phone = await pairDevice('Old phone', false);
@@ -5271,6 +5294,7 @@ describe('WebTerminalServer', () => {
         approvalBox.result = {
           ok: false,
           reason: 'prompt-changed',
+          effect: 'partial',
           request: planTp({ step: { answerId: 'phone-answer-0001', index: 1, total: 3, expectedRevision: 4, incarnation: 'inc', status: 'partial', startedAt: 1 } }),
         };
         const body = answerBody({ action: 'feedback', text: 'use bye instead' });
@@ -5283,6 +5307,34 @@ describe('WebTerminalServer', () => {
         approvalBox.result = { ok: false, reason: 'prompt-changed', request: planTp() };
         const none = await postAnswer(phone.token, answerBody({ clientAnswerId: 'phone-answer-0002' }), V2, 'ap-plan');
         expect(await none.json()).toEqual({ error: 'prompt-changed', effect: 'none' });
+      });
+
+      it('a partial answer stopped by a lost grant keeps its 403 status, says partial, and is journaled (not released)', async () => {
+        await startRW();
+        const phone = await pairDevice('Revoked mid-answer', true);
+        approvalRecords.push(planTp());
+        approvalBox.result = {
+          ok: false,
+          reason: 'input-revoked',
+          effect: 'partial',
+          request: planTp({ step: { answerId: 'phone-answer-0001', index: 1, total: 3, expectedRevision: 4, incarnation: 'inc', status: 'partial', startedAt: 1 } }),
+        };
+        const res = await postAnswer(phone.token, answerBody({ action: 'feedback', text: 'x' }), V2, 'ap-plan');
+        expect(res.status).toBe(403);
+        expect(await res.json()).toEqual({ error: 'input-revoked', effect: 'partial', step: { index: 1, total: 3, status: 'partial' } });
+        const again = await postAnswer(phone.token, answerBody({ action: 'feedback', text: 'x' }), V2, 'ap-plan');
+        expect(await again.json()).toMatchObject({ effect: 'partial', replayed: true });
+        expect(resolveCalls).toHaveLength(1);
+      });
+
+      it('a text the registry refuses is 400 invalid-text', async () => {
+        await startRW();
+        const phone = await pairDevice('Long text', true);
+        approvalRecords.push(planTp());
+        approvalBox.result = { ok: false, reason: 'invalid-text', request: planTp() };
+        const res = await postAnswer(phone.token, answerBody({ action: 'feedback', text: 'x' }), V2, 'ap-plan');
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: 'invalid-text' });
       });
 
       it('a retry while the answer runs is 202; one running when the daemon stopped is 409 uncertain and never re-run', async () => {
