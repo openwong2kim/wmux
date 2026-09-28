@@ -42,6 +42,17 @@ describe('DaemonPTYBridge — running-episode turn id', () => {
 
   const turn = () => bridge.getTurn(bridge.getAgentStatus());
 
+  it('keeps the latest window title and when it was written, repeats included', () => {
+    expect(bridge.getTitle()).toEqual({ title: '', at: 0 });
+    feed('\x1b]0;◐ Sleep command test\x07');
+    expect(bridge.getTitle()).toEqual({ title: '◐ Sleep command test', at: Date.now() });
+    vi.advanceTimersByTime(900);
+    feed('out\x1b]2;◐ Sleep command test\x07more');
+    expect(bridge.getTitle().at).toBe(Date.now());
+    feed('\x1b]0;✳ Sleep command test\x07');
+    expect(bridge.getTitle().title).toBe('✳ Sleep command test');
+  });
+
   it('stays fixed across tool hooks and an approval answer, and changes on the next prompt', () => {
     bridge.noteInput('fix the tests\r');
     const first = turn();

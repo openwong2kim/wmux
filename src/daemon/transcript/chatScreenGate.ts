@@ -52,6 +52,29 @@ export function screenShowsRunningTurn(rows: readonly string[] | null, slug: str
   return !!row && rows.some((line) => row.test(line.trim()));
 }
 
+/**
+ * Window-title spinners, captured on the same versions: Claude Code alternates
+ * `◐ <name>` / `◑ <name>` about once a second for the whole turn (thinking,
+ * tools, streaming) and sets `✳ <name>` when it ends or is interrupted. Codex
+ * puts a braille frame first (`⠙ <name> | <cwd>`) every ~100 ms and drops it
+ * when the turn ends. Unlike the screen row, both stay up while text streams.
+ */
+const CLAUDE_RUNNING_TITLE = /^[◐◑]\s/;
+const CODEX_RUNNING_TITLE = /^[⠁-⣿]\s/;
+/**
+ * A running title is refreshed at least every ~1 s (Claude; Codex ~0.1 s). One
+ * older than this is a program that stopped writing (killed mid-turn, pane
+ * handed back to a shell that sets no title) and proves nothing.
+ */
+export const TITLE_FRESH_MS = 3000;
+
+/** Does the current window title show the agent's running spinner, refreshed recently? */
+export function titleShowsRunningTurn(title: { title: string; at: number } | null | undefined, slug: string, now: number): boolean {
+  if (!title || title.at <= 0 || now - title.at > TITLE_FRESH_MS) return false;
+  const spinner = slug === 'claude' ? CLAUDE_RUNNING_TITLE : slug === 'codex' ? CODEX_RUNNING_TITLE : null;
+  return !!spinner && spinner.test(title.title);
+}
+
 /** The question line of Claude Code's permission dialog. */
 const PROCEED_QUESTION_ROW = /\bDo you want to proceed\b/i;
 

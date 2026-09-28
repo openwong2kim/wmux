@@ -25,11 +25,11 @@ const TUI_STATUS: TranscriptStatus = { available: true, reason: 'ok', agentSessi
 function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-bridge-')); dirs.push(dir);
   const typed: string[] = [];
-  const shell = { empty: true, revision: 0, escAt: 0 };
+  const shell = { empty: true, revision: 0, escAt: 0, title: { title: '', at: 0 } };
   const pane: ChatPane = {
     meta: { id: 'pane', state: 'attached', pid: 100, cwd: '/live', env: {}, spawnCwd: '/spawn', incarnationId: 'inc' },
     bridge: { isEmptyShellPrompt: () => shell.empty, getInputRevision: () => shell.revision,
-      noteInput: () => { shell.revision++; shell.empty = false; }, getLastEscAt: () => shell.escAt },
+      noteInput: () => { shell.revision++; shell.empty = false; }, getLastEscAt: () => shell.escAt, getTitle: () => shell.title },
     promptLog: { size: 3, isCommandRunning: () => false },
     ptyProcess: { write: (data) => { typed.push(data); } },
   };
@@ -619,13 +619,37 @@ describe('cancel', () => {
     expect(f.bridge.sendInFlight('pane')).toBe(false);
   });
 
-  it('a refused cancel leaves no receipt, so the same id re-evaluates', async () => {
+  it('a refused cancel writes no receipt at all, so the same id re-evaluates', async () => {
     const f = running();
-    f.state.screen = ['  one hundred four', '─'.repeat(40), '❯ ', '─'.repeat(40)];
+    const STREAMING = ['  one hundred four', '─'.repeat(40), '❯ ', '─'.repeat(40)];
+    f.state.screen = STREAMING;
     const req = phoneCancel();
     expect(await f.bridge.cancel(req)).toMatchObject({ error: 'turn-not-running', turn: { id: 't1:n.3', state: 'running' }, effect: 'none' });
-    f.state.screen = RUNNING;
+    expect(fs.existsSync(path.join(f.dir, 'chat-cancel-receipts.json'))).toBe(false);
+    // Mid-stream: no row on screen, but the agent's title spinner is fresh.
+    f.shell.title = { title: '◑ English number words 1-200', at: Date.now() };
     expect(await f.bridge.cancel(req)).toMatchObject({ effect: 'interrupt-requested', replayed: false });
+    expect(f.written).toEqual(['\x1b']);
+    expect(await f.bridge.cancel(req)).toMatchObject({ effect: 'interrupt-requested', replayed: true });
+    expect(f.written).toEqual(['\x1b']);
+  });
+
+  it('a stale or idle title is no evidence', async () => {
+    const f = running();
+    f.state.screen = ['  one hundred four', '─'.repeat(40), '❯ ', '─'.repeat(40)];
+    f.shell.title = { title: '◑ English number words 1-200', at: Date.now() - 10_000 };
+    expect(await f.bridge.cancel(phoneCancel())).toMatchObject({ error: 'turn-not-running' });
+    f.shell.title = { title: '✳ English number words 1-200', at: Date.now() };
+    expect(await f.bridge.cancel(phoneCancel())).toMatchObject({ error: 'turn-not-running' });
+    expect(f.written).toEqual([]);
+  });
+
+  it('a receipt that cannot be stored refuses before the ESC', async () => {
+    const f = running();
+    const store = new ChatCancelReceiptStore(f.dir, { write: () => { throw new Error('disk full'); } });
+    const bridge = createChatBridge({ ...f.deps, cancelReceipts: store });
+    expect(await bridge.cancel(phoneCancel())).toMatchObject({ error: 'chat-persist-failed', effect: 'none' });
+    expect(f.written).toEqual([]);
   });
 
   it('turn mismatch, idle turn, dead agent: turn-not-running and nothing written', async () => {

@@ -1,11 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import { interruptChatTurn, type ChatInterruptDeps } from '../interruptChatTurn';
-import { screenShowsRunningTurn } from '../chatScreenGate';
+import { TITLE_FRESH_MS, screenShowsRunningTurn, titleShowsRunningTurn } from '../chatScreenGate';
 import type { AgentStatus } from '../../../shared/types';
 import screens from './fixtures/running-turn-screens.json';
 
-type Frames = Record<string, string[]>;
-const frames = screens as unknown as Frames & { _about: { evidence: string[]; noEvidence: Record<string, string> } };
+type Frame = { rows: string[]; title: { title: string; ageMs: number } };
+const captured = screens as unknown as Record<string, Frame> & {
+  _about: { screenEvidence: string[]; titleOnlyEvidence: Record<string, string>; noEvidence: Record<string, string> };
+};
+const NAMES = Object.keys(captured).filter((k) => k !== '_about');
+const frames: Record<string, string[]> = Object.fromEntries(NAMES.map((k) => [k, captured[k].rows]));
+/** The frame's title as the bridge would report it at `now`. */
+const titleOf = (name: string, now: number) => ({ title: captured[name].title.title, at: now - captured[name].title.ageMs });
 const slugOf = (name: string) => name.split('-')[0];
 
 function fixture() {
@@ -15,22 +21,45 @@ function fixture() {
     escAt: 0, now: 10_000,
   };
   let screen: string[] | null = frames['claude-tool'];
+  let title: { title: string; at: number } | null = null;
   const write = vi.fn((data: string) => { if (data === '\x1b') state.escAt = state.now; return true; });
   const deps: ChatInterruptDeps = {
     getTranscriptSessionId: () => state.transcript, hasOpenApproval: () => state.approval,
     readScreen: async () => screen,
     getAgentState: () => ({ slug: state.slug, status: state.status, ...(state.turn ? { turn: state.turn } : {}) }),
-    write, lastEscAt: () => state.escAt, now: () => state.now,
+    write, lastEscAt: () => state.escAt, now: () => state.now, readTitle: () => title,
   };
-  return { deps, state, write, show: (rows: string[] | null) => { screen = rows; } };
+  return { deps, state, write, show: (rows: string[] | null) => { screen = rows; },
+    frame: (name: string) => { screen = frames[name]; title = titleOf(name, state.now); state.slug = slugOf(name); },
+    setTitle: (t: { title: string; at: number } | null) => { title = t; } };
 }
 
 describe('running-turn evidence against real captures', () => {
   it('finds the running row in every mid-turn frame that draws one', () => {
-    for (const name of frames._about.evidence) expect(screenShowsRunningTurn(frames[name], slugOf(name)), name).toBe(true);
+    for (const name of captured._about.screenEvidence) expect(screenShowsRunningTurn(frames[name], slugOf(name)), name).toBe(true);
   });
-  it('finds none while starting, streaming or after the interrupt', () => {
-    for (const name of Object.keys(frames._about.noEvidence)) expect(screenShowsRunningTurn(frames[name], slugOf(name)), name).toBe(false);
+  it('finds no row while starting, streaming or after the turn', () => {
+    for (const name of [...Object.keys(captured._about.titleOnlyEvidence), ...Object.keys(captured._about.noEvidence)]) {
+      expect(screenShowsRunningTurn(frames[name], slugOf(name)), name).toBe(false);
+    }
+  });
+  it('the title spinner is up in every running frame and gone once the turn ends', () => {
+    const now = 1_000_000;
+    for (const name of [...captured._about.screenEvidence, ...Object.keys(captured._about.titleOnlyEvidence)]) {
+      expect(titleShowsRunningTurn(titleOf(name, now), slugOf(name), now), name).toBe(true);
+    }
+    for (const name of Object.keys(captured._about.noEvidence)) {
+      expect(titleShowsRunningTurn({ title: captured[name].title.title, at: now }, slugOf(name), now), name).toBe(false);
+    }
+  });
+  it('a title spinner older than the freshness window, or another agent\'s, proves nothing', () => {
+    const now = 1_000_000;
+    expect(titleShowsRunningTurn({ title: '◐ Sleep command test', at: now - TITLE_FRESH_MS - 1 }, 'claude', now)).toBe(false);
+    expect(titleShowsRunningTurn({ title: '◐ Sleep command test', at: now - TITLE_FRESH_MS }, 'claude', now)).toBe(true);
+    expect(titleShowsRunningTurn({ title: '◐ Sleep command test', at: now }, 'codex', now)).toBe(false);
+    expect(titleShowsRunningTurn({ title: '⠙ x | cwd', at: now }, 'claude', now)).toBe(false);
+    expect(titleShowsRunningTurn({ title: '◐ x', at: 0 }, 'claude', now)).toBe(false);
+    expect(titleShowsRunningTurn(null, 'claude', now)).toBe(false);
   });
   it('never reads one agent\'s row as the other\'s, and ignores finished-turn and idle rows', () => {
     expect(screenShowsRunningTurn(frames['codex-working'], 'claude')).toBe(false);
@@ -68,12 +97,34 @@ describe('chat Stop interrupts only a running turn', () => {
       expect(f.write).not.toHaveBeenCalled();
     }
   });
-  it('refuses a running status without the agent\'s own running row on screen', async () => {
-    for (const name of ['claude-streaming', 'claude-interrupted', 'claude-starting']) {
-      const f = fixture(); f.show(frames[name]);
+  it('mid-stream: no row on screen, but the running title spinner is evidence', async () => {
+    for (const name of Object.keys(captured._about.titleOnlyEvidence)) {
+      const f = fixture(); f.frame(name);
+      expect(await interruptChatTurn('conversation-1', f.deps), name).toBe('sent');
+    }
+  });
+  it('refuses a running status with neither the row nor a fresh title spinner', async () => {
+    for (const name of Object.keys(captured._about.noEvidence)) {
+      const f = fixture(); f.frame(name);
       expect(await interruptChatTurn('conversation-1', f.deps), name).toBe('not_running');
       expect(f.write).not.toHaveBeenCalled();
     }
+    // A spinner title the agent stopped refreshing (killed mid-turn).
+    const stale = fixture(); stale.frame('claude-streaming');
+    stale.setTitle({ title: '◑ English number words 1-200', at: stale.state.now - TITLE_FRESH_MS - 1 });
+    expect(await interruptChatTurn('conversation-1', stale.deps)).toBe('not_running');
+    const none = fixture(); none.show(frames['claude-streaming']);
+    expect(await interruptChatTurn('conversation-1', none.deps)).toBe('not_running');
+  });
+  it('reads the title after the last await, right before the write', async () => {
+    const f = fixture(); f.frame('claude-streaming');
+    let freshAtRead = true;
+    f.deps.authorized = async () => { f.setTitle({ title: '✳ English number words 1-200', at: f.state.now }); freshAtRead = false; return true; };
+    expect(await interruptChatTurn('conversation-1', f.deps)).toBe('not_running');
+    expect(freshAtRead).toBe(false);
+    const refused = fixture();
+    expect(await interruptChatTurn('conversation-1', { ...refused.deps, beforeWrite: () => false })).toBe('write_refused');
+    expect(refused.write).not.toHaveBeenCalled();
   });
   it('refuses approvals, dialogs, unreadable screens, other agents and other conversations', async () => {
     const approval = fixture(); approval.state.approval = true;

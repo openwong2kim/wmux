@@ -1423,9 +1423,12 @@ and body is 200 `replayed:true`. Refusals are 409 `turn-not-running` `{turn}`,
 `prompt-active` `{by, approvalId?}`, `session-changed`, `chat-busy`,
 `cancel-cooldown` `{retryAfterMs}`, `turn-already-interrupted` `{turnId}` or
 `cancel-id-conflict`, 422 `cancel-unsupported`, and 404 `pane-not-found`. The
-daemon writes the Esc only while the agent's own working row is on screen,
-and both Claude Code and Codex hide that row while answer text streams, so a
-cancel in that phase is refused with `turn-not-running`.
+daemon writes the Esc only on positive evidence that the agent is working
+right now. That means either its working row on screen (Claude's spinner row
+with its counter, Codex's `esc to interrupt` row) or its running spinner in
+the window title, refreshed within the last 3 seconds (Claude `◐`/`◑`, Codex
+a braille frame). The title is what remains while answer text streams. A
+refused cancel stores no receipt, so the same `clientCancelId` may be retried.
 
 ---
 

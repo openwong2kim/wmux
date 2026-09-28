@@ -1,6 +1,6 @@
 import type { AgentStatus } from '../../shared/types';
 import type { ChatInterruptResult } from '../../shared/transcript/turnEvents';
-import { screenBlocksChatSend, screenShowsRunningTurn } from './chatScreenGate';
+import { screenBlocksChatSend, screenShowsRunningTurn, titleShowsRunningTurn } from './chatScreenGate';
 
 /** One ESC per pane within this window, whatever wrote the last one. */
 export const INTERRUPT_COOLDOWN_MS = 2000;
@@ -12,8 +12,9 @@ export const INTERRUPT_COOLDOWN_MS = 2000;
  * - `already_interrupted`: a lone ESC already reached the pane in this turn.
  * - `cooldown`: a lone ESC reached the pane less than the cooldown ago.
  * - `unauthorized`: the caller's re-authorization failed before the write.
+ * - `write_refused`: `beforeWrite` declined (nothing written).
  */
-export type ChatInterruptVerdict = ChatInterruptResult | 'turn_mismatch' | 'already_interrupted' | 'cooldown' | 'unauthorized';
+export type ChatInterruptVerdict = ChatInterruptResult | 'turn_mismatch' | 'already_interrupted' | 'cooldown' | 'unauthorized' | 'write_refused';
 
 export interface ChatInterruptDeps {
   getTranscriptSessionId: () => string | undefined;
@@ -30,6 +31,10 @@ export interface ChatInterruptDeps {
   expectedTurnId?: string;
   /** Called after the screen read, before the write; false writes nothing. */
   authorized?: () => Promise<boolean>;
+  /** The pane's latest window title and when it was set; read synchronously right before the write. */
+  readTitle?: () => { title: string; at: number } | null;
+  /** Synchronous last step before the ESC (e.g. a durable receipt); false writes nothing. */
+  beforeWrite?: () => boolean;
 }
 
 /**
@@ -38,8 +43,10 @@ export interface ChatInterruptDeps {
  * ESC is only safe while the turn runs. At rest it clears Claude's input line
  * (and a second one opens rewind), and in a dialog it answers the dialog, so an
  * idle agent, an open approval or any keyboard-owning screen refuses instead.
- * The screen must also show the agent's own running row, and one ESC per turn
- * and per cooldown is all a pane gets. Every check repeats after the last
+ * The agent must also show it is working right now: its own running row on
+ * the screen read, or a fresh running spinner in the window title (the only
+ * sign left while answer text streams). One ESC per turn and per cooldown is
+ * all a pane gets. Every check repeats after the last
  * await, right before the write.
  */
 export async function interruptChatTurn(agentSessionId: string, deps: ChatInterruptDeps): Promise<ChatInterruptVerdict> {
@@ -74,7 +81,11 @@ export async function interruptChatTurn(agentSessionId: string, deps: ChatInterr
   if (screenBlocksChatSend(rows)) return 'blocked';
   const second = check();
   if (second) return second;
-  // The hook's `running` can outlive the turn; the agent's own row cannot.
-  if (!screenShowsRunningTurn(rows, slug)) return 'not_running';
+  // The hook's `running` can outlive the turn; the agent's own row and title
+  // cannot. The title is read here, with no await between it and the write.
+  let title: { title: string; at: number } | null = null;
+  try { title = deps.readTitle?.() ?? null; } catch { /* no title = no title evidence */ }
+  if (!screenShowsRunningTurn(rows, slug) && !titleShowsRunningTurn(title, slug, now())) return 'not_running';
+  if (deps.beforeWrite && !deps.beforeWrite()) return 'write_refused';
   try { return deps.write('\x1b') ? 'sent' : 'unavailable'; } catch { return 'error'; }
 }

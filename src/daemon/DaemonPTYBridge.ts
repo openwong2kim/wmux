@@ -152,6 +152,9 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /** Last write to stdin that was a lone Esc, from any source (0 = never). */
   private lastEscAt = 0;
+  /** Latest OSC 0/2 window title (sanitized) and when it arrived (0 = never). */
+  private lastTitle = '';
+  private lastTitleAt = 0;
   /** #1463 — a session started and no turn has since (see isPreTurn). */
   private preTurn = false;
   /** #1463 — arrival time of the last turn evidence: submitted input, an
@@ -587,6 +590,11 @@ export class DaemonPTYBridge extends EventEmitter {
     return this.lastEscAt;
   }
 
+  /** The latest window title the program set, and when (`at` 0 = never). */
+  getTitle(): { title: string; at: number } {
+    return { title: this.lastTitle, at: this.lastTitleAt };
+  }
+
   /**
    * #1463 — the agent's SessionStart hook (fired at `signalTs`). Applies the
    * hook's own `running` edge like every other hook, then marks the pane
@@ -813,6 +821,10 @@ export class DaemonPTYBridge extends EventEmitter {
         // OSC 0/2 window title (e.g. Claude Code `/rename`). OSC 1 (icon-only)
         // is ignored. Sanitized here so the daemon→main payload is already safe.
         const title = sanitizeTitle(event.data);
+        // Every title write, repeats included: chat Stop reads the agent's
+        // running spinner here and needs to know how fresh it is.
+        this.lastTitle = title;
+        this.lastTitleAt = Date.now();
         if (title) this.emit('title', { sessionId, title });
         return;
       }
@@ -1118,6 +1130,8 @@ export class DaemonPTYBridge extends EventEmitter {
     this.turnOpen = false;
     this.turnSoftClosed = false;
     this.hookSeen = false;
+    this.lastTitle = '';
+    this.lastTitleAt = 0;
     this.awaitingHuman = false;
     this.oscParser = null;
     this.modeTracker = null;
