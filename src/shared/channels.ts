@@ -290,6 +290,11 @@ export interface ChannelMention {
  * Reasons:
  *  - `not_a_member` — the target workspace is not in the channel, so the whole
  *    mention was dropped. You cannot ping a workspace that isn't in the room.
+ *  - `human_not_seated` — the same drop, when the target is the reserved human
+ *    workspace (`HUMAN_WORKSPACE_ID`). Reported separately because the usual
+ *    remedy (invite the target) does not exist for it: the human workspace
+ *    cannot be invited or seated by an agent, only by the human joining from
+ *    the desktop. No seat is created and nothing is routed elsewhere (#1318).
  *  - `pane_not_in_workspace` — only the PANE PIN was refused: `paneId` is not a
  *    known pane of the mentioned workspace, so the daemon could not prove the
  *    caller is targeting a pane that workspace owns (a pin it cannot prove would
@@ -321,7 +326,7 @@ export interface ChannelDroppedMention {
   name?: string;
   /** The refused pane pin. Present with `pane_not_in_workspace` / `pane_not_live`. */
   paneId?: string;
-  reason: 'not_a_member' | 'pane_not_in_workspace' | 'pane_not_live';
+  reason: 'not_a_member' | 'human_not_seated' | 'pane_not_in_workspace' | 'pane_not_live';
 }
 
 /**

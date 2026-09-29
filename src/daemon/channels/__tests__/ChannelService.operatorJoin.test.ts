@@ -274,6 +274,87 @@ describe('ChannelService.operatorJoin', () => {
   });
 });
 
+// ─── #1318: an agent mentions the human, who has no seat ─────────────────────
+// The mention is dropped exactly as before; what changes is the reason, because
+// the remedy for a non-member (invite it) does not exist for the human. The
+// security property pinned here is the part that must NOT change: an agent's
+// mention never seats the human.
+describe('ChannelService.post — mention of the seatless human (#1318)', () => {
+  const agentSender = { workspaceId: 'ws-agent', memberId: 'agent-1', memberName: 'Agent' };
+
+  it('reports human_not_seated, keeps the mention off the message, and creates no seat', async () => {
+    const { svc, emit } = makeService();
+    const channelId = await makePrivateAgentChannel(svc);
+    emit.mockClear();
+
+    const post = await svc.post({
+      channelId,
+      sender: agentSender,
+      text: '@human please review',
+      verifiedWorkspaceId: 'ws-agent',
+      mentions: [{ workspaceId: HUMAN_WORKSPACE_ID, name: 'human' }],
+    });
+
+    expect(post.ok).toBe(true);
+    if (!post.ok) throw new Error(post.error.code);
+    expect(post.message.mentions).toBeUndefined();
+    expect(post.droppedMentions).toEqual([
+      { workspaceId: HUMAN_WORKSPACE_ID, name: 'human', reason: 'human_not_seated' },
+    ]);
+    // No seat, and no membership change announced (the sender's own cursor
+    // ride still emits its `cursor` catalog signal, as on any post).
+    expect(svc.getMembers(channelId, 'ws-agent').some((m) => m.workspaceId === HUMAN_WORKSPACE_ID)).toBe(false);
+    const membership = emit.mock.calls
+      .map((c) => c[0])
+      .filter((e) => e.type === 'channel.catalog' && e.reason === 'membership');
+    expect(membership).toEqual([]);
+  });
+
+  it('keeps not_a_member for any other non-member in the same post', async () => {
+    const { svc } = makeService();
+    const channelId = await makePrivateAgentChannel(svc);
+
+    const post = await svc.post({
+      channelId,
+      sender: agentSender,
+      text: '@Ghost @human',
+      verifiedWorkspaceId: 'ws-agent',
+      mentions: [
+        { workspaceId: 'ws-ghost', name: 'Ghost' },
+        { workspaceId: HUMAN_WORKSPACE_ID, name: 'human' },
+      ],
+    });
+
+    expect(post.ok).toBe(true);
+    if (!post.ok) throw new Error(post.error.code);
+    expect(post.droppedMentions).toEqual([
+      { workspaceId: 'ws-ghost', name: 'Ghost', reason: 'not_a_member' },
+      { workspaceId: HUMAN_WORKSPACE_ID, name: 'human', reason: 'human_not_seated' },
+    ]);
+  });
+
+  it('lands normally once the human has taken the seat from the desktop', async () => {
+    const { svc } = makeService();
+    const channelId = await makePrivateAgentChannel(svc);
+    await svc.operatorJoin({ channelId, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
+
+    const post = await svc.post({
+      channelId,
+      sender: agentSender,
+      text: '@human please review',
+      verifiedWorkspaceId: 'ws-agent',
+      mentions: [{ workspaceId: HUMAN_WORKSPACE_ID, name: 'human' }],
+    });
+
+    expect(post.ok).toBe(true);
+    if (!post.ok) throw new Error(post.error.code);
+    expect(post.droppedMentions).toBeUndefined();
+    expect(post.message.mentions).toEqual([{ workspaceId: HUMAN_WORKSPACE_ID, name: 'human' }]);
+    const row = svc.unreadFor(HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID).find((r) => r.channelId === channelId);
+    expect(row?.mentionUnread).toBe(1);
+  });
+});
+
 describe('ChannelService.operatorList', () => {
   it('returns metadata-only projection (no messages, no member detail)', async () => {
     const { svc } = makeService();

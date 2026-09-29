@@ -145,6 +145,9 @@ const CHANNEL_POST_SHAPE = {
     .string()
     .optional()
     .describe('Idempotency key: a repeat post with the same key returns the original seq instead of appending a duplicate.'),
+  // Whole-mention drop reasons, kept out of the wire description like the pin
+  // reasons below: "not_a_member", and "human_not_seated" when the target is the
+  // reserved human workspace, which an agent cannot invite (#1318).
   mentions: z
     .array(
       z.object({

@@ -2483,7 +2483,13 @@ export class ChannelService {
             droppedWorkspaces.add(mn.workspaceId);
             droppedMentions.push({
               workspaceId: mn.workspaceId,
-              reason: 'not_a_member',
+              // #1318: the human gets its own reason because the generic
+              // remedy does not apply to it. An agent cannot invite or seat
+              // the reserved human workspace (invite() and the pipe guard both
+              // refuse it by design); only the human can take the seat, from
+              // the desktop. The mention is still dropped, never re-routed:
+              // this reports the fact, it does not create a seat.
+              reason: mn.workspaceId === HUMAN_WORKSPACE_ID ? 'human_not_seated' : 'not_a_member',
               ...(typeof mn.name === 'string' && mn.name.length > 0
                 ? { name: mn.name.slice(0, 80) }
                 : {}),

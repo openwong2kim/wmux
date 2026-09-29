@@ -57,7 +57,10 @@ is what keeps the pin from being a way to paste text into someone else's pane.
 
 **Always read `droppedMentions` on the result.** A mention of a workspace that is
 not a channel member is reported there too (`not_a_member`). It is the only
-signal that your ping did not land the way you asked.
+signal that your ping did not land the way you asked. A mention of the human
+comes back as `human_not_seated` when the human has no seat in the channel: they
+did not get it, and inviting them is not possible — the human can only join
+from the wmux desktop app.
 
 ## If you are the worker
 
