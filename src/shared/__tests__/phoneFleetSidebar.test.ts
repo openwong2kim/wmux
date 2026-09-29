@@ -256,3 +256,79 @@ describe('real fan-out data and per-item drops', () => {
     expect(summary).not.toMatch(/SECRET|yesterday/);
   });
 });
+
+describe('workspace layout tree', () => {
+  const leafNode = (paneId: string, surfaces: unknown[], activeIndex: number | undefined = surfaces.length > 0 ? 0 : undefined) => ({
+    kind: 'leaf', paneId, surfaces, ...(activeIndex !== undefined ? { activeIndex } : {}),
+  });
+  const goodLayout = {
+    root: {
+      kind: 'split', direction: 'horizontal', sizes: [60, 40], children: [
+        leafNode('pa', [{ kind: 'terminal', ptyId: 'p1' }, { kind: 'terminal', ptyId: 'p2' }, { kind: 'browser', title: 'Docs' }], 2),
+        { kind: 'split', direction: 'vertical', sizes: [1, 3], children: [leafNode('pb', [{ kind: 'terminal', ptyId: 'p3' }]), leafNode('pc', [{ kind: 'terminal' }])] },
+      ],
+    },
+    activePaneId: 'pb',
+  };
+  const parseLayout = (layout: unknown) => {
+    const log = createSidebarDropLog();
+    const parsed = parsePhoneSidebarSnapshot({ activeWorkspaceId: null, workspaces: [{ id: 'ws', order: 0, pinned: false, layout }], panes: [] }, log.report);
+    return { row: parsed?.workspaces[0], dropped: log.summary() };
+  };
+
+  it('keeps a valid tree and normalises sizes to percent', () => {
+    const { row, dropped } = parseLayout(goodLayout);
+    expect(dropped).toBe('');
+    expect(row?.layout?.activePaneId).toBe('pb');
+    const root = row?.layout?.root;
+    expect(root?.kind === 'split' && root.sizes).toEqual([60, 40]);
+    const inner = root?.kind === 'split' ? root.children[1] : undefined;
+    expect(inner?.kind === 'split' && inner.sizes).toEqual([25, 75]);
+    expect(root?.kind === 'split' && root.children[0]).toEqual(goodLayout.root.children[0]);
+  });
+
+  it('refuses the whole tree, keeping the row, on a depth bomb and on a node bomb', () => {
+    let deep: unknown = leafNode('bottom', []);
+    for (let i = 0; i < 10_000; i += 1) deep = { kind: 'split', direction: 'vertical', sizes: [1], children: [deep] };
+    const depth = parseLayout({ root: deep });
+    expect(depth.row).toEqual({ id: 'ws', order: 0, pinned: false });
+    expect(depth.dropped).toBe('workspace.layout.depth×1');
+
+    const wide = { kind: 'split', direction: 'horizontal', sizes: Array(100_000).fill(1), children: Array.from({ length: 100_000 }, (_, i) => leafNode(`p${i}`, [])) };
+    expect(parseLayout({ root: wide }).dropped).toBe('workspace.layout.children×1');
+
+    // Within every per-split bound, but over the leaf total.
+    const split = (n: number, base: number) => ({ kind: 'split', direction: 'vertical', sizes: Array(n).fill(1), children: Array.from({ length: n }, (_, i) => leafNode(`p${base + i}`, [])) });
+    const many = { kind: 'split', direction: 'horizontal', sizes: [1, 1], children: [split(40, 0), split(40, 100)] };
+    expect(parseLayout({ root: many }).dropped).toBe('workspace.layout.leaves×1');
+  });
+
+  it('refuses bad sizes: wrong count, zero, negative, non-finite, not numbers', () => {
+    for (const sizes of [[100], [0, 100], [-1, 101], [Infinity, 1], [NaN, 1], ['50', '50'], undefined]) {
+      const root = { kind: 'split', direction: 'horizontal', sizes, children: [leafNode('a', []), leafNode('b', [])] };
+      expect(parseLayout({ root }).dropped).toBe('workspace.layout.sizes×1');
+    }
+  });
+
+  it('reads an unknown surface kind as other, and refuses an unknown node kind', () => {
+    const { row } = parseLayout({ root: leafNode('a', [{ kind: 'hologram', title: 'Future tab', extra: 1 }]) });
+    expect(row?.layout?.root).toEqual({ kind: 'leaf', paneId: 'a', surfaces: [{ kind: 'other', title: 'Future tab' }], activeIndex: 0 });
+    expect(parseLayout({ root: { kind: 'grid', children: [] } }).dropped).toBe('workspace.layout.kind×1');
+  });
+
+  it('refuses an unsafe title, a duplicate pane or session id, and an out-of-range active tab', () => {
+    expect(parseLayout({ root: leafNode('a', [{ kind: 'browser', title: 'evil‮title' }]) }).dropped).toBe('workspace.layout.title×1');
+    const two = (a: unknown, b: unknown) => ({ root: { kind: 'split', direction: 'horizontal', sizes: [1, 1], children: [a, b] } });
+    expect(parseLayout(two(leafNode('a', []), leafNode('a', []))).dropped).toBe('workspace.layout.paneId×1');
+    expect(parseLayout(two(leafNode('a', [{ kind: 'terminal', ptyId: 'p' }]), leafNode('b', [{ kind: 'terminal', ptyId: 'p' }]))).dropped).toBe('workspace.layout.ptyId×1');
+    expect(parseLayout({ root: leafNode('a', [{ kind: 'terminal', ptyId: 'p' }], 1) }).dropped).toBe('workspace.layout.activeIndex×1');
+    expect(parseLayout({ root: { kind: 'leaf', paneId: 'a', surfaces: [{ kind: 'terminal', ptyId: 'p' }] } }).dropped).toBe('workspace.layout.activeIndex×1');
+  });
+
+  it('drops only an activePaneId that is not a leaf of the tree', () => {
+    const { row, dropped } = parseLayout({ ...goodLayout, activePaneId: 'stashed-pane' });
+    expect(row?.layout?.activePaneId).toBeUndefined();
+    expect(row?.layout?.root.kind).toBe('split');
+    expect(dropped).toBe('workspace.layout.activePaneId×1');
+  });
+});
