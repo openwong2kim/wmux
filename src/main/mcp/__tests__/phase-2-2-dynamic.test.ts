@@ -566,8 +566,9 @@ describe('phase 2.2 dynamic — enforce mode (pre-commit 6)', () => {
     expect(d.ok).toBe(true);
   });
 
-  // #1111 Stage 3: the grandfather lane closed on 2026-09-30. In enforce mode
-  // an envelope-less caller is refused; the named callers above still work.
+  // #1111 Stage 3: the grandfather lane closes in the first release on or
+  // after 2026-09-30. In enforce mode an envelope-less caller is refused; the
+  // named callers above still work.
   it('rejects legacy callers (no clientName envelope) in enforce mode', async () => {
     const r = await router.dispatch({
       id: 'legacy-1',
