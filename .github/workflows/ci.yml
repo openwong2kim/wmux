@@ -30,7 +30,10 @@ jobs:
           # dead); the Node 24 runtime is NOT needed for that and kills one
           # vitest fork per run on windows-latest (#984). Recouple when #984
           # is resolved.
-          node-version: 22
+          # EXPERIMENT (#984) — DRAFT, NEVER MERGE: pinned to 24.19.0, a libuv
+          # 1.52.1 build whose fs-event.c:72 assert is live (24.21.0 carries
+          # the libuv fix, so floating `24` would prove nothing).
+          node-version: '24.19.0'
           cache: npm
 
       # npm 11 owns package-lock.json (see CONTRIBUTING). Node 22 bundles npm
