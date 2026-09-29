@@ -49,6 +49,7 @@ import type {
   TranscriptStatus,
   TurnEvent,
 } from '../../shared/transcript/turnEvents';
+import { watchTarget } from '../../shared/watchTarget';
 
 /**
  * A3 — hard serialized-byte budget for one RPC response and for one emitted
@@ -655,7 +656,8 @@ export class TranscriptProjector {
     const dir = path.dirname(state.transcriptPath);
     const basename = transcriptBasename(state.transcriptPath);
     try {
-      const watcher = fs.watch(dir, { persistent: false }, (_event, filename) => {
+      // Long spelling: an 8.3 short dir aborts libuv 1.52 builds (#984).
+      const watcher = fs.watch(watchTarget(dir), { persistent: false }, (_event, filename) => {
         // The directory holds every session for this project slug, so the
         // basename filter is what keeps a sibling pane's writes from waking us.
         // A null filename (some platforms drop it) is treated as "maybe ours".

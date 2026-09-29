@@ -10,6 +10,8 @@ import {
   type GitWatchFactory,
   type GitWatchListener,
 } from '../gitContextWatch';
+import { watchTarget } from '../../../shared/watchTarget';
+import { shortPathOf } from '../../../test-utils/shortPath';
 
 function mkTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-gitwatch-'));
@@ -170,7 +172,22 @@ describe('GitContextWatcher', () => {
     initFakeRepo(root, 'main');
     makeWatcher().update('s1', root);
     expect(fake.arms).toHaveLength(1);
-    expect(fake.last().target).toBe(path.join(root, '.git'));
+    expect(fake.last().target).toBe(watchTarget(path.join(root, '.git')));
+  });
+
+  it.runIf(process.platform === 'win32')('arms on the long spelling when the cwd is an 8.3 short path (#984)', (ctx) => {
+    // libuv 1.52 garbles (or asserts on) the event filename for a directory
+    // watched through a short alias, and the HEAD filter would drop it.
+    const root = tmp();
+    initFakeRepo(root, 'main');
+    const short = shortPathOf(root);
+    if (!short) return ctx.skip(); // 8.3 names are off for this volume
+    makeWatcher().update('s1', short);
+    expect(events).toEqual([{ sessionId: 's1', branch: 'main', isWorktree: false }]);
+    expect(fake.last().target).not.toContain('~');
+    expect(fake.last().target.toLowerCase()).toBe(
+      fs.realpathSync.native(path.join(root, '.git')).toLowerCase(),
+    );
   });
 
   it('emits again when HEAD changes (branch switch)', () => {
@@ -267,7 +284,7 @@ describe('GitContextWatcher', () => {
     const watcher = makeWatcher();
     watcher.update('s1', root);
     // Outside a repo the watch arms on the cwd itself.
-    expect(fake.last().target).toBe(root);
+    expect(fake.last().target).toBe(watchTarget(root));
     const nonRepoWatch = fake.last();
 
     // Unrelated files in the cwd must not trigger a re-resolve.
@@ -281,7 +298,7 @@ describe('GitContextWatcher', () => {
     expect(events.at(-1)?.branch).toBe('fresh');
     // Re-armed on the freshly resolved git dir; the old watch was closed.
     expect(nonRepoWatch.closed).toBe(true);
-    expect(fake.last().target).toBe(path.join(root, '.git'));
+    expect(fake.last().target).toBe(watchTarget(path.join(root, '.git')));
   });
 
   it('remove() closes the watch and clears a pending debounce', () => {

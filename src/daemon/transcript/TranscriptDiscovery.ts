@@ -39,6 +39,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { claudeProjectRoots } from '../hooks/transcriptPathGuard';
+import { watchTarget } from '../../shared/watchTarget';
 
 /** Only Claude Code publishes a transcript wmux can discover today. */
 export const DISCOVERABLE_AGENT = 'claude';
@@ -280,7 +281,8 @@ export class TranscriptDiscovery {
     if (this.disposed) return;
     for (const root of rootsFor(state.agent, this.deps.getSessionEnv?.(sessionId))) {
       try {
-        const watcher = fs.watch(root, { persistent: false }, () => {
+        // Long spelling: an 8.3 short root aborts libuv 1.52 builds (#984).
+        const watcher = fs.watch(watchTarget(root), { persistent: false }, () => {
           this.schedule(sessionId, state);
         });
         // A vanished root just leaves the poll as the only trigger.

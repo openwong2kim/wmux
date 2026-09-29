@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { BUDGET_BYTES, TranscriptProjector } from '../TranscriptProjector';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import type { TranscriptAppendData } from '../../../shared/transcript/turnEvents';
+import { shortPathOf } from '../../../test-utils/shortPath';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -310,6 +311,33 @@ describe('TranscriptProjector.subscribe / unsubscribe — per (client, session)'
     harness.projector.subscribe('c1', 'pty-1');
     harness.projector.dropPty('pty-1');
     expect(harness.projector.watchCount).toBe(0);
+  });
+
+  it.runIf(process.platform === 'win32')('arms fs.watch on the long spelling of an 8.3 short transcript dir (#984)', (ctx) => {
+    // libuv 1.52 builds with asserts on abort the process on the first event
+    // for a directory watched through a short alias.
+    const shortDir = shortPathOf(harness.dir);
+    if (!shortDir) return ctx.skip(); // 8.3 names are off for this volume
+    fixture('claude-basic.jsonl');
+    const shortFile = path.join(shortDir, 'projects', '-synthetic-repo', 'claude-basic.jsonl');
+    // Config root and transcript in the same short spelling, the way a short
+    // %TEMP% or CLAUDE_CONFIG_DIR hands both over.
+    const projector = new TranscriptProjector({
+      getResumeBinding: () => binding({ transcriptPath: shortFile }),
+      getSessionEnv: () => ({ CLAUDE_CONFIG_DIR: shortDir }),
+      emitAppend: () => undefined,
+    });
+    const watch = vi.spyOn(fs, 'watch');
+    try {
+      projector.subscribe('c1', 'pty-1');
+      expect(watch).toHaveBeenCalledTimes(1);
+      const target = String(watch.mock.calls[0][0]);
+      expect(target).not.toContain('~');
+      expect(target.toLowerCase()).toBe(fs.realpathSync.native(harness.projects).toLowerCase());
+    } finally {
+      projector.dispose();
+      watch.mockRestore();
+    }
   });
 });
 
