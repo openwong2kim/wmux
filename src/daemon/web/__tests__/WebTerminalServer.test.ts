@@ -8335,11 +8335,12 @@ describe('WebTerminalServer', () => {
     });
 
     it('404s when the last component became a symlink after the boundary check', async () => {
-      // O_NOFOLLOW is the whole answer to the window between `realpath` and
-      // `open`, and every other symlink case in this file is caught one step
-      // earlier - by realpath - so nothing reaches the flag. Handing the
-      // handler a path realpath did NOT resolve is what puts the swap in front
-      // of `open`, where ELOOP is the refusal.
+      // Every other symlink case in this file is caught one step earlier - by
+      // realpath - so nothing reaches the open. Handing the handler a path
+      // realpath did NOT resolve is what puts the swap in front of
+      // `openResolvedFile`, which refuses the link itself rather than trusting
+      // O_NOFOLLOW (absent on win32, #1434). The swaps that land between its
+      // checks and the open are pinned in openResolvedFile.runtime.test.ts.
       const root = tmpTree();
       const cwd = path.join(root, 'cwd');
       const outside = path.join(root, 'outside');

@@ -7,6 +7,7 @@ import type { InputReceiptStore } from './InputReceiptStore';
 import { sessionPullRequests } from './sessionPullRequests';
 import { SessionGitController, SessionGitError } from './sessionGit';
 import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
+import { openResolvedFile } from './openResolvedFile';
 import { listFolders, FolderBrowseError, homeIsBrowsable } from './phoneFolders';
 import {
   createSearchCursorCodec,
@@ -4813,18 +4814,11 @@ export class WebTerminalServer {
     // second path lookup here is a window in which the file under an allowed
     // path becomes a symlink to somewhere else, or a small file becomes a large
     // one after the size gate has passed.
-    // `real` came back from realpath with every link resolved, so the ONLY way
-    // its last component is a symlink now is that it was swapped in between —
-    // O_NOFOLLOW turns that swap into ELOOP → 404 instead of a follow. And
-    // O_NONBLOCK: a FIFO inside the boundary would otherwise park this request
-    // (and its handle) until a writer shows up, which may be never.
-    let handle: fs.promises.FileHandle;
-    try {
-      handle = await fs.promises.open(
-        real,
-        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
-      );
-    } catch {
+    // `openResolvedFile` refuses a link swapped in since realpath, and anything
+    // that is not a regular file, without depending on O_NOFOLLOW/O_NONBLOCK —
+    // Node has neither on win32 (#1434). Every refusal is the same 404.
+    const handle = await openResolvedFile(real);
+    if (!handle) {
       this.json(res, 404, { error: 'image not found' });
       return;
     }
@@ -4917,7 +4911,9 @@ export class WebTerminalServer {
    * it was rewired to call. Shipped phone builds depend on that route, and the
    * contract this one was written to (wmux-ios, 2026-09-20) asks in as many
    * words that it not be touched; refactoring it to reach a new abstraction is
-   * a change to it, whatever the diff says about behaviour.
+   * a change to it, whatever the diff says about behaviour. The one shared
+   * piece is the open itself, `openResolvedFile`: #1434 asked for both routes
+   * to change together, and two copies of that check could drift apart.
    *
    * Every piece of the boundary is load-bearing here for the reasons spelled
    * out on that handler: the roots are `meta.spawnCwd` ∪ `deps.uploadsDir` and
@@ -4996,13 +4992,8 @@ export class WebTerminalServer {
       return;
     }
 
-    let handle: fs.promises.FileHandle;
-    try {
-      handle = await fs.promises.open(
-        real,
-        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
-      );
-    } catch {
+    const handle = await openResolvedFile(real);
+    if (!handle) {
       this.json(res, 404, { error: 'file not found' });
       return;
     }
