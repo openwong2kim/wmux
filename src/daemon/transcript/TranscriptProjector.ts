@@ -656,7 +656,7 @@ export class TranscriptProjector {
     const dir = path.dirname(state.transcriptPath);
     const basename = transcriptBasename(state.transcriptPath);
     try {
-      // Long spelling: an 8.3 short dir aborts libuv 1.52 builds (#984).
+      // Long spelling: libuv 1.52 mishandles an 8.3 short dir (watchTarget, #984).
       const watcher = fs.watch(watchTarget(dir), { persistent: false }, (_event, filename) => {
         // The directory holds every session for this project slug, so the
         // basename filter is what keeps a sibling pane's writes from waking us.

@@ -200,7 +200,7 @@ export class GitContextWatcher extends EventEmitter {
    * re-resolve.
    */
   private arm(sessionId: string, watch: SessionWatch): void {
-    // Long spelling: an 8.3 short cwd would garble the reported filename (#984).
+    // Long spelling: libuv 1.52 mishandles an 8.3 short dir (watchTarget, #984).
     const target = watchTarget(watch.repo ? watch.repo.gitDir : watch.cwd);
     try {
       watch.watcher = this.watchFactory(target, (_event, filename) => {

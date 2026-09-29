@@ -60,10 +60,10 @@ describe('GitContextWatcher (real fs.watch)', () => {
   }, 15_000);
 
   it.runIf(process.platform === 'win32')('re-emits on a HEAD rewrite when the cwd is an 8.3 short path (#984)', async (ctx) => {
-    // libuv 1.52 reports `<tail of the long dir>\HEAD` instead of `HEAD` for a
-    // directory watched through a short alias (Electron 41, asserts off) or
-    // aborts the process (Node 24.16–24.20, asserts on). Either way the
-    // HEAD-only filename filter never sees a match.
+    // For a directory watched through a short alias, libuv 1.52 reports
+    // `<tail of the long dir>\HEAD` instead of `HEAD` with asserts off
+    // (Electron 41) and aborts the process with asserts on (official Node
+    // 24.16–24.20 and 26.0–26.7). Either way the HEAD filter never matches.
     const root = tmp();
     fs.mkdirSync(path.join(root, '.git'), { recursive: true });
     fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n');

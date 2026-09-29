@@ -159,8 +159,9 @@ describe('fs.watch — truncation and rotation', () => {
 describe('fs.watch — 8.3 short directory spelling (#984)', () => {
   it.runIf(process.platform === 'win32')('delivers an append when the transcript dir is spelled short', async (ctx) => {
     // A windows-latest runner's %TEMP% is `C:\Users\RUNNER~1\...`. libuv 1.52
-    // builds with asserts on (Node 24.16–24.20) aborted the process on the
-    // first event for a directory watched through that spelling.
+    // builds with asserts on (official Node 24.16–24.20 and 26.0–26.7)
+    // aborted the process on the first event for a directory watched through
+    // that spelling.
     const shortRoot = shortPathOf(root);
     if (!shortRoot) return ctx.skip(); // 8.3 names are off for this volume
     projector.dispose();

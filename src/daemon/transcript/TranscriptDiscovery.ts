@@ -281,7 +281,7 @@ export class TranscriptDiscovery {
     if (this.disposed) return;
     for (const root of rootsFor(state.agent, this.deps.getSessionEnv?.(sessionId))) {
       try {
-        // Long spelling: an 8.3 short root aborts libuv 1.52 builds (#984).
+        // Long spelling: libuv 1.52 mishandles an 8.3 short dir (watchTarget, #984).
         const watcher = fs.watch(watchTarget(root), { persistent: false }, () => {
           this.schedule(sessionId, state);
         });
