@@ -3,7 +3,7 @@ import { buildPhoneSidebarSnapshot } from '../phoneSidebarSnapshot';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
 import { parsePhoneSidebarSnapshot, PHONE_SIDEBAR_LIMITS } from '../../../shared/phoneFleetSidebar';
 import type { StoreState } from '../../stores';
-import type { Workspace, Pane, Surface, AgentStatus } from '../../../shared/types';
+import type { Workspace, Pane, PaneLeaf, Surface, AgentStatus } from '../../../shared/types';
 import type { WorkTask } from '../../../shared/workTask';
 import type { FanoutOrigin } from '../../../shared/fanoutOrigin';
 
@@ -83,16 +83,20 @@ describe('buildPhoneSidebarSnapshot — workspace rows', () => {
     const b = workspace('b', [leaf('pb', [surface('sb', 'pty-b')])]);
     const snap = buildPhoneSidebarSnapshot(state({ workspaces: [a, b], pinned: ['b'], activeWorkspaceId: 'b' }));
     expect(snap.activeWorkspaceId).toBe('b');
+    const single = (paneId: string, ptyId: string) => ({
+      root: { kind: 'leaf', paneId, surfaces: [{ kind: 'terminal', ptyId }], activeIndex: 0 },
+      activePaneId: paneId,
+    });
     expect(snap.workspaces).toEqual([
-      { id: 'a', order: 0, pinned: false, color: 'teal', gitBranch: 'feat/x', gitIsWorktree: true, gitSync: { ahead: 2, behind: 1, hasUpstream: true } },
-      { id: 'b', order: 1, pinned: true },
+      { id: 'a', order: 0, pinned: false, color: 'teal', gitBranch: 'feat/x', gitIsWorktree: true, gitSync: { ahead: 2, behind: 1, hasUpstream: true }, layout: single('pa', 'pty-a') },
+      { id: 'b', order: 1, pinned: true, layout: single('pb', 'pty-b') },
     ]);
   });
 
   it('omits a null git sync and leaves no key for an absent color', () => {
     const a = workspace('a', [leaf('pa', [surface('sa', 'pty-a')])], { metadata: { gitSync: null } });
     const [row] = buildPhoneSidebarSnapshot(state({ workspaces: [a] })).workspaces;
-    expect(row).toEqual({ id: 'a', order: 0, pinned: false });
+    expect(row).toEqual({ id: 'a', order: 0, pinned: false, layout: expect.anything() });
   });
 
   it('reports the same task link resolveTaskLink gives the sidebar, for every evidence source', () => {
@@ -287,10 +291,94 @@ describe('buildPhoneSidebarSnapshot — one bad part never costs the snapshot', 
     const reasons: string[] = [];
     const snap = buildPhoneSidebarSnapshot(state({ workspaces: [owner, task, other], missions: { t1: poisoned } }), (r) => reasons.push(r));
     expect(snap.workspaces.map((w) => w.id)).toEqual(['owner', 't1', 'other']);
-    expect(snap.workspaces[1]).toEqual({ id: 't1', order: 1, pinned: false, gitBranch: 'wtask/x' });
+    expect(snap.workspaces[1]).toEqual({ id: 't1', order: 1, pinned: false, gitBranch: 'wtask/x', layout: expect.anything() });
     expect(snap.workspaces[0]).toMatchObject({ gitBranch: 'main' });
+    // The unreadable leaf costs its workspace's tree, never the row.
+    expect(snap.workspaces[2]).toEqual({ id: 'other', order: 2, pinned: false });
     expect(snap.panes.map((p) => p.ptyId)).toEqual(['pty-o', 'pty-1', 'pty-x']);
-    expect(reasons).toEqual(expect.arrayContaining(['task.tree', 'workspace.task', 'pane.row']));
+    expect(reasons).toEqual(expect.arrayContaining(['task.tree', 'workspace.task', 'pane.row', 'workspace.layout']));
     expect(reasons.join(' ')).not.toContain('corrupt');
+  });
+});
+
+describe('buildPhoneSidebarSnapshot — layout tree', () => {
+  const layoutOf = (ws: Workspace, reasons?: string[]) => {
+    const snap = buildPhoneSidebarSnapshot(state({ workspaces: [ws] }), (r) => reasons?.push(r));
+    return { snap, layout: snap.workspaces[0].layout };
+  };
+
+  it('mirrors rootPane: direction, sizes, tab order, active tab (a browser tab) and focused pane; stashed panes stay out', () => {
+    const tabs = { ...(leaf('pa', [
+      surface('s1', 'pty-1'),
+      surface('s2', 'pty-2'),
+      surface('s3', '', { surfaceType: 'browser', title: 'Docs ‮home' } as Partial<Surface>),
+    ]) as PaneLeaf), activeSurfaceId: 's3' };
+    const ws: Workspace = {
+      id: 'a', name: 'a', activePaneId: 'pc',
+      rootPane: {
+        id: 'r', type: 'branch', direction: 'horizontal', sizes: [70, 30], children: [
+          tabs,
+          // No sizes on the inner split: the desktop renders it equal.
+          { id: 'r2', type: 'branch', direction: 'vertical', children: [leaf('pb', [surface('sb', 'pty-b')]), leaf('pc', [surface('sc', 'brain-1')])] },
+        ],
+      },
+      stashedPanes: [{ pane: leaf('pst', [surface('sst', 'pty-st')]) as PaneLeaf, stashedAt: 1 }],
+    } as Workspace;
+    const { snap, layout } = layoutOf(ws);
+    expect(layout).toEqual({
+      root: {
+        kind: 'split', direction: 'horizontal', sizes: [70, 30], children: [
+          { kind: 'leaf', paneId: 'pa', activeIndex: 2, surfaces: [{ kind: 'terminal', ptyId: 'pty-1' }, { kind: 'terminal', ptyId: 'pty-2' }, { kind: 'browser', title: 'Docs home' }] },
+          { kind: 'split', direction: 'vertical', sizes: [50, 50], children: [
+            { kind: 'leaf', paneId: 'pb', surfaces: [{ kind: 'terminal', ptyId: 'pty-b' }], activeIndex: 0 },
+            // The brain session keeps its tab slot but never its id.
+            { kind: 'leaf', paneId: 'pc', surfaces: [{ kind: 'terminal' }], activeIndex: 0 },
+          ] },
+        ],
+      },
+      activePaneId: 'pc',
+    });
+    // Whatever the renderer builds, the parsers accept unchanged.
+    expect(parsePhoneSidebarSnapshot(JSON.parse(JSON.stringify(snap)))?.workspaces[0].layout).toEqual(layout);
+  });
+
+  it('projects a browser-only leaf, a remote mirror and an unknown surface type', () => {
+    const ws = workspace('a', [leaf('pa', [
+      surface('s1', '', { surfaceType: 'browser', title: 'Search' } as Partial<Surface>),
+      surface('s2', '', { surfaceType: 'remote-terminal', title: 'build box' } as Partial<Surface>),
+      surface('s3', '', { surfaceType: 'hologram', title: '' } as unknown as Partial<Surface>),
+    ])]);
+    expect(layoutOf(ws).layout?.root).toEqual({
+      kind: 'leaf', paneId: 'pa', activeIndex: 0,
+      surfaces: [{ kind: 'browser', title: 'Search' }, { kind: 'remote-terminal', title: 'build box' }, { kind: 'other' }],
+    });
+  });
+
+  it('normalises unequal sizes and falls back to an equal split for missing, mismatched or bad ones', () => {
+    const three = [leaf('a', [surface('sa', 'p-a')]), leaf('b', [surface('sb', 'p-b')]), leaf('c', [surface('sc', 'p-c')])];
+    const withSizes = (sizes: number[] | undefined) =>
+      workspace('w', three, { rootPane: { id: 'r', type: 'branch', direction: 'vertical', children: three, ...(sizes ? { sizes } : {}) } });
+    const sizesOf = (ws: Workspace) => { const root = layoutOf(ws).layout?.root; return root?.kind === 'split' ? root.sizes : null; };
+    expect(sizesOf(withSizes([2, 1, 1]))).toEqual([50, 25, 25]);
+    for (const bad of [undefined, [50, 50], [0, 50, 50], [NaN, 1, 1]]) expect(sizesOf(withSizes(bad))).toEqual([33.33, 33.33, 33.33]);
+  });
+
+  it('falls back to the first tab when the active surface is gone, and omits a focused pane that is stashed', () => {
+    const ws = workspace('a', [{ ...(leaf('pa', [surface('s1', 'p1'), surface('s2', 'p2')]) as PaneLeaf), activeSurfaceId: 'gone' }], {
+      activePaneId: 'pst',
+      stashedPanes: [{ pane: leaf('pst', [surface('sst', 'pty-st')]) as PaneLeaf, stashedAt: 1 }],
+    });
+    const { layout } = layoutOf(ws);
+    expect(layout?.root).toMatchObject({ kind: 'leaf', paneId: 'pa', activeIndex: 0 });
+    expect(layout).not.toHaveProperty('activePaneId');
+  });
+
+  it('projects no tree over the leaf bound, keeping the row and every pane', () => {
+    const leaves = Array.from({ length: PHONE_SIDEBAR_LIMITS.layout.leaves + 1 }, (_, i) => leaf(`p${i}`, [surface(`s${i}`, `pty-${i}`)]));
+    const reasons: string[] = [];
+    const { snap, layout } = layoutOf(workspace('a', leaves), reasons);
+    expect(layout).toBeUndefined();
+    expect(snap.panes).toHaveLength(leaves.length);
+    expect(reasons).toContain('workspace.layout.bounds');
   });
 });
