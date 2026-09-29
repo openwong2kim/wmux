@@ -667,6 +667,9 @@ export default function RemoteMirrorTerminal({ attachId, error, insecureTranspor
     const container = containerRef.current;
     if (!container) return;
     const term = new Terminal({
+      // #1641: an own object — xterm 6 shares one default windowOptions object
+      // across every Terminal, and the desktop image addon mutates its copy.
+      windowOptions: {},
       convertEol: false,
       scrollback: 2000,
       disableStdin: false,

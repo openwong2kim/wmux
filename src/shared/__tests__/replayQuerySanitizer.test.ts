@@ -48,6 +48,8 @@ describe('stripReplayQuerySequences', () => {
   it('strips XTWINOPS size queries and XTSMGRAPHICS, keeps their display look-alikes', () => {
     expect(strip('\x1b[14t\x1b[14;2t\x1b[16t\x1b[18t')).toBe('');
     expect(strip('\x1b[?2;1;0S\x1b[?1;4S')).toBe('');
+    // SET / reset are stripped too: the addon answers them with a report.
+    expect(strip('\x1b[?1;3;1024S\x1b[?1;2S')).toBe('');
     // Title push/pop, DECSLPP and plain scroll-up are display state.
     expect(strip('\x1b[22;0t\x1b[23;0t\x1b[24t\x1b[3S')).toBe('\x1b[22;0t\x1b[23;0t\x1b[24t\x1b[3S');
   });

@@ -1153,6 +1153,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // same trade). Option+click-to-move-cursor stays at shell prompts; see
       // installAltClickTrackingGuard for why it is off under mouse tracking.
       macOptionClickForcesSelection: true,
+      // #1641: an own object — xterm 6 shares one default windowOptions
+      // object across every Terminal, and the image addon mutates it.
+      windowOptions: {},
       // Enable xterm 6's Windows-aware ConPTY handling. ConPTY emits spurious
       // row-change events on resize; on a build where the reflow path is taken
       // that logic suppresses them, which in turn keeps SelectionService from

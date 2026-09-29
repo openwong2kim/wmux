@@ -25,6 +25,9 @@ const iconFile = `icon.${iconExt}`;
 // iTerm2 image protocol's base64 with bundled WebAssembly, and Chromium
 // refuses to compile WebAssembly under a bare `script-src 'self'`. It allows
 // WebAssembly compilation only — eval() and new Function() stay blocked.
+// Allowed whether or not the Inline images setting is on, on purpose: this
+// header is fixed when the window loads, and the setting can be switched on
+// later without a reload.
 export const MAIN_WINDOW_PRODUCTION_CSP = [
   "default-src 'self'",
   "script-src 'self' 'wasm-unsafe-eval'",

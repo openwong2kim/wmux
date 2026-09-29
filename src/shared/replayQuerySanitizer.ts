@@ -54,8 +54,12 @@ const REPLAY_QUERY_SEQUENCES = new RegExp(
     // The inline-image addon (#1641) enables these. Only the query forms:
     // 22/23 t are title push/pop and >= 24 t is DECSLPP, both display state.
     '\\x1b\\[(?:14|16|18)(?:;[0-9]*)?t',
-    // XTSMGRAPHICS — CSI ? Pi ; Pa ; Pv S (sixel palette / geometry query,
-    // #1641). The `?` prefix keeps plain CSI Ps S (scroll up) untouched.
+    // XTSMGRAPHICS — CSI ? Pi ; Pa ; Pv S (sixel palette / geometry, #1641).
+    // Every action is stripped, SET and reset-to-default included: the image
+    // addon answers each of them with a status report, so a replayed SET would
+    // type that report into the shell just like a query. What is lost is only
+    // a non-default sixel palette size, which the next sixel app sets again.
+    // The `?` prefix keeps plain CSI Ps S (scroll up) untouched.
     '\\x1b\\[\\?[0-9;]*S',
     // ENQ — answerback query
     '\\x05',
