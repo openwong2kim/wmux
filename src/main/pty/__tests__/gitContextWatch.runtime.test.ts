@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { GitContextWatcher } from '../gitContextWatch';
+import { shortPathOf } from '../../../test-utils/shortPath';
 
 /**
  * Real-filesystem end-to-end proof that the production default actually wires
@@ -51,6 +52,37 @@ describe('GitContextWatcher (real fs.watch)', () => {
     });
 
     watcher.update('s1', root);
+    expect(events).toEqual([{ sessionId: 's1', branch: 'main', isWorktree: false }]);
+
+    fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/feature-y\n');
+    await secondEvent;
+    expect(events[1].branch).toBe('feature-y');
+  }, 15_000);
+
+  it.runIf(process.platform === 'win32')('re-emits on a HEAD rewrite when the cwd is an 8.3 short path (#984)', async (ctx) => {
+    // libuv 1.52 reports `<tail of the long dir>\HEAD` instead of `HEAD` for a
+    // directory watched through a short alias (Electron 41, asserts off) or
+    // aborts the process (Node 24.16–24.20, asserts on). Either way the
+    // HEAD-only filename filter never sees a match.
+    const root = tmp();
+    fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    const short = shortPathOf(root);
+    if (!short) return ctx.skip(); // 8.3 names are off for this volume
+
+    const watcher = new GitContextWatcher();
+    watchers.push(watcher);
+
+    type GitEvent = { sessionId: string; branch: string | null; isWorktree: boolean };
+    const events: GitEvent[] = [];
+    const secondEvent = new Promise<void>((resolve) => {
+      watcher.on('git', (e: GitEvent) => {
+        events.push(e);
+        if (events.length === 2) resolve();
+      });
+    });
+
+    watcher.update('s1', short);
     expect(events).toEqual([{ sessionId: 's1', branch: 'main', isWorktree: false }]);
 
     fs.writeFileSync(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/feature-y\n');
