@@ -13,13 +13,14 @@ import { wrapHandler } from '../wrapHandler';
 import { getWmuxDir } from '../../../daemon/config';
 import {
   getAccountStore,
+  canonicalizeConfigDir,
   AccountError,
   isUnsafeKey,
   type Vendor,
   type Account,
 } from '../../account/accountStore';
 import { provisionAccountDir } from '../../account/accountProvision';
-import { loadClaudeCredential } from '../../claude/claudeCredential';
+import { loadClaudeCredential, credentialFingerprint } from '../../claude/claudeCredential';
 
 function isVendor(v: unknown): v is Vendor {
   return v === 'claude' || v === 'codex';
@@ -49,8 +50,14 @@ function assertReadableAccountDir(configDir: string): string {
   const canonical = path.resolve(configDir);
   const registered = getAccountStore().listAccounts().some((a) => a.configDir === canonical);
   const accountsRoot = path.resolve(getWmuxDir(), 'accounts');
-  const rel = path.relative(accountsRoot, canonical);
-  const underAccountsRoot = rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  // Onboarding hands out the realpath'd dir, so also accept the realpath'd root
+  // (e.g. a symlinked home directory).
+  let realRoot = accountsRoot;
+  try { realRoot = fs.realpathSync.native(accountsRoot); } catch { /* root not created yet */ }
+  const underAccountsRoot = [accountsRoot, realRoot].some((root) => {
+    const rel = path.relative(root, canonical);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  });
   if (!registered && !underAccountsRoot) {
     throw new AccountError('invalid', 'config directory is not an account directory');
   }
@@ -63,21 +70,32 @@ export interface CredentialStatus {
   subscriptionType?: string | null;
   /** why not logged in / unsupported, for the UI. */
   detail?: string;
+  /** Non-secret fingerprint of the stored credential (first 16 hex of sha256
+   *  over the raw blob, computed here in main). Changes whenever the credential
+   *  is rewritten, so a re-login can detect a FRESH login instead of passing on
+   *  the stale credential it replaces. null when not logged in. */
+  stamp?: string | null;
 }
 
 /** Resolve login status + tier for one account's config dir. */
 async function credentialStatus(vendor: Vendor, configDir: string): Promise<CredentialStatus> {
   if (vendor === 'codex') {
     // Codex has no public usage API in v1; login = auth.json presence in CODEX_HOME.
-    return { loggedIn: fs.existsSync(path.join(configDir, 'auth.json')) };
+    let raw: string | null = null;
+    try { raw = fs.readFileSync(path.join(configDir, 'auth.json'), 'utf8'); } catch { /* absent */ }
+    return { loggedIn: raw !== null, stamp: raw !== null ? credentialFingerprint(raw) : null };
   }
   const res = await loadClaudeCredential(configDir);
-  if (res.ok) return { loggedIn: true, subscriptionType: res.credential.subscriptionType };
+  if (res.ok) {
+    return { loggedIn: true, subscriptionType: res.credential.subscriptionType, stamp: res.credential.fingerprint ?? null };
+  }
   return { loggedIn: false, detail: res.reason };
 }
 
 export interface AccountRow extends Account {
   status: CredentialStatus;
+  /** Copy-able fallback for users who log in from their own terminal. */
+  loginCommand: string;
 }
 
 /** Build the platform-correct, properly-escaped, process-scoped login command
@@ -92,14 +110,14 @@ function buildLoginCommand(vendor: Vendor, configDir: string): string {
     const p = configDir.replace(/'/g, "''");
     return vendor === 'codex'
       ? `$env:CODEX_HOME='${p}'; codex login`
-      : `$env:CLAUDE_CONFIG_DIR='${p}'; claude`;
+      : `$env:CLAUDE_CONFIG_DIR='${p}'; claude auth login`;
   }
   // POSIX: inline VAR=... prefix scopes the var to just this command. Escape '
   // by closing/reopening the quote.
   const p = configDir.replace(/'/g, `'\\''`);
   return vendor === 'codex'
     ? `CODEX_HOME='${p}' codex login`
-    : `CLAUDE_CONFIG_DIR='${p}' claude`;
+    : `CLAUDE_CONFIG_DIR='${p}' claude auth login`;
 }
 
 export interface OnboardPrepareResult {
@@ -107,8 +125,6 @@ export interface OnboardPrepareResult {
   linked: string[];
   copied: string[];
   loginCommand: string;
-  /** claude credential-read is unsupported on macOS (keychain keys on username). */
-  credentialReadSupported: boolean;
 }
 
 export function registerAccountHandlers(): () => void {
@@ -131,7 +147,11 @@ export function registerAccountHandlers(): () => void {
     const store = getAccountStore();
     const accounts = store.listAccounts();
     const rows: AccountRow[] = await Promise.all(
-      accounts.map(async (a) => ({ ...a, status: await credentialStatus(a.vendor, a.configDir) })),
+      accounts.map(async (a) => ({
+        ...a,
+        status: await credentialStatus(a.vendor, a.configDir),
+        loginCommand: buildLoginCommand(a.vendor, a.configDir),
+      })),
     );
     return { accounts: rows, bindings: store.getBindings() };
   }));
@@ -145,12 +165,14 @@ export function registerAccountHandlers(): () => void {
       const share = args.share !== false; // default: hybrid share ON
       const configDir = path.join(getWmuxDir(), 'accounts', `${args.vendor}-${randomUUID().slice(0, 8)}`);
       const result = provisionAccountDir({ configDir, vendor: args.vendor, share });
+      // Hand out the same canonical string ACCOUNT_ADD will store: the login
+      // tab exports it as CLAUDE_CONFIG_DIR and the macOS keychain item is keyed
+      // on that exact string, so every later read must use the identical path.
+      const canonical = canonicalizeConfigDir(result.configDir);
       return {
         ...result,
-        loginCommand: buildLoginCommand(args.vendor, result.configDir),
-        // macOS can't partition claude credentials by config dir → the poller
-        // would spin forever. The wizard uses this to show a manual-confirm path.
-        credentialReadSupported: !(args.vendor === 'claude' && process.platform === 'darwin'),
+        configDir: canonical,
+        loginCommand: buildLoginCommand(args.vendor, canonical),
       };
     }));
 

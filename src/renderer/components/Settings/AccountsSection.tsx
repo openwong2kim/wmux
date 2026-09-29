@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useSyncExternalStore } from 'react';
 import type { Account } from '../../../main/account/accountStore';
 import type { CredentialStatus } from '../../../main/ipc/handlers/account.handler';
 import type { AccountUsageEntry } from '../../../main/account/AccountUsageService';
@@ -12,9 +12,18 @@ import Checkbox from '../ui/Checkbox';
 import Input from '../ui/Input';
 import SegmentedControl from '../ui/SegmentedControl';
 import { SettingsSection } from './SettingsLayout';
+import {
+  startAccountLogin,
+  checkAccountLoginAgain,
+  reopenAccountLoginTab,
+  cancelAccountLogin,
+  subscribeAccountLogins,
+  getPendingAccountLogins,
+  type PendingLogin,
+} from '../../utils/accountLogin';
 
 type Vendor = 'claude' | 'codex';
-type AccountRow = Account & { status: CredentialStatus };
+type AccountRow = Account & { status: CredentialStatus; loginCommand: string };
 
 // ─── M2 — per-account usage (hook-gated) ─────────────────────────────────────
 // The 5h/7d numbers are populated in the background when a claude turn ends in a
@@ -85,10 +94,10 @@ function UsageBit({ entry, onRefresh }: {
 // ─── Settings → Accounts (M1) ────────────────────────────────────────────────
 //
 // Registry management + guided onboarding for multi-account. Onboarding
-// provisions an isolated (hybrid-shared) config dir, then hands the user the
-// exact one-line command to log in there; the wizard polls credentialStatus and
-// commits the account automatically once login lands. wmux never touches the
-// OAuth flow itself. Hidden entirely when the preload doesn't expose accounts.
+// provisions an isolated (hybrid-shared) config dir, then opens a terminal tab
+// logged into that dir (utils/accountLogin), which watches credentialStatus and
+// commits the account once login lands. wmux never touches the OAuth flow
+// itself. Hidden entirely when the preload doesn't expose accounts.
 
 function statusBadge(status: CredentialStatus): React.ReactElement {
   if (status.loggedIn) {
@@ -105,155 +114,122 @@ function statusBadge(status: CredentialStatus): React.ReactElement {
   );
 }
 
-// Login completion is polled for at most this long, then the wizard offers a
-// manual "I've logged in" confirm. Bounds the credential I/O (review) and covers
-// macOS claude (where the credential can't be read per-account at all).
-const POLL_TIMEOUT_MS = 3 * 60 * 1000;
+function CopyCommandButton({ command }: { command: string }): React.ReactElement {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  return (
+    <Button
+      variant="ghost"
+      size="md"
+      title={command}
+      onClick={() => {
+        void window.clipboardAPI?.writeText(command);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+    >
+      {copied ? t('common.copied') : t('accounts.copyLoginCommand')}
+    </Button>
+  );
+}
+
+/** A login that is open in a terminal tab and not yet detected. */
+function PendingLoginRow({ entry }: { entry: PendingLogin }): React.ReactElement {
+  const t = useT();
+  const waiting = entry.phase === 'waiting' || entry.phase === 'starting';
+  const failed = entry.phase === 'error';
+  return (
+    <div className="settings-row" data-account-login={entry.configDir}>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2 text-[13px] text-[var(--text-main)]">
+          {/* Amber = alive: the one live wait on this surface. */}
+          {waiting && <span className="inline-block w-2 h-2 rounded-full animate-pulse shrink-0" style={{ background: 'var(--accent-amber)' }} />}
+          {waiting
+            ? t('accounts.waitingForLoginNamed', { name: entry.name })
+            : failed
+              ? t('accounts.loginStatusFailed', { name: entry.name })
+              : t('accounts.loginTimedOut', { name: entry.name })}
+        </div>
+        {!entry.tabOpen && !failed && entry.phase !== 'starting' && (
+          <div className="text-[11px] text-[var(--text-sub)]">{t('accounts.loginTabFailed')}</div>
+        )}
+        <div className="flex flex-wrap justify-end gap-2">
+          <CopyCommandButton command={entry.loginCommand} />
+          <Button variant="ghost" size="md" onClick={() => cancelAccountLogin(entry.configDir)}>{t('common.cancel')}</Button>
+          {!failed && entry.phase !== 'starting' && (
+            <Button variant="secondary" size="md" onClick={() => { void reopenAccountLoginTab(entry.configDir); }}>
+              {t('accounts.openLoginTab')}
+            </Button>
+          )}
+          {!waiting && (
+            <Button variant="primary" size="md" onClick={() => checkAccountLoginAgain(entry.configDir)}>
+              {t('accounts.checkAgain')}
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AddAccountWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }): React.ReactElement {
   const t = useT();
   const [vendor, setVendor] = useState<Vendor>('claude');
   const [name, setName] = useState('');
   const [share, setShare] = useState(true);
-  const [prep, setPrep] = useState<{ configDir: string; loginCommand: string; credentialReadSupported: boolean } | null>(null);
-  const [phase, setPhase] = useState<'form' | 'login' | 'done'>('form');
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [pollTimedOut, setPollTimedOut] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const stopPoll = () => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null; }
-  };
-  useEffect(() => stopPoll, []);
-
-  const commit = useCallback((configDir: string) => {
-    const api = window.electronAPI?.accounts;
-    if (!api) return;
-    void api.add({ name: name.trim(), vendor, configDir })
-      .then(() => { setPhase('done'); })
-      .catch((e) => setError(String((e as { message?: string })?.message ?? e)));
-  }, [name, vendor]);
+  const [busy, setBusy] = useState(false);
 
   const prepare = useCallback(async () => {
     setError(null);
     const api = window.electronAPI?.accounts;
     if (!api) return;
     if (!name.trim()) { setError(t('accounts.enterName')); return; }
+    setBusy(true);
     try {
       const res = await api.onboardPrepare({ vendor, share });
-      setPrep(res);
-      setPhase('login');
-      setPollTimedOut(false);
-      // Auto-detect login (credential file appears) — but only when the platform
-      // supports a per-account credential read. macOS claude can't, so we go
-      // straight to manual confirm.
-      if (res.credentialReadSupported) {
-        pollRef.current = setInterval(() => {
-          void api.credentialStatus({ vendor, configDir: res.configDir }).then((st) => {
-            if (st.loggedIn) { stopPoll(); commit(res.configDir); }
-          }).catch(() => { /* transient — keep polling */ });
-        }, 2000);
-        // Bounded: stop spinning after the timeout and offer manual confirm.
-        timeoutRef.current = setTimeout(() => { stopPoll(); setPollTimedOut(true); }, POLL_TIMEOUT_MS);
-      } else {
-        setPollTimedOut(true);
-      }
+      // Opens the login tab, closes Settings and watches for the login; the
+      // account is registered once the credential shows up.
+      await startAccountLogin({ vendor, name: name.trim(), configDir: res.configDir, loginCommand: res.loginCommand });
+      onDone();
     } catch (e) {
       setError(String((e as { message?: string })?.message ?? e));
+      setBusy(false);
     }
-  }, [vendor, name, share, commit]);
+  }, [vendor, name, share, onDone, t]);
 
   return (
     <div className="settings-row" data-account-wizard>
-      {phase === 'form' && (
-        <div className="flex flex-col gap-3">
-          <SegmentedControl
-            value={vendor}
-            onValueChange={setVendor}
-            ariaLabel={t('accounts.addAccount')}
-            options={[
-              { value: 'claude', label: 'Claude' },
-              { value: 'codex', label: 'Codex' },
-            ]}
-          />
-          <Input
-            className="settings-input"
-            placeholder={t('accounts.namePlaceholder')}
-            aria-label={t('accounts.namePlaceholder')}
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            autoFocus
-          />
-          <label className="flex items-center gap-2 text-[13px] text-[var(--text-main)] cursor-pointer">
-            <Checkbox checked={share} onCheckedChange={setShare} aria-label={t('accounts.copyDefaultSettings')} />
-            {t('accounts.copyDefaultSettings')}
-          </label>
-          {error && <div className="text-[11px] text-[var(--accent-red)]">{error}</div>}
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" size="md" onClick={onCancel}>{t('common.cancel')}</Button>
-            <Button variant="primary" size="md" onClick={prepare}>{t('accounts.createAndLogin')}</Button>
-          </div>
+      <div className="flex flex-col gap-3">
+        <SegmentedControl
+          value={vendor}
+          onValueChange={setVendor}
+          ariaLabel={t('accounts.addAccount')}
+          options={[
+            { value: 'claude', label: 'Claude' },
+            { value: 'codex', label: 'Codex' },
+          ]}
+        />
+        <Input
+          className="settings-input"
+          placeholder={t('accounts.namePlaceholder')}
+          aria-label={t('accounts.namePlaceholder')}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          autoFocus
+        />
+        <label className="flex items-center gap-2 text-[13px] text-[var(--text-main)] cursor-pointer">
+          <Checkbox checked={share} onCheckedChange={setShare} aria-label={t('accounts.copyDefaultSettings')} />
+          {t('accounts.copyDefaultSettings')}
+        </label>
+        {share && <div className="text-[11px] text-[var(--text-sub)]">{t('accounts.independentProfile')}</div>}
+        <div className="text-[11px] text-[var(--text-sub)]">{t('accounts.loginHowItWorks')}</div>
+        {error && <div className="text-[11px] text-[var(--accent-red)]">{error}</div>}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" size="md" onClick={onCancel}>{t('common.cancel')}</Button>
+          <Button variant="primary" size="md" onClick={prepare} disabled={busy}>{t('accounts.createAndLogin')}</Button>
         </div>
-      )}
-      {phase === 'login' && prep && (
-        <div className="flex flex-col gap-3">
-          <div className="text-[13px] text-[var(--text-main)]">
-            {vendor === 'claude' ? t('accounts.runLoginCommandClaude') : t('accounts.runLoginCommand')}
-          </div>
-          <div className="flex items-center gap-2">
-            {/* The login command is machine evidence: mono. */}
-            <code className="ui-code flex-1 truncate" style={{ fontSize: 11, padding: '6px 8px' }} title={prep.loginCommand}>
-              {prep.loginCommand}
-            </code>
-            <Button
-              variant="secondary"
-              size="md"
-              onClick={() => {
-                void window.clipboardAPI?.writeText(prep.loginCommand);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1500);
-              }}
-            >
-              {copied ? t('common.copied') : t('common.copy')}
-            </Button>
-          </div>
-          {share && (
-            <div className="text-[11px] text-[var(--text-sub)]">
-              {t('accounts.independentProfile')}
-            </div>
-          )}
-          {!prep.credentialReadSupported && (
-            <div className="text-[11px] text-[var(--text-sub)]">
-              {t('accounts.macosManualLogin')}
-            </div>
-          )}
-          {prep.credentialReadSupported && !pollTimedOut ? (
-            <div className="flex items-center gap-2 text-[11px] text-[var(--text-sub)]">
-              {/* Amber = alive: the one live wait on this surface. */}
-              <span className="inline-block w-2 h-2 rounded-full animate-pulse" style={{ background: 'var(--accent-amber)' }} />
-              {t('accounts.waitingForLogin')}
-            </div>
-          ) : null}
-          {error && <div className="text-[11px] text-[var(--accent-red)]">{error}</div>}
-          <div className="flex justify-end gap-2">
-            <Button variant="ghost" size="md" onClick={() => { stopPoll(); onCancel(); }}>{t('common.cancel')}</Button>
-            {(pollTimedOut || !prep.credentialReadSupported) && (
-              <Button variant="primary" size="md" onClick={() => { stopPoll(); commit(prep.configDir); }}>
-                {t('accounts.iveLoggedIn')}
-              </Button>
-            )}
-          </div>
-        </div>
-      )}
-      {phase === 'done' && (
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-[13px]" style={{ color: 'var(--accent-green)' }}>{t('accounts.accountAdded')}</div>
-          <Button variant="primary" size="md" onClick={onDone}>{t('common.done')}</Button>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
@@ -268,6 +244,7 @@ export function AccountsSection(): React.ReactElement | null {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [removeNotice, setRemoveNotice] = useState<string | null>(null);
   const [usage, setUsage] = useState<Map<string, AccountUsageEntry>>(new Map());
+  const pending = useSyncExternalStore(subscribeAccountLogins, getPendingAccountLogins);
 
   const reload = useCallback(() => {
     const api = window.electronAPI?.accounts;
@@ -276,6 +253,8 @@ export function AccountsSection(): React.ReactElement | null {
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
+  // A login finishing (or being cancelled) changes the registry / status badges.
+  useEffect(() => subscribeAccountLogins(reload), [reload]);
 
   // M2: seed the usage cache on mount, then live-update on per-account pushes.
   useEffect(() => {
@@ -343,6 +322,7 @@ export function AccountsSection(): React.ReactElement | null {
   return (
     // No heading: the Accounts page title already names this, its only group.
     <SettingsSection id="claudeacct">
+      <p className="settings-note">{t('accounts.intro')}</p>
       {removeNotice && <p className="settings-note">{removeNotice}</p>}
       {loaded && rows.length === 0 && !adding && (
         <p className="settings-note">{t('accounts.empty')}</p>
@@ -370,6 +350,21 @@ export function AccountsSection(): React.ReactElement | null {
             </button>
           )}
           {statusBadge(r.status)}
+          {(!r.status.loggedIn || usage.get(r.id)?.status === 'unauthorized')
+            && !pending.some((p) => p.configDir === r.configDir) && (
+            <Button
+              variant="secondary"
+              size="md"
+              className="shrink-0"
+              onClick={() => {
+                void startAccountLogin({
+                  vendor: r.vendor, name: r.name, configDir: r.configDir, loginCommand: r.loginCommand, accountId: r.id,
+                });
+              }}
+            >
+              {t('accounts.loginAgain')}
+            </Button>
+          )}
           {r.vendor === 'claude' && (
             <UsageBit
               entry={usage.get(r.id)}
@@ -394,6 +389,7 @@ export function AccountsSection(): React.ReactElement | null {
           )}
         </div>
       ))}
+      {pending.map((p) => <PendingLoginRow key={p.configDir} entry={p} />)}
       {adding ? (
         <AddAccountWizard onDone={() => { setAdding(false); reload(); }} onCancel={() => setAdding(false)} />
       ) : (

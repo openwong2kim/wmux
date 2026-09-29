@@ -90,6 +90,7 @@ import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
 import { createFanOutService } from './worktask/createFanOutService';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
 import { registerLedgerRpc } from './pipe/handlers/ledger.rpc';
+import { registerAutomationRpc } from './pipe/handlers/automation.rpc';
 import { registerWorktaskHandlers, type WorktaskServices } from './ipc/handlers/worktask.handler';
 import { registerWorktaskRpc } from './pipe/handlers/worktask.rpc';
 import { TaskAdoptService } from './worktask/TaskAdoptService';
@@ -136,6 +137,7 @@ import { DaemonNotificationRouter } from './notification/DaemonNotificationRoute
 import { markRendererNotificationListenerNotReady } from './notification/rendererNotificationReadiness';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { AutomationBridge } from './automation/AutomationBridge';
+import { AutomationClient } from './automation/AutomationClient';
 import { toastManager } from './notification/ToastManager';
 import { WorkspaceContextRouter } from './metadata/WorkspaceContextRouter';
 import { ensureDaemon, killDaemonByPidFile, killVerifiedDaemonPid, checkProcessLiveness, isDaemonPipeGone } from './daemon/launcher';
@@ -994,6 +996,11 @@ const fanOutService = createFanOutService(() => daemonClient, () => mainWindow);
 registerFanOutHandler(fanOutService);
 registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow);
 registerLedgerRpc(rpcRouter, () => mainWindow);
+// Scheduled runs for agents: draft-only propose + redacted reads, relayed to
+// the daemon over main's first-party connection (pipe/handlers/automation.rpc.ts).
+registerAutomationRpc(rpcRouter, {
+  getClient: () => (daemonClient && daemonClient.isConnected ? new AutomationClient(daemonClient) : null),
+});
 // J3 태스크 수명주기 — close(remove→close 순서)·1클릭 PR(gh 4중 게이트)·정리 스캔
 // (디스크 정본)·미발사 재발사(prompt.md 읽기). 물질화 필드는 데몬 projection에서
 // 역참조하므로 렌더러는 taskId만 싣는다(단일 정본). 파이프 미노출(renderer-trusted).

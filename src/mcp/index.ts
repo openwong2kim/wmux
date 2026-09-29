@@ -36,6 +36,7 @@ import { registerWorktaskTools } from './worktask';
 import { registerGitTools } from './git';
 import { registerPaneLifecycleTools } from './paneLifecycle';
 import { registerFleetTriageTools } from './fleetTriage';
+import { registerAutomationTools } from './automation';
 import { registerReplTools } from './repl/tools';
 import { inputSchemaDeclaresMaxBytes, wrapHandlerWithResultCap } from './resultCap';
 import { getWmuxMcpServerInstructions, resolveMcpServerVersion } from './serverMetadata';
@@ -1800,6 +1801,10 @@ registerLedgerUpdateTool(server, {
   getSenderPtyId: () => MY_PTY_ID,
   resolveWorkspaceId: requireWorkspaceId,
 });
+
+// === Scheduled runs (src/mcp/automation.ts) — draft-only propose + redacted
+// reads. The pipe handler stores a draft disabled; a human enables it.
+registerAutomationTools(server, { sendRpc: (method, params) => sendRpc(method, params) }, MCP_CATALOG_OPTIONS);
 
 // === Pane + surface lifecycle tools (issue #285) ===
 // Five MCP tools (pane_split / pane_close / pane_focus, surface_new /

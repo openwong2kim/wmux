@@ -3,7 +3,7 @@
   "profiles": {
     "full": {
       "maxListBytes": 80000,
-      "wireResultSha256": "20946729d5fce7b4793870108f89a9247b314b4cb2aed2ce5a7cde53eca7f0a6",
+      "wireResultSha256": "055df0b72b8a12c1b81b4813d23077b5e6e7904ecbdb5300932308011edb81d7",
       "instructionSha256": "f18849bb1ea62bcf5a1e46a73d633c787b4e08e763cc04b01c4e557df8f833eb",
       "toolNames": [
         "browser_open",
@@ -75,6 +75,9 @@
         "channel_mission_list",
         "fanout_start",
         "ledger_update",
+        "automation_propose",
+        "automation_list",
+        "automation_runs",
         "pane_split",
         "pane_close",
         "pane_focus",
@@ -88,7 +91,7 @@
     },
     "core": {
       "maxListBytes": 49000,
-      "wireResultSha256": "99854ce3dc2e7281fd292b8bf3c0bc807584d1e00f8c1d276c7bcb8e08f0c83f",
+      "wireResultSha256": "162500b948c3473e83ea65b8f661fca5bc87bf6ecbfc9635a6af217761af884f",
       "instructionSha256": "0c313d4e88ad9313bb6a51ff00717abbb243ebcdd18f8e226cba2c738e43c95a",
       "toolNames": [
         "terminal_read",
@@ -128,6 +131,9 @@
         "channel_mission_list",
         "fanout_start",
         "ledger_update",
+        "automation_propose",
+        "automation_list",
+        "automation_runs",
         "pane_split",
         "pane_close",
         "pane_focus",

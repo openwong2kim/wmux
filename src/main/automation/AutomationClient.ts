@@ -8,6 +8,7 @@ import {
   type AutomationCreateParams,
   type AutomationGrantParams,
   type AutomationMutationResult,
+  type AutomationProposeParams,
   type AutomationRemoveParams,
   type AutomationRun,
   type AutomationRunNowParams,
@@ -94,6 +95,11 @@ export class AutomationClient {
 
   cancelRun(params: AutomationCancelRunParams): Promise<AutomationOkResult> {
     return this.act(AUTOMATION_RPC.cancelRun, { runId: params.runId });
+  }
+
+  /** MCP draft path: the daemon stores it disabled, proposed, approval mode. */
+  propose(params: AutomationProposeParams): Promise<AutomationMutationResult> {
+    return this.mutate(AUTOMATION_RPC.propose, { draft: params.draft });
   }
 
   /** Clear attention items the desktop has surfaced (first-party only). */
