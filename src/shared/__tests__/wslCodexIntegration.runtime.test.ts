@@ -129,6 +129,15 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
     expect(fs.existsSync(f.resultPath)).toBe(false);
   });
 
+  // #1523: a shared app-server carries the environment of the pane that
+  // started it. The fake Codex's argv stands in for `codex app-server …`.
+  // Linux only: the guard reads /proc, which macOS does not have.
+  it.runIf(process.platform === 'linux')('does not forward a notification spawned by a shared app-server', () => {
+    const f = fixture();
+    f.run(['app-server', '--listen', 'unix://', '--managed-daemon']);
+    expect(fs.existsSync(f.resultPath)).toBe(false);
+  });
+
   it('honors CODEX_HOME and integration opt-out, and still launches when the helper is unavailable', () => {
     const f = fixture();
     const customHome = path.join(f.dir, 'custom-home');

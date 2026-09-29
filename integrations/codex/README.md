@@ -70,7 +70,9 @@ vocabulary — a shell call arrives as `tool_name: "Bash"`. A captured `Stop`:
 
 **Pane environment is inherited.** `WMUX_PTY_ID` set on the Codex process
 reaches the hook unchanged, so pane attribution works exactly as it does for
-Kiro and Claude.
+Kiro and Claude — as long as that Codex process runs the turn itself. Under
+Codex 0.157+'s shared server it does not; see
+[Shared Codex server](#shared-codex-server-1523).
 
 **Resume binding is possible**, unlike Kiro. `SessionStart.source` is
 `"startup"` on a fresh session and `"resume"` on `codex … resume`, with the
@@ -243,6 +245,28 @@ Manual setup (no `wmux setup-hooks`) still works:
 If you use this bridge, remove the `notify = [...]` line — otherwise every turn
 reports `agent.stop` twice. The `HookSignalRouter` dedup window swallows the
 duplicate, so nothing breaks, but the second spawn is pure waste.
+
+## Shared Codex server (#1523)
+
+Codex 0.157+ runs turns in one shared background server per account
+(`codex app-server --listen unix:// --managed-daemon`), started by whichever
+Codex needed it first and keeping that process's environment. A program Codex
+spawns from that server — `notify` included — inherits the `WMUX_*` variables
+of the pane that started the server, possibly a closed pane or a pane of
+another wmux instance, not the pane whose turn finished. The payload names no
+pane either.
+
+So the notify bridge looks at the process that spawned it (skipping wrappers
+that re-run the bridge itself, such as a version-manager `node` shim). When
+that process is an `app-server`, the notification is dropped: nothing is sent,
+nothing is spooled, and `codex-notify.log` records `refused-shared-server`.
+A Codex that runs the turn itself — older builds, `--no-daemon` (how wmux's
+bash/zsh `codex` wrapper runs an interactive `codex`), `exec`, `review` — is
+unchanged, and so is a parent the bridge cannot inspect. The WSL launcher makes
+the same check on the Linux side, where the Windows bridge cannot see the
+Codex process.
+
+The hooks bridge has the same exposure and does not check yet.
 
 ## Identity on the main pipe (#1111)
 

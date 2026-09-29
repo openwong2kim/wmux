@@ -76,6 +76,12 @@ exec "$real" --settings "$WMUX_WSL_SETTINGS" "$@"
 `;
 
 export const WSL_CODEX_HOOK = `#!/bin/sh
+# A shared Codex app-server keeps the environment of whichever pane started it,
+# so a notification it spawns names no provable pane (#1523). The Windows
+# bridge cannot see this Linux parent; check it here. No /proc, no check.
+if [ -r "/proc/$PPID/cmdline" ] && tr '\\0' '\\n' < "/proc/$PPID/cmdline" | grep -qx 'app-server'; then
+  exit 0
+fi
 export ELECTRON_RUN_AS_NODE=1
 export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w"
 # Codex also notifies for temporary title-generation and subagent threads.
