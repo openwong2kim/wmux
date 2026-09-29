@@ -260,8 +260,11 @@
   // Both are bigger than this file.
   var termRepaints = 0;
 
-  /** Replay `bytes` into `t` with the gate held for as long as it parses. */
-  function repaint(t, bytes, inc, dec) {
+  /**
+   * Replay `bytes` into `t` with the gate held for as long as it parses, then
+   * `tail` (terminal-side mode resets, see staleReplayTail) queued after them.
+   */
+  function repaint(t, bytes, inc, dec, tail) {
     t.reset();
     inc();
     try {
@@ -271,7 +274,32 @@
       // past its discard watermark). Not releasing here would latch the gate
       // and silently swallow every keystroke for the rest of the page's life.
       dec();
+      return;
     }
+    if (tail) t.write(tail);
+  }
+
+  /**
+   * Stale-replay mode reset — the desktop's own module (src/shared/terminal/
+   * staleReplayModeReset.ts, published as `wmuxTerminalShared`), not a copy.
+   *
+   * A snapshot re-arms whatever input modes the pane's output last left on. A
+   * TUI (claude) that armed any-motion mouse tracking and exited without
+   * disabling it leaves ?1003h in there, and this xterm then types an SGR
+   * report (`35;55;12M`) into the shell for every pointer move. `meta` is the
+   * snapshot's own `meta` frame: the daemon stamps `commandRunning` (OSC 133)
+   * at the same instant it reads the ring. There is no `resumeAgent` on the web
+   * and every streamed pane is live, so the gate can only answer 'mouse' (shell
+   * at its prompt: disarm mouse/focus, keep ?2004 — the live shell owns it) or
+   * 'none'. Written to the terminal only, never sent to the pane.
+   */
+  function staleReplayTail(meta) {
+    var shared = window.wmuxTerminalShared;
+    if (!shared || !meta) return '';
+    var level = shared.staleReplayResetLevel({ commandRunning: meta.commandRunning });
+    if (level === 'none') return '';
+    return (level === 'full' ? shared.STALE_REPLAY_INPUT_MODE_RESETS : shared.STALE_REPLAY_ALIVE_SHELL_RESETS) +
+      shared.STALE_REPLAY_DISPLAY_RESETS;
   }
 
   /**
@@ -1424,9 +1452,15 @@
     setConn('connecting', 'connecting…');
     showOverlay('loading', 'Attaching to pane', 'Loading scrollback and live output.');
 
+    // The `meta` that precedes each snapshot (a mid-stream resize meta has no
+    // snapshot behind it, so it must not replace this).
+    var snapMeta = null;
     es = openStream(sessionId, {
       attention: true,
-      meta: function (m) { ensureTerm(m.cols, m.rows); },
+      meta: function (m) {
+        if (!m.resize) snapMeta = m;
+        ensureTerm(m.cols, m.rows);
+      },
       snapshot: function (bytes) {
         // Snapshot replays the pane's screen, kitty negotiation included —
         // reset before folding so a protocol the app turned off earlier does
@@ -1435,7 +1469,8 @@
         if (term) {
           repaint(term, bytes,
             function () { termRepaints += 1; },
-            function () { termRepaints = Math.max(0, termRepaints - 1); });
+            function () { termRepaints = Math.max(0, termRepaints - 1); },
+            staleReplayTail(snapMeta));
         }
         hideOverlay();
         setConn('live', 'live');
@@ -1590,9 +1625,11 @@
     renderTileHead(tile);
     el.addEventListener('pointerdown', function () { focusTile(tile); });
 
+    var snapMeta = null; // see connect()
     tile.es = openStream(s.id, {
       attention: isAttentionSource,
       meta: function (m) {
+        if (!m.resize) snapMeta = m;
         if (tile.term && m.cols && m.rows) tile.term.resize(m.cols, m.rows);
         rescale();
       },
@@ -1603,7 +1640,8 @@
         if (tile.term) {
           repaint(tile.term, bytes,
             function () { tile.repaints += 1; },
-            function () { tile.repaints = Math.max(0, tile.repaints - 1); });
+            function () { tile.repaints = Math.max(0, tile.repaints - 1); },
+            staleReplayTail(snapMeta));
         }
         rescale();
         if (tile.sessionId === currentSession) setConn('live', 'live');

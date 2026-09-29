@@ -5606,9 +5606,17 @@ export class WebTerminalServer {
     // would pull each time. The truncation rides `meta` rather than a new event
     // name, so a cached frontend that predates it is unaffected.
     const snapshot = capSnapshot(managed.ringBuffer.readAll());
+    // OSC 133 "a foreground command is running", read at the same instant as
+    // the ring so it describes THIS snapshot. The client feeds it to the shared
+    // staleReplayResetLevel gate (src/shared/terminal): `false` means the shell
+    // sits at its prompt, so mouse/focus reporting the snapshot re-arms is a
+    // dead TUI's leftover and must be disarmed. Absent when the shell emits no
+    // prompt markers — the gate then does nothing, as on the desktop.
+    const commandRunning = this.deps.resumeState?.(managed.meta.id)?.commandRunning;
     const meta = this.streamMeta(managed, {
       truncated: snapshot.truncated,
       omittedBytes: snapshot.omittedBytes,
+      ...(typeof commandRunning === 'boolean' ? { commandRunning } : {}),
     });
     // Absolute stream offset of the window's FIRST byte. The tracker needs it
     // to decide whether the alt-screen entry is something the window already

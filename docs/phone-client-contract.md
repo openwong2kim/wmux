@@ -164,7 +164,7 @@ POST /api/stream-ticket        (Authorization header, as always)
 
 | Event | Data |
 | --- | --- |
-| `meta` | `{cols, rows, truncated, omittedBytes}` |
+| `meta` | `{cols, rows, truncated, omittedBytes, commandRunning?}` |
 | `snapshot` | base64 of the initial paint |
 | `data` | base64 of live PTY bytes |
 | `exit` | `1` |
@@ -173,6 +173,14 @@ POST /api/stream-ticket        (Authorization header, as always)
 The first paint is **capped**, and never cut mid-character or mid-escape. When
 `truncated` is true, `omittedBytes` says how much history is above — surface it
 rather than pretending the buffer starts there.
+
+`commandRunning` (optional, present only when the pane's shell emits OSC 133
+prompt markers) is `false` when the shell sits at its prompt. The snapshot
+re-arms whatever input modes the pane's output last left on, including mouse
+tracking a TUI armed and never disabled; a client that sees `false` should
+disarm mouse and focus reporting terminal-side after painting the snapshot
+(never bracketed paste — the live shell owns that), or its pointer moves type
+mouse reports into the prompt.
 
 **`agent.liveness` on this stream is the terminal face's activity header.** Same
 event name and same `state` union as the fleet copy in the next section, and the

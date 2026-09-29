@@ -9285,6 +9285,35 @@ describe('WebTerminalServer', () => {
       expect(first).not.toContain('\x1b[?1049h');
     });
 
+    /** Open the stream and return the `meta` that precedes the first snapshot. */
+    const firstSnapshotMeta = async (): Promise<Record<string, unknown>> => {
+      const info = await startRO();
+      const ac = new AbortController();
+      const text = await readStream(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        ac,
+        (t) => snapshots(t).length >= 1,
+      );
+      ac.abort();
+      const [meta] = metas(text);
+      expect(meta).toBeDefined();
+      return meta;
+    };
+
+    it('★ stamps the snapshot meta with commandRunning so the client can disarm a dead TUI\'s mouse mode', async () => {
+      // The web client feeds this to the shared staleReplayResetLevel gate:
+      // `false` (shell at its prompt) is what earns the mouse/focus reset.
+      primeRing('\x1b[?1003h\x1b[?1006h');
+      resumeStates = { s1: { commandRunning: false } };
+      expect((await firstSnapshotMeta()).commandRunning).toBe(false);
+    });
+
+    it('omits commandRunning from the snapshot meta when the shell reports no prompt state', async () => {
+      primeRing('\x1b[?1003h\x1b[?1006h');
+      resumeStates = { s1: {} };
+      expect(await firstSnapshotMeta()).not.toHaveProperty('commandRunning');
+    });
+
     it('ends just this stream when the initial frame cannot be built', async () => {
       // `readAll()` copies the whole ring — up to 64 MB — and `Buffer.concat`
       // allocates again on top. The headers are already out by then, so there

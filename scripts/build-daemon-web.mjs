@@ -30,6 +30,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildSync } from 'esbuild';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const frontendDir = join(repoRoot, 'src', 'daemon', 'web', 'frontend');
@@ -79,6 +80,24 @@ const keyboardProtocolJs = read(join(frontendDir, 'keyboardProtocol.js'));
 // Copy / paste / newline key decisions. Separate so the chord table is unit
 // tested against the exact bytes the phone runs, without a DOM or xterm.
 const copyPasteKeysJs = read(join(frontendDir, 'copyPasteKeys.js'));
+// Terminal behaviour shared with the desktop renderer (src/shared/terminal).
+// Bundled from the TypeScript source rather than copied into frontend/, so the
+// phone runs the exact module useTerminal.ts imports. Publishes
+// `wmuxTerminalShared` on the global; inlined ahead of app.js, which reads it.
+// es2017 keeps the output parseable by older mobile Safari.
+const terminalSharedEntry = join(repoRoot, 'src', 'shared', 'terminal', 'webTerminalShared.ts');
+read(terminalSharedEntry);
+const terminalSharedJs = buildSync({
+  entryPoints: [terminalSharedEntry],
+  bundle: true,
+  write: false,
+  format: 'iife',
+  globalName: 'wmuxTerminalShared',
+  platform: 'browser',
+  target: 'es2017',
+  minify: true,
+  logLevel: 'error',
+}).outputFiles[0].text;
 let html = read(join(frontendDir, 'index.html'));
 
 html = inject(html, '/*__XTERM_CSS__*/', xtermCss);
@@ -89,6 +108,7 @@ html = inject(html, '/*__PAIR_QUERY_JS__*/', pairQueryJs);
 html = inject(html, '/*__TOUCH_SCROLL_JS__*/', touchScrollJs);
 html = inject(html, '/*__KEYBOARD_PROTOCOL_JS__*/', keyboardProtocolJs);
 html = inject(html, '/*__KEYS_JS__*/', copyPasteKeysJs);
+html = inject(html, '/*__TERMINAL_SHARED_JS__*/', terminalSharedJs);
 html = inject(html, '/*__APP_JS__*/', appJs);
 
 mkdirSync(outDir, { recursive: true });
@@ -137,17 +157,18 @@ const fail = (msg) => {
   process.exit(1);
 };
 
-// The page inlines seven scripts (xterm, attentionFormat, pairQuery, touchScroll,
-// keyboardProtocol, copyPasteKeys, app) and one style block (xterm css + our
+// The page inlines eight scripts (xterm, attentionFormat, pairQuery, touchScroll,
+// keyboardProtocol, copyPasteKeys, terminalShared, app) and one style block (xterm css + our
 // css). A count that moved means index.html grew or lost a block and nobody
 // re-read this gate; refuse rather than guess which. Raised 3 → 4 when
 // pairQuery.js was added for QR pairing, 4 → 5 when touchScroll.js was added
 // for #890, 5 → 6 when copyPasteKeys.js was added for browser copy/paste,
-// 6 → 7 when keyboardProtocol.js was added for the kitty-negotiation gate: the
+// 6 → 7 when keyboardProtocol.js was added for the kitty-negotiation gate,
+// 7 → 8 when the shared terminal bundle (src/shared/terminal) was added: the
 // policy itself is derived from the served bytes, so an extra block is hashed
 // like the others — the count is here to make the change deliberate, not to cap
 // it.
-if (blocks.scripts.length !== 7) fail(`expected 7 inline <script> blocks, found ${blocks.scripts.length}`);
+if (blocks.scripts.length !== 8) fail(`expected 8 inline <script> blocks, found ${blocks.scripts.length}`);
 if (blocks.styles.length !== 1) fail(`expected 1 inline <style> block, found ${blocks.styles.length}`);
 if (blocks.externalRefs.length > 0) {
   fail(
