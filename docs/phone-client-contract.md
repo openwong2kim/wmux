@@ -184,10 +184,13 @@ mouse reports into the prompt.
 
 `resumeAgent` (optional) is set only for a pane the daemon recovered after its
 own restart whose agent has not been re-detected: the process that armed the
-modes is known dead, so a client may disarm every input-reporting mode,
-bracketed paste included (`commandRunning: true` still wins: a fresh command
-now owns the modes). These are the same two inputs the desktop app gates
-its own replay reset on.
+modes is known dead, so it is grounds to disarm mouse and focus reporting even
+when `commandRunning` is absent (`commandRunning: true` still wins: a fresh
+command now owns the modes). It is **not** grounds to clear bracketed paste:
+the recovered pane's new shell is alive and owns `?2004`, and `resumeAgent`
+persists until the agent is re-detected, so clearing it on every attach breaks
+multi-line paste (the first line runs at once). These are the same two inputs
+the desktop app gates its own replay reset on.
 
 **`agent.liveness` on this stream is the terminal face's activity header.** Same
 event name and same `state` union as the fleet copy in the next section, and the

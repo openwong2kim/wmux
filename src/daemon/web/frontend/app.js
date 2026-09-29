@@ -295,9 +295,15 @@
    * snapshot's own `meta` frame: the daemon stamps it, at the same instant it
    * reads the ring, with the SAME two gate inputs `pty.list` gives the desktop —
    * `commandRunning` (OSC 133) and `resumeAgent` (recovered this daemon boot,
-   * agent not re-detected) — so the level is exactly the desktop's: 'full',
-   * 'mouse' (shell at its prompt: keep ?2004 — the live shell owns it) or
-   * 'none'. Written to the terminal only, never sent to the pane.
+   * agent not re-detected) — and the shared gate decides WHETHER to reset.
+   *
+   * What it resets is capped at the alive-shell set: every pane this page
+   * streams has a live shell, and that shell owns ?2004. The gate's 'full'
+   * (resumeAgent) would clear bracketed paste too, and resumeAgent persists
+   * until the agent is re-detected, so every attach would leave a recovered
+   * zsh expecting wrapped pastes that this page no longer wraps — a multi-line
+   * paste then runs its first line at once. The desktop applies 'full' once at
+   * recovery attach; the web never does. Written to the terminal only.
    */
   function staleReplayTail(meta) {
     var shared = window.wmuxTerminalShared;
@@ -307,8 +313,7 @@
       commandRunning: meta.commandRunning
     });
     if (level === 'none') return '';
-    return (level === 'full' ? shared.STALE_REPLAY_INPUT_MODE_RESETS : shared.STALE_REPLAY_ALIVE_SHELL_RESETS) +
-      shared.STALE_REPLAY_DISPLAY_RESETS;
+    return shared.STALE_REPLAY_ALIVE_SHELL_RESETS + shared.STALE_REPLAY_DISPLAY_RESETS;
   }
 
   /**

@@ -5617,7 +5617,8 @@ export class WebTerminalServer {
     //    Absent when the shell emits no prompt markers.
     //  - resumeAgent: recovered this daemon boot, agent not re-detected — the
     //    arming process is known dead (its prompt log is empty after the
-    //    restart, so commandRunning alone would say nothing).
+    //    restart, so commandRunning alone would say nothing). Grounds for the
+    //    mouse/focus reset only: the recovered shell is alive and owns ?2004.
     const resume = this.deps.resumeState?.(managed.meta.id);
     const meta = this.streamMeta(managed, {
       truncated: snapshot.truncated,

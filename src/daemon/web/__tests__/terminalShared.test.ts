@@ -126,12 +126,15 @@ describe('web snapshot repaint + stale-replay reset (app.js)', () => {
     }
   });
 
-  it('★ recovered after a daemon restart (resumeAgent, no prompt state): full reset, bracketed paste included', async () => {
+  it('★ recovered after a daemon restart (resumeAgent, no prompt state): disarms mouse + focus, NEVER bracketed paste', async () => {
+    // The gate says 'full', but the recovered shell is alive and owns ?2004.
+    // resumeAgent persists until re-detection, so clearing it here would break
+    // multi-line paste (first line runs at once) on every attach.
     const { t, emitted, repaints } = await paintSnapshot({ cols: 80, rows: 24, resumeAgent: 'claude' });
     try {
       expect(t.modes.mouseTrackingMode).toBe('none');
       expect(t.modes.sendFocusMode).toBe(false);
-      expect(t.modes.bracketedPasteMode).toBe(false);
+      expect(t.modes.bracketedPasteMode).toBe(true);
       expect(emitted).toEqual([]);
       expect(repaints).toBe(0);
     } finally {
@@ -192,6 +195,9 @@ describe('web snapshot repaint + stale-replay reset (app.js)', () => {
   it('both snapshot handlers (1-up and split tile) pass the tail, and only a snapshot meta feeds it', () => {
     expect(appJs.match(/staleReplayTail\(snapMeta\)\)/g) ?? []).toHaveLength(2);
     expect(appJs.match(/if \(!m\.resize\) snapMeta = m;/g) ?? []).toHaveLength(2);
+    // Every streamed pane has a live shell that owns ?2004: the web never
+    // writes the full (bracketed-paste-clearing) reset.
+    expect(appJs).not.toMatch(/STALE_REPLAY_INPUT_MODE_RESETS/);
     // Terminal-side only: the tail is never sent to the pane.
     expect(appJs).not.toMatch(/send(?:To)?\([^)]*staleReplayTail/);
   });
