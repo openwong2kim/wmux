@@ -522,6 +522,13 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // else; the bytes written are the approval record's own, never the caller's.
   'approval.press':   { capability: 'task.write', riskClass: 'a2a' },
 
+  // --- Scheduled runs (pipe/handlers/automation.rpc.ts) ---
+  // propose stores a DISABLED, approval-mode draft and queues it for the
+  // human; list/runs return a redacted view (no prompt, folder or account).
+  'automation.propose': { capability: 'automation.write', riskClass: 'a2a' },
+  'automation.list':    { capability: 'automation.read',  riskClass: 'a2a' },
+  'automation.runs':    { capability: 'automation.read',  riskClass: 'a2a' },
+
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.
   'company.create':         { capability: 'wmux.internal' },
@@ -616,6 +623,9 @@ export const CAPABILITY_RISK_CLASS: Record<string, RiskClass> = {
   // a2a one; the capability ids stay distinct from ledger.*.
   'task.read':  'a2a',
   'task.write': 'a2a',
+  // Scheduled runs — agent-drafted work the human later enables.
+  'automation.read':  'a2a',
+  'automation.write': 'a2a',
   // Plugin host UI contribution points (B-1) — enforced at mount time by
   // the renderer host, not per-RPC; classed here so the approval dialog
   // renders real copy instead of fallback text.
@@ -700,6 +710,9 @@ export const CAPABILITY_EFFECT: Record<string, 'read' | 'write'> = {
   // patches a repository, pushes a branch or removes a worktree.
   'task.read':  'read',
   'task.write': 'write',
+  // Scheduled runs: list/runs observe, propose stores a draft.
+  'automation.read':  'read',
+  'automation.write': 'write',
   // Plugin host UI contribution points — enforced at mount time, never a
   // per-RPC gate, so the classification is nominal. Listed so the
   // completeness test covers the whole vocabulary.

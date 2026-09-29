@@ -40,6 +40,13 @@ describe('permissionGrammar.parsePermission', () => {
     expect(parsePermission('meta.write:').ok).toBe(false);
   });
 
+  it('refuses a path glob on automation.* (their methods carry no path to match)', () => {
+    expect(parsePermission('automation.read').ok).toBe(true);
+    expect(parsePermission('automation.write').ok).toBe(true);
+    expect(parsePermission('automation.read:*').ok).toBe(false);
+    expect(parsePermission('automation.write:/work/**').ok).toBe(false);
+  });
+
   it('rejects non-string input', () => {
     expect(parsePermission(42).ok).toBe(false);
     expect(parsePermission(null).ok).toBe(false);

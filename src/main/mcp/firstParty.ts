@@ -331,6 +331,11 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'task.gh.prView',
   // Approval press — the commander-only approval_press tool.
   'approval.press',
+  // Scheduled runs — automation_propose (disabled draft only) and the
+  // redacted automation_list / automation_runs reads.
+  'automation.propose',
+  'automation.list',
+  'automation.runs',
   // `company.a2a.*` used to be granted here for the six company_a2a_* tools.
   // Those tools are gone, so the grants went with them (least privilege — a
   // reserved wmux.internal method must not stay reachable by a clientName
