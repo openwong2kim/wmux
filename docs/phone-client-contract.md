@@ -2485,8 +2485,9 @@ not the desktop fields.
     level, as `nested` alone says. This happens when the requesting pane is
     alive but has no session the phone lists (a pane of browser tabs only),
     when the desktop is too old to say, and when the desktop's reply was over
-    its size budget: the pane placement (every `paneId`, `nestedUnder` and
-    `requesterPaneId`) is the first thing cut, before tab titles.
+    its size budget: after the layout trees (see *Workspace layout tree*),
+    the pane placement (every `paneId`, `nestedUnder` and `requesterPaneId`)
+    is the first thing cut, before tab titles.
 
   If no session you hold carries `requesterPaneId` (the two routes are
   polled separately and can disagree for a poll), fall back the same way.
@@ -2507,6 +2508,69 @@ session in a pane of that workspace.
 
 Top level of `GET /api/workspaces`: `activeWorkspaceId` — the workspace the
 desktop is showing, present only when it is one of the listed rows.
+
+#### Workspace layout tree
+
+`layout` — per workspace row, the desktop's split layout for that workspace:
+how its panes are split, how big each is, which tabs each pane holds and which
+one it shows. Read-only, additive, and under the same presence rules as every
+field above; an absent `layout` means "draw this workspace flat from
+`panes[]`", exactly as before. No `/api/config` flag announces it — the key's
+presence on a row is the signal, and a daemon that serves the web client ships
+that client in the same build. `PHONE_PROTOCOL_VERSION` is unchanged.
+
+```ts
+type Layout = {
+  root: Node;
+  activePaneId?: string;   // the desktop's focused pane, only when it is a leaf of root
+  unplaced: string[];      // sessionIds of this row's panes[] that no leaf holds
+};
+type Node =
+  | { kind: 'split'; direction: 'horizontal' | 'vertical'; sizes: number[]; children: Node[] }
+  | { kind: 'leaf'; paneId: string; surfaces: Surface[]; activeIndex?: number };
+type Surface = {
+  kind: 'terminal' | 'browser' | 'editor' | 'diff' | 'git' | 'review' | 'remote-terminal' | 'other';
+  ptyId?: string;          // terminal only: a sessionId of this same row's panes[]
+  title?: string;          // non-terminal only: at most 100 characters, one line
+};
+```
+
+- `direction` uses the desktop's word: `horizontal` lays the children side by
+  side (columns), `vertical` stacks them (rows).
+- `sizes` has one entry per child, in percent: finite, > 0, summing to 100
+  within rounding (two decimals). A desktop split with no or mismatched sizes
+  arrives as an equal split, which is what the desktop draws for it.
+- A leaf's `paneId` is the same value `panes[].paneId` carries. `surfaces` are
+  the pane's tabs in the desktop's order; `activeIndex` is the tab the pane
+  shows, present whenever `surfaces` is non-empty. The shown tab may be a
+  browser or editor tab.
+- A terminal tab carries `ptyId` only — its title is that session's
+  `surfaceTitle` on `GET /api/sessions`. A terminal tab **without** `ptyId`
+  is a slot whose session this row does not list: still spawning, the
+  orchestrator brain, gone, or running in another workspace by the daemon's
+  record. Keep the slot so tab order and `activeIndex` stay true, and draw a
+  placeholder for it. Every `ptyId` in a tree is a live session of that same
+  row, and appears at most once.
+- A non-terminal tab carries its title only (no URL, no file path). There is
+  nothing to stream for it; draw a static tab. Treat an unknown `kind` as
+  `other`.
+- `unplaced` lists the row's sessions that no leaf holds — a stashed pane's
+  tab (stashed panes are not part of the layout), or a session the desktop
+  has not placed yet. Draw them apart from the tree (e.g. a trailing
+  "Not in layout" group) so every listed session stays reachable.
+- The pane cols/rows stay desktop-owned (see *Resizing a pane*): the tree
+  tells you the arrangement, not a geometry you can impose.
+
+Bounds, enforced by the desktop and again by the daemon: depth ≤ 16 (the root
+is 1), ≤ 512 splits and leaves together, ≤ 64 leaves, ≤ 64 children per split,
+≤ 64 tabs per leaf and ≤ 512 tabs per tree. A tree over any bound, with bad
+sizes, a duplicate pane or session id, an out-of-range `activeIndex` or an
+unsafe title is not sent at all; the row and its flat `panes[]` stay.
+
+Size budget: the layout trees are the first thing cut when the desktop's reply
+is over its budget, largest tree first, before pane placement, titles and pane
+rows. A tree is never sent with pane placement, titles or pane rows cut, so a
+`layout` you receive is always backed by a full `panes[]`.
 
 ### Isolated Electron preview smoke test
 
