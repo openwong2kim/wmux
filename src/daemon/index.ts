@@ -245,7 +245,7 @@ let readAgentStateForWeb: ((id: string) => { agentName: string | null; agentStat
 // the session manager's prompt logs nor the agent process tracker in scope, and
 // a request that arrives before registration simply reports no resume block.
 let readResumeStateForWeb:
-  | ((id: string) => { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean } | undefined)
+  | ((id: string) => { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean; resumeAgent?: string } | undefined)
   | undefined;
 
 // M3 — per-device credentials for `wmux web`. Module-scoped for the same reason
@@ -4151,10 +4151,16 @@ function registerRpcHandlers(
     const agentProcessAlive = managed.meta.exec
       ? (managed.meta.state === 'attached' || managed.meta.state === 'detached' ? true : undefined)
       : agentProcessTracker.statusFor(id);
+    // The same recovery hint daemon.listSessions hands pty.list (X6 ②): set only
+    // for a pane recovered this boot whose agent has not been re-detected. The
+    // web stream stamps it on the snapshot meta so its stale-replay gate reads
+    // exactly the desktop's inputs.
+    const resumeAgent = recoveredAgentShellIds.get(id);
     return {
       ...(binding ? { binding } : {}),
       ...(commandRunning !== undefined ? { commandRunning } : {}),
       ...(agentProcessAlive !== undefined ? { agentProcessAlive } : {}),
+      ...(resumeAgent ? { resumeAgent } : {}),
     };
   };
 

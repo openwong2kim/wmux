@@ -164,7 +164,7 @@ POST /api/stream-ticket        (Authorization header, as always)
 
 | Event | Data |
 | --- | --- |
-| `meta` | `{cols, rows, truncated, omittedBytes, commandRunning?}` |
+| `meta` | `{cols, rows, truncated, omittedBytes, commandRunning?, resumeAgent?}` |
 | `snapshot` | base64 of the initial paint |
 | `data` | base64 of live PTY bytes |
 | `exit` | `1` |
@@ -181,6 +181,13 @@ tracking a TUI armed and never disabled; a client that sees `false` should
 disarm mouse and focus reporting terminal-side after painting the snapshot
 (never bracketed paste — the live shell owns that), or its pointer moves type
 mouse reports into the prompt.
+
+`resumeAgent` (optional) is set only for a pane the daemon recovered after its
+own restart whose agent has not been re-detected: the process that armed the
+modes is known dead, so a client may disarm every input-reporting mode,
+bracketed paste included (`commandRunning: true` still wins: a fresh command
+now owns the modes). These are the same two inputs the desktop app gates
+its own replay reset on.
 
 **`agent.liveness` on this stream is the terminal face's activity header.** Same
 event name and same `state` union as the fleet copy in the next section, and the

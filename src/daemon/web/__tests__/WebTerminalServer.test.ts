@@ -507,7 +507,7 @@ describe('WebTerminalServer', () => {
   /** #1163 — the daemon's canonical agent state per session, as the server reads it. */
   let agentStates: Record<string, { agentName: string | null; agentStatus: 'idle' | 'running' | 'awaiting_input' }>;
   /** #1342 — the daemon's resume state per session, as the server reads it. */
-  let resumeStates: Record<string, { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }>;
+  let resumeStates: Record<string, { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean; resumeAgent?: string }>;
 
   beforeEach(() => {
     desktopBridge = null;
@@ -9311,7 +9311,31 @@ describe('WebTerminalServer', () => {
     it('omits commandRunning from the snapshot meta when the shell reports no prompt state', async () => {
       primeRing('\x1b[?1003h\x1b[?1006h');
       resumeStates = { s1: {} };
-      expect(await firstSnapshotMeta()).not.toHaveProperty('commandRunning');
+      const meta = await firstSnapshotMeta();
+      expect(meta).not.toHaveProperty('commandRunning');
+      expect(meta).not.toHaveProperty('resumeAgent');
+    });
+
+    it('★ stamps resumeAgent for a pane recovered after a daemon restart (empty prompt log)', async () => {
+      // After a restart the prompt log is empty, so commandRunning is absent;
+      // the recovery hint is what tells the client the arming process is dead
+      // — the same input the desktop's pty.list gate reads.
+      primeRing('\x1b[?1003h\x1b[?1006h\x1b[?2004h');
+      resumeStates = { s1: { resumeAgent: 'claude' } };
+      const meta = await firstSnapshotMeta();
+      expect(meta.resumeAgent).toBe('claude');
+      expect(meta).not.toHaveProperty('commandRunning');
+    });
+
+    it('keeps resumeAgent off /api/workspaces (snapshot meta only)', async () => {
+      resumeStates = { s1: { resumeAgent: 'claude', commandRunning: false } };
+      const info = await startRO();
+      const res = await fetch(`${base()}/api/workspaces`, { headers: { Authorization: `Bearer ${info.token as string}` } });
+      expect(res.status).toBe(200);
+      const raw = JSON.stringify(await res.json());
+      // Non-vacuous: s1 is listed with its other resume facts.
+      expect(raw).toContain('"commandRunning":false');
+      expect(raw).not.toContain('resumeAgent');
     });
 
     it('ends just this stream when the initial frame cannot be built', async () => {

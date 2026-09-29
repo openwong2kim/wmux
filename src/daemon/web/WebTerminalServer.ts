@@ -729,6 +729,9 @@ interface WebTerminalServerDeps {
     binding?: ResumeBinding;
     commandRunning?: boolean;
     agentProcessAlive?: boolean;
+    /** Recovered this daemon boot, agent not re-detected — the same hint
+     *  `pty.list` carries. Only the snapshot meta reads it. */
+    resumeAgent?: string;
   } | undefined;
   /**
    * A pane's ring as plain-text rows — the `daemon.readSessionText` parse, on
@@ -5606,17 +5609,21 @@ export class WebTerminalServer {
     // would pull each time. The truncation rides `meta` rather than a new event
     // name, so a cached frontend that predates it is unaffected.
     const snapshot = capSnapshot(managed.ringBuffer.readAll());
-    // OSC 133 "a foreground command is running", read at the same instant as
-    // the ring so it describes THIS snapshot. The client feeds it to the shared
-    // staleReplayResetLevel gate (src/shared/terminal): `false` means the shell
-    // sits at its prompt, so mouse/focus reporting the snapshot re-arms is a
-    // dead TUI's leftover and must be disarmed. Absent when the shell emits no
-    // prompt markers — the gate then does nothing, as on the desktop.
-    const commandRunning = this.deps.resumeState?.(managed.meta.id)?.commandRunning;
+    // The shared staleReplayResetLevel gate's inputs (src/shared/terminal),
+    // read at the same instant as the ring so they describe THIS snapshot, and
+    // from the same sources `pty.list` gives the desktop:
+    //  - commandRunning: OSC 133. `false` = the shell sits at its prompt, so
+    //    mouse/focus reporting the snapshot re-arms is a dead TUI's leftover.
+    //    Absent when the shell emits no prompt markers.
+    //  - resumeAgent: recovered this daemon boot, agent not re-detected — the
+    //    arming process is known dead (its prompt log is empty after the
+    //    restart, so commandRunning alone would say nothing).
+    const resume = this.deps.resumeState?.(managed.meta.id);
     const meta = this.streamMeta(managed, {
       truncated: snapshot.truncated,
       omittedBytes: snapshot.omittedBytes,
-      ...(typeof commandRunning === 'boolean' ? { commandRunning } : {}),
+      ...(typeof resume?.commandRunning === 'boolean' ? { commandRunning: resume.commandRunning } : {}),
+      ...(resume?.resumeAgent ? { resumeAgent: resume.resumeAgent } : {}),
     });
     // Absolute stream offset of the window's FIRST byte. The tracker needs it
     // to decide whether the alt-screen entry is something the window already
