@@ -29,7 +29,7 @@ import {
 import http from 'node:http';
 import type { AgentStatus } from '../../shared/types';
 import { isRemoteAgentStatus } from '../../shared/remoteHosts';
-import { createSidebarDropLog, parsePhoneSidebarSnapshot, phoneTaskNesting, type PhoneSidebarSnapshot, type PhoneSidebarTaskSummary, type PhoneSidebarWorkspace, type PhoneTaskNestedUnder } from '../../shared/phoneFleetSidebar';
+import { createSidebarDropLog, parsePhoneSidebarSnapshot, phoneTaskNesting, phoneWorkspaceLayout, type PhoneSidebarSnapshot, type PhoneSidebarTaskSummary, type PhoneSidebarWorkspace, type PhoneTaskNestedUnder } from '../../shared/phoneFleetSidebar';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -2946,7 +2946,13 @@ export class WebTerminalServer {
         return label?.paneId !== undefined && label.workspaceId === w.id ? { ...pane, paneId: label.paneId } : pane;
       });
       return extra
-        ? { ...w, panes, ...sidebarWorkspaceFields(extra, nesting.nested.get(w.id), nesting.summaries.get(w.id), nesting.placement.get(w.id)) }
+        ? {
+            ...w,
+            panes,
+            ...sidebarWorkspaceFields(extra, nesting.nested.get(w.id), nesting.summaries.get(w.id), nesting.placement.get(w.id)),
+            // The tree may name only this row's own sessions (see phoneWorkspaceLayout).
+            ...(extra.layout ? { layout: phoneWorkspaceLayout(extra.layout, w.panes.map((pane) => pane.sessionId)) } : {}),
+          }
         : { ...w, panes };
     });
     // Only an id this reply lists, so the active workspace cannot name one the

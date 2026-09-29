@@ -511,6 +511,44 @@ export function clampSidebarString(value: string | undefined | null, max: number
   return out.length > 0 ? out : undefined;
 }
 
+/** A workspace's layout as `/api/workspaces` carries it. */
+export interface PhoneWorkspaceLayout extends PhoneSidebarLayout {
+  /**
+   * Session ids this row lists that no leaf of `root` holds — a stashed pane's
+   * tab, or a session the desktop has not placed yet — in `panes[]` order.
+   */
+  unplaced: string[];
+}
+
+/**
+ * The desktop's tree narrowed to what one `/api/workspaces` row can show.
+ * `listed` is the row's own session ids: live, non-brain, and running in this
+ * workspace by the daemon's own record. A terminal tab naming any other
+ * session keeps its slot but loses the id (the phone draws a placeholder), so
+ * the tree can never point at a pane the row does not list.
+ */
+export function phoneWorkspaceLayout(layout: PhoneSidebarLayout, listed: readonly string[]): PhoneWorkspaceLayout {
+  const live = new Set(listed);
+  const placed = new Set<string>();
+  const narrow = (node: PhoneLayoutNode): PhoneLayoutNode => {
+    if (node.kind === 'split') return { ...node, children: node.children.map(narrow) };
+    return {
+      ...node,
+      surfaces: node.surfaces.map((surface) => {
+        if (surface.ptyId === undefined) return surface;
+        if (!live.has(surface.ptyId)) return { kind: surface.kind };
+        placed.add(surface.ptyId);
+        return surface;
+      }),
+    };
+  };
+  return {
+    root: narrow(layout.root),
+    ...(layout.activePaneId !== undefined ? { activePaneId: layout.activePaneId } : {}),
+    unplaced: listed.filter((id) => !placed.has(id)),
+  };
+}
+
 /**
  * The nesting and owner rollups as the phone can draw them, over the rows the
  * daemon actually lists (`listedIds`). A task is nested iff the desktop nests

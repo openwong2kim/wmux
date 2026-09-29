@@ -8730,6 +8730,47 @@ describe('WebTerminalServer', () => {
       }
     });
 
+    it('merges the layout tree narrowed to the row\'s own live sessions, and lists the rest as unplaced', async () => {
+      const s1b = { ...live[0], id: 's1b' };
+      live.push({ ...brainRow }, s1b);
+      try {
+        const base = sidebar();
+        const layout = {
+          root: {
+            kind: 'split', direction: 'horizontal', sizes: [60, 40], children: [
+              // s2 is live but runs in ws-legacy by the daemon's own record.
+              { kind: 'leaf', paneId: 'pa', activeIndex: 2, surfaces: [{ kind: 'terminal', ptyId: 's1' }, { kind: 'terminal', ptyId: 's2' }, { kind: 'browser', title: 'Docs' }] },
+              // A brain session and one that is not live.
+              { kind: 'leaf', paneId: 'pb', activeIndex: 0, surfaces: [{ kind: 'terminal', ptyId: 'brain-abc' }, { kind: 'terminal', ptyId: 'ghost' }] },
+            ],
+          },
+          activePaneId: 'pb',
+        };
+        const workspacesWithLayout = base.workspaces.map((w) => (w.id === 'ws-1' ? { ...w, layout } : w));
+        attachDesktop(() => ({ workspaces: [], sidebar: { ...base, workspaces: workspacesWithLayout } }));
+        const info = await startRO();
+        const body = await getJson(info.token as string, '/api/workspaces');
+        const rows = body.workspaces as Row[];
+        const ws1 = rows.find((w) => w.id === 'ws-1')!;
+        expect(ws1.layout).toEqual({
+          root: {
+            kind: 'split', direction: 'horizontal', sizes: [60, 40], children: [
+              { kind: 'leaf', paneId: 'pa', activeIndex: 2, surfaces: [{ kind: 'terminal', ptyId: 's1' }, { kind: 'terminal' }, { kind: 'browser', title: 'Docs' }] },
+              { kind: 'leaf', paneId: 'pb', activeIndex: 0, surfaces: [{ kind: 'terminal' }, { kind: 'terminal' }] },
+            ],
+          },
+          activePaneId: 'pb',
+          unplaced: ['s1b'],
+        });
+        const wire = JSON.stringify(ws1.layout);
+        for (const leaked of ['brain-abc', 'ghost', '"s2"']) expect(wire).not.toContain(leaked);
+        // A row whose desktop entry has no tree carries none.
+        expect(rows.find((w) => w.id === 'ws-legacy')).not.toHaveProperty('layout');
+      } finally {
+        live.length = 3;
+      }
+    });
+
     it('omits activeWorkspaceId when the active workspace is not a listed one', async () => {
       live.push({ ...brainRow });
       try {
