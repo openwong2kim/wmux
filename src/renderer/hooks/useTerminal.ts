@@ -51,7 +51,7 @@ import { decideViewerVisibility } from '../terminal/viewerVisibility';
 import { useWindowDisplayed } from './useWindowDisplayed';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { awaitParseBarrier } from '../terminal/parseBarrier';
-import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../terminal/staleReplayModeReset';
+import { STALE_REPLAY_INPUT_MODE_RESETS, STALE_REPLAY_ALIVE_SHELL_RESETS, STALE_REPLAY_DISPLAY_RESETS, staleReplayResetLevel } from '../../shared/terminal/staleReplayModeReset';
 import { attachAltScreenWheel, PAGE_SCROLL_AGENTS } from '../terminal/altScreenWheel';
 import { RestingCursorGuard } from '../terminal/restingCursor';
 import { restoreSeam } from '../../shared/restoreSeam';
@@ -2341,7 +2341,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     let pendingFlushReset = false;
     let lastFlushRecoveredBytes: number | null = null;
     let removeFlushListener: (() => void) | null = null;
-    // Stale-replay mode reset (see ../terminal/staleReplayModeReset.ts): a
+    // Stale-replay mode reset (see ../../shared/terminal/staleReplayModeReset.ts): a
     // recovered session's ring replay re-executes the dead agent's DECSET
     // arming (mouse/focus/paste reporting) into xterm, so the fresh shell's
     // pane emits mouse reports that both dismiss the resume pill (onData
