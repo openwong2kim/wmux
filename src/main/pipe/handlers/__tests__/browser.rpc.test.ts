@@ -315,9 +315,10 @@ describe('callerScope shadow decision (#810)', () => {
       { kind: 'rejected', lane: 'declared', reason: 'workspace-unresolved' },
     ],
     [
-      // #922 ruling (c): the grandfather stays, but an omitted workspace no
-      // longer resolves through the workspace-blind "first registered surface"
-      // lookup. Closing the lane itself is #1111's shared deprecation clock.
+      // #922 ruling (c): the table's legacy lane stays, but an omitted
+      // workspace no longer resolves through the workspace-blind "first
+      // registered surface" lookup. Closing the lane itself was done at the
+      // gate by #1111, not in this table.
       'legacy caller naming no workspace being refused',
       { origin: 'local', externalWire: true },
       {},
@@ -1199,13 +1200,14 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
   });
 
   it('browser.tabs leaves the legacy caller exactly where ruling (c) left it', async () => {
-    // Recorded as a KNOWN GAP, not as a fix. `browser.tabs` is wmux.internal,
-    // which no plugin can declare — but the enforcer allows an envelope-less
-    // caller before it checks the capability, and ruling (c) keeps the legacy
-    // lane accepting the workspace such a caller names. Folding this method in
-    // confines the identified lanes and changes nothing for this one; closing
-    // it means closing the grandfather (#1111), which this table must not do
-    // ahead of PermissionEnforcer.
+    // Recorded as the table's behaviour, not as a fix. `browser.tabs` is
+    // wmux.internal, which no plugin can declare, and ruling (c) keeps the
+    // table's legacy lane accepting the workspace such a caller names. Folding
+    // this method in confines the identified lanes and changes nothing for
+    // this one. The caller class itself was closed at the gate by #1111: under
+    // enforce mode PermissionEnforcer refuses it before this table runs. This
+    // router is in the default shadow mode (the `'enforce'` below is the
+    // browser table's own scope mode), so the handler still runs here.
     const router = register(() => null, undefined, 'enforce');
     const res = await router.dispatch({
       id: 'prc-tabs-legacy',
@@ -1286,12 +1288,13 @@ describe('registerBrowserRpc — browser.open / browser.close scoping (#922 PR-C
     }, { operator: true });
     expect(operator.ok).toBe(true);
 
-    // Envelope-less caller: still grandfathered, matching PermissionEnforcer.
-    // #922 ruling (c) narrowed this lane WITHOUT closing it — the deliberate,
-    // visible change this assertion was written to catch. A legacy caller that
-    // names a workspace is unchanged; one that names nothing is refused, and
-    // that half is covered in the PR-B block above. Closing the lane outright
-    // belongs to the shared grandfather deprecation (#1111), not here.
+    // Envelope-less caller, at the HANDLER level: this router runs in the
+    // default shadow mode, so the handler still runs after PermissionEnforcer
+    // logs the closed-lane rejection (#1111 refuses it at the gate under
+    // enforce mode). #922 ruling (c) narrowed this handler lane WITHOUT closing
+    // it — the deliberate, visible change this assertion was written to catch.
+    // A legacy caller that names a workspace is unchanged; one that names
+    // nothing is refused, and that half is covered in the PR-B block above.
     const legacy = await router.dispatch({
       id: 'scope-enforce-legacy',
       method: 'browser.evaluate',

@@ -24,8 +24,9 @@
 // Internal-only surfaces (daemon control, company subsystem, surface
 // arrangement) map to the reserved `wmux.internal` capability. The
 // permissionGrammar reserves the `wmux.` prefix, so no plugin can ever
-// declare it; legacy callers (no `clientName` envelope) fall through the
-// grandfather path in RpcRouter and stay allowed during the v3.0 transition.
+// declare it. Only wmux's own curated lanes reach these methods: legacy
+// callers (no `clientName` envelope) used to grandfather through, and are
+// refused since #1111 closed that lane.
 
 import type { RpcMethod } from '../../shared/rpc';
 
@@ -34,9 +35,10 @@ import type { RpcMethod } from '../../shared/rpc';
  * permissionGrammar.ts at parse time) or one of two sentinels:
  *   - `null`             — method is bootstrap-exempt; no capability needed
  *   - `'wmux.internal'`  — substrate-internal method; reserved prefix, no
- *                          plugin can ever satisfy this. Legacy (no envelope)
- *                          callers grandfather through RpcRouter's existing
- *                          legacy path.
+ *                          plugin can ever satisfy this. Reached only through
+ *                          wmux's curated lanes (renderer operator, commander,
+ *                          first-party / CLI / hook-bridge / statusline); a
+ *                          legacy (no envelope) caller is refused since #1111.
  */
 export type RequiredCapabilityName = string | null;
 export type CapabilityResolver = (params: Record<string, unknown>) => RequiredCapabilityName;

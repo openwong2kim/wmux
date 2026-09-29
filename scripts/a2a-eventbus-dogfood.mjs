@@ -27,9 +27,10 @@
  * ---------------------------------------------------
  * The main-pipe RPC router applies workspaceId scoping from `params.workspaceId`
  * VERBATIM (events.rpc.ts:60-95) — the server-side pin lives only in the MCP
- * layer (requireWorkspaceId), NOT in the raw router. And a clientName-less RPC
- * is grandfathered through enforce-mode (RpcRouter.dispatch:206/239 → enforcer
- * legacy/first-party allow). So a single packaged instance + main-pipe RPC can
+ * layer (requireWorkspaceId), NOT in the raw router. And this driver passes the
+ * enforce-mode gate as `wmux-cli` plus a seeded trust row (see
+ * seedDogfoodTrust; the envelope-less grandfather it used to ride was closed by
+ * #1111). So a single packaged instance + main-pipe RPC can
  * impersonate the sender poll, the receiver poll, a third-party poll, and the
  * unscoped poll — the exact four vantage points the invariant is about.
  *   - a2a.task.send (a2a.rpc.ts:106) passes params straight to the renderer,

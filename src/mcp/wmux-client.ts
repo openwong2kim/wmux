@@ -21,8 +21,11 @@ const RETRY_DELAY_MS = 1000;
 // Module-scoped declared identity. Populated by `setClientIdentity` from
 // the MCP `InitializeRequest` handler (src/mcp/index.ts). Every outbound
 // RPC stamps the envelope with this so PluginTrustStore can attribute the
-// call. May be undefined for the very first RPCs that race the MCP
-// initialize handshake — wmux treats those as 'legacy' and records them.
+// call. Undefined until the initialize handshake completes (and for good
+// with a host that reports no clientInfo name). An RPC sent without it goes
+// out envelope-less, which the substrate refuses since #1111 closed the
+// legacy lane (identity bootstrap and a token-validated commander aside);
+// tool calls normally arrive only after the handshake has set it.
 let CLIENT_NAME: string | undefined;
 let CLIENT_VERSION: string | undefined;
 
@@ -45,12 +48,12 @@ export function setClientIdentity(name?: string, version?: string): void {
   CLIENT_VERSION = trimmedVersion.length > 0 ? trimmedVersion : undefined;
 }
 
-// Drop the declared identity so any further outbound RPC stamps an
-// envelope-less request and falls through to the substrate's `legacy`
-// audit path. Called from the MCP transport.onclose handler — after the
-// transport tears down, an old name lingering in module scope would
-// misattribute trailing RPC traffic (e.g. cleanup work) to a plugin that
-// has already disconnected. A reconnect must re-run the initialize
+// Drop the declared identity so any further outbound RPC goes out
+// envelope-less, which the substrate refuses since #1111 (identity bootstrap
+// aside), instead of under a stale name. Called from the MCP
+// transport.onclose handler — after the transport tears down, an old name
+// lingering in module scope would misattribute trailing RPC traffic (e.g.
+// cleanup work) to a plugin that has already disconnected. A reconnect must re-run the initialize
 // handshake to re-establish identity, which is the intended contract.
 export function clearClientIdentity(): void {
   const scope = getConnectionScope();

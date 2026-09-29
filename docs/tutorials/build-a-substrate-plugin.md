@@ -46,28 +46,56 @@ it open — everything below talks to this running instance.
 
 ---
 
-## 2. Run the recorder once, in legacy mode
+## 2. Run the recorder once, and approve it
 
 Open a **separate** PowerShell window (not a wmux pane — we want to prove an
-external program can connect). Go to the repo and run the recorder in
-`--legacy --once` mode:
+external program can connect). Go to the repo and run the recorder in `--once`
+mode:
 
 ```powershell
-node examples/event-recorder/recorder.mjs --legacy --once
+node examples/event-recorder/recorder.mjs --once
 ```
 
-- `--legacy` sends no `clientName`, so wmux grandfathers the connection through
-  its permission gate. This lets you see real output before touching the
-  identity flow. **Deprecated:** the grandfather closes in the first release on or after **2026-09-30** (#1111);
-  from that release `--legacy` is refused and this step requires the identity
-  flow below.
+- The recorder introduces itself: it sends a `clientName`
+  (`wmux-examples.event-recorder`) on every request, calls `mcp.identify`, and
+  declares the capabilities it needs with `mcp.declarePermissions`. Step 6 walks
+  through exactly what it declared. wmux refuses a request that carries no
+  `clientName` at all (#1111), so there is no anonymous shortcut to take.
 - `--once` polls once from the start of the ring (with a few bounded
   reconciliation hops if the ring already wrapped past the oldest event), prints
   what it finds, and exits.
 
-The console shows one summary line per event already in the ring — at minimum
-a `pane.created` and a `process.started` from when wmux launched its first
-pane:
+Because wmux's production default is **enforce** mode, the first gated RPC the
+recorder makes — `workspace.list`, to pick the workspace to watch — comes back
+**rejected**, not with data:
+
+```jsonc
+{"ok":false,
+ "error":"workspace.list: awaiting user approval (promptId=abc123)",
+ "rejection":{"reason":"identity-status","status":"unconfirmed",
+              "pendingApproval":{"promptId":"abc123"}}}
+```
+
+This is expected — the recorder prints
+`workspace.list: waiting for approval in the wmux UI (promptId=...)`, detects
+`pendingApproval`, and retries on a small backoff (the `withApprovalRetry`
+idiom). Meanwhile, look at the **wmux window**: an approval dialog has appeared,
+showing the plugin's name and the capabilities it declared.
+
+**This step needs the GUI** — the approval prompt is a wmux UI surface. Click
+**Approve**. The plugin's status moves to `trusted`, and the recorder's next
+retry succeeds. The approval is remembered, so the later steps run without a
+prompt.
+
+> If you click **Deny**, the rejection's `status` flips to `denied` on the next
+> retry and the recorder stops — the substrate will keep denying it. `denied`
+> is sticky: re-running does **not** produce a new approval prompt. To
+> re-grant, edit `~/.wmux/plugin-trust.json` (remove the plugin's entry or set
+> its status back to `unconfirmed`) and re-run.
+
+Once approved, the console shows one summary line per event already in the
+ring — at minimum a `pane.created` and a `process.started` from when wmux
+launched its first pane:
 
 ```text
 [recorder 2026-06-10T05:00:01.123Z] seq=1 pane.created ws=ws-1 pane=p-1
@@ -99,7 +127,7 @@ is authenticated and reading the substrate.
 Now run without `--once` so it polls continuously:
 
 ```powershell
-node examples/event-recorder/recorder.mjs --legacy
+node examples/event-recorder/recorder.mjs
 ```
 
 It prints any backlog, then waits. Each poll passes back the opaque
@@ -135,7 +163,7 @@ So far the recorder only reads. Stop it (`Ctrl+C`) and restart in `--annotate`
 mode:
 
 ```powershell
-node examples/event-recorder/recorder.mjs --legacy --annotate
+node examples/event-recorder/recorder.mjs --annotate
 ```
 
 Now, every N recorded events (default 10, tunable with `--annotate-every`), the
@@ -151,20 +179,15 @@ read events, write metadata, see it in the UI.
 
 > The recorder writes with `mergeMode: 'merge'`, so it only sets `label` and its
 > own `custom.event-recorder.*` keys; anything else on the pane is preserved.
+> No new approval prompt appears: the capabilities you approved in step 2
+> already include the two metadata writes.
 
 ---
 
-## 6. Graduate to the real identity + approval flow
+## 6. What the identity handshake did
 
-`--legacy` was training wheels. A real plugin announces itself so the user can
-approve exactly what it is allowed to do. Stop the recorder and run it **without**
-`--legacy`:
-
-```powershell
-node examples/event-recorder/recorder.mjs --annotate
-```
-
-Now the recorder:
+The approval you gave in step 2 is the part of this lesson a real plugin cannot
+skip. Before its first gated call, the recorder:
 
 1. Sends a `clientName` (`wmux-examples.event-recorder`) on every request.
 2. Calls `mcp.identify({ name, version })` — registers as `unconfirmed`.
@@ -178,37 +201,17 @@ Now the recorder:
    - `meta.write:label` — write the shared `label` field, which shows in the
      pane header.
    - `meta.write:custom.event-recorder.*` — write its own namespaced subtree.
-4. Starts polling.
+4. Starts polling, wrapping each gated call in `withApprovalRetry` so a pending
+   approval is waited out rather than treated as a failure.
 
-Because wmux's production default is **enforce** mode, the first gated RPC the
-recorder makes — `workspace.list`, to pick the workspace to watch — comes back
-**rejected**, not with data:
+Approving moved the plugin to `trusted` for exactly those six capabilities. A
+later declaration that adds a capability drops it back to `unconfirmed` and
+asks again, so the user always approves what the plugin can actually do.
 
-```jsonc
-{"ok":false,
- "error":"workspace.list: awaiting user approval (promptId=abc123)",
- "rejection":{"reason":"identity-status","status":"unconfirmed",
-              "pendingApproval":{"promptId":"abc123"}}}
-```
-
-This is expected — the recorder prints
-`workspace.list: waiting for approval in the wmux UI (promptId=...)`, detects
-`pendingApproval`, and retries on a small backoff (the `withApprovalRetry`
-idiom). Every gated method gets the same treatment, so once approval lands the
-later `pane.list` and `events.poll` calls pass without a prompt. Meanwhile,
-look at the **wmux window**: an approval dialog has appeared, showing the
-plugin's name and the capabilities it declared.
-
-**This step needs the GUI** — the approval prompt is a wmux UI surface. Click
-**Approve**. The plugin's status moves to `trusted`. The recorder's next retry
-succeeds and events start streaming again, exactly as in step 3 — but now the
-plugin is a named, user-approved identity instead of an anonymous legacy caller.
-
-> If you click **Deny**, the rejection's `status` flips to `denied` on the next
-> retry and the recorder stops — the substrate will keep denying it. `denied`
-> is sticky: re-running does **not** produce a new approval prompt. To
-> re-grant, edit `~/.wmux/plugin-trust.json` (remove the plugin's entry or set
-> its status back to `unconfirmed`) and re-run.
+The recorder still has a `--legacy` flag that skips all of this and sends no
+`clientName`. It is kept only to show the refusal: wmux answers such a request
+with `rejection.status = "legacy"` (#1111 closed the anonymous lane), and the
+recorder stops with a message telling you to run it without `--legacy`.
 
 ---
 
@@ -223,11 +226,10 @@ plugin is a named, user-approved identity instead of an anonymous legacy caller.
 - **Metadata is the write surface**: `pane.setMetadata` writes shared display
   fields (`label`/`role`/`status`) and tool-private `custom.<tool>.*` subtrees,
   and the wmux UI reads them.
-- **Identity + approval** is the difference between a `legacy` grandfathered
-  caller (deprecated — the lane closes in the first release on or after
-  2026-09-30, #1111) and a named plugin the user explicitly trusted. Enforce mode rejects an
-  unconfirmed plugin with a `pendingApproval` promptId; you retry until the user
-  approves in the UI.
+- **Identity + approval** is how an external program gets in at all: a request
+  without a `clientName` is refused (#1111 closed the anonymous `legacy`
+  lane), and enforce mode rejects an unconfirmed plugin with a
+  `pendingApproval` promptId; you retry until the user approves in the UI.
 
 ## Where to go next
 
@@ -242,4 +244,4 @@ plugin is a named, user-approved identity instead of an anonymous legacy caller.
 
 - [`api/inventory.md`](../api/inventory.md) — every RPC method, MCP tool, and event type with stability tier.
 - [`PROTOCOL.md`](../PROTOCOL.md) — the wire-level substrate contract.
-- [`api/mcp-plugin-spec.md`](../api/mcp-plugin-spec.md) — identity, the `wmuxPermissions` grammar, and the enforcement contract you walked in step 6.
+- [`api/mcp-plugin-spec.md`](../api/mcp-plugin-spec.md) — identity, the `wmuxPermissions` grammar, and the enforcement contract you walked in steps 2 and 6.

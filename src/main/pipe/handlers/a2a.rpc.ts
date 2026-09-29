@@ -247,8 +247,9 @@ export function registerA2aRpc(
     // SECURITY: callerPid is caller-asserted (the pipe does not bind the
     // connection to a pid), so a same-user caller could pass a foreign pid to
     // resolve another pane's identity. That stays within the #113 same-user
-    // ceiling — a caller holding the pipe token is already grandfathered
-    // allow-all — so this is a reliability mechanism, not a new security boundary.
+    // ceiling — a caller holding the pipe token can already claim a recognised
+    // client name (before #1111 it did not even need that) — so this is a
+    // reliability mechanism, not a new security boundary.
     const callerPid = normalizeCallerPid((params as { callerPid?: unknown }).callerPid);
     // Start the snapshot CONCURRENTLY and bound the wait (at the walk below) to the
     // RPC budget: it feeds only the final walk, so it must never delay — or, past

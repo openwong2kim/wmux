@@ -289,7 +289,7 @@ export class WmuxClient {
     const envelope = { id, method, params, token: this.token };
     // Stamp declared identity on every envelope when running in identity mode
     // (src/shared/rpc.ts RpcRequest.clientName / clientVersion). Omitting it
-    // makes the substrate treat the caller as `legacy` (grandfathered).
+    // makes the caller `legacy`, which the substrate refuses since #1111.
     if (this.clientName) {
       envelope.clientName = this.clientName;
       if (this.clientVersion) envelope.clientVersion = this.clientVersion;

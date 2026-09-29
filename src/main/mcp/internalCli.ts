@@ -85,7 +85,7 @@ export const WMUX_CLI_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
  * True when `clientName` identifies the bundled first-party wmux CLI. Exact
  * match — `clientName` is already trimmed by RpcRouter when it builds the
  * RpcContext. `undefined` / unknown names are NOT the CLI (they fall through to
- * the legacy grandfather / normal enforcement).
+ * normal enforcement, which refuses an envelope-less caller since #1111).
  */
 export function isInternalCliClient(clientName: string | undefined): boolean {
   return clientName === WMUX_CLI_CLIENT_NAME;

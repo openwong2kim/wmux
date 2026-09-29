@@ -43,12 +43,13 @@ These are the exact rules wmux itself uses (`getPipeName` / `getAuthTokenPath` /
 
 ---
 
-## Two trust modes
+## Identity and approval
 
-wmux records a per-plugin trust entry keyed on the `clientName` you send. There
-are two ways to run the recorder.
+wmux records a per-plugin trust entry keyed on the `clientName` you send, and
+refuses a request that carries no `clientName` at all (#1111). The recorder
+therefore always identifies itself.
 
-### 1. Identity mode (the real pattern) — default
+### Identity mode — the default
 
 ```powershell
 node recorder.mjs --annotate
@@ -82,32 +83,24 @@ would-be rejection is logged server-side but the handler still runs, so the
 recorder proceeds without an approval dialog. The mode is controlled by
 `mcp.mode` in `~/.wmux/config.json` (`"shadow"` | `"enforce"`).
 
-### 2. Legacy mode (grandfathered quick demo)
+### `--legacy` is refused
 
-```powershell
-node recorder.mjs --legacy --once
-```
-
-With `--legacy` the recorder sends **no** `clientName` envelope. The substrate
-records such callers as `legacy` and grandfathers them through the permission
-gate — no identity handshake, no approval dialog. Use this for a fast smoke
-test or a throwaway demo.
-
-> **Deprecated (#1111):** the `legacy` grandfather closes in the first release on or after **2026-09-30**.
-> From that release `--legacy` is refused by the gate — use the identity mode
-> above.
-
-> The two modes differ only in whether the envelope carries `clientName`. The
-> event-bus, metadata, and reconciliation logic is identical.
+`--legacy` skips the identity handshake and sends **no** `clientName`. It used
+to ride a `legacy` grandfather lane through the permission gate; #1111 closed
+that lane, so wmux now refuses the first gated call with
+`rejection.status: "legacy"` and the recorder stops with a message saying so.
+The flag is kept only to demonstrate that refusal. (A dev wmux in shadow mode
+logs the rejection and still lets the call through.)
 
 ---
 
 ## Run commands (PowerShell)
 
 ```powershell
-node recorder.mjs --legacy --once
+node recorder.mjs --once
 ```
-Single poll, no identity, append to `./events.ndjson`, exit. Fastest smoke test.
+Single poll in identity mode, append to `./events.ndjson`, exit. The smoke test
+(`npm run smoke`); the first run waits for the approval prompt.
 
 ```powershell
 node recorder.mjs
@@ -139,7 +132,7 @@ Full flag reference.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--legacy` | off | Skip identity/declare; send no `clientName` (grandfathered). |
+| `--legacy` | off | Skip identity/declare; send no `clientName`. Refused since #1111 — kept to demonstrate the refusal. |
 | `--workspace <id>` | first from `workspace.list` | Workspace to watch. |
 | `--types a,b,c` | all 8 | Comma-separated `WmuxEventType` filter. |
 | `--out <path>` | `./events.ndjson` | NDJSON output file (append). |
@@ -252,14 +245,18 @@ path C).
 
 ## What you'll see
 
-`--legacy --once` against a fresh workspace prints something like:
+`--once` against a fresh workspace, on the first run (before approval),
+prints something like:
 
 ```
 [recorder 2026-06-09T…Z] endpoint = \\.\pipe\wmux-rizz
-[recorder 2026-06-09T…Z] mode = legacy (grandfathered)
+[recorder 2026-06-09T…Z] mode = identity + declare + approve
 [recorder 2026-06-09T…Z] types = pane.created,pane.closed,pane.focused,pane.metadata.changed,workspace.metadata.changed,process.started,process.exited,agent.lifecycle
 [recorder 2026-06-09T…Z] out = ./events.ndjson
 [recorder 2026-06-09T…Z] connected.
+[recorder 2026-06-09T…Z] mcp.identify → status=unconfirmed name=wmux-examples.event-recorder
+[recorder 2026-06-09T…Z] mcp.declarePermissions accepted: [events.subscribe, workspace.read, pane.read, meta.read, meta.write:label, meta.write:custom.event-recorder.*]
+[recorder 2026-06-09T…Z] workspace.list: waiting for approval in the wmux UI (promptId=…)
 [recorder 2026-06-09T…Z] watching workspace: ws-1 (default)
 [recorder 2026-06-09T…Z] pane.list (initial): bootId=550e8400… asOfSeq=12 panes=1 watchedPane=p-1
 [recorder 2026-06-09T…Z] seq=1 pane.created ws=ws-1 pane=p-1

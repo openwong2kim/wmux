@@ -168,7 +168,8 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // appear in ALLOWED_RESERVED_FIRST_PARTY (firstParty.test.ts). Granted to the
   // bundled supervisor per the security review in
   // plans/issue-285-pane-lifecycle-mcp-tools.md §6 (same-user ceiling; already
-  // reachable via the CLI tier + the still-open legacy grandfather).
+  // reachable via the CLI tier, and via the legacy grandfather until #1111
+  // closed it).
   'surface.new',
   'surface.close',
   // panes + metadata
@@ -348,7 +349,8 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
 /**
  * True when `clientName` identifies the bundled first-party wmux MCP server.
  * `undefined` / unknown names are NOT first-party — envelope-less callers are
- * already handled by the enforcer's `legacy` grandfather branch.
+ * refused by the enforcer's closed-lane branch before this is consulted
+ * (#1111).
  *
  * Matches the compiled defaults plus any operator-configured additions
  * (`setConfiguredFirstPartyClients`). Exact match either way — `clientName` is

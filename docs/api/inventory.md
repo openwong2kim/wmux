@@ -330,7 +330,7 @@ Every RPC method maps to a single declarative entry in `src/main/mcp/methodCapab
 The capability column below summarises the table. Three sentinels:
 
 - `null` — identity-bootstrap / system-introspection method; no capability required. Any caller can invoke regardless of trust state.
-- `wmux.internal` — reserved-prefix capability that NO plugin can ever declare (`permissionGrammar.ts` rejects `wmux.*` at declaration time). Internal-only surfaces. Legacy callers (no `clientName` envelope) still grandfather through.
+- `wmux.internal` — reserved-prefix capability that NO plugin can ever declare (`permissionGrammar.ts` rejects `wmux.*` at declaration time). Internal-only surfaces, reached only through wmux's own curated lanes. Legacy callers (no `clientName` envelope) used to grandfather through; they are refused since #1111 closed that lane.
 - `<capability>` — must match one of `KNOWN_CAPABILITIES` (spec §3.2).
 
 ### Capability map (subset — full table in code)

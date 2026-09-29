@@ -328,9 +328,8 @@ function buildMarkdown() {
   p('- `capability` is the `wmuxPermissions` capability the method requires.');
   p('  `null` = bootstrap/introspection (any caller, no declaration needed).');
   p('  `wmux.internal` = reserved prefix no plugin can declare (internal-only;');
-  p('  envelope-less callers grandfather through until #1111 closes that lane');
-  p('  — first release on or after 2026-09-30 — after which they are refused');
-  p('  too).');
+  p('  reached only through wmux\'s own curated lanes; an envelope-less caller');
+  p('  is refused since #1111 closed the legacy grandfather lane).');
   p('- `riskClass` drives the approval-dialog wording; blank for `null` and');
   p('  `wmux.internal` methods.');
   p('');

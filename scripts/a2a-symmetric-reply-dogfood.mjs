@@ -17,7 +17,8 @@
  *
  * Single ISOLATED packaged instance (out/wmux-win32-x64/wmux.exe + a unique
  * WMUX_DATA_SUFFIX so it never touches the user's real wmux). Drives the pure
- * main-pipe RPC (clientName omitted → grandfather).
+ * main-pipe RPC as `wmux-cli` plus a seeded trust row (the envelope-less
+ * grandfather it used to ride was closed by #1111).
  *
  * Run (PowerShell): npm run package; node scripts/a2a-symmetric-reply-dogfood.mjs
  */

@@ -705,8 +705,9 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
   // as strong as the client walk's own-ancestry proof: a same-user caller could
   // assert a foreign pid to adopt that pane's ptyId. This stays within the #113
   // same-user trust ceiling (a same-user caller already holds the pipe token and
-  // is grandfathered allow-all), so the channel sender gate treats MY_PTY_ID as a
-  // reliability mechanism, not a same-user security boundary.
+  // can claim a recognised client name; before #1111 it did not even need
+  // that), so the channel sender gate treats MY_PTY_ID as a reliability
+  // mechanism, not a same-user security boundary.
   if (
     resolved &&
     typeof resolved.workspaceId === 'string' && resolved.workspaceId &&
@@ -1937,7 +1938,7 @@ function wireClientIdentityHook(): void {
       // Fire-and-forget — the trust DB write is best-effort; failures must
       // never block the MCP handshake from completing.
       sendRpc('mcp.identify', { name, version }).catch(() => {
-        /* substrate may be unavailable mid-restart; legacy path takes over */
+        /* substrate may be unavailable mid-restart; later calls still carry the name */
       });
     } catch {
       /* swallow — identity is non-essential to MCP operation */

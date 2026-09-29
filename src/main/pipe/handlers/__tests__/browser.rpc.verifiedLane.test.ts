@@ -10,8 +10,8 @@
 //   legacy    NARROWED, not closed. A legacy caller that NAMES a workspace is
 //             unchanged byte for byte. One that names nothing used to reach the
 //             workspace-blind "first registered surface" lookup; that case is
-//             refused now. The grandfather itself stays — closing it belongs to
-//             the shared deprecation clock (#1111).
+//             refused now. The grandfather itself stayed in this table; #1111
+//             closed it at the gate (PermissionEnforcer), not here.
 //
 // The four regressions this file exists to pin are called out by name below.
 

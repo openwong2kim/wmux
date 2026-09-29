@@ -470,11 +470,11 @@ What it does **not** close, and why it is written down rather than implied:
   caller's own. Nothing in the main process binds a `clientName` to a workspace
   (`mcp.claimWorkspace` forwards to the renderer and records no association), so
   a caller naming a foreign workspace is accepted exactly as before.
-- The `legacy` lane (no `clientName`) is allowed and unscoped, matching
-  `PermissionEnforcer`'s grandfather, so dropping the identity envelope
-  bypasses this layer. #1111 closes that lane in the first release on or after
-  2026-09-30; from then an envelope-less wire request is refused by the
-  permission gate before it reaches here.
+- The `legacy` lane (no `clientName`) is still allowed and unscoped in this
+  table, but #1111 closed `PermissionEnforcer`'s grandfather (in the first
+  release on or after 2026-09-30): under enforce mode an envelope-less wire
+  request is refused by the permission gate before it reaches here. Only shadow
+  mode, the dev default, still lets it through to this layer.
 - `browser.open` and `browser.close` route a create/close by the request's
   `workspaceId` and fall back to the UI-active workspace when it is absent. They
   are surface lifecycle rather than target resolution, were never shadowed, and

@@ -264,10 +264,11 @@ function requestedWorkspaceId(params: Record<string, unknown>): string | undefin
  *           Nothing binds a bare clientName to a workspace, and the name is
  *           self-asserted, so binding to it would be no stronger than the
  *           capability check that already keys on it.
- *   OPEN    the `legacy` lane is still ALLOWED, and `PermissionEnforcer`
- *           grandfathers the same callers. Dropping the identity envelope
- *           still avoids per-plugin permission enforcement; it just no longer
- *           buys an unscoped browser target lookup. Tracked on #1111.
+ *   CLOSED  the `legacy` lane, at the gate rather than here: #1111 closed
+ *           `PermissionEnforcer`'s grandfather, so under enforce mode an
+ *           envelope-less wire caller is refused before it reaches this table.
+ *           The lane below remains for shadow mode (the dev default), where
+ *           the handler still runs after the rejection is logged.
  *
  * The hosted lane closes one caller CLASS, not the general problem: it works
  * only because the plugin host derives both halves of the identity itself. The
@@ -428,10 +429,11 @@ export function callerScope(
     return { kind: 'scoped', lane: 'verified', workspaceId: verifiedWorkspaceId };
   }
 
-  // #922 (c) — the legacy lane keeps its GRANDFATHER: a caller with no identity
-  // envelope is still allowed here, and closing that belongs to the shared
-  // deprecation clock with `PermissionEnforcer`, not to this table (#1111).
-  // What changes is only the OMITTED case. A legacy caller that names a
+  // #922 (c) — the legacy lane: a caller with no identity envelope is still
+  // scoped here as it always was. Closing the lane was `PermissionEnforcer`'s
+  // job, not this table's, and #1111 did it at the gate — under enforce mode
+  // such a caller no longer gets this far; in shadow mode it still does.
+  // What #922 changed here is only the OMITTED case. A legacy caller that names a
   // workspace is unchanged, byte for byte — it was already scoped to what it
   // named. One that names nothing used to reach the workspace-blind "first
   // registered surface" lookup and get whichever surface happened to register
@@ -1931,14 +1933,13 @@ export function registerBrowserRpc(
     // act on a surface, so leaving it outside the table meant one method could
     // still be pointed anywhere the lane rules would have refused.
     //
-    // What this does NOT close, stated because the gap is easy to misread as
-    // fixed: `browser.tabs` is `wmux.internal`, which no plugin can declare —
-    // but `PermissionEnforcer` allows an envelope-less caller BEFORE it looks
-    // at the capability, so a legacy caller reaches this method at all. Under
-    // ruling (c) the legacy lane still accepts the workspace such a caller
-    // names, so scoping here confines the identified lanes and leaves that one
-    // exactly where it was. Closing it means closing the grandfather, which is
-    // #1111's shared deprecation clock, not this table's to start early.
+    // What this does NOT close, and what did: `browser.tabs` is
+    // `wmux.internal`, which no plugin can declare — but `PermissionEnforcer`
+    // used to allow an envelope-less caller BEFORE it looked at the capability,
+    // so a legacy caller reached this method at all. Scoping here confines the
+    // identified lanes; under ruling (c) the legacy lane still accepts the
+    // workspace such a caller names. That lane was closed at the gate by
+    // #1111 (enforce mode refuses it before this runs), not by this table.
     const scoped = scopeFor('browser.tabs', params, ctx);
     const workspaceId = scoped && scoped.length > 0 ? scoped : '';
     if (!workspaceId) {

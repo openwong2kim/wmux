@@ -127,10 +127,10 @@ describe('browser RPC workspace-scope coverage (#810)', () => {
     //
     // One thing folding `browser.tabs` did NOT close, recorded so the next
     // reader does not assume it did: it is `wmux.internal`, which no plugin can
-    // declare, but the enforcer allows an envelope-less caller before it checks
-    // the capability. Ruling (c) leaves the legacy lane accepting the workspace
-    // such a caller names, so that one caller class is unchanged here. It
-    // closes with the grandfather, on #1111.
+    // declare, and ruling (c) leaves this table's legacy lane accepting the
+    // workspace such a caller names, so that one caller class is unchanged
+    // here. It was closed at the gate instead: #1111 made the enforcer refuse
+    // an envelope-less caller before it checks the capability.
     const ALLOWED: string[] = [];
 
     const readers = blocks

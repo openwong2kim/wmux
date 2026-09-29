@@ -111,13 +111,12 @@ function printHelp() {
 
 Usage: node recorder.mjs [options]
 
-  --legacy               DEPRECATED (#1111): skip mcp.identify/declarePermissions
-                         and send no clientName. The substrate grandfathers
-                         envelope-less callers (PROTOCOL.md §4), so this is the
-                         fastest way to see events with no approval dialog —
-                         but that lane closes in the first release on or after
-                         2026-09-30, after which the request is refused. The
-                         npm smoke script no longer uses it.
+  --legacy               REFUSED since #1111: skip mcp.identify/declarePermissions
+                         and send no clientName. wmux closed the anonymous
+                         grandfather lane (PROTOCOL.md §4.1), so the first
+                         gated call comes back refused and the recorder stops.
+                         Kept only to demonstrate the refusal; shadow mode (a
+                         dev wmux) merely logs it and lets the call through.
   --workspace <id>       Watch a specific workspace id (default: first from
                          workspace.list).
   --types a,b,c          Comma-separated WmuxEventType filter. Default: all 8.
@@ -181,8 +180,9 @@ async function declareIdentity(client) {
 //   rejection.pendingApproval.promptId
 // and wmux pops an approval dialog. We retry the same RPC on a backoff until
 // the user approves (status flips to trusted → call succeeds) or denies
-// (rejection.status === 'denied' → we stop). In --legacy mode this branch is
-// never taken because envelope-less calls are grandfathered.
+// (rejection.status === 'denied' → we stop). An envelope-less call (--legacy)
+// comes back with rejection.status === 'legacy' since #1111 closed that lane;
+// there is nothing to approve, so we stop instead of waiting forever.
 
 async function withApprovalRetry(client, fn, label) {
   const BACKOFF_MS = 2000;
@@ -195,6 +195,10 @@ async function withApprovalRetry(client, fn, label) {
       if (rej && rej.reason === 'identity-status') {
         if (rej.status === 'denied') {
           log(`${label}: plugin DENIED by user — stopping. Edit ~/.wmux/plugin-trust.json to restore.`);
+          throw err;
+        }
+        if (rej.status === 'legacy') {
+          log(`${label}: refused — requests without a clientName are no longer accepted (wmux#1111). Run without --legacy.`);
           throw err;
         }
         const promptId = rej.pendingApproval?.promptId;
@@ -301,12 +305,12 @@ async function main() {
   }
 
   log(`endpoint = ${endpoint()}`);
-  log(`mode = ${args.legacy ? 'legacy (grandfathered)' : 'identity + declare + approve'}`);
+  log(`mode = ${args.legacy ? 'legacy (no clientName; refused since wmux#1111)' : 'identity + declare + approve'}`);
   log(`types = ${args.types.join(',')}`);
   log(`out = ${args.out}`);
 
   // (a) Resolve token + endpoint, connect. In legacy mode we send no
-  //     clientName so the substrate treats us as a grandfathered caller.
+  //     clientName, which the substrate refuses since #1111.
   const client = new WmuxClient({
     clientName: args.legacy ? undefined : CLIENT_NAME,
     clientVersion: args.legacy ? undefined : VERSION,

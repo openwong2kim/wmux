@@ -190,9 +190,10 @@ describe('enforce-mode dispatch — rejection names the observed client (#636)',
   });
 
   it('says so explicitly when the caller reported no clientName', async () => {
-    // Envelope-less callers take the legacy grandfather path, so drive the
-    // message builder through a named-but-denied caller instead: the point is
-    // that the message never silently omits the identity field.
+    // Envelope-less callers get the closed-lane message from a separate
+    // branch (#1111), so drive the observed-name builder through a
+    // named-but-denied caller instead: the point is that the message never
+    // silently omits the identity field.
     await store.upsertContact('evil-plugin');
     await store.setUserDecision('evil-plugin', 'denied');
     const res = await dispatchWire({
