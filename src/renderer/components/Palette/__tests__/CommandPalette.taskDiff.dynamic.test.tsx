@@ -143,6 +143,5 @@ describe('hasAdoptableTaskDiff', () => {
     // Not materialized yet, or a worktree:false task (output folder only).
     expect(hasAdoptableTaskDiff(mission({ worktreePath: undefined }))).toBe(false);
     expect(hasAdoptableTaskDiff(mission({ worktreePath: undefined, branch: undefined, outputDir: '/out/1' }))).toBe(false);
-    expect(hasAdoptableTaskDiff(undefined)).toBe(false);
   });
 });

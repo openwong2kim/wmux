@@ -384,13 +384,13 @@ export default function CommandPalette() {
       });
     });
 
-    // #1461 — the task diff (hunk checkboxes, Adopt, PR, Close) for the fan-out
-    // task whose workspace is active. Show Git Diff opens the read-only
-    // workspace diff, so without this the fan-out toast and Fleet's Ready to
-    // review rows were the only ways back to a task diff. Listed only in a task
-    // workspace that still has a worktree, under a fixed id so it does not
-    // shift the `cmd-${i}` ids above.
-    if (activeWorkspaceId && hasAdoptableTaskDiff(activeTask)) {
+    // #1461 — the task diff (hunk checkboxes and Adopt, plus PR and Close while
+    // the task is open) for the fan-out task whose workspace is active. Show
+    // Git Diff opens the read-only workspace diff, so without this the fan-out
+    // toast and Fleet's Ready to review rows were the only ways back to a task
+    // diff. Listed only in a task workspace that still has a worktree, under a
+    // fixed id so it does not shift the `cmd-${i}` ids above.
+    if (activeWorkspaceId && activeTask && hasAdoptableTaskDiff(activeTask)) {
       const task = activeTask;
       items.push({
         id: 'cmd-task-diff',
