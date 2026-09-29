@@ -31,6 +31,10 @@
   // The smallest valid module: magic + version, no sections.
   var EMPTY_MODULE = [0, 97, 115, 109, 1, 0, 0, 0];
 
+  // The addon loaded into each terminal, so a server-side switch can take it
+  // back out of a terminal that is already open.
+  var loaded = typeof WeakMap === 'function' ? new WeakMap() : null;
+
   /** Whether this page may compile AND instantiate WebAssembly. */
   function wasmUsable(wa) {
     try {
@@ -39,6 +43,23 @@
     } catch (e) {
       return false;
     }
+  }
+
+  /**
+   * The addon options for this page. Without createImageBitmap the addon's
+   * iTerm2 path falls back to an <img> on a blob URL that it never revokes on
+   * a decode error and waits a full second on, stalling the parser; such a
+   * browser keeps sixel only.
+   */
+  function optionsFor(env) {
+    var opts = {};
+    for (var k in OPTIONS) opts[k] = OPTIONS[k];
+    opts.iipSupport = typeof env.createImageBitmap === 'function';
+    return opts;
+  }
+
+  function dispose(addon) {
+    try { addon.dispose(); } catch (e) { /* already torn down */ }
   }
 
   /**
@@ -51,13 +72,35 @@
     var mod = env.ImageAddon;
     if (!mod || typeof mod.ImageAddon !== 'function') return false;
     if (!wasmUsable(env.WebAssembly)) return false;
+    var addon = null;
     try {
-      term.loadAddon(new mod.ImageAddon(OPTIONS));
+      addon = new mod.ImageAddon(optionsFor(env));
+      term.loadAddon(addon);
+      if (loaded) loaded.set(term, addon);
       return true;
     } catch (e) {
+      // A half-activated addon may already hold parser handlers.
+      if (addon && typeof addon.dispose === 'function') dispose(addon);
       return false;
     }
   }
 
-  return { OPTIONS: OPTIONS, wasmUsable: wasmUsable, load: load };
+  /**
+   * Bring `term` in line with the server's current switch: load the addon if
+   * it is on and missing, dispose it (and every image it holds) if it is off.
+   */
+  function sync(term, env) {
+    var addon = loaded ? loaded.get(term) : undefined;
+    if (!env || env.enabled === false) {
+      if (addon) {
+        dispose(addon);
+        loaded.delete(term);
+      }
+      return false;
+    }
+    if (addon) return true;
+    return load(term, env);
+  }
+
+  return { OPTIONS: OPTIONS, wasmUsable: wasmUsable, optionsFor: optionsFor, load: load, sync: sync };
 });

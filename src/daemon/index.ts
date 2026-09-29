@@ -58,6 +58,7 @@ import {
 } from './web/webStateStore';
 import { stopWebServerDurably } from './web/webStop';
 import { decideWebStartPolicy, resolveWebInlineImages, resolveWebStartGrants } from './web/webStartPolicy';
+import { loadWebPrefs, saveWebPrefs } from './web/webPrefsStore';
 import { scheduleTokenFileReHarden } from '../shared/security';
 import { applyTaskQueryView } from '../shared/a2aTaskQueryView';
 import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
@@ -661,7 +662,6 @@ function persistWebState(
       allowUpload: info.allowUpload === true,
       allowTranscript: info.allowTranscript === true,
       ...(info.allowDangerousLaunch === true ? { allowDangerousLaunch: true } : {}),
-      ...(info.inlineImages === false ? { inlineImages: false as const } : {}),
       ...(info.tls === true && tls ? { tls } : {}),
       allowedHosts,
       tailscale,
@@ -802,7 +802,7 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
       allowUpload: state.allowUpload,
       allowTranscript: state.allowTranscript,
       allowDangerousLaunch: state.allowDangerousLaunch === true,
-      inlineImages: state.inlineImages !== false,
+      inlineImages: loadWebPrefs(wmuxDir).inlineImages,
       ...(state.tls ? { tls: state.tls } : {}),
       allowedHosts: state.allowedHosts,
       // Replayed, not re-established: the serve registration lives with the
@@ -3160,8 +3160,13 @@ function registerRpcHandlers(
     const inlineImages = resolveWebInlineImages(
       p.inlineImages,
       webServer.currentStartState,
-      loadedPrevious.state,
+      loadWebPrefs(wmuxDir),
     );
+    // An explicit choice is an operator preference: it outlives this server,
+    // including an operator stop (see webPrefsStore).
+    if (typeof p.inlineImages === 'boolean' && !saveWebPrefs(wmuxDir, { inlineImages })) {
+      log('warn', '[web] could not persist the inline images preference; it applies until the next restart');
+    }
     const { tls, token, rotateCredentials } = decideWebStartPolicy({
       requestedTls,
       live: webServer.currentStartState,

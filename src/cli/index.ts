@@ -102,7 +102,8 @@ WEB ACCESS (browser / PWA)
                                     per-launch confirmation. Off by default
         [--no-inline-images]        Stop the browser terminal drawing sixel and
                                     iTerm2 images (on by default; kept across
-                                    re-runs, --inline-images turns it back on)
+                                    re-runs, restarts and --stop;
+                                    --inline-images turns it back on)
         [--allow-host <h1,h2>]      Extra Host names to accept and advertise,
                                     for a reverse proxy or native TLS DNS name
         [--new-token]               Mint a fresh access token, revoking every

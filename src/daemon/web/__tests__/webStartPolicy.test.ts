@@ -262,24 +262,24 @@ describe('web start grant resolution', () => {
 });
 
 describe('inline images switch (#1641)', () => {
+  const on = { inlineImages: true };
+  const off = { inlineImages: false };
+
   it('is on for a fresh server', () => {
-    expect(resolveWebInlineImages(undefined, undefined, previous({ enabled: false }))).toBe(true);
+    expect(resolveWebInlineImages(undefined, undefined, on)).toBe(true);
   });
 
   it('an explicit value always wins', () => {
-    expect(resolveWebInlineImages(false, { inlineImages: true }, previous())).toBe(false);
-    expect(resolveWebInlineImages(true, { inlineImages: false }, previous({ inlineImages: false }))).toBe(true);
+    expect(resolveWebInlineImages(false, { inlineImages: true }, on)).toBe(false);
+    expect(resolveWebInlineImages(true, { inlineImages: false }, off)).toBe(true);
   });
 
   it('a re-run that does not say keeps the running server\'s choice', () => {
-    expect(resolveWebInlineImages(undefined, { inlineImages: false }, previous())).toBe(false);
-    expect(resolveWebInlineImages(undefined, { inlineImages: true }, previous({ inlineImages: false }))).toBe(true);
+    expect(resolveWebInlineImages(undefined, { inlineImages: false }, on)).toBe(false);
+    expect(resolveWebInlineImages(undefined, { inlineImages: true }, off)).toBe(true);
   });
 
-  it('a restart keeps the persisted off, and an operator stop clears it', () => {
-    expect(resolveWebInlineImages(undefined, undefined, previous({ inlineImages: false }))).toBe(false);
-    expect(
-      resolveWebInlineImages(undefined, undefined, previous({ enabled: false, inlineImages: false })),
-    ).toBe(true);
+  it('with nothing running (a restart, or after --stop) the saved preference decides', () => {
+    expect(resolveWebInlineImages(undefined, undefined, off)).toBe(false);
   });
 });

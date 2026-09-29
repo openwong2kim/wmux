@@ -96,18 +96,18 @@ export function decideWebStartPolicy(input: WebStartPolicyInput): WebStartPolicy
  *
  * Not a grant: it is on by default and only the operator turns it off
  * (`wmux web --no-inline-images`). So it is always inherited when a start does
- * not say — from the running server, else from the persisted record while that
- * record is still enabled — and every caller that does not know about it (the
- * desktop popover, an older CLI) keeps the operator's choice.
+ * not say — from the running server, else from the saved preference, which
+ * outlives an operator stop — and every caller that does not know about it
+ * (the desktop popover, an older CLI) keeps the operator's choice.
  */
 export function resolveWebInlineImages(
   explicit: unknown,
   live: { inlineImages?: boolean } | undefined,
-  previous: WebPersistedState,
+  saved: { inlineImages: boolean },
 ): boolean {
   if (typeof explicit === 'boolean') return explicit;
   if (live) return live.inlineImages !== false;
-  return !(previous.enabled && previous.inlineImages === false);
+  return saved.inlineImages;
 }
 
 /** The four per-server phone grants a `daemon.web.start` decides. */
