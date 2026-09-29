@@ -20,8 +20,10 @@ const fstat = promisify(fs.fstat);
  * `st_dev` as 0 for a PATH stat on Windows while a handle's stat carries the
  * volume serial (see `sameFileIdentity` in webStateStore.ts); when one side
  * has no volume, the path is opened once more and the two handles compared,
- * so both sides come from the same kind of stat. The stats are bigint because
- * an NTFS file ID does not fit a double.
+ * so both sides come from the same kind of stat. That open is one more lookup
+ * by path, inside the race `openResolvedFile` describes; what it rules out is
+ * a file ID from another volume passing for this one. The stats are bigint
+ * because an NTFS file ID does not fit a double.
  */
 async function sameFile(opened: fs.BigIntStats, named: fs.BigIntStats, real: string): Promise<boolean> {
   if (opened.ino !== named.ino) return false;
@@ -67,11 +69,13 @@ async function sameFile(opened: fs.BigIntStats, named: fs.BigIntStats, real: str
  * O_NOFOLLOW never covered on POSIX either.
  *
  * This narrows the window between the boundary check and the open; it does
- * not close it. A swap made before the open and undone again between the two
- * lookups after it gets through, and winning that takes no precise timing: a
- * process that keeps flipping a directory on the path to a link and back
- * (atomically on POSIX, with renameat2 RENAME_EXCHANGE or renamex_np
- * RENAME_SWAP) gets some fraction of requests through. Closing it needs the
+ * not close it. A swap made before the open and undone again between the
+ * lookups by path after it (the lstat and the realpath, plus the second open
+ * `sameFile` makes where a path stat has no volume) gets through, and winning
+ * that takes no precise timing: a process that keeps flipping a directory on
+ * the path to a link and back (atomically on POSIX, with renameat2
+ * RENAME_EXCHANGE or renamex_np RENAME_SWAP) gets some fraction of requests
+ * through. Closing it needs the
  * path of the open handle itself, which Node has no API for on Windows or
  * macOS. Linux has one, a readlink of `/proc/self/fd/<fd>`, but that spelling
  * comes from the dentry cache: on a case-insensitive mount it can differ from
