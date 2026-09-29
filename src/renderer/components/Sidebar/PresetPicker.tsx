@@ -63,7 +63,25 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   // Same swap as attachRemoteOpen: the dropdown gives way to the host picker
   // the ⋮ menu's remote entries open (AddRemotePaneModal).
   const [remotePaneOpen, setRemotePaneOpen] = useState(false);
+  // The modal calls onCreated after its host round-trip (up to the request
+  // timeout) with no check that it is still on screen, and every way out of it
+  // (Escape, backdrop, a repair) unmounts this picker. A mint that lands after
+  // that was cancelled: creating the workspace then would switch the user's
+  // screen to something they backed out of, and a retry would leave two. The
+  // session exists on the host by then, so it is destroyed rather than left
+  // running (#1129). The happy path never sees the flag — the modal calls
+  // onCreated before onClose. Reset on mount so a StrictMode re-mount counts
+  // as mounted.
+  const dismissedRef = useRef(false);
+  useEffect(() => {
+    dismissedRef.current = false;
+    return () => { dismissedRef.current = true; };
+  }, []);
   const handleRemotePaneCreated = useCallback((hostId: string, sessionId: string, remoteWorkspaceId: string) => {
+    if (dismissedRef.current) {
+      destroyRemoteSessions([{ hostId, sessionId }]);
+      return;
+    }
     createWorkspaceWithRemotePane(useStore.getState, destroyRemoteSessions, { hostId, sessionId, remoteWorkspaceId });
   }, []);
 
