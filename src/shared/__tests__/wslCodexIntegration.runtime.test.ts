@@ -44,6 +44,7 @@ import { writeFileSync } from 'node:fs';
 writeFileSync(process.env.WMUX_TEST_RESULT, JSON.stringify({
   payload: JSON.parse(process.argv.at(-1)), pane: process.env.WMUX_PTY_ID,
   suffix: process.env.WMUX_DATA_SUFFIX, electron: process.env.ELECTRON_RUN_AS_NODE,
+  notifier: process.env.WMUX_CODEX_NOTIFIER_ARGV, wslenv: process.env.WSLENV,
 }));
 `);
   const resultPath = path.join(dir, 'bridge-result.json');
@@ -72,10 +73,15 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
     expect(result.args.slice(2)).toEqual(args);
     expect(result.electron).toBeUndefined();
     expect(result.stderr).toBe('');
-    expect(JSON.parse(fs.readFileSync(f.resultPath, 'utf8'))).toEqual({
+    const recorded = JSON.parse(fs.readFileSync(f.resultPath, 'utf8'));
+    expect(recorded).toEqual({
       payload: { type: 'agent-turn-complete', 'thread-id': SESSION_ID, 'turn-id': 'turn-1', cwd: f.cwd },
       pane: 'pane-one', suffix: '-codex-test', electron: '1',
+      // #1523: the argv of the Codex that spawned the hook, read from /proc.
+      notifier: process.platform === 'linux' ? expect.any(String) : undefined,
+      wslenv: expect.any(String),
     });
+    if (process.platform === 'linux') expect(recorded.notifier.split('\x1f').slice(-args.length)).toEqual(args);
     expect(fs.readFileSync(config, 'utf8')).toBe('# existing settings\nmodel = "test"\n');
     expect(f.injected.env.WSLENV).toContain('WMUX_WSL_CODEX_BRIDGE/u');
     expect(f.injected.env.WSLENV).toContain('WMUX_WSL_CODEX_HOOK/p');
@@ -130,12 +136,18 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
   });
 
   // #1523: a shared app-server carries the environment of the pane that
-  // started it. The fake Codex's argv stands in for `codex app-server …`.
-  // Linux only: the guard reads /proc, which macOS does not have.
-  it.runIf(process.platform === 'linux')('does not forward a notification spawned by a shared app-server', () => {
+  // started it, and only the Linux side can see that server. The hook hands
+  // its argv to the Windows bridge, which decides (codexNotifyOrigin.test.ts);
+  // the fake Codex's argv stands in for `codex app-server …`. Linux only: the
+  // hook reads /proc, which macOS does not have.
+  it.runIf(process.platform === 'linux')('hands the argv of the spawning Codex to the bridge', () => {
     const f = fixture();
-    f.run(['app-server', '--listen', 'unix://', '--managed-daemon']);
-    expect(fs.existsSync(f.resultPath)).toBe(false);
+    const args = ['app-server', '--listen', 'unix://', '--managed-daemon'];
+    f.run(args);
+    const recorded = JSON.parse(fs.readFileSync(f.resultPath, 'utf8'));
+    expect(recorded.notifier.split('\x1f').slice(-args.length)).toEqual(args);
+    expect(recorded.pane).toBe('pane-one');
+    expect(recorded.wslenv).toContain('WMUX_CODEX_NOTIFIER_ARGV/w');
   });
 
   it('honors CODEX_HOME and integration opt-out, and still launches when the helper is unavailable', () => {

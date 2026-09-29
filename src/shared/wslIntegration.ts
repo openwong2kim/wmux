@@ -76,14 +76,16 @@ exec "$real" --settings "$WMUX_WSL_SETTINGS" "$@"
 `;
 
 export const WSL_CODEX_HOOK = `#!/bin/sh
-# A shared Codex app-server keeps the environment of whichever pane started it,
-# so a notification it spawns names no provable pane (#1523). The Windows
-# bridge cannot see this Linux parent; check it here. No /proc, no check.
-if [ -r "/proc/$PPID/cmdline" ] && tr '\\0' '\\n' < "/proc/$PPID/cmdline" | grep -qx 'app-server'; then
-  exit 0
-fi
 export ELECTRON_RUN_AS_NODE=1
 export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w"
+# The Windows bridge cannot see the Linux Codex that spawned this script: a
+# TUI, or a shared app-server that kept another pane's environment (#1523).
+# Hand it that argv, one U+001F between arguments; the bridge decides.
+if [ -r "/proc/$PPID/cmdline" ]; then
+  WMUX_CODEX_NOTIFIER_ARGV=$(tr '\\0' '\\037' < "/proc/$PPID/cmdline" | head -c 4096)
+  export WMUX_CODEX_NOTIFIER_ARGV
+  export WSLENV="$WSLENV:WMUX_CODEX_NOTIFIER_ARGV/w"
+fi
 # Codex also notifies for temporary title-generation and subagent threads.
 # Only a saved top-level CLI session is a valid Resume target. Match the exact
 # reported UUID and inspect its first metadata record; never guess the newest.

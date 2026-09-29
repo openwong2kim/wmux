@@ -257,14 +257,28 @@ another wmux instance, not the pane whose turn finished. The payload names no
 pane either.
 
 So the notify bridge looks at the process that spawned it (skipping wrappers
-that re-run the bridge itself, such as a version-manager `node` shim). When
-that process is an `app-server`, the notification is dropped: nothing is sent,
-nothing is spooled, and `codex-notify.log` records `refused-shared-server`.
+that re-run the bridge itself, such as a version-manager `node` shim). The
+notification is dropped — nothing is sent, nothing is spooled, and
+`codex-notify.log` records `refused-shared-server` — only when all of these
+hold:
+
+- `app-server` is that process's **subcommand**: the first word after the
+  executable and Codex's global options. `codex --cd app-server`, or a prompt
+  that mentions the word, is not a server.
+- The server is **shared**: `--managed-daemon`, or a `--listen` other than
+  `stdio://`. A stdio server serves the one client that started it; wmux's own
+  Chat composer runs one per pane, with that pane's environment.
+- The environment **claims a pane**: `WMUX_PTY_ID`, `WMUX_WORKSPACE_ID`,
+  `WMUX_SURFACE_ID` or `WMUX_DATA_SUFFIX` is set. A shared server that wmux
+  starts itself has every `WMUX_*` variable removed, so its notifications name
+  no pane and are sent as before, for wmux to place by cwd.
+
 A Codex that runs the turn itself — older builds, `--no-daemon` (how wmux's
 bash/zsh `codex` wrapper runs an interactive `codex`), `exec`, `review` — is
-unchanged, and so is a parent the bridge cannot inspect. The WSL launcher makes
-the same check on the Linux side, where the Windows bridge cannot see the
-Codex process.
+unchanged, and so is a parent the bridge cannot inspect within its 900 ms
+budget. On WSL the bridge is a Windows process that cannot see the Linux
+Codex, so the WSL launcher hands it that process's argv
+(`WMUX_CODEX_NOTIFIER_ARGV`) and the same rules apply.
 
 The hooks bridge has the same exposure and does not check yet.
 

@@ -11,14 +11,15 @@
 // Spawned by the Codex process in the pane, it inherits the pane env, so
 // WMUX_PTY_ID pins the capture to the exact pane and WMUX_DATA_SUFFIX pins every
 // endpoint/file to that instance. Spawned by a SHARED Codex app-server, it
-// inherits the env of whichever pane started that server instead, so it is
-// refused (see "Notifier origin" below, #1523).
+// inherits the env of whichever pane started that server instead; when that
+// env claims a pane, the notification is refused (see "Notifier origin"
+// below, #1523).
 //
 // This script:
 //   1. Parses the LAST argv as the Codex notify JSON payload.
 //   2. Ignores unrelated official lifecycle event types.
-//   3. Refuses a notification spawned by a shared Codex app-server: nothing is
-//      sent or spooled under the identity that server inherited.
+//   3. Refuses a notification spawned by a shared Codex app-server whose env
+//      claims a wmux pane: nothing is sent or spooled under that identity.
 //   4. Builds a canonical, metadata-only AgentSignal envelope
 //      (agent:'codex', kind:'agent.stop'); prompt and assistant content is never
 //      logged or forwarded.
@@ -60,7 +61,8 @@ const AGENT_TURN_COMPLETE = 'agent-turn-complete';
 // Stamped on every codex-notify.log line; bump on behavior changes.
 //   0.2.0 — daemon-first targeting (daemon.hooks.signal → hooks.signal).
 //   0.3.0 — official payload routing + suffix-isolated endpoint/state paths.
-//   0.4.0 — refuse a notification spawned by a shared Codex app-server (#1523).
+//   0.4.0 — refuse a notification spawned by a shared Codex app-server whose
+//           env claims a wmux pane (#1523).
 const BRIDGE_VERSION = '0.4.0';
 const CONNECT_RETRY_BACKOFFS_MS = [100, 250];
 const TRANSIENT_CONNECT_CODES = new Set([
@@ -328,26 +330,50 @@ async function sendToTargets(targets, buildRequest) {
 // Codex CLI 0.157+ runs turns in one shared, detached background server per
 // account (`codex app-server --listen unix:// --managed-daemon`) instead of in
 // the TUI. The first Codex to start that server hands it its environment, and
-// this program is spawned FROM that server — so its WMUX_* variables name
-// whichever pane started the server (a closed pane, or a pane of another wmux
-// instance), not the pane whose turn finished. The payload names no pane
-// either. A notification from a shared server therefore has no provable pane
-// identity, and even its instance (WMUX_DATA_SUFFIX) is someone else's: it is
-// dropped — not sent, not spooled.
+// this program is spawned FROM that server — so when that first Codex ran in a
+// wmux pane, its WMUX_* variables name that pane (maybe closed, maybe in
+// another wmux instance), not the pane whose turn finished. The payload names
+// no pane either. Such a notification has no provable pane identity, and even
+// its instance (WMUX_DATA_SUFFIX) is someone else's: it is dropped — not sent,
+// not spooled. All three must hold:
+//   - the spawner's argv has the SHAPE of a Codex app-server: `app-server` is
+//     its subcommand, not a word in a prompt or an option value;
+//   - that server is SHARED: `--managed-daemon`, or a `--listen` other than
+//     `stdio://`. A stdio server belongs to the one client that started it —
+//     wmux's own Chat composer runs one per pane with that pane's environment;
+//   - the environment CLAIMS a pane. A shared server wmux started itself has
+//     every WMUX_* variable removed, so it names no pane to get wrong; its
+//     notification goes out without one, as before, and wmux places it by cwd.
 //
 // Older Codex builds, `--no-daemon` (what wmux's bash/zsh `codex` wrapper
 // runs), `exec` and `review` spawn this program from the Codex process in the
 // pane, where the inherited identity is exact. That path is unchanged, and so
 // is a parent this program cannot inspect: its environment is trusted as
-// before. The guarantee is "a notification from a shared server is never
-// attributed", not "every attribution is proven".
+// before. The guarantee is "a notification from a shared server never carries
+// its starter's pane", not "every attribution is proven".
 
 const SELF_BASENAME = 'wmux-codex-notify.mjs';
 // This program's own wrappers (a version-manager shim such as Volta's `node`
 // re-runs the same command line as a child) plus the Codex process above them.
 const MAX_ORIGIN_HOPS = 4;
-// One budget for the whole ancestor walk. A PowerShell start is ~350 ms.
-const ORIGIN_LOOKUP_BUDGET_MS = 1500;
+// One budget for the whole ancestor walk, well under the 1.5 s the hook
+// harmlessness gate allows a bridge over a no-op hook. A PowerShell start is
+// ~300 ms; a lookup that runs out is 'unknown', and the environment is trusted.
+const ORIGIN_LOOKUP_BUDGET_MS = 900;
+// On WSL this bridge is a Windows process and cannot see the Linux Codex that
+// spawned the launcher; the launcher (WSL_CODEX_HOOK in
+// src/shared/wslIntegration.ts) hands that argv over, separated by U+001F. It
+// sets the variable only for its own `exec` of this bridge.
+const HANDED_ARGV_ENV = 'WMUX_CODEX_NOTIFIER_ARGV';
+const HANDED_ARGV_SEPARATOR = '\x1f';
+
+// Codex global options that take a value (codex-cli 0.158 `--help`; the
+// bash/zsh `codex` wrapper in src/daemon/shell-integration.ts skips the same).
+const CODEX_VALUE_OPTIONS = new Set([
+  '-c', '--config', '--enable', '--disable', '--remote', '--remote-auth-token-env',
+  '-m', '--model', '--local-provider', '-p', '--profile', '-s', '--sandbox',
+  '-C', '--cd', '--add-dir', '-a', '--ask-for-approval',
+]);
 
 function isSelfToken(token) {
   return typeof token === 'string'
@@ -355,32 +381,89 @@ function isSelfToken(token) {
 }
 
 /**
- * Quote-aware split of a Windows `CommandLine` (`"C:\Program Files\x" a b`),
- * which a bare whitespace split would tear apart. Escaped quotes are not
- * handled; only whole-token matches of `app-server` and this script's
- * basename are read from the result. Exported for tests.
+ * Split a Windows `CommandLine` the way CommandLineToArgvW does: whitespace
+ * outside double quotes separates arguments, 2n backslashes before a quote
+ * are n backslashes and the quote toggles quoting, 2n+1 are n backslashes and
+ * a literal quote, other backslashes are literal, and `""` inside quotes is a
+ * literal quote. Single quotes are ordinary characters on Windows.
+ * Exported for tests.
  */
 export function tokenizeCommandLine(cmdline) {
+  const s = typeof cmdline === 'string' ? cmdline : '';
   const tokens = [];
   let cur = '';
-  let quote = null;
-  for (const ch of typeof cmdline === 'string' ? cmdline : '') {
-    if (quote) {
-      if (ch === quote) quote = null;
-      else cur += ch;
-    } else if (ch === '"' || ch === "'") {
-      quote = ch;
-    } else if (ch === ' ' || ch === '\t') {
-      if (cur) {
-        tokens.push(cur);
-        cur = '';
+  let inToken = false;
+  let quoted = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '\\') {
+      let n = 0;
+      while (s[i] === '\\') { n++; i++; }
+      if (s[i] === '"') {
+        cur += '\\'.repeat(n >> 1);
+        if (n % 2 === 1) cur += '"';
+        else quoted = !quoted;
+      } else {
+        cur += '\\'.repeat(n);
+        i--; // the character after the run is read by the next iteration
       }
+      inToken = true;
+    } else if (ch === '"') {
+      if (quoted && s[i + 1] === '"') { cur += '"'; i++; }
+      else quoted = !quoted;
+      inToken = true;
+    } else if ((ch === ' ' || ch === '\t') && !quoted) {
+      if (inToken) tokens.push(cur);
+      cur = '';
+      inToken = false;
     } else {
       cur += ch;
+      inToken = true;
     }
   }
-  if (cur) tokens.push(cur);
+  if (inToken) tokens.push(cur);
   return tokens;
+}
+
+/**
+ * Index of a Codex command line's subcommand: the first positional after the
+ * executable, past global options and their values. -1 when there is none —
+ * after `--` every word is a prompt, and after `-i/--image` (which takes any
+ * number of files) a word cannot be told apart from one more file.
+ */
+function codexSubcommandIndex(argv) {
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--') return -1;
+    if (CODEX_VALUE_OPTIONS.has(arg)) { i++; continue; }
+    if (arg === '-i' || arg === '--image' || arg.startsWith('--image=') || /^-i./.test(arg)) return -1;
+    if (arg.startsWith('-')) continue; // a flag, or an option with its value attached
+    return i;
+  }
+  return -1;
+}
+
+/**
+ * Is this argv a SHARED Codex app-server — one that serves more than the one
+ * client that started it? `app-server` must be the subcommand, and the server
+ * a managed daemon or listening anywhere but stdio. The executable's name is
+ * not checked: release binaries carry a target suffix and `ps` splits a spaced
+ * path. That splitting also shifts positions, so `--managed-daemon` next to an
+ * `app-server` word counts on its own. Exported for tests.
+ */
+export function isSharedServerArgv(argv) {
+  if (!Array.isArray(argv)) return false;
+  if (argv.includes('--managed-daemon') && argv.includes('app-server')) return true;
+  const sub = codexSubcommandIndex(argv);
+  if (sub < 0 || argv[sub] !== 'app-server') return false;
+  for (let i = sub + 1; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--') break;
+    if (arg === '--managed-daemon') return true;
+    const listen = arg === '--listen' ? argv[i + 1] : arg.startsWith('--listen=') ? arg.slice('--listen='.length) : undefined;
+    if (listen !== undefined && listen !== 'stdio://') return true;
+  }
+  return false;
 }
 
 /**
@@ -388,10 +471,9 @@ export function tokenizeCommandLine(cmdline) {
  * nearest first. An ancestor whose argv runs this script is a wrapper of this
  * same command and is skipped; the first other ancestor spawned the
  * notification and decides:
- *   'shared-server'  one of its tokens is exactly `app-server`: a Codex
- *                    background server serving many panes. A prompt that
- *                    happens to hold that word only drops the signal.
- *   'process'        anything else — the Codex process in the pane.
+ *   'shared-server'  a shared Codex app-server (isSharedServerArgv).
+ *   'process'        anything else — the Codex process in the pane, or a
+ *                    stdio app-server that one client started.
  *   'unknown'        no readable ancestor, or only wrappers.
  * Exported for tests.
  */
@@ -399,9 +481,18 @@ export function classifyNotifierOrigin(chain) {
   for (const argv of Array.isArray(chain) ? chain : []) {
     if (!Array.isArray(argv) || argv.length === 0) return 'unknown';
     if (argv.some(isSelfToken)) continue;
-    return argv.includes('app-server') ? 'shared-server' : 'process';
+    return isSharedServerArgv(argv) ? 'shared-server' : 'process';
   }
   return 'unknown';
+}
+
+/**
+ * Does this environment claim a pane or an instance? Only then can a shared
+ * server's notification be attributed to the wrong one. Exported for tests.
+ */
+export function claimsPaneIdentity(env) {
+  return ['WMUX_PTY_ID', 'WMUX_WORKSPACE_ID', 'WMUX_SURFACE_ID', 'WMUX_DATA_SUFFIX']
+    .some((key) => typeof env?.[key] === 'string' && env[key].length > 0);
 }
 
 /**
@@ -418,8 +509,8 @@ export function parseProcEntry(cmdline, stat) {
 
 /**
  * One line of `ps -o ppid=,args=` → `{ argv, ppid }`, or null. The args
- * column is unquoted, so a spaced argument splits into several tokens — only
- * ever toward a refusal. Exported for tests.
+ * column is unquoted, so a spaced argument splits into several tokens; the
+ * server test reads positions and names no prompt word. Exported for tests.
  */
 export function parsePsEntry(out) {
   const match = /^\s*(\d+)\s+(.*\S)/.exec(out);
@@ -442,12 +533,13 @@ function procEntryPs(pid, timeout) {
 // ancestor that is not a wrapper of this script, like readAncestorChain.
 // `[wmi]` rather than Get-CimInstance: loading CimCmdlets alone added ~500 ms.
 // One `L`-prefixed line per ancestor, line breaks inside a command line
-// flattened. No UTF-8 switch: only the ASCII tokens `app-server` and this
-// script's basename are read, and a legacy code page leaves those intact.
+// flattened. UTF-8 output: in a legacy code page a trail byte can read back as
+// a backslash, and backslashes decide quoting in tokenizeCommandLine.
 function ancestorChainWindows(startPid, timeout) {
   const powershell = join(process.env.SystemRoot || 'C:\\Windows',
     'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const script = [
+    '[Console]::OutputEncoding=[Text.Encoding]::UTF8;',
     `$p=${Number(startPid)};`,
     `for ($i=0; $i -lt ${MAX_ORIGIN_HOPS} -and $p -gt 0; $i++) {`,
     "try { $w=[wmi]('Win32_Process.Handle=' + [char]34 + $p + [char]34) } catch { break };",
@@ -466,12 +558,19 @@ function ancestorChainWindows(startPid, timeout) {
 
 /**
  * The argv of this process's ancestors, nearest first, up to the first one
- * that is not a wrapper of this script. Never throws: a failed lookup ends
- * the chain, and an empty chain classifies as 'unknown'. PID 1 is never read
- * — a parent that already exited leaves this process re-parented to init,
- * which is not who asked for the notification.
+ * that is not a wrapper of this script — or the one argv the WSL launcher
+ * handed over. Never throws: a failed lookup ends the chain, and an empty
+ * chain classifies as 'unknown'. PID 1 is never read — a parent that already
+ * exited leaves this process re-parented to init, which is not who asked for
+ * the notification.
  */
 function readAncestorChain(startPid = process.ppid) {
+  const handed = process.env[HANDED_ARGV_ENV];
+  if (typeof handed === 'string' && handed.length > 0) {
+    const argv = handed.split(HANDED_ARGV_SEPARATOR);
+    if (argv[argv.length - 1] === '') argv.pop();
+    return [argv];
+  }
   const deadline = Date.now() + ORIGIN_LOOKUP_BUDGET_MS;
   const chain = [];
   try {
@@ -544,8 +643,10 @@ async function main() {
   const envSurfaceId = nonEmptyStr(process.env.WMUX_SURFACE_ID);
 
   // Before anything is sent OR spooled (the no-token branch below spools too):
-  // a shared server's inherited identity is not this turn's pane (#1523).
-  const origin = classifyNotifierOrigin(readAncestorChain());
+  // a shared server's inherited identity is not this turn's pane (#1523). An
+  // environment that claims no pane has nothing to get wrong and is sent as
+  // before, so its ancestors are not even read.
+  const origin = claimsPaneIdentity(process.env) ? classifyNotifierOrigin(readAncestorChain()) : 'unclaimed';
   if (origin === 'shared-server') {
     logEvent('refused-shared-server', { sessionId, ...(envPtyId ? { claimedPtyId: envPtyId } : {}) });
     return;
