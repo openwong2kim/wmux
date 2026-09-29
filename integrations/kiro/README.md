@@ -86,6 +86,12 @@ Confirm Kiro picked it up with `kiro-cli agent list` — it appears under
 `Global`, and the `*` stays on `kiro_default`, because this does not change
 your default agent.
 
+**Re-copy the bridge when you update wmux.** Nothing refreshes a hand-placed
+copy. A copy taken before #1111 sends no `clientName`, so once your wmux
+includes that change its main-pipe fallback (`hooks.signal`, used when the
+daemon is unreachable or `WMUX_HOOKS_TO_MAIN=1`) is refused. Its default
+route, the daemon pipe, is unaffected.
+
 ## Why the agent config looks like that
 
 It mirrors `kiro_default` in everything except the prompt. `allowedTools` is
