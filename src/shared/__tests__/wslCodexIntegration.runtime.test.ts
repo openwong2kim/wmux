@@ -8,6 +8,20 @@ import { buildWslInjection } from '../wslIntegration';
 
 const SESSION_ID = '11111111-2222-4333-8444-555555555555';
 const dirs: string[] = [];
+
+// #1523: the argv the hook hands to the Windows bridge is /proc/<pid>/cmdline
+// with each NUL turned into U+001F, so every argument ENDS with one. Decoded
+// the way the bridge does (parseHandedArgv in wmux-codex-notify.mjs).
+function handedArgv(value: string): string[] {
+  expect(value.endsWith('\x1f')).toBe(true);
+  return value.slice(0, -1).split('\x1f');
+}
+// The fixture's fake Codex is node running capture.mjs, and the WSL shim puts
+// its notify override in front of the caller's arguments.
+function fakeCodexArgv(dir: string, args: string[]): unknown[] {
+  return [expect.stringMatching(/node/), path.join(dir, 'capture.mjs'), '-c',
+    expect.stringMatching(/^notify=\["\/bin\/sh",/), ...args];
+}
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 
 function fixture() {
@@ -81,7 +95,7 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
       notifier: process.platform === 'linux' ? expect.any(String) : undefined,
       wslenv: expect.any(String),
     });
-    if (process.platform === 'linux') expect(recorded.notifier.split('\x1f').slice(-args.length)).toEqual(args);
+    if (process.platform === 'linux') expect(handedArgv(recorded.notifier)).toEqual(fakeCodexArgv(f.dir, args));
     expect(fs.readFileSync(config, 'utf8')).toBe('# existing settings\nmodel = "test"\n');
     expect(f.injected.env.WSLENV).toContain('WMUX_WSL_CODEX_BRIDGE/u');
     expect(f.injected.env.WSLENV).toContain('WMUX_WSL_CODEX_HOOK/p');
@@ -145,7 +159,7 @@ describe.skipIf(process.platform === 'win32')('WSL Codex per-launch notify', () 
     const args = ['app-server', '--listen', 'unix://', '--managed-daemon'];
     f.run(args);
     const recorded = JSON.parse(fs.readFileSync(f.resultPath, 'utf8'));
-    expect(recorded.notifier.split('\x1f').slice(-args.length)).toEqual(args);
+    expect(handedArgv(recorded.notifier)).toEqual(fakeCodexArgv(f.dir, args));
     expect(recorded.pane).toBe('pane-one');
     expect(recorded.wslenv).toContain('WMUX_CODEX_NOTIFIER_ARGV/w');
   });

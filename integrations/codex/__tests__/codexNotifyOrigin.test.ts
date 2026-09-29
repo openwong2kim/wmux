@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 // its pure origin rules so they can be checked without a process tree.
 import {
   classifyNotifierOrigin, isSharedServerArgv, claimsPaneIdentity, tokenizeCommandLine, parseProcEntry, parsePsEntry,
+  parseHandedArgv,
 } from '../bin/wmux-codex-notify.mjs';
 
 // #1523: Codex 0.157+ spawns `notify` from a shared, detached app-server that
@@ -170,6 +171,15 @@ describe('ancestor entry parsers', () => {
       .toEqual({ argv: ['/opt/homebrew/bin/codex', ...SERVER_ARGV], ppid: 1 });
     expect(parsePsEntry('')).toBeNull();
   });
+
+  it('reads the argv the WSL launcher hands over, /proc terminators and all', () => {
+    // Every argument ends with U+001F, as every /proc argument ends with NUL.
+    expect(parseHandedArgv('/usr/bin/codex\x1fapp-server\x1f--listen\x1funix://\x1f--managed-daemon\x1f'))
+      .toEqual(['/usr/bin/codex', ...SERVER_ARGV]);
+    // An empty last argument survives; a value cut short keeps its tail.
+    expect(parseHandedArgv('codex\x1fexec\x1f\x1f')).toEqual(['codex', 'exec', '']);
+    expect(parseHandedArgv('codex\x1fexe')).toEqual(['codex', 'exe']);
+  });
 });
 
 // The real thing: the bridge runs under a fake Codex parent, reads its actual
@@ -264,7 +274,8 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
       // The identity of the pane that happened to start the shared server.
       Object.assign(env, { WMUX_PTY_ID: 'pty-starter', WMUX_WORKSPACE_ID: 'ws-starter', WMUX_SURFACE_ID: 'surface-starter' });
     }
-    if (opts.handed) env.WMUX_CODEX_NOTIFIER_ARGV = opts.handed.join('\x1f');
+    // The launcher's form: /proc/<pid>/cmdline with each NUL turned into U+001F.
+    if (opts.handed) env.WMUX_CODEX_NOTIFIER_ARGV = opts.handed.map((arg) => `${arg}\x1f`).join('');
     const proc = spawn(process.execPath, parentArgv, { cwd: dir, env, stdio: 'ignore' });
     return new Promise((resolve) => proc.on('exit', (code) => resolve(code)));
   }

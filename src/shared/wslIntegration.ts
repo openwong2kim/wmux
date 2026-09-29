@@ -80,7 +80,8 @@ export ELECTRON_RUN_AS_NODE=1
 export WSLENV="\${WSLENV:+$WSLENV:}ELECTRON_RUN_AS_NODE/w"
 # The Windows bridge cannot see the Linux Codex that spawned this script: a
 # TUI, or a shared app-server that kept another pane's environment (#1523).
-# Hand it that argv, one U+001F between arguments; the bridge decides.
+# Hand it that argv as /proc holds it, each argument's NUL terminator turned
+# into U+001F (an environment value cannot hold NUL); the bridge decides.
 if [ -r "/proc/$PPID/cmdline" ]; then
   WMUX_CODEX_NOTIFIER_ARGV=$(tr '\\0' '\\037' < "/proc/$PPID/cmdline" | head -c 4096)
   export WMUX_CODEX_NOTIFIER_ARGV

@@ -362,10 +362,9 @@ const MAX_ORIGIN_HOPS = 4;
 const ORIGIN_LOOKUP_BUDGET_MS = 900;
 // On WSL this bridge is a Windows process and cannot see the Linux Codex that
 // spawned the launcher; the launcher (WSL_CODEX_HOOK in
-// src/shared/wslIntegration.ts) hands that argv over, separated by U+001F. It
+// src/shared/wslIntegration.ts) hands that argv over (parseHandedArgv). It
 // sets the variable only for its own `exec` of this bridge.
 const HANDED_ARGV_ENV = 'WMUX_CODEX_NOTIFIER_ARGV';
-const HANDED_ARGV_SEPARATOR = '\x1f';
 
 // Codex global options that take a value (codex-cli 0.158 `--help`; the
 // bash/zsh `codex` wrapper in src/daemon/shell-integration.ts skips the same).
@@ -517,6 +516,18 @@ export function parsePsEntry(out) {
   return match ? { argv: match[2].split(/\s+/), ppid: Number(match[1]) } : null;
 }
 
+/**
+ * The argv the WSL launcher hands over: `/proc/<pid>/cmdline` with every NUL
+ * turned into U+001F, so each argument ENDS with one. The final terminator is
+ * dropped, as parseProcEntry drops /proc's; a value the launcher cut short
+ * keeps its last, partial argument. Exported for tests.
+ */
+export function parseHandedArgv(value) {
+  const argv = value.split('\x1f');
+  if (argv[argv.length - 1] === '') argv.pop();
+  return argv;
+}
+
 // Linux: straight from /proc, no spawn.
 function procEntryLinux(pid) {
   return parseProcEntry(readFileSync(`/proc/${pid}/cmdline`, 'utf8'), readFileSync(`/proc/${pid}/stat`, 'utf8'));
@@ -566,11 +577,7 @@ function ancestorChainWindows(startPid, timeout) {
  */
 function readAncestorChain(startPid = process.ppid) {
   const handed = process.env[HANDED_ARGV_ENV];
-  if (typeof handed === 'string' && handed.length > 0) {
-    const argv = handed.split(HANDED_ARGV_SEPARATOR);
-    if (argv[argv.length - 1] === '') argv.pop();
-    return [argv];
-  }
+  if (typeof handed === 'string' && handed.length > 0) return [parseHandedArgv(handed)];
   const deadline = Date.now() + ORIGIN_LOOKUP_BUDGET_MS;
   const chain = [];
   try {
