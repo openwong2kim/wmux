@@ -261,22 +261,27 @@
   var termRepaints = 0;
 
   /**
-   * Replay `bytes` into `t` with the gate held for as long as it parses, then
-   * `tail` (terminal-side mode resets, see staleReplayTail) queued after them.
+   * Replay `bytes` into `t` with the gate held for as long as it parses, and
+   * `tail` (terminal-side mode resets, see staleReplayTail) inside the SAME
+   * gated span: the gate releases only once the tail has parsed too, so no
+   * mouse report the snapshot re-armed can slip out between the two writes.
    */
   function repaint(t, bytes, inc, dec, tail) {
     t.reset();
     inc();
     try {
-      t.write(bytes, dec);
+      if (tail) {
+        t.write(bytes);
+        t.write(tail, dec);
+      } else {
+        t.write(bytes, dec);
+      }
     } catch (e) {
       // write() can throw before the callback is ever queued (xterm refuses
       // past its discard watermark). Not releasing here would latch the gate
       // and silently swallow every keystroke for the rest of the page's life.
       dec();
-      return;
     }
-    if (tail) t.write(tail);
   }
 
   /**
@@ -287,16 +292,20 @@
    * TUI (claude) that armed any-motion mouse tracking and exited without
    * disabling it leaves ?1003h in there, and this xterm then types an SGR
    * report (`35;55;12M`) into the shell for every pointer move. `meta` is the
-   * snapshot's own `meta` frame: the daemon stamps `commandRunning` (OSC 133)
-   * at the same instant it reads the ring. There is no `resumeAgent` on the web
-   * and every streamed pane is live, so the gate can only answer 'mouse' (shell
-   * at its prompt: disarm mouse/focus, keep ?2004 — the live shell owns it) or
+   * snapshot's own `meta` frame: the daemon stamps it, at the same instant it
+   * reads the ring, with the SAME two gate inputs `pty.list` gives the desktop —
+   * `commandRunning` (OSC 133) and `resumeAgent` (recovered this daemon boot,
+   * agent not re-detected) — so the level is exactly the desktop's: 'full',
+   * 'mouse' (shell at its prompt: keep ?2004 — the live shell owns it) or
    * 'none'. Written to the terminal only, never sent to the pane.
    */
   function staleReplayTail(meta) {
     var shared = window.wmuxTerminalShared;
     if (!shared || !meta) return '';
-    var level = shared.staleReplayResetLevel({ commandRunning: meta.commandRunning });
+    var level = shared.staleReplayResetLevel({
+      resumeAgent: meta.resumeAgent,
+      commandRunning: meta.commandRunning
+    });
     if (level === 'none') return '';
     return (level === 'full' ? shared.STALE_REPLAY_INPUT_MODE_RESETS : shared.STALE_REPLAY_ALIVE_SHELL_RESETS) +
       shared.STALE_REPLAY_DISPLAY_RESETS;

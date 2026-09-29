@@ -21,7 +21,7 @@ import { Terminal } from '@xterm/headless';
  */
 
 type Shared = {
-  staleReplayResetLevel: (s: { commandRunning?: boolean } | undefined) => string;
+  staleReplayResetLevel: (s: { resumeAgent?: string; commandRunning?: boolean } | undefined) => string;
   STALE_REPLAY_ALIVE_SHELL_RESETS: string;
   STALE_REPLAY_DISPLAY_RESETS: string;
   STALE_REPLAY_INPUT_MODE_RESETS: string;
@@ -79,9 +79,13 @@ async function paintSnapshot(meta: Record<string, unknown> | null) {
   const emitted: string[] = [];
   t.onData((d) => emitted.push(d));
   let repaints = 0;
+  // The gate count at the moment each DECRST (`CSI ? … l`) is parsed — the
+  // reset tail is the only source of those here.
+  const gateAtReset: number[] = [];
+  t.parser.registerCsiHandler({ prefix: '?', final: 'l' }, () => { gateAtReset.push(repaints); return false; });
   repaint(t, LEAKED_TUI_MODES, () => { repaints += 1; }, () => { repaints -= 1; }, staleReplayTail(meta));
   await flush(t);
-  return { t, emitted, repaints };
+  return { t, emitted, repaints, gateAtReset };
 }
 
 describe('shared terminal bundle (wmuxTerminalShared)', () => {
@@ -89,6 +93,7 @@ describe('shared terminal bundle (wmuxTerminalShared)', () => {
     expect(shared.staleReplayResetLevel({ commandRunning: false })).toBe('mouse');
     expect(shared.staleReplayResetLevel({ commandRunning: true })).toBe('none');
     expect(shared.staleReplayResetLevel({})).toBe('none');
+    expect(shared.staleReplayResetLevel({ resumeAgent: 'claude' })).toBe('full');
     expect(shared.STALE_REPLAY_ALIVE_SHELL_RESETS).toContain('\x1b[?1003l');
     expect(shared.STALE_REPLAY_ALIVE_SHELL_RESETS).not.toContain('\x1b[?2004l');
   });
@@ -108,6 +113,59 @@ describe('web snapshot repaint + stale-replay reset (app.js)', () => {
     } finally {
       t.dispose();
     }
+  });
+
+  it('★ the repaint gate stays held until the reset tail has parsed (no window for a leaked report)', async () => {
+    const { t, repaints, gateAtReset } = await paintSnapshot({ cols: 80, rows: 24, commandRunning: false });
+    try {
+      expect(gateAtReset.length).toBeGreaterThan(0);
+      expect(gateAtReset.every((n) => n > 0)).toBe(true);
+      expect(repaints).toBe(0);
+    } finally {
+      t.dispose();
+    }
+  });
+
+  it('★ recovered after a daemon restart (resumeAgent, no prompt state): full reset, bracketed paste included', async () => {
+    const { t, emitted, repaints } = await paintSnapshot({ cols: 80, rows: 24, resumeAgent: 'claude' });
+    try {
+      expect(t.modes.mouseTrackingMode).toBe('none');
+      expect(t.modes.sendFocusMode).toBe(false);
+      expect(t.modes.bracketedPasteMode).toBe(false);
+      expect(emitted).toEqual([]);
+      expect(repaints).toBe(0);
+    } finally {
+      t.dispose();
+    }
+  });
+
+  it('a live command outranks resumeAgent, exactly as on the desktop', async () => {
+    const { t } = await paintSnapshot({ cols: 80, rows: 24, resumeAgent: 'claude', commandRunning: true });
+    try {
+      expect(t.modes.mouseTrackingMode).toBe('any');
+    } finally {
+      t.dispose();
+    }
+  });
+
+  it('releases the gate when either write throws, and never writes the tail after a failed snapshot', () => {
+    const run = (throwOn: number) => {
+      const writes: string[] = [];
+      let n = 0;
+      const fake = {
+        reset() { /* no-op */ },
+        write(data: string) {
+          n += 1;
+          if (n === throwOn) throw new Error('discard watermark');
+          writes.push(data);
+        },
+      } as unknown as Terminal;
+      let repaints = 0;
+      repaint(fake, 'SNAP', () => { repaints += 1; }, () => { repaints -= 1; }, 'TAIL');
+      return { writes, repaints };
+    };
+    expect(run(1)).toEqual({ writes: [], repaints: 0 });
+    expect(run(2)).toEqual({ writes: ['SNAP'], repaints: 0 });
   });
 
   it('a running command (commandRunning true) keeps every mode the snapshot armed', async () => {
