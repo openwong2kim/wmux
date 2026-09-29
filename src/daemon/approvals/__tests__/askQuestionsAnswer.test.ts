@@ -74,6 +74,46 @@ const colorAnswered = (answer: string): string[] => [
 /** The picker gone, and nothing drawn yet about its answer. */
 const BLANK_AFTER = [...MULTI.answered.slice(0, 13), ...Array.from({ length: 27 }, () => '')];
 
+// ONE multi-select question — NOT measured. Assumed drawn like the measured
+// multi-select tab under a one-tab bar with no Submit tab (as the measured
+// single-select question is), so both of its possible endings are covered.
+/** multi-02 with its tab bar replaced by `bar`. */
+const oneTab = (rows: readonly string[], bar: string): string[] => {
+  const at = rows.findIndex((row) => row.startsWith('←  ☒ Size'));
+  if (at < 0) throw new Error('no tab bar');
+  return rows.map((row, i) => (i === at ? bar : row));
+};
+const TOPPINGS = {
+  initial: oneTab(MULTI.q2, ' ☐ Toppings'),
+  cheese: oneTab(MULTI.toggle1, ' ☒ Toppings'),
+};
+const TOPPINGS_ON_OLIVES = moveCursor(TOPPINGS.cheese, '1. [✔] Cheese', '2. [ ] Olives');
+const TOPPINGS_ON_BASIL = moveCursor(TOPPINGS_ON_OLIVES, '2. [ ] Olives', '3. [ ] Basil');
+const TOPPINGS_ON_OTHER = moveCursor(TOPPINGS_ON_BASIL, '3. [ ] Basil', '4. [ ] Type something');
+const TOPPINGS_ON_SUBMIT = TOPPINGS_ON_OTHER.map((row) =>
+  row === '❯ 4. [ ] Type something' ? '  4. [ ] Type something' : row === '     Submit' ? '❯    Submit' : row);
+const TOPPINGS_REVIEW = [
+  ...MULTI.review.slice(0, 15),
+  ' ☒ Toppings',
+  '',
+  'Review your answers',
+  '',
+  ' ● Which toppings?',
+  '   → Cheese',
+  '',
+  'Ready to submit your answers?',
+  '',
+  '❯ 1. Submit answers',
+  '  2. Cancel',
+  ...Array.from({ length: 14 }, () => ''),
+];
+const TOPPINGS_ANSWERED = [
+  ...MULTI.answered.slice(0, 14),
+  '⏺ User answered Claude\'s questions:',
+  '  ⎿  · Which toppings? → Cheese',
+  ...Array.from({ length: 24 }, () => ''),
+];
+
 const MULTI_PAYLOAD = {
   hook_event_name: 'PreToolUse',
   tool_name: 'AskUserQuestion',
@@ -105,6 +145,12 @@ const COLOR_PAYLOAD = {
       options: [{ label: 'Red' }, { label: 'Green' }, { label: 'Blue' }],
     }],
   },
+};
+
+const TOPPINGS_PAYLOAD = {
+  hook_event_name: 'PreToolUse',
+  tool_name: 'AskUserQuestion',
+  tool_input: { questions: [MULTI_PAYLOAD.tool_input.questions[1]!] },
 };
 
 const paste = (text: string): string => `\x1b[200~${text}\x1b[201~`;
@@ -354,6 +400,58 @@ describe('answering the picker', () => {
     expect(h.unexpected).toEqual([]);
     expect(result).toMatchObject({ ok: true, request: { state: 'resolved' } });
     expect(stored(h, record.id).answerDigest?.textBytes).toBe(11);
+  });
+
+  describe('one multi-select question (its ending is not measured)', () => {
+    const upToEnter: Array<[string, readonly string[]]> = [
+      ['1', TOPPINGS.cheese],
+      [ASK_KEY_DOWN, TOPPINGS_ON_OLIVES],
+      [ASK_KEY_DOWN, TOPPINGS_ON_BASIL],
+      [ASK_KEY_DOWN, TOPPINGS_ON_OTHER],
+      [ASK_KEY_DOWN, TOPPINGS_ON_SUBMIT],
+    ];
+    const toppings = { answers: [{ questionId: 'q0', keys: ['1'] }] };
+
+    it('resolves when Enter on the Submit row closes the picker at once', async () => {
+      const h = makeRegistry({}, TOPPINGS.initial);
+      const record = await create(h, TOPPINGS_PAYLOAD);
+      expect(record.questionShape).toBe('multi-select');
+      h.script = [...upToEnter, [ASK_KEY_ENTER, TOPPINGS_ANSWERED]];
+      const result = await answer(h, record, toppings);
+      expect(h.unexpected).toEqual([]);
+      expect(result).toMatchObject({ ok: true, request: { state: 'resolved', decision: 'approve' } });
+      // The review's `1` was never needed.
+      expect(stored(h, record.id).step).toMatchObject({ index: 6, total: 6, status: 'done' });
+      expect(h.stepKeys.at(-1)).toBe(ASK_KEY_ENTER);
+      expect(h.submitted).toBe(1);
+    });
+
+    it('checks and submits a review screen when Enter draws one', async () => {
+      const h = makeRegistry({}, TOPPINGS.initial);
+      const record = await create(h, TOPPINGS_PAYLOAD);
+      h.script = [...upToEnter, [ASK_KEY_ENTER, TOPPINGS_REVIEW], ['1', TOPPINGS_ANSWERED]];
+      const result = await answer(h, record, toppings);
+      expect(h.unexpected).toEqual([]);
+      expect(result).toMatchObject({ ok: true, request: { state: 'resolved' } });
+      expect(stored(h, record.id).step).toMatchObject({ index: 7, total: 7, status: 'done' });
+      expect(h.submitted).toBe(1);
+    });
+
+    it('is answer-uncertain when Enter leads to neither', async () => {
+      const h = makeRegistry({}, TOPPINGS.initial);
+      const record = await create(h, TOPPINGS_PAYLOAD);
+      h.script = [...upToEnter, [ASK_KEY_ENTER, BLANK_AFTER]];
+      const result = await answer(h, record, toppings);
+      expect(result).toMatchObject({ ok: false, reason: 'answer-uncertain' });
+      expect(stored(h, record.id)).toMatchObject({ state: 'pending', step: { index: 6, total: 7, status: 'partial' } });
+    });
+
+    it('refuses a picker that draws a Submit tab for one question, before any key', async () => {
+      const h = makeRegistry({}, oneTab(MULTI.q2, '←  ☐ Toppings  ✔ Submit  →'));
+      const record = await create(h, TOPPINGS_PAYLOAD);
+      expect(await answer(h, record, toppings)).toMatchObject({ ok: false, reason: 'prompt-changed' });
+      expect(h.stepKeys).toEqual([]);
+    });
   });
 
   it('never takes an older answer block for this one: unconfirmed is answer-uncertain', async () => {

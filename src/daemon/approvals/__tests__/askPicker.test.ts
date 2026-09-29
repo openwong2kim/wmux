@@ -195,6 +195,19 @@ describe('the answered transcript block', () => {
     // The picker still up is never confirmed.
     expect(answersConfirmed(MULTI.reviewOther, 0, MULTI_QUESTIONS, answers)).toBe(false);
   });
+
+  it('confirms under a follow-up question\'s picker, never under this prompt\'s own', () => {
+    const answers: AskAnswer[] = [{ keys: ['2'] }, { keys: ['1', '3'], other: 'anchovy' }];
+    const block = MULTI.answered.slice(0, 18);
+    // Claude asked about the color right after.
+    const followUp = [...block, ...SINGLE.initial.slice(11, 27)];
+    expect(parseAskPicker(followUp)).toMatchObject({ view: 'question', question: 'Which color should the button be?' });
+    expect(answersConfirmed(followUp, 0, MULTI_QUESTIONS, answers)).toBe(true);
+    // The same prompt's picker drawn again under the block: not this answer's proof.
+    const same = [...block, ...MULTI.q1.slice(13, 29)];
+    expect(parseAskPicker(same)).toMatchObject({ view: 'question', question: 'Which size?' });
+    expect(answersConfirmed(same, 0, MULTI_QUESTIONS, answers)).toBe(false);
+  });
 });
 
 describe('answerListMatches', () => {

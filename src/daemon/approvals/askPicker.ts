@@ -429,11 +429,12 @@ export function askPickerUntouched(screen: AskPickerScreen | null, questions: re
 }
 
 /**
- * Has the answer landed, as far as the screen can tell? The picker is gone, a
- * new "User answered Claude's questions:" block appeared (more of them than
- * `blocksBefore`, the count on the last screen read before the final key — an
- * older block for the same question can still be on screen), and that last
- * block lists every question with exactly the answer given.
+ * Has the answer landed, as far as the screen can tell? This prompt's picker
+ * is gone (another prompt's may already be up: Claude can ask a follow-up at
+ * once), a new "User answered Claude's questions:" block appeared (more of
+ * them than `blocksBefore`, the count on the last screen read before the final
+ * key — an older block for the same question can still be on screen), and
+ * that last block lists every question with exactly the answer given.
  */
 export function answersConfirmed(
   rows: readonly string[],
@@ -441,7 +442,8 @@ export function answersConfirmed(
   questions: readonly AskFormQuestion[],
   answers: readonly AskAnswer[],
 ): boolean {
-  if (parseAskPicker(rows)) return false;
+  const picker = parseAskPicker(rows);
+  if (picker && tabsMatch(picker, questions)) return false;
   if (countAnsweredBlocks(rows) <= blocksBefore) return false;
   const block = lastAnsweredBlock(rows);
   if (!block || block.length !== questions.length) return false;

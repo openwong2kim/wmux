@@ -1589,8 +1589,8 @@ form's length limits): it stays the card above.
   else is 409 `prompt-changed` with `effect: 'none'` and nothing typed; a
   question no longer on screen is 410 `prompt-gone`.
 - 200 `{state: 'resolved', effect: 'complete'}` only once the screen confirms
-  the answer: the picker is gone and a new "User answered Claude's questions"
-  block lists every question with exactly the answer given. When every key
+  the answer: this prompt's picker is gone and a new "User answered Claude's
+  questions" block lists every question with exactly the answer given. When every key
   was typed but the screen does not confirm it within 5 s, the answer is 409
   `{error: 'answer-uncertain', effect: 'uncertain'}`: it may or may not have
   landed as given. The record stays pending with `step.status: 'partial'`,
