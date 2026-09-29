@@ -323,7 +323,7 @@ The substrate has four enforcement points. All four exist to prevent one MCP fro
 - **`enforce`** (production default) — a non-`allow` outcome turns into an `RpcResponse` failure carrying the structured `rejection`; the handler is not invoked.
 - **`shadow`** (dev / `npm start` / `NODE_ENV=test` default) — the same outcome is logged to `~/.wmux/shadow-rejections.log` and the handler still runs, so a bad declaration during dogfood can't lock a developer out.
 
-Either default can be overridden explicitly via the config key. The enforcement decision is computed by a single pure function (`PermissionEnforcer.check`) shared by both modes, so shadow logs predict exactly what enforce mode would reject. A request without a `clientName` envelope is refused unless it comes from the renderer operator bridge (§4.1): the `legacy` grandfather lane that used to admit it was closed by #1111, in the first release on or after **2026-09-30**.
+Either default can be overridden explicitly via the config key. The enforcement decision is computed by a single pure function (`PermissionEnforcer.check`) shared by both modes, so shadow logs predict exactly what enforce mode would reject. A request without a `clientName` envelope is refused unless it comes from the renderer operator bridge or carries a validated commander token for the commander surface (§4.1); the `capability: null` bootstrap methods answer regardless. The `legacy` grandfather lane that used to admit it was closed by #1111, in the first release on or after **2026-09-30**.
 
 ### 4.1 Identity (Phase 2.1 first PR — shipped)
 
