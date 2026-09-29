@@ -117,6 +117,39 @@ describe('phone workspace bridge', () => {
 
     expect(fitSidebarToBudget(base, sidebar, size(noPanes) - 1)).toBeNull();
   });
+  it('drops layout trees first, largest first, and never keeps one once pane data is cut', () => {
+    const base = { workspaces: [{ id: 'ws-big', name: 'Big', sessionId: 'pty-0' }] };
+    const tree = (n: number, prefix: string) => ({
+      root: { kind: 'split' as const, direction: 'horizontal' as const, sizes: Array(n).fill(100 / n), children: Array.from({ length: n }, (_, i) => ({ kind: 'leaf' as const, paneId: `${prefix}-${i}`, surfaces: [{ kind: 'terminal' as const, ptyId: `${prefix}-pty-${i}` }], activeIndex: 0 })) },
+    });
+    const sidebar: PhoneSidebarSnapshot = {
+      activeWorkspaceId: null,
+      workspaces: [
+        { id: 'ws-small', order: 0, pinned: false, layout: tree(2, 's') },
+        { id: 'ws-big', order: 1, pinned: false, layout: tree(12, 'b') },
+      ],
+      panes: Array.from({ length: 12 }, (_, i) => ({ ptyId: `b-pty-${i}`, workspaceId: 'ws-big', paneId: `b-${i}`, surfaceTitle: 't'.repeat(100) })),
+    };
+    const size = (candidate: PhoneSidebarSnapshot) => Buffer.byteLength(JSON.stringify({ ...base, sidebar: candidate }));
+    const reasons: string[] = [];
+    const partial = fitSidebarToBudget(base, sidebar, size(sidebar) - 1, (r) => reasons.push(r))!;
+    // The big tree goes, the small one stays, and nothing else is touched.
+    expect(partial.workspaces[0].layout).toEqual(sidebar.workspaces[0].layout);
+    expect(partial.workspaces[1]).toEqual({ id: 'ws-big', order: 1, pinned: false });
+    expect(partial.panes).toEqual(sidebar.panes);
+    expect(reasons).toEqual(['budget.layout']);
+
+    const noLayout = fitSidebarToBudget(base, sidebar, size(partial) - 1)!;
+    expect(noLayout.workspaces.some((row) => row.layout)).toBe(false);
+    expect(noLayout.panes).toEqual(sidebar.panes);
+
+    // Every later tier: pane placement, titles, then pane rows. None carries a tree.
+    for (let budget = size(noLayout) - 1; budget > 0; budget -= 200) {
+      const fitted = fitSidebarToBudget(base, sidebar, budget);
+      if (!fitted) break;
+      expect(fitted.workspaces.some((row) => row.layout)).toBe(false);
+    }
+  });
   it('keeps every title whenever the sidebar fit without the pane placement (20 workspaces, 512 sessions)', () => {
     const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
     const owners = Array.from({ length: 10 }, (_, i) => `ws-${uuid(i)}`);
