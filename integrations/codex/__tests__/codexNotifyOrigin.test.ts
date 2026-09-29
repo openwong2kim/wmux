@@ -108,7 +108,7 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
   let received: Array<{ method?: string; params?: Record<string, unknown> }>;
 
   beforeEach(async () => {
-    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-codex-notify-')));
+    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-cn-origin-')));
     home = path.join(dir, 'home');
     fs.mkdirSync(home);
     // A parent that runs the command in WMUX_TEST_CHILD and waits for it, the
@@ -124,9 +124,10 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
       "process.exit(spawnSync(process.execPath, process.argv.slice(2), { stdio: 'ignore' }).status ?? 1);",
     ].join('\n'));
     received = [];
+    // Short on POSIX: a macOS temp dir alone nears the 104-byte socket limit.
     pipe = process.platform === 'win32'
       ? `\\\\.\\pipe\\wmux-codex-notify-test-${randomUUID()}`
-      : path.join(dir, 's.sock');
+      : path.join(os.tmpdir(), `wmux-cn-${randomUUID().slice(0, 8)}.sock`);
     server = net.createServer((socket) => {
       let buffer = '';
       socket.on('data', (chunk) => {
@@ -145,6 +146,7 @@ describe('wmux-codex-notify under a fake Codex parent', () => {
 
   afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (process.platform !== 'win32') fs.rmSync(pipe, { force: true });
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
