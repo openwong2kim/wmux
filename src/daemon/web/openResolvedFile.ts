@@ -14,16 +14,26 @@ const READ_FLAGS =
 const fstat = promisify(fs.fstat);
 
 /**
- * Same file object. Some Node builds report `st_dev` as 0 for a PATH stat on
- * Windows while the handle's stat carries the volume serial (see
- * `sameFileIdentity` in webStateStore.ts), so there the device is compared
- * only when both sides report one. The inode is the NTFS file ID, which is
- * why these are bigint stats: it does not fit a double.
+ * Whether `real` still names the file `opened` describes: same file ID, on
+ * the same volume. A file ID is only unique within its volume, so a match
+ * without one could be a file on another volume. Some Node builds report
+ * `st_dev` as 0 for a PATH stat on Windows while a handle's stat carries the
+ * volume serial (see `sameFileIdentity` in webStateStore.ts); when one side
+ * has no volume, the path is opened once more and the two handles compared,
+ * so both sides come from the same kind of stat. The stats are bigint because
+ * an NTFS file ID does not fit a double.
  */
-function sameFile(a: fs.BigIntStats, b: fs.BigIntStats): boolean {
-  if (a.ino !== b.ino) return false;
-  if (a.dev === b.dev) return true;
-  return process.platform === 'win32' && (a.dev === 0n || b.dev === 0n);
+async function sameFile(opened: fs.BigIntStats, named: fs.BigIntStats, real: string): Promise<boolean> {
+  if (opened.ino !== named.ino) return false;
+  if (opened.dev === named.dev) return true;
+  if (process.platform !== 'win32' || (opened.dev !== 0n && named.dev !== 0n)) return false;
+  const again = await fs.promises.open(real, READ_FLAGS);
+  try {
+    const reopened = await fstat(again.fd, { bigint: true });
+    return reopened.ino === opened.ino && reopened.dev === opened.dev;
+  } finally {
+    await again.close().catch(() => { /* already gone — nothing to release */ });
+  }
 }
 
 /**
@@ -88,7 +98,7 @@ export async function openResolvedFile(real: string): Promise<fs.promises.FileHa
     // every lookup of a named pipe is one more connection to its server.
     if (opened.isFile()) {
       const named = await fs.promises.lstat(real, { bigint: true });
-      if (named.isFile() && sameFile(opened, named) && (await fs.promises.realpath(real)) === real) {
+      if (named.isFile() && (await sameFile(opened, named, real)) && (await fs.promises.realpath(real)) === real) {
         return handle;
       }
     }

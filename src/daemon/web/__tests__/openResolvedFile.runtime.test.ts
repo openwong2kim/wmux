@@ -138,6 +138,67 @@ describe('#1434 - openResolvedFile', () => {
     expect(await openResolvedFile(file)).toBeNull();
   });
 
+  it.runIf(isWindows)('does not let a path stat without a volume vouch for the handle', async () => {
+    // Some Node builds report `st_dev` 0 for a path stat on Windows, and a
+    // file ID is only unique within one volume, so an ID match alone could be
+    // a file on another volume. Stand in for both: the path stat below reports
+    // no volume and claims the ID of the file the open actually landed on.
+    const inside = path.join(root, 'cwd', 'shots');
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(inside, { recursive: true });
+    fs.mkdirSync(outside);
+    const file = path.join(inside, 'a.png');
+    fs.writeFileSync(file, PNG_1X1);
+    fs.writeFileSync(path.join(outside, 'a.png'), SECRET_PNG);
+    const realOpen = fs.promises.open;
+    let swapped = false;
+    vi.spyOn(fs.promises, 'open').mockImplementation((async (
+      ...args: Parameters<typeof fs.promises.open>
+    ) => {
+      if (swapped) return realOpen(...args);
+      // In at the open, back out again before anything looks at the path.
+      swapped = true;
+      fs.renameSync(inside, `${inside}-moved`);
+      fs.symlinkSync(outside, inside, 'junction');
+      const handle = await realOpen(...args);
+      fs.rmdirSync(inside);
+      fs.renameSync(`${inside}-moved`, inside);
+      return handle;
+    }) as never);
+    const secretIno = fs.statSync(path.join(outside, 'a.png'), { bigint: true }).ino;
+    const realLstat = fs.promises.lstat;
+    let lstatCalls = 0;
+    vi.spyOn(fs.promises, 'lstat').mockImplementation((async (
+      ...args: Parameters<typeof fs.promises.lstat>
+    ) => {
+      const stats = await realLstat(...args);
+      // The first lstat is the check before the open; the second is the one
+      // that has to agree with the handle.
+      return ++lstatCalls === 2 ? Object.assign(stats, { dev: 0n, ino: secretIno }) : stats;
+    }) as never);
+    const handle = await openResolvedFile(file);
+    await handle?.close();
+    expect(handle).toBeNull();
+    expect({ swapped, lstatCalls }).toEqual({ swapped: true, lstatCalls: 2 });
+  });
+
+  it.runIf(isWindows)('still serves a file when a path stat reports no volume', async () => {
+    // The same build, nothing swapped: the second handle confirms the file.
+    const file = path.join(root, 'a.png');
+    fs.writeFileSync(file, PNG_1X1);
+    const realLstat = fs.promises.lstat;
+    vi.spyOn(fs.promises, 'lstat').mockImplementation((async (
+      ...args: Parameters<typeof fs.promises.lstat>
+    ) => Object.assign(await realLstat(...args), { dev: 0n })) as never);
+    const handle = await openResolvedFile(file);
+    if (!handle) throw new Error('a regular file was refused over a missing st_dev');
+    try {
+      expect((await handle.readFile()).equals(PNG_1X1)).toBe(true);
+    } finally {
+      await handle.close();
+    }
+  });
+
   it.skipIf(isWindows)('refuses a FIFO without waiting for a writer', async () => {
     const fifo = path.join(root, 'pipe.png');
     execFileSync('mkfifo', [fifo]);
