@@ -617,6 +617,39 @@ describe('phase 2.2 dynamic — enforce mode (pre-commit 6)', () => {
     expect(r.ok).toBe(false);
   });
 
+  // #1111 statusline push (#1639): `usage.rateLimits` is wmux.internal too.
+  // Envelope-less (how #1639 shipped) must be refused; the recognised
+  // statusline clientName must still get through, and only for that method.
+  it('refuses an envelope-less usage.rateLimits but allows the identified statusline', async () => {
+    router.register('usage.rateLimits', async () => ({ ok: true, applied: true }));
+    router.register('hooks.signal', async () => ({ ok: true }));
+
+    const anon = await router.dispatch(
+      { id: 'usage-anon', method: 'usage.rateLimits', params: {} },
+      { externalWire: true },
+    );
+    expect(anon.ok).toBe(false);
+    if (anon.ok) throw new Error('expected rejection');
+    expect(anon.rejection?.reason).toBe('identity-status');
+    if (anon.rejection?.reason === 'identity-status') {
+      expect(anon.rejection.status).toBe('legacy');
+    }
+
+    const statusline = await router.dispatch(
+      { id: 'usage-statusline', method: 'usage.rateLimits', params: {}, clientName: 'wmux-statusline' },
+      { externalWire: true },
+    );
+    expect(statusline.ok).toBe(true);
+
+    const overreach = await router.dispatch(
+      { id: 'usage-statusline-overreach', method: 'hooks.signal', params: {}, clientName: 'wmux-statusline' },
+      { externalWire: true },
+    );
+    expect(overreach.ok).toBe(false);
+    if (overreach.ok) throw new Error('expected rejection');
+    expect(overreach.rejection).toBeDefined();
+  });
+
   // The capability-gate bypass closes with it: `wmux.internal` methods were
   // reachable envelope-less because the old allow returned before the gate.
   it('rejects envelope-less wmux.internal calls in enforce mode', async () => {

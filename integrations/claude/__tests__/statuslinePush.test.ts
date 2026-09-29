@@ -197,7 +197,9 @@ describe('statusline live-usage push', () => {
           },
         },
       });
-      expect(main.received[0]).not.toHaveProperty('clientName');
+      // #1111: an envelope-less push is refused once the grandfather lane
+      // closes; this name is what the enforcer's statusline lane recognises.
+      expect(main.received[0]).toHaveProperty('clientName', 'wmux-statusline');
 
       await run(input(30.5), pipe); // unchanged → nothing sent
       await settle();

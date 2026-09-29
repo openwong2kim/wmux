@@ -58,6 +58,12 @@ const PUSH_RETRY_MS = 60_000;
 const PUSH_RESEND_MS = 10 * 60_000;
 /** Env var carrying the payload from the statusline process to the push child. */
 const PUSH_PAYLOAD_ENV = 'WMUX_STATUSLINE_PUSH';
+// #1111: the envelope-less `legacy` grandfather closes in the first release on
+// or after 2026-09-30. `usage.rateLimits` on the MAIN pipe is `wmux.internal`,
+// so no declaration can ever grant it; the enforcer instead recognises this
+// exact clientName and allows that ONE method (src/main/mcp/statuslinePush.ts).
+// Keep it in lockstep with WMUX_STATUSLINE_CLIENT_NAME in src/shared/rpc.ts.
+const WMUX_CLIENT_NAME = 'wmux-statusline';
 
 function getHome() {
   return process.env.USERPROFILE || process.env.HOME || homedir();
@@ -323,6 +329,7 @@ async function runPush() {
     method: 'usage.rateLimits',
     params: { configDir, ptyId: process.env.WMUX_PTY_ID || null, rateLimits },
     token,
+    clientName: WMUX_CLIENT_NAME,
   };
   const deadline = Date.now() + PUSH_TIMEOUT_MS;
   let accepted = false;

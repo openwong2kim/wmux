@@ -64,6 +64,7 @@ import { FIRST_PARTY_METHODS, isFirstPartyClient } from './firstParty';
 import { COMMANDER_RPC_METHODS } from '../../shared/commanderSurface';
 import { WMUX_CLI_METHODS, isInternalCliClient } from './internalCli';
 import { HOOK_BRIDGE_METHODS, isHookBridgeClient } from './hookBridge';
+import { STATUSLINE_PUSH_METHODS, isStatuslinePushClient } from './statuslinePush';
 import { isLocalExternalWireContext } from './rpcProvenance';
 
 export type EnforcerOutcome =
@@ -318,6 +319,23 @@ export function check(input: EnforcerInput): EnforcerOutcome {
     !input.trustLookupFailed &&
     input.trust?.status !== 'denied' &&
     HOOK_BRIDGE_METHODS.has(input.method)
+  ) {
+    return { kind: 'allow' };
+  }
+
+  // Claude Code statusline live-usage push (`integrations/claude/bin/
+  // wmux-statusline.mjs`, clientName 'wmux-statusline'). Same shape as the
+  // hook-bridge tier above: it calls exactly ONE main-pipe method,
+  // `usage.rateLimits`, which is `wmux.internal` and therefore ungrantable by
+  // declaration. Before #1111 it sent no clientName and rode the grandfather.
+  // Its own one-method set, not the hook-bridge one, so neither name widens
+  // what the other reaches. See statuslinePush.ts. Same four guards.
+  if (
+    isLocalExternalWireContext(input.ctx) &&
+    isStatuslinePushClient(input.ctx.clientName) &&
+    !input.trustLookupFailed &&
+    input.trust?.status !== 'denied' &&
+    STATUSLINE_PUSH_METHODS.has(input.method)
   ) {
     return { kind: 'allow' };
   }

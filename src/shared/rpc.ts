@@ -82,6 +82,20 @@ export const WMUX_CLI_CLIENT_NAME = 'wmux-cli';
 export const WMUX_HOOK_BRIDGE_CLIENT_NAME = 'wmux-hook-bridge';
 
 /**
+ * Stable `clientName` reported by the Claude Code statusline script
+ * (`integrations/claude/bin/wmux-statusline.mjs`) when it pushes live rate
+ * limits over the main pipe, so the permission enforcer can grant it a
+ * curated one-method allowlist (src/main/mcp/statuslinePush.ts) instead of
+ * the envelope-less legacy grandfather that #1111 closes.
+ *
+ * The script sends `usage.rateLimits` and nothing else on the main pipe. Like
+ * `hooks.signal` it is `wmux.internal`, so no declaration can ever grant it.
+ * Its own name rather than WMUX_HOOK_BRIDGE_CLIENT_NAME so neither caller
+ * widens what the other's name reaches.
+ */
+export const WMUX_STATUSLINE_CLIENT_NAME = 'wmux-statusline';
+
+/**
  * `clientName` values that must NEVER be promoted to first-party recognition
  * through `mcp.firstPartyClients` in `~/.wmux/config.json` (issue #636).
  * Compared case-insensitively. Enforced by `setConfiguredFirstPartyClients`
@@ -110,6 +124,7 @@ export const NON_IDENTIFYING_CLIENT_NAMES: ReadonlySet<string> = new Set<string>
   'default',
   WMUX_CLI_CLIENT_NAME,
   WMUX_HOOK_BRIDGE_CLIENT_NAME,
+  WMUX_STATUSLINE_CLIENT_NAME,
 ]);
 
 /**
