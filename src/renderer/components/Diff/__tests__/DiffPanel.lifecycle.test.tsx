@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot } from 'react-dom/client';
 import { act } from 'react';
 import DiffPanel from '../DiffPanel';
+import { useStore } from '../../../stores';
 import type { DiffReadResult } from '../../../../shared/diffParse';
 
 const TASK_ID = 'wtask-1';
@@ -123,6 +124,8 @@ afterEach(() => {
   while (mounted.length) mounted.pop()?.();
   vi.restoreAllMocks();
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
+  delete (window as unknown as { __wmuxMissionRpc?: unknown }).__wmuxMissionRpc;
+  useStore.getState().clearMissionsFor(WS);
 });
 
 describe('DiffPanel — adopt and close lifecycle (#1461)', () => {
@@ -179,6 +182,47 @@ describe('DiffPanel — adopt and close lifecycle (#1461)', () => {
     expect(c.textContent).not.toContain('@@ -1,2 +1,3 @@');
     expect(c.querySelector('input[type="checkbox"]')).toBeNull();
     expect(adoptButton(c)).toBeNull();
+  });
+
+  it('re-lists the owner\'s tasks once Close succeeds, so the sidebar stops showing the task as open', async () => {
+    // The mission bridge useRpcBridge installs; it answers with the daemon's
+    // post-close row (the daemon commits the close before task:close returns).
+    const list = vi.fn(async () => ({
+      id: 'renderer-1',
+      ok: true,
+      result: {
+        ok: true,
+        tasks: [{
+          id: TASK_ID,
+          title: 'Fix it',
+          status: 'closed',
+          closedAt: 2,
+          missionChannelId: '',
+          createdAt: 1,
+          createdBy: { principalId: WS, verifiedWorkspaceId: WS },
+          owner: { principalId: WS, verifiedWorkspaceId: WS },
+          worktreePath: '/wt',
+          branch: 'b',
+        }],
+      },
+    }));
+    (window as unknown as { __wmuxMissionRpc: unknown }).__wmuxMissionRpc = { list };
+    const c = render();
+    await flush();
+
+    // A refused Close changes nothing, so there is nothing to re-list.
+    close.mockResolvedValueOnce({ ok: false, taskId: TASK_ID, reason: 'dirty', error: 'dirty', preservedWorktree: '/wt' });
+    click(closeButton(c));
+    await flush();
+    expect(list).not.toHaveBeenCalled();
+
+    close.mockResolvedValueOnce({ ok: true, taskId: TASK_ID, archivePending: false });
+    click(closeButton(c));
+    await flush();
+
+    // Without waiting for the 15 s mission poll.
+    expect(list).toHaveBeenCalledWith({ verifiedWorkspaceId: WS });
+    expect(useStore.getState().missionsByWorkspace[WS]?.[0]?.status).toBe('closed');
   });
 
   it('opens a closed task without reading its removed worktree', async () => {

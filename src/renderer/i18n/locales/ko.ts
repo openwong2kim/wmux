@@ -319,6 +319,7 @@ export const ko = {
   'palette.cmd.toggleToolbarPin': '에이전트 툴바 고정 / 해제',
   'palette.cmd.openWorktaskCleanup': '태스크 정리 목록 열기',
   'palette.cmd.showGitDiff': 'Git Diff 보기',
+  'palette.cmd.showTaskDiff': '태스크 Diff 보기',
   // J3 — 태스크 정리 목록(WorktaskCleanupView)
   'worktask.cleanup.title': '태스크 정리 목록',
   'worktask.cleanup.rescan': '다시 스캔',

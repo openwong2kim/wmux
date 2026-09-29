@@ -617,6 +617,7 @@ export const en = {
   'palette.cmd.toggleToolbarPin': 'Pin / unpin the agent toolbar',
   'palette.cmd.openWorktaskCleanup': 'Open Task Cleanup List',
   'palette.cmd.showGitDiff': 'Show Git Diff',
+  'palette.cmd.showTaskDiff': 'Show Task Diff',
   // J3 — task cleanup list (WorktaskCleanupView)
   'worktask.cleanup.title': 'Task Cleanup List',
   'worktask.cleanup.rescan': 'Rescan',

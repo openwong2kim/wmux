@@ -673,6 +673,12 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         setSelectionDigest({});
         setApplyMsg(null);
         setError(t('diff.taskClosed'));
+        // The daemon commits the close before task:close returns, so re-list the
+        // owner's tasks now: otherwise the sidebar and Fleet keep showing this
+        // task as open until the next 15 s mission poll. verifiedWorkspaceId is
+        // the owner (see Pane.tsx); on a legacy surface without one it is the
+        // task's own workspace, which owns no tasks, so the re-list is a no-op.
+        void useStore.getState().refreshMissions(verifiedWorkspaceId);
         pushToast({
           level: res.archivePending ? 'warn' : 'info',
           message: res.unmaterialized

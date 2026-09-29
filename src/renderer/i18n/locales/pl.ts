@@ -615,6 +615,7 @@ export const pl = {
   'palette.cmd.toggleToolbarPin': 'Przypnij / odepnij pasek narzędzi agenta',
   'palette.cmd.openWorktaskCleanup': 'Otwórz listę porządkowania zadań',
   'palette.cmd.showGitDiff': 'Pokaż diff Git',
+  'palette.cmd.showTaskDiff': 'Pokaż diff zadania',
   // J3 — task cleanup list (WorktaskCleanupView)
   'worktask.cleanup.title': 'Lista porządkowania zadań',
   'worktask.cleanup.rescan': 'Skanuj ponownie',

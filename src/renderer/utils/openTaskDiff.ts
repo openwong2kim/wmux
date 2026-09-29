@@ -1,5 +1,17 @@
 import { useStore } from '../stores';
 import { findLeafPanes } from '../hooks/a2aAddressing';
+import type { WorkTask } from '../../shared/workTask';
+
+/**
+ * Does this task still have a worktree whose diff can be reviewed and adopted?
+ * Open tasks and detached ones (closed, but the worktree was kept) do. An
+ * ordinarily closed task's worktree was removed, and a worktree:false task
+ * (output folder) never had one. Mirrors the task diff panel's own rule.
+ */
+export function hasAdoptableTaskDiff(task: WorkTask | undefined): task is WorkTask {
+  if (!task?.worktreePath) return false;
+  return task.status === 'open' || task.detachedAt !== undefined;
+}
 
 /**
  * F5 — open a task's diff surface in a visible pane of its workspace and

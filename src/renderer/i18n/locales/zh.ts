@@ -926,6 +926,7 @@ export const zh = {
   'palette.cmd.toggleToolbarPin': '固定 / 取消固定智能体工具栏',
   'palette.cmd.openWorktaskCleanup': '打开任务清理列表',
   'palette.cmd.showGitDiff': '显示 Git 差异',
+  'palette.cmd.showTaskDiff': '显示任务差异',
   'worktask.cleanup.title': '任务清理列表',
   'worktask.cleanup.rescan': '重新扫描',
   'worktask.cleanup.scanning': '正在扫描…',
