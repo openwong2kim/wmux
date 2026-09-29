@@ -1563,9 +1563,9 @@ gets the whole prompt as a form:
 Option keys are the digits Claude draws. `allowOther` is always true: Claude
 adds its "Type something" row to every question. A prompt the daemon could not
 match on screen exactly as written gets no form (more than 4 questions or 8
-options on one, a question without a header, two questions with the same
-text, a text or label with control characters, runs of spaces or over the
-form's length limits): it stays the card above.
+options on one, a question without a header, two questions whose texts are
+the same once spaces are removed, a text or label with control characters,
+runs of spaces or over the form's length limits): it stays the card above.
 
 - `{answers: [...]}` (no `action`, or `submit`) — one entry per question, as for
   OpenCode questions: the chosen `keys`, plus `other` for typed text; a
@@ -1580,8 +1580,8 @@ form's length limits): it stays the card above.
   shows what the key before it should have drawn.
 - `other` must fit one row of the pane: at most `cols - 12` columns (a wide
   character counts two), else 400 `invalid-text` with nothing typed. So is an
-  `other` that reads "Type something" (it could not be told apart from the
-  empty row).
+  `other` that reads "Type something" once spaces are removed (it could not
+  be told apart from the empty row).
 - `{action: 'deny'}` — Cancel: one Esc, as a v1 deny. 200 `{state:
   'resolved'}`.
 - The picker must be untouched when the answer starts: the first question, no
@@ -1593,9 +1593,14 @@ form's length limits): it stays the card above.
   questions" block lists every question with exactly the answer given. When every key
   was typed but the screen does not confirm it within 5 s, the answer is 409
   `{error: 'answer-uncertain', effect: 'uncertain'}`: it may or may not have
-  landed as given. The record stays pending with `step.status: 'partial'`,
-  answers `already-answered` from then on, and resolves when Claude reports
-  the question answered.
+  landed as given. The record stays pending with `step.status: 'partial'`
+  and no `decision`, answers `already-answered` from then on, and the pane
+  stays blocked on the question. Claude's own report that the question was
+  answered resolves it, as this answer; anything else that ends it (the
+  question dismissed at the terminal, the turn over, the pane gone, a daemon
+  restart) expires it. A record that Claude's next dialog replaced, or that
+  was settled, while the daemon was still confirming the answer keeps that
+  state, and the 200 carries it.
 - Once the first key is typed the record carries `step` and no `form`, and a
   v1 approve or deny on it is 409 `already-answered`. A key typed at the
   terminal meanwhile, a screen that does not show what the last key should
@@ -1603,8 +1608,10 @@ form's length limits): it stays the card above.
   the turn ending stops the answer, as for the plan dialog's feedback: the
   response carries `effect: 'partial'` and `step` (409 `prompt-changed`, or
   the status of what stopped it), nothing is typed to undo it, and the rest is
-  answered at the terminal. An answer that would take more than 40 keys is 501
-  `unsupported-shape` before any key.
+  answered at the terminal. While keys are still being typed, a newer
+  question or permission gate on the pane does not replace the record: it is
+  replaced only if the answer stops. An answer that would take more than 40
+  keys is 501 `unsupported-shape` before any key.
 
 #### OpenCode permissions and questions
 
