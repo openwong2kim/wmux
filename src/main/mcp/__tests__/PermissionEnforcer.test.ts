@@ -111,14 +111,41 @@ describe('PermissionEnforcer.check — grandfather lane closed (#1111)', () => {
     expect(out).toEqual({ kind: 'allow' });
   });
 
-  it('exempts the in-process plugin-host firstParty lane (no clientName)', () => {
-    const out = check({
-      method: 'pane.list',
-      params: {},
-      ctx: { origin: 'local', firstParty: true },
-      trust: undefined,
-    });
-    expect(out).toEqual({ kind: 'allow' });
+  // Only `operator` is exempt. The plugin host (the one other `firstParty`
+  // source) always sends its manifest name, so an envelope-less firstParty
+  // dispatch is not a real caller today — and exempting it would let a future
+  // one skip the capability gate, reserved lifecycle methods included.
+  it('rejects an envelope-less firstParty dispatch (not exempt, unlike operator)', () => {
+    for (const method of ['pane.list', 'workspace.close', 'company.destroy'] as const) {
+      const out = check({
+        method,
+        params: {},
+        ctx: { origin: 'local', firstParty: true },
+        trust: undefined,
+      });
+      expect(out.kind, `${method} must not pass envelope-less on firstParty alone`).toBe('reject');
+      if (out.kind !== 'reject') throw new Error('expected reject');
+      if (out.rejection.reason !== 'identity-status') throw new Error('expected identity-status');
+      expect(out.rejection.status).toBe('legacy');
+    }
+  });
+
+  // What the plugin host actually sends: firstParty WITH its manifest name.
+  // That caller meets the normal trust ladder, exactly as before the close.
+  it('sends a named firstParty dispatch through the normal trust ladder', () => {
+    const hosted: RpcContext = { origin: 'local', firstParty: true, clientName: 'hello-panel' };
+    const unknown = check({ method: 'pane.list', params: {}, ctx: hosted, trust: undefined });
+    expect(unknown.kind).toBe('reject');
+    if (unknown.kind !== 'reject' || unknown.rejection.reason !== 'identity-status') {
+      throw new Error('expected identity-status');
+    }
+    expect(unknown.rejection.status).toBe('unconfirmed');
+
+    const trusted = trust({ name: 'hello-panel', status: 'trusted', declaredCapabilities: ['pane.read'] });
+    expect(check({ method: 'pane.list', params: {}, ctx: hosted, trust: trusted })).toEqual({ kind: 'allow' });
+    const undeclared = check({ method: 'input.send', params: {}, ctx: hosted, trust: trusted });
+    expect(undeclared.kind).toBe('reject');
+    if (undeclared.kind === 'reject') expect(undeclared.rejection.reason).toBe('capability-not-declared');
   });
 
   it('does NOT exempt an external-wire caller (the flags are not forgeable)', () => {

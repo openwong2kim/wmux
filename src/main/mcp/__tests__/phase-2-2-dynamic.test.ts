@@ -676,4 +676,23 @@ describe('phase 2.2 dynamic — enforce mode (pre-commit 6)', () => {
     );
     expect(r.ok).toBe(true);
   });
+
+  // Only the operator lane is exempt. The plugin host always stamps its
+  // manifest name, so an envelope-less firstParty dispatch is refused like any
+  // other anonymous caller instead of skipping the capability gate. No
+  // `hostedWorkspace` here on purpose: that is the shape a future non-hosted
+  // firstParty source would have, and a hosted dispatch with no workspace is
+  // refused earlier by the #922 binding, which would hide the enforcer.
+  it('refuses an envelope-less firstParty dispatch in enforce mode', async () => {
+    const r = await router.dispatch(
+      { id: 'first-party-anon', method: 'pane.list', params: {} },
+      { firstParty: true },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected rejection');
+    expect(r.rejection?.reason).toBe('identity-status');
+    if (r.rejection?.reason === 'identity-status') {
+      expect(r.rejection.status).toBe('legacy');
+    }
+  });
 });

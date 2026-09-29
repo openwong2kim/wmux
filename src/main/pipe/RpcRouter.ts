@@ -183,10 +183,12 @@ export class RpcRouter {
    * Phase 2.2 enforcer wiring (shadow mode). main/index.ts injects a lookup
    * backed by PluginTrustStore.get; tests inject synchronous stubs. When
    * unset, the enforcer runs with trust=undefined for every request. Before
-   * #1111 that meant legacy/grandfather → allow; now an envelope-less wire
-   * caller is REJECTED instead, while a named one falls through to the
-   * unconfirmed branch. Only the in-process (`operator` / `firstParty`) and
-   * commander lanes still allow without a record.
+   * #1111 that meant legacy/grandfather → allow; now an envelope-less caller
+   * is REJECTED instead, while a named one falls through to the unconfirmed
+   * branch. Identity bootstrap aside, only these lanes allow without a
+   * record: the renderer `operator` bridge, a token-validated commander, and
+   * the curated name lanes on the external wire (first-party MCP hosts,
+   * `wmux-cli`, `wmux-hook-bridge`, `wmux-statusline`).
    */
   setTrustLookup(lookup: TrustLookup | undefined): void {
     this.trustLookup = lookup;
@@ -444,14 +446,15 @@ export class RpcRouter {
     }
 
     // Spec §2.2: external-wire requests without `clientName` are recorded as
-    // `legacy`. The trusted in-process surfaces are excluded: the renderer
-    // bridge (`operator`) and the iframe plugin host (`firstParty`) send no
-    // clientName by design, so counting them here drowned the wire signal in
-    // renderer polling (events.poll alone accounted for ~445k dogfood
+    // `legacy`. In-process dispatch is excluded by provenance, not by what it
+    // sends: the renderer bridge (`operator`) sends no clientName by design,
+    // and the iframe plugin host (`firstParty`) stamps its manifest name, but
+    // neither is wire traffic. Counting the renderer here drowned the wire
+    // signal in its polling (events.poll alone accounted for ~445k dogfood
     // entries) — and this counter is the evidence base for the #1111 close
-    // decision, which must see only envelope-less WIRE callers. The in-process
-    // lanes were never the grandfather's audience (#1139 exempts them at the
-    // enforcement points for the same reason). Two side-channels fire here:
+    // decision, which must see only envelope-less WIRE callers. The renderer
+    // bridge was never the grandfather's audience (#1139 exempts it at the
+    // enforcement point for the same reason). Two side-channels fire here:
     //
     //   1. Process-once trust-DB write (`legacyRecorder`) — one row per
     //      process in `~/.wmux/plugin-trust.json`. Enough to signal "this

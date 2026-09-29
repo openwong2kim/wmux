@@ -34,9 +34,11 @@
 //     closes that grandfather lane, for the first release on or after the
 //     announced 2026-09-30 date: both the no-clientName check and the
 //     `legacy` trust status reject with identity-status:legacy, and they
-//     move together by rule. The trusted in-process lanes (renderer
-//     `operator`, plugin-host `firstParty`) and the token-authenticated
-//     commander lane are exempt — none of them has an envelope to send.
+//     move together by rule. Two lanes are exempt from the no-clientName
+//     reject: the renderer `operator` bridge, which has no envelope to send,
+//     and the token-authenticated commander lane, whose auth is the token.
+//     The iframe plugin host is not exempt and needs no exemption: it always
+//     sends its manifest name and meets the trust ladder like any plugin.
 //   - `denied` is rejected with no pendingApproval (spec §4.3: denied
 //     never regresses). User must edit plugin-trust.json by hand.
 //   - `unconfirmed` is rejected with `pendingApproval` so the client can
@@ -214,24 +216,30 @@ export function check(input: EnforcerInput): EnforcerOutcome {
   // pair: closing one without the other leaves the lane half-open, so they
   // must always move together.
   //
-  // EXCEPT for the trusted in-process surfaces, which have no envelope to
-  // send and never had one. `operator` is the renderer IPC bridge (the wmux
-  // UI itself, src/main/index.ts `invokeRendererRpc`) and `firstParty` is the
-  // broader in-process marker that also covers the iframe plugin host. Both
-  // are dispatch-option arguments set by main, mutually exclusive with
-  // `externalWire`, so a wire client can never forge either. Without this the
-  // close would refuse every renderer-bridged RPC under the production
-  // enforce-mode default and take the whole UI down with the lane — a
-  // breakage shadow mode (the dev/test default) would have hidden entirely.
-  // Narrowly scoped on purpose: it only re-admits callers that reached the
-  // old grandfather through in-process dispatch, never anything off the wire.
+  // EXCEPT for the renderer operator lane, which has no envelope to send and
+  // never had one: the wmux UI's IPC bridge (src/main/index.ts
+  // `invokeRendererRpc`) and the phone browser bridge dispatch with
+  // `{ operator: true }` and no clientName. `operator` is a dispatch-option
+  // argument set by main, mutually exclusive with `externalWire`, so a wire
+  // client can never forge it. Without this the close would refuse every
+  // renderer-bridged RPC under the production enforce-mode default and take
+  // the whole UI down with the lane — a breakage shadow mode (the dev/test
+  // default) would have hidden entirely.
+  //
+  // Deliberately NOT `firstParty`. Its only other source, the iframe plugin
+  // host, always sends the plugin's manifest name as clientName
+  // (pluginHost.handler.ts; PLUGIN_NAME_REGEX guarantees it is non-empty), so
+  // it never reaches this branch and goes through the trust ladder below like
+  // any named plugin. Exempting `firstParty` would admit nothing legitimate,
+  // and would let a future envelope-less `{ firstParty: true }` dispatch skip
+  // the capability gate entirely — the very bypass this close removes.
   //
   // For everyone else there is no approval path out of this rejection —
   // nothing is pending, because an anonymous caller has no identity to
   // approve. The fix is to send a clientName and declare permissions
   // (docs/api/mcp-plugin-spec.md).
   if (!input.ctx.clientName) {
-    if (input.ctx.operator || input.ctx.firstParty) {
+    if (input.ctx.operator === true) {
       return { kind: 'allow' };
     }
     return {
@@ -244,7 +252,6 @@ export function check(input: EnforcerInput): EnforcerOutcome {
       },
     };
   }
-
 
   // First-party bundled wmux MCP server (recognised by the host clientName it
   // reports). It ships inside wmux and never goes through the external-plugin

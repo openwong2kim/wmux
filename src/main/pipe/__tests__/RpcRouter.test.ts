@@ -131,10 +131,13 @@ describe('RpcRouter legacy-contact recorder', () => {
     expect(recorder).not.toHaveBeenCalled();
   });
 
-  it('does not fire for trusted in-process surfaces (operator / firstParty send no clientName)', async () => {
-    // #1111 evidence hygiene: the renderer bridge and the plugin host are
-    // not legacy wire callers. Counting them drowned the shadow log's
-    // legacy-traffic signal in renderer polling.
+  it('does not fire for in-process dispatch (operator / firstParty are never wire traffic)', async () => {
+    // #1111 evidence hygiene: the renderer bridge (which sends no clientName)
+    // and the plugin host are not legacy wire callers. Counting the renderer
+    // drowned the shadow log's legacy-traffic signal in its polling. The
+    // envelope-less firstParty dispatch below is not a shape the plugin host
+    // sends (it stamps its manifest name); it pins that the gate is
+    // provenance, not the missing name.
     const router = makeRouter();
     const recorder = vi.fn();
     router.setLegacyContactRecorder(recorder);
@@ -394,10 +397,12 @@ describe('RpcRouter legacy traffic counter', () => {
     expect(counter.record).not.toHaveBeenCalled();
   });
 
-  it('does NOT tick for trusted in-process surfaces, which send no clientName by design', async () => {
+  it('does NOT tick for in-process dispatch, which is never wire traffic', async () => {
     // #1111 evidence hygiene — the operator renderer bridge polls
-    // events.poll / task.mission.list all day; those must not land in the
-    // legacy-traffic shadow log as if they were external wire callers.
+    // events.poll / task.mission.list all day with no clientName; those must
+    // not land in the legacy-traffic shadow log as if they were external wire
+    // callers. The envelope-less firstParty dispatch pins that the gate is
+    // provenance (the real plugin host stamps its manifest name).
     const router = makeRouter();
     const counter = { record: vi.fn() };
     router.setLegacyTrafficCounter(counter);
