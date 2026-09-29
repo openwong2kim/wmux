@@ -4814,9 +4814,10 @@ export class WebTerminalServer {
     // second path lookup here is a window in which the file under an allowed
     // path becomes a symlink to somewhere else, or a small file becomes a large
     // one after the size gate has passed.
-    // `openResolvedFile` refuses a link swapped in since realpath, and anything
-    // that is not a regular file, without depending on O_NOFOLLOW/O_NONBLOCK —
-    // Node has neither on win32 (#1434). Every refusal is the same 404.
+    // `openResolvedFile` re-checks what it opened instead of trusting
+    // O_NOFOLLOW/O_NONBLOCK, which Node does not have on win32 (#1434); its
+    // doc says what that covers and what it does not. Every refusal is the
+    // same 404.
     const handle = await openResolvedFile(real);
     if (!handle) {
       this.json(res, 404, { error: 'image not found' });

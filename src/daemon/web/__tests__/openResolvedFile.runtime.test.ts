@@ -35,6 +35,19 @@ const canSymlink = ((): boolean => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 })();
+/**
+ * Whether the temp volume ignores case (NTFS, default APFS; not the usual
+ * Linux filesystems) — where one file has more than one spelling.
+ */
+const caseInsensitiveTmp = ((): boolean => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-case-probe-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'probe'), '');
+    return fs.existsSync(path.join(dir, 'PROBE'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+})();
 const isWindows = process.platform === 'win32';
 
 /** The smallest legal PNG: signature, IHDR for 1x1, one IDAT, IEND. */
@@ -86,6 +99,20 @@ describe('#1434 - openResolvedFile', () => {
     expect(await openResolvedFile(junction)).toBeNull();
   });
 
+  it.skipIf(!caseInsensitiveTmp)('refuses any spelling of a path but the native realpath one', async () => {
+    // The contract every caller has to meet. Where the volume ignores case,
+    // JS `fs.realpathSync` hands back the caller's casing (this respelling)
+    // for the same file the native realpath spells as it is on disk, and the
+    // helper compares realpath's answer with what it was given byte for byte.
+    const file = path.join(root, 'Shot.png');
+    fs.writeFileSync(file, PNG_1X1);
+    const respelled = path.join(root, 'SHOT.PNG');
+    expect(await openResolvedFile(respelled)).toBeNull();
+    const handle = await openResolvedFile(fs.realpathSync.native(respelled));
+    if (!handle) throw new Error('the native realpath spelling was refused');
+    await handle.close();
+  });
+
   it.skipIf(!canSymlink)('refuses a path that is a file symlink', async () => {
     const target = path.join(root, 'target.png');
     fs.writeFileSync(target, PNG_1X1);
@@ -117,16 +144,23 @@ describe('#1434 - openResolvedFile', () => {
     expect(await openResolvedFile(fifo)).toBeNull();
   });
 
-  it.runIf(isWindows)('refuses a named pipe without waiting on it', async () => {
+  it.runIf(isWindows)('refuses a named pipe on its handle, without waiting on it', async () => {
     // The FIFO Windows has. Node (24, at least) reports one as a regular file
-    // when asked by PATH, so the check that refuses it is the one on the
-    // handle — before any read, which would wait on a server that never writes.
+    // when asked by PATH, so it passes the check before the open and is
+    // opened; the check on the handle is the one that refuses it. That has to
+    // come before any read, which would wait on a server that never writes,
+    // and before any further lookup by path, each of which connects again.
     const pipe = `\\\\.\\pipe\\wmux-open-resolved-${process.pid}-${Date.now()}`;
     const sockets = new Set<net.Socket>();
     const pipeServer = net.createServer((socket) => { sockets.add(socket); });
     await new Promise<void>((resolve) => pipeServer.listen(pipe, resolve));
+    const lstat = vi.spyOn(fs.promises, 'lstat');
+    const realpath = vi.spyOn(fs.promises, 'realpath');
     try {
       expect(await openResolvedFile(pipe)).toBeNull();
+      const lstatCalls = lstat.mock.calls.filter(([p]) => p === pipe).length;
+      const realpathCalls = realpath.mock.calls.filter(([p]) => p === pipe).length;
+      expect({ lstatCalls, realpathCalls }).toEqual({ lstatCalls: 1, realpathCalls: 0 });
     } finally {
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((resolve) => pipeServer.close(() => resolve()));
