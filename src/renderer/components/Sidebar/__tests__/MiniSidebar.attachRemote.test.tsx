@@ -93,12 +93,17 @@ describe('collapsed rail + reaches Attach remote workspace (#1284)', () => {
 
     const attachRow = findAttachRow(container);
     expect(attachRow).toBeDefined();
+    // The picker itself reads the host list when it opens (#1323), so a bare
+    // "hostsList was called" would already hold here, before the click. The
+    // modal is proven by its own dialog and its own host-list load.
+    const hostReadsBefore = hostsList.mock.calls.length;
     act(() => attachRow?.click());
     await act(async () => {
       for (let i = 0; i < 8; i++) await Promise.resolve();
     });
 
-    expect(hostsList).toHaveBeenCalled();
+    expect(container.querySelector('.ui-dialog')?.textContent).toContain('Attach remote workspace');
+    expect(hostsList).toHaveBeenCalledTimes(hostReadsBefore + 1);
     expect(findAttachRow(container)).toBeUndefined();
   });
 
