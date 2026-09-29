@@ -204,13 +204,18 @@ function getAnswerReceipts(): AnswerReceiptStore {
   return answerReceipts ??= new AnswerReceiptStore(getWmuxDir());
 }
 /**
- * The `decision-v2` forms this daemon answers: the plan dialog while the
- * `stepwise` channel is on, agent-native permissions and questions (OpenCode)
- * while the `native` channel is.
+ * The `decision-v2` forms this daemon answers: the plan dialog and Claude's
+ * AskUserQuestion (`questions`) while the `stepwise` channel is on,
+ * agent-native permissions and questions (OpenCode) while the `native`
+ * channel is.
  */
 function phoneDecisionForms(): DecisionFormKind[] {
   const channels = coercePhoneDecisions(loadConfig().phoneDecisions);
-  return [...(channels.stepwise ? ['plan' as const] : []), ...(channels.native ? ['permission' as const, 'questions' as const] : [])];
+  return [
+    ...(channels.stepwise ? ['plan' as const] : []),
+    ...(channels.native ? ['permission' as const] : []),
+    ...(channels.native || channels.stepwise ? ['questions' as const] : []),
+  ];
 }
 function getRunHistory(): RunHistoryStore {
   return runHistory ??= new RunHistoryStore(getWmuxDir());

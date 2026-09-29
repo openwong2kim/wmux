@@ -135,6 +135,34 @@ describe('hook → approval registry wiring', () => {
     expect(approvals.created[0]).toMatchObject({ question: 'Which size?', questionShape: 'multi-question' });
   });
 
+  it('carries a Claude AskUserQuestion whole as a questions form (#1649), never another agent\'s', () => {
+    const payload = {
+      tool_name: 'AskUserQuestion',
+      tool_input: {
+        questions: [
+          { question: 'Which size?', header: 'Size', multiSelect: false, options: [{ label: 'Small' }, { label: 'Large' }] },
+          { question: 'Which toppings?', header: 'Toppings', multiSelect: true, options: [{ label: 'Cheese' }] },
+        ],
+      },
+    };
+    const claude = makeIngest();
+    claude.ingest.handle(makeSignal({ payload }));
+    expect(claude.approvals.created[0]).toMatchObject({
+      questionShape: 'multi-question',
+      form: {
+        kind: 'questions',
+        questions: [
+          { id: 'q0', header: 'Size', text: 'Which size?', multiSelect: false, allowOther: true },
+          { id: 'q1', header: 'Toppings', text: 'Which toppings?', multiSelect: true, allowOther: true },
+        ],
+      },
+    });
+    const other = makeIngest();
+    other.ingest.handle(makeSignal({ agent: 'gemini', payload }));
+    expect(other.approvals.created).toHaveLength(1);
+    expect(other.approvals.created[0]).not.toHaveProperty('form');
+  });
+
   it('A4: a payload with no usable tool_input still creates the request', () => {
     const { ingest, approvals } = makeIngest();
 

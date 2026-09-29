@@ -62,7 +62,7 @@ import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import { agentDisplayToSlug, agentStatusToSignalKind, type AgentEventStatus } from '../../main/pty/AgentDetector';
 import type { ResumeBinding, PermissionMode } from '../../shared/agentResume';
 import type { ApprovalHookSink, TerminalPromptNote } from '../approvals/types';
-import { extractAskUserQuestion } from '../approvals/askUserQuestion';
+import { claudeQuestionsForm, extractAskUserQuestion } from '../approvals/askUserQuestion';
 import { boundRecordText, isClaudeFamilyAgent, TERMINAL_PROMPT_TOOL_NAME_MAX } from '../approvals/terminalPrompt';
 import { checkNativeTranscriptPath } from '../transcript/providers';
 
@@ -1195,6 +1195,9 @@ export class HookIngest {
     // yields absent fields, never a skipped request.
     const asked = extractAskUserQuestion(signal.payload);
     const permId = signal.agent === 'opencode' ? openCodeRequestId(signal) : undefined;
+    // The whole prompt as a `decision-v2` form: Claude's picker is what the
+    // registry's stepwise driver knows how to answer.
+    const form = isClaudeFamilyAgent(signal.agent) ? claudeQuestionsForm(signal.payload) : null;
     const legacy = (): void => approvals.noteHookAwaitingInput({
       sessionId,
       agent: signal.agent,
@@ -1204,6 +1207,7 @@ export class HookIngest {
       ...(asked.options ? { options: asked.options } : {}),
       ...(asked.choices ? { choices: asked.choices } : {}),
       ...(asked.questionShape ? { questionShape: asked.questionShape } : {}),
+      ...(form ? { form } : {}),
     });
     // OpenCode's plugin, when it lists decisions, makes the records itself:
     // the hook then only marks the pane blocked (the broadcast below).

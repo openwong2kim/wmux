@@ -121,6 +121,18 @@ import {
   TERMINAL_PROMPT_WEB_DECLINE,
 } from './types';
 import type { QuestionShape } from './askUserQuestion';
+import {
+  answersConfirmed,
+  askAnswerSteps,
+  askOtherMaxWidth,
+  askPickerUntouched,
+  askScreenMeets,
+  countAnsweredBlocks,
+  isFreeTextPlaceholder,
+  parseAskPicker,
+  type AskAnswer,
+  type AskStep,
+} from './askPicker';
 import type { PhoneDecisionsConfig } from './decisionConfig';
 import { boundDecisionForm, nativeV2Answer } from './decisionForm';
 
@@ -186,6 +198,11 @@ export const STEP_MAX_KEYS = 40;
 export const STEP_RENDER_WAIT_PER_100_MS = 200;
 /** The feedback width allowed when the pane's width is unknown (measured to fit at 100x40). */
 export const PLAN_FEEDBACK_FALLBACK_WIDTH = 300;
+/**
+ * After an AskUserQuestion answer's last key: how long the driver waits for
+ * the screen to confirm it (see answersConfirmed) before calling it uncertain.
+ */
+export const ASK_CONFIRM_WAIT_MS = 5_000;
 
 /**
  * Columns a text takes on screen: 2 for a wide (East Asian / emoji) code
@@ -350,6 +367,11 @@ function copyRequest(r: ApprovalRequest): ApprovalRequest {
     ...(r.step ? { step: { ...r.step } } : {}),
     ...(r.answerDigest ? { answerDigest: { ...r.answerDigest } } : {}),
   };
+}
+
+/** A refusal that wrote nothing because the screen is not what the answer was for. */
+function changedResult(r: ApprovalRequest): ApprovalResolveResult {
+  return { ok: false, reason: 'prompt-changed', request: copyRequest(r) };
 }
 
 export interface ApprovalRegistryDeps {
@@ -644,6 +666,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     questionShape?: QuestionShape;
     /** The agent's own request id behind this card (OpenCode `permId`). */
     requestId?: string;
+    /** Claude's AskUserQuestion as a `questions` form (see claudeQuestionsForm). */
+    form?: DecisionForm;
   }): Promise<void> {
     // Snapshot BEFORE queuing. `mutate` runs the body after the chain drains,
     // which can be seconds later (a resolve ahead of it is holding the chain
@@ -660,6 +684,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       choices: input.choices ? input.choices.map((c) => ({ ...c })) : undefined,
       questionShape: input.questionShape,
       requestId: input.requestId,
+      form: input.form && input.form.kind === 'questions' ? boundDecisionForm(input.form) : null,
     };
     return this.mutate(() => {
       // A Codex pane whose approval is already up as a native decision: the
@@ -679,8 +704,14 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         }
         events.push({ type: 'supersede', request: copyRequest(superseded) });
       }
+      const id = this.newId();
+      // A `decision-v2` client answers the whole prompt through the stepwise
+      // driver (answerQuestions) — only while that channel is on, and only
+      // when this daemon can type a driver key. The v1 fields stay as they
+      // are either way.
+      const form = snapshot.form && this.decisionChannels().stepwise && this.deps.writeStepKey ? snapshot.form : null;
       const created: ApprovalRequest = {
-        id: this.newId(),
+        id,
         sessionId: snapshot.sessionId,
         ...(snapshot.workspaceId ? { workspaceId: snapshot.workspaceId } : {}),
         agent: snapshot.agent,
@@ -693,6 +724,14 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         ...(snapshot.choices && snapshot.choices.length > 0 ? { choices: snapshot.choices.map((c) => ({ ...c })) } : {}),
         ...(snapshot.questionShape ? { questionShape: snapshot.questionShape } : {}),
         ...(snapshot.requestId ? { hookRequestId: snapshot.requestId } : {}),
+        ...(form
+          ? {
+              channel: 'fenced-keys' as const,
+              form,
+              // Per record: the same prompt asked again is a new card to answer.
+              formFingerprint: crypto.createHash('sha256').update(`${id}|${canonicalJson(form)}`).digest('hex').slice(0, 32),
+            }
+          : {}),
         // Danger HINT for UI step-up, computed once at creation from the same
         // pattern list the PTY critical-action scanner uses. A miss or a false
         // positive changes nothing about whether this request can be answered.
@@ -1220,7 +1259,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   private staleQuestionFor(note: TerminalPromptNote): ApprovalRequest | undefined {
     if (note.toolName === 'AskUserQuestion') return undefined;
     const pending = this.requests.filter((r) => r.state === 'pending' && r.sessionId === note.sessionId && !isNative(r));
-    return pending.length === 1 && pending[0].kind === 'awaiting_input' ? pending[0] : undefined;
+    // A question the stepwise driver is answering: its own keys take the
+    // question off the screen (the review screen, the next tab).
+    return pending.length === 1 && pending[0].kind === 'awaiting_input' && pending[0].step?.status !== 'running'
+      ? pending[0]
+      : undefined;
   }
 
   /**
@@ -1688,6 +1731,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     // fences; every other record refuses it.
     if (params.decisionAnswer !== undefined || params.decisionV2Answer !== undefined) {
       if (peek?.kind === 'terminal_prompt' && peek.form?.kind === 'plan') return this.answerPlan(params, peek);
+      if (peek?.kind === 'awaiting_input' && peek.form?.kind === 'questions') return this.answerQuestions(params, peek);
       return this.refuseDecisionAnswer(params, peek);
     }
     if (peek?.kind === 'terminal_prompt') return this.resolveTerminalPrompt(params, peek);
@@ -1711,7 +1755,12 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           } as ApprovalResolveResult,
         };
       }
-
+      // A question the stepwise driver started answering (see
+      // answerQuestions) is its own from the first key: a key typed here
+      // could land between two of its keys.
+      if (record.step) {
+        return { result: { ok: false, reason: 'already-answered', request: copyRequest(record) } as ApprovalResolveResult };
+      }
 
       // The caller's authority, re-checked inside the chain before ANY
       // mutation — including the prompt-gone expiry below.
@@ -2886,6 +2935,399 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   }
 
   /**
+   * A `decision-v2` answer to Claude's AskUserQuestion (`form.kind:
+   * 'questions'` on an `awaiting_input` record, #1649). Fails closed at every
+   * step, like answerPlan:
+   *
+   *   1. settled → `already-resolved` / `expired`; a stepwise answer started
+   *      (`step`) → `already-answered`
+   *   2. who: a human through the web answer route (its Symbol marker) →
+   *      else `answer-in-terminal`; a record made without a form, or the
+   *      `stepwise` switch off now → `unsupported-shape`
+   *   3. what: the echoed `formFingerprint` must be the record's → else
+   *      `prompt-changed`; the answer must fit the form (every question, keys
+   *      it offers, one pick on a single-select, no `text`) → else
+   *      `invalid-choice`; free text must be paste-safe, not the row's own
+   *      placeholder, and fit one row of the pane → else `invalid-text`; an
+   *      answer that takes more than STEP_MAX_KEYS keys → `unsupported-shape`
+   *   4. when: not within TERMINAL_PROMPT_MIN_ANSWER_AGE_MS of creation
+   *   5. the screen: the picker is re-read and must be exactly as Claude
+   *      draws it before anyone touched it — the first question, no tab
+   *      answered, the cursor on option 1, nothing ticked, the free-text row
+   *      empty (askPickerUntouched) → else `prompt-changed`; a question gone
+   *      from the screen expires the record (`prompt-gone`), as a v1 answer
+   *      does
+   *
+   * `deny` (Cancel) is the v1 path's one Esc, behind its own screen proof and
+   * fence. An answer runs the stepwise driver (see driveQuestions).
+   */
+  private async answerQuestions(params: ApprovalResolveParams, record: ApprovalRequest): Promise<ApprovalResolveResult> {
+    const answer = params.decisionAnswer;
+    const audit = (outcome: string): void => {
+      const typed = (answer?.answers ?? []).reduce((n, a) => n + (a.other !== undefined ? Buffer.byteLength(a.other, 'utf8') : 0), 0);
+      this.deps.log?.(
+        'info',
+        `[approvals] questions answer outcome=${outcome} record=${record.id} session=${record.sessionId} ` +
+          `by="${logText(sanitizeResolvedBy(params.resolvedBy))}" action=${logText(answer?.action, 20) || '-'} ` +
+          `other=${typed}B step=${record.step ? `${record.step.index}/${record.step.total}:${record.step.status}` : '-'} ` +
+          `fp=${(record.formFingerprint ?? '').slice(0, 8) || '-'}`,
+      );
+    };
+    const refuse = (reason: Exclude<ApprovalResolveFailure, 'answer-in-terminal'>): ApprovalResolveResult => {
+      audit(reason);
+      return { ok: false, reason, request: copyRequest(record) };
+    };
+    const inTerminal = (why: AnswerRefusalReason): ApprovalResolveResult => {
+      audit(`answer-in-terminal:${why}`);
+      return { ok: false, reason: 'answer-in-terminal', answerRefusal: why, request: copyRequest(record) };
+    };
+    if (record.state !== 'pending') {
+      const reason = record.state === 'resolved' ? 'already-resolved' : 'expired';
+      audit(reason);
+      return {
+        ok: false,
+        reason,
+        ...(record.resolvedBy !== undefined ? { resolvedBy: record.resolvedBy } : {}),
+        request: copyRequest(record),
+      };
+    }
+    if (record.pressedAt !== undefined || record.step) return refuse('already-answered');
+    if ((params.resolver ?? 'human') !== 'human' || params.decisionV2Answer !== DECISION_V2_WEB_ANSWER || !answer) {
+      return inTerminal('no-capability');
+    }
+    const form = record.form;
+    const questions = form?.questions ?? [];
+    if (!form || questions.length === 0 || record.channel !== 'fenced-keys' || !record.formFingerprint
+      || !this.decisionChannels().stepwise || !this.deps.writeStepKey || !this.deps.readPromptScreen || !this.deps.promptScreenMark) {
+      return inTerminal('unsupported-shape');
+    }
+    if (answer.formFingerprint !== record.formFingerprint) return refuse('prompt-changed');
+    const built = nativeV2Answer(form, answer);
+    if (!built) return refuse('invalid-choice');
+    if (this.now() - record.createdAt < TERMINAL_PROMPT_MIN_ANSWER_AGE_MS) return refuse('answer-too-soon');
+    if (built.decision === 'deny') {
+      audit('deny:escape');
+      return this.resolve({
+        id: record.id,
+        decision: 'deny',
+        resolvedBy: params.resolvedBy,
+        ...(params.resolver ? { resolver: params.resolver } : {}),
+        ...(params.authorize ? { authorize: params.authorize } : {}),
+      });
+    }
+    const answers: AskAnswer[] = built.answers ?? [];
+    for (const a of answers) {
+      // The text goes into one bracketed paste (a control character would end
+      // it early or submit the field), and its echo must be told apart from
+      // the empty row.
+      if (a.other !== undefined && (!isPasteSafeText(a.other) || isFreeTextPlaceholder(a.other))) {
+        audit('invalid-text:content');
+        return { ok: false, reason: 'invalid-text', request: copyRequest(record) };
+      }
+    }
+    const steps = askAnswerSteps(questions, answers);
+    if (steps.length > STEP_MAX_KEYS) return inTerminal('unsupported-shape');
+
+    const refusedEarly = await this.reauthorize(params, record);
+    if (refusedEarly) {
+      audit(refusedEarly.ok ? 'ok' : refusedEarly.reason);
+      return refusedEarly;
+    }
+    const first = await this.readQuestionScreen(record.sessionId);
+    if (!first) return refuse('prompt-changed');
+    const picker = parseAskPicker(first.rows);
+    if (!askPickerUntouched(picker, questions)) {
+      // Nothing of the question on screen: it was answered or dismissed at the
+      // terminal. Same outcome as a v1 answer.
+      if (!picker && questionOnScreen(first.rows, record) === 'absent') {
+        const gone = await this.mutate<ApprovalResolveResult>(() => {
+          if (record.state !== 'pending' || record.step) return { result: changedResult(record) };
+          return this.expireUnpressed(record, first.rows, 'prompt-gone', 'its question is not on screen');
+        });
+        audit(gone.ok ? 'ok' : gone.reason);
+        return gone;
+      }
+      return refuse('prompt-changed');
+    }
+    // The echo check reads the whole text back off its row.
+    const maxWidth = askOtherMaxWidth(first.cols);
+    if (answers.some((a) => a.other !== undefined && textWidth(a.other) > maxWidth)) {
+      audit(`invalid-text:width>${maxWidth}`);
+      return { ok: false, reason: 'invalid-text', request: copyRequest(record) };
+    }
+    return this.driveQuestions(params, record, first, steps, answers, answer, audit);
+  }
+
+  /** One screen read with the pane's state at that instant, or null. Outside the chain. */
+  private async readQuestionScreen(sessionId: string): Promise<{ rows: readonly string[]; mark: PromptScreenMark; cols?: number } | null> {
+    try {
+      return (await this.deps.readPromptScreen?.(sessionId)) ?? null;
+    } catch (err) {
+      this.deps.log?.('warn', `[approvals] prompt screen read failed for ${sessionId}: ${String(err)}`);
+      return null;
+    }
+  }
+
+  /**
+   * The stepwise driver applied to Claude's AskUserQuestion picker: the keys
+   * askAnswerSteps lists, one at a time, each written only once the screen
+   * shows exactly what the key before it should have drawn (askScreenMeets),
+   * within STEP_RENDER_WAIT_MS, the whole answer within STEP_TOTAL_MS. Every
+   * key is the driver's own (`writeStepKey`), fenced synchronously right
+   * before it is written, its revision recorded on `record.step` so that any
+   * other key is seen — exactly as driveFeedback does.
+   *
+   * On a review screen the driver checks every question is listed with the
+   * answer given before it presses `1`. The last key does NOT resolve the
+   * record: the driver then waits for the screen to confirm the answer
+   * (answersConfirmed — the picker gone and a NEW "User answered Claude's
+   * questions" block listing exactly these answers). Confirmed → resolved.
+   * Not confirmed within ASK_CONFIRM_WAIT_MS → 409 `answer-uncertain`: every
+   * key was typed, but whether the answer landed as given is not known; the
+   * record stays pending as `partial` (`already-answered` from then on) and
+   * the pane's own sweep settles it, as resolved.
+   *
+   * Anything else after the first key — a human key, a screen that never
+   * shows the expected state, a lost grant, the record settled — stops it
+   * `partial`: 409 `prompt-changed` (or the stopping reason) with `effect:
+   * 'partial'`. No key is ever typed to undo what was typed.
+   */
+  private async driveQuestions(
+    params: ApprovalResolveParams,
+    record: ApprovalRequest,
+    first: { rows: readonly string[]; mark: PromptScreenMark; cols?: number },
+    steps: readonly AskStep[],
+    answers: readonly AskAnswer[],
+    answer: DecisionAnswer,
+    audit: (outcome: string) => void,
+  ): Promise<ApprovalResolveResult> {
+    const writeStepKey = this.deps.writeStepKey!;
+    const sessionId = record.sessionId;
+    const questions = record.form!.questions!;
+    const changed = (): ApprovalResolveResult => changedResult(record);
+    const delay = this.deps.promptReadDelay
+      ?? ((ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms).unref?.(); }));
+    const deadline = this.now() + STEP_TOTAL_MS;
+    const typed = answers.flatMap((a) => (a.other !== undefined ? [a.other] : []));
+    const joined = typed.join('\u0000');
+    const answerDigest = typed.length > 0
+      ? { textBytes: Buffer.byteLength(joined, 'utf8'), textHash: crypto.createHash('sha256').update(joined, 'utf8').digest('hex') }
+      : undefined;
+    const ours = (): boolean => record.step?.answerId === answer.clientAnswerId;
+
+    /**
+     * Stop after the first key: the step is left `partial` (never undone), a
+     * sweep that arrived while it ran is applied now — as a resolve once every
+     * key was typed — and the answer says what happened.
+     */
+    const stop = async (result: ApprovalResolveResult, why: string, uncertain = false): Promise<ApprovalResolveResult> => {
+      const failure = result.ok ? changed() : result;
+      const out = await this.mutate<ApprovalResolveResult>(() => {
+        const step = record.step;
+        if (!step || !ours()) return { result: failure };
+        if (step.status === 'running') step.status = 'partial';
+        const events: ApprovalEvent[] = [];
+        const held = this.deferredExpiry.get(record.id);
+        this.deferredExpiry.delete(record.id);
+        if (record.state === 'pending' && held) {
+          record.state = step.index >= step.total ? 'resolved' : 'expired';
+          record.resolvedAt = this.now();
+          events.push({ type: record.state === 'resolved' ? 'resolve' : 'expire', request: copyRequest(record) });
+          this.deps.log?.('info', `[approvals] settled ${record.id} on ${sessionId} (${held}, held while its answer ran)`);
+        } else if (record.state === 'pending') {
+          events.push({ type: 'press', request: copyRequest(record) });
+        }
+        return {
+          events,
+          persist: true,
+          result: uncertain
+            ? { ok: false, reason: 'answer-uncertain', request: copyRequest(record) }
+            : { ...failure, effect: 'partial' as const, request: copyRequest(record) } as ApprovalResolveResult,
+        };
+      });
+      audit(`${out.ok ? 'ok' : out.reason}:${uncertain ? 'uncertain' : 'partial'}:${why}`);
+      return out;
+    };
+    const unwritten = (why: string): ApprovalResolveResult => {
+      audit(`prompt-changed:${why}`);
+      return changed();
+    };
+    /** Confirmed on screen: the record resolves (a sweep that got there first keeps its state). */
+    const finish = async (submitted: boolean): Promise<ApprovalResolveResult> => {
+      const out = await this.mutate<ApprovalResolveResult>(() => {
+        const step = record.step;
+        if (!step || !ours()) return { result: changed() };
+        this.deferredExpiry.delete(record.id);
+        step.status = 'done';
+        // Closed before the steps planned for it (a single multi-select with no review).
+        step.total = step.index;
+        if (!submitted) this.noteSubmittedSafely(sessionId);
+        if (record.state !== 'pending') return { persist: true, result: { ok: true, request: copyRequest(record), durable: true } };
+        record.state = 'resolved';
+        record.decision = 'approve';
+        record.resolvedBy = sanitizeResolvedBy(params.resolvedBy);
+        record.resolvedAt = this.now();
+        if (answerDigest) record.answerDigest = answerDigest;
+        return {
+          events: [{ type: 'resolve', request: copyRequest(record) }],
+          result: { ok: true, request: copyRequest(record), durable: true },
+        };
+      }, (r, durable) => (r.ok ? { ...r, durable } : r));
+      audit(out.ok ? 'answered' : out.reason);
+      return out;
+    };
+
+    type Screen = { rows: readonly string[]; mark: PromptScreenMark; cols?: number };
+    /** Poll the screen until it shows what `expect` says, or say why not. */
+    const awaitScreen = async (
+      step: AskStep,
+      blocksBefore: number,
+    ): Promise<Screen | { closed: true } | 'moved' | 'timeout' | 'gone'> => {
+      const paste = step.key.startsWith('\x1b[200~') ? step.key.slice(6, -6) : undefined;
+      const wait = STEP_RENDER_WAIT_MS + (paste !== undefined ? Math.ceil(textWidth(paste) / 100) * STEP_RENDER_WAIT_PER_100_MS : 0);
+      const until = Math.min(this.now() + wait, deadline);
+      let lastLook = false;
+      for (;;) {
+        const screen = await this.readQuestionScreen(sessionId);
+        if (!screen) return 'gone';
+        const progress = record.step;
+        if (!progress || screen.mark.incarnation !== progress.incarnation || screen.mark.keyInputRevision !== progress.expectedRevision) {
+          return 'moved';
+        }
+        const picker = parseAskPicker(screen.rows);
+        if (step.expect.view === 'review-or-closed') {
+          if (askScreenMeets(picker, { view: 'review' }, questions, answers)) return screen;
+          if (answersConfirmed(screen.rows, blocksBefore, questions, answers)) return { closed: true };
+        } else if (askScreenMeets(picker, step.expect, questions, answers)) {
+          return screen;
+        }
+        if (lastLook) return 'timeout';
+        // Out of time: one more look after a last pause, then give up.
+        if (this.now() >= until) lastLook = true;
+        await delay(STEP_POLL_MS);
+      }
+    };
+
+    /** After the last key: does the screen confirm the answer within ASK_CONFIRM_WAIT_MS? */
+    const confirmed = async (blocksBefore: number, incarnation: string): Promise<boolean> => {
+      const until = this.now() + ASK_CONFIRM_WAIT_MS;
+      let lastLook = false;
+      for (;;) {
+        const screen = await this.readQuestionScreen(sessionId);
+        // A key typed after the answer does not change what the screen shows of it.
+        if (!screen || (screen.mark.incarnation ?? '') !== incarnation) return false;
+        if (answersConfirmed(screen.rows, blocksBefore, questions, answers)) return true;
+        if (lastLook) return false;
+        if (this.now() >= until) lastLook = true;
+        await delay(STEP_POLL_MS);
+      }
+    };
+
+    let read: Screen = first;
+    // "User answered" blocks on the screen the key that may close the picker was typed over.
+    let blocksBefore = countAnsweredBlocks(first.rows);
+    for (let index = 0; index < steps.length;) {
+      if (index > 0) {
+        const seen = await awaitScreen(steps[index - 1]!, blocksBefore);
+        if (typeof seen === 'string') {
+          // After a key that may have submitted the picker, nothing typed can be ruled out.
+          return stop(changed(), seen, steps[index - 1]!.expect.view === 'review-or-closed');
+        }
+        if ('closed' in seen) return finish(false);
+        read = seen;
+      }
+      const refused = await this.reauthorize(params, record);
+      if (refused) {
+        if (index > 0) return stop(refused, 'authorize');
+        audit(refused.ok ? 'ok' : refused.reason);
+        return refused;
+      }
+      if (this.now() > deadline) return index > 0 ? stop(changed(), 'deadline') : unwritten('deadline');
+      const at = index;
+      const last = at === steps.length - 1;
+      const outcome = await this.mutate<'retry' | 'written' | 'moved' | ApprovalResolveResult>(() => {
+        // ── Synchronous from here to the write: nothing can move in between. ──
+        if (record.state !== 'pending') {
+          return { result: { ok: false, reason: record.state === 'resolved' ? 'already-resolved' : 'expired', request: copyRequest(record) } };
+        }
+        const step = record.step;
+        // The CAS: a stepwise answer starts only on a record nothing answered.
+        if (at === 0 ? step !== undefined || record.pressedAt !== undefined : !ours() || step!.status !== 'running') {
+          return { result: { ok: false, reason: 'already-answered', request: copyRequest(record) } };
+        }
+        const now = this.deps.promptScreenMark?.(sessionId) ?? null;
+        const revision = at === 0 ? read.mark.keyInputRevision : step!.expectedRevision;
+        const incarnation = at === 0 ? read.mark.incarnation : step!.incarnation;
+        if (!now || (now.incarnation ?? '') !== (incarnation ?? '') || now.keyInputRevision !== revision) return { result: 'moved' };
+        if (now.bytes !== read.mark.bytes) return { result: 'retry' };
+        let written: number | null = null;
+        try {
+          written = writeStepKey(sessionId, steps[at]!.key);
+        } catch (err) {
+          this.deps.log?.('warn', `[approvals] step write failed for ${sessionId}: ${String(err)}`);
+        }
+        if (written === null) return { result: 'moved' };
+        const events: ApprovalEvent[] = [];
+        if (at === 0) {
+          record.step = {
+            answerId: answer.clientAnswerId,
+            index: 1,
+            total: steps.length,
+            expectedRevision: written,
+            incarnation: now.incarnation ?? '',
+            status: 'running',
+            startedAt: this.now(),
+          };
+          events.push({ type: 'press', request: copyRequest(record) });
+        } else {
+          step!.index = at + 1;
+          step!.expectedRevision = written;
+        }
+        if (last) {
+          // Every key is in: the answer is the phone's, whatever the screen
+          // goes on to show, and the pane's turn resumes.
+          record.decision = 'approve';
+          this.noteSubmittedSafely(sessionId);
+        }
+        // Every delivered key is on disk before the next one.
+        return { events, persist: true, result: 'written' };
+      });
+      if (outcome === 'written') {
+        const view = steps[at]!.expect.view;
+        if (view === 'closed' || view === 'review-or-closed') blocksBefore = countAnsweredBlocks(read.rows);
+        index++;
+        continue;
+      }
+      if (outcome === 'retry') {
+        // Output since the read: read again (and prove again, for the first key).
+        if (at === 0) {
+          const again = await this.readQuestionScreen(sessionId);
+          if (!again || !askPickerUntouched(parseAskPicker(again.rows), questions)) return unwritten('retry');
+          read = again;
+        }
+        if (this.now() > deadline) return at > 0 ? stop(changed(), 'deadline') : unwritten('deadline');
+        continue;
+      }
+      if (outcome === 'moved') return at === 0 ? unwritten('input') : stop(changed(), 'input');
+      if (at > 0) return stop(outcome, 'settled');
+      audit(outcome.ok ? 'ok' : outcome.reason);
+      return outcome;
+    }
+    const incarnation = record.step?.incarnation ?? '';
+    if (await confirmed(blocksBefore, incarnation)) return finish(true);
+    return stop(changed(), 'unconfirmed', true);
+  }
+
+  /** The pane's turn resumes after the driver's last key; a failure is only logged. */
+  private noteSubmittedSafely(sessionId: string): void {
+    try {
+      this.deps.noteSubmitted?.(sessionId);
+    } catch (err) {
+      this.deps.log?.('warn', `[approvals] noteSubmitted failed for ${sessionId}: ${String(err)}`);
+    }
+  }
+
+  /**
    * A `decision-v2` answer (`POST /api/approvals/:id/answer`) for a record
    * that is not native and not a plan dialog (see answerPlan): after the
    * lifecycle checks every such record refuses it as `unsupported-shape`.
@@ -3021,7 +3463,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       }
       // A terminal_prompt whose remote answer was written RESOLVES when its
       // dialog is gone (the answered path, the screen check, the turn's end).
-      if (r.pressedAt !== undefined) {
+      // So does a question whose stepwise answer typed every key but could
+      // not be confirmed on screen (driveQuestions).
+      if (r.pressedAt !== undefined || (r.step !== undefined && r.step.index >= r.step.total)) {
         r.state = 'resolved';
         r.resolvedAt = this.now();
         events.push({ type: 'resolve', request: copyRequest(r) });

@@ -623,6 +623,11 @@ export interface ApprovalHookSink {
     questionShape?: QuestionShape;
     /** The agent's own request id behind the card (OpenCode `permId`). */
     requestId?: string;
+    /**
+     * Claude-family AskUserQuestion only: the whole prompt as a `questions`
+     * form (see claudeQuestionsForm), answered by the stepwise driver.
+     */
+    form?: DecisionForm;
   }): void;
   /**
    * Expire a pane's informational `awaiting_input` cards for these agent

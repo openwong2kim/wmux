@@ -23,6 +23,8 @@
 // so a multi-MB field cannot make the control-char scan do O(n) work, then
 // strip, collapse, trim, and truncate to the display cap.
 
+import type { DecisionForm } from './types';
+
 /** Cap applied BEFORE any regex work on an untrusted string (activitySummary's MAX_RAW_LEN). */
 const MAX_RAW_LEN = 1024;
 
@@ -81,8 +83,8 @@ export interface ExtractedQuestion {
  * ONLY THE FIRST QUESTION is extracted. AskUserQuestion may carry several, but
  * the keystroke map presses one option on whatever the TUI is showing, which is
  * the first question — surfacing options from a later one would describe a
- * choice the press cannot make. Multi-question prompts remain a real gap: the
- * daemon has no way to advance to a later question and answer it separately.
+ * choice the press cannot make. A multi-question prompt is answered whole only
+ * through its `decision-v2` form (claudeQuestionsForm, below).
  *
  * `choices` preserves the ORIGINAL 1-based index of each option in the payload
  * array as the `key`. When a label is blank/unusable the entry is dropped from
@@ -123,6 +125,62 @@ export function extractAskUserQuestion(payload: unknown): ExtractedQuestion {
   if (choices.length > 0) out.choices = choices;
 
   return out;
+}
+
+/** Claude Code's AskUserQuestion asks at most this many questions at once. */
+export const CLAUDE_FORM_MAX_QUESTIONS = 4;
+/**
+ * Most options a question may have for a form: with the free-text row after
+ * them, every row the driver presses keeps a one-digit number.
+ */
+export const CLAUDE_FORM_MAX_OPTIONS = 8;
+/** The limits `boundDecisionForm` puts on question text and labels. */
+const FORM_TEXT_MAX = 500;
+const FORM_LABEL_MAX = 200;
+// Text that would not reach the screen as it is: C0/C1 controls, DEL, the
+// Unicode line and paragraph separators, or a run of whitespace the TUI
+// could collapse.
+// eslint-disable-next-line no-control-regex -- refusing them is the point
+const FORM_UNSHOWABLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]|\s{2,}|^\s|\s$/;
+
+/**
+ * The `decision-v2` `questions` form for a Claude Code AskUserQuestion
+ * PreToolUse payload (#1649), or null when the payload is not one the
+ * stepwise driver can answer whole. Strict where `extractAskUserQuestion` is
+ * lenient: only the canonical `{questions: [{question, header, multiSelect,
+ * options: [{label}]}]}` shape, 1–4 questions with distinct texts, each with a
+ * header (its tab), a literal boolean `multiSelect` and 1–8 options, every
+ * string short enough and clean enough to be shown and read back exactly as
+ * it is. A string that would be cut or cleaned gets no form: the screen could
+ * not be matched against it.
+ *
+ * Option keys are their 1-based positions, the digit Claude draws. Every
+ * question allows free text: Claude appends its "Type something" row to each.
+ */
+export function claudeQuestionsForm(payload: unknown): DecisionForm | null {
+  const raw = readArray(readObject(payload, 'tool_input'), 'questions');
+  if (!raw || raw.length === 0 || raw.length > CLAUDE_FORM_MAX_QUESTIONS) return null;
+  const showable = (value: unknown, max: number): value is string =>
+    typeof value === 'string' && value.length > 0 && value.length <= max && !FORM_UNSHOWABLE.test(value);
+  const questions: NonNullable<DecisionForm['questions']> = [];
+  for (const [i, entry] of raw.entries()) {
+    if (!isObject(entry)) return null;
+    const { question, header, multiSelect, options } = entry;
+    if (!showable(question, FORM_TEXT_MAX) || !showable(header, FORM_LABEL_MAX) || typeof multiSelect !== 'boolean') return null;
+    if (!Array.isArray(options) || options.length === 0 || options.length > CLAUDE_FORM_MAX_OPTIONS) return null;
+    const labels = options.map((o) => (isObject(o) ? o['label'] : undefined));
+    if (!labels.every((label) => showable(label, FORM_LABEL_MAX))) return null;
+    if (questions.some((q) => q.text === question)) return null;
+    questions.push({
+      id: `q${i}`,
+      header,
+      text: question,
+      multiSelect,
+      allowOther: true,
+      options: (labels as string[]).map((label, j) => ({ key: String(j + 1), label })),
+    });
+  }
+  return { v: 1, kind: 'questions', questions, actions: [{ id: 'submit', label: 'Submit' }, { id: 'deny', label: 'Cancel' }] };
 }
 
 /**
