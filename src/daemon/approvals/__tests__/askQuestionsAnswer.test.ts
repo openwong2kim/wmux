@@ -663,6 +663,21 @@ describe('other prompts on the pane while the answer runs', () => {
     expect(h.registry.list().pending).toEqual([expect.objectContaining({ question: 'And a drink?' })]);
   });
 
+  it('holds only the typing answer: a second newer question still replaces the first', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    h.script = [...MULTI_SCRIPT];
+    h.afterStepKey.fn = (index) => {
+      if (index === 3) void h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', question: 'And a drink?' });
+      if (index === 4) void h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', question: 'And dessert?' });
+    };
+    const result = await answer(h, record, MULTI_ANSWER);
+    expect(result).toMatchObject({ ok: true, request: { state: 'resolved' } });
+    // One card per pane again: the first newer question was replaced by the second.
+    expect(h.registry.list().pending).toEqual([expect.objectContaining({ question: 'And dessert?' })]);
+    expect(h.registry.list().recentlyResolved).toContainEqual(expect.objectContaining({ question: 'And a drink?', state: 'superseded' }));
+  });
+
   it('applies a held supersede when the answer stops', async () => {
     const h = makeRegistry();
     const record = await create(h);

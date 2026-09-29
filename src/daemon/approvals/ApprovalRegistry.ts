@@ -707,14 +707,15 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // hook's question-less card would be a second card for the same prompt.
       if (!snapshot.question && this.shadowsCodexDecision(snapshot.sessionId, snapshot.agent)) return [];
       // A native decision is the agent's own request, settled by its server:
-      // a screen-backed question on the same pane never replaces it.
+      // a screen-backed question on the same pane never replaces it. Nor
+      // does it replace a question whose answer is still typing: held (see
+      // typingAnswer), and then not what this one replaces.
+      this.holdSupersede(snapshot.sessionId);
       const superseded = this.requests.find(
-        (r) => r.state === 'pending' && r.sessionId === snapshot.sessionId && !isNative(r),
+        (r) => r.state === 'pending' && r.sessionId === snapshot.sessionId && !isNative(r) && !typingAnswer(r),
       );
       const events: ApprovalEvent[] = [];
-      if (superseded && typingAnswer(superseded)) {
-        this.deferredSupersede.add(superseded.id);
-      } else if (superseded) {
+      if (superseded) {
         superseded.state = 'superseded';
         superseded.resolvedAt = this.now();
         if (superseded.kind === 'awaiting_permission') {
@@ -795,17 +796,18 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // each blocks its own bridge process. Superseding one would silently drop
       // that tool to the local prompt while the phone operator, watching only
       // the phone, sees nothing (review: Claude). So a gate never supersedes
-      // another gate; it only replaces a screen-backed prompt.
+      // another gate; it only replaces a screen-backed prompt — and a question
+      // whose answer is still typing only once that answer stops (typingAnswer).
+      this.holdSupersede(snapshot.sessionId);
       const superseded = this.requests.find(
         (r) => r.state === 'pending'
           && r.sessionId === snapshot.sessionId
           && r.kind !== 'awaiting_permission'
-          && !isNative(r),
+          && !isNative(r)
+          && !typingAnswer(r),
       );
       const events: ApprovalEvent[] = [];
-      if (superseded && typingAnswer(superseded)) {
-        this.deferredSupersede.add(superseded.id);
-      } else if (superseded) {
+      if (superseded) {
         superseded.state = 'superseded';
         superseded.resolvedAt = this.now();
         events.push({ type: 'supersede', request: copyRequest(superseded) });
@@ -962,6 +964,17 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       events.push({ type: 'create', request: copyRequest(created), ...(existing ? { replaces: existing.id } : {}) });
       return { events, result: created.id };
     });
+  }
+
+  /**
+   * A newer prompt or gate arrived on this pane: a question whose stepwise
+   * answer is still typing is superseded only if that answer stops (see
+   * driveQuestions), never in the middle of its keys. Inside a mutation.
+   */
+  private holdSupersede(sessionId: string): void {
+    for (const r of this.requests) {
+      if (r.state === 'pending' && r.sessionId === sessionId && typingAnswer(r)) this.deferredSupersede.add(r.id);
+    }
   }
 
   /** A Codex hook's `awaiting_input` card: no question, nothing native. */
