@@ -329,6 +329,19 @@ export interface DecisionStep {
   incarnation: string;
   status: 'running' | 'partial' | 'done';
   startedAt: number;
+  /**
+   * AskUserQuestion driver: a key that may submit the whole answer has been
+   * typed. From then on only the screen can say where the answer is, and the
+   * record is no longer held against a supersede. Daemon-internal.
+   */
+  mayBeSubmitted?: true;
+  /**
+   * AskUserQuestion driver: the answer stopped 409 `answer-uncertain` — every
+   * key that could submit it was typed and the screen never confirmed it. Who
+   * answered. Only Claude's own "answered" report resolves such a record (as
+   * this answer); any other end expires it. Daemon-internal.
+   */
+  uncertainBy?: string;
 }
 
 /** A validated `POST /api/approvals/:id/answer` body (see web/decisionAnswer.ts). */

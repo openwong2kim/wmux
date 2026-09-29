@@ -137,9 +137,24 @@ export function askOtherMaxWidth(cols: number | undefined): number {
   return Math.min(2000, Math.max(0, cols - 12));
 }
 
-/** Free text whose echo could not be told apart from the empty row. */
+/**
+ * Free text whose echo could not be told apart from the empty row: the echo
+ * check compares texts with every space removed, so `Type some thing` reads
+ * as the placeholder too.
+ */
 export function isFreeTextPlaceholder(text: string): boolean {
-  return FREE_TEXT_PLACEHOLDER.test(normalize(text));
+  return /^Typesomething\.?$/.test(compact(text));
+}
+
+/**
+ * The same question text: compared with every space removed, because Claude
+ * wraps a text with no spaces (CJK, a long path) inside a word, and the review
+ * and answered-block rows are narrower than the picker's. The whole text, never
+ * a prefix: two questions may start alike.
+ */
+export function sameQuestionText(screen: string, form: string): boolean {
+  const text = compact(screen);
+  return text.length > 0 && text === compact(form);
 }
 
 function parseTabBar(row: string): AskPickerTabs | null {
@@ -364,8 +379,8 @@ function tabsMatch(screen: AskPickerTabs, questions: readonly AskFormQuestion[])
  * Does the screen show exactly what `expect` says? `closed` and
  * `review-or-closed` are judged by `answersConfirmed` instead (never here).
  *
- * A question view must be question `q` (its text, and its options by key and
- * label, the free-text row last), the tabs before it answered and the ones
+ * A question view must be question `q` (its whole text, and its options by key
+ * and label, the free-text row last), the tabs before it answered and the ones
  * after it not (the current tab's own mark is not checked: when it turns is
  * not measured for every shape), the cursor where `expect` puts it, exactly
  * the expected boxes ticked, and the free-text row showing its placeholder or
@@ -387,12 +402,12 @@ export function askScreenMeets(
       || cancel?.key !== '2' || cancel.label !== 'Cancel') {
       return false;
     }
-    return questions.every((q, j) => isCutOf(screen.entries[j]!.question, q.text, 8)
+    return questions.every((q, j) => sameQuestionText(screen.entries[j]!.question, q.text)
       && answerListMatches(screen.entries[j]!.answer, answerLabels(q, answers[j]!)));
   }
   if (expect.view !== 'question' || screen.view !== 'question') return false;
   const question = questions[expect.q];
-  if (!question || !isCutOf(screen.question, question.text, 8)) return false;
+  if (!question || !sameQuestionText(screen.question, question.text)) return false;
   if (!screen.tabs.every((tab, j) => j === expect.q || tab.answered === j < expect.q)) return false;
   if (screen.multiSelect !== question.multiSelect) return false;
   if (question.multiSelect ? !screen.submitRow : !!screen.submitRow) return false;
@@ -448,8 +463,9 @@ export function answersConfirmed(
   const block = lastAnsweredBlock(rows);
   if (!block || block.length !== questions.length) return false;
   return questions.every((q, j) => {
-    const entry = block[j]!;
-    const head = `${normalize(q.text)} → `;
+    // `question → answer`, compared with every space removed (see sameQuestionText).
+    const entry = compact(block[j]!);
+    const head = `${compact(q.text)}→`;
     return entry.startsWith(head) && answerListMatches(entry.slice(head.length), answerLabels(q, answers[j]!));
   });
 }

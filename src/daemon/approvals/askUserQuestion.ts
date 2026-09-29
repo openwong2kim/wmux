@@ -148,11 +148,11 @@ const FORM_UNSHOWABLE = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]|\s{2,}|^\s|\s$
  * PreToolUse payload (#1649), or null when the payload is not one the
  * stepwise driver can answer whole. Strict where `extractAskUserQuestion` is
  * lenient: only the canonical `{questions: [{question, header, multiSelect,
- * options: [{label}]}]}` shape, 1–4 questions with distinct texts, each with a
- * header (its tab), a literal boolean `multiSelect` and 1–8 options, every
- * string short enough and clean enough to be shown and read back exactly as
- * it is. A string that would be cut or cleaned gets no form: the screen could
- * not be matched against it.
+ * options: [{label}]}]}` shape, 1–4 questions whose texts differ even with
+ * every space removed, each with a header (its tab), a literal boolean
+ * `multiSelect` and 1–8 options, every string short enough and clean enough
+ * to be shown and read back exactly as it is. A string that would be cut or
+ * cleaned gets no form: the screen could not be matched against it.
  *
  * Option keys are their 1-based positions, the digit Claude draws. Every
  * question allows free text: Claude appends its "Type something" row to each.
@@ -170,7 +170,10 @@ export function claudeQuestionsForm(payload: unknown): DecisionForm | null {
     if (!Array.isArray(options) || options.length === 0 || options.length > CLAUDE_FORM_MAX_OPTIONS) return null;
     const labels = options.map((o) => (isObject(o) ? o['label'] : undefined));
     if (!labels.every((label) => showable(label, FORM_LABEL_MAX))) return null;
-    if (questions.some((q) => q.text === question)) return null;
+    // The screen tells questions apart by their text with every space removed
+    // (sameQuestionText): two that read the same that way cannot be.
+    const compactText = (text: string): string => text.replace(/\s+/g, '');
+    if (questions.some((q) => compactText(q.text) === compactText(question))) return null;
     questions.push({
       id: `q${i}`,
       header,

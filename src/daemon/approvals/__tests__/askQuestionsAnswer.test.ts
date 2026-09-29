@@ -176,6 +176,8 @@ interface Harness {
   events: ApprovalEvent[];
   clock: { now: number };
   afterStepKey: { fn: ((index: number) => void) | null };
+  /** Runs at each read of the pane's screen, before it is taken. */
+  onRead: { fn: (() => void) | null };
 }
 
 let tmpDir: string;
@@ -192,6 +194,7 @@ function makeRegistry(overrides: Partial<ApprovalRegistryDeps> = {}, initial: re
     events: [],
     clock: { now: 10_000 },
     afterStepKey: { fn: null },
+    onRead: { fn: null },
   };
   // The fake TUI: a key moves the pane's revision by one and draws the next scripted screen.
   const draw = (data: string): void => {
@@ -224,6 +227,7 @@ function makeRegistry(overrides: Partial<ApprovalRegistryDeps> = {}, initial: re
     },
     noteSubmitted: () => { h.submitted += 1; },
     readPromptScreen: async () => {
+      h.onRead.fn?.();
       const rows = h.pane.rows;
       const mark = { bytes: h.pane.bytes, keyInputRevision: h.pane.keyInputRevision, incarnation: h.pane.incarnation };
       return rows ? { rows, mark, cols: h.pane.cols } : null;
@@ -446,6 +450,35 @@ describe('answering the picker', () => {
       expect(stored(h, record.id)).toMatchObject({ state: 'pending', step: { index: 6, total: 7, status: 'partial' } });
     });
 
+    it('settles an unconfirmed Enter on Claude\'s own answered report, and on nothing else', async () => {
+      for (const [reason, state] of [['answered-locally', 'resolved'], ['turn-ended', 'expired']] as const) {
+        const h = makeRegistry({}, TOPPINGS.initial);
+        const record = await create(h, TOPPINGS_PAYLOAD);
+        h.script = [...upToEnter, [ASK_KEY_ENTER, BLANK_AFTER]];
+        expect(await answer(h, record, toppings)).toMatchObject({ reason: 'answer-uncertain' });
+        await h.registry.expireForSession('pty-a', reason);
+        expect(stored(h, record.id).state).toBe(state);
+      }
+    });
+
+    it('lets another tool\'s dialog in once Enter may have submitted it, although its review key is still planned', async () => {
+      const h = makeRegistry({}, TOPPINGS.initial);
+      const record = await create(h, TOPPINGS_PAYLOAD);
+      h.script = [...upToEnter, [ASK_KEY_ENTER, BLANK_AFTER]];
+      let fired = false;
+      let noted: Promise<void> | undefined;
+      h.onRead.fn = () => {
+        if (fired || h.stepKeys.length !== 6) return;
+        fired = true;
+        noted = h.registry.noteTerminalPrompt({ sessionId: 'pty-a', agent: 'claude', toolName: 'Bash', source: 'hook' });
+        h.pane.rows = TOPPINGS_ANSWERED;
+      };
+      const result = await answer(h, record, toppings);
+      await noted;
+      expect(result).toMatchObject({ ok: true });
+      expect(h.registry.list().pending).toEqual([expect.objectContaining({ kind: 'terminal_prompt', toolName: 'Bash' })]);
+    });
+
     it('refuses a picker that draws a Submit tab for one question, before any key', async () => {
       const h = makeRegistry({}, oneTab(MULTI.q2, '←  ☐ Toppings  ✔ Submit  →'));
       const record = await create(h, TOPPINGS_PAYLOAD);
@@ -463,16 +496,21 @@ describe('answering the picker', () => {
     expect(result).toMatchObject({ ok: false, reason: 'answer-uncertain' });
     expect(result.ok === false && result.effect).toBeUndefined();
     const after = stored(h, record.id);
-    expect(after).toMatchObject({ state: 'pending', decision: 'approve', step: { index: 1, total: 1, status: 'partial' } });
+    expect(after).toMatchObject({ state: 'pending', step: { index: 1, total: 1, status: 'partial' } });
+    // Unconfirmed: no decision on the record, in the list or in any event a
+    // shipped phone reads, and the pane is still blocked on its question.
+    expect(after.decision).toBeUndefined();
+    expect(h.events.some((e) => e.request.decision !== undefined)).toBe(false);
+    expect(h.submitted).toBe(0);
     // Waited out its confirmation window.
     expect(h.clock.now).toBeGreaterThanOrEqual(10_000 + TERMINAL_PROMPT_MIN_ANSWER_AGE_MS + ASK_CONFIRM_WAIT_MS);
     // Nothing more is typed for it, from any path.
     expect(await answer(h, record, { answers: [{ questionId: 'q0', keys: ['3'] }] })).toMatchObject({ reason: 'already-answered' });
     expect(await h.registry.resolve({ id: record.id, decision: 'deny', resolvedBy: 'phone' })).toMatchObject({ reason: 'already-answered' });
     expect(h.writes).toEqual([]);
-    // The pane's own word that the question was answered settles it as resolved.
+    // Claude's own word that the question was answered settles it, as this answer.
     await h.registry.expireForSession('pty-a', 'answered-locally', 'awaiting_input');
-    expect(stored(h, record.id)).toMatchObject({ state: 'resolved', decision: 'approve' });
+    expect(stored(h, record.id)).toMatchObject({ state: 'resolved', decision: 'approve', resolvedBy: 'device Test phone (dev-1)' });
   });
 
   it('is answer-uncertain when the last key closes the picker with nothing drawn about it', async () => {
@@ -482,7 +520,8 @@ describe('answering the picker', () => {
     const result = await answer(h, record, MULTI_ANSWER);
     expect(result).toMatchObject({ ok: false, reason: 'answer-uncertain' });
     expect(h.stepKeys).toHaveLength(11);
-    expect(h.submitted).toBe(1);
+    // The pane's turn resumes only on a confirmed answer.
+    expect(h.submitted).toBe(0);
   });
 
   it('does not press Submit on a review that lists another answer', async () => {
@@ -550,6 +589,135 @@ describe('answering the picker', () => {
   });
 });
 
+describe('an answer the screen never confirmed (answer-uncertain)', () => {
+  /** The color prompt answered with `3`; the picker closes, but only the OLD block is on screen. */
+  async function colorUncertain(onConfirmRead?: (h: Harness) => void) {
+    const h = makeRegistry({}, COLOR_AGAIN);
+    const record = await create(h, COLOR_PAYLOAD);
+    h.script = [['3', [...SINGLE.otherField.slice(0, 20), ...Array.from({ length: 20 }, () => '')]]];
+    let fired = false;
+    h.onRead.fn = () => {
+      if (!onConfirmRead || fired || h.stepKeys.length !== 1) return;
+      fired = true;
+      onConfirmRead(h);
+    };
+    expect(await answer(h, record, { answers: [{ questionId: 'q0', keys: ['3'] }] })).toMatchObject({ ok: false, reason: 'answer-uncertain' });
+    return { h, record };
+  }
+
+  it.each(['prompt-submitted', 'turn-ended', 'pane-gone', 'session-start', 'prompt-gone', 'screen-cleared'] as const)(
+    'is expired, never resolved, by %s',
+    async (reason) => {
+      const { h, record } = await colorUncertain();
+      await h.registry.expireForSession('pty-a', reason);
+      const after = stored(h, record.id);
+      expect(after.state).toBe('expired');
+      expect(after.decision).toBeUndefined();
+      expect(after.resolvedBy).toBeUndefined();
+    },
+  );
+
+  it('settles a sweep held while it was confirming by the same rules', async () => {
+    // The question dismissed at the terminal while the driver was still looking.
+    const dismissed = await colorUncertain((h) => {
+      void h.registry.expireForSession('pty-a', 'prompt-submitted', 'awaiting_input');
+    });
+    expect(stored(dismissed.h, dismissed.record.id)).toMatchObject({ state: 'expired' });
+    expect(stored(dismissed.h, dismissed.record.id).decision).toBeUndefined();
+    // A stale-question check first, then Claude's own report: the report wins.
+    const answered = await colorUncertain((h) => {
+      void h.registry.expireForSession('pty-a', 'prompt-gone', 'awaiting_input');
+      void h.registry.expireForSession('pty-a', 'answered-locally', 'awaiting_input');
+    });
+    expect(stored(answered.h, answered.record.id)).toMatchObject({
+      state: 'resolved',
+      decision: 'approve',
+      resolvedBy: 'device Test phone (dev-1)',
+    });
+  });
+});
+
+describe('other prompts on the pane while the answer runs', () => {
+  it('holds a gate that lands while keys are typed, and the answer still lands', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    h.script = [...MULTI_SCRIPT];
+    let gateId = '';
+    h.afterStepKey.fn = (index) => {
+      if (index === 3) gateId = h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', toolName: 'Bash' });
+    };
+    const result = await answer(h, record, MULTI_ANSWER);
+    expect(result).toMatchObject({ ok: true, request: { state: 'resolved' } });
+    expect(stored(h, gateId)).toMatchObject({ kind: 'awaiting_permission', state: 'pending' });
+  });
+
+  it('holds a newer question that lands while keys are typed', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    h.script = [...MULTI_SCRIPT];
+    h.afterStepKey.fn = (index) => {
+      if (index === 3) void h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', question: 'And a drink?' });
+    };
+    const result = await answer(h, record, MULTI_ANSWER);
+    expect(result).toMatchObject({ ok: true, request: { state: 'resolved' } });
+    expect(h.registry.list().pending).toEqual([expect.objectContaining({ question: 'And a drink?' })]);
+  });
+
+  it('applies a held supersede when the answer stops', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    // The toggle never shows.
+    h.script = [['2', MULTI.q2], ['1', MULTI.q2]];
+    h.afterStepKey.fn = (index) => {
+      if (index === 0) h.registry.noteGateAwaiting({ sessionId: 'pty-a', agent: 'claude', toolName: 'Bash' });
+    };
+    const result = await answer(h, record, MULTI_ANSWER);
+    expect(result).toMatchObject({ ok: false, reason: 'prompt-changed', effect: 'partial' });
+    expect(stored(h, record.id).state).toBe('superseded');
+  });
+
+  it('lets another tool\'s dialog in once every key is typed', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    h.script = [...MULTI_SCRIPT.slice(0, -1), ['1', BLANK_AFTER]];
+    let fired = false;
+    let noted: Promise<void> | undefined;
+    h.onRead.fn = () => {
+      if (fired || h.stepKeys.length !== 11) return;
+      fired = true;
+      // The next tool's PermissionRequest, while the driver confirms the answer.
+      noted = h.registry.noteTerminalPrompt({ sessionId: 'pty-a', agent: 'claude', toolName: 'Bash', source: 'hook' });
+      h.pane.rows = MULTI.answered;
+    };
+    const result = await answer(h, record, MULTI_ANSWER);
+    await noted;
+    expect(result).toMatchObject({ ok: true });
+    expect(h.registry.list().pending).toEqual([expect.objectContaining({ kind: 'terminal_prompt', toolName: 'Bash' })]);
+  });
+
+  it('is replaced by a follow-up question while it confirms, and leaves the pane to it', async () => {
+    const h = makeRegistry();
+    const record = await create(h);
+    h.script = [...MULTI_SCRIPT.slice(0, -1), ['1', BLANK_AFTER]];
+    let fired = false;
+    h.onRead.fn = () => {
+      if (h.stepKeys.length !== 11) return;
+      if (!fired) {
+        fired = true;
+        void h.registry.noteHookAwaitingInput({ sessionId: 'pty-a', agent: 'claude', question: 'And a drink?' });
+        return;
+      }
+      // The answered block shows on the next look.
+      h.pane.rows = MULTI.answered;
+    };
+    const result = await answer(h, record, MULTI_ANSWER);
+    expect(result).toMatchObject({ ok: true, request: { state: 'superseded' } });
+    // The newer question holds the pane now: its wait is not released.
+    expect(h.submitted).toBe(0);
+    expect(h.registry.list().pending).toEqual([expect.objectContaining({ question: 'And a drink?' })]);
+  });
+});
+
 describe('what is refused before any key', () => {
   it('a picker someone already touched', async () => {
     const h = makeRegistry({}, SINGLE.down);
@@ -590,6 +758,8 @@ describe('what is refused before any key', () => {
       ({ answers: [{ questionId: 'q0', keys: ['2'] }, { questionId: 'q1', keys: [], other }] });
     expect(await answer(h, record, withOther('a\x1b[201~b'))).toMatchObject({ reason: 'invalid-text' });
     expect(await answer(h, record, withOther('Type something'))).toMatchObject({ reason: 'invalid-text' });
+    // Read back with its spaces removed, as the echo check does: still the placeholder.
+    expect(await answer(h, record, withOther('Type some thing'))).toMatchObject({ reason: 'invalid-text' });
     // One row of a 100-column pane holds 88 columns; a wide character counts two.
     expect(await answer(h, record, withOther('x'.repeat(89)))).toMatchObject({ reason: 'invalid-text' });
     expect(await answer(h, record, withOther('漢'.repeat(45)))).toMatchObject({ reason: 'invalid-text' });

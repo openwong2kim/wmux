@@ -268,6 +268,89 @@ describe('askScreenMeets / askPickerUntouched', () => {
   });
 });
 
+describe('question texts', () => {
+  const RULE = '─'.repeat(100);
+  /** A two-question picker drawn from scratch: `bar`, question `text` (rows), options Yes/No. */
+  const picker = (bar: string, text: readonly string[]): string[] => [
+    RULE,
+    bar,
+    '',
+    ...text,
+    '',
+    '❯ 1. Yes',
+    '  2. No',
+    '  3. Type something.',
+    RULE,
+    '  4. Chat about this',
+    '',
+    'Enter to select · Tab/Arrow keys to navigate · Esc to cancel',
+  ];
+  const two = (a: string, b: string): AskFormQuestion[] => claudeQuestionsForm({
+    tool_input: {
+      questions: [
+        { question: a, header: 'First', multiSelect: false, options: [{ label: 'Yes' }, { label: 'No' }] },
+        { question: b, header: 'Second', multiSelect: false, options: [{ label: 'Yes' }, { label: 'No' }] },
+      ],
+    },
+  })!.questions! as AskFormQuestion[];
+
+  it('match a text Claude wrapped inside a word, in the picker, the review and the answered block', () => {
+    // No spaces to wrap at: the row breaks inside a word.
+    const questions = two('日本語の長い質問文です', 'Second?');
+    const onFirst = parseAskPicker(picker('←  ☐ First  ☐ Second  ✔ Submit  →', ['日本語の長い', '質問文です']));
+    expect(askPickerUntouched(onFirst, questions)).toBe(true);
+    const answers: AskAnswer[] = [{ keys: ['1'] }, { keys: ['2'] }];
+    const review = [
+      RULE,
+      '←  ☒ First  ☒ Second  ✔ Submit  →',
+      '',
+      'Review your answers',
+      '',
+      ' ● 日本語の長い質',
+      '   問文です',
+      '   → Yes',
+      ' ● Second?',
+      '   → No',
+      '',
+      'Ready to submit your answers?',
+      '',
+      '❯ 1. Submit answers',
+      '  2. Cancel',
+    ];
+    expect(askScreenMeets(parseAskPicker(review), { view: 'review' }, questions, answers)).toBe(true);
+    const answered = [
+      '⏺ User answered Claude\'s questions:',
+      '  ⎿  · 日本語の長い質問',
+      '     文です → Yes',
+      '     · Second? → No',
+      '',
+    ];
+    expect(answersConfirmed(answered, 0, questions, answers)).toBe(true);
+  });
+
+  it('never take a question for another that starts the same', () => {
+    const questions = two('Enable caching', 'Enable caching for tests');
+    // Still on the first question after its digit (a build whose digit does not move on).
+    const stuck = parseAskPicker(picker('←  ☒ First  ☐ Second  ✔ Submit  →', ['Enable caching']));
+    expect(askScreenMeets(stuck, { view: 'question', q: 1, cursor: '1', checked: [], other: null }, questions, [])).toBe(false);
+    const moved = parseAskPicker(picker('←  ☒ First  ☐ Second  ✔ Submit  →', ['Enable caching for tests']));
+    expect(askScreenMeets(moved, { view: 'question', q: 1, cursor: '1', checked: [], other: null }, questions, [])).toBe(true);
+  });
+
+  it('give no form when two questions read the same without spaces', () => {
+    const payload = (a: string, b: string) => ({
+      tool_input: {
+        questions: [
+          { question: a, header: 'First', multiSelect: false, options: [{ label: 'Yes' }] },
+          { question: b, header: 'Second', multiSelect: false, options: [{ label: 'Yes' }] },
+        ],
+      },
+    });
+    expect(claudeQuestionsForm(payload('Pick one', 'Pickone'))).toBeNull();
+    expect(claudeQuestionsForm(payload('Pick one', 'Pick one more'))).not.toBeNull();
+  });
+});
+
 describe('askAnswerSteps', () => {
   it('replays the measured order for the two-question prompt', () => {
     const steps = askAnswerSteps(MULTI_QUESTIONS, [{ keys: ['2'] }, { keys: ['3', '1'], other: 'anchovy' }]);
@@ -314,10 +397,14 @@ describe('free-text limits', () => {
     expect(askOtherMaxWidth(undefined)).toBe(68);
   });
 
-  it('knows the free-text row placeholder', () => {
+  it('knows the free-text row placeholder, read with its spaces removed as the echo check does', () => {
     expect(isFreeTextPlaceholder('Type something.')).toBe(true);
     expect(isFreeTextPlaceholder('Type  something')).toBe(true);
+    expect(isFreeTextPlaceholder('Type some thing')).toBe(true);
+    expect(isFreeTextPlaceholder('Typesomething')).toBe(true);
+    expect(isFreeTextPlaceholder('Type some thing.')).toBe(true);
     expect(isFreeTextPlaceholder('Type something else')).toBe(false);
+    expect(isFreeTextPlaceholder('type something')).toBe(false);
   });
 });
 

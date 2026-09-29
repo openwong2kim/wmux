@@ -374,6 +374,16 @@ function changedResult(r: ApprovalRequest): ApprovalResolveResult {
   return { ok: false, reason: 'prompt-changed', request: copyRequest(r) };
 }
 
+/**
+ * A question whose stepwise answer is still typing keys that cannot have
+ * submitted it yet (see driveQuestions). Replacing it now would stop the
+ * answer with the picker half-typed, so a supersede is held until the answer
+ * stops; once a key that may submit it is typed, nothing is held any more.
+ */
+function typingAnswer(r: ApprovalRequest): boolean {
+  return r.kind === 'awaiting_input' && r.step?.status === 'running' && !r.step.mayBeSubmitted;
+}
+
 export interface ApprovalRegistryDeps {
   /** Suffix-aware wmux data dir — where approvals.json lives. */
   wmuxDir: string;
@@ -533,6 +543,12 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * answer stops partway. Record id → the sweep's reason. In memory only.
    */
   private readonly deferredExpiry = new Map<string, ApprovalExpiryReason>();
+  /**
+   * Questions a newer prompt or gate on their pane would have superseded while
+   * their stepwise answer was still typing (typingAnswer): superseded when the
+   * answer stops, dropped when it lands. Record ids. In memory only.
+   */
+  private readonly deferredSupersede = new Set<string>();
   /** Native requests that left `pending` recently (`adapter|requestId` → when). */
   private readonly nativeSettled = new Map<string, number>();
 
@@ -696,7 +712,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         (r) => r.state === 'pending' && r.sessionId === snapshot.sessionId && !isNative(r),
       );
       const events: ApprovalEvent[] = [];
-      if (superseded) {
+      if (superseded && typingAnswer(superseded)) {
+        this.deferredSupersede.add(superseded.id);
+      } else if (superseded) {
         superseded.state = 'superseded';
         superseded.resolvedAt = this.now();
         if (superseded.kind === 'awaiting_permission') {
@@ -785,7 +803,9 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           && !isNative(r),
       );
       const events: ApprovalEvent[] = [];
-      if (superseded) {
+      if (superseded && typingAnswer(superseded)) {
+        this.deferredSupersede.add(superseded.id);
+      } else if (superseded) {
         superseded.state = 'superseded';
         superseded.resolvedAt = this.now();
         events.push({ type: 'supersede', request: copyRequest(superseded) });
@@ -1259,9 +1279,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
   private staleQuestionFor(note: TerminalPromptNote): ApprovalRequest | undefined {
     if (note.toolName === 'AskUserQuestion') return undefined;
     const pending = this.requests.filter((r) => r.state === 'pending' && r.sessionId === note.sessionId && !isNative(r));
-    // A question the stepwise driver is answering: its own keys take the
-    // question off the screen (the review screen, the next tab).
-    return pending.length === 1 && pending[0].kind === 'awaiting_input' && pending[0].step?.status !== 'running'
+    // A question the stepwise driver is still typing into: its own keys take
+    // the question off the screen (the review screen, the next tab). Once the
+    // key that may submit it is in, a dialog for another tool is the proof
+    // that the question is over, as for any other question.
+    return pending.length === 1 && pending[0].kind === 'awaiting_input' && !typingAnswer(pending[0])
       ? pending[0]
       : undefined;
   }
@@ -3081,16 +3103,21 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
    * answer given before it presses `1`. The last key does NOT resolve the
    * record: the driver then waits for the screen to confirm the answer
    * (answersConfirmed — the picker gone and a NEW "User answered Claude's
-   * questions" block listing exactly these answers). Confirmed → resolved.
-   * Not confirmed within ASK_CONFIRM_WAIT_MS → 409 `answer-uncertain`: every
-   * key was typed, but whether the answer landed as given is not known; the
-   * record stays pending as `partial` (`already-answered` from then on) and
-   * the pane's own sweep settles it, as resolved.
+   * questions" block listing exactly these answers). Confirmed → resolved,
+   * and only then does the pane's turn resume (`noteSubmitted`). Not
+   * confirmed within ASK_CONFIRM_WAIT_MS → 409 `answer-uncertain`: every key
+   * was typed, but whether the answer landed as given is not known. The
+   * record stays pending as `partial`, with no decision (`already-answered`
+   * from then on); Claude's own report that the question was answered
+   * resolves it as this answer, and any other end expires it.
    *
    * Anything else after the first key — a human key, a screen that never
    * shows the expected state, a lost grant, the record settled — stops it
    * `partial`: 409 `prompt-changed` (or the stopping reason) with `effect:
-   * 'partial'`. No key is ever typed to undo what was typed.
+   * 'partial'`. No key is ever typed to undo what was typed. While keys that
+   * cannot have submitted the answer are still being typed, a newer prompt or
+   * gate on the pane does not supersede the record: the supersede is held and
+   * applied if the answer stops (typingAnswer).
    */
   private async driveQuestions(
     params: ApprovalResolveParams,
@@ -3116,9 +3143,13 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
     const ours = (): boolean => record.step?.answerId === answer.clientAnswerId;
 
     /**
-     * Stop after the first key: the step is left `partial` (never undone), a
-     * sweep that arrived while it ran is applied now — as a resolve once every
-     * key was typed — and the answer says what happened.
+     * Stop after the first key: the step is left `partial` (never undone) and
+     * the answer says what happened. `uncertain`: every key that could submit
+     * the answer was typed and the screen never confirmed it; the step keeps
+     * who answered, so that only Claude's own "answered" report resolves the
+     * record (see expirePendingWhere). A supersede held while the answer was
+     * typing is applied now, else a sweep held while it ran is — through the
+     * same rules as any sweep.
      */
     const stop = async (result: ApprovalResolveResult, why: string, uncertain = false): Promise<ApprovalResolveResult> => {
       const failure = result.ok ? changed() : result;
@@ -3126,13 +3157,18 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
         const step = record.step;
         if (!step || !ours()) return { result: failure };
         if (step.status === 'running') step.status = 'partial';
+        if (uncertain) step.uncertainBy = sanitizeResolvedBy(params.resolvedBy);
         const events: ApprovalEvent[] = [];
         const held = this.deferredExpiry.get(record.id);
         this.deferredExpiry.delete(record.id);
-        if (record.state === 'pending' && held) {
-          record.state = step.index >= step.total ? 'resolved' : 'expired';
+        const replaced = this.deferredSupersede.delete(record.id);
+        if (record.state === 'pending' && replaced) {
+          record.state = 'superseded';
           record.resolvedAt = this.now();
-          events.push({ type: record.state === 'resolved' ? 'resolve' : 'expire', request: copyRequest(record) });
+          events.push({ type: 'supersede', request: copyRequest(record) });
+          this.deps.log?.('info', `[approvals] superseded ${record.id} on ${sessionId} (held while its answer typed)`);
+        } else if (record.state === 'pending' && held) {
+          events.push(...this.expirePendingWhere((r) => r.id === record.id, held));
           this.deps.log?.('info', `[approvals] settled ${record.id} on ${sessionId} (${held}, held while its answer ran)`);
         } else if (record.state === 'pending') {
           events.push({ type: 'press', request: copyRequest(record) });
@@ -3152,17 +3188,25 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       audit(`prompt-changed:${why}`);
       return changed();
     };
-    /** Confirmed on screen: the record resolves (a sweep that got there first keeps its state). */
-    const finish = async (submitted: boolean): Promise<ApprovalResolveResult> => {
+    /**
+     * Confirmed on screen: the record resolves (a sweep, or a dialog that
+     * replaced it, that got there first keeps its state) and the pane's turn
+     * resumes — only now, so an answer that is never confirmed leaves the pane
+     * blocked on its question, where the screen verifier keeps watching it.
+     */
+    const finish = async (): Promise<ApprovalResolveResult> => {
       const out = await this.mutate<ApprovalResolveResult>(() => {
         const step = record.step;
         if (!step || !ours()) return { result: changed() };
         this.deferredExpiry.delete(record.id);
+        this.deferredSupersede.delete(record.id);
         step.status = 'done';
         // Closed before the steps planned for it (a single multi-select with no review).
         step.total = step.index;
-        if (!submitted) this.noteSubmittedSafely(sessionId);
+        // Replaced (a newer dialog's own wait is the pane's now) or swept: the
+        // record keeps its state and the pane is left alone.
         if (record.state !== 'pending') return { persist: true, result: { ok: true, request: copyRequest(record), durable: true } };
+        this.noteSubmittedSafely(sessionId);
         record.state = 'resolved';
         record.decision = 'approve';
         record.resolvedBy = sanitizeResolvedBy(params.resolvedBy);
@@ -3233,7 +3277,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           // After a key that may have submitted the picker, nothing typed can be ruled out.
           return stop(changed(), seen, steps[index - 1]!.expect.view === 'review-or-closed');
         }
-        if ('closed' in seen) return finish(false);
+        if ('closed' in seen) return finish();
         read = seen;
       }
       const refused = await this.reauthorize(params, record);
@@ -3244,7 +3288,6 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       }
       if (this.now() > deadline) return index > 0 ? stop(changed(), 'deadline') : unwritten('deadline');
       const at = index;
-      const last = at === steps.length - 1;
       const outcome = await this.mutate<'retry' | 'written' | 'moved' | ApprovalResolveResult>(() => {
         // ── Synchronous from here to the write: nothing can move in between. ──
         if (record.state !== 'pending') {
@@ -3283,12 +3326,11 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           step!.index = at + 1;
           step!.expectedRevision = written;
         }
-        if (last) {
-          // Every key is in: the answer is the phone's, whatever the screen
-          // goes on to show, and the pane's turn resumes.
-          record.decision = 'approve';
-          this.noteSubmittedSafely(sessionId);
-        }
+        // A key that may submit the answer: from here only the screen can say
+        // where the answer is. The record stays pending, with no decision,
+        // until the screen confirms it (finish) or it is settled.
+        const view = steps[at]!.expect.view;
+        if (view === 'closed' || view === 'review-or-closed') record.step!.mayBeSubmitted = true;
         // Every delivered key is on disk before the next one.
         return { events, persist: true, result: 'written' };
       });
@@ -3314,7 +3356,7 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       return outcome;
     }
     const incarnation = record.step?.incarnation ?? '';
-    if (await confirmed(blocksBefore, incarnation)) return finish(true);
+    if (await confirmed(blocksBefore, incarnation)) return finish();
     return stop(changed(), 'unconfirmed', true);
   }
 
@@ -3458,16 +3500,25 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       // pane's "answered"), so nothing the screen suggests settles it. The
       // driver closes it, or leaves it `partial` for the sweep to settle.
       if (r.step?.status === 'running' && SCREEN_INFERRED_EXPIRY.has(reason)) {
-        if (!this.deferredExpiry.has(r.id)) this.deferredExpiry.set(r.id, reason);
+        // The first reason is kept, except that Claude's own word that the
+        // question was answered wins: it is what settles an answer the
+        // screen never confirmed (see below).
+        if (!this.deferredExpiry.has(r.id) || reason === 'answered-locally') this.deferredExpiry.set(r.id, reason);
         continue;
       }
       // A terminal_prompt whose remote answer was written RESOLVES when its
       // dialog is gone (the answered path, the screen check, the turn's end).
-      // So does a question whose stepwise answer typed every key but could
-      // not be confirmed on screen (driveQuestions).
-      if (r.pressedAt !== undefined || (r.step !== undefined && r.step.index >= r.step.total)) {
+      // A question whose stepwise answer ended `answer-uncertain` resolves,
+      // as that answer, only on Claude's own report that it was answered;
+      // any other end (dismissed, the turn over, the pane gone) expires it.
+      const unconfirmed = r.step?.uncertainBy;
+      if (r.pressedAt !== undefined || (unconfirmed !== undefined && reason === 'answered-locally')) {
         r.state = 'resolved';
         r.resolvedAt = this.now();
+        if (unconfirmed !== undefined) {
+          r.decision = 'approve';
+          r.resolvedBy = unconfirmed;
+        }
         events.push({ type: 'resolve', request: copyRequest(r) });
         continue;
       }
