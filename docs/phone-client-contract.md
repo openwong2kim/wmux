@@ -2586,6 +2586,29 @@ is over its budget, largest tree first, before pane placement, titles and pane
 rows. A tree is never sent with pane placement, titles or pane rows cut, so a
 `layout` you receive is always backed by a full `panes[]`.
 
+#### Browser app (/app)
+
+`GET /app` is an opt-in second page, next to the classic `/`: the desktop
+renderer's own components (sidebar, workspace rows, surface tabs, split
+layout, theme and fonts), built by `vite.web.config.ts` and inlined by
+`scripts/build-daemon-web.mjs` as two scripts and one style block. It is a
+read-only mirror of the tree above — it reads `GET /api/workspaces` and
+`GET /api/sessions` every 2.5 s and never calls a write route. Terminal tabs
+render as placeholders until the terminal adapter lands; then `/` switches to it.
+
+- The first script (es2017) stores `?token=` under the same key `/` uses and
+  installs a deny-by-default `window.electronAPI`: only static values
+  (`platform`, `systemLocale`, `windowsBuildNumber`, `browser.getBackendSync`)
+  are implemented; every other member (`pty.*`, `shell.*`, `accounts.*`,
+  `dialog.*`, …) returns a rejected promise and is never wired to the daemon.
+  A browser that cannot run the es2022 bundle (iOS before 16.4) is sent to `/`.
+- The page is served under its own CSP, derived from its own bytes like `/`'s.
+  Both policies now carry `font-src 'self'`: the app's fonts are served
+  same-origin from `/app/assets/<name>.woff2` (exact file names from the build,
+  immutable caching). The page makes no request to any other origin.
+- The service worker caches `/app` under its own key (it no longer overwrites
+  the offline copy of `/`) and caches the fonts on first use.
+
 ### Isolated Electron preview smoke test
 
 Run `node scripts/run-phone-browser-smoke.mjs` from this repository with a
