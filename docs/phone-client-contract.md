@@ -3771,9 +3771,14 @@ With `agentLaunch`, the agent runs through a login shell (`$SHELL -lc`),
 whose profile could export another `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. For
 bash, zsh, sh, dash and ksh the daemon exports the pane's resolved keys again
 after the profile, right before the agent, on the first launch and on every
-recovery replay. Not covered: fish and PowerShell wrappers, and an agent
-typed into the interactive shell later (for example by `chat/launch`), where
-an export in the user's `.zshrc` / `.bashrc` still wins.
+recovery replay. `chat/launch` types into the pane's interactive shell, whose
+`.zshrc` / `.bashrc` can export another account too: on a pane created with
+`accountId`, a launch of that account's vendor is typed with the account's key
+as a one-command prefix (`CLAUDE_CONFIG_DIR='<dir>' claude -- '…'`), so the
+agent runs on the chosen account. A pane without `accountId` and the other
+vendor's agent are typed as before. Not covered: fish and PowerShell wrappers
+for `agentLaunch` (a launch is only typed into zsh, bash or sh), and an agent
+the user types by hand, where the shell's own export still wins.
 
 If the account's directory is gone when a pane is recovered, the key is
 dropped with a warning in the daemon log and the CLI uses its default

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DesktopPhoneError, type DesktopPhoneBridge } from './DesktopPhoneBridge';
 import {
-  DESKTOP_ACCOUNT_ENV_COMMAND, PANE_ACCOUNT_ENV_KEY,
+  DESKTOP_ACCOUNT_ENV_COMMAND, PANE_ACCOUNT_ENV_KEY, parsePaneAccountFields,
   type HandoffFrom, type PaneAccountVendor, type StoredHandoffFrom,
 } from '../../shared/phonePaneAccount';
 
@@ -119,15 +119,13 @@ export async function verifyHandoff(
 export function storedHandoffOf(value: unknown): StoredHandoffFrom | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const v = value as Record<string, unknown>;
-  if (typeof v.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(v.sessionId)) return undefined;
-  if (v.agentSessionId !== undefined && (typeof v.agentSessionId !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(v.agentSessionId))) return undefined;
   if (typeof v.verified !== 'boolean' || typeof v.at !== 'number' || !Number.isFinite(v.at)) return undefined;
-  return {
-    sessionId: v.sessionId,
-    ...(typeof v.agentSessionId === 'string' ? { agentSessionId: v.agentSessionId } : {}),
-    verified: v.verified,
-    at: v.at,
-  };
+  // The ids pass the same shared rule the create parsed them with.
+  const ids = parsePaneAccountFields({ handoffFrom: {
+    sessionId: v.sessionId, ...(v.agentSessionId !== undefined ? { agentSessionId: v.agentSessionId } : {}),
+  } });
+  if (!ids.ok || !ids.value.handoffFrom) return undefined;
+  return { ...ids.value.handoffFrom, verified: v.verified, at: v.at };
 }
 
 /** The row's view of a lineage: ids only where this reader may see them. */

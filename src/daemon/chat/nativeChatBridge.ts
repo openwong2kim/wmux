@@ -7,6 +7,7 @@ import type { TerminalLaunchAgent } from '../../shared/transcript/terminalChat';
 import type { ChatInterruptResult, ChatSendResult, TranscriptPage, TranscriptStatus } from '../../shared/transcript/turnEvents';
 import type { AgentLaunchOptions } from '../web/agentLaunch';
 import { buildAgentLaunch } from '../web/agentLaunch';
+import { withChosenAccountEnv } from '../phone/paneAccountSpawn';
 import { codexCdOperand, withCodexRemote } from '../web/recoverCodexPane';
 import { screenBlocksChatSend, screenShowsTurnEnding, titleShowsFinishedTurn } from '../transcript/chatScreenGate';
 import { deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
@@ -42,6 +43,8 @@ export interface ChatPane {
   meta: {
     id: string; state: string; pid: number; cwd: string; env: Record<string, string>;
     exec?: unknown; wslTarget?: unknown; spawnCwd?: string; incarnationId?: string;
+    /** Set only for a pane created with a chosen account (contract v-next item 4). */
+    paneAccount?: { vendor: 'claude' | 'codex' };
   };
   bridge: {
     isEmptyShellPrompt(): boolean; getInputRevision(): number; noteInput(data: string): void;
@@ -1310,6 +1313,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         // shell's own "$PWD" is the directory Codex should start in; a tracked cwd can only lag it.
         command = withCodexRemote(command, relay.url, codexCdOperand());
       }
+      // A pane created with a chosen account launches that vendor's agent on it,
+      // whatever the shell's rc files exported (see withChosenAccountEnv).
+      command = withChosenAccountEnv(command, pane.meta, agent);
       const secondIdle = await idle();
       if (secondIdle) return secondIdle;
       if (req.authorized) {

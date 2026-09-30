@@ -9,7 +9,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonSession, DaemonSessionState, DaemonSessionSupervision, DaemonConfig } from './types';
-import type { StoredHandoffFrom } from '../shared/phonePaneAccount';
+import type { PaneAccountVendor, StoredHandoffFrom } from '../shared/phonePaneAccount';
 import { MIN_SAFE_COLS, MIN_SAFE_ROWS } from '../shared/terminalGeometry';
 import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
@@ -370,6 +370,8 @@ export class DaemonSessionManager extends EventEmitter {
     execLaunchCommand?: string;
     /** Phone handoff lineage, on the meta from creation (before the first hook can land). */
     handoffFrom?: StoredHandoffFrom;
+    /** Vendor of the account chosen for this phone pane (its directory is in `env`). */
+    paneAccount?: { vendor: PaneAccountVendor };
     /**
      * X8 supervision policy + sticky status. Fresh creates pass
      * status:'armed'; recovery replays the persisted value so a
@@ -642,6 +644,7 @@ export class DaemonSessionManager extends EventEmitter {
       meta.exec = { command: params.exec.command };
     }
     if (params.handoffFrom) meta.handoffFrom = { ...params.handoffFrom };
+    if (params.paneAccount) meta.paneAccount = { vendor: params.paneAccount.vendor };
     if (params.supervision) {
       // Own copy — meta is persisted via buildState and must not alias
       // caller-held objects (recovery replays the persisted blob verbatim).

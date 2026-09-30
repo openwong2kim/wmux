@@ -7,6 +7,7 @@ import type { TranscriptPage, TranscriptStatus } from '../../../shared/transcrip
 import { ChatSendReceiptStore } from '../ChatSendReceiptStore';
 import { ChatCancelReceiptStore } from '../ChatCancelReceiptStore';
 import { ChatQueueStore } from '../ChatQueue';
+import { withChosenAccountEnv } from '../../phone/paneAccountSpawn';
 import { createChatBridge, QUEUE_WATCH_CLIENT, WEB_BRIDGE_CLIENT, type ChatAgentState, type ChatPane, type NativeChatBridgeDeps } from '../nativeChatBridge';
 import type { TerminalChatAbortOutcome } from '../../transcript/TerminalChatService';
 import { cancelResponse } from '../../web/chatWire';
@@ -423,6 +424,32 @@ describe('launch', () => {
     const f = fixture();
     expect(await f.bridge.launch({ id: 'pane', agent: 'codex', prompt: 'go' })).toMatchObject({ ok: true });
     expect(f.typed).toEqual(["codex --remote unix:///tmp/relay.sock --cd \"$PWD\" -- 'go'\r"]);
+  });
+
+  it('launches the chosen account of a pane created with one, whatever the shell rc exported', async () => {
+    const f = fixture();
+    f.state.pane!.meta.env = { CLAUDE_CONFIG_DIR: "/acct/it's b", CODEX_HOME: '/ws/codex' };
+    f.state.pane!.meta.paneAccount = { vendor: 'claude' };
+    expect(await f.bridge.launch({ id: 'pane', agent: 'claude', prompt: 'go' })).toMatchObject({ ok: true });
+    expect(f.typed).toEqual(["CLAUDE_CONFIG_DIR='/acct/it'\\''s b' claude -- 'go'\r"]);
+    // The other vendor's agent, and a pane with no chosen account, are typed as before.
+    const g = fixture();
+    g.state.pane!.meta.env = { CLAUDE_CONFIG_DIR: '/acct/b' };
+    g.state.pane!.meta.paneAccount = { vendor: 'claude' };
+    expect(await g.bridge.launch({ id: 'pane', agent: 'codex', prompt: 'go' })).toMatchObject({ ok: true });
+    expect(g.typed).toEqual(["codex --remote unix:///tmp/relay.sock --cd \"$PWD\" -- 'go'\r"]);
+    const h = fixture();
+    h.state.pane!.meta.env = { CLAUDE_CONFIG_DIR: '/ws/claude' };
+    expect(await h.bridge.launch({ id: 'pane', agent: 'claude', prompt: 'go' })).toMatchObject({ ok: true });
+    expect(h.typed).toEqual(["claude -- 'go'\r"]);
+  });
+
+  it('a typed account prefix survives an rc export in a real shell', async () => {
+    if (process.platform === 'win32') return;
+    const { execFileSync } = await import('node:child_process');
+    // The agent reads its own environment: stand in for it with a child that prints it.
+    const command = withChosenAccountEnv(`/bin/sh -c 'printf %s "$CODEX_HOME"'`, { env: { CODEX_HOME: "/acct/c'x" }, paneAccount: { vendor: 'codex' } }, 'codex');
+    expect(execFileSync('/bin/sh', ['-c', `export CODEX_HOME=/from-rc; ${command}`]).toString()).toBe("/acct/c'x");
   });
 
   it('names each refusal', async () => {

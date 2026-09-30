@@ -1,5 +1,5 @@
 import { isAccessibleDir, type AccountStore } from '../account/accountStore';
-import { PANE_ACCOUNT_ENV_KEY, type AccountEnvForAccountResult } from '../../shared/phonePaneAccount';
+import { PANE_ACCOUNT_ENV_KEY, parsePaneAccountFields, type AccountEnvForAccountResult } from '../../shared/phonePaneAccount';
 import type { AccountUsageService } from '../account/AccountUsageService';
 
 interface AccountDeps {
@@ -37,9 +37,9 @@ export async function handlePhoneAccounts(command: string, payload: Record<strin
     // One pane's account: resolved here from the desktop registry, never from
     // a path the phone sent. Read-only: the workspace binding is not touched.
     // Refusals are answers, not errors, so the daemon can tell them apart.
-    const accountId = payload.accountId;
-    const account = typeof accountId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(accountId) &&
-      !['__proto__','constructor','prototype'].includes(accountId) ? store.getAccount(accountId) : undefined;
+    // The same shared id rule the daemon parsed the request with.
+    const parsed = parsePaneAccountFields({accountId:payload.accountId,workspaceId});
+    const account = parsed.ok && parsed.value.accountId ? store.getAccount(parsed.value.accountId) : undefined;
     let result: AccountEnvForAccountResult;
     if (!account) result = {ok:false,error:'unknown-account'};
     else if (!isAccessibleDir(account.configDir)) result = {ok:false,error:'account-directory-missing'};

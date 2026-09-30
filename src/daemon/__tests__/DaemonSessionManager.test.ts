@@ -1232,10 +1232,12 @@ describe('DaemonSessionManager', () => {
         env: { WMUX_WORKSPACE_ID: 'ws-1', CLAUDE_CONFIG_DIR: os.tmpdir(), CODEX_HOME: gone },
         exec: { command: 'claude' },
         handoffFrom: lineage,
+        paneAccount: { vendor: 'claude' },
       });
       expect(lastMockPty?.spawnArgs).toEqual(['-lc', `export CLAUDE_CONFIG_DIR='${os.tmpdir()}'; claude`]);
       expect(session.exec).toEqual({ command: 'claude' });
       expect(session.handoffFrom).toEqual(lineage);
+      expect(session.paneAccount).toEqual({ vendor: 'claude' });
       expect(session.env.CODEX_HOME).toBeUndefined();
     });
 

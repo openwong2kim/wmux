@@ -15,7 +15,7 @@ import { buildAgentLaunch, installedAgentLaunchOptions, pinnedAgentLaunch } from
 import { agentExecEnv } from '../shared/execEnv';
 import { workspaceAccountEnv } from './phone/workspaceAccountEnv';
 import { applyPaneAccount, assertPaneAccountUsable } from './phone/paneAccount';
-import type { StoredHandoffFrom } from '../shared/phonePaneAccount';
+import type { PaneAccountVendor, StoredHandoffFrom } from '../shared/phonePaneAccount';
 import { DesktopPhoneBridge } from './phone/DesktopPhoneBridge';
 import { RunHistoryStore } from './history/RunHistoryStore';
 import { AutomationEngine } from './automation/AutomationEngine';
@@ -1916,6 +1916,7 @@ async function recoverSessions(
         managed.meta.codexRelayResume = persisted.codexRelayResume;
       }
       if (persisted.handoffFrom && !managed.meta.handoffFrom) managed.meta.handoffFrom = persisted.handoffFrom;
+      if (persisted.paneAccount && !managed.meta.paneAccount) managed.meta.paneAccount = persisted.paneAccount;
     }
     // Build combined state: recovered (live) sessions + everything we
     // intentionally left untouched (originally-dead within TTL, plus
@@ -2055,6 +2056,7 @@ async function restartSupervisedSession(
     if (meta.lastDetectedAgent && !fresh.meta.lastDetectedAgent) fresh.meta.lastDetectedAgent = meta.lastDetectedAgent;
     if (meta.codexRelayResume && !fresh.meta.codexRelayResume) fresh.meta.codexRelayResume = meta.codexRelayResume;
     if (meta.handoffFrom && !fresh.meta.handoffFrom) fresh.meta.handoffFrom = meta.handoffFrom;
+    if (meta.paneAccount && !fresh.meta.paneAccount) fresh.meta.paneAccount = meta.paneAccount;
   }
 
   // Same external-death safety net as the create/recovery paths.
@@ -2127,7 +2129,7 @@ function registerRpcHandlers(
   // (see sessionLifecycle below). A phone-spawned pane must be the same kind of
   // object as a GUI-spawned one — process-monitored, supervised, persisted,
   // snapshotted — and the only way to guarantee that is for both to run this.
-  const createSessionRpc = async (params: Record<string, unknown>, local?: {execLaunchCommand?:string;handoffFrom?:StoredHandoffFrom}): Promise<unknown> => {
+  const createSessionRpc = async (params: Record<string, unknown>, local?: {execLaunchCommand?:string;handoffFrom?:StoredHandoffFrom;paneAccount?:{vendor:PaneAccountVendor}}): Promise<unknown> => {
     // B′ auto-replace (Codex #1): shutdown() snapshots the managed-session
     // list once, so a session created AFTER that snapshot would be disposed
     // without any durable suspended record — silent data loss. shutdown()
@@ -2164,6 +2166,7 @@ function registerRpcHandlers(
       exec: p.exec,
       execLaunchCommand: local?.execLaunchCommand,
       ...(local?.handoffFrom ? { handoffFrom: local.handoffFrom } : {}),
+      ...(local?.paneAccount ? { paneAccount: local.paneAccount } : {}),
       supervision: p.supervision
         ? {
             restart: p.supervision.restart,
@@ -2367,6 +2370,8 @@ function registerRpcHandlers(
           // Lineage is on the meta from the moment the session exists, so the
           // first hook of the new pane already carries it.
           ...(handoffFrom ? {handoffFrom} : {}),
+          // Which vendor's key is the pane's own choice: chat/launch re-applies it.
+          ...(account ? {paneAccount:{vendor:account.vendor}} : {}),
         });
         if (relay) {
           const managed = sessionManager.getSession(id);
@@ -2878,6 +2883,7 @@ function registerRpcHandlers(
       if (promotedSession) {
         // Lineage is where the pane came from, not a resume offer: kept either way.
         if (session.handoffFrom && !promotedSession.meta.handoffFrom) promotedSession.meta.handoffFrom = session.handoffFrom;
+        if (session.paneAccount && !promotedSession.meta.paneAccount) promotedSession.meta.paneAccount = session.paneAccount;
         // A fresh start drops the binding outright. It names a conversation in
         // the directory that no longer exists, and the pane did not resume it —
         // keeping it would leave the pane advertising a resume offer for a

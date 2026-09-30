@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { ENV_KEYS } from '../../shared/constants';
+import { PANE_ACCOUNT_ENV_KEY, type PaneAccountVendor } from '../../shared/phonePaneAccount';
 
 const ACCOUNT_KEYS = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME'] as const;
 const PHONE_PANE_ID = /^web-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -38,6 +39,27 @@ export function dropMissingAccountDirs(id: string, env: Record<string, string>, 
 }
 
 const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+const pinnable = (value: string | undefined): value is string => typeof value === 'string' && value !== '' && !value.includes('\0');
+
+/**
+ * `chat/launch` types the agent into the pane's interactive shell, whose rc
+ * files may export another account over the pane's environment. For a pane
+ * created with a chosen account (`paneAccount`), the launch of that vendor's
+ * agent carries the account's key as a one-command assignment prefix
+ * (`KEY='dir' claude …`), which zsh, bash and sh (the only shells a launch is
+ * typed into) apply to the agent alone. Every other pane, and the other
+ * vendor's agent, is typed exactly as before.
+ */
+export function withChosenAccountEnv(
+  command: string,
+  meta: { env: Record<string, string>; paneAccount?: { vendor: PaneAccountVendor } },
+  agent: PaneAccountVendor,
+): string {
+  if (meta.paneAccount?.vendor !== agent) return command;
+  const key = PANE_ACCOUNT_ENV_KEY[agent];
+  const dir = meta.env[key];
+  return pinnable(dir) ? `${key}=${shellQuote(dir)} ${command}` : command;
+}
 
 /**
  * An exec unit runs `$SHELL -lc '<command>'`, and a login profile may export
@@ -52,7 +74,7 @@ export function pinAccountEnv(id: string, shellPath: string, command: string, en
   const stem = (shellPath.split(/[\\/]/).pop() ?? '').toLowerCase().replace(/^-/, '');
   if (!POSIX_STEMS.has(stem)) return command;
   const pins = ACCOUNT_KEYS
-    .filter((key) => typeof env[key] === 'string' && env[key] !== '' && !env[key].includes('\0'))
+    .filter((key) => pinnable(env[key]))
     .map((key) => `${key}=${shellQuote(env[key])}`);
   return pins.length ? `export ${pins.join(' ')}; ${command}` : command;
 }

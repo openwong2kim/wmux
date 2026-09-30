@@ -9,7 +9,7 @@ import type { GateConfig } from './approvals/gateConfig';
 import type { PhoneDecisionsConfig } from './approvals/decisionConfig';
 import type { NotifySinkConfig } from './push/WebhookSink';
 import type { PushPresenceSuppressionConfig } from './push/presence';
-import type { StoredHandoffFrom } from '../shared/phonePaneAccount';
+import type { PaneAccountVendor, StoredHandoffFrom } from '../shared/phonePaneAccount';
 
 /** Session lifecycle state */
 export type DaemonSessionState = 'detached' | 'attached' | 'dead' | 'suspended';
@@ -144,6 +144,12 @@ export interface DaemonSession {
    * recovery. Absent on every other pane.
    */
   handoffFrom?: StoredHandoffFrom;
+  /**
+   * The vendor of the account chosen for this pane at `POST /api/sessions`
+   * (its directory is in `env`). Absent for every other pane, including one
+   * that runs on the workspace binding. Carried across recovery.
+   */
+  paneAccount?: { vendor: PaneAccountVendor };
 }
 
 /** Top-level schema for ~/.wmux/sessions.json */
