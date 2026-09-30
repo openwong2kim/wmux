@@ -211,6 +211,13 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
     const svc = service({ addGit: async () => ({ ok: false, ran: true, code: 128, stdout: '', stderr: 'fatal: no space' }) });
     expect((await create(svc, repo, 'nospace')).receipt).toMatchObject({ state: 'refused', error: 'git-operation-failed' });
     expect(fs.existsSync(path.join(wmuxDir, 'worktrees', projectId(repo)))).toBe(false);
+    // Git failed the checkout and kept only the branch it had just made: that
+    // untouched branch is dropped, so the answer is a plain refusal.
+    const branchOnly = service({
+      addGit: async () => { run(repo, 'branch', 'phone/objects', 'HEAD'); return { ok: false, ran: true, code: 128, stdout: '', stderr: 'fatal: missing object' }; },
+    });
+    expect((await create(branchOnly, repo, 'objects')).receipt).toMatchObject({ state: 'refused', error: 'git-operation-failed' });
+    expect(branches(repo)).toEqual([]);
   });
 
   it('reads an interrupted add that left anything behind as unknown, and a repeat recovers it', async () => {

@@ -376,10 +376,18 @@ export class PhoneWorktreeService {
     // The add ran (or was killed) and did not finish cleanly. Only when it
     // left nothing behind is this a refusal; otherwise the outcome is unknown
     // and a repeat of the same request recovers it.
-    const leftovers = made1.ok || await fs.promises.lstat(dir).then(() => true, () => false) ||
-      ((await listWorktrees(this.git, cwd).catch(() => null)) ?? []).some((w) => path.resolve(w.path) === dir);
-    if (leftovers) return { state: 'unknown', error: 'git-outcome-unknown' };
-    await this.removeEmpty(made);
+    const dirLeft = await fs.promises.lstat(dir).then(() => true, () => false);
+    const registered = ((await listWorktrees(this.git, cwd).catch(() => null)) ?? []).some((w) => path.resolve(w.path) === dir);
+    let branchLeft = made1.ok;
+    // Git answered with a failure and removed its checkout, keeping only the
+    // branch it had just created (e.g. objects it may not fetch): that branch
+    // is untouched and ours, so drop it and report a plain refusal.
+    if (add.ran !== false && !dirLeft && !registered && branchLeft && await this.dropUntouchedBranch(cwd, config, branchRef, base)) {
+      branchLeft = false;
+    }
+    // Directories made for this job go again whenever they are still empty.
+    if (!dirLeft) await this.removeEmpty(made);
+    if (branchLeft || dirLeft || registered) return { state: 'unknown', error: 'git-outcome-unknown' };
     throw new Refusal('git-operation-failed');
   }
 
@@ -414,13 +422,19 @@ export class PhoneWorktreeService {
       worktrees = (await listWorktrees(this.git, cwd)) ?? [];
     }
     const tip = await this.read(cwd, config, 'rev-parse', '--verify', '-q', branchRef);
-    if (tip.ok && !worktrees.some((w) => w.branch === branch)) {
-      const log = await this.read(cwd, config, 'reflog', 'show', '--format=%H', branchRef, '--');
-      const entries = log.ok ? log.stdout.split('\n').filter(Boolean) : [];
-      if (entries.length === 1 && entries[0] === tip.stdout.trim()) {
-        await this.read(cwd, config, 'update-ref', '-d', branchRef, tip.stdout.trim());
-      }
-    }
+    if (tip.ok && !worktrees.some((w) => w.branch === branch)) await this.dropUntouchedBranch(cwd, config, branchRef, tip.stdout.trim());
     return null;
+  }
+
+  /**
+   * Delete `ref` only if it still points at `oid` and its reflog holds the
+   * single entry of its creation: a branch nobody has moved since. Compare
+   * and swap, so a concurrent update wins.
+   */
+  private async dropUntouchedBranch(cwd: string, config: readonly string[], ref: string, oid: string): Promise<boolean> {
+    const log = await this.read(cwd, config, 'reflog', 'show', '--format=%H', ref, '--');
+    const entries = log.ok ? log.stdout.split('\n').filter(Boolean) : [];
+    if (entries.length !== 1 || entries[0] !== oid) return false;
+    return (await this.read(cwd, config, 'update-ref', '-d', ref, oid)).ok;
   }
 }

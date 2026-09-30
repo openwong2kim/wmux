@@ -4508,7 +4508,10 @@ finish cleanly (it failed, was killed by the 120 s bound or a signal, or the
 daemon stopped), the daemon looks at what is there. Nothing left (no
 `phone/<slug>` branch, no directory, no registered worktree) is `refused`
 with `git-operation-failed`, and no empty `<projectId>` directory is left
-behind. Anything left is `unknown` with `git-outcome-unknown`. Repeating the
+behind; when git itself failed the checkout and kept only the branch it had
+just created, untouched, that branch is removed and this is the same
+refusal (a partial clone missing objects is one such case: nothing is
+fetched). Anything left is `unknown` with `git-outcome-unknown`. Repeating the
 same POST then recovers:
 
 - a finished, clean checkout of `phone/<slug>` at the directory is adopted:
