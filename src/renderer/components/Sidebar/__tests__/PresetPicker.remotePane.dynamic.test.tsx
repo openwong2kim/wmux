@@ -11,7 +11,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
-import { act, createElement, Fragment, useState } from 'react';
+import { act, createElement, Fragment, useEffect, useState } from 'react';
 import PresetPicker from '../PresetPicker';
 import { EmptyLeafFunnel } from '../../Layout/EmptyLeafFunnel';
 import { useStore } from '../../../stores';
@@ -76,10 +76,13 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 
 /** Hosts the picker the way Titlebar, Sidebar and MiniSidebar do
  *  (`{pickerOpen && <PresetPicker onClose={closePicker} />}`): closing it
- *  unmounts it. A bare vi.fn() onClose would keep it mounted after every way
- *  out, which is not a state the app can be in. */
+ *  unmounts it, and clicking the same + again opens a fresh picker under the
+ *  SAME open state (`reopenPicker`). A bare vi.fn() onClose would keep it
+ *  mounted after every way out, which is not a state the app can be in. */
+let reopenPicker: () => void = () => undefined;
 function PickerHost({ onClose }: { onClose: () => void }) {
   const [open, setOpen] = useState(true);
+  useEffect(() => { reopenPicker = () => setOpen(true); });
   return open
     ? createElement(PresetPicker, { onClose: () => { onClose(); setOpen(false); } })
     : null;
@@ -310,6 +313,50 @@ describe('PresetPicker — local vs. remote for a new pane (#1323)', () => {
     // The session already exists on the host; nothing else would ever reap it.
     expect(sessionClose).toHaveBeenCalledTimes(1);
     expect(sessionClose).toHaveBeenCalledWith('host-1', 'sess-late');
+  });
+
+  // Found in the live dogfood: the dismissed picker's modal still calls
+  // onClose after its late onCreated, and onClose is the PARENT's — one open
+  // state per + button. Reopening the same + and retrying, the cancelled
+  // answer used to close the retry's picker mid-mint, which then threw the
+  // retry's own session away too.
+  it('a retry from the same + is not closed by the cancelled request’s late answer', async () => {
+    const cancelled = deferred<{ ok: true; sessionId: string }>();
+    const retried = deferred<{ ok: true; sessionId: string }>();
+    workspaceCreate = vi.fn()
+      .mockImplementationOnce(() => cancelled.promise)
+      .mockImplementationOnce(() => retried.promise);
+    installBridge(() => Promise.resolve([HOST]));
+
+    mountPicker();
+    await flush();
+    await pickHost();
+    act(() => pressEscape());
+    await flush();
+
+    // The same + again: the same open state brings up a fresh picker.
+    act(() => reopenPicker());
+    await flush();
+    await pickHost();
+    expect(workspaceCreate).toHaveBeenCalledTimes(2);
+
+    await act(async () => cancelled.resolve({ ok: true, sessionId: 'sess-cancelled' }));
+    await flush();
+    // The retry's dialog is still up, waiting on its own answer.
+    expect(container.querySelector('.ui-dialog')).not.toBeNull();
+
+    await act(async () => retried.resolve({ ok: true, sessionId: 'sess-retry' }));
+    await flush();
+
+    const state = useStore.getState();
+    expect(state.workspaces).toHaveLength(2);
+    const created = state.workspaces[1];
+    expect(state.activeWorkspaceId).toBe(created.id);
+    if (created.rootPane.type !== 'leaf') throw new Error('expected a single leaf');
+    expect(created.rootPane.surfaces.map((s) => s.remoteSessionId)).toEqual(['sess-retry']);
+    expect(sessionClose).toHaveBeenCalledTimes(1);
+    expect(sessionClose).toHaveBeenCalledWith('host-1', 'sess-cancelled');
+    expect(container.querySelector('.ui-dialog')).toBeNull();
   });
 
   it('a retry after a cancelled mint ends with one workspace, holding the retry’s session', async () => {

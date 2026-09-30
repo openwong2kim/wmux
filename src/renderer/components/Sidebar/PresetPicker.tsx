@@ -84,6 +84,14 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
     }
     createWorkspaceWithRemotePane(useStore.getState, destroyRemoteSessions, { hostId, sessionId, remoteWorkspaceId });
   }, []);
+  // After a late onCreated the modal calls onClose too, and onClose is the
+  // parent's: one open state per + button. A dismissed picker's call would
+  // close the picker the user has since reopened from the same + — mid-retry,
+  // which would then throw the retry's own session away. Once dismissed, this
+  // picker's modal closes nothing.
+  const handleRemotePaneClose = useCallback(() => {
+    if (!dismissedRef.current) onClose();
+  }, [onClose]);
 
   const handleSelect = useCallback((presetId: string | null) => {
     if (presetId === null) {
@@ -140,7 +148,7 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
     return (
       <AddRemotePaneModal
         title={t('sidebar.emptyRemote')}
-        onClose={onClose}
+        onClose={handleRemotePaneClose}
         onCreated={handleRemotePaneCreated}
       />
     );
