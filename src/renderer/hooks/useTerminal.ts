@@ -2,6 +2,7 @@ import { createOsc8LinkHandler } from '../terminal/osc8LinkHandler';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { FixedGeometryFitAddon, type FixedGeometry } from '../terminal/fixedGeometryFit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
@@ -708,6 +709,14 @@ interface UseTerminalOptions {
    * future embed is dead-key-safe until it opts in.
    */
   ownsComposeShortcut?: boolean;
+  /**
+   * The pane's grid is owned elsewhere (wmux web mirrors a desktop pane, and
+   * the daemon answers any other viewer's resize with `409 desk-owns-size`).
+   * When set, the grid is pinned to these cols/rows, the font size is fitted
+   * to the container instead of the grid, and `pty.resize` is never called.
+   * Absent (the desktop) → the normal fit, unchanged.
+   */
+  fixedGeometry?: FixedGeometry | null;
 }
 
 export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>, options: UseTerminalOptions) {
@@ -758,6 +767,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const { ptyId, isVisible = true, scrollbackFile, onFirstData, onContextMenu, ownsComposeShortcut = false } = options;
   const ptyIdRef = useRef(ptyId);
   ptyIdRef.current = ptyId;
+  const fixedGeometryRef = useRef<FixedGeometry | null>(options.fixedGeometry ?? null);
+  fixedGeometryRef.current = options.fixedGeometry ?? null;
+  const fixedCols = options.fixedGeometry?.cols;
+  const fixedRows = options.fixedGeometry?.rows;
   // Live visibility for long-lived callbacks (the burst repaint below) — the
   // closure value captured at mount would go stale across workspace switches.
   const isVisibleRef = useRef(isVisible);
@@ -819,6 +832,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   //   • "not found" — the session was swapped/disposed mid-resize; the main
   //     pty:resize handler already retries-then-logs this, so we swallow it.
   const sendResize = useCallback((targetPtyId: string, cols: number, rows: number) => {
+    // The grid belongs to someone else (see `fixedGeometry`): never resize the
+    // PTY. Gated here, not at the callers, so no fit path can get around it.
+    if (fixedGeometryRef.current) return;
     window.electronAPI.pty.resize(targetPtyId, cols, rows).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes('rate limited')) return; // not-found / other: handled upstream
@@ -1135,6 +1151,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     console.log(`[wmux:pane-adopt] ptyId=${ptyId} mount=${adopted ? 'adopted' : 'fresh'}`);
 
     const terminal = adopted ? adopted.terminal : new Terminal({
+      // A fixed grid is applied at construction, before the first byte of the
+      // pane's screen is parsed — a TUI frame parsed at 80x24 and reflowed
+      // later is not repaired by any resize.
+      ...(fixedGeometryRef.current ? { cols: fixedGeometryRef.current.cols, rows: fixedGeometryRef.current.rows } : {}),
       cursorBlink: true,
       cursorStyle: terminalCursorStyle,
       fontSize: terminalFontSize,
@@ -1200,7 +1220,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // in-flight replay cannot become live-authorized during that handoff.
     replayMuteRef.current = getTerminalReplayMute(terminal);
 
-    const fitAddon = new FitAddon();
+    const fitAddon = fixedGeometryRef.current
+      ? new FixedGeometryFitAddon(() => fixedGeometryRef.current)
+      : new FitAddon();
     const searchAddon = new SearchAddon();
     // Smart link routing (X3): localhost URLs open in the embedded browser
     // pane, external ones in the system browser; Ctrl/Cmd+click inverts. The
@@ -3104,6 +3126,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     }
     fitAddonRef.current?.fit();
   }, [terminalFontSize, terminalFontFamily, terminalCursorStyle, xtermTheme, minimumContrastRatio, containerRef]);
+
+  // `fixedGeometry`: the owner resized the pane — re-pin the grid and refit
+  // the font. Never runs without the option.
+  useEffect(() => {
+    if (fixedCols === undefined || fixedRows === undefined) return;
+    fit();
+  }, [fixedCols, fixedRows, fit]);
 
   // Manage WebGL lifecycle based on visibility.
   // Load WebGL when visible (GPU-accelerated rendering), dispose when hidden
