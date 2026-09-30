@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createElectronApiShim, ElectronApiDeniedError } from '../electronApiShim';
 import { platformFromNavigator, webElectronApiImpl } from '../webElectronApi';
 
@@ -40,7 +40,7 @@ describe('deny-by-default electronAPI shim', () => {
     expect(platformFromNavigator({ userAgent: 'x', platform: 'Win32' })).toBe('win32');
     expect(platformFromNavigator({ userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' })).toBe('linux');
     expect(Object.keys(webElectronApiImpl({ userAgent: 'x', language: 'en' })).sort())
-      .toEqual(['browser', 'events', 'platform', 'systemLocale', 'windowsBuildNumber']);
+      .toEqual(['browser', 'daemon', 'events', 'platform', 'pty', 'systemLocale', 'windowsBuildNumber']);
   });
 
   it('returns the same node for the same path', () => {
@@ -60,6 +60,25 @@ describe('deny-by-default electronAPI shim', () => {
     process.off('unhandledRejection', onUnhandled);
     expect(unhandled).toEqual([]);
     expect(denied).toEqual(['shell.openExternal']);
+  });
+
+  it('pty: forwards the stream/input members to the bridge, denies create/dispose/promote/resize', async () => {
+    const denied: string[] = [];
+    const holder: { bridge?: Record<string, (...args: unknown[]) => unknown> } = {};
+    const api = createElectronApiShim(webElectronApiImpl({ userAgent: 'x', language: 'en' }, () => holder.bridge), (p) => denied.push(p)) as AnyApi;
+    // Before the bundle publishes the bridge: subscriptions are inert, calls reject (handled).
+    expect(typeof api.pty.onData(() => undefined)).toBe('function');
+    await expect(api.pty.list()).rejects.toThrow('not ready');
+    const write = vi.fn(async () => undefined);
+    holder.bridge = { write, list: async () => [{ id: 'a' }] };
+    await api.pty.write('a', 'x');
+    expect(write).toHaveBeenCalledWith('a', 'x');
+    expect(await api.pty.list()).toEqual([{ id: 'a' }]);
+    expect(typeof api.daemon.onConnected(() => undefined)).toBe('function');
+    for (const m of ['create', 'dispose', 'promote', 'resize', 'cancelCreate']) {
+      await expect(api.pty[m]('a')).rejects.toBeInstanceOf(ElectronApiDeniedError);
+    }
+    expect(denied).toEqual(['pty.create', 'pty.dispose', 'pty.promote', 'pty.resize', 'pty.cancelCreate']);
   });
 
   it('swallows the desktop EventBus announcements a tap makes, sending nothing', () => {

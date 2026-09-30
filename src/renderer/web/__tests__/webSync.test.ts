@@ -44,7 +44,8 @@ describe('startWebSync', () => {
       startWebSync({ token: 't', fetchImpl, intervalMs: 100, onUnauthorized });
       await vi.advanceTimersByTimeAsync(500);
       expect(onUnauthorized).toHaveBeenCalledTimes(1);
-      expect(fetchImpl.mock.calls.length).toBe(2);
+      // The two GETs run one after the other; a refusal ends the poll at the first.
+      expect(fetchImpl.mock.calls.length).toBe(1);
     }
   });
 
@@ -61,7 +62,8 @@ describe('startWebSync', () => {
     await vi.advanceTimersByTimeAsync(1050);
     expect(signals[0].aborted).toBe(true);
     await vi.advanceTimersByTimeAsync(150);
-    expect(fetchImpl.mock.calls.length).toBe(4);
+    // One GET per poll got as far as hanging: the next poll still started.
+    expect(fetchImpl.mock.calls.length).toBe(2);
     // Stopping cancels the request in flight.
     stop();
     await flush();

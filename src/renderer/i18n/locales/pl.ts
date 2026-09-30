@@ -165,6 +165,9 @@ export const pl = {
   // App lifecycle
   'app.restoringPanes': 'Przywracanie paneli…',
   'web.surfacePlaceholder': 'Jeszcze niewidoczne w przeglądarce',
+  'web.streamWaiting': 'Wstrzymano: na żywo jest {count} paneli',
+  'web.streamShow': 'Pokaż na żywo',
+  'web.streamConnecting': 'Łączenie…',
 
   // Common
   'common.cancel': 'Anuluj',

@@ -76,7 +76,9 @@ beforeAll(async () => {
     root.render(<WebApp />);
   });
   await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
-});
+  // The import above pulls in the whole pane tree, terminal included; on a
+  // loaded machine that alone can pass the default 10 s hook budget.
+}, 30_000);
 
 afterAll(() => {
   stop();

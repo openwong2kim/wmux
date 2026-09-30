@@ -2,6 +2,9 @@ export const zh = {
   // App lifecycle
   'app.restoringPanes': '正在恢复面板…',
   'web.surfacePlaceholder': '浏览器中暂不显示',
+  'web.streamWaiting': '已暂停：已有 {count} 个实时窗格',
+  'web.streamShow': '实时显示',
+  'web.streamConnecting': '正在连接…',
 
   // Common
   'common.cancel': '取消',

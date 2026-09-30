@@ -150,6 +150,9 @@ export const en = {
   // App lifecycle
   'app.restoringPanes': 'Restoring panes…',
   'web.surfacePlaceholder': 'Not shown in the browser yet',
+  'web.streamWaiting': 'Paused: {count} panes are live',
+  'web.streamShow': 'Show live',
+  'web.streamConnecting': 'Connecting…',
 
   // Common
   'common.cancel': 'Cancel',

@@ -150,6 +150,9 @@ export const ko = {
   // App lifecycle
   'app.restoringPanes': '패널 복원 중…',
   'web.surfacePlaceholder': '브라우저에서는 아직 표시되지 않습니다',
+  'web.streamWaiting': '일시 정지: 실시간 창 {count}개 사용 중',
+  'web.streamShow': '실시간으로 보기',
+  'web.streamConnecting': '연결 중…',
 
   // Common
   'common.undo': '되돌리기',

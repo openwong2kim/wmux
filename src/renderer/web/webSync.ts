@@ -25,8 +25,10 @@ export interface WebSyncOptions {
   fetchImpl?: typeof fetch;
   intervalMs?: number;
   timeoutMs?: number;
-  /** Called when the daemon refuses the credential (401/403); the pairing flow lives on `/`. */
+  /** Called when the daemon refuses the credential (401/403); the pairing flow lives on the classic page. */
   onUnauthorized: () => void;
+  /** Every successful poll's `/api/sessions` rows (pane geometry for the terminals), before the store updates. */
+  onSessions?: (rows: ReadonlyArray<{ id: string; cols?: unknown; rows?: unknown }>) => void;
 }
 
 class Refused extends Error {}
@@ -53,17 +55,19 @@ export function startWebSync(opts: WebSyncOptions): () => void {
     inflight = ctl;
     const timeout = setTimeout(() => ctl.abort(), opts.timeoutMs ?? WEB_POLL_TIMEOUT_MS);
     try {
-      const [wsText, sessText] = await Promise.all([
-        get('/api/workspaces', ctl.signal),
-        get('/api/sessions', ctl.signal),
-      ]);
+      // One after the other: up to four live pane streams already hold four of
+      // the browser's six connections to this origin, and typing needs one.
+      const wsText = await get('/api/workspaces', ctl.signal);
+      const sessText = await get('/api/sessions', ctl.signal);
       if (stopped) return;
       const text = `${wsText}\n${sessText}`;
       if (text === lastText) return;
+      const sessionsReply = JSON.parse(sessText) as WebSessionsReply;
+      if (Array.isArray(sessionsReply.sessions)) opts.onSessions?.(sessionsReply.sessions);
       const store = useStore.getState();
       const { state, server } = hydrateWebState({
         workspacesReply: JSON.parse(wsText) as WebWorkspacesReply,
-        sessionsReply: JSON.parse(sessText) as WebSessionsReply,
+        sessionsReply,
         current: {
           workspaces: store.workspaces,
           activeWorkspaceId: store.activeWorkspaceId,
