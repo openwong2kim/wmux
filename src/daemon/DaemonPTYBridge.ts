@@ -608,6 +608,23 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /**
+   * #1671 — the agent's server is gone under a live TUI (a restart): a turn it
+   * was running is over, and a dialog it was waiting on went with it. Nothing
+   * reports either (no Stop hook, no transcript end), so the episode ends here
+   * and the next prompt starts a new one. A pane with no open turn and no
+   * dialog is left as it is.
+   */
+  noteServerLost(): void {
+    if (!this.turnOpen && !this.awaitingHuman) return;
+    if (this.awaitingHuman) {
+      this.awaitingHuman = false;
+      this.awaitingQuestionAt = null;
+      if (this.settledStatus === 'awaiting_input') this.settledStatus = 'waiting';
+    }
+    this.closeTurn();
+  }
+
+  /**
    * Start of the evidence a transcript end must postdate to count for the
    * current state: the last submit/hook, or a later byte-promoted episode.
    */

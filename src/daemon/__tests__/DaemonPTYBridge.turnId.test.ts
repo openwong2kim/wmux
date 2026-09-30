@@ -145,6 +145,34 @@ describe('DaemonPTYBridge — running-episode turn id', () => {
     expect(turn().id).toBe(first);
   });
 
+  it('#1671 — a server that is gone ends the open turn and the dialog it waited on', () => {
+    bridge.noteInput('long task\r');
+    bridge.noteAgentStatus('running', true);
+    vi.advanceTimersByTime(100);
+    feed(BIG);
+    const first = turn();
+    bridge.noteAgentStatus('awaiting_input', true); // an approval the dead server will never resolve
+    expect(turn()).toMatchObject({ id: first.id, state: 'running' });
+    bridge.noteServerLost();
+    expect(bridge.isAwaitingHuman()).toBe(false);
+    expect(bridge.getAgentStatus()).not.toBe('awaiting_input');
+    expect(turn()).toMatchObject({ id: first.id, state: 'idle' });
+    bridge.noteInput('try again\r');
+    expect(turn().id).not.toBe(first.id);
+  });
+
+  it('#1671 — a server gone while no turn is open draws no episode boundary', () => {
+    bridge.noteInput('go\r');
+    vi.advanceTimersByTime(100);
+    feed(BIG);
+    const first = turn().id;
+    bridge.noteAgentStatus('complete'); // a detector settle on a hookless pane: may be resumed
+    bridge.noteServerLost();
+    vi.advanceTimersByTime(6100);
+    feed(BIG); // the same work, still painting
+    expect(turn()).toMatchObject({ id: first, state: 'running' });
+  });
+
   it('a detector settle ends the episode only on a pane with no hook reports', () => {
     bridge.noteInput('go\r');
     bridge.noteAgentStatus('running', true); // this pane has hooks

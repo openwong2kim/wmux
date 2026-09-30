@@ -24,9 +24,10 @@ export interface CodexPaneRelayHooks {
   decisionPending?:(id:string,owner:ManagedSession,ref:CodexDecisionRef,request:CodexDecisionRequest)=>void;
   /** A request reported by `decisionPending` is over without `answer`. */
   decisionSettled?:(id:string,ref:CodexDecisionRef,reason:CodexDecisionSettledReason)=>void;
-  /** The account server under pane `id`'s committed TUI went away (a restart):
-   * a turn it was running is over, with no Stop hook or transcript end. */
-  upstreamLost?:(id:string)=>void;
+  /** The account server under pane `id`'s committed TUI is gone (another server
+   * answered after a lost link, or none came back): a turn it was running is
+   * over, with no Stop hook or transcript end. */
+  serverLost?:(id:string)=>void;
 }
 /** One Codex request, keyed by (relay incarnation, thread, server request id). */
 export interface CodexDecisionRef {relayId:string; threadId:string; requestId:string; method?:string}
@@ -87,13 +88,13 @@ export class CodexPaneRelays {
       creation = this.create({codeHome,onStateChange:()=>{
         if (!entry.retired && this.entries.get(id) === entry && entry.owner) this.stateChanged(id,entry.owner);
       },
-      // The account server went away under the TUI: a new relay incarnation,
-      // so no turn or request pinned to the old server link matches any more
-      // (request ids restart on the new link).
-      onUpstreamLost:()=>{
-        if (entry.retired || this.entries.get(id) !== entry) return;
-        entry.relayId = randomUUID();
-        if (entry.owner) try {this.hooks.upstreamLost?.(id);} catch {/* A notice cannot keep the old link. */}
+      // The TUI's server link was lost: a new relay incarnation, so no turn or
+      // request pinned to the old link matches any more (request ids restart
+      // on the new link).
+      onLinkLost:()=>{ if (!entry.retired && this.entries.get(id) === entry) entry.relayId = randomUUID(); },
+      onServerLost:()=>{
+        if (entry.retired || this.entries.get(id) !== entry || !entry.owner) return;
+        try {this.hooks.serverLost?.(id);} catch {/* A notice cannot bring the server back. */}
       },
       ensureUpstream:async()=>{
         if (entry.retired || this.entries.get(id) !== entry) return;
@@ -159,7 +160,8 @@ export class CodexPaneRelays {
       void this.retireEntry(entry);return {live:false};
     }
     const relay = entry.relay;
-    if (!relay || relay.retired()) return {live:false};
+    // A lost server link reads as no live relay until the TUI is linked again.
+    if (!relay || relay.retired() || relay.disconnected()) return {live:false};
     const selected = relay.current();
     return selected ? {live:true,selection:selected} : {live:true};
   }
@@ -175,7 +177,7 @@ export class CodexPaneRelays {
 
   /** Panes whose relay is live and committed to an owner. */
   liveIds():string[] {
-    return [...this.entries.values()].filter(entry=>!entry.retired && !!entry.owner && !!entry.relay && !entry.relay.retired()).map(entry=>entry.id);
+    return [...this.entries.values()].filter(entry=>!entry.retired && !!entry.owner && !!entry.relay && !entry.relay.retired() && !entry.relay.disconnected()).map(entry=>entry.id);
   }
 
   /**

@@ -314,8 +314,8 @@ const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Co
     decisionSettled: (id,ref,reason)=>{
       void approvalRegistry?.expireNative(id,{ adapter: 'codex', ...ref },reason).catch(()=>undefined);
     },
-    upstreamLost: (id)=>{
-      log('info',`[codex-relay] the Codex account server under ${id} went away; the relay waits for the TUI to reconnect`);
+    serverLost: (id)=>{
+      log('info',`[codex-relay] the Codex account server under ${id} is gone; its running turn is over`);
       noteCodexServerLost?.(id);
     },
   });
@@ -7406,11 +7406,10 @@ async function main(): Promise<void> {
       throw new Error('Codex recovery selection could not be persisted');
     }
   };
-  // #1671 — the account server under this pane's Codex went away: a turn it
-  // was running is over, and no Stop hook or transcript end will say so, so
-  // the pane's episode ends here and the next prompt starts a new one.
+  // #1671 — the account server under this pane's Codex is gone: a turn it
+  // was running is over, and no Stop hook or transcript end will say so.
   noteCodexServerLost = (id) => {
-    sessionManager.getSession(id)?.bridge.noteTranscriptTurnEnd(Date.now());
+    sessionManager.getSession(id)?.bridge.noteServerLost();
   };
 
   recordHistory(store => store.reconcileLiveSessions(new Set(sessionManager.listLiveSessions().map(s => s.id))));

@@ -103,6 +103,11 @@ export class CodexTuiSelectionTracker {
       ...(typeof thread.path === 'string' && path.isAbsolute(thread.path) && !thread.path.includes('\0') ? {transcriptPath:thread.path} : {})};
   }
 
+  /** The TUI's connection ended: a selection request it left unanswered never
+   * will be, and the next connection starts its request ids afresh. The
+   * selection that request cleared stays cleared until the TUI selects again. */
+  connectionEnded():void { this.pending = undefined; }
+
   close():void { this.retired = true; this.invalidate(); }
   private invalidate():void { this.selected = undefined; this.pending = undefined; this.generation++; }
 }

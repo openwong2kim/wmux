@@ -6,11 +6,11 @@ const owner=(id='pane')=>({meta:{id,state:'attached'}} as ManagedSession);
 function relay() {
   // `active`: the running turn the pane's stream reported; `complete` plays
   // that stream's `turn/completed`.
-  const state = {retired:false,selected:true,active:undefined as string|undefined,ended:new Map<string,string>(),
+  const state = {retired:false,disconnected:false,selected:true,active:undefined as string|undefined,ended:new Map<string,string>(),
     waiters:new Set<{turnId:string;resolve:(status:string|undefined)=>void}>()};
   return {url:'unix:///private/socket',state,
     current:()=>state.selected ? {threadId:'thread',cwd:'/repo',generation:1} : undefined,
-    retired:()=>state.retired,close:vi.fn(async()=> { /* noop */ }),
+    retired:()=>state.retired,disconnected:()=>state.disconnected,close:vi.fn(async()=> { /* noop */ }),
     answer:vi.fn(async(_threadId:string,_requestId:string,_decision:'accept'|'cancel'):Promise<'ok'|'not-found'|'unavailable'>=>'ok'),
     activeTurn:(_threadId:string)=>state.active,
     turnEnded:(_threadId:string,turnId:string)=>state.ended.get(turnId),
@@ -325,14 +325,13 @@ describe('Codex pane relay native interrupt',()=>{
     await registry.shutdown();
   });
 });
-describe('Codex pane relay after the account server restarts (#1671)',()=>{
-  it('starts a new relay incarnation: nothing pinned to the old server link matches, and the runtime is ensured on a failed re-dial',async()=>{
+describe('Codex pane relay after a lost server link (#1671)',()=>{
+  it('starts a new relay incarnation on a lost link, reads as not live until relinked, and reports a gone server once',async()=>{
     let options:RelayOptions|undefined;const connection=relay();
-    const pending=vi.fn();const settled=vi.fn();
+    const pending=vi.fn();const settled=vi.fn();const serverLost=vi.fn();
     const runtime=vi.fn(async(_id:string,_codeHome?:string)=> { /* the runtime start */ });
-    const serverLost=vi.fn();
     const registry=new CodexPaneRelays((async(o:RelayOptions)=>{options=o;return connection;}) as unknown as typeof createCodexTuiRelay,undefined,undefined,
-      {ensureRuntime:runtime,decisionPending:pending,decisionSettled:settled,upstreamLost:serverLost});
+      {ensureRuntime:runtime,decisionPending:pending,decisionSettled:settled,serverLost});
     const lease=await registry.prepare('pane','/h/.codex');const pane=owner();lease.commit(pane);
     options!.policy!.recordOwner('thread');
     options!.policy!.decisionPending?.('0',{method:'item/commandExecution/requestApproval',threadId:'thread',question:'Run?',toolName:'command'});
@@ -343,26 +342,34 @@ describe('Codex pane relay after the account server restarts (#1671)',()=>{
     // The relay settles the old link's requests under the old incarnation, then reports the loss.
     options!.policy!.decisionSettled?.('0','thread','pane-gone');
     expect(settled).toHaveBeenCalledWith('pane',{relayId:ref.relayId,threadId:'thread',requestId:'0'},'pane-gone');
-    options!.onUpstreamLost?.();
-    // The pane's own episode is told the turn is over (no Stop hook comes for it).
-    expect(serverLost).toHaveBeenCalledExactlyOnceWith('pane');
+    connection.state.disconnected=true;
+    options!.onLinkLost?.();
+    // Disconnected: no live relay, so no account status, no native cancel, no selection authority.
+    expect(registry.liveSelection('pane',pane)).toEqual({live:false});
+    expect(registry.accountHome('pane',pane)).toBeUndefined();
+    expect(registry.activeTurn('pane',pane)).toBeUndefined();
+    expect(registry.liveIds()).toEqual([]);
+    expect(serverLost).not.toHaveBeenCalled();
+    // Relinked to the same server: its turn is live again, under the new incarnation.
+    connection.state.disconnected=false;
+    expect(registry.accountHome('pane',pane)).toBe('/h/.codex');
     expect(registry.stillRunning('pane',pane,aimed)).toBe(false);
     await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:50})).resolves.toMatchObject({outcome:'not-written'});
     await expect(registry.answer(ref,'approve')).resolves.toBe('not-found');
     expect(connection.interrupt).not.toHaveBeenCalled();
     expect(connection.answer).not.toHaveBeenCalled();
-    // Same pane, same relay: a turn on the new server is aimed at the new incarnation.
     const now=registry.activeTurn('pane',pane)!;
     expect(now.relayId).not.toBe(aimed.relayId);
     expect(registry.stillRunning('pane',pane,now)).toBe(true);
-    // Account status keeps its server scope.
-    expect(registry.accountHome('pane',pane)).toBe('/h/.codex');
+    // A gone server is reported for the committed pane.
+    options!.onServerLost?.();
+    expect(serverLost).toHaveBeenCalledExactlyOnceWith('pane');
     await options!.ensureUpstream?.();
     expect(runtime).toHaveBeenCalledWith('pane','/h/.codex');
     await registry.shutdown();
-    // A retired entry neither rotates nor starts anything.
+    // A retired entry neither reports nor starts anything.
     runtime.mockClear();serverLost.mockClear();
-    options!.onUpstreamLost?.();
+    options!.onLinkLost?.();options!.onServerLost?.();
     await options!.ensureUpstream?.();
     expect(runtime).not.toHaveBeenCalled();
     expect(serverLost).not.toHaveBeenCalled();
