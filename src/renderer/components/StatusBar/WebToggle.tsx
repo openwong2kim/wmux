@@ -26,7 +26,7 @@ import Input from '../ui/Input';
 import Badge from '../ui/Badge';
 import { DECK_ICON_BUTTON, deckIconTone } from '../Deck/deckIconStyles';
 import PairedDevicesModal from './PairedDevicesModal';
-import PhoneConnectWizard from './PhoneConnectWizard';
+import PhoneConnectWizard, { type WizardSession } from './PhoneConnectWizard';
 import OtherComputersSection from './OtherComputersSection';
 import AttachRemoteModal from '../Sidebar/AttachRemoteModal';
 import { useStore } from '../../stores';
@@ -897,6 +897,10 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
    * controls (stop, grants, revoke) and a link into the wizard.
    */
   const [view, setView] = useState<'auto' | 'hub' | 'wizard'>('auto');
+  /** Both reads made on THIS open have landed; `auto` decides only then. */
+  const [openReadDone, setOpenReadDone] = useState(false);
+  /** The wizard's pairing in progress. Outlives the popover closing. */
+  const wizardSession = useRef<WizardSession | null>(null);
   const [now, setNow] = useState(() => Date.now());
   /**
    * Drop the grant once the code it belonged to has been redeemed.
@@ -1007,22 +1011,45 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   // tailnet front (a deliberate act by the operator); the polls after it do not.
   useEffect(() => {
     if (!open) return;
-    void refresh(true);
-    void refreshDevices();
+    let current = true;
+    setOpenReadDone(false);
+    void Promise.all([refresh(true), refreshDevices()]).then(() => {
+      if (current) setOpenReadDone(true);
+    });
     const timer = setInterval(() => {
       void refresh();
       void refreshDevices();
     }, POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
+    return () => {
+      current = false;
+      clearInterval(timer);
+    };
   }, [open, refresh, refreshDevices]);
+
+  // Every way the popover closes (toggle, outside click, Escape, a host
+  // handed to the attach dialog) lands here, so the next open decides again.
+  useEffect(() => {
+    if (!open) setView('auto');
+  }, [open]);
 
   // Needs the diagnose bridge: an older preload without it keeps the hub.
   const canWizard = typeof api?.diagnose === 'function';
   useEffect(() => {
-    if (!open || view !== 'auto' || devices === null) return;
-    const empty = summarizeRoster(devices).total === 0;
-    setView(canWizard && empty && pendingPairFlow(info) !== 'computer' ? 'wizard' : 'hub');
-  }, [open, view, devices, canWizard, info]);
+    if (!open || view !== 'auto') return;
+    if (!canWizard) {
+      setView('hub');
+      return;
+    }
+    // Decide on what is true NOW, not on what the roster was when the popover
+    // last closed: a phone may have paired in between.
+    if (!openReadDone) return;
+    if (wizardSession.current) {
+      setView('wizard');
+      return;
+    }
+    const empty = devices !== null && summarizeRoster(devices).total === 0;
+    setView(empty && pendingPairFlow(info) !== 'computer' ? 'wizard' : 'hub');
+  }, [open, view, devices, canWizard, info, openReadDone]);
 
   // The computer link's countdown. Ticks only while the popover is open and a
   // computer code is live; at zero it re-reads status, which shows the
@@ -1142,7 +1169,6 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
         // control.
         setAnchorTop(Math.max(8, Math.min(r.bottom + 4, window.innerHeight - 8 - POPOVER_MAX_HEIGHT)));
       }
-      setView('auto');
     }
     setOpen(!open);
   }, [open]);
@@ -1417,7 +1443,11 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
           } as CSSProperties}
           className="fixed z-50 w-72 overflow-y-auto"
         >
-          {view === 'wizard' ? (
+          {view === 'auto' && canWizard ? (
+            <p className="ui-note" role="status">
+              {t('web.devicesLoading')}
+            </p>
+          ) : view === 'wizard' ? (
             <PhoneConnectWizard
               info={info}
               onInfo={applyInfo}
@@ -1427,6 +1457,7 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
               copied={copied}
               onCopyPairUrl={handleCopyPairUrl}
               onCopyPairCode={handleCopyPairCode}
+              session={wizardSession}
               t={t}
             />
           ) : (

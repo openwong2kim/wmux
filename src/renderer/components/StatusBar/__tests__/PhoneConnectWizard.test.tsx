@@ -8,12 +8,13 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   PhoneWizardView,
-  findNewDevice,
-  liveDeviceIds,
+  codeIsLive,
+  findPairedDevice,
+  sharedImpacts,
   wizardReadiness,
   type PhoneWizardViewProps,
 } from '../PhoneConnectWizard';
-import { DEVICE_ACTIVE_WINDOW_MS, type WebDeviceSummary, type WebDiagnosis } from '../../../../shared/web';
+import type { WebDeviceSummary, WebDiagnosis } from '../../../../shared/web';
 
 const t = (key: string): string => key;
 const NOW = 1_800_000_000_000;
@@ -54,23 +55,53 @@ describe('wizardReadiness', () => {
   });
 });
 
-describe('findNewDevice', () => {
-  const baseline = liveDeviceIds([device('a'), device('gone', { revokedAt: NOW - 5 })]);
+describe('pairing follows the code', () => {
+  it('codeIsLive: only the running phone code under this name', () => {
+    const live = { running: true, pairCode: 'AB', pendingDeviceName: 'p', pendingPairFlow: 'phone' as const };
+    expect(codeIsLive(live, 'p')).toBe(true);
+    expect(codeIsLive({ ...live, pendingDeviceName: undefined }, 'p')).toBe(false);
+    expect(codeIsLive({ ...live, pendingPairFlow: 'computer' }, 'p')).toBe(false);
+    expect(codeIsLive({ ...live, running: false }, 'p')).toBe(false);
+  });
 
-  it('baseline holds live devices only', () => {
-    expect([...baseline]).toEqual(['a']);
+  it('findPairedDevice: the newest live device with the name, minted after the code', () => {
+    const since = NOW - 500;
+    const older = device('old', { name: 'p', createdAt: NOW - 10_000 });
+    const mine = device('new', { name: 'p', createdAt: NOW });
+    const other = device('x', { name: 'q', createdAt: NOW });
+    expect(findPairedDevice([older, other, mine], 'p', since)?.deviceId).toBe('new');
+    expect(findPairedDevice([older, other], 'p', since)).toBeNull();
+    expect(findPairedDevice([{ ...mine, revokedAt: NOW }], 'p', since)).toBeNull();
   });
-  it('a device outside the baseline, seen recently, is the new phone', () => {
-    expect(findNewDevice([device('a'), device('b')], baseline, NOW)?.deviceId).toBe('b');
+});
+
+describe('sharedImpacts', () => {
+  const typing = device('a', { allowInput: true });
+  const quiet = device('b', { allowInput: false });
+
+  it('raising input counts devices already allowed to type (legacy records included upstream)', () => {
+    const info = { running: true, allowInput: false, allowUpload: false };
+    expect(sharedImpacts(info, [typing, quiet], true, false)).toEqual([{ key: 'web.wizardInputRaiseWarn', count: 1 }]);
   });
-  it('an old or revoked record is not', () => {
-    const stale = device('c', { lastSeenAt: NOW - DEVICE_ACTIVE_WINDOW_MS - 1 });
-    const revoked = device('d', { revokedAt: NOW });
-    expect(findNewDevice([device('a'), stale, revoked], baseline, NOW)).toBeNull();
+  it('running with nobody else paired still warns about the access link', () => {
+    expect(sharedImpacts({ running: true, allowInput: false }, [], true, false)).toEqual([
+      { key: 'web.wizardInputRaiseWarn', count: 0 },
+    ]);
   });
-  it('activeNow counts even when lastSeenAt lags', () => {
-    const live = device('e', { lastSeenAt: 0, activeNow: true });
-    expect(findNewDevice([live], baseline, NOW)?.deviceId).toBe('e');
+  it('view only, or input already on: nothing to confirm', () => {
+    expect(sharedImpacts({ running: true, allowInput: false }, [typing], false, false)).toEqual([]);
+    expect(sharedImpacts({ running: true, allowInput: true }, [typing], true, false)).toEqual([]);
+  });
+  it('upload in either direction reaches every live device', () => {
+    const on = { running: true, allowInput: true, allowUpload: true };
+    expect(sharedImpacts(on, [typing, quiet], false, false)).toEqual([{ key: 'web.wizardUploadOffWarn', count: 2 }]);
+    const off = { running: true, allowInput: true, allowUpload: false };
+    expect(sharedImpacts(off, [typing], false, true)).toEqual([{ key: 'web.wizardUploadOnWarn', count: 1 }]);
+  });
+  it('an unreadable roster warns with an unknown count rather than staying silent', () => {
+    expect(sharedImpacts({ running: true, allowInput: false }, null, true, false)).toEqual([
+      { key: 'web.wizardInputRaiseWarn', count: null },
+    ]);
   });
 });
 
@@ -88,6 +119,10 @@ function render(over: Partial<PhoneWizardViewProps>): string {
     copied: null,
     connected: null,
     devices: [],
+    impacts: [],
+    acknowledged: false,
+    onToggleAcknowledged: vi.fn(),
+    notice: null,
     onRetry: vi.fn(),
     onNext: vi.fn(),
     onBack: vi.fn(),
@@ -155,11 +190,33 @@ describe('PhoneWizardView', () => {
     expect(html).toContain('web.wizardWaiting');
   });
 
-  it('step 3 with the named code gone: no stray code, a way to mint a new one', () => {
+  it('step 3 with the named code gone: no stray code while the watcher settles it', () => {
     const html = render({ step: 'qr', info: { running: true, pairCode: 'UNNAMED1', urls: ['https://box.example.ts.net/'] } });
     expect(html).not.toContain('UNNAMED1');
-    expect(html).toContain('web.pairSpent');
-    expect(html).toContain('web.newPairCode');
+    expect(html).toContain('web.devicesLoading');
+  });
+
+  it('step 2 with a server-wide effect: the warning, and no way on until confirmed', () => {
+    const impacts = [{ key: 'web.wizardInputRaiseWarn' as const, count: 2 }];
+    const blocked = render({ step: 'permissions', name: 'p', impacts });
+    expect(blocked).toContain('data-testid="wizard-impacts"');
+    expect(blocked).toContain('web.wizardConfirmShared');
+    expect(blocked).toMatch(/<button[^>]*disabled=""[^>]*>web\.wizardShowQr/);
+    const confirmed = render({ step: 'permissions', name: 'p', impacts, acknowledged: true });
+    expect(confirmed).not.toMatch(/<button[^>]*disabled=""[^>]*>web\.wizardShowQr/);
+  });
+
+  it('step 2 while busy: the access picker cannot change under the request', () => {
+    const html = render({ step: 'permissions', name: 'p', busy: true });
+    expect(html.match(/role="radio"[^>]*aria-disabled="true"/g)?.length).toBe(2);
+  });
+
+  it('step 1 while sharing behind a tailnet front that tailscale reports broken: a warning', () => {
+    const web = { running: true, tailscale: true, urls: ['https://box.example.ts.net/'] };
+    const html = render({ diagnosis: { tailscale: tsBad, web } });
+    expect(html).toContain('web.wizardAlreadySharing');
+    expect(html).toContain('web.wizardTailscaleWarn');
+    expect(html).toContain('needs the Tailscale CLI');
   });
 
   it('step 4: the named device and the roster, with Done as primary', () => {

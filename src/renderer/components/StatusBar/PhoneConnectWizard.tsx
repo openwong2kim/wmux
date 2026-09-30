@@ -10,7 +10,6 @@ import Input from '../ui/Input';
 import SegmentedControl from '../ui/SegmentedControl';
 import { DEVICE_NAME_MAX, PhonePairCode, splitLinkedLine, webQrPayload, type CopyTarget } from './WebToggle';
 import {
-  DEVICE_ACTIVE_WINDOW_MS,
   webComputerPairOrigin,
   type WebDeviceSummary,
   type WebDiagnosis,
@@ -29,8 +28,15 @@ import {
 export type WizardStep = 'check' | 'permissions' | 'qr' | 'done';
 const STEP_NUMBER: Record<WizardStep, number> = { check: 1, permissions: 2, qr: 3, done: 4 };
 
-/** How often the roster is re-read while the QR is on screen. */
-const DEVICE_POLL_MS = 2_000;
+/** How often the pairing is re-read while the QR is on screen. */
+const PAIR_POLL_MS = 2_000;
+
+/**
+ * Ticks a consumed code may go without its device showing on the roster
+ * before the wizard calls it lapsed: the daemon burns the code BEFORE it
+ * writes the device, so one read can land in between.
+ */
+const MISSING_DEVICE_TICKS = 3;
 
 /** A steel text link (DESIGN.md: steel is for focus rings and links). */
 const LINK = `text-[11px] leading-4 text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`;
@@ -56,30 +62,88 @@ export function wizardReadiness(d: WebDiagnosis): Readiness {
   return d.tailscale.ok ? 'ready' : 'tailscale';
 }
 
-/** Live (unrevoked) device ids, the baseline a new arrival is measured against. */
-export function liveDeviceIds(devices: readonly WebDeviceSummary[]): Set<string> {
-  return new Set(devices.filter((d) => d.revokedAt === undefined).map((d) => d.deviceId));
+/**
+ * The pairing this wizard started. Held by the popover (a ref that outlives
+ * this component) so closing and reopening the popover mid-scan picks the
+ * same pairing back up instead of stranding it.
+ */
+export interface WizardSession {
+  /** The name the code registers — also how the new device is recognised. */
+  name: string;
+  /** The per-device grant the code was minted with. New codes reuse it. */
+  remote: boolean;
+  /** When the code was minted; a matching device must be newer than this. */
+  mintedAt: number;
+  /**
+   * Server-wide grants the wizard changed for this pairing, with the values
+   * to put back if it is abandoned before a phone connects.
+   */
+  restore: WebGrantArgs;
+}
+
+/** Whether `info` still holds the live phone code for `name`. */
+export function codeIsLive(info: WebTerminalInfo, name: string): boolean {
+  return (
+    info.running === true &&
+    typeof info.pairCode === 'string' &&
+    info.pairCode !== '' &&
+    info.pendingDeviceName === name &&
+    info.pendingPairFlow !== 'computer'
+  );
 }
 
 /**
- * The device that paired since `baseline` was taken, or null.
+ * The device this pairing's code registered, or null.
  *
- * "Recent" as well as "new": a device the daemon reports but that has not been
- * seen within the active window is not the phone in the operator's hand.
+ * Keyed on the CODE, not on a roster diff: once the code is consumed, the
+ * device it minted carries the pending name and was created after the mint.
+ * An older device with the same name is not it.
  */
-export function findNewDevice(
+export function findPairedDevice(
   devices: readonly WebDeviceSummary[],
-  baseline: ReadonlySet<string>,
-  now: number = Date.now(),
+  name: string,
+  since: number,
 ): WebDeviceSummary | null {
-  return (
-    devices.find(
-      (d) =>
-        !baseline.has(d.deviceId) &&
-        d.revokedAt === undefined &&
-        (d.activeNow === true || now - d.lastSeenAt < DEVICE_ACTIVE_WINDOW_MS),
-    ) ?? null
-  );
+  const matches = devices
+    .filter((d) => d.revokedAt === undefined && d.name === name && d.createdAt >= since)
+    .sort((a, b) => b.createdAt - a.createdAt);
+  return matches[0] ?? null;
+}
+
+/** A server-wide change the chosen permissions make, and who else it reaches. */
+export interface SharedImpact {
+  key: 'web.wizardInputRaiseWarn' | 'web.wizardUploadOnWarn' | 'web.wizardUploadOffWarn';
+  /** Other paired devices it reaches; null when the roster could not be read. */
+  count: number | null;
+}
+
+/**
+ * What Remote control and the upload box change for EVERYONE, not just this
+ * phone. Input and upload are server-wide ceilings, so raising input lets
+ * every device whose own grant is on (records written before per-device
+ * grants count as on) — and anyone with the full access link — type, and the
+ * upload box is shared by every paired device in both directions.
+ */
+export function sharedImpacts(
+  info: WebTerminalInfo,
+  roster: readonly WebDeviceSummary[] | null,
+  remote: boolean,
+  upload: boolean,
+): SharedImpact[] {
+  const live = roster ? roster.filter((d) => d.revokedAt === undefined) : null;
+  const out: SharedImpact[] = [];
+  const inputOn = info.running === true && info.allowInput === true;
+  if (remote && !inputOn) {
+    const typing = live ? live.filter((d) => d.allowInput).length : null;
+    // Running: the token link can already be open somewhere, so say so even
+    // with no paired device.
+    if (typing !== 0 || info.running === true) out.push({ key: 'web.wizardInputRaiseWarn', count: typing });
+  }
+  const uploadOn = info.running === true && info.allowUpload === true;
+  if (upload !== uploadOn && (live === null || live.length > 0)) {
+    out.push({ key: upload ? 'web.wizardUploadOnWarn' : 'web.wizardUploadOffWarn', count: live ? live.length : null });
+  }
+  return out;
 }
 
 // ─── Presentational view ───────────────────────────────────────────────────
@@ -99,6 +163,13 @@ export interface PhoneWizardViewProps {
   copied: CopyTarget;
   connected: WebDeviceSummary | null;
   devices: readonly WebDeviceSummary[];
+  /** Server-wide effects of the current choices (step 2). */
+  impacts: readonly SharedImpact[];
+  /** Whether the operator confirmed those effects. */
+  acknowledged: boolean;
+  onToggleAcknowledged: () => void;
+  /** A one-line note carried into a step (e.g. a pairing that lapsed). */
+  notice: string | null;
   onRetry: () => void;
   onNext: () => void;
   onBack: () => void;
@@ -193,6 +264,17 @@ export function PhoneWizardView(p: PhoneWizardViewProps) {
               onOpenLink={p.onOpenLink}
             />
           ) : null}
+          {/* Running behind a tailnet front while tailscale itself reports a
+              problem: the address may reach nothing, so say it, don't bury it. */}
+          {readiness === 'shared' &&
+          p.diagnosis &&
+          p.diagnosis.web.tailscale === true &&
+          !p.diagnosis.tailscale.ok ? (
+            <>
+              <p className="ui-note">{t('web.wizardTailscaleWarn')}</p>
+              <Lines lines={p.diagnosis.tailscale.lines} onOpenLink={p.onOpenLink} />
+            </>
+          ) : null}
         </PopoverSection>
         {footer(
           ok ? (
@@ -210,7 +292,7 @@ export function PhoneWizardView(p: PhoneWizardViewProps) {
   }
 
   if (p.step === 'permissions') {
-    const canGo = p.name.trim().length > 0 && !p.busy;
+    const canGo = p.name.trim().length > 0 && !p.busy && (p.impacts.length === 0 || p.acknowledged);
     return (
       <>
         <PopoverSection title={t('web.connectPhone')} action={header}>
@@ -218,8 +300,8 @@ export function PhoneWizardView(p: PhoneWizardViewProps) {
           <SegmentedControl<'view' | 'remote'>
             value={p.remote ? 'remote' : 'view'}
             options={[
-              { value: 'view', label: t('web.wizardViewOnly') },
-              { value: 'remote', label: t('web.wizardRemoteControl') },
+              { value: 'view', label: t('web.wizardViewOnly'), disabled: p.busy },
+              { value: 'remote', label: t('web.wizardRemoteControl'), disabled: p.busy },
             ]}
             onValueChange={(v) => p.onRemoteChange(v === 'remote')}
             ariaLabel={t('web.phoneAccess')}
@@ -243,9 +325,30 @@ export function PhoneWizardView(p: PhoneWizardViewProps) {
             }}
             placeholder={t('web.namePlaceholder')}
             maxLength={DEVICE_NAME_MAX}
+            disabled={p.busy}
             aria-label={t('web.nameHint')}
             className="w-full text-[13px]"
           />
+          {p.impacts.length > 0 ? (
+            <div className="ui-notice flex flex-col gap-2 px-3 py-2.5" data-testid="wizard-impacts">
+              {p.impacts.map((impact) => (
+                <p key={impact.key} className="ui-note flex gap-1.5">
+                  <span className="mt-0.5 shrink-0 text-[var(--accent-yellow)]" aria-hidden="true">
+                    <IconWarning size={11} />
+                  </span>
+                  <span>{t(impact.key).replace('{count}', impact.count === null ? '?' : String(impact.count))}</span>
+                </p>
+              ))}
+              <Field label={t('web.wizardConfirmShared')}>
+                <Checkbox
+                  checked={p.acknowledged}
+                  disabled={p.busy}
+                  onCheckedChange={() => p.onToggleAcknowledged()}
+                />
+              </Field>
+            </div>
+          ) : null}
+          {p.notice ? <p className="ui-note">{p.notice}</p> : null}
           {p.errorLines.length > 0 ? <Lines lines={p.errorLines} onOpenLink={p.onOpenLink} /> : null}
         </PopoverSection>
         {footer(
@@ -282,15 +385,12 @@ export function PhoneWizardView(p: PhoneWizardViewProps) {
               t={t}
             />
           ) : (
-            // The named code is gone (redeemed elsewhere, expired, or the
-            // server restarted): never show a code that registers nobody.
-            <>
-              <p className="ui-note">{t('web.pairSpent')}</p>
-              <Button size="sm" onClick={p.onNewPairCode} disabled={p.busy} className="self-start">
-                {t('web.newPairCode')}
-              </Button>
-            </>
+            // The named code is no longer live: the watcher is finding out
+            // whether it became this phone or lapsed. Never show a code that
+            // registers nobody meanwhile.
+            <p className="ui-note">{t('web.devicesLoading')}</p>
           )}
+          {p.errorLines.length > 0 ? <Lines lines={p.errorLines} onOpenLink={p.onOpenLink} /> : null}
           <p className="ui-note flex items-center gap-1.5" role="status">
             <span aria-hidden="true" className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--accent)]" />
             <span>{t('web.wizardWaiting')}</span>
@@ -378,8 +478,12 @@ export interface PhoneConnectWizardProps {
   copied: CopyTarget;
   onCopyPairUrl: () => void;
   onCopyPairCode: () => void;
+  /** The pairing in progress, owned by the popover so it survives a close. */
+  session: { current: WizardSession | null };
   t: (key: string) => string;
 }
+
+const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 export default function PhoneConnectWizard({
   info,
@@ -390,23 +494,25 @@ export default function PhoneConnectWizard({
   copied,
   onCopyPairUrl,
   onCopyPairCode,
+  session,
   t,
 }: PhoneConnectWizardProps) {
   const api = (typeof window === 'undefined' ? undefined : window.electronAPI?.web) as WebApi | undefined;
-  // Reopened while a phone code is live: go straight back to the scan.
-  const [step, setStep] = useState<WizardStep>(() =>
-    info.pairCode && info.pendingDeviceName && info.pendingPairFlow !== 'computer' ? 'qr' : 'check',
-  );
+  // A pairing still in progress (the popover was closed mid-scan): go back to
+  // the scan, where the watcher settles whether the phone arrived meanwhile.
+  const [step, setStep] = useState<WizardStep>(() => (session.current ? 'qr' : 'check'));
   const [diagnosis, setDiagnosis] = useState<WebDiagnosis | null>(null);
   const [busy, setBusy] = useState(false);
-  const [remote, setRemote] = useState(info.pendingDeviceAllowInput === true);
-  /** null = untouched: the server keeps (or inherits) its own value. */
-  const [upload, setUpload] = useState<boolean | null>(null);
+  const [remote, setRemote] = useState(false);
+  /** Seeded from the running server; always sent as an explicit boolean. */
+  const [upload, setUpload] = useState(() => info.running && info.allowUpload === true);
   const [name, setName] = useState('');
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [roster, setRoster] = useState<WebDeviceSummary[] | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [errorLines, setErrorLines] = useState<string[]>([]);
   const [devices, setDevices] = useState<WebDeviceSummary[]>([]);
   const [connected, setConnected] = useState<WebDeviceSummary | null>(null);
-  const baseline = useRef<Set<string> | null>(null);
 
   const checking = useRef(false);
   const runCheck = useCallback(async () => {
@@ -439,28 +545,86 @@ export default function PhoneConnectWizard({
     }
   }, [api]);
 
+  // Step 2 needs the roster to say who else a server-wide change reaches.
+  useEffect(() => {
+    if (step !== 'permissions') return;
+    let live = true;
+    void readRoster().then((r) => {
+      if (live) setRoster(r);
+    });
+    return () => {
+      live = false;
+    };
+  }, [step, readRoster]);
+
+  const impacts = useMemo(() => sharedImpacts(info, roster, remote, upload), [info, roster, remote, upload]);
+  // A confirmation covers the choices it was given for, not later ones.
+  useEffect(() => setAcknowledged(false), [remote, upload]);
+
+  /** Put back what this pairing changed server-wide. Best effort. */
+  const restoreGrants = useCallback(
+    async (restore: WebGrantArgs) => {
+      if (!api?.setGrants || Object.keys(restore).length === 0) return;
+      try {
+        onInfo(await api.setGrants(restore));
+      } catch {
+        /* the hub still shows the live values; nothing else to do here */
+      }
+    },
+    [api, onInfo],
+  );
+
+  /** End the pairing without a phone: burn the code, then restore grants. */
+  const abandon = useCallback(
+    async (cancelCode: boolean) => {
+      const s = session.current;
+      session.current = null;
+      if (cancelCode && api?.pairCancel) {
+        try {
+          onInfo(await api.pairCancel());
+        } catch {
+          /* restoring still matters more than the code */
+        }
+      }
+      if (s) await restoreGrants(s.restore);
+    },
+    [api, onInfo, restoreGrants, session],
+  );
+
   const handleConnect = useCallback(async () => {
     const trimmed = name.trim();
     if (!api || !trimmed) return;
     setBusy(true);
     setErrorLines([]);
+    setNotice(null);
+    const restore: WebGrantArgs = {};
+    let minted = false;
     try {
       // Look again first, like the hub's Start: the popover may be a poll behind.
       let current = await api.status();
       if (!current.running) {
-        const args: WebStartArgs = { tailscale: true, allowInput: remote, ...(upload !== null ? { allowUpload: upload } : {}) };
+        // Every grant the screen shows is sent as shown, so nothing the
+        // operator did not see is inherited from an earlier run.
+        const args: WebStartArgs = { tailscale: true, allowInput: remote, allowUpload: upload };
         current = await api.start(args);
         onInfo(current);
         if (!current.running) {
           setErrorLines(current.transportError?.lines ?? (current.error ? [current.error] : []));
           return;
         }
+        if (remote) restore.allowInput = false;
       } else {
-        // Raise, never lower: view-only for THIS phone must not take typing
-        // away from phones already paired with it.
+        // Raise input, never lower it: view-only for THIS phone must not
+        // take typing away from phones already paired.
         const grants: WebGrantArgs = {};
-        if (remote && current.allowInput !== true) grants.allowInput = true;
-        if (upload !== null && upload !== (current.allowUpload === true)) grants.allowUpload = upload;
+        if (remote && current.allowInput !== true) {
+          grants.allowInput = true;
+          restore.allowInput = false;
+        }
+        if (upload !== (current.allowUpload === true)) {
+          grants.allowUpload = upload;
+          restore.allowUpload = current.allowUpload === true;
+        }
         if (Object.keys(grants).length > 0 && api.setGrants) {
           current = await api.setGrants(grants);
           onInfo(current);
@@ -470,70 +634,105 @@ export default function PhoneConnectWizard({
           }
         }
       }
-      const roster = await readRoster();
-      baseline.current = roster ? liveDeviceIds(roster) : null;
-      const minted = await api.pairStart(trimmed, remote, 'phone');
-      onInfo(minted);
-      if (minted.pairStartError) {
-        setErrorLines([minted.pairStartError]);
+      const mintedAt = Date.now();
+      const res = await api.pairStart(trimmed, remote, 'phone');
+      onInfo(res);
+      if (res.pairStartError || !codeIsLive(res, trimmed)) {
+        setErrorLines([res.pairStartError ?? res.error ?? t('web.wizardCheckFailed')]);
         return;
       }
+      session.current = { name: trimmed, remote, mintedAt, restore };
+      minted = true;
       setStep('qr');
+    } catch (err) {
+      setErrorLines([errorText(err)]);
     } finally {
+      if (!minted) await restoreGrants(restore);
       setBusy(false);
     }
-  }, [api, name, remote, upload, onInfo, readRoster]);
+  }, [api, name, remote, upload, onInfo, restoreGrants, session, t]);
 
-  // Watch the roster while the QR is up. A device that was not in the
-  // baseline and has been seen recently is the phone that just scanned.
+  // While the QR is up, follow the CODE: as long as the daemon still holds it
+  // under this name, keep waiting; once it is gone, the device it minted is
+  // the phone — or, if none shows up, the pairing lapsed and whatever the
+  // wizard widened goes back.
+  const missing = useRef(0);
   useEffect(() => {
-    if (step !== 'qr') return;
+    if (step !== 'qr' || !api) return;
     let stopped = false;
+    missing.current = 0;
     const tick = async () => {
-      const roster = await readRoster();
-      if (stopped || !roster) return;
-      // Reopened mid-scan, or the first read failed: the baseline starts here.
-      if (baseline.current === null) {
-        baseline.current = liveDeviceIds(roster);
+      const s = session.current;
+      if (!s) return;
+      let status: WebTerminalInfo;
+      try {
+        status = await api.status();
+      } catch {
         return;
       }
-      const fresh = findNewDevice(roster, baseline.current);
-      if (fresh) {
-        setDevices(roster);
-        setConnected(fresh);
+      if (stopped) return;
+      onInfo(status);
+      if (codeIsLive(status, s.name)) return;
+      const list = await readRoster();
+      if (stopped || session.current !== s) return;
+      const device = list ? findPairedDevice(list, s.name, s.mintedAt) : null;
+      if (device && list) {
+        session.current = null;
+        setDevices(list);
+        setConnected(device);
         setStep('done');
+        return;
       }
+      if (list === null || ++missing.current < MISSING_DEVICE_TICKS) return;
+      await abandon(false);
+      if (stopped) return;
+      setNotice(t('web.wizardCodeLapsed'));
+      setStep('permissions');
     };
     void tick();
-    const timer = setInterval(() => void tick(), DEVICE_POLL_MS);
+    const timer = setInterval(() => void tick(), PAIR_POLL_MS);
     return () => {
       stopped = true;
       clearInterval(timer);
     };
-  }, [step, readRoster]);
+  }, [step, api, onInfo, readRoster, abandon, session, t]);
 
-  // Same code, same name, same grant — "New code" must not quietly register
-  // a view-only phone after "Remote control" was chosen.
+  // Same name, same CONFIRMED grant — not whatever the (disabled) picker says.
   const handleNewPairCode = useCallback(async () => {
-    const pending = (info.pendingDeviceName ?? name).trim();
-    if (!api || !pending) return;
+    const s = session.current;
+    if (!api || !s) return;
     setBusy(true);
+    setErrorLines([]);
     try {
-      onInfo(await api.pairStart(pending, remote, 'phone'));
+      const res = await api.pairStart(s.name, s.remote, 'phone');
+      onInfo(res);
+      if (res.pairStartError) setErrorLines([res.pairStartError]);
+    } catch (err) {
+      setErrorLines([errorText(err)]);
     } finally {
       setBusy(false);
     }
-  }, [api, info.pendingDeviceName, name, remote, onInfo]);
+  }, [api, onInfo, session]);
 
   const handleCancel = useCallback(async () => {
     setBusy(true);
+    setErrorLines([]);
     try {
-      if (api?.pairCancel) onInfo(await api.pairCancel());
+      await abandon(true);
       setStep('permissions');
+    } catch (err) {
+      setErrorLines([errorText(err)]);
     } finally {
       setBusy(false);
     }
-  }, [api, onInfo]);
+  }, [abandon]);
+
+  // Leaving from the scan abandons the pairing, so a widened grant never
+  // outlives the reason it was widened.
+  const handleExit = useCallback(async () => {
+    if (step === 'qr' && session.current) await abandon(true);
+    onExit();
+  }, [step, session, abandon, onExit]);
 
   const qrPayload = webQrPayload(info);
   const qr = useMemo(() => buildQrPath(qrPayload), [qrPayload]);
@@ -545,18 +744,22 @@ export default function PhoneConnectWizard({
       diagnosis={diagnosis}
       busy={busy}
       remote={remote}
-      upload={upload ?? (info.running && info.allowUpload === true)}
+      upload={upload}
       name={name}
       errorLines={errorLines}
       qr={qr}
       copied={copied}
       connected={connected}
       devices={devices}
+      impacts={impacts}
+      acknowledged={acknowledged}
+      onToggleAcknowledged={() => setAcknowledged((v) => !v)}
+      notice={notice}
       onRetry={() => void runCheck()}
       onNext={() => setStep('permissions')}
       onBack={() => setStep('check')}
       onRemoteChange={setRemote}
-      onToggleUpload={() => setUpload((v) => !(v ?? (info.running && info.allowUpload === true)))}
+      onToggleUpload={() => setUpload((v) => !v)}
       onNameChange={(v) => setName(v.slice(0, DEVICE_NAME_MAX))}
       onConnect={() => void handleConnect()}
       onCancel={() => void handleCancel()}
@@ -566,12 +769,17 @@ export default function PhoneConnectWizard({
       onOpenLink={onOpenLink}
       onOpenDevices={onOpenDevices}
       onAnother={() => {
+        // A fresh decision for the next phone: nothing carries over.
         setConnected(null);
         setName('');
+        setRemote(false);
+        setUpload(info.running && info.allowUpload === true);
+        setNotice(null);
+        setErrorLines([]);
         setDiagnosis(null);
         setStep('check');
       }}
-      onExit={onExit}
+      onExit={() => void handleExit()}
       t={t}
     />
   );

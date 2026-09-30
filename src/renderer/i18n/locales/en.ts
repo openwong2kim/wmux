@@ -988,6 +988,12 @@ export const en = {
   'web.wizardConnected': '“{name}” is connected.',
   'web.wizardDone': 'Done',
   'web.wizardAnother': 'Connect another phone',
+  'web.wizardInputRaiseWarn': 'Input turns on for this whole computer: {count} paired device(s) already allowed to type, and anyone holding the full access link, will be able to type too.',
+  'web.wizardUploadOnWarn': 'Upload is shared by every paired device: {count} other device(s) will also be able to send files.',
+  'web.wizardUploadOffWarn': 'Upload is shared by every paired device: {count} other device(s) will no longer be able to send files.',
+  'web.wizardConfirmShared': 'I understand this also changes access for other devices',
+  'web.wizardTailscaleWarn': 'Sharing is on, but Tailscale reports a problem, so the phone may not reach this computer:',
+  'web.wizardCodeLapsed': 'The code was used or cancelled before this phone connected. Any access the wizard turned on was put back.',
   'web.daemonOffline': 'wmux web needs the background daemon, which is not running.',
 
   // Settings

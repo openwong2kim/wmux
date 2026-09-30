@@ -978,6 +978,12 @@ export const pl = {
   'web.wizardConnected': '„{name}” jest połączony.',
   'web.wizardDone': 'Gotowe',
   'web.wizardAnother': 'Połącz kolejny telefon',
+  'web.wizardInputRaiseWarn': 'Wprowadzanie zostanie włączone dla całego komputera: {count} sparowanych urządzeń z prawem pisania oraz każdy z pełnym linkiem dostępu też będzie mógł pisać.',
+  'web.wizardUploadOnWarn': 'Przesyłanie jest wspólne dla wszystkich sparowanych urządzeń: {count} innych urządzeń też będzie mogło wysyłać pliki.',
+  'web.wizardUploadOffWarn': 'Przesyłanie jest wspólne dla wszystkich sparowanych urządzeń: {count} innych urządzeń nie będzie już mogło wysyłać plików.',
+  'web.wizardConfirmShared': 'Rozumiem, że zmienia to też dostęp innych urządzeń',
+  'web.wizardTailscaleWarn': 'Udostępnianie jest włączone, ale Tailscale zgłasza problem, więc telefon może nie dotrzeć do tego komputera:',
+  'web.wizardCodeLapsed': 'Kod został użyty lub anulowany, zanim ten telefon się połączył. Dostęp włączony przez kreator został przywrócony.',
   'web.daemonOffline': 'wmux web wymaga demona w tle, który nie jest uruchomiony.',
 
   // Settings
