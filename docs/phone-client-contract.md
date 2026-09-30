@@ -1325,6 +1325,7 @@ v1 paths.
 | --- | --- |
 | `decisionForms` | The form kinds this daemon produces now: any of `permission`, `plan`, `questions`. `plan` while the daemon's `phoneDecisions.stepwise` switch is on (see Plan dialog); `permission` and `questions` (agent-native, OpenCode; see below) while `phoneDecisions.native` is on. Offer a v2 answer only for a kind listed here |
 | `chatCancel` | Whether this caller may use `POST /api/sessions/<id>/chat/cancel` (its input grant) |
+| `chatCancelOutcome` | `true` when `chatCancel` is true and the cancel receipt store loaded; omitted otherwise (never `false`). Advertises `cancel` on the cancel answer, the cancel receipt route and SSE `chat.cancel` (see Chat cancel outcome) |
 | `chatQueue` | Whether this caller's `chat-queue` sends are held by the daemon queue (its input grant, and a queue that loaded) |
 
 **The record.** For a `decision-v2` caller, a record that can still be
@@ -1627,6 +1628,124 @@ the same turn. The Esc once-per-turn latch and cooldown do not apply: an
 abort of a turn that has already ended is simply `turn-not-running`. When
 the abort request left but its answer was lost, the result is 500
 `cancel-failed` with `effect:"uncertain"`, as for a Claude/Codex write.
+
+### Chat cancel outcome
+
+On a daemon that advertises `chatCancelOutcome`, a cancel also reports what
+happened after the write, keyed by the same owner-bound `clientCancelId`.
+Shared types: `src/shared/phoneChatCancelOutcome.ts`.
+
+**Who may cancel.** The daemon has no per-pane owner: control belongs to the
+credential, not to whoever started the turn. A cancel is accepted only when
+**all** of these hold. Each is checked when the headers arrive, again after
+the body, and again immediately before the interrupt is written:
+
+1. the server runs with `--allow-transcript` and `--allow-input`;
+2. the caller may input: the operator token, or a paired, unrevoked device
+   whose own `grants.input` is true;
+3. the pane resolves for the caller (never the orchestrator brain pane, for
+   any credential) and is the same incarnation throughout;
+4. the re-authenticated caller is the same caller (same credential class; for
+   a device, the same device id);
+5. `agentSessionId` (and `historyEpoch` and `turnId` when sent) match the
+   pane's current conversation and running turn.
+
+"Only the turn I started" is **not** a rule the daemon can enforce: send
+receipts do not record which `chat.turn.id` they started. Any caller that may
+control the pane may stop its running turn, as at the keyboard.
+
+**The answer.** `POST …/chat/cancel` is unchanged, and its body stays strict.
+A 202 also carries the cancel's progress:
+
+```json
+"cancel": { "state": "requested", "turnId": "t1:…", "requestedAt": 1758712345123, "at": 1758712345123 }
+```
+
+A replay carries the progress **as it is now** (it may already read `ended`),
+whatever the replay's status; that includes the replay of a 500
+`cancel-failed` (`unknown`, `write-uncertain`). The first 500 itself carries no
+`cancel`: read the receipt.
+
+**The receipt.**
+
+```
+GET /api/sessions/<id>/chat/cancel/<clientCancelId>
+→ 200 {
+    "clientCancelId": "…",
+    "state": "requested" | "ended" | "not-ended" | "unknown" | "none",
+    "turnId": "t1:…",                                   // aimed turn, when known
+    "endedAs": "interrupted" | "completed" | "failed" | "unspecified",   // ended only
+    "evidence": "native" | "transcript" | "screen",     // ended only
+    "reason": "write-uncertain" | "daemon-restart" | "pane-closed" | "session-changed",  // unknown only, when known; open set
+    "requestedAt": 1758712345123,                       // absent after a daemon restart
+    "at": 1758712349000
+  }
+→ 404 {error: "pane-not-found"}
+→ 403 transcript refusal (as `/turns`)
+→ 503 {error: "chat-persist-failed"}   // no receipt store (the key is also omitted)
+```
+
+Owner-bound (a device reads only its own cancels) and pane-bound; needs
+`--allow-transcript`, not input, so a device whose input grant was withdrawn
+still learns what its cancel did. `none` means there is no receipt for this
+owner, pane and id: it was never written, or it was refused (a refusal stores
+nothing).
+
+| `state` | Meaning | Client |
+| --- | --- | --- |
+| `requested` | written; the aimed turn has not been seen to end | keep "Stopping…", poll every 2 s or wait for `chat.cancel` |
+| `ended` | the aimed turn ended after the write | final. `endedAs: "completed"` means it finished on its own first |
+| `not-ended` | still running 15 s after the write | final: it never changes, even if the turn ends later. Re-read `/turns` for the turn's current state; offer Stop again (a new `clientCancelId`) or Terminal |
+| `unknown` | cannot be known | final; check Terminal |
+
+What counts as `ended` today (the Esc path, Claude and Codex): the daemon
+looks at the pane about once a second for 15 s after the write.
+
+- `evidence: "transcript"`: an interrupt or end record in the transcript at or
+  after the aimed turn's start. An interrupt reads `endedAs: "interrupted"`, an
+  end_turn reply or Codex `task_complete` reads `completed`. A new prompt after
+  it does not hide it.
+- `evidence: "screen"`: the aimed `chat.turn` is no longer running, and the
+  idle title the agent set during the turn (Claude `✳`, Codex without a
+  spinner) or Claude's Stop-hook row is on screen. `endedAs: "unspecified"`.
+- The hook stream is not evidence: an interrupt fires no Stop hook.
+- `endedAs: "failed"` and `evidence: "native"` are not sent yet.
+
+`unknown` reasons: `write-uncertain` (the write itself may or may not have
+landed; from the start), `daemon-restart` (the daemon restarted before an end
+was seen), `pane-closed` (the pane closed or is another incarnation),
+`session-changed` (the pane shows another conversation). An aimed turn that
+stopped running with no proof by the 15 s deadline reads `unknown` **without**
+a `reason`.
+
+**Not served yet.** Codex app-server `turn/interrupt {threadId, turnId}` with
+`native` evidence (gated on the same spike as the Codex account status); Codex
+uses the Esc path above. OpenCode: nothing observes the plugin abort yet, so an
+OpenCode cancel reads `unknown` (no `reason`) from the start, or `unknown`
+(`write-uncertain`) when the abort's answer was lost; `native` evidence from
+the plugin's phase is a follow-up.
+
+**Storage.** `chat-cancel-receipts.json` keeps `version: 1`, and
+`outcome.effect` keeps its two values. Progress is an optional field next to
+`outcome` on each entry: `progress: {state, endedAs?, evidence?, reason?,
+at}`. An entry without it reads as `requested` when its outcome is
+`interrupt-requested`, and as `unknown` (`write-uncertain`) when it is
+`uncertain`. At load, the restart rule that turns a `pending` entry into a
+final `uncertain` one also sets `progress` to `unknown` (`daemon-restart`), and
+a `requested` progress becomes `unknown` (`daemon-restart`) the same way. An
+older daemon reading the file ignores the field.
+
+**SSE.**
+
+```
+event: chat.cancel
+data: {"sessionId":"pty-7f3c","clientCancelId":"…","state":"ended","turnId":"t1:…","endedAs":"interrupted","at":1758712349000}
+```
+
+On every change, the first `requested` (or the `write-uncertain` `unknown`)
+included. Live-only (no `id:`, never in the backlog) and sent only to the
+cancel's owner among the callers that read the pane's `/turns`. The receipt is
+authoritative after a reconnect.
 
 ### Chat queue
 
@@ -3427,7 +3546,7 @@ daemon"; never probe with a write.
 | --- | --- | --- |
 | `turnFailure` | always, once served | `failure` on the surfaces in item 1 |
 | `codexAccountStatus` | `--allow-transcript`, and the spike in item 2 has landed | `GET /api/sessions/<id>/codex/account-status` |
-| `chatCancelOutcome` | `chatCancel` is true and the cancel receipt store loaded | `cancel` on the cancel answer, the cancel receipt route, `chat.cancel` SSE |
+| `chatCancelOutcome` | `chatCancel` is true and the cancel receipt store loaded | **Served** (see Chat cancel outcome): `cancel` on the cancel answer, the cancel receipt route, `chat.cancel` SSE |
 | `paneAccount` | caller may input, `--allow-transcript`, and the attached desktop announced `accounts.envForAccount` | `accountId` on `POST /api/sessions` and on `GET /api/agent-launch-options` |
 | `paneHandoff` | caller may input | `handoffFrom` on `POST /api/sessions`, echoed on rows and history |
 | `gitProjects` | caller may input | `GET /api/git/projects`, `GET …/git/branches` |
@@ -3598,97 +3717,9 @@ Needs `--allow-transcript` (like `GET …/accounts`), not input.
 
 ### 3. Chat cancel outcome
 
-**Who may cancel.** The daemon has no per-pane owner: control belongs to the
-credential, not to whoever started the turn. A cancel is accepted only when
-**all** of these hold. Each is checked when the headers arrive, again after
-the body, and again immediately before the interrupt is written:
-
-1. the server runs with `--allow-transcript` and `--allow-input`;
-2. the caller may input: the operator token, or a paired, unrevoked device
-   whose own `grants.input` is true;
-3. the pane resolves for the caller (never the orchestrator brain pane, for
-   any credential) and is the same incarnation throughout;
-4. the re-authenticated caller is the same caller (same credential class; for
-   a device, the same device id);
-5. `agentSessionId` (and `historyEpoch` and `turnId` when sent) match the
-   pane's current conversation and running turn.
-
-"Only the turn I started" is **not** a rule the daemon can enforce: send
-receipts do not record which `chat.turn.id` they started. Any caller that may
-control the pane may stop its running turn, as at the keyboard.
-
-**The answer.** `POST …/chat/cancel` is unchanged, and its body stays strict. On
-a `chatCancelOutcome` daemon, a 202 or a replay also carries:
-
-```json
-"cancel": { "state": "requested", "turnId": "t1:…", "requestedAt": 1758712345123, "at": 1758712345123 }
-```
-
-**The receipt.**
-
-```
-GET /api/sessions/<id>/chat/cancel/<clientCancelId>
-→ 200 {
-    "clientCancelId": "…",
-    "state": "requested" | "ended" | "not-ended" | "unknown" | "none",
-    "turnId": "t1:…",                                   // aimed turn, when known
-    "endedAs": "interrupted" | "completed" | "failed" | "unspecified",   // ended only
-    "evidence": "native" | "transcript" | "screen",     // ended only
-    "reason": "write-uncertain" | "daemon-restart" | "pane-closed" | "session-changed",  // unknown only; open set
-    "requestedAt": 1758712345123,
-    "at": 1758712349000
-  }
-→ 404 {error: "pane-not-found"}
-```
-
-Owner-bound (a device reads only its own cancels) and pane-bound; needs
-`--allow-transcript`, not input. `none` means there is no receipt for this
-owner, pane and id: it was never written, or it was refused (a refusal stores
-nothing).
-
-| `state` | Meaning | Client |
-| --- | --- | --- |
-| `requested` | written; the aimed turn has not been seen to end | keep "Stopping…", poll every 2 s or wait for `chat.cancel` |
-| `ended` | the aimed turn ended after the write | final. `endedAs: "completed"` means it finished on its own first |
-| `not-ended` | still running 15 s after the write | final: it never changes, even if the turn ends later. Re-read `/turns` for the turn's current state; offer Stop again (a new `clientCancelId`) or Terminal |
-| `unknown` | cannot be known | final; check Terminal |
-
-What counts as `ended`, per agent:
-
-- **Claude and Codex**: the aimed `chat.turn` leaving `running`, proved by an
-  interrupt or end record in the transcript (`transcript`) or by the idle
-  title or Stop row on screen (`screen`). The interrupt is the existing Esc.
-  An interrupt fires no Stop hook, so the hook stream is not evidence.
-- **Codex, later**: app-server `turn/interrupt {threadId, turnId}` with the
-  relay stream's `turn/completed` as `native` evidence. Availability is gated
-  on the same spike as item 2 (a second connection to the shared app-server);
-  until then Codex uses the Esc path above.
-- **OpenCode**: the plugin's phase returning to `complete`
-  (`evidence: "native"`).
-
-A write that ended `effect: "uncertain"` starts as `unknown`
-(`write-uncertain`). A daemon restart turns `requested` into `unknown`
-(`daemon-restart`).
-
-**Storage.** `chat-cancel-receipts.json` keeps `version: 1`, and
-`outcome.effect` keeps its two values. Progress is a new optional field next
-to `outcome` on each entry: `progress: {state, endedAs?, evidence?, reason?,
-at}`. An entry without it reads as `requested` when its outcome is
-`interrupt-requested`, as `unknown` (`write-uncertain`) when it is
-`uncertain`, and, while the write is still in flight (`pending`, no outcome
-yet), as `requested`. A stored `progress` is normalized on read: a state
-outside the union reads `unknown`, and fields that do not belong to the state
-are dropped. The restart rule that already turns a `pending` entry into a
-final `uncertain` one also sets `progress` to `unknown` (`daemon-restart`),
-in the same write; a `requested` progress found at load becomes `unknown`
-(`daemon-restart`) the same way. An older daemon reading the file ignores the
-field.
-
-**SSE.** `chat.cancel` `{sessionId, clientCancelId, state, turnId?, endedAs?, at}`
-on every change. It is live-only (no `id:`) and sent only to the cancel's owner
-among the pane's `/turns` watchers. The receipt is authoritative after a
-reconnect. The frame carries no `evidence` or `reason`: when it reports a
-final `state` and you need those, read the receipt.
+**Served** for the Esc path (Claude and Codex): see "Chat cancel outcome",
+right after "Chat cancel". The Codex `turn/interrupt` (`native`) path is not served
+yet and stays gated on the spike in item 2.
 
 ### 4. Account per pane, and handoff lineage
 
