@@ -3763,15 +3763,40 @@ workspace binding. The workspace's binding itself does not change, and no
 later pane inherits the choice. The pane keeps the account across daemon
 recovery, because its environment is persisted with it.
 
+The chosen vendor's workspace binding is not consulted at all, so a broken
+binding for that vendor does not block the pane. A broken binding for the
+other vendor still refuses (`workspace-account-missing`).
+
+With `agentLaunch`, the agent runs through a login shell (`$SHELL -lc`),
+whose profile could export another `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. For
+bash, zsh, sh, dash and ksh the daemon exports the pane's resolved keys again
+after the profile, right before the agent, on the first launch and on every
+recovery replay. Not covered: fish and PowerShell wrappers, and an agent
+typed into the interactive shell later (for example by `chat/launch`), where
+an export in the user's `.zshrc` / `.bashrc` still wins.
+
+If the account's directory is gone when a pane is recovered, the key is
+dropped with a warning in the daemon log and the CLI uses its default
+credential, the same way the desktop treats a binding whose directory went
+missing. It is never passed to the CLI, which would create an empty, signed-out
+config there.
+
+The credential is checked again once the body has arrived, and again after
+each desktop round trip, before any account answer is sent: a device revoked
+in between gets `401 {error:"authorization-expired"}`, not a hint about
+whether the id exists.
+
 | Status | Body | When |
 | --- | --- | --- |
 | 400 | `{error:"invalid-account-id", effect:"none"}` | not `^[A-Za-z0-9_-]{1,128}$` |
 | 400 | `{error:"workspace-required", effect:"none"}` | `accountId` without `workspaceId` |
 | 400 | `{error:"unknown-account", effect:"none"}` | no such account on this desktop. An unknown id and another host's id get the same answer |
-| 400 | `{error:"account-vendor-mismatch", effect:"none"}` | `agentLaunch.agent` is not the account's vendor. The vendor is not echoed |
+| 400 | `{error:"account-vendor-mismatch", effect:"none"}` | `agentLaunch.agent` is anything other than the account's vendor. The vendor is not echoed |
+| 401 | `{error:"authorization-expired"}` | the credential stopped holding the input grant while the request was in flight |
 | 403 | the input or transcript refusal | the caller lacks either grant |
-| 409 | `{error:"account-directory-missing", effect:"none"}` | the account's directory is gone |
-| 503 | `{error:"desktop-unavailable", effect:"none"}` | no attached desktop supports the command, or the command failed in any way |
+| 409 | `{error:"account-directory-missing", effect:"none"}` | the account's directory is gone (checked at resolution and again right before the spawn) |
+| 409 | `{error:"workspace-account-missing", effect:"none"}` | the workspace's binding for the **other** vendor points at a directory that is gone. Also answered for a create without `accountId` when the attached desktop announced `accounts.envForAccount` |
+| 503 | `{error:"desktop-unavailable", effect:"none"}` | no attached desktop supports the command, or any desktop request for the create failed (including a desktop that detaches or times out mid-create, and the catalog lookup for `agentLaunch`) |
 
 The 201 row adds `accountId` (only for a pane created with one) so the phone
 can confirm it was honoured. With both `accountId` and `agentLaunch`, the model
@@ -3800,16 +3825,20 @@ bad id) is `400 {error:"invalid-handoff", effect:"none"}`. No id field
 such an id is refused like any malformed one. The stored value appears on the
 `/api/sessions` row and on every `/api/history` entry of the new pane.
 
-Two narrowings, both because `/api/sessions` rows reach every reader:
+Narrowings, because `/api/sessions` rows reach every reader:
 
 - `agentSessionId` is compared with the source's conversation only on a
   `--allow-transcript` server. Without it, a handoff that names one is stored
   with `verified: false`, so `verified` cannot be used to test guesses.
-- The row's `handoffFrom` carries `agentSessionId` only on a
-  `--allow-transcript` server; `/api/history` (which needs that grant) always
-  carries it.
+- The row's `handoffFrom` carries `sessionId` only when the reader may attach
+  the source pane (it still exists and is not hidden from that credential);
+  otherwise the row has just `{verified, at}`. `agentSessionId` rides along
+  with `sessionId` only on a `--allow-transcript` server. `/api/history`
+  (which needs that grant) always carries the stored value.
 
-The source counts as live only while it is not `dead` or `suspended`.
+The source counts as live only while it is not `dead` or `suspended`. The
+lineage is on the new pane from the moment it is created, so the pane's
+first history entry already carries it.
 
 **Long handoff text travels as a file.** `chat/launch` takes at most 2,000
 UTF-16 units of prompt. Upload the handoff body with `POST /api/upload-file`
