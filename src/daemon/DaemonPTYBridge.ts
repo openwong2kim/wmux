@@ -14,6 +14,7 @@ import { OutputModeTracker } from './util/outputModeTracker';
 import { RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
 import { isFreshSessionSource } from '../shared/hooks/signal-types';
+import { titleShowsRunningTurn } from './transcript/chatScreenGate';
 
 /**
  * Daemon version of PTYBridge.
@@ -141,6 +142,14 @@ export class DaemonPTYBridge extends EventEmitter {
    * transcript end or the agent ending makes the close final.
    */
   private turnSoftClosed = false;
+  /**
+   * #1670 — the episode was opened by a byte promotion while the boot window
+   * was open (a program launched, no submit or hook since): the TUI painting
+   * itself, or a first turn started from the command line. A submit or a
+   * running hook proves which; until then a submit that finds no running turn
+   * on the title replaces it (see `startAnsweredTurn`).
+   */
+  private bootEpisode = false;
 
   /**
    * Reads the pane's transcript for the latest recorded turn end (epoch ms),
@@ -404,12 +413,12 @@ export class DaemonPTYBridge extends EventEmitter {
     // An answer resumes the episode it interrupted; a submit into a running
     // turn is queued by the agent's own composer. Anything else starts one.
     if (!wasAwaiting) {
-      // #1670 — with no turn evidence since the program launched, an open
-      // episode can only be the boot burst's own byte promotion (the TUI
-      // painting itself), not a turn. The first submit starts the first turn,
-      // so a key sent before it (a lone Esc dismissing a notice) is never
-      // read as an interrupt of that turn.
-      if (this.turnOpen && this.codexBootWindow) this.closeTurn();
+      // #1670 — an episode the boot burst opened is the TUI painting itself
+      // unless the agent shows a running turn (a first turn started from the
+      // command line). The first submit starts the first turn, so a key sent
+      // before it (a lone Esc dismissing a notice, an answered trust dialog)
+      // is never read as an interrupt of that turn.
+      if (this.turnOpen && this.bootEpisode && !this.titleShowsRunningTurn()) this.closeTurn();
       if (this.turnOpen && this.sessionId) {
         const endedAt = DaemonPTYBridge.transcriptTurnEndProbe?.(this.sessionId);
         if (endedAt !== undefined) this.noteTranscriptTurnEnd(endedAt);
@@ -418,6 +427,7 @@ export class DaemonPTYBridge extends EventEmitter {
       // typed into the running turn, however long the turn has been quiet.
       this.turnSoftClosed = false;
       this.openTurn();
+      this.bootEpisode = false;
     }
     this.lastTurnStartedAt = Date.now();
     this.preTurn = false;
@@ -485,6 +495,8 @@ export class DaemonPTYBridge extends EventEmitter {
         // The first hook after a settle is an autonomous turn; later hooks, and
         // any hook behind an unanswered dialog, belong to the open episode.
         if (!this.awaitingHuman) this.openTurn(true);
+        // The agent's own hook: whatever opened the episode, it is a turn.
+        this.bootEpisode = false;
       }
       this.explicitTerminalStatus = false;
       this.settledStatus = null;
@@ -584,12 +596,21 @@ export class DaemonPTYBridge extends EventEmitter {
     this.turnSoftClosed = false;
     this.turnSeq += 1;
     this.turnOpenedAt = Date.now();
+    this.bootEpisode = this.codexBootWindow;
   }
 
   private closeTurn(soft = false): void {
     if (this.turnOpen) this.turnSoftClosed = soft;
     else if (!soft) this.turnSoftClosed = false;
     this.turnOpen = false;
+    if (!this.turnSoftClosed) this.bootEpisode = false;
+  }
+
+  /** The agent's own running spinner is the latest window title, set within the freshness window. */
+  private titleShowsRunningTurn(): boolean {
+    const agent = this.agentDetector?.getLastAgent() ?? '';
+    const slug = /codex/i.test(agent) ? 'codex' : /claude/i.test(agent) ? 'claude' : '';
+    return !!slug && titleShowsRunningTurn({ title: this.lastTitle, at: this.lastTitleAt }, slug, Date.now());
   }
 
   /**
@@ -667,7 +688,7 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   noteSessionStart(signalTs: number, source: unknown): void {
     const atIdlePrompt = this.explicitTerminalStatus && this.settledStatus === 'waiting' && !this.awaitingHuman;
-    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, turnSoftClosed, codexBootWindow } = this;
+    const { preTurn, turnEvidenceAt, turnOpen, turnSeq, turnOpenedAt, turnSoftClosed, codexBootWindow, bootEpisode } = this;
     this.noteAgentStatus('running', true);
     this.codexBootWindow = codexBootWindow;
     // The session start is not turn evidence itself: a duplicate delivery of
@@ -680,6 +701,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.turnSeq = turnSeq;
     this.turnOpenedAt = turnOpenedAt;
     this.turnSoftClosed = turnSoftClosed;
+    this.bootEpisode = bootEpisode;
     if (!isFreshSessionSource(source)) {
       this.preTurn = false;
       return;
@@ -1224,6 +1246,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.codexBannerTail = '';
     this.turnOpen = false;
     this.turnSoftClosed = false;
+    this.bootEpisode = false;
     this.hookSeen = false;
     this.lastTitle = '';
     this.lastTitleAt = 0;

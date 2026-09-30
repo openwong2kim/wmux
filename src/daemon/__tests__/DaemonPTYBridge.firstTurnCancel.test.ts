@@ -123,6 +123,37 @@ describe('DaemonPTYBridge — #1670 first turn starts at the submit', () => {
     expect(await stop('codex')).toBe('already_interrupted');
   });
 
+  it('a trust dialog answered with Enter before the first prompt: same', async () => {
+    feed(CODEX_MODES + BANNER + BIG); // boot burst: byte promotion opens an episode
+    const boot = turn();
+    bridge.noteAgentStatus('awaiting_input'); // "Do you trust the contents of this directory?"
+    vi.advanceTimersByTime(500);
+    bridge.noteInput('\r'); // trust and continue
+    expect(bridge.isAwaitingHuman()).toBe(false);
+    feed(BIG);
+    await escThenFirstPrompt();
+    expect(turn().id).not.toBe(boot.id);
+    expect(await stop('codex')).toBe('sent');
+  });
+
+  it('a first turn started from the command line keeps its id and its Esc through a queued prompt', async () => {
+    const working = (frame: string) => feed(`\x1b]0;${frame} Working\x07` + BIG);
+    // `codex "task"` with no hooks: the boot burst is the first turn, and it runs.
+    working('⠋');
+    feed(CODEX_MODES + BANNER);
+    const first = turn();
+    expect(first.state).toBe('running');
+    vi.advanceTimersByTime(3000);
+    working('⠙');
+    bridge.noteInput('\x1b'); // the user interrupts it
+    vi.advanceTimersByTime(2500);
+    working('⠹'); // still winding down
+    bridge.noteInput('then summarize\r'); // queued behind the running turn
+    expect(turn()).toMatchObject({ id: first.id, startedAt: first.startedAt });
+    working('⠸');
+    expect(await stop('codex')).toBe('already_interrupted');
+  });
+
   it('a prompt typed into a running turn after the first one stays in it', () => {
     feed(CODEX_MODES + BANNER + BIG);
     vi.advanceTimersByTime(1000);
