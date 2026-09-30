@@ -1697,14 +1697,13 @@ describe('native chat routes (contract v0.3.1)', () => {
     });
   });
 
-  // Relay panes are Unix-only; Windows answers `unsupported-platform` instead.
-  describe.skipIf(process.platform === 'win32')('Codex account status (contract v-next item 2)', () => {
+  describe('Codex account status (contract v-next item 2)', () => {
     const codexResolution = (): ChatResolution => fileResolution({ terminal: { kind: 'terminal', agent: 'codex', nativeSessionId: 'sess-a',
       capabilities: { history: true, send: true, permissions: false, cancel: false, fileUndo: false } } });
     const status = (h: Record<string, string>, id = 's1') => fetch(`${base()}/api/sessions/${id}/codex/account-status`, { headers: h });
     const config = async (h: Record<string, string>) => await (await fetch(`${base()}/api/config`, { headers: h })).json() as Record<string, unknown>;
 
-    it('advertises the key only with the transcript grant and a readable pane that has a live relay', async () => {
+    it.skipIf(process.platform === 'win32')('advertises the key only with the transcript grant and a readable pane that has a live relay', async () => {
       let info = await start();
       expect(await config(bearer(info.token as string))).not.toHaveProperty('codexAccountStatus');
       // A brain pane's relay is not this caller's to read.
@@ -1719,7 +1718,7 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(await config(bearer(info.token as string))).not.toHaveProperty('codexAccountStatus');
     });
 
-    it('gates the route: 403 without transcript, 404 for a missing or brain pane, 503 without a live relay', async () => {
+    it('gates the route on every platform: 403 without transcript, 404 for a missing or brain pane, 503 for a WSL pane', async () => {
       codexHomes.set('brain-1', '/h/brain');
       const off = await start({ allowTranscript: false });
       const refused = await status(bearer(off.token as string));
@@ -1732,39 +1731,55 @@ describe('native chat routes (contract v0.3.1)', () => {
       const brain = await status(h, 'brain-1');
       expect(brain.status).toBe(404);
       expect(await brain.json()).toEqual({ error: 'pane-not-found' });
-      const none = await status(h);
-      expect(none.status).toBe(503);
-      expect(await none.json()).toEqual({ error: 'unavailable', reason: 'no-account-server' });
+      // A WSL pane on a Unix-shaped fake: refused before any relay is consulted.
+      codexHomes.set('s2', '/h/wsl');
+      (panes.get('s2')!.meta as Record<string, unknown>).wslTarget = { distro: 'Ubuntu' };
+      const wsl = await status(h, 's2');
+      expect(wsl.status).toBe(503);
+      expect(wsl.headers.get('cache-control')).toBe('no-store');
+      expect(await wsl.json()).toEqual({ error: 'unavailable', reason: 'unsupported-platform' });
       expect(accountReads).toEqual([]);
     });
 
-    it('reads the account of the pane\'s own relay, marked no-store', async () => {
-      const info = await start();
-      codexHomes.set('s1', '/h/a');
-      const body: CodexAccountStatus = { auth: { state: 'signed-in', method: 'chatgpt' }, fetchedAt: 5, cached: true,
-        rateLimits: { ordinaryUsageAllowed: true, planType: 'plus', buckets: [{ limitId: 'codex', limitName: null,
-          primary: { usedPercent: 12, windowMinutes: 10080, resetsAt: 1_790_000_000_000 }, secondary: null, reachedType: null }] } };
-      accountRead = async () => body;
-      const res = await status(device('dev-ro', false));
-      expect(res.status).toBe(200);
-      expect(res.headers.get('cache-control')).toBe('no-store');
-      expect(await res.json()).toEqual(body);
-      expect(accountReads).toEqual(['/h/a']);
-      accountRead = async () => { throw new Error('socket closed'); };
-      const failed = await status(bearer(info.token as string));
-      expect(failed.status).toBe(503);
-      expect(await failed.json()).toEqual({ error: 'unavailable', reason: 'upstream-failed' });
-    });
+    // Relay panes are Unix-only; Windows answers `unsupported-platform` for every pane.
+    describe.skipIf(process.platform === 'win32')('with Unix relay panes', () => {
+      it('503 no-account-server without a live relay, uncacheable', async () => {
+        const info = await start();
+        const none = await status(bearer(info.token as string));
+        expect(none.status).toBe(503);
+        expect(none.headers.get('cache-control')).toBe('no-store');
+        expect(await none.json()).toEqual({ error: 'unavailable', reason: 'no-account-server' });
+        expect(accountReads).toEqual([]);
+      });
 
-    it('/turns: accountStatus only on a Codex terminal binding whose pane has a live relay', async () => {
-      const info = await start();
-      const h = bearer(info.token as string);
-      chatBox.resolution = codexResolution();
-      expect((await turns(h)).body.chat.capabilities).not.toHaveProperty('accountStatus');
-      codexHomes.set('s1', '/h/a');
-      expect((await turns(h)).body.chat.capabilities).toMatchObject({ accountStatus: true });
-      chatBox.resolution = fileResolution();
-      expect((await turns(h)).body.chat.capabilities).not.toHaveProperty('accountStatus');
+      it('reads the account of the pane\'s own relay, marked no-store', async () => {
+        const info = await start();
+        codexHomes.set('s1', '/h/a');
+        const body: CodexAccountStatus = { auth: { state: 'signed-in', method: 'chatgpt' }, fetchedAt: 5, cached: true,
+          rateLimits: { ordinaryUsageAllowed: true, planType: 'plus', buckets: [{ limitId: 'codex', limitName: null,
+            primary: { usedPercent: 12, windowMinutes: 10080, resetsAt: 1_790_000_000_000 }, secondary: null, reachedType: null }] } };
+        accountRead = async () => body;
+        const res = await status(device('dev-ro', false));
+        expect(res.status).toBe(200);
+        expect(res.headers.get('cache-control')).toBe('no-store');
+        expect(await res.json()).toEqual(body);
+        expect(accountReads).toEqual(['/h/a']);
+        accountRead = async () => { throw new Error('socket closed'); };
+        const failed = await status(bearer(info.token as string));
+        expect(failed.status).toBe(503);
+        expect(await failed.json()).toEqual({ error: 'unavailable', reason: 'upstream-failed' });
+      });
+
+      it('/turns: accountStatus only on a Codex terminal binding whose pane has a live relay', async () => {
+        const info = await start();
+        const h = bearer(info.token as string);
+        chatBox.resolution = codexResolution();
+        expect((await turns(h)).body.chat.capabilities).not.toHaveProperty('accountStatus');
+        codexHomes.set('s1', '/h/a');
+        expect((await turns(h)).body.chat.capabilities).toMatchObject({ accountStatus: true });
+        chatBox.resolution = fileResolution();
+        expect((await turns(h)).body.chat.capabilities).not.toHaveProperty('accountStatus');
+      });
     });
   });
 });

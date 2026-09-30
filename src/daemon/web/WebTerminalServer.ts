@@ -3604,12 +3604,11 @@ export class WebTerminalServer {
     const id = decodePathSegment(rawId);
     const pane = id === null ? undefined : this.readableSession(id);
     if (!pane || id === null) return this.json(res, 404, { error: 'pane-not-found' });
-    if (process.platform === 'win32' || pane.meta.wslTarget) {
-      return this.json(res, 503, { error: 'unavailable', reason: 'unsupported-platform' });
-    }
+    const unavailable = (reason: string) => this.json(res, 503, { error: 'unavailable', reason }, { 'Cache-Control': 'no-store' });
+    if (process.platform === 'win32' || pane.meta.wslTarget) return unavailable('unsupported-platform');
     const source = this.deps.codexAccountStatus;
     const codeHome = source?.accountHome(id);
-    if (!source || codeHome === undefined) return this.json(res, 503, { error: 'unavailable', reason: 'no-account-server' });
+    if (!source || codeHome === undefined) return unavailable('no-account-server');
     void source.read(codeHome).then(
       (status) => {
         if (res.destroyed || res.writableEnded) return;
@@ -3617,7 +3616,7 @@ export class WebTerminalServer {
       },
       () => {
         if (res.destroyed || res.writableEnded) return;
-        this.json(res, 503, { error: 'unavailable', reason: 'upstream-failed' });
+        unavailable('upstream-failed');
       });
   }
 

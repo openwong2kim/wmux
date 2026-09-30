@@ -3802,8 +3802,14 @@ the default), not the workspace's next-launch binding. The daemon sends
 already-running app-server. It never starts an account server and never sends
 a model request. The rate-limit read does reach the provider's backend, so
 reads are cached per account for 60 s (`cached: true`), and there is no
-refresh parameter. A signed-out or API-key account is not asked for rate
-limits (`rateLimits: null`). The cache is in memory: a daemon restart reads
+refresh parameter. `cached: true` also marks an answer shared with a read
+already in flight. The cache key is the account's Codex home plus its
+credential file, so a new sign-in there is read at once. A failed auth read
+(503 `upstream-failed`) is remembered for 10 s, and so is an answer whose
+rate-limit read failed (`rateLimits: null`), so a failing server is not asked
+again on every request. A signed-out or API-key account is not asked for rate
+limits (`rateLimits: null`). Every answer, 503 included, is
+`Cache-Control: no-store`. The cache is in memory: a daemon restart reads
 again.
 
 Never on this wire: the auth token, e-mail, account id, credit balance, the
