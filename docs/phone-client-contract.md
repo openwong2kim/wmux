@@ -1699,24 +1699,30 @@ nothing).
 | `unknown` | cannot be known | final; check Terminal |
 
 What counts as `ended` today (the Esc path, Claude and Codex): the daemon
-looks at the pane about once a second for 15 s after the write.
+looks at the pane about once a second for 15 s after the write. Nothing is
+`ended` while the aimed `chat.turn` still reads `running`.
 
-- `evidence: "transcript"`: an interrupt or end record in the transcript at or
-  after the aimed turn's start. An interrupt reads `endedAs: "interrupted"`, an
-  end_turn reply or Codex `task_complete` reads `completed`. A new prompt after
-  it does not hide it.
-- `evidence: "screen"`: the aimed `chat.turn` is no longer running, and the
-  idle title the agent set during the turn (Claude `✳`, Codex without a
-  spinner) or Claude's Stop-hook row is on screen. `endedAs: "unspecified"`.
+- `evidence: "transcript"`: the first record written **after the interrupt**
+  is an interrupt or end record. The daemon notes where the transcript stood
+  right before the write; an end recorded before that point (an earlier turn
+  that a queued prompt merged into the same episode) never counts. An
+  interrupt reads `endedAs: "interrupted"`, an end_turn reply or Codex
+  `task_complete` reads `completed`.
+- `evidence: "screen"`: the aimed turn is no longer running, and an idle title
+  the agent set after the write (Claude `✳`, Codex without a spinner) or
+  Claude's Stop-hook row is on screen. `endedAs: "unspecified"`. The pane, its
+  conversation and the turn are checked again after the screen read.
 - The hook stream is not evidence: an interrupt fires no Stop hook.
 - `endedAs: "failed"` and `evidence: "native"` are not sent yet.
 
 `unknown` reasons: `write-uncertain` (the write itself may or may not have
 landed; from the start), `daemon-restart` (the daemon restarted before an end
-was seen), `pane-closed` (the pane closed or is another incarnation),
-`session-changed` (the pane shows another conversation). An aimed turn that
-stopped running with no proof by the 15 s deadline reads `unknown` **without**
-a `reason`.
+was seen), `pane-closed` (the pane closed, is another incarnation or dead, or
+was not attached when the window closed), `session-changed` (the pane shows
+another conversation). `unknown` **without** a `reason` when the aimed turn's
+end cannot be proved: a new prompt or turn start was recorded after the write
+before any end, the transcript tail no longer reaches back to the write, or
+the turn stopped running with no proof by the 15 s deadline.
 
 **Not served yet.** Codex app-server `turn/interrupt {threadId, turnId}` with
 `native` evidence (gated on the same spike as the Codex account status); Codex
@@ -1732,8 +1738,12 @@ at}`. An entry without it reads as `requested` when its outcome is
 `interrupt-requested`, and as `unknown` (`write-uncertain`) when it is
 `uncertain`. At load, the restart rule that turns a `pending` entry into a
 final `uncertain` one also sets `progress` to `unknown` (`daemon-restart`), and
-a `requested` progress becomes `unknown` (`daemon-restart`) the same way. An
-older daemon reading the file ignores the field.
+a `requested` progress becomes `unknown` (`daemon-restart`) the same way; the
+result is written once, so its `at` does not move on later restarts. An older
+daemon reading the file ignores the field. A `progress` never makes an entry
+invalid: a state this daemon does not know reads `unknown`, an unknown
+`endedAs`, `evidence` or `reason` value is left out, and a malformed
+`progress` is ignored.
 
 **SSE.**
 
@@ -1743,7 +1753,8 @@ data: {"sessionId":"pty-7f3c","clientCancelId":"…","state":"ended","turnId":"t
 ```
 
 On every change, the first `requested` (or the `write-uncertain` `unknown`)
-included. Live-only (no `id:`, never in the backlog) and sent only to the
+included, and only once the change is on disk (a failed write is retried, not
+announced). Live-only (no `id:`, never in the backlog) and sent only to the
 cancel's owner among the callers that read the pane's `/turns`. The receipt is
 authoritative after a reconnect.
 

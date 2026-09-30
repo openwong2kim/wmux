@@ -17,7 +17,7 @@ import type { ChatSessionService } from './ChatSessionService';
 import { ChatSendReceiptStore, type StoredChatOutcome } from './ChatSendReceiptStore';
 import { ChatCancelReceiptStore } from './ChatCancelReceiptStore';
 import { createChatCancelObserver, type CancelProbe, type ChatCancelEvent, type WatchedCancel } from './chatCancelObserver';
-import { firstTurnEndSince } from '../transcript/chatAgentStatus';
+import { turnEndAfter, type TranscriptBoundary } from '../transcript/chatAgentStatus';
 import type { StoredCancelProgress } from '../../shared/phoneChatCancelOutcome';
 import { isActiveQueueState, type ChatQueueReason, type ChatQueueRecord, type ChatQueueState, type ChatQueueStore } from './ChatQueue';
 import {
@@ -28,6 +28,9 @@ import {
   type ChatSendTag, type ChatTurn, type DangerousLaunchTrace,
   type ChatDeliveredMessage, type ChatDequeueResult, type ChatQueueEvent, type ChatQueueItemView, type ChatSendReceiptView,
 } from './chatBridge';
+
+/** Transcript stamps may trail the daemon's write time by this much and still count after it. */
+const CANCEL_CLOCK_SKEW_MS = 2000;
 
 /** Synthetic TerminalChatService client key for the phone's OpenCode watch. */
 export const WEB_BRIDGE_CLIENT = 'web:bridge';
@@ -194,28 +197,48 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   const sending = new Set<string>();
   const lastEscAt = (id: string): number => deps.pane(id)?.bridge.getLastEscAt() ?? 0;
 
-  /** What one look at a cancelled pane proves about the turn the ESC was aimed at. */
-  const probeCancel = async (cancel: WatchedCancel & { pane: P; incarnationId?: string; agentSessionId: string; slug: string }): Promise<CancelProbe> => {
+  /**
+   * What one look at a cancelled pane proves about the turn the ESC was aimed
+   * at. The pane is matched by id and incarnation, not object identity (a
+   * reattach may replace the object). The running check comes first, so
+   * `ended` is never reported while `/turns` still shows the turn running.
+   */
+  const probeCancel = async (cancel: WatchedCancel & {
+    incarnationId?: string; agentSessionId: string; slug: string; boundary: TranscriptBoundary;
+  }): Promise<CancelProbe> => {
     const id = cancel.paneId;
-    const live = (): boolean => {
+    const where = (): 'live' | 'gone' | 'transient' => {
       const pane = deps.pane(id);
-      return pane === cancel.pane && pane.meta.incarnationId === cancel.incarnationId && ['attached', 'detached'].includes(pane.meta.state);
+      if (!pane || pane.meta.incarnationId !== cancel.incarnationId || pane.meta.state === 'dead') return 'gone';
+      return ['attached', 'detached'].includes(pane.meta.state) ? 'live' : 'transient';
     };
-    if (!live()) return { kind: 'gone' };
     // An unreadable binding is a transient read, not another conversation.
-    const current = deps.projector.status(id).agentSessionId;
-    if (current !== undefined && current !== cancel.agentSessionId) return { kind: 'session-changed' };
-    const end = firstTurnEndSince(deps.projector.snapshot(id)?.events, cancel.turnStartedAt);
-    if (end) return { kind: 'ended', endedAs: end.status === 'idle' ? 'interrupted' : 'completed', evidence: 'transcript' };
-    const turn = deps.chatAgentState(id).turn;
-    if (turn?.id === cancel.turnId && turn.state === 'running') return { kind: 'running' };
+    const sessionChanged = (): boolean => {
+      const current = deps.projector.status(id).agentSessionId;
+      return current !== undefined && current !== cancel.agentSessionId;
+    };
+    const aimedRunning = (): boolean => {
+      const turn = deps.chatAgentState(id).turn;
+      return turn?.id === cancel.turnId && turn.state === 'running';
+    };
+    const state = where();
+    if (state !== 'live') return { kind: state };
+    if (sessionChanged()) return { kind: 'session-changed' };
+    if (aimedRunning()) return { kind: 'running' };
+    const end = turnEndAfter(deps.projector.snapshot(id)?.events, cancel.boundary);
+    if (end?.kind === 'ended') return { kind: 'ended', endedAs: end.status === 'idle' ? 'interrupted' : 'completed', evidence: 'transcript' };
+    if (end) return { kind: 'unprovable' };
     // The turn stopped running without a transcript record: the screen may
-    // still prove it (idle title set during the turn, Claude's Stop-hook row).
+    // still prove it (an idle title set after the write, Claude's Stop-hook row).
     const rows = await deps.readScreen(id);
-    if (!live()) return { kind: 'gone' };
+    // The read awaited: the pane, its conversation and the turn are re-checked.
+    const after = where();
+    if (after !== 'live') return { kind: after };
+    if (sessionChanged()) return { kind: 'session-changed' };
+    if (aimedRunning()) return { kind: 'running' };
     let title: { title: string; at: number } | null = null;
-    try { title = cancel.pane.bridge.getTitle(); } catch { /* no title = no title evidence */ }
-    if (titleShowsFinishedTurn(title, cancel.slug, cancel.turnStartedAt) || screenShowsTurnEnding(rows, cancel.slug)) {
+    try { title = deps.pane(id)?.bridge.getTitle() ?? null; } catch { /* no title = no title evidence */ }
+    if (titleShowsFinishedTurn(title, cancel.slug, cancel.requestedAt) || screenShowsTurnEnding(rows, cancel.slug)) {
       return { kind: 'ended', endedAs: 'unspecified', evidence: 'screen' };
     }
     return { kind: 'idle' };
@@ -1135,10 +1158,15 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     let aimed: string | undefined;
     let aimedStartedAt = 0;
     let aimedPane: P | undefined;
+    let lastEventId: string | undefined;
     const beforeWrite = (target: { id: string; startedAt: number }): boolean => {
       aimed = target.id;
       aimedStartedAt = target.startedAt;
       aimedPane = deps.pane(id);
+      // Where the transcript stands right before the ESC: only records after
+      // this can be the aimed turn's end (an earlier turn merged into the same
+      // episode has its end before it). Unreadable: timestamps alone decide.
+      try { const events = deps.projector.snapshot(id)?.events; lastEventId = events?.[events.length - 1]?.id; } catch { lastEventId = undefined; }
       inserted = store.insertPending(owner, clientCancelId, { paneId: id, fingerprint });
       return inserted === 'inserted';
     };
@@ -1168,8 +1196,12 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       const watched = { owner, paneId: id, clientCancelId, ...(aimed ? { turnId: aimed } : {}) };
       cancelObserver?.announce(watched, progress);
       if (verdict === 'sent' && aimed && aimedPane) {
-        cancelObserver?.watch({ ...watched, turnId: aimed, turnStartedAt: aimedStartedAt, requestedAt, pane: aimedPane,
-          incarnationId: aimedPane.meta.incarnationId, agentSessionId: req.agentSessionId, slug: agent } satisfies ObservedCancel);
+        cancelObserver?.watch({ ...watched, turnId: aimed, turnStartedAt: aimedStartedAt, requestedAt,
+          incarnationId: aimedPane.meta.incarnationId, agentSessionId: req.agentSessionId, slug: agent,
+          boundary: { ...(lastEventId !== undefined ? { lastEventId } : {}), since: requestedAt - CANCEL_CLOCK_SKEW_MS } } satisfies ObservedCancel);
+      } else if (verdict === 'sent') {
+        // The pane was already gone at the write: nothing can be observed.
+        cancelObserver?.settle(watched, { state: 'unknown', reason: 'pane-closed', at: now() });
       }
       const view = verdict === 'sent' ? store.progress(owner, clientCancelId) : undefined;
       return { clientCancelId, replayed: false, ...outcome, ...(verdict === 'error' ? { error: 'cancel-failed' as const } : {}),

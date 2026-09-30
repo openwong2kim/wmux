@@ -7,6 +7,8 @@ import type { ChatOwner } from './chatBridge';
 
 /** Poll period while a cancel is `requested`. The phone polls the receipt every 2 s. */
 export const CHAT_CANCEL_POLL_MS = 1000;
+/** Failed progress writes retried after the window closes, one per poll. */
+const LATE_SAVE_RETRIES = 5;
 
 /** One cancel whose ESC was written, being watched until its outcome settles. */
 export interface WatchedCancel {
@@ -26,9 +28,14 @@ export interface WatchedCancel {
  * - `ended`: proof that the aimed turn ended.
  * - `running`: the aimed turn is still the pane's running turn.
  * - `idle`: the aimed turn is no longer running, but nothing proves how.
+ * - `unprovable`: the transcript moved past the aimed turn without a
+ *   provable end (a new turn started first, or the tail lost the boundary).
+ * - `transient`: the pane is the same incarnation but not attached or
+ *   detached right now; look again.
  */
 export type CancelProbe =
   | { kind: 'gone' } | { kind: 'session-changed' } | { kind: 'running' } | { kind: 'idle' }
+  | { kind: 'unprovable' } | { kind: 'transient' }
   | { kind: 'ended'; endedAs: ChatCancelEndedAs; evidence: ChatCancelEvidence };
 
 /** SSE `chat.cancel`: narrower than the receipt (no evidence, reason or requestedAt). */
@@ -54,8 +61,11 @@ export interface ChatCancelObserverDeps<W extends WatchedCancel> {
 }
 
 export interface ChatCancelObserver<W extends WatchedCancel = WatchedCancel> {
-  /** Record a progress change and announce it. False when the entry's progress is already final. */
-  settle(cancel: Pick<WatchedCancel, 'owner' | 'paneId' | 'clientCancelId'> & { turnId?: string }, progress: StoredCancelProgress): boolean;
+  /**
+   * Record a progress change and, once it is on disk, announce it. `unsaved`:
+   * nothing changed (the caller may retry); `final`: already settled.
+   */
+  settle(cancel: Pick<WatchedCancel, 'owner' | 'paneId' | 'clientCancelId'> & { turnId?: string }, progress: StoredCancelProgress): 'saved' | 'unsaved' | 'final';
   /** Announce an entry's first progress (already stored with its outcome). */
   announce(cancel: Pick<WatchedCancel, 'owner' | 'paneId' | 'clientCancelId'> & { turnId?: string }, progress: StoredCancelProgress): void;
   /** Watch a `requested` cancel until it ends, or `CHAT_CANCEL_OBSERVE_MS` after the write. */
@@ -84,15 +94,18 @@ export function createChatCancelObserver<W extends WatchedCancel>(deps: ChatCanc
   };
 
   const settle: ChatCancelObserver<W>['settle'] = (cancel, progress) => {
-    if (!deps.store.setProgress(cancel.owner, cancel.clientCancelId, progress)) return false;
-    announce(cancel, progress);
-    return true;
+    const result = deps.store.setProgress(cancel.owner, cancel.clientCancelId, progress);
+    if (result === 'saved') announce(cancel, progress);
+    else if (result === 'unsaved') deps.log?.(`[chat] cancel progress for ${cancel.paneId} not persisted; retrying`);
+    return result;
   };
 
   const watch = (cancel: W): void => {
     const deadline = cancel.requestedAt + windowMs;
+    let lateTries = 0;
     const tick = async (): Promise<void> => {
       const final = now() >= deadline;
+      if (final && lateTries++ > LATE_SAVE_RETRIES) return;
       let seen: CancelProbe;
       try { seen = await deps.probe(cancel); } catch (error) {
         // No evidence either way: look again, or settle `unknown` at the deadline.
@@ -100,17 +113,21 @@ export function createChatCancelObserver<W extends WatchedCancel>(deps: ChatCanc
         seen = { kind: 'idle' };
       }
       const at = now();
+      let progress: StoredCancelProgress | undefined;
       switch (seen.kind) {
-        case 'gone': settle(cancel, { state: 'unknown', reason: 'pane-closed', at }); return;
-        case 'session-changed': settle(cancel, { state: 'unknown', reason: 'session-changed', at }); return;
-        case 'ended': settle(cancel, { state: 'ended', endedAs: seen.endedAs, evidence: seen.evidence, at }); return;
+        case 'gone': progress = { state: 'unknown', reason: 'pane-closed', at }; break;
+        case 'session-changed': progress = { state: 'unknown', reason: 'session-changed', at }; break;
+        case 'ended': progress = { state: 'ended', endedAs: seen.endedAs, evidence: seen.evidence, at }; break;
+        case 'unprovable': progress = { state: 'unknown', at }; break;
         default:
           if (final) {
-            settle(cancel, seen.kind === 'running' ? { state: 'not-ended', at } : { state: 'unknown', at });
-            return;
+            progress = seen.kind === 'running' ? { state: 'not-ended', at }
+              : seen.kind === 'transient' ? { state: 'unknown', reason: 'pane-closed', at } : { state: 'unknown', at };
           }
-          schedule(() => void tick(), Math.min(pollMs, Math.max(0, deadline - at)));
       }
+      // Settled, or already final: done. Unsaved or undecided: look again.
+      if (progress && settle(cancel, progress) !== 'unsaved') return;
+      schedule(() => void tick(), final ? pollMs : Math.min(pollMs, Math.max(0, deadline - at)));
     };
     schedule(() => void tick(), Math.min(pollMs, windowMs));
   };

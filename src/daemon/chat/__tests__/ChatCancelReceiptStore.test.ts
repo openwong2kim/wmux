@@ -49,8 +49,8 @@ describe('ChatCancelReceiptStore', () => {
     expect(store.complete('device:a', cid, { effect: 'interrupt-requested', turnId: 't1:n.1' }, { state: 'requested', at: 5_000 })).toBe(true);
     expect(store.progress('device:a', cid)).toEqual({ state: 'requested', turnId: 't1:n.1', requestedAt: 5_000, at: 5_000 });
     expect(store.progress('device:b', cid)).toBeUndefined();
-    expect(store.setProgress('device:a', cid, { state: 'ended', endedAs: 'interrupted', evidence: 'transcript', at: 6_000 })).toBe(true);
-    expect(store.setProgress('device:a', cid, { state: 'not-ended', at: 7_000 })).toBe(false);
+    expect(store.setProgress('device:a', cid, { state: 'ended', endedAs: 'interrupted', evidence: 'transcript', at: 6_000 })).toBe('saved');
+    expect(store.setProgress('device:a', cid, { state: 'not-ended', at: 7_000 })).toBe('final');
     expect(store.progress('device:a', cid)).toEqual({ state: 'ended', turnId: 't1:n.1', endedAs: 'interrupted', evidence: 'transcript', requestedAt: 5_000, at: 6_000 });
     const saved = JSON.parse(fs.readFileSync(path.join(dir, 'chat-cancel-receipts.json'), 'utf8'));
     expect(saved.version).toBe(1);
@@ -76,7 +76,7 @@ describe('ChatCancelReceiptStore', () => {
       progress: { state: 'unknown', reason: 'daemon-restart' } });
     expect(reloaded.progress('operator', uncertain)).toEqual({ state: 'unknown', reason: 'write-uncertain', at: 5_000 });
     expect(reloaded.progress('operator', ended)).toMatchObject({ state: 'ended', endedAs: 'completed', evidence: 'screen', at: 5_500 });
-    expect(reloaded.setProgress('operator', requested, { state: 'ended', at: 9_500 })).toBe(false);
+    expect(reloaded.setProgress('operator', requested, { state: 'ended', at: 9_500 })).toBe('final');
   });
 
   it('downgrade: a file written with progress still loads under the shipped v1 validator', () => {
@@ -107,6 +107,11 @@ describe('ChatCancelReceiptStore', () => {
         (row.state === 'pending' && row.outcome === undefined || row.state === 'final' && validOutcome(row.outcome));
     };
     for (const [key, value] of Object.entries(saved.entries)) expect(validEntry(key, value)).toBe(true);
+    // And back up: this build reads what it wrote, plus a value only a newer daemon knows.
+    const firstKey = Object.keys(saved.entries)[0];
+    saved.entries[firstKey].progress = { state: 'rerouted', at: 1 };
+    fs.writeFileSync(path.join(dir, 'chat-cancel-receipts.json'), JSON.stringify(saved));
+    expect(() => new ChatCancelReceiptStore(dir)).not.toThrow();
     // Every stored effect is one of the two v1 values.
     for (const value of Object.values(saved.entries)) {
       const outcome = (value as { outcome?: { effect: string } }).outcome;
@@ -114,19 +119,73 @@ describe('ChatCancelReceiptStore', () => {
     }
   });
 
-  it('refuses a malformed progress', () => {
+  it('a progress from a newer daemon never disables the store: unknown values normalize, malformed progress is dropped', () => {
     const dir = tmp();
     const store = new ChatCancelReceiptStore(dir);
+    const [future, bad, junk] = [id(), id(), id()];
+    for (const cid of [future, bad, junk]) {
+      store.insertPending('operator', cid, { paneId: 'pane', fingerprint: fp });
+      store.complete('operator', cid, { effect: 'interrupt-requested' }, { state: 'requested', at: 1 });
+    }
+    const file = path.join(dir, 'chat-cancel-receipts.json');
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const keys = Object.keys(saved.entries);
+    const progress = [
+      { state: 'ended', endedAs: 'handed-off', evidence: 'telepathy', reason: 'later', at: 7 },
+      { state: 'cancelled-natively', at: 8 },
+      { state: 'ended', at: 'x' },
+    ];
+    keys.forEach((key, i) => { saved.entries[key].progress = progress[i]; });
+    fs.writeFileSync(file, JSON.stringify(saved));
+    const reloaded = new ChatCancelReceiptStore(dir, { now: () => 9_000 });
+    const views = [future, bad, junk].map((cid) => reloaded.progress('operator', cid));
+    // Which id got which row follows key order; compare as a set.
+    expect(views).toEqual(expect.arrayContaining([
+      { state: 'ended', at: 7 },
+      { state: 'unknown', at: 8 },
+      // Dropped: the entry's effect decides (`requested`), which a restart settles.
+      { state: 'unknown', reason: 'daemon-restart', at: 9_000 },
+    ]));
+    expect(reloaded.insertPending('operator', id(), { paneId: 'pane', fingerprint: fp })).toBe('inserted');
+  });
+
+  it('writes the restart settlement once, so its time is stable across later restarts', () => {
+    const dir = tmp();
+    const store = new ChatCancelReceiptStore(dir, { now: () => 5_000 });
+    const cid = id();
+    store.insertPending('operator', cid, { paneId: 'pane', fingerprint: fp });
+    store.complete('operator', cid, { effect: 'interrupt-requested' }, { state: 'requested', at: 5_000 });
+    expect(new ChatCancelReceiptStore(dir, { now: () => 9_000 }).progress('operator', cid)).toMatchObject({ state: 'unknown', at: 9_000 });
+    expect(new ChatCancelReceiptStore(dir, { now: () => 12_000 }).progress('operator', cid)).toMatchObject({ state: 'unknown', at: 9_000 });
+  });
+
+  it('a failed progress write changes nothing and reports unsaved', () => {
+    const dir = tmp();
+    let fail = false;
+    const store = new ChatCancelReceiptStore(dir, { write: (file, data) => { if (fail) throw new Error('ENOSPC'); fs.writeFileSync(file, JSON.stringify(data)); } });
     const cid = id();
     store.insertPending('operator', cid, { paneId: 'pane', fingerprint: fp });
     store.complete('operator', cid, { effect: 'interrupt-requested' }, { state: 'requested', at: 1 });
-    const file = path.join(dir, 'chat-cancel-receipts.json');
-    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
-    for (const progress of [{ state: 'done', at: 1 }, { state: 'ended', at: 'x' }, { state: 'ended', evidence: 'hook', at: 1 }]) {
-      const entries = Object.fromEntries(Object.entries(saved.entries).map(([k, v]) => [k, { ...(v as object), progress }]));
-      fs.writeFileSync(file, JSON.stringify({ version: 1, entries }));
-      expect(() => new ChatCancelReceiptStore(dir)).toThrow();
-    }
+    fail = true;
+    expect(store.setProgress('operator', cid, { state: 'ended', at: 2 })).toBe('unsaved');
+    expect(store.progress('operator', cid)).toMatchObject({ state: 'requested' });
+    fail = false;
+    expect(store.setProgress('operator', cid, { state: 'ended', at: 3 })).toBe('saved');
+    expect(store.setProgress('operator', cid, { state: 'not-ended', at: 4 })).toBe('final');
+  });
+
+  it('forgets the write time of a receipt it drops', () => {
+    const dir = tmp();
+    let clock = Date.now();
+    const store = new ChatCancelReceiptStore(dir, { now: () => clock });
+    const old = id();
+    store.insertPending('operator', old, { paneId: 'pane', fingerprint: fp });
+    store.complete('operator', old, { effect: 'interrupt-requested' }, { state: 'requested', at: clock });
+    const times = (store as unknown as { requestedAt: Map<string, number> }).requestedAt;
+    expect(times.size).toBe(1);
+    clock += 25 * 3600_000;
+    store.insertPending('operator', `${clock}-${randomUUID()}`, { paneId: 'pane', fingerprint: fp });
+    expect(times.size).toBe(0);
   });
 
   it('refuses a corrupt file rather than forgetting ids that may have pressed ESC', () => {

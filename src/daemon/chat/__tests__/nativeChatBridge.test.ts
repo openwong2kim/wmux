@@ -800,7 +800,7 @@ describe('cancel outcome (Esc path)', () => {
   const T0 = 1_760_000_000_000;
   const RUNNING = ['✢ Ruminating… (8s · ↓ 238 tokens)', '─'.repeat(40), '❯ ', '─'.repeat(40)];
   afterEach(() => { vi.useRealTimers(); });
-  const setup = () => {
+  const setup = (over: (f: ReturnType<typeof fixture>) => Partial<NativeChatBridgeDeps<ChatPane>> = () => ({})) => {
     vi.useFakeTimers({ now: T0 });
     const f = fixture(); f.liveClaude();
     const startedAt = Date.now() - 5_000;
@@ -810,7 +810,7 @@ describe('cancel outcome (Esc path)', () => {
     let transcript: import('../../../shared/transcript/turnEvents').TurnEvent[] = [];
     const bridge = createChatBridge({ ...f.deps,
       projector: { status: () => f.state.projector, snapshot: () => ({ ...page('e'), events: transcript }) },
-      onCancelEvent: (event) => { events.push(event); } });
+      onCancelEvent: (event) => { events.push(event); }, ...over(f) });
     const req = { owner: 'device:a' as const, id: 'pane', agentSessionId: 'conv', historyEpoch: EPOCH, turnId: 't1:n.3', clientCancelId: msgId() };
     const outcome = (cid = req.clientCancelId) => bridge.cancelOutcome?.('device:a', 'pane', cid);
     const setTranscript = (rows: typeof transcript) => { transcript = rows; };
@@ -838,10 +838,109 @@ describe('cancel outcome (Esc path)', () => {
     expect((await f.bridge.cancel(f.req)).cancel).toMatchObject({ state: 'ended', endedAs: 'interrupted' });
   });
 
+  it('an end recorded before the write (an earlier turn merged into the episode) is never the aimed turn\'s end', async () => {
+    const f = setup();
+    // Turn A ended, then a queued prompt kept the same episode running.
+    f.setTranscript([meta('turn_complete', T0 - 1_000), { id: 'u2', kind: 'user_text', text: 'queued', ts: T0 - 900 }]);
+    await f.bridge.cancel(f.req);
+    f.state.agent.turn = { id: 't1:n.3', state: 'idle', startedAt: f.startedAt };
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'requested' });
+    // The aimed turn's own interrupt record, after the write.
+    f.setTranscript([meta('turn_complete', T0 - 1_000), { id: 'u2', kind: 'user_text', text: 'queued', ts: T0 - 900 }, meta('turn_aborted', T0 + 1_300)]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'ended', endedAs: 'interrupted', evidence: 'transcript' });
+  });
+
+  it('a new turn starting before any end after the write is unknown, never the next turn\'s end', async () => {
+    const f = setup();
+    f.setTranscript([meta('turn_started', T0 - 5_000)]);
+    await f.bridge.cancel(f.req);
+    f.setTranscript([meta('turn_started', T0 - 5_000), { id: 'u9', kind: 'user_text', text: 'next', ts: T0 + 500 }, meta('turn_complete', T0 + 900)]);
+    f.state.agent.turn = { id: 't1:n.4', state: 'idle', startedAt: T0 + 500 };
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toEqual({ state: 'unknown', turnId: 't1:n.3', requestedAt: T0, at: T0 + 1_000 });
+  });
+
+  it('a tail that no longer reaches the write boundary is unknown', async () => {
+    const f = setup();
+    f.setTranscript([meta('turn_started', T0 - 5_000)]);
+    await f.bridge.cancel(f.req);
+    f.setTranscript([meta('turn_complete', T0 + 700)]);
+    f.state.agent.turn = { id: 't1:n.3', state: 'idle', startedAt: f.startedAt };
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'unknown' });
+    expect(f.outcome()).not.toHaveProperty('reason');
+  });
+
+  it('the running check comes first: an end record while /turns still shows the turn running does not settle', async () => {
+    const f = setup();
+    await f.bridge.cancel(f.req);
+    f.setTranscript([meta('turn_aborted', T0 + 300)]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'requested' });
+    f.state.agent.turn = { id: 't1:n.3', state: 'idle', startedAt: f.startedAt };
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'ended', endedAs: 'interrupted' });
+  });
+
+  it('a conversation change while the screen is read settles session-changed, not the new conversation\'s idle', async () => {
+    let swap = false;
+    const f = setup((fx) => ({ readScreen: async () => {
+      if (swap) { fx.state.projector = { ...fx.state.projector, agentSessionId: 'other' }; fx.shell.title = { title: '✳ Claude Code', at: Date.now() }; }
+      return fx.state.screen;
+    } }));
+    await f.bridge.cancel(f.req);
+    swap = true;
+    f.state.agent.turn = { id: 't1:n.3', state: 'idle', startedAt: f.startedAt };
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'unknown', reason: 'session-changed' });
+  });
+
+  it('a replaced pane object of the same incarnation is still the pane; a dead one is pane-closed', async () => {
+    const f = setup();
+    await f.bridge.cancel(f.req);
+    f.state.pane = { ...f.state.pane!, meta: { ...f.state.pane!.meta } };
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'requested' });
+    f.state.pane.meta.state = 'suspended';
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'requested' });
+    f.state.pane.meta.state = 'dead';
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'unknown', reason: 'pane-closed' });
+  });
+
+  it('a pane gone by the write settles pane-closed at once instead of staying requested', async () => {
+    const f = setup((fx) => ({ readScreen: async () => { const rows = fx.state.screen; fx.state.pane = undefined; return rows; } }));
+    const answer = await f.bridge.cancel(f.req);
+    expect(answer).toMatchObject({ effect: 'interrupt-requested' });
+    expect(f.outcome()).toMatchObject({ state: 'unknown', reason: 'pane-closed' });
+    expect(f.events.map((event) => event.state)).toEqual(['requested', 'unknown']);
+  });
+
+  it('a progress write that fails is not announced and is retried', async () => {
+    const f = setup();
+    const store = f.deps.cancelReceipts!;
+    await f.bridge.cancel(f.req);
+    const real = store.setProgress.bind(store);
+    let fail = 2;
+    vi.spyOn(store, 'setProgress').mockImplementation((...args) => (fail-- > 0 ? 'unsaved' : real(...args)));
+    f.setTranscript([meta('turn_aborted', T0 + 300)]);
+    f.state.agent.turn = { id: 't1:n.3', state: 'idle', startedAt: f.startedAt };
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(f.outcome()).toMatchObject({ state: 'requested' });
+    expect(f.events.map((event) => event.state)).toEqual(['requested']);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'ended' });
+    expect(f.events.map((event) => event.state)).toEqual(['requested', 'ended']);
+  });
+
   it('a turn that finished on its own first reads ended/completed', async () => {
     const f = setup();
     await f.bridge.cancel(f.req);
     f.setTranscript([meta('turn_complete', T0 + 300)]);
+    f.state.agent.turn = { id: 't1:n.3', state: 'idle', startedAt: f.startedAt };
     await vi.advanceTimersByTimeAsync(1_000);
     expect(f.outcome()).toMatchObject({ state: 'ended', endedAs: 'completed', evidence: 'transcript' });
   });

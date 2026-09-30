@@ -41,25 +41,46 @@ export function transcriptTurnEnd(
   return undefined;
 }
 
+/** Where a cancelled turn's transcript stood when the interrupt was written. */
+export interface TranscriptBoundary {
+  /** The last event id in the tail at the write; undefined when the tail was empty or unreadable. */
+  lastEventId?: string;
+  /** Records stamped before this (the write time less a small skew) are never the aimed turn's end. */
+  since: number;
+}
+
 /**
- * The first turn end recorded at or after `since`, whatever follows it: a
- * turn that ended and was followed by the next prompt still ended. `idle` is
- * an interrupt, `complete` an end_turn reply. Undefined when none is in the
- * scanned tail.
+ * What the transcript says about the turn that was running at `boundary`:
+ * only records after the boundary count, so an end recorded before the write
+ * (an earlier turn merged into the same episode) is never taken for it.
+ * - `ended`: the first record after the boundary is an end (`idle` = interrupt,
+ *   `complete` = end_turn) before any new turn starts.
+ * - `crossed`: a new prompt or turn start came first; the aimed turn's end is
+ *   not provable from here.
+ * - `gap`: the tail no longer reaches back to the boundary, so what came right
+ *   after it is out of view.
+ * Undefined: nothing after the boundary settles it yet.
  */
-export function firstTurnEndSince(
+export function turnEndAfter(
   events: readonly TurnEvent[] | undefined,
-  since: number,
-): { status: AgentStatus; at: number } | undefined {
+  boundary: TranscriptBoundary,
+): { kind: 'ended'; status: AgentStatus } | { kind: 'crossed' } | { kind: 'gap' } | undefined {
   if (!events) return undefined;
-  let found: { status: AgentStatus; at: number } | undefined;
-  for (let i = events.length - 1; i >= Math.max(0, events.length - END_SCAN_LIMIT * 4); i--) {
-    const event = events[i];
-    if (event.ts !== undefined && event.ts < since) break;
-    const status = turnEndStatus(event);
-    if (status && event.ts !== undefined) found = { status, at: event.ts };
+  let start = 0;
+  if (boundary.lastEventId !== undefined) {
+    let at = -1;
+    for (let i = events.length - 1; i >= 0; i--) if (events[i].id === boundary.lastEventId) { at = i; break; }
+    if (at < 0) return events.length ? { kind: 'gap' } : undefined;
+    start = at + 1;
   }
-  return found;
+  for (let i = start; i < events.length; i++) {
+    const event = events[i];
+    if (event.ts !== undefined && event.ts < boundary.since) continue;
+    const status = turnEndStatus(event);
+    if (status) return { kind: 'ended', status };
+    if (event.kind === 'user_text' || (event.kind === 'meta' && event.subtype === 'turn_started')) return { kind: 'crossed' };
+  }
+  return undefined;
 }
 
 /**
