@@ -1,3 +1,235 @@
+## [3.64.0] — 2026-10-01
+
+### Added
+
+- **`/api/workspaces` carries the desktop's split layout.** While the desktop
+  app is attached, each workspace row now has an optional read-only `layout`
+  with how its panes are split and sized, which tabs each pane holds, which tab
+  it shows, and which pane has focus. The tree names only that row's own live
+  sessions. Sessions the tree leaves out, such as a stashed pane's, are listed
+  in `unplaced`. Before this, web and phone clients got only a flat pane list
+  and could not draw the app's arrangement. Clients that ignore the new key see
+  no change. (#1650)
+
+- **"Show Task Diff" in the command palette.** In a fan-out task's workspace,
+  the palette now opens that task's diff, with hunk checkboxes and Adopt, plus
+  PR and Close while the task is still open. Before, once the "Open diff" toast
+  after a fan-out timed out, a task that was still running (or detached) had
+  no way back to it. "Show Git Diff" opens the read-only workspace diff, and
+  Fleet's Ready to review lists finished tasks only. (#1651)
+
+- **The + menu offers a remote pane when a computer is paired.** Next to
+  "Attach remote workspace…", a new "Empty — remote…" row opens the same host
+  picker as the pane menu's "Split right/down — remote" and creates a
+  workspace whose single pane runs on the chosen computer: a real, interactive
+  pane, not a read-only mirror. Before, "Empty" always made a local pane, and
+  a remote pane could only be split off an existing one. With no computer
+  paired, the menu is unchanged. (#1653)
+
+- **wmux recognises the Antigravity CLI (`agy`).** Google replaced the Gemini
+  CLI with `agy`, and a pane running it used to look like a bare shell: no
+  agent badge, no running/waiting state and no approval alert. The detector now
+  opens on the `Antigravity CLI` banner or the project trust screen, reads the
+  footer (`esc to cancel` while a turn runs, `? for shortcuts` when idle) and
+  raises the trust screen as awaiting input. Patterns come from a live capture
+  of agy 1.2.13. (#1659)
+
+- **Opt-in MCP registration for the Antigravity CLI.** `wmux mcp register
+  --target agy` adds the wmux server to `~/.gemini/config/mcp_config.json`,
+  where agy reads its MCP servers. It is never written at boot or by a
+  target-less `wmux mcp register`, because agy often runs as a worker whose
+  tool surface the operator keeps restricted on purpose. A target-less
+  `wmux mcp check` and `wmux mcp unregister` do include it, so an opted-in
+  entry can be inspected and removed like the others. (#1659)
+
+- **agy is a known agent launcher.** Its `--model` grammar is verified (a full
+  `agy models` id such as `gemini-3.8-flash-low`). Fan-out lists agy but keeps
+  it unselectable, and role bindings do not offer it: agy rejects a positional
+  prompt, and a fresh worktree stops on its project trust screen, which no flag
+  or environment variable can pre-answer. (#1659)
+
+- **`wmux web` can show the app's own interface at `/app`.** Open `/app`
+  instead of `/` to see the same sidebar, workspace rows, pane tabs and split
+  layout the desktop app draws, in its theme and fonts, kept in step with the
+  desktop every few seconds. On a phone it shows the rail, a sidebar drawer and
+  one pane at a time. It is read-only and does not show live terminals yet; the
+  classic page at `/` is unchanged. Before this, the browser only had a session
+  list and a flat tab strip. (#1660)
+
+- **Connect a phone step by step from the Remote popover.** A new wizard first
+  checks whether this computer can serve over HTTPS through Tailscale. If it
+  can't, it shows the reason and a retry. You then choose View only or Remote
+  control, decide whether to allow photo and file upload, and name the phone.
+  The wizard shows the QR code and confirms once the phone connects. It opens
+  by itself while nothing is paired. With a phone already paired, the popover
+  keeps its usual controls and offers "Connect a phone step by step". Before
+  this, a first-time user had to pick the right checkboxes, start the server
+  and mint a named code in that order on their own. (#1661)
+
+- **The phone can list projects, branches and CI checks.** Three new
+  read-only web routes for a paired phone with the input grant:
+  `GET /api/git/projects` groups your open panes by repository (linked
+  worktrees of one repository form one project), `GET …/git/branches` lists a
+  pane's local branches with their upstream and which panes have each one
+  checked out, and `GET …/git/checks` shows the CI checks of the pane's pull
+  request. Before, the phone could only see the status of one pane's working
+  tree and its PR list. `/api/config` advertises them as `gitProjects` and
+  `gitChecks`. (#1663)
+
+- **A phone can open a pane on a different account.** `POST /api/sessions`
+  accepts an `accountId` from the desktop's account list. The new pane runs on
+  that account's Claude or Codex config directory, and the workspace's own
+  account binding stays as it was. Before, a phone-created pane always used the
+  workspace's bound account. The desktop has to announce support first
+  (`paneAccount` in `/api/config`), and any failure refuses the create instead
+  of silently using the workspace account. `GET /api/agent-launch-options`
+  takes the same `accountId`, so the model picker shows that account's models.
+
+- **Handoff lineage for phone-created panes.** `POST /api/sessions` accepts
+  `handoffFrom`, the pane the work came from. It is stored on the new pane,
+  including across recovery, together with whether the source could be
+  verified. It appears on the pane's row and on every `/api/history` entry of
+  that pane (`paneHandoff` in `/api/config`).
+
+- **The phone learns whether Stop actually stopped the turn.** A chat cancel
+  used to answer "interrupt requested" and stop there. On a daemon that
+  advertises `chatCancelOutcome`, the answer now carries the cancel's progress,
+  a new receipt route (`GET /api/sessions/<id>/chat/cancel/<clientCancelId>`)
+  reports `requested`, `ended`, `not-ended` or `unknown`, and an SSE
+  `chat.cancel` event announces each change. For Claude and Codex the daemon
+  watches the stopped turn for 15 seconds: the interrupt record in the
+  transcript, or the agent's idle title, settles `ended`; a turn still running
+  after 15 seconds settles `not-ended`; a daemon restart settles `unknown`.
+  (#1665)
+
+- **Live terminals in the `wmux web` browser app.** The page that shows the
+  app's own sidebar, tabs and split layout now shows each pane's live terminal
+  too, drawn by the same terminal component as the desktop, at the desktop's
+  exact columns and rows (the font size adapts to the browser). You can type
+  when the server and your device allow input, and mouse clicks in full-screen
+  programs land on the right cell. Up to four panes stream at once; any other
+  shown pane offers a "Show live" button. On a phone, only the selected pane is
+  live. (#1667)
+
+- **The phone can show a Codex pane's sign-in and usage limits.** A new route,
+  `GET /api/sessions/<id>/codex/account-status`, reads the auth state and plan
+  limits of the account a phone-created Codex pane runs on, from the account
+  server that pane already uses. It never starts a server, never sends a model
+  request, and never passes on tokens, e-mail addresses or account ids.
+  Answers are cached per account for 60 seconds. `/api/config` advertises
+  `codexAccountStatus`, and `/turns` marks such panes with
+  `chat.capabilities.accountStatus`. (#1668)
+
+- **Stop on a phone-created Codex pane uses Codex's own interrupt.** A chat
+  cancel used to press Esc in the Codex TUI and infer the result from the
+  transcript or the screen. On a Codex pane with a wmux relay it now asks the
+  Codex app-server to interrupt the running turn first, and the cancel receipt
+  reads `ended` with `evidence: "native"` once that pane's own Codex stream
+  reports the turn interrupted. The interrupt request's own answer is never
+  taken as proof. When no proof arrives within 5 seconds, every Esc check
+  runs again and the Esc goes out as before; a turn stopped that way is
+  reported with the Esc path's evidence, never `native`. (#1669)
+
+### Changed
+
+- **Breaking for envelope-less RPC callers.** The `legacy` grandfather lane
+  is closed, as announced for 2026-09-30 (#1111): a JSON-RPC request without
+  a `clientName` envelope is now refused by the permission gate instead of
+  being allowed through unscoped (which also, quietly, bypassed the
+  capability gate for `wmux.internal` methods). Send a `clientName` and use
+  the identity + declaration flow, or the curated `wmux-cli` lane. The wmux
+  UI (its renderer bridge) and the token-authenticated commander lane are
+  exempt, and UI plugins are unaffected because the plugin host already
+  sends each plugin's manifest name. (#1111, #1139)
+
+- **wmux's own integrations now identify themselves.** The agent hook
+  bridges send `wmux-hook-bridge` and the Claude Code statusline sends
+  `wmux-statusline`. Each name has a lane that admits only the one method
+  that caller sends (`hooks.signal`, `usage.rateLimits`) with no approval
+  prompt; for anything else the names are ordinary clients. Copies the app
+  manages are refreshed automatically (the Claude bridge and statusline
+  under `~/.wmux/hooks/`, the Codex notify bridge, the OpenCode plugin); run
+  `wmux setup-hooks` again to refresh the Codex hooks bridge. Copies you
+  installed yourself keep the old bridge until you replace them: run
+  `claude plugin update` for the `wmux-claude-integration` marketplace
+  plugin (now 0.5.0), and re-copy a hand-installed Kiro or OpenClaude
+  bridge. An old bridge still reports through the daemon pipe, its default
+  route; only its main-pipe fallback is refused. (#1111, #1139)
+
+- **`wmux web` opens the app interface at `/`.** The browser app (previously
+  opt-in at `/app`, without terminals) is now the default page. The classic
+  single-pane page moved to `/classic`; pairing (`/pair`), a missing or
+  rejected credential, and browsers too old for the app (iOS before 16.4) use
+  it automatically. This supersedes the #1660 note that `/` was unchanged.
+  (#1667)
+
+### Fixed
+
+- **Moving the mouse over the browser terminal no longer types junk into the
+  shell.** When a TUI such as Claude Code turned on mouse tracking and exited
+  without turning it off, attaching from the web replayed that mode, and every
+  pointer move typed a mouse report like `35;55;12M` into the prompt. The web
+  client now clears the leftover mouse and focus reporting after painting a
+  pane whose shell is at its prompt, using the same code the desktop app uses
+  for the same problem. (#1648)
+
+- **Closing a task from its diff panel updates the sidebar right away.** The
+  sidebar and Fleet used to keep listing the task as open for up to 15 seconds,
+  until the next background refresh. (#1651)
+
+- **Opening a task's diff again goes to the tab that is already open.** With
+  the diff open in one pane of the task workspace and focus in another, opening
+  it again (from the fan-out toast or Fleet) added a second diff tab for the
+  same task. After a Close in one of them, the other kept showing the removed
+  worktree's changes, with Adopt and Close still offered. (#1651)
+
+- **Transcript images and videos are much harder to pull from outside their
+  folder on Windows.** When the phone asked for an image or video named in a
+  transcript, the daemon checked that the file was inside the pane's folder
+  and then opened it. It relied on two file-open flags to catch a link swapped
+  in between the check and the open, and those flags do not exist on Windows,
+  so a directory on the path could be swapped for a junction in that window
+  and the file outside the folder was sent. Both routes now re-check what they
+  actually opened: it must be a regular file, the path must still name it, and
+  the path must still resolve inside the folder. Anything else gets the same
+  "not found" as a missing file. This also narrows the same directory-swap
+  window on macOS and Linux, which the flags never covered there. It narrows
+  the race rather than closing it: a process that keeps swapping a folder for
+  a link and back can still get an occasional request through. (#1654)
+
+- **A new repository shows its branch in the sidebar when you run `git init`
+  in a folder reached through a Windows short name.** Some shells keep 8.3
+  short names in the working directory, for example Git Bash after
+  `cd /c/Users/JOHNSM~1/...`. In such a pane the file watcher reported the
+  wrong file names, and the sidebar showed no branch until the first commit.
+  wmux now watches the directory's full long path. (#1656)
+
+- **Codex's notify bridge no longer credits a finished turn to the pane that
+  started Codex's shared background server.** Codex 0.157 and later run turns
+  in one shared server per account, and that server keeps the wmux settings of
+  whichever pane started it. Every turn-complete notification then named that
+  pane, possibly a closed pane or a pane in another wmux instance. The wrong
+  pane was marked done and labelled Codex, and it could be given another
+  pane's conversation for Resume. The notify bridge now drops a notification
+  that a shared Codex server launched while carrying a wmux pane's settings,
+  and sends or saves nothing under them; the WSL launcher applies the same
+  rule. A server carries a pane's settings when an unwrapped `codex` started
+  it from a wmux pane: PowerShell, Git Bash and fish panes, scripts, and panes
+  opened before the bash/zsh `codex` wrapper. While such a server runs, the
+  turns it serves are detected from the screen instead. `codex --no-daemon`, a
+  server wmux started itself, and wmux's Chat composer report as before.
+  Codex's lifecycle hooks bridge, which wmux can also install, still reports
+  under the server's pane and is not changed here. (#1657)
+
+- **`/api/config` advertisement now matches the routes' refusal rules.**
+  `chatCancel` and `chatQueue` were advertised from the input grant alone,
+  while their routes also require `--allow-transcript`, a chat bridge and,
+  for the queue, a working dequeue. They are now computed from the same check
+  the routes use. The phone client contract states the rule and the cancel
+  receipt details (contract fix). (#1672)
+
+- **A Codex pane reconnects after its app-server restarts.** When the managed Codex app-server restarted (for example after it updated itself), the pane's Codex stayed on "Reconnecting…" and the phone's Codex account status, Stop and approvals treated the server as gone until the pane was recreated. The pane now re-attaches to the restarted server by itself, and account status, Stop and approvals work again. (#1675)
+
 ## [3.63.0] — 2026-09-29
 
 ### Added
