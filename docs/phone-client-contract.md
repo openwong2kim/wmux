@@ -4354,10 +4354,11 @@ timeout. Every `git` the daemon runs for the phone is local only: no
 transport is allowed and a partial clone never fetches a missing object.
 The one exception to the 5 s bound is `git worktree add` itself, bounded at
 120 s: it checks out a whole tree, and killing it at 5 s would manufacture
-the half-written state the receipt exists to describe. A creation holds its
-slot from the POST until the background job settles. Worktree creation runs
-in the background (below) and serializes per repository, keyed by the
-realpath of the git common dir. Each creation that
+the half-written state the receipt exists to describe. Worktree creations do
+not use the four read slots: each caller runs one at a time and the daemon at
+most two (`429 git-busy` beyond that). They run in the background (below)
+and serialize per repository, keyed by the realpath of the git common dir.
+Each creation that
 passes validation writes one line to the device audit log
 (`device-audit.jsonl`): event `git-worktree`, the device id (empty for the
 operator token), and the outcome tag as `reason`. No path and no branch name
@@ -4438,18 +4439,29 @@ else:
 - branch `phone/<slug>`;
 - directory `${wmuxHome}/worktrees/<projectId>/phone-<slug>`;
 - the command: `git worktree add -b phone/<slug> -- <dir> <base-oid>`, with
-  hooks disabled (`core.hooksPath=/dev/null`), so no repository hook runs,
-  and the global attributes file disabled (`core.attributesFile=/dev/null`),
-  so only the attributes the filter check below reads can select a filter.
+  `core.hooksPath` pointing at an empty directory the daemon owns (no
+  repository hook runs), `core.attributesFile` at an empty file (only the
+  tree's own attributes and `info/attributes` apply), every configured
+  content filter driver switched off on the command line, and no transport.
+
+Every directory from the daemon's data directory down to `<projectId>` must
+be a real directory, not a symbolic link or junction
+(`worktree-path-unsafe`); missing ones are created one level at a time, and
+the check is repeated right before the add.
 
 Refused before anything is written: a bare repository, an unborn `HEAD`, a
 merge/rebase/sequencer in progress, a repository with submodules
 (`.gitmodules` at the base commit; submodules are not checked out by a phone
 worktree, so they are refused rather than left empty), and content filters.
-The filter check reads the `.gitattributes` files in the base tree (and
-`info/attributes`): only a `filter=` attribute that some path in the tree
-actually uses refuses the create (`git-filters-require-desktop`). A global
-`git lfs install` alone, with no `filter=lfs` in the tree, is not a refusal.
+The filter check scans every path of the base commit's whole tree (not only
+the session's subdirectory) for a set `filter` attribute, as
+`git check-attr --source` resolves it from the tree's `.gitattributes` files
+and `info/attributes`; any hit refuses the create
+(`git-filters-require-desktop`). A global `git lfs install` alone, with no
+`filter=` attribute in effect in the tree, is not a refusal. The scan needs
+git 2.40 or later (`git-version-unsupported` otherwise) and has a 30 s
+bound. On Windows the directory plus the longest path in the tree must fit
+260 characters (`path-too-long`); elsewhere only the directory is bounded.
 
 **The answer is asynchronous.** Checking out a tree can take longer than any
 reasonable request, so the create never runs inside the HTTP request:
@@ -4475,22 +4487,38 @@ GET /api/sessions/<id>/git/worktree/<requestId>
 ```
 
 A repeat POST with the same body answers **200 with this same receipt body**
-plus `replayed: true`, whatever its state; there is one shape for the
-created answer. The receipt route needs the input grant, like the POST.
+plus `replayed: true`, when the receipt is `pending`, `created` or
+`refused`; there is one shape for the created answer. A repeat of an
+**`unknown`** receipt is a recovery run instead (202, `pending` again; see
+below). The receipt route needs the input grant, like the POST.
 
 | POST status | `error` | When |
 | --- | --- | --- |
 | 400 | `invalid-git-request` | body shape, extra key, malformed `requestId` |
 | 400 | `invalid-slug` | slug fails the rule |
 | 409 | `request-id-conflict` | this `requestId` was used with another slug or session |
-| 429 | `git-busy` | four Git/PR jobs already running |
-| 503 | `git-receipts-unavailable` | the receipt store could not be read (the key is also hidden), or the `pending` entry could not be written |
+| 429 | `git-busy` | this caller already has a creation running, two are running, or this caller holds 100 receipts that are all still pending |
+| 503 | `git-receipts-unavailable` | the receipt store could not be read (the key is also hidden) |
 
 The receipt route answers 400 `invalid-git-request` for an id that is not a
-lowercase UUID and 503 `git-receipts-unavailable` like the POST. A `git
-worktree add` that was killed (the 120 s bound, a signal) reads `unknown`
-with `git-outcome-unknown`, like a restart: its directory may exist half
-written, and the desktop cleanup below lists it.
+UUID and 503 `git-receipts-unavailable` like the POST.
+
+**When the add does not finish.** If `git worktree add` ran and did not
+finish cleanly (it failed, was killed by the 120 s bound or a signal, or the
+daemon stopped), the daemon looks at what is there. Nothing left (no
+`phone/<slug>` branch, no directory, no registered worktree) is `refused`
+with `git-operation-failed`, and no empty `<projectId>` directory is left
+behind. Anything left is `unknown` with `git-outcome-unknown`. Repeating the
+same POST then recovers:
+
+- a finished, clean checkout of `phone/<slug>` at the directory is adopted:
+  the receipt becomes `created`;
+- a checkout git left locked mid-creation is removed, and a `phone/<slug>`
+  branch that never moved since it was created and is checked out nowhere is
+  deleted; the create then runs again;
+- anything else (a checkout with changes in it, a branch with history) is
+  left alone and refused (`worktree-path-exists`, `branch-exists`); the
+  desktop cleanup list reclaims it.
 
 Refusals found by the background job land in the receipt as `state:
 "refused"` with `error` one of: `branch-exists` (never auto-suffixed),
@@ -4498,17 +4526,20 @@ Refusals found by the background job land in the receipt as `state:
 `worktree-path-exists`, `path-too-long` (over 260 characters),
 `not-a-git-repo` (including bare), `unborn-head`, `submodules-unsupported`,
 `git-filters-require-desktop`, `git-operation-in-progress`,
-`git-operation-failed`.
+`git-operation-failed`, `worktree-path-unsafe`, `git-version-unsupported`.
 
 **Receipt store.** A new file, `phone-worktree-receipts.json`, `version: 1`,
 mode 0600, written durably. Entries are keyed by a hash of (owner,
 `requestId`), where the owner is `device:<id>` or `operator`, and expire 24 h
-after creation. The `pending` entry is on disk before `git worktree add`
-starts. A `pending` entry found after a daemon restart becomes `unknown` with
-`error: "git-outcome-unknown"`: list branches to see whether `phone/<slug>`
-exists. If the file cannot be read or validated at start, the daemon turns
-the worktree routes off and omits `gitWorktrees` (fail closed); it never
-starts with an empty store over an unreadable one.
+after creation; each owner holds at most 100, the oldest finished ones going
+first. The `pending` entry is on disk before `git worktree add` starts; a
+request refused before that point is recorded afterwards, and a restart in
+between forgets it (nothing was written, so repeating it is harmless). A
+`pending` entry found after a daemon restart becomes `unknown` with `error:
+"git-outcome-unknown"`, which the same POST recovers as above. If the file
+cannot be read or validated at start, the daemon logs one warning, turns the
+worktree routes off and omits `gitWorktrees` (fail closed); it never starts
+with an empty store over an unreadable one.
 
 **Opening a pane in it.** Pass the receipt's `cwd` verbatim to the existing
 `POST /api/sessions {workspaceId, cwd}`; do not build or edit it. That route
@@ -4518,10 +4549,13 @@ refusal. The new pane's `spawnCwd` is the worktree, so every Git route
 addressed through it acts on the new branch.
 
 **Desktop cleanup.** The desktop's worktree scan lists phone worktrees in a
-category of their own, `phone-worktree`, instead of calling them orphans,
-and reclaims them through the existing cleanup flow (which already refuses a
-dirty worktree). Every `phone-*` directory without a task stamp is listed,
-clean or not, never hidden. Worktree removal from the phone is not in v1.
+category of their own, `phone-worktree`, instead of calling them orphans.
+Every `phone-*` directory without a task stamp is listed, clean or not,
+never hidden, with a **Remove** action: it refuses while a pane runs inside,
+asks before discarding uncommitted changes or deleting a directory git does
+not track, runs `git worktree remove`, then offers to delete the
+`phone/<slug>` branch as a separate confirmation. Worktree removal from the
+phone is not in v1.
 
 Not in v1: push, PR creation, worktree removal, switching an existing
 checkout's branch, remote branches.

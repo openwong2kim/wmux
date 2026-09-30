@@ -3903,13 +3903,9 @@ export class WebTerminalServer {
       }
       if (!this.mayInput(fresh.principal)) return this.refuseInput(res, fresh.principal, 'Input permission changed');
       if (this.attachableSession(fresh.principal, id) !== managed) return this.json(res, 404, { error: 'session not found' });
-      const result = service.submit(
-        { owner, deviceId: principal.kind === 'device' ? principal.deviceId : '', sessionId: id, cwd, body },
-        {
-          acquire: () => { if (this.phoneGitRequests >= 4) return false; this.phoneGitRequests += 1; return true; },
-          release: () => { this.phoneGitRequests -= 1; },
-        },
-      );
+      // Creations have their own budget in the service (one per caller, two
+      // overall), so a queued checkout never holds one of the read slots.
+      const result = service.submit({ owner, deviceId: principal.kind === 'device' ? principal.deviceId : '', sessionId: id, cwd, body });
       this.json(res, result.status, result.body, { 'Cache-Control': 'no-store' });
     });
   }

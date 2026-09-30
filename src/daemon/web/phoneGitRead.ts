@@ -39,6 +39,8 @@ export interface PhoneGitRepo {
   mainRoot: string;
   /** Absolute git common dir, as git reports it. */
   commonDir: string;
+  /** The worktree this session runs in, as git reports it. */
+  worktreeRoot: string;
   /** Canonical (native realpath) git common dir: what "same repository" compares. */
   commonReal: string;
   branch: string | null;
@@ -67,7 +69,7 @@ export const canonicalPath = async (p: string) => fs.realpath(p).catch(() => pat
  */
 const repoHashRealpath = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 
-interface WorktreeRow { path: string; branch: string | null }
+export interface WorktreeRow { path: string; branch: string | null; locked?: true }
 
 /**
  * `git worktree list --porcelain`: records of `key value` fields, each record
@@ -80,6 +82,7 @@ export function parseWorktreeList(stdout: string, sep = '\0'): WorktreeRow[] {
     if (!field) { if (current) rows.push(current); current = null; continue; }
     if (field.startsWith('worktree ')) current = { path: field.slice('worktree '.length), branch: null };
     else if (current && field.startsWith('branch refs/heads/')) current.branch = field.slice('branch refs/heads/'.length);
+    else if (current && (field === 'locked' || field.startsWith('locked '))) current.locked = true;
   }
   if (current) rows.push(current);
   return rows;
@@ -139,6 +142,7 @@ export async function resolvePhoneGitRepo(cwd: string, git: GitRunner): Promise<
     name: path.basename(mainRoot),
     mainRoot,
     commonDir,
+    worktreeRoot: top,
     commonReal: await canonicalPath(commonDir),
     branch: head.ok && head.stdout.trim() ? head.stdout.trim() : null,
     linkedWorktree: repoHashRealpath(top) !== mainRoot,

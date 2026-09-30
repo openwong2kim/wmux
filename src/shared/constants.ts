@@ -162,6 +162,10 @@ export const IPC = {
   TASK_CREATE_PR: 'task:create-pr',
   WORKTASK_SCAN: 'worktask:scan',
   WORKTASK_REFIRE: 'worktask:refire',
+  // Phone worktrees (no task) in the cleanup list: remove by path, then
+  // optionally delete their phone/<slug> branch.
+  WORKTASK_REMOVE_PHONE: 'worktask:remove-phone',
+  WORKTASK_DELETE_PHONE_BRANCH: 'worktask:delete-phone-branch',
   // Command Deck Phase 2 — the Commander brain (an Agent-SDK orchestrator that
   // runs in MAIN and drives the fleet via wmux MCP). Renderer-only surface, same
   // trust basis as channelLocal/fanout (Electron process boundary, pipe-

@@ -2014,6 +2014,14 @@ export const ko = {
   'worktask.cleanup.noPaneForCommit': '이 태스크에는 커밋을 준비할 살아 있는 페인이 없습니다. worktree를 직접 여세요.',
   'worktask.cleanup.commitNeedsShell': '이 태스크의 페인은 셸이 아니라 에이전트 TUI입니다 — git 줄을 넣으면 채팅 메시지가 됩니다. worktree를 직접 여세요.',
   'worktask.cleanup.openWorktreeFailed': 'worktree를 열지 못했습니다: {error}',
+  'worktask.cleanup.remove': '제거',
+  'worktask.cleanup.removing': '제거 중…',
+  'worktask.cleanup.removed': 'worktree를 제거했습니다.',
+  'worktask.cleanup.removeFailed': '제거 실패: {error}',
+  'worktask.cleanup.removeInUse': '이 worktree에서 아직 실행 중인 판이 있습니다 — 먼저 닫으세요.',
+  'worktask.cleanup.removeDirtyConfirm': '이 worktree에 커밋하지 않은 변경이 있습니다. 변경을 버리고 제거할까요?',
+  'worktask.cleanup.removeUnregisteredConfirm': 'git이 worktree로 인식하지 않는 디렉터리입니다(생성 중단). 디렉터리를 삭제할까요?',
+  'worktask.cleanup.deleteBranchConfirm': '{branch} 브랜치도 삭제할까요?',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': '페인 cwd가 태스크 worktree 경계 밖으로 이탈: {cwd}',

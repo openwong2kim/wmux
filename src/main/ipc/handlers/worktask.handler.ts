@@ -25,6 +25,7 @@ import { TaskWorktreeManager, metaDirForWorktree } from '../../worktask/TaskWork
 import { TaskCloseService } from '../../worktask/TaskCloseService';
 import { TaskPrService } from '../../worktask/TaskPrService';
 import { WorktaskScanService, type ScanOpenTask } from '../../worktask/WorktaskScanService';
+import { deletePhoneBranch, removePhoneWorktree } from '../../worktask/PhoneWorktreeRemoval';
 import { prStatusCache } from '../../metadata/PrStatusCache';
 import { getWmuxHomeDir } from '../../../shared/constants';
 import { sanitizePtyText } from '../../../shared/types';
@@ -232,11 +233,44 @@ export function registerWorktaskHandlers(
     }),
   );
 
+  // ── worktask:remove-phone / worktask:delete-phone-branch ─────────────
+  // A phone worktree has no task to close; it is removed by its path, which
+  // PhoneWorktreeRemoval checks against the one shape the daemon creates.
+  ipcMain.removeHandler(IPC.WORKTASK_REMOVE_PHONE);
+  ipcMain.handle(
+    IPC.WORKTASK_REMOVE_PHONE,
+    wrapHandler(IPC.WORKTASK_REMOVE_PHONE, async (_event, raw: unknown) => {
+      const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+      if (typeof r.worktreePath !== 'string') return { ok: false as const, reason: 'invalid' as const };
+      return removePhoneWorktree(r.worktreePath, r.force === true, {
+        root: path.join(getWmuxHomeDir(), 'worktrees'),
+        livePaneCwds: async () => {
+          const dc = getDaemonClient();
+          if (!dc) throw new Error('Daemon not connected');
+          const sessions = (await dc.rpc('daemon.listSessions', {})) as Array<{ cwd?: string; spawnCwd?: string }>;
+          return (Array.isArray(sessions) ? sessions : []).flatMap((s) =>
+            [s.cwd, s.spawnCwd].filter((c): c is string => typeof c === 'string' && c.length > 0));
+        },
+      }).catch((error: unknown) => ({ ok: false as const, reason: 'error' as const, error: error instanceof Error ? error.message : String(error) }));
+    }),
+  );
+  ipcMain.removeHandler(IPC.WORKTASK_DELETE_PHONE_BRANCH);
+  ipcMain.handle(
+    IPC.WORKTASK_DELETE_PHONE_BRANCH,
+    wrapHandler(IPC.WORKTASK_DELETE_PHONE_BRANCH, async (_event, raw: unknown) => {
+      const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+      if (typeof r.repo !== 'string' || typeof r.branch !== 'string') return { ok: false, error: 'invalid request' };
+      return deletePhoneBranch(r.repo, r.branch);
+    }),
+  );
+
   return () => {
     ipcMain.removeHandler(IPC.TASK_CLOSE);
     ipcMain.removeHandler(IPC.TASK_CREATE_PR);
     ipcMain.removeHandler(IPC.WORKTASK_SCAN);
     ipcMain.removeHandler(IPC.WORKTASK_REFIRE);
+    ipcMain.removeHandler(IPC.WORKTASK_REMOVE_PHONE);
+    ipcMain.removeHandler(IPC.WORKTASK_DELETE_PHONE_BRANCH);
   };
 }
 

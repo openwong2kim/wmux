@@ -292,3 +292,8 @@ export interface WorktaskScanEntryWire {
 export type WorktaskScanResultWire =
   | { ok: true; scannedRoot: string; entries: WorktaskScanEntryWire[] }
   | { ok: false; error: string; scannedRoot: string; entries: WorktaskScanEntryWire[] };
+
+/** worktask:remove-phone result (PhoneWorktreeRemoval mirror). */
+export type RemovePhoneWorktreeResultWire =
+  | { ok: true; branch?: string; repo?: string }
+  | { ok: false; reason: 'invalid' | 'in-use' | 'dirty' | 'unregistered' | 'error'; error?: string };

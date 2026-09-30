@@ -91,7 +91,7 @@ export type PhoneWorktreeRequestError =
 export type PhoneWorktreeRefusal =
   | 'not-a-git-repo' | 'unborn-head' | 'branch-exists' | 'branch-namespace-blocked' | 'worktree-path-exists'
   | 'path-too-long' | 'submodules-unsupported' | 'git-filters-require-desktop' | 'git-operation-in-progress'
-  | 'git-operation-failed';
+  | 'git-operation-failed' | 'worktree-path-unsafe' | 'git-version-unsupported';
 
 /** `GET …/git/worktree/<requestId>`. `none`: no receipt for this caller and id. */
 export type PhoneWorktreeReceiptState = 'pending' | 'created' | 'refused' | 'unknown' | 'none';

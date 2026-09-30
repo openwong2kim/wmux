@@ -207,6 +207,7 @@ function getPhoneWorktrees(): PhoneWorktreeService {
   return phoneWorktrees ??= new PhoneWorktreeService({
     wmuxDir: getWmuxDir(),
     audit: (deviceId, reason) => getDeviceStore().recordGitWorktree(deviceId, reason),
+    log: (level, msg) => log(level, msg),
   });
 }
 let answerReceipts: AnswerReceiptStore | null = null;

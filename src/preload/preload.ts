@@ -1134,6 +1134,12 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.WORKTASK_REFIRE, params) as Promise<
         { ok: true } | { ok: false; error: string }
       >,
+    removePhone: (worktreePath: string, force: boolean) =>
+      ipcRenderer.invoke(IPC.WORKTASK_REMOVE_PHONE, { worktreePath, force }) as Promise<
+        import('../shared/workTask').RemovePhoneWorktreeResultWire
+      >,
+    deletePhoneBranch: (repo: string, branch: string) =>
+      ipcRenderer.invoke(IPC.WORKTASK_DELETE_PHONE_BRANCH, { repo, branch }) as Promise<{ ok: boolean; error?: string }>,
   },
   dialog: {
     pickFile: () => ipcRenderer.invoke(IPC.DIALOG_PICK_FILE) as Promise<string[]>,

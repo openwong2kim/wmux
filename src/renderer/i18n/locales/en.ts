@@ -2547,6 +2547,14 @@ export const en = {
   'worktask.cleanup.noPaneForCommit': 'This task has no live pane to prepare the commit in. Open the worktree instead.',
   'worktask.cleanup.commitNeedsShell': "The task's pane is running an agent, not a shell — a git line typed there becomes a chat message. Open the worktree instead.",
   'worktask.cleanup.openWorktreeFailed': "Couldn't open the worktree: {error}",
+  'worktask.cleanup.remove': 'Remove',
+  'worktask.cleanup.removing': 'Removing…',
+  'worktask.cleanup.removed': 'Worktree removed.',
+  'worktask.cleanup.removeFailed': 'Remove failed: {error}',
+  'worktask.cleanup.removeInUse': 'A pane is still running in this worktree — close it first.',
+  'worktask.cleanup.removeDirtyConfirm': 'This worktree has uncommitted changes. Remove it and discard them?',
+  'worktask.cleanup.removeUnregisteredConfirm': 'Git does not track this directory as a worktree (an interrupted creation). Delete the directory?',
+  'worktask.cleanup.deleteBranchConfirm': 'Also delete the branch {branch}?',
 
   // ─── Workspace item: task worktree boundary warning ──────────────────────
   'workspace.cwdDeparted': 'Pane cwd departed outside the task worktree boundary: {cwd}',
