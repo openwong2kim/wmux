@@ -41,7 +41,14 @@ export type PaneAccountParseError = 'invalid-account-id' | 'workspace-required' 
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const AGENT_SESSION_ID = /^[A-Za-z0-9_.:-]{1,128}$/;
-const RESERVED = new Set(['__proto__', 'constructor', 'prototype']);
+/**
+ * Every `Object.prototype` member name (plus `prototype`) is refused as an id,
+ * so no consumer that indexes a plain object by one of these ids can hit a
+ * prototype member. Serving code must still look ids up with a Map or an
+ * own-property check; this is the second line, not the first.
+ */
+const RESERVED: ReadonlySet<string> = new Set([...Object.getOwnPropertyNames(Object.prototype), '__proto__', 'prototype']);
+const idOk = (v: unknown, shape: RegExp): v is string => typeof v === 'string' && shape.test(v) && !RESERVED.has(v);
 
 /**
  * Read `accountId` / `handoffFrom` off a create body. Absent fields stay
@@ -53,7 +60,7 @@ export function parsePaneAccountFields(body: Record<string, unknown>):
   const value: PaneAccountFields = {};
   if (body.accountId !== undefined) {
     const id = body.accountId;
-    if (typeof id !== 'string' || !ACCOUNT_ID.test(id) || RESERVED.has(id)) return { ok: false, error: 'invalid-account-id' };
+    if (!idOk(id, ACCOUNT_ID)) return { ok: false, error: 'invalid-account-id' };
     // The desktop resolves an account only for a named workspace; without one there is nothing to fall back from.
     if (typeof body.workspaceId !== 'string' || !body.workspaceId.trim()) return { ok: false, error: 'workspace-required' };
     value.accountId = id;
@@ -63,8 +70,8 @@ export function parsePaneAccountFields(body: Record<string, unknown>):
     if (!h || typeof h !== 'object' || Array.isArray(h)) return { ok: false, error: 'invalid-handoff' };
     const o = h as Record<string, unknown>;
     if (Object.keys(o).some((k) => k !== 'sessionId' && k !== 'agentSessionId')) return { ok: false, error: 'invalid-handoff' };
-    if (typeof o.sessionId !== 'string' || !SESSION_ID.test(o.sessionId)) return { ok: false, error: 'invalid-handoff' };
-    if (o.agentSessionId !== undefined && (typeof o.agentSessionId !== 'string' || !AGENT_SESSION_ID.test(o.agentSessionId))) {
+    if (!idOk(o.sessionId, SESSION_ID)) return { ok: false, error: 'invalid-handoff' };
+    if (o.agentSessionId !== undefined && !idOk(o.agentSessionId, AGENT_SESSION_ID)) {
       return { ok: false, error: 'invalid-handoff' };
     }
     value.handoffFrom = { sessionId: o.sessionId, ...(typeof o.agentSessionId === 'string' ? { agentSessionId: o.agentSessionId } : {}) };

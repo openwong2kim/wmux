@@ -11,6 +11,8 @@
  * are defined for forward compatibility and are never populated today.
  */
 
+import { ownLookup, sanitizeDisplayText } from './phoneText';
+
 export type TurnFailureReason = 'rate-limited' | 'auth' | 'quota' | 'network' | 'unknown';
 export type TurnFailureProvider = 'claude' | 'codex';
 
@@ -73,19 +75,15 @@ const CODEX_REASONS: Readonly<Record<string, TurnFailureReason>> = {
 
 /** Codex object variants that describe a transport failure and may carry an HTTP status. */
 const CODEX_TRANSPORT = new Set(['httpConnectionFailed', 'responseStreamConnectionFailed', 'responseStreamDisconnected']);
+/** Every object-shaped `CodexErrorInfo` variant in the 0.157.1 schema. */
+const KNOWN_CODEX_OBJECT_VARIANTS = new Set([...CODEX_TRANSPORT, 'responseTooManyFailedAttempts', 'activeTurnNotSteerable']);
 
-/** Strip control characters, collapse whitespace, clip to the unit budget. */
+/**
+ * Strip control, bidi and zero-width characters and lone surrogates, collapse
+ * whitespace, and clip to the unit budget (see `sanitizeDisplayText`).
+ */
 export function clipProviderMessage(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  // eslint-disable-next-line no-control-regex
-  const flat = value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!flat) return undefined;
-  if (flat.length <= TURN_FAILURE_MESSAGE_MAX_UNITS) return flat;
-  let cut = TURN_FAILURE_MESSAGE_MAX_UNITS - 1;
-  // Never leave a lone high surrogate at the cut.
-  const last = flat.charCodeAt(cut - 1);
-  if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
-  return `${flat.slice(0, cut)}…`;
+  return sanitizeDisplayText(value, TURN_FAILURE_MESSAGE_MAX_UNITS);
 }
 
 function reasonFromHttpStatus(status: number | undefined): TurnFailureReason | undefined {
@@ -101,10 +99,13 @@ function reasonFromHttpStatus(status: number | undefined): TurnFailureReason | u
  * marked internal by Claude Code).
  */
 export function classifyClaudeStopFailure(payload: Record<string, unknown>, at: number): TurnFailure {
-  const code = typeof payload.error === 'string' && PROVIDER_CODE.test(payload.error) ? payload.error : undefined;
-  const message = clipProviderMessage(payload.last_assistant_message);
+  // The signature promises an object, but the payload crossed a process
+  // boundary: anything else classifies as `unknown` rather than throwing.
+  const p: Record<string, unknown> = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  const code = typeof p.error === 'string' && PROVIDER_CODE.test(p.error) ? p.error : undefined;
+  const message = clipProviderMessage(p.last_assistant_message);
   return {
-    reason: (code && CLAUDE_REASONS[code]) || 'unknown',
+    reason: (code && ownLookup(CLAUDE_REASONS, code)) || 'unknown',
     provider: 'claude',
     ...(code ? { providerCode: code } : {}),
     ...(message ? { message } : {}),
@@ -129,16 +130,19 @@ export function classifyCodexTurnCompleted(turn: unknown, at: number): TurnFailu
   if (typeof info === 'string') {
     code = info;
   } else if (info && typeof info === 'object' && !Array.isArray(info)) {
-    const keys = Object.keys(info);
-    if (keys.length === 1) {
-      code = keys[0];
+    // Prefer a variant this table knows, so an extra key a newer Codex adds
+    // next to it does not hide the one that classifies; else the first
+    // identifier-shaped key, kept as providerCode only.
+    const keys = Object.keys(info).filter((k) => PROVIDER_CODE.test(k));
+    code = keys.find((k) => KNOWN_CODEX_OBJECT_VARIANTS.has(k)) ?? keys[0];
+    if (code !== undefined) {
       const inner = (info as Record<string, unknown>)[code];
       const status = inner && typeof inner === 'object' ? (inner as Record<string, unknown>).httpStatusCode : undefined;
       if (typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599) httpStatus = status;
     }
   }
   if (code !== undefined && !PROVIDER_CODE.test(code)) { code = undefined; httpStatus = undefined; }
-  let reason: TurnFailureReason = (code && CODEX_REASONS[code]) || 'unknown';
+  let reason: TurnFailureReason = (code && ownLookup(CODEX_REASONS, code)) || 'unknown';
   if (reason === 'unknown' && code && (CODEX_TRANSPORT.has(code) || code === 'responseTooManyFailedAttempts')) {
     reason = reasonFromHttpStatus(httpStatus) ?? (CODEX_TRANSPORT.has(code) ? 'network' : 'unknown');
   }

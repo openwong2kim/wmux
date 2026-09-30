@@ -8,6 +8,8 @@
  * refspec. Push and PR creation are not in v1.
  */
 
+import { ownLookup, sanitizeDisplayText } from './phoneText';
+
 // ── Projects and branches ─────────────────────────────────────────────────────
 
 export interface PhoneGitProjectSession {
@@ -60,7 +62,8 @@ export const PHONE_WORKTREE_SLUG = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$/;
 export const PHONE_WORKTREE_BRANCH_PREFIX = 'phone/';
 /** Directory prefix inside `${wmuxHome}/worktrees/<projectId>/`; the desktop scan lists these as `phone-worktree`. */
 export const PHONE_WORKTREE_DIR_PREFIX = 'phone-';
-const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** Case-insensitive on input (iOS `UUID().uuidString` is uppercase); the parser lowercases it. */
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface PhoneWorktreeCreateBody { slug: string; requestId: string }
 
@@ -71,7 +74,7 @@ export function parseWorktreeCreateBody(body: unknown):
   if (Object.keys(o).some((k) => k !== 'slug' && k !== 'requestId')) return { ok: false, error: 'invalid-git-request' };
   if (typeof o.requestId !== 'string' || !REQUEST_ID.test(o.requestId)) return { ok: false, error: 'invalid-git-request' };
   if (typeof o.slug !== 'string' || !PHONE_WORKTREE_SLUG.test(o.slug)) return { ok: false, error: 'invalid-slug' };
-  return { ok: true, value: { slug: o.slug, requestId: o.requestId } };
+  return { ok: true, value: { slug: o.slug, requestId: o.requestId.toLowerCase() } };
 }
 
 /** Server-derived names for a slug. `repoHash` is the project's `projectId`. */
@@ -155,8 +158,13 @@ export const PHONE_MAX_CHECKS = 100;
 
 const PASSED = new Set<PhoneCheckState>(['success', 'neutral']);
 const SKIPPED = new Set<PhoneCheckState>(['skipped']);
-/** `unknown` is not a verdict, so it never counts as failed. */
-const PENDING = new Set<PhoneCheckState>(['queued', 'in_progress', 'pending', 'unknown']);
+/**
+ * `unknown` is a finished check (or a status context) whose result this
+ * daemon cannot read. It counts as failed, so `overall` is never `success`
+ * over a result nobody could read. A check that has not finished is never
+ * `unknown`: an unrecognized in-flight status reads `pending`.
+ */
+const PENDING = new Set<PhoneCheckState>(['queued', 'in_progress', 'pending']);
 const CONCLUSIONS: Readonly<Record<string, PhoneCheckState>> = {
   SUCCESS: 'success', FAILURE: 'failure', NEUTRAL: 'neutral', SKIPPED: 'skipped', CANCELLED: 'cancelled',
   TIMED_OUT: 'timed_out', ACTION_REQUIRED: 'action_required', STALE: 'stale', STARTUP_FAILURE: 'failure',
@@ -170,10 +178,16 @@ const time = (v: unknown): number | undefined => {
   const t = Date.parse(v);
   return Number.isFinite(t) ? t : undefined;
 };
-const githubUrl = (v: unknown): string | undefined =>
-  typeof v === 'string' && v.length <= 2048 && v.startsWith('https://github.com/') ? v : undefined;
-const text = (v: unknown, max: number): string | undefined =>
-  typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : undefined;
+/** A link the phone may open: parsed, origin exactly https://github.com, no credentials, no whitespace or controls. */
+export function githubUrl(v: unknown): string | undefined {
+  // eslint-disable-next-line no-control-regex
+  if (typeof v !== 'string' || v.length > 2048 || /[\s\u0000-\u001f\u007f-\u009f]/.test(v)) return undefined;
+  let url: URL;
+  try { url = new URL(v); } catch { return undefined; }
+  if (url.origin !== 'https://github.com' || url.username || url.password) return undefined;
+  return url.href;
+}
+const text = (v: unknown, max: number): string | undefined => sanitizeDisplayText(v, max);
 
 /** One `statusCheckRollup` entry from `gh pr view --json statusCheckRollup` (CheckRun or StatusContext). */
 export function projectCheck(row: unknown): PhoneCheck | null {
@@ -184,9 +198,9 @@ export function projectCheck(row: unknown): PhoneCheck | null {
     if (!name) return null;
     const status = typeof r.status === 'string' ? r.status : '';
     const state: PhoneCheckState = status === 'COMPLETED'
-      ? CONCLUSIONS[typeof r.conclusion === 'string' ? r.conclusion : ''] ?? 'unknown'
+      ? (typeof r.conclusion === 'string' && ownLookup(CONCLUSIONS, r.conclusion)) || 'unknown'
       : status === 'IN_PROGRESS' ? 'in_progress'
-        : ['QUEUED', 'WAITING', 'PENDING', 'REQUESTED'].includes(status) ? 'queued' : 'unknown';
+        : ['QUEUED', 'WAITING', 'PENDING', 'REQUESTED'].includes(status) ? 'queued' : 'pending';
     const workflow = text(r.workflowName, 200);
     const url = githubUrl(r.detailsUrl);
     const startedAt = time(r.startedAt);
@@ -199,12 +213,13 @@ export function projectCheck(row: unknown): PhoneCheck | null {
     if (!name) return null;
     const url = githubUrl(r.targetUrl);
     const startedAt = time(r.startedAt);
-    return { kind: 'status', name, state: CONTEXT_STATES[typeof r.state === 'string' ? r.state : ''] ?? 'unknown',
+    return { kind: 'status', name, state: (typeof r.state === 'string' && ownLookup(CONTEXT_STATES, r.state)) || 'unknown',
       ...(url ? { url } : {}), ...(startedAt ? { startedAt } : {}) };
   }
   return null;
 }
 
+/** `counts` and `overall` cover the whole rollup; only `checks` is cut to PHONE_MAX_CHECKS. */
 export function summarizeChecks(rollup: unknown): PhoneCheckSummary {
   const rows = Array.isArray(rollup) ? rollup : [];
   const all = rows.map(projectCheck).filter((c): c is PhoneCheck => c !== null);

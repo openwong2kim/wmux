@@ -3450,7 +3450,7 @@ in structured form:
   "provider": "claude",            // "claude" | "codex" (open)
   "providerCode": "rate_limit",    // provider's own code, verbatim, ^[A-Za-z][A-Za-z0-9_]{0,63}$; optional
   "httpStatus": 429,               // codex only, when the error names one; optional
-  "message": "You've hit your limit · resets 3pm", // ≤ 280 UTF-16 units, control-stripped, plain text; optional
+  "message": "You've hit your limit · resets 3pm", // ≤ 280 UTF-16 units, sanitized (see below), plain text; optional
   "retryAfterMs": 30000,           // reserved, never sent today
   "resetAt": 1760000000000,        // reserved, never sent today
   "at": 1758712345123,             // epoch ms the daemon saw it
@@ -3459,6 +3459,12 @@ in structured form:
 ```
 
 Render `reason` for the headline and `message` (when present) as the body.
+Every provider- or server-authored string in this section (`message`, rate-limit
+`limitName`, check `name` and `workflow`) is sanitized the same way: C0/C1
+controls, bidi embeddings, overrides and isolates (U+202A–202E, U+2066–2069),
+zero-width characters (U+200B–200F) and U+FEFF are removed, lone surrogates
+are dropped, whitespace is collapsed, and a clipped string ends in `…` without
+splitting a surrogate pair.
 Never parse `message`: a reset time in it is prose, not a field. Neither
 source carries a structured retry-after or reset time, so `retryAfterMs` and
 `resetAt` stay absent.
@@ -3561,7 +3567,8 @@ refresh parameter.
 
 Never on this wire: the auth token, e-mail, account id, credit balance, the
 backend's upsell banner, config paths. `resetsAt` is epoch ms (the server's
-seconds × 1000). Do not infer "usage is available again" from `usedPercent` or
+seconds × 1000); a value outside 2020-01-01 … 2100-01-01 reads `null`. `planType`
+comes from the single-bucket view, else the first bucket that names one. Do not infer "usage is available again" from `usedPercent` or
 `resetsAt`; `ordinaryUsageAllowed` is the only verdict.
 
 Needs `--allow-transcript` (like `GET …/accounts`), not input.
@@ -3644,8 +3651,11 @@ A write that ended `effect: "uncertain"` starts as `unknown`
 `outcome.effect` keeps its two values. Progress is a new optional field next
 to `outcome` on each entry: `progress: {state, endedAs?, evidence?, reason?,
 at}`. An entry without it reads as `requested` when its outcome is
-`interrupt-requested`, and as `unknown` (`write-uncertain`) when it is
-`uncertain`. The restart rule that already turns a `pending` entry into a
+`interrupt-requested`, as `unknown` (`write-uncertain`) when it is
+`uncertain`, and, while the write is still in flight (`pending`, no outcome
+yet), as `requested`. A stored `progress` is normalized on read: a state
+outside the union reads `unknown`, and fields that do not belong to the state
+are dropped. The restart rule that already turns a `pending` entry into a
 final `uncertain` one also sets `progress` to `unknown` (`daemon-restart`),
 in the same write; a `requested` progress found at load becomes `unknown`
 (`daemon-restart`) the same way. An older daemon reading the file ignores the
@@ -3654,7 +3664,8 @@ field.
 **SSE.** `chat.cancel` `{sessionId, clientCancelId, state, turnId?, endedAs?, at}`
 on every change. It is live-only (no `id:`) and sent only to the cancel's owner
 among the pane's `/turns` watchers. The receipt is authoritative after a
-reconnect.
+reconnect. The frame carries no `evidence` or `reason`: when it reports a
+final `state` and you need those, read the receipt.
 
 ### 4. Account per pane, and handoff lineage
 
@@ -3710,7 +3721,10 @@ caller at creation, and `agentSessionId` (when sent) matched its current
 conversation. False means "not proven" (the source may have closed), never an
 error. A source the caller may not read is stored exactly like a missing one,
 so the answer does not confirm hidden panes. A malformed object (unknown key,
-bad id) is `400 {error:"invalid-handoff"}`. The stored value appears on the
+bad id) is `400 {error:"invalid-handoff", effect:"none"}`. No id field
+(`accountId`, `handoffFrom.sessionId`, `handoffFrom.agentSessionId`) may be an
+`Object.prototype` member name (`constructor`, `toString`, `__proto__`, …);
+such an id is refused like any malformed one. The stored value appears on the
 `/api/sessions` row and on every `/api/history` entry of the new pane.
 
 **Long handoff text travels as a file.** `chat/launch` takes at most 2,000
@@ -3807,8 +3821,11 @@ are display text; no route accepts one back.
 
 Exactly these two keys. `slug` is 1–40 characters of `a-z`, `0-9` and single
 hyphens, no leading or trailing hyphen
-(`^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$`). `requestId` is a lowercase
-UUID, minted once when the user taps Create. The server derives everything
+(`^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$`). `requestId` is a UUID,
+minted once when the user taps Create; any letter case is accepted (iOS
+`UUID().uuidString` is uppercase) and the server lowercases it, so the
+receipt echoes the lowercase form and a retry in either case is the same
+request. The server derives everything
 else:
 
 - the base: the session's `HEAD` commit, resolved **once** to an oid before
@@ -3920,15 +3937,20 @@ else the most recent. Then `gh pr view <number> --repo github.com/<owner/repo>
 whether the PR head is the local `HEAD` (the checks may describe a commit you
 have not pushed past, or one you do not have). `no-pr` is a definite "no
 matching PR"; `unavailable` is a CLI, auth or network failure, never a claim
-of no checks. At most 100 checks.
+of no checks. `counts` and `overall` cover the whole rollup; only `checks` is
+cut to 100 (`truncated: true`).
 
 `state` per check: a CheckRun's `COMPLETED` conclusion maps to `success`,
 `failure` (also `STARTUP_FAILURE`), `neutral`, `skipped`, `cancelled`,
 `timed_out`, `action_required` or `stale`; a CheckRun that is not completed
-is `queued` or `in_progress`. A StatusContext's state maps to `success`,
-`failure`, `error` or `pending` (`EXPECTED` too). Anything else is `unknown`,
-which counts as pending, never as failed. `url` is present only for a
-`https://github.com/` link; other hosts are dropped.
+is `queued` or `in_progress`, and an unrecognized in-flight status is
+`pending`. A StatusContext's state maps to `success`, `failure`, `error` or
+`pending` (`EXPECTED` too). A completed CheckRun without a recognized
+conclusion, or a StatusContext with an unrecognized state, is `unknown`: a
+result nobody could read, which counts as **failed**, so `overall` is never
+`success` over it. `url` is present only when it parses as a URL whose origin
+is exactly `https://github.com`, with no credentials, whitespace or control
+characters; anything else is dropped.
 
 ### Coordination with open work
 

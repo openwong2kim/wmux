@@ -5,8 +5,9 @@ import {
 } from '../phoneTurnFailure';
 import { projectCodexAuth, projectCodexRateLimits } from '../phoneCodexAccountStatus';
 import { parsePaneAccountFields } from '../phonePaneAccount';
-import { parseWorktreeCreateBody, phoneWorktreeAddArgs, phoneWorktreeNames, summarizeChecks } from '../phoneGitV1';
-import { effectiveCancelProgress } from '../phoneChatCancelOutcome';
+import { githubUrl, parseWorktreeCreateBody, phoneWorktreeAddArgs, phoneWorktreeNames, summarizeChecks } from '../phoneGitV1';
+import { effectiveCancelProgress, normalizeCancelProgress } from '../phoneChatCancelOutcome';
+import { sanitizeDisplayText } from '../phoneText';
 
 describe('classifyClaudeStopFailure', () => {
   it.each([
@@ -181,11 +182,95 @@ describe('contract v-next review follow-ups', () => {
     expect(effectiveCancelProgress({ outcome: { effect: 'interrupt-requested' }, createdAt: 1 }, true, 9)).toEqual({ state: 'unknown', reason: 'daemon-restart', at: 9 });
     expect(effectiveCancelProgress({ outcome: { effect: 'uncertain' }, createdAt: 1 }, true, 9)).toEqual({ state: 'unknown', reason: 'write-uncertain', at: 1 });
     const notEnded = { state: 'not-ended' as const, at: 5 };
-    expect(effectiveCancelProgress({ outcome: { effect: 'interrupt-requested' }, progress: notEnded, createdAt: 1 }, true, 9)).toBe(notEnded);
+    expect(effectiveCancelProgress({ outcome: { effect: 'interrupt-requested' }, progress: notEnded, createdAt: 1 }, true, 9)).toEqual(notEnded);
   });
 
   it('keys a failure by turn id, else by time', () => {
     expect(turnFailureKey('p', { turnId: 't1:a', at: 1 })).not.toBe(turnFailureKey('p', { at: 1 }));
     expect(turnFailureKey('p', { at: 1 })).toBe(turnFailureKey('p', { at: 1 }));
+  });
+});
+
+describe('PR review round 1', () => {
+  const protoNames = ['constructor', 'toString', 'hasOwnProperty', 'valueOf', '__proto__'];
+
+  it('never resolves a provider code to an Object.prototype member', () => {
+    for (const error of protoNames.filter((n) => /^[A-Za-z]/.test(n))) {
+      expect(classifyClaudeStopFailure({ error }, 1).reason).toBe('unknown');
+      expect(classifyCodexTurnCompleted({ status: 'failed', error: { codexErrorInfo: error } }, 1)?.reason).toBe('unknown');
+    }
+    const s = summarizeChecks([
+      { __typename: 'CheckRun', name: 'a', status: 'COMPLETED', conclusion: 'constructor' },
+      { __typename: 'StatusContext', context: 'b', state: 'toString' },
+    ]);
+    expect(s.checks.map((c) => c.state)).toEqual(['unknown', 'unknown']);
+  });
+
+  it('refuses every Object.prototype name as an id, session ids included', () => {
+    for (const n of protoNames) {
+      expect(parsePaneAccountFields({ workspaceId: 'ws', accountId: n }).ok).toBe(false);
+      expect(parsePaneAccountFields({ handoffFrom: { sessionId: n } }).ok).toBe(false);
+      expect(parsePaneAccountFields({ handoffFrom: { sessionId: 'p', agentSessionId: n } }).ok).toBe(false);
+    }
+  });
+
+  it('sanitizes invisible and direction-changing text and clips on a pair boundary', () => {
+    expect(sanitizeDisplayText('pay\u202Eevil\u200B\uFEFF ok\u0007', 100)).toBe('pay evil ok');
+    expect(sanitizeDisplayText('a\ud800b\udc00c', 100)).toBe('abc');
+    expect(sanitizeDisplayText('ab😀', 3)).toBe('ab…');
+    expect(sanitizeDisplayText('😀😀', 2)).toBeUndefined();
+    expect(clipProviderMessage('\u2066\u2069')).toBeUndefined();
+    expect(projectCodexRateLimits({ rateLimits: { limitName: '  \u202E ', primary: null } })?.buckets[0].limitName).toBeNull();
+  });
+
+  it('accepts only real github.com URLs', () => {
+    expect(githubUrl('https://github.com/o/r/actions/runs/1')).toBe('https://github.com/o/r/actions/runs/1');
+    for (const u of ['https://github.com.evil.io/x', 'https://evil.io/https://github.com/', 'https://u:p@github.com/x',
+      'http://github.com/x', 'https://github.com/x y', 'https://github.com/\nx', 'javascript:alert(1)']) {
+      expect(githubUrl(u)).toBeUndefined();
+    }
+  });
+
+  it('guards a non-object Claude payload and finds a known Codex variant among several keys', () => {
+    expect(classifyClaudeStopFailure(null as unknown as Record<string, unknown>, 1)).toEqual({ reason: 'unknown', provider: 'claude', at: 1 });
+    expect(classifyCodexTurnCompleted({ status: 'failed', error: { codexErrorInfo: { futureHint: {}, httpConnectionFailed: { httpStatusCode: 429 } } } }, 1))
+      .toMatchObject({ reason: 'rate-limited', providerCode: 'httpConnectionFailed', httpStatus: 429 });
+  });
+
+  it('drops implausible reset times and reads planType from the multi-bucket view', () => {
+    const out = projectCodexRateLimits({ rateLimits: null, rateLimitsByLimitId: {
+      codex: { limitId: 'codex', planType: 'plus', primary: { usedPercent: 1, windowDurationMins: 60, resetsAt: 9_007_199_254_740 } },
+      other: { limitId: 'x', primary: { usedPercent: 1, windowDurationMins: 60, resetsAt: 1 } },
+    } });
+    expect(out?.planType).toBe('plus');
+    expect(out?.buckets.map((b) => b.primary?.resetsAt)).toEqual([null, null]);
+  });
+
+  it('never reads an unreadable finished check as pending, and counts the whole rollup', () => {
+    const rows = [
+      { __typename: 'CheckRun', name: 'done', status: 'COMPLETED' },
+      { __typename: 'CheckRun', name: 'new', status: 'SOMETHING_NEW' },
+      ...Array.from({ length: 101 }, (_, i) => ({ __typename: 'CheckRun', name: `c${i}`, status: 'COMPLETED', conclusion: 'SUCCESS' })),
+    ];
+    const s = summarizeChecks(rows);
+    expect(s.checks[0].state).toBe('unknown');
+    expect(s.checks[1].state).toBe('pending');
+    expect(s.overall).toBe('failure');
+    expect(s.counts).toEqual({ total: 103, passed: 101, failed: 1, pending: 1, skipped: 0 });
+    expect(s.checks).toHaveLength(100);
+    expect(s.truncated).toBe(true);
+  });
+
+  it('normalizes stored cancel progress and keeps a live pending entry requested', () => {
+    expect(normalizeCancelProgress({ state: 'bogus', at: 5 }, 1)).toEqual({ state: 'unknown', at: 5 });
+    expect(normalizeCancelProgress({ state: 'ended', endedAs: 'nope', evidence: 'screen', reason: 'x', at: -1 }, 7))
+      .toEqual({ state: 'ended', evidence: 'screen', at: 7 });
+    expect(effectiveCancelProgress({ createdAt: 3 }, false, 9)).toEqual({ state: 'requested', at: 3 });
+    expect(effectiveCancelProgress({ createdAt: 3 }, true, 9)).toEqual({ state: 'unknown', reason: 'daemon-restart', at: 9 });
+  });
+
+  it('accepts an uppercase request id and lowercases it', () => {
+    const upper = '3F1C2E4A-0B6D-4C1E-9A7F-2D8E5B6C7A90';
+    expect(parseWorktreeCreateBody({ slug: 'a', requestId: upper })).toEqual({ ok: true, value: { slug: 'a', requestId: upper.toLowerCase() } });
   });
 });
