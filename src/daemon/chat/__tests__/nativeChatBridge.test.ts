@@ -1063,9 +1063,10 @@ describe('cancel outcome (Codex native turn/interrupt)', () => {
       turn: { id: 't1:c.1', state: 'running', startedAt } };
     f.state.screen = RUNNING;
     const relay: Relay = { active: AIMED, ended: new Map<string, string>(), interrupts: 0, pinned: [], eventsAtAnswer: -1 };
+    let transcript: import('../../../shared/transcript/turnEvents').TurnEvent[] = [];
     const events: import('../chatCancelObserver').ChatCancelEvent[] = [];
     const bridge = createChatBridge({ ...f.deps,
-      projector: { status: () => f.state.projector, snapshot: () => ({ ...page('e'), events: [] }) },
+      projector: { status: () => f.state.projector, snapshot: () => ({ ...page('e'), events: transcript }) },
       onCancelEvent: (event) => { events.push(event); },
       relays: { ...f.deps.relays,
         activeTurn: () => relay.active,
@@ -1085,7 +1086,8 @@ describe('cancel outcome (Codex native turn/interrupt)', () => {
     const req = { owner: 'device:a' as const, id: 'pane', agentSessionId: 'conv', historyEpoch: EPOCH, turnId: 't1:c.1', clientCancelId: msgId() };
     const outcome = () => bridge.cancelOutcome?.('device:a', 'pane', req.clientCancelId);
     const stop = () => { f.state.agent.turn = { id: 't1:c.1', state: 'idle', startedAt }; f.state.agent.agentStatus = 'complete'; f.state.screen = IDLE; };
-    return { ...f, bridge, events, req, outcome, relay, stop };
+    const setTranscript = (rows: typeof transcript) => { transcript = rows; };
+    return { ...f, bridge, events, req, outcome, relay, stop, setTranscript };
   };
   const escs = (f: { written: string[] }) => f.written.filter((data) => data === '\x1b').length;
 
@@ -1116,10 +1118,15 @@ describe('cancel outcome (Codex native turn/interrupt)', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     // Stopped, but nothing proves how: never counted as a native end.
     expect(f.outcome()).toMatchObject({ state: 'requested' });
-    // The pane's own stream reports the aimed turn interrupted later: that is proof.
+    // The stream reports the turn interrupted, but an ESC was written: the
+    // stream cannot say which write stopped it, so it is not evidence.
     f.relay.ended.set(AIMED.turnId, 'interrupted');
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(f.outcome()).toMatchObject({ state: 'ended', endedAs: 'interrupted', evidence: 'native' });
+    expect(f.outcome()).toMatchObject({ state: 'requested' });
+    // The ESC path's own evidence settles it.
+    f.setTranscript([{ id: 'abort', kind: 'meta', subtype: 'turn_aborted', label: 'turn_aborted', ts: T0 + 2_000 }]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'ended', endedAs: 'interrupted', evidence: 'transcript' });
   });
 
   it('a turn that completed on its own is not a native interrupt', async () => {
@@ -1137,6 +1144,12 @@ describe('cancel outcome (Codex native turn/interrupt)', () => {
     expect(escs(f)).toBe(0);
     expect(answer).toMatchObject({ effect: 'interrupt-requested', cancel: { state: 'requested' } });
     expect(f.outcome()).toMatchObject({ state: 'requested' });
+    // No ESC was written and the server acknowledged the request: a later
+    // stream report of the aimed turn interrupted is the native path's proof.
+    f.stop();
+    f.relay.ended.set(AIMED.turnId, 'interrupted');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'ended', endedAs: 'interrupted', evidence: 'native' });
   });
 
   it('a refused request wrote nothing: a refusing ESC gate leaves no receipt', async () => {

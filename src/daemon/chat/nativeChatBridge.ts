@@ -1012,7 +1012,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   const interruptLocked = async (id: string, agentSessionId: string,
     opts: { turnId?: string; authorized?: () => Promise<boolean>; beforeWrite?: (turn: { id: string; startedAt: number }) => boolean;
       native?: () => Promise<'interrupted' | 'not-written' | 'uncertain'>; nativeStillAimed?: () => boolean;
-      fallbackRefused?: (verdict: ChatInterruptVerdict) => void } = {},
+      fallbackRefused?: (verdict: ChatInterruptVerdict) => void; escWriting?: () => void } = {},
   ): Promise<ChatInterruptVerdict | 'busy'> => {
     if (sending.has(id)) return 'busy';
     sending.add(id);
@@ -1027,6 +1027,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
           return slug && current.agentVerified ? { slug, status: current.agentStatus, ...(current.turn ? { turn: current.turn } : {}) } : null;
         },
         write: (data) => {
+          opts.escWriting?.();
           try { return deps.write(id, data); } catch (error) {
             // The ESC may have reached the PTY: latch it anyway, so no other
             // Stop in this turn (or within the cooldown) presses a second one.
@@ -1207,9 +1208,15 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       }
       cancelObserver?.announce({ owner, paneId: id, clientCancelId, ...(aimed ? { turnId: aimed } : {}) }, progress);
     };
+    // `native` evidence only when the proof came from the native path alone: no
+    // ESC was written for this cancel, and the server acknowledged the request
+    // or the stream proved it during the wait. After a fallback ESC, the ESC
+    // path's own evidence rules decide.
+    let nativeOutcome: 'interrupted' | 'not-written' | 'uncertain' | undefined;
+    let escWritten = false;
     const native = codexTurn && interruptNative
       ? async (): Promise<'interrupted' | 'not-written' | 'uncertain'> =>
-        (await interruptNative(id, deps.pane(id), codexTurn, { answered: markRequested })).outcome
+        (nativeOutcome = (await interruptNative(id, deps.pane(id), codexTurn, { answered: markRequested })).outcome)
       : undefined;
     const nativeStillAimed = codexTurn ? () => deps.relays.stillRunning?.(id, deps.pane(id), codexTurn) ?? false : undefined;
     const fallbackRefused = (verdict: ChatInterruptVerdict) => {
@@ -1233,7 +1240,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     try {
       verdict = await interruptLocked(id, req.agentSessionId, { ...(req.turnId !== undefined ? { turnId: req.turnId } : {}),
         ...(req.authorized ? { authorized: req.authorized } : {}), beforeWrite,
-        ...(native && nativeStillAimed ? { native, nativeStillAimed, fallbackRefused } : {}) });
+        ...(native && nativeStillAimed ? { native, nativeStillAimed, fallbackRefused, escWriting: () => { escWritten = true; } } : {}) });
     } catch (error) {
       // Nothing that throws out of here runs after the write (the write's own
       // failure is the `error` verdict), so the id is freed for a retry. Only
@@ -1265,7 +1272,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         cancelObserver?.watch({ ...watched, turnId: aimed, turnStartedAt: aimedStartedAt, requestedAt,
           incarnationId: aimedPane.meta.incarnationId, agentSessionId: req.agentSessionId, slug: agent,
           boundary: { ...(lastEventId !== undefined ? { lastEventId } : {}), since: requestedAt - CANCEL_CLOCK_SKEW_MS },
-          ...(codexTurn ? { codexTurn } : {}) } satisfies ObservedCancel);
+          ...(codexTurn && !escWritten && (nativeOutcome === 'interrupted' || requestedEarly) ? { codexTurn } : {}) } satisfies ObservedCancel);
       } else if (verdict === 'sent') {
         // The pane was already gone at the write: nothing can be observed.
         cancelObserver?.settle(watched, { state: 'unknown', reason: 'pane-closed', at: now() });

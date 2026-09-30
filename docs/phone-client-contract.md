@@ -1727,11 +1727,15 @@ the phone or the desktop, is refused as already interrupted. The Codex turn
 id never leaves the daemon; the receipt's `turnId` is the `chat.turn.id` as
 for the Esc path.
 
-- `evidence: "native"`: the aimed turn is no longer running, and the pane's
-  own Codex stream reported it `interrupted`. This is about the proof, not the
-  key: it is also sent when the fallback Esc is what stopped the turn (the
-  Codex TUI turns an Esc into the same protocol interrupt), so it does not
-  tell a native stop from a fallback. `endedAs: "interrupted"`.
+- `evidence: "native"`: the aimed turn is no longer running, the pane's own
+  Codex stream reported it `interrupted`, the server acknowledged the native
+  request (or the stream proved the stop while waiting for it), and **no Esc
+  was written** for this cancel. Only the native path can produce it, so it
+  always means a native stop. `endedAs: "interrupted"`.
+- Once a fallback Esc was written, the stream is not used as evidence: the
+  Codex TUI turns an Esc into the same protocol interrupt, so the stream
+  cannot say which write stopped the turn. The Esc path's rules below decide
+  (`transcript`, `screen`, or `unknown` when neither proves the end).
 
 - `evidence: "transcript"`: the first record written **after the interrupt**
   is an interrupt or end record. The daemon notes where the transcript stood
