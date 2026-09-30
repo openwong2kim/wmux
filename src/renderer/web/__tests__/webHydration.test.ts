@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { hydrateWebState, type ServerSelection, type WebWorkspacesReply } from '../webHydration';
+import { selectAllWorkspaceAgentStatus } from '../../stores/selectors/fleet';
 import type { PaneLeaf, Workspace } from '../../../shared/types';
 
 const reply = (activeIndex = 0, activePaneId = 'p1'): WebWorkspacesReply => ({
@@ -84,5 +85,46 @@ describe('hydrateWebState', () => {
     const fourth = run(reply(2, 'p2'), { workspaces: third.state.workspaces, activeWorkspaceId: 'w1' }, third.server);
     const fifth = run(reply(2, 'p1'), { workspaces: fourth.state.workspaces, activeWorkspaceId: 'w1' }, fourth.server);
     expect(fifth.state.workspaces.find((w) => w.id === 'w1')!.activePaneId).toBe('p1');
+  });
+
+  it('keeps unplaced (stashed) sessions as the workspace\'s stashed panes', () => {
+    const r = reply();
+    r.workspaces[0].panes.push({ sessionId: 'pty-2', shell: 'zsh', paneId: 'p9' }, { sessionId: 'pty-3', shell: 'zsh', paneId: 'p9' });
+    r.workspaces[0].layout!.unplaced = ['pty-2', 'pty-3', 'pty-gone'];
+    const { state } = run(r, { workspaces: [], activeWorkspaceId: '' }, empty);
+    const stashed = state.workspaces.find((w) => w.id === 'w1')!.stashedPanes!;
+    expect(stashed).toHaveLength(1);
+    expect(stashed[0].pane.id).toBe('p9');
+    expect(stashed[0].pane.surfaces.map((s) => s.ptyId)).toEqual(['pty-2', 'pty-3']);
+  });
+
+  it('feeds the desktop status selectors so the sidebar draws the same dots', () => {
+    const statuses = ['running', 'waiting', 'complete', 'error', 'awaiting_input', 'idle'] as const;
+    const r: WebWorkspacesReply = {
+      workspaces: statuses.map((status, i) => ({
+        id: `w-${status}`, name: status, order: i,
+        panes: [{ sessionId: `pty-${status}`, agentName: 'Claude', agentStatus: status }],
+      })),
+    };
+    const { state } = hydrateWebState({
+      workspacesReply: r, sessionsReply: { sessions: [] }, current: { workspaces: [], activeWorkspaceId: '' },
+      lastServer: empty, cache: new Map(), now: 1000,
+    });
+    expect(state.surfaceTurnOpenAt).toEqual({ 'pty-running': 1000 });
+    const rolled = selectAllWorkspaceAgentStatus({
+      workspaces: state.workspaces, surfaceAgentStatus: state.surfaceAgentStatus, surfaceActivity: {},
+      surfaceAgent: state.surfaceAgent, surfaceTurnOpenAt: state.surfaceTurnOpenAt, agentClockMs: 1000,
+    } as Parameters<typeof selectAllWorkspaceAgentStatus>[0]);
+    expect(rolled).toEqual({
+      'w-running': 'running', 'w-waiting': 'waiting', 'w-complete': 'complete',
+      'w-error': 'error', 'w-awaiting_input': 'awaiting_input',
+    });
+    // A pane that keeps running keeps its latch stamp across polls.
+    const again = hydrateWebState({
+      workspacesReply: r, sessionsReply: { sessions: [] },
+      current: { workspaces: state.workspaces, activeWorkspaceId: state.activeWorkspaceId, surfaceTurnOpenAt: state.surfaceTurnOpenAt },
+      lastServer: empty, cache: new Map(), now: 9000,
+    });
+    expect(again.state.surfaceTurnOpenAt).toEqual({ 'pty-running': 1000 });
   });
 });

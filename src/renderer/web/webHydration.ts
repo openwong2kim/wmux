@@ -21,7 +21,7 @@
  *
  * Only GETs are issued here. Nothing in this module writes to the daemon.
  */
-import type { AgentStatus, GitSyncStatus, Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
+import type { AgentStatus, GitSyncStatus, Pane, PaneLeaf, StashedPane, Surface, Workspace } from '../../shared/types';
 import type { PhoneLayoutNode, PhoneLayoutSurface } from '../../shared/phoneFleetSidebar';
 import { WORKSPACE_COLOR_IDS, type WorkspaceColorId } from '../../shared/workspaceColors';
 
@@ -72,6 +72,15 @@ export interface WebHydratedState {
   surfaceAgent: Record<string, { name: string; status: AgentStatus }>;
   /** Pane names the user typed on the desktop (not auto names), by pane id. */
   paneLabel: Record<string, string>;
+  /**
+   * The two maps the desktop's status selectors read (selectors/fleet.ts):
+   * an attention status (complete / waiting / awaiting_input / error) lives in
+   * `surfaceAgentStatus`, and `running` is the hook turn latch
+   * `surfaceTurnOpenAt`, which does not decay. Filled from the daemon's
+   * per-session `agentStatus`, so the sidebar dots match the desktop's.
+   */
+  surfaceAgentStatus: Record<string, AgentStatus>;
+  surfaceTurnOpenAt: Record<string, number>;
 }
 
 /**
@@ -94,6 +103,7 @@ export interface ServerSelection {
 }
 
 const AGENT_STATUSES: ReadonlySet<string> = new Set(['running', 'complete', 'error', 'waiting', 'awaiting_input', 'idle']);
+const ATTENTION_STATUSES: ReadonlySet<string> = new Set(['complete', 'error', 'waiting', 'awaiting_input']);
 const COLOR_IDS: ReadonlySet<string> = new Set(WORKSPACE_COLOR_IDS);
 
 function placeholderTitle(s: PhoneLayoutSurface): string {
@@ -167,6 +177,44 @@ function leaves(pane: Pane, out: PaneLeaf[] = []): PaneLeaf[] {
   return out;
 }
 
+/**
+ * `layout.unplaced`: sessions of this row no leaf holds — a stashed pane's tabs,
+ * or a session the desktop has not placed yet. The desktop draws a stashed pane
+ * in the sidebar roster, so they become the workspace's `stashedPanes`, one
+ * pane per desktop pane id (a session without one is a pane of its own).
+ */
+function unplacedPanes(
+  row: WebWorkspaceRow,
+  panes: Map<string, WebPaneRow>,
+  titles: Map<string, string>,
+  ordinals: Map<string, number>,
+): StashedPane[] {
+  const byPane = new Map<string, Surface[]>();
+  for (const sessionId of row.layout?.unplaced ?? []) {
+    const pane = panes.get(sessionId);
+    if (!pane) continue;
+    const paneId = pane.paneId ?? `web-stash:${sessionId}`;
+    const surfaces = byPane.get(paneId) ?? [];
+    surfaces.push({
+      id: `web-surface:${sessionId}`,
+      ptyId: sessionId,
+      title: titles.get(sessionId) ?? pane.shell ?? 'Terminal',
+      shell: pane.shell ?? '',
+      cwd: pane.cwd ?? '',
+      surfaceType: 'terminal',
+    });
+    byPane.set(paneId, surfaces);
+  }
+  return [...byPane].map(([paneId, surfaces]) => {
+    const ordinal = ordinals.get(paneId);
+    return {
+      pane: { id: paneId, type: 'leaf', surfaces, activeSurfaceId: surfaces[0].id, ...(ordinal !== undefined ? { ordinal } : {}) },
+      // Unknown here; 0 reads as "no time to show".
+      stashedAt: 0,
+    };
+  });
+}
+
 function gitSyncOf(row: WebWorkspaceRow): GitSyncStatus | undefined {
   if (!row.gitSync) return undefined;
   return { dirty: 0, ahead: row.gitSync.ahead, behind: row.gitSync.behind, hasUpstream: row.gitSync.hasUpstream };
@@ -193,11 +241,13 @@ function buildWorkspace(
     ? row.layout.activePaneId
     : leafIds[0] ?? '';
   const gitSync = gitSyncOf(row);
+  const stashedPanes = unplacedPanes(row, panes, titles, ordinals);
   return {
     id: row.id,
     name: row.name || 'Workspace',
     rootPane,
     activePaneId,
+    ...(stashedPanes.length > 0 ? { stashedPanes } : {}),
     ...(wsOrdinal !== undefined ? { wsOrdinal } : {}),
     ...(row.color && COLOR_IDS.has(row.color) ? { color: row.color as WorkspaceColorId } : {}),
     metadata: {
@@ -255,13 +305,31 @@ function sortRows(rows: WebWorkspaceRow[]): WebWorkspaceRow[] {
   });
 }
 
+/** Which pane and tabs a workspace shows — the part a local tap can change. */
+function selectionOf(ws: Workspace): string {
+  return `${ws.activePaneId}|${leaves(ws.rootPane).map((l) => l.activeSurfaceId).join('|')}`;
+}
+
+export interface HydrationCacheEntry {
+  /** JSON of the inputs `built` was made from. */
+  key: string;
+  built: Workspace;
+  /** The object last handed to the store for this workspace. */
+  returned?: Workspace;
+}
+
 export interface HydrationInput {
   workspacesReply: WebWorkspacesReply;
   sessionsReply: WebSessionsReply | null;
-  current: { workspaces: Workspace[]; activeWorkspaceId: string };
+  current: {
+    workspaces: Workspace[];
+    activeWorkspaceId: string;
+    /** The latch stamps already in the store, so a pane that keeps running keeps its stamp. */
+    surfaceTurnOpenAt?: Record<string, number>;
+  };
   lastServer: ServerSelection;
-  /** Previously built workspace per id, with the JSON of the inputs it was built from. */
-  cache: Map<string, { key: string; built: Workspace }>;
+  cache: Map<string, HydrationCacheEntry>;
+  now?: number;
 }
 
 export function hydrateWebState(input: HydrationInput): { state: WebHydratedState; server: ServerSelection } {
@@ -291,13 +359,17 @@ export function hydrateWebState(input: HydrationInput): { state: WebHydratedStat
     }
     const key = JSON.stringify([row, [...rowTitles], [...rowPaneNames]]);
     const hit = cache.get(row.id);
-    const built = hit && hit.key === key ? hit.built : buildWorkspace(row, rowTitles, rowPaneNames);
-    cache.set(row.id, { key, built });
-    const merged = mergeSelection(built, currentById.get(row.id), lastServer, server);
-    // Nothing changed: hand back the very object the store already holds so
-    // the memoized slot does not re-render.
+    const same = hit !== undefined && hit.key === key;
+    const built = same ? hit.built : buildWorkspace(row, rowTitles, rowPaneNames);
     const prev = currentById.get(row.id);
-    return prev && JSON.stringify(prev) === JSON.stringify(merged) ? prev : merged;
+    const merged = mergeSelection(built, prev, lastServer, server);
+    // Same inputs and the same selection as the object the store already
+    // holds: hand that object back so the memoized slot does not re-render.
+    const out = same && prev !== undefined && prev === hit.returned && selectionOf(prev) === selectionOf(merged)
+      ? prev
+      : merged;
+    cache.set(row.id, { key, built, returned: out });
+    return out;
   });
   for (const id of [...cache.keys()]) if (!rows.some((r) => r.id === id)) cache.delete(id);
 
@@ -310,11 +382,16 @@ export function hydrateWebState(input: HydrationInput): { state: WebHydratedStat
     : current.activeWorkspaceId;
 
   const surfaceAgent: WebHydratedState['surfaceAgent'] = {};
+  const surfaceAgentStatus: Record<string, AgentStatus> = {};
+  const surfaceTurnOpenAt: Record<string, number> = {};
+  const now = input.now ?? Date.now();
   for (const row of workspacesReply.workspaces) {
     for (const p of row.panes) {
-      if (p.agentName && p.agentStatus && AGENT_STATUSES.has(p.agentStatus)) {
-        surfaceAgent[p.sessionId] = { name: p.agentName, status: p.agentStatus as AgentStatus };
-      }
+      if (!p.agentStatus || !AGENT_STATUSES.has(p.agentStatus)) continue;
+      const status = p.agentStatus as AgentStatus;
+      if (p.agentName) surfaceAgent[p.sessionId] = { name: p.agentName, status };
+      if (ATTENTION_STATUSES.has(status)) surfaceAgentStatus[p.sessionId] = status;
+      if (status === 'running') surfaceTurnOpenAt[p.sessionId] = current.surfaceTurnOpenAt?.[p.sessionId] ?? now;
     }
   }
   return {
@@ -324,6 +401,8 @@ export function hydrateWebState(input: HydrationInput): { state: WebHydratedStat
       sidebarPinnedIds: rows.filter((r) => r.pinned).map((r) => r.id),
       surfaceAgent,
       paneLabel,
+      surfaceAgentStatus,
+      surfaceTurnOpenAt,
     },
     server,
   };

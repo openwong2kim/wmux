@@ -366,6 +366,8 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
   const unverifiableMinutesByPtyId = useStore(useShallow(selectUnverifiablePaneMinutes));
   // Glance board: per-pane "changed since you last looked".
   const unseenByPtyId = useStore(useShallow(selectSidebarUnseen));
+  // Browser mirror (wmux web /app): a stashed row cannot be brought back from here.
+  const readOnly = useStore((s) => s.readOnly);
   // 2026-09-27 — this workspace's tasks, filed under the requesting pane.
   const taskSplit = usePaneTaskSplit(workspaceId, renderTask ? taskIds : undefined);
   // A pane that asked for tasks keeps a row while it is open even after its
@@ -488,6 +490,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                   aria-label={rowAriaLabel}
                   onClick={(event) => {
                     event.stopPropagation();
+                    if (row.stashed && readOnly) return;
                     if (row.stashed) {
                       // focusNotificationTarget resolves ptyId → surfaceId and
                       // unstashes on the way, so an exited pane (no ptyId left)
