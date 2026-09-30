@@ -178,7 +178,8 @@ export default function DeckFleet({
           // an inert row explains itself; this roster only states facts about the
           // launch. Consequence: an args-only binding shows no chip either —
           // unless its args skip permission prompts, which, like the role's
-          // skipPermissions, is always shown (#1681).
+          // skipPermissions, is shown when the role names its agent (#1681;
+          // without one wmux cannot tell which spelling is the skip flag).
           const binding = role ? roleBindings[role] : undefined;
           const enforcesModel = bindingEnforcesModel(binding);
           const skipFlag = bindingSkipPermissionsFlag(binding);

@@ -221,7 +221,10 @@ export function bindingEnforcesModel(binding: RoleBinding | undefined): boolean 
  * Mirrors applyRoleBinding: the binding must name the agent and the agent must
  * have a verified skip grammar (agentLaunchOptions). The skip comes from
  * `skipPermissions` or from a skip spelling in the role's own `args`, which are
- * appended just the same. Returns the canonical flag either way. A line that
+ * appended just the same. Returns the canonical flag either way. An agentless
+ * binding answers undefined even when its args carry a skip spelling: the args
+ * still apply to any agent launched, but no grammar says which spelling is the
+ * skip. A line that
  * makes its own permission choice can still withhold it for that one launch
  * (#1681); this answers for the role, not for a particular line.
  */
