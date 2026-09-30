@@ -153,6 +153,17 @@ export const en = {
   'web.streamWaiting': 'Paused: {count} panes are live',
   'web.streamShow': 'Show live',
   'web.streamConnecting': 'Connecting…',
+  'web.streamUnavailable': 'Could not stream this pane',
+  'web.appReadOnly': 'Read-only',
+  'web.inputChecking': 'Checking input…',
+  'web.inputPaused': 'Input paused',
+  'web.inputPausedOffline': 'The connection dropped, so what you typed may not have arrived.',
+  'web.inputPausedPrompt': 'The pane is showing a permission prompt. Answer it at the desk or in approvals.',
+  'web.inputPausedRefused': 'The server refused the input ({code}).',
+  'web.inputPausedUnauthorized': 'This device no longer has access.',
+  'web.inputPausedTooLarge': 'That paste is too large to send.',
+  'web.inputDropped': '{count} more keystrokes were not sent.',
+  'web.inputResume': 'Resume input',
 
   // Common
   'common.cancel': 'Cancel',

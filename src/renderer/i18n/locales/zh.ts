@@ -5,6 +5,17 @@ export const zh = {
   'web.streamWaiting': '已暂停：已有 {count} 个实时窗格',
   'web.streamShow': '实时显示',
   'web.streamConnecting': '正在连接…',
+  'web.streamUnavailable': '无法传输此窗格',
+  'web.appReadOnly': '只读',
+  'web.inputChecking': '正在检查输入权限…',
+  'web.inputPaused': '输入已暂停',
+  'web.inputPausedOffline': '连接已断开，输入的内容可能未送达。',
+  'web.inputPausedPrompt': '窗格正在显示权限提示。请在桌面或审批中回应。',
+  'web.inputPausedRefused': '服务器拒绝了输入（{code}）。',
+  'web.inputPausedUnauthorized': '此设备已无访问权限。',
+  'web.inputPausedTooLarge': '粘贴内容过大，无法发送。',
+  'web.inputDropped': '之后的 {count} 次按键未发送。',
+  'web.inputResume': '恢复输入',
 
   // Common
   'common.cancel': '取消',

@@ -6,16 +6,24 @@
  * the handful of `pty.*` calls they make:
  *
  *  - `setViewerVisibility(id, true|false)` opens / closes the pane's SSE stream
- *    (`GET /api/stream`). Nothing else opens one.
+ *    (`GET /api/stream`). Nothing else opens one. A device credential opens it
+ *    with a stream ticket and never rides the URL itself — no ticket, no stream
+ *    (the retry backs off); the operator token uses `?token=`.
  *  - The stream's `snapshot` becomes ONE replay write (`onData(…, replay=true)`)
  *    followed by `onFlushComplete`, which is the contract useTerminal's
  *    resync/reset paths are written against. The replay starts with RIS, so a
  *    re-opened stream repaints instead of stacking a second copy of the screen.
- *  - `write` posts to `/api/input` (in order, per pane) only when this caller
- *    may type; otherwise it drops the bytes. It also drops xterm's automatic
- *    answers to device queries (DA / DSR / DECRQM) while a replay is being
- *    parsed: the snapshot carries whatever queries the pane's app once sent,
- *    and the machine that owns the pane already answered them.
+ *    Snapshot and live bytes share one streaming UTF-8 decoder.
+ *  - `write` posts to `/api/input` in order, per pane, only while this caller
+ *    may type. Keys typed while a replay is being parsed WAIT for it instead of
+ *    being dropped (the terminal's automatic query answers are absorbed at the
+ *    parser — viewerParser.ts — so nothing here has to guess which bytes are
+ *    the user's). A delivery that fails or cannot be confirmed stops the pane's
+ *    input and says so (`inputHaltOf`); nothing is dropped silently, and an
+ *    unconfirmed keystroke is never re-sent (it may have arrived). The daemon's
+ *    input receipts would make a retry safe, but they cost two durable disk
+ *    writes each and hold 10 000 a day for every client together — sized for
+ *    a phone's composed messages, not for one request per keystroke.
  *  - `list` feeds useTerminal's stale-mode reset with the snapshot's own gate
  *    inputs, capped at the alive-shell level: every pane this page streams has
  *    a live shell, and that shell owns bracketed paste (?2004).
@@ -25,25 +33,46 @@
  * The browser allows six HTTP/1.1 connections per origin (and the daemon eight
  * streams per principal), and the poll loop needs the rest. A shown pane that
  * gets no slot waits; `activate` hands it one by retiring the least recently
- * activated live pane, and a released slot goes to the longest waiter.
+ * activated live pane, and a released slot goes to the longest waiter. A
+ * stream that keeps failing gives its slot up and shows as unavailable.
  */
 import {
   STALE_REPLAY_ALIVE_SHELL_RESETS,
   STALE_REPLAY_DISPLAY_RESETS,
   staleReplayResetLevel,
 } from '../../shared/terminal/staleReplayModeReset';
+import { isFocusReport } from './viewerParser';
 
 export const WEB_LIVE_STREAM_CAP = 4;
-/** Reopen delay after a stream the browser gave up on (non-200). */
-const STREAM_RETRY_MS = 3000;
+/** Consecutive stream failures before the pane gives its slot up. */
+export const STREAM_FAIL_LIMIT = 5;
+const STREAM_RETRY_BASE_MS = 1000;
+const STREAM_RETRY_MAX_MS = 30_000;
 /** Renew a stream ticket this long before it expires. */
 const TICKET_RENEW_MARGIN_MS = 15_000;
+/** Upper bound on one control request (config, ticket, input). */
+const REQUEST_TIMEOUT_MS = 10_000;
+/** How often the caller's grant is re-read while things are fine. */
+export const CONFIG_REFRESH_MS = 10_000;
+const CONFIG_RETRY_MAX_MS = 30_000;
+/** Longest a keystroke waits for a replay parse (or the first grant) to finish. */
+const INPUT_WAIT_MAX_MS = 5_000;
 /** Reset to initial state (RIS): a re-opened stream repaints, never stacks. */
 const RIS = '\x1bc';
 
 export interface PaneGeometry {
   cols: number;
   rows: number;
+}
+
+/** Whether this caller may type: unknown until `/api/config` answers. */
+export type InputState = 'checking' | 'allowed' | 'read-only';
+
+export interface InputHalt {
+  /** Short machine reason: offline | refused:<code> | unauthorized | too-large. */
+  reason: string;
+  /** Keystrokes (writes) that were not sent after the halt. */
+  dropped: number;
 }
 
 type DataListener = (ptyId: string, data: string, replay?: boolean) => void;
@@ -62,6 +91,8 @@ export interface WebPtyDeps {
   createEventSource?: (url: string) => EventSourceLike;
   /** True while this pane's terminal is parsing replayed bytes. */
   isReplaying?: (ptyId: string) => boolean;
+  /** The owner resized the pane: apply the grid now, before the next byte parses. */
+  applyGeometry?: (ptyId: string, g: PaneGeometry) => void;
   /** The daemon refused the credential (401). */
   onUnauthorized?: () => void;
   now?: () => number;
@@ -106,6 +137,11 @@ export function snapshotTail(gate: SnapshotGate | undefined): string {
   return staleReplayResetLevel(gate) === 'none' ? '' : STALE_REPLAY_ALIVE_SHELL_RESETS + STALE_REPLAY_DISPLAY_RESETS;
 }
 
+/** A device credential is `<deviceId>.<secret>`; the operator token has no dot. */
+export function isDeviceCredential(token: string): boolean {
+  return token.includes('.');
+}
+
 export function createWebPty(deps: WebPtyDeps) {
   const fetchImpl = deps.fetchImpl ?? fetch.bind(globalThis);
   const createEventSource = deps.createEventSource ?? ((url: string) => new EventSource(url));
@@ -113,6 +149,8 @@ export function createWebPty(deps: WebPtyDeps) {
   const setTimer = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
   const clearTimer = deps.clearTimer ?? ((h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>));
   const auth = { Authorization: `Bearer ${deps.token}` };
+  const device = isDeviceCredential(deps.token);
+  const sleep = (ms: number) => new Promise<void>((r) => { setTimer(r, ms); });
 
   const dataListeners = new Set<DataListener>();
   const flushListeners = new Set<FlushListener>();
@@ -124,44 +162,52 @@ export function createWebPty(deps: WebPtyDeps) {
   let waiting: string[] = [];
   const viewerVisible = new Map<string, boolean>();
   const streams = new Map<string, Stream>();
+  const failures = new Map<string, number>();
+  const failed = new Set<string>();
   const geometry = new Map<string, PaneGeometry>();
   const gates = new Map<string, SnapshotGate>();
   const inputChain = new Map<string, Promise<void>>();
-  let allowInput = false;
+  const halts = new Map<string, InputHalt>();
+  let inputState: InputState = 'checking';
+  let hostPlatform: string | null = null;
   let version = 0;
 
   let ticket = '';
   let ticketExpiresAt = 0;
-  /**
-   * This session holds the operator token, which opens streams with ?token=
-   * and is refused a ticket (403). A device credential is `<deviceId>.<secret>`
-   * (the daemon's DEVICE_CREDENTIAL_SEP); the operator token never carries a
-   * dot, so it does not ask — the refusal would only be a console error.
-   */
-  let ticketsUnavailable = !deps.token.includes('.');
-  let ticketInFlight: Promise<void> | null = null;
+  let ticketInFlight: Promise<boolean> | null = null;
 
   const notify = () => {
     version++;
     for (const l of [...viewListeners]) l();
   };
 
-  const ensureTicket = (force: boolean): Promise<void> => {
-    if (ticketsUnavailable) return Promise.resolve();
-    if (!force && ticket && now() < ticketExpiresAt - TICKET_RENEW_MARGIN_MS) return Promise.resolve();
+  const request = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    const ctl = new AbortController();
+    const timer = setTimer(() => ctl.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      return await fetchImpl(url, { ...init, signal: ctl.signal });
+    } finally {
+      clearTimer(timer);
+    }
+  };
+
+  /** Resolves true once a usable ticket is held (always true for the operator token). */
+  const ensureTicket = (force: boolean): Promise<boolean> => {
+    if (!device) return Promise.resolve(true);
+    if (!force && ticket && now() < ticketExpiresAt - TICKET_RENEW_MARGIN_MS) return Promise.resolve(true);
     if (ticketInFlight) return ticketInFlight;
     ticketInFlight = (async () => {
       try {
-        const res = await fetchImpl('/api/stream-ticket', { method: 'POST', headers: auth });
-        if (res.status === 403) { ticketsUnavailable = true; return; }
-        if (res.status === 401) { deps.onUnauthorized?.(); return; }
-        if (!res.ok) return;
+        const res = await request('/api/stream-ticket', { method: 'POST', headers: auth });
+        if (res.status === 401) { deps.onUnauthorized?.(); return false; }
+        if (!res.ok) return false;
         const body = await res.json() as { ticket?: unknown; expiresAt?: unknown };
-        if (typeof body.ticket !== 'string' || !body.ticket) return;
+        if (typeof body.ticket !== 'string' || !body.ticket) return false;
         ticket = body.ticket;
         ticketExpiresAt = typeof body.expiresAt === 'number' ? body.expiresAt : now() + 60_000;
+        return true;
       } catch {
-        /* the stream open that follows reports the failure */
+        return false;
       } finally {
         ticketInFlight = null;
       }
@@ -171,9 +217,8 @@ export function createWebPty(deps: WebPtyDeps) {
 
   const streamUrl = (ptyId: string): string => {
     const base = `/api/stream?session=${encodeURIComponent(ptyId)}`;
-    return ticket && !ticketsUnavailable
-      ? `${base}&ticket=${encodeURIComponent(ticket)}`
-      : `${base}&token=${encodeURIComponent(deps.token)}`;
+    // A device credential is durable: it never goes into a URL.
+    return device ? `${base}&ticket=${encodeURIComponent(ticket)}` : `${base}&token=${encodeURIComponent(deps.token)}`;
   };
 
   const emitData = (ptyId: string, data: string, replay: boolean) => {
@@ -191,14 +236,49 @@ export function createWebPty(deps: WebPtyDeps) {
     try { s.es?.close(); } catch { /* already closed */ }
   };
 
+  const setGeometry = (ptyId: string, g: PaneGeometry) => {
+    const prev = geometry.get(ptyId);
+    if (prev && prev.cols === g.cols && prev.rows === g.rows) return;
+    geometry.set(ptyId, g);
+    notify();
+  };
+
+  const retire = (ptyId: string) => {
+    live = live.filter((id) => id !== ptyId);
+    closeStream(ptyId);
+    if (!waiting.includes(ptyId)) waiting = [...waiting, ptyId];
+  };
+
+  /** Back off, and after STREAM_FAIL_LIMIT failures give the slot up. */
+  const streamFailed = (ptyId: string, stream: Stream) => {
+    const n = (failures.get(ptyId) ?? 0) + 1;
+    failures.set(ptyId, n);
+    stream.es = null;
+    if (n >= STREAM_FAIL_LIMIT) {
+      failed.add(ptyId);
+      retire(ptyId);
+      promoteWaiter();
+      notify();
+      void refreshConfig();
+      return;
+    }
+    const delay = Math.min(STREAM_RETRY_MAX_MS, STREAM_RETRY_BASE_MS * 2 ** (n - 1));
+    stream.retry = setTimer(() => {
+      if (streams.get(ptyId) !== stream) return;
+      streams.delete(ptyId);
+      openStream(ptyId, true);
+    }, delay);
+  };
+
   const openStream = (ptyId: string, forceTicket = false) => {
     if (streams.has(ptyId) || !wantsStream(ptyId)) return;
     const stream: Stream = { es: null, gen: 0, decoder: new TextDecoder(), retry: undefined };
     streams.set(ptyId, stream);
     const gen = ++stream.gen;
     const current = () => streams.get(ptyId) === stream && stream.gen === gen;
-    void ensureTicket(forceTicket).then(() => {
+    void ensureTicket(forceTicket).then((ok) => {
       if (!current() || !wantsStream(ptyId)) return;
+      if (!ok) { streamFailed(ptyId, stream); return; }
       const es = createEventSource(streamUrl(ptyId));
       stream.es = es;
       let snapshotGate: SnapshotGate | undefined;
@@ -207,7 +287,12 @@ export function createWebPty(deps: WebPtyDeps) {
         let meta: Record<string, unknown>;
         try { meta = JSON.parse(String(ev.data)) as Record<string, unknown>; } catch { return; }
         const g = validGeometry(meta);
-        if (g) setGeometry(ptyId, g);
+        if (g) {
+          setGeometry(ptyId, g);
+          // Bytes after this meta are framed for the new grid: apply it now,
+          // not after the next render.
+          deps.applyGeometry?.(ptyId, g);
+        }
         // A mid-stream resize meta has no snapshot behind it; only the meta
         // that precedes a snapshot describes it.
         if (meta.resize !== true) {
@@ -221,11 +306,14 @@ export function createWebPty(deps: WebPtyDeps) {
         if (!current()) return;
         let bytes: Uint8Array;
         try { bytes = b64ToBytes(String(ev.data)); } catch { return; }
+        failures.delete(ptyId);
+        // The snapshot starts the stream over; live bytes continue it through
+        // the same decoder, so a character split across the boundary survives.
         stream.decoder = new TextDecoder();
         gates.set(ptyId, snapshotGate ?? {});
         // One write, so the reset, the screen and the mode tail parse inside
-        // one replay span (the device-reply guard covers all of it).
-        emitData(ptyId, RIS + new TextDecoder().decode(bytes) + snapshotTail(snapshotGate), true);
+        // one replay span.
+        emitData(ptyId, RIS + stream.decoder.decode(bytes, { stream: true }) + snapshotTail(snapshotGate), true);
         for (const l of [...flushListeners]) l(ptyId, bytes.length);
       });
       es.addEventListener('data', (ev) => {
@@ -238,18 +326,11 @@ export function createWebPty(deps: WebPtyDeps) {
       es.onerror = () => {
         if (!current()) return;
         // CONNECTING: the browser is retrying on its own. CLOSED: a non-200
-        // (an expired ticket, a revoked device) — it will never retry itself.
+        // (an expired ticket, the stream quota, a revoked device) — it will
+        // never retry itself.
         if (es.readyState !== 2) return;
         try { es.close(); } catch { /* closed */ }
-        stream.es = null;
-        void fetchImpl('/api/config', { headers: auth, cache: 'no-store' }).then((res) => {
-          if (res.status === 401) deps.onUnauthorized?.();
-        }, () => undefined);
-        stream.retry = setTimer(() => {
-          if (!current()) return;
-          streams.delete(ptyId);
-          openStream(ptyId, true);
-        }, STREAM_RETRY_MS);
+        streamFailed(ptyId, stream);
       };
     });
   };
@@ -259,17 +340,15 @@ export function createWebPty(deps: WebPtyDeps) {
     else closeStream(ptyId);
   };
 
-  const setGeometry = (ptyId: string, g: PaneGeometry) => {
-    const prev = geometry.get(ptyId);
-    if (prev && prev.cols === g.cols && prev.rows === g.rows) return;
-    geometry.set(ptyId, g);
-    notify();
-  };
-
   const grant = (ptyId: string) => {
     waiting = waiting.filter((id) => id !== ptyId);
     live = [...live.filter((id) => id !== ptyId), ptyId];
     syncStream(ptyId);
+  };
+
+  const promoteWaiter = () => {
+    const next = waiting.find((id) => !failed.has(id));
+    if (next && live.length < WEB_LIVE_STREAM_CAP) grant(next);
   };
 
   const release = (ptyId: string) => {
@@ -277,8 +356,98 @@ export function createWebPty(deps: WebPtyDeps) {
     live = live.filter((id) => id !== ptyId);
     waiting = waiting.filter((id) => id !== ptyId);
     closeStream(ptyId);
-    if (wasLive && waiting.length > 0 && live.length < WEB_LIVE_STREAM_CAP) grant(waiting[0]);
+    if (wasLive) promoteWaiter();
     notify();
+  };
+
+  /** Repaint every live stream (the read-only mouse policy applies at parse). */
+  const reopenLive = () => {
+    for (const id of live) {
+      if (!streams.has(id)) continue;
+      closeStream(id);
+      openStream(id);
+    }
+  };
+
+  const setInputState = (next: InputState) => {
+    if (inputState === next) return;
+    const repaint = inputState !== 'checking' || next === 'read-only';
+    inputState = next;
+    if (next === 'allowed') halts.forEach((h, id) => { if (h.reason === 'read-only') halts.delete(id); });
+    if (repaint) reopenLive();
+    notify();
+  };
+
+  // --- the caller's grant, re-read while the page lives -------------------
+  let configTimer: unknown;
+  let configFailures = 0;
+  let configStopped = true;
+  let configInFlight: Promise<void> | null = null;
+  const scheduleConfig = (ms: number) => {
+    if (configStopped) return;
+    if (configTimer !== undefined) clearTimer(configTimer);
+    configTimer = setTimer(() => { configTimer = undefined; void refreshConfig(); }, ms);
+  };
+  const refreshConfig = (): Promise<void> => {
+    if (configInFlight) return configInFlight;
+    configInFlight = (async () => {
+      let ok = false;
+      try {
+        const res = await request('/api/config', { headers: auth, cache: 'no-store' });
+        if (res.status === 401) { deps.onUnauthorized?.(); return; }
+        if (res.ok) {
+          const cfg = await res.json() as { allowInput?: unknown; hostPlatform?: unknown };
+          if (typeof cfg.hostPlatform === 'string') hostPlatform = cfg.hostPlatform;
+          setInputState(cfg.allowInput === true ? 'allowed' : 'read-only');
+          ok = true;
+        }
+      } catch {
+        /* unreachable or timed out: retried below */
+      } finally {
+        configInFlight = null;
+      }
+      configFailures = ok ? 0 : configFailures + 1;
+      scheduleConfig(ok ? CONFIG_REFRESH_MS : Math.min(CONFIG_RETRY_MAX_MS, 1000 * 2 ** Math.min(configFailures, 5)));
+    })();
+    return configInFlight;
+  };
+
+  // --- input ---------------------------------------------------------------
+  const waitUntil = async (ready: () => boolean): Promise<void> => {
+    const deadline = now() + INPUT_WAIT_MAX_MS;
+    while (!ready() && now() < deadline) await sleep(16);
+  };
+
+  const halt = (ptyId: string, reason: string) => {
+    if (!halts.has(ptyId)) halts.set(ptyId, { reason, dropped: 0 });
+    notify();
+  };
+
+  const countDropped = (ptyId: string) => {
+    const h = halts.get(ptyId);
+    if (!h) return;
+    h.dropped += 1;
+    notify();
+  };
+
+  const send = async (ptyId: string, data: string): Promise<void> => {
+    let status = 0;
+    let code = '';
+    try {
+      const res = await request(`/api/input?session=${encodeURIComponent(ptyId)}`, {
+        method: 'POST', body: data, headers: { ...auth, 'Content-Type': 'application/octet-stream' }, keepalive: true,
+      });
+      status = res.status;
+      if (!res.ok) code = await res.json().then((b: { error?: unknown }) => (typeof b?.error === 'string' ? b.error : ''), () => '');
+    } catch {
+      status = 0; // network error or timeout: the outcome is unknown
+    }
+    if (status >= 200 && status < 300) return;
+    if (status === 401) { halt(ptyId, 'unauthorized'); deps.onUnauthorized?.(); return; }
+    if (status === 403) { setInputState('read-only'); halt(ptyId, 'read-only'); return; }
+    if (status === 413) { halt(ptyId, 'too-large'); return; }
+    if (status >= 400 && status < 500) { halt(ptyId, `refused:${code || status}`); return; }
+    halt(ptyId, 'offline');
   };
 
   const pty = {
@@ -304,28 +473,18 @@ export function createWebPty(deps: WebPtyDeps) {
       syncStream(ptyId);
     },
     write(ptyId: string, data: string): Promise<void> {
-      if (!allowInput || !ptyId || typeof data !== 'string' || data.length === 0) return Promise.resolve();
-      // An automatic answer to a replayed device query — see the module comment.
-      if (deps.isReplaying?.(ptyId)) return Promise.resolve();
+      if (!ptyId || typeof data !== 'string' || data.length === 0) return Promise.resolve();
+      // The viewer's own focus is not the pane owner's.
+      if (isFocusReport(data)) return Promise.resolve();
+      if (inputState === 'read-only') return Promise.resolve();
       const prev = inputChain.get(ptyId) ?? Promise.resolve();
       const next = prev.then(async () => {
-        if (!allowInput) return;
-        try {
-          const res = await fetchImpl(`/api/input?session=${encodeURIComponent(ptyId)}`, {
-            method: 'POST',
-            body: data,
-            headers: { ...auth, 'Content-Type': 'application/octet-stream' },
-            keepalive: true,
-          });
-          if (res.status === 401) deps.onUnauthorized?.();
-          else if (res.status === 403) {
-            // The server has shut this door (read-only device or server).
-            allowInput = false;
-            notify();
-          }
-        } catch {
-          /* transient — the stream reports connectivity */
-        }
+        // Keys typed during the first grant check or a replay parse wait for
+        // it; they are neither dropped nor sent early.
+        await waitUntil(() => inputState !== 'checking' && !deps.isReplaying?.(ptyId));
+        if (halts.has(ptyId)) { countDropped(ptyId); return; }
+        if (inputState !== 'allowed') return;
+        await send(ptyId, data);
       });
       inputChain.set(ptyId, next);
       return next;
@@ -348,6 +507,8 @@ export function createWebPty(deps: WebPtyDeps) {
       // `reconnect`, which repaints from a fresh stream's snapshot.
       return { success: false, code: 'local-mode' };
     },
+    /** The daemon's OS, for key encodings the pane's host decides (null until known). */
+    hostPlatform: (): string | null => hostPlatform,
   };
 
   return {
@@ -355,7 +516,7 @@ export function createWebPty(deps: WebPtyDeps) {
     /** Ask for a live slot for a shown pane; false = it waits (placeholder). */
     request(ptyId: string): boolean {
       if (live.includes(ptyId)) return true;
-      if (live.length < WEB_LIVE_STREAM_CAP) {
+      if (live.length < WEB_LIVE_STREAM_CAP && !failed.has(ptyId)) {
         grant(ptyId);
         notify();
         return true;
@@ -368,23 +529,22 @@ export function createWebPty(deps: WebPtyDeps) {
     },
     /** The user asked for this pane: give it a slot, retiring the least recent. */
     activate(ptyId: string): void {
+      failed.delete(ptyId);
+      failures.delete(ptyId);
       if (live.includes(ptyId)) {
         live = [...live.filter((id) => id !== ptyId), ptyId];
+        notify();
         return;
       }
-      while (live.length >= WEB_LIVE_STREAM_CAP) {
-        const evicted = live[0];
-        live = live.slice(1);
-        closeStream(evicted);
-        // Still shown: it waits for the next free slot.
-        if (!waiting.includes(evicted)) waiting = [...waiting, evicted];
-      }
+      while (live.length >= WEB_LIVE_STREAM_CAP) retire(live[0]);
       grant(ptyId);
       notify();
     },
     /** The pane is no longer shown (tab switch, unmount). */
     release,
     isLive: (ptyId: string) => live.includes(ptyId),
+    /** The stream gave up (quota, credential, server): the pane shows why. */
+    isUnavailable: (ptyId: string) => failed.has(ptyId),
     geometryOf: (ptyId: string): PaneGeometry | undefined => geometry.get(ptyId),
     /** Pane sizes from `GET /api/sessions`. */
     setSessions(rows: ReadonlyArray<{ id: string; cols?: unknown; rows?: unknown }>): void {
@@ -393,12 +553,27 @@ export function createWebPty(deps: WebPtyDeps) {
         if (g) setGeometry(row.id, g);
       }
     },
-    setAllowInput(v: boolean): void {
-      if (allowInput === v) return;
-      allowInput = v;
-      notify();
+    /** Start re-reading `/api/config` (now, then periodically, backing off on failure). */
+    startConfig(): () => void {
+      configStopped = false;
+      void refreshConfig();
+      return () => {
+        configStopped = true;
+        if (configTimer !== undefined) clearTimer(configTimer);
+      };
     },
-    allowsInput: () => allowInput,
+    refreshConfig,
+    /** Test/boot seam: set the grant directly. */
+    setAllowInput(v: boolean): void {
+      setInputState(v ? 'allowed' : 'read-only');
+    },
+    inputState: (): InputState => inputState,
+    allowsInput: () => inputState === 'allowed',
+    inputHaltOf: (ptyId: string): InputHalt | undefined => halts.get(ptyId),
+    /** The user acknowledged a halt: this pane's input goes out again. */
+    resumeInput(ptyId: string): void {
+      if (halts.delete(ptyId)) notify();
+    },
     subscribe(listener: () => void): () => void {
       viewListeners.add(listener);
       return () => { viewListeners.delete(listener); };

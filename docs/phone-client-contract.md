@@ -371,7 +371,7 @@ GET /api/events?since=<cursor>     (Bearer)
 GET /api/config    → {allowInput, allowUpload, allowTranscript, liveActivityPush?,
                       gatedTools, gateEnabled?, fleetSidebar?, terminalPromptDetail?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
-                      serverVersion}
+                      serverVersion, hostPlatform}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
                       workspace?, workspaceId?, shell?, lastDetectedAgent?, cwdLeaf?,
                       liveness?, lastAssistantText?, surfaceTitle?, paneName?}]}
@@ -2752,7 +2752,8 @@ whose app page was not built serves the classic page at `/`.
   - A pane's stream (`GET /api/stream`, with a stream ticket for a device
     credential — `<deviceId>.<secret>` — and `?token=` for the operator token,
     which never asks for a ticket) is open only while the pane is shown and its
-    terminal reports itself visible; it closes on hide.
+    terminal reports itself visible; it closes on hide. A device credential
+    never goes into the URL: no ticket, no stream.
   - Inline images (sixel / iTerm2) are off in the browser: the image decoder
     needs WebAssembly, which the page's CSP does not allow.
   - At most **4** panes stream at once (the daemon allows 8 streams per
@@ -2765,14 +2766,39 @@ whose app page was not built serves the classic page at `/`.
     to its box — never a CSS transform, which would misplace mouse reports — and
     never asks to resize a pane.
   - Each `snapshot` is replayed as one write starting with RIS (a re-opened
-    stream repaints instead of stacking). Terminal answers to device queries
-    (DA, DSR, DECRQM) produced while a snapshot is being parsed are dropped, not
-    typed. The stale-mode reset uses the shared gate (`commandRunning`,
+    stream repaints instead of stacking). Queries the snapshot replays are
+    not answered (the viewer answers none — see below). The stale-mode reset
+    uses the shared gate (`commandRunning`,
     `resumeAgent` from `meta`) capped at the alive-shell set: mouse and focus
     reporting are cleared, bracketed paste (`?2004`) never is.
-  - Keystrokes go to `POST /api/input` in order per pane, only when
-    `/api/config` says this caller may type; a 403 turns input off for the page.
-    A read-only caller's terminal sends nothing.
+  - `hostPlatform` in `/api/config` is the daemon's `process.platform`
+    (`darwin`, `win32`, `linux`): the browser app folds keyboard-protocol
+    negotiation by the pane's host, not by the browser's OS.
+  - The page re-reads `/api/config` every 10 s (backing off on failure), so a
+    failed first read or a changed grant does not stick; until the first
+    answer the page shows "Checking input…", and a read-only caller sees a
+    "Read-only" chip.
+  - Keystrokes go to `POST /api/input` in order per pane, only while this
+    caller may type; a read-only caller's terminal sends nothing, and never
+    arms mouse reporting (the drag selects text instead). Keys typed while a
+    snapshot is being parsed wait for it. A delivery that fails or cannot be
+    confirmed (409, other 4xx, 5xx, no answer) stops that pane's input and the
+    page says so, with how many keystrokes were not sent and a Resume button.
+    An unconfirmed keystroke is never re-sent (it may have arrived); input
+    receipts are not used per keystroke (two durable writes each, 10 000 a day
+    shared by every client).
+  - The browser terminal is a viewer and **answers no terminal query** (DA,
+    DSR/CPR, DECRQM, XTVERSION, DECRQSS, OSC 4/10/11/12 `?`), replayed or live,
+    and sends no focus reports: the pane's owner (the desktop's terminal)
+    answers. With no desktop attached a query goes unanswered and the app
+    falls back on its own timeout — a viewer that answers can type into a
+    shell; one that stays quiet cannot.
+  - Paste (⌘V, Ctrl+V, Ctrl+Shift+V) is the browser's own paste event, so it
+    works outside a secure context; copy falls back to the legacy copy
+    command there.
+  - A stream the daemon keeps refusing (stream quota, expired ticket) backs
+    off (1 s doubling to 30 s) and after 5 failures gives its slot up; the
+    pane shows it as unavailable with "Show live" to try again.
 - The page is served under its own CSP, derived from its own bytes like the
   classic page's. Both policies carry `font-src 'self'`: the app's fonts are
   served same-origin from `/app/assets/<name>.woff2` (exact file names from the

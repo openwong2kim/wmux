@@ -18,6 +18,8 @@ import { WorkspaceViewport } from '../components/Layout/WorkspaceViewport';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { getLeafPanes } from '../../shared/paneUtils';
 import { FOCUS_RING } from '../components/focusRing';
+import { useT } from '../hooks/useT';
+import { useWebInputState } from './WebTerminal';
 
 export const PHONE_QUERY = '(max-width: 640px)';
 
@@ -66,6 +68,26 @@ function PanePicker() {
   );
 }
 
+/**
+ * Says when this page cannot type: a read-only device or server, or the grant
+ * not read yet. Neutral, not accent — a state, not an action (DESIGN.md).
+ */
+function InputStateChip() {
+  const t = useT();
+  const state = useWebInputState();
+  if (state === 'allowed') return null;
+  return (
+    <div
+      className="pointer-events-none absolute bottom-2 right-3 rounded border px-2 py-0.5 text-[11px]"
+      style={{ zIndex: 'var(--z-overlay)' as unknown as number, borderColor: 'var(--border)', background: 'var(--bg-mantle)', color: 'var(--text-sub)' }}
+      role="status"
+      data-web-input-state={state}
+    >
+      {state === 'read-only' ? t('web.appReadOnly') : t('web.inputChecking')}
+    </div>
+  );
+}
+
 export function WebApp() {
   const narrow = useNarrow();
   const sidebarVisible = useStore((s) => s.sidebarVisible);
@@ -110,6 +132,7 @@ export function WebApp() {
                 <div className="absolute inset-0 flex flex-col" data-pane-grid-wrapper>
                   <WorkspaceViewport />
                 </div>
+                <InputStateChip />
               </div>
             </div>
           </ErrorBoundary>

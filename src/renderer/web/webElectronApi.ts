@@ -73,6 +73,13 @@ export function webElectronApiImpl(
     // daemon link of its own to report — its streams reconnect themselves.
     daemon: { onConnected: () => () => undefined },
     pty: lateBoundPty(getPtyBridge),
+    // The daemon's OS (from /api/config), for key encodings the pane's host
+    // decides; null until known. `platform` above stays the browser's, which
+    // is what the keyboard in front of the user follows.
+    hostPlatform: (): string | null => {
+      const answer = getPtyBridge()?.hostPlatform?.();
+      return typeof answer === 'string' ? answer : null;
+    },
   };
 }
 
@@ -81,12 +88,35 @@ export function webElectronApiImpl(
  * browser's own clipboard. Reads and writes need a secure context and, for
  * reads, the browser's permission; anything unavailable answers empty.
  */
-export function webClipboardApi(nav: Pick<Navigator, 'clipboard'>): Record<string, (...args: never[]) => Promise<unknown>> {
+export function webClipboardApi(
+  nav: Pick<Navigator, 'clipboard'>,
+  doc: Pick<Document, 'createElement' | 'execCommand' | 'body'> | null = typeof document === 'undefined' ? null : document,
+): Record<string, unknown> {
   const clip = nav.clipboard as Clipboard | undefined;
-  const writeText = (text: string): Promise<void> => (clip?.writeText
-    ? clip.writeText(text)
-    : Promise.reject(new Error('clipboard unavailable in this browser context')));
+  // Outside a secure context there is no async clipboard; the legacy copy
+  // command still works inside the key press that asked for it.
+  const legacyCopy = (text: string): boolean => {
+    if (!doc?.body) return false;
+    const area = doc.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    doc.body.appendChild(area);
+    area.select();
+    let ok = false;
+    try { ok = doc.execCommand('copy'); } catch { ok = false; }
+    area.remove();
+    return ok;
+  };
+  const writeText = (text: string): Promise<void> => {
+    if (clip?.writeText) return clip.writeText(text).catch(() => (legacyCopy(text) ? undefined : Promise.reject(new Error('copy refused'))));
+    return legacyCopy(text) ? Promise.resolve() : Promise.reject(new Error('clipboard unavailable in this browser context'));
+  };
   return {
+    // useTerminal leaves ⌘V / Ctrl+V / Ctrl+Shift+V to the browser's paste
+    // event (xterm brackets it) instead of reading the clipboard itself.
+    nativePaste: true,
     writeText,
     readText: () => (clip?.readText ? clip.readText().catch(() => '') : Promise.resolve('')),
     readImage: () => Promise.resolve(null),

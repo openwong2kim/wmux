@@ -65,6 +65,8 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(pkg.version),
     // The browser has no Node `process`; React and zustand read NODE_ENV.
     'process.env.NODE_ENV': JSON.stringify('production'),
+    // Dogfood-only page hooks that read pane contents (main.tsx).
+    __WMUX_WEB_DEBUG__: JSON.stringify(process.env.WMUX_WEB_DEBUG === '1'),
   },
   publicDir: false,
   build: {

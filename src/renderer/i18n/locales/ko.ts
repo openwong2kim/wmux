@@ -153,6 +153,17 @@ export const ko = {
   'web.streamWaiting': '일시 정지: 실시간 창 {count}개 사용 중',
   'web.streamShow': '실시간으로 보기',
   'web.streamConnecting': '연결 중…',
+  'web.streamUnavailable': '이 창을 스트리밍하지 못했습니다',
+  'web.appReadOnly': '읽기 전용',
+  'web.inputChecking': '입력 권한 확인 중…',
+  'web.inputPaused': '입력 일시 정지',
+  'web.inputPausedOffline': '연결이 끊겨 입력한 내용이 전달되지 않았을 수 있습니다.',
+  'web.inputPausedPrompt': '창에 권한 확인 창이 떠 있습니다. 데스크톱이나 승인 화면에서 응답하세요.',
+  'web.inputPausedRefused': '서버가 입력을 거부했습니다 ({code}).',
+  'web.inputPausedUnauthorized': '이 기기의 접근 권한이 없어졌습니다.',
+  'web.inputPausedTooLarge': '붙여넣은 내용이 너무 커서 보낼 수 없습니다.',
+  'web.inputDropped': '이후 입력 {count}건은 보내지 않았습니다.',
+  'web.inputResume': '입력 재개',
 
   // Common
   'common.undo': '되돌리기',

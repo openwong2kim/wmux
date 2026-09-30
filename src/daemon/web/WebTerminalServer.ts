@@ -2310,6 +2310,9 @@ export class WebTerminalServer {
         // that 403s on every keystroke.
         allowInput: this.mayInput(principal),
         inputReceipts: this.mayInput(principal) && this.deps.inputReceipts !== undefined,
+        // The panes' host OS: key encodings follow the machine the PTY runs on
+        // (ConPTY's own ?9001h on win32), not the client drawing it.
+        hostPlatform: process.platform,
         allowUpload: this.opts?.allowUpload === true,
         generalFileUpload: this.opts?.allowUpload === true && this.deps.uploadsDir !== undefined,
         allowTranscript: this.opts?.allowTranscript === true,

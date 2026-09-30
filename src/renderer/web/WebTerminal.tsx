@@ -20,7 +20,7 @@ import { useStore } from '../stores';
 import { useT } from '../hooks/useT';
 import { findLeaf, findLeafBySurfaceId, getLeafPanes } from '../../shared/paneUtils';
 import { FOCUS_RING } from '../components/focusRing';
-import { WEB_LIVE_STREAM_CAP, type WebPtyHub } from './webPty';
+import { WEB_LIVE_STREAM_CAP, type InputHalt, type WebPtyHub } from './webPty';
 
 let hub: WebPtyHub | null = null;
 
@@ -31,6 +31,13 @@ export function setWebPtyHub(next: WebPtyHub | null): void {
 
 const noopSubscribe = () => () => undefined;
 const zero = () => 0;
+
+/** Whether this page may type ('checking' until /api/config answers). */
+export function useWebInputState(): 'checking' | 'allowed' | 'read-only' {
+  const h = hub;
+  useSyncExternalStore(h ? h.subscribe : noopSubscribe, h ? h.version : zero);
+  return h ? h.inputState() : 'checking';
+}
 
 interface WebTerminalProps {
   chatView?: boolean;
@@ -55,6 +62,42 @@ function Body({ surfaceId, children }: { surfaceId: string; children: React.Reac
       data-web-terminal-waiting
     >
       {children}
+    </div>
+  );
+}
+
+function haltText(t: ReturnType<typeof useT>, halt: InputHalt): string {
+  if (halt.reason === 'offline') return t('web.inputPausedOffline');
+  if (halt.reason === 'unauthorized') return t('web.inputPausedUnauthorized');
+  if (halt.reason === 'too-large') return t('web.inputPausedTooLarge');
+  if (halt.reason === 'refused:terminal-prompt-active') return t('web.inputPausedPrompt');
+  return t('web.inputPausedRefused', { code: halt.reason.replace(/^refused:/, '') });
+}
+
+/** Input to this pane stopped: say why and what was not sent, never silently. */
+function InputHaltBanner({ halt, onResume }: { halt: InputHalt; onResume: () => void }) {
+  const t = useT();
+  return (
+    <div
+      role="alert"
+      className="absolute inset-x-2 top-2 z-20 rounded border p-3 text-sm"
+      style={{ borderColor: 'var(--border)', background: 'var(--bg-base)', color: 'var(--text-main)' }}
+      data-web-input-halt={halt.reason}
+    >
+      <p className="font-medium">{t('web.inputPaused')}</p>
+      <p className="mt-1 break-words" style={{ color: 'var(--text-sub)' }}>{haltText(t, halt)}</p>
+      {halt.dropped > 0 && (
+        <p className="mt-1" style={{ color: 'var(--text-sub2)' }}>{t('web.inputDropped', { count: halt.dropped })}</p>
+      )}
+      <button
+        type="button"
+        className={`mt-2 rounded border px-3 py-1 text-xs ${FOCUS_RING}`}
+        style={{ borderColor: 'var(--border)', color: 'var(--text-main)' }}
+        onClick={onResume}
+        data-web-input-resume
+      >
+        {t('web.inputResume')}
+      </button>
     </div>
   );
 }
@@ -101,7 +144,9 @@ export default function WebTerminal({
     return (
       <Body surfaceId={surfaceId}>
         <span className="truncate max-w-[80%]" style={{ color: 'var(--text-sub)' }}>{title}</span>
-        <span className="text-xs">{t('web.streamWaiting', { count: WEB_LIVE_STREAM_CAP })}</span>
+        <span className="text-xs">
+          {h.isUnavailable(id) ? t('web.streamUnavailable') : t('web.streamWaiting', { count: WEB_LIVE_STREAM_CAP })}
+        </span>
         <button
           type="button"
           className={`rounded border px-3 py-1 text-xs ${FOCUS_RING}`}
@@ -121,16 +166,20 @@ export default function WebTerminal({
       </Body>
     );
   }
+  const halt = h.inputHaltOf(id);
   return (
-    <TerminalComponent
-      ptyId={id}
-      cwd={cwd}
-      isActive={isActive}
-      visible={visible}
-      isWorkspaceVisible={isWorkspaceVisible}
-      workspaceId={workspaceId}
-      surfaceId={surfaceId}
-      fixedGeometry={geometry}
-    />
+    <>
+      <TerminalComponent
+        ptyId={id}
+        cwd={cwd}
+        isActive={isActive}
+        visible={visible}
+        isWorkspaceVisible={isWorkspaceVisible}
+        workspaceId={workspaceId}
+        surfaceId={surfaceId}
+        fixedGeometry={geometry}
+      />
+      {halt && halt.reason !== 'read-only' && <InputHaltBanner halt={halt} onResume={() => h.resumeInput(id)} />}
+    </>
   );
 }

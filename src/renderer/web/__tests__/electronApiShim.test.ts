@@ -40,7 +40,7 @@ describe('deny-by-default electronAPI shim', () => {
     expect(platformFromNavigator({ userAgent: 'x', platform: 'Win32' })).toBe('win32');
     expect(platformFromNavigator({ userAgent: 'Mozilla/5.0 (X11; Linux x86_64)' })).toBe('linux');
     expect(Object.keys(webElectronApiImpl({ userAgent: 'x', language: 'en' })).sort())
-      .toEqual(['browser', 'daemon', 'events', 'platform', 'pty', 'systemLocale', 'windowsBuildNumber']);
+      .toEqual(['browser', 'daemon', 'events', 'hostPlatform', 'platform', 'pty', 'systemLocale', 'windowsBuildNumber']);
   });
 
   it('returns the same node for the same path', () => {
