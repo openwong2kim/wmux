@@ -39,6 +39,11 @@ describe('removing a phone worktree from the desktop cleanup list', { timeout: 3
     fs.mkdirSync(outside);
     fs.symlinkSync(outside, path.join(root, HASH, 'phone-link'), 'dir');
     expect(phoneWorktreeDir(root, path.join(root, HASH, 'phone-link'))).toBeNull();
+    // A root reached through a link (a linked home) accepts either spelling.
+    const linkedRoot = path.join(base, 'linked-root');
+    fs.symlinkSync(root, linkedRoot, 'dir');
+    expect(phoneWorktreeDir(linkedRoot, dir)).toBe(dir);
+    expect(phoneWorktreeDir(linkedRoot, path.join(linkedRoot, HASH, 'phone-ok'))).toBe(dir);
   });
 
   it('refuses while a pane runs inside, asks before discarding changes, then deletes the branch on request', async () => {

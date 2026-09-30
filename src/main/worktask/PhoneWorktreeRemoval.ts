@@ -45,10 +45,16 @@ const BRANCH = new RegExp(`^${PHONE_WORKTREE_BRANCH_PREFIX}${PHONE_WORKTREE_SLUG
 export function phoneWorktreeDir(root: string, worktreePath: string): string | null {
   let rootReal: string;
   try { rootReal = fs.realpathSync.native(root); } catch { return null; }
-  const parts = path.relative(path.resolve(root), path.resolve(worktreePath)).split(path.sep);
+  // The root as configured or as resolved (a home reached through a link).
+  const base = [path.resolve(root), rootReal].find((b) => {
+    const rel = path.relative(b, path.resolve(worktreePath));
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  });
+  if (!base) return null;
+  const parts = path.relative(base, path.resolve(worktreePath)).split(path.sep);
   if (parts.length !== 2 || !/^[a-f0-9]{12}$/.test(parts[0]) || !parts[1].startsWith(PHONE_WORKTREE_DIR_PREFIX) ||
       !PHONE_WORKTREE_SLUG.test(parts[1].slice(PHONE_WORKTREE_DIR_PREFIX.length))) return null;
-  let current = path.resolve(root);
+  let current = base;
   for (const part of parts) {
     current = path.join(current, part);
     try {
