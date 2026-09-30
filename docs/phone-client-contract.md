@@ -1698,9 +1698,29 @@ nothing).
 | `not-ended` | still running 15 s after the write | final: it never changes, even if the turn ends later. Re-read `/turns` for the turn's current state; offer Stop again (a new `clientCancelId`) or Terminal |
 | `unknown` | cannot be known | final; check Terminal |
 
-What counts as `ended` today (the Esc path, Claude and Codex): the daemon
-looks at the pane about once a second for 15 s after the write. Nothing is
-`ended` while the aimed `chat.turn` still reads `running`.
+What counts as `ended` today (Claude and Codex): the daemon looks at the
+pane about once a second for 15 s after the write. Nothing is `ended` while
+the aimed `chat.turn` still reads `running`.
+
+**Codex panes with a daemon-owned relay** (phone-created Codex panes on Unix)
+stop the turn natively first: once every check above has passed and the
+receipt is on disk, the daemon sends the app-server's own `turn/interrupt`
+for the turn the pane's relay stream reported running, on a side connection,
+bounded at 5 s. Only the pane's own stream reporting `turn/completed` with
+`status: "interrupted"` for that turn counts as proof; the request's `{}`
+answer never does (the server can answer `{}` for a request it held and
+then released when some other turn was interrupted). When no proof arrives
+in time, every check (credential, pane, conversation, running turn, screen)
+runs again and the Esc goes out if the same turn still runs. `requestedAt` is
+the time of the first write, and the 15 s window counts from it. A receipt
+is never dropped once the native request may have reached the server, even
+when the Esc is then refused. The Codex turn id never leaves the daemon; the
+receipt's `turnId` is the `chat.turn.id` as for the Esc path.
+
+- `evidence: "native"`: the aimed turn is no longer running, and the pane's
+  own Codex stream reported it `interrupted` (from the native request or the
+  Esc; either way the agent's own protocol proved the end).
+  `endedAs: "interrupted"`.
 
 - `evidence: "transcript"`: the first record written **after the interrupt**
   is an interrupt or end record. The daemon notes where the transcript stood
@@ -1713,7 +1733,8 @@ looks at the pane about once a second for 15 s after the write. Nothing is
   Claude's Stop-hook row is on screen. `endedAs: "unspecified"`. The pane, its
   conversation and the turn are checked again after the screen read.
 - The hook stream is not evidence: an interrupt fires no Stop hook.
-- `endedAs: "failed"` and `evidence: "native"` are not sent yet.
+- `endedAs: "failed"` is not sent yet; `evidence: "native"` only for the
+  Codex relay path above.
 
 `unknown` reasons: `write-uncertain` (the write itself may or may not have
 landed; from the start), `daemon-restart` (the daemon restarted before an end
@@ -1724,9 +1745,8 @@ end cannot be proved: a new prompt or turn start was recorded after the write
 before any end, the transcript tail no longer reaches back to the write, or
 the turn stopped running with no proof by the 15 s deadline.
 
-**Not served yet.** Codex app-server `turn/interrupt {threadId, turnId}` with
-`native` evidence (gated on the same spike as the Codex account status); Codex
-uses the Esc path above. OpenCode: nothing observes the plugin abort yet, so an
+**Not served yet.** A Codex pane without a relay (a `codex` typed by hand)
+uses the Esc path only. OpenCode: nothing observes the plugin abort yet, so an
 OpenCode cancel reads `unknown` (no `reason`) from the start, or `unknown`
 (`write-uncertain`) when the abort's answer was lost; `native` evidence from
 the plugin's phase is a follow-up.
@@ -3822,9 +3842,12 @@ Needs `--allow-transcript` (like `GET …/accounts`), not input.
 
 ### 3. Chat cancel outcome
 
-**Served** for the Esc path (Claude and Codex): see "Chat cancel outcome",
-right after "Chat cancel". The Codex `turn/interrupt` (`native`) path is not served
-yet and stays gated on the spike in item 2.
+**Served** for the Esc path (Claude and Codex) and for the Codex
+`turn/interrupt` path with `native` evidence on panes with a daemon-owned
+relay: see "Chat cancel outcome", right after "Chat cancel". The spike behind
+item 2 (codex-cli 0.159.2) confirmed that a side connection may interrupt a
+turn it did not start, and that the owning connection then receives
+`turn/completed {status:"interrupted"}` for it.
 
 ### 4. Account per pane, and handoff lineage (served)
 

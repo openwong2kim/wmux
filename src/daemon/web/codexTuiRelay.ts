@@ -34,6 +34,11 @@ export type CodexDecisionSettledReason = 'answered-locally' | 'turn-ended' | 'pa
 export type CodexAnswerOutcome = 'ok' | 'not-found' | 'unavailable' | 'uncertain';
 /** How long a phone's answer waits for the server to report the request resolved. */
 const ANSWER_CONFIRM_MS = 5000;
+/** Threads whose running turn the relay remembers, and ended turns kept for a cancel's later look. */
+const MAX_ACTIVE_TURNS = 64;
+const MAX_ENDED_TURNS = 32;
+/** A turn's final `status` on `turn/completed` (`completed`, `interrupted`, `failed`), verbatim. */
+export type CodexTurnEnd = string;
 
 /**
  * Deny-by-default request policy (codexRelayPolicy.ts). Without it the relay
@@ -95,10 +100,26 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
   let closing:Promise<void> | undefined;
   // The live connection's phone-answer path; none before a TUI connects.
   let answerOnConnection:((threadId:string,requestId:string,decision:CodexDecisionAnswer)=>Promise<CodexAnswerOutcome>) | undefined;
+  // Turn identity as the pane's own stream reports it (`turn/started`,
+  // `turn/completed`): thread -> its running turn, and recently ended turns
+  // with their final status. Only this stream proves a turn ended; the
+  // answer to a `turn/interrupt` never does.
+  const activeTurns = new Map<string,string>();
+  const endedTurns = new Map<string,CodexTurnEnd>();
+  const turnWaiters = new Map<string,Set<(status:CodexTurnEnd | undefined)=>void>>();
+  const turnKey = (threadId:string, turnId:string) => `${threadId}\n${turnId}`;
+  const settleTurnWaiters = (key:string, status:CodexTurnEnd | undefined) => {
+    const waiters = turnWaiters.get(key);
+    if (!waiters) return;
+    turnWaiters.delete(key);
+    for (const resolve of waiters) resolve(status);
+  };
   const close = ():Promise<void> => {
     if (closing) return closing;
     retired = true;
     tracker.close();
+    activeTurns.clear();
+    for (const key of [...turnWaiters.keys()]) settleTurnWaiters(key,undefined);
     try {options.onStateChange?.();} catch {/* Retiring cannot restore authority. */}
     for (const socket of sockets) socket.terminate();
     closing = (async()=>{
@@ -296,7 +317,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       const frame = decode(raw,binary);if(!frame)return;
       const before = JSON.stringify(tracker.current());
       tracker.fromServer(frame.message);
-      const message = frame.message as {method?:unknown;params?:{threadId?:unknown;requestId?:unknown};id?:unknown;result?:unknown} | null;
+      const message = frame.message as {method?:unknown;params?:{threadId?:unknown;requestId?:unknown;turn?:unknown};id?:unknown;result?:unknown} | null;
       if (message && typeof message.method === 'string' && isRequestId(message.id)) {
         if (!pendingServerRequests.has(message.id) && pendingServerRequests.size >= MAX_PENDING_SERVER_REQUESTS) {
           try {options.policy?.refused?.('too many Codex requests are awaiting an answer; the pane connection was closed');} catch {/* A notice cannot change the outcome. */}
@@ -328,10 +349,27 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
             else settleDecision(key,'answered-locally');
           }
         }
+      } else if (message?.method === 'turn/started' && typeof message.params?.threadId === 'string') {
+        const turn = message.params.turn as {id?:unknown} | null | undefined;
+        if (typeof turn?.id === 'string' && turn.id.length <= 128) {
+          activeTurns.delete(message.params.threadId);
+          activeTurns.set(message.params.threadId,turn.id);
+          if (activeTurns.size > MAX_ACTIVE_TURNS) activeTurns.delete(activeTurns.keys().next().value as string);
+        }
       } else if (message?.method === 'turn/completed' && typeof message.params?.threadId === 'string') {
         // A finished turn leaves none of its requests awaiting an answer.
         for (const [id,threadId] of pendingServerRequests) if (threadId === message.params.threadId) pendingServerRequests.delete(id);
         for (const [key,decision] of decisions) if (decision.threadId === message.params.threadId) settleDecision(key,'turn-ended');
+        const turn = message.params.turn as {id?:unknown;status?:unknown} | null | undefined;
+        if (typeof turn?.id === 'string' && turn.id.length <= 128) {
+          if (activeTurns.get(message.params.threadId) === turn.id) activeTurns.delete(message.params.threadId);
+          const status = typeof turn.status === 'string' && /^[A-Za-z]{1,32}$/.test(turn.status) ? turn.status : 'unknown';
+          const key = turnKey(message.params.threadId,turn.id);
+          endedTurns.delete(key);
+          endedTurns.set(key,status);
+          if (endedTurns.size > MAX_ENDED_TURNS) endedTurns.delete(endedTurns.keys().next().value as string);
+          settleTurnWaiters(key,status);
+        }
       }
       if (message && message.method === undefined && (typeof message.id === 'string' || typeof message.id === 'number')) {
         const method = tracked.get(message.id);
@@ -373,7 +411,39 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     return {url:`unix://${socketPath}`,current:()=>tracker.current(),retired:()=>retired,close,
       /** A phone's answer to a request reported by `decisionPending`. */
       answer:(threadId:string,requestId:string,decision:CodexDecisionAnswer):Promise<CodexAnswerOutcome> =>
-        retired || !answerOnConnection ? Promise.resolve('not-found') : answerOnConnection(threadId,requestId,decision)};
+        retired || !answerOnConnection ? Promise.resolve('not-found') : answerOnConnection(threadId,requestId,decision),
+      /** The thread's running turn as this pane's stream last reported it. */
+      activeTurn:(threadId:string):string | undefined => retired ? undefined : activeTurns.get(threadId),
+      /** How a recently ended turn ended, as this pane's stream reported it. */
+      turnEnded:(threadId:string,turnId:string):CodexTurnEnd | undefined => endedTurns.get(turnKey(threadId,turnId)),
+      /**
+       * The turn's final status once this pane's stream reports `turn/completed`
+       * for it; undefined when `ms` passes, `cancel` is called or the relay closes.
+       */
+      waitTurnEnd:(threadId:string,turnId:string,ms:number):{ended:Promise<CodexTurnEnd | undefined>; cancel:()=>void} => {
+        const key = turnKey(threadId,turnId);
+        let done:((status:CodexTurnEnd | undefined)=>void) | undefined;
+        const ended = new Promise<CodexTurnEnd | undefined>(resolve=>{
+          const seen = endedTurns.get(key);
+          if (retired || seen !== undefined) { resolve(seen);return; }
+          const finish = (status:CodexTurnEnd | undefined) => {
+            clearTimeout(timer);
+            const waiters = turnWaiters.get(key);
+            waiters?.delete(finish);
+            if (waiters?.size === 0) turnWaiters.delete(key);
+            resolve(status);
+          };
+          const timer = setTimeout(()=>finish(undefined),ms);
+          timer.unref?.();
+          done = finish;
+          const waiters = turnWaiters.get(key) ?? new Set();
+          waiters.add(finish);turnWaiters.set(key,waiters);
+        });
+        return {ended,cancel:()=>done?.(undefined)};
+      },
+      /** `turn/interrupt` on a side connection (see `interruptUpstream`). */
+      interrupt:(threadId:string,turnId:string,timeoutMs?:number):Promise<unknown> =>
+        retired ? Promise.reject(new CodexUpstreamError('not-sent')) : interruptUpstream(upstreamPath,threadId,turnId,timeoutMs)};
   } catch(error) {await close();throw error;}
 }
 
@@ -385,11 +455,39 @@ export type CodexUpstreamRead = 'config/read'|'thread/loaded/list'|'getAuthStatu
 export const codexUpstreamPath = (codeHome:string):string => path.join(codeHome,'app-server-control','app-server-control.sock');
 
 /**
+ * A side-connection request that did not answer. `refused`: the server
+ * answered with an error, so it did nothing. `not-sent`: the request never
+ * left. `uncertain`: it was written and no answer came (timeout or close).
+ */
+export class CodexUpstreamError extends Error {
+  constructor(readonly kind:'refused'|'not-sent'|'uncertain', message = 'Codex query failed') {super(message);}
+}
+
+/**
  * One read-only request on a separate, short-lived connection to the account
  * server, so the relay's own stream (and its request ids) stay untouched.
  */
 export function queryUpstream(upstreamPath:string, method:CodexUpstreamRead, params:Record<string,unknown>, timeoutMs = 5000):Promise<unknown> {
+  return requestUpstream(upstreamPath,method,params,timeoutMs);
+}
+
+/**
+ * The one write a side connection sends: `turn/interrupt` for a turn this
+ * pane's stream reported running. Its answer is not an outcome: `{}` can
+ * arrive for a turn that is not interrupted (a request for an already
+ * finished turn is held and later answered when another turn is
+ * interrupted), and such a request may never be answered at all, so
+ * `timeoutMs` always bounds it. Only the pane's own `turn/completed` proves
+ * the turn ended. Never `thread/resume` from a side connection: it broadcasts
+ * to every connection on the thread.
+ */
+export function interruptUpstream(upstreamPath:string, threadId:string, turnId:string, timeoutMs = 5000):Promise<unknown> {
+  return requestUpstream(upstreamPath,'turn/interrupt',{threadId,turnId},timeoutMs);
+}
+
+function requestUpstream(upstreamPath:string, method:string, params:Record<string,unknown>, timeoutMs:number):Promise<unknown> {
   return new Promise((resolve,reject)=>{
+    let sent = false;
     const socket = new WebSocket(`ws+unix://${upstreamPath}:/`,{handshakeTimeout:timeoutMs,maxPayload:MAX_FRAME,perMessageDeflate:false,followRedirects:false});
     let done = false;
     const finish = (error:Error|undefined, value?:unknown) => {
@@ -397,22 +495,24 @@ export function queryUpstream(upstreamPath:string, method:CodexUpstreamRead, par
       socket.terminate();
       if (error) reject(error); else resolve(value);
     };
-    const timer = setTimeout(()=>finish(new Error('Codex query timed out')),timeoutMs);
-    socket.on('error',()=>finish(new Error('Codex query failed')));
-    socket.on('close',()=>finish(new Error('Codex query closed')));
+    const lost = (message:string) => new CodexUpstreamError(sent ? 'uncertain' : 'not-sent',message);
+    const timer = setTimeout(()=>finish(lost('Codex query timed out')),timeoutMs);
+    socket.on('error',()=>finish(lost('Codex query failed')));
+    socket.on('close',()=>finish(lost('Codex query closed')));
     socket.on('open',()=>{
       socket.send(JSON.stringify({id:1,method:'initialize',params:{clientInfo:{name:'wmux_relay',version:'1.0.0'},capabilities:{experimentalApi:true,requestAttestation:false}}}));
     });
     socket.on('message',(raw,binary)=>{
-      if (binary) return finish(new Error('Codex query failed'));
+      if (binary) return finish(lost('Codex query failed'));
       let message:{id?:unknown;result?:unknown;error?:unknown};
-      try { message = JSON.parse(raw.toString()); } catch { return finish(new Error('Codex query failed')); }
+      try { message = JSON.parse(raw.toString()); } catch { return finish(lost('Codex query failed')); }
       if (message.id === 1) {
-        if (message.error) return finish(new Error('Codex query failed'));
+        if (message.error) return finish(lost('Codex query failed'));
         socket.send(JSON.stringify({method:'initialized'}));
+        sent = true;
         socket.send(JSON.stringify({id:2,method,params}));
       } else if (message.id === 2) {
-        return message.error ? finish(new Error('Codex query failed')) : finish(undefined,message.result);
+        return message.error ? finish(new CodexUpstreamError('refused')) : finish(undefined,message.result);
       }
     });
   });

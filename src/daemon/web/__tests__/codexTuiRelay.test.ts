@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import WebSocket,{WebSocketServer} from 'ws';
 import {describe,it,expect} from 'vitest';
-import {createCodexTuiRelay,CodexRelayUnavailableError,type CodexRelayPolicy,type CodexDecisionSettledReason} from '../codexTuiRelay';
+import {createCodexTuiRelay,CodexRelayUnavailableError,CodexUpstreamError,type CodexRelayPolicy,type CodexDecisionSettledReason} from '../codexTuiRelay';
 import type {CodexDecisionRequest} from '../codexDecisions';
 import {threadIdentityEnv} from '../codexRelayPolicy';
 const threadId='01234567-89ab-4cde-8123-456789abcdef';
@@ -24,12 +24,18 @@ async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpst
   // connection opened after creation is the relay's own upstream link.
   let ready=false,live:WebSocket|undefined;
   wss.on('connection',socket=>{
+    const previous=live;
     if(ready)live=socket;
     socket.on('message',bytes=>{
       const request=JSON.parse(bytes.toString());
+      // A side connection (queries, turn/interrupt) introduces itself; it is
+      // never the relay's own upstream link.
+      if(request.method==='initialize'&&request.params?.clientInfo?.name==='wmux_relay'&&live===socket)live=previous;
       if(ready)options.onUpstreamRequest?.(request,bytes.toString());
       if(request.id===undefined||request.method===undefined)return;
       const custom=ready?options.respond?.(request):undefined;
+      // null: never answer (a request the server holds).
+      if(custom===null)return;
       if(custom!==undefined){socket.send(JSON.stringify({id:request.id,...(custom as object)}));return;}
       const system=request.params?.threadSource==='system';
       socket.send(JSON.stringify({id:request.id,result:{thread:{id:system?systemThreadId:threadId,cwd:'/repo'}}}));
@@ -701,5 +707,62 @@ describe.skipIf(process.platform === 'win32')('phone answers to Codex approvals'
       expect(t.settled.at(-1)).toEqual({requestId:'10',threadId:owned,reason:'pane-gone'});
       await expect(t.f.relay.answer(owned,'10','accept')).resolves.toBe('not-found');
     } finally { await t.f.cleanup(); }
+  });
+});
+describe.skipIf(process.platform === 'win32')('Codex relay turn identity and native interrupt',()=>{
+  const deliver=async(f:Awaited<ReturnType<typeof fixture>>,client:WebSocket,message:unknown)=>{
+    const seen=new Promise<void>(resolve=>client.once('message',()=>resolve()));
+    f.upstream()?.send(JSON.stringify(message));
+    await seen;
+  };
+  it('keeps the running turn from turn/started until that turn\'s turn/completed, and reports how it ended',async()=>{
+    const f=await fixture();
+    try {
+      const client=await f.connect();await select(client,1);
+      await deliver(f,client,{method:'turn/started',params:{threadId,turn:{id:'turn-1',status:'inProgress'}}});
+      expect(f.relay.activeTurn(threadId)).toBe('turn-1');
+      const wait=f.relay.waitTurnEnd(threadId,'turn-1',2000);
+      let settled:string|undefined='pending';
+      void wait.ended.then(status=>{settled=status;});
+      // Another turn's end is not this turn's.
+      await deliver(f,client,{method:'turn/completed',params:{threadId,turn:{id:'turn-0',status:'interrupted'}}});
+      expect(settled).toBe('pending');
+      expect(f.relay.activeTurn(threadId)).toBe('turn-1');
+      await deliver(f,client,{method:'turn/completed',params:{threadId,turn:{id:'turn-1',status:'interrupted'}}});
+      await expect(wait.ended).resolves.toBe('interrupted');
+      expect(f.relay.activeTurn(threadId)).toBeUndefined();
+      expect(f.relay.turnEnded(threadId,'turn-1')).toBe('interrupted');
+      // A wait for a turn already seen ending answers at once.
+      await expect(f.relay.waitTurnEnd(threadId,'turn-1',2000).ended).resolves.toBe('interrupted');
+      // A wait with no end in time reads undefined; so does one after close.
+      await expect(f.relay.waitTurnEnd(threadId,'turn-2',20).ended).resolves.toBeUndefined();
+      const open=f.relay.waitTurnEnd(threadId,'turn-3',5000);
+      client.terminate();await f.relay.close();
+      await expect(open.ended).resolves.toBeUndefined();
+      expect(f.relay.activeTurn(threadId)).toBeUndefined();
+    } finally {await f.cleanup();}
+  });
+  it('sends turn/interrupt on a side connection: an error answer is a refusal, silence is bounded, {} is only an answer',async()=>{
+    const interrupts:Array<Record<string,unknown>|undefined>=[];
+    const f=await fixture({respond:request=>{
+      if(request.method!=='turn/interrupt')return undefined;
+      interrupts.push(request.params);
+      if(request.params?.turnId==='wrong')return {error:{code:-32600,message:'expected active turn id turn-1 but found wrong'}};
+      if(request.params?.turnId==='finished')return null;
+      return {result:{}};
+    }});
+    try {
+      const client=await f.connect();await select(client,1);
+      await expect(f.relay.interrupt(threadId,'wrong',2000)).rejects.toMatchObject({kind:'refused'});
+      const hung=f.relay.interrupt(threadId,'finished',100);
+      await expect(hung).rejects.toBeInstanceOf(CodexUpstreamError);
+      await expect(hung).rejects.toMatchObject({kind:'uncertain'});
+      await expect(f.relay.interrupt(threadId,'turn-1',2000)).resolves.toEqual({});
+      expect(interrupts).toEqual([{threadId,turnId:'wrong'},{threadId,turnId:'finished'},{threadId,turnId:'turn-1'}]);
+      // The pane's own link is untouched: its stream still reaches the TUI.
+      await deliver(f,client,{method:'turn/started',params:{threadId,turn:{id:'turn-9'}}});
+      expect(f.relay.activeTurn(threadId)).toBe('turn-9');
+      client.terminate();
+    } finally {await f.cleanup();}
   });
 });

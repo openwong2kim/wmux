@@ -3732,6 +3732,9 @@ function registerRpcHandlers(
       },
       unavailable: (error) => (error as NodeJS.ErrnoException)?.code === 'ENOENT' || error instanceof CodexRelayUnavailableError,
       selection: (id, pane) => codexPaneRelays.selection(id, pane),
+      activeTurn: (id, pane) => codexPaneRelays.activeTurn(id, pane),
+      interrupt: (id, pane) => codexPaneRelays.interrupt(id, pane),
+      turnEnded: (id, ref) => codexPaneRelays.turnEnded(id, ref),
     },
     startCodexRuntime: async (env) => {
       const state = await codexSharedRuntime.ensureStarted(undefined, env);
