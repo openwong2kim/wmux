@@ -3545,6 +3545,8 @@ nothing itself.
 > section above, nothing here is extracted from serving code: no daemon serves
 > these routes or fields yet. Do not ship a client path that depends on them
 > until the matching `/api/config` key (below) appears on a real daemon.
+> **Served so far: item 4** (`paneAccount`, `paneHandoff`). Items 1, 2, 3 and 5
+> are still design only.
 > Shared types: `src/shared/phoneTurnFailure.ts`,
 > `src/shared/phoneCodexAccountStatus.ts`, `src/shared/phoneChatCancelOutcome.ts`,
 > `src/shared/phonePaneAccount.ts`, `src/shared/phoneGitV1.ts`.
@@ -3562,8 +3564,8 @@ daemon"; never probe with a write.
 | `turnFailure` | always, once served | `failure` on the surfaces in item 1 |
 | `codexAccountStatus` | `--allow-transcript`, and the spike in item 2 has landed | `GET /api/sessions/<id>/codex/account-status` |
 | `chatCancelOutcome` | `chatCancel` is true and the cancel receipt store loaded | **Served** (see Chat cancel outcome): `cancel` on the cancel answer, the cancel receipt route, `chat.cancel` SSE |
-| `paneAccount` | caller may input, `--allow-transcript`, and the attached desktop announced `accounts.envForAccount` | `accountId` on `POST /api/sessions` and on `GET /api/agent-launch-options` |
-| `paneHandoff` | caller may input | `handoffFrom` on `POST /api/sessions`, echoed on rows and history |
+| `paneAccount` (**served**) | caller may input, `--allow-transcript`, and the attached desktop announced `accounts.envForAccount` | `accountId` on `POST /api/sessions` and on `GET /api/agent-launch-options` |
+| `paneHandoff` (**served**) | caller may input | `handoffFrom` on `POST /api/sessions`, echoed on rows and history |
 | `gitProjects` | caller may input | `GET /api/git/projects`, `GET …/git/branches` |
 | `gitWorktrees` | caller may input and the worktree receipt store loaded | `POST …/git/worktree` and its receipt |
 | `gitChecks` | caller may input | `GET …/git/checks` |
@@ -3581,7 +3583,9 @@ on the workspace's bound account. Also check that the 201 row echoes the
 **Desktop capability handshake.** `paneAccount` depends on a desktop bridge
 command that older desktops do not have. The key appears only after the
 attached desktop has announced support for `accounts.envForAccount` on this
-connection; it disappears when the desktop detaches. Any failure of that
+connection (the desktop sends `daemon.phone.register {commands:[…]}`; an older
+desktop sends no list and so never enables it); it disappears when the desktop
+detaches. Any failure of that
 command (unsupported, timeout, malformed answer, desktop gone) refuses the
 create. The daemon never falls back to the workspace's account environment
 when an `accountId` was sent.
@@ -3736,7 +3740,7 @@ Needs `--allow-transcript` (like `GET …/accounts`), not input.
 right after "Chat cancel". The Codex `turn/interrupt` (`native`) path is not served
 yet and stays gated on the spike in item 2.
 
-### 4. Account per pane, and handoff lineage
+### 4. Account per pane, and handoff lineage (served)
 
 `POST /api/sessions` gains two optional fields:
 
@@ -3795,6 +3799,17 @@ bad id) is `400 {error:"invalid-handoff", effect:"none"}`. No id field
 `Object.prototype` member name (`constructor`, `toString`, `__proto__`, …);
 such an id is refused like any malformed one. The stored value appears on the
 `/api/sessions` row and on every `/api/history` entry of the new pane.
+
+Two narrowings, both because `/api/sessions` rows reach every reader:
+
+- `agentSessionId` is compared with the source's conversation only on a
+  `--allow-transcript` server. Without it, a handoff that names one is stored
+  with `verified: false`, so `verified` cannot be used to test guesses.
+- The row's `handoffFrom` carries `agentSessionId` only on a
+  `--allow-transcript` server; `/api/history` (which needs that grant) always
+  carries it.
+
+The source counts as live only while it is not `dead` or `suspended`.
 
 **Long handoff text travels as a file.** `chat/launch` takes at most 2,000
 UTF-16 units of prompt. Upload the handoff body with `POST /api/upload-file`
