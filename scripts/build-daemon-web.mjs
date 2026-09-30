@@ -116,13 +116,14 @@ mkdirSync(outDir, { recursive: true });
 writeFileSync(join(outDir, 'terminal.html'), html);
 copyFileSync(join(frontendDir, 'manifest.webmanifest'), join(outDir, 'manifest.webmanifest'));
 
-// --- /app: the desktop renderer's components in the browser -----------------
+// --- / (app.html): the desktop renderer's components in the browser ----------
 // vite.web.config.ts builds src/renderer/web/main.tsx into ONE classic script
 // (es2022) + ONE stylesheet; the fonts it references stay files under
 // /app/assets/, served same-origin by the daemon (`font-src 'self'`). Ahead of
 // the bundle sits boot.ts at es2017: it installs the credential and the
 // deny-by-default window.electronAPI, and sends a browser that cannot parse the
-// bundle back to `/`. See docs/phone-client-contract.md "Browser app (/app)".
+// bundle to the classic page at `/classic` (terminal.html). See
+// docs/phone-client-contract.md "Browser app (`/`)".
 const appBuildDir = join(repoRoot, 'dist', 'daemon-web-app');
 const appAssetsOut = join(outDir, 'app-assets');
 const buildFail = (msg) => {
