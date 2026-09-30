@@ -1612,6 +1612,41 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect('chatCancelOutcome' in await config(bearer(ro.token as string))).toBe(false);
     });
 
+    it('advertise == route: chatCancel and chatCancelOutcome appear exactly when POST /chat/cancel passes the caller gates', async () => {
+      const { receipts } = wireOutcome();
+      for (const allowTranscript of [true, false]) {
+        const info = await start({ allowTranscript });
+        const callers = [
+          ['operator', () => bearer(info.token as string)],
+          ['device with input', () => device('dev-1')],
+          ['device without input', () => device('ro', false)],
+        ] as const;
+        for (const [who, headers] of callers) {
+          const body = await config(headers());
+          const res = await postJson(`${base()}/api/sessions/s1/chat/cancel`, headers(),
+            { agentSessionId: 'sess-a', turnId: 't1:abc.3', clientCancelId: freshId() });
+          const served = res.status === 202;
+          expect({ who, allowTranscript, chatCancel: body.chatCancel }).toEqual({ who, allowTranscript, chatCancel: served });
+          expect({ who, allowTranscript, outcome: 'chatCancelOutcome' in body }).toEqual({ who, allowTranscript, outcome: served });
+          if (!served) expect(res.status).toBe(403);
+        }
+        // Receipts need the transcript grant and the owner, not input and not the
+        // key: a device without input reads its own receipt while the key is absent.
+        const cid = freshId();
+        receipts.set(`device:ro|s1|${cid}`, { state: 'requested', turnId: 't1:abc.3', requestedAt: 1, at: 1 });
+        const read = await receipt('s1', cid, device('ro', false));
+        expect(read.status).toBe(allowTranscript ? 200 : 403);
+        if (allowTranscript) expect('chatCancelOutcome' in await config(device('ro', false))).toBe(false);
+        // No chat bridge: the route answers 503, so neither key is shown.
+        chatWired = false;
+        const bare = await config(bearer(info.token as string));
+        expect(bare.chatCancel).toBe(false);
+        expect('chatCancelOutcome' in bare).toBe(false);
+        chatWired = true;
+        await server.stop();
+      }
+    });
+
     it('GET receipt: transcript not input; owner- and pane-bound; brain or missing pane 404; no store 503', async () => {
       const off = await start({ allowTranscript: false });
       const { receipts, fns } = wireOutcome();

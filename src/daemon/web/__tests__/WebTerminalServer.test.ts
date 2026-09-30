@@ -5210,7 +5210,8 @@ describe('WebTerminalServer', () => {
       const cfg = async (headers: Record<string, string>) =>
         (await fetch(`${base()}/api/config`, { headers: { ...bearer(info.token as string), ...headers } })).json();
       const plain = await cfg({});
-      expect(plain).toMatchObject({ decisionForms: [], chatCancel: true });
+      // No --allow-transcript and no chat bridge here, so `/chat/cancel` would refuse: not advertised.
+      expect(plain).toMatchObject({ decisionForms: [], chatCancel: false });
       expect(await cfg(OLD_IOS)).toEqual(plain);
       expect(await cfg({ 'X-Wmux-Client-Caps': 'terminal-prompt-answer, decision-v2, chat-cancel' })).toEqual(plain);
     });
