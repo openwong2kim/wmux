@@ -130,7 +130,7 @@ function Lines({ lines, onOpenLink }: { lines: string[]; onOpenLink: (url: strin
             <span key={i} className="ui-note break-words">
               {before}
               {url ? (
-                <button type="button" onClick={() => onOpenLink(url)} className={LINK}>
+                <button type="button" onClick={() => onOpenLink(url)} aria-label={url} className={LINK}>
                   {url}
                 </button>
               ) : null}
