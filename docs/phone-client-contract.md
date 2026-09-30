@@ -4485,7 +4485,7 @@ GET /api/sessions/<id>/git/worktree/<requestId>
   "cwd": "/Users/me/.wmux/worktrees/a1b2c3d4e5f6/phone-fix-login",   // created
   "leaf": "phone-fix-login",                        // created
   "error": "branch-exists",                         // refused, or unknown ("git-outcome-unknown")
-  "retryAfterMs": 5000                              // unknown only: nothing was changed; repeat the POST after this
+  "retryAfterMs": 5000                              // unknown only: nothing was changed, or a removal under way is still incomplete; repeat the POST after this
 }
 ```
 
@@ -4537,9 +4537,18 @@ same POST then recovers, before anything about the main checkout is checked
   left alone and refused (`worktree-path-exists`, `branch-exists`); the
   desktop cleanup list reclaims it.
 
-Repeat the same POST after `retryAfterMs`, a bounded number of times: stop
-after about 12 tries (a minute) and point the user at the desktop's cleanup
-list. Each repeat runs about ten `git` commands on the desktop.
+Repeat the same POST after `retryAfterMs` (nothing was changed, or a removal
+that was under way is still incomplete and the next repeat finishes it), a
+bounded number of times: stop after about 12 tries (a minute) and point the
+user at the desktop's cleanup list. If that list shows nothing for the slug,
+the worktree's registration or its `phone/<slug>` branch may be left in the
+repository. Each repeat runs about ten `git` commands on the desktop.
+
+Known limitation: a locked registration whose directory is gone (deleted by
+hand, or a removal that stopped between the directory and its registration)
+keeps answering `unknown`, and a removal git ran but could not finish is
+refused with its directory and branch left; both need
+`git worktree remove -f -f <dir>` and `git branch -D phone/<slug>` by hand.
 
 Refusals found by the background job land in the receipt as `state:
 "refused"` with `error` one of: `branch-exists` (never auto-suffixed),
