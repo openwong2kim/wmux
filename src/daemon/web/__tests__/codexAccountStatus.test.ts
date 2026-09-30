@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { CodexAccountStatusError, createCodexAccountStatusReader } from '../codexAccountStatus';
 
@@ -25,9 +26,11 @@ describe('Codex account status reader', () => {
   it('reads auth without a token, then the plan limits, from the account\'s own control socket', async () => {
     const h = harness((method) => method === 'getAuthStatus' ? auth : limits);
     const status = await h.reader.read('/h/a');
+    // The platform's own separators (the route itself answers 503 on Windows).
+    const socket = path.join('/h/a', 'app-server-control', 'app-server-control.sock');
     expect(h.calls).toEqual([
-      { path: '/h/a/app-server-control/app-server-control.sock', method: 'getAuthStatus', params: { includeToken: false, refreshToken: false } },
-      { path: '/h/a/app-server-control/app-server-control.sock', method: 'account/rateLimits/read', params: { excludeResetCreditDetails: true } },
+      { path: socket, method: 'getAuthStatus', params: { includeToken: false, refreshToken: false } },
+      { path: socket, method: 'account/rateLimits/read', params: { excludeResetCreditDetails: true } },
     ]);
     expect(status).toMatchObject({ auth: { state: 'signed-in', method: 'chatgpt' }, fetchedAt: 1_000, cached: false,
       rateLimits: { ordinaryUsageAllowed: true, planType: 'plus' } });
