@@ -62,6 +62,10 @@ import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
 import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerPerfRpc } from './pipe/handlers/perf.rpc';
+import { registerComputerRpc } from './pipe/handlers/computer.rpc';
+import { createComputerService } from './computer';
+import { createComputerConsentRequester } from './computer/computerConsent';
+import type { ComputerService } from './computer/ComputerService';
 import { revealStatsAggregator } from './perf/revealStatsAggregator';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { registerUsageRpc } from './pipe/handlers/usage.rpc';
@@ -874,6 +878,17 @@ registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
 registerPerfRpc(rpcRouter);
+// Desktop computer use. Built on first call, so an install that never opts in
+// (computerUse.enabled) never constructs it or spawns a helper. Consent rides
+// the approval queue, which is created further down — hence the late binding.
+let computerService: ComputerService | null = null;
+let computerConsentQueue: ApprovalQueue | null = null;
+registerComputerRpc(rpcRouter, () => {
+  computerService ??= createComputerService({
+    requestConsent: createComputerConsentRequester({ queue: () => computerConsentQueue }),
+  });
+  return computerService;
+});
 // #517 backend choice: main owns the setting (sync read at boot — an RPC can
 // arrive before the renderer has pushed anything, so renderer-push authority
 // would race and fail open to builtin).
@@ -1255,6 +1270,7 @@ const approvalQueue = new ApprovalQueue(getPluginTrustStore(), {
   },
 });
 rpcRouter.setApprovalQueue(approvalQueue);
+computerConsentQueue = approvalQueue;
 // Live-Chrome tab borrowing asks through that same queue, so the prompt appears
 // in both of its renditions (the modal and the Fleet approvals inbox) with no new
 // UI. The workspace NAME comes from the renderer's mirror, which is the only

@@ -32,8 +32,10 @@ import type { PluginTrustStore } from './PluginTrustStore';
  * trust DB on resolve. 'browser-borrow' asks the human to lend an agent one live
  * Chrome tab; it grants nothing durable, so it is deliberately NOT persisted —
  * consent for one tab in one session is not a standing decision about a client.
+ * 'computer-app' asks whether one agent may see and drive one desktop app for
+ * this run (src/main/computer/computerConsent.ts); not persisted either.
  */
-export type ApprovalPromptKind = 'plugin' | 'browser-borrow';
+export type ApprovalPromptKind = 'plugin' | 'browser-borrow' | 'computer-app';
 
 /**
  * Information about a pending prompt that gets shipped to the renderer to

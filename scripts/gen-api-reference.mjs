@@ -237,6 +237,7 @@ const GROUP_ORDER = [
   { key: 'system.', title: 'system' },
   { key: 'notify', title: 'notify' },
   { key: 'browser.', title: 'browser' },
+  { key: 'computer.', title: 'computer' },
   { key: 'a2a.', title: 'a2a' },
   { key: 'company.a2a.', title: 'company.a2a' },
   { key: 'company.', title: 'company' },

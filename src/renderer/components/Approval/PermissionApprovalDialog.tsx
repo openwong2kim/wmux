@@ -49,7 +49,7 @@ export interface PermissionApprovalDialogProps {
    */
   title?: string;
   /** What is being asked. Absent (and 'plugin') keeps the plugin layout. */
-  kind?: 'plugin' | 'browser-borrow';
+  kind?: 'plugin' | 'browser-borrow' | 'computer-app';
   /** Called when the user clicks Approve. */
   onApprove: () => void;
   /** Called when the user clicks Deny. */
@@ -109,9 +109,13 @@ export function PermissionApprovalDialogView(
         description={
           // The label names WHAT is asking. A borrow prompt is a workspace's
           // agent, not a plugin, and calling it one would misattribute the
-          // request.
+          // request; a computer-use prompt names the agent itself.
           <>
-            {t(props.kind === 'browser-borrow' ? 'permission.workspaceLabel' : 'permission.pluginLabel')}{' '}
+            {t(props.kind === 'browser-borrow'
+              ? 'permission.workspaceLabel'
+              : props.kind === 'computer-app'
+                ? 'permission.agentLabel'
+                : 'permission.pluginLabel')}{' '}
             <span className="font-mono text-[12px] text-[var(--text-main)]">{props.clientName}</span>
           </>
         }

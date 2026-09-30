@@ -1,0 +1,40 @@
+// Opt-in switch for computer use: `computerUse.enabled` in ~/.wmux/config.json.
+//
+// Read by two processes on purpose. The MCP server reads it when it builds its
+// tool list, so the `computer` tool does not exist for anyone who has not opted
+// in (and the published tool surface stays unchanged). Main reads it on every
+// call, so a stale MCP server cannot keep driving the desktop after the user
+// turns it off.
+//
+// Fail-closed like firstPartyConfig.ts: a missing, unreadable or malformed
+// file, or anything but a literal `true`, means off.
+
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { dataSuffix } from '../constants';
+
+export function computerUseConfigPath(): string {
+  return path.join(os.homedir(), `.wmux${dataSuffix()}`, 'config.json');
+}
+
+export function readComputerUseEnabled(configPath: string = computerUseConfigPath()): boolean {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(configPath, 'utf-8');
+  } catch {
+    return false;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw, (key, value) =>
+      key === '__proto__' || key === 'constructor' || key === 'prototype' ? undefined : value,
+    );
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== 'object') return false;
+  const section = (parsed as Record<string, unknown>).computerUse;
+  if (!section || typeof section !== 'object') return false;
+  return (section as Record<string, unknown>).enabled === true;
+}

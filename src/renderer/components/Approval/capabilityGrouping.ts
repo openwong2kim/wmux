@@ -31,6 +31,7 @@ export interface CapabilityGroup {
 const GROUP_RENDER_ORDER: RiskClass[] = [
   'terminal-content',
   'terminal-input',
+  'computer',
   'browser',
   'a2a',
   'metadata',

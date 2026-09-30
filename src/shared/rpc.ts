@@ -406,6 +406,13 @@ export type RpcMethod =
   // Performance diagnostics (P0-5c) — aggregate reveal-mechanism counters
   // for `wmux doctor --performance`. Read-only, no terminal content.
   | 'perf.status'
+  // Desktop computer use (docs/computer-use-design.md). Off unless the user
+  // sets computerUse.enabled; `act` is the only input-injecting method.
+  | 'computer.capabilities'
+  | 'computer.listApps'
+  | 'computer.listWindows'
+  | 'computer.getAppState'
+  | 'computer.act'
   | 'deck.resolvePaneRoute'
   | 'deck.resolveCommanderWorkspace'
   | 'deck.completeWork'
@@ -642,6 +649,11 @@ export const ALL_RPC_METHODS = [
   'system.identify',
   'system.capabilities',
   'perf.status',
+  'computer.capabilities',
+  'computer.listApps',
+  'computer.listWindows',
+  'computer.getAppState',
+  'computer.act',
   'deck.resolvePaneRoute',
   'deck.resolveCommanderWorkspace',
   'deck.completeWork',

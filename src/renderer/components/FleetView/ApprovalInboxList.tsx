@@ -341,7 +341,11 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve, onNavi
                 {/* A tab-borrow prompt comes from a workspace's agent, not from a
                     plugin; labelling it one would misattribute the request. */}
                 <span style={{ color: 'var(--text-subtle)' }}>
-                  {t(item.kind === 'browser-borrow' ? 'fleet.approvals.workspace' : 'fleet.approvals.plugin')}:{' '}
+                  {t(item.kind === 'browser-borrow'
+                    ? 'fleet.approvals.workspace'
+                    : item.kind === 'computer-app'
+                      ? 'fleet.approvals.agent'
+                      : 'fleet.approvals.plugin')}:{' '}
                 </span>
                 {item.clientName}
               </span>

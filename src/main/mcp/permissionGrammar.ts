@@ -45,6 +45,11 @@ const KNOWN_CAPABILITIES = new Set<string>([
   // resetPermissions. These mutate browser state in ways page JS cannot, so it is
   // declared/approved on its own rather than riding on browser.evaluate.
   'browser.emulate',
+  // Desktop computer use. `observe` reads other apps (accessibility tree,
+  // screenshots); `control` injects mouse and keyboard input into them. Split
+  // so an approval to look never covers an approval to act.
+  'computer.observe',
+  'computer.control',
   // Agent-to-agent
   'a2a.send',
   'a2a.execute',

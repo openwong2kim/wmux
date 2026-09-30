@@ -432,6 +432,7 @@ export const en = {
   'permission.pluginTitle': 'Plugin requesting permissions',
   'permission.pluginLabel': 'plugin:',
   'permission.workspaceLabel': 'workspace:',
+  'permission.agentLabel': 'agent:',
 
   // Workspace
   'workspace.agentRunning': 'Running',
@@ -762,6 +763,7 @@ export const en = {
   'fleet.approvals.to': 'to',
   'fleet.approvals.plugin': 'plugin',
   'fleet.approvals.workspace': 'workspace',
+  'fleet.approvals.agent': 'agent',
   'fleet.approvals.enterApprove': 'approve',
   'fleet.approvals.delDeny': 'deny',
   // C-3 — what happened to the approvals nobody answered.

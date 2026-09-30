@@ -224,6 +224,13 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'browser.session.list',
   'browser.screenshot',
   'browser.evaluate',
+  // Desktop computer use (the `computer` MCP tool, registered only when the
+  // user opts in). Per-app consent is enforced in ComputerService.
+  'computer.capabilities',
+  'computer.listApps',
+  'computer.listWindows',
+  'computer.getAppState',
+  'computer.act',
   'browser.cdp.info',
   'browser.console.get',
   'browser.network.get',
