@@ -61,7 +61,9 @@ describe('phone Git reads against real repositories', { timeout: 30_000 }, () =>
       { id: 'other-pane', spawnCwd: other, lastActivity: '2026-09-02T00:00:00.000Z' },
       { id: 'plain-pane', spawnCwd: plain, lastActivity: '2026-09-04T00:00:00.000Z' },
     ]);
-    const hash = (dir: string) => createHash('sha256').update(fs.realpathSync(dir)).digest('hex').slice(0, 12);
+    // The desktop's derivation (resolveRepoInfo): realpathSync of git's own
+    // toplevel, which on Windows spells the temp dir differently (8.3 names).
+    const hash = (dir: string) => createHash('sha256').update(fs.realpathSync(run(dir, 'rev-parse', '--show-toplevel'))).digest('hex').slice(0, 12);
     expect(result).toEqual({
       truncated: false,
       projects: [
