@@ -959,6 +959,7 @@ export const zh = {
   'worktask.cleanup.cat.diskMissing': '磁盘缺失',
   'worktask.cleanup.cat.preserved': '已保留（未提交）',
   'worktask.cleanup.cat.orphan': '孤儿目录',
+  'worktask.cleanup.cat.phoneWorktree': '手机 worktree',
   'palette.cmd.projectPrefix': '项目：',
   'palette.cmd.projectReview': '项目：审阅 wmux.json…',
   'palette.cmd.projectApplyLayout': '项目：应用布局',

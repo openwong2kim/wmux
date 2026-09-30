@@ -27,7 +27,7 @@ export interface GitMutation {
   expectedRef: string;
 }
 const OID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
-const WRITE_CONFIG = ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgSign=false', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0'];
+export const WRITE_CONFIG = ['-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgSign=false', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0'];
 
 /** Phone writes use literal paths, pinned trees and compare-and-swap refs. */
 export class SessionGitController {

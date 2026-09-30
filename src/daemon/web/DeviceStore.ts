@@ -519,6 +519,14 @@ export class DeviceStore {
   }
 
   /**
+   * One phone worktree creation (contract item 5): the device (empty for the
+   * operator token) and the outcome tag. Never a path or a branch name.
+   */
+  recordGitWorktree(deviceId: string, reason: string): void {
+    this.audit.append({ event: 'git-worktree', deviceId, reason });
+  }
+
+  /**
    * Revoke a device. FAIL-CLOSED: `ok` is true only once the revocation is on
    * disk, because an operator who is told "revoked" will stop worrying about
    * that phone.

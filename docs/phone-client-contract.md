@@ -4008,7 +4008,7 @@ daemon"; never probe with a write.
 | `paneAccount` (**served**) | caller may input, `--allow-transcript`, and the attached desktop announced `accounts.envForAccount` | `accountId` on `POST /api/sessions` and on `GET /api/agent-launch-options` |
 | `paneHandoff` (**served**) | caller may input | `handoffFrom` on `POST /api/sessions`, echoed on rows and history |
 | `gitProjects` | caller may input (**served**) | `GET /api/git/projects`, `GET …/git/branches` |
-| `gitWorktrees` | caller may input and the worktree receipt store loaded | `POST …/git/worktree` and its receipt |
+| `gitWorktrees` | caller may input and the worktree receipt store loaded (**served**) | `POST …/git/worktree` and its receipt |
 | `gitChecks` | caller may input (**served**) | `GET …/git/checks` |
 
 Per session, `/turns` `chat.capabilities` gains `accountStatus: true` for a
@@ -4331,8 +4331,8 @@ cannot pick a model or effort.
 
 > **Served:** `GET /api/git/projects`, `GET …/git/branches` and
 > `GET …/git/checks` (keys `gitProjects`, `gitChecks`;
-> `src/daemon/web/phoneGitRead.ts`). Worktree creation (`gitWorktrees`) is
-> proposed — on hold pending client review; no daemon serves it.
+> `src/daemon/web/phoneGitRead.ts`), and `POST …/git/worktree` with its
+> receipt (key `gitWorktrees`; `src/daemon/web/phoneWorktree.ts`).
 
 Every request names a session (`/api/sessions/<id>/…`), except the project
 list, whose rows hand you one. The daemon derives the repository from that
@@ -4352,8 +4352,12 @@ write no audit line. They share the existing four-slot Git/PR budget
 (`429 {error:"git-busy"}`) and the 5 s per-`git` timeout; `gh` keeps its 8 s
 timeout. Every `git` the daemon runs for the phone is local only: no
 transport is allowed and a partial clone never fetches a missing object.
-Worktree creation runs in the background (below) and serializes per
-repository, keyed by the realpath of the git common dir. Each creation that
+The one exception to the 5 s bound is `git worktree add` itself, bounded at
+120 s: it checks out a whole tree, and killing it at 5 s would manufacture
+the half-written state the receipt exists to describe. A creation holds its
+slot from the POST until the background job settles. Worktree creation runs
+in the background (below) and serializes per repository, keyed by the
+realpath of the git common dir. Each creation that
 passes validation writes one line to the device audit log
 (`device-audit.jsonl`): event `git-worktree`, the device id (empty for the
 operator token), and the outcome tag as `reason`. No path and no branch name
@@ -4434,7 +4438,9 @@ else:
 - branch `phone/<slug>`;
 - directory `${wmuxHome}/worktrees/<projectId>/phone-<slug>`;
 - the command: `git worktree add -b phone/<slug> -- <dir> <base-oid>`, with
-  hooks disabled (`core.hooksPath=/dev/null`), so no repository hook runs.
+  hooks disabled (`core.hooksPath=/dev/null`), so no repository hook runs,
+  and the global attributes file disabled (`core.attributesFile=/dev/null`),
+  so only the attributes the filter check below reads can select a filter.
 
 Refused before anything is written: a bare repository, an unborn `HEAD`, a
 merge/rebase/sequencer in progress, a repository with submodules
@@ -4478,7 +4484,13 @@ created answer. The receipt route needs the input grant, like the POST.
 | 400 | `invalid-slug` | slug fails the rule |
 | 409 | `request-id-conflict` | this `requestId` was used with another slug or session |
 | 429 | `git-busy` | four Git/PR jobs already running |
-| 503 | `git-receipts-unavailable` | the receipt store could not be read (the key is also hidden) |
+| 503 | `git-receipts-unavailable` | the receipt store could not be read (the key is also hidden), or the `pending` entry could not be written |
+
+The receipt route answers 400 `invalid-git-request` for an id that is not a
+lowercase UUID and 503 `git-receipts-unavailable` like the POST. A `git
+worktree add` that was killed (the 120 s bound, a signal) reads `unknown`
+with `git-outcome-unknown`, like a restart: its directory may exist half
+written, and the desktop cleanup below lists it.
 
 Refusals found by the background job land in the receipt as `state:
 "refused"` with `error` one of: `branch-exists` (never auto-suffixed),
@@ -4508,7 +4520,8 @@ addressed through it acts on the new branch.
 **Desktop cleanup.** The desktop's worktree scan lists phone worktrees in a
 category of their own, `phone-worktree`, instead of calling them orphans,
 and reclaims them through the existing cleanup flow (which already refuses a
-dirty worktree). Worktree removal from the phone is not in v1.
+dirty worktree). Every `phone-*` directory without a task stamp is listed,
+clean or not, never hidden. Worktree removal from the phone is not in v1.
 
 Not in v1: push, PR creation, worktree removal, switching an existing
 checkout's branch, remote branches.

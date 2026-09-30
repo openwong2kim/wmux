@@ -28,6 +28,7 @@ const CATEGORY_LABEL_KEY: Record<WorktaskScanCategoryWire, string> = {
   'disk-missing': 'worktask.cleanup.cat.diskMissing',
   preserved: 'worktask.cleanup.cat.preserved',
   'orphan-dir': 'worktask.cleanup.cat.orphan',
+  'phone-worktree': 'worktask.cleanup.cat.phoneWorktree',
 };
 
 // Status tones tint a neutral badge; steel is kept for focus and links.
@@ -36,6 +37,7 @@ const CATEGORY_TONE: Record<WorktaskScanCategoryWire, BadgeTone> = {
   'disk-missing': 'danger',
   preserved: 'neutral',
   'orphan-dir': 'neutral',
+  'phone-worktree': 'neutral',
 };
 
 // ─── C-4: the prepared commit line ──────────────────────────────────────

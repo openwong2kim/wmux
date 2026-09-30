@@ -350,6 +350,7 @@ export const ko = {
   'worktask.cleanup.cat.diskMissing': '디스크 결측',
   'worktask.cleanup.cat.preserved': '보존 잔존(미커밋)',
   'worktask.cleanup.cat.orphan': '무연결 디렉토리',
+  'worktask.cleanup.cat.phoneWorktree': '폰 worktree',
   'palette.cmd.saveLayout': '현재 레이아웃을 템플릿으로 저장',
   'palette.cmd.layoutPrefix': '레이아웃: ',
   'palette.cmd.projectPrefix': '프로젝트: ',

@@ -10,6 +10,8 @@ import type { InputReceiptStore } from './InputReceiptStore';
 import { sessionPullRequests } from './sessionPullRequests';
 import { SessionGitController, SessionGitError } from './sessionGit';
 import { PhoneGitReads, type PhoneGitSessionRef } from './phoneGitRead';
+import type { PhoneWorktreeService } from './phoneWorktree';
+import { PHONE_WORKTREE_REQUEST_ID } from '../../shared/phoneGitV1';
 import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
 import { openResolvedFile } from './openResolvedFile';
 import { listFolders, FolderBrowseError, homeIsBrowsable } from './phoneFolders';
@@ -666,6 +668,8 @@ interface WebTerminalServerDeps {
    * tested without a repository on the test machine's disk.
    */
   git?: GitRunner;
+  /** Phone worktree creation (contract item 5). Absent: the routes 503 and `gitWorktrees` is omitted. */
+  phoneWorktrees?: () => PhoneWorktreeService;
   /**
    * Where `POST /api/upload` writes photos. Optional like `approvals`: a daemon
    * that did not wire one still serves every other route, and the upload route
@@ -2480,6 +2484,7 @@ export class WebTerminalServer {
         gitControl: this.mayInput(principal),
         // Phone Git v1 (contract item 5): OMITTED, not false, without the grant.
         ...(this.mayInput(principal) ? { gitProjects: true, gitChecks: true } : {}),
+        ...(this.mayInput(principal) && this.phoneWorktreeService()?.available ? { gitWorktrees: true } : {}),
         runHistory: this.opts?.allowTranscript === true && this.deps.runHistory !== undefined,
         // `GET /api/search`, and which of its scopes can answer. OMITTED, not
         // false, when none can — the shape a daemon predating the route serves.
@@ -2611,6 +2616,10 @@ export class WebTerminalServer {
       }
       const phoneGitRead = req.method === 'GET' ? /^([^/]+)\/git\/(branches|checks)$/.exec(rest) : null;
       if (phoneGitRead) return this.handlePhoneGitRead(res, phoneGitRead[1], principal, phoneGitRead[2] as 'branches' | 'checks');
+      const worktreeRoute = /^([^/]+)\/git\/worktree(?:\/([^/]+))?$/.exec(rest);
+      if (worktreeRoute && (req.method === 'POST' ? worktreeRoute[2] === undefined : req.method === 'GET' && worktreeRoute[2] !== undefined)) {
+        return this.handlePhoneWorktree(req, res, worktreeRoute[1], worktreeRoute[2], url, principal);
+      }
       if (req.method === 'GET' && rest.endsWith('/git/pr')) {
         return this.handleSessionGit(req, res, rest.slice(0, -'/git/pr'.length), url, principal, true);
       }
@@ -3861,6 +3870,48 @@ export class WebTerminalServer {
       if (error instanceof SessionGitError) return this.json(res, error.status, { error: error.tag });
       return this.json(res, 500, { error: 'git-operation-failed' });
     }).finally(() => { this.phoneGitRequests -= 1; });
+  }
+
+  /** The worktree service, or undefined when it is not wired or could not be built. */
+  private phoneWorktreeService(): PhoneWorktreeService | undefined {
+    try { return this.deps.phoneWorktrees?.(); } catch { return undefined; }
+  }
+
+  /** `POST …/git/worktree` and `GET …/git/worktree/<requestId>` (contract item 5). */
+  private handlePhoneWorktree(req: http.IncomingMessage, res: http.ServerResponse, rawId: string, rawReceipt: string | undefined, url: URL, principal: WebPrincipal): void {
+    if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Git control requires input permission');
+    const id = decodePathSegment(rawId);
+    const managed = id === null ? null : this.attachableSession(principal, id);
+    if (!managed || id === null) return this.json(res, 404, { error: 'session not found' });
+    const service = this.phoneWorktreeService();
+    if (!service?.available) return this.json(res, 503, { error: 'git-receipts-unavailable' });
+    const owner = principal.kind === 'device' ? `device:${principal.deviceId}` : 'operator';
+    if (rawReceipt !== undefined) {
+      const requestId = decodePathSegment(rawReceipt);
+      if (requestId === null || !PHONE_WORKTREE_REQUEST_ID.test(requestId)) return this.json(res, 400, { error: 'invalid-git-request' });
+      return this.json(res, 200, service.receipt(owner, id, requestId), { 'Cache-Control': 'no-store' });
+    }
+    const cwd = managed.meta.spawnCwd;
+    if (!cwd) return this.json(res, 409, { error: 'not-a-git-repo' });
+    this.readJsonBody(req, res, async body => {
+      // Re-authorized after the body, as `/git` writes are: the same credential
+      // must still hold the grant and still reach this pane.
+      const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+      if (!fresh.ok || fresh.principal.kind !== principal.kind ||
+          (principal.kind === 'device' && (fresh.principal.kind !== 'device' || fresh.principal.deviceId !== principal.deviceId))) {
+        return this.json(res, 401, { error: 'authorization-expired' });
+      }
+      if (!this.mayInput(fresh.principal)) return this.refuseInput(res, fresh.principal, 'Input permission changed');
+      if (this.attachableSession(fresh.principal, id) !== managed) return this.json(res, 404, { error: 'session not found' });
+      const result = service.submit(
+        { owner, deviceId: principal.kind === 'device' ? principal.deviceId : '', sessionId: id, cwd, body },
+        {
+          acquire: () => { if (this.phoneGitRequests >= 4) return false; this.phoneGitRequests += 1; return true; },
+          release: () => { this.phoneGitRequests -= 1; },
+        },
+      );
+      this.json(res, result.status, result.body, { 'Cache-Control': 'no-store' });
+    });
   }
 
   private async handleSessionDiff(res: http.ServerResponse, rawId: string, principal: WebPrincipal): Promise<void> {

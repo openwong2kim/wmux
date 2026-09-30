@@ -274,7 +274,8 @@ export type WorktaskScanCategoryWire =
   | 'unmaterialized-open'
   | 'disk-missing'
   | 'preserved'
-  | 'orphan-dir';
+  | 'orphan-dir'
+  | 'phone-worktree';
 
 export interface WorktaskScanEntryWire {
   category: WorktaskScanCategoryWire;

@@ -649,6 +649,7 @@ export const pl = {
   'worktask.cleanup.cat.diskMissing': 'Brak na dysku',
   'worktask.cleanup.cat.preserved': 'Zachowane (niezatwierdzone)',
   'worktask.cleanup.cat.orphan': 'Osierocony katalog',
+  'worktask.cleanup.cat.phoneWorktree': 'Worktree z telefonu',
   'palette.cmd.saveLayout': 'Zapisz bieżący układ jako szablon',
   'palette.cmd.layoutPrefix': 'Układ: ',
   'palette.cmd.snapPrefix': 'Przyciągnij działające panele do układu: ',

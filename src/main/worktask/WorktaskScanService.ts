@@ -31,6 +31,7 @@ import { getWmuxHomeDir } from '../../shared/constants';
 import { getExecEnv } from '../../shared/execEnv';
 import { normalizeWorktreePath, WORKTASK_META_FILENAME, type WorkTaskMetaStamp } from '../../shared/workTask';
 import { metaDirForWorktree } from './TaskWorktreeManager';
+import { PHONE_WORKTREE_DIR_PREFIX } from '../../shared/phoneGitV1';
 
 const execFileAsync = promisify(execFile);
 
@@ -38,7 +39,8 @@ export type WorktaskScanCategory =
   | 'unmaterialized-open'
   | 'disk-missing'
   | 'preserved'
-  | 'orphan-dir';
+  | 'orphan-dir'
+  | 'phone-worktree';
 
 export interface WorktaskScanEntry {
   category: WorktaskScanCategory;
@@ -181,6 +183,17 @@ export class WorktaskScanService {
       }
       // 무연결 디렉토리 — task.json으로 역추적(GC된 closed·크래시 잔여).
       const stamp = this.readStamp(dir);
+      // A phone-created worktree (contract item 5) has no task and no stamp.
+      // It is listed in its own category, never hidden, so the operator can
+      // see and reclaim it here like any other unlinked directory.
+      if (!stamp && path.basename(dir).startsWith(PHONE_WORKTREE_DIR_PREFIX)) {
+        entries.push({
+          category: 'phone-worktree',
+          worktreePath: dir,
+          detail: 'Created from the phone (branch phone/…) — check it, then remove it once no longer needed',
+        });
+        continue;
+      }
       entries.push({
         category: 'orphan-dir',
         ...(stamp?.taskId ? { taskId: stamp.taskId } : {}),

@@ -1,8 +1,8 @@
 /**
  * Phone Git v1: read-only projects and branches, worktree creation, CI checks
  * (docs/phone-client-contract.md, "Proposed: contract v-next", item 5).
- * Served: projects, branches and checks (src/daemon/web/phoneGitRead.ts).
- * CONTRACT ONLY: worktree creation is not served yet.
+ * Served: projects, branches and checks (src/daemon/web/phoneGitRead.ts) and
+ * worktree creation (src/daemon/web/phoneWorktree.ts).
  *
  * Every request names a session. The daemon derives the repository from that
  * session's trusted `spawnCwd`; the phone never sends a path, a ref or a
@@ -64,7 +64,7 @@ export const PHONE_WORKTREE_BRANCH_PREFIX = 'phone/';
 /** Directory prefix inside `${wmuxHome}/worktrees/<projectId>/`; the desktop scan lists these as `phone-worktree`. */
 export const PHONE_WORKTREE_DIR_PREFIX = 'phone-';
 /** Case-insensitive on input (iOS `UUID().uuidString` is uppercase); the parser lowercases it. */
-const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const PHONE_WORKTREE_REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface PhoneWorktreeCreateBody { slug: string; requestId: string }
 
@@ -73,7 +73,7 @@ export function parseWorktreeCreateBody(body: unknown):
   if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, error: 'invalid-git-request' };
   const o = body as Record<string, unknown>;
   if (Object.keys(o).some((k) => k !== 'slug' && k !== 'requestId')) return { ok: false, error: 'invalid-git-request' };
-  if (typeof o.requestId !== 'string' || !REQUEST_ID.test(o.requestId)) return { ok: false, error: 'invalid-git-request' };
+  if (typeof o.requestId !== 'string' || !PHONE_WORKTREE_REQUEST_ID.test(o.requestId)) return { ok: false, error: 'invalid-git-request' };
   if (typeof o.slug !== 'string' || !PHONE_WORKTREE_SLUG.test(o.slug)) return { ok: false, error: 'invalid-slug' };
   return { ok: true, value: { slug: o.slug, requestId: o.requestId.toLowerCase() } };
 }

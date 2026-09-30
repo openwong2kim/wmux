@@ -655,6 +655,7 @@ export const en = {
   'worktask.cleanup.cat.diskMissing': 'Disk missing',
   'worktask.cleanup.cat.preserved': 'Preserved (uncommitted)',
   'worktask.cleanup.cat.orphan': 'Orphaned directory',
+  'worktask.cleanup.cat.phoneWorktree': 'Phone worktree',
   'palette.cmd.saveLayout': 'Save Current Layout as Template',
   'palette.cmd.layoutPrefix': 'Layout: ',
   'palette.cmd.snapPrefix': 'Snap Running Panes to Layout: ',

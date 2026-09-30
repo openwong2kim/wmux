@@ -227,3 +227,22 @@ describe('J3 §1 스캔 경계', () => {
     expect(res.entries.find((x) => x.worktreePath === wt)?.category).toBe('preserved');
   });
 });
+
+describe('phone worktrees (contract item 5)', () => {
+  it('lists an unlinked phone-<slug> directory as phone-worktree, never hidden', async () => {
+    // A worktree the phone created, or a half-written one left by a killed
+    // `git worktree add`: either way it has no task and no stamp.
+    const wt = seedWorktree('phone-fix-login');
+    const res = await makeSvc().scan([]);
+    expect(res.entries).toEqual([
+      expect.objectContaining({ category: 'phone-worktree', worktreePath: wt }),
+    ]);
+    expect(res.entries[0].taskId).toBeUndefined();
+  });
+
+  it('keeps a stamped task directory whose slug starts with phone- as orphan-dir', async () => {
+    const wt = seedWorktree('phone-app', { taskId: 'wtask-9', title: 'Phone app' } as WorkTaskMetaStamp);
+    const res = await makeSvc().scan([]);
+    expect(res.entries).toEqual([expect.objectContaining({ category: 'orphan-dir', taskId: 'wtask-9', worktreePath: wt })]);
+  });
+});
