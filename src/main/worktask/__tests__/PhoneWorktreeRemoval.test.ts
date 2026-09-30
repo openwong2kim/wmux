@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { deletePhoneBranch, phoneWorktreeDir, removePhoneWorktree, windowsDirectoryHold, type DirectoryHold } from '../PhoneWorktreeRemoval';
+import { deletePhoneBranch, phoneWorktreeDir, removePhoneWorktree } from '../PhoneWorktreeRemoval';
+import { windowsDirectoryHold, type DirectoryHold } from '../../../shared/directoryHold';
 
 const HASH = 'abc123def456';
 let base: string;

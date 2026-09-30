@@ -4352,9 +4352,11 @@ write no audit line. They share the existing four-slot Git/PR budget
 (`429 {error:"git-busy"}`) and the 5 s per-`git` timeout; `gh` keeps its 8 s
 timeout. Every `git` the daemon runs for the phone is local only: no
 transport is allowed and a partial clone never fetches a missing object.
-The one exception to the 5 s bound is `git worktree add` itself, bounded at
-120 s: it checks out a whole tree, and killing it at 5 s would manufacture
-the half-written state the receipt exists to describe. Worktree creations do
+The exceptions to the 5 s bound are `git worktree add` itself and, when a
+repeated request recovers one, the `git status` and `git worktree remove`
+that cover its whole checkout, bounded at 120 s: they cross a whole tree,
+and killing the add at 5 s would manufacture the half-written state the
+receipt exists to describe. Worktree creations do
 not use the four read slots: each caller runs one at a time and the daemon at
 most two (`429 git-busy` beyond that). They run in the background (below)
 and serialize per repository, keyed by the realpath of the git common dir.
@@ -4482,7 +4484,8 @@ GET /api/sessions/<id>/git/worktree/<requestId>
   "base": "<oid>",                                  // created: the commit the branch starts at
   "cwd": "/Users/me/.wmux/worktrees/a1b2c3d4e5f6/phone-fix-login",   // created
   "leaf": "phone-fix-login",                        // created
-  "error": "branch-exists"                          // refused, or unknown ("git-outcome-unknown")
+  "error": "branch-exists",                         // refused, or unknown ("git-outcome-unknown")
+  "retryAfterMs": 5000                              // unknown only: the checkout is still being written
 }
 ```
 
@@ -4515,8 +4518,15 @@ fetched). Anything left is `unknown` with `git-outcome-unknown`. Repeating the
 same POST then recovers:
 
 - a finished, clean checkout of `phone/<slug>` at the directory is adopted:
-  the receipt becomes `created`;
-- a checkout git left locked mid-creation is removed, and a `phone/<slug>`
+  the receipt becomes `created`, also when git left it locked because the
+  command that made it died first;
+- a locked checkout that a process still holds is left exactly as it is and
+  the receipt stays `unknown`, now with `retryAfterMs`: on Windows a checkout
+  can outlive a daemon restart (the daemon's process job ends `git worktree
+  add` with it, not the `git reset --hard` it started, which goes on writing
+  the tree). Repeat the same POST after `retryAfterMs`; once the writer is
+  done the finished checkout is adopted as above;
+- any other checkout git left locked mid-creation is removed, and a `phone/<slug>`
   branch that never moved since it was created and is checked out nowhere is
   deleted; the create then runs again;
 - anything else (a checkout with changes in it, a branch with history) is

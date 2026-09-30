@@ -3,11 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { buildGitEnv, createGitRunner, type GitRunner } from '../sessionDiff';
 import { PhoneWorktreeService, scanTree, type PhoneWorktreeOptions } from '../phoneWorktree';
 import { PHONE_WORKTREE_RECEIPTS_FILE, PHONE_WORKTREE_RECEIPTS_PER_OWNER, PhoneWorktreeReceipts } from '../phoneWorktreeReceipts';
-import { parseWorktreeCreateBody } from '../../../shared/phoneGitV1';
+import { parseWorktreeCreateBody, PHONE_WORKTREE_RETRY_AFTER_MS } from '../../../shared/phoneGitV1';
+import { windowsDirectoryHold } from '../../../shared/directoryHold';
 
 const savedHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
 let root: string;
@@ -249,6 +251,107 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
     // Someone already has changes in it: left alone.
     await scenario('dirty', (dir) => { fs.writeFileSync(path.join(dir, 'mine.txt'), 'work'); }, 'worktree-path-exists');
     expect(fs.readFileSync(path.join(phoneDir(repo, 'dirty'), 'mine.txt'), 'utf8')).toBe('work');
+  });
+
+  // A git runner that records every argv, and whether an argv with this
+  // command sequence was ever issued.
+  const recording = (calls: string[][]): GitRunner => {
+    const real = createGitRunner();
+    return async (args, cwd) => { calls.push([...args]); return real(args, cwd); };
+  };
+  const issued = (calls: string[][], ...command: string[]) =>
+    calls.some((argv) => argv.some((_, i) => command.every((word, k) => argv[i + k] === word)));
+  // An add that finished its checkout and was then cut off before it could
+  // unlock the worktree: what a Windows daemon crash leaves behind once the
+  // orphaned `git reset --hard` is done. `damage` can make the checkout partial.
+  const cutOff = async (slug: string, damage: (dir: string) => void = () => undefined) => {
+    const requestId = randomUUID();
+    const real = createGitRunner();
+    const killed = service({
+      addGit: async (args, cwd) => {
+        const result = await real(args, cwd);
+        const dir = args[args.indexOf('--') + 1];
+        run(repo, 'worktree', 'lock', '--reason', 'initializing', dir);
+        damage(dir);
+        return result.ok ? { ok: false, ran: false, stdout: '', stderr: 'killed' } : result;
+      },
+    });
+    expect((await create(killed, repo, slug, { requestId })).receipt).toMatchObject({ state: 'unknown' });
+    return { requestId, dir: phoneDir(repo, slug) };
+  };
+  const retryable = (requestId: string) => ({ requestId, state: 'unknown', error: 'git-outcome-unknown', retryAfterMs: PHONE_WORKTREE_RETRY_AFTER_MS });
+
+  it('touches nothing in a locked checkout a process still holds, keeps it retryable, then adopts it', async () => {
+    for (const hold of ['in-use', 'refused'] as const) {
+      const slug = `held-${hold}`;
+      const { requestId, dir } = await cutOff(slug);
+      const calls: string[][] = [];
+      const probed: string[] = [];
+      const busy = service({ git: recording(calls), directoryHold: async (d) => { probed.push(d); return hold; } });
+      const again = await create(busy, repo, slug, { requestId });
+      expect(again.answer.status).toBe(202);
+      expect(again.receipt).toEqual(retryable(requestId));
+      expect(probed).toEqual([dir]);
+      expect(issued(calls, 'worktree', 'unlock') || issued(calls, 'worktree', 'remove')).toBe(false);
+      expect(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8')).toBe('a');
+      expect(run(repo, 'worktree', 'list', '--porcelain')).toContain('locked initializing');
+      // Once nothing holds it, the same request adopts the finished checkout.
+      const later: string[][] = [];
+      const free = service({ git: recording(later), directoryHold: async () => 'free' });
+      expect((await create(free, repo, slug, { requestId })).receipt).toMatchObject({ state: 'created', cwd: dir, branch: `phone/${slug}` });
+      expect(issued(later, 'worktree', 'remove')).toBe(false);
+    }
+    // A locked checkout that is not complete is still removed and made again.
+    const partial = await cutOff('partial', (dir) => fs.rmSync(path.join(dir, 'a.txt')));
+    const calls: string[][] = [];
+    const free = service({ git: recording(calls), directoryHold: async () => 'free' });
+    expect((await create(free, repo, 'partial', { requestId: partial.requestId })).receipt).toMatchObject({ state: 'created', cwd: partial.dir });
+    expect(issued(calls, 'worktree', 'remove')).toBe(true);
+    expect(fs.readFileSync(path.join(partial.dir, 'a.txt'), 'utf8')).toBe('a');
+  });
+
+  it('recovers as before when the hold probe itself fails', async () => {
+    const { requestId, dir } = await cutOff('probe-fails');
+    const probed: string[] = [];
+    const svc = service({ directoryHold: async (d) => { probed.push(d); throw new Error('probe failed'); } });
+    expect((await create(svc, repo, 'probe-fails', { requestId })).receipt).toMatchObject({ state: 'created', cwd: dir });
+    expect(probed).toEqual([dir]);
+  });
+
+  // The real thing on Windows: a process holding the half-made worktree.
+  it.runIf(process.platform === 'win32')('leaves a locked checkout alone while a process holds it on Windows', async () => {
+    const { requestId, dir } = await cutOff('held-win');
+    const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: dir, stdio: 'ignore' });
+    try {
+      await once(holder, 'spawn');
+      // A new process holds its current directory a moment after it starts.
+      await vi.waitFor(async () => expect(await windowsDirectoryHold(dir)).toBe('in-use'), { timeout: 10_000, interval: 50 });
+      const calls: string[][] = [];
+      expect((await create(service({ git: recording(calls) }), repo, 'held-win', { requestId })).receipt).toEqual(retryable(requestId));
+      expect(issued(calls, 'worktree', 'unlock') || issued(calls, 'worktree', 'remove')).toBe(false);
+      expect(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8')).toBe('a');
+    } finally {
+      holder.kill();
+      await once(holder, 'exit');
+    }
+    await vi.waitFor(async () => expect(await windowsDirectoryHold(dir)).toBe('free'), { timeout: 10_000, interval: 50 });
+    expect((await create(service(), repo, 'held-win', { requestId })).receipt).toMatchObject({ state: 'created', cwd: dir });
+  });
+
+  it('keeps the retry hint of an unknown receipt across a restart, and fails closed on a malformed one', async () => {
+    const store = new PhoneWorktreeReceipts(wmuxDir);
+    const requestId = randomUUID();
+    store.begin('operator', requestId, 's1', 'hint');
+    store.settle('operator', requestId, { state: 'unknown', error: 'git-outcome-unknown', retryAfterMs: PHONE_WORKTREE_RETRY_AFTER_MS });
+    await store.flush();
+    expect(new PhoneWorktreeReceipts(wmuxDir).find('operator', requestId)?.receipt).toEqual(retryable(requestId));
+    const file = path.join(wmuxDir, PHONE_WORKTREE_RECEIPTS_FILE);
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as { entries: Record<string, Record<string, unknown>> };
+    for (const bad of [0, -1, 1.5, '5000']) {
+      for (const entry of Object.values(saved.entries)) entry.retryAfterMs = bad;
+      fs.writeFileSync(file, JSON.stringify(saved));
+      expect(new PhoneWorktreeReceipts(wmuxDir).available).toBe(false);
+    }
   });
 
   it('turns a journaled pending receipt into unknown at start, and fails closed on an unreadable file', () => {

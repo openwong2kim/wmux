@@ -116,7 +116,16 @@ export interface PhoneWorktreeReceipt {
   leaf?: string;
   /** `refused`: a PhoneWorktreeRefusal. `unknown`: `git-outcome-unknown`. */
   error?: PhoneWorktreeRefusal | 'git-outcome-unknown';
+  /**
+   * `unknown` only: the interrupted checkout is still being written (on
+   * Windows it can outlive a daemon restart), so nothing was touched. Repeat
+   * the same POST after this many milliseconds.
+   */
+  retryAfterMs?: number;
 }
+
+/** The `retryAfterMs` of an `unknown` receipt whose checkout is still being written. */
+export const PHONE_WORKTREE_RETRY_AFTER_MS = 5_000;
 
 /** Receipt lifetime, from creation. */
 export const PHONE_WORKTREE_RECEIPT_TTL_MS = 24 * 60 * 60 * 1000;

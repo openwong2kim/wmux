@@ -32,7 +32,7 @@ const MAX_ENTRIES = 2000;
 export type PhoneWorktreeOutcome =
   | { state: 'created'; projectId: string; branch: string; base: string; cwd: string; leaf: string }
   | { state: 'refused'; error: PhoneWorktreeRefusal }
-  | { state: 'unknown'; error: 'git-outcome-unknown' };
+  | { state: 'unknown'; error: 'git-outcome-unknown'; retryAfterMs?: number };
 
 type Entry = { createdAt: number; requestId: string; sessionId: string; slug: string; owner?: string } &
   ({ state: 'pending' } | PhoneWorktreeOutcome);
@@ -57,7 +57,7 @@ function validEntry(key: string, v: unknown): v is Entry {
     case 'created': return str(e.projectId, 64) && str(e.branch, 128) && typeof e.base === 'string' &&
       /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(e.base) && str(e.cwd) && str(e.leaf, 256);
     case 'refused': return typeof e.error === 'string' && REFUSALS.has(e.error);
-    case 'unknown': return e.error === 'git-outcome-unknown';
+    case 'unknown': return e.error === 'git-outcome-unknown' && (e.retryAfterMs === undefined || (Number.isSafeInteger(e.retryAfterMs) && (e.retryAfterMs as number) > 0));
     default: return false;
   }
 }

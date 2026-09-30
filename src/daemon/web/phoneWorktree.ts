@@ -9,9 +9,10 @@ import {
 import { canonicalPath, listWorktrees, resolvePhoneGitRepo, type PhoneGitRepo } from './phoneGitRead';
 import { PhoneWorktreeReceipts, ReceiptCapacityError, type PhoneWorktreeOutcome } from './phoneWorktreeReceipts';
 import {
-  parseWorktreeCreateBody, phoneWorktreeAddArgs, phoneWorktreeNames, PHONE_WORKTREE_DIR_PREFIX,
+  parseWorktreeCreateBody, phoneWorktreeAddArgs, phoneWorktreeNames, PHONE_WORKTREE_DIR_PREFIX, PHONE_WORKTREE_RETRY_AFTER_MS,
   type PhoneWorktreeReceipt, type PhoneWorktreeRefusal,
 } from '../../shared/phoneGitV1';
+import { directoryHold, type DirectoryHold } from '../../shared/directoryHold';
 
 /**
  * Phone worktree creation (contract item 5, `POST …/git/worktree`).
@@ -133,6 +134,8 @@ export interface PhoneWorktreeOptions {
   scan?: TreeScanner;
   /** Defaults to `process.platform`; Windows also bounds the longest path in the tree. */
   platform?: NodeJS.Platform;
+  /** Whether a half-made worktree is still held (written) by a process. Defaults to the shared Windows probe. */
+  directoryHold?: (dir: string) => Promise<DirectoryHold>;
   /** One audit line per job that reached the background: device id and outcome tag. */
   audit?: (deviceId: string, reason: string) => void;
   log?: (level: 'warn', msg: string) => void;
@@ -146,7 +149,10 @@ export class PhoneWorktreeService {
   private readonly git: GitRunner;
   private readonly addGit: GitRunner;
   private readonly scan: TreeScanner;
+  /** Recovery's commands over a whole checkout (status, remove), bounded like the add. */
+  private readonly longGit: GitRunner;
   private readonly platform: NodeJS.Platform;
+  private readonly directoryHold: (dir: string) => Promise<DirectoryHold>;
   private readonly queues = new Map<string, Promise<unknown>>();
   private readonly running = new Set<string>();
   private gitVersionOk?: Promise<boolean>;
@@ -159,7 +165,9 @@ export class PhoneWorktreeService {
     this.git = opts.git ?? createGitRunner();
     this.addGit = opts.addGit ?? createAddRunner();
     this.scan = opts.scan ?? scanTree;
+    this.longGit = opts.git ?? createAddRunner();
     this.platform = opts.platform ?? process.platform;
+    this.directoryHold = opts.directoryHold ?? directoryHold;
   }
 
   get available(): boolean { return this.receipts.available; }
@@ -236,7 +244,11 @@ export class PhoneWorktreeService {
   }
 
   private async read(cwd: string, config: readonly string[], ...args: string[]): Promise<GitRunResult> {
-    const result = await this.git(gitArgv(...config, ...args), cwd);
+    return this.readWith(this.git, cwd, config, ...args);
+  }
+
+  private async readWith(git: GitRunner, cwd: string, config: readonly string[], ...args: string[]): Promise<GitRunResult> {
+    const result = await git(gitArgv(...config, ...args), cwd);
     if (!result.ok && result.ran === false) throw new Refusal('git-operation-failed');
     return result;
   }
@@ -393,12 +405,16 @@ export class PhoneWorktreeService {
 
   /**
    * A repeat of an `unknown` request. A finished, clean checkout of
-   * `phone/<slug>` at the phone directory is adopted as created. A checkout
-   * git left locked mid-creation is removed, and a `phone/<slug>` branch that
-   * never moved since it was created and is checked out nowhere is deleted
-   * (compare-and-swap on its tip), so the create can run again. Anything
-   * else — a directory with changes in it, a branch with history — is left
-   * for the operator, and the normal refusals report it.
+   * `phone/<slug>` at the phone directory is adopted as created, also when git
+   * left it locked because the command that made it died first. A locked
+   * checkout some process still holds (on Windows: still being written) is
+   * left exactly as it is and the request stays `unknown`, with a retry hint.
+   * Any other checkout git left locked mid-creation is removed, and a
+   * `phone/<slug>` branch that never moved since it was created and is
+   * checked out nowhere is deleted (compare-and-swap on its tip), so the
+   * create can run again. Anything else — a directory with changes in it,
+   * a branch with history — is left for the operator, and the normal
+   * refusals report it.
    */
   private async recover(cwd: string, config: readonly string[], repo: PhoneGitRepo, branch: string, dir: string): Promise<PhoneWorktreeOutcome | null> {
     await this.read(cwd, config, 'worktree', 'prune');
@@ -406,23 +422,43 @@ export class PhoneWorktreeService {
     const here = worktrees.find((w) => path.resolve(w.path) === dir);
     const branchRef = `refs/heads/${branch}`;
     if (here && !here.locked && here.branch === branch) {
-      const tip = await this.read(cwd, config, 'rev-parse', '--verify', '-q', branchRef);
-      const status = await this.read(dir, config, 'status', '--porcelain', '--untracked-files=all');
-      const checkedOut = await this.read(dir, config, 'rev-parse', '--verify', '-q', 'HEAD');
-      if (tip.ok && status.ok && status.stdout === '' && checkedOut.ok && checkedOut.stdout.trim() === tip.stdout.trim()) {
-        return { state: 'created', projectId: repo.projectId, branch, base: tip.stdout.trim(), cwd: dir, leaf: path.basename(dir) };
-      }
+      const adopted = await this.adoptClean(cwd, config, repo, branch, dir);
+      if (adopted) return adopted;
     }
     // A finished checkout that is not clean holds someone's work: leave it.
     if (here && !here.locked) throw new Refusal('worktree-path-exists');
     if (here?.locked) {
+      // On Windows a checkout can outlive the daemon that started it: the
+      // daemon's process job ends `git worktree add` with it, not the `git
+      // reset --hard` it spawned, which goes on writing and leaves the lock.
+      // Removing under that writer leaves half a checkout, so touch nothing
+      // (the lock stays) and keep the request retryable.
+      if (await this.directoryHold(dir).catch((): DirectoryHold => 'free') !== 'free') {
+        return { state: 'unknown', error: 'git-outcome-unknown', retryAfterMs: PHONE_WORKTREE_RETRY_AFTER_MS };
+      }
       await this.read(cwd, config, 'worktree', 'unlock', '--', dir);
-      const removed = await this.read(cwd, config, 'worktree', 'remove', '--force', '--', dir);
+      // Once that writer is done the checkout is complete: adopt it.
+      if (here.branch === branch) {
+        const adopted = await this.adoptClean(cwd, config, repo, branch, dir);
+        if (adopted) return adopted;
+      }
+      const removed = await this.readWith(this.longGit, cwd, config, 'worktree', 'remove', '--force', '--', dir);
       if (!removed.ok) throw new Refusal('git-operation-failed');
       worktrees = (await listWorktrees(this.git, cwd)) ?? [];
     }
     const tip = await this.read(cwd, config, 'rev-parse', '--verify', '-q', branchRef);
     if (tip.ok && !worktrees.some((w) => w.branch === branch)) await this.dropUntouchedBranch(cwd, config, branchRef, tip.stdout.trim());
+    return null;
+  }
+
+  /** `created` when `dir` has `phone/<slug>` checked out at its tip with nothing changed. */
+  private async adoptClean(cwd: string, config: readonly string[], repo: PhoneGitRepo, branch: string, dir: string): Promise<PhoneWorktreeOutcome | null> {
+    const tip = await this.read(cwd, config, 'rev-parse', '--verify', '-q', `refs/heads/${branch}`);
+    const status = await this.readWith(this.longGit, dir, config, 'status', '--porcelain', '--untracked-files=all');
+    const checkedOut = await this.read(dir, config, 'rev-parse', '--verify', '-q', 'HEAD');
+    if (tip.ok && status.ok && status.stdout === '' && checkedOut.ok && checkedOut.stdout.trim() === tip.stdout.trim()) {
+      return { state: 'created', projectId: repo.projectId, branch, base: tip.stdout.trim(), cwd: dir, leaf: path.basename(dir) };
+    }
     return null;
   }
 
