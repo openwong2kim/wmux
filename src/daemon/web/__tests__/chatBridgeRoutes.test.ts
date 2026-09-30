@@ -1697,7 +1697,8 @@ describe('native chat routes (contract v0.3.1)', () => {
     });
   });
 
-  describe('Codex account status (contract v-next item 2)', () => {
+  // Relay panes are Unix-only; Windows answers `unsupported-platform` instead.
+  describe.skipIf(process.platform === 'win32')('Codex account status (contract v-next item 2)', () => {
     const codexResolution = (): ChatResolution => fileResolution({ terminal: { kind: 'terminal', agent: 'codex', nativeSessionId: 'sess-a',
       capabilities: { history: true, send: true, permissions: false, cancel: false, fileUndo: false } } });
     const status = (h: Record<string, string>, id = 's1') => fetch(`${base()}/api/sessions/${id}/codex/account-status`, { headers: h });
