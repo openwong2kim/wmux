@@ -3379,3 +3379,487 @@ re-read after every reconnect instead of reconstructing from events. A dialog
 seen only on the rendered screen shows on the next `/turns` read (and as
 `blockedBy:"terminal"` on a refused send); a send refused that way emits
 nothing itself.
+
+---
+
+## Proposed: contract v-next (NOT SERVED YET)
+
+> **Status: design, pending engineering review.** Unlike every section above,
+> nothing here is extracted from serving code: no daemon serves these routes or
+> fields yet. Do not ship a client path that depends on them until the
+> matching `/api/config` key (below) appears on a real daemon. Shared types:
+> `src/shared/phoneTurnFailure.ts`, `src/shared/phoneCodexAccountStatus.ts`,
+> `src/shared/phoneChatCancelOutcome.ts`, `src/shared/phonePaneAccount.ts`,
+> `src/shared/phoneGitV1.ts`.
+
+All items are additive. None moves `protocolVersion` or `chatVersion`.
+
+### Discovery
+
+Flat, per-caller `/api/config` keys, **omitted (not `false`)** when the caller
+cannot use them, exactly like the keys above. An absent key means "not on this
+daemon"; never probe with a write.
+
+| Key | Present when | Advertises |
+| --- | --- | --- |
+| `turnFailure` | always, once served | `failure` on the surfaces in item 1 |
+| `codexAccountStatus` | `--allow-transcript` | `GET /api/sessions/<id>/codex/account-status` |
+| `chatCancelOutcome` | `chatCancel` is true | `cancel` on the cancel answer, the cancel receipt route, `chat.cancel` SSE |
+| `paneAccount` | caller may input and a desktop bridge is wired | `accountId` on `POST /api/sessions` |
+| `paneHandoff` | caller may input | `handoffFrom` on `POST /api/sessions`, echoed on rows and history |
+| `gitProjects` | caller may input | `GET /api/git/projects`, `GET …/git/branches` |
+| `gitWorktrees` | caller may input | `POST …/git/worktree` and its receipt |
+| `gitChecks` | caller may input | `GET …/git/checks` |
+
+Per session, `/turns` `chat.capabilities` gains `accountStatus: true` for a
+`terminal` binding whose agent is `codex` and whose account server is
+running. The route stays authoritative (503 below).
+
+**`paneAccount` is mandatory before sending `accountId`.** `POST /api/sessions`
+ignores unknown body keys on every daemon that predates this, so an
+`accountId` sent to an older daemon is silently dropped and the pane spawns
+on the workspace's bound account. Also check that the 201 row echoes the
+`accountId` you sent.
+
+### 1. Typed turn failure
+
+When a turn ends in failure the daemon reports only what the provider said,
+in structured form:
+
+```jsonc
+"failure": {
+  "reason": "rate-limited",        // "rate-limited" | "auth" | "quota" | "network" | "unknown" (closed)
+  "provider": "claude",            // "claude" | "codex" (open)
+  "providerCode": "rate_limit",    // provider's own code, verbatim, ^[A-Za-z][A-Za-z0-9_]{0,63}$; optional
+  "httpStatus": 429,               // codex only, when the error names one; optional
+  "message": "You've hit your limit · resets 3pm", // ≤ 280 UTF-16 units, control-stripped, plain text; optional
+  "retryAfterMs": 30000,           // reserved, never sent today
+  "resetAt": 1760000000000,        // reserved, never sent today
+  "at": 1758712345123,             // epoch ms the daemon saw it
+  "turnId": "t1:…"                 // chat.turn.id of the failed turn, when known; optional
+}
+```
+
+Render `reason` for the headline and `message` (when present) as the body.
+Never parse `message`: a reset time in it is prose, not a field. Neither
+source carries a structured retry-after or reset time, so `retryAfterMs` and
+`resetAt` stay absent. Codex window reset times are on the account status
+route (item 2), as a fact about the window rather than about this failure.
+
+**Sources and mapping (normative).**
+
+Claude Code `StopFailure` hook. It fires instead of `Stop`, and the bridge
+forwards its payload verbatim. Input fields: `error` (required),
+`error_details`, `last_assistant_message` (verified on Claude Code 2.1.285).
+`message` comes from `last_assistant_message`, never from `error_details`
+(raw API text that Claude Code marks internal).
+
+| `error` | `reason` |
+| --- | --- |
+| `rate_limit` | `rate-limited` (includes subscription usage caps: Claude reports them as `rate_limit`) |
+| `billing_error` | `quota` |
+| `authentication_failed`, `oauth_org_not_allowed`, `cloud_credential_error`, `account_on_hold`, `verification_required` | `auth` |
+| `overloaded`, `server_error`, `invalid_request`, `model_not_found`, `max_output_tokens`, `unknown`, anything else | `unknown` |
+
+Claude has no connection-failure code, so Claude never yields `network`.
+
+Codex: `turn/completed` with `turn.status: "failed"` on the pane's own relay
+stream (codex-cli 0.157.1 schema). `message` is `turn.error.message`;
+`additionalDetails` is never sent. An `error` notification with
+`willRetry: true` is not a failure, and an interrupted turn is a cancel.
+
+| `codexErrorInfo` | `reason` |
+| --- | --- |
+| `rateLimitExceeded` | `rate-limited` |
+| `usageLimitExceeded`, `sessionBudgetExceeded` | `quota` |
+| `unauthorized` | `auth` |
+| `httpConnectionFailed`, `responseStreamConnectionFailed`, `responseStreamDisconnected` | `network`; `rate-limited` if `httpStatusCode` is 429, `auth` if 401/403 |
+| `responseTooManyFailedAttempts` | `unknown`; 429 → `rate-limited`, 401/403 → `auth` |
+| anything else, or `null` | `unknown` |
+
+**Scope.** Claude: any pane with the wmux hook bridge installed. Codex: only
+panes with a daemon-owned relay (phone-created Codex panes on Unix). A `codex`
+typed by hand has no relay; its `notify` carries no failure detail and, from a
+shared app-server, no provable pane (see #1657). OpenCode: none.
+
+**Where it appears.**
+
+| Surface | Field | Lifetime | `message` |
+| --- | --- | --- | --- |
+| `/turns` `chat` | `chat.lastFailure` | until the next turn starts in that conversation | yes |
+| `/api/sessions` row | `lastFailure` | until the next turn starts | only with `--allow-transcript` |
+| `/api/events` `agent.liveness` | `failure` on the frame that ends the turn | live-only | yes (the fleet copy already needs a `/turns` read) |
+| `/api/stream` `agent.liveness` | `failure` | live-only | **no** (same narrowing as `tool`) |
+| `/api/history` entry | `failure` on `outcome: "failed"` | kept with the entry | yes (history already needs `--allow-transcript`) |
+
+The frame that ends a failed turn carries `state: "idle"` plus `failure`. The
+turn is over, so `idle` is the truthful state, and a client that ignores
+`failure` renders what a finished turn renders. (Today's daemon projects a
+`StopFailure` onto `state: "busy"`; serving this item fixes that.)
+
+### 2. Codex account status (read-only)
+
+```
+GET /api/sessions/<id>/codex/account-status
+→ 200 {
+    "auth": { "state": "signed-in", "method": "chatgpt" },   // state: signed-in | signed-out | unknown; method: chatgpt | apikey | other
+    "rateLimits": {                                          // null when unavailable (e.g. an API-key account)
+      "ordinaryUsageAllowed": false,                         // the server's verdict; null = unavailable
+      "planType": "pro",                                     // verbatim, open set; null when absent
+      "buckets": [{
+        "limitId": "codex", "limitName": "Codex",
+        "primary":   { "usedPercent": 100, "windowMinutes": 300,   "resetsAt": 1760000000000 },
+        "secondary": { "usedPercent": 41,  "windowMinutes": 10080, "resetsAt": 1760400000000 },
+        "reachedType": "rate_limit_reached"                  // verbatim, open set; null when not reached
+      }]
+    },
+    "fetchedAt": 1758712345123,
+    "cached": true
+  }
+→ 404 {error: "pane-not-found"}
+→ 403 transcript refusal (as `/turns`)
+→ 503 {error: "unavailable", reason: "no-account-server" | "upstream-failed" | "unsupported-platform"}
+```
+
+The account is the one **this pane runs on** (its spawn `CODEX_HOME`, else
+the default), not the workspace's next-launch binding. The daemon opens a
+short-lived connection to that account's already-running app-server and sends
+`getAuthStatus {includeToken:false, refreshToken:false}` and
+`account/rateLimits/read {excludeResetCreditDetails:true}`. It never starts an
+account server and never sends a model request. The rate-limit read does
+reach the provider's backend, so reads are cached per account for 60 s
+(`cached: true`), and there is no refresh parameter.
+
+Never on this wire: the auth token, e-mail, account id, credit balance, the
+backend's upsell banner, config paths. `resetsAt` is epoch ms (the server's
+seconds × 1000). Do not infer "usage is available again" from `usedPercent` or
+`resetsAt`; `ordinaryUsageAllowed` is the only verdict.
+
+Needs `--allow-transcript` (like `GET …/accounts`), not input.
+
+### 3. Chat cancel outcome
+
+**Who may cancel.** The daemon has no per-pane owner: control belongs to the
+credential, not to whoever started the turn. A cancel is accepted only when
+**all** of these hold. Each is checked when the headers arrive, again after
+the body, and again immediately before the interrupt is written:
+
+1. the server runs with `--allow-transcript` and `--allow-input`;
+2. the caller may input: the operator token, or a paired, unrevoked device
+   whose own `grants.input` is true;
+3. the pane resolves for the caller (never the orchestrator brain pane, for
+   any credential) and is the same incarnation throughout;
+4. the re-authenticated caller is the same caller (same credential class; for
+   a device, the same device id);
+5. `agentSessionId` (and `historyEpoch` and `turnId` when sent) match the
+   pane's current conversation and running turn.
+
+"Only the turn I started" is **not** a rule the daemon can enforce: send
+receipts do not record which `chat.turn.id` they started. Any caller that may
+control the pane may stop its running turn, as at the keyboard.
+
+**The answer.** `POST …/chat/cancel` is unchanged, and its body stays strict. On
+a `chatCancelOutcome` daemon, a 202 or a replay also carries:
+
+```json
+"cancel": { "state": "requested", "turnId": "t1:…", "requestedAt": 1758712345123, "at": 1758712345123 }
+```
+
+**The receipt.**
+
+```
+GET /api/sessions/<id>/chat/cancel/<clientCancelId>
+→ 200 {
+    "clientCancelId": "…",
+    "state": "requested" | "ended" | "not-ended" | "unknown" | "none",
+    "turnId": "t1:…",                                   // aimed turn, when known
+    "endedAs": "interrupted" | "completed" | "failed" | "unspecified",   // ended only
+    "evidence": "native" | "transcript" | "screen",     // ended only
+    "reason": "write-uncertain" | "daemon-restart" | "pane-closed" | "session-changed",  // unknown only; open set
+    "requestedAt": 1758712345123,
+    "at": 1758712349000
+  }
+→ 404 {error: "pane-not-found"}
+```
+
+Owner-bound (a device reads only its own cancels) and pane-bound; needs
+`--allow-transcript`, not input. `none` means there is no receipt for this
+owner, pane and id: it was never written, or it was refused (a refusal stores
+nothing).
+
+| `state` | Meaning | Client |
+| --- | --- | --- |
+| `requested` | written; the aimed turn has not been seen to end | keep "Stopping…", poll every 2 s or wait for `chat.cancel` |
+| `ended` | the aimed turn ended after the write | final. `endedAs: "completed"` means it finished on its own first |
+| `not-ended` | still running 15 s after the write | final; offer Stop again (a new `clientCancelId`) or Terminal |
+| `unknown` | cannot be known | final; check Terminal |
+
+What counts as `ended`, per agent:
+
+- **Codex with a daemon relay**: the relay stream's `turn/completed` for the
+  aimed turn (`evidence: "native"`, `endedAs` from `turn.status`). The daemon
+  prefers app-server `turn/interrupt {threadId, turnId}` to an Esc here, once
+  a spike confirms the shared server accepts it from a connection that is not
+  subscribed to the thread; otherwise the Esc path below.
+- **Claude, and Codex without a relay**: the aimed `chat.turn` leaving
+  `running`, proved by an interrupt or end record in the transcript
+  (`transcript`) or by the idle title or Stop row on screen (`screen`). An
+  interrupt fires no Stop hook, so the hook stream is not evidence.
+- **OpenCode**: the plugin's phase returning to `complete`
+  (`evidence: "native"`).
+
+A write that ended `effect: "uncertain"` starts as `unknown`
+(`write-uncertain`). A daemon restart turns `requested` into `unknown`
+(`daemon-restart`).
+
+**SSE.** `chat.cancel` `{sessionId, clientCancelId, state, turnId?, endedAs?, at}`
+on every change. It is live-only (no `id:`) and sent only to the cancel's owner
+among the pane's `/turns` watchers. The receipt is authoritative after a
+reconnect.
+
+### 4. Account per pane, and handoff lineage
+
+`POST /api/sessions` gains two optional fields:
+
+```json
+{
+  "workspaceId": "ws-…",
+  "cwd": "/Users/me/repo",
+  "accountId": "3f1c2e4a-0b6d-4c1e-9a7f-2d8e5b6c7a90",
+  "handoffFrom": { "sessionId": "web-5b0c…", "agentSessionId": "0199f1c2-…" }
+}
+```
+
+**`accountId`** is an id from `GET /api/sessions/<id>/accounts`
+(`accounts[].id`), never a path. The desktop resolves it to that account's
+config directory, and the new pane's `CLAUDE_CONFIG_DIR` **or** `CODEX_HOME`
+(whichever matches the account's vendor) is set to it. The other vendor's key
+keeps the workspace binding. The workspace's binding itself does not change,
+and no later pane inherits the choice. The pane keeps the account across
+daemon recovery, because its environment is persisted with it.
+
+| Status | Body | When |
+| --- | --- | --- |
+| 400 | `{error:"invalid-account-id", effect:"none"}` | not `^[A-Za-z0-9_-]{1,128}$` |
+| 400 | `{error:"unknown-account", effect:"none"}` | no such account on this desktop. An unknown id and another host's id get the same answer |
+| 400 | `{error:"account-vendor-mismatch", vendor, effect:"none"}` | `agentLaunch.agent` is not the account's vendor |
+| 409 | `{error:"account-directory-missing", effect:"none"}` | the account's directory is gone |
+| 503 | `{error:"desktop-unavailable", effect:"none"}` | the desktop app is not attached; accounts live there |
+
+The 201 row adds `accountId` (only for a pane created with one) so the phone
+can confirm it was honoured. With both `accountId` and `agentLaunch`, the model
+and effort are validated against the catalog of the **chosen** account, not
+the workspace's; `GET /api/agent-launch-options` accepts `accountId` next to
+`workspaceId` so the picker shows that account's models. `accountId` is **not** accepted by
+`POST …/chat/launch`: launch types into a shell whose environment was fixed
+at spawn, and its body refuses unknown keys (`invalid-chat-request`).
+
+**`handoffFrom`** records where the work came from. The daemon stores it on
+the new pane with `verified` and `at`:
+
+```json
+"handoffFrom": { "sessionId": "web-5b0c…", "agentSessionId": "0199f1c2-…", "verified": true, "at": 1758712345123 }
+```
+
+`verified` is true only when the source pane was live and readable by this
+caller at creation, and `agentSessionId` (when sent) matched its current
+conversation. False means "not proven" (the source may have closed), never an
+error. A source the caller may not read is stored exactly like a missing one,
+so the answer does not confirm hidden panes. A malformed object (unknown key,
+bad id) is `400 {error:"invalid-handoff"}`. The stored value appears on the
+`/api/sessions` row and on every `/api/history` entry of the new pane.
+
+**Long handoff text travels as a file.** `chat/launch` takes at most 2,000
+UTF-16 units of prompt. Upload the handoff body with `POST /api/upload-file`
+(`generalFileUpload`, `X-Wmux-File-Extension: md`), then launch with a short
+prompt that names the returned `path`. The daemon never reads that path from
+a request; it is only text in the prompt. Two limits to design for: the file
+expires 24 h after upload, and it lives outside the pane's working directory,
+so Claude in default mode asks for permission to read it (answer it in Chat or
+Terminal).
+
+The flow has two steps: create the pane with `accountId` and `handoffFrom`
+and no `agentLaunch`, wait for `/turns` `launch.ready`, then
+`POST …/chat/launch` with the prompt. `agentLaunch` would start the agent
+without a prompt and make the pane ineligible for `chat/launch`, and launch
+cannot pick a model or effort.
+
+### 5. Git v1 (priority-3 track): projects, branches, worktree creation, CI checks
+
+Every request names a session (`/api/sessions/<id>/…`), except the project
+list, whose rows hand you one. The daemon derives the repository from that
+session's trusted `spawnCwd`, exactly as `/git` and `/git/pr` do. **The phone
+never sends a path, a ref or a refspec.** Push and PR creation are not in v1.
+
+**Where it runs.** In the daemon, with no desktop round trip. The inputs are
+daemon state (live sessions and their `spawnCwd`), the daemon already runs
+the hardened phone Git runner (fixed `-c` config, sanitized environment,
+output bounds) and `gh` for `/git/pr`, and these routes must work on a
+headless daemon. Nothing here needs the desktop's workspace registry.
+
+**Gates, budget, audit.** All four routes need the input grant and an
+attachable session, like `/git` (`gitControl`); the three reads change
+nothing and write no audit line. They share the existing four-slot Git/PR
+budget (`429 {error:"git-busy"}`). Each `git` subprocess keeps the 5 s
+timeout, except `git worktree add`, which gets 30 s because it checks out a
+tree. `gh` keeps its 8 s timeout. Worktree creation also serializes per
+repository and re-authenticates after the body and again immediately before
+`git worktree add`. Each creation that passes validation writes one line to
+the device audit log (`device-audit.jsonl`): event `git-worktree`, the
+device id (empty for the operator token), and the outcome tag as `reason`.
+No path and no branch name is logged. The desktop's worktree cleanup scan
+leaves `phone-*` directories alone.
+
+#### `GET /api/git/projects`
+
+```jsonc
+→ 200 {
+  "projects": [{
+    "projectId": "a1b2c3d4e5f6",       // sha256(realpath of the main worktree root)[0,12); opaque
+    "name": "wmux",                    // last segment of the main worktree; display only
+    "sessionId": "web-5b0c…",          // address this project's routes with this session
+    "sessions": [
+      { "sessionId": "web-5b0c…", "branch": "main", "linkedWorktree": false },
+      { "sessionId": "pty-7f3c", "branch": "phone/fix-login", "linkedWorktree": true }
+    ]
+  }],
+  "truncated": false
+}
+```
+
+A project exists only because a live session attachable by this caller
+(never the brain pane) has its `spawnCwd` inside it. Worktrees of one
+repository group into one project. At most 50 projects; 10 s cache. A
+workspace whose panes are all closed has no project here (the same evidence
+rule as `workspaceId`).
+
+#### `GET /api/sessions/<id>/git/branches`
+
+```jsonc
+→ 200 {
+  "projectId": "a1b2c3d4e5f6",
+  "current": { "branch": "main", "head": "<oid>", "detached": false },   // branch/head null when detached/unborn
+  "branches": [{
+    "name": "phone/fix-login",
+    "head": "<oid>",
+    "committedAt": 1758712345000,
+    "upstream": { "name": "origin/phone/fix-login", "ahead": 2, "behind": 0, "gone": false },  // optional
+    "worktree": { "leaf": "phone-fix-login", "main": false, "sessionIds": ["pty-7f3c"] }          // optional
+  }],
+  "truncated": false
+}
+→ 404 {error:"session not found"}   409 {error:"not-a-git-repo"}   429 {error:"git-busy"}
+```
+
+Local branches (`refs/heads/*`) only, newest tip first, at most 200. Names
+are display text; no route accepts one back.
+
+#### `POST /api/sessions/<id>/git/worktree`
+
+```json
+{ "slug": "fix-login", "requestId": "3f1c2e4a-0b6d-4c1e-9a7f-2d8e5b6c7a90" }
+```
+
+Exactly these two keys. `slug` is 1–40 characters of `a-z`, `0-9` and single
+hyphens, no leading or trailing hyphen
+(`^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$`). `requestId` is a lowercase
+UUID, minted once when the user taps Create. The server derives everything
+else:
+
+- branch `phone/<slug>`, created at the session's current `HEAD` (no fetch);
+- directory `${wmuxHome}/worktrees/<projectId>/phone-<slug>`. `projectId` is
+  the desktop task worktrees' `repoHash` (the same hash of the same root), so
+  both kinds of worktree of one repository sit side by side;
+- `git worktree add` runs with hooks disabled (`core.hooksPath=/dev/null`),
+  so no repository hook runs on the Mac.
+
+```jsonc
+→ 201 {
+  "requestId": "3f1c2e4a-…", "replayed": false,
+  "projectId": "a1b2c3d4e5f6",
+  "branch": "phone/fix-login",
+  "base": "<oid>",                                  // the commit the branch starts at
+  "cwd": "/Users/me/.wmux/worktrees/a1b2c3d4e5f6/phone-fix-login",
+  "leaf": "phone-fix-login"
+}
+```
+
+| Status | `error` | When |
+| --- | --- | --- |
+| 400 | `invalid-git-request` | body shape, extra key, malformed `requestId` |
+| 400 | `invalid-slug` | slug fails the rule |
+| 409 | `branch-exists` | `phone/<slug>` already exists (never auto-suffixed) |
+| 409 | `branch-namespace-blocked` | a branch named `phone` exists, so `phone/…` cannot |
+| 409 | `worktree-path-exists` | the directory exists (a leftover or another repo's) |
+| 409 | `path-too-long` | derived path over 260 characters |
+| 409 | `not-a-git-repo` | the session is not in a repository, or it is bare |
+| 409 | `unborn-head` | the session's branch has no commit yet |
+| 409 | `git-filters-require-desktop` | LFS or another content filter is configured |
+| 409 | `git-operation-in-progress` | merge/rebase/sequencer state |
+| 409 | `request-id-conflict` | this `requestId` was used with another slug or session |
+| 429 | `git-busy` | four Git/PR jobs already running |
+| 500 | `git-operation-failed` | anything else; no retry without inspecting branches first |
+
+**Receipts.** Keyed by (caller, `requestId`), persisted before `git worktree
+add` runs, kept 24 h. A repeat with the same body replays the stored answer
+with `replayed:true` (a success is 200 on replay). A receipt left pending by a
+daemon restart replays as `409 {error:"git-outcome-unknown"}`: list branches
+to see whether `phone/<slug>` exists. `GET
+/api/sessions/<id>/git/worktree/<requestId>` reads the receipt without the
+input grant: `{requestId, state: "pending"|"created"|"refused"|"unknown"|"none",
+branch?, cwd?, error?}`.
+
+**Opening a pane in it.** Pass the returned `cwd` verbatim to the existing
+`POST /api/sessions {workspaceId, cwd}`; do not build or edit it. That route
+already validates `cwd`. The new pane's `spawnCwd` is the worktree, so every
+Git route addressed through it acts on the new branch.
+
+Not in v1: push, PR creation, worktree removal, switching an existing
+checkout's branch, remote branches.
+
+#### `GET /api/sessions/<id>/git/checks`
+
+```jsonc
+→ 200 {
+  "state": "available",                 // available | no-pr | unsupported | unavailable
+  "pr": { "number": 1658, "url": "https://github.com/o/r/pull/1658", "headOid": "<oid>", "headMatchesLocal": true },
+  "overall": "failure",                 // success | failure | pending | none
+  "counts": { "total": 8, "passed": 6, "failed": 1, "pending": 1, "skipped": 0 },
+  "checks": [
+    { "kind": "check-run", "name": "validate", "state": "success", "workflow": "CI",
+      "url": "https://github.com/o/r/actions/runs/1/job/2", "startedAt": 1758712345000, "completedAt": 1758713291000 },
+    { "kind": "status", "name": "CodeRabbit", "state": "failure" }
+  ],
+  "truncated": false
+}
+```
+
+The PR is chosen with the same identity rules as `/git/pr`: a credential-free
+github.com `origin`, the session's current branch, the head repository equal
+to origin, and the head branch equal to the local branch. The open PR wins,
+else the most recent. Then `gh pr view <number> --repo github.com/<owner/repo>
+--json number,url,headRefOid,statusCheckRollup`. `headMatchesLocal` says
+whether the PR head is the local `HEAD` (the checks may describe a commit you
+have not pushed past, or one you do not have). `no-pr` is a definite "no
+matching PR"; `unavailable` is a CLI, auth or network failure, never a claim
+of no checks. At most 100 checks.
+
+`state` per check: a CheckRun's `COMPLETED` conclusion maps to `success`,
+`failure` (also `STARTUP_FAILURE`), `neutral`, `skipped`, `cancelled`,
+`timed_out`, `action_required` or `stale`; a CheckRun that is not completed
+is `queued` or `in_progress`. A StatusContext's state maps to `success`,
+`failure`, `error` or `pending` (`EXPECTED` too). Anything else is `unknown`,
+which counts as pending, never as failed. `url` is present only for a
+`https://github.com/` link; other hosts are dropped.
+
+### Coordination with open work
+
+- #1658 (Claude AskUserQuestion form) edits `HookIngest.ts` and this document.
+  Item 1 wires into the same `StopFailure` emission path, so #1658 lands first.
+- #1657 (Codex notify attribution) is why a hand-typed Codex gets no typed
+  failure in item 1.
+- #1660 (`/app` desktop UI) edits `src/shared/types.ts` and this document;
+  this section adds no fields there.
+- #1653 (remote pane from the + menu) creates panes on a paired remote host
+  through the Surface model, not `POST /api/sessions`; `accountId` does not
+  apply to remote panes.
