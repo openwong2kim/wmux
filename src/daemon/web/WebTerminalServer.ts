@@ -2438,11 +2438,11 @@ export class WebTerminalServer {
               // this daemon produces, and whether this caller may use
               // `/chat/cancel` (the route's own caller gates, plus a chat bridge).
               decisionForms: this.decisionForms(),
-              chatCancel: this.chatCancelServable(principal),
+              chatCancel: this.chatWritable(principal),
               // Contract v-next item 3: `cancel` progress, its receipt route and SSE `chat.cancel`.
-              ...(this.chatCancelServable(principal) && this.deps.chat?.()?.cancelOutcomeEnabled?.() === true ? { chatCancelOutcome: true } : {}),
+              ...(this.chatWritable(principal) && this.deps.chat?.()?.cancelOutcomeEnabled?.() === true ? { chatCancelOutcome: true } : {}),
               // Whether this caller's `chat-queue` sends are held by the daemon.
-              chatQueue: this.mayInput(principal) && this.deps.chat?.()?.queueEnabled?.() === true,
+              chatQueue: this.chatWritable(principal) && this.deps.chat?.()?.queueEnabled?.() === true,
             }
           : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,
@@ -4340,7 +4340,7 @@ export class WebTerminalServer {
   private chatConfig(principal: WebPrincipal): Record<string, unknown> {
     if (!(this.deps.chat?.() ?? null)) return {};
     const chatBinding = this.opts?.allowTranscript === true;
-    const writable = chatBinding && this.mayInput(principal);
+    const writable = this.chatWritable(principal);
     const dangerous = this.opts?.allowDangerousLaunch === true;
     return {
       chatBinding,
@@ -4459,8 +4459,9 @@ export class WebTerminalServer {
    */
   private handleChatDequeue(res: http.ServerResponse, rawId: string, rawMessageId: string, principal: WebPrincipal): void {
     res.setHeader('Cache-Control', 'no-store');
-    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
-    if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Canceling a queued message changes what is typed into this pane');
+    const refusal = this.chatWriteRefusal(principal);
+    if (refusal === 'transcript') return this.refuseTranscript(res);
+    if (refusal === 'input') return this.refuseInput(res, principal, 'Canceling a queued message changes what is typed into this pane');
     const id = decodePathSegment(rawId);
     if (id === null || !this.readableSession(id)) return this.json(res, 404, { error: 'pane-not-found' });
     const chat = this.deps.chat?.() ?? null;
@@ -4483,8 +4484,9 @@ export class WebTerminalServer {
     principal: WebPrincipal,
   ): void {
     res.setHeader('Cache-Control', 'no-store');
-    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
-    if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Sending to a chat types into this pane');
+    const refusal = this.chatWriteRefusal(principal);
+    if (refusal === 'transcript') return this.refuseTranscript(res);
+    if (refusal === 'input') return this.refuseInput(res, principal, 'Sending to a chat types into this pane');
     const id = decodePathSegment(rawId);
     const pane = id === null ? undefined : this.readableSession(id);
     if (!pane || id === null) return this.json(res, 404, { error: 'session not found' });
@@ -4545,7 +4547,7 @@ export class WebTerminalServer {
     principal: WebPrincipal,
   ): void {
     res.setHeader('Cache-Control', 'no-store');
-    const refusal = this.chatCancelRefusal(principal);
+    const refusal = this.chatWriteRefusal(principal);
     if (refusal === 'transcript') return this.refuseTranscript(res);
     if (refusal === 'input') return this.refuseInput(res, principal, 'Stopping a turn types into this pane');
     const id = decodePathSegment(rawId);
@@ -4585,20 +4587,21 @@ export class WebTerminalServer {
   }
 
   /**
-   * The caller gates of `POST …/chat/cancel`, in the route's order: the first
-   * refusal, or null. `/api/config` advertises `chatCancel` and
-   * `chatCancelOutcome` from this same answer (`chatCancelServable`), so a key
-   * is never shown to a caller the route refuses.
+   * The caller gates every chat write route checks first, in their order:
+   * send, launch, cancel and dequeue. The first refusal, or null.
+   * `/api/config` advertises `chatSend`, `chatLaunch`, `chatQueue`,
+   * `chatCancel` and `chatCancelOutcome` from this same answer
+   * (`chatWritable`), so a key is never shown to a caller the route refuses.
    */
-  private chatCancelRefusal(principal: WebPrincipal): 'transcript' | 'input' | null {
+  private chatWriteRefusal(principal: WebPrincipal): 'transcript' | 'input' | null {
     if (this.opts?.allowTranscript !== true) return 'transcript';
     if (!this.mayInput(principal)) return 'input';
     return null;
   }
 
-  /** Whether `POST …/chat/cancel` gets past every gate that does not depend on the pane. */
-  private chatCancelServable(principal: WebPrincipal): boolean {
-    return this.chatCancelRefusal(principal) === null && (this.deps.chat?.() ?? null) !== null;
+  /** Whether a chat write gets past every gate that does not depend on the pane (the caller's, and a bridge). */
+  private chatWritable(principal: WebPrincipal): boolean {
+    return this.chatWriteRefusal(principal) === null && (this.deps.chat?.() ?? null) !== null;
   }
 
   /** `GET /api/sessions/:id/chat/cancel/:clientCancelId`: transcript, not input; owner- and pane-bound (chatCancelOutcome.ts). */
@@ -4654,8 +4657,9 @@ export class WebTerminalServer {
     principal: WebPrincipal,
   ): void {
     res.setHeader('Cache-Control', 'no-store');
-    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
-    if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Starting an agent runs a command on this machine');
+    const refusal = this.chatWriteRefusal(principal);
+    if (refusal === 'transcript') return this.refuseTranscript(res);
+    if (refusal === 'input') return this.refuseInput(res, principal, 'Starting an agent runs a command on this machine');
     const id = decodePathSegment(rawId);
     const pane = id === null ? undefined : this.readableSession(id);
     if (!pane || id === null) return this.json(res, 404, { error: 'session not found' });

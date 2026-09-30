@@ -1326,15 +1326,17 @@ v1 paths.
 | `decisionForms` | The form kinds this daemon produces now: any of `permission`, `plan`, `questions`. `plan` while the daemon's `phoneDecisions.stepwise` switch is on (see Plan dialog); `permission` and `questions` (agent-native, OpenCode; see below) while `phoneDecisions.native` is on. Offer a v2 answer only for a kind listed here |
 | `chatCancel` | Whether this caller may use `POST /api/sessions/<id>/chat/cancel`: the server runs with `--allow-transcript`, the caller has the input grant, and the chat bridge is wired |
 | `chatCancelOutcome` | `true` when `chatCancel` is true and the cancel receipt store loaded; omitted otherwise (never `false`). Advertises `cancel` on the cancel answer, the cancel receipt route and SSE `chat.cancel` (see Chat cancel outcome) |
-| `chatQueue` | Whether this caller's `chat-queue` sends are held by the daemon queue (its input grant, and a queue that loaded) |
+| `chatQueue` | Whether this caller's `chat-queue` sends are held by the daemon queue, and `DELETE …/chat/queue/<clientMessageId>` is open to it: the same condition as `chatSend`, plus a queue that loaded |
 
-**Advertised = accepted.** `chatCancel` and `chatCancelOutcome` are computed
-from the same caller gates `POST …/chat/cancel` checks before it looks at the
-pane (`--allow-transcript`, then the input grant). A caller that sees them is
-never refused a cancel with 403 for its grants or 503 for a missing bridge;
-the per-pane and per-turn answers (404 `pane-not-found`, the refusals in
-Chat cancel such as 409 `turn-already-interrupted`) still apply per request.
-Reading a cancel receipt needs neither key (see Chat cancel outcome).
+**Advertised = accepted.** The chat write keys (`chatSend`, `chatLaunch`,
+`chatQueue`, `chatCancel`, `chatCancelOutcome`) are computed from the same
+caller gates their routes (`POST …/chat/messages`, `…/chat/launch`,
+`…/chat/cancel`, `DELETE …/chat/queue/<id>`) check before they look at the
+pane: `--allow-transcript`, then the input grant, plus a wired chat bridge.
+A caller that sees a key is never refused that write with 403 for its grants
+or 503 for a missing bridge; the per-pane and per-turn answers (404, and the
+refusals such as 409 `turn-already-interrupted`) still apply per request.
+Reading a cancel receipt needs none of these keys (see Chat cancel outcome).
 
 **The record.** For a `decision-v2` caller, a record that can still be
 answered may carry:
@@ -1713,7 +1715,7 @@ answers 503 `chat-persist-failed`.
 | --- | --- | --- |
 | `requested` | written; the aimed turn has not been seen to end | keep "Stopping…", poll every 2 s or wait for `chat.cancel` |
 | `ended` | the aimed turn ended after the write | final. `endedAs: "completed"` means it finished on its own first |
-| `not-ended` | still running 15 s after the write | final: it never changes, even if the turn ends later. Do **not** offer Stop again for this turn: a turn gets one interrupt (an Esc or a native stop), so a second cancel aimed at it is refused with 409 `turn-already-interrupted`. Point to Terminal and re-read `/turns`; only a different running turn (a new `chat.turn.id`, started after the write) can be stopped, with a new `clientCancelId` |
+| `not-ended` | still running 15 s after the write | final: it never changes, even if the turn ends later. Do **not** offer Stop again for this turn: a turn gets one interrupt (an Esc or a native stop), so a second cancel aimed at it is refused with 409 `turn-already-interrupted`. Re-read `/turns`. If the same turn is still running, force-interrupt it with `chat/interrupt` (key `chatInterrupt`; **planned, not served yet**: no daemon has this route today). A different running turn (a new `chat.turn.id`, started after the write) can be stopped with a new `clientCancelId`. Terminal is only a secondary fallback |
 | `unknown` | cannot be known | final; check Terminal |
 | `none` | no receipt for this owner, pane and id: never written, refused, expired, or the POST has not reached the daemon yet | not a progress state. If the POST answered, its answer stands (a refusal wrote nothing); otherwise nothing is known to be written. Re-read `/turns` |
 

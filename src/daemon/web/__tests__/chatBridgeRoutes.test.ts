@@ -1660,6 +1660,42 @@ describe('native chat routes (contract v0.3.1)', () => {
       }
     });
 
+    it('advertise == route: chatSend, chatLaunch and chatQueue appear exactly when their routes pass the caller gates', async () => {
+      Object.assign(chat, { queueEnabled: vi.fn(() => true), queue: vi.fn(() => []), dequeue: vi.fn(() => ({ ok: true })) });
+      const url = (tail: string) => `${base()}/api/sessions/s1/chat/${tail}`;
+      const probes = (h: Record<string, string>) => ({
+        chatSend: [() => postJson(url('messages'), h, sendBody())],
+        chatLaunch: [() => postJson(url('launch'), h, launchBody())],
+        chatQueue: [
+          () => postJson(url('messages'), { ...h, 'x-wmux-client-caps': 'chat-queue' }, sendBody()),
+          () => fetch(url(`queue/${freshId()}`), { method: 'DELETE', headers: h }),
+        ],
+      });
+      for (const [allowTranscript, wired] of [[true, true], [false, true], [true, false]] as const) {
+        chatWired = wired;
+        const info = await start({ allowTranscript });
+        const callers = [
+          ['operator', () => bearer(info.token as string)],
+          ['device with input', () => device('dev-1')],
+          ['device without input', () => device('ro', false)],
+        ] as const;
+        for (const [who, headers] of callers) {
+          const body = await config(headers());
+          for (const [key, requests] of Object.entries(probes(headers()))) {
+            for (const request of requests) {
+              const status = (await request()).status;
+              // Past the caller gates and the bridge means anything but 403 / 503.
+              const served = status !== 403 && status !== 503;
+              expect({ who, allowTranscript, wired, key, advertised: body[key] === true })
+                .toEqual({ who, allowTranscript, wired, key, advertised: served });
+            }
+          }
+        }
+        await server.stop();
+      }
+      chatWired = true;
+    });
+
     it('GET receipt: transcript not input; owner- and pane-bound; brain or missing pane 404; no store 503', async () => {
       const off = await start({ allowTranscript: false });
       const { receipts, fns } = wireOutcome();
