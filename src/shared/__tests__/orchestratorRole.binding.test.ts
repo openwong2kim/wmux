@@ -3,6 +3,8 @@ import {
   applyRoleAgent,
   applyRoleBinding,
   bindingEnforcesModel,
+  bindingEnforcesSkipPermissions,
+  bindingSkipPermissionsFlag,
   launcherSupportsModelFlag,
   KNOWN_AGENT_STEMS,
   normalizeRoleBinding,
@@ -761,5 +763,49 @@ describe('applyRoleBinding — optionsInjected reports only what was added', () 
     const r = applyRoleBinding('claude --permission-mode plan', { agent: 'claude', effort: 'low', skipPermissions: true });
     expect(r.command).toBe('claude --effort low --permission-mode plan');
     expect(r.optionsInjected).toEqual({ effort: 'low' });
+  });
+});
+
+// #1681 — the pane badge and fleet chip gate on this, like bindingEnforcesModel.
+describe('bindingEnforcesSkipPermissions / bindingSkipPermissionsFlag', () => {
+  it('is true for a named agent with a verified skip grammar', () => {
+    expect(bindingSkipPermissionsFlag({ agent: 'claude', skipPermissions: true })).toBe('--dangerously-skip-permissions');
+    expect(bindingSkipPermissionsFlag({ agent: 'codex', skipPermissions: true }))
+      .toBe('--dangerously-bypass-approvals-and-sandbox');
+    expect(bindingSkipPermissionsFlag({ agent: 'agy', skipPermissions: true })).toBe('--dangerously-skip-permissions');
+    expect(bindingEnforcesSkipPermissions({ agent: 'claude', model: 'haiku', skipPermissions: true })).toBe(true);
+  });
+
+  it('counts a skip spelling in the role args', () => {
+    expect(bindingSkipPermissionsFlag({ agent: 'claude', args: '--verbose --dangerously-skip-permissions' }))
+      .toBe('--dangerously-skip-permissions');
+    expect(bindingSkipPermissionsFlag({ agent: 'codex', args: '--yolo' }))
+      .toBe('--dangerously-bypass-approvals-and-sandbox');
+    expect(bindingEnforcesSkipPermissions({ agent: 'claude', args: '--allow-dangerously-skip-permissions' })).toBe(false);
+  });
+
+  it('is false without an agent, without a skip grammar, or without a skip', () => {
+    expect(bindingEnforcesSkipPermissions(undefined)).toBe(false);
+    expect(bindingEnforcesSkipPermissions({ skipPermissions: true })).toBe(false);
+    expect(bindingEnforcesSkipPermissions({ args: '--dangerously-skip-permissions' })).toBe(false);
+    expect(bindingEnforcesSkipPermissions({ agent: 'gemini', skipPermissions: true })).toBe(false);
+    expect(bindingEnforcesSkipPermissions({ agent: 'claude', model: 'haiku' })).toBe(false);
+  });
+
+  it('agrees with applyRoleBinding on a fresh launch', () => {
+    const cases: RoleBinding[] = [
+      { agent: 'claude', skipPermissions: true },
+      { agent: 'codex', skipPermissions: true },
+      { agent: 'claude', args: '--dangerously-skip-permissions' },
+      { skipPermissions: true },
+      { agent: 'gemini', skipPermissions: true },
+      { agent: 'claude', model: 'haiku' },
+    ];
+    for (const binding of cases) {
+      const stem = binding.agent ?? 'claude';
+      const flag = bindingSkipPermissionsFlag(binding);
+      const launched = applyRoleBinding(stem, binding).command.split(' ');
+      expect(launched.includes(flag ?? '\u0000')).toBe(flag !== undefined);
+    }
   });
 });

@@ -212,6 +212,34 @@ export function bindingEnforcesModel(binding: RoleBinding | undefined): boolean 
   );
 }
 
+/**
+ * The skip-permissions flag a launch in this role will carry, or undefined when
+ * it carries none. The sibling of {@link bindingEnforcesModel}, with the same
+ * contract: an affordance claiming "this pane skips permission prompts" gates
+ * on this, never on the setting merely being stored.
+ *
+ * Mirrors applyRoleBinding: the binding must name the agent and the agent must
+ * have a verified skip grammar (agentLaunchOptions). The skip comes from
+ * `skipPermissions` or from a skip spelling in the role's own `args`, which are
+ * appended just the same. Returns the canonical flag either way. A line that
+ * makes its own permission choice can still withhold it for that one launch
+ * (#1681); this answers for the role, not for a particular line.
+ */
+export function bindingSkipPermissionsFlag(binding: RoleBinding | undefined): string | undefined {
+  const agent = binding?.agent;
+  const launch = agent ? launchGrammarFor(agent) : undefined;
+  const flag = launch?.skipPermissionsFlag;
+  if (!binding || !launch || !flag) return undefined;
+  if (binding.skipPermissions) return flag;
+  const args = binding.args?.trim();
+  return args && tokenize(args).some((t) => isSkipPermissionsToken(launch, t.value)) ? flag : undefined;
+}
+
+/** Does a launch in this role skip permission prompts? See {@link bindingSkipPermissionsFlag}. */
+export function bindingEnforcesSkipPermissions(binding: RoleBinding | undefined): boolean {
+  return bindingSkipPermissionsFlag(binding) !== undefined;
+}
+
 /** Launcher stems wmux recognizes as agent CLIs. This is applyRoleBinding's
  *  OUTER gate: a command whose stem is absent here is never rewritten in any
  *  way, so `git commit -m "wip"` and `npm test` in a bound pane come back

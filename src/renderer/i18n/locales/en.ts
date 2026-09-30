@@ -1197,6 +1197,10 @@ export const en = {
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Enforced launch: {binding}',
   'pane.enforcedLaunch': 'Role-enforced launch: {binding}',
+  // #1681 — a role that skips permission prompts: the badge word (red) and
+  // the tooltip part naming the flag.
+  'pane.enforcedSkipBadge': 'bypass',
+  'pane.enforcedSkipPermissions': 'skips permission prompts ({flag})',
   // M3: surfaced subscription rate-limit notices in the orchestrator thread.
   // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.

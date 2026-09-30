@@ -703,6 +703,10 @@ export const ko = {
   'settings.roleBindingEffortDefault': 'Effort: 기본',
   'settings.roleBindingSkipPermissions': '권한 확인 건너뛰기',
   'settings.roleBindingRefreshModels': '모델 새로고침',
+  'deck.fleet.enforcedLaunch': '강제 실행: {binding}',
+  'pane.enforcedLaunch': '역할이 강제한 실행: {binding}',
+  'pane.enforcedSkipBadge': '바이패스',
+  'pane.enforcedSkipPermissions': '권한 확인 건너뜀 ({flag})',
   'settings.orchestratorFullPower': '풀파워 모드',
   'settings.orchestratorFullPowerDesc':
     'Claude Code의 스킬·CLAUDE.md·훅을 agent 턴에 로드합니다. 개인 훅이 agent 턴 안에서 실행되고(wmux 샌드박스 밖의 본인 코드), 툴 호출이 느려질 수 있으며, 켜져 있는 동안 agent는 메모리 노트를 쓸 수 없습니다. 다음 agent 턴부터 적용됩니다.',

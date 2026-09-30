@@ -150,6 +150,32 @@ describe('DeckFleet role dropdown', () => {
     }
   });
 
+  // #1681 — a role that skips permission prompts was invisible here unless it
+  // also pinned a model. The skip leads in red so truncation keeps it.
+  it.each([
+    ['the role skip', { agent: 'claude', skipPermissions: true }, 'bypass · claude'],
+    ['a skip flag in the role args', { agent: 'codex', args: '--yolo' }, 'bypass · codex'],
+    ['a model and the skip', { agent: 'claude', model: 'haiku', skipPermissions: true }, 'bypass · claude · haiku'],
+  ])('shows the skip on the chip for %s', (_label, binding, text) => {
+    seedStore({ p1: 'Reviewer' });
+    act(() => useStore.setState({ orchestratorRoleBindings: { Reviewer: binding } }));
+    mount();
+    const chip = q<HTMLSpanElement>('[data-deck-fleet-binding]');
+    expect(chip.textContent).toBe(text);
+    const skip = q<HTMLSpanElement>('[data-deck-fleet-skip]');
+    expect(skip.className).toContain('text-[var(--accent-red)]');
+    expect(chip.firstElementChild).toBe(skip);
+    expect(chip.getAttribute('title')).toMatch(/skips permission prompts \(--dangerously-(skip-permissions|bypass-approvals-and-sandbox)\)/);
+  });
+
+  it('shows no skip on the chip when the skip has no agent to apply to', () => {
+    seedStore({ p1: 'Reviewer' });
+    act(() => useStore.setState({ orchestratorRoleBindings: { Reviewer: { skipPermissions: true } } }));
+    mount();
+    expect(container.querySelector('[data-deck-fleet-binding]')).toBeNull();
+    expect(container.querySelector('[data-deck-fleet-skip]')).toBeNull();
+  });
+
   // DESIGN.md: rows are 26–30px and the type scale starts at 10px. A bound row
   // used to grow (min-h + a stacked 9px sub-label), breaking both.
   it('keeps the fixed row height and the 10px floor when the role is bound', () => {

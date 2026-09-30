@@ -177,6 +177,39 @@ describe('SurfaceTabs — the header badges never cover the view toggle', () => 
     expect(badge()).toBeNull();
   });
 
+  // #1681 — a role that skips permission prompts shows on the pane, with the
+  // skip leading in red text so a truncated badge still says it.
+  it('shows a role-enforced skip, model or not, and names the flag in the tooltip', () => {
+    mount({ binding: { agent: 'claude', skipPermissions: true } });
+    expect(badge()!.textContent).toBe('bypass');
+    const skip = badge()!.querySelector<HTMLElement>('[data-pane-enforced-skip]')!;
+    expect(skip.className).toContain('text-[var(--accent-red)]');
+    const label = badge()!.getAttribute('title')!;
+    expect(label).toContain('claude');
+    expect(label).toContain('skips permission prompts (--dangerously-skip-permissions)');
+    expect(badge()!.getAttribute('aria-label')).toBe(label);
+  });
+
+  it('leads with the skip when the role also pins a model', () => {
+    mount({ binding: { agent: 'claude', model: 'haiku', skipPermissions: true } });
+    expect(badge()!.textContent).toBe('bypass · haiku');
+    expect(badge()!.firstElementChild?.hasAttribute('data-pane-enforced-skip')).toBe(true);
+    // Still shrinkable: the skip rides inside the one truncating badge.
+    expect(badge()!.className).toContain('truncate');
+    expect(badge()!.getAttribute('title')).toContain('claude · haiku · skips permission prompts');
+  });
+
+  it('shows no skip for a model-only role', () => {
+    mount();
+    expect(badge()!.querySelector('[data-pane-enforced-skip]')).toBeNull();
+    expect(badge()!.getAttribute('title')).not.toContain('permission');
+  });
+
+  it('draws no badge for a skip with no agent to apply it to', () => {
+    mount({ binding: { skipPermissions: true } });
+    expect(badge()).toBeNull();
+  });
+
   it('draws no model badge for a binding wmux would not actually apply', () => {
     // A model with no agent is stored and shown in Settings but never injected,
     // so badging it would claim a pin that the launch does not honour.

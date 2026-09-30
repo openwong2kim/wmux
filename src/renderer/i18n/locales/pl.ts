@@ -1178,6 +1178,8 @@ export const pl = {
   // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
   'deck.fleet.enforcedLaunch': 'Wymuszone uruchomienie: {binding}',
   'pane.enforcedLaunch': 'Uruchomienie wymuszone rolą: {binding}',
+  'pane.enforcedSkipBadge': 'bypass',
+  'pane.enforcedSkipPermissions': 'pomija pytania o uprawnienia ({flag})',
   // M3: surfaced subscription rate-limit notices in the orchestrator thread.
   // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.

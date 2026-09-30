@@ -69,6 +69,25 @@ describe('showsEnforcedModelBadge — only claims a model wmux really injects', 
     })).toBe(false);
   });
 
+  // #1681 — a role that skips permission prompts is badged too, model or not.
+  it('shows for a role that really skips permission prompts', () => {
+    for (const binding of [
+      { agent: 'claude', skipPermissions: true },
+      { agent: 'codex', skipPermissions: true },
+      { agent: 'claude', args: '--dangerously-skip-permissions' },
+    ]) {
+      expect(showsEnforcedModelBadge({ binding, surfaceType: 'terminal' })).toBe(true);
+    }
+  });
+
+  it('stays silent for a skip that no launch would carry', () => {
+    for (const binding of [{ skipPermissions: true }, { agent: 'gemini', skipPermissions: true }]) {
+      expect(showsEnforcedModelBadge({ binding, surfaceType: 'terminal' })).toBe(false);
+    }
+    expect(showsEnforcedModelBadge({ binding: { agent: 'claude', skipPermissions: true }, surfaceType: 'browser' }))
+      .toBe(false);
+  });
+
   it('stays silent on a surface that cannot launch an agent', () => {
     for (const surfaceType of ['browser', 'editor', 'diff']) {
       expect(showsEnforcedModelBadge({ binding: { agent: 'claude', model: 'haiku' }, surfaceType }))

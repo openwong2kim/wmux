@@ -1257,6 +1257,8 @@ export const zh = {
   'settings.roleBindingRefreshModels': '刷新模型',
   'deck.fleet.enforcedLaunch': '强制启动：{binding}',
   'pane.enforcedLaunch': '按角色强制启动：{binding}',
+  'pane.enforcedSkipBadge': '绕过',
+  'pane.enforcedSkipPermissions': '跳过权限确认（{flag}）',
   'deck.limit.window': '用量',
   'deck.brainTerminal': '大脑终端',
   'deck.wakeNow': '唤醒',
