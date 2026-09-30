@@ -2441,8 +2441,9 @@ export class WebTerminalServer {
               chatCancel: this.chatWritable(principal),
               // Contract v-next item 3: `cancel` progress, its receipt route and SSE `chat.cancel`.
               ...(this.chatWritable(principal) && this.deps.chat?.()?.cancelOutcomeEnabled?.() === true ? { chatCancelOutcome: true } : {}),
-              // Whether this caller's `chat-queue` sends are held by the daemon.
-              chatQueue: this.chatWritable(principal) && this.deps.chat?.()?.queueEnabled?.() === true,
+              // Whether this caller's `chat-queue` sends are held by the daemon,
+              // and DELETE …/chat/queue/:id (which needs `dequeue`) answers.
+              chatQueue: this.chatWritable(principal) && this.deps.chat?.()?.queueEnabled?.() === true && typeof this.deps.chat?.()?.dequeue === 'function',
             }
           : {}),
         protocolVersion: PHONE_PROTOCOL_VERSION,

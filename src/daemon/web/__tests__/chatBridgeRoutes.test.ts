@@ -1694,6 +1694,11 @@ describe('native chat routes (contract v0.3.1)', () => {
         await server.stop();
       }
       chatWired = true;
+      // A queue without `dequeue` cannot answer DELETE …/chat/queue/:id (503): not advertised.
+      const info = await start();
+      delete (chat as { dequeue?: unknown }).dequeue;
+      expect((await config(bearer(info.token as string))).chatQueue).toBe(false);
+      expect((await fetch(url(`queue/${freshId()}`), { method: 'DELETE', headers: bearer(info.token as string) })).status).toBe(503);
     });
 
     it('GET receipt: transcript not input; owner- and pane-bound; brain or missing pane 404; no store 503', async () => {

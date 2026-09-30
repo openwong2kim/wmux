@@ -1333,9 +1333,12 @@ v1 paths.
 caller gates their routes (`POST …/chat/messages`, `…/chat/launch`,
 `…/chat/cancel`, `DELETE …/chat/queue/<id>`) check before they look at the
 pane: `--allow-transcript`, then the input grant, plus a wired chat bridge.
-A caller that sees a key is never refused that write with 403 for its grants
-or 503 for a missing bridge; the per-pane and per-turn answers (404, and the
-refusals such as 409 `turn-already-interrupted`) still apply per request.
+The keys are a snapshot taken when `/api/config` is read: a caller that saw a
+key is not refused that write with 403 for the grants it held then, or 503
+for a missing bridge. Still possible per request: a grant that changed since
+(the re-authorization during the request answers 401 `authorization-expired`,
+or 403 read-only "Input permission changed"), and the per-pane and per-turn
+answers (404, and the refusals such as 409 `turn-already-interrupted`).
 Reading a cancel receipt needs none of these keys (see Chat cancel outcome).
 
 **The record.** For a `decision-v2` caller, a record that can still be
@@ -1715,7 +1718,7 @@ answers 503 `chat-persist-failed`.
 | --- | --- | --- |
 | `requested` | written; the aimed turn has not been seen to end | keep "Stopping…", poll every 2 s or wait for `chat.cancel` |
 | `ended` | the aimed turn ended after the write | final. `endedAs: "completed"` means it finished on its own first |
-| `not-ended` | still running 15 s after the write | final: it never changes, even if the turn ends later. Do **not** offer Stop again for this turn: a turn gets one interrupt (an Esc or a native stop), so a second cancel aimed at it is refused with 409 `turn-already-interrupted`. Re-read `/turns`. If the same turn is still running, force-interrupt it with `chat/interrupt` (key `chatInterrupt`; **planned, not served yet**: no daemon has this route today). A different running turn (a new `chat.turn.id`, started after the write) can be stopped with a new `clientCancelId`. Terminal is only a secondary fallback |
+| `not-ended` | still running 15 s after the write | final: it never changes, even if the turn ends later. Do **not** offer Stop again for this turn: a turn gets one interrupt (an Esc or a native stop), so a second cancel aimed at it is refused with 409 `turn-already-interrupted`. Re-read `/turns`. If the same turn is still running, force-interrupt it with `chat/interrupt` (key `chatInterrupt`; **planned, not served yet**: no daemon has this route today). On a daemon that does not advertise `chatInterrupt` (every daemon today) there is no force interrupt: tell the user the turn is still running and keep following `/turns`. A different running turn (a new `chat.turn.id`, started after the write) can be stopped with a new `clientCancelId`. Terminal is only a secondary fallback |
 | `unknown` | cannot be known | final; check Terminal |
 | `none` | no receipt for this owner, pane and id: never written, refused, expired, or the POST has not reached the daemon yet | not a progress state. If the POST answered, its answer stands (a refusal wrote nothing); otherwise nothing is known to be written. Re-read `/turns` |
 
