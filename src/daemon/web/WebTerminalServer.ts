@@ -9,6 +9,7 @@ import { DESKTOP_ACCOUNT_ENV_COMMAND, parsePaneAccountFields, type StoredHandoff
 import type { InputReceiptStore } from './InputReceiptStore';
 import { sessionPullRequests } from './sessionPullRequests';
 import { SessionGitController, SessionGitError } from './sessionGit';
+import { PhoneGitReads, type PhoneGitSessionRef } from './phoneGitRead';
 import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
 import { listFolders, FolderBrowseError, homeIsBrowsable } from './phoneFolders';
 import {
@@ -1252,6 +1253,8 @@ export class WebTerminalServer {
   /** Latest liveness state per pane, held for the open coalescing window. */
   private readonly phoneGit = new SessionGitController();
   private phoneGitRequests = 0;
+  /** Phone Git v1 reads (contract item 5); built on first use. */
+  private phoneGitReads?: PhoneGitReads;
   private readonly agentSettingsRequests = new Set<string>();
   private readonly pendingLiveness = new Map<string, AgentLivenessBody>();
   /** `GET /api/search`: the cursor key lives and dies with this server. */
@@ -2360,6 +2363,8 @@ export class WebTerminalServer {
         quickCommands: this.opts?.allowTranscript === true && desktopAvailable,
         desktopAccounts: this.opts?.allowTranscript === true && desktopAvailable,
         gitControl: this.mayInput(principal),
+        // Phone Git v1 (contract item 5): OMITTED, not false, without the grant.
+        ...(this.mayInput(principal) ? { gitProjects: true, gitChecks: true } : {}),
         runHistory: this.opts?.allowTranscript === true && this.deps.runHistory !== undefined,
         // `GET /api/search`, and which of its scopes can answer. OMITTED, not
         // false, when none can — the shape a daemon predating the route serves.
@@ -2444,6 +2449,9 @@ export class WebTerminalServer {
     if (req.method === 'GET' && p === '/api/search') {
       return this.handleSearch(res, url, principal);
     }
+    if (req.method === 'GET' && p === '/api/git/projects') {
+      return this.handlePhoneGitRead(res, null, principal, 'projects');
+    }
     if (req.method === 'GET' && p === '/api/workspaces') {
       return this.handleWorkspacesList(res);
     }
@@ -2478,6 +2486,8 @@ export class WebTerminalServer {
       if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/accounts')) {
         return this.handleSessionAccounts(req,res,rest.slice(0,-'/accounts'.length),url,principal);
       }
+      const phoneGitRead = req.method === 'GET' ? /^([^/]+)\/git\/(branches|checks)$/.exec(rest) : null;
+      if (phoneGitRead) return this.handlePhoneGitRead(res, phoneGitRead[1], principal, phoneGitRead[2] as 'branches' | 'checks');
       if (req.method === 'GET' && rest.endsWith('/git/pr')) {
         return this.handleSessionGit(req, res, rest.slice(0, -'/git/pr'.length), url, principal, true);
       }
@@ -3646,6 +3656,36 @@ export class WebTerminalServer {
       if (this.attachableSession(fresh.principal, id!) !== managed) return this.json(res, 404, { error: 'session not found' });
       respond(() => this.phoneGit.mutate(cwd, body, authorized));
     });
+  }
+
+  /** The live sessions this caller may attach, for the phone Git reads (never the brain pane). */
+  private phoneGitSessions(principal: WebPrincipal): PhoneGitSessionRef[] {
+    return this.deps.sessionManager.listLiveSessions().flatMap((s) => {
+      if (isBrainPty({ id: s.id, env: s.env })) return [];
+      const spawnCwd = this.attachableSession(principal, s.id)?.meta.spawnCwd;
+      return spawnCwd ? [{ id: s.id, spawnCwd, lastActivity: s.lastActivity }] : [];
+    });
+  }
+
+  /** Phone Git v1 reads (contract item 5): same grant, pane rule and budget as `/git`. */
+  private handlePhoneGitRead(res: http.ServerResponse, rawId: string | null, principal: WebPrincipal, kind: 'projects' | 'branches' | 'checks'): void {
+    if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Git control requires input permission');
+    const reads = this.phoneGitReads ??= new PhoneGitReads(this.deps.git ?? createGitRunner());
+    let work = () => reads.projects(this.phoneGitSessions(principal)) as Promise<unknown>;
+    if (rawId !== null) {
+      const id = decodePathSegment(rawId);
+      const managed = id === null ? null : this.attachableSession(principal, id);
+      if (!managed) return this.json(res, 404, { error: 'session not found' });
+      const cwd = managed.meta.spawnCwd;
+      if (!cwd) return this.json(res, 409, { error: 'not-a-git-repo' });
+      work = kind === 'branches' ? () => reads.branches(cwd, this.phoneGitSessions(principal)) : () => reads.checks(cwd);
+    }
+    if (this.phoneGitRequests >= 4) return this.json(res, 429, { error: 'git-busy' });
+    this.phoneGitRequests += 1;
+    void work().then(result => this.json(res, 200, result, { 'Cache-Control': 'no-store' })).catch(error => {
+      if (error instanceof SessionGitError) return this.json(res, error.status, { error: error.tag });
+      return this.json(res, 500, { error: 'git-operation-failed' });
+    }).finally(() => { this.phoneGitRequests -= 1; });
   }
 
   private async handleSessionDiff(res: http.ServerResponse, rawId: string, principal: WebPrincipal): Promise<void> {

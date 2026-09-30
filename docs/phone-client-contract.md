@@ -3630,9 +3630,9 @@ daemon"; never probe with a write.
 | `chatCancelOutcome` | `chatCancel` is true and the cancel receipt store loaded | **Served** (see Chat cancel outcome): `cancel` on the cancel answer, the cancel receipt route, `chat.cancel` SSE |
 | `paneAccount` (**served**) | caller may input, `--allow-transcript`, and the attached desktop announced `accounts.envForAccount` | `accountId` on `POST /api/sessions` and on `GET /api/agent-launch-options` |
 | `paneHandoff` (**served**) | caller may input | `handoffFrom` on `POST /api/sessions`, echoed on rows and history |
-| `gitProjects` | caller may input | `GET /api/git/projects`, `GET …/git/branches` |
+| `gitProjects` | caller may input (**served**) | `GET /api/git/projects`, `GET …/git/branches` |
 | `gitWorktrees` | caller may input and the worktree receipt store loaded | `POST …/git/worktree` and its receipt |
-| `gitChecks` | caller may input | `GET …/git/checks` |
+| `gitChecks` | caller may input (**served**) | `GET …/git/checks` |
 
 Per session, `/turns` `chat.capabilities` gains `accountStatus: true` for a
 `terminal` binding whose agent is `codex` and whose account server is
@@ -3926,6 +3926,10 @@ cannot pick a model or effort.
 
 ### 5. Git v1 (priority-3 track): projects, branches, worktree creation, CI checks
 
+> **Served:** `GET /api/git/projects`, `GET …/git/branches` and
+> `GET …/git/checks` (keys `gitProjects`, `gitChecks`;
+> `src/daemon/web/phoneGitRead.ts`). Worktree creation is not served yet.
+
 Every request names a session (`/api/sessions/<id>/…`), except the project
 list, whose rows hand you one. The daemon derives the repository from that
 session's trusted `spawnCwd`, exactly as `/git` and `/git/pr` do. **The phone
@@ -3990,6 +3994,7 @@ here (the same evidence rule as `workspaceId`).
   "truncated": false
 }
 → 404 {error:"session not found"}   409 {error:"not-a-git-repo"}   429 {error:"git-busy"}
+→ 409 {error:"git-operation-failed"}   // git could not answer (timeout, failed listing); retry later
 ```
 
 Local branches (`refs/heads/*`) only, newest tip first, at most 200. Names
@@ -4120,7 +4125,10 @@ whether the PR head is the local `HEAD` (the checks may describe a commit you
 have not pushed past, or one you do not have). `no-pr` is a definite "no
 matching PR"; `unavailable` is a CLI, auth or network failure, never a claim
 of no checks. `counts` and `overall` cover the whole rollup; only `checks` is
-cut to 100 (`truncated: true`).
+cut to 100 (`truncated: true`). Every state carries `overall`, `counts`,
+`checks` and `truncated`; outside `available` they read `none`, zeros, `[]`
+and `false`, and `pr` is absent. `unsupported` is an `origin` that is not a
+credential-free github.com repository.
 
 `state` per check: a CheckRun's `COMPLETED` conclusion maps to `success`,
 `failure` (also `STARTUP_FAILURE`), `neutral`, `skipped`, `cancelled`,

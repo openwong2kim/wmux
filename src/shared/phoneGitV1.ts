@@ -1,7 +1,8 @@
 /**
  * Phone Git v1: read-only projects and branches, worktree creation, CI checks
  * (docs/phone-client-contract.md, "Proposed: contract v-next", item 5).
- * CONTRACT ONLY: no route serves these yet.
+ * Served: projects, branches and checks (src/daemon/web/phoneGitRead.ts).
+ * CONTRACT ONLY: worktree creation is not served yet.
  *
  * Every request names a session. The daemon derives the repository from that
  * session's trusted `spawnCwd`; the phone never sends a path, a ref or a
