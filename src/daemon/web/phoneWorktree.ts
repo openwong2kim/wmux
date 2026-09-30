@@ -48,6 +48,12 @@ const EMPTY_DIR = '.phone-git-empty';
 class Refusal extends Error {
   constructor(readonly tag: PhoneWorktreeRefusal) { super(tag); }
 }
+/** A step that did not run to an answer (killed, timed out, could not start): it concludes nothing. */
+class NotRun extends Refusal {
+  constructor() { super('git-operation-failed'); }
+}
+/** Nothing was changed; the same request may get further later. */
+const RETRY: PhoneWorktreeOutcome = { state: 'unknown', error: 'git-outcome-unknown', retryAfterMs: PHONE_WORKTREE_RETRY_AFTER_MS };
 
 /** What the whole-tree scan found: whether any path's `filter` attribute is set, and the longest path. */
 export interface TreeScan { filters: 'used' | 'unused' | 'failed'; longest: number }
@@ -218,8 +224,11 @@ export class PhoneWorktreeService {
     try {
       outcome = await this.create(job, slug, requestId, recovering);
     } catch (error) {
-      outcome = error instanceof Refusal
-        ? { state: 'refused', error: error.tag }
+      // During recovery only a concluded refusal is final: a step that did not
+      // run leaves the request retryable, whatever is left on disk.
+      const concluded = error instanceof Refusal && !(error instanceof NotRun);
+      outcome = recovering && !concluded ? RETRY
+        : error instanceof Refusal ? { state: 'refused', error: error.tag }
         : { state: 'unknown', error: 'git-outcome-unknown' };
     }
     try {
@@ -230,7 +239,7 @@ export class PhoneWorktreeService {
 
   private async create(job: PhoneWorktreeJob, slug: string, requestId: string, recovering: boolean): Promise<PhoneWorktreeOutcome> {
     let repo: PhoneGitRepo | null;
-    try { repo = await resolvePhoneGitRepo(job.cwd, this.git); } catch { throw new Refusal('git-operation-failed'); }
+    try { repo = await resolvePhoneGitRepo(job.cwd, this.git); } catch { throw new NotRun(); }
     if (!repo) throw new Refusal('not-a-git-repo');
     const found = repo;
     // One job at a time per repository: two worktrees of one repository share
@@ -249,7 +258,7 @@ export class PhoneWorktreeService {
 
   private async readWith(git: GitRunner, cwd: string, config: readonly string[], ...args: string[]): Promise<GitRunResult> {
     const result = await git(gitArgv(...config, ...args), cwd);
-    if (!result.ok && result.ran === false) throw new Refusal('git-operation-failed');
+    if (!result.ok && result.ran === false) throw new NotRun();
     return result;
   }
 
@@ -283,7 +292,7 @@ export class PhoneWorktreeService {
           a.isSymbolicLink() || !a.isFile() || a.size !== 0 || (await fs.promises.readdir(hooks)).length !== 0) {
         throw new Error('not empty');
       }
-    } catch { throw new Refusal('git-operation-failed'); }
+    } catch { throw new NotRun(); }
     return ['-c', 'core.hooksPath=' + hooks, '-c', 'commit.gpgSign=false', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0',
       '-c', 'core.attributesFile=' + attributes];
   }
@@ -325,6 +334,15 @@ export class PhoneWorktreeService {
   /** Every refusal is decided here, before anything is written. */
   private async createLocked(job: PhoneWorktreeJob, slug: string, requestId: string, repo: PhoneGitRepo, recovering: boolean): Promise<PhoneWorktreeOutcome> {
     const cwd = job.cwd;
+    const names = phoneWorktreeNames(slug, repo.projectId);
+    const leaf = `${PHONE_WORKTREE_DIR_PREFIX}${slug}`;
+    // A repeat of an `unknown` request settles its half-made worktree before
+    // anything about the main checkout is checked (a rebase in progress there
+    // must not strand it); only what recovery removed goes on to be made again.
+    if (recovering) {
+      const settled = await this.recover(cwd, await this.jobConfig(), repo, names.branch, path.join((await this.parentOf(repo.projectId, false)).parent, leaf));
+      if (settled) return settled;
+    }
     if (!await this.gitIsRecentEnough()) throw new Refusal('git-version-unsupported');
     const config = await this.jobConfig();
     for (const name of IN_PROGRESS) {
@@ -337,21 +355,14 @@ export class PhoneWorktreeService {
     const base = head.stdout.trim();
     if (!OID.test(base)) throw new Refusal('git-operation-failed');
 
-    const names = phoneWorktreeNames(slug, repo.projectId);
     const branchRef = `refs/heads/${names.branch}`;
     const { parent } = await this.parentOf(repo.projectId, false);
-    const leaf = `${PHONE_WORKTREE_DIR_PREFIX}${slug}`;
     const dir = path.join(parent, leaf);
     const refExists = async (ref: string) => {
       const r = await this.read(cwd, config, 'show-ref', '--verify', '--quiet', ref);
       if (!r.ok && r.code !== 1) throw new Refusal('git-operation-failed');
       return r.ok;
     };
-
-    if (recovering) {
-      const adopted = await this.recover(cwd, config, repo, names.branch, dir);
-      if (adopted) return adopted;
-    }
 
     if (await refExists('refs/heads/phone')) throw new Refusal('branch-namespace-blocked');
     if (await refExists(branchRef)) throw new Refusal('branch-exists');
@@ -407,8 +418,10 @@ export class PhoneWorktreeService {
    * A repeat of an `unknown` request. A finished, clean checkout of
    * `phone/<slug>` at the phone directory is adopted as created, also when git
    * left it locked because the command that made it died first. A locked
-   * checkout some process still holds (on Windows: still being written) is
-   * left exactly as it is and the request stays `unknown`, with a retry hint.
+   * checkout some process still holds (on Windows usually the orphaned
+   * `git reset --hard` still writing it; also a shell in it, an open file) is
+   * left exactly as it is and the request stays `unknown`, with a retry hint,
+   * as it does when a step here does not run.
    * Any other checkout git left locked mid-creation is removed, and a
    * `phone/<slug>` branch that never moved since it was created and is
    * checked out nowhere is deleted (compare-and-swap on its tip), so the
@@ -433,16 +446,13 @@ export class PhoneWorktreeService {
       // reset --hard` it spawned, which goes on writing and leaves the lock.
       // Removing under that writer leaves half a checkout, so touch nothing
       // (the lock stays) and keep the request retryable.
-      if (await this.directoryHold(dir).catch((): DirectoryHold => 'free') !== 'free') {
-        return { state: 'unknown', error: 'git-outcome-unknown', retryAfterMs: PHONE_WORKTREE_RETRY_AFTER_MS };
-      }
-      await this.read(cwd, config, 'worktree', 'unlock', '--', dir);
-      // Once that writer is done the checkout is complete: adopt it.
-      if (here.branch === branch) {
-        const adopted = await this.adoptClean(cwd, config, repo, branch, dir);
-        if (adopted) return adopted;
-      }
-      const removed = await this.readWith(this.longGit, cwd, config, 'worktree', 'remove', '--force', '--', dir);
+      if (await this.directoryHold(dir).catch((): DirectoryHold => 'free') !== 'free') return RETRY;
+      // Once that writer is done the checkout is complete: adopt it, then drop the lock.
+      const adopted = here.branch === branch ? await this.adoptClean(cwd, config, repo, branch, dir) : null;
+      if (adopted) return (await this.read(cwd, config, 'worktree', 'unlock', '--', dir)).ok ? adopted : RETRY;
+      // Otherwise remove it lock and all (`--force` twice): a removal cut short
+      // is still locked, and the next repeat finds it again.
+      const removed = await this.readWith(this.longGit, cwd, config, 'worktree', 'remove', '--force', '--force', '--', dir);
       if (!removed.ok) throw new Refusal('git-operation-failed');
       worktrees = (await listWorktrees(this.git, cwd)) ?? [];
     }

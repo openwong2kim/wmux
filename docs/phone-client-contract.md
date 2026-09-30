@@ -4485,7 +4485,7 @@ GET /api/sessions/<id>/git/worktree/<requestId>
   "cwd": "/Users/me/.wmux/worktrees/a1b2c3d4e5f6/phone-fix-login",   // created
   "leaf": "phone-fix-login",                        // created
   "error": "branch-exists",                         // refused, or unknown ("git-outcome-unknown")
-  "retryAfterMs": 5000                              // unknown only: the checkout is still being written
+  "retryAfterMs": 5000                              // unknown only: nothing was changed; repeat the POST after this
 }
 ```
 
@@ -4515,23 +4515,31 @@ behind; when git itself failed the checkout and kept only the branch it had
 just created, untouched, that branch is removed and this is the same
 refusal (a partial clone missing objects is one such case: nothing is
 fetched). Anything left is `unknown` with `git-outcome-unknown`. Repeating the
-same POST then recovers:
+same POST then recovers, before anything about the main checkout is checked
+(a merge or rebase in progress there does not stop it):
 
 - a finished, clean checkout of `phone/<slug>` at the directory is adopted:
   the receipt becomes `created`, also when git left it locked because the
   command that made it died first;
 - a locked checkout that a process still holds is left exactly as it is and
-  the receipt stays `unknown`, now with `retryAfterMs`: on Windows a checkout
-  can outlive a daemon restart (the daemon's process job ends `git worktree
-  add` with it, not the `git reset --hard` it started, which goes on writing
-  the tree). Repeat the same POST after `retryAfterMs`; once the writer is
-  done the finished checkout is adopted as above;
+  the receipt stays `unknown`, now with `retryAfterMs`. On Windows that
+  process is usually a `git reset --hard` that outlived a daemon restart
+  (the daemon's process job ends `git worktree add` with the daemon, but not
+  the checkout it started), and once it is done the finished checkout is
+  adopted as above; it can also be a shell in the checkout, a program with a
+  file open in it, or an ACL that forbids deleting it, which do not end on
+  their own. A recovery step that could not run (a `git` that timed out or
+  could not start) leaves the receipt the same way;
 - any other checkout git left locked mid-creation is removed, and a `phone/<slug>`
   branch that never moved since it was created and is checked out nowhere is
   deleted; the create then runs again;
 - anything else (a checkout with changes in it, a branch with history) is
   left alone and refused (`worktree-path-exists`, `branch-exists`); the
   desktop cleanup list reclaims it.
+
+Repeat the same POST after `retryAfterMs`, a bounded number of times: stop
+after about 12 tries (a minute) and point the user at the desktop's cleanup
+list. Each repeat runs about ten `git` commands on the desktop.
 
 Refusals found by the background job land in the receipt as `state:
 "refused"` with `error` one of: `branch-exists` (never auto-suffixed),

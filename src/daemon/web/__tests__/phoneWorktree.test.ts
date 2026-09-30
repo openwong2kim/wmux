@@ -318,6 +318,48 @@ describe('phone worktree creation', { timeout: 60_000 }, () => {
     expect(probed).toEqual([dir]);
   });
 
+  it('settles a locked checkout before looking at the main checkout, where a rebase may be stopped', async () => {
+    const done = await cutOff('rebasing');
+    const partial = await cutOff('rebasing-partial', (dir) => fs.rmSync(path.join(dir, 'a.txt')));
+    // A rebase stopped on a conflict in the session's own checkout.
+    run(repo, 'checkout', '-q', '-b', 'other');
+    commit(repo, { 'a.txt': 'other' }, 'other');
+    run(repo, 'checkout', '-q', 'main');
+    commit(repo, { 'a.txt': 'main' }, 'main');
+    expect(() => run(repo, 'rebase', 'other')).toThrow();
+    const held = service({ directoryHold: async () => 'in-use' });
+    expect((await create(held, repo, 'rebasing', { requestId: done.requestId })).receipt).toEqual(retryable(done.requestId));
+    const free = service({ directoryHold: async () => 'free' });
+    expect((await create(free, repo, 'rebasing', { requestId: done.requestId })).receipt).toMatchObject({ state: 'created', cwd: done.dir });
+    // A half-made one goes with its untouched branch; making it again meets the
+    // rebase, a plain refusal that leaves nothing behind.
+    expect((await create(free, repo, 'rebasing-partial', { requestId: partial.requestId })).receipt)
+      .toMatchObject({ state: 'refused', error: 'git-operation-in-progress' });
+    expect(fs.existsSync(partial.dir)).toBe(false);
+    expect(branches(repo)).not.toContain('phone/rebasing-partial');
+    run(repo, 'rebase', '--abort');
+    expect((await create(free, repo, 'rebasing-partial')).receipt).toMatchObject({ state: 'created', cwd: partial.dir });
+  });
+
+  it('keeps the request retryable when a recovery step does not run, and a removal cut short stays locked', async () => {
+    const real = createGitRunner();
+    const notRunning = (word: string): GitRunner => async (args, cwd) =>
+      (args.includes(word) ? { ok: false, ran: false, stdout: '', stderr: 'timed out' } : real(args, cwd));
+    const block = (dir: string) => run(repo, 'worktree', 'list', '--porcelain').split(/\n\n/).find((b) => b.includes(path.basename(dir))) ?? '';
+    const stalled = await cutOff('stalled');
+    expect((await create(service({ git: notRunning('prune'), directoryHold: async () => 'free' }), repo, 'stalled', { requestId: stalled.requestId })).receipt)
+      .toEqual(retryable(stalled.requestId));
+    const cut = await cutOff('cut-short', (dir) => fs.rmSync(path.join(dir, 'a.txt')));
+    expect((await create(service({ git: notRunning('remove'), directoryHold: async () => 'free' }), repo, 'cut-short', { requestId: cut.requestId })).receipt)
+      .toEqual(retryable(cut.requestId));
+    expect(block(cut.dir)).toContain('locked initializing');
+    // The next repeats get through.
+    for (const { requestId, dir } of [stalled, cut]) {
+      expect((await create(service({ directoryHold: async () => 'free' }), repo, path.basename(dir).slice('phone-'.length), { requestId })).receipt)
+        .toMatchObject({ state: 'created', cwd: dir });
+    }
+  });
+
   // The real thing on Windows: a process holding the half-made worktree.
   it.runIf(process.platform === 'win32')('leaves a locked checkout alone while a process holds it on Windows', async () => {
     const { requestId, dir } = await cutOff('held-win');

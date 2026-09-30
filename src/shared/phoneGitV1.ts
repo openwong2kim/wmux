@@ -117,9 +117,13 @@ export interface PhoneWorktreeReceipt {
   /** `refused`: a PhoneWorktreeRefusal. `unknown`: `git-outcome-unknown`. */
   error?: PhoneWorktreeRefusal | 'git-outcome-unknown';
   /**
-   * `unknown` only: the interrupted checkout is still being written (on
-   * Windows it can outlive a daemon restart), so nothing was touched. Repeat
-   * the same POST after this many milliseconds.
+   * `unknown` only: nothing was changed, and a repeat may get further. Some
+   * process still holds the interrupted checkout (on Windows usually the
+   * orphaned `git reset --hard` still writing it, which can outlive a daemon
+   * restart; also a shell in it, a program with a file open in it, or an ACL
+   * that forbids deleting it), or a recovery step did not run. Repeat the same
+   * POST after this many milliseconds, a bounded number of times (the
+   * contract says when to stop).
    */
   retryAfterMs?: number;
 }
