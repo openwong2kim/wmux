@@ -18,8 +18,11 @@ const execFileAsync = promisify(execFile);
  * the index lock, so it can never collide with a user-driven git operation.
  *
  * `--ignore-submodules=dirty` skips scanning each submodule's work tree. A
- * submodule whose checked-out commit differs from the recorded one still
- * counts as dirty; uncommitted edits inside a submodule do not. Without it,
+ * direct submodule whose checked-out commit differs from the recorded one
+ * still counts as dirty; uncommitted edits inside a submodule, and a nested
+ * submodule's own pointer changes, do not. The flag also overrides
+ * `submodule.<name>.ignore` / `diff.ignoreSubmodules`, so the badge can count
+ * pointer changes that the user's own `git status` hides. Without it,
  * status recurses into every submodule: 73 s in a repo with 66 nested
  * submodules (227 ms with it), far past GIT_TIMEOUT_MS, so the call never
  * succeeded and every TTL window spawned another one.
