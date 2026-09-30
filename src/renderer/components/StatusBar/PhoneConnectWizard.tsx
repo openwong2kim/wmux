@@ -155,7 +155,7 @@ export function PhoneWizardView(p: PhoneWizardViewProps) {
   );
   const footer = (primary: ReactNode, back?: ReactNode) => (
     <div className="flex items-center justify-between gap-2">
-      <button type="button" onClick={p.onExit} className={LINK} data-testid="wizard-all-settings">
+      <button type="button" onClick={p.onExit} className={`${LINK} shrink-0 whitespace-nowrap`} data-testid="wizard-all-settings">
         {t('web.wizardAllSettings')}
       </button>
       <div className="flex items-center gap-2">
@@ -270,7 +270,7 @@ export function PhoneWizardView(p: PhoneWizardViewProps) {
             <p className="ui-note text-[var(--text-main)]">
               {refusal.reason === 'no-front' ? t('web.refusalNoFront') : t('web.refusalInsecure')}
             </p>
-          ) : p.info.pairCode ? (
+          ) : p.info.pairCode && p.info.pendingDeviceName && p.info.pendingPairFlow !== 'computer' ? (
             <PhonePairCode
               info={p.info}
               qr={p.qr}
@@ -281,7 +281,16 @@ export function PhoneWizardView(p: PhoneWizardViewProps) {
               onNewPairCode={p.onNewPairCode}
               t={t}
             />
-          ) : null}
+          ) : (
+            // The named code is gone (redeemed elsewhere, expired, or the
+            // server restarted): never show a code that registers nobody.
+            <>
+              <p className="ui-note">{t('web.pairSpent')}</p>
+              <Button size="sm" onClick={p.onNewPairCode} disabled={p.busy} className="self-start">
+                {t('web.newPairCode')}
+              </Button>
+            </>
+          )}
           <p className="ui-note flex items-center gap-1.5" role="status">
             <span aria-hidden="true" className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--accent)]" />
             <span>{t('web.wizardWaiting')}</span>

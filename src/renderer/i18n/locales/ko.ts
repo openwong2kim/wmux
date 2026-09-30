@@ -1532,6 +1532,7 @@ export const ko = {
   'web.phonePairingInProgress': '폰을 페어링하는 중입니다. 그 페어링을 취소해야 다른 컴퓨터를 연결할 수 있습니다.',
   'web.cancelPairing': '진행 중인 페어링 취소',
   'web.cancel': '취소',
+  'web.pairSpent': '코드가 사용되었거나 만료되었습니다.',
   'web.wizardOpen': '단계별로 폰 연결하기',
   'web.wizardStep': '{total}단계 중 {step}단계',
   'web.wizardCheckTitle': '이 컴퓨터 확인',

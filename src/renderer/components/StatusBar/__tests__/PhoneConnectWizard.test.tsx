@@ -155,6 +155,13 @@ describe('PhoneWizardView', () => {
     expect(html).toContain('web.wizardWaiting');
   });
 
+  it('step 3 with the named code gone: no stray code, a way to mint a new one', () => {
+    const html = render({ step: 'qr', info: { running: true, pairCode: 'UNNAMED1', urls: ['https://box.example.ts.net/'] } });
+    expect(html).not.toContain('UNNAMED1');
+    expect(html).toContain('web.pairSpent');
+    expect(html).toContain('web.newPairCode');
+  });
+
   it('step 4: the named device and the roster, with Done as primary', () => {
     const phone = device('p', { name: 'my phone', kind: 'phone', activeNow: true });
     const html = render({ step: 'done', connected: phone, devices: [phone, device('q', { revokedAt: 1 })] });
