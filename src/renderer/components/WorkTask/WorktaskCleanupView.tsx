@@ -238,6 +238,8 @@ export default function WorktaskCleanupView() {
           }
         } else if (res.reason === 'in-use') {
           pushToast({ level: 'warn', message: t('worktask.cleanup.removeInUse') });
+        } else if (res.reason === 'held') {
+          pushToast({ level: 'warn', message: t('worktask.cleanup.removeHeld') });
         } else if (res.reason !== 'dirty' && res.reason !== 'unregistered') {
           pushToast({ level: 'error', message: t('worktask.cleanup.removeFailed', { error: res.error ?? res.reason }) });
         }

@@ -80,7 +80,7 @@ describe('removing a phone worktree from the desktop cleanup list', { timeout: 3
     };
     for (const [cwd, answer] of [
       [dir, { ok: false, reason: 'in-use' }],
-      [path.join(dir, 'src'), { ok: false, reason: 'error', error: expect.stringContaining('Windows will not delete') }],
+      [path.join(dir, 'src'), { ok: false, reason: 'held' }],
     ] as const) {
       const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd, stdio: 'ignore' });
       try {
@@ -104,7 +104,7 @@ describe('removing a phone worktree from the desktop cleanup list', { timeout: 3
     expect(await removePhoneWorktree(dir, true, { root, livePaneCwds: async () => [], directoryHold: probe('in-use') }))
       .toEqual({ ok: false, reason: 'in-use' });
     expect(await removePhoneWorktree(dir, true, { root, livePaneCwds: async () => [], directoryHold: probe('refused') }))
-      .toEqual({ ok: false, reason: 'error', error: expect.stringContaining('Windows will not delete') });
+      .toEqual({ ok: false, reason: 'held' });
     expect(git(repo, 'worktree', 'list', '--porcelain')).toContain('phone-probed');
     expect(await removePhoneWorktree(dir, false, { root, livePaneCwds: async () => [dir], directoryHold: probe('free') }))
       .toEqual({ ok: false, reason: 'in-use' });

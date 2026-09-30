@@ -296,4 +296,4 @@ export type WorktaskScanResultWire =
 /** worktask:remove-phone result (PhoneWorktreeRemoval mirror). */
 export type RemovePhoneWorktreeResultWire =
   | { ok: true; branch?: string; repo?: string }
-  | { ok: false; reason: 'invalid' | 'in-use' | 'dirty' | 'unregistered' | 'error'; error?: string };
+  | { ok: false; reason: 'invalid' | 'in-use' | 'held' | 'dirty' | 'unregistered' | 'error'; error?: string };

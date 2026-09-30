@@ -108,6 +108,32 @@ describe('WorktaskCleanupView', () => {
     expect(useStore.getState().worktaskCleanupVisible).toBe(false);
   });
 
+  it('says why a phone worktree was not removed: a shell inside it, or a Windows hold', async () => {
+    const api = (window as unknown as { electronAPI: { workTask: Record<string, unknown> } }).electronAPI.workTask;
+    api.scan = vi.fn(async () => ({
+      ok: true,
+      scannedRoot: '/wt',
+      entries: [{ category: 'phone-worktree', worktreePath: '/wt/abc123def456/phone-x' }],
+    }));
+    api.removePhone = vi.fn()
+      .mockResolvedValueOnce({ ok: false, reason: 'in-use' })
+      .mockResolvedValueOnce({ ok: false, reason: 'held' });
+    const confirm = vi.spyOn(window, 'confirm');
+    act(() => useStore.setState({ toasts: [] } as never));
+    act(() => root.render(createElement(WorktaskCleanupView)));
+    await flush();
+    for (let i = 0; i < 2; i++) {
+      act(() => button('Remove').click());
+      await flush();
+    }
+    expect(useStore.getState().toasts.map((toast) => toast.message)).toEqual([
+      'A pane or another shell is still running in this worktree — close it first.',
+      'Windows will not delete this worktree right now: a program has a file or folder in it open, or the folder may not be deleted. Close it and try again.',
+    ]);
+    expect(confirm).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
   it('Commit & close leaves focus on the terminal holding the prepared line', async () => {
     act(() => root.render(createElement(WorktaskCleanupView)));
     await flush();

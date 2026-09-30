@@ -20,7 +20,7 @@ import { PHONE_WORKTREE_BRANCH_PREFIX, PHONE_WORKTREE_DIR_PREFIX, PHONE_WORKTREE
 
 export type PhoneWorktreeRemoveResult =
   | { ok: true; branch?: string; repo?: string }
-  | { ok: false; reason: 'invalid' | 'in-use' | 'dirty' | 'unregistered' | 'error'; error?: string };
+  | { ok: false; reason: 'invalid' | 'in-use' | 'held' | 'dirty' | 'unregistered' | 'error'; error?: string };
 
 export type PhoneGit = (args: string[], cwd: string) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
 
@@ -71,9 +71,6 @@ export async function windowsDirectoryHold(dir: string): Promise<DirectoryHold> 
 const defaultDirectoryHold = async (dir: string): Promise<DirectoryHold> =>
   process.platform === 'win32' ? windowsDirectoryHold(dir) : 'free';
 
-/** A handle below the directory and a missing delete permission look the same from here. */
-const HOLD_REFUSED = 'Windows will not delete this worktree right now: a program has a file or folder in it open, or the folder may not be deleted. Close what is using it and try again.';
-
 const BRANCH =new RegExp(`^${PHONE_WORKTREE_BRANCH_PREFIX}${PHONE_WORKTREE_SLUG.source.slice(1)}`);
 
 /** The canonical phone worktree directory, or null when `worktreePath` is not one. */
@@ -112,7 +109,8 @@ export async function removePhoneWorktree(worktreePath: string, force: boolean, 
   if (inUse) return { ok: false, reason: 'in-use' };
   const hold = await (deps.directoryHold ?? defaultDirectoryHold)(dir);
   if (hold === 'in-use') return { ok: false, reason: 'in-use' };
-  if (hold === 'refused') return { ok: false, reason: 'error', error: HOLD_REFUSED };
+  // A handle below the directory and a missing delete permission look the same from here.
+  if (hold === 'refused') return { ok: false, reason: 'held' };
 
   const top = await git(['rev-parse', '--show-toplevel'], dir);
   const registered = top.ok && canonical(top.stdout.trim()) === dir;
