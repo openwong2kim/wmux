@@ -145,7 +145,15 @@ if (/import\.meta/.test(webAppJs)) buildFail('the bundle still reads import.meta
 // Every url() in the stylesheet must be one of our own emitted fonts: the CSP
 // gate below only sees <script src>/<link>, not what a stylesheet pulls in.
 const emitted = existsSync(join(appBuildDir, 'assets')) ? readdirSync(join(appBuildDir, 'assets')) : [];
-for (const f of emitted) if (!/\.woff2$/.test(f)) buildFail(`unexpected emitted asset ${f} (only fonts may ship)`);
+// The daemon's font route serves exactly the names WEB_APP_FONT_FILE accepts;
+// a font it would refuse must not ship (it would 404 in every browser).
+const compiledCspForFonts = join(repoRoot, 'dist', 'daemon', 'daemon', 'web', 'webCsp.js');
+if (!existsSync(compiledCspForFonts)) buildFail('dist/daemon/daemon/web/webCsp.js not found — run `tsc -p tsconfig.daemon.json` first');
+const { WEB_APP_FONT_FILE } = createRequire(import.meta.url)(compiledCspForFonts);
+for (const f of emitted) {
+  if (!/\.woff2$/.test(f)) buildFail(`unexpected emitted asset ${f} (only fonts may ship)`);
+  if (!WEB_APP_FONT_FILE.test(f)) buildFail(`font ${f} does not match the daemon's font route (${WEB_APP_FONT_FILE})`);
+}
 for (const m of webAppCss.matchAll(/url\(\s*['"]?([^'")]+)/g)) {
   const ref = m[1];
   if (ref.startsWith('data:')) continue;

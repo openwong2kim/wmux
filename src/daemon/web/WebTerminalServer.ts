@@ -140,7 +140,7 @@ import {
   sendResponse,
   type WireResponse,
 } from './chatWire';
-import { buildWebCsp } from './webCsp';
+import { buildWebCsp, WEB_APP_FONT_FILE } from './webCsp';
 
 /**
  * Opaque cursor for `/api/sessions/:id/turns` (#782). Encodes head+tail offsets
@@ -8063,7 +8063,7 @@ export class WebTerminalServer {
     this.appFonts = new Map();
     try {
       for (const name of fs.readdirSync(path.join(dir, 'app-assets'))) {
-        if (!/^[A-Za-z0-9_-]+\.woff2$/.test(name)) continue;
+        if (!WEB_APP_FONT_FILE.test(name)) continue;
         const bytes = readIfExists(path.join(dir, 'app-assets', name));
         if (bytes) this.appFonts.set(name, bytes);
       }

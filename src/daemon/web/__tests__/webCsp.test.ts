@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildWebCsp, cspHash, extractInlineBlocks, normalizeForHash } from '../webCsp';
+import { buildWebCsp, cspHash, extractInlineBlocks, normalizeForHash, WEB_APP_FONT_FILE } from '../webCsp';
 
 const page = (body: string): string =>
   `<!doctype html><html><head><style>\n.a { color: red }\n</style></head><body>${body}</body></html>`;
@@ -75,5 +75,14 @@ describe('webCsp', () => {
     expect(policy).toContain("frame-ancestors 'none'");
     expect(policy).toContain("base-uri 'none'");
     expect(policy).toContain("form-action 'none'");
+  });
+
+  it('names the /app font files the build may ship and the daemon serves', () => {
+    for (const ok of ['Inter-latin-8kRkwJBP.woff2', 'Inter.latin-B_x.1.woff2', 'JetBrainsMono-Be_q-A24.woff2']) {
+      expect(WEB_APP_FONT_FILE.test(ok)).toBe(true);
+    }
+    for (const bad of ['..woff2', '.hidden.woff2', 'a/b.woff2', 'font.woff', 'x.woff2.js', '../x.woff2']) {
+      expect(WEB_APP_FONT_FILE.test(bad)).toBe(false);
+    }
   });
 });

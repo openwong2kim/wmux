@@ -34,6 +34,15 @@ export interface InlineBlocks {
   externalRefs: string[];
 }
 
+/**
+ * File names the `/app` font route serves (`/app/assets/<name>`), and the only
+ * names `scripts/build-daemon-web.mjs` lets the web build emit — one rule, so a
+ * font the build ships can never 404. Dots are allowed (Vite's hashed names may
+ * contain them) but not first, so no name can be `.` or `..`; the route looks a
+ * name up in a map built from the directory listing, never joins it to a path.
+ */
+export const WEB_APP_FONT_FILE = /^[A-Za-z0-9_-][A-Za-z0-9._-]*\.woff2$/;
+
 const BLOCK_RE = /<(script|style)\b([^>]*)>([\s\S]*?)<\/\1\s*>/gi;
 const SCRIPT_SRC_ATTR = /\bsrc\s*=/i;
 const STYLESHEET_LINK_RE = /<link\b[^>]*\brel\s*=\s*["']?stylesheet["']?[^>]*>/gi;

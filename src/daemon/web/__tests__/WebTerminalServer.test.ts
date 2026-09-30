@@ -1316,6 +1316,8 @@ describe('WebTerminalServer', () => {
     fs.writeFileSync(path.join(dir, 'app.html'), '<html><body><script>var boot=1;</script><script>var app=2;</script></body></html>');
     fs.mkdirSync(path.join(dir, 'app-assets'));
     fs.writeFileSync(path.join(dir, 'app-assets', 'Inter-abc123.woff2'), 'FONT');
+    // Build-emitted names may carry dots; the route must serve every name the build gate accepts.
+    fs.writeFileSync(path.join(dir, 'app-assets', 'Inter.latin-B_x.1.woff2'), 'DOTTED');
     fs.writeFileSync(path.join(dir, 'app-assets', 'notes.txt'), 'nope');
     const deps = makeDeps();
     const srv = new WebTerminalServer({ sessionManager: deps.sessionManager, log: () => { /* silent */ }, assetsDir: dir });
@@ -1336,6 +1338,7 @@ describe('WebTerminalServer', () => {
       expect(font.status).toBe(200);
       expect(font.headers.get('content-type')).toBe('font/woff2');
       expect(await font.text()).toBe('FONT');
+      expect(await (await fetch(`${base}/app/assets/Inter.latin-B_x.1.woff2`)).text()).toBe('DOTTED');
       expect((await fetch(`${base}/app/assets/notes.txt`)).status).toBe(404);
       expect((await fetch(`${base}/app/assets/..%2Fterminal.html`)).status).toBe(404);
     } finally {
