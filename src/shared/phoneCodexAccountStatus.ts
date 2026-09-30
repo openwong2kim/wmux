@@ -1,6 +1,7 @@
 /**
  * Read-only Codex account status for the phone (docs/phone-client-contract.md,
- * "Proposed: contract v-next", item 2). CONTRACT ONLY: no route serves it yet.
+ * "Proposed: contract v-next", item 2). Served by
+ * `GET /api/sessions/<id>/codex/account-status` (daemon/web/codexAccountStatus.ts).
  *
  * Source: two requests on a short-lived connection to the pane's Codex account
  * server, `getAuthStatus {includeToken:false, refreshToken:false}` and

@@ -3609,8 +3609,9 @@ nothing itself.
 > section above, nothing here is extracted from serving code: no daemon serves
 > these routes or fields yet. Do not ship a client path that depends on them
 > until the matching `/api/config` key (below) appears on a real daemon.
-> **Served so far: items 3 and 4** (`chatCancelOutcome`, `paneAccount`,
-> `paneHandoff`). Items 1, 2 and 5 are still design only.
+> **Served so far: items 2, 3 and 4** (`codexAccountStatus`,
+> `chatCancelOutcome`, `paneAccount`, `paneHandoff`). Items 1 and 5 are still
+> design only.
 > Shared types: `src/shared/phoneTurnFailure.ts`,
 > `src/shared/phoneCodexAccountStatus.ts`, `src/shared/phoneChatCancelOutcome.ts`,
 > `src/shared/phonePaneAccount.ts`, `src/shared/phoneGitV1.ts`.
@@ -3626,7 +3627,7 @@ daemon"; never probe with a write.
 | Key | Present when | Advertises |
 | --- | --- | --- |
 | `turnFailure` | always, once served | `failure` on the surfaces in item 1 |
-| `codexAccountStatus` | `--allow-transcript`, and the spike in item 2 has landed | `GET /api/sessions/<id>/codex/account-status` |
+| `codexAccountStatus` (**served**) | `--allow-transcript`, and a pane this caller may read has a live Codex relay | `GET /api/sessions/<id>/codex/account-status` |
 | `chatCancelOutcome` | `chatCancel` is true and the cancel receipt store loaded | **Served** (see Chat cancel outcome): `cancel` on the cancel answer, the cancel receipt route, `chat.cancel` SSE |
 | `paneAccount` (**served**) | caller may input, `--allow-transcript`, and the attached desktop announced `accounts.envForAccount` | `accountId` on `POST /api/sessions` and on `GET /api/agent-launch-options` |
 | `paneHandoff` (**served**) | caller may input | `handoffFrom` on `POST /api/sessions`, echoed on rows and history |
@@ -3635,8 +3636,9 @@ daemon"; never probe with a write.
 | `gitChecks` | caller may input | `GET …/git/checks` |
 
 Per session, `/turns` `chat.capabilities` gains `accountStatus: true` for a
-`terminal` binding whose agent is `codex` and whose account server is
-running (once `codexAccountStatus` is served). The route stays authoritative.
+`terminal` binding whose agent is `codex` and whose pane has a live relay to
+its account server (**served**; omitted otherwise). The route stays
+authoritative.
 
 **`paneAccount` is mandatory before sending `accountId`.** `POST /api/sessions`
 ignores unknown body keys on every daemon that predates this, so an
@@ -3751,13 +3753,14 @@ turn is over, so `idle` is the truthful state, and a client that ignores
 `StopFailure` onto `state: "busy"` (`deriveAgentLiveness` has no branch for
 `status: "error"`); the implementation of this item maps it to `idle`.
 
-### 2. Codex account status (read-only)
+### 2. Codex account status (read-only, served)
 
-**Availability is gated on a spike.** The route reads the pane's shared
-Codex app-server over a second, short-lived connection. Whether that server
-answers these reads on a connection that did not start the pane's thread is
-unverified. Until a spike confirms it, `codexAccountStatus` is not
-advertised.
+The route reads the pane's shared Codex app-server over a second,
+short-lived connection that starts no thread work. A spike on codex-cli
+0.159.2 confirmed that such a connection is answered (0.157.1 has the same
+request and response types). Only panes with a daemon-owned relay qualify
+(phone-created Codex panes on Unix): the relay proves which account server
+the pane talks to.
 
 ```
 GET /api/sessions/<id>/codex/account-status
@@ -3781,6 +3784,17 @@ GET /api/sessions/<id>/codex/account-status
 → 503 {error: "unavailable", reason: "no-account-server" | "upstream-failed" | "unsupported-platform"}
 ```
 
+The example shows every field. Real ChatGPT accounts observed in the spike
+answer a single bucket (`limitId: "codex"`, `limitName: null`) with one
+weekly window, `primary.windowMinutes: 10080`, and `secondary: null`: do not
+assume a 5-hour primary or that a secondary window exists.
+
+| 503 `reason` | When |
+| --- | --- |
+| `no-account-server` | the pane has no live relay (not a Codex pane, a Codex typed by hand, the relay closed) |
+| `upstream-failed` | the auth read failed or timed out (5 s). A failed rate-limit read alone is `rateLimits: null` in a 200 |
+| `unsupported-platform` | Windows or a WSL pane |
+
 The account is the one **this pane runs on** (its spawn `CODEX_HOME`, else
 the default), not the workspace's next-launch binding. The daemon sends
 `getAuthStatus {includeToken:false, refreshToken:false}` and
@@ -3788,7 +3802,9 @@ the default), not the workspace's next-launch binding. The daemon sends
 already-running app-server. It never starts an account server and never sends
 a model request. The rate-limit read does reach the provider's backend, so
 reads are cached per account for 60 s (`cached: true`), and there is no
-refresh parameter.
+refresh parameter. A signed-out or API-key account is not asked for rate
+limits (`rateLimits: null`). The cache is in memory: a daemon restart reads
+again.
 
 Never on this wire: the auth token, e-mail, account id, credit balance, the
 backend's upsell banner, config paths. `resetsAt` is epoch ms (the server's

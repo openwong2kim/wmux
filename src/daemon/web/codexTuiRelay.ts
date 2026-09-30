@@ -63,7 +63,7 @@ export interface CodexRelayPolicy {
 export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMethod?:(method:string)=>void; onStateChange?:()=>void; policy?:CodexRelayPolicy; answerConfirmMs?:number}) {
   const codeHome = options.codeHome ?? path.join(os.homedir(),'.codex');
   if (!path.isAbsolute(codeHome) || codeHome.includes('\0') || codeHome.includes(':')) throw new Error('Invalid Codex account scope');
-  const upstreamPath = path.join(codeHome,'app-server-control','app-server-control.sock');
+  const upstreamPath = codexUpstreamPath(codeHome);
   const link = await lstat(upstreamPath);
   const target = link.isSymbolicLink() ? await realpath(upstreamPath) : upstreamPath;
   const stat = await lstat(target);
@@ -377,11 +377,18 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
   } catch(error) {await close();throw error;}
 }
 
+/** The read-only methods a side connection may send. `getAuthStatus` and
+ * `account/rateLimits/read` serve the phone's account status (no model call). */
+export type CodexUpstreamRead = 'config/read'|'thread/loaded/list'|'getAuthStatus'|'account/rateLimits/read';
+
+/** An account server's control socket under a Codex home. */
+export const codexUpstreamPath = (codeHome:string):string => path.join(codeHome,'app-server-control','app-server-control.sock');
+
 /**
  * One read-only request on a separate, short-lived connection to the account
  * server, so the relay's own stream (and its request ids) stay untouched.
  */
-export function queryUpstream(upstreamPath:string, method:'config/read'|'thread/loaded/list', params:Record<string,unknown>, timeoutMs = 5000):Promise<unknown> {
+export function queryUpstream(upstreamPath:string, method:CodexUpstreamRead, params:Record<string,unknown>, timeoutMs = 5000):Promise<unknown> {
   return new Promise((resolve,reject)=>{
     const socket = new WebSocket(`ws+unix://${upstreamPath}:/`,{handshakeTimeout:timeoutMs,maxPayload:MAX_FRAME,perMessageDeflate:false,followRedirects:false});
     let done = false;

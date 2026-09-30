@@ -130,6 +130,7 @@ import type { TranscriptCursor } from '../../shared/transcript/turnEvents';
 import { cursorMatches, decodeChatCursor, encodeChatCursor, type ReadSource } from './chatCursor';
 import { ChatLaunchReceiptStore, type LaunchReceiptState } from './chatLaunchReceipts';
 import { cancelEventBody, cancelReceiptResponse } from './chatCancelOutcome';
+import type { CodexAccountStatus } from '../../shared/phoneCodexAccountStatus';
 import type { ChatCancelEvent } from '../chat/chatCancelObserver';
 import {
   buildChatObject,
@@ -581,6 +582,16 @@ export interface WebSessionLifecycle {
 
 interface WebTerminalServerDeps {
   agentSettings?: (id:string, authorized:()=>Promise<boolean>, choice?:PaneSettingsChoice)=>Promise<LiveAgentSettings>;
+  /**
+   * Contract v-next item 2. `accountHome`: the Codex home of the account
+   * server a pane's live relay talks to, or undefined. `liveIds`: panes with
+   * a live relay. `read`: that account's status (cached per account).
+   */
+  codexAccountStatus?: {
+    accountHome(id: string): string | undefined;
+    liveIds(): string[];
+    read(codeHome: string): Promise<CodexAccountStatus>;
+  };
   agentLaunchOptions?: (env?: NodeJS.ProcessEnv) => Promise<AgentLaunchOptions[]>;
   desktop?: () => DesktopPhoneBridge | null;
   runHistory?: () => RunHistoryStore;
@@ -2344,6 +2355,9 @@ export class WebTerminalServer {
         workspaceFiles: this.mayInput(principal) && this.opts?.allowTranscript === true,
         liveActivityHostScope: true,
         agentSettings: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.agentSettings !== undefined,
+        // Contract v-next item 2. OMITTED, not false: needs the transcript
+        // grant and a pane this caller may read that has a live Codex relay.
+        ...(this.codexAccountStatusVisible() ? { codexAccountStatus: true } : {}),
         agentLaunch: this.mayInput(principal) && this.deps.agentLaunchOptions !== undefined,
         // Contract v-next item 4. OMITTED, not false: `paneAccount` needs both
         // grants and a desktop that announced the account command on this connection.
@@ -2475,6 +2489,9 @@ export class WebTerminalServer {
       }
       if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/agent-settings')) return this.handleAgentSettings(req,res,rest.slice(0,-'/agent-settings'.length),url,principal);
       if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/browser')) return this.handlePhoneBrowser(req,res,rest.slice(0,-'/browser'.length),url,principal);
+      if (req.method === 'GET' && rest.endsWith('/codex/account-status')) {
+        return this.handleCodexAccountStatus(res, rest.slice(0, -'/codex/account-status'.length));
+      }
       if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/accounts')) {
         return this.handleSessionAccounts(req,res,rest.slice(0,-'/accounts'.length),url,principal);
       }
@@ -3569,6 +3586,41 @@ export class WebTerminalServer {
     });
   }
 
+  /** Whether any pane this caller may read has a live Codex relay (the `codexAccountStatus` key). */
+  private codexAccountStatusVisible(): boolean {
+    const source = this.deps.codexAccountStatus;
+    if (this.opts?.allowTranscript !== true || !source || process.platform === 'win32') return false;
+    return source.liveIds().some((id) => !!this.readableSession(id) && source.accountHome(id) !== undefined);
+  }
+
+  /**
+   * `GET /api/sessions/<id>/codex/account-status` (contract v-next item 2):
+   * the auth state and plan limits of the account this pane's Codex runs on,
+   * read from its already-running account server. Never tokens, e-mails or
+   * account ids; never starts a server.
+   */
+  private handleCodexAccountStatus(res: http.ServerResponse, rawId: string): void {
+    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+    const id = decodePathSegment(rawId);
+    const pane = id === null ? undefined : this.readableSession(id);
+    if (!pane || id === null) return this.json(res, 404, { error: 'pane-not-found' });
+    if (process.platform === 'win32' || pane.meta.wslTarget) {
+      return this.json(res, 503, { error: 'unavailable', reason: 'unsupported-platform' });
+    }
+    const source = this.deps.codexAccountStatus;
+    const codeHome = source?.accountHome(id);
+    if (!source || codeHome === undefined) return this.json(res, 503, { error: 'unavailable', reason: 'no-account-server' });
+    void source.read(codeHome).then(
+      (status) => {
+        if (res.destroyed || res.writableEnded) return;
+        this.json(res, 200, status, { 'Cache-Control': 'no-store' });
+      },
+      () => {
+        if (res.destroyed || res.writableEnded) return;
+        this.json(res, 503, { error: 'unavailable', reason: 'upstream-failed' });
+      });
+  }
+
   private handleAgentSettings(req:http.IncomingMessage,res:http.ServerResponse,rawId:string,url:URL,principal:WebPrincipal):void {
     if (!this.mayInput(principal)) return this.refuseInput(res,principal,'Agent settings require input permission');
     if (this.opts?.allowTranscript !== true) return this.json(res,403,{error:'transcript-disabled'});
@@ -3951,7 +4003,9 @@ export class WebTerminalServer {
     const queue = caps.chatQueue === true && chat.queueEnabled?.() === true ? chat.queue?.(owner, sessionId) ?? [] : undefined;
     const events = queue !== undefined ? this.tagDeliveredRows(chat, sessionId, owner, body.events) : body.events;
     this.json(res, 200, { ...body, ...(events !== undefined ? { events } : {}), chat: buildChatObject(resolution, projectChatBlocked(blocked, caps),
-      { ...(turn ? { turn } : {}), chatCancel: caps.chatCancel === true, ...(queue ? { queue } : {}) }) });
+      { ...(turn ? { turn } : {}), chatCancel: caps.chatCancel === true, ...(queue ? { queue } : {}),
+        accountStatus: this.opts?.allowTranscript === true && process.platform !== 'win32' &&
+          this.deps.codexAccountStatus?.accountHome(sessionId) !== undefined }) });
   }
 
   /**

@@ -1,4 +1,6 @@
 import {randomUUID} from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 import type {ManagedSession} from '../DaemonSessionManager';
 import {createCodexTuiRelay,type CodexAnswerOutcome,type CodexDecisionSettledReason} from './codexTuiRelay';
 import type {CodexDecisionAnswer,CodexDecisionRequest} from './codexDecisions';
@@ -6,7 +8,7 @@ import type {CodexRelayObservation} from './codexTuiSelection';
 import {threadIdentityEnv} from './codexRelayPolicy';
 
 type Relay = Awaited<ReturnType<typeof createCodexTuiRelay>>;
-interface Entry {id:string; relayId:string; relay?:Relay; owner?:ManagedSession; retired:boolean}
+interface Entry {id:string; relayId:string; relay?:Relay; owner?:ManagedSession; retired:boolean; codeHome?:string}
 
 export interface CodexPaneRelayHooks {
   /** Before every relay (and so every wmux Codex launch): make sure the shared
@@ -61,7 +63,7 @@ export class CodexPaneRelays {
 
   async prepare(id:string, codeHome?:string) {
     if (this.stopped || this.entries.has(id) || this.entries.size >= 256 || this.creating.size >= 256) throw new Error('Codex pane relay unavailable');
-    const entry:Entry = {id,relayId:randomUUID(),retired:false};
+    const entry:Entry = {id,relayId:randomUUID(),retired:false,codeHome};
     this.entries.set(id,entry);
     try {await this.hooks.ensureRuntime?.(id,codeHome);} catch {/* The relay probe below decides availability. */}
     let creation:Promise<Relay> | undefined;
@@ -131,6 +133,20 @@ export class CodexPaneRelays {
     if (!relay || relay.retired()) return {live:false};
     const selected = relay.current();
     return selected ? {live:true,selection:selected} : {live:true};
+  }
+
+  /**
+   * The Codex home of the account server a live, owned relay talks to (the
+   * pane's spawn `CODEX_HOME`, else the default); undefined otherwise.
+   */
+  accountHome(id:string, owner:ManagedSession | undefined):string | undefined {
+    if (!this.liveSelection(id,owner).live) return undefined;
+    return this.entries.get(id)?.codeHome ?? path.join(os.homedir(),'.codex');
+  }
+
+  /** Panes whose relay is live and committed to an owner. */
+  liveIds():string[] {
+    return [...this.entries.values()].filter(entry=>!entry.retired && !!entry.owner && !!entry.relay && !entry.relay.retired()).map(entry=>entry.id);
   }
 
   /**
