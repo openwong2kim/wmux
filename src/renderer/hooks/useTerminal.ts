@@ -423,6 +423,9 @@ function proposedSafeDimensions(
   try {
     const dims = addon.proposeDimensions();
     if (!dims) return null;
+    // A fixed grid is the owner's size, not a transient measurement: the
+    // floor protects against mid-layout fits, which this never is.
+    if (addon instanceof FixedGeometryFitAddon) return dims;
     if (!isSafeGeometry(dims.cols, dims.rows)) return null;
     return dims;
   } catch {
@@ -1366,6 +1369,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // 그 밖의 native paste는 그대로 흘려보내 xterm 자체 처리에 맡긴다. 윈도우 크기는 이
     // 파일의 기존 RIGHT_CLICK_PASTE_SUPPRESS_MS와 동일한 관례(최근 이벤트 판별용 300ms)를 따른다.
     const isMac = window.electronAPI?.platform === 'darwin';
+    // The browser build (wmux web) pastes through the browser's own paste
+    // event: its clipboard bridge cannot read the clipboard outside a secure
+    // context, and xterm's paste handler already brackets the text. The
+    // desktop preload never sets this, so the desktop keeps its IPC paste.
+    const nativePaste = (window.clipboardAPI as { nativePaste?: boolean } | undefined)?.nativePaste === true;
     let lastPasteKeydownAt = 0;
     const NATIVE_PASTE_RACE_WINDOW_MS = 300;
     const blockNativePaste = (e: Event): void => {
@@ -1840,9 +1848,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // start of every session on its own behalf, so trusting it armed win32 key
     // records for every pane on the box (#1363). kitty / modifyOtherKeys still
     // fold normally — an app has to ask for those itself.
-    const foldOpts = { trustWin32Input: window.electronAPI.platform !== 'win32' };
+    // The PANE's host decides this, not the machine drawing it: the browser
+    // build reports the daemon's OS through `hostPlatform` (null until known);
+    // the desktop has no such member and is its own host.
+    const hostPlatform = () =>
+      (window.electronAPI as { hostPlatform?: () => string | null }).hostPlatform?.() ?? window.electronAPI.platform;
+    const foldOpts = () => ({ trustWin32Input: hostPlatform() !== 'win32' });
     const noteKeyboard = (data: string | Uint8Array) => {
-      keyboardRef.current = foldRemoteKeyboardState(keyboardRef.current, data, foldOpts);
+      keyboardRef.current = foldRemoteKeyboardState(keyboardRef.current, data, foldOpts());
       parkedKeyboardByTerminal.set(terminal, keyboardRef.current);
     };
     // #1228 review (C1): the fold is liveness-scoped. When process-truth or
@@ -2039,6 +2052,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         return true; // no selection → let the OS handle ⌘C
       }
       if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
+        if (nativePaste) return false;
         e.preventDefault();
         lastPasteKeydownAt = Date.now(); // blockNativePaste 위: 곧 같이 뜰 native paste를 레이스로 잡는다
         void (async () => {
@@ -2081,6 +2095,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // mac은 Cmd+V가 붙여넣기 전담(위 분기) — Ctrl+V는 readline quoted-insert
       // (verbatim)이므로 PTY로 통과시킨다.
       if (!isMac && resolveCtrlLetterByte(e) === '\x16') {
+        if (nativePaste) return false;
         e.preventDefault();
         // isMac 게이트: blockNativePaste 리스너가 비-macOS에선 등록조차 안 되므로(위 참고)
         // 스탬프도 macOS에서만 찍는다 — 안 그러면 나중에 등록 게이트를 넓힐 때 값이 이미
@@ -2127,6 +2142,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       // Ctrl+Shift+V: paste fallback
       if (e.ctrlKey && e.shiftKey && (e.key === 'V' || e.code === 'KeyV')) {
+        if (nativePaste) return false;
         e.preventDefault();
         if (isMac) lastPasteKeydownAt = Date.now(); // isMac 게이트 이유는 Ctrl+V 분기 주석 참고
         void (async () => {
@@ -2482,6 +2498,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // the encoding (#1152). Replay is history, not a negotiation: it
       // re-delivers the dead session's `?9001h` on every restart (#1363).
       if (!payload.replay) noteKeyboard(payload.data);
+      else if (fixedGeometryRef.current) {
+        // A viewer (`fixedGeometry`) never saw the negotiation happen: its
+        // replay is a snapshot of the pane's CURRENT state, so it is the
+        // negotiation to fold — from scratch, as the snapshot starts over.
+        keyboardRef.current = INITIAL_REMOTE_KEYBOARD_STATE;
+        noteKeyboard(payload.data);
+      }
       const st = resyncRef.current;
       if (st.pending) {
         st.buffer.push(payload);

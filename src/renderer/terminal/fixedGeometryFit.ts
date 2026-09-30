@@ -33,7 +33,14 @@ const DEFAULT_SCROLL_BAR_WIDTH = 14;
 
 interface CellSize { width: number; height: number }
 
-function cellSize(term: Terminal): CellSize | null {
+/**
+ * The rendered cell size. Read from xterm's PRIVATE render service — the same
+ * field FitAddon itself reads; xterm has no public API for it. If an xterm
+ * upgrade moves it, this returns null, the grid is still pinned and only the
+ * font fit is skipped (with one warning); useTerminal.fixedGeometry.test pins
+ * the path against the installed xterm so the move is caught in CI.
+ */
+export function cellSize(term: Terminal): CellSize | null {
   const dims = (term as unknown as {
     _core?: { _renderService?: { dimensions?: { css?: { cell?: CellSize } } } };
   })._core?._renderService?.dimensions?.css?.cell;
@@ -69,6 +76,9 @@ export class FixedGeometryFitAddon extends FitAddon {
   /** State the last font search settled on; an unchanged state skips the
    *  search, so the char-size refit a font change triggers cannot loop. */
   private settledKey = '';
+  /** Fits in a row that found a laid-out box but no readable cell size. */
+  private unreadable = 0;
+  private warned = false;
 
   constructor(private readonly geometry: () => FixedGeometry | null | undefined) {
     super();
@@ -105,7 +115,18 @@ export class FixedGeometryFitAddon extends FitAddon {
   private fitFont(term: Terminal, g: FixedGeometry): void {
     const box = availableBox(term);
     const cell0 = box ? cellSize(term) : null;
+    if (box && !cell0) {
+      // Before the first render the size is legitimately missing; persisting
+      // past a few fits means xterm's internals moved (see cellSize).
+      this.unreadable += 1;
+      if (this.unreadable >= 3 && !this.warned) {
+        this.warned = true;
+        console.warn('[wmux] xterm cell size unreadable; the grid stays pinned, the font size is not fitted');
+      }
+      return;
+    }
     if (!box || !cell0) return;
+    this.unreadable = 0;
     if (this.stateKey(term, g, box, cell0) === this.settledKey) return;
 
     const fits = (c: CellSize) => c.width * g.cols <= box.width && c.height * g.rows <= box.height;

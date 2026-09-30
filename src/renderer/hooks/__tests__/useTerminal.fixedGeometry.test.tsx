@@ -89,9 +89,15 @@ async function mount(fixedGeometry: { cols: number; rows: number } | undefined) 
 }
 
 // The first case pays for importing the whole hook under jsdom.
-describe('useTerminal fixedGeometry', { timeout: 30_000 }, () => {
+describe('useTerminal fixedGeometry', { timeout: 60_000 }, () => {
   it('takes the owner\'s cols/rows and never resizes the PTY', async () => {
     const { term, rerender } = await mount({ cols: 132, rows: 43 });
+    // The font fit reads xterm's private cell size (fixedGeometryFit.cellSize);
+    // an xterm upgrade that moves it must fail here, not silently in browsers.
+    const cell = (term() as unknown as { _core?: { _renderService?: { dimensions?: { css?: { cell?: { width?: unknown; height?: unknown } } } } } })
+      ._core?._renderService?.dimensions?.css?.cell;
+    expect(typeof cell?.width).toBe('number');
+    expect(typeof cell?.height).toBe('number');
     expect(term().cols).toBe(132);
     expect(term().rows).toBe(43);
 
