@@ -104,8 +104,24 @@ describe('web app mount (ptyId-less fixture)', () => {
   });
 
   it('hides structure-changing chrome in read-only mode', () => {
-    expect(container.querySelector('[data-mini-add-workspace]')).toBeNull();
+    // The full sidebar and a split are on screen, so the absences below are real.
+    expect(container.querySelector('.wmux-sidebar')).not.toBeNull();
+    expect(container.querySelectorAll('[data-group] [role="separator"]').length).toBeGreaterThan(0);
+    expect(container.querySelector('button[aria-label="New workspace"]')).toBeNull();
+    expect(container.querySelector('[data-sidebar-nav], [data-onboarding-target="settings-button"]')).toBeNull();
     expect(container.querySelector('[data-group] [role="separator"]:not([aria-disabled="true"])')).toBeNull();
     expect(container.querySelector('[data-surface-tab-close], [data-workspace-actions], [data-pane-actions]')).toBeNull();
+  });
+
+  it('tab and pane clicks stay local: no write, no denied call', async () => {
+    const before = calls.length;
+    const tabs = [...container.querySelectorAll<HTMLElement>('.wmux-pane-header [title]')];
+    expect(tabs.length).toBeGreaterThan(1);
+    await act(async () => {
+      for (const tab of tabs) tab.click();
+      container.querySelectorAll<HTMLElement>('[data-wmux-pane-root]').forEach((p) => p.click());
+    });
+    expect(calls.slice(before).every((c) => c.method === 'GET')).toBe(true);
+    expect(denied).toEqual([]);
   });
 });

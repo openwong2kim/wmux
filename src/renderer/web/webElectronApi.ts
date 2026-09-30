@@ -22,5 +22,9 @@ export function webElectronApiImpl(nav: Pick<Navigator, 'userAgent' | 'language'
     // uiSlice reads this synchronously at module load; `undefined` means "no
     // sync answer", and the store keeps its default.
     browser: { getBackendSync: () => undefined },
+    // Store actions announce pane focus/creation to the desktop's EventBus
+    // (events/publisher.ts). The browser has no bus and must not reach the
+    // daemon from a tap, so the announcement goes nowhere.
+    events: { publish: () => undefined },
   };
 }

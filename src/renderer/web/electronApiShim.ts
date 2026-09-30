@@ -11,7 +11,11 @@
  *
  * A denied path is still a callable object (so `api.foo.bar()` rejects instead
  * of throwing a TypeError at the call site), and `then` is never exposed, so
- * awaiting any node of the shim cannot be mistaken for a thenable.
+ * awaiting any node of the shim cannot be mistaken for a thenable. The rejected
+ * promise is pre-marked handled: a caller that awaits it still gets the error,
+ * but fire-and-forget callers (`void api.x()`) do not surface as an uncaught
+ * rejection. Every node is created once per path, so repeated reads return the
+ * same object.
  */
 
 export type ShimImpl = { readonly [key: string]: unknown };
@@ -30,40 +34,52 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && Object.getPrototypeOf(v) === Object.prototype;
 }
 
-function deniedNode(path: string, onDeny: DenyListener): unknown {
+type NodeCache = Map<string, unknown>;
+
+function deniedNode(path: string, onDeny: DenyListener, nodes: NodeCache): unknown {
+  const cached = nodes.get(path);
+  if (cached) return cached;
   const fn = function denied(): Promise<never> {
     onDeny(path);
-    return Promise.reject(new ElectronApiDeniedError(path));
+    const p = Promise.reject(new ElectronApiDeniedError(path));
+    p.catch(() => undefined);
+    return p;
   };
-  return new Proxy(fn, {
+  const node = new Proxy(fn, {
     get(_t, prop) {
       if (typeof prop === 'symbol' || prop === 'then') return undefined;
-      return deniedNode(`${path}.${prop}`, onDeny);
+      return deniedNode(`${path}.${prop}`, onDeny, nodes);
     },
     set() { return false; },
     defineProperty() { return false; },
   });
+  nodes.set(path, node);
+  return node;
 }
 
-function wrap(impl: ShimImpl, prefix: string, onDeny: DenyListener): unknown {
+function wrap(impl: ShimImpl, prefix: string, onDeny: DenyListener, nodes: NodeCache): unknown {
+  const cached = nodes.get(`impl:${prefix}`);
+  if (cached) return cached;
   // A private copy, NOT frozen: a frozen target would oblige `get` to return
   // the raw nested object, and nested objects must come back wrapped.
-  return new Proxy({ ...impl }, {
+  const node = new Proxy({ ...impl }, {
     get(target, prop) {
       if (typeof prop === 'symbol' || prop === 'then') return undefined;
       const path = prefix ? `${prefix}.${prop}` : prop;
       if (Object.prototype.hasOwnProperty.call(target, prop)) {
         const value = (target as Record<string, unknown>)[prop];
-        return isPlainObject(value) ? wrap(value, path, onDeny) : value;
+        return isPlainObject(value) ? wrap(value, path, onDeny, nodes) : value;
       }
-      return deniedNode(path, onDeny);
+      return deniedNode(path, onDeny, nodes);
     },
     set() { return false; },
     defineProperty() { return false; },
     deleteProperty() { return false; },
   });
+  nodes.set(`impl:${prefix}`, node);
+  return node;
 }
 
 export function createElectronApiShim(impl: ShimImpl, onDeny: DenyListener): unknown {
-  return wrap(impl, '', onDeny);
+  return wrap(impl, '', onDeny, new Map());
 }
