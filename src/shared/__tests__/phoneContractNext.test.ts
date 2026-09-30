@@ -120,6 +120,28 @@ describe('Codex account status projections', () => {
     expect(JSON.stringify(out)).not.toMatch(/acct-secret|buy|12\.00/);
     expect(projectCodexRateLimits(undefined)).toBeNull();
   });
+
+  it('projects the shape a real ChatGPT account answers with (codex-cli 0.159.2: one weekly window, no secondary)', () => {
+    // Every key of GetAccountRateLimitsResponse / RateLimitSnapshot, values
+    // invented; the single-bucket and multi-bucket views describe one bucket.
+    const snapshot = {
+      limitId: 'codex', limitName: null, normalModelSlug: null,
+      primary: { usedPercent: 7, windowDurationMins: 10080, resetsAt: 1_790_000_000 }, secondary: null,
+      credits: { hasCredits: false, unlimited: false, balance: '0' }, individualLimit: null, spendControlReached: null,
+      planType: 'plus', rateLimitReachedType: null,
+    };
+    const out = projectCodexRateLimits({
+      ordinaryUsageAllowed: true, rateLimits: snapshot, rateLimitsByLimitId: { codex: snapshot },
+      rateLimitResetCredits: null, accountId: 'acct-0000', rateLimitUpsell: null,
+    });
+    expect(out).toEqual({
+      ordinaryUsageAllowed: true, planType: 'plus',
+      buckets: [{ limitId: 'codex', limitName: null, primary: { usedPercent: 7, windowMinutes: 10080, resetsAt: 1_790_000_000_000 },
+        secondary: null, reachedType: null }],
+    });
+    expect(JSON.stringify(out)).not.toMatch(/acct-0000|balance|credits/);
+    expect(projectCodexAuth({ authMethod: 'chatgpt', authToken: null, requiresOpenaiAuth: true })).toEqual({ state: 'signed-in', method: 'chatgpt' });
+  });
 });
 
 describe('parsePaneAccountFields', () => {

@@ -78,7 +78,7 @@ function skillsAgent(agent: string | undefined): boolean {
 export function buildChatObject(
   resolution: ChatResolution,
   blocked: ChatBlocked | undefined,
-  opts: { turn?: ChatTurn; chatCancel?: boolean; queue?: ChatQueueItemView[] } = {},
+  opts: { turn?: ChatTurn; chatCancel?: boolean; queue?: ChatQueueItemView[]; accountStatus?: boolean } = {},
 ): Record<string, unknown> {
   const { status } = resolution;
   const liveness = {
@@ -156,6 +156,9 @@ export function buildChatObject(
       ...(resolution.source === 'file' ? { streaming: false } : {}),
       launch: false,
       skills: skillsAgent(agent),
+      // Contract v-next item 2: the pane's Codex account server answers
+      // `GET …/codex/account-status`. Omitted otherwise.
+      ...(opts.accountStatus === true && agent === 'codex' ? { accountStatus: true } : {}),
     },
     ...blockedField,
     ...(opts.queue !== undefined ? { queue: opts.queue.map((item) => ({ ...item })) } : {}),

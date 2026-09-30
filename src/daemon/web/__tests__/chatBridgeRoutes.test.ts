@@ -30,6 +30,7 @@ import {
 } from '../../chat/chatBridge';
 import type { ChatSkillCatalog } from '../../../shared/transcript/chatSkills';
 import type { ChatCancelProgress } from '../../../shared/phoneChatCancelOutcome';
+import type { CodexAccountStatus } from '../../../shared/phoneCodexAccountStatus';
 
 /**
  * Phone native chat routes (contract v0.3.1) against a FAKE ChatBridge: the
@@ -177,8 +178,15 @@ describe('native chat routes (contract v0.3.1)', () => {
   let approvalRecords: ApprovalRequest[];
   let approvalListeners: Set<(e: ApprovalEvent) => void>;
   let clock: number | null;
+  /** Pane → Codex home of its live relay (contract v-next item 2). */
+  let codexHomes: Map<string, string>;
+  let accountReads: string[];
+  let accountRead: (codeHome: string) => Promise<CodexAccountStatus>;
 
   beforeEach(() => {
+    codexHomes = new Map();
+    accountReads = [];
+    accountRead = async () => ({ auth: { state: 'signed-in', method: 'chatgpt' }, rateLimits: null, fetchedAt: 1, cached: false });
     panes = new Map([['s1', mkPane('s1')], ['s2', mkPane('s2')], ['brain-1', mkPane('brain-1', { WMUX_BRAIN_PTY: '1' })]]);
     roster = new Map();
     clock = null;
@@ -223,6 +231,11 @@ describe('native chat routes (contract v0.3.1)', () => {
       devices,
       projector: () => projectorMock as unknown as TranscriptProjector,
       chat: () => (chatWired ? chat : null),
+      codexAccountStatus: {
+        accountHome: (id) => codexHomes.get(id),
+        liveIds: () => [...codexHomes.keys()],
+        read: (codeHome) => { accountReads.push(codeHome); return accountRead(codeHome); },
+      },
       now: () => clock ?? Date.now(),
       log: () => { /* silent */ },
       assetsDir: os.tmpdir(),
@@ -1716,6 +1729,92 @@ describe('native chat routes (contract v0.3.1)', () => {
         const backlog = await (await fetch(`${base()}/api/events`, { headers: mine })).json();
         expect(JSON.stringify(backlog)).not.toContain('chat.cancel');
       } finally { events.close(); otherWatcher.close(); notWatching.close(); }
+    });
+  });
+
+  describe('Codex account status (contract v-next item 2)', () => {
+    const codexResolution = (): ChatResolution => fileResolution({ terminal: { kind: 'terminal', agent: 'codex', nativeSessionId: 'sess-a',
+      capabilities: { history: true, send: true, permissions: false, cancel: false, fileUndo: false } } });
+    const status = (h: Record<string, string>, id = 's1') => fetch(`${base()}/api/sessions/${id}/codex/account-status`, { headers: h });
+    const config = async (h: Record<string, string>) => await (await fetch(`${base()}/api/config`, { headers: h })).json() as Record<string, unknown>;
+
+    it.skipIf(process.platform === 'win32')('advertises the key only with the transcript grant and a readable pane that has a live relay', async () => {
+      let info = await start();
+      expect(await config(bearer(info.token as string))).not.toHaveProperty('codexAccountStatus');
+      // A brain pane's relay is not this caller's to read.
+      codexHomes.set('brain-1', '/h/brain');
+      expect(await config(bearer(info.token as string))).not.toHaveProperty('codexAccountStatus');
+      codexHomes.set('s1', '/h/a');
+      expect(await config(bearer(info.token as string))).toMatchObject({ codexAccountStatus: true });
+      // Read-only devices read it too: it needs the transcript grant, not input.
+      expect(await config(device('dev-ro', false))).toMatchObject({ codexAccountStatus: true });
+      await server.stop();
+      info = await start({ allowTranscript: false });
+      expect(await config(bearer(info.token as string))).not.toHaveProperty('codexAccountStatus');
+    });
+
+    it('gates the route on every platform: 403 without transcript, 404 for a missing or brain pane, 503 for a WSL pane', async () => {
+      codexHomes.set('brain-1', '/h/brain');
+      const off = await start({ allowTranscript: false });
+      const refused = await status(bearer(off.token as string));
+      expect(refused.status).toBe(403);
+      expect(((await refused.json()) as { error: string }).error.startsWith('transcript-disabled:')).toBe(true);
+      await server.stop();
+      const info = await start();
+      const h = bearer(info.token as string);
+      expect((await status(h, 'missing')).status).toBe(404);
+      const brain = await status(h, 'brain-1');
+      expect(brain.status).toBe(404);
+      expect(await brain.json()).toEqual({ error: 'pane-not-found' });
+      // A WSL pane on a Unix-shaped fake: refused before any relay is consulted.
+      codexHomes.set('s2', '/h/wsl');
+      (panes.get('s2')!.meta as Record<string, unknown>).wslTarget = { distro: 'Ubuntu' };
+      const wsl = await status(h, 's2');
+      expect(wsl.status).toBe(503);
+      expect(wsl.headers.get('cache-control')).toBe('no-store');
+      expect(await wsl.json()).toEqual({ error: 'unavailable', reason: 'unsupported-platform' });
+      expect(accountReads).toEqual([]);
+    });
+
+    // Relay panes are Unix-only; Windows answers `unsupported-platform` for every pane.
+    describe.skipIf(process.platform === 'win32')('with Unix relay panes', () => {
+      it('503 no-account-server without a live relay, uncacheable', async () => {
+        const info = await start();
+        const none = await status(bearer(info.token as string));
+        expect(none.status).toBe(503);
+        expect(none.headers.get('cache-control')).toBe('no-store');
+        expect(await none.json()).toEqual({ error: 'unavailable', reason: 'no-account-server' });
+        expect(accountReads).toEqual([]);
+      });
+
+      it('reads the account of the pane\'s own relay, marked no-store', async () => {
+        const info = await start();
+        codexHomes.set('s1', '/h/a');
+        const body: CodexAccountStatus = { auth: { state: 'signed-in', method: 'chatgpt' }, fetchedAt: 5, cached: true,
+          rateLimits: { ordinaryUsageAllowed: true, planType: 'plus', buckets: [{ limitId: 'codex', limitName: null,
+            primary: { usedPercent: 12, windowMinutes: 10080, resetsAt: 1_790_000_000_000 }, secondary: null, reachedType: null }] } };
+        accountRead = async () => body;
+        const res = await status(device('dev-ro', false));
+        expect(res.status).toBe(200);
+        expect(res.headers.get('cache-control')).toBe('no-store');
+        expect(await res.json()).toEqual(body);
+        expect(accountReads).toEqual(['/h/a']);
+        accountRead = async () => { throw new Error('socket closed'); };
+        const failed = await status(bearer(info.token as string));
+        expect(failed.status).toBe(503);
+        expect(await failed.json()).toEqual({ error: 'unavailable', reason: 'upstream-failed' });
+      });
+
+      it('/turns: accountStatus only on a Codex terminal binding whose pane has a live relay', async () => {
+        const info = await start();
+        const h = bearer(info.token as string);
+        chatBox.resolution = codexResolution();
+        expect((await turns(h)).body.chat.capabilities).not.toHaveProperty('accountStatus');
+        codexHomes.set('s1', '/h/a');
+        expect((await turns(h)).body.chat.capabilities).toMatchObject({ accountStatus: true });
+        chatBox.resolution = fileResolution();
+        expect((await turns(h)).body.chat.capabilities).not.toHaveProperty('accountStatus');
+      });
     });
   });
 });

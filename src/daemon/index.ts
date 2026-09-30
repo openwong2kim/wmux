@@ -11,6 +11,7 @@ import { codexCdOperand, recoverCodexPane, withCodexRemote } from './web/recover
 import { CodexRelayUnavailableError } from './web/codexTuiRelay';
 import { paneCodexSettings } from './web/paneCodexSettings';
 import { CodexPaneRelays } from './web/codexPaneRelays';
+import { createCodexAccountStatusReader } from './web/codexAccountStatus';
 import { buildAgentLaunch, installedAgentLaunchOptions, pinnedAgentLaunch } from './web/agentLaunch';
 import { agentExecEnv } from '../shared/execEnv';
 import { workspaceAccountEnv } from './phone/workspaceAccountEnv';
@@ -313,6 +314,8 @@ const codexPaneRelays = new CodexPaneRelays(undefined,()=>log('warn','[phone] Co
       void approvalRegistry?.expireNative(id,{ adapter: 'codex', ...ref },reason).catch(()=>undefined);
     },
   });
+// Contract v-next item 2: account status read from a pane's live relay account.
+const codexAccountStatusReader = createCodexAccountStatusReader();
 
 /**
  * #919 — canonical pane-agent identity for one pane, right now. Folds the
@@ -694,6 +697,11 @@ async function restoreWebServer(sessionManager: DaemonSessionManager): Promise<v
           agentName: paneId=>readAgentStateForWeb?.(paneId)?.agentName,
           selection: paneId=>codexPaneRelays.selection(paneId,sessionManager.getSession(paneId)),
         },id,authorized,choice),
+        codexAccountStatus: {
+          accountHome: (id) => codexPaneRelays.accountHome(id, sessionManager.getSession(id)),
+          liveIds: () => codexPaneRelays.liveIds(),
+          read: (codeHome) => codexAccountStatusReader.read(codeHome),
+        },
         // Pane spawn/close for POST/DELETE /api/sessions. Both routes answer
         // 503 without it, and both are additionally gated on --allow-input.
         ...(sessionLifecycle ? { lifecycle: sessionLifecycle } : {}),
@@ -2992,6 +3000,11 @@ function registerRpcHandlers(
           agentName: paneId=>readAgentStateForWeb?.(paneId)?.agentName,
           selection: paneId=>codexPaneRelays.selection(paneId,sessionManager.getSession(paneId)),
         },id,authorized,choice),
+        codexAccountStatus: {
+          accountHome: (id) => codexPaneRelays.accountHome(id, sessionManager.getSession(id)),
+          liveIds: () => codexPaneRelays.liveIds(),
+          read: (codeHome) => codexAccountStatusReader.read(codeHome),
+        },
       // See the restore path: the lifecycle routes need this and answer 503
       // without it. Registered by the time either site runs.
       ...(sessionLifecycle ? { lifecycle: sessionLifecycle } : {}),

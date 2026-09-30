@@ -45,6 +45,19 @@ describe('Codex pane relay lifetime',()=>{
     expect(registry.liveSelection('pane',pane)).toEqual({live:false});
     await registry.shutdown();
   });
+  it('names the account home only for a live, committed relay (account status)',async()=>{
+    const connection=relay();const registry=new CodexPaneRelays(async()=>connection);
+    const lease=await registry.prepare('pane','/h/account-a');const pane=owner();
+    expect(registry.accountHome('pane',pane)).toBeUndefined();
+    expect(registry.liveIds()).toEqual([]);
+    lease.commit(pane);
+    expect(registry.accountHome('pane',pane)).toBe('/h/account-a');
+    expect(registry.liveIds()).toEqual(['pane']);
+    connection.state.retired=true;
+    expect(registry.accountHome('pane',pane)).toBeUndefined();
+    expect(registry.liveIds()).toEqual([]);
+    await registry.shutdown();
+  });
   it('closes a relay that finishes preparing after pane retirement',async()=>{
     let release!:(value:ReturnType<typeof relay>)=>void;
     const registry=new CodexPaneRelays(()=>new Promise(resolve=>{release=resolve;}));
