@@ -53,6 +53,8 @@ export interface McpRegistrarStatus {
  *   - Claude Code  ~/.claude.json          (JSON, created on demand)
  *   - Codex CLI    ~/.codex/config.toml     (TOML, only if installed)
  *   - Gemini CLI   ~/.gemini/settings.json  (JSON, only if installed; unverified)
+ *   - Antigravity  ~/.gemini/config/mcp_config.json (JSON, opt-in via
+ *                  `wmux mcp register --target agy`; never at boot)
  *
  * EMPIRICAL GATE: a non-Claude target is only written when its config already
  * exists (the CLI is installed) and is shipped as `verified` only after the
@@ -211,6 +213,7 @@ export class McpRegistrar {
       }
 
       for (const target of MCP_TARGETS) {
+        if (!target.autoRegister) continue;
         try {
           // No profile argument on purpose. This is the AUTOMATIC path (boot,
           // path refresh), and it must never overrule a profile the user chose

@@ -34,6 +34,7 @@ import type {
   WebStartArgs,
   WebGrantArgs,
   WebTerminalInfo,
+  WebDiagnosis,
 } from '../shared/web';
 import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteHostStatus, RemoteWorkspaceSummary } from '../shared/remoteHosts';
 
@@ -1584,6 +1585,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setGrants: (args: WebGrantArgs) =>
     ipcRenderer.invoke(IPC.WEB_SET_GRANTS, args) as Promise<WebTerminalInfo>,
   stop: () => ipcRenderer.invoke(IPC.WEB_STOP) as Promise<WebTerminalInfo>,
+  diagnose: () => ipcRenderer.invoke(IPC.WEB_DIAGNOSE) as Promise<WebDiagnosis>,
   // Roster surface. Unlike the calls above these do NOT resolve a
   // WebTerminalInfo: the device roster is owned by the store, not by a running
   // server, so it answers even while the server is stopped.

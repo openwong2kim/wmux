@@ -260,18 +260,60 @@
   // Both are bigger than this file.
   var termRepaints = 0;
 
-  /** Replay `bytes` into `t` with the gate held for as long as it parses. */
-  function repaint(t, bytes, inc, dec) {
+  /**
+   * Replay `bytes` into `t` with the gate held for as long as it parses, and
+   * `tail` (terminal-side mode resets, see staleReplayTail) inside the SAME
+   * gated span: the gate releases only once the tail has parsed too, so no
+   * mouse report the snapshot re-armed can slip out between the two writes.
+   */
+  function repaint(t, bytes, inc, dec, tail) {
     t.reset();
     inc();
     try {
-      t.write(bytes, dec);
+      if (tail) {
+        t.write(bytes);
+        t.write(tail, dec);
+      } else {
+        t.write(bytes, dec);
+      }
     } catch (e) {
       // write() can throw before the callback is ever queued (xterm refuses
       // past its discard watermark). Not releasing here would latch the gate
       // and silently swallow every keystroke for the rest of the page's life.
       dec();
     }
+  }
+
+  /**
+   * Stale-replay mode reset — the desktop's own module (src/shared/terminal/
+   * staleReplayModeReset.ts, published as `wmuxTerminalShared`), not a copy.
+   *
+   * A snapshot re-arms whatever input modes the pane's output last left on. A
+   * TUI (claude) that armed any-motion mouse tracking and exited without
+   * disabling it leaves ?1003h in there, and this xterm then types an SGR
+   * report (`35;55;12M`) into the shell for every pointer move. `meta` is the
+   * snapshot's own `meta` frame: the daemon stamps it, at the same instant it
+   * reads the ring, with the SAME two gate inputs `pty.list` gives the desktop —
+   * `commandRunning` (OSC 133) and `resumeAgent` (recovered this daemon boot,
+   * agent not re-detected) — and the shared gate decides WHETHER to reset.
+   *
+   * What it resets is capped at the alive-shell set: every pane this page
+   * streams has a live shell, and that shell owns ?2004. The gate's 'full'
+   * (resumeAgent) would clear bracketed paste too, and resumeAgent persists
+   * until the agent is re-detected, so every attach would leave a recovered
+   * zsh expecting wrapped pastes that this page no longer wraps — a multi-line
+   * paste then runs its first line at once. The desktop applies 'full' once at
+   * recovery attach; the web never does. Written to the terminal only.
+   */
+  function staleReplayTail(meta) {
+    var shared = window.wmuxTerminalShared;
+    if (!shared || !meta) return '';
+    var level = shared.staleReplayResetLevel({
+      resumeAgent: meta.resumeAgent,
+      commandRunning: meta.commandRunning
+    });
+    if (level === 'none') return '';
+    return shared.STALE_REPLAY_ALIVE_SHELL_RESETS + shared.STALE_REPLAY_DISPLAY_RESETS;
   }
 
   /**
@@ -1424,9 +1466,15 @@
     setConn('connecting', 'connecting…');
     showOverlay('loading', 'Attaching to pane', 'Loading scrollback and live output.');
 
+    // The `meta` that precedes each snapshot (a mid-stream resize meta has no
+    // snapshot behind it, so it must not replace this).
+    var snapMeta = null;
     es = openStream(sessionId, {
       attention: true,
-      meta: function (m) { ensureTerm(m.cols, m.rows); },
+      meta: function (m) {
+        if (!m.resize) snapMeta = m;
+        ensureTerm(m.cols, m.rows);
+      },
       snapshot: function (bytes) {
         // Snapshot replays the pane's screen, kitty negotiation included —
         // reset before folding so a protocol the app turned off earlier does
@@ -1435,7 +1483,8 @@
         if (term) {
           repaint(term, bytes,
             function () { termRepaints += 1; },
-            function () { termRepaints = Math.max(0, termRepaints - 1); });
+            function () { termRepaints = Math.max(0, termRepaints - 1); },
+            staleReplayTail(snapMeta));
         }
         hideOverlay();
         setConn('live', 'live');
@@ -1590,9 +1639,11 @@
     renderTileHead(tile);
     el.addEventListener('pointerdown', function () { focusTile(tile); });
 
+    var snapMeta = null; // see connect()
     tile.es = openStream(s.id, {
       attention: isAttentionSource,
       meta: function (m) {
+        if (!m.resize) snapMeta = m;
         if (tile.term && m.cols && m.rows) tile.term.resize(m.cols, m.rows);
         rescale();
       },
@@ -1603,7 +1654,8 @@
         if (tile.term) {
           repaint(tile.term, bytes,
             function () { tile.repaints += 1; },
-            function () { tile.repaints = Math.max(0, tile.repaints - 1); });
+            function () { tile.repaints = Math.max(0, tile.repaints - 1); },
+            staleReplayTail(snapMeta));
         }
         rescale();
         if (tile.sessionId === currentSession) setConn('live', 'live');

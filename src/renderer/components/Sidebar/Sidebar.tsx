@@ -186,6 +186,9 @@ export default function Sidebar() {
     setPickerOpen((v) => !v);
   }, []);
   const closePicker = useCallback(() => setPickerOpen(false), []);
+  // Browser mirror (wmux web /app): creation, restore, kill and the
+  // desktop-only destinations are not offered.
+  const readOnly = useStore((s) => s.readOnly);
 
   // Ctrl+F → focus workspace search, but only while focus is already inside
   // the sidebar. A document-level listener would collide with the global
@@ -274,11 +277,11 @@ export default function Sidebar() {
     >
       {pickerOpen && <PresetPicker onClose={closePicker} anchorStyle={pickerAnchor} />}
       <SidebarResizeHandle />
-      <SidebarNavigation />
+      {!readOnly && <SidebarNavigation />}
       <div className="wmux-sidebar-section">
         <span className="truncate">{t('sidebar.workspaces')}</span>
         <span className="wmux-sidebar-total">{listedCount}</span>
-        <button
+        {!readOnly && <button
           ref={pickerButtonRef}
           type="button"
           className={`ui-icon-btn ml-auto h-7 w-7 ${FOCUS_RING}`}
@@ -286,7 +289,7 @@ export default function Sidebar() {
           title={t('sidebar.newWorkspace')}
           aria-label={t('sidebar.newWorkspace')}
           aria-expanded={pickerOpen}
-        ><IconPlus size={15} /></button>
+        ><IconPlus size={15} /></button>}
       </div>
 
       {/* Workspace search input — only visible when 3+ workspaces */}
@@ -415,22 +418,22 @@ export default function Sidebar() {
 
         {/* #1011 — put-away workspaces: configuration snapshots, one click
             back to live. Collapsed by default; empty → invisible. */}
-        <ArchivedWorkspaces />
+        {!readOnly && <ArchivedWorkspaces />}
 
         {/* #1101 — daemon sessions that outlived their pane: still running,
             owned by nothing. Click a row to bring one back, ✕ to kill it.
             Renders nothing when the list is empty. */}
-        <OrphanSessions />
+        {!readOnly && <OrphanSessions />}
       </div>
       )}
 
       {/* Plugin sidebar panels (B-1 ui.sidebar contribution point) */}
-      <PluginPanels />
+      {!readOnly && <PluginPanels />}
 
       {/* Footer — when docked right, mirror the row so the collapse arrow sits
           on the inner edge facing the content area (issue #151). */}
       <div className={`wmux-sidebar-footer flex items-center shrink-0 gap-1 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`} {...tokenAttrs('textMuted', 'text')}>
-        <button
+        {readOnly ? <span className="flex-1" /> : <button
           type="button"
           className={`wmux-nav-button flex-1 ${FOCUS_RING}`}
           aria-label={t('settings.title')}
@@ -440,7 +443,7 @@ export default function Sidebar() {
         >
           <IconGear size={16} />
           <span>{t('settings.title')}</span>
-        </button>
+        </button>}
         <button
           data-sidebar-collapse
           className={`${HIT_TARGET_24} rounded text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}

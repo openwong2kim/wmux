@@ -11,7 +11,8 @@ export function githubRepository(remote: string): string | null {
   return match?.[1] ?? null;
 }
 
-const runGh: PullRequestRunner = (repo, branch) => new Promise((resolve, reject) => {
+/** Run a read-only `gh` command against github.com and parse its JSON answer. */
+export const runGhJson = (args: readonly string[], maxBuffer = 128 * 1024): Promise<unknown> => new Promise((resolve, reject) => {
   // gh is usually a Homebrew install; a Finder-launched daemon's launchd PATH lacks it.
   const env = buildGitEnv(getExecEnv());
   // Only github.com is accepted. Never forward credentials to a host selected
@@ -21,13 +22,16 @@ const runGh: PullRequestRunner = (repo, branch) => new Promise((resolve, reject)
   }
   env.GH_HOST = 'github.com';
   env.GH_PROMPT_DISABLED = '1';
-  execFile('gh', ['pr', 'list', '--repo', `github.com/${repo}`, '--head', branch, '--state', 'all', '--limit', '100',
-    '--json', 'number,title,state,url,isDraft,headRefName,headRepository'],
-  {env, timeout:8000, maxBuffer:128 * 1024, windowsHide:true}, (error, stdout) => {
+  execFile('gh', [...args],
+  {env, timeout:8000, maxBuffer, windowsHide:true}, (error, stdout) => {
     if (error) { reject(error); return; }
     try { resolve(JSON.parse(stdout)); } catch (parseError) { reject(parseError); }
   });
 });
+
+const runGh: PullRequestRunner = (repo, branch) =>
+  runGhJson(['pr', 'list', '--repo', `github.com/${repo}`, '--head', branch, '--state', 'all', '--limit', '100',
+    '--json', 'number,title,state,url,isDraft,headRefName,headRepository']);
 
 export async function sessionPullRequests(cwd: string, git: GitRunner = createGitRunner(), gh: PullRequestRunner = runGh): Promise<PullRequestState> {
   const [remote, branch] = await Promise.all([

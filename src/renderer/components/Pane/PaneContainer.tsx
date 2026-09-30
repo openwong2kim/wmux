@@ -119,6 +119,8 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
   const zoomedPaneId = useStore((s) => s.zoomedPaneId);
 
   const updatePaneSizes = useStore((s) => s.updatePaneSizes);
+  // Browser mirror (wmux web /app): the desktop owns the split; dividers do not drag.
+  const readOnly = useStore((s) => s.readOnly);
 
   // useGroupRef is the v4 way to get an imperative handle for setLayout/getLayout
   const groupRef = useGroupRef();
@@ -287,7 +289,7 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
   // target in an unrelated subtree — a popover portalled over the band — is
   // still ignored: it is neither inside this group nor one of its ancestors.
   useEffect(() => {
-    if (!paneDirection) return;
+    if (!paneDirection || readOnly) return;
     const onDoubleClick = (e: MouseEvent) => {
       const groupEl = groupElementRef.current;
       if (!groupEl) return;
@@ -303,7 +305,7 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
     };
     window.addEventListener('dblclick', onDoubleClick, true);
     return () => window.removeEventListener('dblclick', onDoubleClick, true);
-  }, [paneDirection, handleSeparatorDoubleClick]);
+  }, [paneDirection, readOnly, handleSeparatorDoubleClick]);
 
   if (pane.type === 'leaf') {
     return (
@@ -330,6 +332,7 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
       orientation={orientation}
       className="h-full w-full"
       resizeTargetMinimumSize={SEPARATOR_HIT_TARGET}
+      disabled={readOnly}
       onLayoutChanged={handleLayoutChanged}
     >
       {pane.children.map((child, i) => {
@@ -342,6 +345,7 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
           <Fragment key={child.id}>
             {i > 0 && (
               <Separator
+                disabled={readOnly}
                 className={`${
                   orientation === 'horizontal' ? 'w-px' : 'h-px'
                 } bg-[var(--border-soft)] hover:bg-[var(--accent-blue)] transition-colors ${

@@ -3,6 +3,7 @@ import type { ChatSendResult, TranscriptPage, TranscriptStatus } from '../../sha
 import type { ChatSkillCatalog } from '../../shared/transcript/chatSkills';
 import type { TerminalLaunchAgent, TerminalLaunchMode } from '../../shared/transcript/terminalChat';
 import type { ChatQueueReason, ChatQueueState } from './ChatQueue';
+import type { ChatCancelProgress } from '../../shared/phoneChatCancelOutcome';
 
 /**
  * Phone native chat bridge (contract v0.3.1, N1-N19): the daemon-side seam the
@@ -270,6 +271,8 @@ export interface ChatCancelOutcome {
   /** Current identity, on `session-changed`. */
   agentSessionId?: string;
   historyEpoch?: string;
+  /** What happened after the write (contract v-next item 3): on a fresh success and on a replay. */
+  cancel?: ChatCancelProgress;
 }
 
 export interface DangerousLaunchTrace {
@@ -305,6 +308,13 @@ export interface ChatBridge {
   unwatch(id: string): void;
   /** Audit record in the daemon log; desktop notification when the launch reached typing. */
   traceDangerousLaunch(trace: DangerousLaunchTrace): void;
+  /** Whether the cancel receipt store loaded, so cancel outcomes are served (`chatCancelOutcome`). */
+  cancelOutcomeEnabled?(): boolean;
+  /**
+   * `GET …/chat/cancel/:clientCancelId`: owner- and pane-bound progress, or
+   * undefined when there is no such receipt (`none`). Null without a store.
+   */
+  cancelOutcome?(owner: ChatOwner, id: string, clientCancelId: string): ChatCancelProgress | undefined | null;
   /** Whether the daemon queue loaded (a `chat-queue` send falls back to today's path when not). */
   queueEnabled?(): boolean;
   /** The owner's most recent queue items on the pane, in enqueue order. */

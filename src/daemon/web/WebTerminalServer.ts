@@ -3,10 +3,15 @@ import type { PaneSettingsChoice } from './paneCodexSettings';
 import { buildAgentLaunch, type AgentLaunchChoice, type AgentLaunchOptions } from './agentLaunch';
 import { DesktopPhoneError, type DesktopPhoneBridge } from '../phone/DesktopPhoneBridge';
 import type { RunHistoryStore } from '../history/RunHistoryStore';
+import { applyPaneAccount, handoffRowOf, paneAccountFailure, resolvePaneAccount, verifyHandoff, type ResolvedPaneAccount } from '../phone/paneAccount';
+import { resolveWorkspaceAccountKeys } from '../phone/workspaceAccountEnv';
+import { DESKTOP_ACCOUNT_ENV_COMMAND, parsePaneAccountFields, type StoredHandoffFrom } from '../../shared/phonePaneAccount';
 import type { InputReceiptStore } from './InputReceiptStore';
 import { sessionPullRequests } from './sessionPullRequests';
 import { SessionGitController, SessionGitError } from './sessionGit';
+import { PhoneGitReads, type PhoneGitSessionRef } from './phoneGitRead';
 import { sessionFiles, searchSessionFiles, SessionFileError } from './sessionFiles';
+import { openResolvedFile } from './openResolvedFile';
 import { listFolders, FolderBrowseError, homeIsBrowsable } from './phoneFolders';
 import {
   createSearchCursorCodec,
@@ -29,7 +34,7 @@ import {
 import http from 'node:http';
 import type { AgentStatus } from '../../shared/types';
 import { isRemoteAgentStatus } from '../../shared/remoteHosts';
-import { createSidebarDropLog, parsePhoneSidebarSnapshot, phoneTaskNesting, type PhoneSidebarSnapshot, type PhoneSidebarTaskSummary, type PhoneSidebarWorkspace, type PhoneTaskNestedUnder } from '../../shared/phoneFleetSidebar';
+import { createSidebarDropLog, parsePhoneSidebarSnapshot, phoneTaskNesting, phoneWorkspaceLayout, type PhoneSidebarSnapshot, type PhoneSidebarTaskSummary, type PhoneSidebarWorkspace, type PhoneTaskNestedUnder } from '../../shared/phoneFleetSidebar';
 import https from 'node:https';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -126,6 +131,9 @@ import {
 import type { TranscriptCursor } from '../../shared/transcript/turnEvents';
 import { cursorMatches, decodeChatCursor, encodeChatCursor, type ReadSource } from './chatCursor';
 import { ChatLaunchReceiptStore, type LaunchReceiptState } from './chatLaunchReceipts';
+import { cancelEventBody, cancelReceiptResponse } from './chatCancelOutcome';
+import type { CodexAccountStatus } from '../../shared/phoneCodexAccountStatus';
+import type { ChatCancelEvent } from '../chat/chatCancelObserver';
 import {
   buildChatObject,
   cancelResponse,
@@ -140,7 +148,7 @@ import {
   sendResponse,
   type WireResponse,
 } from './chatWire';
-import { buildWebCsp } from './webCsp';
+import { buildWebCsp, WEB_APP_FONT_FILE } from './webCsp';
 
 /**
  * Opaque cursor for `/api/sessions/:id/turns` (#782). Encodes head+tail offsets
@@ -563,13 +571,29 @@ export interface WebSessionLifecycle {
    * reservation — every one of them a round trip to another process. A device
    * revoked or narrowed inside that window must not end up with a shell.
    * Rejects with `SessionAuthorizationExpiredError` when it no longer holds. */
-  create(params: { workspaceId?: string; cwd?: string; agentLaunch?: AgentLaunchChoice; authorized?: () => Promise<boolean> }): Promise<{ id: string }>;
+  create(params: {
+    workspaceId?: string; cwd?: string; agentLaunch?: AgentLaunchChoice; authorized?: () => Promise<boolean>;
+    /** The desktop-resolved account for this pane only (contract v-next item 4). Requires `workspaceId`. */
+    account?: ResolvedPaneAccount;
+    /** Lineage to store on the new pane. */
+    handoffFrom?: StoredHandoffFrom;
+  }): Promise<{ id: string }>;
   /** Close a pane and dispose its PTY. Called only for an id already resolved. */
   destroy(id: string): Promise<void>;
 }
 
 interface WebTerminalServerDeps {
   agentSettings?: (id:string, authorized:()=>Promise<boolean>, choice?:PaneSettingsChoice)=>Promise<LiveAgentSettings>;
+  /**
+   * Contract v-next item 2. `accountHome`: the Codex home of the account
+   * server a pane's live relay talks to, or undefined. `liveIds`: panes with
+   * a live relay. `read`: that account's status (cached per account).
+   */
+  codexAccountStatus?: {
+    accountHome(id: string): string | undefined;
+    liveIds(): string[];
+    read(codeHome: string): Promise<CodexAccountStatus>;
+  };
   agentLaunchOptions?: (env?: NodeJS.ProcessEnv) => Promise<AgentLaunchOptions[]>;
   desktop?: () => DesktopPhoneBridge | null;
   runHistory?: () => RunHistoryStore;
@@ -729,6 +753,9 @@ interface WebTerminalServerDeps {
     binding?: ResumeBinding;
     commandRunning?: boolean;
     agentProcessAlive?: boolean;
+    /** Recovered this daemon boot, agent not re-detected — the same hint
+     *  `pty.list` carries. Only the snapshot meta reads it. */
+    resumeAgent?: string;
   } | undefined;
   /**
    * A pane's ring as plain-text rows — the `daemon.readSessionText` parse, on
@@ -1238,6 +1265,8 @@ export class WebTerminalServer {
   /** Latest liveness state per pane, held for the open coalescing window. */
   private readonly phoneGit = new SessionGitController();
   private phoneGitRequests = 0;
+  /** Phone Git v1 reads (contract item 5); built on first use. */
+  private phoneGitReads?: PhoneGitReads;
   private readonly agentSettingsRequests = new Set<string>();
   private readonly pendingLiveness = new Map<string, AgentLivenessBody>();
   /** `GET /api/search`: the cursor key lives and dies with this server. */
@@ -1408,6 +1437,15 @@ export class WebTerminalServer {
   private manifest: Buffer | null = null;
   private serviceWorker: Buffer | null = null;
   private icon: Buffer | null = null;
+  /**
+   * The browser app page (`/app`, opt-in): the desktop renderer's components,
+   * built by vite.web.config.ts. Its own policy, derived from its own bytes the
+   * same way `csp` is — the two pages inline different scripts.
+   */
+  private appHtml: Buffer | null = null;
+  private appCsp: string = buildWebCsp(null);
+  /** `/app/assets/<name>` → font bytes. Exact names from the build, so no path is ever joined from a request. */
+  private appFonts = new Map<string, Buffer>();
   /**
    * The CSP for the assets currently loaded. Initialized to the asset-less
    * policy (`script-src 'none'`) so a request that somehow arrives before
@@ -2138,9 +2176,20 @@ export class WebTerminalServer {
       return this.json(res, 403, { error: 'host not allowed' });
     }
 
-    // Static, unauthenticated app shell (no secrets live in these). `/pair`
-    // is the same SPA shell — the frontend renders the pairing screen for it.
-    if (req.method === 'GET' && (p === '/' || p === '/index.html' || p === '/pair')) {
+    // Static, unauthenticated pages (no secrets live in these). `/` is the
+    // browser app (the desktop's own UI, app.html); `/classic` is the flat
+    // client it falls back to on browsers that cannot run it, and `/pair` is
+    // that same classic shell, which renders the pairing screen. A daemon
+    // whose app page was not built keeps serving the classic page at `/`.
+    const appPage = p === '/' || p === '/index.html' || p === '/app';
+    if (req.method === 'GET' && appPage && this.appHtml) {
+      // Same no-store reasoning as the classic shell below.
+      return this.serveStatic(res, this.appHtml, 'text/html; charset=utf-8', {
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': this.appCsp,
+      });
+    }
+    if (req.method === 'GET' && (appPage || p === '/classic' || p === '/pair')) {
       // The whole app is inlined into this one file and it is rebuilt on every
       // release, so a stale copy is not a slightly-old page — it is the old
       // client talking to a new daemon. With no Cache-Control and no validator
@@ -2152,6 +2201,12 @@ export class WebTerminalServer {
         'Cache-Control': 'no-store',
         ...(this.csp ? { 'Content-Security-Policy': this.csp } : {}),
       });
+    }
+    if (req.method === 'GET' && p.startsWith('/app/assets/')) {
+      const font = this.appFonts.get(p.slice('/app/assets/'.length));
+      if (!font) return this.json(res, 404, { error: 'not found' });
+      // Content-hashed names: a changed font is a new URL.
+      return this.serveStatic(res, font, 'font/woff2', { 'Cache-Control': 'public, max-age=31536000, immutable' });
     }
     if (req.method === 'GET' && p === '/manifest.webmanifest') {
       // Same reasoning as the shell: a cached manifest pins an installed app's
@@ -2279,6 +2334,9 @@ export class WebTerminalServer {
         // that 403s on every keystroke.
         allowInput: this.mayInput(principal),
         inputReceipts: this.mayInput(principal) && this.deps.inputReceipts !== undefined,
+        // The panes' host OS: key encodings follow the machine the PTY runs on
+        // (ConPTY's own ?9001h on win32), not the client drawing it.
+        hostPlatform: process.platform,
         allowUpload: this.opts?.allowUpload === true,
         generalFileUpload: this.opts?.allowUpload === true && this.deps.uploadsDir !== undefined,
         allowTranscript: this.opts?.allowTranscript === true,
@@ -2301,7 +2359,15 @@ export class WebTerminalServer {
         workspaceFiles: this.mayInput(principal) && this.opts?.allowTranscript === true,
         liveActivityHostScope: true,
         agentSettings: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.agentSettings !== undefined,
+        // Contract v-next item 2. OMITTED, not false: needs the transcript
+        // grant and a pane this caller may read that has a live Codex relay.
+        ...(this.codexAccountStatusVisible() ? { codexAccountStatus: true } : {}),
         agentLaunch: this.mayInput(principal) && this.deps.agentLaunchOptions !== undefined,
+        // Contract v-next item 4. OMITTED, not false: `paneAccount` needs both
+        // grants and a desktop that announced the account command on this connection.
+        ...(this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.lifecycle &&
+          this.availableDesktop()?.supports(DESKTOP_ACCOUNT_ENV_COMMAND) ? { paneAccount: true } : {}),
+        ...(this.mayInput(principal) && this.deps.lifecycle ? { paneHandoff: true } : {}),
         folderBrowse: this.mayInput(principal) && homeIsBrowsable(),
         browserScrolling: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
         workspaceBrowsers: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
@@ -2312,6 +2378,8 @@ export class WebTerminalServer {
         quickCommands: this.opts?.allowTranscript === true && desktopAvailable,
         desktopAccounts: this.opts?.allowTranscript === true && desktopAvailable,
         gitControl: this.mayInput(principal),
+        // Phone Git v1 (contract item 5): OMITTED, not false, without the grant.
+        ...(this.mayInput(principal) ? { gitProjects: true, gitChecks: true } : {}),
         runHistory: this.opts?.allowTranscript === true && this.deps.runHistory !== undefined,
         // `GET /api/search`, and which of its scopes can answer. OMITTED, not
         // false, when none can — the shape a daemon predating the route serves.
@@ -2371,6 +2439,8 @@ export class WebTerminalServer {
               // `/chat/cancel`.
               decisionForms: this.decisionForms(),
               chatCancel: this.mayInput(principal),
+              // Contract v-next item 3: `cancel` progress, its receipt route and SSE `chat.cancel`.
+              ...(this.mayInput(principal) && this.deps.chat?.()?.cancelOutcomeEnabled?.() === true ? { chatCancelOutcome: true } : {}),
               // Whether this caller's `chat-queue` sends are held by the daemon.
               chatQueue: this.mayInput(principal) && this.deps.chat?.()?.queueEnabled?.() === true,
             }
@@ -2381,7 +2451,7 @@ export class WebTerminalServer {
       });
     }
     if (req.method === 'GET' && p === '/api/sessions') {
-      return this.handleSessionsList(res);
+      return this.handleSessionsList(res, principal);
     }
     if (req.method === 'GET' && p === '/api/history') {
       if (this.opts?.allowTranscript !== true) return this.json(res, 403, {error:'history-disabled'});
@@ -2393,6 +2463,9 @@ export class WebTerminalServer {
     }
     if (req.method === 'GET' && p === '/api/search') {
       return this.handleSearch(res, url, principal);
+    }
+    if (req.method === 'GET' && p === '/api/git/projects') {
+      return this.handlePhoneGitRead(res, null, principal, 'projects');
     }
     if (req.method === 'GET' && p === '/api/workspaces') {
       return this.handleWorkspacesList(res);
@@ -2411,6 +2484,7 @@ export class WebTerminalServer {
           if (req.method === 'DELETE' && rawReceipt !== undefined) return this.handleChatDequeue(res, rawId, rawReceipt, principal);
         } else if (kind === 'cancel') {
           if (req.method === 'POST' && rawReceipt === undefined) return this.handleChatCancel(req, res, rawId, url, principal);
+          if (req.method === 'GET' && rawReceipt !== undefined) return this.handleChatCancelReceipt(res, rawId, rawReceipt, principal);
         } else if (req.method === 'POST' && rawReceipt === undefined) {
           return kind === 'messages'
             ? this.handleChatSend(req, res, rawId, url, principal)
@@ -2424,9 +2498,14 @@ export class WebTerminalServer {
       }
       if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/agent-settings')) return this.handleAgentSettings(req,res,rest.slice(0,-'/agent-settings'.length),url,principal);
       if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/browser')) return this.handlePhoneBrowser(req,res,rest.slice(0,-'/browser'.length),url,principal);
+      if (req.method === 'GET' && rest.endsWith('/codex/account-status')) {
+        return this.handleCodexAccountStatus(res, rest.slice(0, -'/codex/account-status'.length));
+      }
       if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/accounts')) {
         return this.handleSessionAccounts(req,res,rest.slice(0,-'/accounts'.length),url,principal);
       }
+      const phoneGitRead = req.method === 'GET' ? /^([^/]+)\/git\/(branches|checks)$/.exec(rest) : null;
+      if (phoneGitRead) return this.handlePhoneGitRead(res, phoneGitRead[1], principal, phoneGitRead[2] as 'branches' | 'checks');
       if (req.method === 'GET' && rest.endsWith('/git/pr')) {
         return this.handleSessionGit(req, res, rest.slice(0, -'/git/pr'.length), url, principal, true);
       }
@@ -2465,8 +2544,34 @@ export class WebTerminalServer {
       if (!this.mayInput(principal)) return this.refuseInput(res,principal,'Agent launch requires input permission');
       if (!this.deps.agentLaunchOptions) return this.json(res,503,{error:'agent-launch-unavailable'});
       const workspaceId = url.searchParams.get('workspaceId') ?? '';
+      const accountId = url.searchParams.get('accountId');
+      if (accountId !== null) {
+        if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+        const parsed = parsePaneAccountFields({accountId,...(workspaceId ? {workspaceId} : {})});
+        if (!parsed.ok) return this.json(res,400,{error:parsed.error,effect:'none'});
+      }
       if (workspaceId) { const bad = this.rejectWorkspaceId(workspaceId,principal); if (bad) return this.json(res,400,bad); }
-      void this.agentOptionsForWorkspace(workspaceId).then(agents => this.json(res,200,{agents},{'Cache-Control':'no-store'})).catch(() => this.json(res,503,{error:'agent-launch-unavailable'}));
+      void (async () => {
+        // Every answer below follows a desktop round trip, so an account
+        // answer is given only to a caller that still holds the grant.
+        const stillAuthorized = async () => {
+          const now = await this.authenticate(req,url,false).catch(() => ({ok:false as const}));
+          return now.ok && this.mayInput(now.principal);
+        };
+        const chosen = accountId === null ? null : await resolvePaneAccount(this.availableDesktop(),workspaceId,accountId);
+        if (chosen && !await stillAuthorized()) return this.json(res,401,{error:'authorization-expired'});
+        if (chosen && !chosen.ok) return this.json(res,chosen.refusal.status,chosen.refusal.body);
+        let agents: AgentLaunchOptions[];
+        try { agents = await this.agentOptionsForWorkspace(workspaceId,chosen?.account); }
+        catch (error) {
+          const failure = paneAccountFailure(error);
+          if (!failure) throw error;
+          if (chosen && !await stillAuthorized()) return this.json(res,401,{error:'authorization-expired'});
+          return this.json(res,failure.status,failure.body);
+        }
+        if (chosen && !await stillAuthorized()) return this.json(res,401,{error:'authorization-expired'});
+        return this.json(res,200,{agents},{'Cache-Control':'no-store'});
+      })().catch(() => this.json(res,503,{error:'agent-launch-unavailable'}));
       return;
     }
     if (req.method === 'GET' && p === '/api/folders') {
@@ -2600,7 +2705,7 @@ export class WebTerminalServer {
     }
   }
 
-  private listSessions(): Array<{
+  private listSessions(principal?: WebPrincipal): Array<{
     id: string;
     incarnationId?: string;
     cwd: string;
@@ -2717,6 +2822,7 @@ export class WebTerminalServer {
         ...workspaceLabelOf(s.env),
         ...workspaceIdOf(s.env),
         ...shellLabelOf(s.cmd),
+        ...this.handoffRow(this.deps.sessionManager.getSession(s.id)?.meta.handoffFrom, principal),
         ...this.livenessSummary(s.id),
         ...this.lastAssistantSummary(s.id, reads),
       }));
@@ -2943,7 +3049,13 @@ export class WebTerminalServer {
         return label?.paneId !== undefined && label.workspaceId === w.id ? { ...pane, paneId: label.paneId } : pane;
       });
       return extra
-        ? { ...w, panes, ...sidebarWorkspaceFields(extra, nesting.nested.get(w.id), nesting.summaries.get(w.id), nesting.placement.get(w.id)) }
+        ? {
+            ...w,
+            panes,
+            ...sidebarWorkspaceFields(extra, nesting.nested.get(w.id), nesting.summaries.get(w.id), nesting.placement.get(w.id)),
+            // The tree may name only this row's own sessions (see phoneWorkspaceLayout).
+            ...(extra.layout ? { layout: phoneWorkspaceLayout(extra.layout, w.panes.map((pane) => pane.sessionId)) } : {}),
+          }
         : { ...w, panes };
     });
     // Only an id this reply lists, so the active workspace cannot name one the
@@ -2961,9 +3073,9 @@ export class WebTerminalServer {
    * already gone from `listSessions`, and nothing is added for a ptyId the
    * list does not hold.
    */
-  private async handleSessionsList(res: http.ServerResponse): Promise<void> {
+  private async handleSessionsList(res: http.ServerResponse, principal?: WebPrincipal): Promise<void> {
     const sidebar = await this.desktopSidebar();
-    const sessions = this.listSessions();
+    const sessions = this.listSessions(principal);
     if (!sidebar) return this.json(res, 200, { sessions });
     const labels = new Map(sidebar.panes.map((p) => [p.ptyId, p]));
     return this.json(res, 200, {
@@ -3485,6 +3597,40 @@ export class WebTerminalServer {
     });
   }
 
+  /** Whether any pane this caller may read has a live Codex relay (the `codexAccountStatus` key). */
+  private codexAccountStatusVisible(): boolean {
+    const source = this.deps.codexAccountStatus;
+    if (this.opts?.allowTranscript !== true || !source || process.platform === 'win32') return false;
+    return source.liveIds().some((id) => !!this.readableSession(id) && source.accountHome(id) !== undefined);
+  }
+
+  /**
+   * `GET /api/sessions/<id>/codex/account-status` (contract v-next item 2):
+   * the auth state and plan limits of the account this pane's Codex runs on,
+   * read from its already-running account server. Never tokens, e-mails or
+   * account ids; never starts a server.
+   */
+  private handleCodexAccountStatus(res: http.ServerResponse, rawId: string): void {
+    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+    const id = decodePathSegment(rawId);
+    const pane = id === null ? undefined : this.readableSession(id);
+    if (!pane || id === null) return this.json(res, 404, { error: 'pane-not-found' });
+    const unavailable = (reason: string) => this.json(res, 503, { error: 'unavailable', reason }, { 'Cache-Control': 'no-store' });
+    if (process.platform === 'win32' || pane.meta.wslTarget) return unavailable('unsupported-platform');
+    const source = this.deps.codexAccountStatus;
+    const codeHome = source?.accountHome(id);
+    if (!source || codeHome === undefined) return unavailable('no-account-server');
+    void source.read(codeHome).then(
+      (status) => {
+        if (res.destroyed || res.writableEnded) return;
+        this.json(res, 200, status, { 'Cache-Control': 'no-store' });
+      },
+      () => {
+        if (res.destroyed || res.writableEnded) return;
+        unavailable('upstream-failed');
+      });
+  }
+
   private handleAgentSettings(req:http.IncomingMessage,res:http.ServerResponse,rawId:string,url:URL,principal:WebPrincipal):void {
     if (!this.mayInput(principal)) return this.refuseInput(res,principal,'Agent settings require input permission');
     if (this.opts?.allowTranscript !== true) return this.json(res,403,{error:'transcript-disabled'});
@@ -3562,6 +3708,36 @@ export class WebTerminalServer {
       if (this.attachableSession(fresh.principal, id!) !== managed) return this.json(res, 404, { error: 'session not found' });
       respond(() => this.phoneGit.mutate(cwd, body, authorized));
     });
+  }
+
+  /** The live sessions this caller may attach, for the phone Git reads (never the brain pane). */
+  private phoneGitSessions(principal: WebPrincipal): PhoneGitSessionRef[] {
+    return this.deps.sessionManager.listLiveSessions().flatMap((s) => {
+      if (isBrainPty({ id: s.id, env: s.env })) return [];
+      const spawnCwd = this.attachableSession(principal, s.id)?.meta.spawnCwd;
+      return spawnCwd ? [{ id: s.id, spawnCwd, lastActivity: s.lastActivity }] : [];
+    });
+  }
+
+  /** Phone Git v1 reads (contract item 5): same grant, pane rule and budget as `/git`. */
+  private handlePhoneGitRead(res: http.ServerResponse, rawId: string | null, principal: WebPrincipal, kind: 'projects' | 'branches' | 'checks'): void {
+    if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Git control requires input permission');
+    const reads = this.phoneGitReads ??= new PhoneGitReads(this.deps.git ?? createGitRunner());
+    let work = () => reads.projects(this.phoneGitSessions(principal), { aborted: () => res.destroyed || res.writableEnded }) as Promise<unknown>;
+    if (rawId !== null) {
+      const id = decodePathSegment(rawId);
+      const managed = id === null ? null : this.attachableSession(principal, id);
+      if (!managed) return this.json(res, 404, { error: 'session not found' });
+      const cwd = managed.meta.spawnCwd;
+      if (!cwd) return this.json(res, 409, { error: 'not-a-git-repo' });
+      work = kind === 'branches' ? () => reads.branches(cwd, this.phoneGitSessions(principal)) : () => reads.checks(cwd);
+    }
+    if (this.phoneGitRequests >= 4) return this.json(res, 429, { error: 'git-busy' });
+    this.phoneGitRequests += 1;
+    void work().then(result => this.json(res, 200, result, { 'Cache-Control': 'no-store' })).catch(error => {
+      if (error instanceof SessionGitError) return this.json(res, error.status, { error: error.tag });
+      return this.json(res, 500, { error: 'git-operation-failed' });
+    }).finally(() => { this.phoneGitRequests -= 1; });
   }
 
   private async handleSessionDiff(res: http.ServerResponse, rawId: string, principal: WebPrincipal): Promise<void> {
@@ -3867,7 +4043,9 @@ export class WebTerminalServer {
     const queue = caps.chatQueue === true && chat.queueEnabled?.() === true ? chat.queue?.(owner, sessionId) ?? [] : undefined;
     const events = queue !== undefined ? this.tagDeliveredRows(chat, sessionId, owner, body.events) : body.events;
     this.json(res, 200, { ...body, ...(events !== undefined ? { events } : {}), chat: buildChatObject(resolution, projectChatBlocked(blocked, caps),
-      { ...(turn ? { turn } : {}), chatCancel: caps.chatCancel === true, ...(queue ? { queue } : {}) }) });
+      { ...(turn ? { turn } : {}), chatCancel: caps.chatCancel === true, ...(queue ? { queue } : {}),
+        accountStatus: this.opts?.allowTranscript === true && process.platform !== 'win32' &&
+          this.deps.codexAccountStatus?.accountHome(sessionId) !== undefined }) });
   }
 
   /**
@@ -4052,7 +4230,7 @@ export class WebTerminalServer {
    */
   private deliverChatEvent(
     sessionId: string,
-    viewFor: (caps: ClientCaps) => { event: 'chat.blocked' | 'chat.unblocked' | 'chat.queue'; body: string },
+    viewFor: (caps: ClientCaps) => { event: 'chat.blocked' | 'chat.unblocked' | 'chat.queue' | 'chat.cancel'; body: string },
     only?: (principal: WebPrincipal) => boolean,
   ): void {
     const watchers = this.transcriptWatchers.get(sessionId);
@@ -4403,6 +4581,16 @@ export class WebTerminalServer {
         this.json(res, wire.status, wire.body);
       })().catch((err: unknown) => this.failRequest(res, err));
     }, CHAT_CANCEL_MAX_BODY_BYTES);
+  }
+
+  /** `GET /api/sessions/:id/chat/cancel/:clientCancelId`: transcript, not input; owner- and pane-bound (chatCancelOutcome.ts). */
+  private handleChatCancelReceipt(res: http.ServerResponse, rawId: string, rawCancelId: string, principal: WebPrincipal): void {
+    res.setHeader('Cache-Control', 'no-store');
+    if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+    const id = decodePathSegment(rawId);
+    if (id === null || !this.readableSession(id)) return this.json(res, 404, { error: 'pane-not-found' });
+    const wire = cancelReceiptResponse(this.deps.chat?.() ?? null, chatOwner(principal), id, decodePathSegment(rawCancelId) ?? '');
+    return this.json(res, wire.status, wire.body);
   }
 
   /**
@@ -4810,18 +4998,12 @@ export class WebTerminalServer {
     // second path lookup here is a window in which the file under an allowed
     // path becomes a symlink to somewhere else, or a small file becomes a large
     // one after the size gate has passed.
-    // `real` came back from realpath with every link resolved, so the ONLY way
-    // its last component is a symlink now is that it was swapped in between —
-    // O_NOFOLLOW turns that swap into ELOOP → 404 instead of a follow. And
-    // O_NONBLOCK: a FIFO inside the boundary would otherwise park this request
-    // (and its handle) until a writer shows up, which may be never.
-    let handle: fs.promises.FileHandle;
-    try {
-      handle = await fs.promises.open(
-        real,
-        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
-      );
-    } catch {
+    // `openResolvedFile` re-checks what it opened instead of trusting
+    // O_NOFOLLOW/O_NONBLOCK, which Node does not have on win32 (#1434); its
+    // doc says what that covers and what it does not. Every refusal is the
+    // same 404.
+    const handle = await openResolvedFile(real);
+    if (!handle) {
       this.json(res, 404, { error: 'image not found' });
       return;
     }
@@ -4914,7 +5096,9 @@ export class WebTerminalServer {
    * it was rewired to call. Shipped phone builds depend on that route, and the
    * contract this one was written to (wmux-ios, 2026-09-20) asks in as many
    * words that it not be touched; refactoring it to reach a new abstraction is
-   * a change to it, whatever the diff says about behaviour.
+   * a change to it, whatever the diff says about behaviour. The one shared
+   * piece is the open itself, `openResolvedFile`: #1434 asked for both routes
+   * to change together, and two copies of that check could drift apart.
    *
    * Every piece of the boundary is load-bearing here for the reasons spelled
    * out on that handler: the roots are `meta.spawnCwd` ∪ `deps.uploadsDir` and
@@ -4993,13 +5177,8 @@ export class WebTerminalServer {
       return;
     }
 
-    let handle: fs.promises.FileHandle;
-    try {
-      handle = await fs.promises.open(
-        real,
-        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK,
-      );
-    } catch {
+    const handle = await openResolvedFile(real);
+    if (!handle) {
       this.json(res, 404, { error: 'file not found' });
       return;
     }
@@ -5250,21 +5429,17 @@ export class WebTerminalServer {
    * only differently revocable, so gating on the credential FORM rather than on
    * the server's input policy would be a boundary that is not one.
    */
-  private async agentOptionsForWorkspace(workspaceId: string): Promise<AgentLaunchOptions[]> {
+  private async agentOptionsForWorkspace(workspaceId: string, account?: ResolvedPaneAccount): Promise<AgentLaunchOptions[]> {
     if (!this.deps.agentLaunchOptions) throw new Error('Agent launch unavailable');
     if (!workspaceId) return this.deps.agentLaunchOptions();
-    const desktop = this.availableDesktop();
-    if (!desktop) throw new Error('Desktop unavailable');
-    const resolved = await desktop.request('accounts.env',{workspaceId});
-    if (!resolved || typeof resolved !== 'object') throw new Error('Account unavailable');
-    const codexHome = (resolved as Record<string,unknown>).CODEX_HOME;
+    // Bridge failures surface as DesktopPhoneError / PaneAccountRefusalError
+    // (see paneAccountFailure). A chosen account's vendor binding is skipped.
+    const resolved = await resolveWorkspaceAccountKeys(workspaceId, this.availableDesktop(), account?.vendor);
     const env = {...process.env};
     delete env.CODEX_HOME;
-    if (codexHome !== undefined) {
-      if (typeof codexHome !== 'string' || !codexHome || codexHome.includes('\0')) throw new Error('Invalid account directory');
-      env.CODEX_HOME = codexHome;
-    }
-    return this.deps.agentLaunchOptions(env);
+    if (resolved.CODEX_HOME !== undefined) env.CODEX_HOME = resolved.CODEX_HOME;
+    // A per-pane account replaces its own vendor's key only; the catalog is that account's.
+    return this.deps.agentLaunchOptions(account ? applyPaneAccount(env, account) : env);
   }
 
   private handleSessionCreate(
@@ -5285,25 +5460,10 @@ export class WebTerminalServer {
 
     this.readJsonBody(req, res, (body) => {
       void (async () => {
-      const b = (body ?? {}) as { workspaceId?: unknown; cwd?: unknown; agentLaunch?: unknown };
-      const workspaceId = typeof b.workspaceId === 'string' ? b.workspaceId.trim() : '';
-      const cwd = typeof b.cwd === 'string' ? b.cwd.trim() : '';
-      if (workspaceId) {
-        const bad = this.rejectWorkspaceId(workspaceId, principal);
-        if (bad) return this.json(res, 400, bad);
-      }
-      let agentLaunch: AgentLaunchChoice | undefined;
-      if (b.agentLaunch !== undefined) {
-        if (!this.deps.agentLaunchOptions) return this.json(res,400,{error:'agent-launch-unavailable'});
-        try {
-          buildAgentLaunch(b.agentLaunch, await this.agentOptionsForWorkspace(workspaceId));
-          const requested = b.agentLaunch as AgentLaunchChoice;
-          agentLaunch = {agent:requested.agent,...(requested.model !== undefined ? {model:requested.model} : {}),...(requested.effort !== undefined ? {effort:requested.effort} : {})};
-        } catch { return this.json(res,400,{error:'invalid-agent-launch'}); }
-      }
-      // The entry check saw the credential as it was when the HEADERS arrived;
-      // the body and the desktop agent-options round-trip both came after. A
-      // device revoked or narrowed in that window must not spawn a shell.
+      // The entry check saw the credential as it was when the HEADERS arrived.
+      // Re-check it now that the body is in, BEFORE anything is looked up for
+      // this caller: a device revoked while its body trickled in must not learn
+      // whether an account id exists.
       const stillAuthorized = async () => {
         const now = await this.authenticate(req,url,false).catch(() => ({ok:false as const}));
         return now.ok && this.mayInput(now.principal);
@@ -5311,29 +5471,100 @@ export class WebTerminalServer {
       const fresh = await this.authenticate(req,url,false).catch(() => ({ok:false as const}));
       if (!fresh.ok) return this.json(res,401,{error:'authorization-expired'});
       if (!this.mayInput(fresh.principal)) return this.refuseInput(res,fresh.principal,'Input permission changed');
+      const caller = fresh.principal;
+      const b = (body ?? {}) as { workspaceId?: unknown; cwd?: unknown; agentLaunch?: unknown; accountId?: unknown; handoffFrom?: unknown };
+      const workspaceId = typeof b.workspaceId === 'string' ? b.workspaceId.trim() : '';
+      const cwd = typeof b.cwd === 'string' ? b.cwd.trim() : '';
+      // Contract v-next item 4. The account list needs transcript access, so
+      // naming one does too; checked before the shape so a caller without the
+      // grant learns nothing about accounts.
+      if (b.accountId !== undefined && this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+      const lineage = parsePaneAccountFields({ ...(b as Record<string, unknown>), workspaceId });
+      if (!lineage.ok) return this.json(res, 400, { error: lineage.error, effect: 'none' });
+      if (workspaceId) {
+        const bad = this.rejectWorkspaceId(workspaceId, caller);
+        if (bad) return this.json(res, 400, bad);
+      }
+      let account: ResolvedPaneAccount | undefined;
+      if (lineage.value.accountId) {
+        const chosen = await resolvePaneAccount(this.availableDesktop(), workspaceId, lineage.value.accountId);
+        // The lookup was a round trip: answer only a caller that still holds the grant.
+        if (!await stillAuthorized()) return this.json(res,401,{error:'authorization-expired'});
+        if (!chosen.ok) return this.json(res, chosen.refusal.status, chosen.refusal.body);
+        account = chosen.account;
+      }
+      let agentLaunch: AgentLaunchChoice | undefined;
+      if (b.agentLaunch !== undefined) {
+        if (!this.deps.agentLaunchOptions) return this.json(res,400,{error:'agent-launch-unavailable'});
+        if (!b.agentLaunch || typeof b.agentLaunch !== 'object' || Array.isArray(b.agentLaunch)) return this.json(res,400,{error:'invalid-agent-launch'});
+        // Any agent other than the account's vendor, not only the other known
+        // one. The vendor is not echoed: the phone already knows which account it picked.
+        if (account && (b.agentLaunch as { agent?: unknown }).agent !== account.vendor) {
+          return this.json(res, 400, { error: 'account-vendor-mismatch', effect: 'none' });
+        }
+        let options: AgentLaunchOptions[];
+        try { options = await this.agentOptionsForWorkspace(workspaceId, account); }
+        catch (error) {
+          const failure = paneAccountFailure(error);
+          if (!await stillAuthorized()) return this.json(res,401,{error:'authorization-expired'});
+          return failure ? this.json(res, failure.status, failure.body) : this.json(res,503,{error:'agent-launch-unavailable'});
+        }
+        try {
+          buildAgentLaunch(b.agentLaunch, options);
+          const requested = b.agentLaunch as AgentLaunchChoice;
+          agentLaunch = {agent:requested.agent,...(requested.model !== undefined ? {model:requested.model} : {}),...(requested.effort !== undefined ? {effort:requested.effort} : {})};
+        } catch { return this.json(res,400,{error:'invalid-agent-launch'}); }
+      }
+      // The desktop agent-options round trip came after the check above.
+      if (!await stillAuthorized()) return this.json(res,401,{error:'authorization-expired'});
       // A cwd the shell cannot enter does not fail the spawn: the child exits
       // at once and the caller got a 201 for a dead pane. Refuse it up front
       // (the phone offers "open in home" instead). After the re-check above,
       // so a caller that just lost its grant learns nothing about the disk.
       if (cwd && await cwdUnusable(cwd)) return this.json(res, 400, { error: 'cwd-not-found', effect: 'none' });
+      const handoffFrom = lineage.value.handoffFrom ? await verifyHandoff(lineage.value.handoffFrom, {
+        readable: (id) => {
+          const source = this.attachableSession(caller, id);
+          return !!source && source.meta.state !== 'dead' && source.meta.state !== 'suspended';
+        },
+        allowTranscript: this.opts?.allowTranscript === true,
+        currentConversation: async (id) => {
+          const chat = this.deps.chat?.() ?? null;
+          return chat ? resolutionAgentSessionId(await chat.resolve(id)) : undefined;
+        },
+        now: () => this.now(),
+      }) : undefined;
       lifecycle
         // The same question again at the spawn itself: `create` has its own
         // awaits after this point, and this check is the last one before a PTY.
-        .create({ ...(workspaceId ? { workspaceId } : {}), ...(cwd ? { cwd } : {}), ...(agentLaunch ? {agentLaunch} : {}), authorized: stillAuthorized })
+        .create({
+          ...(workspaceId ? { workspaceId } : {}), ...(cwd ? { cwd } : {}), ...(agentLaunch ? {agentLaunch} : {}),
+          ...(account ? { account } : {}), ...(handoffFrom ? { handoffFrom } : {}),
+          authorized: stillAuthorized,
+        })
         .then(({ id }) => {
           // One serializer: the new pane is described by the SAME projection
           // `GET /api/sessions` uses, so a client can append the response to
           // its list without a second shape to keep in step. A create that
           // somehow left nothing live is reported rather than faked.
-          const row = this.listSessions().find((s) => s.id === id);
+          const row = this.listSessions(caller).find((s) => s.id === id);
           if (!row) return this.json(res, 500, { error: 'created session is not live' });
-          return this.json(res, 201, row);
+          return this.json(res, 201, {
+            ...row,
+            ...(handoffFrom ? this.handoffRow(handoffFrom, caller) : {}),
+            // Echoed so the phone can confirm the account was honoured.
+            ...(lineage.value.accountId ? { accountId: lineage.value.accountId } : {}),
+          });
         })
         .catch((err: unknown) => {
           // The grant went away while the create was preparing. Not the
           // operator's situation — the caller's — so it answers like the
           // pre-spawn re-check above, not like a refused create.
           if (err instanceof SessionAuthorizationExpiredError) return this.json(res,401,{error:'authorization-expired'});
+          // The desktop went away or failed mid-create, or an account check
+          // refused at the spawn: typed, and nothing was created.
+          const failure = paneAccountFailure(err);
+          if (failure) return this.json(res, failure.status, failure.body);
           // The daemon refuses a create for reasons that are the operator's
           // situation, not a bug: the session cap, memory pressure, a shutdown
           // in flight. 409 says "not now" and carries the daemon's own wording,
@@ -5343,6 +5574,12 @@ export class WebTerminalServer {
         });
       })().catch(() => this.json(res,503,{error:'agent-launch-unavailable'}));
     });
+  }
+
+  /** A lineage as this caller may see it on a row (see `handoffRowOf`). */
+  private handoffRow(value: unknown, principal: WebPrincipal | undefined) {
+    return handoffRowOf(value, this.opts?.allowTranscript === true,
+      (id) => principal !== undefined && this.attachableSession(principal, id) !== undefined);
   }
 
   /**
@@ -5606,9 +5843,22 @@ export class WebTerminalServer {
     // would pull each time. The truncation rides `meta` rather than a new event
     // name, so a cached frontend that predates it is unaffected.
     const snapshot = capSnapshot(managed.ringBuffer.readAll());
+    // The shared staleReplayResetLevel gate's inputs (src/shared/terminal),
+    // read at the same instant as the ring so they describe THIS snapshot, and
+    // from the same sources `pty.list` gives the desktop:
+    //  - commandRunning: OSC 133. `false` = the shell sits at its prompt, so
+    //    mouse/focus reporting the snapshot re-arms is a dead TUI's leftover.
+    //    Absent when the shell emits no prompt markers.
+    //  - resumeAgent: recovered this daemon boot, agent not re-detected — the
+    //    arming process is known dead (its prompt log is empty after the
+    //    restart, so commandRunning alone would say nothing). Grounds for the
+    //    mouse/focus reset only: the recovered shell is alive and owns ?2004.
+    const resume = this.deps.resumeState?.(managed.meta.id);
     const meta = this.streamMeta(managed, {
       truncated: snapshot.truncated,
       omittedBytes: snapshot.omittedBytes,
+      ...(typeof resume?.commandRunning === 'boolean' ? { commandRunning: resume.commandRunning } : {}),
+      ...(resume?.resumeAgent ? { resumeAgent: resume.resumeAgent } : {}),
     });
     // Absolute stream offset of the window's FIRST byte. The tracker needs it
     // to decide whether the alt-screen entry is something the window already
@@ -7186,6 +7436,13 @@ export class WebTerminalServer {
     this.deliverChatEvent(event.sessionId, () => ({ event: 'chat.queue', body }), (principal) => chatOwner(principal) === event.owner);
   }
 
+  /** SSE `chat.cancel`: a cancel's progress changed. Live-only, only to its owner among the pane's watchers. */
+  emitChatCancel(event: ChatCancelEvent): void {
+    if (!this.server || this.opts?.allowTranscript !== true) return;
+    const body = cancelEventBody(event);
+    this.deliverChatEvent(event.sessionId, () => ({ event: 'chat.cancel', body }), (principal) => chatOwner(principal) === event.owner);
+  }
+
   emitTranscriptNudge(sessionId: string): void {
     if (this.eventClients.size === 0) return;
     // N3 — a new transcript row can open or close an OpenCode dialog.
@@ -8014,6 +8271,18 @@ export class WebTerminalServer {
     this.manifest = readIfExists(path.join(dir, 'manifest.webmanifest'));
     this.serviceWorker = readIfExists(path.join(dir, 'sw.js'));
     this.icon = readIfExists(path.join(dir, 'icon-512.png'));
+    this.appHtml = readIfExists(path.join(dir, 'app.html'));
+    this.appCsp = buildWebCsp(this.appHtml ? this.appHtml.toString('utf8') : null);
+    this.appFonts = new Map();
+    try {
+      for (const name of fs.readdirSync(path.join(dir, 'app-assets'))) {
+        if (!WEB_APP_FONT_FILE.test(name)) continue;
+        const bytes = readIfExists(path.join(dir, 'app-assets', name));
+        if (bytes) this.appFonts.set(name, bytes);
+      }
+    } catch {
+      /* no /app build — `/app` answers 503 like a missing shell */
+    }
     // Derived from the page we just loaded, once per start rather than per
     // request: hashing 583 KB on the way out of every response would be a real
     // cost for a header that cannot change while the process runs.

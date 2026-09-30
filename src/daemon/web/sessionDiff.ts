@@ -105,6 +105,9 @@ export const GIT_HARDENING_CONFIG: readonly string[] = [
   '-c', 'diff.external=',
   '-c', 'diff.noprefix=false',
   '-c', 'diff.relative=false',
+  // No transport of any kind: phone Git work is local, and a partial clone
+  // would otherwise fetch missing objects through the configured remote.
+  '-c', 'protocol.allow=never',
 ];
 
 /** Prefix `GIT_HARDENING_CONFIG` onto a command's own arguments. */
@@ -236,6 +239,9 @@ export function buildGitEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.Proce
   // (or fails because the agent is mid-commit) is a worse answer than a slightly
   // stale one.
   env.GIT_OPTIONAL_LOCKS = '0';
+  // Phone reads are local: a partial clone must not fetch missing objects
+  // (git 2.45+; `protocol.allow=never` in GIT_HARDENING_CONFIG covers older).
+  env.GIT_NO_LAZY_FETCH = '1';
   // A pager or a credential prompt would hang until the timeout; neither has
   // anywhere to draw on a daemon's stdio.
   env.GIT_PAGER = 'cat';

@@ -429,6 +429,71 @@ describe('AgentDetector', () => {
     });
   });
 
+  describe('Antigravity CLI (agy 1.2.13, live capture 2026-09-29)', () => {
+    const FOOTER_TAIL = '                                                                     accept-edits · Gemini 3.8 Flash · high';
+
+    function agyGated() {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('  ▄▀▀▄        Antigravity CLI 1.2.13\n');
+      return { det, cb };
+    }
+
+    it('opens the gate on the version banner', () => {
+      const { det, cb } = agyGated();
+      expect(det.getLastAgent()).toBe('Antigravity CLI');
+      expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Antigravity CLI', status: 'running' });
+    });
+
+    it('opens the gate on the signed-out splash', () => {
+      const det = new AgentDetector();
+      det.feed(' Welcome to the Antigravity CLI. You are currently not signed in.\n');
+      expect(det.getLastAgent()).toBe('Antigravity CLI');
+    });
+
+    it('reports the project trust screen as awaiting_input', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed(' Welcome to the Antigravity CLI. You are currently not signed in.\n');
+      det.feed('Do you trust the contents of this project?\n');
+      expect(cb.mock.calls.map((c) => c[0].status)).toContain('awaiting_input');
+    });
+
+    it('reports a trust screen that arrives before any banner', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Do you trust the contents of this project?\n');
+      expect(det.getLastAgent()).toBe('Antigravity CLI');
+      expect(cb.mock.calls.map((c) => c[0].status)).toContain('awaiting_input');
+    });
+
+    it('does not open on the trust question quoted inside another line', () => {
+      const det = new AgentDetector();
+      det.feed(`det.feed('Do you trust the contents of this project?\\n');\n`);
+      det.feed('agy asks "Do you trust the contents of this project?" on first run\n');
+      expect(det.getLastAgent()).toBeNull();
+    });
+
+    it('reads the footer: esc to cancel is running, ? for shortcuts is waiting', () => {
+      const { det, cb } = agyGated();
+      cb.mockClear();
+      det.feed(`esc to cancel${FOOTER_TAIL}\n`);
+      det.feed(`? for shortcuts${FOOTER_TAIL}\n`);
+      expect(cb.mock.calls.map((c) => c[0].status)).toEqual(['running', 'waiting']);
+    });
+
+    it('does not take over a live Claude pane that mentions Antigravity CLI', () => {
+      const { det, cb } = claudeGated();
+      det.feed('We could dispatch this card to the Antigravity CLI worker instead.\n');
+      det.feed(`? for shortcuts${FOOTER_TAIL}\n`);
+      expect(det.getLastAgent()).toBe('Claude Code');
+      expect(cb.mock.calls.map((c) => c[0].agent)).not.toContain('Antigravity CLI');
+    });
+  });
+
   describe('feed() line splitting', () => {
     it('splits on \\n', () => {
       const det = new AgentDetector();

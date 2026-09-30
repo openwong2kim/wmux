@@ -18,6 +18,8 @@ describe('desktop phone listener lifetime', () => {
     await Promise.resolve();
     expect(handle).toHaveBeenCalledTimes(1);
     expect(client.rpc).toHaveBeenCalledWith('daemon.phone.complete', { requestId: 'r1', ok: true, result: { accounts: [] } });
+    // The desktop announces the optional commands it handles at register.
+    expect(client.rpc).toHaveBeenCalledWith('daemon.phone.register', { commands: ['accounts.envForAccount'] });
     dispose();
     client.emit('event', { ...event, data: { ...event.data, requestId: 'r2' } });
     expect(handle).toHaveBeenCalledTimes(1);

@@ -507,7 +507,7 @@ describe('WebTerminalServer', () => {
   /** #1163 — the daemon's canonical agent state per session, as the server reads it. */
   let agentStates: Record<string, { agentName: string | null; agentStatus: 'idle' | 'running' | 'awaiting_input' }>;
   /** #1342 — the daemon's resume state per session, as the server reads it. */
-  let resumeStates: Record<string, { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }>;
+  let resumeStates: Record<string, { binding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean; resumeAgent?: string }>;
 
   beforeEach(() => {
     desktopBridge = null;
@@ -1304,6 +1304,53 @@ describe('WebTerminalServer', () => {
       expect(api.headers.get('content-security-policy')).toBe("frame-ancestors 'none'");
     } finally {
       if (csps.isRunning) await csps.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The browser app page (/ and /app) has its own inline scripts, so its own
+  // policy, and serves only the exact font files the build emitted.
+  it('serves GET /app under its own CSP and its fonts same-origin', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-web-app-'));
+    fs.writeFileSync(path.join(dir, 'terminal.html'), '<html><body><script>var a=1;</script></body></html>');
+    fs.writeFileSync(path.join(dir, 'app.html'), '<html><body><script>var boot=1;</script><script>var app=2;</script></body></html>');
+    fs.mkdirSync(path.join(dir, 'app-assets'));
+    fs.writeFileSync(path.join(dir, 'app-assets', 'Inter-abc123.woff2'), 'FONT');
+    // Build-emitted names may carry dots; the route must serve every name the build gate accepts.
+    fs.writeFileSync(path.join(dir, 'app-assets', 'Inter.latin-B_x.1.woff2'), 'DOTTED');
+    fs.writeFileSync(path.join(dir, 'app-assets', 'notes.txt'), 'nope');
+    const deps = makeDeps();
+    const srv = new WebTerminalServer({ sessionManager: deps.sessionManager, log: () => { /* silent */ }, assetsDir: dir });
+    try {
+      const info = await srv.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
+      const base = `http://127.0.0.1:${info.port}`;
+      const page = await fetch(`${base}/app`);
+      expect(page.status).toBe(200);
+      expect(await page.text()).toContain('var app=2;');
+      const csp = page.headers.get('content-security-policy') ?? '';
+      expect(csp.match(/'sha256-[A-Za-z0-9+/=]+'/g)).toHaveLength(2);
+      expect(csp).toContain("font-src 'self'");
+      // `/` is the app page too, now that it has terminals.
+      const root = await fetch(`${base}/`);
+      expect(await root.text()).toContain('var app=2;');
+      expect(root.headers.get('content-security-policy')).toBe(csp);
+      // The classic page lives at /classic (fallback) and /pair (pairing), and
+      // its policy names only its own block.
+      for (const classicPath of ['/classic', '/pair']) {
+        const classic = await fetch(`${base}${classicPath}`);
+        expect(await classic.text()).toContain('var a=1;');
+        expect((classic.headers.get('content-security-policy') ?? '').match(/'sha256-/g)).toHaveLength(1);
+      }
+
+      const font = await fetch(`${base}/app/assets/Inter-abc123.woff2`);
+      expect(font.status).toBe(200);
+      expect(font.headers.get('content-type')).toBe('font/woff2');
+      expect(await font.text()).toBe('FONT');
+      expect(await (await fetch(`${base}/app/assets/Inter.latin-B_x.1.woff2`)).text()).toBe('DOTTED');
+      expect((await fetch(`${base}/app/assets/notes.txt`)).status).toBe(404);
+      expect((await fetch(`${base}/app/assets/..%2Fterminal.html`)).status).toBe(404);
+    } finally {
+      if (srv.isRunning) await srv.stop();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -4035,6 +4082,180 @@ describe('WebTerminalServer', () => {
     expect(lifecycleCalls).toHaveLength(before);
     expect((await fetch(`${base()}/api/sessions`,{method:'POST',headers,body:JSON.stringify({agentLaunch:{agent:'claude',model:'opus',effort:'high'}})})).status).toBe(201);
     expect(lifecycleCalls.at(-1)).toMatchObject({op:'create',arg:{agentLaunch:{agent:'claude',model:'opus',effort:'high'}}});
+  });
+
+  describe('per-pane account and handoff lineage (contract v-next item 4)', () => {
+    /** A desktop that answers `accounts.envForAccount` from `accounts`; `announce` is what it registered with. */
+    const accountDesktop = (announce: string[] | undefined, accounts: Record<string, unknown>, calls: unknown[] = []) => {
+      desktopBridge = new DesktopPhoneBridge((_owner,raw) => {
+        const data = (raw as {data:{requestId:string;command:string;payload:Record<string,unknown>}}).data;
+        calls.push({command:data.command,payload:data.payload});
+        const workspaceEnv = {CLAUDE_CONFIG_DIR:'/ws/claude',CODEX_HOME:'/ws/codex'};
+        const reply = data.command === 'accounts.env'
+          ? {ok:true,result:data.payload.typed === true ? {ok:true,env:workspaceEnv} : workspaceEnv}
+          : data.command === 'accounts.envForAccount' && announce
+            ? {ok:true,result:accounts[data.payload.accountId as string] ?? {ok:false,error:'unknown-account'}}
+            // An old desktop throws on a command it does not know; the envelope says only "failed".
+            : {ok:false};
+        queueMicrotask(() => desktopBridge!.complete('main',{requestId:data.requestId,...reply}));
+        return true;
+      });
+      desktopBridge.register('main',announce);
+      return calls;
+    };
+    const second = {ok:true,vendor:'codex',env:{CODEX_HOME:'/acct/second'}};
+    const startBoth = () => server.start({port:0,host:'127.0.0.1',allowInput:true,allowTranscript:true,allowUpload:false});
+    const post = (headers: Record<string,string>, body: unknown) => fetch(`${base()}/api/sessions`,{method:'POST',headers,body:JSON.stringify(body)});
+
+    it('an old desktop (command unknown) refuses the create and never spawns on the workspace env', async () => {
+      accountDesktop(undefined,{c2:second});
+      const headers = bearer((await startBoth()).token as string);
+      expect(await (await fetch(`${base()}/api/config`,{headers})).json()).not.toHaveProperty('paneAccount');
+      const before = lifecycleCalls.length;
+      const refused = await post(headers,{workspaceId:'ws-1',accountId:'c2'});
+      expect(refused.status).toBe(503);
+      expect(await refused.json()).toEqual({error:'desktop-unavailable',effect:'none'});
+      // A desktop that announced the command but fails it is refused the same way.
+      accountDesktop(['accounts.envForAccount'],{c2:{ok:false,error:'boom'}});
+      expect((await post(headers,{workspaceId:'ws-1',accountId:'c2'})).status).toBe(503);
+      desktopBridge = null;
+      expect((await post(headers,{workspaceId:'ws-1',accountId:'c2'})).status).toBe(503);
+      expect(lifecycleCalls).toHaveLength(before);
+    });
+
+    it('refuses unknown and foreign ids alike, a missing workspace, a missing grant, and a vendor mismatch', async () => {
+      accountDesktop(['accounts.envForAccount'],{c2:second});
+      const headers = bearer((await startBoth()).token as string);
+      const before = lifecycleCalls.length;
+      const unknown = await (await post(headers,{workspaceId:'ws-1',accountId:'nope'})).json();
+      const foreign = await (await post(headers,{workspaceId:'ws-1',accountId:'3f1c2e4a-0b6d-4c1e-9a7f-2d8e5b6c7a90'})).json();
+      expect(unknown).toEqual({error:'unknown-account',effect:'none'});
+      expect(foreign).toEqual(unknown);
+      const noWorkspace = await post(headers,{accountId:'c2'});
+      expect(noWorkspace.status).toBe(400);
+      expect(await noWorkspace.json()).toEqual({error:'workspace-required',effect:'none'});
+      expect(await (await post(headers,{workspaceId:'ws-1',accountId:'../x'})).json()).toEqual({error:'invalid-account-id',effect:'none'});
+      const mismatch = await post(headers,{workspaceId:'ws-1',accountId:'c2',agentLaunch:{agent:'claude'}});
+      expect(mismatch.status).toBe(400);
+      expect(await mismatch.text()).toBe(JSON.stringify({error:'account-vendor-mismatch',effect:'none'}));
+      // Any other agent is a mismatch too, not only the other known vendor.
+      expect(await (await post(headers,{workspaceId:'ws-1',accountId:'c2',agentLaunch:{agent:'opencode'}})).json()).toEqual({error:'account-vendor-mismatch',effect:'none'});
+      expect(lifecycleCalls).toHaveLength(before);
+      await server.stop();
+      const rw = await startRW();
+      const noTranscript = await post(bearer(rw.token as string),{workspaceId:'ws-1',accountId:'c2'});
+      expect(noTranscript.status).toBe(403);
+      expect(lifecycleCalls).toHaveLength(before);
+    });
+
+    it('spawns with the chosen account, echoes the id, and never returns the path', async () => {
+      const calls = accountDesktop(['accounts.envForAccount'],{c2:second});
+      const headers = bearer((await startBoth()).token as string);
+      expect(await (await fetch(`${base()}/api/config`,{headers})).json()).toMatchObject({paneAccount:true,paneHandoff:true});
+      const created = await post(headers,{workspaceId:'ws-1',accountId:'c2'});
+      expect(created.status).toBe(201);
+      const text = await created.text();
+      expect(JSON.parse(text)).toMatchObject({accountId:'c2'});
+      expect(text).not.toContain('/acct/second');
+      expect(lifecycleCalls.at(-1)).toMatchObject({op:'create',arg:{workspaceId:'ws-1',account:{vendor:'codex',dir:'/acct/second'}}});
+      expect(calls).toEqual([{command:'accounts.envForAccount',payload:{workspaceId:'ws-1',accountId:'c2'}}]);
+    });
+
+    it('validates the launch catalog against the chosen account', async () => {
+      const claude = {ok:true,vendor:'claude',env:{CLAUDE_CONFIG_DIR:'/acct/claude-2'}};
+      accountDesktop(['accounts.envForAccount'],{c2:second,k2:claude});
+      const headers = bearer((await startBoth()).token as string);
+      expect((await fetch(`${base()}/api/agent-launch-options?workspaceId=ws-1&accountId=c2`,{headers})).status).toBe(200);
+      expect(agentLaunchEnv?.CODEX_HOME).toBe('/acct/second');
+      expect((await fetch(`${base()}/api/agent-launch-options?workspaceId=ws-1&accountId=k2`,{headers})).status).toBe(200);
+      expect(agentLaunchEnv?.CODEX_HOME).toBe('/ws/codex');
+      expect(agentLaunchEnv?.CLAUDE_CONFIG_DIR).toBe('/acct/claude-2');
+      const unknown = await fetch(`${base()}/api/agent-launch-options?workspaceId=ws-1&accountId=nope`,{headers});
+      expect(unknown.status).toBe(400);
+      expect(await unknown.json()).toEqual({error:'unknown-account',effect:'none'});
+      expect(await (await fetch(`${base()}/api/agent-launch-options?accountId=c2`,{headers})).json()).toEqual({error:'workspace-required',effect:'none'});
+      expect((await post(headers,{workspaceId:'ws-1',accountId:'k2',agentLaunch:{agent:'claude',model:'opus'}})).status).toBe(201);
+      expect(agentLaunchEnv?.CLAUDE_CONFIG_DIR).toBe('/acct/claude-2');
+    });
+
+    it('stores handoff lineage with verified, and refuses a malformed one', async () => {
+      const headers = bearer((await startBoth()).token as string);
+      const before = lifecycleCalls.length;
+      for (const handoffFrom of [{sessionId:'s1',extra:1},{sessionId:'a b'},'s1',{sessionId:'s1',agentSessionId:''}]) {
+        const bad = await post(headers,{handoffFrom});
+        expect(bad.status).toBe(400);
+        expect(await bad.json()).toEqual({error:'invalid-handoff',effect:'none'});
+      }
+      expect(lifecycleCalls).toHaveLength(before);
+      const live = await post(headers,{handoffFrom:{sessionId:'s1'}});
+      expect(live.status).toBe(201);
+      expect(await live.json()).toMatchObject({handoffFrom:{sessionId:'s1',verified:true}});
+      expect(lifecycleCalls.at(-1)).toMatchObject({arg:{handoffFrom:{sessionId:'s1',verified:true}}});
+      const gone = await post(headers,{handoffFrom:{sessionId:'gone-pane',agentSessionId:'conv-1'}});
+      expect(lifecycleCalls.at(-1)).toMatchObject({arg:{handoffFrom:{sessionId:'gone-pane',agentSessionId:'conv-1',verified:false}}});
+      // The row names a source only when this reader may attach it.
+      const goneRow = (await gone.json()) as {handoffFrom:Record<string,unknown>};
+      expect(goneRow.handoffFrom).toEqual({verified:false,at:expect.any(Number)});
+    });
+
+    it('re-checks the credential after a slow body, before answering anything about accounts', async () => {
+      accountDesktop(['accounts.envForAccount'],{c2:second});
+      await startBoth();
+      const phone = await pairDevice('Slow phone');
+      const before = lifecycleCalls.length;
+      const status = await new Promise<{status:number;text:string}>((resolve,reject) => {
+        const req = httpReq({host:'127.0.0.1',port:server.status().port,path:'/api/sessions',method:'POST',
+          headers:{Authorization:`Bearer ${phone.token}`,'Content-Type':'application/json'}},(res) => {
+          let text = ''; res.on('data',(c) => { text += c; }); res.on('end',() => resolve({status:res.statusCode ?? 0,text}));
+        });
+        req.on('error',reject);
+        const body = JSON.stringify({workspaceId:'ws-1',accountId:'nope'});
+        req.write(body.slice(0,10));
+        setTimeout(() => { deviceRoster.get(phone.deviceId)!.revoked = true; req.end(body.slice(10)); },50);
+      });
+      expect(status.status).toBe(401);
+      expect(status.text).not.toContain('unknown-account');
+      expect(lifecycleCalls).toHaveLength(before);
+    });
+
+    it('a broken binding for the chosen vendor does not block the pane; one for the other vendor is named', async () => {
+      const calls: unknown[] = [];
+      desktopBridge = new DesktopPhoneBridge((_owner,raw) => {
+        const data = (raw as {data:{requestId:string;command:string;payload:Record<string,unknown>}}).data;
+        calls.push({command:data.command,payload:data.payload});
+        // The workspace's claude binding points at a directory that is gone.
+        const result = data.command === 'accounts.envForAccount' ? {ok:true,vendor:'claude',env:{CLAUDE_CONFIG_DIR:'/acct/claude-2'}}
+          : data.payload.omitVendor === 'claude' ? {ok:true,env:{CODEX_HOME:'/ws/codex'}}
+          : {ok:false,error:'workspace-account-missing'};
+        queueMicrotask(() => desktopBridge!.complete('main',{requestId:data.requestId,ok:true,result}));
+        return true;
+      });
+      desktopBridge.register('main',['accounts.envForAccount']);
+      const headers = bearer((await startBoth()).token as string);
+      const created = await post(headers,{workspaceId:'ws-1',accountId:'k2',agentLaunch:{agent:'claude'}});
+      expect(created.status).toBe(201);
+      expect(calls).toContainEqual({command:'accounts.env',payload:{workspaceId:'ws-1',typed:true,omitVendor:'claude'}});
+      const missing = await post(headers,{workspaceId:'ws-1',agentLaunch:{agent:'claude'}});
+      expect(missing.status).toBe(409);
+      expect(await missing.json()).toEqual({error:'workspace-account-missing',effect:'none'});
+    });
+
+    it('a desktop that detaches mid-lookup answers desktop-unavailable, never invalid-agent-launch', async () => {
+      desktopBridge = new DesktopPhoneBridge((_owner,raw) => {
+        const data = (raw as {data:{requestId:string;command:string}}).data;
+        if (data.command === 'accounts.envForAccount') queueMicrotask(() => desktopBridge!.complete('main',{requestId:data.requestId,ok:true,result:second}));
+        else queueMicrotask(() => desktopBridge!.disconnect('main'));
+        return true;
+      });
+      desktopBridge.register('main',['accounts.envForAccount']);
+      const headers = bearer((await startBoth()).token as string);
+      const before = lifecycleCalls.length;
+      const detached = await post(headers,{workspaceId:'ws-1',accountId:'c2',agentLaunch:{agent:'codex'}});
+      // (codex is not in this fixture's catalog: a 400 here would mean the bridge failure became invalid-agent-launch.)
+      expect(detached.status).toBe(503);
+      expect(await detached.json()).toEqual({error:'desktop-unavailable',effect:'none'});
+      expect(lifecycleCalls).toHaveLength(before);
+    });
   });
 
   it('serves workspace-scoped browser captures and restricts browser writes', async () => {
@@ -8335,11 +8556,12 @@ describe('WebTerminalServer', () => {
     });
 
     it('404s when the last component became a symlink after the boundary check', async () => {
-      // O_NOFOLLOW is the whole answer to the window between `realpath` and
-      // `open`, and every other symlink case in this file is caught one step
-      // earlier - by realpath - so nothing reaches the flag. Handing the
-      // handler a path realpath did NOT resolve is what puts the swap in front
-      // of `open`, where ELOOP is the refusal.
+      // Every other symlink case in this file is caught one step earlier - by
+      // realpath - so nothing reaches the open. Handing the handler a path
+      // realpath did NOT resolve is what puts the swap in front of
+      // `openResolvedFile`, which refuses the link itself rather than trusting
+      // O_NOFOLLOW (absent on win32, #1434). The swaps that land between its
+      // checks and the open are pinned in openResolvedFile.runtime.test.ts.
       const root = tmpTree();
       const cwd = path.join(root, 'cwd');
       const outside = path.join(root, 'outside');
@@ -8725,6 +8947,47 @@ describe('WebTerminalServer', () => {
           expect(wire).not.toContain(leaked);
         }
         expect((workspacesBody.workspaces as Row[]).map((w) => w.id)).not.toContain('ws-desktop-only');
+      } finally {
+        live.length = 3;
+      }
+    });
+
+    it('merges the layout tree narrowed to the row\'s own live sessions, and lists the rest as unplaced', async () => {
+      const s1b = { ...live[0], id: 's1b' };
+      live.push({ ...brainRow }, s1b);
+      try {
+        const base = sidebar();
+        const layout = {
+          root: {
+            kind: 'split', direction: 'horizontal', sizes: [60, 40], children: [
+              // s2 is live but runs in ws-legacy by the daemon's own record.
+              { kind: 'leaf', paneId: 'pa', activeIndex: 2, surfaces: [{ surfaceId: 't1', kind: 'terminal', ptyId: 's1' }, { surfaceId: 't2', kind: 'terminal', ptyId: 's2' }, { surfaceId: 't3', kind: 'browser', title: 'Docs' }] },
+              // A brain session and one that is not live.
+              { kind: 'leaf', paneId: 'pb', activeIndex: 0, surfaces: [{ surfaceId: 't4', kind: 'terminal', ptyId: 'brain-abc' }, { surfaceId: 't5', kind: 'terminal', ptyId: 'ghost' }] },
+            ],
+          },
+          activePaneId: 'pb',
+        };
+        const workspacesWithLayout = base.workspaces.map((w) => (w.id === 'ws-1' ? { ...w, layout } : w));
+        attachDesktop(() => ({ workspaces: [], sidebar: { ...base, workspaces: workspacesWithLayout } }));
+        const info = await startRO();
+        const body = await getJson(info.token as string, '/api/workspaces');
+        const rows = body.workspaces as Row[];
+        const ws1 = rows.find((w) => w.id === 'ws-1')!;
+        expect(ws1.layout).toEqual({
+          root: {
+            kind: 'split', direction: 'horizontal', sizes: [60, 40], children: [
+              { kind: 'leaf', paneId: 'pa', activeIndex: 2, surfaces: [{ surfaceId: 't1', kind: 'terminal', ptyId: 's1' }, { surfaceId: 't2', kind: 'terminal' }, { surfaceId: 't3', kind: 'browser', title: 'Docs' }] },
+              { kind: 'leaf', paneId: 'pb', activeIndex: 0, surfaces: [{ surfaceId: 't4', kind: 'terminal' }, { surfaceId: 't5', kind: 'terminal' }] },
+            ],
+          },
+          activePaneId: 'pb',
+          unplaced: ['s1b'],
+        });
+        const wire = JSON.stringify(ws1.layout);
+        for (const leaked of ['brain-abc', 'ghost', '"s2"']) expect(wire).not.toContain(leaked);
+        // A row whose desktop entry has no tree carries none.
+        expect(rows.find((w) => w.id === 'ws-legacy')).not.toHaveProperty('layout');
       } finally {
         live.length = 3;
       }
@@ -9283,6 +9546,59 @@ describe('WebTerminalServer', () => {
       expect(first).toContain('\x1b[?2004h');
       // No alt-screen switch was sent, so none is asserted.
       expect(first).not.toContain('\x1b[?1049h');
+    });
+
+    /** Open the stream and return the `meta` that precedes the first snapshot. */
+    const firstSnapshotMeta = async (): Promise<Record<string, unknown>> => {
+      const info = await startRO();
+      const ac = new AbortController();
+      const text = await readStream(
+        `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+        ac,
+        (t) => snapshots(t).length >= 1,
+      );
+      ac.abort();
+      const [meta] = metas(text);
+      expect(meta).toBeDefined();
+      return meta;
+    };
+
+    it('★ stamps the snapshot meta with commandRunning so the client can disarm a dead TUI\'s mouse mode', async () => {
+      // The web client feeds this to the shared staleReplayResetLevel gate:
+      // `false` (shell at its prompt) is what earns the mouse/focus reset.
+      primeRing('\x1b[?1003h\x1b[?1006h');
+      resumeStates = { s1: { commandRunning: false } };
+      expect((await firstSnapshotMeta()).commandRunning).toBe(false);
+    });
+
+    it('omits commandRunning from the snapshot meta when the shell reports no prompt state', async () => {
+      primeRing('\x1b[?1003h\x1b[?1006h');
+      resumeStates = { s1: {} };
+      const meta = await firstSnapshotMeta();
+      expect(meta).not.toHaveProperty('commandRunning');
+      expect(meta).not.toHaveProperty('resumeAgent');
+    });
+
+    it('★ stamps resumeAgent for a pane recovered after a daemon restart (empty prompt log)', async () => {
+      // After a restart the prompt log is empty, so commandRunning is absent;
+      // the recovery hint is what tells the client the arming process is dead
+      // — the same input the desktop's pty.list gate reads.
+      primeRing('\x1b[?1003h\x1b[?1006h\x1b[?2004h');
+      resumeStates = { s1: { resumeAgent: 'claude' } };
+      const meta = await firstSnapshotMeta();
+      expect(meta.resumeAgent).toBe('claude');
+      expect(meta).not.toHaveProperty('commandRunning');
+    });
+
+    it('keeps resumeAgent off /api/workspaces (snapshot meta only)', async () => {
+      resumeStates = { s1: { resumeAgent: 'claude', commandRunning: false } };
+      const info = await startRO();
+      const res = await fetch(`${base()}/api/workspaces`, { headers: { Authorization: `Bearer ${info.token as string}` } });
+      expect(res.status).toBe(200);
+      const raw = JSON.stringify(await res.json());
+      // Non-vacuous: s1 is listed with its other resume facts.
+      expect(raw).toContain('"commandRunning":false');
+      expect(raw).not.toContain('resumeAgent');
     });
 
     it('ends just this stream when the initial frame cannot be built', async () => {

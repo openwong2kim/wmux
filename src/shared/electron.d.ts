@@ -19,6 +19,7 @@ import type {
   WebStartArgs,
   WebGrantArgs,
   WebTerminalInfo,
+  WebDiagnosis,
 } from './web';
 import type { BrowserHelpOutcome, BrowserHelpRequestInfo } from './browserHelp';
 import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteHostStatus, RemoteWorkspaceSummary } from './remoteHosts';
@@ -166,6 +167,12 @@ declare global {
         setGrants: (args: WebGrantArgs) => Promise<WebTerminalInfo>;
         /** Stop the server. Resolves the post-stop state (`running:false`). */
         stop: () => Promise<WebTerminalInfo>;
+        /**
+         * Read-only readiness check (tailscale status + serve status + server
+         * status). Never starts, stops or configures anything. Optional: an
+         * older preload without it keeps the popover on the plain hub.
+         */
+        diagnose?: () => Promise<WebDiagnosis>;
         /**
          * Mint a fresh pairing code. Needed because a code is single-use and
          * expires, which would otherwise leave no way to pair another device

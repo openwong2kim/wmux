@@ -26,6 +26,7 @@ import Input from '../ui/Input';
 import Badge from '../ui/Badge';
 import { DECK_ICON_BUTTON, deckIconTone } from '../Deck/deckIconStyles';
 import PairedDevicesModal from './PairedDevicesModal';
+import PhoneConnectWizard, { type WizardSession } from './PhoneConnectWizard';
 import OtherComputersSection from './OtherComputersSection';
 import AttachRemoteModal from '../Sidebar/AttachRemoteModal';
 import { useStore } from '../../stores';
@@ -286,6 +287,8 @@ export interface WebPopoverBodyProps {
   pairRemainingMs?: number | null;
   /** Which card a refused start came from, so its error lands under that card. */
   pairErrorFlow?: PairFlow | null;
+  /** Open the step-by-step phone wizard. Absent when the bridge cannot run it. */
+  onOpenWizard?: () => void;
   t: (key: string) => string;
 }
 
@@ -294,6 +297,96 @@ const WEB_LINK = `text-[11px] leading-4 text-[var(--accent-blue)] hover:underlin
 
 /** Nothing copied, or the field whose copy button should read "Copied". */
 export type CopyTarget = null | 'url' | 'pairUrl' | 'pairCode' | 'computerLink';
+
+/**
+ * The live phone code: who it registers, the QR (or the pair address), the
+ * code itself and "New code". Shared by the hub's phone card and the phone
+ * wizard, so the two cannot drift into different scan screens.
+ */
+export function PhonePairCode({
+  info,
+  qr,
+  busy,
+  copied,
+  onCopyPairUrl,
+  onCopyPairCode,
+  onNewPairCode,
+  t,
+}: {
+  info: WebTerminalInfo;
+  qr: QrPath | null;
+  busy: boolean;
+  copied: CopyTarget;
+  onCopyPairUrl: () => void;
+  onCopyPairCode: () => void;
+  onNewPairCode: () => void;
+  t: (key: string) => string;
+}) {
+  const pairUrl = webPairUrl(info);
+  return (
+    <>
+      {/* Which device this code will register. The operator typed it a
+          moment ago, but the code outlives that moment by ten minutes and
+          a mis-labelled roster is only discovered when someone needs to
+          revoke one entry out of eight. */}
+      <p className="ui-note">
+        {t('web.pairingAs').replace('{name}', info.pendingDeviceName ?? '')}
+      </p>
+      <p className="ui-note">{t('web.pairHint')}</p>
+      {/* The QR replaces the pair-URL text row rather than stacking on it:
+          once a scan carries the address AND the code, the address as text
+          is redundant, and this popover is a fixed 288px box. Copy stays
+          reachable for a phone that will not scan. */}
+      {qr ? (
+        <div className="flex items-center gap-3">
+          <svg
+            viewBox={`0 0 ${qr.size} ${qr.size}`}
+            width={116}
+            height={116}
+            shapeRendering="crispEdges"
+            role="img"
+            aria-label={t('web.qrAlt')}
+            className="shrink-0 rounded-[8px] bg-white p-1"
+          >
+            <path d={qr.d} fill="#000" />
+          </svg>
+          <div className="flex min-w-0 flex-1 flex-col items-start gap-2">
+            <span className="ui-note">{t('web.qrHint')}</span>
+            <Button size="sm" onClick={onCopyPairUrl}>
+              {copied === 'pairUrl' ? t('web.copied') : t('web.copyLink')}
+            </Button>
+          </div>
+        </div>
+      ) : pairUrl ? (
+        <div className="flex items-center gap-2">
+          <span className="min-w-0 flex-1 truncate select-all font-mono text-[11px] text-[var(--text-sub)]">
+            {pairUrl}
+          </span>
+          <Button size="sm" onClick={onCopyPairUrl} className="shrink-0">
+            {copied === 'pairUrl' ? t('web.copied') : t('web.copy')}
+          </Button>
+        </div>
+      ) : null}
+      <div className="flex items-center gap-2">
+        <span className="flex-1 select-all font-mono text-[22px] font-semibold tracking-widest text-[var(--text-main)]">
+          {info.pairCode}
+        </span>
+        <Button size="sm" onClick={onCopyPairCode} className="shrink-0">
+          {copied === 'pairCode' ? t('web.copied') : t('web.copy')}
+        </Button>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="ui-note">{t('web.pairValidity')}</span>
+        {/* Still reachable while a code is live: the operator may believe
+            this one was seen. It re-mints under the SAME name, so replacing
+            a code never silently costs the device its label. */}
+        <Button variant="ghost" size="sm" onClick={onNewPairCode} disabled={busy} className="ml-auto shrink-0">
+          {t('web.newPairCode')}
+        </Button>
+      </div>
+    </>
+  );
+}
 
 /**
  * The popover contents. Split from WebToggle so the node-env test suite can
@@ -344,6 +437,7 @@ export function WebPopoverBody({
   onCopyComputerLink = () => undefined,
   pairRemainingMs = null,
   pairErrorFlow = null,
+  onOpenWizard,
   t,
 }: WebPopoverBodyProps) {
   // Same control in both bodies below — declared once so the running and
@@ -385,6 +479,12 @@ export function WebPopoverBody({
       )}
     </button>
   );
+  // The wizard's way back in for someone who has already paired a phone.
+  const wizardLink = onOpenWizard ? (
+    <button type="button" onClick={onOpenWizard} data-testid="web-open-wizard" className={`${WEB_LINK} self-start`}>
+      {t('web.wizardOpen')}
+    </button>
+  ) : null;
   // One code slot, two cards: while one card's pairing is live the other says
   // so and offers to end it, rather than silently rotating the code under it.
   const pending = pendingPairFlow(info);
@@ -459,6 +559,7 @@ export function WebPopoverBody({
     return (
       <>
         <PopoverSection title={t('web.shareThisComputer')}>
+          {wizardLink}
           {info.error ? <p className="ui-note">{info.error}</p> : null}
           <div className="ui-group">
             <Field label={t('web.allowInput')} className="ui-row">
@@ -525,7 +626,6 @@ export function WebPopoverBody({
   }
 
   const url = primaryWebUrl(info);
-  const pairUrl = webPairUrl(info);
   const computerOrigin = webComputerPairOrigin(info);
   const computerLink = webComputerLink(info);
   const exposed = webIsExposed(info);
@@ -575,6 +675,7 @@ export function WebPopoverBody({
           typing a 36-char token on a phone keyboard is miserable, so the phone
           opens a token-free /pair address and enters eight characters instead. */}
       <PopoverSection title={t('web.connectPhone')}>
+        {pending === null ? wizardLink : null}
         {info.pairRefusal ? (
           // The whole point of the refusal: this replaces the code rather than
           // sitting beside it. A code shown next to "pairing is unavailable" is
@@ -594,67 +695,16 @@ export function WebPopoverBody({
         ) : pending === 'computer' ? (
           otherInProgress('web.computerPairingInProgress')
         ) : pending === 'phone' ? (
-          <>
-            {/* Which device this code will register. The operator typed it a
-                moment ago, but the code outlives that moment by ten minutes and
-                a mis-labelled roster is only discovered when someone needs to
-                revoke one entry out of eight. */}
-            <p className="ui-note">
-              {t('web.pairingAs').replace('{name}', info.pendingDeviceName ?? '')}
-            </p>
-            <p className="ui-note">{t('web.pairHint')}</p>
-            {/* The QR replaces the pair-URL text row rather than stacking on it:
-                once a scan carries the address AND the code, the address as text
-                is redundant, and this popover is a fixed 288px box. Copy stays
-                reachable for a phone that will not scan. */}
-            {qr ? (
-              <div className="flex items-center gap-3">
-                <svg
-                  viewBox={`0 0 ${qr.size} ${qr.size}`}
-                  width={116}
-                  height={116}
-                  shapeRendering="crispEdges"
-                  role="img"
-                  aria-label={t('web.qrAlt')}
-                  className="shrink-0 rounded-[8px] bg-white p-1"
-                >
-                  <path d={qr.d} fill="#000" />
-                </svg>
-                <div className="flex min-w-0 flex-1 flex-col items-start gap-2">
-                  <span className="ui-note">{t('web.qrHint')}</span>
-                  <Button size="sm" onClick={onCopyPairUrl}>
-                    {copied === 'pairUrl' ? t('web.copied') : t('web.copyLink')}
-                  </Button>
-                </div>
-              </div>
-            ) : pairUrl ? (
-              <div className="flex items-center gap-2">
-                <span className="min-w-0 flex-1 truncate select-all font-mono text-[11px] text-[var(--text-sub)]">
-                  {pairUrl}
-                </span>
-                <Button size="sm" onClick={onCopyPairUrl} className="shrink-0">
-                  {copied === 'pairUrl' ? t('web.copied') : t('web.copy')}
-                </Button>
-              </div>
-            ) : null}
-            <div className="flex items-center gap-2">
-              <span className="flex-1 select-all font-mono text-[22px] font-semibold tracking-widest text-[var(--text-main)]">
-                {info.pairCode}
-              </span>
-              <Button size="sm" onClick={onCopyPairCode} className="shrink-0">
-                {copied === 'pairCode' ? t('web.copied') : t('web.copy')}
-              </Button>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="ui-note">{t('web.pairValidity')}</span>
-              {/* Still reachable while a code is live: the operator may believe
-                  this one was seen. It re-mints under the SAME name, so replacing
-                  a code never silently costs the device its label. */}
-              <Button variant="ghost" size="sm" onClick={onNewPairCode} disabled={busy} className="ml-auto shrink-0">
-                {t('web.newPairCode')}
-              </Button>
-            </div>
-          </>
+          <PhonePairCode
+            info={info}
+            qr={qr}
+            busy={busy}
+            copied={copied}
+            onCopyPairUrl={onCopyPairUrl}
+            onCopyPairCode={onCopyPairCode}
+            onNewPairCode={onNewPairCode}
+            t={t}
+          />
         ) : (
           // Name first, code second. A code exists from the moment the server
           // starts, but redeeming an unnamed one produces the "Unnamed device"
@@ -841,6 +891,16 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   /** Which card the last refused start came from. */
   const [pairErrorFlow, setPairErrorFlow] = useState<PairFlow | null>(null);
   const [devices, setDevices] = useState<WebDeviceSummary[] | null>(null);
+  /**
+   * Which body the popover shows. `auto` resolves once the roster is read:
+   * nothing paired yet → the phone wizard, otherwise the hub with its quick
+   * controls (stop, grants, revoke) and a link into the wizard.
+   */
+  const [view, setView] = useState<'auto' | 'hub' | 'wizard'>('auto');
+  /** Both reads made on THIS open have landed; `auto` decides only then. */
+  const [openReadDone, setOpenReadDone] = useState(false);
+  /** The wizard's pairing in progress. Outlives the popover closing. */
+  const wizardSession = useRef<WizardSession | null>(null);
   const [now, setNow] = useState(() => Date.now());
   /**
    * Drop the grant once the code it belonged to has been redeemed.
@@ -951,14 +1011,45 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
   // tailnet front (a deliberate act by the operator); the polls after it do not.
   useEffect(() => {
     if (!open) return;
-    void refresh(true);
-    void refreshDevices();
+    let current = true;
+    setOpenReadDone(false);
+    void Promise.all([refresh(true), refreshDevices()]).then(() => {
+      if (current) setOpenReadDone(true);
+    });
     const timer = setInterval(() => {
       void refresh();
       void refreshDevices();
     }, POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
+    return () => {
+      current = false;
+      clearInterval(timer);
+    };
   }, [open, refresh, refreshDevices]);
+
+  // Every way the popover closes (toggle, outside click, Escape, a host
+  // handed to the attach dialog) lands here, so the next open decides again.
+  useEffect(() => {
+    if (!open) setView('auto');
+  }, [open]);
+
+  // Needs the diagnose bridge: an older preload without it keeps the hub.
+  const canWizard = typeof api?.diagnose === 'function';
+  useEffect(() => {
+    if (!open || view !== 'auto') return;
+    if (!canWizard) {
+      setView('hub');
+      return;
+    }
+    // Decide on what is true NOW, not on what the roster was when the popover
+    // last closed: a phone may have paired in between.
+    if (!openReadDone) return;
+    if (wizardSession.current) {
+      setView('wizard');
+      return;
+    }
+    const empty = devices !== null && summarizeRoster(devices).total === 0;
+    setView(empty && pendingPairFlow(info) !== 'computer' ? 'wizard' : 'hub');
+  }, [open, view, devices, canWizard, info, openReadDone]);
 
   // The computer link's countdown. Ticks only while the popover is open and a
   // computer code is live; at zero it re-reads status, which shows the
@@ -1048,6 +1139,8 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
     seenHubRequest.current = hubRequestSeq;
     if (variant !== 'sidebar') return;
     anchorUnderButton();
+    // "Other computers" lives in the hub, so a request for it must land there.
+    setView('hub');
     setOpen(true);
     setScrollToOthers(true);
   }, [hubRequestSeq, variant, anchorUnderButton]);
@@ -1350,6 +1443,25 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
           } as CSSProperties}
           className="fixed z-50 w-72 overflow-y-auto"
         >
+          {view === 'auto' && canWizard ? (
+            <p className="ui-note" role="status">
+              {t('web.devicesLoading')}
+            </p>
+          ) : view === 'wizard' ? (
+            <PhoneConnectWizard
+              info={info}
+              onInfo={applyInfo}
+              onExit={() => setView('hub')}
+              onOpenDevices={handleOpenDevices}
+              onOpenLink={handleOpenLink}
+              copied={copied}
+              onCopyPairUrl={handleCopyPairUrl}
+              onCopyPairCode={handleCopyPairCode}
+              session={wizardSession}
+              t={t}
+            />
+          ) : (
+          <>
           {/* This machine → other computers first: the client half of the
               hub, independent of whether this machine is sharing itself. */}
           <OtherComputersSection
@@ -1402,8 +1514,11 @@ export default function WebToggle({ variant = 'icon', compact = false }: { varia
             onCopyComputerLink={() => void handleCopyComputerLink()}
             pairRemainingMs={pairRemainingMs}
             pairErrorFlow={pairErrorFlow}
+            onOpenWizard={canWizard ? () => setView('wizard') : undefined}
             t={t}
           />
+          </>
+          )}
         </Popover>
       ) : null}
 

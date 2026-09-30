@@ -164,7 +164,7 @@ POST /api/stream-ticket        (Authorization header, as always)
 
 | Event | Data |
 | --- | --- |
-| `meta` | `{cols, rows, truncated, omittedBytes}` |
+| `meta` | `{cols, rows, truncated, omittedBytes, commandRunning?, resumeAgent?}` |
 | `snapshot` | base64 of the initial paint |
 | `data` | base64 of live PTY bytes |
 | `exit` | `1` |
@@ -173,6 +173,24 @@ POST /api/stream-ticket        (Authorization header, as always)
 The first paint is **capped**, and never cut mid-character or mid-escape. When
 `truncated` is true, `omittedBytes` says how much history is above — surface it
 rather than pretending the buffer starts there.
+
+`commandRunning` (optional, present only when the pane's shell emits OSC 133
+prompt markers) is `false` when the shell sits at its prompt. The snapshot
+re-arms whatever input modes the pane's output last left on, including mouse
+tracking a TUI armed and never disabled; a client that sees `false` should
+disarm mouse and focus reporting terminal-side after painting the snapshot
+(never bracketed paste — the live shell owns that), or its pointer moves type
+mouse reports into the prompt.
+
+`resumeAgent` (optional) is set only for a pane the daemon recovered after its
+own restart whose agent has not been re-detected: the process that armed the
+modes is known dead, so it is grounds to disarm mouse and focus reporting even
+when `commandRunning` is absent (`commandRunning: true` still wins: a fresh
+command now owns the modes). It is **not** grounds to clear bracketed paste:
+the recovered pane's new shell is alive and owns `?2004`, and `resumeAgent`
+persists until the agent is re-detected, so clearing it on every attach breaks
+multi-line paste (the first line runs at once). These are the same two inputs
+the desktop app gates its own replay reset on.
 
 **`agent.liveness` on this stream is the terminal face's activity header.** Same
 event name and same `state` union as the fleet copy in the next section, and the
@@ -353,7 +371,7 @@ GET /api/events?since=<cursor>     (Bearer)
 GET /api/config    → {allowInput, allowUpload, allowTranscript, liveActivityPush?,
                       gatedTools, gateEnabled?, fleetSidebar?, terminalPromptDetail?,
                       terminalPromptDecline?, protocolVersion, minProtocolVersion,
-                      serverVersion}
+                      serverVersion, hostPlatform}
 GET /api/sessions  → {sessions: [{id, cwd, spawnCwd?, cols, rows, state, agent, lastActivity,
                       workspace?, workspaceId?, shell?, lastDetectedAgent?, cwdLeaf?,
                       liveness?, lastAssistantText?, surfaceTitle?, paneName?}]}
@@ -1307,6 +1325,7 @@ v1 paths.
 | --- | --- |
 | `decisionForms` | The form kinds this daemon produces now: any of `permission`, `plan`, `questions`. `plan` while the daemon's `phoneDecisions.stepwise` switch is on (see Plan dialog); `permission` and `questions` (agent-native, OpenCode; see below) while `phoneDecisions.native` is on. Offer a v2 answer only for a kind listed here |
 | `chatCancel` | Whether this caller may use `POST /api/sessions/<id>/chat/cancel` (its input grant) |
+| `chatCancelOutcome` | `true` when `chatCancel` is true and the cancel receipt store loaded; omitted otherwise (never `false`). Advertises `cancel` on the cancel answer, the cancel receipt route and SSE `chat.cancel` (see Chat cancel outcome) |
 | `chatQueue` | Whether this caller's `chat-queue` sends are held by the daemon queue (its input grant, and a queue that loaded) |
 
 **The record.** For a `decision-v2` caller, a record that can still be
@@ -1609,6 +1628,139 @@ the same turn. The Esc once-per-turn latch and cooldown do not apply: an
 abort of a turn that has already ended is simply `turn-not-running`. When
 the abort request left but its answer was lost, the result is 500
 `cancel-failed` with `effect:"uncertain"`, as for a Claude/Codex write.
+
+### Chat cancel outcome
+
+On a daemon that advertises `chatCancelOutcome`, a cancel also reports what
+happened after the write, keyed by the same owner-bound `clientCancelId`.
+Shared types: `src/shared/phoneChatCancelOutcome.ts`.
+
+**Who may cancel.** The daemon has no per-pane owner: control belongs to the
+credential, not to whoever started the turn. A cancel is accepted only when
+**all** of these hold. Each is checked when the headers arrive, again after
+the body, and again immediately before the interrupt is written:
+
+1. the server runs with `--allow-transcript` and `--allow-input`;
+2. the caller may input: the operator token, or a paired, unrevoked device
+   whose own `grants.input` is true;
+3. the pane resolves for the caller (never the orchestrator brain pane, for
+   any credential) and is the same incarnation throughout;
+4. the re-authenticated caller is the same caller (same credential class; for
+   a device, the same device id);
+5. `agentSessionId` (and `historyEpoch` and `turnId` when sent) match the
+   pane's current conversation and running turn.
+
+"Only the turn I started" is **not** a rule the daemon can enforce: send
+receipts do not record which `chat.turn.id` they started. Any caller that may
+control the pane may stop its running turn, as at the keyboard.
+
+**The answer.** `POST …/chat/cancel` is unchanged, and its body stays strict.
+A 202 also carries the cancel's progress:
+
+```json
+"cancel": { "state": "requested", "turnId": "t1:…", "requestedAt": 1758712345123, "at": 1758712345123 }
+```
+
+A replay carries the progress **as it is now** (it may already read `ended`),
+whatever the replay's status; that includes the replay of a 500
+`cancel-failed` (`unknown`, `write-uncertain`). The first 500 itself carries no
+`cancel`: read the receipt.
+
+**The receipt.**
+
+```
+GET /api/sessions/<id>/chat/cancel/<clientCancelId>
+→ 200 {
+    "clientCancelId": "…",
+    "state": "requested" | "ended" | "not-ended" | "unknown" | "none",
+    "turnId": "t1:…",                                   // aimed turn, when known
+    "endedAs": "interrupted" | "completed" | "failed" | "unspecified",   // ended only
+    "evidence": "native" | "transcript" | "screen",     // ended only
+    "reason": "write-uncertain" | "daemon-restart" | "pane-closed" | "session-changed",  // unknown only, when known; open set
+    "requestedAt": 1758712345123,                       // absent after a daemon restart
+    "at": 1758712349000
+  }
+→ 404 {error: "pane-not-found"}
+→ 403 transcript refusal (as `/turns`)
+→ 503 {error: "chat-persist-failed"}   // no receipt store (the key is also omitted)
+```
+
+Owner-bound (a device reads only its own cancels) and pane-bound; needs
+`--allow-transcript`, not input, so a device whose input grant was withdrawn
+still learns what its cancel did. `none` means there is no receipt for this
+owner, pane and id: it was never written, or it was refused (a refusal stores
+nothing).
+
+| `state` | Meaning | Client |
+| --- | --- | --- |
+| `requested` | written; the aimed turn has not been seen to end | keep "Stopping…", poll every 2 s or wait for `chat.cancel` |
+| `ended` | the aimed turn ended after the write | final. `endedAs: "completed"` means it finished on its own first |
+| `not-ended` | still running 15 s after the write | final: it never changes, even if the turn ends later. Re-read `/turns` for the turn's current state; offer Stop again (a new `clientCancelId`) or Terminal |
+| `unknown` | cannot be known | final; check Terminal |
+
+What counts as `ended` today (the Esc path, Claude and Codex): the daemon
+looks at the pane about once a second for 15 s after the write. Nothing is
+`ended` while the aimed `chat.turn` still reads `running`.
+
+- `evidence: "transcript"`: the first record written **after the interrupt**
+  is an interrupt or end record. The daemon notes where the transcript stood
+  right before the write; an end recorded before that point (an earlier turn
+  that a queued prompt merged into the same episode) never counts. An
+  interrupt reads `endedAs: "interrupted"`, an end_turn reply or Codex
+  `task_complete` reads `completed`.
+- `evidence: "screen"`: the aimed turn is no longer running, and an idle title
+  the agent set after the write (Claude `✳`, Codex without a spinner) or
+  Claude's Stop-hook row is on screen. `endedAs: "unspecified"`. The pane, its
+  conversation and the turn are checked again after the screen read.
+- The hook stream is not evidence: an interrupt fires no Stop hook.
+- `endedAs: "failed"` and `evidence: "native"` are not sent yet.
+
+`unknown` reasons: `write-uncertain` (the write itself may or may not have
+landed; from the start), `daemon-restart` (the daemon restarted before an end
+was seen), `pane-closed` (the pane closed, is another incarnation or dead, or
+was not attached when the window closed), `session-changed` (the pane shows
+another conversation). `unknown` **without** a `reason` when the aimed turn's
+end cannot be proved: a new prompt or turn start was recorded after the write
+before any end, the transcript tail no longer reaches back to the write, or
+the turn stopped running with no proof by the 15 s deadline.
+
+**Not served yet.** Codex app-server `turn/interrupt {threadId, turnId}` with
+`native` evidence (gated on the same spike as the Codex account status); Codex
+uses the Esc path above. OpenCode: nothing observes the plugin abort yet, so an
+OpenCode cancel reads `unknown` (no `reason`) from the start, or `unknown`
+(`write-uncertain`) when the abort's answer was lost; `native` evidence from
+the plugin's phase is a follow-up.
+
+**Storage.** `chat-cancel-receipts.json` keeps `version: 1`, and
+`outcome.effect` keeps its two values. Progress is an optional field next to
+`outcome` on each entry: `progress: {state, endedAs?, evidence?, reason?,
+at}`. An entry without it reads as `requested` when its outcome is
+`interrupt-requested`, and as `unknown` (`write-uncertain`) when it is
+`uncertain`. At load, the restart rule that turns a `pending` entry into a
+final `uncertain` one also sets `progress` to `unknown` (`daemon-restart`), and
+a `requested` progress becomes `unknown` (`daemon-restart`) the same way; the
+result is written once, so its `at` does not move on later restarts. An older
+daemon reading the file ignores the field. While the write is still in flight
+(`pending`, no outcome yet) an entry reads `requested`. A stored `progress` is
+normalized on read (`normalizeCancelProgress`) and never makes an entry
+invalid: a state outside the union reads `unknown`, fields that do not belong
+to the state or fail their check are dropped (`reason` is an open set), and a
+malformed `at` falls back to the entry's own time.
+
+**SSE.**
+
+```
+event: chat.cancel
+data: {"sessionId":"pty-7f3c","clientCancelId":"…","state":"ended","turnId":"t1:…","endedAs":"interrupted","at":1758712349000}
+```
+
+On every change, the first `requested` (or the `write-uncertain` `unknown`)
+included, and only once the change is on disk (a failed write is retried, not
+announced). Live-only (no `id:`, never in the backlog) and sent only to the
+cancel's owner among the callers that read the pane's `/turns`. The receipt is
+authoritative after a reconnect. The frame carries no `evidence` or `reason`
+(`ChatCancelEventFrame`): when it reports a final `state` and you need those,
+read the receipt.
 
 ### Chat queue
 
@@ -2467,8 +2619,9 @@ not the desktop fields.
     level, as `nested` alone says. This happens when the requesting pane is
     alive but has no session the phone lists (a pane of browser tabs only),
     when the desktop is too old to say, and when the desktop's reply was over
-    its size budget: the pane placement (every `paneId`, `nestedUnder` and
-    `requesterPaneId`) is the first thing cut, before tab titles.
+    its size budget: after the layout trees (see *Workspace layout tree*),
+    the pane placement (every `paneId`, `nestedUnder` and `requesterPaneId`)
+    is the first thing cut, before tab titles.
 
   If no session you hold carries `requesterPaneId` (the two routes are
   polled separately and can disagree for a poll), fall back the same way.
@@ -2489,6 +2642,170 @@ session in a pane of that workspace.
 
 Top level of `GET /api/workspaces`: `activeWorkspaceId` — the workspace the
 desktop is showing, present only when it is one of the listed rows.
+
+#### Workspace layout tree
+
+`layout` — per workspace row, the desktop's split layout for that workspace:
+how its panes are split, how big each is, which tabs each pane holds and which
+one it shows. Read-only, additive, and under the same presence rules as every
+field above; an absent `layout` means "draw this workspace flat from
+`panes[]`", exactly as before. No `/api/config` flag announces it — the key's
+presence on a row is the signal, and a daemon that serves the web client ships
+that client in the same build. `PHONE_PROTOCOL_VERSION` is unchanged.
+
+```ts
+type Layout = {
+  root: Node;
+  activePaneId?: string;   // the desktop's focused pane, only when it is a leaf of root
+  unplaced: string[];      // sessionIds of this row's panes[] that no leaf holds
+};
+type Node =
+  | { kind: 'split'; direction: 'horizontal' | 'vertical'; sizes: number[]; children: Node[] }
+  | { kind: 'leaf'; paneId: string; surfaces: Surface[]; activeIndex?: number };
+type Surface = {
+  surfaceId: string;       // desktop tab id: stable across polls, unique in the tree
+  kind: 'terminal' | 'browser' | 'editor' | 'diff' | 'git' | 'review' | 'remote-terminal' | 'other';
+  ptyId?: string;          // terminal only: a sessionId of this same row's panes[]
+  title?: string;          // non-terminal only: at most 100 characters, one line
+};
+```
+
+- `direction` uses the desktop's word: `horizontal` lays the children side by
+  side (columns), `vertical` stacks them (rows).
+- `sizes` has one entry per child, in percent, in whole hundredths (0.01)
+  that sum to exactly 100, none below 0.01. A desktop split with no or
+  mismatched sizes arrives as an equal split (e.g. 33.34 / 33.33 / 33.33),
+  which is what the desktop draws for it.
+- A leaf's `paneId` is the same value `panes[].paneId` carries. `surfaces` are
+  the pane's tabs in the desktop's order; `activeIndex` is the tab the pane
+  focuses, present whenever `surfaces` is non-empty. It may be a browser or
+  editor tab.
+- `surfaceId` is the desktop's own tab id. It stays the same across polls for
+  as long as the tab exists, so key tabs (and any per-tab view state) by it;
+  a tab that moves to another pane keeps it.
+- A pane holding both terminal and browser tabs is drawn by the desktop as a
+  side-by-side split inside the pane: the terminal side shows the focused
+  terminal tab (else the first terminal tab), the browser side shows the
+  focused browser tab (else the first browser tab), and a focused
+  diff/editor/remote tab covers both. That split starts at 50/50 and its
+  ratio is not stored anywhere, so `kind`, order and `activeIndex` are all a
+  reader needs to reproduce it.
+- A terminal tab carries `ptyId` only — its title is that session's
+  `surfaceTitle` on `GET /api/sessions`. A terminal tab **without** `ptyId`
+  is a slot whose session this row does not list: still spawning, the
+  orchestrator brain, gone, or running in another workspace by the daemon's
+  record. Keep the slot so tab order and `activeIndex` stay true, and draw a
+  placeholder for it. Every `ptyId` in a tree is a live session of that same
+  row, and appears at most once.
+- A non-terminal tab carries its title only (no URL, no file path). There is
+  nothing to stream for it; draw a static tab. Treat an unknown `kind` as
+  `other`.
+- `unplaced` lists the row's sessions that no leaf holds — a stashed pane's
+  tab (stashed panes are not part of the layout), or a session the desktop
+  has not placed yet. Draw them apart from the tree (e.g. a trailing
+  "Not in layout" group) so every listed session stays reachable.
+- The pane cols/rows stay desktop-owned (see *Resizing a pane*): the tree
+  tells you the arrangement, not a geometry you can impose.
+
+Bounds, enforced by the desktop and again by the daemon: depth ≤ 16 (the root
+is 1), ≤ 512 splits and leaves together, ≤ 64 leaves, ≤ 64 children per split,
+≤ 64 tabs per leaf and ≤ 512 tabs per tree. A tree over any bound, with bad
+sizes, a missing or duplicate `surfaceId`, a duplicate pane or session id, an
+out-of-range `activeIndex` or an unsafe title is not sent at all; the row and
+its flat `panes[]` stay. A single terminal tab whose session id the desktop
+cannot send safely loses only its `ptyId`.
+
+Size budget: the layout trees are the first thing cut when the desktop's reply
+is over its budget, largest tree first, before pane placement, titles and pane
+rows. A tree is never sent with pane placement, titles or pane rows cut, so a
+`layout` you receive is always backed by a full `panes[]`.
+
+#### Browser app (`/`)
+
+**The native iOS app does not use any of the HTML pages below.** It talks to
+the JSON/SSE routes in this document directly; the pages are the daemon's
+browser clients, and nothing in them is part of the native contract.
+
+`GET /` (also `/index.html` and `/app`) is the browser app: the desktop
+renderer's own components (sidebar, workspace rows, surface tabs, split layout,
+terminals, theme and fonts), built by `vite.web.config.ts` and inlined by
+`scripts/build-daemon-web.mjs` as two scripts and one style block. It mirrors
+the tree above — it reads `GET /api/workspaces` and `GET /api/sessions` every
+2.5 s, one after the other — and changes no structure (no split, close, rename
+or reorder). `GET /classic` is the flat client that used to live at `/`, and
+`GET /pair` is that same classic page opened on its pairing screen. A daemon
+whose app page was not built serves the classic page at `/`.
+
+- The first script (es2017) stores `?token=` under the same key the classic
+  page uses and installs a deny-by-default `window.electronAPI`: static values
+  (`platform`, `systemLocale`, `windowsBuildNumber`, `browser.getBackendSync`),
+  no-op subscriptions (`events.publish`, `daemon.onConnected`) and the terminal
+  members listed below; every other member (`pty.create` / `dispose` /
+  `promote` / `resize`, `shell.*`, `accounts.*`, `dialog.*`, …) returns a
+  rejected promise and is never wired to the daemon. It also installs a
+  `window.clipboardAPI` on the browser clipboard (secure contexts only) and
+  registers `/sw.js` in a secure context, as the classic page does.
+- No stored credential, a 401, or a browser that cannot run the es2022 bundle
+  (iOS before 16.4) → the page goes to `/classic`. After pairing, the classic
+  page lands on `/` again (and an old browser falls straight back).
+- Terminals are the desktop's own `Terminal` component over the web routes:
+  - A pane's stream (`GET /api/stream`, with a stream ticket for a device
+    credential — `<deviceId>.<secret>` — and `?token=` for the operator token,
+    which never asks for a ticket) is open only while the pane is shown and its
+    terminal reports itself visible; it closes on hide. A device credential
+    never goes into the URL: no ticket, no stream.
+  - Inline images (sixel / iTerm2) are off in the browser: the image decoder
+    needs WebAssembly, which the page's CSP does not allow.
+  - At most **4** panes stream at once (the daemon allows 8 streams per
+    principal, the browser 6 HTTP/1.1 connections per origin). A shown pane
+    beyond that shows a placeholder with "Show live", which takes the slot of
+    the least recently activated pane; a freed slot goes to the longest waiter.
+    At phone width only the selected pane is shown, so only it streams.
+  - The grid is the desktop's: cols/rows from `/api/sessions` and the stream's
+    `meta` (including mid-stream resize metas). The page fits the **font size**
+    to its box — never a CSS transform, which would misplace mouse reports — and
+    never asks to resize a pane.
+  - Each `snapshot` is replayed as one write starting with RIS (a re-opened
+    stream repaints instead of stacking). Queries the snapshot replays are
+    not answered (the viewer answers none — see below). The stale-mode reset
+    uses the shared gate (`commandRunning`,
+    `resumeAgent` from `meta`) capped at the alive-shell set: mouse and focus
+    reporting are cleared, bracketed paste (`?2004`) never is.
+  - `hostPlatform` in `/api/config` is the daemon's `process.platform`
+    (`darwin`, `win32`, `linux`): the browser app folds keyboard-protocol
+    negotiation by the pane's host, not by the browser's OS.
+  - The page re-reads `/api/config` every 10 s (backing off on failure), so a
+    failed first read or a changed grant does not stick; until the first
+    answer the page shows "Checking input…", and a read-only caller sees a
+    "Read-only" chip.
+  - Keystrokes go to `POST /api/input` in order per pane, only while this
+    caller may type; a read-only caller's terminal sends nothing, and never
+    arms mouse reporting (the drag selects text instead). Keys typed while a
+    snapshot is being parsed wait for it. A delivery that fails or cannot be
+    confirmed (409, other 4xx, 5xx, no answer) stops that pane's input and the
+    page says so, with how many keystrokes were not sent and a Resume button.
+    An unconfirmed keystroke is never re-sent (it may have arrived); input
+    receipts are not used per keystroke (two durable writes each, 10 000 a day
+    shared by every client).
+  - The browser terminal is a viewer and **answers no terminal query** (DA,
+    DSR/CPR, DECRQM, XTVERSION, DECRQSS, OSC 4/10/11/12 `?`), replayed or live,
+    and sends no focus reports: the pane's owner (the desktop's terminal)
+    answers. With no desktop attached a query goes unanswered and the app
+    falls back on its own timeout — a viewer that answers can type into a
+    shell; one that stays quiet cannot.
+  - Paste (⌘V, Ctrl+V, Ctrl+Shift+V) is the browser's own paste event, so it
+    works outside a secure context; copy falls back to the legacy copy
+    command there.
+  - A stream the daemon keeps refusing (stream quota, expired ticket) backs
+    off (1 s doubling to 30 s) and after 5 failures gives its slot up; the
+    pane shows it as unavailable with "Show live" to try again.
+- The page is served under its own CSP, derived from its own bytes like the
+  classic page's. Both policies carry `font-src 'self'`: the app's fonts are
+  served same-origin from `/app/assets/<name>.woff2` (exact file names from the
+  build, immutable caching). The page makes no request to any other origin.
+- The service worker keeps two offline shells under their own keys — `/` (the
+  app; `/index.html` and `/app` share it) and `/classic` (`/pair` shares it) —
+  precaches both, and caches the fonts on first use.
 
 ### Isolated Electron preview smoke test
 
@@ -3283,3 +3600,593 @@ re-read after every reconnect instead of reconstructing from events. A dialog
 seen only on the rendered screen shows on the next `/turns` read (and as
 `blockedBy:"terminal"` on a refused send); a send refused that way emits
 nothing itself.
+
+---
+
+## Proposed: contract v-next (NOT SERVED YET)
+
+> **Status: design, engineering review GO (conditional).** Unlike every
+> section above, nothing here is extracted from serving code: no daemon serves
+> these routes or fields yet. Do not ship a client path that depends on them
+> until the matching `/api/config` key (below) appears on a real daemon.
+> **Served so far: items 2, 3 and 4** (`codexAccountStatus`,
+> `chatCancelOutcome`, `paneAccount`, `paneHandoff`). Items 1 and 5 are still
+> design only.
+> Shared types: `src/shared/phoneTurnFailure.ts`,
+> `src/shared/phoneCodexAccountStatus.ts`, `src/shared/phoneChatCancelOutcome.ts`,
+> `src/shared/phonePaneAccount.ts`, `src/shared/phoneGitV1.ts`.
+
+All items are additive. None moves `protocolVersion` or `chatVersion`.
+
+### Discovery
+
+Flat, per-caller `/api/config` keys, **omitted (not `false`)** when the caller
+cannot use them, exactly like the keys above. An absent key means "not on this
+daemon"; never probe with a write.
+
+| Key | Present when | Advertises |
+| --- | --- | --- |
+| `turnFailure` | always, once served | `failure` on the surfaces in item 1 |
+| `codexAccountStatus` (**served**) | `--allow-transcript`, and a pane this caller may read has a live Codex relay | `GET /api/sessions/<id>/codex/account-status` |
+| `chatCancelOutcome` | `chatCancel` is true and the cancel receipt store loaded | **Served** (see Chat cancel outcome): `cancel` on the cancel answer, the cancel receipt route, `chat.cancel` SSE |
+| `paneAccount` (**served**) | caller may input, `--allow-transcript`, and the attached desktop announced `accounts.envForAccount` | `accountId` on `POST /api/sessions` and on `GET /api/agent-launch-options` |
+| `paneHandoff` (**served**) | caller may input | `handoffFrom` on `POST /api/sessions`, echoed on rows and history |
+| `gitProjects` | caller may input (**served**) | `GET /api/git/projects`, `GET …/git/branches` |
+| `gitWorktrees` | caller may input and the worktree receipt store loaded | `POST …/git/worktree` and its receipt |
+| `gitChecks` | caller may input (**served**) | `GET …/git/checks` |
+
+Per session, `/turns` `chat.capabilities` gains `accountStatus: true` for a
+`terminal` binding whose agent is `codex` and whose pane has a live relay to
+its account server (**served**; omitted otherwise). The route stays
+authoritative.
+
+**`paneAccount` is mandatory before sending `accountId`.** `POST /api/sessions`
+ignores unknown body keys on every daemon that predates this, so an
+`accountId` sent to an older daemon is silently dropped and the pane spawns
+on the workspace's bound account. Also check that the 201 row echoes the
+`accountId` you sent.
+
+**Desktop capability handshake.** `paneAccount` depends on a desktop bridge
+command that older desktops do not have. The key appears only after the
+attached desktop has announced support for `accounts.envForAccount` on this
+connection (the desktop sends `daemon.phone.register {commands:[…]}`; an older
+desktop sends no list and so never enables it); it disappears when the desktop
+detaches. Any failure of that
+command (unsupported, timeout, malformed answer, desktop gone) refuses the
+create. The daemon never falls back to the workspace's account environment
+when an `accountId` was sent.
+
+### Defaults this contract assumes (owner decisions pending)
+
+- Codex `sessionBudgetExceeded` is **not** `quota`: it reads `reason:"unknown"`
+  with `providerCode:"sessionBudgetExceeded"`.
+- A Claude subscription usage cap reads `rate-limited`; Claude reports it as
+  `rate_limit`, and `providerCode` is the only finer signal.
+- A `codex` typed by hand and OpenCode get no typed failure (v1 limit).
+- Worktree removal is not in v1; the desktop's cleanup UI reclaims phone
+  worktrees (item 5).
+
+### 1. Typed turn failure
+
+When a turn ends in failure the daemon reports only what the provider said,
+in structured form:
+
+```jsonc
+"failure": {
+  "reason": "rate-limited",        // "rate-limited" | "auth" | "quota" | "network" | "unknown" (closed)
+  "provider": "claude",            // "claude" | "codex" (open)
+  "providerCode": "rate_limit",    // provider's own code, verbatim, ^[A-Za-z][A-Za-z0-9_]{0,63}$; optional
+  "httpStatus": 429,               // codex only, when the error names one; optional
+  "message": "You've hit your limit · resets 3pm", // ≤ 280 UTF-16 units, sanitized (see below), plain text; optional
+  "retryAfterMs": 30000,           // reserved, never sent today
+  "resetAt": 1760000000000,        // reserved, never sent today
+  "at": 1758712345123,             // epoch ms the daemon saw it
+  "turnId": "t1:…"                 // chat.turn.id of the failed turn, when known; optional
+}
+```
+
+Render `reason` for the headline and `message` (when present) as the body.
+Every provider- or server-authored string in this section (`message`, rate-limit
+`limitName`, check `name` and `workflow`) is sanitized the same way: C0/C1
+controls, bidi embeddings, overrides and isolates (U+202A–202E, U+2066–2069),
+zero-width characters (U+200B–200F) and U+FEFF are removed, lone surrogates
+are dropped, whitespace is collapsed, and a clipped string ends in `…` without
+splitting a surrogate pair.
+Never parse `message`: a reset time in it is prose, not a field. Neither
+source carries a structured retry-after or reset time, so `retryAfterMs` and
+`resetAt` stay absent.
+
+**One failure, several surfaces.** The same failure can reach you on up to
+five surfaces and again after a reconnect. Deduplicate by `(sessionId,
+turnId)`, or by `(sessionId, at)` when `turnId` is absent; the daemon sends
+identical `turnId` and `at` values on every surface for one failure.
+
+**Sources and mapping (normative).**
+
+Claude Code `StopFailure` hook. It fires instead of `Stop`, and the bridge
+forwards its payload verbatim. Input fields: `error` (required),
+`error_details`, `last_assistant_message` (verified on Claude Code 2.1.285).
+`message` comes from `last_assistant_message`, never from `error_details`
+(raw API text that Claude Code marks internal).
+
+| `error` | `reason` |
+| --- | --- |
+| `rate_limit` | `rate-limited` (includes subscription usage caps) |
+| `billing_error` | `quota` |
+| `authentication_failed`, `oauth_org_not_allowed`, `cloud_credential_error`, `account_on_hold`, `verification_required` | `auth` |
+| `overloaded`, `server_error`, `invalid_request`, `model_not_found`, `max_output_tokens`, `unknown`, anything else | `unknown` |
+
+Claude has no connection-failure code, so Claude never yields `network`.
+
+Codex: `turn/completed` with `turn.status: "failed"` on the pane's own relay
+stream (codex-cli 0.157.1 schema). `message` is `turn.error.message`;
+`additionalDetails` is never sent. An `error` notification with
+`willRetry: true` is not a failure, and an interrupted turn is a cancel.
+
+| `codexErrorInfo` | `reason` |
+| --- | --- |
+| `rateLimitExceeded` | `rate-limited` |
+| `usageLimitExceeded` | `quota` |
+| `unauthorized` | `auth` |
+| `httpConnectionFailed`, `responseStreamConnectionFailed`, `responseStreamDisconnected` | `network`; `rate-limited` if `httpStatusCode` is 429, `auth` if 401/403 |
+| `responseTooManyFailedAttempts` | `unknown`; 429 → `rate-limited`, 401/403 → `auth` |
+| `sessionBudgetExceeded`, anything else, or `null` | `unknown` |
+
+**Scope.** Claude: any pane with the wmux hook bridge installed. Codex: only
+panes with a daemon-owned relay (phone-created Codex panes on Unix). A `codex`
+typed by hand has no relay; its `notify` carries no failure detail and, from a
+shared app-server, no provable pane (see #1657). OpenCode: none.
+
+**Where it appears.**
+
+| Surface | Field | Lifetime | `message` |
+| --- | --- | --- | --- |
+| `/turns` `chat` | `chat.lastFailure` | until the next turn starts in that conversation | yes |
+| `/api/sessions` row | `lastFailure` | until the next turn starts | only with `--allow-transcript` |
+| `/api/events` `agent.liveness` | `failure` on the frame that ends the turn | live-only | yes (the fleet copy already needs a `/turns` read) |
+| `/api/stream` `agent.liveness` | `failure` | live-only | **no** (same narrowing as `tool`) |
+| `/api/history` entry | `failure` on `outcome: "failed"` | kept with the entry | yes (history already needs `--allow-transcript`) |
+
+The frame that ends a failed turn carries `state: "idle"` plus `failure`. The
+turn is over, so `idle` is the truthful state, and a client that ignores
+`failure` renders what a finished turn renders. Today's daemon projects a
+`StopFailure` onto `state: "busy"` (`deriveAgentLiveness` has no branch for
+`status: "error"`); the implementation of this item maps it to `idle`.
+
+### 2. Codex account status (read-only, served)
+
+The route reads the pane's shared Codex app-server over a second,
+short-lived connection that starts no thread work. A spike on codex-cli
+0.159.2 and a live run on 0.157.1 confirmed that such a connection is
+answered. Only panes with a daemon-owned relay qualify
+(phone-created Codex panes on Unix): the relay proves which account server
+the pane talks to.
+
+```
+GET /api/sessions/<id>/codex/account-status
+→ 200 {
+    "auth": { "state": "signed-in", "method": "chatgpt" },   // state: signed-in | signed-out | unknown; method: chatgpt | apikey | other
+    "rateLimits": {                                          // null when unavailable (e.g. an API-key account)
+      "ordinaryUsageAllowed": false,                         // the server's verdict; null = unavailable
+      "planType": "pro",                                     // verbatim, open set; null when absent
+      "buckets": [{
+        "limitId": "codex", "limitName": "Codex",
+        "primary":   { "usedPercent": 100, "windowMinutes": 300,   "resetsAt": 1760000000000 },
+        "secondary": { "usedPercent": 41,  "windowMinutes": 10080, "resetsAt": 1760400000000 },
+        "reachedType": "rate_limit_reached"                  // verbatim, open set; null when not reached
+      }]
+    },
+    "fetchedAt": 1758712345123,
+    "cached": true
+  }
+→ 404 {error: "pane-not-found"}
+→ 403 transcript refusal (as `/turns`)
+→ 503 {error: "unavailable", reason: "no-account-server" | "upstream-failed" | "unsupported-platform"}
+```
+
+The example shows every field. Real ChatGPT accounts observed in the spike
+answer a single bucket (`limitId: "codex"`, `limitName: null`) with one
+weekly window, `primary.windowMinutes: 10080`, and `secondary: null`: do not
+assume a 5-hour primary or that a secondary window exists.
+
+| 503 `reason` | When |
+| --- | --- |
+| `no-account-server` | the pane has no live relay (not a Codex pane, a Codex typed by hand, the relay closed) |
+| `upstream-failed` | the auth read failed or timed out (5 s). A failed rate-limit read alone is `rateLimits: null` in a 200 |
+| `unsupported-platform` | Windows or a WSL pane |
+
+The account is the one **this pane runs on** (its spawn `CODEX_HOME`, else
+the default), not the workspace's next-launch binding. The daemon sends
+`getAuthStatus {includeToken:false, refreshToken:false}` and
+`account/rateLimits/read {excludeResetCreditDetails:true}` to that account's
+already-running app-server. It never starts an account server and never sends
+a model request. The rate-limit read does reach the provider's backend, so
+reads are cached per account for 60 s (`cached: true`), and there is no
+refresh parameter. `cached: true` also marks an answer shared with a read
+already in flight. The cache key is the account's Codex home plus its
+credential file, so a new sign-in there is read at once. A failed auth read
+(503 `upstream-failed`) is remembered for 10 s, and so is an answer whose
+rate-limit read failed (`rateLimits: null`), so a failing server is not asked
+again on every request. A signed-out or API-key account is not asked for rate
+limits (`rateLimits: null`). Every answer, 503 included, is
+`Cache-Control: no-store`. The cache is in memory: a daemon restart reads
+again.
+
+Never on this wire: the auth token, e-mail, account id, credit balance, the
+backend's upsell banner, config paths. `resetsAt` is epoch ms (the server's
+seconds × 1000); a value outside 2020-01-01 … 2100-01-01 reads `null`. `planType`
+comes from the single-bucket view, else the first bucket that names one. Do not infer "usage is available again" from `usedPercent` or
+`resetsAt`; `ordinaryUsageAllowed` is the only verdict.
+
+Needs `--allow-transcript` (like `GET …/accounts`), not input.
+
+### 3. Chat cancel outcome
+
+**Served** for the Esc path (Claude and Codex): see "Chat cancel outcome",
+right after "Chat cancel". The Codex `turn/interrupt` (`native`) path is not served
+yet and stays gated on the spike in item 2.
+
+### 4. Account per pane, and handoff lineage (served)
+
+`POST /api/sessions` gains two optional fields:
+
+```json
+{
+  "workspaceId": "ws-…",
+  "cwd": "/Users/me/repo",
+  "accountId": "3f1c2e4a-0b6d-4c1e-9a7f-2d8e5b6c7a90",
+  "handoffFrom": { "sessionId": "web-5b0c…", "agentSessionId": "0199f1c2-…" }
+}
+```
+
+**`accountId`** is an id from `GET /api/sessions/<id>/accounts`
+(`accounts[].id`), never a path. It needs the input grant **and**
+`--allow-transcript` (the account list itself needs transcript access), and
+`workspaceId`. The desktop resolves it to that account's config directory,
+and the new pane's `CLAUDE_CONFIG_DIR` **or** `CODEX_HOME` (whichever matches
+the account's vendor) is set to it. The other vendor's key keeps the
+workspace binding. The workspace's binding itself does not change, and no
+later pane inherits the choice. The pane keeps the account across daemon
+recovery, because its environment is persisted with it.
+
+The chosen vendor's workspace binding is not consulted at all, so a broken
+binding for that vendor does not block the pane. A broken binding for the
+other vendor still refuses (`workspace-account-missing`).
+
+With `agentLaunch`, the agent runs through a login shell (`$SHELL -lc`),
+whose profile could export another `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. For
+bash, zsh, sh, dash and ksh the daemon exports the pane's resolved keys again
+after the profile, right before the agent, on the first launch and on every
+recovery replay. `chat/launch` types into the pane's interactive shell, whose
+`.zshrc` / `.bashrc` can export another account too: on a pane created with
+`accountId`, a launch of that account's vendor is typed with the account's key
+as a one-command prefix (`CLAUDE_CONFIG_DIR='<dir>' claude -- '…'`), so the
+agent runs on the chosen account. A pane without `accountId` and the other
+vendor's agent are typed as before. Not covered: fish and PowerShell wrappers
+for `agentLaunch` (a launch is only typed into zsh, bash or sh), and an agent
+the user types by hand, where the shell's own export still wins.
+
+If the account's directory is gone when a pane is recovered, the key is
+dropped with a warning in the daemon log and the CLI uses its default
+credential, the same way the desktop treats a binding whose directory went
+missing. It is never passed to the CLI, which would create an empty, signed-out
+config there.
+
+The credential is checked again once the body has arrived, and again after
+each desktop round trip, before any account answer is sent: a device revoked
+in between gets `401 {error:"authorization-expired"}`, not a hint about
+whether the id exists.
+
+| Status | Body | When |
+| --- | --- | --- |
+| 400 | `{error:"invalid-account-id", effect:"none"}` | not `^[A-Za-z0-9_-]{1,128}$` |
+| 400 | `{error:"workspace-required", effect:"none"}` | `accountId` without `workspaceId` |
+| 400 | `{error:"unknown-account", effect:"none"}` | no such account on this desktop. An unknown id and another host's id get the same answer |
+| 400 | `{error:"account-vendor-mismatch", effect:"none"}` | `agentLaunch.agent` is anything other than the account's vendor. The vendor is not echoed |
+| 401 | `{error:"authorization-expired"}` | the credential stopped holding the input grant while the request was in flight |
+| 403 | the input or transcript refusal | the caller lacks either grant |
+| 409 | `{error:"account-directory-missing", effect:"none"}` | the account's directory is gone (checked at resolution and again right before the spawn) |
+| 409 | `{error:"workspace-account-missing", effect:"none"}` | the workspace's binding for the **other** vendor points at a directory that is gone. Also answered for a create without `accountId` when the attached desktop announced `accounts.envForAccount` |
+| 503 | `{error:"desktop-unavailable", effect:"none"}` | no attached desktop supports the command, or any desktop request for the create failed (including a desktop that detaches or times out mid-create, and the catalog lookup for `agentLaunch`) |
+
+The 201 row adds `accountId` (only for a pane created with one) so the phone
+can confirm it was honoured. With both `accountId` and `agentLaunch`, the model
+and effort are validated against the catalog of the **chosen** account, not
+the workspace's. `GET /api/agent-launch-options` accepts `accountId` next to
+`workspaceId` (same grants, same refusals) so the picker shows that account's
+models. `accountId` is **not** accepted by `POST …/chat/launch`: launch types
+into a shell whose environment was fixed at spawn, and its body refuses
+unknown keys (`invalid-chat-request`).
+
+**`handoffFrom`** records where the work came from. The daemon stores it on
+the new pane with `verified` and `at`:
+
+```json
+"handoffFrom": { "sessionId": "web-5b0c…", "agentSessionId": "0199f1c2-…", "verified": true, "at": 1758712345123 }
+```
+
+`verified` is true only when the source pane was live and readable by this
+caller at creation, and `agentSessionId` (when sent) matched its current
+conversation. False means "not proven" (the source may have closed), never an
+error. A source the caller may not read is stored exactly like a missing one,
+so the answer does not confirm hidden panes. A malformed object (unknown key,
+bad id) is `400 {error:"invalid-handoff", effect:"none"}`. No id field
+(`accountId`, `handoffFrom.sessionId`, `handoffFrom.agentSessionId`) may be an
+`Object.prototype` member name (`constructor`, `toString`, `__proto__`, …);
+such an id is refused like any malformed one. The stored value appears on the
+`/api/sessions` row and on every `/api/history` entry of the new pane.
+
+Narrowings, because `/api/sessions` rows reach every reader:
+
+- `agentSessionId` is compared with the source's conversation only on a
+  `--allow-transcript` server. Without it, a handoff that names one is stored
+  with `verified: false`, so `verified` cannot be used to test guesses.
+- The row's `handoffFrom` carries `sessionId` only when the reader may attach
+  the source pane (it still exists and is not hidden from that credential);
+  otherwise the row has just `{verified, at}`. `agentSessionId` rides along
+  with `sessionId` only on a `--allow-transcript` server. `/api/history`
+  (which needs that grant) always carries the stored value.
+
+The source counts as live only while it is not `dead` or `suspended`. The
+lineage is on the new pane from the moment it is created, so the pane's
+first history entry already carries it.
+
+**Long handoff text travels as a file.** `chat/launch` takes at most 2,000
+UTF-16 units of prompt. Upload the handoff body with `POST /api/upload-file`
+(`generalFileUpload`, `X-Wmux-File-Extension: md`), then launch with a short
+prompt that names the returned `path`. The daemon never reads that path from
+a request; it is only text in the prompt. Two limits to design for: the file
+expires 24 h after upload, and it lives outside the pane's working directory,
+so Claude in default mode asks for permission to read it (answer it in Chat or
+Terminal).
+
+The flow has two steps: create the pane with `accountId` and `handoffFrom`
+and no `agentLaunch`, wait for `/turns` `launch.ready`, then
+`POST …/chat/launch` with the prompt. `agentLaunch` would start the agent
+without a prompt and make the pane ineligible for `chat/launch`, and launch
+cannot pick a model or effort.
+
+### 5. Git v1 (priority-3 track): projects, branches, worktree creation, CI checks
+
+> **Served:** `GET /api/git/projects`, `GET …/git/branches` and
+> `GET …/git/checks` (keys `gitProjects`, `gitChecks`;
+> `src/daemon/web/phoneGitRead.ts`). Worktree creation is not served yet.
+
+Every request names a session (`/api/sessions/<id>/…`), except the project
+list, whose rows hand you one. The daemon derives the repository from that
+session's trusted `spawnCwd`, exactly as `/git` and `/git/pr` do. **The phone
+never sends a path, a ref or a refspec to these routes.** Push and PR creation
+are not in v1.
+
+**Where it runs.** In the daemon, with no desktop round trip. The inputs are
+daemon state (live sessions and their `spawnCwd`), the daemon already runs
+the hardened phone Git runner (fixed `-c` config, sanitized environment,
+output bounds) and `gh` for `/git/pr`, and these routes must work on a
+headless daemon. Nothing here needs the desktop's workspace registry.
+
+**Gates, budget, audit.** All routes need the input grant and an attachable
+session, the same as `/git` (`gitControl`); the reads change nothing and
+write no audit line. They share the existing four-slot Git/PR budget
+(`429 {error:"git-busy"}`) and the 5 s per-`git` timeout; `gh` keeps its 8 s
+timeout. Every `git` the daemon runs for the phone is local only: no
+transport is allowed and a partial clone never fetches a missing object.
+Worktree creation runs in the background (below) and serializes per
+repository, keyed by the realpath of the git common dir. Each creation that
+passes validation writes one line to the device audit log
+(`device-audit.jsonl`): event `git-worktree`, the device id (empty for the
+operator token), and the outcome tag as `reason`. No path and no branch name
+is logged.
+
+#### `GET /api/git/projects`
+
+```jsonc
+→ 200 {
+  "projects": [{
+    "projectId": "a1b2c3d4e5f6",       // sha256(realpath of the main worktree root)[0,12); opaque
+    "name": "wmux",                    // last segment of the main worktree; display only
+    "sessionId": "web-5b0c…",          // address this project's routes with this session
+    "sessions": [
+      { "sessionId": "web-5b0c…", "branch": "main", "linkedWorktree": false },
+      { "sessionId": "pty-7f3c", "branch": "phone/fix-login", "linkedWorktree": true }
+    ]
+  }],
+  "truncated": false,
+  "degraded": true                     // optional: some sessions' repositories could not be read
+}
+→ 409 {error:"git-operation-failed"}   // no repository could be read at all (git missing, timeouts)
+```
+
+A separate route on purpose: `/api/sessions` is polled every few seconds and
+must not start Git subprocesses. Repository facts are cached per `spawnCwd`
+(its realpath) for 10 s; each answer is then filtered to the sessions this
+caller may attach (never the brain pane), so a project appears only because
+such a session has its `spawnCwd` inside it. Worktrees of one repository
+group into one project. The listing looks at the 200 most recently active
+sessions within a 15 s budget; anything it did not reach sets `truncated`,
+as does a 51st project (at most 50 are returned). A workspace whose panes
+are all closed has no project here (the same evidence rule as
+`workspaceId`). A submodule checkout is a project of its own.
+
+#### `GET /api/sessions/<id>/git/branches`
+
+```jsonc
+→ 200 {
+  "projectId": "a1b2c3d4e5f6",
+  "current": { "branch": "main", "head": "<oid>", "detached": false },   // branch/head null when detached/unborn
+  "branches": [{
+    "name": "phone/fix-login",
+    "head": "<oid>",
+    "committedAt": 1758712345000,
+    "upstream": { "name": "origin/phone/fix-login", "ahead": 2, "behind": 0, "gone": false },  // optional
+    "worktree": { "leaf": "phone-fix-login", "main": false, "sessionIds": ["pty-7f3c"] }          // optional
+  }],
+  "truncated": false
+}
+→ 404 {error:"session not found"}   409 {error:"not-a-git-repo"}   429 {error:"git-busy"}
+→ 409 {error:"git-operation-failed"}   // git could not answer (timeout, failed listing); retry later
+```
+
+Local branches (`refs/heads/*`) only, newest tip first, at most 200. Names
+are display text; no route accepts one back. `worktree.sessionIds` lists a
+pane only when it runs in this same repository (same git common dir); among
+nested worktrees the deepest one owns it. A git too old to list worktrees
+answers without `worktree`.
+
+#### `POST /api/sessions/<id>/git/worktree`
+
+```json
+{ "slug": "fix-login", "requestId": "3f1c2e4a-0b6d-4c1e-9a7f-2d8e5b6c7a90" }
+```
+
+Exactly these two keys. `slug` is 1–40 characters of `a-z`, `0-9` and single
+hyphens, no leading or trailing hyphen
+(`^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$`). `requestId` is a UUID,
+minted once when the user taps Create; any letter case is accepted (iOS
+`UUID().uuidString` is uppercase) and the server lowercases it, so the
+receipt echoes the lowercase form and a retry in either case is the same
+request. The server derives everything
+else:
+
+- the base: the session's `HEAD` commit, resolved **once** to an oid before
+  anything is written (no fetch);
+- branch `phone/<slug>`;
+- directory `${wmuxHome}/worktrees/<projectId>/phone-<slug>`;
+- the command: `git worktree add -b phone/<slug> -- <dir> <base-oid>`, with
+  hooks disabled (`core.hooksPath=/dev/null`), so no repository hook runs.
+
+Refused before anything is written: a bare repository, an unborn `HEAD`, a
+merge/rebase/sequencer in progress, a repository with submodules
+(`.gitmodules` at the base commit; submodules are not checked out by a phone
+worktree, so they are refused rather than left empty), and content filters.
+The filter check reads the `.gitattributes` files in the base tree (and
+`info/attributes`): only a `filter=` attribute that some path in the tree
+actually uses refuses the create (`git-filters-require-desktop`). A global
+`git lfs install` alone, with no `filter=lfs` in the tree, is not a refusal.
+
+**The answer is asynchronous.** Checking out a tree can take longer than any
+reasonable request, so the create never runs inside the HTTP request:
+
+```jsonc
+→ 202 { "requestId": "3f1c2e4a-…", "replayed": false, "state": "pending" }
+```
+
+Then poll the receipt every 2 s:
+
+```jsonc
+GET /api/sessions/<id>/git/worktree/<requestId>
+→ 200 {
+  "requestId": "3f1c2e4a-…",
+  "state": "pending" | "created" | "refused" | "unknown" | "none",
+  "projectId": "a1b2c3d4e5f6",                      // created
+  "branch": "phone/fix-login",                      // created
+  "base": "<oid>",                                  // created: the commit the branch starts at
+  "cwd": "/Users/me/.wmux/worktrees/a1b2c3d4e5f6/phone-fix-login",   // created
+  "leaf": "phone-fix-login",                        // created
+  "error": "branch-exists"                          // refused, or unknown ("git-outcome-unknown")
+}
+```
+
+A repeat POST with the same body answers **200 with this same receipt body**
+plus `replayed: true`, whatever its state; there is one shape for the
+created answer. The receipt route needs the input grant, like the POST.
+
+| POST status | `error` | When |
+| --- | --- | --- |
+| 400 | `invalid-git-request` | body shape, extra key, malformed `requestId` |
+| 400 | `invalid-slug` | slug fails the rule |
+| 409 | `request-id-conflict` | this `requestId` was used with another slug or session |
+| 429 | `git-busy` | four Git/PR jobs already running |
+| 503 | `git-receipts-unavailable` | the receipt store could not be read (the key is also hidden) |
+
+Refusals found by the background job land in the receipt as `state:
+"refused"` with `error` one of: `branch-exists` (never auto-suffixed),
+`branch-namespace-blocked` (a branch named `phone` exists),
+`worktree-path-exists`, `path-too-long` (over 260 characters),
+`not-a-git-repo` (including bare), `unborn-head`, `submodules-unsupported`,
+`git-filters-require-desktop`, `git-operation-in-progress`,
+`git-operation-failed`.
+
+**Receipt store.** A new file, `phone-worktree-receipts.json`, `version: 1`,
+mode 0600, written durably. Entries are keyed by a hash of (owner,
+`requestId`), where the owner is `device:<id>` or `operator`, and expire 24 h
+after creation. The `pending` entry is on disk before `git worktree add`
+starts. A `pending` entry found after a daemon restart becomes `unknown` with
+`error: "git-outcome-unknown"`: list branches to see whether `phone/<slug>`
+exists. If the file cannot be read or validated at start, the daemon turns
+the worktree routes off and omits `gitWorktrees` (fail closed); it never
+starts with an empty store over an unreadable one.
+
+**Opening a pane in it.** Pass the receipt's `cwd` verbatim to the existing
+`POST /api/sessions {workspaceId, cwd}`; do not build or edit it. That route
+checks only that the directory is usable (`cwd-not-found` otherwise), not
+that it is this worktree, so sending anything else is your bug, not a
+refusal. The new pane's `spawnCwd` is the worktree, so every Git route
+addressed through it acts on the new branch.
+
+**Desktop cleanup.** The desktop's worktree scan lists phone worktrees in a
+category of their own, `phone-worktree`, instead of calling them orphans,
+and reclaims them through the existing cleanup flow (which already refuses a
+dirty worktree). Worktree removal from the phone is not in v1.
+
+Not in v1: push, PR creation, worktree removal, switching an existing
+checkout's branch, remote branches.
+
+#### `GET /api/sessions/<id>/git/checks`
+
+```jsonc
+→ 200 {
+  "state": "available",                 // available | no-pr | unsupported | unavailable
+  "pr": { "number": 1658, "url": "https://github.com/o/r/pull/1658", "headOid": "<oid>", "headMatchesLocal": true },
+  "overall": "failure",                 // success | failure | pending | none
+  "counts": { "total": 8, "passed": 6, "failed": 1, "pending": 1, "skipped": 0 },
+  "checks": [
+    { "kind": "check-run", "name": "validate", "state": "success", "workflow": "CI",
+      "url": "https://github.com/o/r/actions/runs/1/job/2", "startedAt": 1758712345000, "completedAt": 1758713291000 },
+    { "kind": "status", "name": "CodeRabbit", "state": "failure" }
+  ],
+  "truncated": false
+}
+→ 404 {error:"session not found"}   409 {error:"not-a-git-repo"}   429 {error:"git-busy"}
+```
+
+The same pane rule as `/git/branches`: a pane outside any repository is 409
+`not-a-git-repo`, never a `state`. A definite answer (`available`, `no-pr`,
+`unsupported`) is reused for 20 s per pane; `unavailable` is never reused.
+
+The PR is chosen with the same identity rules as `/git/pr`: a credential-free
+github.com `origin`, the session's current branch, the head repository equal
+to origin, and the head branch equal to the local branch. The open PR wins,
+else the most recent. Then `gh pr view <number> --repo github.com/<owner/repo>
+--json number,url,headRefOid,statusCheckRollup`. `headMatchesLocal` says
+whether the PR head is the local `HEAD` (the checks may describe a commit you
+have not pushed past, or one you do not have). `no-pr` is a definite "no
+matching PR"; `unavailable` is a CLI, auth or network failure, never a claim
+of no checks. `counts` and `overall` cover the whole rollup; only `checks` is
+cut to 100 (`truncated: true`). Every state carries `overall`, `counts`,
+`checks` and `truncated`; outside `available` they read `none`, zeros, `[]`
+and `false`, and `pr` is absent. `unsupported` is a repository without an
+`origin`, or one whose `origin` is not a credential-free github.com repository.
+
+`state` per check: a CheckRun's `COMPLETED` conclusion maps to `success`,
+`failure` (also `STARTUP_FAILURE`), `neutral`, `skipped`, `cancelled`,
+`timed_out`, `action_required` or `stale`; a CheckRun that is not completed
+is `queued` or `in_progress`, and an unrecognized in-flight status is
+`pending`. A StatusContext's state maps to `success`, `failure`, `error` or
+`pending` (`EXPECTED` too). A completed CheckRun without a recognized
+conclusion, or a StatusContext with an unrecognized state, is `unknown`: a
+result nobody could read, which counts as **failed**, so `overall` is never
+`success` over it. `url` is present only when it parses as a URL whose origin
+is exactly `https://github.com`, with no credentials, whitespace or control
+characters; anything else is dropped.
+
+### Coordination with open work
+
+- #1658 (Claude AskUserQuestion form) edits `HookIngest.ts` and this document.
+  Item 1 wires into the same `StopFailure` emission path, so #1658 lands first.
+- #1657 (Codex notify attribution) is why a hand-typed Codex gets no typed
+  failure in item 1.
+- #1660 (`/app` desktop UI) edits `src/shared/types.ts` and this document;
+  this section adds no fields there.
+- #1653 (remote pane from the + menu) creates panes on a paired remote host
+  through the Surface model, not `POST /api/sessions`; `accountId` does not
+  apply to remote panes.

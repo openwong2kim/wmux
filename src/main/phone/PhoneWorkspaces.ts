@@ -74,7 +74,8 @@ export async function handlePhoneWorkspaces(command: string, payload: Record<str
 /**
  * The daemon drops a reply over its per-request byte cap without answering,
  * which would turn every list call into a timeout, so the sidebar must fit.
- * It degrades in steps, cheapest loss first. The pane placement (every pane
+ * It degrades in steps, cheapest loss first. The per-workspace layout trees
+ * go first (largest first; the phone draws that workspace flat). The pane placement (every pane
  * id and every task's pane group) goes before anything the reply carried
  * before it existed, so a sidebar that fit without it still arrives whole;
  * then tab titles, then the pane rows, and only then the whole sidebar. With
@@ -89,10 +90,35 @@ export function fitSidebarToBudget(
 ): PhoneSidebarSnapshot | null {
   const fits = (candidate: PhoneSidebarSnapshot) => Buffer.byteLength(JSON.stringify({ ...base, sidebar: candidate })) <= budget;
   if (fits(sidebar)) return sidebar;
+  // The layout trees go first, largest first and one workspace at a time, so
+  // the rest keep theirs. Every later step starts from a snapshot with no tree
+  // at all: a tree never rides with pane rows or titles cut under it.
+  const withoutLayout: PhoneSidebarSnapshot = { ...sidebar, workspaces: sidebar.workspaces.map(({ layout: _layout, ...row }) => row) };
+  const layouts = sidebar.workspaces
+    .filter((row) => row.layout !== undefined)
+    .map((row) => ({ id: row.id, bytes: Buffer.byteLength(`,"layout":${JSON.stringify(row.layout)}`) }))
+    .sort((a, b) => b.bytes - a.bytes);
+  if (layouts.length > 0) {
+    onDrop('budget.layout');
+    const excess = Buffer.byteLength(JSON.stringify({ ...base, sidebar })) - budget;
+    const dropped = new Set<string>();
+    let freed = 0;
+    for (const { id, bytes } of layouts.slice(0, -1)) {
+      dropped.add(id);
+      freed += bytes;
+      if (freed < excess) continue;
+      const partial: PhoneSidebarSnapshot = {
+        ...sidebar,
+        workspaces: sidebar.workspaces.map((row, i) => (dropped.has(row.id) ? withoutLayout.workspaces[i] : row)),
+      };
+      if (fits(partial)) return partial;
+    }
+    if (fits(withoutLayout)) return withoutLayout;
+  }
   onDrop('budget.panePlacement');
   const withoutPlacement: PhoneSidebarSnapshot = {
-    ...sidebar,
-    workspaces: sidebar.workspaces.map((row) => {
+    ...withoutLayout,
+    workspaces: withoutLayout.workspaces.map((row) => {
       if (row.task?.paneGroup === undefined && row.task?.requesterPaneId === undefined) return row;
       const { paneGroup: _paneGroup, requesterPaneId: _requesterPaneId, ...task } = row.task;
       return { ...row, task };

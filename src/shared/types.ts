@@ -59,7 +59,9 @@ export interface Surface {
   title: string;
   shell: string;
   cwd: string;
-  surfaceType?: 'terminal' | 'browser' | 'editor' | 'diff' | 'git' | 'review' | 'remote-terminal';
+  /** `placeholder` is minted only by the browser build (wmux web `/app`) for a
+   *  tab it cannot show; the desktop never creates or persists one. */
+  surfaceType?: 'terminal' | 'browser' | 'editor' | 'diff' | 'git' | 'review' | 'remote-terminal' | 'placeholder';
   browserUrl?: string;
   browserPartition?: string;
   editorFilePath?: string;

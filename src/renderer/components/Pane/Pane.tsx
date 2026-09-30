@@ -15,6 +15,7 @@ import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
 import RemotePaneSurface from '../Remote/RemotePaneSurface';
 import AddRemotePaneModal from '../Remote/AddRemotePaneModal';
+import SurfacePlaceholder from './SurfacePlaceholder';
 import SurfaceTabs, {
   paneClusterWidth,
   paneActionsMode,
@@ -136,7 +137,9 @@ export function pickOverlaySurfaces<T extends { surfaceType?: string }>(
   surfaces: ReadonlyArray<T>,
 ): T[] {
   return surfaces.filter(
-    (s) => s.surfaceType === 'diff' || s.surfaceType === 'editor' || s.surfaceType === 'remote-terminal',
+    (s) =>
+      s.surfaceType === 'diff' || s.surfaceType === 'editor' || s.surfaceType === 'remote-terminal'
+      || s.surfaceType === 'placeholder',
   );
 }
 
@@ -505,6 +508,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // the cluster is absent. Subscribe the same way SurfaceTabs does.
   const paneActionsSetting = useStore((s) => s.paneActionsVisible);
   const chatViewEnabled = useStore((s) => s.chatViewEnabled);
+  // Browser mirror (wmux web /app): no split/stash/zoom cluster or corner zoom.
+  const readOnly = useStore((s) => s.readOnly);
   // #977 follow-up — width-based collapse. The cluster is fixed-width and
   // shrink-0, so on a narrow pane every pixel it takes comes out of the tab
   // strip, which is flex-1 min-w-0 and therefore collapses to NOTHING: at
@@ -526,7 +531,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // paneHeaderExtraChromeWidth). Both of these gate on the ACTIVE surface being
   // a terminal, which is the same condition SurfaceTabs draws them under.
   const activeSurfaceType = pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.surfaceType;
-  const actionsMode: PaneActionsMode = paneActionsSetting
+  const actionsMode: PaneActionsMode = paneActionsSetting && !readOnly
     ? paneActionsMode(
         paneWidth,
         paneHeaderExtraChromeWidth({
@@ -646,7 +651,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
       <ErrorBoundary name="pane">
       {/* Plugin badges (B-1 ui.pane-decoration) — host-rendered data only */}
       <PaneDecorations paneId={pane.id} />
-      {actionsMode === 'none' && isZoomed && (
+      {actionsMode === 'none' && isZoomed && !readOnly && (
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -678,7 +683,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           button (hover-revealed via .wmux-pane-maximize-btn in globals.css) so
           the zoom feature isn't keyboard-only. Clicking it zooms the pane; once
           zoomed, the always-visible ZOOM badge above takes over as the toggle. */}
-      {actionsMode === 'none' && !isZoomed && (
+      {actionsMode === 'none' && !isZoomed && !readOnly && (
         <button
           className="wmux-pane-maximize-btn"
           onClick={(e) => {
@@ -1110,6 +1115,13 @@ function SplitSurfaceView({
               surfaceId={surface.id}
               verifiedWorkspaceId={surface.diffOwnerWorkspaceId || workspaceId}
             />
+          ) : surface.surfaceType === 'placeholder' ? (
+            <SurfacePlaceholder
+              key={surface.id}
+              title={surface.title}
+              isActive={surface.id === activeSurfaceId}
+              surfaceId={surface.id}
+            />
           ) : surface.surfaceType === 'remote-terminal' ? (
             // #1086/#1091 — a remote session mirrored as an ordinary tab in a
             // LOCAL workspace's pane, not a whole separate "attached remote
@@ -1215,6 +1227,13 @@ function SplitSurfaceView({
             isActive={surface.id === activeSurfaceId}
             surfaceId={surface.id}
             verifiedWorkspaceId={surface.diffOwnerWorkspaceId || workspaceId}
+          />
+        ) : surface.surfaceType === 'placeholder' ? (
+          <SurfacePlaceholder
+            key={surface.id}
+            title={surface.title}
+            isActive={surface.id === activeSurfaceId}
+            surfaceId={surface.id}
           />
         ) : surface.surfaceType === 'remote-terminal' ? (
           // #1086/#1091, CodeRabbit round 1 — the hasBoth split previously

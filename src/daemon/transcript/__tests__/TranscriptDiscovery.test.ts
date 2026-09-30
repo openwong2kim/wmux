@@ -14,6 +14,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { TranscriptDiscovery, scanForTranscript } from '../TranscriptDiscovery';
 import { checkTranscriptPath } from '../../hooks/transcriptPathGuard';
+import { shortPathOf } from '../../../test-utils/shortPath';
 
 const ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
@@ -143,6 +144,29 @@ describe('Windows-shaped paths (pure function)', () => {
 
   it('refuses a Windows-separated agent session id outright', () => {
     expect(scanForTranscript(`..\\elsewhere\\${ID}`, env)).toEqual([]);
+  });
+});
+
+describe('8.3 short root spelling (#984)', () => {
+  it.runIf(process.platform === 'win32')('arms fs.watch on the long spelling of a short-spelled root', (ctx) => {
+    // libuv 1.52 builds with asserts on abort the process on the first event
+    // for a directory watched through a short alias.
+    const shortHome = shortPathOf(home);
+    if (!shortHome) return ctx.skip(); // 8.3 names are off for this volume
+    const watch = vi.spyOn(fs, 'watch');
+    const discovery = new TranscriptDiscovery({
+      getSessionEnv: () => ({ CLAUDE_CONFIG_DIR: path.join(shortHome, 'config') }),
+      onFound: () => undefined,
+      deadlineMs: 50,
+    });
+    try {
+      discovery.start('pty-1', ID, '/repo');
+      const targets = watch.mock.calls.map((call) => String(call[0]).toLowerCase());
+      expect(targets).toContain(fs.realpathSync.native(root).toLowerCase());
+      expect(targets.some((t) => t.startsWith(shortHome.toLowerCase()))).toBe(false);
+    } finally {
+      discovery.dispose();
+    }
   });
 });
 

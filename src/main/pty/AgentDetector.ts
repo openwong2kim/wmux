@@ -344,6 +344,28 @@ const AGENT_PATTERNS: AgentPattern[] = [
     ],
   },
 
+  // ── Antigravity CLI (agy) ─────────────────────────────────────────────────
+  // Live capture 2026-09-29, agy 1.2.13 on Windows (ConPTY, 120x40). The
+  // banner reads `Antigravity CLI 1.2.13` and the signed-out splash
+  // `Welcome to the Antigravity CLI.`; the footer row carries the state:
+  // `esc to cancel` while a turn runs, `? for shortcuts` once the composer is
+  // idle, both followed on the same row by `<mode> · <model> · <effort>`.
+  // The trust screen shows before the banner in an untrusted folder.
+  // As with Codex, the trust phrase is part of the gate: when it arrives
+  // before any banner, the same line opens the gate and emits awaiting_input.
+  // Only as a whole row (anchored both ends), so prose or source that quotes
+  // the question mid-line cannot claim the pane for agy.
+  {
+    agent: 'Antigravity CLI',
+    slug: 'agy',
+    gate: /Antigravity\s*CLI|^\s*Do\s*you\s*trust\s*the\s*contents\s*of\s*this\s*project\?\s*$/,
+    patterns: [
+      { regex: /^\s*Do\s*you\s*trust\s*the\s*contents\s*of\s*this\s*project\?/, status: 'awaiting_input', message: 'Project trust prompt' },
+      { regex: /^\s*esc\s*to\s*cancel/,                                        status: 'running',        message: 'Working' },
+      { regex: /^\s*\?\s*for\s*shortcuts/,                                     status: 'waiting',        message: 'Ready for input' },
+    ],
+  },
+
   // ── Kiro CLI ──────────────────────────────────────────────────────────────
   // The generic gate loop below special-cases this slug and opens it only
   // after BOTH KIRO_CHROME_LINE and KIRO_PROMPT_LINE have been observed.

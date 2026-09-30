@@ -72,9 +72,9 @@ describe('drag reorder is paused while the ordering is on', () => {
     expect(itemSrc).toContain('const reorderOff = taskRow || (sortPaused && !pinned);');
     // The row itself always drags (its markdown hand-off to an agent pane);
     // reorderOff only withholds the reorder source.
-    expect(itemSrc).toContain('draggable={!!workspace && !editing}');
+    expect(itemSrc).toContain('draggable={!!workspace && !editing && !readOnly}');
     expect(itemSrc).toContain('if (!reorderOff) setDraggedWorkspaceIndex(index);');
-    expect(miniSrc).toContain('const reorderOff = sidebarAttentionFirst && !isPinned;');
+    expect(miniSrc).toContain('const reorderOff = readOnly || (sidebarAttentionFirst && !isPinned);');
     expect(miniSrc).toContain('draggable={!reorderOff}');
     expect(miniSrc).toContain("const sidebarAttentionFirst = sidebarSortMode !== 'manual';");
   });

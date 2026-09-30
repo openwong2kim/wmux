@@ -9,6 +9,7 @@ import type { GateConfig } from './approvals/gateConfig';
 import type { PhoneDecisionsConfig } from './approvals/decisionConfig';
 import type { NotifySinkConfig } from './push/WebhookSink';
 import type { PushPresenceSuppressionConfig } from './push/presence';
+import type { PaneAccountVendor, StoredHandoffFrom } from '../shared/phonePaneAccount';
 
 /** Session lifecycle state */
 export type DaemonSessionState = 'detached' | 'attached' | 'dead' | 'suspended';
@@ -137,6 +138,18 @@ export interface DaemonSession {
   resumeBinding?: ResumeBinding;
   /** Exact thread observed on this pane's owned Codex TUI relay. Never hook-derived. */
   codexRelayResume?: {threadId:string;cwd:string;codeHome:string;transcriptPath:string};
+  /**
+   * Phone handoff lineage (contract v-next item 4): the pane this one was
+   * created to continue, set once at `POST /api/sessions` and carried across
+   * recovery. Absent on every other pane.
+   */
+  handoffFrom?: StoredHandoffFrom;
+  /**
+   * The vendor of the account chosen for this pane at `POST /api/sessions`
+   * (its directory is in `env`). Absent for every other pane, including one
+   * that runs on the workspace binding. Carried across recovery.
+   */
+  paneAccount?: { vendor: PaneAccountVendor };
 }
 
 /** Top-level schema for ~/.wmux/sessions.json */

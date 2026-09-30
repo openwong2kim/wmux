@@ -249,6 +249,7 @@ const BODY_PREVIEW_AGENTS: ReadonlySet<string> = new Set([
   'claude',
   'codex',
   'gemini',
+  'agy',
   'aider',
   'opencode',
   'copilot',

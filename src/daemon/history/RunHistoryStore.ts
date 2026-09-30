@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { atomicWriteJSONSync } from '../util/atomicWrite';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
 import type { HookAgentEventData } from '../hooks/HookIngest';
+import type { StoredHandoffFrom } from '../../shared/phonePaneAccount';
+import { storedHandoffOf } from '../phone/paneAccount';
 
 export interface RunHistoryEntry {
   id: string;
@@ -13,8 +15,10 @@ export interface RunHistoryEntry {
   outcome: 'completed' | 'failed' | 'interrupted';
   at: number;
   summary: string;
+  /** The pane's phone handoff lineage, when it was created with one. Optional so older files and loaders agree. */
+  handoffFrom?: StoredHandoffFrom;
 }
-interface ActiveRun { sessionId: string; workspace: string; agent: string; startedAt: number }
+interface ActiveRun { sessionId: string; workspace: string; agent: string; startedAt: number; handoffFrom?: StoredHandoffFrom }
 interface HistoryFile { version: 1; entries: RunHistoryEntry[]; active: ActiveRun[] }
 const CAP = 1000;
 // eslint-disable-next-line no-control-regex
@@ -48,9 +52,12 @@ export class RunHistoryStore {
     this.entries = value.entries.filter(e => e && typeof e.id === 'string' && typeof e.sessionId === 'string' &&
       typeof e.workspace === 'string' && typeof e.agent === 'string' && typeof e.summary === 'string' &&
       Number.isFinite(e.at) && ['completed','failed','interrupted'].includes(e.outcome)).slice(-CAP);
+    // A malformed lineage is dropped; the entry itself is kept.
+    for (const e of this.entries) if (e.handoffFrom !== undefined && !storedHandoffOf(e.handoffFrom)) delete e.handoffFrom;
     for (const a of value.active.slice(-256)) {
       if (a && typeof a.sessionId === 'string' && typeof a.workspace === 'string' && typeof a.agent === 'string' && Number.isFinite(a.startedAt)) {
-        this.active.set(a.sessionId, a);
+        const handoffFrom = storedHandoffOf(a.handoffFrom);
+        this.active.set(a.sessionId, {sessionId:a.sessionId,workspace:a.workspace,agent:a.agent,startedAt:a.startedAt,...(handoffFrom ? {handoffFrom} : {})});
       }
     }
   }
@@ -62,7 +69,7 @@ export class RunHistoryStore {
     return { entries, nextOffset: offset + entries.length < newest.length ? offset + entries.length : null };
   }
 
-  ingest(sessionId: string, env: Record<string,string>, data: HookAgentEventData) {
+  ingest(sessionId: string, env: Record<string,string>, data: HookAgentEventData, handoffFrom?: StoredHandoffFrom) {
     if (isBrainPty({id:sessionId,env})) return;
     const kind = data.signal.kind;
     if (data.source !== 'hook') return;
@@ -71,7 +78,7 @@ export class RunHistoryStore {
     const agent = clean(data.agent, 80);
     if (data.status === 'running' && ['agent.activity','agent.tool_started','agent.user_prompt_submit'].includes(kind)) {
       if (!this.active.has(sessionId) && this.active.size < 256) {
-        this.active.set(sessionId, {sessionId,workspace,agent,startedAt:at});
+        this.active.set(sessionId, {sessionId,workspace,agent,startedAt:at,...(handoffFrom ? {handoffFrom} : {})});
         this.save();
       }
       return;
@@ -87,7 +94,7 @@ export class RunHistoryStore {
     this.active.delete(sessionId);
     const reported = data.signal.payload.last_assistant_message;
     const summary = outcome === 'completed' && typeof reported === 'string' && reported.trim() ? reported : data.message;
-    this.append({id,sessionId,workspace,agent,outcome,at,summary:clean(summary,600)});
+    this.append({id,sessionId,workspace,agent,outcome,at,summary:clean(summary,600),...(handoffFrom ? {handoffFrom} : {})});
   }
 
   reconcileLiveSessions(live: ReadonlySet<string>) {
@@ -103,7 +110,7 @@ export class RunHistoryStore {
     const id = createHash('sha256').update(JSON.stringify([sessionId,active.startedAt,'interrupted'])).digest('hex');
     if (!this.entries.some(e => e.id === id)) {
       this.append({id,sessionId,workspace:active.workspace,agent:active.agent,outcome:'interrupted',at,
-        summary:'The pane ended before an authoritative completion signal.'});
+        summary:'The pane ended before an authoritative completion signal.',...(active.handoffFrom ? {handoffFrom:active.handoffFrom} : {})});
     }
   }
 

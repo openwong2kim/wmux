@@ -7,8 +7,9 @@ import type { TerminalLaunchAgent } from '../../shared/transcript/terminalChat';
 import type { ChatInterruptResult, ChatSendResult, TranscriptPage, TranscriptStatus } from '../../shared/transcript/turnEvents';
 import type { AgentLaunchOptions } from '../web/agentLaunch';
 import { buildAgentLaunch } from '../web/agentLaunch';
+import { withChosenAccountEnv } from '../phone/paneAccountSpawn';
 import { codexCdOperand, withCodexRemote } from '../web/recoverCodexPane';
-import { screenBlocksChatSend } from '../transcript/chatScreenGate';
+import { screenBlocksChatSend, screenShowsTurnEnding, titleShowsFinishedTurn } from '../transcript/chatScreenGate';
 import { deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { INTERRUPT_COOLDOWN_MS, interruptChatTurn, type ChatInterruptVerdict } from '../transcript/interruptChatTurn';
 import { codexRuntimeEnv, terminalLaunchCommand } from '../transcript/terminalLaunch';
@@ -16,6 +17,9 @@ import type { TerminalChatFailure, TerminalChatService } from '../transcript/Ter
 import type { ChatSessionService } from './ChatSessionService';
 import { ChatSendReceiptStore, type StoredChatOutcome } from './ChatSendReceiptStore';
 import { ChatCancelReceiptStore } from './ChatCancelReceiptStore';
+import { createChatCancelObserver, type CancelProbe, type ChatCancelEvent, type WatchedCancel } from './chatCancelObserver';
+import { turnEndAfter, type TranscriptBoundary } from '../transcript/chatAgentStatus';
+import type { StoredCancelProgress } from '../../shared/phoneChatCancelOutcome';
 import { isActiveQueueState, type ChatQueueReason, type ChatQueueRecord, type ChatQueueState, type ChatQueueStore } from './ChatQueue';
 import {
   CHAT_LAUNCH_MAX_UNITS, CHAT_MESSAGE_RETENTION_MS, CHAT_SEND_MAX_UNITS, OPENCODE_MAX_SEND_BYTES, OPENCODE_REQUEST_MAX_BYTES,
@@ -25,6 +29,9 @@ import {
   type ChatSendTag, type ChatTurn, type DangerousLaunchTrace,
   type ChatDeliveredMessage, type ChatDequeueResult, type ChatQueueEvent, type ChatQueueItemView, type ChatSendReceiptView,
 } from './chatBridge';
+
+/** Transcript stamps may trail the daemon's write time by this much and still count after it. */
+const CANCEL_CLOCK_SKEW_MS = 2000;
 
 /** Synthetic TerminalChatService client key for the phone's OpenCode watch. */
 export const WEB_BRIDGE_CLIENT = 'web:bridge';
@@ -36,6 +43,8 @@ export interface ChatPane {
   meta: {
     id: string; state: string; pid: number; cwd: string; env: Record<string, string>;
     exec?: unknown; wslTarget?: unknown; spawnCwd?: string; incarnationId?: string;
+    /** Set only for a pane created with a chosen account (contract v-next item 4). */
+    paneAccount?: { vendor: 'claude' | 'codex' };
   };
   bridge: {
     isEmptyShellPrompt(): boolean; getInputRevision(): number; noteInput(data: string): void;
@@ -83,6 +92,11 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
   receipts: ChatSendReceiptStore | null;
   /** Null when the store could not be loaded: phone cancels are refused. */
   cancelReceipts: ChatCancelReceiptStore | null;
+  /** Every cancel progress change (the web server fans it out as SSE `chat.cancel`). */
+  onCancelEvent?: (event: ChatCancelEvent) => void;
+  /** Cancel observation overrides (tests). */
+  cancelObserveMs?: number;
+  cancelPollMs?: number;
   /** The daemon-held phone queue. Absent or null: a `chat-queue` send takes today's path. */
   queue?: ChatQueueStore | null;
   /** Every queue transition (the web server fans it out as SSE `chat.queue`). */
@@ -185,6 +199,63 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
   const launching = new Set<string>();
   const sending = new Set<string>();
   const lastEscAt = (id: string): number => deps.pane(id)?.bridge.getLastEscAt() ?? 0;
+
+  /**
+   * What one look at a cancelled pane proves about the turn the ESC was aimed
+   * at. The pane is matched by id and incarnation, not object identity (a
+   * reattach may replace the object). The running check comes first, so
+   * `ended` is never reported while `/turns` still shows the turn running.
+   */
+  const probeCancel = async (cancel: WatchedCancel & {
+    incarnationId?: string; agentSessionId: string; slug: string; boundary: TranscriptBoundary;
+  }): Promise<CancelProbe> => {
+    const id = cancel.paneId;
+    const where = (): 'live' | 'gone' | 'transient' => {
+      const pane = deps.pane(id);
+      if (!pane || pane.meta.incarnationId !== cancel.incarnationId || pane.meta.state === 'dead') return 'gone';
+      return ['attached', 'detached'].includes(pane.meta.state) ? 'live' : 'transient';
+    };
+    // An unreadable binding is a transient read, not another conversation.
+    const sessionChanged = (): boolean => {
+      const current = deps.projector.status(id).agentSessionId;
+      return current !== undefined && current !== cancel.agentSessionId;
+    };
+    const aimedRunning = (): boolean => {
+      const turn = deps.chatAgentState(id).turn;
+      return turn?.id === cancel.turnId && turn.state === 'running';
+    };
+    const state = where();
+    if (state !== 'live') return { kind: state };
+    if (sessionChanged()) return { kind: 'session-changed' };
+    if (aimedRunning()) return { kind: 'running' };
+    const end = turnEndAfter(deps.projector.snapshot(id)?.events, cancel.boundary);
+    if (end?.kind === 'ended') return { kind: 'ended', endedAs: end.status === 'idle' ? 'interrupted' : 'completed', evidence: 'transcript' };
+    if (end) return { kind: 'unprovable' };
+    // The turn stopped running without a transcript record: the screen may
+    // still prove it (an idle title set after the write, Claude's Stop-hook row).
+    const rows = await deps.readScreen(id);
+    // The read awaited: the pane, its conversation and the turn are re-checked.
+    const after = where();
+    if (after !== 'live') return { kind: after };
+    if (sessionChanged()) return { kind: 'session-changed' };
+    if (aimedRunning()) return { kind: 'running' };
+    let title: { title: string; at: number } | null = null;
+    try { title = deps.pane(id)?.bridge.getTitle() ?? null; } catch { /* no title = no title evidence */ }
+    if (titleShowsFinishedTurn(title, cancel.slug, cancel.requestedAt) || screenShowsTurnEnding(rows, cancel.slug)) {
+      return { kind: 'ended', endedAs: 'unspecified', evidence: 'screen' };
+    }
+    return { kind: 'idle' };
+  };
+  type ObservedCancel = Parameters<typeof probeCancel>[0];
+  const cancelObserver = deps.cancelReceipts ? createChatCancelObserver<ObservedCancel>({
+    store: deps.cancelReceipts,
+    probe: probeCancel,
+    emit: (event) => deps.onCancelEvent?.(event),
+    log: (message) => deps.log('warn', message),
+    now,
+    ...(deps.cancelObserveMs !== undefined ? { windowMs: deps.cancelObserveMs } : {}),
+    ...(deps.cancelPollMs !== undefined ? { pollMs: deps.cancelPollMs } : {}),
+  }) : null;
 
   const route = async (id: string): Promise<ChatRoute> => {
     const service = deps.terminalChat();
@@ -1011,8 +1082,16 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     if (aborted.result === 'sent' || aborted.result === 'unconfirmed') {
       const turnId = aborted.turn?.id ?? req.turnId ?? resolution.turn?.id;
       const outcome = { effect: aborted.result === 'sent' ? 'interrupt-requested' as const : 'uncertain' as const, ...(turnId ? { turnId } : {}) };
-      if (inserted === 'inserted' && !store.complete(owner, clientCancelId, outcome)) deps.log('warn', `[chat] cancel receipt for ${id} not persisted`);
-      return { clientCancelId, replayed: false, ...outcome, ...(aborted.result === 'unconfirmed' ? { error: 'cancel-failed' as const } : {}) };
+      // Nothing observes an OpenCode abort yet (its `native` evidence is not
+      // served): its outcome is `unknown` from the start, never a `requested`
+      // that no one would ever settle.
+      const progress: StoredCancelProgress = aborted.result === 'sent'
+        ? { state: 'unknown', at: now() } : { state: 'unknown', reason: 'write-uncertain', at: now() };
+      if (inserted === 'inserted' && !store.complete(owner, clientCancelId, outcome, progress)) deps.log('warn', `[chat] cancel receipt for ${id} not persisted`);
+      if (inserted === 'inserted') cancelObserver?.announce({ owner, paneId: id, clientCancelId, ...(turnId ? { turnId } : {}) }, progress);
+      const view = aborted.result === 'sent' ? store.progress(owner, clientCancelId) : undefined;
+      return { clientCancelId, replayed: false, ...outcome, ...(aborted.result === 'unconfirmed' ? { error: 'cancel-failed' as const } : {}),
+        ...(view ? { cancel: view } : {}) };
     }
     if (inserted === 'inserted') store.discard(owner, clientCancelId);
     switch (aborted.result) {
@@ -1051,8 +1130,10 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       if (entry.fingerprint !== fingerprint) return refuse('cancel-id-conflict');
       // Pending: the first request is between its receipt and its ESC.
       if (entry.state === 'pending' || !entry.outcome) return refuse('chat-busy');
+      // A replay carries the progress as it is now: the receipt is authoritative.
+      const progress = store.progress(owner, clientCancelId);
       return { clientCancelId, replayed: true, effect: entry.outcome.effect, ...(entry.outcome.turnId ? { turnId: entry.outcome.turnId } : {}),
-        ...(entry.outcome.effect === 'uncertain' ? { error: 'cancel-failed' as const } : {}) };
+        ...(entry.outcome.effect === 'uncertain' ? { error: 'cancel-failed' as const } : {}), ...(progress ? { cancel: progress } : {}) };
     };
     const replayed = early();
     if (replayed) return replayed;
@@ -1078,8 +1159,17 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     // the turn the ESC was aimed at, captured before the write.
     let inserted: ReturnType<ChatCancelReceiptStore['insertPending']> | undefined;
     let aimed: string | undefined;
-    const beforeWrite = (target: { id: string }): boolean => {
+    let aimedStartedAt = 0;
+    let aimedPane: P | undefined;
+    let lastEventId: string | undefined;
+    const beforeWrite = (target: { id: string; startedAt: number }): boolean => {
       aimed = target.id;
+      aimedStartedAt = target.startedAt;
+      aimedPane = deps.pane(id);
+      // Where the transcript stands right before the ESC: only records after
+      // this can be the aimed turn's end (an earlier turn merged into the same
+      // episode has its end before it). Unreadable: timestamps alone decide.
+      try { const events = deps.projector.snapshot(id)?.events; lastEventId = events?.[events.length - 1]?.id; } catch { lastEventId = undefined; }
       inserted = store.insertPending(owner, clientCancelId, { paneId: id, fingerprint });
       return inserted === 'inserted';
     };
@@ -1102,8 +1192,23 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     if (inserted === 'inserted' && (verdict === 'sent' || verdict === 'error')) {
       // `error` = the write threw: the ESC may have reached the pane.
       const outcome = { effect: verdict === 'sent' ? 'interrupt-requested' as const : 'uncertain' as const, ...(aimed ? { turnId: aimed } : {}) };
-      if (!store.complete(owner, clientCancelId, outcome)) deps.log('warn', `[chat] cancel receipt for ${id} not persisted`);
-      return { clientCancelId, replayed: false, ...outcome, ...(verdict === 'error' ? { error: 'cancel-failed' as const } : {}) };
+      const requestedAt = now();
+      const progress: StoredCancelProgress = verdict === 'sent'
+        ? { state: 'requested', at: requestedAt } : { state: 'unknown', reason: 'write-uncertain', at: requestedAt };
+      if (!store.complete(owner, clientCancelId, outcome, progress)) deps.log('warn', `[chat] cancel receipt for ${id} not persisted`);
+      const watched = { owner, paneId: id, clientCancelId, ...(aimed ? { turnId: aimed } : {}) };
+      cancelObserver?.announce(watched, progress);
+      if (verdict === 'sent' && aimed && aimedPane) {
+        cancelObserver?.watch({ ...watched, turnId: aimed, turnStartedAt: aimedStartedAt, requestedAt,
+          incarnationId: aimedPane.meta.incarnationId, agentSessionId: req.agentSessionId, slug: agent,
+          boundary: { ...(lastEventId !== undefined ? { lastEventId } : {}), since: requestedAt - CANCEL_CLOCK_SKEW_MS } } satisfies ObservedCancel);
+      } else if (verdict === 'sent') {
+        // The pane was already gone at the write: nothing can be observed.
+        cancelObserver?.settle(watched, { state: 'unknown', reason: 'pane-closed', at: now() });
+      }
+      const view = verdict === 'sent' ? store.progress(owner, clientCancelId) : undefined;
+      return { clientCancelId, replayed: false, ...outcome, ...(verdict === 'error' ? { error: 'cancel-failed' as const } : {}),
+        ...(view ? { cancel: view } : {}) };
     }
     // `unavailable` after the receipt: the pane was gone, nothing was written.
     if (inserted === 'inserted') store.discard(owner, clientCancelId);
@@ -1208,6 +1313,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         // shell's own "$PWD" is the directory Codex should start in; a tracked cwd can only lag it.
         command = withCodexRemote(command, relay.url, codexCdOperand());
       }
+      // A pane created with a chosen account launches that vendor's agent on it,
+      // whatever the shell's rc files exported (see withChosenAccountEnv).
+      command = withChosenAccountEnv(command, pane.meta, agent);
       const secondIdle = await idle();
       if (secondIdle) return secondIdle;
       if (req.authorized) {
@@ -1311,6 +1419,14 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     sendInFlight: (id) => sending.has(id),
     hasOpenApproval,
     desktopSkills: (id, agent) => skillsWith(id, agent, 'cwd'),
+    cancelOutcomeEnabled: () => !!deps.cancelReceipts,
+    cancelOutcome: (owner, id, clientCancelId) => {
+      const store = deps.cancelReceipts;
+      if (!store) return null;
+      // Pane-bound: a receipt for another pane reads as none.
+      if (store.lookup(owner, clientCancelId)?.paneId !== id) return undefined;
+      return store.progress(owner, clientCancelId);
+    },
     queueEnabled: () => !!queueStore,
     queue: queueView,
     dequeue,

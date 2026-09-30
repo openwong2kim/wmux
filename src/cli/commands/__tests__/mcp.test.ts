@@ -26,6 +26,7 @@ import {
   isolatedInstanceNotice,
   resolveWmuxScript,
   selectedProfile,
+  selectedTargets,
 } from '../mcp';
 
 const existsSyncMock = fs.existsSync as unknown as ReturnType<typeof vi.fn>;
@@ -160,6 +161,25 @@ describe('canConnectBrokerPipe', () => {
   it('resolves false on connection error and never rejects', async () => {
     scriptConnect('error');
     await expect(canConnectBrokerPipe(300)).resolves.toBe(false);
+  });
+});
+
+describe('selectedTargets — opt-in agy target', () => {
+  it('leaves agy out of a target-less register', () => {
+    expect(selectedTargets(['register'])!.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini']);
+  });
+
+  it('covers agy on a target-less check and unregister, so an opt-in entry can be removed', () => {
+    expect(selectedTargets(['unregister'])!.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini', 'agy']);
+    expect(selectedTargets(['check'])!.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini', 'agy']);
+  });
+
+  it('acts on agy only when it is named', () => {
+    expect(selectedTargets(['register', '--target', 'agy'])!.map((t) => t.id)).toEqual(['agy']);
+  });
+
+  it('still rejects an unknown target', () => {
+    expect(selectedTargets(['register', '--target', 'agyy'])).toBeNull();
   });
 });
 

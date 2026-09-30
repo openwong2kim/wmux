@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { watchTarget } from '../../shared/watchTarget';
 
 /**
  * X1 workspace-context sidebar — git branch tracking via fs.watch.
@@ -199,7 +200,8 @@ export class GitContextWatcher extends EventEmitter {
    * re-resolve.
    */
   private arm(sessionId: string, watch: SessionWatch): void {
-    const target = watch.repo ? watch.repo.gitDir : watch.cwd;
+    // Long spelling: libuv 1.52 mishandles an 8.3 short dir (watchTarget, #984).
+    const target = watchTarget(watch.repo ? watch.repo.gitDir : watch.cwd);
     try {
       watch.watcher = this.watchFactory(target, (_event, filename) => {
         if (watch.repo) {

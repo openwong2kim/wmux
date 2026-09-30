@@ -1,3 +1,4 @@
+import os from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import { handlePhoneAccounts } from '../PhoneAccounts';
 
@@ -8,6 +9,10 @@ function fixture() {
       listAccounts: () => [account], getAccount: (id: string) => id === 'a1' ? account : undefined,
       getBindings: () => ({ 'ws-1': { claude: 'a1' } }), setBinding: vi.fn(async () => { /* noop */ }),
       resolveWorkspaceAccountEnv: vi.fn(() => ({ CLAUDE_CONFIG_DIR: '/private/account' })),
+      resolveAccountEnv: vi.fn((_ws: string, vendor: 'claude' | 'codex', onMissing?: () => void): Record<string, string> => {
+        if (vendor === 'codex') { onMissing?.(); return {}; }
+        return { CLAUDE_CONFIG_DIR: '/private/account' };
+      }),
     },
     usage: { getAll: () => [{ accountId: 'a1', status: 'error' as const, snapshot: null, fetchedAtMs: 1, lastError: 'private diagnostic' }], refreshNow: vi.fn(async () => { /* noop */ }) },
   };
@@ -36,6 +41,30 @@ describe('phone account projection', () => {
     const deps = fixture();
     await expect(handlePhoneAccounts('accounts.bind', { workspaceId: '__proto__' }, deps)).rejects.toThrow();
     await expect(handlePhoneAccounts('shell.exec', { workspaceId: 'ws-1' }, deps)).rejects.toThrow();
+    expect(deps.store.setBinding).not.toHaveBeenCalled();
+  });
+  it('resolves one pane account by id without touching the workspace binding', async () => {
+    const deps = fixture();
+    const dir = os.tmpdir();
+    const codex = { id: 'c2', name: 'Second', vendor: 'codex' as const, configDir: dir, createdAt: 2 };
+    const store = { ...deps.store, getAccount: (id: string) => id === 'c2' ? codex : deps.store.getAccount(id) };
+    const run = (accountId: unknown) => handlePhoneAccounts('accounts.envForAccount', { workspaceId: 'ws-1', accountId }, { ...deps, store });
+    expect(await run('c2')).toEqual({ ok: true, vendor: 'codex', env: { CODEX_HOME: dir } });
+    // An unknown id, another host's id and a malformed one are the same answer.
+    for (const id of ['nope', '3f1c2e4a-0b6d-4c1e-9a7f-2d8e5b6c7a90', '../etc', '__proto__', 7]) {
+      expect(await run(id)).toEqual({ ok: false, error: 'unknown-account' });
+    }
+    expect(await run('a1')).toEqual({ ok: false, error: 'account-directory-missing' });
+    expect(deps.store.setBinding).not.toHaveBeenCalled();
+    expect(deps.store.resolveWorkspaceAccountEnv).not.toHaveBeenCalled();
+  });
+  it('answers the typed workspace env, names a missing binding, and skips the omitted vendor', async () => {
+    const deps = fixture();
+    // The codex binding's directory is gone in this fixture.
+    expect(await handlePhoneAccounts('accounts.env', { workspaceId: 'ws-1', typed: true }, deps)).toEqual({ ok: false, error: 'workspace-account-missing' });
+    expect(await handlePhoneAccounts('accounts.env', { workspaceId: 'ws-1', typed: true, omitVendor: 'codex' }, deps)).toEqual({ ok: true, env: { CLAUDE_CONFIG_DIR: '/private/account' } });
+    expect(await handlePhoneAccounts('accounts.env', { workspaceId: 'ws-1', typed: true, omitVendor: 'claude' }, deps)).toEqual({ ok: false, error: 'workspace-account-missing' });
+    await expect(handlePhoneAccounts('accounts.env', { workspaceId: 'ws-1', typed: true, omitVendor: 'x' }, deps)).rejects.toThrow();
     expect(deps.store.setBinding).not.toHaveBeenCalled();
   });
 });

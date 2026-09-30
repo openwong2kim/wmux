@@ -13,7 +13,9 @@
  */
 var BUILD = '__BUILD_ID__';
 var CACHE = 'wmux-web-' + BUILD;
-var SHELL = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
+// `/` is the browser app; `/classic` is the flat client it falls back to on a
+// browser that cannot run it, so an offline old browser still has a page.
+var SHELL = ['/', '/classic', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); }));
@@ -34,22 +36,52 @@ self.addEventListener('fetch', function (e) {
   if (url.pathname.indexOf('/api/') === 0) return;
   if (e.request.method !== 'GET') return;
 
-  var isShell = e.request.mode === 'navigate'
+  // /app fonts carry a content hash in their name: cache-first, stored on the
+  // first fetch so the installed app keeps its typography offline.
+  if (url.pathname.indexOf('/app/assets/') === 0) {
+    e.respondWith(
+      caches.match(e.request).then(function (hit) {
+        if (hit) return hit;
+        return fetch(e.request).then(function (res) {
+          if (res.ok) {
+            var copy = res.clone();
+            caches.open(CACHE).then(function (c) { c.put(e.request, copy); }).catch(function () { /* quota */ });
+          }
+          return res;
+        });
+      })
+    );
+    return;
+  }
+
+  var classicPath = url.pathname === '/classic' || url.pathname === '/pair';
+  var shellPath = classicPath
     || url.pathname === '/'
     || url.pathname === '/index.html'
-    || url.pathname === '/pair';
+    || url.pathname === '/app';
+  var isShell = e.request.mode === 'navigate' || shellPath;
+  // Two different pages, two cache entries: the browser app (`/`, its aliases)
+  // and the classic client (`/classic`, `/pair`). One must never overwrite the
+  // offline copy of the other.
+  var shellKey = classicPath ? '/classic' : '/';
 
   if (isShell) {
     // Network-first: fresh app when online, last good copy when not.
     e.respondWith(
       fetch(e.request)
         .then(function (res) {
-          var copy = res.clone();
-          caches.open(CACHE).then(function (c) { c.put('/', copy); }).catch(function () { /* quota */ });
+          // Only a shell page is stored as one: a navigation to anything else
+          // (a font URL typed into the address bar) must not become the
+          // offline copy of `/`.
+          var type = res.headers.get('content-type') || '';
+          if (shellPath && res.ok && type.indexOf('text/html') === 0) {
+            var copy = res.clone();
+            caches.open(CACHE).then(function (c) { c.put(shellKey, copy); }).catch(function () { /* quota */ });
+          }
           return res;
         })
         .catch(function () {
-          return caches.match('/').then(function (hit) {
+          return caches.match(shellKey).then(function (hit) {
             return hit || Response.error();
           });
         })

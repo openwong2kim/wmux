@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { TranscriptProjector } from '../TranscriptProjector';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import type { TranscriptAppendData } from '../../../shared/transcript/turnEvents';
+import { shortPathOf } from '../../../test-utils/shortPath';
 
 let root: string;
 let dir: string;
@@ -27,12 +28,12 @@ function entry(id: string, text: string): string {
   }) + '\n';
 }
 
-function makeProjector(opts?: { pollMs?: number }): TranscriptProjector {
+function makeProjector(opts?: { pollMs?: number; configDir?: string }): TranscriptProjector {
   return new TranscriptProjector({
     getResumeBinding: (id) => bindings.get(id),
     // The projector refuses any transcript outside `<CLAUDE_CONFIG_DIR>/projects`,
     // so the tmp tree stands in for a relocated Claude config dir.
-    getSessionEnv: () => ({ CLAUDE_CONFIG_DIR: root }),
+    getSessionEnv: () => ({ CLAUDE_CONFIG_DIR: opts?.configDir ?? root }),
     emitAppend: (_sessionId, data, clientIds) => appends.push({ data, clientIds }),
     debounceMs: 40,
     ...(opts?.pollMs ? { pollMs: opts.pollMs } : {}),
@@ -152,6 +153,34 @@ describe('fs.watch — truncation and rotation', () => {
     fs.writeFileSync(file, entry('n-1', 'recreated'), 'utf8');
     await waitFor(() => appends.length === seenBefore + 1);
     expect(appends.at(-1)!.data.reset).toBe(true);
+  });
+});
+
+describe('fs.watch — 8.3 short directory spelling (#984)', () => {
+  it.runIf(process.platform === 'win32')('delivers an append when the transcript dir is spelled short', async (ctx) => {
+    // A windows-latest runner's %TEMP% is `C:\Users\RUNNER~1\...`. libuv 1.52
+    // builds with asserts on (official Node 24.16–24.20 and 26.0–26.7)
+    // aborted the process on the first event for a directory watched through
+    // that spelling.
+    const shortRoot = shortPathOf(root);
+    if (!shortRoot) return ctx.skip(); // 8.3 names are off for this volume
+    projector.dispose();
+    bindings.set('pty-3', {
+      agent: 'claude',
+      sessionId: 'session',
+      cwd: dir,
+      transcriptPath: path.join(shortRoot, 'projects', '-synthetic-repo', 'session.jsonl'),
+      ts: 1,
+    });
+    projector = makeProjector({ configDir: shortRoot });
+    projector.subscribe('c1', 'pty-3');
+    await waitFor(() => appends.length === 1);
+
+    fs.appendFileSync(file, entry('s-2', 'written after subscribe'));
+    await waitFor(() => appends.length === 2);
+    expect(appends[1].data.events.map((e) => (e.kind === 'assistant_text' ? e.text : ''))).toEqual([
+      'written after subscribe',
+    ]);
   });
 });
 

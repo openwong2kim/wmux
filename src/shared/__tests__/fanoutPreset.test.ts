@@ -47,6 +47,12 @@ describe('validateFanoutAgentChoice', () => {
     expect((r as { error: string }).error).toMatch(/not verified end to end/);
   });
 
+  it('refuses agy with the trust-screen reason until a pre-trust mechanism exists', () => {
+    const r = validateFanoutAgentChoice({ agent: 'agy' });
+    expect(r).toMatchObject({ ok: false });
+    expect((r as { error: string }).error).toMatch(/trust screen/);
+  });
+
   it('every selectable CLI that pins a model has a model grammar on the rewrite path', () => {
     for (const a of FANOUT_AGENTS.filter((x) => x.selectable && x.modelFlag)) {
       const out = applyRoleBinding(`${a.stem} "$(cat '/p')"`, { agent: a.stem, model: 'm1' }, {

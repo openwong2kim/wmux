@@ -1,5 +1,6 @@
 import type { DaemonClient } from '../DaemonClient';
 import type { DaemonEvent } from '../../shared/rpc';
+import { DESKTOP_ACCOUNT_ENV_COMMAND } from '../../shared/phonePaneAccount';
 
 export function installPhoneBridge(client: DaemonClient, handle: (command: string, payload: Record<string,unknown>) => Promise<unknown>): () => void {
   let active = true;
@@ -19,6 +20,8 @@ export function installPhoneBridge(client: DaemonClient, handle: (command: strin
     ).catch(() => { /* Caller observes timeout/disconnect; never retry a write. */ });
   };
   client.on('event',listener);
-  void client.rpc('daemon.phone.register').catch(() => { /* Older daemon: no capability. */ });
+  // Announce the optional commands this desktop handles; a daemon that predates
+  // the announcement ignores the params.
+  void client.rpc('daemon.phone.register',{commands:[DESKTOP_ACCOUNT_ENV_COMMAND]}).catch(() => { /* Older daemon: no capability. */ });
   return () => { active = false; client.off('event',listener); };
 }

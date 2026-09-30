@@ -78,7 +78,7 @@ function skillsAgent(agent: string | undefined): boolean {
 export function buildChatObject(
   resolution: ChatResolution,
   blocked: ChatBlocked | undefined,
-  opts: { turn?: ChatTurn; chatCancel?: boolean; queue?: ChatQueueItemView[] } = {},
+  opts: { turn?: ChatTurn; chatCancel?: boolean; queue?: ChatQueueItemView[]; accountStatus?: boolean } = {},
 ): Record<string, unknown> {
   const { status } = resolution;
   const liveness = {
@@ -156,6 +156,9 @@ export function buildChatObject(
       ...(resolution.source === 'file' ? { streaming: false } : {}),
       launch: false,
       skills: skillsAgent(agent),
+      // Contract v-next item 2: the pane's Codex account server answers
+      // `GET …/codex/account-status`. Omitted otherwise.
+      ...(opts.accountStatus === true && agent === 'codex' ? { accountStatus: true } : {}),
     },
     ...blockedField,
     ...(opts.queue !== undefined ? { queue: opts.queue.map((item) => ({ ...item })) } : {}),
@@ -424,7 +427,8 @@ export function cancelResponse(outcome: ChatCancelOutcome): WireResponse {
   const { clientCancelId, effect } = outcome;
   let response: WireResponse;
   if (!outcome.error) {
-    response = { status: 202, body: { result: 'sent', replayed: false, ...(outcome.turnId ? { turnId: outcome.turnId } : {}), clientCancelId, effect } };
+    response = { status: 202, body: { result: 'sent', replayed: false, ...(outcome.turnId ? { turnId: outcome.turnId } : {}), clientCancelId, effect,
+      ...(outcome.cancel ? { cancel: outcome.cancel } : {}) } };
   } else {
     response = {
       status: cancelStatus(outcome.error),
@@ -446,5 +450,6 @@ export function cancelResponse(outcome: ChatCancelOutcome): WireResponse {
   // A replayed success is 200; a replayed failure keeps its status (an
   // uncertain ESC stays 500) and only gains `replayed:true`.
   if (!outcome.replayed) return response;
-  return { status: outcome.error ? response.status : 200, body: { ...response.body, replayed: true } };
+  return { status: outcome.error ? response.status : 200,
+    body: { ...response.body, replayed: true, ...(outcome.cancel ? { cancel: outcome.cancel } : {}) } };
 }

@@ -22,7 +22,7 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
   it('routes pty:data through the resync hold-out before the scheduler', () => {
     const idx = src.indexOf('const routePtyData');
     expect(idx).toBeGreaterThan(0);
-    const body = src.slice(idx, idx + 1500);
+    const body = src.slice(idx, idx + 2000);
     // In-flight resync buffers bytes out of xterm entirely…
     expect(body).toMatch(/st\.buffer\.push\(payload\)/);
     expect(body).toMatch(/RESYNC_BUFFER_MAX_CHARS/);

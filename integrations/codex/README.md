@@ -70,7 +70,9 @@ vocabulary — a shell call arrives as `tool_name: "Bash"`. A captured `Stop`:
 
 **Pane environment is inherited.** `WMUX_PTY_ID` set on the Codex process
 reaches the hook unchanged, so pane attribution works exactly as it does for
-Kiro and Claude.
+Kiro and Claude — as long as that Codex process runs the turn itself. Under
+Codex 0.157+'s shared server it does not; see
+[Shared Codex server](#shared-codex-server-1523).
 
 **Resume binding is possible**, unlike Kiro. `SessionStart.source` is
 `"startup"` on a fresh session and `"resume"` on `codex … resume`, with the
@@ -243,6 +245,42 @@ Manual setup (no `wmux setup-hooks`) still works:
 If you use this bridge, remove the `notify = [...]` line — otherwise every turn
 reports `agent.stop` twice. The `HookSignalRouter` dedup window swallows the
 duplicate, so nothing breaks, but the second spawn is pure waste.
+
+## Shared Codex server (#1523)
+
+Codex 0.157+ runs turns in one shared background server per account
+(`codex app-server --listen unix:// --managed-daemon`), started by whichever
+Codex needed it first and keeping that process's environment. A program Codex
+spawns from that server — `notify` included — inherits the `WMUX_*` variables
+of the pane that started the server, possibly a closed pane or a pane of
+another wmux instance, not the pane whose turn finished. The payload names no
+pane either.
+
+So the notify bridge looks at the process that spawned it (skipping wrappers
+that re-run the bridge itself, such as a version-manager `node` shim). The
+notification is dropped — nothing is sent, nothing is spooled, and
+`codex-notify.log` records `refused-shared-server` — only when all of these
+hold:
+
+- `app-server` is that process's **subcommand**: the first word after the
+  executable and Codex's global options. `codex --cd app-server`, or a prompt
+  that mentions the word, is not a server.
+- The server is **shared**: `--managed-daemon`, or a `--listen` other than
+  `stdio://`. A stdio server serves the one client that started it; wmux's own
+  Chat composer runs one per pane, with that pane's environment.
+- The environment **claims a pane**: `WMUX_PTY_ID`, `WMUX_WORKSPACE_ID`,
+  `WMUX_SURFACE_ID` or `WMUX_DATA_SUFFIX` is set. A shared server that wmux
+  starts itself has every `WMUX_*` variable removed, so its notifications name
+  no pane and are sent as before, for wmux to place by cwd.
+
+A Codex that runs the turn itself — older builds, `--no-daemon` (how wmux's
+bash/zsh `codex` wrapper runs an interactive `codex`), `exec`, `review` — is
+unchanged, and so is a parent the bridge cannot inspect within its 900 ms
+budget. On WSL the bridge is a Windows process that cannot see the Linux
+Codex, so the WSL launcher hands it that process's argv
+(`WMUX_CODEX_NOTIFIER_ARGV`) and the same rules apply.
+
+The hooks bridge has the same exposure and does not check yet.
 
 ## Identity on the main pipe (#1111)
 

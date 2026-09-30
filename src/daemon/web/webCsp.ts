@@ -34,6 +34,15 @@ export interface InlineBlocks {
   externalRefs: string[];
 }
 
+/**
+ * File names the `/app` font route serves (`/app/assets/<name>`), and the only
+ * names `scripts/build-daemon-web.mjs` lets the web build emit — one rule, so a
+ * font the build ships can never 404. Dots are allowed (Vite's hashed names may
+ * contain them) but not first, so no name can be `.` or `..`; the route looks a
+ * name up in a map built from the directory listing, never joins it to a path.
+ */
+export const WEB_APP_FONT_FILE = /^[A-Za-z0-9_-][A-Za-z0-9._-]*\.woff2$/;
+
 const BLOCK_RE = /<(script|style)\b([^>]*)>([\s\S]*?)<\/\1\s*>/gi;
 const SCRIPT_SRC_ATTR = /\bsrc\s*=/i;
 const STYLESHEET_LINK_RE = /<link\b[^>]*\brel\s*=\s*["']?stylesheet["']?[^>]*>/gi;
@@ -127,6 +136,12 @@ const STYLE_SRC = "'unsafe-inline'";
  * 'script-src' is used as a fallback"), and `manifest-src` falls all the way
  * back to `default-src`, which would refuse `/manifest.webmanifest` and with it
  * add-to-home-screen. Both are same-origin and nothing else.
+ *
+ * `font-src 'self'` is for the browser app page (`/app`), which renders the
+ * desktop's own UI and terminal fonts. They are served by this daemon under
+ * `/app/assets/` — same-origin files, never `data:` and never a third party —
+ * so the page still makes zero external requests. The classic page loads no
+ * font file, so the directive grants it nothing it uses.
  */
 export function buildWebCsp(html: string | null): string {
   const blocks = html ? extractInlineBlocks(html) : null;
@@ -138,6 +153,7 @@ export function buildWebCsp(html: string | null): string {
     `script-src ${scriptSrc}`,
     `style-src ${STYLE_SRC}`,
     "img-src 'self' data:",
+    "font-src 'self'",
     "connect-src 'self'",
     "worker-src 'self'",
     "manifest-src 'self'",

@@ -33,11 +33,11 @@ describe('useTerminal keyboard-protocol arming (#1363)', () => {
     expect(SRC).toMatch(/if \(!payload\.replay\) noteKeyboard\(payload\.data\);/);
   });
 
-  it('the fold is told not to trust ?9001h on Windows', () => {
-    expect(SRC).toMatch(
-      /trustWin32Input: window\.electronAPI\.platform !== 'win32'/,
-    );
-    expect(SRC).toMatch(/foldRemoteKeyboardState\(keyboardRef\.current, data, foldOpts\)/);
+  it('the fold is told not to trust ?9001h on a Windows host', () => {
+    // The pane's host (the browser build reports the daemon's), else this machine.
+    expect(SRC).toMatch(/hostPlatform\?\.\(\) \?\? window\.electronAPI\.platform/);
+    expect(SRC).toMatch(/trustWin32Input: hostPlatform\(\) !== 'win32'/);
+    expect(SRC).toMatch(/foldRemoteKeyboardState\(keyboardRef\.current, data, foldOpts\(\)\)/);
   });
 
   it("ConPTY's startup ?9001h does not arm win32 input on a Windows host", () => {

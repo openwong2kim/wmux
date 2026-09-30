@@ -761,3 +761,13 @@ describe('startWebTransport / stopWebTransport ordering', () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe('describeTailscaleProblem — check context', () => {
+  it('drops the start/rollback sentences, keeps the problem and the fix', () => {
+    const start = describeTailscaleProblem('port-taken');
+    const check = describeTailscaleProblem('port-taken', undefined, { context: 'check' });
+    expect(start.join('\n')).toMatch(/was NOT started/);
+    expect(check.join('\n')).not.toMatch(/was NOT started|Refusing to overwrite/);
+    expect(check[0]).toBe(start[0]);
+  });
+});

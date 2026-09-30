@@ -8,6 +8,7 @@ import { useIpc } from '../../hooks/useIpc';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
+import { hasAdoptableTaskDiff, openTaskDiff } from '../../utils/openTaskDiff';
 import { tokenAttrs } from '../../themes';
 import { usePlugins } from '../../plugins/usePlugins';
 import { postPluginCommand } from '../../plugins/pluginFrameRegistry';
@@ -157,6 +158,11 @@ export default function CommandPalette() {
   const { plugins } = usePlugins();
   // Project config commands (X5 wmux.json) — active workspace only.
   const projectConfigs = useStore((s) => s.projectConfigs);
+  // The fan-out task whose workspace is active, if any (Show Task Diff).
+  // Visible-gated like activeWorkspaceForItems: no re-render while closed.
+  const activeTask = useStore((s) =>
+    s.commandPaletteVisible && s.activeWorkspaceId ? s.missionByPaneGroup[s.activeWorkspaceId] : undefined,
+  );
 
   const buildItems = useCallback((): PaletteItemData[] => {
     const items: PaletteItemData[] = [];
@@ -377,6 +383,26 @@ export default function CommandPalette() {
         action: cmd.action,
       });
     });
+
+    // #1461 — the task diff (hunk checkboxes and Adopt, plus PR and Close while
+    // the task is open) for the fan-out task whose workspace is active. Show
+    // Git Diff opens the read-only workspace diff, so without this the fan-out
+    // toast and Fleet's Ready to review rows were the only ways back to a task
+    // diff. Listed only in a task workspace that still has a worktree, under a
+    // fixed id so it does not shift the `cmd-${i}` ids above.
+    if (activeWorkspaceId && activeTask && hasAdoptableTaskDiff(activeTask)) {
+      const task = activeTask;
+      items.push({
+        id: 'cmd-task-diff',
+        label: t('palette.cmd.showTaskDiff'),
+        category: 'command' as PaletteCategory,
+        icon: <IconCommand />,
+        action: () => {
+          openTaskDiff(task.id, activeWorkspaceId, task.title, task.owner.verifiedWorkspaceId);
+          setVisible(false);
+        },
+      });
+    }
 
     // Company commands
     const state = useStore.getState();
@@ -659,7 +685,7 @@ export default function CommandPalette() {
     }
 
     return items;
-  }, [workspaces, activeWorkspaceId, activeWorkspaceForItems, layoutTemplates, setVisible, ipcInvoke, recentCommands, togglePalette, plugins, projectConfigs, t]);
+  }, [workspaces, activeWorkspaceId, activeWorkspaceForItems, activeTask, layoutTemplates, setVisible, ipcInvoke, recentCommands, togglePalette, plugins, projectConfigs, t]);
 
   // -------------------------------------------------------------------------
   // Filtered + scored results — useMemo to cache across renders

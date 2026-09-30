@@ -40,7 +40,7 @@ export function externalRegistrationSkipReason(): string | null {
 
 export interface McpTarget {
   /** Stable id used in status payloads, CLI `--target`, and UI keys. */
-  id: 'claude' | 'codex' | 'gemini';
+  id: 'claude' | 'codex' | 'gemini' | 'agy';
   /** Human label for Settings / CLI output. */
   displayName: string;
   /** Config file syntax. Drives which `configIO` adapter is used. */
@@ -60,6 +60,14 @@ export interface McpTarget {
    * detected" and never created speculatively.
    */
   verified: boolean;
+  /**
+   * When false, neither the boot-time registrar nor a target-less
+   * `wmux mcp register` touches this config: only an explicit
+   * `wmux mcp register --target <id>` writes it. For agents whose MCP surface
+   * the operator deliberately keeps restricted (a worker that must not see the
+   * wmux pane/terminal tools until someone opts in).
+   */
+  autoRegister: boolean;
 }
 
 // The MCP server key wmux owns in every target config. (A formerly-paired
@@ -77,6 +85,7 @@ export const MCP_TARGETS: readonly McpTarget[] = [
     configPath: (home) => path.join(home, '.claude.json'),
     createIfMissing: true,
     verified: true,
+    autoRegister: true,
   },
   {
     id: 'codex',
@@ -85,6 +94,7 @@ export const MCP_TARGETS: readonly McpTarget[] = [
     configPath: (home) => path.join(home, '.codex', 'config.toml'),
     createIfMissing: false,
     verified: true,
+    autoRegister: true,
   },
   {
     id: 'gemini',
@@ -93,6 +103,20 @@ export const MCP_TARGETS: readonly McpTarget[] = [
     configPath: (home) => path.join(home, '.gemini', 'settings.json'),
     createIfMissing: false,
     verified: false,
+    autoRegister: true,
+  },
+  {
+    // Antigravity CLI (`agy`), Google's successor to the Gemini CLI. It reads
+    // MCP servers from `~/.gemini/config/mcp_config.json` (same `mcpServers`
+    // JSON shape; `agy mcp add` writes there). Opt-in only: agy is commonly a
+    // restricted worker, so wmux never adds its tools on its own.
+    id: 'agy',
+    displayName: 'Antigravity CLI',
+    format: 'json',
+    configPath: (home) => path.join(home, '.gemini', 'config', 'mcp_config.json'),
+    createIfMissing: false,
+    verified: false,
+    autoRegister: false,
   },
 ];
 

@@ -100,6 +100,22 @@ export const FANOUT_AGENTS: readonly FanoutAgentSpec[] = [
     modelFlag: false,
     unattendedFlags: '',
   },
+  {
+    // Checked 2026-09-29 on Windows with agy 1.2.13. Two blockers, both on
+    // agy's side: a positional prompt is rejected ("Prompts are read only from
+    // -p/--print, -i/--prompt-interactive, or stdin"), and a fresh folder stops
+    // on "Do you trust the contents of this project?" even with
+    // --dangerously-skip-permissions. Trust is not inherited from a trusted
+    // parent and agy exposes no env or flag to pre-trust a folder, so a worker
+    // in a new worktree would wait on a screen only a keypress can answer.
+    stem: 'agy',
+    label: 'Antigravity CLI',
+    selectable: false,
+    disabledReason: 'a fresh worktree stops on the project trust screen, and the first prompt needs -i',
+    disabledCode: 'unverified',
+    modelFlag: false,
+    unattendedFlags: '--dangerously-skip-permissions',
+  },
 ];
 
 /** Stems fan-out may launch that the generic role-binding rewrite does not know

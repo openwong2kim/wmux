@@ -25,6 +25,23 @@ export const PHONE_SIDEBAR_LIMITS = {
   gitBranch: 200,
   /** Upper bound for counts and ahead/behind; anything larger is not a real value. */
   count: 1_000_000,
+  /**
+   * Per-workspace split tree (`PhoneSidebarWorkspace.layout`). A tree over any
+   * bound is not projected (producer) and not accepted (parsers); the flat
+   * `panes` list still carries every session.
+   */
+  layout: {
+    /** Nesting depth, the root counting as 1. */
+    depth: 16,
+    /** Splits plus leaves. */
+    nodes: 512,
+    leaves: 64,
+    /** Children of one split. */
+    children: 64,
+    surfacesPerLeaf: 64,
+    /** Surfaces over the whole tree. */
+    surfaces: 512,
+  },
 } as const;
 
 export interface PhoneSidebarTaskLink {
@@ -93,6 +110,58 @@ export interface PhoneSidebarWorkspace {
   gitIsWorktree?: boolean;
   gitSync?: { ahead: number; behind: number; hasUpstream: boolean };
   task?: PhoneSidebarTaskLink;
+  /** The workspace's visible split tree; absent when not projected or cut for size. */
+  layout?: PhoneSidebarLayout;
+}
+
+/**
+ * Surface kinds the phone may see: the desktop's surface types, plus 'other'
+ * for anything newer. A parser maps an unknown kind to 'other' rather than
+ * refusing the tree, so an older reader still draws the tab.
+ */
+export const PHONE_LAYOUT_SURFACE_KINDS = ['terminal', 'browser', 'editor', 'diff', 'git', 'review', 'remote-terminal', 'other'] as const;
+export type PhoneLayoutSurfaceKind = (typeof PHONE_LAYOUT_SURFACE_KINDS)[number];
+
+/**
+ * One tab of a pane. A terminal tab carries its session id only (its title is
+ * already `panes[].surfaceTitle`); any other tab carries its clamped title
+ * only. A terminal without `ptyId` is a slot with no listable session (still
+ * spawning, or the orchestrator brain) — kept so tab order and `activeIndex`
+ * stay the desktop's.
+ */
+export interface PhoneLayoutSurface {
+  /** Desktop surface id: stable across polls while the tab exists, unique in the tree. */
+  surfaceId: string;
+  kind: PhoneLayoutSurfaceKind;
+  ptyId?: string;
+  title?: string;
+}
+
+export interface PhoneLayoutLeaf {
+  kind: 'leaf';
+  /** Desktop pane id, the same value `panes[].paneId` carries. */
+  paneId: string;
+  /** Tabs in the desktop's order. */
+  surfaces: PhoneLayoutSurface[];
+  /** Index into `surfaces` of the tab the pane shows; present iff `surfaces` is non-empty. */
+  activeIndex?: number;
+}
+
+export interface PhoneLayoutSplit {
+  kind: 'split';
+  /** The desktop's own word: 'horizontal' lays the children side by side. */
+  direction: 'horizontal' | 'vertical';
+  /** One share per child, in percent: finite, > 0, summing to 100 within rounding. */
+  sizes: number[];
+  children: PhoneLayoutNode[];
+}
+
+export type PhoneLayoutNode = PhoneLayoutLeaf | PhoneLayoutSplit;
+
+export interface PhoneSidebarLayout {
+  root: PhoneLayoutNode;
+  /** The workspace's focused pane, present only when it is a leaf of `root`. */
+  activePaneId?: string;
 }
 
 export interface PhoneSidebarPane {
@@ -149,6 +218,11 @@ function boundedString(value: unknown, max: number): string | undefined {
 function idString(value: unknown): string | undefined {
   const id = boundedString(value, PHONE_SIDEBAR_LIMITS.id);
   return id !== undefined && !RESERVED_KEYS.has(id) ? id : undefined;
+}
+
+/** True when the parsers accept `value` as an id; the producer checks with this. */
+export function isSidebarId(value: unknown): value is string {
+  return idString(value) !== undefined;
 }
 
 function count(value: unknown): number | undefined {
@@ -243,7 +317,150 @@ function parseWorkspace(value: unknown, drop: SidebarDropReporter): PhoneSidebar
   const task = parseTask(value.task, drop);
   if (task) row.task = task;
   else if (value.task !== undefined) drop('workspace.task');
+  if (value.layout !== undefined) {
+    const layout = parseLayout(value.layout, drop);
+    if (layout) row.layout = layout;
+  }
   return row;
+}
+
+/** Hundredths of a percent: split shares are whole units of 0.01. */
+const SIZE_UNITS = 10_000;
+
+/**
+ * Positive weights as percent shares in whole hundredths that sum to exactly
+ * 100 (10 000 hundredths), each at least 0.01. Largest remainder: floor every
+ * share, then hand the leftover hundredths to the largest fractions; when the
+ * 0.01 floor overshoots, take the excess back from the largest shares.
+ */
+function distributeSizes(weights: readonly number[]): number[] {
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  const exact = weights.map((weight) => (weight / total) * SIZE_UNITS);
+  const units = exact.map((share) => Math.max(1, Math.floor(share)));
+  let left = SIZE_UNITS - units.reduce((sum, unit) => sum + unit, 0);
+  const byFraction = exact.map((share, i) => ({ i, fraction: share - Math.floor(share) })).sort((a, b) => b.fraction - a.fraction || a.i - b.i);
+  for (let k = 0; left > 0; k = (k + 1) % byFraction.length, left -= 1) units[byFraction[k].i] += 1;
+  while (left < 0) {
+    let largest = 0;
+    for (let i = 1; i < units.length; i += 1) if (units[i] > units[largest]) largest = i;
+    units[largest] -= 1;
+    left += 1;
+  }
+  return units.map((unit) => unit / 100);
+}
+
+/** An equal split of `count` children, in the same units as `normalizeLayoutSizes`. */
+export function equalLayoutSizes(count: number): number[] {
+  return distributeSizes(Array.from({ length: count }, () => 1));
+}
+
+/**
+ * Split shares as the phone reads them: one positive percent per child, in
+ * whole hundredths that sum to exactly 100, none below 0.01. Null when
+ * `sizes` is not one finite, positive number per child.
+ */
+export function normalizeLayoutSizes(sizes: unknown, count: number): number[] | null {
+  if (!Array.isArray(sizes) || count === 0 || count > SIZE_UNITS || sizes.length !== count) return null;
+  if (!sizes.every((size) => typeof size === 'number' && Number.isFinite(size) && size > 0)) return null;
+  const total = (sizes as number[]).reduce((sum, size) => sum + size, 0);
+  if (!Number.isFinite(total)) return null;
+  return distributeSizes(sizes as number[]);
+}
+
+class LayoutRefusal extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+  }
+}
+
+/**
+ * Strict parse of one workspace's split tree. All or nothing: a tree over a
+ * bound, with bad sizes, a missing or duplicate pane, tab or session id, an unsafe title or an
+ * out-of-range `activeIndex` is refused whole (the row and the flat `panes`
+ * list stay), because a partial tree would draw a layout the desktop does not
+ * have. Two things degrade instead: an unknown surface kind reads as 'other',
+ * and an `activePaneId` that is not a leaf of the tree is dropped alone.
+ */
+function parseLayout(value: unknown, drop: SidebarDropReporter): PhoneSidebarLayout | undefined {
+  const bounds = PHONE_SIDEBAR_LIMITS.layout;
+  let nodes = 0;
+  let leaves = 0;
+  let surfaceCount = 0;
+  const paneIds = new Set<string>();
+  const ptyIds = new Set<string>();
+  const surfaceIds = new Set<string>();
+  const refuse = (reason: string): never => {
+    throw new LayoutRefusal(reason);
+  };
+
+  const parseSurface = (raw: unknown): PhoneLayoutSurface => {
+    if (!isRecord(raw) || typeof raw.kind !== 'string') return refuse('surface');
+    const kind: PhoneLayoutSurfaceKind = (PHONE_LAYOUT_SURFACE_KINDS as readonly string[]).includes(raw.kind)
+      ? (raw.kind as PhoneLayoutSurfaceKind)
+      : 'other';
+    const surfaceId = idString(raw.surfaceId);
+    if (surfaceId === undefined || surfaceIds.has(surfaceId)) return refuse('surfaceId');
+    surfaceIds.add(surfaceId);
+    if (kind === 'terminal') {
+      if (raw.ptyId === undefined) return { surfaceId, kind };
+      const ptyId = idString(raw.ptyId);
+      if (ptyId === undefined || ptyIds.has(ptyId)) return refuse('ptyId');
+      ptyIds.add(ptyId);
+      return { surfaceId, kind, ptyId };
+    }
+    if (raw.title === undefined) return { surfaceId, kind };
+    const title = boundedString(raw.title, PHONE_SIDEBAR_LIMITS.surfaceTitle);
+    return title !== undefined ? { surfaceId, kind, title } : refuse('title');
+  };
+
+  const parseNode = (raw: unknown, depth: number): PhoneLayoutNode => {
+    // Bounds are checked before descending, so a depth or width bomb costs
+    // at most the bound in work and stack.
+    if (depth > bounds.depth) return refuse('depth');
+    if (++nodes > bounds.nodes) return refuse('nodes');
+    if (!isRecord(raw)) return refuse('node');
+    if (raw.kind === 'leaf') {
+      if (++leaves > bounds.leaves) return refuse('leaves');
+      const paneId = idString(raw.paneId);
+      if (paneId === undefined || paneIds.has(paneId)) return refuse('paneId');
+      paneIds.add(paneId);
+      if (!Array.isArray(raw.surfaces) || raw.surfaces.length > bounds.surfacesPerLeaf) return refuse('surfaces');
+      surfaceCount += raw.surfaces.length;
+      if (surfaceCount > bounds.surfaces) return refuse('surfaces');
+      const surfaces = raw.surfaces.map(parseSurface);
+      const leaf: PhoneLayoutLeaf = { kind: 'leaf', paneId, surfaces };
+      if (surfaces.length > 0) {
+        const index = raw.activeIndex;
+        if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || index >= surfaces.length) return refuse('activeIndex');
+        leaf.activeIndex = index;
+      } else if (raw.activeIndex !== undefined) return refuse('activeIndex');
+      return leaf;
+    }
+    if (raw.kind === 'split') {
+      if (raw.direction !== 'horizontal' && raw.direction !== 'vertical') return refuse('direction');
+      if (!Array.isArray(raw.children) || raw.children.length === 0 || raw.children.length > bounds.children) return refuse('children');
+      const sizes = normalizeLayoutSizes(raw.sizes, raw.children.length);
+      if (!sizes) return refuse('sizes');
+      const children = raw.children.map((child) => parseNode(child, depth + 1));
+      return { kind: 'split', direction: raw.direction, sizes, children };
+    }
+    return refuse('kind');
+  };
+
+  try {
+    if (!isRecord(value)) return refuse('envelope');
+    const layout: PhoneSidebarLayout = { root: parseNode(value.root, 1) };
+    if (value.activePaneId !== undefined) {
+      const activePaneId = idString(value.activePaneId);
+      if (activePaneId !== undefined && paneIds.has(activePaneId)) layout.activePaneId = activePaneId;
+      else drop('workspace.layout.activePaneId');
+    }
+    return layout;
+  } catch (error) {
+    if (!(error instanceof LayoutRefusal)) throw error;
+    drop(`workspace.layout.${error.reason}`);
+    return undefined;
+  }
 }
 
 function parsePane(value: unknown, drop: SidebarDropReporter): PhoneSidebarPane | null {
@@ -333,6 +550,44 @@ export function clampSidebarString(value: string | undefined | null, max: number
     out = out.trimEnd();
   }
   return out.length > 0 ? out : undefined;
+}
+
+/** A workspace's layout as `/api/workspaces` carries it. */
+export interface PhoneWorkspaceLayout extends PhoneSidebarLayout {
+  /**
+   * Session ids this row lists that no leaf of `root` holds — a stashed pane's
+   * tab, or a session the desktop has not placed yet — in `panes[]` order.
+   */
+  unplaced: string[];
+}
+
+/**
+ * The desktop's tree narrowed to what one `/api/workspaces` row can show.
+ * `listed` is the row's own session ids: live, non-brain, and running in this
+ * workspace by the daemon's own record. A terminal tab naming any other
+ * session keeps its slot but loses the id (the phone draws a placeholder), so
+ * the tree can never point at a pane the row does not list.
+ */
+export function phoneWorkspaceLayout(layout: PhoneSidebarLayout, listed: readonly string[]): PhoneWorkspaceLayout {
+  const live = new Set(listed);
+  const placed = new Set<string>();
+  const narrow = (node: PhoneLayoutNode): PhoneLayoutNode => {
+    if (node.kind === 'split') return { ...node, children: node.children.map(narrow) };
+    return {
+      ...node,
+      surfaces: node.surfaces.map((surface) => {
+        if (surface.ptyId === undefined) return surface;
+        if (!live.has(surface.ptyId)) return { surfaceId: surface.surfaceId, kind: surface.kind };
+        placed.add(surface.ptyId);
+        return surface;
+      }),
+    };
+  };
+  return {
+    root: narrow(layout.root),
+    ...(layout.activePaneId !== undefined ? { activePaneId: layout.activePaneId } : {}),
+    unplaced: listed.filter((id) => !placed.has(id)),
+  };
 }
 
 /**

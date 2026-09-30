@@ -51,6 +51,8 @@ export default function MiniSidebar() {
   const reorderWorkspace = useStore((s) => s.reorderWorkspace);
   const notifications = useStore((s) => s.notifications);
   const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
+  // Browser mirror (wmux web /app): no creation, reorder or desktop-only destinations.
+  const readOnly = useStore((s) => s.readOnly);
 
   // #1284 — the rail's + opens the same PresetPicker as the titlebar +. With
   // the sidebar collapsed the titlebar + is clipped by its 48px segment, so
@@ -88,9 +90,9 @@ export default function MiniSidebar() {
 
   return (
     <div className={`wmux-sidebar flex flex-col shrink-0 h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 48, borderColor: 'var(--border-soft)' }} {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}>
-      <SidebarNavigation compact />
+      {!readOnly && <SidebarNavigation compact />}
       {/* Header — new workspace button */}
-      <button
+      {!readOnly && <button
         ref={plusBtnRef}
         className={`flex items-center justify-center h-10 text-[var(--text-subtle)] hover:text-[var(--accent-green)] transition-colors duration-150 border-b border-[var(--bg-surface)] font-mono text-lg leading-none ${FOCUS_RING}`}
         style={{ borderColor: 'var(--border-soft)' }}
@@ -104,7 +106,7 @@ export default function MiniSidebar() {
         data-derived="textSubtle"
       >
         <IconPlus size={14} />
-      </button>
+      </button>}
       {pickerOpen && <PresetPicker onClose={closePicker} anchorStyle={pickerAnchor} />}
 
       {/* Workspace dots */}
@@ -119,7 +121,7 @@ export default function MiniSidebar() {
           const isMultiview = multiviewIds.includes(ws.id);
           const isDragging = draggingIndex === i;
           const isPinned = pinnedIds.includes(ws.id);
-          const reorderOff = sidebarAttentionFirst && !isPinned;
+          const reorderOff = readOnly || (sidebarAttentionFirst && !isPinned);
           // A sorted rail only takes pinned-to-pinned drops.
           const dropAllowed = (fromId: string) =>
             !sidebarAttentionFirst || (isPinned && pinnedIds.includes(fromId));
@@ -278,7 +280,7 @@ export default function MiniSidebar() {
 
       {/* Footer — expand + status */}
       <div className="flex flex-col items-center gap-2 py-2 border-t border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
-        <button
+        {!readOnly && <button
           type="button"
           className={`ui-icon-btn w-8 h-8 ${FOCUS_RING}`}
           aria-label={t('settings.title')}
@@ -288,7 +290,7 @@ export default function MiniSidebar() {
           onClick={() => useStore.getState().toggleSettingsPanel()}
         >
           <IconGear size={16} />
-        </button>
+        </button>}
 
         {/* Expand sidebar button — same position as collapse button in full sidebar */}
         <button

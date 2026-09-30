@@ -47,7 +47,7 @@ afterEach(() => {
 describe('McpRegistrar.getStatus (multi-target)', () => {
   it('reports every target as not registered when no configs exist', () => {
     const status = new McpRegistrar().getStatus();
-    expect(status.targets.map((t) => t.id).sort()).toEqual(['claude', 'codex', 'gemini']);
+    expect(status.targets.map((t) => t.id).sort()).toEqual(['agy', 'claude', 'codex', 'gemini']);
     for (const t of status.targets) {
       expect(t.configExists).toBe(false);
       expect(t.configModified).toBeNull();
@@ -209,6 +209,16 @@ describe('McpRegistrar.register (broker topology selection)', () => {
     await new McpRegistrar().register('tok');
     expect(canConnectBrokerPipe).not.toHaveBeenCalled();
     expect(registeredPath()).toBe(entryPath());
+  });
+
+  it('never writes the opt-in agy config at boot, even when agy is installed', async () => {
+    const agyJson = path.join(tmpHome, '.gemini', 'config', 'mcp_config.json');
+    fs.mkdirSync(path.dirname(agyJson), { recursive: true });
+    const before = JSON.stringify({ mcpServers: { worker: { command: 'python', args: ['server.py'] } } });
+    fs.writeFileSync(agyJson, before, 'utf8');
+    await new McpRegistrar().register('tok');
+    expect(fs.readFileSync(agyJson, 'utf8')).toBe(before);
+    expect(target(new McpRegistrar().getStatus(), 'agy').wmux.registered).toBe(false);
   });
 });
 

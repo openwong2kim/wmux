@@ -94,6 +94,14 @@ describe('RoleBindingsView render', () => {
     expect(html).toContain('list="role-binding-models-Builder"');
   });
 
+  // agy is a known launcher, but fan-out cannot start it with a positional
+  // prompt, so the role list must not offer it.
+  it('does not offer agy as a role-binding agent', () => {
+    const html = render();
+    expect(html).toContain('<option value="gemini">');
+    expect(html).not.toContain('<option value="agy">');
+  });
+
   it('suggests claude aliases only when the row is bound to claude', () => {
     expect(render({ Builder: { agent: 'claude' } })).toContain('Haiku 4.5');
     expect(render({ Builder: { agent: 'codex' } })).not.toContain('Haiku 4.5');

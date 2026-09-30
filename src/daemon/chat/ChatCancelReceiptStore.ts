@@ -3,6 +3,10 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { atomicWriteJSONSync } from '../util/atomicWrite';
 import { CHAT_MESSAGE_RETENTION_MS, chatIdTime, type ChatCancelEffect, type ChatOwner } from './chatBridge';
+import {
+  effectiveCancelProgress, isFinalCancelState,
+  type ChatCancelProgress, type StoredCancelProgress,
+} from '../../shared/phoneChatCancelOutcome';
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const EFFECTS: readonly string[] = ['interrupt-requested', 'uncertain'];
@@ -20,7 +24,16 @@ export interface ChatCancelReceipt {
   fingerprint: string;
   state: 'pending' | 'final';
   outcome?: StoredCancelOutcome;
+  /**
+   * What happened after the write (contract v-next item 3). Optional and
+   * ignored by an older daemon: the file stays `version: 1` and
+   * `outcome.effect` keeps its two values.
+   */
+  progress?: StoredCancelProgress;
 }
+
+/** `GET …/chat/cancel/:clientCancelId`: the progress of one cancel, with the turn it was aimed at. */
+export type ChatCancelProgressView = ChatCancelProgress;
 
 /** A cancel that never reported back before a daemon restart: the ESC may have been written. */
 const RESTART_UNCERTAIN: StoredCancelOutcome = { effect: 'uncertain' };
@@ -53,6 +66,8 @@ function validEntry(key: string, value: unknown): value is ChatCancelReceipt {
  */
 export class ChatCancelReceiptStore {
   private entries: Record<string, ChatCancelReceipt> = {};
+  /** When the interrupt was written, per key. Memory only: the file keeps `progress` alone, so it is absent after a restart. */
+  private readonly requestedAt = new Map<string, number>();
   private readonly file: string;
   private readonly now: () => number;
   private readonly limit: number;
@@ -67,10 +82,24 @@ export class ChatCancelReceiptStore {
     if (fs.statSync(this.file).size > MAX_FILE_BYTES) throw new Error('Chat cancel receipt storage exceeds limit');
     const saved = JSON.parse(fs.readFileSync(this.file, 'utf8'));
     if (saved?.version !== 1 || !saved.entries || typeof saved.entries !== 'object' || Array.isArray(saved.entries)) throw new Error('Invalid chat cancel receipt storage');
+    const now = this.now();
+    let changed = false;
     for (const [key, value] of Object.entries(saved.entries)) {
       if (!validEntry(key, value)) throw new Error('Invalid chat cancel receipt entry');
-      this.entries[key] = value.state === 'pending' ? { ...value, state: 'final', outcome: RESTART_UNCERTAIN } : value;
+      const { progress: raw, ...rest } = value as ChatCancelReceipt & { progress?: unknown };
+      // Nothing observes a cancel across a restart: a `requested` progress,
+      // and the `pending` entry that becomes a final `uncertain` one here,
+      // both settle `unknown` (`daemon-restart`). Read from the entry as
+      // loaded, before the conversion, so a crashed `pending` keeps that
+      // reason. The shared reader normalizes the untrusted stored value, so a
+      // `progress` never makes an entry invalid.
+      const progress = effectiveCancelProgress({ ...rest, ...(raw !== undefined ? { progress: raw as StoredCancelProgress } : {}) }, true, now);
+      if (JSON.stringify(progress) !== JSON.stringify(raw)) changed = true;
+      this.entries[key] = rest.state === 'pending' ? { ...rest, state: 'final', outcome: RESTART_UNCERTAIN, progress } : { ...rest, progress };
     }
+    // Write the settled progress once, so its `at` stays put across later
+    // restarts. A failed write only repeats this at the next load.
+    if (changed) { try { this.save(this.entries); } catch { /* see above */ } }
   }
 
   static fingerprint(paneId: string, agentSessionId: string, historyEpoch: string | undefined, turnId: string | undefined): string {
@@ -96,14 +125,52 @@ export class ChatCancelReceiptStore {
     return 'inserted';
   }
 
-  /** Record the verdict of a cancel that reached the write. A failed save stays `pending` on disk (uncertain after a restart). */
-  complete(owner: ChatOwner, clientCancelId: string, outcome: StoredCancelOutcome): boolean {
+  /**
+   * Record the verdict of a cancel that reached the write, and its first
+   * progress, in one write. A failed save stays `pending` on disk (uncertain
+   * after a restart).
+   */
+  complete(owner: ChatOwner, clientCancelId: string, outcome: StoredCancelOutcome, progress?: StoredCancelProgress): boolean {
     const key = this.key(owner, clientCancelId);
     const entry = this.entries[key];
     if (!entry || entry.state !== 'pending') return false;
-    const next = { ...this.entries, [key]: { ...entry, state: 'final' as const, outcome } };
+    const next = { ...this.entries, [key]: { ...entry, state: 'final' as const, outcome, ...(progress ? { progress } : {}) } };
     this.entries = next;
+    if (progress?.state === 'requested') this.requestedAt.set(key, progress.at);
     try { this.save(next); return true; } catch { return false; }
+  }
+
+  /**
+   * Move a final entry's progress on. `final`: its progress is already final
+   * and never changes again. `unsaved`: the write failed and nothing changed,
+   * in memory or on disk, so the caller may try again.
+   */
+  setProgress(owner: ChatOwner, clientCancelId: string, progress: StoredCancelProgress): 'saved' | 'unsaved' | 'final' {
+    const key = this.key(owner, clientCancelId);
+    const entry = this.entries[key];
+    if (!entry || entry.state !== 'final' || isFinalCancelState(effectiveCancelProgress(entry, false, this.now()).state)) return 'final';
+    const next = { ...this.entries, [key]: { ...entry, progress } };
+    try { this.save(next); } catch { return 'unsaved'; }
+    this.entries = next;
+    return 'saved';
+  }
+
+  /** The progress of a cancel, or undefined (none, refused, expired, another owner). */
+  progress(owner: ChatOwner, clientCancelId: string): ChatCancelProgressView | undefined {
+    const entry = this.lookup(owner, clientCancelId);
+    // A `pending` entry (the write in flight under the pane lock) reads `requested`.
+    if (!entry) return undefined;
+    const { endedAs, evidence, reason, state, at } = effectiveCancelProgress(entry, false, this.now());
+    const requestedAt = this.requestedAt.get(this.key(owner, clientCancelId));
+    return {
+      state,
+      ...(entry.outcome?.turnId ? { turnId: entry.outcome.turnId } : {}),
+      ...(endedAs ? { endedAs } : {}),
+      ...(evidence ? { evidence } : {}),
+      ...(reason ? { reason } : {}),
+      ...(requestedAt !== undefined ? { requestedAt } : {}),
+      at,
+    };
   }
 
   /** Drop a `pending` receipt whose cancel wrote nothing. */
@@ -125,5 +192,7 @@ export class ChatCancelReceiptStore {
     if (Buffer.byteLength(JSON.stringify(data)) > MAX_FILE_BYTES) throw new Error('Chat cancel receipt storage exceeds limit');
     fs.mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
     this.write(this.file, data);
+    // Retention pruning and discards drop entries here; their write times go with them.
+    for (const key of this.requestedAt.keys()) if (!Object.hasOwn(entries, key)) this.requestedAt.delete(key);
   }
 }

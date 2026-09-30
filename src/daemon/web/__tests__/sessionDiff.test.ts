@@ -198,6 +198,7 @@ describe('collectSessionDiff', () => {
     expect(inherited.sort()).toEqual([
       'GIT_ATTR_NOSYSTEM',
       'GIT_CONFIG_NOSYSTEM',
+      'GIT_NO_LAZY_FETCH',
       'GIT_OPTIONAL_LOCKS',
       'GIT_PAGER',
       'GIT_TERMINAL_PROMPT',

@@ -19,19 +19,30 @@
 //   - pane group:   `splitTasksByPane` over the owner's leaves, the split
 //                   the sidebar files each nested task under (#1581)
 //   - panes:        the roster's pane display name and surface title rules
+//   - layout:       `rootPane` as PaneContainer draws it (direction, sizes,
+//                   tab order, active tab) and `activePaneId`
 //
 // Store-free (state in, plain object out) so it is unit-testable directly.
 
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { isBrainPtyId } from '../../shared/constants';
 import {
+  PHONE_LAYOUT_SURFACE_KINDS,
   PHONE_SIDEBAR_LIMITS,
   clampSidebarString,
+  equalLayoutSizes,
+  isSidebarId,
+  normalizeLayoutSizes,
+  type PhoneLayoutNode,
+  type PhoneLayoutSurface,
+  type PhoneLayoutSurfaceKind,
+  type PhoneSidebarLayout,
   type PhoneSidebarPane,
   type PhoneSidebarSnapshot,
   type PhoneSidebarWorkspace,
   type SidebarDropReporter,
 } from '../../shared/phoneFleetSidebar';
+import type { Pane, Surface } from '../../shared/types';
 import type { StoreState } from '../stores';
 import { resolveTaskLink } from '../utils/fanoutProvenance';
 import { computePaneAutoName, paneDisplayName } from '../utils/paneNaming';
@@ -43,6 +54,76 @@ import { isTaskReadyForReview } from '../stores/selectors/reviewQueue';
 function nonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+/**
+ * The workspace's visible split tree, walked from `rootPane` — never
+ * `getWorkspaceLeafPanes`, which also returns stashed panes the desktop does
+ * not draw. Undefined when the tree is over a bound, so the phone gets the
+ * flat list alone rather than a tree the parsers would refuse.
+ */
+function projectLayout(ws: StoreState['workspaces'][number]): PhoneSidebarLayout | undefined {
+  const bounds = PHONE_SIDEBAR_LIMITS.layout;
+  let nodes = 0;
+  let leaves = 0;
+  let surfaceCount = 0;
+  const leafIds = new Set<string>();
+  const ptyIds = new Set<string>();
+  const surfaceIds = new Set<string>();
+
+  /** Null when the tab has no usable id: a reader keys tabs by it, so the tree cannot go out. */
+  const projectSurface = (surface: Surface): PhoneLayoutSurface | null => {
+    const surfaceId = surface.id;
+    if (!isSidebarId(surfaceId) || surfaceIds.has(surfaceId)) return null;
+    surfaceIds.add(surfaceId);
+    const type = surface.surfaceType ?? 'terminal';
+    const kind: PhoneLayoutSurfaceKind = (PHONE_LAYOUT_SURFACE_KINDS as readonly string[]).includes(type)
+      ? type as PhoneLayoutSurfaceKind
+      : 'other';
+    if (kind === 'terminal') {
+      // Same rule as the pane rows: no brain session, and only an id the
+      // parsers accept; a slot without one still holds its tab position.
+      const ptyId = surface.ptyId;
+      if (!isSidebarId(ptyId) || isBrainPtyId(ptyId) || ptyIds.has(ptyId)) return { surfaceId, kind };
+      ptyIds.add(ptyId);
+      return { surfaceId, kind, ptyId };
+    }
+    const title = clampSidebarString(surface.title, PHONE_SIDEBAR_LIMITS.surfaceTitle);
+    return title ? { surfaceId, kind, title } : { surfaceId, kind };
+  };
+
+  const walk = (pane: Pane, depth: number): PhoneLayoutNode | null => {
+    if (depth > bounds.depth || ++nodes > bounds.nodes) return null;
+    if (pane.type === 'leaf') {
+      if (++leaves > bounds.leaves || !isSidebarId(pane.id) || leafIds.has(pane.id) || pane.surfaces.length > bounds.surfacesPerLeaf) return null;
+      surfaceCount += pane.surfaces.length;
+      if (surfaceCount > bounds.surfaces) return null;
+      leafIds.add(pane.id);
+      const surfaces: PhoneLayoutSurface[] = [];
+      for (const surface of pane.surfaces) {
+        const projected = projectSurface(surface);
+        if (!projected) return null;
+        surfaces.push(projected);
+      }
+      const active = pane.surfaces.findIndex((surface) => surface.id === pane.activeSurfaceId);
+      return { kind: 'leaf', paneId: pane.id, surfaces, ...(surfaces.length > 0 ? { activeIndex: Math.max(active, 0) } : {}) };
+    }
+    if (pane.children.length === 0 || pane.children.length > bounds.children) return null;
+    const children: PhoneLayoutNode[] = [];
+    for (const child of pane.children) {
+      const node = walk(child, depth + 1);
+      if (!node) return null;
+      children.push(node);
+    }
+    // `sizes` is optional and may not match the children (a split mid-update):
+    // the desktop then renders an equal split, and so does the phone.
+    const sizes = normalizeLayoutSizes(pane.sizes, children.length) ?? equalLayoutSizes(children.length);
+    return { kind: 'split', direction: pane.direction, sizes, children };
+  };
+
+  const root = walk(ws.rootPane, 1);
+  if (!root) return undefined;
+  return { root, ...(leafIds.has(ws.activePaneId) ? { activePaneId: ws.activePaneId } : {}) };
 }
 
 /**
@@ -102,6 +183,13 @@ export function buildPhoneSidebarSnapshot(state: StoreState, onDrop: SidebarDrop
     } catch {
       delete row.task;
       onDrop('workspace.task');
+    }
+    try {
+      const layout = projectLayout(ws);
+      if (layout) row.layout = layout;
+      else onDrop('workspace.layout.bounds');
+    } catch {
+      onDrop('workspace.layout');
     }
     workspaceRows.push(row);
   });

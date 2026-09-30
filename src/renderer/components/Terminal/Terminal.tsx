@@ -9,6 +9,7 @@ import { pasteClipboardImage } from '../../utils/imagePaste';
 import { openTerminalUrl } from '../../utils/browserPaneActions';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { isFileDrag } from '../../../shared/dragDrop';
+import type { FixedGeometry } from '../../terminal/fixedGeometryFit';
 import { findLeafBySurfaceId } from '../../../shared/paneUtils';
 import ViCopyMode from './ViCopyMode';
 import SearchBar from './SearchBar';
@@ -49,9 +50,12 @@ interface TerminalProps {
   workspaceId?: string;
   /** ID of the surface this terminal occupies. Sent as WMUX_SURFACE_ID. */
   surfaceId?: string;
+  /** Grid owned elsewhere — see useTerminal's `fixedGeometry`. Only the
+   *  browser build (wmux web) sets it; the desktop never does. */
+  fixedGeometry?: FixedGeometry | null;
 }
 
-export default function TerminalComponent({ chatView = false, ptyId: externalPtyId, shell, cwd, onPtyCreated, isActive = true, visible, isWorkspaceVisible = true, scrollbackFile, workspaceId: ownerWorkspaceId, surfaceId: ownerSurfaceId }: TerminalProps) {
+export default function TerminalComponent({ chatView = false, ptyId: externalPtyId, shell, cwd, onPtyCreated, isActive = true, visible, isWorkspaceVisible = true, scrollbackFile, workspaceId: ownerWorkspaceId, surfaceId: ownerSurfaceId, fixedGeometry }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [ptyId, setPtyId] = useState<string | null>(externalPtyId || null);
   const creatingRef = useRef(false);
@@ -308,7 +312,8 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
     // FloatingPane and Deck's BrainTerminalEmbed deliberately do NOT opt in —
     // there the key stays a pane byte rather than dying between the two
     // gates (#1280 review).
-    ownsComposeShortcut: true });
+    ownsComposeShortcut: true,
+    fixedGeometry });
 
   // terminalInstance (state, #1256) — not terminalRef.current (a render-time
   // snapshot): the ref is populated after this render ran, so a snapshot read
