@@ -122,6 +122,52 @@ describe('phone Git reads against real repositories', { timeout: 30_000 }, () =>
     await reads.projects(sessions);
     expect(calls).toBe(cold * 2);
   });
+
+  it('bounds the listing by its deadline and stops when the caller is gone', async () => {
+    let now = 0;
+    const slow: GitRunner = async (args, cwd) => { now += 6_000; return git(args, cwd); };
+    const reads = new PhoneGitReads(slow, undefined, undefined, () => now);
+    const sessions = [
+      { id: 'a', spawnCwd: repo, lastActivity: '2026-09-03T00:00:00.000Z' },
+      { id: 'b', spawnCwd: other, lastActivity: '2026-09-02T00:00:00.000Z' },
+    ];
+    // Each repository costs three git calls (18 s here): the second is past the deadline.
+    const bounded = await reads.projects(sessions);
+    expect(bounded.truncated).toBe(true);
+    expect(bounded.projects.map((p) => p.name)).toEqual(['repo']);
+    const gone = await new PhoneGitReads(git).projects(sessions, { aborted: () => true });
+    expect(gone).toEqual({ projects: [], truncated: true });
+  });
+
+  it('attributes a pane to a worktree only within the same repository', async () => {
+    // Another repository nested inside the main checkout: its pane is under
+    // repo's path but is not one of repo's worktrees.
+    const inner = path.join(repo, 'vendor', 'inner');
+    init(inner);
+    const answer = await new PhoneGitReads(git).branches(repo, [{ id: 'main-pane', spawnCwd: repo }, { id: 'inner-pane', spawnCwd: inner }]);
+    expect(answer.branches.find((b) => b.name === 'main')?.worktree?.sessionIds).toEqual(['main-pane']);
+  });
+
+  it('resolves a submodule checkout to its own worktree', async () => {
+    const lib = path.join(root, 'lib');
+    init(lib);
+    const host = path.join(root, 'host');
+    init(host);
+    run(host, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'lib');
+    const sub = path.join(host, 'lib');
+    const repoFacts = await new PhoneGitReads(git).repo(sub);
+    expect(repoFacts).toMatchObject({ name: 'lib', linkedWorktree: false });
+    const branches = await new PhoneGitReads(git).branches(sub, [{ id: 'sub-pane', spawnCwd: sub }]);
+    expect(branches.current.branch).toBe('main');
+    expect(branches.branches.find((b) => b.name === 'main')?.worktree).toEqual({ leaf: 'lib', main: true, sessionIds: ['sub-pane'] });
+  });
+
+  it('lists worktrees without -z on a git that lacks it', async () => {
+    const oldGit: GitRunner = async (args, cwd) =>
+      args.includes('-z') && args.includes('worktree') ? { ok: false, ran: true, code: 129, stdout: '', stderr: 'unknown switch' } : git(args, cwd);
+    const answer = await new PhoneGitReads(oldGit).branches(repo, [{ id: 'wt-pane', spawnCwd: linked }]);
+    expect(answer.branches.find((b) => b.name === 'feature')?.worktree).toEqual({ leaf: 'wt', main: false, sessionIds: ['wt-pane'] });
+  });
 });
 
 describe('phone Git read parsers', () => {
@@ -142,8 +188,13 @@ describe('phone Git read parsers', () => {
 
 describe('phone CI checks', () => {
   const head = 'b'.repeat(40);
-  const stubGit = (origin: string): GitRunner => async (args) => {
-    if (args.includes('remote')) return { ok: true, stdout: `${origin}\n`, stderr: '' };
+  const stubGit = (origin: string | null, calls: string[][] = []): GitRunner => async (args) => {
+    calls.push([...args]);
+    if (args.includes('--git-common-dir')) return { ok: true, stdout: '/repo\n/repo/.git\n/repo/.git\n', stderr: '' };
+    if (args.includes('--show-toplevel')) return { ok: true, stdout: '/repo\n', stderr: '' };
+    if (args.includes('remote')) {
+      return origin === null ? { ok: false, ran: true, code: 2, stdout: '', stderr: 'error: No such remote' } : { ok: true, stdout: `${origin}\n`, stderr: '' };
+    }
     if (args.includes('symbolic-ref')) return { ok: true, stdout: 'feature/x\n', stderr: '' };
     return { ok: true, stdout: `${head}\n`, stderr: '' };
   };
@@ -201,10 +252,32 @@ describe('phone CI checks', () => {
     }
   });
 
+  it('answers unsupported without an origin, 409 outside a repository, and caches definite answers', async () => {
+    expect(await new PhoneGitReads(stubGit(null), async () => { throw new Error('unused'); }).checks('/r'))
+      .toMatchObject({ state: 'unsupported', checks: [] });
+    const notRepo: GitRunner = async () => ({ ok: false, ran: true, code: 128, stdout: '', stderr: 'fatal: not a git repository' });
+    await expect(new PhoneGitReads(notRepo).checks('/r')).rejects.toMatchObject({ status: 409, tag: 'not-a-git-repo' });
+    let now = 0;
+    let views = 0;
+    const reads = new PhoneGitReads(stubGit('git@github.com:team/project.git'), async () => [pr(7, 'OPEN')],
+      async () => { views += 1; return { number: 7, url: 'https://github.com/team/project/pull/7', headRefOid: head, statusCheckRollup: [] }; }, () => now);
+    await reads.checks('/r');
+    await reads.checks('/r');
+    expect(views).toBe(1);
+    now += 20_000;
+    await reads.checks('/r');
+    expect(views).toBe(2);
+  });
+
   it('keeps a git failure distinct from a non-repository', async () => {
     const dead: GitRunner = async () => ({ ok: false, ran: false, stdout: '', stderr: 'spawn ENOENT' });
     await expect(new PhoneGitReads(dead).branches('/r', [])).rejects.toBeInstanceOf(SessionGitError);
     await expect(new PhoneGitReads(dead).branches('/r', [])).rejects.toMatchObject({ tag: 'git-operation-failed' });
-    expect(await new PhoneGitReads(dead).projects([{ id: 'x', spawnCwd: '/r' }])).toEqual({ projects: [], truncated: false });
+    // Every repository read failed to run: an error, not an empty list.
+    await expect(new PhoneGitReads(dead).projects([{ id: 'x', spawnCwd: '/r' }])).rejects.toMatchObject({ tag: 'git-operation-failed' });
+    // Some did: the answer says it is partial.
+    const half: GitRunner = async (args, cwd) => (cwd.includes('broken') ? dead(args, cwd) : stubGit('git@github.com:t/p.git')(args, cwd));
+    expect(await new PhoneGitReads(half).projects([{ id: 'x', spawnCwd: '/repo' }, { id: 'y', spawnCwd: '/broken' }]))
+      .toMatchObject({ projects: [{ sessionId: 'x' }], truncated: false, degraded: true });
   });
 });

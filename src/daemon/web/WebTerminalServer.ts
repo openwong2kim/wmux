@@ -3671,7 +3671,7 @@ export class WebTerminalServer {
   private handlePhoneGitRead(res: http.ServerResponse, rawId: string | null, principal: WebPrincipal, kind: 'projects' | 'branches' | 'checks'): void {
     if (!this.mayInput(principal)) return this.refuseInput(res, principal, 'Git control requires input permission');
     const reads = this.phoneGitReads ??= new PhoneGitReads(this.deps.git ?? createGitRunner());
-    let work = () => reads.projects(this.phoneGitSessions(principal)) as Promise<unknown>;
+    let work = () => reads.projects(this.phoneGitSessions(principal), { aborted: () => res.destroyed || res.writableEnded }) as Promise<unknown>;
     if (rawId !== null) {
       const id = decodePathSegment(rawId);
       const managed = id === null ? null : this.attachableSession(principal, id);

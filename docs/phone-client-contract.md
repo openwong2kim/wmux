@@ -3946,7 +3946,9 @@ headless daemon. Nothing here needs the desktop's workspace registry.
 session, the same as `/git` (`gitControl`); the reads change nothing and
 write no audit line. They share the existing four-slot Git/PR budget
 (`429 {error:"git-busy"}`) and the 5 s per-`git` timeout; `gh` keeps its 8 s
-timeout. Worktree creation runs in the background (below) and serializes per
+timeout. Every `git` the daemon runs for the phone is local only: no
+transport is allowed and a partial clone never fetches a missing object.
+Worktree creation runs in the background (below) and serializes per
 repository, keyed by the realpath of the git common dir. Each creation that
 passes validation writes one line to the device audit log
 (`device-audit.jsonl`): event `git-worktree`, the device id (empty for the
@@ -3966,17 +3968,22 @@ is logged.
       { "sessionId": "pty-7f3c", "branch": "phone/fix-login", "linkedWorktree": true }
     ]
   }],
-  "truncated": false
+  "truncated": false,
+  "degraded": true                     // optional: some sessions' repositories could not be read
 }
+→ 409 {error:"git-operation-failed"}   // no repository could be read at all (git missing, timeouts)
 ```
 
 A separate route on purpose: `/api/sessions` is polled every few seconds and
 must not start Git subprocesses. Repository facts are cached per `spawnCwd`
-for 10 s; each answer is then filtered to the sessions this caller may attach
-(never the brain pane), so a project appears only because such a session has
-its `spawnCwd` inside it. Worktrees of one repository group into one project.
-At most 50 projects. A workspace whose panes are all closed has no project
-here (the same evidence rule as `workspaceId`).
+(its realpath) for 10 s; each answer is then filtered to the sessions this
+caller may attach (never the brain pane), so a project appears only because
+such a session has its `spawnCwd` inside it. Worktrees of one repository
+group into one project. The listing looks at the 200 most recently active
+sessions within a 15 s budget; anything it did not reach sets `truncated`,
+as does a 51st project (at most 50 are returned). A workspace whose panes
+are all closed has no project here (the same evidence rule as
+`workspaceId`). A submodule checkout is a project of its own.
 
 #### `GET /api/sessions/<id>/git/branches`
 
@@ -3998,7 +4005,10 @@ here (the same evidence rule as `workspaceId`).
 ```
 
 Local branches (`refs/heads/*`) only, newest tip first, at most 200. Names
-are display text; no route accepts one back.
+are display text; no route accepts one back. `worktree.sessionIds` lists a
+pane only when it runs in this same repository (same git common dir); among
+nested worktrees the deepest one owns it. A git too old to list worktrees
+answers without `worktree`.
 
 #### `POST /api/sessions/<id>/git/worktree`
 
@@ -4114,7 +4124,12 @@ checkout's branch, remote branches.
   ],
   "truncated": false
 }
+→ 404 {error:"session not found"}   409 {error:"not-a-git-repo"}   429 {error:"git-busy"}
 ```
+
+The same pane rule as `/git/branches`: a pane outside any repository is 409
+`not-a-git-repo`, never a `state`. A definite answer (`available`, `no-pr`,
+`unsupported`) is reused for 20 s per pane; `unavailable` is never reused.
 
 The PR is chosen with the same identity rules as `/git/pr`: a credential-free
 github.com `origin`, the session's current branch, the head repository equal
@@ -4127,8 +4142,8 @@ matching PR"; `unavailable` is a CLI, auth or network failure, never a claim
 of no checks. `counts` and `overall` cover the whole rollup; only `checks` is
 cut to 100 (`truncated: true`). Every state carries `overall`, `counts`,
 `checks` and `truncated`; outside `available` they read `none`, zeros, `[]`
-and `false`, and `pr` is absent. `unsupported` is an `origin` that is not a
-credential-free github.com repository.
+and `false`, and `pr` is absent. `unsupported` is a repository without an
+`origin`, or one whose `origin` is not a credential-free github.com repository.
 
 `state` per check: a CheckRun's `COMPLETED` conclusion maps to `success`,
 `failure` (also `STARTUP_FAILURE`), `neutral`, `skipped`, `cancelled`,
