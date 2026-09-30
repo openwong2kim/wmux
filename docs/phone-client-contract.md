@@ -3852,7 +3852,7 @@ Needs `--allow-transcript` (like `GET …/accounts`), not input.
 
 **Served** for the Esc path (Claude and Codex): see "Chat cancel outcome",
 right after "Chat cancel". The Codex `turn/interrupt` (`native`) path is not served
-yet and stays gated on the spike in item 2.
+yet.
 
 ### 4. Account per pane, and handoff lineage (served)
 
