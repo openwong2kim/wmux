@@ -43,7 +43,7 @@ function make(opts: { operator?: boolean; isReplaying?: (id: string) => boolean 
     return new Response('{}', { status: 200 });
   });
   const hub = createWebPty({
-    token: 'secret',
+    token: opts.operator ? 'secret' : 'dev1.secret',
     fetchImpl: fetchImpl as unknown as typeof fetch,
     createEventSource: (url) => new FakeEventSource(url),
     isReplaying: opts.isReplaying,
@@ -112,10 +112,11 @@ describe('live stream rationing', () => {
     expect(FakeEventSource.all[0].url).toBe('/api/stream?session=a&ticket=tk');
   });
 
-  it('opens operator streams with ?token= (the server refuses them a ticket)', async () => {
-    const { hub } = make({ operator: true });
+  it('opens operator streams with ?token=, without asking for a ticket it would be refused', async () => {
+    const { hub, calls } = make({ operator: true });
     await showLive(hub, 'a');
     expect(FakeEventSource.all[0].url).toBe('/api/stream?session=a&token=secret');
+    expect(calls.some((c) => c.url === '/api/stream-ticket')).toBe(false);
   });
 });
 

@@ -132,8 +132,13 @@ export function createWebPty(deps: WebPtyDeps) {
 
   let ticket = '';
   let ticketExpiresAt = 0;
-  /** This session holds the operator token, which opens streams with ?token=. */
-  let ticketsUnavailable = false;
+  /**
+   * This session holds the operator token, which opens streams with ?token=
+   * and is refused a ticket (403). A device credential is `<deviceId>.<secret>`
+   * (the daemon's DEVICE_CREDENTIAL_SEP); the operator token never carries a
+   * dot, so it does not ask — the refusal would only be a console error.
+   */
+  let ticketsUnavailable = !deps.token.includes('.');
   let ticketInFlight: Promise<void> | null = null;
 
   const notify = () => {
