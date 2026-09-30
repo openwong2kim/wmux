@@ -606,6 +606,8 @@ export const IPC = {
   WEB_DEVICE_SET_INPUT: 'web:deviceSetInput',
   /** Change the phone grants (transcript / upload) of the running server in place. */
   WEB_SET_GRANTS: 'web:setGrants',
+  /** Read-only readiness check for the phone wizard: tailscale + server status, changes nothing. */
+  WEB_DIAGNOSE: 'web:diagnose',
   // First-run wizard (Plan 1.15) — magical-moment onboarding flow
   FIRST_RUN_CHECK: 'first-run:check',
   FIRST_RUN_COMPLETE: 'first-run:complete',

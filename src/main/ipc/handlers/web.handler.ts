@@ -9,6 +9,7 @@ import {
   type WebDeviceRevokeResult,
   type WebDeviceSetInputResult,
   type WebDeviceSummary,
+  type WebDiagnosis,
   type WebGrantArgs,
   type WebStartArgs,
   type WebTerminalInfo,
@@ -19,10 +20,18 @@ import {
 import {
   checkWebFront,
   describeTailscaleProblem,
+  diagnoseTailscale,
   startWebTransport,
   stopWebTransport,
   type TailscaleExec,
 } from '../../../cli/tailscale';
+
+/**
+ * Ceiling on the whole readiness check. Each tailscale read carries its own
+ * 15s exec timeout and there are two of them, which is far longer than a
+ * wizard should sit on "Checking…".
+ */
+export const WEB_DIAGNOSE_TIMEOUT_MS = 10_000;
 
 /**
  * wmux web — titlebar toggle ↔ daemon control-plane IPC. Forwards the renderer's
@@ -166,6 +175,35 @@ export function registerWebHandlers(
         });
       }
       return withFront(info);
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.WEB_DIAGNOSE);
+  ipcMain.handle(
+    IPC.WEB_DIAGNOSE,
+    wrapHandler(IPC.WEB_DIAGNOSE, async (): Promise<WebDiagnosis> => {
+      // READ-ONLY by contract: `daemon.web.status` and the two tailscale
+      // status reads, nothing else. `frontState` is deliberately not written
+      // either — it is folded into every later WEB_STATUS reply, so updating it
+      // here would be a state change made by a "check".
+      const info = await call('daemon.web.status', {});
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<{ ok: false; problem: 'status-unreadable'; detail: string }>((resolve) => {
+        timer = setTimeout(
+          () => resolve({ ok: false, problem: 'status-unreadable', detail: 'tailscale did not answer in time' }),
+          WEB_DIAGNOSE_TIMEOUT_MS,
+        );
+      });
+      const probe = await Promise.race([
+        diagnoseTailscale({ webPort: info.port ?? WEB_DEFAULT_PORT, ...(exec ? { exec } : {}) }),
+        timedOut,
+      ]).finally(() => clearTimeout(timer));
+      return {
+        tailscale: probe.ok
+          ? { ok: true, serve: probe.serve }
+          : { ok: false, problem: probe.problem, lines: describeTailscaleProblem(probe.problem, probe.detail) },
+        web: withFront(info),
+      };
     }),
   );
 
@@ -541,6 +579,7 @@ export function registerWebHandlers(
 
   return () => {
     ipcMain.removeHandler(IPC.WEB_STATUS);
+    ipcMain.removeHandler(IPC.WEB_DIAGNOSE);
     ipcMain.removeHandler(IPC.WEB_START);
     ipcMain.removeHandler(IPC.WEB_SET_GRANTS);
     ipcMain.removeHandler(IPC.WEB_STOP);

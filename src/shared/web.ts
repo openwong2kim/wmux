@@ -12,6 +12,8 @@
  * the security warning wording; the GUI reuses the wording, shortened.
  */
 
+import type { TailscaleProblem } from '../cli/tailscale';
+
 /** Default listen port shared with the CLI (`wmux web`) and the daemon. */
 export const WEB_DEFAULT_PORT = 7681;
 /** Loopback-only bind (safe default — nothing off-machine can reach it). */
@@ -140,6 +142,20 @@ export interface WebTerminalInfo {
    * whose on-disk state could not be revoked. Absent on a normal reply.
    */
   error?: string;
+}
+
+/**
+ * Answer of the read-only readiness check (`WEB_DIAGNOSE`) the phone wizard
+ * runs before it offers to start anything.
+ *
+ * `tailscale.lines` is `describeTailscaleProblem`'s text, quoted as-is like
+ * `transportError.lines`. `web` is the same reply `WEB_STATUS` would give.
+ */
+export interface WebDiagnosis {
+  tailscale:
+    | { ok: true; serve: 'free' | 'ours' }
+    | { ok: false; problem: TailscaleProblem; lines: string[] };
+  web: WebTerminalInfo;
 }
 
 /**

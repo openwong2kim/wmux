@@ -344,17 +344,23 @@ export function describeTailscaleProblem(problem: TailscaleProblem, detail?: str
 
 // === orchestration ==========================================================
 
+export type TailscaleDiagnosis =
+  | { ok: true; magicDns: string; serve: 'free' | 'ours' }
+  | { ok: false; problem: TailscaleProblem; detail?: string };
+
 /**
- * Bring up `tailscale serve` in front of a loopback `wmux web` on `webPort`.
+ * Could `tailscale serve` be set up in front of `webPort` right now?
  *
- * Fails CLOSED at every step: an unreadable serve status is treated as "cannot
- * prove the slot is free", not as "probably fine".
+ * READ-ONLY: runs `tailscale status --json` and `tailscale serve status --json`
+ * and nothing else. It is the read half of `ensureTailscaleServe` (which calls
+ * it before writing), exported so the phone wizard can check readiness without
+ * registering, removing or repairing anything.
  */
-export async function ensureTailscaleServe(opts: {
+export async function diagnoseTailscale(opts: {
   webPort: number;
   servePort?: number;
   exec?: TailscaleExec;
-}): Promise<TailscaleSetup> {
+}): Promise<TailscaleDiagnosis> {
   const exec = opts.exec ?? (execFileAsync as unknown as TailscaleExec);
   const servePort = opts.servePort ?? DEFAULT_SERVE_PORT;
 
@@ -378,6 +384,26 @@ export async function ensureTailscaleServe(opts: {
   }
   if (ownership === 'foreign') return { ok: false, problem: 'port-taken' };
   if (ownership === 'unreadable') return { ok: false, problem: 'serve-status-unreadable' };
+  return { ok: true, magicDns: identity.magicDns, serve: ownership };
+}
+
+/**
+ * Bring up `tailscale serve` in front of a loopback `wmux web` on `webPort`.
+ *
+ * Fails CLOSED at every step: an unreadable serve status is treated as "cannot
+ * prove the slot is free", not as "probably fine".
+ */
+export async function ensureTailscaleServe(opts: {
+  webPort: number;
+  servePort?: number;
+  exec?: TailscaleExec;
+}): Promise<TailscaleSetup> {
+  const exec = opts.exec ?? (execFileAsync as unknown as TailscaleExec);
+  const servePort = opts.servePort ?? DEFAULT_SERVE_PORT;
+
+  const probe = await diagnoseTailscale({ webPort: opts.webPort, servePort, exec });
+  if (!probe.ok) return probe;
+  const { magicDns, serve: ownership } = probe;
 
   try {
     await runTailscale(exec, ['serve', '--bg', `--https=${servePort}`, `http://127.0.0.1:${opts.webPort}`]);
@@ -393,9 +419,9 @@ export async function ensureTailscaleServe(opts: {
 
   return {
     ok: true,
-    magicDns: identity.magicDns,
+    magicDns,
     servePort,
-    url: servePort === 443 ? `https://${identity.magicDns}` : `https://${identity.magicDns}:${servePort}`,
+    url: servePort === 443 ? `https://${magicDns}` : `https://${magicDns}:${servePort}`,
   };
 }
 
