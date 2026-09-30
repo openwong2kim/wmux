@@ -9,6 +9,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DaemonSession, DaemonSessionState, DaemonSessionSupervision, DaemonConfig } from './types';
+import type { StoredHandoffFrom } from '../shared/phonePaneAccount';
 import { MIN_SAFE_COLS, MIN_SAFE_ROWS } from '../shared/terminalGeometry';
 import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
@@ -18,6 +19,7 @@ import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { expandTilde } from '../shared/expandTilde';
 import { restoreSeam } from '../shared/restoreSeam';
 import { buildExecArgs } from './execWrapper';
+import { dropMissingAccountDirs, pinAccountEnv } from './phone/paneAccountSpawn';
 import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac, parseWindowsBuildNumber } from '../shared/platform';
@@ -366,6 +368,8 @@ export class DaemonSessionManager extends EventEmitter {
      * unless `exec` is also set. Defaults to `exec.command`.
      */
     execLaunchCommand?: string;
+    /** Phone handoff lineage, on the meta from creation (before the first hook can land). */
+    handoffFrom?: StoredHandoffFrom;
     /**
      * X8 supervision policy + sticky status. Fresh creates pass
      * status:'armed'; recovery replays the persisted value so a
@@ -485,6 +489,10 @@ export class DaemonSessionManager extends EventEmitter {
       env[ENV_KEYS.DATA_SUFFIX] = globalThis.process.env[ENV_KEYS.DATA_SUFFIX] as string;
     }
 
+    // Phone workspace panes: a gone account directory is dropped with a warning
+    // (recovery), never handed to the CLI to recreate as an empty config.
+    dropMissingAccountDirs(params.id, env, (message) => console.warn(message));
+
     let spawnArgs: string[] = isWslDistroSpawnArgs(cmd, params.args) ? [...params.args] : [];
     if (wsl) {
       const injection = buildWslInjection({ target: wsl.target, cwd, env,
@@ -506,10 +514,12 @@ export class DaemonSessionManager extends EventEmitter {
       const launchCommand = params.execLaunchCommand ?? params.exec.command;
       // #1620: on a factory-default Windows client, powershell.exe resolves an
       // npm agent (`codex`) to its .ps1 shim, which Restricted blocks.
-      let execArgs = buildExecArgs(cmd, launchCommand, windowsPowerShellPolicyArgs(cmd));
+      // A phone workspace pane re-exports its account keys after the login
+      // profile, so the agent runs on the account the pane was created on.
+      let execArgs = buildExecArgs(cmd, pinAccountEnv(params.id, cmd, launchCommand, env), windowsPowerShellPolicyArgs(cmd));
       if (!execArgs) {
         cmd = this.resolveExecFallbackShell();
-        execArgs = buildExecArgs(cmd, launchCommand, windowsPowerShellPolicyArgs(cmd));
+        execArgs = buildExecArgs(cmd, pinAccountEnv(params.id, cmd, launchCommand, env), windowsPowerShellPolicyArgs(cmd));
       }
       if (!execArgs) {
         throw new Error(`No usable wrapper shell for exec session (resolved: ${cmd})`);
@@ -631,6 +641,7 @@ export class DaemonSessionManager extends EventEmitter {
     if (params.exec) {
       meta.exec = { command: params.exec.command };
     }
+    if (params.handoffFrom) meta.handoffFrom = { ...params.handoffFrom };
     if (params.supervision) {
       // Own copy — meta is persisted via buildState and must not alias
       // caller-held objects (recovery replays the persisted blob verbatim).

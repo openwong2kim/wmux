@@ -14,7 +14,8 @@ import { CodexPaneRelays } from './web/codexPaneRelays';
 import { buildAgentLaunch, installedAgentLaunchOptions, pinnedAgentLaunch } from './web/agentLaunch';
 import { agentExecEnv } from '../shared/execEnv';
 import { workspaceAccountEnv } from './phone/workspaceAccountEnv';
-import { applyPaneAccount } from './phone/paneAccount';
+import { applyPaneAccount, assertPaneAccountUsable } from './phone/paneAccount';
+import type { StoredHandoffFrom } from '../shared/phonePaneAccount';
 import { DesktopPhoneBridge } from './phone/DesktopPhoneBridge';
 import { RunHistoryStore } from './history/RunHistoryStore';
 import { AutomationEngine } from './automation/AutomationEngine';
@@ -2126,7 +2127,7 @@ function registerRpcHandlers(
   // (see sessionLifecycle below). A phone-spawned pane must be the same kind of
   // object as a GUI-spawned one — process-monitored, supervised, persisted,
   // snapshotted — and the only way to guarantee that is for both to run this.
-  const createSessionRpc = async (params: Record<string, unknown>, local?: {execLaunchCommand?:string}): Promise<unknown> => {
+  const createSessionRpc = async (params: Record<string, unknown>, local?: {execLaunchCommand?:string;handoffFrom?:StoredHandoffFrom}): Promise<unknown> => {
     // B′ auto-replace (Codex #1): shutdown() snapshots the managed-session
     // list once, so a session created AFTER that snapshot would be disposed
     // without any durable suspended record — silent data loss. shutdown()
@@ -2162,6 +2163,7 @@ function registerRpcHandlers(
       // a persisted 'stopped' only ever enters through recovery replay.
       exec: p.exec,
       execLaunchCommand: local?.execLaunchCommand,
+      ...(local?.handoffFrom ? { handoffFrom: local.handoffFrom } : {}),
       supervision: p.supervision
         ? {
             restart: p.supervision.restart,
@@ -2308,13 +2310,13 @@ function registerRpcHandlers(
           ? { workspaceName: sibling.env[ENV_KEYS.WORKSPACE_NAME] }
           : {}),
       });
-      if (workspaceId) env = await workspaceAccountEnv(env, workspaceId, desktopPhoneBridge);
+      if (account && !workspaceId) throw new Error('A pane account needs a workspace');
+      // A chosen account's vendor binding is not asked for: the account
+      // replaces it, so a broken binding for that vendor cannot block the pane.
+      if (workspaceId) env = await workspaceAccountEnv(env, workspaceId, desktopPhoneBridge, account?.vendor);
       // A per-pane account replaces only its own vendor's key, after the
       // workspace binding and before the CLI probe and the Codex relay read it.
-      if (account) {
-        if (!workspaceId) throw new Error('A pane account needs a workspace');
-        env = applyPaneAccount(env, account);
-      }
+      if (account) env = applyPaneAccount(env, account);
       const agentCommand = agentLaunch ? buildAgentLaunch(agentLaunch, await installedAgentLaunchOptions(env)) : undefined;
       // The pane runs `$SHELL -lc '<agent>'`, whose profile rewrites PATH and skips
       // ~/.zshrc; the spawn is pinned to the binary and PATH the probe verified
@@ -2340,6 +2342,9 @@ function registerRpcHandlers(
         // and a device revoked inside that window would still get its shell.
         // The enclosing catch releases the relay reservation prepared above.
         if (authorized && !await authorized()) throw new SessionAuthorizationExpiredError();
+        // The account was resolved several round trips ago: the desktop that
+        // resolved it must still be attached and its directory still there.
+        if (account) assertPaneAccountUsable(desktopPhoneBridge, account);
         await createSessionRpc({
           id,
           ...(agentCommand ? {exec:{command:agentCommand}} : {}),
@@ -2354,22 +2359,20 @@ function registerRpcHandlers(
           // the home directory the same way.
           ...(cwd ? { cwd } : {}),
           env,
-        }, relay && agentCommand
-          // Relay flags first (they anchor on a leading `codex`), then pin the binary.
-          ? {execLaunchCommand:await pinnedAgentLaunch(withCodexRemote(agentCommand,relay.url,codexCdOperand(cwd ?? os.homedir())))}
-          : launchCommand !== agentCommand ? {execLaunchCommand:launchCommand} : undefined);
+        }, {
+          ...(relay && agentCommand
+            // Relay flags first (they anchor on a leading `codex`), then pin the binary.
+            ? {execLaunchCommand:await pinnedAgentLaunch(withCodexRemote(agentCommand,relay.url,codexCdOperand(cwd ?? os.homedir())))}
+            : launchCommand !== agentCommand ? {execLaunchCommand:launchCommand} : {}),
+          // Lineage is on the meta from the moment the session exists, so the
+          // first hook of the new pane already carries it.
+          ...(handoffFrom ? {handoffFrom} : {}),
+        });
         if (relay) {
           const managed = sessionManager.getSession(id);
           if (!managed || !relay.commit(managed)) {
             if (managed) await destroySessionRpc({id});
             throw new Error('Codex pane closed during launch');
-          }
-        }
-        if (handoffFrom) {
-          const managed = sessionManager.getSession(id);
-          if (managed) {
-            managed.meta.handoffFrom = handoffFrom;
-            stateWriter.saveImmediate(buildState(sessionManager));
           }
         }
         return { id };

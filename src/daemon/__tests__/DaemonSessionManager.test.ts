@@ -1218,6 +1218,27 @@ describe('DaemonSessionManager', () => {
       expect(session.exec).toEqual({ command: 'claude' });
     });
 
+    // Phone contract v-next item 4: a phone workspace pane's agent runs on the
+    // account the pane was created on even when the login profile exports
+    // another one, lineage is on the meta from creation, and a gone account
+    // directory is dropped rather than handed to the CLI.
+    it('pins a phone pane account after the login profile and records lineage at creation', () => {
+      const lineage = { sessionId: 'web-src', verified: true, at: 7 };
+      const gone = path.join(os.tmpdir(), `wmux-gone-${process.pid}-${Date.now()}`);
+      const session = manager.createSession({
+        id: 'web-3f1c2e4a-0b6d-4c1e-9a7f-2d8e5b6c7a90',
+        cmd: '/bin/sh',
+        cwd: '.',
+        env: { WMUX_WORKSPACE_ID: 'ws-1', CLAUDE_CONFIG_DIR: os.tmpdir(), CODEX_HOME: gone },
+        exec: { command: 'claude' },
+        handoffFrom: lineage,
+      });
+      expect(lastMockPty?.spawnArgs).toEqual(['-lc', `export CLAUDE_CONFIG_DIR='${os.tmpdir()}'; claude`]);
+      expect(session.exec).toEqual({ command: 'claude' });
+      expect(session.handoffFrom).toEqual(lineage);
+      expect(session.env.CODEX_HOME).toBeUndefined();
+    });
+
     it('keeps a temporary Codex relay out of persisted recovery commands', () => {
       const session = manager.createSession({
         id:'codex-relay',cmd:'pwsh.exe',cwd:'.',

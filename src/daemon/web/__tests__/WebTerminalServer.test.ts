@@ -4082,8 +4082,9 @@ describe('WebTerminalServer', () => {
       desktopBridge = new DesktopPhoneBridge((_owner,raw) => {
         const data = (raw as {data:{requestId:string;command:string;payload:Record<string,unknown>}}).data;
         calls.push({command:data.command,payload:data.payload});
+        const workspaceEnv = {CLAUDE_CONFIG_DIR:'/ws/claude',CODEX_HOME:'/ws/codex'};
         const reply = data.command === 'accounts.env'
-          ? {ok:true,result:{CLAUDE_CONFIG_DIR:'/ws/claude',CODEX_HOME:'/ws/codex'}}
+          ? {ok:true,result:data.payload.typed === true ? {ok:true,env:workspaceEnv} : workspaceEnv}
           : data.command === 'accounts.envForAccount' && announce
             ? {ok:true,result:accounts[data.payload.accountId as string] ?? {ok:false,error:'unknown-account'}}
             // An old desktop throws on a command it does not know; the envelope says only "failed".
@@ -4129,6 +4130,8 @@ describe('WebTerminalServer', () => {
       const mismatch = await post(headers,{workspaceId:'ws-1',accountId:'c2',agentLaunch:{agent:'claude'}});
       expect(mismatch.status).toBe(400);
       expect(await mismatch.text()).toBe(JSON.stringify({error:'account-vendor-mismatch',effect:'none'}));
+      // Any other agent is a mismatch too, not only the other known vendor.
+      expect(await (await post(headers,{workspaceId:'ws-1',accountId:'c2',agentLaunch:{agent:'opencode'}})).json()).toEqual({error:'account-vendor-mismatch',effect:'none'});
       expect(lifecycleCalls).toHaveLength(before);
       await server.stop();
       const rw = await startRW();
@@ -4180,8 +4183,70 @@ describe('WebTerminalServer', () => {
       expect(live.status).toBe(201);
       expect(await live.json()).toMatchObject({handoffFrom:{sessionId:'s1',verified:true}});
       expect(lifecycleCalls.at(-1)).toMatchObject({arg:{handoffFrom:{sessionId:'s1',verified:true}}});
-      await post(headers,{handoffFrom:{sessionId:'gone-pane',agentSessionId:'conv-1'}});
+      const gone = await post(headers,{handoffFrom:{sessionId:'gone-pane',agentSessionId:'conv-1'}});
       expect(lifecycleCalls.at(-1)).toMatchObject({arg:{handoffFrom:{sessionId:'gone-pane',agentSessionId:'conv-1',verified:false}}});
+      // The row names a source only when this reader may attach it.
+      const goneRow = (await gone.json()) as {handoffFrom:Record<string,unknown>};
+      expect(goneRow.handoffFrom).toEqual({verified:false,at:expect.any(Number)});
+    });
+
+    it('re-checks the credential after a slow body, before answering anything about accounts', async () => {
+      accountDesktop(['accounts.envForAccount'],{c2:second});
+      await startBoth();
+      const phone = await pairDevice('Slow phone');
+      const before = lifecycleCalls.length;
+      const status = await new Promise<{status:number;text:string}>((resolve,reject) => {
+        const req = httpReq({host:'127.0.0.1',port:server.status().port,path:'/api/sessions',method:'POST',
+          headers:{Authorization:`Bearer ${phone.token}`,'Content-Type':'application/json'}},(res) => {
+          let text = ''; res.on('data',(c) => { text += c; }); res.on('end',() => resolve({status:res.statusCode ?? 0,text}));
+        });
+        req.on('error',reject);
+        const body = JSON.stringify({workspaceId:'ws-1',accountId:'nope'});
+        req.write(body.slice(0,10));
+        setTimeout(() => { deviceRoster.get(phone.deviceId)!.revoked = true; req.end(body.slice(10)); },50);
+      });
+      expect(status.status).toBe(401);
+      expect(status.text).not.toContain('unknown-account');
+      expect(lifecycleCalls).toHaveLength(before);
+    });
+
+    it('a broken binding for the chosen vendor does not block the pane; one for the other vendor is named', async () => {
+      const calls: unknown[] = [];
+      desktopBridge = new DesktopPhoneBridge((_owner,raw) => {
+        const data = (raw as {data:{requestId:string;command:string;payload:Record<string,unknown>}}).data;
+        calls.push({command:data.command,payload:data.payload});
+        // The workspace's claude binding points at a directory that is gone.
+        const result = data.command === 'accounts.envForAccount' ? {ok:true,vendor:'claude',env:{CLAUDE_CONFIG_DIR:'/acct/claude-2'}}
+          : data.payload.omitVendor === 'claude' ? {ok:true,env:{CODEX_HOME:'/ws/codex'}}
+          : {ok:false,error:'workspace-account-missing'};
+        queueMicrotask(() => desktopBridge!.complete('main',{requestId:data.requestId,ok:true,result}));
+        return true;
+      });
+      desktopBridge.register('main',['accounts.envForAccount']);
+      const headers = bearer((await startBoth()).token as string);
+      const created = await post(headers,{workspaceId:'ws-1',accountId:'k2',agentLaunch:{agent:'claude'}});
+      expect(created.status).toBe(201);
+      expect(calls).toContainEqual({command:'accounts.env',payload:{workspaceId:'ws-1',typed:true,omitVendor:'claude'}});
+      const missing = await post(headers,{workspaceId:'ws-1',agentLaunch:{agent:'claude'}});
+      expect(missing.status).toBe(409);
+      expect(await missing.json()).toEqual({error:'workspace-account-missing',effect:'none'});
+    });
+
+    it('a desktop that detaches mid-lookup answers desktop-unavailable, never invalid-agent-launch', async () => {
+      desktopBridge = new DesktopPhoneBridge((_owner,raw) => {
+        const data = (raw as {data:{requestId:string;command:string}}).data;
+        if (data.command === 'accounts.envForAccount') queueMicrotask(() => desktopBridge!.complete('main',{requestId:data.requestId,ok:true,result:second}));
+        else queueMicrotask(() => desktopBridge!.disconnect('main'));
+        return true;
+      });
+      desktopBridge.register('main',['accounts.envForAccount']);
+      const headers = bearer((await startBoth()).token as string);
+      const before = lifecycleCalls.length;
+      const detached = await post(headers,{workspaceId:'ws-1',accountId:'c2',agentLaunch:{agent:'codex'}});
+      // (codex is not in this fixture's catalog: a 400 here would mean the bridge failure became invalid-agent-launch.)
+      expect(detached.status).toBe(503);
+      expect(await detached.json()).toEqual({error:'desktop-unavailable',effect:'none'});
+      expect(lifecycleCalls).toHaveLength(before);
     });
   });
 

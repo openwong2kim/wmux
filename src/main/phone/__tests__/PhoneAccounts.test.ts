@@ -9,6 +9,10 @@ function fixture() {
       listAccounts: () => [account], getAccount: (id: string) => id === 'a1' ? account : undefined,
       getBindings: () => ({ 'ws-1': { claude: 'a1' } }), setBinding: vi.fn(async () => { /* noop */ }),
       resolveWorkspaceAccountEnv: vi.fn(() => ({ CLAUDE_CONFIG_DIR: '/private/account' })),
+      resolveAccountEnv: vi.fn((_ws: string, vendor: 'claude' | 'codex', onMissing?: () => void): Record<string, string> => {
+        if (vendor === 'codex') { onMissing?.(); return {}; }
+        return { CLAUDE_CONFIG_DIR: '/private/account' };
+      }),
     },
     usage: { getAll: () => [{ accountId: 'a1', status: 'error' as const, snapshot: null, fetchedAtMs: 1, lastError: 'private diagnostic' }], refreshNow: vi.fn(async () => { /* noop */ }) },
   };
@@ -53,5 +57,14 @@ describe('phone account projection', () => {
     expect(await run('a1')).toEqual({ ok: false, error: 'account-directory-missing' });
     expect(deps.store.setBinding).not.toHaveBeenCalled();
     expect(deps.store.resolveWorkspaceAccountEnv).not.toHaveBeenCalled();
+  });
+  it('answers the typed workspace env, names a missing binding, and skips the omitted vendor', async () => {
+    const deps = fixture();
+    // The codex binding's directory is gone in this fixture.
+    expect(await handlePhoneAccounts('accounts.env', { workspaceId: 'ws-1', typed: true }, deps)).toEqual({ ok: false, error: 'workspace-account-missing' });
+    expect(await handlePhoneAccounts('accounts.env', { workspaceId: 'ws-1', typed: true, omitVendor: 'codex' }, deps)).toEqual({ ok: true, env: { CLAUDE_CONFIG_DIR: '/private/account' } });
+    expect(await handlePhoneAccounts('accounts.env', { workspaceId: 'ws-1', typed: true, omitVendor: 'claude' }, deps)).toEqual({ ok: false, error: 'workspace-account-missing' });
+    await expect(handlePhoneAccounts('accounts.env', { workspaceId: 'ws-1', typed: true, omitVendor: 'x' }, deps)).rejects.toThrow();
+    expect(deps.store.setBinding).not.toHaveBeenCalled();
   });
 });

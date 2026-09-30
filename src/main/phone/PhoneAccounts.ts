@@ -3,7 +3,7 @@ import { PANE_ACCOUNT_ENV_KEY, type AccountEnvForAccountResult } from '../../sha
 import type { AccountUsageService } from '../account/AccountUsageService';
 
 interface AccountDeps {
-  store: Pick<AccountStore,'listAccounts'|'getBindings'|'setBinding'|'resolveWorkspaceAccountEnv'|'getAccount'>;
+  store: Pick<AccountStore,'listAccounts'|'getBindings'|'setBinding'|'resolveWorkspaceAccountEnv'|'resolveAccountEnv'|'getAccount'>;
   usage: Pick<AccountUsageService,'getAll'|'refreshNow'>;
 }
 
@@ -13,6 +13,20 @@ export async function handlePhoneAccounts(command: string, payload: Record<strin
   if (typeof workspaceId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(workspaceId) ||
       ['__proto__','constructor','prototype'].includes(workspaceId)) throw new Error('invalid workspace');
   const {store,usage} = deps;
+  if (command === 'accounts.env' && payload.typed === true) {
+    // Typed form, sent only by a daemon that saw this desktop announce
+    // accounts.envForAccount. A missing bound directory is an answer the
+    // daemon can name, and `omitVendor` skips the binding a pane-chosen
+    // account replaces, so a broken binding for it cannot block that pane.
+    const omit = payload.omitVendor;
+    if (omit !== undefined && omit !== 'claude' && omit !== 'codex') throw new Error('invalid vendor');
+    let missing = false;
+    const env: Record<string,string> = {};
+    for (const vendor of ['claude','codex'] as const) {
+      if (vendor !== omit) Object.assign(env,store.resolveAccountEnv(workspaceId,vendor,() => { missing = true; }));
+    }
+    return missing ? {ok:false,error:'workspace-account-missing'} : {ok:true,env};
+  }
   if (command === 'accounts.env') {
     let missing = false;
     const env = store.resolveWorkspaceAccountEnv(workspaceId, () => { missing = true; });

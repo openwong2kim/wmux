@@ -1,5 +1,6 @@
+import fs from 'node:fs';
 import path from 'node:path';
-import type { DesktopPhoneBridge } from './DesktopPhoneBridge';
+import { DesktopPhoneError, type DesktopPhoneBridge } from './DesktopPhoneBridge';
 import {
   DESKTOP_ACCOUNT_ENV_COMMAND, PANE_ACCOUNT_ENV_KEY,
   type HandoffFrom, type PaneAccountVendor, type StoredHandoffFrom,
@@ -12,6 +13,24 @@ export interface ResolvedPaneAccount { vendor: PaneAccountVendor; dir: string }
 export interface PaneAccountRefusal { status: number; body: { error: string; effect: 'none' } }
 
 const refuse = (status: number, error: string): PaneAccountRefusal => ({ status, body: { error, effect: 'none' } });
+
+/** A typed refusal raised from inside the create, after the route handed it off. */
+export class PaneAccountRefusalError extends Error {
+  constructor(readonly refusal: PaneAccountRefusal) { super(refusal.body.error); }
+  static of(status: number, error: string) { return new PaneAccountRefusalError(refuse(status, error)); }
+}
+
+/**
+ * The typed answer for a failure that is about the desktop or the accounts,
+ * not about the create itself: a refusal raised on purpose, or any bridge
+ * failure (desktop gone, detached mid-create, timed out, failed the command).
+ * Null for anything else, which stays the caller's own error.
+ */
+export function paneAccountFailure(error: unknown): PaneAccountRefusal | null {
+  if (error instanceof PaneAccountRefusalError) return error.refusal;
+  if (error instanceof DesktopPhoneError) return refuse(503, 'desktop-unavailable');
+  return null;
+}
 
 /**
  * Ask the attached desktop which directory `accountId` names. Fails closed:
@@ -45,6 +64,20 @@ export async function resolvePaneAccount(
   const dir = (env as Record<string, unknown>)[PANE_ACCOUNT_ENV_KEY[vendor]];
   if (keys.length !== 1 || typeof dir !== 'string' || !dir || dir.includes('\0') || !path.isAbsolute(dir)) return unavailable;
   return { ok: true, account: { vendor, dir } };
+}
+
+/**
+ * The last check before a PTY exists: the desktop that resolved the account is
+ * still attached and the directory is still there. Throws the typed refusal.
+ */
+export function assertPaneAccountUsable(
+  desktop: Pick<DesktopPhoneBridge, 'supports'> | null,
+  account: ResolvedPaneAccount,
+): void {
+  if (!desktop?.supports(DESKTOP_ACCOUNT_ENV_COMMAND)) throw PaneAccountRefusalError.of(503, 'desktop-unavailable');
+  let isDir = false;
+  try { isDir = fs.statSync(account.dir).isDirectory(); } catch { /* gone */ }
+  if (!isDir) throw PaneAccountRefusalError.of(409, 'account-directory-missing');
 }
 
 /**
@@ -97,14 +130,23 @@ export function storedHandoffOf(value: unknown): StoredHandoffFrom | undefined {
   };
 }
 
+/** The row's view of a lineage: ids only where this reader may see them. */
+export type HandoffRow = Pick<StoredHandoffFrom, 'verified' | 'at'> & Partial<Pick<StoredHandoffFrom, 'sessionId' | 'agentSessionId'>>;
+
 /**
- * The row's view of the lineage. The conversation id rides the row only when
- * the server serves transcripts: rows reach every reader, and that id is
- * otherwise a transcript-gated value.
+ * The row's view of the lineage. Rows reach every reader, so the source's
+ * `sessionId` rides only when this reader may attach that pane, and the
+ * conversation id only when, in addition, the server serves transcripts (it
+ * is otherwise a transcript-gated value). `verified` and `at` always ride.
  */
-export function handoffRowOf(value: unknown, allowTranscript: boolean): { handoffFrom?: StoredHandoffFrom } {
+export function handoffRowOf(
+  value: unknown, allowTranscript: boolean, sourceVisible: (sessionId: string) => boolean,
+): { handoffFrom?: HandoffRow } {
   const stored = storedHandoffOf(value);
   if (!stored) return {};
-  if (allowTranscript) return { handoffFrom: stored };
-  return { handoffFrom: { sessionId: stored.sessionId, verified: stored.verified, at: stored.at } };
+  const row: HandoffRow = { verified: stored.verified, at: stored.at };
+  if (!sourceVisible(stored.sessionId)) return { handoffFrom: row };
+  row.sessionId = stored.sessionId;
+  if (allowTranscript && stored.agentSessionId !== undefined) row.agentSessionId = stored.agentSessionId;
+  return { handoffFrom: { sessionId: row.sessionId, ...(row.agentSessionId ? { agentSessionId: row.agentSessionId } : {}), verified: row.verified, at: row.at } };
 }
