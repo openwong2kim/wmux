@@ -325,3 +325,42 @@ describe('Codex pane relay native interrupt',()=>{
     await registry.shutdown();
   });
 });
+describe('Codex pane relay after the account server restarts (#1671)',()=>{
+  it('starts a new relay incarnation: nothing pinned to the old server link matches, and the runtime is ensured on a failed re-dial',async()=>{
+    let options:RelayOptions|undefined;const connection=relay();
+    const pending=vi.fn();const settled=vi.fn();
+    const runtime=vi.fn(async(_id:string,_codeHome?:string)=> { /* the runtime start */ });
+    const registry=new CodexPaneRelays((async(o:RelayOptions)=>{options=o;return connection;}) as unknown as typeof createCodexTuiRelay,undefined,undefined,
+      {ensureRuntime:runtime,decisionPending:pending,decisionSettled:settled});
+    const lease=await registry.prepare('pane','/h/.codex');const pane=owner();lease.commit(pane);
+    options!.policy!.recordOwner('thread');
+    options!.policy!.decisionPending?.('0',{method:'item/commandExecution/requestApproval',threadId:'thread',question:'Run?',toolName:'command'});
+    const ref=pending.mock.calls[0]![2];
+    connection.state.active='turn-1';
+    const aimed=registry.activeTurn('pane',pane)!;
+    runtime.mockClear();
+    // The relay settles the old link's requests under the old incarnation, then reports the loss.
+    options!.policy!.decisionSettled?.('0','thread','pane-gone');
+    expect(settled).toHaveBeenCalledWith('pane',{relayId:ref.relayId,threadId:'thread',requestId:'0'},'pane-gone');
+    options!.onUpstreamLost?.();
+    expect(registry.stillRunning('pane',pane,aimed)).toBe(false);
+    await expect(registry.interrupt('pane',pane,aimed,{timeoutMs:50})).resolves.toMatchObject({outcome:'not-written'});
+    await expect(registry.answer(ref,'approve')).resolves.toBe('not-found');
+    expect(connection.interrupt).not.toHaveBeenCalled();
+    expect(connection.answer).not.toHaveBeenCalled();
+    // Same pane, same relay: a turn on the new server is aimed at the new incarnation.
+    const now=registry.activeTurn('pane',pane)!;
+    expect(now.relayId).not.toBe(aimed.relayId);
+    expect(registry.stillRunning('pane',pane,now)).toBe(true);
+    // Account status keeps its server scope.
+    expect(registry.accountHome('pane',pane)).toBe('/h/.codex');
+    await options!.ensureUpstream?.();
+    expect(runtime).toHaveBeenCalledWith('pane','/h/.codex');
+    await registry.shutdown();
+    // A retired entry neither rotates nor starts anything.
+    runtime.mockClear();
+    options!.onUpstreamLost?.();
+    await options!.ensureUpstream?.();
+    expect(runtime).not.toHaveBeenCalled();
+  });
+});

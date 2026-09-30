@@ -83,7 +83,16 @@ export class CodexPaneRelays {
     try {
       creation = this.create({codeHome,onStateChange:()=>{
         if (!entry.retired && this.entries.get(id) === entry && entry.owner) this.stateChanged(id,entry.owner);
-      },policy:{
+      },
+      // The account server went away under the TUI: a new relay incarnation,
+      // so no turn or request pinned to the old server link matches any more
+      // (request ids restart on the new link).
+      onUpstreamLost:()=>{ if (!entry.retired && this.entries.get(id) === entry) entry.relayId = randomUUID(); },
+      ensureUpstream:async()=>{
+        if (entry.retired || this.entries.get(id) !== entry) return;
+        try {await this.hooks.ensureRuntime?.(id,codeHome);} catch {/* The next dial decides. */}
+      },
+      policy:{
         paneId:id,
         // Only the committed owner's own session record; never a client value.
         identity:()=>!entry.retired && this.entries.get(id) === entry && entry.owner && entry.owner.meta.id === id

@@ -68,25 +68,28 @@ export interface CodexRelayPolicy {
   decisionSettled?: (requestId:string, threadId:string, reason:CodexDecisionSettledReason) => void;
 }
 
-/** A single-use endpoint for a daemon-owned TUI. It never starts/stops Codex's
- * account server; the pane lifecycle owns and must close this relay. */
-export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMethod?:(method:string)=>void; onStateChange?:()=>void; policy?:CodexRelayPolicy; answerConfirmMs?:number}) {
+/** How a TUI coming back after its account server went away is re-attached:
+ * the relay re-dials the server with a doubling delay from `baseMs` up to
+ * `maxMs`, holding the TUI's frames, for at most `windowMs`. */
+export interface CodexRelayReconnect {windowMs?:number; baseMs?:number; maxMs?:number}
+const RECONNECT_WINDOW_MS = 30_000;
+const RECONNECT_BASE_MS = 250;
+const RECONNECT_MAX_MS = 4000;
+
+/** An endpoint for one daemon-owned TUI. It never stops Codex's account
+ * server; the pane lifecycle owns and must close this relay. When the server
+ * goes away (a restart, an auto-update) the TUI's connection is ended and the
+ * endpoint stays, so the TUI's own reconnect lands on a fresh server link. */
+export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMethod?:(method:string)=>void; onStateChange?:()=>void; policy?:CodexRelayPolicy; answerConfirmMs?:number;
+  /** The server link of a connected TUI was lost; everything pinned to it (turns, requests) is gone. */
+  onUpstreamLost?:()=>void;
+  /** A re-dial after a loss failed: make sure a server runs (never restarts one). Must not throw. */
+  ensureUpstream?:()=>Promise<void>;
+  reconnect?:CodexRelayReconnect}) {
   const codeHome = options.codeHome ?? path.join(os.homedir(),'.codex');
   if (!path.isAbsolute(codeHome) || codeHome.includes('\0') || codeHome.includes(':')) throw new Error('Invalid Codex account scope');
   const upstreamPath = codexUpstreamPath(codeHome);
-  const link = await lstat(upstreamPath);
-  const target = link.isSymbolicLink() ? await realpath(upstreamPath) : upstreamPath;
-  const stat = await lstat(target);
-  if (link.isSymbolicLink()) {
-    // Current Codex places its Unix socket in a private short-path directory.
-    // Accept that indirection only when both directories belong to this user
-    // and cannot be written by anyone else; never accept a foreign socket.
-    for (const directory of [path.dirname(upstreamPath), path.dirname(target)]) {
-      const parent = await lstat(directory);
-      if (!parent.isDirectory() || parent.mode & 0o022 || typeof process.getuid === 'function' && parent.uid !== process.getuid()) throw new Error('Unsafe Codex socket directory');
-    }
-  }
-  if (!stat.isSocket() || typeof process.getuid === 'function' && stat.uid !== process.getuid()) throw new Error('Codex account socket unavailable');
+  await verifyUpstreamSocket(upstreamPath);
   // A socket inode alone does not prove a running/compatible account server.
   // Probe before publishing a TUI endpoint; never start or restart the server.
   try {
@@ -102,6 +105,9 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
   const sockets = new Set<WebSocket>();
   let claimed = false;
   let retired = false;
+  // The last connection lost its server link: the next one is the TUI coming back.
+  let upstreamLost = false;
+  const redials = new Set<NodeJS.Timeout>();
   let closing:Promise<void> | undefined;
   // The live connection's phone-answer path; none before a TUI connects.
   let answerOnConnection:((threadId:string,requestId:string,decision:CodexDecisionAnswer)=>Promise<CodexAnswerOutcome>) | undefined;
@@ -127,6 +133,8 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     for (const key of [...turnWaiters.keys()]) settleTurnWaiters(key,undefined);
     try {options.onStateChange?.();} catch {/* Retiring cannot restore authority. */}
     for (const socket of sockets) socket.terminate();
+    for (const timer of redials) clearTimeout(timer);
+    redials.clear();
     closing = (async()=>{
       await new Promise<void>(resolve=>wss.close(()=>resolve()));
       if (server.listening) await new Promise<void>(resolve=>{server.close(()=>resolve());server.closeAllConnections();});
@@ -143,28 +151,33 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     wss.handleUpgrade(request,socket,head,client=>wss.emit('connection',client));
   });
   wss.on('connection',client=>{
-    const upstream = new WebSocket(`ws+unix://${upstreamPath}:/`,{handshakeTimeout:5000,maxPayload:MAX_FRAME,perMessageDeflate:false,followRedirects:false});
-    sockets.add(client);sockets.add(upstream);
+    sockets.add(client);
+    // The TUI coming back after the server went away, rather than its first connection.
+    const rejoining = upstreamLost;
+    // False once this connection ended (`drop`) while the relay lives on:
+    // nothing of it may act on the relay any more.
+    let alive = true;
+    // The server link opened at least once.
+    let linked = false;
+    let upstream:WebSocket | undefined;
     const queued:Buffer[] = [];
     let queuedBytes = 0;
     const retire = () => { void close().catch(()=> { /* noop */ }); };
     const send = (target:WebSocket,bytes:Buffer) => {
+      if (!alive) return;
       if (retired || target.readyState !== WebSocket.OPEN || target.bufferedAmount + bytes.length > MAX_BUFFER) { retire();return; }
-      target.send(bytes,{binary:false},error=>{if(error)retire();});
+      target.send(bytes,{binary:false},error=>{if(error && alive)retire();});
     };
     const decode = (raw:RawData,binary:boolean):{bytes:Buffer;message:unknown}|undefined => {
+      if (!alive) return;
       if (retired || binary) {retire();return;}
       const bytes = Buffer.isBuffer(raw) ? raw : raw instanceof ArrayBuffer ? Buffer.from(raw) : Buffer.concat(raw);
       if (bytes.length > MAX_FRAME) {retire();return;}
       try {return {bytes,message:JSON.parse(bytes.toString('utf8'))};}
       catch {retire();return;}
     };
-    upstream.on('open',()=>{
-      for(const bytes of queued)send(upstream,bytes);
-      queued.length = 0;queuedBytes = 0;
-    });
     const forward = (bytes:Buffer) => {
-      if(upstream.readyState === WebSocket.OPEN)send(upstream,bytes);
+      if(upstream?.readyState === WebSocket.OPEN)send(upstream,bytes);
       else if(queued.length < 64 && queuedBytes + bytes.length <= MAX_BUFFER) {
         queued.push(bytes);queuedBytes += bytes.length;
       } else retire();
@@ -220,13 +233,14 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
      * no word in time) is `uncertain`, and the record is settled so no card
      * is left up for a request nobody can answer from here any more.
      */
-    answerOnConnection = async (threadId, requestId, decision) => {
+    const answerHere = async (threadId:string, requestId:string, decision:CodexDecisionAnswer):Promise<CodexAnswerOutcome> => {
       const pending = decisions.get(requestId);
       if (!pending || pending.confirm || pending.threadId !== threadId || !pendingServerRequests.has(pending.id)) return 'not-found';
       const owner = options.policy?.owner(threadId);
       if (!options.policy || owner?.paneId !== options.policy.paneId || !owner.live) return 'not-found';
       const bytes = Buffer.from(JSON.stringify({id:pending.id,result:{decision}}));
-      if (retired || upstream.readyState !== WebSocket.OPEN || upstream.bufferedAmount + bytes.length > MAX_BUFFER) return 'unavailable';
+      const link = upstream;
+      if (retired || !alive || !link || link.readyState !== WebSocket.OPEN || link.bufferedAmount + bytes.length > MAX_BUFFER) return 'unavailable';
       pendingServerRequests.delete(pending.id);
       return new Promise<CodexAnswerOutcome>(resolve=>{
         const timer = setTimeout(()=>finish('uncertain'),options.answerConfirmMs ?? ANSWER_CONFIRM_MS);
@@ -242,11 +256,12 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
           }
         };
         pending.confirm = finish;
-        upstream.send(bytes,{binary:false},error=>{
-          if (error) {finish('uncertain');retire();}
+        link.send(bytes,{binary:false},error=>{
+          if (error) {finish('uncertain');if (alive) retire();}
         });
       });
     };
+    answerOnConnection = answerHere;
     let unmatchedResponses = 0;
     const needsIdentity = (message:unknown) => {
       const cls = classify(message);
@@ -266,23 +281,23 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       if (!policy) { handleClient(frame);return; }
       let identity = policy.identity();
       if (!identity && needsIdentity(frame.message)) {
-        for (let waited = 0; !identity && waited < IDENTITY_WAIT_MS && !retired; waited += IDENTITY_POLL_MS) {
+        for (let waited = 0; !identity && waited < IDENTITY_WAIT_MS && !retired && alive; waited += IDENTITY_POLL_MS) {
           await new Promise(resolve=>setTimeout(resolve,IDENTITY_POLL_MS));
           identity = policy.identity();
         }
-        if (retired) return;
+        if (retired || !alive) return;
         if (!identity) {
           // The pane never took ownership: stop holding the TUI, close the relay.
           refuse(frame.message,'pane identity is not available');
           retire();return;
         }
       }
-      if (retired) return;
+      if (retired || !alive) return;
       const verdict = await reviewClientFrame(frame.message,{
         paneId:policy.paneId, identity, serverProven:policy.serverProven(), owner:policy.owner,
         query:(method,params)=>queryUpstream(upstreamPath,method,params),
       });
-      if (retired) return;
+      if (retired || !alive) return;
       if (verdict.kind === 'refuse') { refuse(frame.message,verdict.reason);return; }
       const message = verdict.message ?? frame.message;
       const m = message as {id?:unknown;method?:unknown};
@@ -315,10 +330,10 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
         if (answersPending) settleDecision(codexRequestKey(id as string|number),'answered-locally');
       }
       heldFrames++;heldBytes += frame.bytes.length;
-      clientChain = clientChain.then(()=>review(frame,answersPending)).catch(()=>retire())
+      clientChain = clientChain.then(()=>review(frame,answersPending)).catch(()=>{if (alive) retire();})
         .finally(()=>{heldFrames--;heldBytes -= frame.bytes.length;});
     });
-    upstream.on('message',(raw,binary)=>{
+    const fromUpstream = (raw:RawData,binary:boolean) => {
       const frame = decode(raw,binary);if(!frame)return;
       const before = JSON.stringify(tracker.current());
       tracker.fromServer(frame.message);
@@ -394,16 +409,97 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
         try {options.onStateChange?.();} catch {retire();return;}
       }
       send(client,frame.bytes);
-    });
-    for(const socket of [client,upstream]) {
-      socket.on('error',retire);
-      socket.on('close',()=>{
-        queued.length=0;queuedBytes=0;tracked.clear();pendingServerRequests.clear();
-        // Request ids restart with the next connection: nothing here is answerable any more.
-        for (const key of [...decisions.keys()]) settleDecision(key,'pane-gone');
-        retire();
+    };
+    // Request ids restart with the next connection: nothing here is answerable any more.
+    const endConnection = () => {
+      queued.length=0;queuedBytes=0;tracked.clear();pendingServerRequests.clear();
+      for (const key of [...decisions.keys()]) settleDecision(key,'pane-gone');
+    };
+    let redial:NodeJS.Timeout | undefined;
+    /**
+     * Ends this connection without retiring the relay, and lets the TUI go so
+     * its own reconnect comes back to this endpoint. `lost`: the server link
+     * that carried the TUI's session went away (a restart, an auto-update), so
+     * the turns it reported running are forgotten; the new server reports its own.
+     */
+    const drop = (lost:boolean) => {
+      if (!alive || retired) return;
+      endConnection();
+      alive = false;
+      claimed = false;
+      upstreamLost = true;
+      if (answerOnConnection === answerHere) answerOnConnection = undefined;
+      if (redial) { clearTimeout(redial);redials.delete(redial);redial = undefined; }
+      for (const socket of [client,upstream]) if (socket) { sockets.delete(socket);socket.terminate(); }
+      if (!lost) return;
+      activeTurns.clear();
+      for (const key of [...turnWaiters.keys()]) settleTurnWaiters(key,undefined);
+      try {options.onUpstreamLost?.();} catch {/* A notice cannot keep the old link. */}
+      try {options.onStateChange?.();} catch {/* The selection did not change. */}
+    };
+    const clientGone = () => {
+      if (!alive) return;
+      // A TUI that gave up on a reconnect attempt before the server came back
+      // leaves the endpoint for its next attempt.
+      if (rejoining && !linked) { drop(false);return; }
+      endConnection();retire();
+    };
+    client.on('error',clientGone);
+    client.on('close',clientGone);
+    const reconnect = options.reconnect ?? {};
+    const windowMs = reconnect.windowMs ?? RECONNECT_WINDOW_MS;
+    const maxMs = reconnect.maxMs ?? RECONNECT_MAX_MS;
+    let delay = reconnect.baseMs ?? RECONNECT_BASE_MS;
+    const since = Date.now();
+    let ensured = false;
+    /** A re-dial failed: try again after a doubled delay, or let the TUI go once the window is spent. */
+    const retryLater = () => {
+      if (!alive || retired) return;
+      if (!ensured) {
+        ensured = true;
+        try {void options.ensureUpstream?.().catch(()=> { /* the next dial decides */ });} catch {/* the next dial decides */}
+      }
+      if (Date.now() - since + delay > windowMs) { drop(false);return; }
+      const timer = setTimeout(()=>{
+        redials.delete(timer);
+        if (redial === timer) redial = undefined;
+        void dial();
+      },delay);
+      timer.unref?.();
+      redial = timer;redials.add(timer);
+      delay = Math.min(delay * 2,maxMs);
+    };
+    const dial = async () => {
+      if (!alive || retired) return;
+      if (rejoining) {
+        // A restarted server serves a new socket: it must pass the same checks.
+        try {await verifyUpstreamSocket(upstreamPath);} catch {retryLater();return;}
+        if (!alive || retired) return;
+      }
+      const attempt = new WebSocket(`ws+unix://${upstreamPath}:/`,{handshakeTimeout:5000,maxPayload:MAX_FRAME,perMessageDeflate:false,followRedirects:false});
+      upstream = attempt;sockets.add(attempt);
+      let over = false;
+      const failed = () => {
+        if (over || !alive || upstream !== attempt) return;
+        over = true;
+        sockets.delete(attempt);attempt.terminate();
+        if (linked) { drop(true);return; }
+        // A first connection that never reached the server: as it always was.
+        if (!rejoining) { endConnection();retire();return; }
+        retryLater();
+      };
+      attempt.on('open',()=>{
+        if (!alive || upstream !== attempt) return;
+        linked = true;
+        upstreamLost = false;
+        for(const bytes of queued)send(attempt,bytes);
+        queued.length = 0;queuedBytes = 0;
       });
-    }
+      attempt.on('message',(raw,binary)=>{ if (upstream === attempt) fromUpstream(raw,binary); });
+      attempt.on('error',failed);
+      attempt.on('close',failed);
+    };
+    void dial();
   });
   try {
     await chmod(directory,0o700);
@@ -462,6 +558,26 @@ export type CodexUpstreamRead = 'config/read'|'thread/loaded/list'|'getAuthStatu
 
 /** An account server's control socket under a Codex home. */
 export const codexUpstreamPath = (codeHome:string):string => path.join(codeHome,'app-server-control','app-server-control.sock');
+
+/**
+ * The control socket belongs to this user. Checked before the first dial and
+ * again before every re-dial: a restarted server serves a new socket inode.
+ */
+async function verifyUpstreamSocket(upstreamPath:string):Promise<void> {
+  const link = await lstat(upstreamPath);
+  const target = link.isSymbolicLink() ? await realpath(upstreamPath) : upstreamPath;
+  const stat = await lstat(target);
+  if (link.isSymbolicLink()) {
+    // Current Codex places its Unix socket in a private short-path directory.
+    // Accept that indirection only when both directories belong to this user
+    // and cannot be written by anyone else; never accept a foreign socket.
+    for (const directory of [path.dirname(upstreamPath), path.dirname(target)]) {
+      const parent = await lstat(directory);
+      if (!parent.isDirectory() || parent.mode & 0o022 || typeof process.getuid === 'function' && parent.uid !== process.getuid()) throw new Error('Unsafe Codex socket directory');
+    }
+  }
+  if (!stat.isSocket() || typeof process.getuid === 'function' && stat.uid !== process.getuid()) throw new Error('Codex account socket unavailable');
+}
 
 /**
  * A side-connection request that did not answer. `refused`: the server

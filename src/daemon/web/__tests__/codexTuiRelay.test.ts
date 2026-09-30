@@ -1,18 +1,19 @@
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
-import {mkdtemp,mkdir,rm,stat,access,symlink} from 'node:fs/promises';
+import {mkdtemp,mkdir,rm,stat,access,symlink,writeFile,unlink} from 'node:fs/promises';
 import {readFileSync} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import WebSocket,{WebSocketServer} from 'ws';
-import {describe,it,expect} from 'vitest';
+import {describe,it,expect,vi} from 'vitest';
 import {createCodexTuiRelay,CodexRelayUnavailableError,CodexUpstreamError,type CodexRelayPolicy,type CodexDecisionSettledReason} from '../codexTuiRelay';
 import type {CodexDecisionRequest} from '../codexDecisions';
 import {threadIdentityEnv} from '../codexRelayPolicy';
 const threadId='01234567-89ab-4cde-8123-456789abcdef';
 const systemThreadId='11111111-89ab-4cde-8123-456789abcdef';
 const otherThreadId='22222222-89ab-4cde-8123-456789abcdef';
-async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpstreamRequest?:(request:{id?:unknown;method?:unknown;params?:Record<string,unknown>},raw:string)=>void; policy?:CodexRelayPolicy; answerConfirmMs?:number; respond?:(request:{id?:unknown;method?:unknown;params?:Record<string,unknown>})=>unknown}={}) {
+type RelayExtras = Pick<Parameters<typeof createCodexTuiRelay>[0],'onUpstreamLost'|'ensureUpstream'|'reconnect'>;
+async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpstreamRequest?:(request:{id?:unknown;method?:unknown;params?:Record<string,unknown>},raw:string)=>void; policy?:CodexRelayPolicy; answerConfirmMs?:number; respond?:(request:{id?:unknown;method?:unknown;params?:Record<string,unknown>})=>unknown; relay?:RelayExtras}={}) {
   // macOS's per-user tmpdir is too long for a Unix socket path (sun_path is
   // 104 bytes there); /tmp keeps the fixture sockets addressable.
   const home=await mkdtemp(path.join(process.platform === 'darwin' ? '/tmp' : os.tmpdir(),'wmux-relay-test-'));
@@ -44,14 +45,23 @@ async function fixture(options:{linked?:boolean; onStateChange?:()=>void; onUpst
   const actualPath = options.linked ? path.join(home, 'actual.sock') : upstreamPath;
   await new Promise<void>(resolve=>server.listen(actualPath,resolve));
   if (options.linked) await symlink(actualPath, upstreamPath);
-  const relay=await createCodexTuiRelay({codeHome:home,onStateChange:options.onStateChange,policy:options.policy,answerConfirmMs:options.answerConfirmMs});
+  const relay=await createCodexTuiRelay({codeHome:home,onStateChange:options.onStateChange,policy:options.policy,answerConfirmMs:options.answerConfirmMs,...options.relay});
   ready=true;
   const connect=async(origin?:string)=>{
     const socket=new WebSocket(relay.url.replace('unix://','ws+unix://')+':/rpc',{origin});
     await new Promise<void>((resolve,reject)=>{socket.once('open',()=>resolve());socket.once('error',reject);});
     return socket;
   };
-  return {relay,connect,server,upstream:()=>live,async cleanup(){
+  return {relay,connect,server,upstream:()=>live,upstreamPath,
+    /** The account server stops (its socket goes away), as on a restart or an update. */
+    async down(){
+      for(const socket of wss.clients)socket.terminate();
+      live=undefined;
+      await new Promise<void>(resolve=>server.close(()=>resolve()));
+    },
+    /** A server listens on the same account socket again. */
+    async up(){await new Promise<void>(resolve=>server.listen(actualPath,resolve));},
+    async cleanup(){
     await relay.close();for(const client of wss.clients)client.terminate();
     await new Promise<void>(resolve=>wss.close(()=>resolve()));
     await new Promise<void>(resolve=>server.close(()=>resolve()));
@@ -583,7 +593,8 @@ describe.skipIf(process.platform === 'win32')('phone answers to Codex approvals'
       t.f.upstream()!.terminate();
       await expect(answered).resolves.toBe('uncertain');
       expect(t.settled).toEqual([{requestId:'12',threadId:owned,reason:'prompt-gone'}]);
-      expect(t.f.relay.retired()).toBe(true);
+      // The server link went away, not the pane: the endpoint stays for the TUI's reconnect (#1671).
+      expect(t.f.relay.retired()).toBe(false);
     } finally { t.client.terminate();await t.f.cleanup(); }
   });
 
@@ -773,6 +784,125 @@ describe.skipIf(process.platform === 'win32')('Codex relay turn identity and nat
       await deliver(f,client,{method:'turn/started',params:{threadId,turn:{id:'turn-9'}}});
       expect(f.relay.activeTurn(threadId)).toBe('turn-9');
       client.terminate();
+    } finally {await f.cleanup();}
+  });
+});
+
+// #1671 — the account server restarts (a managed auto-update) under a running
+// TUI. The relay lets the TUI go without retiring its endpoint, forgets what
+// the old server reported, and dials the server again when the TUI comes back.
+describe.skipIf(process.platform === 'win32')('Codex relay reconnect after the account server restarts',()=>{
+  const deliver=async(f:Awaited<ReturnType<typeof fixture>>,client:WebSocket,message:unknown)=>{
+    const seen=new Promise<void>(resolve=>client.once('message',()=>resolve()));
+    f.upstream()?.send(JSON.stringify(message));
+    await seen;
+  };
+  const closed=(client:WebSocket)=>new Promise<void>(resolve=>{
+    if(client.readyState===WebSocket.CLOSED)resolve();else client.once('close',()=>resolve());
+  });
+  it('lets the TUI go, keeps the endpoint, and re-attaches it to the restarted server',async()=>{
+    const lost=vi.fn();const upstream:string[]=[];
+    const f=await fixture({relay:{onUpstreamLost:lost},onUpstreamRequest:r=>{if(typeof r.method==='string')upstream.push(r.method);}});
+    try {
+      const client=await f.connect();await select(client,1);
+      await deliver(f,client,{method:'turn/started',params:{threadId,turn:{id:'turn-old'}}});
+      expect(f.relay.activeTurn(threadId)).toBe('turn-old');
+      const wait=f.relay.waitTurnEnd(threadId,'turn-old',5000);
+      const gone=closed(client);
+      await f.down();
+      await gone;
+      // The old server's turn is gone with it: nothing may aim at it any more.
+      await expect(wait.ended).resolves.toBeUndefined();
+      expect(f.relay.activeTurn(threadId)).toBeUndefined();
+      expect(f.relay.retired()).toBe(false);
+      expect(lost).toHaveBeenCalledOnce();
+      // The TUI's session hint survives for its own resume.
+      expect(f.relay.current()?.threadId).toBe(threadId);
+
+      await f.up();
+      upstream.length=0;
+      const back=await f.connect();
+      const reply=new Promise(resolve=>back.once('message',bytes=>resolve(JSON.parse(bytes.toString()))));
+      back.send(JSON.stringify({id:7,method:'thread/resume',params:{threadId}}));
+      await expect(reply).resolves.toMatchObject({id:7,result:{thread:{id:threadId}}});
+      expect(upstream).toEqual(['thread/resume']);
+      // Turn tracking and the native interrupt run on the new server.
+      await deliver(f,back,{method:'turn/started',params:{threadId,turn:{id:'turn-new'}}});
+      expect(f.relay.activeTurn(threadId)).toBe('turn-new');
+      await expect(f.relay.interrupt(threadId,'turn-new',2000)).resolves.toBeDefined();
+      expect(upstream).toContain('turn/interrupt');
+      // Only one TUI at a time, still.
+      await expect(f.connect()).rejects.toThrow();
+      // The TUI leaving a working link retires the relay, as before.
+      back.terminate();await closed(back);
+      await vi.waitFor(()=>expect(f.relay.retired()).toBe(true));
+    } finally {await f.cleanup();}
+  });
+  it('holds a TUI that comes back before the server does, and re-dials with backoff until it is up',async()=>{
+    const ensure=vi.fn(async()=> { /* the runtime start */ });
+    const f=await fixture({relay:{ensureUpstream:ensure,reconnect:{baseMs:20,maxMs:80,windowMs:5000}}});
+    try {
+      const client=await f.connect();await select(client,1);
+      const gone=closed(client);
+      await f.down();await gone;
+      const back=await f.connect();
+      const reply=new Promise(resolve=>back.once('message',bytes=>resolve(JSON.parse(bytes.toString()))));
+      back.send(JSON.stringify({id:2,method:'thread/resume',params:{threadId}}));
+      await new Promise(r=>setTimeout(r,150));
+      expect(ensure).toHaveBeenCalledOnce();
+      await f.up();
+      await expect(reply).resolves.toMatchObject({id:2,result:{thread:{id:threadId}}});
+      expect(f.relay.retired()).toBe(false);
+      back.terminate();
+    } finally {await f.cleanup();}
+  });
+  it('lets a waiting TUI go once the re-dial window is spent, and serves its next attempt',async()=>{
+    const f=await fixture({relay:{reconnect:{baseMs:20,maxMs:40,windowMs:150}}});
+    try {
+      const client=await f.connect();await select(client,1);
+      const gone=closed(client);
+      await f.down();await gone;
+      const early=await f.connect();
+      await closed(early);
+      expect(f.relay.retired()).toBe(false);
+      // A TUI that gives up on its own before the server is back leaves the endpoint too.
+      const impatient=await f.connect();
+      impatient.terminate();await closed(impatient);
+      await new Promise(r=>setTimeout(r,20));
+      expect(f.relay.retired()).toBe(false);
+      await f.up();
+      const back=await f.connect();await select(back,3);
+      expect(f.relay.current()?.threadId).toBe(threadId);
+      back.terminate();
+    } finally {await f.cleanup();}
+  });
+  it('re-checks the socket before every re-dial: a file where the socket was is no account server',async()=>{
+    const f=await fixture({relay:{reconnect:{baseMs:20,maxMs:40,windowMs:200}}});
+    try {
+      const client=await f.connect();await select(client,1);
+      const gone=closed(client);
+      await f.down();await gone;
+      await writeFile(f.upstreamPath,'not a socket');
+      const early=await f.connect();
+      await closed(early);
+      expect(f.relay.retired()).toBe(false);
+      await unlink(f.upstreamPath);
+      await f.up();
+      const back=await f.connect();await select(back,4);
+      back.terminate();
+    } finally {await f.cleanup();}
+  });
+  it('close() while a TUI waits for the server stops the re-dials',async()=>{
+    const f=await fixture({relay:{reconnect:{baseMs:20,maxMs:40,windowMs:60_000}}});
+    try {
+      const client=await f.connect();await select(client,1);
+      const gone=closed(client);
+      await f.down();await gone;
+      const waiting=await f.connect();
+      await new Promise(r=>setTimeout(r,60));
+      await f.relay.close();
+      await closed(waiting);
+      expect(f.relay.retired()).toBe(true);
     } finally {await f.cleanup();}
   });
 });
