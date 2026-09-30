@@ -3545,8 +3545,8 @@ nothing itself.
 > section above, nothing here is extracted from serving code: no daemon serves
 > these routes or fields yet. Do not ship a client path that depends on them
 > until the matching `/api/config` key (below) appears on a real daemon.
-> **Served so far: item 4** (`paneAccount`, `paneHandoff`). Items 1, 2, 3 and 5
-> are still design only.
+> **Served so far: items 3 and 4** (`chatCancelOutcome`, `paneAccount`,
+> `paneHandoff`). Items 1, 2 and 5 are still design only.
 > Shared types: `src/shared/phoneTurnFailure.ts`,
 > `src/shared/phoneCodexAccountStatus.ts`, `src/shared/phoneChatCancelOutcome.ts`,
 > `src/shared/phonePaneAccount.ts`, `src/shared/phoneGitV1.ts`.
