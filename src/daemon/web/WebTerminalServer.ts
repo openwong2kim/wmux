@@ -3,6 +3,8 @@ import type { PaneSettingsChoice } from './paneCodexSettings';
 import { buildAgentLaunch, type AgentLaunchChoice, type AgentLaunchOptions } from './agentLaunch';
 import { DesktopPhoneError, type DesktopPhoneBridge } from '../phone/DesktopPhoneBridge';
 import type { RunHistoryStore } from '../history/RunHistoryStore';
+import { applyPaneAccount, handoffRowOf, resolvePaneAccount, verifyHandoff, type ResolvedPaneAccount } from '../phone/paneAccount';
+import { DESKTOP_ACCOUNT_ENV_COMMAND, parsePaneAccountFields, type StoredHandoffFrom } from '../../shared/phonePaneAccount';
 import type { InputReceiptStore } from './InputReceiptStore';
 import { sessionPullRequests } from './sessionPullRequests';
 import { SessionGitController, SessionGitError } from './sessionGit';
@@ -565,7 +567,13 @@ export interface WebSessionLifecycle {
    * reservation — every one of them a round trip to another process. A device
    * revoked or narrowed inside that window must not end up with a shell.
    * Rejects with `SessionAuthorizationExpiredError` when it no longer holds. */
-  create(params: { workspaceId?: string; cwd?: string; agentLaunch?: AgentLaunchChoice; authorized?: () => Promise<boolean> }): Promise<{ id: string }>;
+  create(params: {
+    workspaceId?: string; cwd?: string; agentLaunch?: AgentLaunchChoice; authorized?: () => Promise<boolean>;
+    /** The desktop-resolved account for this pane only (contract v-next item 4). Requires `workspaceId`. */
+    account?: ResolvedPaneAccount;
+    /** Lineage to store on the new pane. */
+    handoffFrom?: StoredHandoffFrom;
+  }): Promise<{ id: string }>;
   /** Close a pane and dispose its PTY. Called only for an id already resolved. */
   destroy(id: string): Promise<void>;
 }
@@ -2329,6 +2337,11 @@ export class WebTerminalServer {
         liveActivityHostScope: true,
         agentSettings: this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.agentSettings !== undefined,
         agentLaunch: this.mayInput(principal) && this.deps.agentLaunchOptions !== undefined,
+        // Contract v-next item 4. OMITTED, not false: `paneAccount` needs both
+        // grants and a desktop that announced the account command on this connection.
+        ...(this.mayInput(principal) && this.opts?.allowTranscript === true && this.deps.lifecycle &&
+          this.availableDesktop()?.supports(DESKTOP_ACCOUNT_ENV_COMMAND) ? { paneAccount: true } : {}),
+        ...(this.mayInput(principal) && this.deps.lifecycle ? { paneHandoff: true } : {}),
         folderBrowse: this.mayInput(principal) && homeIsBrowsable(),
         browserScrolling: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
         workspaceBrowsers: this.mayInput(principal) && this.opts?.allowTranscript === true && desktopAvailable,
@@ -2495,8 +2508,19 @@ export class WebTerminalServer {
       if (!this.mayInput(principal)) return this.refuseInput(res,principal,'Agent launch requires input permission');
       if (!this.deps.agentLaunchOptions) return this.json(res,503,{error:'agent-launch-unavailable'});
       const workspaceId = url.searchParams.get('workspaceId') ?? '';
+      const accountId = url.searchParams.get('accountId');
+      if (accountId !== null) {
+        if (this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+        const parsed = parsePaneAccountFields({accountId,...(workspaceId ? {workspaceId} : {})});
+        if (!parsed.ok) return this.json(res,400,{error:parsed.error,effect:'none'});
+      }
       if (workspaceId) { const bad = this.rejectWorkspaceId(workspaceId,principal); if (bad) return this.json(res,400,bad); }
-      void this.agentOptionsForWorkspace(workspaceId).then(agents => this.json(res,200,{agents},{'Cache-Control':'no-store'})).catch(() => this.json(res,503,{error:'agent-launch-unavailable'}));
+      void (async () => {
+        const chosen = accountId === null ? null : await resolvePaneAccount(this.availableDesktop(),workspaceId,accountId);
+        if (chosen && !chosen.ok) return this.json(res,chosen.refusal.status,chosen.refusal.body);
+        const agents = await this.agentOptionsForWorkspace(workspaceId,chosen?.account);
+        return this.json(res,200,{agents},{'Cache-Control':'no-store'});
+      })().catch(() => this.json(res,503,{error:'agent-launch-unavailable'}));
       return;
     }
     if (req.method === 'GET' && p === '/api/folders') {
@@ -2747,6 +2771,7 @@ export class WebTerminalServer {
         ...workspaceLabelOf(s.env),
         ...workspaceIdOf(s.env),
         ...shellLabelOf(s.cmd),
+        ...handoffRowOf(this.deps.sessionManager.getSession(s.id)?.meta.handoffFrom, this.opts?.allowTranscript === true),
         ...this.livenessSummary(s.id),
         ...this.lastAssistantSummary(s.id, reads),
       }));
@@ -5296,7 +5321,7 @@ export class WebTerminalServer {
    * only differently revocable, so gating on the credential FORM rather than on
    * the server's input policy would be a boundary that is not one.
    */
-  private async agentOptionsForWorkspace(workspaceId: string): Promise<AgentLaunchOptions[]> {
+  private async agentOptionsForWorkspace(workspaceId: string, account?: ResolvedPaneAccount): Promise<AgentLaunchOptions[]> {
     if (!this.deps.agentLaunchOptions) throw new Error('Agent launch unavailable');
     if (!workspaceId) return this.deps.agentLaunchOptions();
     const desktop = this.availableDesktop();
@@ -5310,7 +5335,8 @@ export class WebTerminalServer {
       if (typeof codexHome !== 'string' || !codexHome || codexHome.includes('\0')) throw new Error('Invalid account directory');
       env.CODEX_HOME = codexHome;
     }
-    return this.deps.agentLaunchOptions(env);
+    // A per-pane account replaces its own vendor's key only; the catalog is that account's.
+    return this.deps.agentLaunchOptions(account ? applyPaneAccount(env, account) : env);
   }
 
   private handleSessionCreate(
@@ -5331,18 +5357,35 @@ export class WebTerminalServer {
 
     this.readJsonBody(req, res, (body) => {
       void (async () => {
-      const b = (body ?? {}) as { workspaceId?: unknown; cwd?: unknown; agentLaunch?: unknown };
+      const b = (body ?? {}) as { workspaceId?: unknown; cwd?: unknown; agentLaunch?: unknown; accountId?: unknown; handoffFrom?: unknown };
       const workspaceId = typeof b.workspaceId === 'string' ? b.workspaceId.trim() : '';
       const cwd = typeof b.cwd === 'string' ? b.cwd.trim() : '';
+      // Contract v-next item 4. The account list needs transcript access, so
+      // naming one does too; checked before the shape so a caller without the
+      // grant learns nothing about accounts.
+      if (b.accountId !== undefined && this.opts?.allowTranscript !== true) return this.refuseTranscript(res);
+      const lineage = parsePaneAccountFields({ ...(b as Record<string, unknown>), workspaceId });
+      if (!lineage.ok) return this.json(res, 400, { error: lineage.error, effect: 'none' });
       if (workspaceId) {
         const bad = this.rejectWorkspaceId(workspaceId, principal);
         if (bad) return this.json(res, 400, bad);
       }
+      let account: ResolvedPaneAccount | undefined;
+      if (lineage.value.accountId) {
+        const chosen = await resolvePaneAccount(this.availableDesktop(), workspaceId, lineage.value.accountId);
+        if (!chosen.ok) return this.json(res, chosen.refusal.status, chosen.refusal.body);
+        account = chosen.account;
+      }
       let agentLaunch: AgentLaunchChoice | undefined;
       if (b.agentLaunch !== undefined) {
         if (!this.deps.agentLaunchOptions) return this.json(res,400,{error:'agent-launch-unavailable'});
+        const agent = (b.agentLaunch as { agent?: unknown } | null)?.agent;
+        // The vendor is not echoed: the phone already knows which account it picked.
+        if (account && (agent === 'claude' || agent === 'codex') && agent !== account.vendor) {
+          return this.json(res, 400, { error: 'account-vendor-mismatch', effect: 'none' });
+        }
         try {
-          buildAgentLaunch(b.agentLaunch, await this.agentOptionsForWorkspace(workspaceId));
+          buildAgentLaunch(b.agentLaunch, await this.agentOptionsForWorkspace(workspaceId, account));
           const requested = b.agentLaunch as AgentLaunchChoice;
           agentLaunch = {agent:requested.agent,...(requested.model !== undefined ? {model:requested.model} : {}),...(requested.effort !== undefined ? {effort:requested.effort} : {})};
         } catch { return this.json(res,400,{error:'invalid-agent-launch'}); }
@@ -5362,10 +5405,26 @@ export class WebTerminalServer {
       // (the phone offers "open in home" instead). After the re-check above,
       // so a caller that just lost its grant learns nothing about the disk.
       if (cwd && await cwdUnusable(cwd)) return this.json(res, 400, { error: 'cwd-not-found', effect: 'none' });
+      const handoffFrom = lineage.value.handoffFrom ? await verifyHandoff(lineage.value.handoffFrom, {
+        readable: (id) => {
+          const source = this.attachableSession(fresh.principal, id);
+          return !!source && source.meta.state !== 'dead' && source.meta.state !== 'suspended';
+        },
+        allowTranscript: this.opts?.allowTranscript === true,
+        currentConversation: async (id) => {
+          const chat = this.deps.chat?.() ?? null;
+          return chat ? resolutionAgentSessionId(await chat.resolve(id)) : undefined;
+        },
+        now: () => this.now(),
+      }) : undefined;
       lifecycle
         // The same question again at the spawn itself: `create` has its own
         // awaits after this point, and this check is the last one before a PTY.
-        .create({ ...(workspaceId ? { workspaceId } : {}), ...(cwd ? { cwd } : {}), ...(agentLaunch ? {agentLaunch} : {}), authorized: stillAuthorized })
+        .create({
+          ...(workspaceId ? { workspaceId } : {}), ...(cwd ? { cwd } : {}), ...(agentLaunch ? {agentLaunch} : {}),
+          ...(account ? { account } : {}), ...(handoffFrom ? { handoffFrom } : {}),
+          authorized: stillAuthorized,
+        })
         .then(({ id }) => {
           // One serializer: the new pane is described by the SAME projection
           // `GET /api/sessions` uses, so a client can append the response to
@@ -5373,7 +5432,12 @@ export class WebTerminalServer {
           // somehow left nothing live is reported rather than faked.
           const row = this.listSessions().find((s) => s.id === id);
           if (!row) return this.json(res, 500, { error: 'created session is not live' });
-          return this.json(res, 201, row);
+          return this.json(res, 201, {
+            ...row,
+            ...(handoffFrom ? handoffRowOf(handoffFrom, this.opts?.allowTranscript === true) : {}),
+            // Echoed so the phone can confirm the account was honoured.
+            ...(lineage.value.accountId ? { accountId: lineage.value.accountId } : {}),
+          });
         })
         .catch((err: unknown) => {
           // The grant went away while the create was preparing. Not the

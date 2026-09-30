@@ -1,7 +1,7 @@
 /**
  * Per-pane account choice and handoff lineage on `POST /api/sessions`
  * (docs/phone-client-contract.md, "Proposed: contract v-next", item 4).
- * CONTRACT ONLY: the route does not read these fields yet.
+ * Served: `WebTerminalServer` reads them (`src/daemon/phone/paneAccount.ts`).
  *
  * The phone names an account by its desktop account id, never by a path. The
  * desktop resolves the id to its config directory; the workspace's own
@@ -89,9 +89,9 @@ export const PANE_ACCOUNT_ENV_KEY: Readonly<Record<PaneAccountVendor, 'CLAUDE_CO
 };
 
 /**
- * Proposed desktop bridge command (`DesktopPhoneCommand` gains
- * `accounts.envForAccount`): `{workspaceId, accountId}` →
- * `{vendor, env:{CLAUDE_CONFIG_DIR}|{CODEX_HOME}}` or an error tag. Type only.
+ * Desktop bridge command `accounts.envForAccount`: `{workspaceId, accountId}` →
+ * `{ok:true, vendor, env:{CLAUDE_CONFIG_DIR}|{CODEX_HOME}}` or `{ok:false, error}`.
+ * Handled in `src/main/phone/PhoneAccounts.ts`.
  *
  * Capability handshake: the daemon advertises `paneAccount` only after the
  * attached desktop announced this command (`DESKTOP_ACCOUNT_ENV_COMMAND` in

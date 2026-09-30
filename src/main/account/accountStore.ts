@@ -101,7 +101,7 @@ export function canonicalizeConfigDir(input: string): string {
 
 /** True when `dir` resolves to an accessible DIRECTORY on disk (not a file,
  *  not a dangling link). Used at spawn time before injecting the overlay. */
-function isAccessibleDir(dir: string): boolean {
+export function isAccessibleDir(dir: string): boolean {
   try {
     return fs.statSync(dir).isDirectory();
   } catch {

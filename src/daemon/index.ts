@@ -14,6 +14,7 @@ import { CodexPaneRelays } from './web/codexPaneRelays';
 import { buildAgentLaunch, installedAgentLaunchOptions, pinnedAgentLaunch } from './web/agentLaunch';
 import { agentExecEnv } from '../shared/execEnv';
 import { workspaceAccountEnv } from './phone/workspaceAccountEnv';
+import { applyPaneAccount } from './phone/paneAccount';
 import { DesktopPhoneBridge } from './phone/DesktopPhoneBridge';
 import { RunHistoryStore } from './history/RunHistoryStore';
 import { AutomationEngine } from './automation/AutomationEngine';
@@ -1913,6 +1914,7 @@ async function recoverSessions(
       if (persisted.codexRelayResume && !managed.meta.codexRelayResume) {
         managed.meta.codexRelayResume = persisted.codexRelayResume;
       }
+      if (persisted.handoffFrom && !managed.meta.handoffFrom) managed.meta.handoffFrom = persisted.handoffFrom;
     }
     // Build combined state: recovered (live) sessions + everything we
     // intentionally left untouched (originally-dead within TTL, plus
@@ -2051,6 +2053,7 @@ async function restartSupervisedSession(
     if (meta.resumeBinding && !fresh.meta.resumeBinding) fresh.meta.resumeBinding = meta.resumeBinding;
     if (meta.lastDetectedAgent && !fresh.meta.lastDetectedAgent) fresh.meta.lastDetectedAgent = meta.lastDetectedAgent;
     if (meta.codexRelayResume && !fresh.meta.codexRelayResume) fresh.meta.codexRelayResume = meta.codexRelayResume;
+    if (meta.handoffFrom && !fresh.meta.handoffFrom) fresh.meta.handoffFrom = meta.handoffFrom;
   }
 
   // Same external-death safety net as the create/recovery paths.
@@ -2288,7 +2291,7 @@ function registerRpcHandlers(
    * `rejectWorkspaceId` in WebTerminalServer for the trade-off that buys.
    */
   sessionLifecycle = {
-    create: async ({ workspaceId, cwd, agentLaunch, authorized }) => {
+    create: async ({ workspaceId, cwd, agentLaunch, authorized, account, handoffFrom }) => {
       const id = `web-${randomUUID()}`;
       // The human-readable workspace NAME is copied from a live sibling pane;
       // the daemon has no workspace registry of its own to look one up in.
@@ -2306,6 +2309,12 @@ function registerRpcHandlers(
           : {}),
       });
       if (workspaceId) env = await workspaceAccountEnv(env, workspaceId, desktopPhoneBridge);
+      // A per-pane account replaces only its own vendor's key, after the
+      // workspace binding and before the CLI probe and the Codex relay read it.
+      if (account) {
+        if (!workspaceId) throw new Error('A pane account needs a workspace');
+        env = applyPaneAccount(env, account);
+      }
       const agentCommand = agentLaunch ? buildAgentLaunch(agentLaunch, await installedAgentLaunchOptions(env)) : undefined;
       // The pane runs `$SHELL -lc '<agent>'`, whose profile rewrites PATH and skips
       // ~/.zshrc; the spawn is pinned to the binary and PATH the probe verified
@@ -2354,6 +2363,13 @@ function registerRpcHandlers(
           if (!managed || !relay.commit(managed)) {
             if (managed) await destroySessionRpc({id});
             throw new Error('Codex pane closed during launch');
+          }
+        }
+        if (handoffFrom) {
+          const managed = sessionManager.getSession(id);
+          if (managed) {
+            managed.meta.handoffFrom = handoffFrom;
+            stateWriter.saveImmediate(buildState(sessionManager));
           }
         }
         return { id };
@@ -2857,6 +2873,8 @@ function registerRpcHandlers(
 
       const promotedSession = sessionManager.getSession(sessionId);
       if (promotedSession) {
+        // Lineage is where the pane came from, not a resume offer: kept either way.
+        if (session.handoffFrom && !promotedSession.meta.handoffFrom) promotedSession.meta.handoffFrom = session.handoffFrom;
         // A fresh start drops the binding outright. It names a conversation in
         // the directory that no longer exists, and the pane did not resume it —
         // keeping it would leave the pane advertising a resume offer for a
@@ -3467,9 +3485,9 @@ function registerRpcHandlers(
   };
 
   desktopPhoneBridge ??= new DesktopPhoneBridge((id,event) => pipeServer.sendTo(id,event));
-  pipeServer.onRpc('daemon.phone.register', async (_params,ctx) => {
+  pipeServer.onRpc('daemon.phone.register', async (params,ctx) => {
     if (!firstPartyOnly(ctx.clientId,'daemon.phone.register')) return {ok:false};
-    return {ok:desktopPhoneBridge!.register(ctx.clientId)};
+    return {ok:desktopPhoneBridge!.register(ctx.clientId,(params as {commands?:unknown} | undefined)?.commands)};
   });
   pipeServer.onRpc('daemon.phone.complete', async (params,ctx) => {
     if (!firstPartyOnly(ctx.clientId,'daemon.phone.complete')) return {ok:false};
@@ -3792,7 +3810,7 @@ function registerRpcHandlers(
         const historySession = sessionManager.getSession(sessionId);
         // Scheduled runs keep their own history; they are not phone runs.
         const automationPane = automationEngine?.ownsPane(sessionId) === true;
-        if (historySession && !automationPane) recordHistory(store => store.ingest(sessionId, historySession.meta.env, data));
+        if (historySession && !automationPane) recordHistory(store => store.ingest(sessionId, historySession.meta.env, data, historySession.meta.handoffFrom));
         if (automationPane) {
           automationEngine?.onAgentEvent(sessionId, {
             kind: data.signal.kind,

@@ -1,4 +1,5 @@
-import type { AccountStore } from '../account/accountStore';
+import { isAccessibleDir, type AccountStore } from '../account/accountStore';
+import { PANE_ACCOUNT_ENV_KEY, type AccountEnvForAccountResult } from '../../shared/phonePaneAccount';
 import type { AccountUsageService } from '../account/AccountUsageService';
 
 interface AccountDeps {
@@ -17,6 +18,19 @@ export async function handlePhoneAccounts(command: string, payload: Record<strin
     const env = store.resolveWorkspaceAccountEnv(workspaceId, () => { missing = true; });
     if (missing) throw new Error('bound account directory unavailable');
     return env;
+  }
+  if (command === 'accounts.envForAccount') {
+    // One pane's account: resolved here from the desktop registry, never from
+    // a path the phone sent. Read-only: the workspace binding is not touched.
+    // Refusals are answers, not errors, so the daemon can tell them apart.
+    const accountId = payload.accountId;
+    const account = typeof accountId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(accountId) &&
+      !['__proto__','constructor','prototype'].includes(accountId) ? store.getAccount(accountId) : undefined;
+    let result: AccountEnvForAccountResult;
+    if (!account) result = {ok:false,error:'unknown-account'};
+    else if (!isAccessibleDir(account.configDir)) result = {ok:false,error:'account-directory-missing'};
+    else result = {ok:true,vendor:account.vendor,env:{[PANE_ACCOUNT_ENV_KEY[account.vendor]]:account.configDir}};
+    return result;
   }
   if (command === 'accounts.bind') {
     if (payload.vendor !== 'claude' && payload.vendor !== 'codex') throw new Error('invalid vendor');
