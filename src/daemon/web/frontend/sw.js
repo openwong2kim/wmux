@@ -37,7 +37,11 @@ self.addEventListener('fetch', function (e) {
   var isShell = e.request.mode === 'navigate'
     || url.pathname === '/'
     || url.pathname === '/index.html'
-    || url.pathname === '/pair';
+    || url.pathname === '/pair'
+    || url.pathname === '/app';
+  // The browser app (/app) is a different page from the classic shell: it gets
+  // its own cache entry, or visiting it would overwrite the offline copy of `/`.
+  var shellKey = url.pathname === '/app' ? '/app' : '/';
 
   if (isShell) {
     // Network-first: fresh app when online, last good copy when not.
@@ -45,14 +49,32 @@ self.addEventListener('fetch', function (e) {
       fetch(e.request)
         .then(function (res) {
           var copy = res.clone();
-          caches.open(CACHE).then(function (c) { c.put('/', copy); }).catch(function () { /* quota */ });
+          caches.open(CACHE).then(function (c) { c.put(shellKey, copy); }).catch(function () { /* quota */ });
           return res;
         })
         .catch(function () {
-          return caches.match('/').then(function (hit) {
+          return caches.match(shellKey).then(function (hit) {
             return hit || Response.error();
           });
         })
+    );
+    return;
+  }
+
+  // /app fonts carry a content hash in their name: cache-first, stored on the
+  // first fetch so the installed app keeps its typography offline.
+  if (url.pathname.indexOf('/app/assets/') === 0) {
+    e.respondWith(
+      caches.match(e.request).then(function (hit) {
+        if (hit) return hit;
+        return fetch(e.request).then(function (res) {
+          if (res.ok) {
+            var copy = res.clone();
+            caches.open(CACHE).then(function (c) { c.put(e.request, copy); }).catch(function () { /* quota */ });
+          }
+          return res;
+        });
+      })
     );
     return;
   }

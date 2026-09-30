@@ -127,6 +127,12 @@ const STYLE_SRC = "'unsafe-inline'";
  * 'script-src' is used as a fallback"), and `manifest-src` falls all the way
  * back to `default-src`, which would refuse `/manifest.webmanifest` and with it
  * add-to-home-screen. Both are same-origin and nothing else.
+ *
+ * `font-src 'self'` is for the browser app page (`/app`), which renders the
+ * desktop's own UI and terminal fonts. They are served by this daemon under
+ * `/app/assets/` — same-origin files, never `data:` and never a third party —
+ * so the page still makes zero external requests. The classic page loads no
+ * font file, so the directive grants it nothing it uses.
  */
 export function buildWebCsp(html: string | null): string {
   const blocks = html ? extractInlineBlocks(html) : null;
@@ -138,6 +144,7 @@ export function buildWebCsp(html: string | null): string {
     `script-src ${scriptSrc}`,
     `style-src ${STYLE_SRC}`,
     "img-src 'self' data:",
+    "font-src 'self'",
     "connect-src 'self'",
     "worker-src 'self'",
     "manifest-src 'self'",

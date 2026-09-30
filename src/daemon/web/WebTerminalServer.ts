@@ -1412,6 +1412,15 @@ export class WebTerminalServer {
   private serviceWorker: Buffer | null = null;
   private icon: Buffer | null = null;
   /**
+   * The browser app page (`/app`, opt-in): the desktop renderer's components,
+   * built by vite.web.config.ts. Its own policy, derived from its own bytes the
+   * same way `csp` is — the two pages inline different scripts.
+   */
+  private appHtml: Buffer | null = null;
+  private appCsp: string = buildWebCsp(null);
+  /** `/app/assets/<name>` → font bytes. Exact names from the build, so no path is ever joined from a request. */
+  private appFonts = new Map<string, Buffer>();
+  /**
    * The CSP for the assets currently loaded. Initialized to the asset-less
    * policy (`script-src 'none'`) so a request that somehow arrives before
    * `loadAssets()` is served the locked-down header, never a permissive one.
@@ -2155,6 +2164,19 @@ export class WebTerminalServer {
         'Cache-Control': 'no-store',
         ...(this.csp ? { 'Content-Security-Policy': this.csp } : {}),
       });
+    }
+    if (req.method === 'GET' && p === '/app') {
+      // Same no-store reasoning as the classic shell above.
+      return this.serveStatic(res, this.appHtml, 'text/html; charset=utf-8', {
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': this.appCsp,
+      });
+    }
+    if (req.method === 'GET' && p.startsWith('/app/assets/')) {
+      const font = this.appFonts.get(p.slice('/app/assets/'.length));
+      if (!font) return this.json(res, 404, { error: 'not found' });
+      // Content-hashed names: a changed font is a new URL.
+      return this.serveStatic(res, font, 'font/woff2', { 'Cache-Control': 'public, max-age=31536000, immutable' });
     }
     if (req.method === 'GET' && p === '/manifest.webmanifest') {
       // Same reasoning as the shell: a cached manifest pins an installed app's
@@ -8036,6 +8058,18 @@ export class WebTerminalServer {
     this.manifest = readIfExists(path.join(dir, 'manifest.webmanifest'));
     this.serviceWorker = readIfExists(path.join(dir, 'sw.js'));
     this.icon = readIfExists(path.join(dir, 'icon-512.png'));
+    this.appHtml = readIfExists(path.join(dir, 'app.html'));
+    this.appCsp = buildWebCsp(this.appHtml ? this.appHtml.toString('utf8') : null);
+    this.appFonts = new Map();
+    try {
+      for (const name of fs.readdirSync(path.join(dir, 'app-assets'))) {
+        if (!/^[A-Za-z0-9_-]+\.woff2$/.test(name)) continue;
+        const bytes = readIfExists(path.join(dir, 'app-assets', name));
+        if (bytes) this.appFonts.set(name, bytes);
+      }
+    } catch {
+      /* no /app build — `/app` answers 503 like a missing shell */
+    }
     // Derived from the page we just loaded, once per start rather than per
     // request: hashing 583 KB on the way out of every response would be a real
     // cost for a header that cannot change while the process runs.

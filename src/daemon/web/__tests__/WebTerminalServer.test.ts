@@ -1308,6 +1308,42 @@ describe('WebTerminalServer', () => {
     }
   });
 
+  // The browser app page (/app) has its own inline scripts, so its own policy,
+  // and serves only the exact font files the build emitted.
+  it('serves GET /app under its own CSP and its fonts same-origin', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-web-app-'));
+    fs.writeFileSync(path.join(dir, 'terminal.html'), '<html><body><script>var a=1;</script></body></html>');
+    fs.writeFileSync(path.join(dir, 'app.html'), '<html><body><script>var boot=1;</script><script>var app=2;</script></body></html>');
+    fs.mkdirSync(path.join(dir, 'app-assets'));
+    fs.writeFileSync(path.join(dir, 'app-assets', 'Inter-abc123.woff2'), 'FONT');
+    fs.writeFileSync(path.join(dir, 'app-assets', 'notes.txt'), 'nope');
+    const deps = makeDeps();
+    const srv = new WebTerminalServer({ sessionManager: deps.sessionManager, log: () => { /* silent */ }, assetsDir: dir });
+    try {
+      const info = await srv.start({ port: 0, host: '127.0.0.1', allowInput: false, allowUpload: false });
+      const base = `http://127.0.0.1:${info.port}`;
+      const page = await fetch(`${base}/app`);
+      expect(page.status).toBe(200);
+      expect(await page.text()).toContain('var app=2;');
+      const csp = page.headers.get('content-security-policy') ?? '';
+      expect(csp.match(/'sha256-[A-Za-z0-9+/=]+'/g)).toHaveLength(2);
+      expect(csp).toContain("font-src 'self'");
+      // The classic page's policy names only its own block.
+      const classic = await fetch(`${base}/`);
+      expect((classic.headers.get('content-security-policy') ?? '').match(/'sha256-/g)).toHaveLength(1);
+
+      const font = await fetch(`${base}/app/assets/Inter-abc123.woff2`);
+      expect(font.status).toBe(200);
+      expect(font.headers.get('content-type')).toBe('font/woff2');
+      expect(await font.text()).toBe('FONT');
+      expect((await fetch(`${base}/app/assets/notes.txt`)).status).toBe(404);
+      expect((await fetch(`${base}/app/assets/..%2Fterminal.html`)).status).toBe(404);
+    } finally {
+      if (srv.isRunning) await srv.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   /** Raw request so we can set Host (undici forbids overriding it on fetch()). */
   const getWithHost = (port: number, path: string, host: string) =>
     new Promise<{ status: number; body: string }>((resolve, reject) => {
