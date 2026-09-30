@@ -34,11 +34,17 @@ const html = () => new Response('<html></html>', { status: 200, headers: { 'cont
 const font = () => new Response('FONT', { status: 200, headers: { 'content-type': 'font/woff2' } });
 
 describe('sw.js shell cache', () => {
-  it('stores / and /app under their own keys', async () => {
-    const { stored, dispatch } = load(() => html());
+  it('stores the app page and the classic page under their own keys', async () => {
+    const { stored, dispatch } = load((url) => new Response(url.includes('/classic') || url.includes('/pair') ? 'CLASSIC' : 'APP', {
+      status: 200, headers: { 'content-type': 'text/html; charset=utf-8' },
+    }));
     await dispatch('http://h/', 'navigate');
     await dispatch('http://h/app', 'navigate');
-    expect([...stored.keys()].sort()).toEqual(['/', '/app']);
+    await dispatch('http://h/classic', 'navigate');
+    await dispatch('http://h/pair', 'navigate');
+    expect([...stored.keys()].sort()).toEqual(['/', '/classic']);
+    expect(await stored.get('/')!.text()).toBe('APP');
+    expect(await stored.get('/classic')!.text()).toBe('CLASSIC');
   });
 
   it('a navigation to a font URL never overwrites the offline copy of /', async () => {

@@ -13,7 +13,9 @@
  */
 var BUILD = '__BUILD_ID__';
 var CACHE = 'wmux-web-' + BUILD;
-var SHELL = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
+// `/` is the browser app; `/classic` is the flat client it falls back to on a
+// browser that cannot run it, so an offline old browser still has a page.
+var SHELL = ['/', '/classic', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); }));
@@ -52,14 +54,16 @@ self.addEventListener('fetch', function (e) {
     return;
   }
 
-  var shellPath = url.pathname === '/'
+  var classicPath = url.pathname === '/classic' || url.pathname === '/pair';
+  var shellPath = classicPath
+    || url.pathname === '/'
     || url.pathname === '/index.html'
-    || url.pathname === '/pair'
     || url.pathname === '/app';
   var isShell = e.request.mode === 'navigate' || shellPath;
-  // The browser app (/app) is a different page from the classic shell: it gets
-  // its own cache entry, or visiting it would overwrite the offline copy of `/`.
-  var shellKey = url.pathname === '/app' ? '/app' : '/';
+  // Two different pages, two cache entries: the browser app (`/`, its aliases)
+  // and the classic client (`/classic`, `/pair`). One must never overwrite the
+  // offline copy of the other.
+  var shellKey = classicPath ? '/classic' : '/';
 
   if (isShell) {
     // Network-first: fresh app when online, last good copy when not.

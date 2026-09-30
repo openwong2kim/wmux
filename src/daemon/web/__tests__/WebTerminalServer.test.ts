@@ -1308,8 +1308,8 @@ describe('WebTerminalServer', () => {
     }
   });
 
-  // The browser app page (/app) has its own inline scripts, so its own policy,
-  // and serves only the exact font files the build emitted.
+  // The browser app page (/ and /app) has its own inline scripts, so its own
+  // policy, and serves only the exact font files the build emitted.
   it('serves GET /app under its own CSP and its fonts same-origin', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-web-app-'));
     fs.writeFileSync(path.join(dir, 'terminal.html'), '<html><body><script>var a=1;</script></body></html>');
@@ -1330,9 +1330,17 @@ describe('WebTerminalServer', () => {
       const csp = page.headers.get('content-security-policy') ?? '';
       expect(csp.match(/'sha256-[A-Za-z0-9+/=]+'/g)).toHaveLength(2);
       expect(csp).toContain("font-src 'self'");
-      // The classic page's policy names only its own block.
-      const classic = await fetch(`${base}/`);
-      expect((classic.headers.get('content-security-policy') ?? '').match(/'sha256-/g)).toHaveLength(1);
+      // `/` is the app page too, now that it has terminals.
+      const root = await fetch(`${base}/`);
+      expect(await root.text()).toContain('var app=2;');
+      expect(root.headers.get('content-security-policy')).toBe(csp);
+      // The classic page lives at /classic (fallback) and /pair (pairing), and
+      // its policy names only its own block.
+      for (const classicPath of ['/classic', '/pair']) {
+        const classic = await fetch(`${base}${classicPath}`);
+        expect(await classic.text()).toContain('var a=1;');
+        expect((classic.headers.get('content-security-policy') ?? '').match(/'sha256-/g)).toHaveLength(1);
+      }
 
       const font = await fetch(`${base}/app/assets/Inter-abc123.woff2`);
       expect(font.status).toBe(200);
