@@ -36,7 +36,7 @@ export interface PaneAccountFields {
 }
 
 /** 400 tags this parser produces. Resolution adds its own (see the doc). */
-export type PaneAccountParseError = 'invalid-account-id' | 'invalid-handoff';
+export type PaneAccountParseError = 'invalid-account-id' | 'workspace-required' | 'invalid-handoff';
 
 const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -54,6 +54,8 @@ export function parsePaneAccountFields(body: Record<string, unknown>):
   if (body.accountId !== undefined) {
     const id = body.accountId;
     if (typeof id !== 'string' || !ACCOUNT_ID.test(id) || RESERVED.has(id)) return { ok: false, error: 'invalid-account-id' };
+    // The desktop resolves an account only for a named workspace; without one there is nothing to fall back from.
+    if (typeof body.workspaceId !== 'string' || !body.workspaceId.trim()) return { ok: false, error: 'workspace-required' };
     value.accountId = id;
   }
   if (body.handoffFrom !== undefined) {
@@ -81,10 +83,17 @@ export const PANE_ACCOUNT_ENV_KEY: Readonly<Record<PaneAccountVendor, 'CLAUDE_CO
 
 /**
  * Proposed desktop bridge command (`DesktopPhoneCommand` gains
- * `accounts.envForAccount`): `{workspaceId?, accountId}` →
+ * `accounts.envForAccount`): `{workspaceId, accountId}` →
  * `{vendor, env:{CLAUDE_CONFIG_DIR}|{CODEX_HOME}}` or an error tag. Type only.
+ *
+ * Capability handshake: the daemon advertises `paneAccount` only after the
+ * attached desktop announced this command (`DESKTOP_ACCOUNT_ENV_COMMAND` in
+ * its supported-command list) on the current connection. Any failure of the
+ * command refuses the create; the daemon never falls back to the workspace's
+ * account environment once an `accountId` was sent.
  */
-export interface AccountEnvForAccountRequest { workspaceId?: string; accountId: string }
+export const DESKTOP_ACCOUNT_ENV_COMMAND = 'accounts.envForAccount';
+export interface AccountEnvForAccountRequest { workspaceId: string; accountId: string }
 export type AccountEnvForAccountResult =
   | { ok: true; vendor: PaneAccountVendor; env: Partial<Record<'CLAUDE_CONFIG_DIR' | 'CODEX_HOME', string>> }
   | { ok: false; error: 'unknown-account' | 'account-directory-missing' };

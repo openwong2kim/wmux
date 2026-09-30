@@ -66,7 +66,8 @@ const CLAUDE_REASONS: Readonly<Record<string, TurnFailureReason>> = {
 const CODEX_REASONS: Readonly<Record<string, TurnFailureReason>> = {
   rateLimitExceeded: 'rate-limited',
   usageLimitExceeded: 'quota',
-  sessionBudgetExceeded: 'quota',
+  // `sessionBudgetExceeded` is deliberately absent: a local session budget is
+  // not the account's allowance, so it reads `unknown` with its providerCode.
   unauthorized: 'auth',
 };
 
@@ -152,6 +153,14 @@ export function classifyCodexTurnCompleted(turn: unknown, at: number): TurnFailu
     ...(message ? { message } : {}),
     at,
   };
+}
+
+/**
+ * Clients deduplicate one failure seen on several surfaces by this key; the
+ * daemon sends identical `turnId`/`at` values on every surface.
+ */
+export function turnFailureKey(sessionId: string, failure: Pick<TurnFailure, 'turnId' | 'at'>): string {
+  return failure.turnId ? `${sessionId}\u0000t:${failure.turnId}` : `${sessionId}\u0000a:${failure.at}`;
 }
 
 /** The same failure with `message` removed, for surfaces without `--allow-transcript`. */

@@ -3384,13 +3384,13 @@ nothing itself.
 
 ## Proposed: contract v-next (NOT SERVED YET)
 
-> **Status: design, pending engineering review.** Unlike every section above,
-> nothing here is extracted from serving code: no daemon serves these routes or
-> fields yet. Do not ship a client path that depends on them until the
-> matching `/api/config` key (below) appears on a real daemon. Shared types:
-> `src/shared/phoneTurnFailure.ts`, `src/shared/phoneCodexAccountStatus.ts`,
-> `src/shared/phoneChatCancelOutcome.ts`, `src/shared/phonePaneAccount.ts`,
-> `src/shared/phoneGitV1.ts`.
+> **Status: design, engineering review GO (conditional).** Unlike every
+> section above, nothing here is extracted from serving code: no daemon serves
+> these routes or fields yet. Do not ship a client path that depends on them
+> until the matching `/api/config` key (below) appears on a real daemon.
+> Shared types: `src/shared/phoneTurnFailure.ts`,
+> `src/shared/phoneCodexAccountStatus.ts`, `src/shared/phoneChatCancelOutcome.ts`,
+> `src/shared/phonePaneAccount.ts`, `src/shared/phoneGitV1.ts`.
 
 All items are additive. None moves `protocolVersion` or `chatVersion`.
 
@@ -3403,23 +3403,41 @@ daemon"; never probe with a write.
 | Key | Present when | Advertises |
 | --- | --- | --- |
 | `turnFailure` | always, once served | `failure` on the surfaces in item 1 |
-| `codexAccountStatus` | `--allow-transcript` | `GET /api/sessions/<id>/codex/account-status` |
-| `chatCancelOutcome` | `chatCancel` is true | `cancel` on the cancel answer, the cancel receipt route, `chat.cancel` SSE |
-| `paneAccount` | caller may input and a desktop bridge is wired | `accountId` on `POST /api/sessions` |
+| `codexAccountStatus` | `--allow-transcript`, and the spike in item 2 has landed | `GET /api/sessions/<id>/codex/account-status` |
+| `chatCancelOutcome` | `chatCancel` is true and the cancel receipt store loaded | `cancel` on the cancel answer, the cancel receipt route, `chat.cancel` SSE |
+| `paneAccount` | caller may input, `--allow-transcript`, and the attached desktop announced `accounts.envForAccount` | `accountId` on `POST /api/sessions` and on `GET /api/agent-launch-options` |
 | `paneHandoff` | caller may input | `handoffFrom` on `POST /api/sessions`, echoed on rows and history |
 | `gitProjects` | caller may input | `GET /api/git/projects`, `GET …/git/branches` |
-| `gitWorktrees` | caller may input | `POST …/git/worktree` and its receipt |
+| `gitWorktrees` | caller may input and the worktree receipt store loaded | `POST …/git/worktree` and its receipt |
 | `gitChecks` | caller may input | `GET …/git/checks` |
 
 Per session, `/turns` `chat.capabilities` gains `accountStatus: true` for a
 `terminal` binding whose agent is `codex` and whose account server is
-running. The route stays authoritative (503 below).
+running (once `codexAccountStatus` is served). The route stays authoritative.
 
 **`paneAccount` is mandatory before sending `accountId`.** `POST /api/sessions`
 ignores unknown body keys on every daemon that predates this, so an
 `accountId` sent to an older daemon is silently dropped and the pane spawns
 on the workspace's bound account. Also check that the 201 row echoes the
 `accountId` you sent.
+
+**Desktop capability handshake.** `paneAccount` depends on a desktop bridge
+command that older desktops do not have. The key appears only after the
+attached desktop has announced support for `accounts.envForAccount` on this
+connection; it disappears when the desktop detaches. Any failure of that
+command (unsupported, timeout, malformed answer, desktop gone) refuses the
+create. The daemon never falls back to the workspace's account environment
+when an `accountId` was sent.
+
+### Defaults this contract assumes (owner decisions pending)
+
+- Codex `sessionBudgetExceeded` is **not** `quota`: it reads `reason:"unknown"`
+  with `providerCode:"sessionBudgetExceeded"`.
+- A Claude subscription usage cap reads `rate-limited`; Claude reports it as
+  `rate_limit`, and `providerCode` is the only finer signal.
+- A `codex` typed by hand and OpenCode get no typed failure (v1 limit).
+- Worktree removal is not in v1; the desktop's cleanup UI reclaims phone
+  worktrees (item 5).
 
 ### 1. Typed turn failure
 
@@ -3443,8 +3461,12 @@ in structured form:
 Render `reason` for the headline and `message` (when present) as the body.
 Never parse `message`: a reset time in it is prose, not a field. Neither
 source carries a structured retry-after or reset time, so `retryAfterMs` and
-`resetAt` stay absent. Codex window reset times are on the account status
-route (item 2), as a fact about the window rather than about this failure.
+`resetAt` stay absent.
+
+**One failure, several surfaces.** The same failure can reach you on up to
+five surfaces and again after a reconnect. Deduplicate by `(sessionId,
+turnId)`, or by `(sessionId, at)` when `turnId` is absent; the daemon sends
+identical `turnId` and `at` values on every surface for one failure.
 
 **Sources and mapping (normative).**
 
@@ -3456,7 +3478,7 @@ forwards its payload verbatim. Input fields: `error` (required),
 
 | `error` | `reason` |
 | --- | --- |
-| `rate_limit` | `rate-limited` (includes subscription usage caps: Claude reports them as `rate_limit`) |
+| `rate_limit` | `rate-limited` (includes subscription usage caps) |
 | `billing_error` | `quota` |
 | `authentication_failed`, `oauth_org_not_allowed`, `cloud_credential_error`, `account_on_hold`, `verification_required` | `auth` |
 | `overloaded`, `server_error`, `invalid_request`, `model_not_found`, `max_output_tokens`, `unknown`, anything else | `unknown` |
@@ -3471,11 +3493,11 @@ stream (codex-cli 0.157.1 schema). `message` is `turn.error.message`;
 | `codexErrorInfo` | `reason` |
 | --- | --- |
 | `rateLimitExceeded` | `rate-limited` |
-| `usageLimitExceeded`, `sessionBudgetExceeded` | `quota` |
+| `usageLimitExceeded` | `quota` |
 | `unauthorized` | `auth` |
 | `httpConnectionFailed`, `responseStreamConnectionFailed`, `responseStreamDisconnected` | `network`; `rate-limited` if `httpStatusCode` is 429, `auth` if 401/403 |
 | `responseTooManyFailedAttempts` | `unknown`; 429 → `rate-limited`, 401/403 → `auth` |
-| anything else, or `null` | `unknown` |
+| `sessionBudgetExceeded`, anything else, or `null` | `unknown` |
 
 **Scope.** Claude: any pane with the wmux hook bridge installed. Codex: only
 panes with a daemon-owned relay (phone-created Codex panes on Unix). A `codex`
@@ -3494,10 +3516,17 @@ shared app-server, no provable pane (see #1657). OpenCode: none.
 
 The frame that ends a failed turn carries `state: "idle"` plus `failure`. The
 turn is over, so `idle` is the truthful state, and a client that ignores
-`failure` renders what a finished turn renders. (Today's daemon projects a
-`StopFailure` onto `state: "busy"`; serving this item fixes that.)
+`failure` renders what a finished turn renders. Today's daemon projects a
+`StopFailure` onto `state: "busy"` (`deriveAgentLiveness` has no branch for
+`status: "error"`); the implementation of this item maps it to `idle`.
 
 ### 2. Codex account status (read-only)
+
+**Availability is gated on a spike.** The route reads the pane's shared
+Codex app-server over a second, short-lived connection. Whether that server
+answers these reads on a connection that did not start the pane's thread is
+unverified. Until a spike confirms it, `codexAccountStatus` is not
+advertised.
 
 ```
 GET /api/sessions/<id>/codex/account-status
@@ -3522,13 +3551,13 @@ GET /api/sessions/<id>/codex/account-status
 ```
 
 The account is the one **this pane runs on** (its spawn `CODEX_HOME`, else
-the default), not the workspace's next-launch binding. The daemon opens a
-short-lived connection to that account's already-running app-server and sends
+the default), not the workspace's next-launch binding. The daemon sends
 `getAuthStatus {includeToken:false, refreshToken:false}` and
-`account/rateLimits/read {excludeResetCreditDetails:true}`. It never starts an
-account server and never sends a model request. The rate-limit read does
-reach the provider's backend, so reads are cached per account for 60 s
-(`cached: true`), and there is no refresh parameter.
+`account/rateLimits/read {excludeResetCreditDetails:true}` to that account's
+already-running app-server. It never starts an account server and never sends
+a model request. The rate-limit read does reach the provider's backend, so
+reads are cached per account for 60 s (`cached: true`), and there is no
+refresh parameter.
 
 Never on this wire: the auth token, e-mail, account id, credit balance, the
 backend's upsell banner, config paths. `resetsAt` is epoch ms (the server's
@@ -3591,26 +3620,36 @@ nothing).
 | --- | --- | --- |
 | `requested` | written; the aimed turn has not been seen to end | keep "Stopping…", poll every 2 s or wait for `chat.cancel` |
 | `ended` | the aimed turn ended after the write | final. `endedAs: "completed"` means it finished on its own first |
-| `not-ended` | still running 15 s after the write | final; offer Stop again (a new `clientCancelId`) or Terminal |
+| `not-ended` | still running 15 s after the write | final: it never changes, even if the turn ends later. Re-read `/turns` for the turn's current state; offer Stop again (a new `clientCancelId`) or Terminal |
 | `unknown` | cannot be known | final; check Terminal |
 
 What counts as `ended`, per agent:
 
-- **Codex with a daemon relay**: the relay stream's `turn/completed` for the
-  aimed turn (`evidence: "native"`, `endedAs` from `turn.status`). The daemon
-  prefers app-server `turn/interrupt {threadId, turnId}` to an Esc here, once
-  a spike confirms the shared server accepts it from a connection that is not
-  subscribed to the thread; otherwise the Esc path below.
-- **Claude, and Codex without a relay**: the aimed `chat.turn` leaving
-  `running`, proved by an interrupt or end record in the transcript
-  (`transcript`) or by the idle title or Stop row on screen (`screen`). An
-  interrupt fires no Stop hook, so the hook stream is not evidence.
+- **Claude and Codex**: the aimed `chat.turn` leaving `running`, proved by an
+  interrupt or end record in the transcript (`transcript`) or by the idle
+  title or Stop row on screen (`screen`). The interrupt is the existing Esc.
+  An interrupt fires no Stop hook, so the hook stream is not evidence.
+- **Codex, later**: app-server `turn/interrupt {threadId, turnId}` with the
+  relay stream's `turn/completed` as `native` evidence. Availability is gated
+  on the same spike as item 2 (a second connection to the shared app-server);
+  until then Codex uses the Esc path above.
 - **OpenCode**: the plugin's phase returning to `complete`
   (`evidence: "native"`).
 
 A write that ended `effect: "uncertain"` starts as `unknown`
 (`write-uncertain`). A daemon restart turns `requested` into `unknown`
 (`daemon-restart`).
+
+**Storage.** `chat-cancel-receipts.json` keeps `version: 1`, and
+`outcome.effect` keeps its two values. Progress is a new optional field next
+to `outcome` on each entry: `progress: {state, endedAs?, evidence?, reason?,
+at}`. An entry without it reads as `requested` when its outcome is
+`interrupt-requested`, and as `unknown` (`write-uncertain`) when it is
+`uncertain`. The restart rule that already turns a `pending` entry into a
+final `uncertain` one also sets `progress` to `unknown` (`daemon-restart`),
+in the same write; a `requested` progress found at load becomes `unknown`
+(`daemon-restart`) the same way. An older daemon reading the file ignores the
+field.
 
 **SSE.** `chat.cancel` `{sessionId, clientCancelId, state, turnId?, endedAs?, at}`
 on every change. It is live-only (no `id:`) and sent only to the cancel's owner
@@ -3631,28 +3670,33 @@ reconnect.
 ```
 
 **`accountId`** is an id from `GET /api/sessions/<id>/accounts`
-(`accounts[].id`), never a path. The desktop resolves it to that account's
-config directory, and the new pane's `CLAUDE_CONFIG_DIR` **or** `CODEX_HOME`
-(whichever matches the account's vendor) is set to it. The other vendor's key
-keeps the workspace binding. The workspace's binding itself does not change,
-and no later pane inherits the choice. The pane keeps the account across
-daemon recovery, because its environment is persisted with it.
+(`accounts[].id`), never a path. It needs the input grant **and**
+`--allow-transcript` (the account list itself needs transcript access), and
+`workspaceId`. The desktop resolves it to that account's config directory,
+and the new pane's `CLAUDE_CONFIG_DIR` **or** `CODEX_HOME` (whichever matches
+the account's vendor) is set to it. The other vendor's key keeps the
+workspace binding. The workspace's binding itself does not change, and no
+later pane inherits the choice. The pane keeps the account across daemon
+recovery, because its environment is persisted with it.
 
 | Status | Body | When |
 | --- | --- | --- |
 | 400 | `{error:"invalid-account-id", effect:"none"}` | not `^[A-Za-z0-9_-]{1,128}$` |
+| 400 | `{error:"workspace-required", effect:"none"}` | `accountId` without `workspaceId` |
 | 400 | `{error:"unknown-account", effect:"none"}` | no such account on this desktop. An unknown id and another host's id get the same answer |
-| 400 | `{error:"account-vendor-mismatch", vendor, effect:"none"}` | `agentLaunch.agent` is not the account's vendor |
+| 400 | `{error:"account-vendor-mismatch", effect:"none"}` | `agentLaunch.agent` is not the account's vendor. The vendor is not echoed |
+| 403 | the input or transcript refusal | the caller lacks either grant |
 | 409 | `{error:"account-directory-missing", effect:"none"}` | the account's directory is gone |
-| 503 | `{error:"desktop-unavailable", effect:"none"}` | the desktop app is not attached; accounts live there |
+| 503 | `{error:"desktop-unavailable", effect:"none"}` | no attached desktop supports the command, or the command failed in any way |
 
 The 201 row adds `accountId` (only for a pane created with one) so the phone
 can confirm it was honoured. With both `accountId` and `agentLaunch`, the model
 and effort are validated against the catalog of the **chosen** account, not
-the workspace's; `GET /api/agent-launch-options` accepts `accountId` next to
-`workspaceId` so the picker shows that account's models. `accountId` is **not** accepted by
-`POST …/chat/launch`: launch types into a shell whose environment was fixed
-at spawn, and its body refuses unknown keys (`invalid-chat-request`).
+the workspace's. `GET /api/agent-launch-options` accepts `accountId` next to
+`workspaceId` (same grants, same refusals) so the picker shows that account's
+models. `accountId` is **not** accepted by `POST …/chat/launch`: launch types
+into a shell whose environment was fixed at spawn, and its body refuses
+unknown keys (`invalid-chat-request`).
 
 **`handoffFrom`** records where the work came from. The daemon stores it on
 the new pane with `verified` and `at`:
@@ -3689,7 +3733,8 @@ cannot pick a model or effort.
 Every request names a session (`/api/sessions/<id>/…`), except the project
 list, whose rows hand you one. The daemon derives the repository from that
 session's trusted `spawnCwd`, exactly as `/git` and `/git/pr` do. **The phone
-never sends a path, a ref or a refspec.** Push and PR creation are not in v1.
+never sends a path, a ref or a refspec to these routes.** Push and PR creation
+are not in v1.
 
 **Where it runs.** In the daemon, with no desktop round trip. The inputs are
 daemon state (live sessions and their `spawnCwd`), the daemon already runs
@@ -3697,18 +3742,16 @@ the hardened phone Git runner (fixed `-c` config, sanitized environment,
 output bounds) and `gh` for `/git/pr`, and these routes must work on a
 headless daemon. Nothing here needs the desktop's workspace registry.
 
-**Gates, budget, audit.** All four routes need the input grant and an
-attachable session, like `/git` (`gitControl`); the three reads change
-nothing and write no audit line. They share the existing four-slot Git/PR
-budget (`429 {error:"git-busy"}`). Each `git` subprocess keeps the 5 s
-timeout, except `git worktree add`, which gets 30 s because it checks out a
-tree. `gh` keeps its 8 s timeout. Worktree creation also serializes per
-repository and re-authenticates after the body and again immediately before
-`git worktree add`. Each creation that passes validation writes one line to
-the device audit log (`device-audit.jsonl`): event `git-worktree`, the
-device id (empty for the operator token), and the outcome tag as `reason`.
-No path and no branch name is logged. The desktop's worktree cleanup scan
-leaves `phone-*` directories alone.
+**Gates, budget, audit.** All routes need the input grant and an attachable
+session, the same as `/git` (`gitControl`); the reads change nothing and
+write no audit line. They share the existing four-slot Git/PR budget
+(`429 {error:"git-busy"}`) and the 5 s per-`git` timeout; `gh` keeps its 8 s
+timeout. Worktree creation runs in the background (below) and serializes per
+repository, keyed by the realpath of the git common dir. Each creation that
+passes validation writes one line to the device audit log
+(`device-audit.jsonl`): event `git-worktree`, the device id (empty for the
+operator token), and the outcome tag as `reason`. No path and no branch name
+is logged.
 
 #### `GET /api/git/projects`
 
@@ -3727,11 +3770,13 @@ leaves `phone-*` directories alone.
 }
 ```
 
-A project exists only because a live session attachable by this caller
-(never the brain pane) has its `spawnCwd` inside it. Worktrees of one
-repository group into one project. At most 50 projects; 10 s cache. A
-workspace whose panes are all closed has no project here (the same evidence
-rule as `workspaceId`).
+A separate route on purpose: `/api/sessions` is polled every few seconds and
+must not start Git subprocesses. Repository facts are cached per `spawnCwd`
+for 10 s; each answer is then filtered to the sessions this caller may attach
+(never the brain pane), so a project appears only because such a session has
+its `spawnCwd` inside it. Worktrees of one repository group into one project.
+At most 50 projects. A workspace whose panes are all closed has no project
+here (the same evidence rule as `workspaceId`).
 
 #### `GET /api/sessions/<id>/git/branches`
 
@@ -3766,53 +3811,86 @@ hyphens, no leading or trailing hyphen
 UUID, minted once when the user taps Create. The server derives everything
 else:
 
-- branch `phone/<slug>`, created at the session's current `HEAD` (no fetch);
-- directory `${wmuxHome}/worktrees/<projectId>/phone-<slug>`. `projectId` is
-  the desktop task worktrees' `repoHash` (the same hash of the same root), so
-  both kinds of worktree of one repository sit side by side;
-- `git worktree add` runs with hooks disabled (`core.hooksPath=/dev/null`),
-  so no repository hook runs on the Mac.
+- the base: the session's `HEAD` commit, resolved **once** to an oid before
+  anything is written (no fetch);
+- branch `phone/<slug>`;
+- directory `${wmuxHome}/worktrees/<projectId>/phone-<slug>`;
+- the command: `git worktree add -b phone/<slug> -- <dir> <base-oid>`, with
+  hooks disabled (`core.hooksPath=/dev/null`), so no repository hook runs.
+
+Refused before anything is written: a bare repository, an unborn `HEAD`, a
+merge/rebase/sequencer in progress, a repository with submodules
+(`.gitmodules` at the base commit; submodules are not checked out by a phone
+worktree, so they are refused rather than left empty), and content filters.
+The filter check reads the `.gitattributes` files in the base tree (and
+`info/attributes`): only a `filter=` attribute that some path in the tree
+actually uses refuses the create (`git-filters-require-desktop`). A global
+`git lfs install` alone, with no `filter=lfs` in the tree, is not a refusal.
+
+**The answer is asynchronous.** Checking out a tree can take longer than any
+reasonable request, so the create never runs inside the HTTP request:
 
 ```jsonc
-→ 201 {
-  "requestId": "3f1c2e4a-…", "replayed": false,
-  "projectId": "a1b2c3d4e5f6",
-  "branch": "phone/fix-login",
-  "base": "<oid>",                                  // the commit the branch starts at
-  "cwd": "/Users/me/.wmux/worktrees/a1b2c3d4e5f6/phone-fix-login",
-  "leaf": "phone-fix-login"
+→ 202 { "requestId": "3f1c2e4a-…", "replayed": false, "state": "pending" }
+```
+
+Then poll the receipt every 2 s:
+
+```jsonc
+GET /api/sessions/<id>/git/worktree/<requestId>
+→ 200 {
+  "requestId": "3f1c2e4a-…",
+  "state": "pending" | "created" | "refused" | "unknown" | "none",
+  "projectId": "a1b2c3d4e5f6",                      // created
+  "branch": "phone/fix-login",                      // created
+  "base": "<oid>",                                  // created: the commit the branch starts at
+  "cwd": "/Users/me/.wmux/worktrees/a1b2c3d4e5f6/phone-fix-login",   // created
+  "leaf": "phone-fix-login",                        // created
+  "error": "branch-exists"                          // refused, or unknown ("git-outcome-unknown")
 }
 ```
 
-| Status | `error` | When |
+A repeat POST with the same body answers **200 with this same receipt body**
+plus `replayed: true`, whatever its state; there is one shape for the
+created answer. The receipt route needs the input grant, like the POST.
+
+| POST status | `error` | When |
 | --- | --- | --- |
 | 400 | `invalid-git-request` | body shape, extra key, malformed `requestId` |
 | 400 | `invalid-slug` | slug fails the rule |
-| 409 | `branch-exists` | `phone/<slug>` already exists (never auto-suffixed) |
-| 409 | `branch-namespace-blocked` | a branch named `phone` exists, so `phone/…` cannot |
-| 409 | `worktree-path-exists` | the directory exists (a leftover or another repo's) |
-| 409 | `path-too-long` | derived path over 260 characters |
-| 409 | `not-a-git-repo` | the session is not in a repository, or it is bare |
-| 409 | `unborn-head` | the session's branch has no commit yet |
-| 409 | `git-filters-require-desktop` | LFS or another content filter is configured |
-| 409 | `git-operation-in-progress` | merge/rebase/sequencer state |
 | 409 | `request-id-conflict` | this `requestId` was used with another slug or session |
 | 429 | `git-busy` | four Git/PR jobs already running |
-| 500 | `git-operation-failed` | anything else; no retry without inspecting branches first |
+| 503 | `git-receipts-unavailable` | the receipt store could not be read (the key is also hidden) |
 
-**Receipts.** Keyed by (caller, `requestId`), persisted before `git worktree
-add` runs, kept 24 h. A repeat with the same body replays the stored answer
-with `replayed:true` (a success is 200 on replay). A receipt left pending by a
-daemon restart replays as `409 {error:"git-outcome-unknown"}`: list branches
-to see whether `phone/<slug>` exists. `GET
-/api/sessions/<id>/git/worktree/<requestId>` reads the receipt without the
-input grant: `{requestId, state: "pending"|"created"|"refused"|"unknown"|"none",
-branch?, cwd?, error?}`.
+Refusals found by the background job land in the receipt as `state:
+"refused"` with `error` one of: `branch-exists` (never auto-suffixed),
+`branch-namespace-blocked` (a branch named `phone` exists),
+`worktree-path-exists`, `path-too-long` (over 260 characters),
+`not-a-git-repo` (including bare), `unborn-head`, `submodules-unsupported`,
+`git-filters-require-desktop`, `git-operation-in-progress`,
+`git-operation-failed`.
 
-**Opening a pane in it.** Pass the returned `cwd` verbatim to the existing
+**Receipt store.** A new file, `phone-worktree-receipts.json`, `version: 1`,
+mode 0600, written durably. Entries are keyed by a hash of (owner,
+`requestId`), where the owner is `device:<id>` or `operator`, and expire 24 h
+after creation. The `pending` entry is on disk before `git worktree add`
+starts. A `pending` entry found after a daemon restart becomes `unknown` with
+`error: "git-outcome-unknown"`: list branches to see whether `phone/<slug>`
+exists. If the file cannot be read or validated at start, the daemon turns
+the worktree routes off and omits `gitWorktrees` (fail closed); it never
+starts with an empty store over an unreadable one.
+
+**Opening a pane in it.** Pass the receipt's `cwd` verbatim to the existing
 `POST /api/sessions {workspaceId, cwd}`; do not build or edit it. That route
-already validates `cwd`. The new pane's `spawnCwd` is the worktree, so every
-Git route addressed through it acts on the new branch.
+checks only that the directory is usable (`cwd-not-found` otherwise), not
+that it is this worktree, so sending anything else is your bug, not a
+refusal. The new pane's `spawnCwd` is the worktree, so every Git route
+addressed through it acts on the new branch.
+
+**Desktop cleanup.** The desktop's worktree scan lists phone worktrees in a
+category of their own, `phone-worktree`, instead of calling them orphans,
+and reclaims them through the existing cleanup flow (which already refuses a
+dirty worktree). Worktree removal from the phone is not in v1.
 
 Not in v1: push, PR creation, worktree removal, switching an existing
 checkout's branch, remote branches.

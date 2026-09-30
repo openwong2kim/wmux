@@ -51,7 +51,44 @@ export interface ChatCancelProgress {
  */
 export const CHAT_CANCEL_OBSERVE_MS = 15_000;
 
-/** Final states never change again. */
+/**
+ * Final states never change again. `not-ended` included: a turn that ends
+ * after the observation window does not revise it (the client re-reads
+ * `/turns` for the turn's current state).
+ */
 export function isFinalCancelState(state: ChatCancelOutcomeState): boolean {
   return state !== 'requested';
+}
+
+/**
+ * What `chat-cancel-receipts.json` (still `version: 1`) stores next to an
+ * entry's `outcome`, as an optional `progress` field. `outcome.effect` keeps
+ * its two values; an older daemon ignores this field.
+ */
+export interface StoredCancelProgress {
+  state: ChatCancelOutcomeState;
+  endedAs?: ChatCancelEndedAs;
+  evidence?: ChatCancelEvidence;
+  reason?: ChatCancelUnknownReason;
+  at: number;
+}
+
+/**
+ * Progress for an entry, reading a missing `progress` from the effect the
+ * entry already stores. `restarted` is true when the entry is being loaded
+ * after a daemon restart: nothing is observing it any more, so a `requested`
+ * progress settles `unknown` (`daemon-restart`), in the same write that turns
+ * a `pending` entry into a final `uncertain` one.
+ */
+export function effectiveCancelProgress(
+  entry: { outcome?: { effect: 'interrupt-requested' | 'uncertain' }; progress?: StoredCancelProgress; createdAt: number },
+  restarted: boolean,
+  now: number,
+): StoredCancelProgress {
+  const stored = entry.progress
+    ?? (entry.outcome?.effect === 'interrupt-requested'
+      ? { state: 'requested' as const, at: entry.createdAt }
+      : { state: 'unknown' as const, reason: entry.outcome ? 'write-uncertain' as const : 'daemon-restart' as const, at: entry.createdAt });
+  if (restarted && stored.state === 'requested') return { state: 'unknown', reason: 'daemon-restart', at: now };
+  return stored;
 }

@@ -58,7 +58,7 @@ export const PHONE_GIT_MAX_BRANCHES = 200;
 export const PHONE_WORKTREE_SLUG = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,39}$/;
 /** Branch namespace for phone-created worktrees. */
 export const PHONE_WORKTREE_BRANCH_PREFIX = 'phone/';
-/** Directory prefix inside `${wmuxHome}/worktrees/<repoHash>/`, so the desktop task scanner can tell these apart. */
+/** Directory prefix inside `${wmuxHome}/worktrees/<projectId>/`; the desktop scan lists these as `phone-worktree`. */
 export const PHONE_WORKTREE_DIR_PREFIX = 'phone-';
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -79,25 +79,52 @@ export function phoneWorktreeNames(slug: string, repoHash: string): { branch: st
   return { branch: `${PHONE_WORKTREE_BRANCH_PREFIX}${slug}`, relativeDir: `worktrees/${repoHash}/${PHONE_WORKTREE_DIR_PREFIX}${slug}` };
 }
 
+/** Synchronous POST refusals (the request never reaches the background job). */
+export type PhoneWorktreeRequestError =
+  | 'invalid-slug' | 'invalid-git-request' | 'request-id-conflict' | 'git-busy' | 'git-receipts-unavailable';
+
+/** Refusals the background job records in the receipt (`state: "refused"`). */
 export type PhoneWorktreeRefusal =
-  | 'invalid-slug' | 'invalid-git-request' | 'not-a-git-repo' | 'branch-exists' | 'branch-namespace-blocked'
-  | 'worktree-path-exists' | 'path-too-long' | 'git-filters-require-desktop' | 'git-operation-in-progress'
-  | 'unborn-head' | 'request-id-conflict' | 'git-outcome-unknown' | 'git-busy' | 'git-operation-failed';
+  | 'not-a-git-repo' | 'unborn-head' | 'branch-exists' | 'branch-namespace-blocked' | 'worktree-path-exists'
+  | 'path-too-long' | 'submodules-unsupported' | 'git-filters-require-desktop' | 'git-operation-in-progress'
+  | 'git-operation-failed';
 
 /** `GET …/git/worktree/<requestId>`. `none`: no receipt for this caller and id. */
 export type PhoneWorktreeReceiptState = 'pending' | 'created' | 'refused' | 'unknown' | 'none';
 
-export interface PhoneWorktreeCreated {
+/**
+ * The one receipt shape: the GET answer, and (with `replayed: true`) the
+ * answer to a repeated POST. The first POST answers 202
+ * `{requestId, replayed:false, state:"pending"}`.
+ */
+export interface PhoneWorktreeReceipt {
   requestId: string;
-  replayed: boolean;
-  projectId: string;
-  branch: string;
-  /** The commit the branch starts at: the session's HEAD when the request ran. */
-  base: string;
+  replayed?: boolean;
+  state: PhoneWorktreeReceiptState;
+  /** `created` only. */
+  projectId?: string;
+  branch?: string;
+  /** The commit the branch starts at: the session's HEAD, resolved once before any write. */
+  base?: string;
   /** Absolute directory of the new worktree, server-derived. */
-  cwd: string;
+  cwd?: string;
   /** Last path segment, for display. */
-  leaf: string;
+  leaf?: string;
+  /** `refused`: a PhoneWorktreeRefusal. `unknown`: `git-outcome-unknown`. */
+  error?: PhoneWorktreeRefusal | 'git-outcome-unknown';
+}
+
+/** Receipt lifetime, from creation. */
+export const PHONE_WORKTREE_RECEIPT_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The fixed argv after the hardened `-c` prefix. The base is an oid resolved
+ * once before anything is written, and `--` ends option parsing before the
+ * directory.
+ */
+export function phoneWorktreeAddArgs(branch: string, dir: string, baseOid: string): string[] {
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(baseOid)) throw new Error('base must be a full object id');
+  return ['worktree', 'add', '-b', branch, '--', dir, baseOid];
 }
 
 // ── CI checks ─────────────────────────────────────────────────────────────────

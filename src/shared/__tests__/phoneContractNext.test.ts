@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyClaudeStopFailure, classifyCodexTurnCompleted, clipProviderMessage, withoutMessage,
-  TURN_FAILURE_MESSAGE_MAX_UNITS,
+  TURN_FAILURE_MESSAGE_MAX_UNITS, turnFailureKey,
 } from '../phoneTurnFailure';
 import { projectCodexAuth, projectCodexRateLimits } from '../phoneCodexAccountStatus';
 import { parsePaneAccountFields } from '../phonePaneAccount';
-import { parseWorktreeCreateBody, phoneWorktreeNames, summarizeChecks } from '../phoneGitV1';
+import { parseWorktreeCreateBody, phoneWorktreeAddArgs, phoneWorktreeNames, summarizeChecks } from '../phoneGitV1';
+import { effectiveCancelProgress } from '../phoneChatCancelOutcome';
 
 describe('classifyClaudeStopFailure', () => {
   it.each([
@@ -52,7 +53,7 @@ describe('classifyCodexTurnCompleted', () => {
 
   it.each([
     ['usageLimitExceeded', 'quota'],
-    ['sessionBudgetExceeded', 'quota'],
+    ['sessionBudgetExceeded', 'unknown'],
     ['rateLimitExceeded', 'rate-limited'],
     ['unauthorized', 'auth'],
     ['serverOverloaded', 'unknown'],
@@ -123,11 +124,13 @@ describe('Codex account status projections', () => {
 describe('parsePaneAccountFields', () => {
   it('accepts absent, well-formed and refuses malformed fields', () => {
     expect(parsePaneAccountFields({})).toEqual({ ok: true, value: {} });
-    expect(parsePaneAccountFields({ accountId: '3f1c2e4a-0b6d-4c1e-9a7f-2d8e5b6c7a90', handoffFrom: { sessionId: 'web-1', agentSessionId: 'ses_1' } }))
+    expect(parsePaneAccountFields({ workspaceId: 'ws-1', accountId: '3f1c2e4a-0b6d-4c1e-9a7f-2d8e5b6c7a90', handoffFrom: { sessionId: 'web-1', agentSessionId: 'ses_1' } }))
       .toEqual({ ok: true, value: { accountId: '3f1c2e4a-0b6d-4c1e-9a7f-2d8e5b6c7a90', handoffFrom: { sessionId: 'web-1', agentSessionId: 'ses_1' } } });
     for (const accountId of ['', '/Users/me/.codex', '__proto__', 42, null]) {
-      expect(parsePaneAccountFields({ accountId })).toEqual({ ok: false, error: 'invalid-account-id' });
+      expect(parsePaneAccountFields({ workspaceId: 'ws-1', accountId })).toEqual({ ok: false, error: 'invalid-account-id' });
     }
+    expect(parsePaneAccountFields({ accountId: 'acct-1' })).toEqual({ ok: false, error: 'workspace-required' });
+    expect(parsePaneAccountFields({ workspaceId: ' ', accountId: 'acct-1' })).toEqual({ ok: false, error: 'workspace-required' });
     for (const handoffFrom of [null, [], {}, { sessionId: 'a/b' }, { sessionId: 'p', path: '/tmp' }, { sessionId: 'p', agentSessionId: '' }]) {
       expect(parsePaneAccountFields({ handoffFrom })).toEqual({ ok: false, error: 'invalid-handoff' });
     }
@@ -163,5 +166,26 @@ describe('phone git v1', () => {
     expect(summary.checks[1]).toEqual({ kind: 'check-run', name: 'e2e', state: 'in_progress', startedAt: Date.parse('2026-09-29T22:35:20Z') });
     expect(summary.checks[2]).toEqual({ kind: 'status', name: 'CodeRabbit', state: 'failure' });
     expect(summarizeChecks(null)).toEqual({ overall: 'none', counts: { total: 0, passed: 0, failed: 0, pending: 0, skipped: 0 }, checks: [], truncated: false });
+  });
+});
+
+describe('contract v-next review follow-ups', () => {
+  it('builds the worktree argv from a pinned oid only', () => {
+    const oid = 'a'.repeat(40);
+    expect(phoneWorktreeAddArgs('phone/x', '/h/worktrees/p/phone-x', oid)).toEqual(['worktree', 'add', '-b', 'phone/x', '--', '/h/worktrees/p/phone-x', oid]);
+    expect(() => phoneWorktreeAddArgs('phone/x', '/d', 'HEAD')).toThrow();
+  });
+
+  it('derives cancel progress without touching the stored effect', () => {
+    expect(effectiveCancelProgress({ outcome: { effect: 'interrupt-requested' }, createdAt: 1 }, false, 9)).toEqual({ state: 'requested', at: 1 });
+    expect(effectiveCancelProgress({ outcome: { effect: 'interrupt-requested' }, createdAt: 1 }, true, 9)).toEqual({ state: 'unknown', reason: 'daemon-restart', at: 9 });
+    expect(effectiveCancelProgress({ outcome: { effect: 'uncertain' }, createdAt: 1 }, true, 9)).toEqual({ state: 'unknown', reason: 'write-uncertain', at: 1 });
+    const notEnded = { state: 'not-ended' as const, at: 5 };
+    expect(effectiveCancelProgress({ outcome: { effect: 'interrupt-requested' }, progress: notEnded, createdAt: 1 }, true, 9)).toBe(notEnded);
+  });
+
+  it('keys a failure by turn id, else by time', () => {
+    expect(turnFailureKey('p', { turnId: 't1:a', at: 1 })).not.toBe(turnFailureKey('p', { at: 1 }));
+    expect(turnFailureKey('p', { at: 1 })).toBe(turnFailureKey('p', { at: 1 }));
   });
 });
