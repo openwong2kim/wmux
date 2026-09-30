@@ -24,9 +24,37 @@ export const SLICE_DIR = path.join(ROOT, 'scripts', 'typecheck');
 /** Slice configs in run order: the app source first, then the test areas. */
 export const SLICES = ['src', 'tests-renderer', 'tests-main', 'tests-daemon', 'tests-rest'];
 
+/**
+ * Build programs checked as they are, after the slices. These are not slices:
+ * each sets its own compiler options, and the option that matters is the
+ * target. The MCP bundle builds for ES2020 and the CLI and daemon for ES2022,
+ * while tsconfig.json targets ESNext — so a shared file that calls a newer
+ * library API (`Object.hasOwn`, `Array.prototype.at`, `replaceAll`) passes
+ * every slice and only fails when its own build runs. #1677 shipped exactly
+ * that into the MCP bundle and found out from `npm run start`.
+ *
+ * They pick their own files, so the coverage and scope checks (which compare
+ * slices against tsconfig.json) do not apply to them.
+ */
+export const PROGRAMS = {
+  mcp: 'tsconfig.mcp.json',
+  cli: 'tsconfig.cli.json',
+  daemon: 'tsconfig.daemon.json',
+};
+
 export function sliceConfig(name, dir = SLICE_DIR) {
   return path.join(dir, `${name}.json`);
 }
+
+/** The tsconfig to run for a slice or program name. */
+export function checkConfig(name, dir = SLICE_DIR, root = ROOT) {
+  return Object.prototype.hasOwnProperty.call(PROGRAMS, name)
+    ? path.join(root, PROGRAMS[name])
+    : sliceConfig(name, dir);
+}
+
+/** Every name `node scripts/typecheck.mjs` runs by default, in order. */
+export const CHECKS = [...SLICES, ...Object.keys(PROGRAMS)];
 
 /** The root files a tsconfig selects (include/exclude expanded), without building a program. */
 export function rootFiles(configPath) {
@@ -141,6 +169,6 @@ export function casingMismatches(files, root = ROOT) {
 
 export function assertSlicesExist(names, dir = SLICE_DIR) {
   for (const n of names) {
-    if (!fs.existsSync(sliceConfig(n, dir))) throw new Error(`unknown type-check slice "${n}" (have: ${SLICES.join(', ')})`);
+    if (!fs.existsSync(checkConfig(n, dir))) throw new Error(`unknown type-check slice "${n}" (have: ${CHECKS.join(', ')})`);
   }
 }

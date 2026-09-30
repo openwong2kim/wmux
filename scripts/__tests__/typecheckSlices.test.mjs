@@ -6,7 +6,8 @@
 // check actually reports a missing directory.
 import { describe, expect, it } from 'vitest';
 import {
-  ROOT_CONFIG, SLICES, sliceConfig, coverageGaps, rootFiles, sliceConfigProblems, scopeProblems, casingMismatches,
+  ROOT, ROOT_CONFIG, SLICES, PROGRAMS, CHECKS, sliceConfig, checkConfig, assertSlicesExist, coverageGaps, rootFiles,
+  sliceConfigProblems, scopeProblems, casingMismatches,
 } from '../lib/typecheck-slices.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -96,6 +97,22 @@ describe('typecheck slices', () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // #1681 — the MCP bundle targets ES2020, so an ES2022 API in a shared file
+  // passed every slice (tsconfig.json targets ESNext) and only failed its build.
+  it('also runs the build programs, each with its own tsconfig', () => {
+    expect(Object.keys(PROGRAMS)).toEqual(['mcp', 'cli', 'daemon']);
+    expect(CHECKS).toEqual([...SLICES, 'mcp', 'cli', 'daemon']);
+    for (const name of Object.keys(PROGRAMS)) {
+      const config = checkConfig(name);
+      expect(path.dirname(config)).toBe(ROOT);
+      expect(fs.existsSync(config), `${config} is missing`).toBe(true);
+    }
+    expect(checkConfig('mcp')).toBe(path.join(ROOT, 'tsconfig.mcp.json'));
+    expect(checkConfig('src')).toBe(sliceConfig('src'));
+    expect(() => assertSlicesExist(CHECKS)).not.toThrow();
+    expect(() => assertSlicesExist(['nope'])).toThrow(/unknown type-check slice "nope"/);
   });
 
   it('reports a directory that no slice selects', () => {

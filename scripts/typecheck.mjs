@@ -1,20 +1,25 @@
 #!/usr/bin/env node
 // Type-check the root project as a sequence of smaller programs.
 //
-//   node scripts/typecheck.mjs                 every slice (what CI runs)
+//   node scripts/typecheck.mjs                 every slice, then the build programs (what CI runs)
 //   node scripts/typecheck.mjs src tests-main  only the named slices
+//   node scripts/typecheck.mjs mcp             only the named build program
 //
 // The slices live in scripts/typecheck/*.json; why they exist is in
 // scripts/lib/typecheck-slices.mjs. The checks before and around tsc stand in
 // for what one whole program used to catch on its own: a file no slice
 // selects, a slice that loosens compiler options, globals split across
 // programs, and import paths whose casing differs from the file on disk.
+//
+// The build programs (PROGRAMS: mcp, cli, daemon) run after the slices with
+// their own tsconfig, because they target older ECMAScript versions than
+// tsconfig.json does.
 
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import {
-  ROOT, ROOT_CONFIG, SLICES, sliceConfig, coverageGaps, assertSlicesExist,
+  ROOT, ROOT_CONFIG, SLICES, CHECKS, sliceConfig, checkConfig, coverageGaps, assertSlicesExist,
   sliceConfigProblems, scopeProblems, casingMismatches,
 } from './lib/typecheck-slices.mjs';
 
@@ -28,7 +33,7 @@ function fail(header, lines) {
 
 function main() {
   const asked = process.argv.slice(2);
-  const names = asked.length > 0 ? asked : SLICES;
+  const names = asked.length > 0 ? asked : CHECKS;
   assertSlicesExist(names);
 
   const configProblems = sliceConfigProblems(SLICES);
@@ -49,7 +54,7 @@ function main() {
   const failed = [];
   for (const name of names) {
     const started = Date.now();
-    const args = [tsc, '--noEmit', '--listFiles', '-p', sliceConfig(name)];
+    const args = [tsc, '--noEmit', '--listFiles', '-p', checkConfig(name)];
     if (process.stdout.isTTY) args.push('--pretty');
     const run = spawnSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'inherit'] });
     // --listFiles prints one absolute path per line after the diagnostics.
