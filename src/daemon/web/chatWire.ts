@@ -428,7 +428,7 @@ export function cancelResponse(outcome: ChatCancelOutcome): WireResponse {
   let response: WireResponse;
   if (!outcome.error) {
     response = { status: 202, body: { result: 'sent', replayed: false, ...(outcome.turnId ? { turnId: outcome.turnId } : {}), clientCancelId, effect,
-      ...(outcome.cancel ? { cancel: outcome.cancel } : {}) } };
+      ...(outcome.cancel ? { cancel: outcome.cancel } : {}), ...(outcome.escRefused ? { escRefused: outcome.escRefused } : {}) } };
   } else {
     response = {
       status: cancelStatus(outcome.error),

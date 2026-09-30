@@ -35,6 +35,20 @@ export interface ChatInterruptDeps {
   readTitle?: () => { title: string; at: number } | null;
   /** Synchronous last step before the ESC (e.g. a durable receipt), given the turn aimed at; false writes nothing. */
   beforeWrite?: (turn: { id: string; startedAt: number }) => boolean;
+  /**
+   * The agent's own interrupt, tried after `beforeWrite` and before the ESC
+   * (Codex `turn/interrupt`). `interrupted`: the agent's own stream proved
+   * the turn stopped, so no ESC follows. `not-written`: nothing reached the
+   * agent. `uncertain`: it may have. Anything but `interrupted` runs every
+   * gate again before the ESC.
+   */
+  native?: () => Promise<'interrupted' | 'not-written' | 'uncertain'>;
+  /** Read synchronously right before the fallback ESC: false when the turn the native request was aimed at ended or was replaced. */
+  nativeStillAimed?: () => boolean;
+  /** A native interrupt reached the turn without an ESC: record it as the pane's interrupt of this turn. */
+  noteInterrupt?: () => void;
+  /** A native request that may have landed was followed by a refused ESC; its verdict. */
+  fallbackRefused?: (verdict: ChatInterruptVerdict) => void;
 }
 
 /**
@@ -75,24 +89,51 @@ export async function interruptChatTurn(agentSessionId: string, deps: ChatInterr
   if (!agentSessionId) return 'error';
   const first = check();
   if (first) return first;
-  // Authorization first: the screen read is the last await before the write.
-  if (deps.authorized) {
-    let ok = false;
-    try { ok = await deps.authorized(); } catch { /* a failed check is a refusal */ }
-    if (!ok) return 'unauthorized';
-  }
-  let rows: readonly string[] | null = null;
-  try { rows = await deps.readScreen(); } catch { /* unreadable = refuse */ }
-  if (screenBlocksChatSend(rows)) return 'blocked';
-  const second = check();
+  /**
+   * Authorization, then the screen read (the last await before a write),
+   * then every check again. Null: the turn `expected` (when given) is still
+   * running and may be interrupted now.
+   */
+  const lastGate = async (expected?: string): Promise<ChatInterruptVerdict | null> => {
+    if (deps.authorized) {
+      let ok = false;
+      try { ok = await deps.authorized(); } catch { /* a failed check is a refusal */ }
+      if (!ok) return 'unauthorized';
+    }
+    let rows: readonly string[] | null = null;
+    try { rows = await deps.readScreen(); } catch { /* unreadable = refuse */ }
+    if (screenBlocksChatSend(rows)) return 'blocked';
+    const again = check();
+    if (again || !target) return again ?? 'not_running';
+    if (expected !== undefined && target.id !== expected) return 'not_running';
+    // The hook's `running` can outlive the turn; the agent's own row and title
+    // cannot. The title is read synchronously, with nothing between it and the write.
+    let title: { title: string; at: number } | null = null;
+    try { title = deps.readTitle?.() ?? null; } catch { /* no title = no title evidence */ }
+    if (titleShowsFinishedTurn(title, slug, target.startedAt) || screenShowsTurnEnding(rows, slug)) return 'not_running';
+    if (!screenShowsRunningTurn(rows, slug) && !titleShowsRunningTurn(title, slug, now())) return 'not_running';
+    return null;
+  };
+  const second = await lastGate();
   if (second || !target) return second ?? 'not_running';
   const aimed = target;
-  // The hook's `running` can outlive the turn; the agent's own row and title
-  // cannot. The title is read synchronously, with nothing between it and the write.
-  let title: { title: string; at: number } | null = null;
-  try { title = deps.readTitle?.() ?? null; } catch { /* no title = no title evidence */ }
-  if (titleShowsFinishedTurn(title, slug, aimed.startedAt) || screenShowsTurnEnding(rows, slug)) return 'not_running';
-  if (!screenShowsRunningTurn(rows, slug) && !titleShowsRunningTurn(title, slug, now())) return 'not_running';
   if (deps.beforeWrite && !deps.beforeWrite(aimed)) return 'write_refused';
+  if (deps.native) {
+    let native: 'interrupted' | 'not-written' | 'uncertain';
+    try { native = await deps.native(); } catch { native = 'uncertain'; }
+    if (native === 'interrupted') { deps.noteInterrupt?.(); return 'sent'; }
+    // Up to the native bound passed: every gate again, for the same turn,
+    // before the ESC, and the native target must still be the running turn.
+    // A refusal after a native request that may have landed is still a
+    // written interrupt (`sent`), which the caller observes.
+    const third = await lastGate(aimed.id) ?? (deps.nativeStillAimed && !deps.nativeStillAimed() ? 'not_running' : null);
+    const landed = (verdict: ChatInterruptVerdict): ChatInterruptVerdict => {
+      deps.noteInterrupt?.();
+      try { deps.fallbackRefused?.(verdict); } catch { /* a notice cannot change the outcome */ }
+      return 'sent';
+    };
+    if (third) return native === 'uncertain' ? landed(third) : third;
+    try { return deps.write('\x1b') ? 'sent' : native === 'uncertain' ? landed('unavailable') : 'unavailable'; } catch { return 'error'; }
+  }
   try { return deps.write('\x1b') ? 'sent' : 'unavailable'; } catch { return 'error'; }
 }

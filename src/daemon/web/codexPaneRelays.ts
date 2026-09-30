@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import type {ManagedSession} from '../DaemonSessionManager';
-import {createCodexTuiRelay,type CodexAnswerOutcome,type CodexDecisionSettledReason} from './codexTuiRelay';
+import {createCodexTuiRelay,CodexUpstreamError,type CodexAnswerOutcome,type CodexDecisionSettledReason,type CodexTurnEnd} from './codexTuiRelay';
 import type {CodexDecisionAnswer,CodexDecisionRequest} from './codexDecisions';
 import type {CodexRelayObservation} from './codexTuiSelection';
 import {threadIdentityEnv} from './codexRelayPolicy';
@@ -29,6 +29,19 @@ export interface CodexPaneRelayHooks {
 export interface CodexDecisionRef {relayId:string; threadId:string; requestId:string; method?:string}
 /** Remembered thread owners; the oldest is forgotten past this (forgotten = unknown owner). */
 const MAX_THREAD_OWNERS = 4096;
+/** Hard bound on a native interrupt: the request and the wait for the pane's own `turn/completed`. */
+export const CODEX_NATIVE_INTERRUPT_MS = 5000;
+/** A Codex turn one relay incarnation reported running (the Codex turn id never leaves the daemon). */
+export interface CodexTurnRef {relayId:string; threadId:string; turnId:string}
+/**
+ * - `interrupted`: the pane's own stream reported `turn/completed` with status
+ *   `interrupted` for the aimed turn. The only proof of a native stop.
+ * - `not-written`: nothing reached the server, or it refused the request
+ *   (wrong turn, unknown thread), so it did nothing.
+ * - `uncertain`: written, and no proof either way in time (`{}` alone, no
+ *   answer, or the turn ended some other way).
+ */
+export type CodexNativeInterrupt = {outcome:'interrupted'|'not-written'|'uncertain'; turn?:CodexTurnRef};
 
 /** Owns relay reservations before PTY spawn and live ownership after it.
  * A failed/retired spawn cannot install a late relay into a recycled pane ID. */
@@ -162,6 +175,62 @@ export class CodexPaneRelays {
     const owner = this.ownerOf(ref.threadId);
     if (owner?.paneId !== entry.id || !owner.live) return Promise.resolve('not-found');
     return entry.relay.answer(ref.threadId,ref.requestId,answer);
+  }
+
+  /** The running Codex turn of the pane's foreground thread, from its own live relay. */
+  activeTurn(id:string, owner:ManagedSession | undefined):CodexTurnRef | undefined {
+    const observed = this.liveSelection(id,owner);
+    const entry = this.entries.get(id);
+    if (!observed.live || !observed.selection || !entry?.relay) return undefined;
+    const turnId = entry.relay.activeTurn(observed.selection.threadId);
+    return turnId ? {relayId:entry.relayId,threadId:observed.selection.threadId,turnId} : undefined;
+  }
+
+  /**
+   * Whether `turn` is still the running turn of the pane's foreground thread,
+   * on the same relay incarnation, with no end reported for it.
+   */
+  stillRunning(id:string, owner:ManagedSession | undefined, turn:CodexTurnRef):boolean {
+    const now = this.activeTurn(id,owner);
+    return !!now && now.relayId === turn.relayId && now.threadId === turn.threadId && now.turnId === turn.turnId &&
+      this.turnEnded(id,turn) === undefined;
+  }
+
+  /**
+   * Stop exactly `turn` (pinned by the caller) with `turn/interrupt`, bounded
+   * by `timeoutMs` in total. Nothing is sent for a turn that already ended or
+   * is no longer the running one: the server holds an interrupt for a
+   * finished turn without answering. The waiter on the pane's own stream is
+   * registered before the request leaves, and only that stream decides
+   * `interrupted`; the request's `{}` never does. An end reported any other
+   * way returns at once, without waiting for the request. `answered`: the
+   * server acknowledged the request (so it landed).
+   */
+  async interrupt(id:string, owner:ManagedSession | undefined, turn:CodexTurnRef,
+    opts:{timeoutMs?:number; answered?:()=>void} = {}):Promise<CodexNativeInterrupt> {
+    const timeoutMs = opts.timeoutMs ?? CODEX_NATIVE_INTERRUPT_MS;
+    const relay = this.entries.get(id)?.relay;
+    // Ended before this request (however it ended), or replaced: nothing to send.
+    if (!relay || !this.stillRunning(id,owner,turn)) return {outcome:'not-written',turn};
+    const wait = relay.waitTurnEnd(turn.threadId,turn.turnId,timeoutMs);
+    let answer:'answered'|'refused'|'not-sent'|'uncertain'|undefined;
+    void relay.interrupt(turn.threadId,turn.turnId,timeoutMs).then(
+      ()=>{answer = 'answered';try {opts.answered?.();} catch {/* a notice cannot change the outcome */}},
+      (error:unknown)=>{
+        answer = error instanceof CodexUpstreamError && error.kind !== 'uncertain' ? error.kind : 'uncertain';
+        // A refusal or a request that never left ends the wait early; `{}` does not.
+        if (answer === 'refused' || answer === 'not-sent') wait.cancel();
+      });
+    const status:CodexTurnEnd | undefined = await wait.ended;
+    if (status === 'interrupted') return {outcome:'interrupted',turn};
+    return {outcome:answer === 'refused' || answer === 'not-sent' ? 'not-written' : 'uncertain',turn};
+  }
+
+  /** How the turn ended, when the same relay incarnation's stream reported it. */
+  turnEnded(id:string, ref:CodexTurnRef):CodexTurnEnd | undefined {
+    const entry = this.entries.get(id);
+    if (!entry || entry.retired || entry.relayId !== ref.relayId || !entry.relay) return undefined;
+    return entry.relay.turnEnded(ref.threadId,ref.turnId);
   }
 
   retire(id:string):Promise<void> {

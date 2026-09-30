@@ -9,6 +9,7 @@ import type { AgentLaunchOptions } from '../web/agentLaunch';
 import { buildAgentLaunch } from '../web/agentLaunch';
 import { withChosenAccountEnv } from '../phone/paneAccountSpawn';
 import { codexCdOperand, withCodexRemote } from '../web/recoverCodexPane';
+import type { CodexNativeInterrupt, CodexTurnRef } from '../web/codexPaneRelays';
 import { screenBlocksChatSend, screenShowsTurnEnding, titleShowsFinishedTurn } from '../transcript/chatScreenGate';
 import { deliverChatPrompt, type ChatScreenRows } from '../transcript/deliverChatPrompt';
 import { INTERRUPT_COOLDOWN_MS, interruptChatTurn, type ChatInterruptVerdict } from '../transcript/interruptChatTurn';
@@ -50,6 +51,8 @@ export interface ChatPane {
     isEmptyShellPrompt(): boolean; getInputRevision(): number; noteInput(data: string): void;
     /** When a lone ESC last reached the pane, from any source (0 = never). */
     getLastEscAt(): number;
+    /** A native interrupt reached the running turn without a key: latch it like a lone ESC. */
+    noteInterrupt?(): void;
     /** The latest window title the program set, and when (`at` 0 = never). */
     getTitle(): { title: string; at: number };
   };
@@ -112,6 +115,17 @@ export interface NativeChatBridgeDeps<P extends ChatPane> {
     /** The "account server not there yet" failures that justify starting the runtime. */
     unavailable(error: unknown): boolean;
     selection(id: string, pane: P): { cwd?: string } | undefined;
+    /** The pane's running Codex turn, from its own relay stream. Absent: no native cancel. */
+    activeTurn?(id: string, pane: P | undefined): CodexTurnRef | undefined;
+    /**
+     * Codex `turn/interrupt` for exactly `turn`, bounded; `interrupted` only on
+     * the pane's own `turn/completed`. `answered`: the server acknowledged it.
+     */
+    interrupt?(id: string, pane: P | undefined, turn: CodexTurnRef, opts?: { answered?: () => void }): Promise<CodexNativeInterrupt>;
+    /** `turn` is still the running turn of the pane's foreground thread on the same relay. */
+    stillRunning?(id: string, pane: P | undefined, turn: CodexTurnRef): boolean;
+    /** How that turn ended, as the same relay's stream reported it. */
+    turnEnded?(id: string, ref: CodexTurnRef): string | undefined;
   };
   startCodexRuntime(env: NodeJS.ProcessEnv): Promise<void>;
   loadSkills(agent: string, cwd: string, env: Record<string, string | undefined>): Promise<ChatSkillCatalog>;
@@ -208,6 +222,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
    */
   const probeCancel = async (cancel: WatchedCancel & {
     incarnationId?: string; agentSessionId: string; slug: string; boundary: TranscriptBoundary;
+    /** The Codex turn a native interrupt was aimed at (never on the wire). */
+    codexTurn?: CodexTurnRef;
   }): Promise<CancelProbe> => {
     const id = cancel.paneId;
     const where = (): 'live' | 'gone' | 'transient' => {
@@ -228,6 +244,10 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     if (state !== 'live') return { kind: state };
     if (sessionChanged()) return { kind: 'session-changed' };
     if (aimedRunning()) return { kind: 'running' };
+    // The pane's own Codex stream reported the aimed turn interrupted.
+    if (cancel.codexTurn && deps.relays.turnEnded?.(id, cancel.codexTurn) === 'interrupted') {
+      return { kind: 'ended', endedAs: 'interrupted', evidence: 'native' };
+    }
     const end = turnEndAfter(deps.projector.snapshot(id)?.events, cancel.boundary);
     if (end?.kind === 'ended') return { kind: 'ended', endedAs: end.status === 'idle' ? 'interrupted' : 'completed', evidence: 'transcript' };
     if (end) return { kind: 'unprovable' };
@@ -990,7 +1010,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
    * the once-per-turn check.
    */
   const interruptLocked = async (id: string, agentSessionId: string,
-    opts: { turnId?: string; authorized?: () => Promise<boolean>; beforeWrite?: (turn: { id: string; startedAt: number }) => boolean } = {},
+    opts: { turnId?: string; authorized?: () => Promise<boolean>; beforeWrite?: (turn: { id: string; startedAt: number }) => boolean;
+      native?: () => Promise<'interrupted' | 'not-written' | 'uncertain'>; nativeStillAimed?: () => boolean;
+      fallbackRefused?: (verdict: ChatInterruptVerdict) => void; escWriting?: () => void } = {},
   ): Promise<ChatInterruptVerdict | 'busy'> => {
     if (sending.has(id)) return 'busy';
     sending.add(id);
@@ -1005,6 +1027,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
           return slug && current.agentVerified ? { slug, status: current.agentStatus, ...(current.turn ? { turn: current.turn } : {}) } : null;
         },
         write: (data) => {
+          opts.escWriting?.();
           try { return deps.write(id, data); } catch (error) {
             // The ESC may have reached the PTY: latch it anyway, so no other
             // Stop in this turn (or within the cooldown) presses a second one.
@@ -1018,6 +1041,9 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         ...(opts.turnId !== undefined ? { expectedTurnId: opts.turnId } : {}),
         ...(opts.authorized ? { authorized: opts.authorized } : {}),
         ...(opts.beforeWrite ? { beforeWrite: opts.beforeWrite } : {}),
+        ...(opts.native ? { native: opts.native, noteInterrupt: () => { try { deps.pane(id)?.bridge.noteInterrupt?.(); } catch { /* best effort */ } } } : {}),
+        ...(opts.nativeStillAimed ? { nativeStillAimed: opts.nativeStillAimed } : {}),
+        ...(opts.fallbackRefused ? { fallbackRefused: opts.fallbackRefused } : {}),
       });
     } finally { sending.delete(id); }
   };
@@ -1162,10 +1188,47 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     let aimedStartedAt = 0;
     let aimedPane: P | undefined;
     let lastEventId: string | undefined;
+    let writeAt: number | undefined;
+    // Set once the receipt reads `requested` (and was announced) before the
+    // lock is released: a native request the server acknowledged.
+    let requestedEarly = false;
+    let escRefused: ChatCancelTag | undefined;
+    // Codex relay panes: the agent's own `turn/interrupt` first, then the ESC
+    // gates again unless the pane's own stream proved the turn interrupted.
+    // The Codex turn is pinned here, at entry: the request and the fallback
+    // ESC are both for this turn and no later one.
+    const interruptNative = deps.relays.interrupt;
+    const codexTurn = agent === 'codex' && interruptNative ? deps.relays.activeTurn?.(id, deps.pane(id)) : undefined;
+    const markRequested = () => {
+      if (requestedEarly || inserted !== 'inserted' || writeAt === undefined) return;
+      requestedEarly = true;
+      const progress: StoredCancelProgress = { state: 'requested', at: writeAt };
+      if (!store.complete(owner, clientCancelId, { effect: 'interrupt-requested', ...(aimed ? { turnId: aimed } : {}) }, progress)) {
+        deps.log('warn', `[chat] cancel receipt for ${id} not persisted`);
+      }
+      cancelObserver?.announce({ owner, paneId: id, clientCancelId, ...(aimed ? { turnId: aimed } : {}) }, progress);
+    };
+    // `native` evidence only when the proof came from the native path alone: no
+    // ESC was written for this cancel, and the server acknowledged the request
+    // or the stream proved it during the wait. After a fallback ESC, the ESC
+    // path's own evidence rules decide.
+    let nativeOutcome: 'interrupted' | 'not-written' | 'uncertain' | undefined;
+    let escWritten = false;
+    const native = codexTurn && interruptNative
+      ? async (): Promise<'interrupted' | 'not-written' | 'uncertain'> =>
+        (nativeOutcome = (await interruptNative(id, deps.pane(id), codexTurn, { answered: markRequested })).outcome)
+      : undefined;
+    const nativeStillAimed = codexTurn ? () => deps.relays.stillRunning?.(id, deps.pane(id), codexTurn) ?? false : undefined;
+    const fallbackRefused = (verdict: ChatInterruptVerdict) => {
+      escRefused = ESC_REFUSED[verdict] ?? 'chat-unavailable';
+      deps.log('info', `[chat] cancel for ${id}: native interrupt sent, fallback ESC refused (${verdict})`);
+    };
     const beforeWrite = (target: { id: string; startedAt: number }): boolean => {
       aimed = target.id;
       aimedStartedAt = target.startedAt;
       aimedPane = deps.pane(id);
+      // The first write happens right after this; a native wait may delay the ESC.
+      writeAt = now();
       // Where the transcript stands right before the ESC: only records after
       // this can be the aimed turn's end (an earlier turn merged into the same
       // episode has its end before it). Unreadable: timestamps alone decide.
@@ -1176,7 +1239,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     let verdict: ChatInterruptVerdict | 'busy';
     try {
       verdict = await interruptLocked(id, req.agentSessionId, { ...(req.turnId !== undefined ? { turnId: req.turnId } : {}),
-        ...(req.authorized ? { authorized: req.authorized } : {}), beforeWrite });
+        ...(req.authorized ? { authorized: req.authorized } : {}), beforeWrite,
+        ...(native && nativeStillAimed ? { native, nativeStillAimed, fallbackRefused, escWriting: () => { escWritten = true; } } : {}) });
     } catch (error) {
       // Nothing that throws out of here runs after the write (the write's own
       // failure is the `error` verdict), so the id is freed for a retry. Only
@@ -1189,26 +1253,33 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       if (inserted === 'exists') return early() ?? refuse('cancel-id-conflict');
       return refuse(inserted === 'full' ? 'message-history-full' : 'chat-persist-failed');
     }
+    // A fallback ESC that threw after an acknowledged native request: the
+    // interrupt certainly landed, so it stays a `requested` cancel.
+    if (requestedEarly && verdict === 'error') verdict = 'sent';
     if (inserted === 'inserted' && (verdict === 'sent' || verdict === 'error')) {
       // `error` = the write threw: the ESC may have reached the pane.
       const outcome = { effect: verdict === 'sent' ? 'interrupt-requested' as const : 'uncertain' as const, ...(aimed ? { turnId: aimed } : {}) };
-      const requestedAt = now();
+      const requestedAt = writeAt ?? now();
       const progress: StoredCancelProgress = verdict === 'sent'
         ? { state: 'requested', at: requestedAt } : { state: 'unknown', reason: 'write-uncertain', at: requestedAt };
-      if (!store.complete(owner, clientCancelId, outcome, progress)) deps.log('warn', `[chat] cancel receipt for ${id} not persisted`);
       const watched = { owner, paneId: id, clientCancelId, ...(aimed ? { turnId: aimed } : {}) };
-      cancelObserver?.announce(watched, progress);
+      // Already stored and announced when the server acknowledged the native request.
+      if (!requestedEarly) {
+        if (!store.complete(owner, clientCancelId, outcome, progress)) deps.log('warn', `[chat] cancel receipt for ${id} not persisted`);
+        cancelObserver?.announce(watched, progress);
+      }
       if (verdict === 'sent' && aimed && aimedPane) {
         cancelObserver?.watch({ ...watched, turnId: aimed, turnStartedAt: aimedStartedAt, requestedAt,
           incarnationId: aimedPane.meta.incarnationId, agentSessionId: req.agentSessionId, slug: agent,
-          boundary: { ...(lastEventId !== undefined ? { lastEventId } : {}), since: requestedAt - CANCEL_CLOCK_SKEW_MS } } satisfies ObservedCancel);
+          boundary: { ...(lastEventId !== undefined ? { lastEventId } : {}), since: requestedAt - CANCEL_CLOCK_SKEW_MS },
+          ...(codexTurn && !escWritten && (nativeOutcome === 'interrupted' || requestedEarly) ? { codexTurn } : {}) } satisfies ObservedCancel);
       } else if (verdict === 'sent') {
         // The pane was already gone at the write: nothing can be observed.
         cancelObserver?.settle(watched, { state: 'unknown', reason: 'pane-closed', at: now() });
       }
       const view = verdict === 'sent' ? store.progress(owner, clientCancelId) : undefined;
       return { clientCancelId, replayed: false, ...outcome, ...(verdict === 'error' ? { error: 'cancel-failed' as const } : {}),
-        ...(view ? { cancel: view } : {}) };
+        ...(view ? { cancel: view } : {}), ...(escRefused ? { escRefused } : {}) };
     }
     // `unavailable` after the receipt: the pane was gone, nothing was written.
     if (inserted === 'inserted') store.discard(owner, clientCancelId);
@@ -1228,6 +1299,13 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         deps.log('info', `[chat] cancel for ${id} refused: ${verdict}`);
         return notRunning();
     }
+  };
+
+  /** A refused fallback ESC after a native request that may have landed, as the cancel's own refusal tags. */
+  const ESC_REFUSED: Partial<Record<ChatInterruptVerdict, ChatCancelTag>> = {
+    unauthorized: 'authorization-expired', blocked: 'prompt-active', session_changed: 'session-changed',
+    not_running: 'turn-not-running', turn_mismatch: 'turn-not-running', already_interrupted: 'turn-already-interrupted',
+    cooldown: 'cancel-cooldown', unavailable: 'chat-unavailable',
   };
 
   /**

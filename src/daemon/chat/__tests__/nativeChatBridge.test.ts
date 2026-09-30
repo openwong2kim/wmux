@@ -33,7 +33,8 @@ function fixture() {
   const pane: ChatPane = {
     meta: { id: 'pane', state: 'attached', pid: 100, cwd: '/live', env: {}, spawnCwd: '/spawn', incarnationId: 'inc' },
     bridge: { isEmptyShellPrompt: () => shell.empty, getInputRevision: () => shell.revision,
-      noteInput: (data: string) => { shell.revision++; shell.empty = false; if (data === '\x1b') shell.escAt = Date.now(); }, getLastEscAt: () => shell.escAt, getTitle: () => shell.title },
+      noteInput: (data: string) => { shell.revision++; shell.empty = false; if (data === '\x1b') shell.escAt = Date.now(); }, getLastEscAt: () => shell.escAt, getTitle: () => shell.title,
+      noteInterrupt: () => { shell.escAt = Date.now(); } },
     promptLog: { size: 3, isCommandRunning: () => false },
     ptyProcess: { write: (data) => { typed.push(data); } },
   };
@@ -1041,6 +1042,185 @@ describe('cancel outcome (Esc path)', () => {
     const off = createChatBridge({ ...f.deps, cancelReceipts: null });
     expect(off.cancelOutcomeEnabled?.()).toBe(false);
     expect(off.cancelOutcome?.('device:a', 'pane', f.req.clientCancelId)).toBeNull();
+  });
+});
+
+describe('cancel outcome (Codex native turn/interrupt)', () => {
+  const EPOCH = fileHistoryEpoch('codex', 'conv', 'a.jsonl');
+  const T0 = 1_760_000_000_000;
+  const RUNNING = ['• Working (5s • esc to interrupt)', '', '› '];
+  const IDLE = ['• Done.', '', '› '];
+  const AIMED = { relayId: 'relay-1', threadId: 'thread-1', turnId: 'codex-turn-a' };
+  afterEach(() => { vi.useRealTimers(); });
+  type Native = 'interrupted' | 'not-written' | 'uncertain';
+  type Relay = { active: typeof AIMED | undefined; ended: Map<string, string>; interrupts: number; pinned: (typeof AIMED)[]; eventsAtAnswer: number };
+  const setup = (native: Native, onInterrupt: (f: ReturnType<typeof fixture>, relay: Relay) => void = () => undefined) => {
+    vi.useFakeTimers({ now: T0 });
+    const f = fixture();
+    f.state.projector = { ...FILE, terminal: { ...FILE.terminal!, agent: 'codex' } };
+    const startedAt = Date.now() - 5_000;
+    f.state.agent = { ...f.state.agent, agentName: 'Codex CLI', agentVerified: true, agentStatus: 'running',
+      turn: { id: 't1:c.1', state: 'running', startedAt } };
+    f.state.screen = RUNNING;
+    const relay: Relay = { active: AIMED, ended: new Map<string, string>(), interrupts: 0, pinned: [], eventsAtAnswer: -1 };
+    let transcript: import('../../../shared/transcript/turnEvents').TurnEvent[] = [];
+    const events: import('../chatCancelObserver').ChatCancelEvent[] = [];
+    const bridge = createChatBridge({ ...f.deps,
+      projector: { status: () => f.state.projector, snapshot: () => ({ ...page('e'), events: transcript }) },
+      onCancelEvent: (event) => { events.push(event); },
+      relays: { ...f.deps.relays,
+        activeTurn: () => relay.active,
+        interrupt: async (_id, _pane, turn, opts) => {
+          relay.interrupts++;
+          relay.pinned.push(turn);
+          // The server acknowledges a request it accepted; a refusal is not an acknowledgement.
+          if (native !== 'not-written') { opts?.answered?.(); relay.eventsAtAnswer = events.length; }
+          // The native wait takes time under the pane lock.
+          await vi.advanceTimersByTimeAsync(500);
+          onInterrupt(f, relay);
+          if (native === 'interrupted') { relay.ended.set(turn.turnId, 'interrupted'); relay.active = undefined; }
+          return { outcome: native, turn };
+        },
+        stillRunning: (_id, _pane, turn) => relay.active?.turnId === turn.turnId && !relay.ended.has(turn.turnId),
+        turnEnded: (_id, ref) => relay.ended.get(ref.turnId) } });
+    const req = { owner: 'device:a' as const, id: 'pane', agentSessionId: 'conv', historyEpoch: EPOCH, turnId: 't1:c.1', clientCancelId: msgId() };
+    const outcome = () => bridge.cancelOutcome?.('device:a', 'pane', req.clientCancelId);
+    const stop = () => { f.state.agent.turn = { id: 't1:c.1', state: 'idle', startedAt }; f.state.agent.agentStatus = 'complete'; f.state.screen = IDLE; };
+    const setTranscript = (rows: typeof transcript) => { transcript = rows; };
+    return { ...f, bridge, events, req, outcome, relay, stop, setTranscript };
+  };
+  const escs = (f: { written: string[] }) => f.written.filter((data) => data === '\x1b').length;
+
+  it('interrupted on the pane\'s own stream: no ESC, and ended/interrupted/native once the turn stops running', async () => {
+    const f = setup('interrupted');
+    const answer = await f.bridge.cancel(f.req);
+    expect(f.relay.interrupts).toBe(1);
+    expect(escs(f)).toBe(0);
+    // requestedAt is the first write, not the end of the native wait.
+    expect(answer).toMatchObject({ effect: 'interrupt-requested', turnId: 't1:c.1', cancel: { state: 'requested', requestedAt: T0 } });
+    // Never ended while /turns still shows the aimed turn running.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'requested' });
+    f.stop();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'ended', turnId: 't1:c.1', endedAs: 'interrupted', evidence: 'native' });
+    // The Codex turn id never reaches the wire.
+    expect(JSON.stringify([answer, f.outcome(), f.events])).not.toContain('codex-turn-a');
+  });
+
+  it('{} or no answer in time is not an end: the ESC gates run again and the ESC goes out while the turn still runs', async () => {
+    const f = setup('uncertain');
+    const answer = await f.bridge.cancel(f.req);
+    expect(f.relay.interrupts).toBe(1);
+    expect(escs(f)).toBe(1);
+    expect(answer).toMatchObject({ effect: 'interrupt-requested', cancel: { state: 'requested', requestedAt: T0 } });
+    f.stop();
+    await vi.advanceTimersByTimeAsync(1_000);
+    // Stopped, but nothing proves how: never counted as a native end.
+    expect(f.outcome()).toMatchObject({ state: 'requested' });
+    // The stream reports the turn interrupted, but an ESC was written: the
+    // stream cannot say which write stopped it, so it is not evidence.
+    f.relay.ended.set(AIMED.turnId, 'interrupted');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'requested' });
+    // The ESC path's own evidence settles it.
+    f.setTranscript([{ id: 'abort', kind: 'meta', subtype: 'turn_aborted', label: 'turn_aborted', ts: T0 + 2_000 }]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'ended', endedAs: 'interrupted', evidence: 'transcript' });
+  });
+
+  it('a turn that completed on its own is not a native interrupt', async () => {
+    const f = setup('uncertain');
+    await f.bridge.cancel(f.req);
+    f.relay.ended.set(AIMED.turnId, 'completed');
+    f.stop();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(f.outcome()).toMatchObject({ state: 'unknown' });
+  });
+
+  it('a request that may have landed keeps its receipt even when the ESC gate then refuses', async () => {
+    const f = setup('uncertain', (fx) => { fx.state.screen = IDLE; });
+    const answer = await f.bridge.cancel(f.req);
+    expect(escs(f)).toBe(0);
+    expect(answer).toMatchObject({ effect: 'interrupt-requested', cancel: { state: 'requested' } });
+    expect(f.outcome()).toMatchObject({ state: 'requested' });
+    // No ESC was written and the server acknowledged the request: a later
+    // stream report of the aimed turn interrupted is the native path's proof.
+    f.stop();
+    f.relay.ended.set(AIMED.turnId, 'interrupted');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(f.outcome()).toMatchObject({ state: 'ended', endedAs: 'interrupted', evidence: 'native' });
+  });
+
+  it('a refused request wrote nothing: a refusing ESC gate leaves no receipt', async () => {
+    const f = setup('not-written', (fx) => { fx.state.screen = IDLE; });
+    const answer = await f.bridge.cancel(f.req);
+    expect(escs(f)).toBe(0);
+    expect(answer).toMatchObject({ effect: 'none', error: 'turn-not-running' });
+    expect(f.outcome()).toBeUndefined();
+  });
+
+  it('a refused request (wrong turn) falls back to the ESC while the turn still runs', async () => {
+    const f = setup('not-written');
+    const answer = await f.bridge.cancel(f.req);
+    expect(f.relay.interrupts).toBe(1);
+    expect(escs(f)).toBe(1);
+    expect(answer).toMatchObject({ effect: 'interrupt-requested', cancel: { state: 'requested' } });
+  });
+
+  it('re-authorizes after the native wait before an ESC', async () => {
+    const f = setup('not-written');
+    let calls = 0;
+    const answer = await f.bridge.cancel({ ...f.req, authorized: async () => ++calls === 1 });
+    expect(calls).toBe(2);
+    expect(escs(f)).toBe(0);
+    expect(answer).toMatchObject({ effect: 'none', error: 'authorization-expired' });
+  });
+
+  it('announces requested as soon as the server acknowledges the request, not after the wait', async () => {
+    const f = setup('uncertain');
+    await f.bridge.cancel(f.req);
+    expect(f.relay.eventsAtAnswer).toBe(1);
+    expect(f.events[0]).toMatchObject({ state: 'requested', turnId: 't1:c.1', at: T0 });
+    // Announced once, even though the ESC fallback then went out too.
+    expect(f.events.filter((event) => event.state === 'requested')).toHaveLength(1);
+  });
+
+  it('pins the Codex turn at entry: a turn that replaced it during the wait gets no ESC', async () => {
+    const f = setup('uncertain', (_fx, relay) => { relay.active = { ...AIMED, turnId: 'codex-turn-b' }; });
+    const answer = await f.bridge.cancel(f.req);
+    expect(f.relay.pinned).toEqual([AIMED]);
+    expect(escs(f)).toBe(0);
+    // The request may have landed: the receipt stays, and the refused fallback says why.
+    expect(answer).toMatchObject({ effect: 'interrupt-requested', escRefused: 'turn-not-running', cancel: { state: 'requested' } });
+    expect(cancelResponse(answer).body).toMatchObject({ escRefused: 'turn-not-running' });
+  });
+
+  it('a refused fallback after a request that may have landed names its reason', async () => {
+    const f = setup('uncertain');
+    let calls = 0;
+    const answer = await f.bridge.cancel({ ...f.req, authorized: async () => ++calls === 1 });
+    expect(escs(f)).toBe(0);
+    expect(answer).toMatchObject({ effect: 'interrupt-requested', escRefused: 'authorization-expired' });
+  });
+
+  it('a native stop latches the turn: another cancel or a desktop Stop sends no second interrupt', async () => {
+    const f = setup('interrupted');
+    await f.bridge.cancel(f.req);
+    // The episode still reads running for a moment after the stop.
+    const again = await f.bridge.cancel({ ...f.req, clientCancelId: msgId() });
+    expect(again).toMatchObject({ effect: 'none', error: 'turn-already-interrupted' });
+    expect(await f.bridge.desktopInterrupt('pane', 'conv')).toBe('not_running');
+    expect(escs(f)).toBe(0);
+    expect(f.relay.interrupts).toBe(1);
+  });
+
+  it('without a running turn on the pane\'s relay it is the plain ESC path', async () => {
+    const f = setup('interrupted');
+    f.relay.active = undefined;
+    await f.bridge.cancel(f.req);
+    expect(f.relay.interrupts).toBe(0);
+    expect(escs(f)).toBe(1);
   });
 });
 

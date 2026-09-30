@@ -1,7 +1,8 @@
 /**
  * Chat cancel outcome for the phone (docs/phone-client-contract.md, "Chat
- * cancel outcome"). Served for the Esc path (Claude, Codex); `native`
- * evidence (Codex `turn/interrupt`, the OpenCode plugin) is not served yet.
+ * cancel outcome"). Served for the Esc path (Claude, Codex) and for Codex
+ * `turn/interrupt` on relay panes (`native` evidence); the OpenCode plugin's
+ * `native` evidence is not served yet.
  *
  * Today's `POST …/chat/cancel` answers 202 `interrupt-requested` and stops
  * there. This adds what happened next, keyed by the same owner-bound
